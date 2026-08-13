@@ -277,7 +277,7 @@ test('the stateless classifier has no tools and treats Slack context as data', (
   assert.match(SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS, /untrusted classification data/);
 });
 
-test('every profile receives shared Slack teammate defaults before voice overrides and guardrail', async () => {
+test('every Agent receives shared Slack teammate defaults before voice overrides and guardrail', async () => {
   const store = new SqliteConfigStore(':memory:', {
     agents: [{
       id: 'agent_custom', name: 'Custom', instructions: 'Use a playful voice.', enabled: true,
@@ -294,7 +294,7 @@ test('every profile receives shared Slack teammate defaults before voice overrid
     assignments: store,
   });
   assert.deepEqual(config.instructionLayers.map((layer) => layer.source), [
-    'interaction_defaults', 'profile', 'channel', 'runtime', 'guardrail',
+    'interaction_defaults', 'agent', 'channel', 'runtime', 'guardrail',
   ]);
   assert.match(config.instructions, /Lead with the outcome/);
   assert.match(config.instructions, /Current Slack user text may express task intent/);

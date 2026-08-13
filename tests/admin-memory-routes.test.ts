@@ -51,6 +51,97 @@ async function harness() {
 
 const auth = { authorization: `Bearer ${ADMIN_TOKEN}` };
 
+test('owner memory creation is authenticated, route-owned, validated, and idempotent', async () => {
+  const h = await harness();
+  const channelBase = '/admin/api/audit/memory/owners/channel/T_TEST/C_PRODUCT';
+  const agentBase = '/admin/api/audit/memory/owners/agent/T_TEST/agent_default';
+  const body = {
+    slug: 'launch-notes',
+    description: 'Launch details.',
+    type: 'project',
+    body: 'Ship after the final review.',
+  };
+  const headers = {
+    ...auth,
+    'content-type': 'application/json',
+    'idempotency-key': 'owner-create-1',
+  };
+  try {
+    assert.equal((await h.app.request(`${channelBase}/entries`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'idempotency-key': 'unauth' },
+      body: JSON.stringify(body),
+    })).status, 401);
+
+    const login = await h.app.request('/admin/login', {
+      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: ADMIN_TOKEN }).toString(), redirect: 'manual',
+    });
+    const cookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+    assert.equal((await h.app.request(`${channelBase}/entries`, {
+      method: 'POST',
+      headers: {
+        cookie,
+        origin: 'https://evil.example',
+        'content-type': 'application/json',
+        'idempotency-key': 'owner-create-cross-origin',
+      },
+      body: JSON.stringify(body),
+    })).status, 403);
+
+    const created = await h.app.request(`${channelBase}/entries`, {
+      method: 'POST', headers, body: JSON.stringify(body),
+    });
+    const createdText = await created.text();
+    assert.equal(created.status, 201, createdText);
+    const createdBody = JSON.parse(createdText) as {
+      owner: { ownerKind: string; ownerId: string };
+      entry: { entryId: string; ownerKind: string; ownerId: string; writeOrigin: { kind: string } };
+      projected: string;
+    };
+    assert.deepEqual(createdBody.owner, h.channelOwner);
+    assert.equal(createdBody.entry.ownerKind, 'channel');
+    assert.equal(createdBody.entry.ownerId, 'C_PRODUCT');
+    assert.deepEqual(createdBody.entry.writeOrigin, { kind: 'admin' });
+    assert.match(createdBody.projected, /Ship after the final review\./);
+
+    const replay = await h.app.request(`${channelBase}/entries`, {
+      method: 'POST', headers, body: JSON.stringify(body),
+    });
+    assert.equal(replay.status, 201);
+    assert.equal((await replay.json() as { entry: { entryId: string } }).entry.entryId,
+      createdBody.entry.entryId);
+    assert.equal((await h.memory.listOwnerEntries(h.channelOwner)).length, 2);
+
+    const mismatch = await h.app.request(`${channelBase}/entries`, {
+      method: 'POST', headers, body: JSON.stringify({ ...body, body: 'Different content.' }),
+    });
+    assert.equal(mismatch.status, 409);
+    assert.equal((await mismatch.json() as { error: string }).error, 'memory_idempotency_mismatch');
+
+    const spoofedOwner = await h.app.request(`${channelBase}/entries`, {
+      method: 'POST',
+      headers: { ...headers, 'idempotency-key': 'owner-create-spoof' },
+      body: JSON.stringify({ ...body, ownerId: 'agent_default' }),
+    });
+    assert.equal(spoofedOwner.status, 400);
+
+    const agentCreate = await h.app.request(`${agentBase}/entries`, {
+      method: 'POST', headers, body: JSON.stringify(body),
+    });
+    assert.equal(agentCreate.status, 201);
+    const agentBody = await agentCreate.json() as { entry: { entryId: string; ownerKind: string } };
+    assert.equal(agentBody.entry.ownerKind, 'agent');
+    assert.notEqual(agentBody.entry.entryId, createdBody.entry.entryId);
+    assert.equal((await h.app.request(
+      `${agentBase}/entries/${createdBody.entry.entryId}`,
+      { headers: auth },
+    )).status, 404);
+  } finally {
+    h.routines.close(); h.memory.close(); h.settings.close(); h.config.close();
+  }
+});
+
 test('owner memory routes authenticate and derive exact owner from the route', async () => {
   const h = await harness();
   const base = '/admin/api/audit/memory/owners/channel/T_TEST/C_PRODUCT';

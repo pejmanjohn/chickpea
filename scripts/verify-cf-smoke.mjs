@@ -187,7 +187,7 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
   const sandboxMigration = migrations.find((migration) => migration.tag === 'v3');
   check(
     sameArray(sandboxMigration?.new_sqlite_classes ?? [], ['Sandbox']),
-    'built wrangler.json preserves the v3 Sandbox class migration in every profile',
+    'built wrangler.json preserves the v3 Sandbox class migration in every deployment profile',
   );
   const reset = migrations.find((migration) => migration.tag === 'v6');
   check(
@@ -751,7 +751,7 @@ async function main() {
     buildAndVerify('sandbox');
     buildAndVerify('core');
   } else {
-    // An explicit Sandbox smoke retains its one-profile behavior, including
+    // An explicit Sandbox smoke retains its one-deployment-profile behavior, including
     // the documented iteration-only reuse path.
     buildAndVerify('sandbox', { reuseExisting: true });
   }
@@ -1068,38 +1068,38 @@ async function main() {
         allowedTools: [],
       },
     ];
-    const smokeProfile = {
-      id: 'agent_cf_smoke_profile',
-      name: 'CF Smoke Profile',
+    const smokeAgent = {
+      id: 'agent_cf_smoke',
+      name: 'CF Smoke Agent',
       instructions: 'Answer only from the CF smoke gate fixture.',
       enabled: true,
       model: 'anthropic/claude-sonnet-4-6',
       mcpServers: smokeConnections,
     };
-    const profileCreate = await adminFetch(baseUrl, '/admin/api/agents', {
+    const agentCreate = await adminFetch(baseUrl, '/admin/api/agents', {
       method: 'POST',
-      body: JSON.stringify(smokeProfile),
+      body: JSON.stringify(smokeAgent),
     });
     check(
-      profileCreate.status === 201 &&
-        profileCreate.body?.agent?.id === 'agent_cf_smoke_profile' &&
-        profileCreate.body?.agent?.model === 'anthropic/claude-sonnet-4-6',
-      'profile create endpoint saves an explicit model pin',
-      `HTTP ${profileCreate.status}`,
+      agentCreate.status === 201 &&
+        agentCreate.body?.agent?.id === 'agent_cf_smoke' &&
+        agentCreate.body?.agent?.model === 'anthropic/claude-sonnet-4-6',
+      'Agent create endpoint saves an explicit model pin',
+      `HTTP ${agentCreate.status}`,
     );
-    const createdProfile = await adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke_profile');
+    const createdAgent = await adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke');
     check(
-      createdProfile.status === 200 &&
-        createdProfile.body?.agent?.model === 'anthropic/claude-sonnet-4-6',
-      'profile create round-trips through the profile GET endpoint',
-      `HTTP ${createdProfile.status}`,
+      createdAgent.status === 200 &&
+        createdAgent.body?.agent?.model === 'anthropic/claude-sonnet-4-6',
+      'Agent create round-trips through the Agent GET endpoint',
+      `HTTP ${createdAgent.status}`,
     );
 
     // Two writes in parallel exercise the atomic settings-set merge through a
     // real Durable Object RPC. Delete + recreate then probes both sources: if
     // either merge entry were lost, its old credential would still read stored.
     const [linearSecrets, githubSecrets] = await Promise.all([
-      adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke_profile/mcp/secrets/linear-mcp', {
+      adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke/mcp/secrets/linear-mcp', {
         method: 'PUT',
         body: JSON.stringify({
           bearerToken: 'linear-smoke-token',
@@ -1107,7 +1107,7 @@ async function main() {
           headerNames: ['X-Linear-Key'],
         }),
       }),
-      adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke_profile/mcp/secrets/github-mcp', {
+      adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke/mcp/secrets/github-mcp', {
         method: 'PUT',
         body: JSON.stringify({
           bearerToken: 'github-smoke-token',
@@ -1121,48 +1121,48 @@ async function main() {
       'parallel MCP secret writes complete through the DO settings RPC',
       `HTTP ${linearSecrets.status}/${githubSecrets.status}`,
     );
-    const deleteSmokeProfile = await adminFetch(
+    const deleteSmokeAgent = await adminFetch(
       baseUrl,
-      '/admin/api/agents/agent_cf_smoke_profile',
+      '/admin/api/agents/agent_cf_smoke',
       { method: 'DELETE' },
     );
     check(
-      deleteSmokeProfile.status === 204,
-      'profile deletion consumes the durable MCP secret inventory',
-      `HTTP ${deleteSmokeProfile.status}`,
+      deleteSmokeAgent.status === 204,
+      'Agent deletion consumes the durable MCP secret inventory',
+      `HTTP ${deleteSmokeAgent.status}`,
     );
-    const recreateSmokeProfile = await adminFetch(baseUrl, '/admin/api/agents', {
+    const recreateSmokeAgent = await adminFetch(baseUrl, '/admin/api/agents', {
       method: 'POST',
-      body: JSON.stringify(smokeProfile),
+      body: JSON.stringify(smokeAgent),
     });
     const [linearSources, githubSources] = await Promise.all([
-      adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke_profile/mcp/secrets/linear-mcp', {
+      adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke/mcp/secrets/linear-mcp', {
         method: 'PUT',
         body: JSON.stringify({ headerNames: ['X-Linear-Key'] }),
       }),
-      adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke_profile/mcp/secrets/github-mcp', {
+      adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke/mcp/secrets/github-mcp', {
         method: 'PUT',
         body: JSON.stringify({ headerNames: ['X-GitHub-Key'] }),
       }),
     ]);
     check(
-      recreateSmokeProfile.status === 201 &&
+      recreateSmokeAgent.status === 201 &&
         linearSources.body?.bearer === 'missing' &&
         linearSources.body?.headers?.['X-Linear-Key'] === 'missing' &&
         githubSources.body?.bearer === 'missing' &&
         githubSources.body?.headers?.['X-GitHub-Key'] === 'missing',
-      'profile deletion cleared both parallel MCP credential scopes',
-      `HTTP ${recreateSmokeProfile.status}/${linearSources.status}/${githubSources.status}`,
+      'Agent deletion cleared both parallel MCP credential scopes',
+      `HTTP ${recreateSmokeAgent.status}/${linearSources.status}/${githubSources.status}`,
     );
-    const cleanupSmokeProfile = await adminFetch(
+    const cleanupSmokeAgent = await adminFetch(
       baseUrl,
-      '/admin/api/agents/agent_cf_smoke_profile',
+      '/admin/api/agents/agent_cf_smoke',
       { method: 'DELETE' },
     );
     check(
-      cleanupSmokeProfile.status === 204,
-      'recreated MCP smoke profile cleans up',
-      `HTTP ${cleanupSmokeProfile.status}`,
+      cleanupSmokeAgent.status === 204,
+      'recreated MCP smoke Agent cleans up',
+      `HTTP ${cleanupSmokeAgent.status}`,
     );
 
     // --- Add-channel proxy: server-side conversations.list through workerd ---
@@ -1293,7 +1293,10 @@ async function main() {
     // model edit still goes through the real admin API and DO-backed store.
     const patch = await adminFetch(baseUrl, '/admin/api/agents/agent_default', {
       method: 'PATCH',
-      body: JSON.stringify({ model: 'local-stub/smoke-model' }),
+      body: JSON.stringify({
+        expectedRevision: defaultAgent.revision,
+        model: 'local-stub/smoke-model',
+      }),
     });
     check(patch.status === 200, 'admin PATCH pinned the agent model', `HTTP ${patch.status}`);
 

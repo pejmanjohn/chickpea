@@ -71,6 +71,10 @@ const forbiddenSourcePathRoots = [
 const allowedPublicDocs = new Set([
   exportPath('docs', 'architecture', 'agent-runtime-boundary.md'),
   exportPath('docs', 'authentication.md'),
+  exportPath('docs', 'design', 'agent-first-admin-prototype', 'design-qa.md'),
+  exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'app.jsx'),
+  exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'assets', 'chickpea-mark.svg'),
+  exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'styles.css'),
   exportPath('docs', 'plans', '2026-07-28-001-feat-openai-subscription-auth-plan.md'),
   exportPath('docs', 'runbooks', 'access-recovery.md'),
   exportPath('docs', 'runbooks', 'auth-db-upgrade.md'),
@@ -107,6 +111,54 @@ const allowedBinaryFiles = new Map([
   [
     exportPath('assets', 'admin-page.png'),
     '68c94f054f6492300e77c62304f896735ef2fc3c81a37225c9539f179c073098',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-agent-first-channel.png'),
+    '19f8f0824462b9c564904436894b601c78784356773333141b0eb3ceacec079d',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-agent-first-comparison.png'),
+    'ec8b9087540753cbca840527a174f9b439e44d6b8b80abd120dcdf89e66f01f1',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-agent-first-memory.png'),
+    'dbf5740d62cc52b0ba2766afe633c0cac34fe206d6e1fa9abe44724e0a958e1d',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-agent-memory-files.png'),
+    'e33cc0a7755986711421cbd03cef39f033c6719d5ce0a2ed4058ed1f0b88112d',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-channel-always-on-capabilities.png'),
+    'b2f884b47867cd9feb01fdb96ce97e5f65e2da596346c2c025a933b82b99361b',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-channel-annotated.png'),
+    '49a257c9b7f8864a640a80ac75acd64f37b4c12cf905446ff1ee86e2d670573a',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-channel.png'),
+    '9c76d9c17862dad9b7c5a8c024529396d7bad6e5860ce815105b1198f41effd6',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-channels-index.png'),
+    '1b693a6819588b11b01d1bcf134622bef766f5392849eb6ad9f44911ca47f3e6',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-comparison.png'),
+    '07a93bd6065a419a073d280bd50c6aa252e5068002c7b26a3cb58e137f58aac7',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-profile-rows.png'),
+    '3b7e1988271ba9d16ca7c329bd50572745b50bcb45082797fc23126893c9101d',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-profile-tabs-annotated.png'),
+    '870c869362645b1600c767052e529c5bae058cc15471cda00373a79b51b8ed63',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-profile-tabs.png'),
+    '347a7c4fcca8d82640c0524c4dfc10b550c22f8560e8d294257c0a78f0247f5e',
   ],
 ]);
 
@@ -223,7 +275,9 @@ function assertPublicSourceManifest(entries) {
       const normalizedPath = path.toLowerCase();
       return (
         forbiddenSourcePaths.has(normalizedPath) ||
-        (normalizedPath.startsWith('docs/') && !allowedPublicDocs.has(normalizedPath)) ||
+        (normalizedPath.startsWith('docs/') &&
+          !allowedPublicDocs.has(normalizedPath) &&
+          !allowedBinaryFiles.has(normalizedPath)) ||
         forbiddenSourcePathRoots.some(
           (root) =>
             normalizedPath === root || normalizedPath.startsWith(`${root}/`),

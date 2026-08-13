@@ -35,6 +35,7 @@ function assignment(): ResolvedAssignment {
     slackIdentityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     agent: {
       id: 'agent_default',
+      revision: 1,
       name: 'Default',
       instructions: 'Help the team.',
       enabled: true,

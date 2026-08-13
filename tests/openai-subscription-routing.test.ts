@@ -17,6 +17,7 @@ import type { BindOpenAiSubscriptionProviderOptions } from '../src/openai-subscr
 function profile(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
     id: 'agent_openai_route',
+    revision: 1,
     name: 'OpenAI route',
     instructions: 'Use the selected OpenAI lane.',
     enabled: true,

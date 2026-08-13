@@ -991,6 +991,7 @@ function projectRuntimePlanAgent(
   });
   return {
     id: current.id,
+    revision: current.revision,
     name: current.name,
     instructions: plan.instructions,
     enabled: true,

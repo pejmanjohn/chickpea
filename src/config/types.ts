@@ -177,6 +177,8 @@ export interface AgentReferenceSummary {
 
 export interface CustomAgentConfig {
   id: string;
+  /** Durable optimistic-concurrency token. Persisted agents always expose it. */
+  revision: number;
   name: string;
   instructions: string;
   enabled: boolean;
@@ -189,10 +191,24 @@ export interface CustomAgentConfig {
   slackIdentityId?: string;
 }
 
+/** Create/seed input. Persistence assigns revision 1 regardless of caller input. */
+export type AgentCreateInput = Omit<CustomAgentConfig, 'revision'> & { revision?: number };
+
 export interface ChannelAssignment {
   workspaceId: string;
   channelId: string;
   agentId: string;
+}
+
+export interface ChannelPlacementMutation {
+  channel: ChannelConfig;
+  agentId: string | null;
+  expectedAgentId: string | null;
+}
+
+export interface ChannelPlacementResult {
+  channel: ChannelConfig;
+  assignment: ChannelAssignment | null;
 }
 
 export type ChannelParticipationMode = 'ambient' | 'mention_only';

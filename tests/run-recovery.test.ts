@@ -609,7 +609,7 @@ function assignment(): ResolvedAssignment {
     workspaceId: 'T_canary', channelId: 'C_canary', agentId: 'agent_canary',
     model: 'local-stub/canary',
     agent: {
-      id: 'agent_canary', name: 'Canary', instructions: 'Help.', enabled: true,
+      id: 'agent_canary', revision: 1, name: 'Canary', instructions: 'Help.', enabled: true,
       skills: [], mcpServers: [], apiConnections: [], repositories: [],
     },
   };

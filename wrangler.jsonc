@@ -1,86 +1,111 @@
 {
-  "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "chickpea",
-  "workers_dev": true,
-  "preview_urls": false,
-  "compatibility_date": "2026-06-01",
-  "compatibility_flags": ["nodejs_compat"],
-  // Without this, a fresh install captures NO logs at all — the sanitized
-  // Slack error is then the only trace of a provider failure (learned the
-  // hard way: the raw error behind a keyless-anthropic 401 was unrecoverable).
-  "observability": {
-    "enabled": true,
-    // Flue spans are registered explicitly in the Cloudflare-only entry with
-    // `content: false`; platform tracing exports operational metadata only.
-    "traces": { "enabled": true }
-  },
-  "ai": {
-    "binding": "AI"
-  },
-  "triggers": {
-    "crons": ["* * * * *"]
-  },
-  // App-owned state Durable Object (src/cloudflare.ts): one singleton instance
-  // hosts config agents/assignments, thread snapshots, claims, the thread
-  // registry, and operator settings on the Cloudflare target. The optional
-  // Sandbox binding/container is added only by the explicit Sandbox build
-  // profile; its v3 migration remains here so the same Worker can add or
-  // remove that deployment capability without changing Durable Object history.
-  "durable_objects": {
-    "bindings": [
-      { "name": "TAG_STATE", "class_name": "TagStateStore" },
-      { "name": "AUTH_GUARD", "class_name": "AuthGuard" }
-    ]
-  },
-  "d1_databases": [
-    {
-      "binding": "AUTH_DB",
-      "database_name": "chickpea-auth-db",
-      "database_id": "",
-      "migrations_dir": "migrations/better-auth"
-    }
-  ],
-  // v6 is the deliberate prelaunch Flue 2 reset. It permanently deletes only
-  // the four beta Flue namespaces and creates fresh v2 agents. TagStateStore,
-  // Sandbox, ContainerProxy, and all other app-owned state are preserved.
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["FlueRegistry", "FlueSlackThreadAgent"]
-    },
-    {
-      "tag": "v2",
-      "new_sqlite_classes": ["TagStateStore"]
-    },
-    {
-      "tag": "v3",
-      "new_sqlite_classes": ["Sandbox"]
-    },
-    {
-      "tag": "v4",
-      "new_sqlite_classes": ["FlueRoutineWorkflow"]
-    },
-    {
-      "tag": "v5",
-      "new_sqlite_classes": ["FlueRoutineIntentAgent"]
-    },
-    {
-      "tag": "v6",
-      "new_sqlite_classes": [
-        "FlueChickpeaSlackV2Agent",
-        "FlueChickpeaRoutineIntentV2Agent",
-        "FlueChickpeaRoutineExecutionV2Agent"
-      ],
-      "deleted_classes": [
-        "FlueRegistry",
-        "FlueSlackThreadAgent",
-        "FlueRoutineIntentAgent",
-        "FlueRoutineWorkflow"
-      ]
-    },
-    {
-      "tag": "v7",
-      "new_sqlite_classes": ["AuthGuard"]
-    }
-  ]
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "chickpea",
+	"workers_dev": true,
+	"preview_urls": false,
+	"compatibility_date": "2026-06-01",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	// Without this, a fresh install captures NO logs at all — the sanitized
+	// Slack error is then the only trace of a provider failure (learned the
+	// hard way: the raw error behind a keyless-anthropic 401 was unrecoverable).
+	"observability": {
+		"enabled": true,
+		// Flue spans are registered explicitly in the Cloudflare-only entry with
+		// `content: false`; platform tracing exports operational metadata only.
+		"traces": {
+			"enabled": true
+		}
+	},
+	"ai": {
+		"binding": "AI"
+	},
+	"triggers": {
+		"crons": [
+			"* * * * *"
+		]
+	},
+	// App-owned state Durable Object (src/cloudflare.ts): one singleton instance
+	// hosts config agents/assignments, thread snapshots, claims, the thread
+	// registry, and operator settings on the Cloudflare target. The optional
+	// Sandbox binding/container is added only by the explicit Sandbox build
+	// profile; its v3 migration remains here so the same Worker can add or
+	// remove that deployment capability without changing Durable Object history.
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "TAG_STATE",
+				"class_name": "TagStateStore"
+			},
+			{
+				"name": "AUTH_GUARD",
+				"class_name": "AuthGuard"
+			}
+		]
+	},
+	"d1_databases": [
+		{
+			"binding": "AUTH_DB",
+			"database_name": "chickpea-auth-db",
+			"database_id": "",
+			"migrations_dir": "migrations/better-auth"
+		}
+	],
+	// v6 is the deliberate prelaunch Flue 2 reset. It permanently deletes only
+	// the four beta Flue namespaces and creates fresh v2 agents. TagStateStore,
+	// Sandbox, ContainerProxy, and all other app-owned state are preserved.
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"FlueRegistry",
+				"FlueSlackThreadAgent"
+			]
+		},
+		{
+			"tag": "v2",
+			"new_sqlite_classes": [
+				"TagStateStore"
+			]
+		},
+		{
+			"tag": "v3",
+			"new_sqlite_classes": [
+				"Sandbox"
+			]
+		},
+		{
+			"tag": "v4",
+			"new_sqlite_classes": [
+				"FlueRoutineWorkflow"
+			]
+		},
+		{
+			"tag": "v5",
+			"new_sqlite_classes": [
+				"FlueRoutineIntentAgent"
+			]
+		},
+		{
+			"tag": "v6",
+			"new_sqlite_classes": [
+				"FlueChickpeaSlackV2Agent",
+				"FlueChickpeaRoutineIntentV2Agent",
+				"FlueChickpeaRoutineExecutionV2Agent"
+			],
+			"deleted_classes": [
+				"FlueRegistry",
+				"FlueSlackThreadAgent",
+				"FlueRoutineIntentAgent",
+				"FlueRoutineWorkflow"
+			]
+		},
+		{
+			"tag": "v7",
+			"new_sqlite_classes": [
+				"AuthGuard"
+			]
+		}
+	]
 }

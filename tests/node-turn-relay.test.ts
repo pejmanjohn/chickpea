@@ -576,7 +576,7 @@ function assignment(): ResolvedAssignment {
     workspaceId: 'T_node', channelId: 'C_node', agentId: 'agent_node_relay',
     model: 'local-stub/node-relay',
     agent: {
-      id: 'agent_node_relay', name: 'Node relay', instructions: 'Help.', enabled: true,
+      id: 'agent_node_relay', revision: 1, name: 'Node relay', instructions: 'Help.', enabled: true,
       skills: [], mcpServers: [], apiConnections: [], repositories: [],
     },
   };

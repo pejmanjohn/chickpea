@@ -195,8 +195,13 @@ export class MemoryService {
   async list(input: { scope: AuthorizedMemoryScope }): Promise<OwnerMemoryEntry[]>;
   async list(input: { scope: MemoryServiceScope }): Promise<Array<MemoryEntry | OwnerMemoryEntry>> {
     if (isOwnerScope(input.scope)) {
-      const entries = await Promise.all(input.scope.readOwners.map((owner) => this.state.listOwnerEntries(owner)));
-      return entries.flat().filter((entry) => readableOwnerEntry(entry, this.now())).sort(compareOwnerMemoryEntry);
+      const readableAt = this.now();
+      const entries = await Promise.all(
+        input.scope.readOwners.map((owner) =>
+          this.state.listOwnerEntries(owner, { readableAt })
+        ),
+      );
+      return entries.flat().sort(compareOwnerMemoryEntry);
     }
     const entries = await Promise.all(
       input.scope.reads.map((read) =>

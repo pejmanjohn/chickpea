@@ -149,7 +149,7 @@ test('fresh Worker setup needs no recovery token and rejects mismatched confirma
   const setup = await submit(PASSWORD);
   assert.equal(setup.status, 303, await setup.clone().text());
   assert.equal(setup.headers.get('location'), '/admin/onboarding');
-  assert.equal((await settings.getSetting('onboarding.journey.v1')) !== undefined, true);
+  assert.equal((await settings.getSetting('onboarding.journey.v2')) !== undefined, true);
   backend.close();
   settings.close();
   identity.close();

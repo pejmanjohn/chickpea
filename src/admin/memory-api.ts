@@ -39,6 +39,12 @@ interface MemoryAdminApiOptions {
 }
 
 const opaqueId = v.pipe(v.string(), v.regex(/^[A-Za-z0-9_-]{1,200}$/));
+const createOwnerEntrySchema = v.strictObject({
+  slug: v.pipe(v.string(), v.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/)),
+  description: v.string(),
+  type: v.picklist(['fact', 'decision', 'project', 'feedback', 'preference']),
+  body: v.string(),
+});
 const updateSchema = v.object({
   expectedVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
   description: v.string(),
@@ -90,6 +96,55 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
           content: file.path === 'MEMORY.md' ? file.content : undefined,
         };
       }) });
+    } catch (error) { return memoryError(c, error); }
+  });
+
+  app.post('/audit/memory/owners/:ownerKind/:workspaceId/:ownerId/entries', async (c) => {
+    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    const idempotencyKey = readIdempotencyKey(c);
+    if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
+    const parsed = v.safeParse(createOwnerEntrySchema, await readJson(c));
+    if (!parsed.success) return invalid(c);
+    try {
+      const state = options.store(c);
+      const owner = await routeOwner(c, state);
+      const content = validateMemoryContent(parsed.output);
+      const actorId = adminActor(c);
+      const ownerScope = createHash('sha256').update(owner.storeId).digest('hex').slice(0, 24);
+      const namespacedKey = `admin:owner:create:${ownerScope}:${idempotencyKey}`;
+      const entryId = `mem_${createHash('sha256').update(namespacedKey).digest('hex').slice(0, 32)}`;
+      const entry = await state.createOwnerEntry({
+        entryId,
+        storeId: owner.storeId,
+        workspaceId: owner.workspaceId,
+        slug: parsed.output.slug,
+        slugSeed: parsed.output.slug,
+        ...content,
+        actorId,
+        actorClass: 'operator',
+        writeOrigin: { kind: 'admin' },
+        idempotencyKey: namespacedKey,
+      });
+      assertOwnerCreateReceipt(
+        await state.listOwnerRevisions(entry.entryId),
+        namespacedKey,
+        entry.entryId,
+        actorId,
+        parsed.output.slug,
+        content,
+      );
+      if (
+        entry.storeId !== owner.storeId ||
+        entry.workspaceId !== owner.workspaceId ||
+        entry.ownerKind !== owner.ownerKind ||
+        entry.ownerId !== owner.ownerId
+      ) {
+        throw new MemoryStateError(
+          'memory_idempotency_mismatch',
+          'The idempotency key belongs to a different memory owner.',
+        );
+      }
+      return c.json({ owner, entry, projected: projectOwnerMemoryEntry(entry) }, 201);
     } catch (error) { return memoryError(c, error); }
   });
 
@@ -602,6 +657,34 @@ function assertUpdateReceipt(
     throw new MemoryStateError(
       'memory_idempotency_mismatch',
       'The idempotency key belongs to a different memory update.',
+    );
+  }
+}
+
+function assertOwnerCreateReceipt(
+  revisions: readonly MemoryRevision[],
+  idempotencyKey: string,
+  entryId: string,
+  actorId: string,
+  slug: string,
+  content: Pick<OwnerMemoryEntry, 'description' | 'type' | 'body'>,
+): void {
+  const receipt = revisions.find((revision) => revision.idempotencyKey === idempotencyKey);
+  if (
+    !receipt ||
+    receipt.entryId !== entryId ||
+    receipt.version !== 1 ||
+    receipt.operation !== 'create' ||
+    receipt.actorId !== actorId ||
+    receipt.actorClass !== 'operator' ||
+    receipt.description !== content.description ||
+    receipt.type !== content.type ||
+    receipt.body !== content.body ||
+    receipt.reasonCode !== `slug_seed:${slug}`
+  ) {
+    throw new MemoryStateError(
+      'memory_idempotency_mismatch',
+      'The idempotency key belongs to a different memory creation.',
     );
   }
 }

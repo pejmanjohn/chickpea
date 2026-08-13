@@ -320,7 +320,7 @@ test('provider settings endpoint matrix reports sources, enforces env read-only 
         assert.deepEqual(await removed.json(), {
           ok: true,
           provider: { id: 'openai', status: 'missing', modelCount: null },
-          pinnedProfileCount: 1,
+          pinnedAgentCount: 1,
         });
         assert.equal(await settings.getSetting(PROVIDER_KEY_SETTING_KEYS.openai), undefined);
 

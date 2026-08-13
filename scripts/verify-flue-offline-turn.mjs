@@ -18,9 +18,9 @@
  *      the stub reply marker
  *   4. status rejected         -> a durable plain progress post precedes the
  *      final, final still delivered, no status retry storm
- *   5. provider 500            -> ONE generic sanitized agent final (the Flue
- *      HTTP boundary deliberately renders unknown upstream failures opaque),
- *      no raw provider error marker, status cleared
+ *   5. provider 500            -> durable operator-recovery state after the
+ *      bounded Flue reattachment budget, no misleading Slack final, no raw
+ *      provider error marker, status cleared
  *   6. NET_GUARD_LOG empty     -> zero external traffic across all scenarios
  *
  * A suitable Node >= 22.19 builds and spawns the Flue server; the shared
@@ -30,6 +30,7 @@
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import {
   REPO_ROOT,
@@ -47,13 +48,6 @@ import {
 
 const EXEC_CHANNEL = 'C_EXEC';
 const ROOT_THREAD_TS = '1782770400.000100';
-
-// Intentionally an INDEPENDENT oracle: the provider's raw error is opaque at
-// Flue's HTTP boundary, so Slack must receive the generic agent copy rather
-// than guessing that an opaque operation failure came from the provider. Keep
-// the text local (not imported from src) so the proof catches presentation drift.
-const AGENT_FAILURE_TEXT =
-  'I reached the Slack thread, but the agent run failed before completion. I did not expose internal error details in Slack.';
 
 // Load the TypeScript fake backend through tsx's runtime loader.
 const { FakeSlackBackend, STUB_REPLY_MARKER, RAW_PROVIDER_ERROR_MARKER, isMarkdownPost } =
@@ -81,6 +75,26 @@ function record(name, passed, detail) {
   console.log(`${passed ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 }
 
+async function waitForRecoveryRequired(path, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      const count = Number(
+        db.prepare(
+          `SELECT COUNT(*) AS count FROM turn_jobs
+           WHERE delivered = 0 AND status = 'recovery_required'`,
+        ).get()?.count ?? 0,
+      );
+      if (count > 0) return count;
+    } finally {
+      db.close();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return 0;
+}
+
 const backend = new FakeSlackBackend({
   slack: {
     // The runtime now revalidates the selected Slack identity's workspace and
@@ -94,6 +108,13 @@ const backend = new FakeSlackBackend({
         isMember: true,
         teamId: 'T_DEMO',
       },
+    ],
+    channelMembers: {
+      [EXEC_CHANNEL]: ['U_ALICE', 'U_BOT'],
+    },
+    workspaceUsers: [
+      { id: 'U_ALICE', teamId: 'T_DEMO' },
+      { id: 'U_BOT', teamId: 'T_DEMO', isBot: true, isAppUser: true },
     ],
   },
 });
@@ -235,8 +256,9 @@ try {
     );
   }
 
-  // Check 5: provider 500 still delivers one generic sanitized final and clears status.
-  // Flue retries the 5xx a few times before failing, so allow a generous poll.
+  // Check 5: provider 500 exhausts the bounded Flue reattachment budget into
+  // explicit operator recovery. A dispatched turn must not be replaced with
+  // a second run or a misleading generic final.
   {
     backend.reset();
     backend.configure({ slack: { rejectSetStatus: false }, provider: { mode: 'http_500' } });
@@ -244,23 +266,23 @@ try {
       eventsUrl,
       craftMention({ eventId: 'Ev_OFFLINE_500', ts: '1782770920.000100' }),
     );
-    const finals = await waitForFinals(backend, 1, 40_000);
-    const [final] = finals;
+    const recoveryRequired = await waitForRecoveryRequired(stateDbPath, 40_000);
+    const finals = backend.finals();
     const lastStatus = backend.statusCalls().at(-1);
+    const slackWire = JSON.stringify(backend.wireLog);
 
     const passed =
-      finals.length === 1 &&
-      final !== undefined &&
-      final.text.includes(AGENT_FAILURE_TEXT) &&
-      !final.text.includes(RAW_PROVIDER_ERROR_MARKER) &&
+      recoveryRequired === 1 &&
+      finals.length === 0 &&
+      !slackWire.includes(RAW_PROVIDER_ERROR_MARKER) &&
       lastStatus !== undefined &&
       String(lastStatus.body.status) === '';
     record(
-      'provider 500 -> one generic sanitized final, status cleared, no raw error leak',
+      'provider 500 -> durable recovery state, status cleared, no raw error leak',
       passed,
-      `finals=${finals.length} sanitized=${final?.text.includes(AGENT_FAILURE_TEXT)} ` +
-        `rawLeak=${final?.text.includes(RAW_PROVIDER_ERROR_MARKER)} lastStatus="${String(lastStatus?.body.status)}" ` +
-        `finalText=${JSON.stringify(final?.text)}`,
+      `recoveryRequired=${recoveryRequired} finals=${finals.length} ` +
+        `rawLeak=${slackWire.includes(RAW_PROVIDER_ERROR_MARKER)} ` +
+        `lastStatus="${String(lastStatus?.body.status)}"`,
     );
   }
 

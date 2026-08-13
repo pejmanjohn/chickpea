@@ -17,7 +17,7 @@ const config: EffectiveSlackConfig = {
   agentId: 'agent_default',
   slackIdentityId: 'slack_identity_default',
   agent: {
-    id: 'agent_default', name: 'Chickpea', instructions: 'Be useful.', enabled: true,
+    id: 'agent_default', revision: 1, name: 'Chickpea', instructions: 'Be useful.', enabled: true,
     model: 'anthropic/claude-sonnet-4-6', skills: [], mcpServers: [], apiConnections: [], repositories: [],
   },
   model: 'anthropic/claude-sonnet-4-6',

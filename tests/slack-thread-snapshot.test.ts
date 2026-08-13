@@ -45,6 +45,7 @@ const BETA = 'SNAPSHOT_UNIT_BETA: edited Agent instructions.';
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
     id: AGENT_ID,
+    revision: 1,
     name: 'Snapshot Unit Agent',
     instructions: ALPHA,
     enabled: true,
@@ -592,6 +593,7 @@ test('slack-thread freezes effective config per durable thread id', async () => 
         const disabler = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
         await disabler.createAgent(agent({
           id: 'agent_snapshot_reassigned',
+          revision: 1,
           name: 'Reassigned Agent',
           instructions: 'SNAPSHOT_UNIT_REASSIGNED: replacement Agent instructions.',
         }));

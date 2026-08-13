@@ -108,9 +108,16 @@ async function adminRequest(baseUrl, path, init = {}) {
 }
 
 async function patchInstructions(baseUrl, instructions) {
+  const current = await adminRequest(baseUrl, '/admin/api/agents/agent_default');
+  if (current.status !== 200 || typeof current.body?.agent?.revision !== 'number') {
+    return current;
+  }
   return adminRequest(baseUrl, '/admin/api/agents/agent_default', {
     method: 'PATCH',
-    body: JSON.stringify({ instructions }),
+    body: JSON.stringify({
+      expectedRevision: current.body.agent.revision,
+      instructions,
+    }),
   });
 }
 

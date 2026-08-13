@@ -83,7 +83,8 @@ function adminApp(store: SqliteConfigStore, settings: SqliteSettingsStore): Hono
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
     id: 'agent-github',
-    name: 'GitHub profile',
+    revision: 1,
+    name: 'GitHub Agent',
     instructions: 'Use only granted repositories.',
     enabled: true,
     model: 'local-stub/github',
@@ -1113,7 +1114,7 @@ test('GitHub status stays recoverable when the App key is rejected outright', as
             appSlug: 'chickpea-test',
             installations: [],
             installationsUnavailable: true,
-            referencingProfiles: [],
+            referencingAgents: [],
           });
         }),
     );
@@ -1211,7 +1212,7 @@ test('GitHub status enumerates App installations and live repository counts', as
             installations: [
               { id: 42, accountLogin: 'acme', accountType: 'Organization', repoCount: 2 },
             ],
-            referencingProfiles: [],
+            referencingAgents: [],
           });
         }),
     );
@@ -1299,7 +1300,7 @@ test('GitHub status and disconnect routes are admin-auth gated and the legacy wr
   }
 });
 
-test('GitHub disconnect clears credentials and reports profiles with repository grants', async () => {
+test('GitHub disconnect clears credentials and reports Agents with repository grants', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   await settings.setSetting('github.pat', 'github-pat-secret');
@@ -1324,7 +1325,7 @@ test('GitHub disconnect clears credentials and reports profiles with repository 
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
       ok: true,
-      referencingProfiles: [{ id: 'agent-github', name: 'GitHub profile' }],
+      referencingAgents: [{ id: 'agent-github', name: 'GitHub Agent' }],
     });
     assert.equal(await settings.getSetting('github.pat'), undefined);
   } finally {
@@ -1351,7 +1352,7 @@ test('agent PATCH validates and persists repository grants', async () => {
     const response = await app.request('/admin/api/agents/agent-github', {
       method: 'PATCH',
       headers: jsonHeaders(),
-      body: JSON.stringify({ repositories }),
+      body: JSON.stringify({ expectedRevision: 1, repositories }),
     });
     assert.equal(response.status, 200);
     assert.deepEqual((await store.getAgent('agent-github')).repositories, repositories);
@@ -1359,7 +1360,10 @@ test('agent PATCH validates and persists repository grants', async () => {
     const invalid = await app.request('/admin/api/agents/agent-github', {
       method: 'PATCH',
       headers: jsonHeaders(),
-      body: JSON.stringify({ repositories: [{ ...repositories[0], enabled: 'yes' }] }),
+      body: JSON.stringify({
+        expectedRevision: 2,
+        repositories: [{ ...repositories[0], enabled: 'yes' }],
+      }),
     });
     assert.equal(invalid.status, 400);
   } finally {

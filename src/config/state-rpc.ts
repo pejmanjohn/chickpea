@@ -6,11 +6,14 @@ import type {
   SlackIdentityPatch,
 } from './store.ts';
 import type {
+  AgentCreateInput,
   AgentSnapshot,
   AgentSnapshotRootReference,
   AgentReferenceSummary,
   ChannelAssignment,
   ChannelConfig,
+  ChannelPlacementMutation,
+  ChannelPlacementResult,
   CustomAgentConfig,
   SlackIdentity,
   SlackIdentityDmState,
@@ -70,10 +73,12 @@ export type { TurnJob } from '../slack/turn-job-types.ts';
 export type StateRpcErrorCode =
   | 'unknown_agent'
   | 'agent_exists'
+  | 'agent_revision_conflict'
   | 'agent_still_assigned'
   | 'agent_still_referenced'
   | 'agent_slack_dm_handler'
   | 'agent_slack_identity_conflict'
+  | 'channel_assignment_conflict'
   | 'unknown_slack_identity'
   | 'slack_identity_exists'
   | 'slack_identity_still_referenced'
@@ -200,10 +205,11 @@ export interface TagStateRpc {
   // -- config: agents ------------------------------------------------------
   configListAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
   configGetAgent(agentId: string): Promise<StateRpcResult<CustomAgentConfig>>;
-  configCreateAgent(agent: CustomAgentConfig): Promise<StateRpcResult<CustomAgentConfig>>;
+  configCreateAgent(agent: AgentCreateInput): Promise<StateRpcResult<CustomAgentConfig>>;
   configUpdateAgent(
     agentId: string,
     patch: ConfigAgentPatch,
+    expectedRevision?: number,
   ): Promise<StateRpcResult<CustomAgentConfig>>;
   configMarkOAuthReauthorizationRequired(
     target: OAuthReauthorizationTarget,
@@ -215,6 +221,9 @@ export interface TagStateRpc {
     channelId: string,
   ): Promise<StateRpcResult<ChannelConfig | null>>;
   configPutChannel(channel: ChannelConfig): Promise<StateRpcResult<ChannelConfig>>;
+  configPutChannelPlacement(
+    input: ChannelPlacementMutation,
+  ): Promise<StateRpcResult<ChannelPlacementResult>>;
   // -- config: assignments -------------------------------------------------
   configListAssignments(): Promise<StateRpcResult<ChannelAssignment[]>>;
   configGetAssignment(

@@ -98,7 +98,7 @@ function assignment(): ResolvedAssignment {
     workspaceId: 'T_acme', channelId: 'C_canary', agentId: 'agent_default',
     model: 'local-stub/canary',
     agent: {
-      id: 'agent_default', name: 'Default', instructions: 'Help.', enabled: true,
+      id: 'agent_default', revision: 1, name: 'Default', instructions: 'Help.', enabled: true,
       skills: [], mcpServers: [], apiConnections: [], repositories: [],
     },
   };

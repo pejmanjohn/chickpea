@@ -18,7 +18,12 @@ tmp/
 docs/
 !docs/
 docs/*
+!docs/design/
+docs/design/*
+!docs/design/agent-first-admin-prototype/
+!docs/design/agent-first-admin-prototype/**
 !docs/runbooks/
 docs/runbooks/*
 !docs/runbooks/coding-sandbox-deployment.md
 design-qa.md
+!docs/design/agent-first-admin-prototype/design-qa.md

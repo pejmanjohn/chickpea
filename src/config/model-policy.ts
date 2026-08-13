@@ -19,8 +19,8 @@ export function resolveAgentModel(
     return noteResolvedModel(fallbackModel);
   }
   throw new ModelResolutionError(
-    `No model pinned for agent ${agent.id}. Pin a model in /admin (Profiles -> Model), ` +
-      'or set SLACK_TAG_MODEL for offline/dev unpinned-profile fallback.',
+    `No model pinned for agent ${agent.id}. Pin a model in /admin (Agents -> Model), ` +
+      'or set SLACK_TAG_MODEL for offline/dev unpinned-agent fallback.',
   );
 }
 

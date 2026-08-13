@@ -42,6 +42,7 @@ const PARITY_MODEL = 'local-stub/parity-stub-1';
 // that array is being built at module load.
 const RELEASE_SCRIBE_PROFILE: CustomAgentConfig = {
   id: 'agent_release_scribe',
+  revision: 1,
   name: 'Release Scribe',
   instructions: [
     'You are Release Scribe, the engineering release profile for this Slack channel.',
@@ -61,6 +62,7 @@ const RELEASE_SCRIBE_PROFILE: CustomAgentConfig = {
 
 const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
   id: 'agent_exec_brief',
+  revision: 1,
   name: 'Exec Brief',
   instructions: [
     'You are Exec Brief, the executive briefing profile for this Slack channel.',
@@ -885,6 +887,7 @@ export const scenarios: Scenario[] = [
         agents: [
           {
             id: 'agent_pinned_model',
+            revision: 1,
             name: 'Pinned Model Agent',
             instructions: 'Use the pinned parity model.',
             enabled: true,
@@ -929,6 +932,7 @@ export const scenarios: Scenario[] = [
         agents: [
           {
             id: 'agent_addendum',
+            revision: 1,
             name: 'Addendum Agent',
             instructions: 'Base addendum test instructions.',
             enabled: true,
@@ -1001,6 +1005,7 @@ export const scenarios: Scenario[] = [
         agents: [
           {
             id: 'agent_unresolvable',
+            revision: 1,
             name: 'Unresolvable Model Agent',
             instructions: 'Reply if you can.',
             enabled: true,
@@ -1025,7 +1030,11 @@ export const scenarios: Scenario[] = [
       await instance.quiesce();
 
       const finals = instance.backend.finals();
-      assert.equal(finals.length, 1, 'an unresolvable model must still deliver one final, not silence');
+      assert.equal(
+        finals.length,
+        1,
+        `an unresolvable model must still deliver one final, not silence\nconfig=${instance.configDbPath ?? ''}\n${instance.debugOutput?.() ?? ''}`,
+      );
       const [final] = finals;
       assert.ok(final);
       assert.equal(final.text, AGENT_FAILURE_TEXT);
@@ -1033,9 +1042,9 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S29',
-    title: 'two distinct profiles feed distinct per-channel instructions to the provider',
-    // The seed now ships ONE neutral profile, so this per-channel-differentiation
-    // proof builds its own two distinct profiles (inline fixtures below) in the
+    title: 'two distinct Agents feed distinct per-channel instructions to the provider',
+    // The seed now ships ONE neutral Agent, so this per-channel-differentiation
+    // proof builds its own two distinct Agents (inline fixtures below) in the
     // scenario's own store seed rather than relying on the install seed.
     config: twoProfileDifferentiationConfig(),
     async run(instance) {
@@ -1050,7 +1059,11 @@ export const scenarios: Scenario[] = [
           },
         }),
       );
-      await waitForFinalCount(instance, 1);
+      try {
+        await waitForFinalCount(instance, 1);
+      } catch (error) {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}\nconfig=${instance.configDbPath ?? ''}\n${instance.debugOutput?.() ?? ''}`);
+      }
       const releasePrompt = JSON.stringify(instance.backend.providerCalls().at(-1)?.body ?? {});
       assert.match(releasePrompt, /Release Scribe/);
       assert.match(releasePrompt, /summary table/i);
@@ -1212,6 +1225,7 @@ export const scenarios: Scenario[] = [
         agents: [
           {
             id: 'agent_scoped',
+            revision: 1,
             name: 'Scoped Profile',
             instructions: 'Reply.',
             enabled: true,
@@ -1368,14 +1382,14 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S36',
-    title: 'started thread keeps running after its profile is disabled',
+    title: 'an assigned Agent cannot be disabled and its started thread remains available',
     config: snapshotScenarioConfig('agent_snapshot_disable'),
     async run(instance) {
       await instance.postEvent(
         appMention({
           event_id: 'Ev_S36_T1',
           event: {
-            text: '<@U_BOT> start before the profile is disabled',
+            text: '<@U_BOT> start before the Agent disable attempt',
             ts: '1782771800.000100',
             event_ts: '1782771800.000100',
           },
@@ -1383,13 +1397,28 @@ export const scenarios: Scenario[] = [
       );
       await waitForProviderCallCount(instance, 2);
 
-      await patchAgent(instance, 'agent_snapshot_disable', { enabled: false });
+      const current = await instance.adminRequest('/admin/api/agents/agent_snapshot_disable', {
+        method: 'GET',
+      });
+      assert.equal(current.status, 200, JSON.stringify(current.body));
+      const revision = Number(
+        (current.body as { agent?: { revision?: unknown } } | undefined)?.agent?.revision,
+      );
+      const disable = await instance.adminRequest('/admin/api/agents/agent_snapshot_disable', {
+        method: 'PATCH',
+        body: JSON.stringify({ expectedRevision: revision, enabled: false }),
+      });
+      assert.equal(disable.status, 409, JSON.stringify(disable.body));
+      assert.equal(
+        (disable.body as { error?: unknown } | undefined)?.error,
+        'agent_still_referenced',
+      );
 
       await instance.postEvent(
         channelThreadMessage({
           event_id: 'Ev_S36_T2',
           event: {
-            text: 'continue after the profile was disabled',
+            text: 'continue after the blocked Agent disable attempt',
             ts: '1782771801.000100',
             event_ts: '1782771801.000100',
             thread_ts: '1782771800.000100',
@@ -1415,6 +1444,7 @@ export const scenarios: Scenario[] = [
         agents: [
           {
             id: 'agent_dm_snapshot',
+            revision: 1,
             name: 'DM Profile',
             instructions: 'SNAPSHOT_ALPHA_INSTRUCTIONS: original DM instructions.',
             enabled: true,
@@ -1481,7 +1511,7 @@ export const scenarios: Scenario[] = [
       const [hint] = hints;
       assert.equal(hint?.body.channel, 'C_EXEC');
       assert.equal(hint?.body.user, 'U_ALICE');
-      assert.ok(String(hint?.body.text).includes('No profile is assigned'));
+      assert.ok(String(hint?.body.text).includes('No Agent is assigned'));
       assert.ok(String(hint?.body.text).includes('Configure'));
 
       // Rate-limited: a repeat mention inside the claim-TTL window adds none.
@@ -1735,6 +1765,7 @@ function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
       agents: [
         {
           id: agentId,
+          revision: 1,
           name: 'Snapshot Profile',
           instructions: 'SNAPSHOT_ALPHA_INSTRUCTIONS: original profile instructions.',
           enabled: true,
@@ -1762,9 +1793,17 @@ async function patchAgent(
   agentId: string,
   patch: Record<string, unknown>,
 ): Promise<void> {
+  const current = await instance.adminRequest(`/admin/api/agents/${agentId}`, {
+    method: 'GET',
+  });
+  assert.equal(current.status, 200, JSON.stringify(current.body));
+  const revision = Number(
+    (current.body as { agent?: { revision?: unknown } } | undefined)?.agent?.revision,
+  );
+  assert.ok(Number.isInteger(revision) && revision >= 1, 'Agent projection must expose revision');
   const response = await instance.adminRequest(`/admin/api/agents/${agentId}`, {
     method: 'PATCH',
-    body: JSON.stringify(patch),
+    body: JSON.stringify({ expectedRevision: revision, ...patch }),
   });
   assert.equal(response.status, 200, JSON.stringify(response.body));
 }

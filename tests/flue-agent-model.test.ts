@@ -32,6 +32,7 @@ const THREAD_KEY = 'T_DEMO:C_EXEC:1782770400.000100';
 function modelAgent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
     id: 'agent_model',
+    revision: 1,
     name: 'Model Agent',
     instructions: 'Model policy instructions.',
     enabled: true,
@@ -242,6 +243,7 @@ test('slack-thread initializes from the SQLite config store for the current stat
   const store = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
   await store.createAgent({
     id: 'agent_runtime',
+    revision: 1,
     name: 'Runtime Agent',
     instructions: 'Runtime configured instructions.',
     enabled: true,

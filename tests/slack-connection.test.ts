@@ -1055,7 +1055,7 @@ test('disconnect deletes only stored Slack connection identity and immediately c
         slackAppRevoked: false,
         configurationPreserved: true,
         message:
-          'Disconnected Chickpea locally. The Slack app was not uninstalled or revoked, and profiles, channel assignments, transcripts, and the public URL were preserved.',
+          'Disconnected Chickpea locally. The Slack app was not uninstalled or revoked, and Agents, channel assignments, transcripts, and the public URL were preserved.',
       });
 
       for (const key of [

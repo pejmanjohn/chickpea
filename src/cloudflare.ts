@@ -9,11 +9,13 @@ import { instrument } from '@flue/runtime';
 import { createCloudflareTracing } from '@flue/runtime/cloudflare';
 
 import {
+  AgentRevisionConflictError,
   AgentSlackIdentityConflictError,
   AgentExistsError,
   AgentStillAssignedError,
   AgentStillSlackDmHandlerError,
   AgentStillReferencedError,
+  ChannelAssignmentConflictError,
   SlackIdentityExistsError,
   SlackIdentityLifecycleError,
   SlackIdentityRevisionConflictError,
@@ -66,12 +68,15 @@ import {
   type OAuthReauthorizationTarget,
   type SlackIdentityPatch,
 } from './config/store.ts';
+import type { AgentCreateInput } from './config/types.ts';
 import type {
   AgentSnapshot,
   AgentSnapshotRootReference,
   AgentReferenceSummary,
   ChannelAssignment,
   ChannelConfig,
+  ChannelPlacementMutation,
+  ChannelPlacementResult,
   CustomAgentConfig,
   SlackIdentity,
   SlackIdentityDmState,
@@ -591,15 +596,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.config.getAgent(agentId));
   }
 
-  async configCreateAgent(agent: CustomAgentConfig): Promise<StateRpcResult<CustomAgentConfig>> {
+  async configCreateAgent(agent: AgentCreateInput): Promise<StateRpcResult<CustomAgentConfig>> {
     return this.call((stores) => stores.config.createAgent(agent));
   }
 
   async configUpdateAgent(
     agentId: string,
     patch: ConfigAgentPatch,
+    expectedRevision?: number,
   ): Promise<StateRpcResult<CustomAgentConfig>> {
-    return this.call((stores) => stores.config.updateAgent(agentId, patch));
+    return this.call((stores) => stores.config.updateAgent(agentId, patch, expectedRevision));
   }
 
   async configMarkOAuthReauthorizationRequired(
@@ -636,6 +642,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 
   async configPutChannel(channel: ChannelConfig): Promise<StateRpcResult<ChannelConfig>> {
     return this.call((stores) => stores.config.putChannel(channel));
+  }
+
+  async configPutChannelPlacement(
+    input: ChannelPlacementMutation,
+  ): Promise<StateRpcResult<ChannelPlacementResult>> {
+    return this.call((stores) => stores.config.putChannelPlacement(input));
   }
 
   // ── config: assignments ──────────────────────────────────────────────────
@@ -1569,6 +1581,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (err instanceof AgentExistsError) {
         return rpcError('agent_exists', err.message, { agentId: err.agentId });
       }
+      if (err instanceof AgentRevisionConflictError) {
+        return rpcError('agent_revision_conflict', err.message, {
+          agentId: err.agentId,
+          expectedRevision: String(err.expectedRevision),
+          actualRevision: String(err.actualRevision),
+        });
+      }
       if (err instanceof AgentStillAssignedError) {
         return rpcError('agent_still_assigned', err.message, {
           agentId: err.agentId,
@@ -1592,6 +1611,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           agentId: err.agentId,
           expectedIdentityId: err.expectedIdentityId ?? '',
           actualIdentityId: err.actualIdentityId ?? '',
+        });
+      }
+      if (err instanceof ChannelAssignmentConflictError) {
+        return rpcError('channel_assignment_conflict', err.message, {
+          workspaceId: err.workspaceId,
+          channelId: err.channelId,
+          expectedAgentId: err.expectedAgentId ?? '',
+          actualAgentId: err.actualAgentId ?? '',
         });
       }
       if (err instanceof UnknownSlackIdentityError) {

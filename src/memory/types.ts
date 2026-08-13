@@ -476,7 +476,7 @@ export type MemoryRpcRequest =
   | { kind: 'consume_owner_write_challenge'; tokenHash: string; slackUserId: string; consumedAt: number }
   | { kind: 'replay_owner_import'; input: ReplayOwnerMemoryImportInput }
   | { kind: 'apply_owner_import'; input: ApplyOwnerMemoryImportInput }
-  | { kind: 'list_owner_entries'; owner: MemoryOwnerRef }
+  | { kind: 'list_owner_entries'; owner: MemoryOwnerRef; readableAt?: number }
   | { kind: 'list_owner_revisions'; entryId: string }
   | { kind: 'reset_owner'; owner: MemoryOwnerRef; input: OwnerMemoryLifecycleInput }
   | { kind: 'seal_owner'; owner: MemoryOwnerRef; input: SealMemoryOwnerInput }
@@ -557,7 +557,10 @@ export interface MemoryStateStore {
   consumeOwnerWriteChallenge(tokenHash: string, slackUserId: string, consumedAt: number): Promise<OwnerMemoryWriteChallenge | undefined>;
   replayOwnerImport(input: ReplayOwnerMemoryImportInput): Promise<OwnerMemoryEntry[] | undefined>;
   applyOwnerImport(input: ApplyOwnerMemoryImportInput): Promise<OwnerMemoryEntry[]>;
-  listOwnerEntries(owner: MemoryOwnerRef): Promise<OwnerMemoryEntry[]>;
+  listOwnerEntries(
+    owner: MemoryOwnerRef,
+    filter?: { readableAt?: number },
+  ): Promise<OwnerMemoryEntry[]>;
   listOwnerRevisions(entryId: string): Promise<MemoryRevision[]>;
   resetOwner(owner: MemoryOwnerRef, input: OwnerMemoryLifecycleInput): Promise<MemoryOwnerDescriptor>;
   sealOwner(owner: MemoryOwnerRef, input: SealMemoryOwnerInput): Promise<MemoryOwnerDescriptor>;

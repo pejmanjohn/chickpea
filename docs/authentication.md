@@ -11,7 +11,7 @@ A fresh Cloudflare or Node install uses invitation-only email/password accounts.
 3. Enter the owner email, password, and password confirmation. The initial organization is named `Chickpea`, and the display name is derived from the email.
 4. Chickpea pins the HTTPS origin, atomically creates the first Better Auth owner and organization, returns a secure browser session, and continues to `/admin/onboarding`.
 
-The setup capability is separate from signing authority. Only its digest and deployment time enter Worker configuration; the browser removes the raw fragment before a request and consumes it through the resumable first-owner operation. The capability expires after 24 hours, cannot create a second owner, and can be replaced by retrying deployment without rotating active sessions.
+The setup capability is separate from signing authority. Only its digest and deployment time enter Worker configuration; the browser removes the raw fragment before a request and consumes it through the resumable first-owner operation. The capability expires after 24 hours and cannot create a second owner. A deliberate onboarding reset is a clean break: it invalidates every previously issued setup link and rearms owner creation only behind a freshly generated, single-use setup capability. It does not roll back or remove append-only Cloudflare Durable Object migrations or infrastructure bindings.
 
 Browser sessions use Better Auth's opaque cookie with `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` on HTTPS. Human credential routes do not accept personal access tokens or agent credentials. State-changing forms and APIs also require the pinned origin and same-site request provenance.
 

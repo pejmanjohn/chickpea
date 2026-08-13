@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, before, test } from 'node:test';
 
 import type { WebClient } from '@slack/web-api';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
 import type { SlackInteractionProgressPatch } from '../src/config/state-rpc.ts';
 import {
   AgentPromptFailure,
@@ -47,6 +51,7 @@ const assignment: ResolvedAssignment = {
   model: 'local-stub/heartbeat',
   agent: {
     id: 'agent_heartbeat',
+    revision: 1,
     name: 'Chickpea',
     instructions: 'Answer directly.',
     enabled: true,
@@ -56,6 +61,34 @@ const assignment: ResolvedAssignment = {
     repositories: [],
   },
 };
+
+const heartbeatStateDirectory = mkdtempSync(join(tmpdir(), 'chickpea-heartbeat-'));
+const heartbeatStatePath = join(heartbeatStateDirectory, 'state.sqlite');
+let previousStatePath: string | undefined;
+
+before(async () => {
+  previousStatePath = process.env.SLACK_STATE_DB_PATH;
+  process.env.SLACK_STATE_DB_PATH = heartbeatStatePath;
+  const store = new SqliteConfigStore(heartbeatStatePath, { agents: [], assignments: [] });
+  await store.createAgent(assignment.agent);
+  const identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+  await store.updateSlackIdentity(identity.id, identity.connectionRevision, {
+    lifecycle: 'connected',
+    teamId: assignment.workspaceId,
+    botUserId: 'U_CHICKPEA',
+    dmState: 'on',
+    dmAgentId: assignment.agentId,
+    credentialProvenance: 'stored',
+    health: 'healthy',
+  });
+  store.close();
+});
+
+after(() => {
+  if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;
+  else process.env.SLACK_STATE_DB_PATH = previousStatePath;
+  rmSync(heartbeatStateDirectory, { recursive: true, force: true });
+});
 
 function workTurn(eventId: string): NormalizedSlackTurn {
   return {
@@ -549,11 +582,6 @@ test('runTurn freezes eligibility before exposing the receipt-scoped relay facto
 });
 
 test('a frozen Cloudflare plan narrows unsettled dispatches when its live binding disappeared', async () => {
-  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
-  Object.defineProperty(globalThis, 'navigator', {
-    configurable: true,
-    value: { userAgent: 'Cloudflare-Workers' },
-  });
   const repositoryAssignment: ResolvedAssignment = {
     ...assignment,
     agent: {
@@ -597,8 +625,7 @@ test('a frozen Cloudflare plan narrows unsettled dispatches when its live bindin
       },
     },
   } as unknown as WebClient;
-  try {
-    for (const checkpoint of ['unstarted', 'envelope', 'receipt'] as const) {
+  for (const checkpoint of ['unstarted', 'envelope', 'receipt'] as const) {
       const dispatchEnvelope: FlueDispatchEnvelopeV1 = {
         schemaVersion: 1,
         agentName: 'chickpea-slack-v2',
@@ -622,7 +649,7 @@ test('a frozen Cloudflare plan narrows unsettled dispatches when its live bindin
         reconcileExistingInstance: async () => { throw new Error('not used'); },
         markRecoveryRequired: async () => {},
       };
-      await runTurn({ ...turn, eventId: `${turn.eventId}_${checkpoint}` }, repositoryAssignment, {}, {
+      await runTurn({ ...turn, eventId: `${turn.eventId}_${checkpoint}` }, repositoryAssignment, undefined, {
         client,
         runtimePlanDecision: {
           runtimePlan,
@@ -644,11 +671,7 @@ test('a frozen Cloudflare plan narrows unsettled dispatches when its live bindin
           };
         },
       });
-    }
-    assert.match(JSON.stringify(finalPayloads), new RegExp(SANDBOX_UNAVAILABLE_FALLBACK_NOTICE));
-    assert.doesNotMatch(JSON.stringify(finalPayloads), /control-plane|binding|credential|token/i);
-  } finally {
-    if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator);
-    else delete (globalThis as { navigator?: unknown }).navigator;
   }
+  assert.match(JSON.stringify(finalPayloads), new RegExp(SANDBOX_UNAVAILABLE_FALLBACK_NOTICE));
+  assert.doesNotMatch(JSON.stringify(finalPayloads), /control-plane|binding|credential|token/i);
 });

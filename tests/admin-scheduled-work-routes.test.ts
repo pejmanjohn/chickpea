@@ -99,6 +99,7 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
     const routine = await seededRoutine(routines, Date.now);
     await config.createAgent({
       id: 'agent_routine_admin',
+      revision: 1,
       name: 'Routine admin profile',
       instructions: 'Handle scheduled work.',
       enabled: true,

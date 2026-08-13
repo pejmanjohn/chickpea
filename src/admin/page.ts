@@ -1364,6 +1364,82 @@ details[open].advanced summary::before {
 .ptab-panel .skill-form { background: var(--well); }
 .ptab-panel .skill-form .conn-tool, .ptab-panel .skill-form .import-row { background: var(--bg); box-shadow: 0 1.5px 0 rgba(59, 50, 32, 0.08); }
 
+/* ---- Agent-first detail and owner memory -------------------------------- */
+.agent-kicker { color: var(--ember-deep); font-family: var(--mono); font-size: .6875rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.agent-model-row, .agent-advanced-row, .channel-agent-hero, .channel-try-card {
+  align-items: center;
+  background: var(--well);
+  border-radius: 14px;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 14px 16px;
+}
+.agent-model-row > div, .agent-advanced-row > span, .channel-agent-hero > div { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+.agent-model-row .field { min-width: min(100%, 360px); }
+.agent-advanced-row + .agent-advanced-row { border-top: 1px solid var(--line); border-radius: 0; }
+.agent-advanced-row .btn { flex-shrink: 0; }
+.where-list, .capability-preview-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.where-pill, .capability-pill {
+  align-items: center;
+  background: var(--well);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text);
+  display: inline-flex;
+  font: inherit;
+  font-size: .75rem;
+  font-weight: 700;
+  gap: 6px;
+  min-height: 34px;
+  padding: 7px 11px;
+}
+button.where-pill, button.capability-pill { cursor: pointer; }
+.where-pill.dm { background: var(--ember-tint); color: var(--ember-deep); }
+.owner-memory-intro { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
+.owner-memory-layout { display: grid; gap: 14px; grid-template-columns: minmax(150px, .42fr) minmax(0, 1.58fr); min-height: 340px; }
+.owner-memory-files { background: var(--well); border: 1px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; gap: 4px; padding: 8px; }
+.owner-memory-files > button { background: transparent; border: 0; border-radius: 10px; color: var(--text-2); cursor: pointer; display: flex; flex-direction: column; font: inherit; gap: 2px; padding: 9px 10px; text-align: left; }
+.owner-memory-files > button:hover, .owner-memory-files > button.on { background: var(--bg); color: var(--text); }
+.owner-memory-files strong { font-family: var(--mono); font-size: .75rem; overflow-wrap: anywhere; }
+.owner-memory-files small { color: var(--text-3); font-size: .6875rem; }
+.owner-memory-editor { background: var(--well); border: 1px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 15px; }
+.owner-memory-editor-head { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; }
+.owner-memory-editor h3 { color: var(--text); font-family: var(--mono); font-size: .875rem; margin: 0; }
+.owner-memory-source { background: var(--bg); border-radius: 12px; color: var(--text-2); font-family: var(--mono); font-size: .75rem; line-height: 1.65; margin: 0; min-height: 220px; overflow: auto; padding: 14px; white-space: pre-wrap; }
+.owner-memory-fields { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) minmax(120px, .45fr); }
+.owner-memory-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.owner-memory-status { color: var(--text-3); font-size: .75rem; min-height: 18px; }
+.owner-memory-status.error { color: var(--danger); }
+.channel-agent-hero { align-items: flex-start; background: var(--ember-tint); }
+.channel-agent-hero h2 { color: var(--text); font-family: var(--display); font-size: 1.15rem; margin: 0; }
+.channel-capability-groups { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.channel-capability-group { background: var(--well); border-radius: 14px; min-width: 0; padding: 13px; }
+.channel-capability-group > strong { color: var(--text); display: block; font-size: .75rem; margin-bottom: 8px; }
+.channel-try-card { align-items: flex-start; }
+.channel-try-prompt { color: var(--text); font-size: .8125rem; font-weight: 700; line-height: 1.55; }
+.channel-advanced-content { display: flex; flex-direction: column; gap: 16px; padding: 14px 0 2px; }
+.channels-index-head { align-items: flex-start; display: flex; gap: 16px; justify-content: space-between; }
+.channels-index-tools { align-items: center; display: flex; gap: 8px; }
+.channels-index-tools .input { min-width: min(320px, 45vw); }
+.channels-index-list { display: flex; flex-direction: column; gap: 8px; }
+.channels-index-row { align-items: center; background: var(--well); border: 0; border-radius: 14px; box-shadow: inset 0 0 0 1px var(--line); color: inherit; display: flex; font: inherit; gap: 12px; min-height: 62px; padding: 11px 13px; text-align: left; width: 100%; }
+.channels-index-open { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: flex; flex: 1; font: inherit; gap: 12px; min-width: 0; padding: 0; text-align: left; }
+.channels-index-open:hover .channels-index-name { color: var(--ember-press); }
+.channels-index-name { color: var(--text); font-size: .875rem; font-weight: 700; }
+.channels-index-copy { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+.channels-index-copy small { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channel-platform-mark { align-items: center; background: #fff; border-radius: 10px; display: inline-flex; height: 34px; justify-content: center; width: 34px; }
+@container (max-width: 680px) {
+  .owner-memory-layout { grid-template-columns: 1fr; }
+  .owner-memory-files { max-height: 180px; overflow-y: auto; }
+  .owner-memory-fields, .channel-capability-groups { grid-template-columns: 1fr; }
+  .agent-model-row, .channel-try-card { align-items: stretch; flex-direction: column; }
+  .channels-index-head, .channels-index-tools { align-items: stretch; flex-direction: column; }
+  .channels-index-tools .input { min-width: 0; width: 100%; }
+  .channels-index-row { align-items: flex-start; flex-wrap: wrap; }
+}
+
 /* ---- profile repositories ---------------------------------------------- */
 .repo-panel-head, .repo-group-actions, .repo-picker-foot, .repo-footer, .repo-account-choice {
   align-items: center;
@@ -1880,14 +1956,14 @@ details[open].advanced summary::before {
       <span class="chip">${targetChip}</span>
     </div>
     <div class="actions">
+      <button type="button" class="btn btn-soft" disabled>Agents</button>
       <button type="button" class="btn btn-soft" disabled>Channels</button>
-      <button type="button" class="btn btn-soft" disabled>Profiles</button>
       <button type="button" class="btn btn-soft" disabled>Settings</button>
     </div>
   </header>
   <div class="body">
-    <nav class="rail" aria-label="Channels">
-      <div class="rail-head"><span class="section-eyebrow">Channels</span></div>
+    <nav class="rail" aria-label="Agents">
+      <div class="rail-head"><span class="section-eyebrow">Agents</span></div>
       <div class="ws-row"><svg class="ic" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z"/></svg>Workspace</div>
     </nav>
     <main class="main"><div class="main-inner"><div class="empty"><h1 class="page-title">Loading admin...</h1><p class="hint">Reading local configuration.</p></div></div></main>
@@ -1929,14 +2005,16 @@ details[open].advanced summary::before {
     slackChannelsError: null,
     slackChannelsLoading: false,
     slackChannelsRequestId: 0,
+    channelIndex: [],
+    channelIndexError: "",
+    channelIndexQuery: "",
     swapOpen: false,
     channelDraft: { enabled: true, channelPromptAddendum: "", participationMode: "ambient" },
     dirty: false,
     saveError: "",
-    // Channels is the default destination. channelScreen distinguishes the
-    // platform overview from a concrete Slack-channel detail without muddling
-    // the reusable Profiles destination into the platform hierarchy.
-    view: "channels",
+    // Agents are the primary authoring destination. channelScreen distinguishes
+    // the secondary Channels index from a concrete Slack-channel detail.
+    view: "profiles",
     // Team is Chickpea's authorization surface. Authentication providers prove
     // identity, while Chickpea owns invitations and membership status.
     team: null,
@@ -1963,6 +2041,7 @@ details[open].advanced summary::before {
     editingAgentId: null,
     profileDraft: null,
     profileError: "",
+    profileConflict: false,
     // Safe identity summaries for Profile selection. The workspace default is
     // always rendered even if this auxiliary collection endpoint is unavailable.
     slackIdentities: { identities: [], globalDmAllowed: true },
@@ -2226,7 +2305,29 @@ details[open].advanced summary::before {
     memoryNotice: "",
     memoryIdempotencyKey: "",
     memoryConflict: null,
-    memoryDeleteConfirm: false
+    memoryDeleteConfirm: false,
+    // The Agent and Channel detail surfaces share this owner-bound file editor.
+    // The route adapter derives every owner segment from the selected surface;
+    // no free-form field can widen memory access.
+    ownerMemory: {
+      ownerKind: "",
+      workspaceId: "",
+      ownerId: "",
+      files: null,
+      selectedFile: "MEMORY.md",
+      detail: null,
+      history: [],
+      draft: null,
+      dirty: false,
+      loading: false,
+      busy: "",
+      error: "",
+      notice: "",
+      conflict: null,
+      deleteConfirm: false,
+      createDraft: null,
+      requestId: 0
+    }
   };
   var egressDraft = { mode: "allowlist", domains: [""] };
   var sandboxDraft = {
@@ -2311,6 +2412,34 @@ details[open].advanced summary::before {
     }) || null;
   }
 
+  function activeChannelProjection() {
+    if (!state.active) return null;
+    return (state.channelIndex || []).find(function (channel) {
+      return channel.workspaceId === state.active.workspaceId && channel.channelId === state.active.channelId;
+    }) || null;
+  }
+
+  function activeChannelRecord() {
+    var assignment = activeAssignment();
+    var channel = activeChannelProjection();
+    if (assignment) {
+      var projectedLabel = channel && normalizeChannelLabel(channel.channelName);
+      return projectedLabel && !normalizeChannelLabel(assignment.channelLabel)
+        ? Object.assign({}, assignment, { channelLabel: projectedLabel })
+        : assignment;
+    }
+    if (!channel) return null;
+    return {
+      workspaceId: channel.workspaceId,
+      channelId: channel.channelId,
+      channelLabel: channel.channelName,
+      agentId: channel.assignment && channel.assignment.agentId || "",
+      enabled: true,
+      channelPromptAddendum: "",
+      participationMode: channel.behavior && channel.behavior.participationMode || "ambient"
+    };
+  }
+
   function firstWorkspaceAssignment() {
     return state.assignments.find(function (assignment) {
       return assignment.workspaceId !== "*";
@@ -2387,6 +2516,7 @@ details[open].advanced summary::before {
 
   function resetProfileTransientState() {
     state.profileError = "";
+    state.profileConflict = false;
     state.profileDirty = false;
     state.disableConfirm = false;
     state.profileTab = "instructions";
@@ -2417,6 +2547,7 @@ details[open].advanced summary::before {
     state.profileDraft = cloneAgent(selected);
     resetProfileTransientState();
     render();
+    loadOwnerMemory("agent", connectedTeamId(), selected.id);
   }
 
   function openNewProfile() {
@@ -2467,9 +2598,9 @@ details[open].advanced summary::before {
       return memoryPath;
     }
     if (state.view === "profiles") {
-      if (state.profileScreen === "create") return "/admin/profiles/new";
-      if (state.profileScreen === "edit" && state.editingAgentId) return "/admin/profiles/" + encodeURIComponent(state.editingAgentId);
-      return "/admin/profiles";
+      if (state.profileScreen === "create") return "/admin/agents/new";
+      if (state.profileScreen === "edit" && state.editingAgentId) return "/admin/agents/" + encodeURIComponent(state.editingAgentId);
+      return "/admin/agents";
     }
     if (state.channelScreen === "detail" && state.active) return "/admin/channels/" + encodeURIComponent(state.active.workspaceId) + "/" + encodeURIComponent(state.active.channelId);
     return "/admin/channels";
@@ -2516,7 +2647,7 @@ details[open].advanced summary::before {
       openAuditLogs(parts[3] || "", parts[4] || "", parts[5] || "");
       return;
     }
-    if (parts[1] === "profiles") {
+    if (parts[1] === "agents") {
       if (parts[2] === "new") {
         openNewProfile();
         return;
@@ -2536,11 +2667,13 @@ details[open].advanced summary::before {
       render();
       return;
     }
-    state.view = "channels";
-    state.channelScreen = "overview";
-    state.profileScreen = "list";
-    state.disableConfirm = false;
-    render();
+    if (parts[1] === "channels") {
+      openChannels();
+      return;
+    }
+    var initialAgent = state.agents[0] || null;
+    if (initialAgent) openProfileEditor(initialAgent);
+    else enterProfiles(null);
   }
 
   function render() {
@@ -2675,7 +2808,7 @@ details[open].advanced summary::before {
       },
       dm: {
         title: "Change DM behavior?",
-        body: "Future DMs to this Slack app will use the selected setting and Profile. The existing Slack conversation and audience memory continue.",
+        body: "Future DMs to this Slack app will use the selected setting and Agent. The existing Slack conversation and audience memory continue.",
         label: "Save DM behavior"
       }
     };
@@ -2695,7 +2828,7 @@ details[open].advanced summary::before {
     return '<div class="modal-backdrop">' +
       '<div class="modal-card" role="dialog" aria-modal="true" aria-label="Unsaved changes">' +
       '<h2 class="modal-title">Unsaved changes</h2>' +
-      '<p class="modal-body">This profile has changes you haven&rsquo;t saved. Save them before leaving, or discard them.</p>' +
+      '<p class="modal-body">This Agent has changes you haven&rsquo;t saved. Save them before leaving, or discard them.</p>' +
       '<div class="modal-foot">' +
       '<button type="button" class="btn btn-ghost" data-action="leave-cancel">Keep editing</button>' +
       '<span class="spacer"></span>' +
@@ -2715,8 +2848,8 @@ details[open].advanced summary::before {
       '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + '<span class="brand-name">Chickpea</span></button><span class="chip">${targetChip}</span></div>' +
       '<details class="topbar-menu"><summary aria-label="Menu">' + icon("bars-3") + '</summary></details>' +
       '<div class="actions actions-list">' + connectedBadge +
+      '<button type="button" class="btn btn-soft' + (primarySection() === "profiles" ? " nav-active" : "") + '" data-action="open-profiles" data-section-switcher="true">Agents</button>' +
       '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-channels" data-section-switcher="true">Channels</button>' +
-      '<button type="button" class="btn btn-soft' + (primarySection() === "profiles" ? " nav-active" : "") + '" data-action="open-profiles" data-section-switcher="true">Profiles</button>' +
       '<button type="button" class="btn btn-soft' + (primarySection() === "team" ? " nav-active" : "") + '" data-action="open-team" data-section-switcher="true">Team</button>' +
       (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (primarySection() === "usage" ? " nav-active" : "") + '" data-action="open-usage" data-section-switcher="true">Usage</button>' : '') +
       '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>' +
@@ -2735,8 +2868,8 @@ details[open].advanced summary::before {
   function sectionSwitcherHtml() {
     var active = primarySection();
     var sections = [
+      { id: "profiles", label: "Agents", action: "open-profiles" },
       { id: "channels", label: "Channels", action: "open-channels" },
-      { id: "profiles", label: "Profiles", action: "open-profiles" },
       { id: "team", label: "Team", action: "open-team" }
     ];
     if (USAGE_ADMIN_UI) sections.push({ id: "usage", label: "Usage", action: "open-usage" });
@@ -2782,15 +2915,15 @@ details[open].advanced summary::before {
   }
 
   function channelsRailHtml() {
-    var channels = concreteAssignments();
+    var channels = configuredChannelsForIndex().filter(function (channel) { return channel.configured; });
     var groups = [];
-    channels.forEach(function (assignment) {
-      var group = groups.find(function (candidate) { return candidate.workspaceId === assignment.workspaceId; });
+    channels.forEach(function (channel) {
+      var group = groups.find(function (candidate) { return candidate.workspaceId === channel.workspaceId; });
       if (!group) {
-        group = { workspaceId: assignment.workspaceId, assignments: [] };
+        group = { workspaceId: channel.workspaceId, channels: [] };
         groups.push(group);
       }
-      group.assignments.push(assignment);
+      group.channels.push(channel);
     });
     var html = '<nav class="rail" aria-label="Channels"><div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Channels</span></div>' +
@@ -2803,12 +2936,13 @@ details[open].advanced summary::before {
     } else {
       groups.forEach(function (group) {
         html += '<div class="ws-row">' + icon("chevron-down") + esc(railGroupLabel(group.workspaceId)) + '</div>';
-        group.assignments.forEach(function (assignment) {
-          var active = state.channelScreen === "detail" && state.active && state.active.workspaceId === assignment.workspaceId && state.active.channelId === assignment.channelId;
-          var railAgent = agentById(assignment.agentId);
-          html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-channel" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '">' +
-            '<span class="chan-name">' + esc(channelLabel(assignment)) + '</span>' +
-            '<span class="chan-meta">' + esc(railAgent ? railAgent.name : assignment.agentId) + '</span></button>';
+        group.channels.forEach(function (channel) {
+          var active = state.channelScreen === "detail" && state.active && state.active.workspaceId === channel.workspaceId && state.active.channelId === channel.channelId;
+          var assignment = channel.assignment;
+          var railAgent = assignment && agentById(assignment.agentId);
+          html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-channel" data-workspace="' + esc(channel.workspaceId) + '" data-channel="' + esc(channel.channelId) + '">' +
+            '<span class="chan-name">#' + esc(normalizeChannelLabel(channel.channelName)) + '</span>' +
+            '<span class="chan-meta">' + esc(railAgent ? railAgent.name : assignment && assignment.agentName || "No Agent assigned") + '</span></button>';
         });
       });
     }
@@ -2912,20 +3046,23 @@ details[open].advanced summary::before {
   }
 
   function profilesRailHtml() {
-    var html = '<nav class="rail" aria-label="Profiles"><div class="rail-context">' +
-      '<div class="rail-head"><span class="section-eyebrow">Profiles</span></div>' +
-      '<button type="button" class="rail-add' + (state.profileScreen === "create" ? " active" : "") + '" data-action="new-profile">' + icon("plus") + 'New profile</button>' +
-      '<div class="ws-row">Your profiles</div>';
+    var html = '<nav class="rail" aria-label="Agents"><div class="rail-context">' +
+      '<div class="rail-head"><span class="section-eyebrow">Agents</span></div>' +
+      '<button type="button" class="platform-row" data-action="open-profiles"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack' +
+      (isSlackConnected() ? '<span class="platform-status">Connected</span>' : '') + '</button>' +
+      '<div class="ws-row">Your Agents</div>';
     if (!state.agents.length) {
-      html += '<div class="empty" style="margin:8px; padding:12px;"><p class="hint">No profiles yet</p></div>';
+      html += '<div class="empty" style="margin:8px; padding:12px;"><p class="hint">No Agents yet</p></div>';
     } else {
       state.agents.forEach(function (agent) {
         var active = state.profileScreen === "edit" && state.editingAgentId === agent.id;
-        var meta = (agent.model || "No model pinned") + " · " + (agent.enabled ? "Enabled" : "Disabled");
+        var channelCount = concreteAssignmentsForAgent(agent.id).length;
+        var meta = channelCountLabel(channelCount) + (agentHasDmDefault(agent.id) ? " + Direct messages" : "");
         html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="edit-profile" data-agent="' + esc(agent.id) + '">' +
           '<span class="chan-name">' + esc(agent.name) + '</span><span class="chan-meta">' + esc(meta) + '</span></button>';
       });
     }
+    html += '<button type="button" class="rail-add' + (state.profileScreen === "create" ? " active" : "") + '" data-action="new-profile">' + icon("plus") + 'New Agent</button>';
     return html + '</div>' + sectionSwitcherHtml() + '</nav>';
   }
 
@@ -3612,10 +3749,12 @@ details[open].advanced summary::before {
     if (!workspace || !channel) return '<div class="empty"><p class="field-error">The onboarding channel is unavailable.</p></div>';
     var deepLink = 'https://app.slack.com/client/' + encodeURIComponent(workspace.id) + '/' + encodeURIComponent(channel.id);
     if (complete) {
+      var completedAgentId = (state.onboarding && state.onboarding.agentId) || ((defaultAgent() && defaultAgent().id) || "");
+      var completedAgent = agentById(completedAgentId) || defaultAgent();
       return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Reply confirmed in #' + esc(channel.name) + '</span>' +
         '<h1 class="onboarding-title">Chickpea is ready</h1>' +
-        '<p class="onboarding-lede">Your setup is working. Go to Channels to manage where Chickpea works.</p>' +
-        '<div class="onboarding-actions onboarding-completion-actions"><button type="button" class="btn btn-primary" data-action="open-channels">Go to Channels</button>' +
+        '<p class="onboarding-lede">Your setup is working. Continue in the Default Agent to shape what Chickpea knows and can do.</p>' +
+        '<div class="onboarding-actions onboarding-completion-actions"><button type="button" class="btn btn-primary" data-action="open-profiles" data-agent="' + esc(completedAgentId) + '">Open ' + esc((completedAgent && completedAgent.name) || "Default Agent") + '</button>' +
         '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Open #' + esc(channel.name) + ' in Slack</a></div></section>';
     }
     return '<section class="onboarding-panel onboarding-panel-wide"><div class="onboarding-success"><span class="onboarding-success-icon" aria-hidden="true">&#10003;</span><div>' +
@@ -3699,7 +3838,7 @@ details[open].advanced summary::before {
     if (state.slack && !state.slack.connected) {
       return '<main class="main"><div class="main-inner">' + slackStepperHtml() + '</div></main>';
     }
-    var assignment = activeAssignment();
+    var assignment = activeChannelRecord();
     var connected = isSlackConnected();
     // Connected: credential provenance is demoted to a collapsed disclosure at
     // the very bottom so it never competes with the funnel or the channel page.
@@ -3717,7 +3856,7 @@ details[open].advanced summary::before {
       // non-blocking empty so the rest of the admin still renders.
       var emptyBlock = state.addChannelOpen ? "" : '<div class="empty">' +
         '<h1 class="page-title">No channels yet &mdash; add one</h1>' +
-        '<p class="hint">Pick a Slack channel and attach a profile. Mentions guarantee a response; Chickpea may also join useful unmentioned conversation.</p>' +
+        '<p class="hint">Pick a Slack Channel and assign an Agent. Mentions guarantee a response; Chickpea may also join useful unmentioned conversation.</p>' +
         addChannelButtonHtml("btn btn-soft") +
         '</div>';
       return '<main class="main"><div class="main-inner">' + invite + addPanel + emptyBlock + '</div></main>';
@@ -3726,17 +3865,19 @@ details[open].advanced summary::before {
     var enabled = state.channelDraft.enabled;
     return '<main class="main"><div class="main-inner">' + invite + addPanel +
       '<div class="main-head"><div style="display:flex; flex-direction:column; gap:2px;">' +
+      '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="open-channels">&larr; All Channels</button>' +
+      '<span class="agent-kicker">Slack Channel</span>' +
       '<h1 class="page-title mono-title">' + esc(channelLabel(assignment)) + '</h1>' +
-      '<p class="hint">What Chickpea can do in this channel. Mentions guarantee a response; ambient participation follows the setting below. New threads reply as ' + esc(slackIdentityMentionForId(state.effective && state.effective.slackIdentityId)) + '.</p>' +
+      '<p class="hint">Its assigned Agent supplies the capabilities; this page holds only Channel-local behavior and memory.</p>' +
       '</div><label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (enabled ? "Enabled" : "Disabled") + '</span>' +
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="channel-enabled" ' + (enabled ? "checked" : "") + ' aria-label="Channel enabled"></span></label></div>' +
       profileSectionHtml(agent, assignment) +
-      channelInstructionsHtml() +
-      channelAuditSectionHtml(assignment) +
+      channelCapabilitiesHtml(agent) +
       accessSummaryHtml() +
+      channelInstructionsHtml() +
+      channelTryHtml(assignment) +
       advancedHtml(assignment) +
       saveBarHtml() +
-      slackBottom +
       '</div></main>';
   }
 
@@ -3791,7 +3932,7 @@ details[open].advanced summary::before {
         '<button type="button" class="btn btn-soft btn-sm" data-action="slack-behavior-retry">Retry</button></div>';
     }
     return '<div class="behavior-list">' +
-      slackBehaviorRowHtml("allowDms", "Allow direct messages", "Chickpea answers Slack DMs with the install\'s Default profile and provider budget.") +
+      slackBehaviorRowHtml("allowDms", "Allow direct messages", "Chickpea answers Slack DMs with the install\'s Default Agent and provider budget.") +
       slackBehaviorRowHtml("unassignedHint", "Help people configure unassigned channels", "When someone mentions " + slackMentionText() + " in an unassigned channel, Chickpea privately shares setup steps.") +
       slackBehaviorRowHtml("welcomeOnJoin", "Post a welcome when " + slackMentionText() + " joins an assigned channel", "Chickpea starts the conversation with a short welcome message.") +
       slackBehaviorRowHtml("ambientParticipation", "Allow ambient participation", "Chickpea may selectively respond to useful unmentioned messages in assigned channels. Turn this off for an installation-wide mention-only rollback.") +
@@ -3817,7 +3958,7 @@ details[open].advanced summary::before {
       : '<button type="submit" class="btn btn-primary">Validate &amp; update</button>';
     return '<div class="empty" style="gap:14px;">' +
       '<div class="section-head"><div><p class="field-label">Update Slack credentials</p>' +
-      '<p class="hint">Rotate this workspace&rsquo;s credentials, or switch to another workspace. Existing profiles and channel mappings stay saved.</p></div>' +
+      '<p class="hint">Rotate this workspace&rsquo;s credentials, or switch to another workspace. Existing Agents and Channel mappings stay saved.</p></div>' +
       '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-update-close"' + (state.slackConnectionBusy ? " disabled" : "") + '>Cancel</button></div>' +
       '<form data-action="slack-connect-form" style="display:flex; flex-direction:column; gap:12px;">' +
       '<div class="form-grid"><div class="field"><label class="field-label" for="slack-update-bot-token">Bot User OAuth Token</label>' +
@@ -3838,6 +3979,91 @@ details[open].advanced summary::before {
       (dedicatedCount ? '<p class="hint">' + esc(dedicatedCount + " active dedicated identit" + (dedicatedCount === 1 ? "y" : "ies")) + '</p>' : '') + '</section>';
   }
 
+  function configuredChannelsForIndex() {
+    var projected = (state.channelIndex || []).map(function (channel) {
+      return {
+        workspaceId: channel.workspaceId,
+        channelId: channel.channelId,
+        channelName: channel.channelName || channel.channelId,
+        assignment: channel.assignment || null,
+        behavior: channel.behavior || {},
+        readiness: channel.readiness || null,
+        configured: true
+      };
+    });
+    if (!projected.length) {
+      projected = concreteAssignments().map(function (assignment) {
+        var agent = agentById(assignment.agentId);
+        return {
+          workspaceId: assignment.workspaceId,
+          channelId: assignment.channelId,
+          channelName: normalizeChannelLabel(assignment.channelLabel) || assignment.channelId,
+          assignment: agent ? { agentId: agent.id, agentName: agent.name, agentEnabled: agent.enabled } : null,
+          behavior: {
+            participationMode: assignment.participationMode || "ambient",
+            hasAdditionalInstructions: !!assignment.channelPromptAddendum
+          },
+          readiness: null,
+          configured: true
+        };
+      });
+    }
+    var seen = new Set(projected.map(function (channel) { return channel.workspaceId + "\u0000" + channel.channelId; }));
+    var catalog = (state.slackChannels && state.slackChannels.channels) || [];
+    catalog.forEach(function (channel) {
+      var workspaceId = (state.slackChannels && state.slackChannels.teamId) || connectedTeamId();
+      var key = workspaceId + "\u0000" + channel.id;
+      if (seen.has(key)) return;
+      projected.push({
+        workspaceId: workspaceId,
+        channelId: channel.id,
+        channelName: channel.name || channel.id,
+        assignment: null,
+        behavior: {},
+        readiness: null,
+        configured: false
+      });
+    });
+    return projected;
+  }
+
+  function channelsIndexHtml() {
+    if (state.addChannelOpen) {
+      return '<button type="button" class="link-btn" data-action="toggle-add-channel">&larr; Channels</button>' + addChannelPanelHtml();
+    }
+    var query = String(state.channelIndexQuery || "").trim().toLowerCase();
+    var channels = configuredChannelsForIndex().filter(function (channel) {
+      if (!query) return true;
+      var agentName = channel.assignment && channel.assignment.agentName || "";
+      return (channel.channelName + " " + channel.channelId + " " + agentName).toLowerCase().indexOf(query) >= 0;
+    });
+    var error = state.channelIndexError
+      ? '<p class="inline-status error" role="status">The Channel projection could not refresh. Showing saved assignments.</p>'
+      : "";
+    var rows = channels.map(function (channel) {
+      var assignment = channel.assignment;
+      var agent = assignment && agentById(assignment.agentId);
+      var agentName = (assignment && assignment.agentName) || (agent && agent.name) || "No Agent assigned";
+      var behavior = channel.behavior || {};
+      var mode = behavior.participationMode === "mention_only" ? "Mention only" : "Ambient";
+      var additional = behavior.hasAdditionalInstructions ? " · Additional instructions" : "";
+      var ready = !channel.readiness || channel.readiness.ready !== false;
+      var action = channel.configured ? "open-channel-index" : "channel-index-add";
+      return '<div class="channels-index-row"><button type="button" class="channels-index-open" data-action="' + action + '" data-workspace="' + esc(channel.workspaceId) + '" data-channel="' + esc(channel.channelId) + '">' +
+        '<span class="channel-platform-mark"><span class="platform-logo slack-logo-image" aria-hidden="true"></span></span>' +
+        '<span class="channels-index-copy"><span class="channels-index-name">#' + esc(normalizeChannelLabel(channel.channelName)) + '</span><small>' + esc(channel.configured ? "Assigned Agent: " + agentName + " · " + mode + additional : "Discovered in Slack · choose an Agent to add it") + '</small></span>' +
+        '<span class="badge ' + (channel.configured && ready ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (channel.configured ? (ready ? "Ready" : "Needs attention") : "Not configured") + '</span>' +
+        '<span aria-hidden="true">' + (channel.configured ? "&rsaquo;" : "+") + '</span></button>' +
+        (assignment && assignment.agentId ? '<button type="button" class="btn btn-ghost btn-sm" data-action="open-profiles" data-agent="' + esc(assignment.agentId) + '">Open Agent</button>' : "") + '</div>';
+    }).join("");
+    if (!rows) {
+      rows = '<div class="empty"><p class="field-label">' + (query ? "No Channels match" : "No Channels yet") + '</p><p class="hint">' + (query ? "Try another Channel or Agent name." : "Add one Slack Channel, then choose its Agent.") + '</p></div>';
+    }
+    return '<div class="channels-index-head"><div><span class="agent-kicker">Secondary placement index</span><h1 class="page-title">Channels</h1><p class="hint">See where Agents work and open a Channel for its local behavior and memory.</p></div>' +
+      '<div class="channels-index-tools"><label class="sr-only" for="channels-index-query">Search Channels</label><input class="input" id="channels-index-query" type="search" value="' + esc(state.channelIndexQuery) + '" placeholder="Search Channels or Agents" data-action="channels-index-query"><button type="button" class="btn btn-primary" data-action="toggle-add-channel">' + icon("plus") + 'Add Channel</button></div></div>' +
+      error + '<section class="section"><div class="section-head"><div><h2 class="section-title">Configured and discovered</h2><p class="hint">Configured Channels show their assigned Agent; discovered Channels stay secondary until added.</p></div></div><div class="channels-index-list">' + rows + '</div></section>';
+  }
+
   function slackOverviewHtml() {
     var head = '<div class="slack-head"><span class="slack-logo-large slack-logo-image" role="img" aria-label="Slack"></span>' +
       '<div><h1 class="page-title" style="font-size:1.75rem;">Slack</h1><p class="hint">Manage where Chickpea answers in Slack.</p></div></div>';
@@ -3847,11 +4073,19 @@ details[open].advanced summary::before {
     if (!isSlackConnected()) {
       return head + slackStepperHtml();
     }
-    if (state.addChannelOpen) {
-      return head + addChannelPanelHtml();
+    return successToastHtml() + channelsIndexHtml();
+  }
+
+  function slackWorkspaceSettingsHtml() {
+    if (!state.slack) {
+      return '<section class="section"><div class="empty"><p class="field-label">Slack settings are unavailable</p><p class="hint">Reload the page to try the connection again.</p></div></section>';
+    }
+    if (!isSlackConnected()) {
+      return '<section class="section"><div class="section-head"><div><h2 class="section-title">Workspace connection</h2><p class="hint">Connect Slack before adding identities or Channels.</p></div></div>' + slackStepperHtml() + '</section>';
     }
     var count = connectedAssignmentCount();
     var mutable = slackConnectionMutable();
+    var connectionBusy = !!state.slackConnectionBusy;
     var workspace = '<section class="section"><div class="section-head"><h2 class="section-title">Connected workspace</h2></div>' +
       '<div class="workspace-card"><div class="workspace-ident"><span class="workspace-icon"><span class="platform-logo slack-logo-image" aria-hidden="true"></span></span>' +
       '<div style="min-width:0;"><div class="workspace-name">' + esc(connectedTeamName()) + '</div><div class="workspace-meta mono">Team ID ' + esc(connectedTeamId() || "Unknown") + '</div></div></div>' +
@@ -3860,7 +4094,6 @@ details[open].advanced summary::before {
       '<span class="hint">' + esc(slackCredentialSummary()) + '</span></div></section>';
     var behavior = '<section class="section"><div class="section-head"><div><h2 class="section-title">Slack behavior</h2>' +
       '<p class="hint">Control how Chickpea behaves across this Slack workspace.</p></div></div>' + slackBehaviorHtml() + '</section>';
-    var connectionBusy = !!state.slackConnectionBusy;
     var testButton = state.slackTestBusy
       ? '<button type="button" class="btn btn-soft i-lead" disabled><span class="spinner"></span>Testing&hellip;</button>'
       : '<button type="button" class="btn btn-soft i-lead" data-action="slack-test"' + (connectionBusy ? " disabled" : "") + '>' + icon("arrow-path") + 'Test connection</button>';
@@ -3871,13 +4104,11 @@ details[open].advanced summary::before {
       '<div class="action-well">' + testButton + updateButton +
       slackConnectionStatusHtml() + '</div>' + slackUpdateCredentialsHtml() +
       '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect this workspace</span>' +
-      '<span class="hint">Stops Chickpea from answering. Profiles and channel configuration stay saved so you can reconnect later. This does not uninstall the Slack app.</span>' +
+      '<span class="hint">Stops Chickpea from answering. Agents and Channel configuration stay saved so you can reconnect later. This does not uninstall the Slack app.</span>' +
       (!mutable ? '<span class="hint">This connection is managed by the environment and is read-only here.</span>' : "") +
       (state.slackDisconnectError ? '<span class="inline-status error">' + esc(state.slackDisconnectError) + '</span>' : "") + '</div>' +
       '<button type="button" class="btn btn-danger" data-action="slack-disconnect-open"' + (mutable && !connectionBusy ? "" : " disabled") + '>Disconnect</button></div></section>';
-    var foot = '<div class="slack-overview-foot"><button type="button" class="btn btn-primary i-lead" data-action="toggle-add-channel">' + icon("plus") + 'Add Slack channel</button>' +
-      '<span class="hint">Choose a channel where Chickpea should answer.</span></div>';
-    return head + successToastHtml() + workspace + slackIdentityHtml() + behavior + connection + foot;
+    return successToastHtml() + workspace + behavior + connection;
   }
 
   function slackDisconnectModalHtml() {
@@ -3887,7 +4118,7 @@ details[open].advanced summary::before {
       : '<button type="button" class="btn btn-danger" data-action="slack-disconnect-confirm">Disconnect workspace</button>';
     return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Disconnect Slack workspace" tabindex="-1" data-role="slack-disconnect-dialog">' +
       '<h2 class="modal-title">Disconnect ' + esc(connectedTeamName()) + '?</h2>' +
-      '<p class="modal-body">Chickpea will stop answering in Slack. Profiles and channel mappings stay saved. The Slack app itself remains installed until you remove it in Slack.</p>' +
+      '<p class="modal-body">Chickpea will stop answering in Slack. Agents and Channel mappings stay saved. The Slack app itself remains installed until you remove it in Slack.</p>' +
       (state.slackDisconnectError ? '<p class="error" style="margin-top:10px;" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-disconnect-error">' + esc(state.slackDisconnectError) + '</p>' : "") +
       '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="slack-disconnect-cancel"' + (state.slackDisconnectBusy ? " disabled" : "") + '>Keep connected</button><span class="spacer"></span>' + button + '</div></div></div>';
   }
@@ -3900,8 +4131,8 @@ details[open].advanced summary::before {
       return '<span class="mono" style="color:var(--text);">' + esc(profile.name) + '</span>';
     }));
     var profileWarning = profiles.length
-      ? '<b style="font-weight:500; color:var(--text);">' + profiles.length + ' profile' + (profiles.length === 1 ? "" : "s") + '</b> ' + (profiles.length === 1 ? "references" : "reference") + ' GitHub repositories &mdash; ' + names + '. Those repository selections stay saved, but cannot be used until GitHub is reconnected.'
-      : 'No profiles currently reference GitHub repositories.';
+      ? '<b style="font-weight:500; color:var(--text);">' + profiles.length + ' Agent' + (profiles.length === 1 ? "" : "s") + '</b> ' + (profiles.length === 1 ? "references" : "reference") + ' GitHub repositories &mdash; ' + names + '. Those repository selections stay saved, but cannot be used until GitHub is reconnected.'
+      : 'No Agents currently reference GitHub repositories.';
     var appNote = ' The GitHub App remains installed on GitHub until you remove it there.';
     var button = state.githubBusy === "disconnect"
       ? '<button type="button" class="btn btn-danger" disabled><span class="spinner"></span>Disconnecting&hellip;</button>'
@@ -4023,7 +4254,7 @@ details[open].advanced summary::before {
 
   function defaultAgentName() {
     var agent = defaultAgent();
-    return agent ? agent.name : "a profile";
+    return agent ? agent.name : "an Agent";
   }
 
   // The profile a newly added channel will get: the one carried in from the
@@ -4077,7 +4308,7 @@ details[open].advanced summary::before {
   function addChannelPanelHtml() {
     if (!state.addChannelOpen) return "";
     var head = '<div class="section-head"><div><h2 class="section-title">Add a channel</h2>' +
-      '<p class="hint">Attach to a Slack channel. Mentions guarantee a response and ambient messages may be evaluated with the ' + esc(addChannelAgentName()) + ' profile.</p></div>' +
+      '<p class="hint">Add a Slack Channel and assign ' + esc(addChannelAgentName()) + '. Mentions guarantee a response; ambient messages may also be evaluated.</p></div>' +
       '<button type="button" class="btn btn-ghost btn-sm" data-action="cancel-add-channel">Cancel</button></div>';
     if (!isSlackConnected()) {
       return '<section class="section">' + head +
@@ -4407,38 +4638,58 @@ details[open].advanced summary::before {
   }
 
   function profileSectionHtml(agent, assignment) {
-    // Count concrete channels + a separate "+ DMs" suffix — never fold the DM
-    // wildcard into the channel count (that read "used in 2 channels" for a
-    // profile on 1 channel + the DM default), matching the profile list/footer.
-    var meta = "Unknown profile";
-    if (agent) {
-      var usedChannels = concreteAssignmentsForAgent(agent.id).length;
-      var usedDm = agentHasDmDefault(agent.id);
-      meta = modelLabel(agent) + " · used in " + channelCountLabel(usedChannels) + (usedDm ? " + DMs" : "");
-    }
+    var identityName = slackIdentityMentionForId(state.effective && state.effective.slackIdentityId);
     var row = agent
-      ? '<div class="bundle-row"><span class="b-name">' + esc(agent.name) + '</span><span class="b-meta">' + esc(meta) + '</span><span class="spacer"></span>' +
-        '<button type="button" class="btn btn-soft btn-sm" data-action="open-profiles" data-agent="' + esc(agent.id) + '">Edit</button>' +
-        '<button type="button" class="btn btn-soft btn-sm" data-action="toggle-swap">Change</button>' +
-        '<button type="button" class="x-btn" data-action="detach-profile" aria-label="Detach profile">' + icon("x-mark") + '</button></div>'
-      : '<div class="empty"><p class="field-label">No profile attached</p><p class="hint">Attach a profile before the channel can answer.</p></div>';
+      ? '<div class="channel-agent-hero"><div><span class="agent-kicker">Assigned Agent</span><h2>' + esc(agent.name) + '</h2><span class="hint">' + esc(modelLabel(agent)) + ' · replies as ' + esc(identityName) + ' · Agent changes apply to new threads</span></div>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="open-profiles" data-agent="' + esc(agent.id) + '">Manage Agent</button>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="toggle-swap">Change Agent</button></div>'
+      : '<div class="empty"><p class="field-label">No Agent assigned</p><p class="hint">Choose an Agent before this Channel can answer.</p><button type="button" class="btn btn-soft btn-sm" data-action="toggle-swap">Choose Agent</button></div>';
     if (state.swapOpen) {
-      row += '<div class="bundle-row"><span class="select-wrap"><select class="input" data-role="swap-profile">' + state.agents.map(function (profile) {
-        return '<option value="' + esc(profile.id) + '"' + (profile.id === assignment.agentId ? " selected" : "") + '>' + esc(profile.name) + '</option>';
-      }).join("") + '</select>' + icon("chevron-down", "select-caret") + '</span><button type="button" class="btn btn-primary btn-sm" data-action="attach-selected-profile">Attach</button></div>';
+      row += '<div class="bundle-row"><span class="select-wrap"><select class="input" aria-label="Assigned Agent" data-role="swap-profile">' + state.agents.map(function (candidate) {
+        return '<option value="' + esc(candidate.id) + '"' + (candidate.id === assignment.agentId ? " selected" : "") + '>' + esc(candidate.name) + '</option>';
+      }).join("") + '</select>' + icon("chevron-down", "select-caret") + '</span><button type="button" class="btn btn-primary btn-sm" data-action="attach-selected-profile">Use Agent</button></div>';
     }
-    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Profile</h2><p class="hint">The reusable behavior attached to this channel &mdash; instructions, model, skills, and connections.</p></div><button type="button" class="btn btn-ghost btn-sm" data-action="open-profiles">Manage profiles</button></div>' + row + '</section>';
+    return '<section class="section" aria-label="Assigned Agent">' + row + '</section>';
+  }
+
+  function channelCapabilityGroupHtml(kind, title, items) {
+    var visible = (items || []).filter(function (item) { return item.enabled !== false; }).slice(0, 4);
+    var extra = Math.max(0, (items || []).filter(function (item) { return item.enabled !== false; }).length - visible.length);
+    var pills = visible.map(function (item) {
+      var mark = kind === "repository"
+        ? icon("repository")
+        : kind === "connector" && item.presetId && presetById(item.presetId)
+          ? connectorLogoHtml(presetById(item.presetId))
+          : icon("check");
+      return '<span class="capability-preview-pill">' + mark + '<span>' + esc(item.name || item.fullName || item.displayName || item.id) + '</span></span>';
+    }).join("");
+    if (extra) pills += '<span class="capability-preview-pill">+' + extra + ' more</span>';
+    if (!pills) pills = '<span class="hint">None added</span>';
+    return '<div class="channel-capability-group"><strong>' + title + '</strong><div class="capability-preview-list">' + pills + '</div></div>';
+  }
+
+  function channelCapabilitiesHtml(agent) {
+    var previews = agent && agent.capabilityPreviews || {};
+    var skills = previews.skills || (agent && agent.skills) || [];
+    var connectors = previews.connectors || ((agent && agent.mcpServers) || []).concat((agent && agent.apiConnections) || []);
+    var repositories = previews.repositories || (agent && agent.repositories) || [];
+    return '<section class="section"><div class="section-head"><div><h2 class="section-title">What this Agent can use</h2><p class="hint">Inherited from the assigned Agent. Manage capabilities on the Agent; this Channel never forks them.</p></div>' +
+      (agent ? '<button type="button" class="btn btn-ghost btn-sm" data-action="open-profiles" data-agent="' + esc(agent.id) + '">Open Agent</button>' : "") + '</div>' +
+      '<div class="channel-capability-groups">' + channelCapabilityGroupHtml("skill", "Skills", skills) + channelCapabilityGroupHtml("connector", "Connectors", connectors) + channelCapabilityGroupHtml("repository", "Repositories", repositories) + '</div></section>';
   }
 
   function channelInstructionsHtml() {
-    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Channel instructions</h2><p class="hint">Appended to the profile\\'s instructions in this channel only.</p></div></div>' +
-      '<div class="field"><label class="field-label" for="participation-mode">Participation</label>' +
+    return '<section class="section"><div class="section-head"><div><h2 class="section-title">When it speaks</h2><p class="hint">Mentions always receive a response. Ambient participation can also contribute when it is useful.</p></div></div>' +
+      '<div class="field"><label class="field-label" for="participation-mode">Participation mode</label>' +
       '<span class="select-wrap"><select class="input" id="participation-mode" data-action="channel-participation">' +
       '<option value="ambient"' + (state.channelDraft.participationMode === "ambient" ? " selected" : "") + '>Ambient (mentions guaranteed)</option>' +
       '<option value="mention_only"' + (state.channelDraft.participationMode === "mention_only" ? " selected" : "") + '>Mention only</option></select>' + icon("chevron-down", "select-caret") + '</span>' +
-      '<p class="hint">Ambient lets Chickpea decide when an unmentioned contribution is useful. Mention-only narrows this channel without changing tools or teammate permissions.</p></div>' +
-      '<div class="field"><label class="field-label" for="addendum" style="position:absolute; clip: rect(0 0 0 0);">Channel instructions</label>' +
-      '<textarea class="textarea" id="addendum" data-action="channel-addendum">' + esc(state.channelDraft.channelPromptAddendum || "") + '</textarea></div></section>';
+      '<p class="hint">This changes only participation. The Agent, capabilities, identity, and memory stay the same.</p></div></section>';
+  }
+
+  function channelTryHtml(assignment) {
+    var deepLink = "https://app.slack.com/client/" + encodeURIComponent(assignment.workspaceId) + "/" + encodeURIComponent(assignment.channelId);
+    return '<section class="section"><div class="channel-try-card"><div><span class="agent-kicker">Try it in Slack</span><p class="channel-try-prompt">' + esc(ONBOARDING_PROMPT) + '</p><span class="hint">A real Slack reply is the proof that this placement is ready.</span></div><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Open ' + esc(channelLabel(assignment)) + '</a></div></section>';
   }
 
   function accessSummaryHtml() {
@@ -4448,16 +4699,16 @@ details[open].advanced summary::before {
     } else if (!state.effective) {
       body = '<div class="well"><dl><div class="kv"><dt>Status</dt><dd>Resolving...</dd></div></dl></div>';
     } else {
-      var profile = state.effective.profile;
+      var profile = state.effective.agent || state.effective.profile;
       // Trimmed to the four human-meaningful rows ("what will it do"); Model,
       // Provider, and Snapshot are diagnostic and move under Advanced (card 07).
       body = '<div class="well"><dl>' +
-        '<div class="kv"><dt>Profile</dt><dd>' + esc(profile.name) + ' ' + enabledBadge(profile.enabled) + '</dd></div>' +
+        '<div class="kv"><dt>Agent</dt><dd>' + esc(profile.name) + ' ' + enabledBadge(profile.enabled) + '</dd></div>' +
         '<div class="kv"><dt>Replies as</dt><dd>' + esc(slackIdentityMentionForId(state.effective.slackIdentityId)) + ' &mdash; new threads only</dd></div>' +
         '<div class="kv"><dt>Instructions</dt><dd><div class="instructions-preview">' + instructionLayersHtml(state.effective.instructionLayers) + '</div></dd></div>' +
         '</dl></div>';
     }
-    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Access summary</h2><p class="hint">Resolved from the attached profile and this channel\\'s instructions. New threads pick this up; existing threads keep the snapshot they started with.</p></div></div>' + body + '</section>';
+    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Access summary</h2><p class="hint">Resolved from the assigned Agent and this Channel\\'s instructions. New threads pick this up; existing threads keep the snapshot they started with.</p></div></div>' + body + '</section>';
   }
 
   function advancedHtml(assignment) {
@@ -4474,13 +4725,16 @@ details[open].advanced summary::before {
         '<div class="kv"><dt>Provider</dt><dd class="mono">' + esc(state.effective.provider || "unknown") + '</dd></div>' +
         '<div class="kv"><dt>Snapshot</dt><dd class="mono">sha256:' + esc(shortHash(state.effective.snapshotHash)) + ' · new threads only</dd></div>';
     }
-    return '<details class="advanced"><summary>Advanced</summary><div class="adv-rows"><dl style="display:contents;">' +
+    return '<details class="advanced"><summary>Advanced</summary><div class="channel-advanced-content">' +
+      '<section><div class="section-head"><div><h2 class="section-title">Additional instructions</h2><p class="hint">Appended after the assigned Agent instructions in this Channel only.</p></div></div>' +
+      '<div class="field"><label class="field-label" for="addendum">Channel additional instructions</label><textarea class="textarea" id="addendum" rows="6" data-action="channel-addendum" placeholder="Add context unique to this Channel">' + esc(state.channelDraft.channelPromptAddendum || "") + '</textarea></div></section>' +
+      '<section><div class="section-head"><div><h2 class="section-title">Channel memory</h2><p class="hint">Exact-Channel files stay here even if the assigned Agent changes.</p></div></div>' + ownerMemoryPanelHtml("channel", assignment.channelId, assignment.channelLabel || assignment.channelId) + '</section>' +
+      '<div class="adv-rows"><dl style="display:contents;">' +
       diagnostics +
       '<div class="kv"><dt>Channel ID</dt><dd class="mono">' + esc(assignment.channelId) + '</dd></div>' +
       '<div class="kv"><dt>Workspace ID</dt><dd class="mono">' + esc(assignment.workspaceId) + '</dd></div>' +
       '<div class="kv"><dt>Providers</dt><dd style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">' + providerBadges() + '<span class="hint" style="font-size:0.75rem;">${providerHint}</span></dd></div>' +
-      '<div class="kv"><dt>Coming later</dt><dd>Inherited defaults, guest policy, and channel-member edits arrive with scope inheritance &mdash; see the roadmap.</dd></div>' +
-      '</dl></div></details>';
+      '</dl></div></div></details>';
   }
 
   function saveBarHtml() {
@@ -4501,14 +4755,32 @@ details[open].advanced summary::before {
   }
 
   function agentHasDmDefault(agentId) {
-    return state.assignments.some(function (assignment) {
+    var legacyDefault = state.assignments.some(function (assignment) {
       return assignment.agentId === agentId && assignment.workspaceId === "*" && assignment.channelId === "*";
     });
+    var identityDefault = ((state.slackIdentities && state.slackIdentities.identities) || []).some(function (identity) {
+      return identity.dmAgentId === agentId && identity.effectiveDmState === "on";
+    });
+    return legacyDefault || identityDefault;
   }
 
   function concreteAssignmentsForAgent(agentId) {
+    var agent = agentById(agentId);
+    var projected = agent && agent.whereItWorks && Array.isArray(agent.whereItWorks.channels)
+      ? agent.whereItWorks.channels
+      : [];
     return state.assignments.filter(function (assignment) {
       return assignment.agentId === agentId && assignment.workspaceId !== "*" && assignment.channelId !== "*";
+    }).map(function (assignment) {
+      if (normalizeChannelLabel(assignment.channelLabel)) return assignment;
+      var channel = (state.channelIndex || []).find(function (candidate) {
+        return candidate.workspaceId === assignment.workspaceId && candidate.channelId === assignment.channelId;
+      }) || projected.find(function (candidate) {
+        return candidate.workspaceId === assignment.workspaceId && candidate.channelId === assignment.channelId;
+      });
+      return channel && channel.channelName
+        ? Object.assign({}, assignment, { channelLabel: channel.channelName })
+        : assignment;
     });
   }
 
@@ -4517,11 +4789,11 @@ details[open].advanced summary::before {
   function profileOverviewHtml() {
     var cards = state.agents.map(profileCardHtml).join("");
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
-      '<h1 class="page-title">Profiles</h1>' +
-      '<p class="hint" style="max-width:58ch;">A profile is reusable behavior you attach to channels &mdash; its instructions, model, skills, connections, and Slack identity. By default, every Profile always replies as <b style="font-weight:500; color:var(--text);">' + slackMentionHtml() + '</b>; dedicated identities are optional.</p>' +
-      '</div><button type="button" class="btn btn-primary" style="flex-shrink:0;" data-action="new-profile">New profile</button></div>' +
-      '<section class="section"><div class="section-head"><div><h2 class="section-title">Your profiles</h2><p class="hint">Everything Chickpea can be in this workspace.</p></div></div>' +
-      (cards || '<div class="empty"><p class="field-label">No profiles yet</p><p class="hint">Create one to give Chickpea a behavior you can attach to channels.</p></div>') +
+      '<span class="agent-kicker">Workspace teammates</span><h1 class="page-title">Agents</h1>' +
+      '<p class="hint" style="max-width:58ch;">Agents hold reusable instructions, models, capabilities, identity, placements, and memory.</p>' +
+      '</div><button type="button" class="btn btn-primary" style="flex-shrink:0;" data-action="new-profile">New Agent</button></div>' +
+      '<section class="section"><div class="section-head"><div><h2 class="section-title">Your Agents</h2><p class="hint">Everything Chickpea can be in this workspace.</p></div></div>' +
+      (cards || '<div class="empty"><p class="field-label">No Agents yet</p><p class="hint">Create one, then add it to a Channel.</p></div>') +
       '</section>';
   }
 
@@ -4752,8 +5024,8 @@ details[open].advanced summary::before {
         ? "Read through the connected GitHub App. "
         : "Read from GitHub without authentication. ";
       sourceDisclosure = '<div class="import-disclosure"><span class="badge-src">' + (isPrivate ? "Private repository" : "Public repository") + '</span>' +
-        '<span>' + access + 'Selected instructions are copied into this profile as a snapshot and may be sent to its configured model when the skill is used. Scripts and assets are excluded.</span>' +
-        '<span>Importing does not grant the profile access to the repository. Configure ongoing runtime access separately in the Repositories tab.</span></div>';
+        '<span>' + access + 'Selected instructions are copied into this Agent as a snapshot and may be sent to its configured model when the skill is used. Scripts and assets are excluded.</span>' +
+        '<span>Importing does not grant the Agent access to the repository. Configure ongoing runtime access separately in the Repositories tab.</span></div>';
     }
     return '<div class="import-summary"><span>' + summary + notes + '</span>' + selectAll + "</div>" +
       sourceDisclosure + listOrEmpty + actions;
@@ -4780,7 +5052,88 @@ details[open].advanced summary::before {
       skillImportPickerHtml(imp) + "</div>";
   }
 
-  // ---- Capability tabs (Instructions / Skills / Connections / Repositories) -
+  function ownerMemoryEntryCount() {
+    return (state.ownerMemory.files || []).filter(function (file) { return !file.generated; }).length;
+  }
+
+  function ownerMemoryMatches(ownerKind, workspaceId, ownerId) {
+    var memory = state.ownerMemory;
+    return memory.ownerKind === ownerKind && memory.workspaceId === workspaceId && memory.ownerId === ownerId;
+  }
+
+  function ownerMemoryPanelHtml(ownerKind, ownerId, ownerLabel) {
+    var workspaceId = connectedTeamId();
+    var memory = state.ownerMemory;
+    var ownerName = ownerKind === "channel" ? channelLabel({ channelLabel: ownerLabel, channelId: ownerId }) : ownerLabel;
+    var reach = ownerKind === "agent"
+      ? "This memory follows " + ownerName + " everywhere it works."
+      : "This memory stays only in " + ownerName + ", even if its Agent changes.";
+    if (!ownerId) {
+      return '<div class="empty"><p class="field-label">Save this Agent to add memory</p><p class="hint">Memory files bind to the durable Agent id.</p></div>';
+    }
+    if (!workspaceId) {
+      return '<div class="empty"><p class="field-label">Connect Slack to use memory</p><p class="hint">Memory ownership is scoped to the connected workspace.</p></div>';
+    }
+    if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) {
+      return '<div class="empty"><p class="field-label">Loading memory files&hellip;</p><p class="hint">' + esc(reach) + '</p></div>';
+    }
+    var status = memory.error
+      ? '<p class="owner-memory-status error" role="alert">' + esc(memory.error) + '</p>'
+      : '<p class="owner-memory-status" role="status" aria-live="polite">' + esc(memory.notice || (memory.dirty ? "Unsaved memory changes" : "")) + '</p>';
+    if (memory.loading && !memory.files) {
+      return '<div class="empty"><p class="field-label">Loading memory files&hellip;</p><p class="hint">' + esc(reach) + '</p></div>' + status;
+    }
+    if (!memory.files) {
+      return '<div class="empty"><p class="field-label">Memory is unavailable</p><p class="hint">' + esc(reach) + '</p><button type="button" class="btn btn-soft btn-sm" data-action="owner-memory-retry">Retry</button></div>' + status;
+    }
+    var selected = memory.files.find(function (file) {
+      return (file.generated ? "MEMORY.md" : file.entryId) === memory.selectedFile;
+    }) || memory.files[0] || null;
+    var files = memory.files.map(function (file) {
+      var key = file.generated ? "MEMORY.md" : file.entryId;
+      var selectedFile = selected && key === (selected.generated ? "MEMORY.md" : selected.entryId);
+      return '<button type="button" class="' + (selectedFile ? "on" : "") + '" data-action="owner-memory-file" data-file="' + esc(key) + '"' + (selectedFile ? ' aria-current="true"' : '') + '>' +
+        '<strong>' + esc(file.name) + '</strong><small>' + (file.generated ? "Generated · read-only" : esc((file.status || "active") + " · v" + (file.version || 1))) + '</small></button>';
+    }).join("");
+    var editor;
+    if (memory.createDraft) {
+      var create = memory.createDraft;
+      editor = '<section class="owner-memory-editor"><div class="owner-memory-editor-head"><div><h3>New memory file</h3><p class="hint">Create one focused Markdown file for this ' + (ownerKind === "agent" ? "Agent" : "Channel") + '.</p></div></div>' +
+        '<div class="owner-memory-fields"><div class="field"><label class="field-label" for="owner-memory-create-slug">Filename</label><div style="display:flex;align-items:center;gap:6px;"><input class="input mono" id="owner-memory-create-slug" value="' + esc(create.slug) + '" placeholder="project-context" data-action="owner-memory-create-slug"><span class="mono">.md</span></div><p class="hint">Letters, numbers, hyphens, and underscores only.</p></div>' +
+        '<div class="field"><label class="field-label" for="owner-memory-create-type">Type</label><select class="input" id="owner-memory-create-type" data-action="owner-memory-create-type">' + ["fact", "decision", "project", "feedback", "preference"].map(function (type) { return '<option value="' + type + '"' + (create.type === type ? " selected" : "") + '>' + type.charAt(0).toUpperCase() + type.slice(1) + '</option>'; }).join("") + '</select></div></div>' +
+        '<div class="field"><label class="field-label" for="owner-memory-create-description">Description</label><input class="input" id="owner-memory-create-description" value="' + esc(create.description) + '" data-action="owner-memory-create-description"></div>' +
+        '<div class="field"><label class="field-label" for="owner-memory-create-body">Markdown body</label><textarea class="textarea" id="owner-memory-create-body" rows="9" data-action="owner-memory-create-body">' + esc(create.body) + '</textarea></div>' +
+        '<div class="owner-memory-actions"><span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-create-cancel"' + (memory.busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="owner-memory-create-confirm"' + (memory.busy ? " disabled" : "") + '>' + (memory.busy === "create" ? "Creating&hellip;" : "Create file") + '</button></div></section>';
+    } else if (!selected) {
+      editor = '<div class="empty"><p class="field-label">No memory files yet</p><p class="hint">Create a Markdown file to give this ' + (ownerKind === "agent" ? "Agent" : "Channel") + ' durable context.</p></div>';
+    } else if (selected.generated) {
+      editor = '<section class="owner-memory-editor"><div class="owner-memory-editor-head"><div><h3>MEMORY.md</h3><p class="hint">Generated index · edit individual files to change it.</p></div><span class="chip">Read-only</span></div>' +
+        '<pre class="owner-memory-source">' + esc(selected.content || "# Memory\\n") + '</pre></section>';
+    } else if (!memory.detail || memory.detail.entry.entryId !== selected.entryId) {
+      editor = '<section class="owner-memory-editor"><p class="hint">' + (memory.busy === "load" ? "Loading file&hellip;" : "Choose this file again to load it.") + '</p></section>';
+    } else {
+      var entry = memory.detail.entry;
+      var draft = memory.draft || { description: entry.description || "", type: entry.type || "fact", body: entry.body || "" };
+      var review = memory.detail.unresolvedReview;
+      var reviewHtml = review ? '<div class="memory-review"><strong>Review requested</strong><span>' + esc(review.reasonCode || "Needs operator review") + '</span><span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-resolve-review">Mark reviewed</button></div>' : "";
+      var historyHtml = '<details><summary>Version history (' + memory.history.length + ')</summary><div class="adv-rows">' + (memory.history.length ? memory.history.map(function (revision) {
+        return '<div class="kv"><dt>Version ' + Number(revision.version || 0) + '</dt><dd>' + esc((revision.actorClass || "operator") + " · " + formatMemoryDate(revision.createdAt || revision.modifiedAt || revision.timestamp)) + '</dd></div>';
+      }).join("") : '<p class="hint">No earlier versions.</p>') + '</div></details>';
+      editor = '<section class="owner-memory-editor"><div class="owner-memory-editor-head"><div><h3>' + esc(selected.name) + '</h3><p class="hint">Version ' + Number(entry.version) + ' · ' + esc(reach) + '</p></div><span class="badge badge-on"><span class="dot"></span>' + esc(entry.status || "active") + '</span></div>' +
+        '<div class="owner-memory-fields"><div class="field"><label class="field-label" for="owner-memory-description">Description</label><input class="input" id="owner-memory-description" value="' + esc(draft.description) + '" data-action="owner-memory-description"></div>' +
+        '<div class="field"><label class="field-label" for="owner-memory-type">Type</label><select class="input" id="owner-memory-type" data-action="owner-memory-type">' + ["fact", "decision", "project", "feedback", "preference"].map(function (type) { return '<option value="' + type + '"' + (draft.type === type ? " selected" : "") + '>' + type.charAt(0).toUpperCase() + type.slice(1) + '</option>'; }).join("") + '</select></div></div>' +
+        '<div class="field"><label class="field-label" for="owner-memory-body">Markdown body</label><textarea class="textarea" id="owner-memory-body" rows="9" data-action="owner-memory-body">' + esc(draft.body) + '</textarea></div>' +
+        reviewHtml + historyHtml +
+        (memory.conflict ? '<div class="callout"><span>Your draft is preserved. This file changed elsewhere.</span><button type="button" class="btn btn-soft btn-sm" data-action="owner-memory-use-latest">Load latest</button></div>' : '') +
+        (memory.deleteConfirm ? '<div class="callout" role="alert"><span>Forget this file? This is irreversible and removes it from the generated MEMORY.md.</span><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-delete-cancel">Cancel</button><button type="button" class="btn btn-danger btn-sm" data-action="owner-memory-delete-confirm">Forget file</button></div>' : '') +
+        '<div class="owner-memory-actions"><button type="button" class="btn btn-danger btn-sm" data-action="owner-memory-delete-open"' + (memory.dirty || memory.busy || entry.status === "forgotten" ? " disabled" : "") + '>Forget file</button><span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-discard"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>Discard</button><button type="button" class="btn btn-primary btn-sm" data-action="owner-memory-save"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>' + (memory.busy === "save" ? "Saving&hellip;" : "Save file") + '</button></div></section>';
+    }
+    return '<div class="owner-memory-intro"><p class="hint">' + esc(reach) + ' MEMORY.md is generated; individual Markdown files are editable.</p></div>' +
+      '<div class="owner-memory-layout"><aside class="owner-memory-files" aria-label="Memory files">' + files +
+      '<button type="button" data-action="owner-memory-create-open"' + (memory.busy || memory.dirty ? " disabled" : "") + '><strong>+ Add file</strong><small>Markdown memory</small></button></aside>' + editor + '</div>' + status;
+  }
+
+  // ---- Capability tabs (Instructions / Skills / Connectors / Repositories / Memory) -
 
   // One panel is visible at a time; the other three stay MOUNTED but [hidden] so
   // their form fields survive re-renders and collectProfileDraft() keeps
@@ -4795,14 +5148,16 @@ details[open].advanced summary::before {
       instructions: false,
       skills: !!(state.skillEditor || state.skillImport),
       connections: !!(state.connectionEditor || state.apiConnectionEditor),
-      repositories: !!(state.repositoryPicker || state.repositoryAddOpen)
+      repositories: !!(state.repositoryPicker || state.repositoryAddOpen),
+      memory: !!state.ownerMemory.dirty
     };
     var repositoryCount = enabledRepositoryGrants(draft).length;
     var tabs = [
       { id: "instructions", label: "Instructions", count: 0 },
       { id: "skills", label: "Skills", count: (draft.skills || []).length },
-      { id: "connections", label: "Connections", count: (draft.mcpServers || []).length + (draft.apiConnections || []).length },
-      { id: "repositories", label: "Repositories", count: repositoryCount }
+      { id: "connections", label: "Connectors", count: (draft.mcpServers || []).length + (draft.apiConnections || []).length },
+      { id: "repositories", label: "Repositories", count: repositoryCount },
+      { id: "memory", label: "Memory", count: ownerMemoryEntryCount() }
     ];
     var bar = tabs.map(function (tab) {
       var on = tab.id === active;
@@ -4815,17 +5170,18 @@ details[open].advanced summary::before {
     }
     return '<section class="section">' +
       '<div class="ptab-tray">' +
-      '<div class="ptabs" role="tablist" aria-label="Profile behavior">' + bar + '</div>' +
+      '<div class="ptabs" role="tablist" aria-label="Agent setup">' + bar + '</div>' +
       panel("instructions", instructionsPanelHtml(draft, state.profileScreen === "create")) +
       panel("skills", skillsPanelHtml(draft)) +
       panel("connections", connectionsPanelHtml(draft)) +
       panel("repositories", repositoriesPanelHtml(draft)) +
+      panel("memory", ownerMemoryPanelHtml("agent", draft.id, draft.name)) +
       '</div>' +
       '</section>';
   }
 
   function instructionsPanelHtml(draft, showPlaceholder) {
-    return '<p class="hint ptab-hint">These travel with the profile to every channel it&rsquo;s attached to. Channels can append their own instructions on each channel&rsquo;s page.</p>' +
+    return '<p class="hint ptab-hint">These travel with the Agent everywhere it works. Channels can add their own instructions without replacing this behavior.</p>' +
       '<div class="field">' + profileInstructionsFieldHtml(draft, showPlaceholder) + '</div>';
   }
 
@@ -4857,7 +5213,7 @@ details[open].advanced summary::before {
         '<button type="button" class="btn btn-soft btn-sm" data-action="import-skills">Import from URL</button></div>';
     var body = list + newForm + importPanel + addButtons;
     if (!list && !newForm && !importPanel) {
-      body = '<div class="empty"><p class="field-label">No custom skills yet</p><p class="hint">Add one to extend what this profile can do.</p></div>' + addButtons;
+      body = '<div class="empty"><p class="field-label">No custom skills yet</p><p class="hint">Add one to extend what this Agent can do.</p></div>' + addButtons;
     }
     return body;
   }
@@ -5220,7 +5576,7 @@ details[open].advanced summary::before {
     if (preset.auth.kind !== "oauth" && preset.tokenDocsUrl) {
       docsHtml += '<a class="hint-link" href="' + esc(preset.tokenDocsUrl) + '" target="_blank" rel="noopener noreferrer">Where do I find this?</a>';
     }
-    var notesHtml = preset.notes ? '<p class="hint">' + esc(preset.notes) + '</p>' : "";
+    var notesHtml = preset.notes ? '<p class="hint">' + esc(String(preset.notes).replace(/profile/gi, "Agent")) + '</p>' : "";
     return '<div class="conn-recommended-head">' +
       connectorLogoHtml(preset) +
       '<span class="field-label">' + esc(preset.name) + '</span>' +
@@ -5345,8 +5701,8 @@ details[open].advanced summary::before {
       createForm = '<div class="skill-list">' + apiConnectionEditorFormHtml(apiEditor) + '</div>';
     }
     var gallery = editor || apiEditor || state.customConnectionLane ? "" : connectorGalleryHtml();
-    var hint = 'MCP servers and REST APIs this profile can call.';
-    var security = '<p class="conn-security">Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never returned by the API.</p>';
+    var hint = 'MCP servers and REST APIs this Agent can call.';
+    var security = '<p class="conn-security">Your Agent stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never returned by the API.</p>';
     return oauthReturnNoticeHtml(draft) + '<p class="hint ptab-hint">' + hint + '</p>' + list + createForm + gallery + security;
   }
 
@@ -5504,7 +5860,7 @@ details[open].advanced summary::before {
       '<div class="repo-picker-foot"><span class="hint">' + selectedCount + ' repo' + (selectedCount === 1 ? "" : "s") + ' selected</span><span class="spacer"></span>' +
       '<button type="button" class="btn btn-ghost btn-sm" data-action="repo-picker-cancel">Cancel</button>' +
       '<button type="button" class="btn btn-primary btn-sm" data-action="repo-picker-apply"' + (exceedsLimit ? " disabled" : "") + '>Apply</button></div>' +
-      (exceedsLimit ? '<p class="field-error">A profile can select at most 200 repository grants.</p>' : "") + '</div>';
+      (exceedsLimit ? '<p class="field-error">An Agent can select at most 200 repository grants.</p>' : "") + '</div>';
   }
 
   function repositoryGroupHtml(group) {
@@ -5514,7 +5870,7 @@ details[open].advanced summary::before {
       ? "All repositories"
       : explicit.length + " repositor" + (explicit.length === 1 ? "y" : "ies");
     var rows = allRepositories
-      ? '<p class="hint">Every repository in this installation is available to this profile.</p>'
+      ? '<p class="hint">Every repository in this installation is available to this Agent.</p>'
       : explicit.map(function (grant) {
         return '<div class="repo-row">' + icon("repository") + '<span class="repo-name mono">' + esc(grant.fullName) + '</span><span class="spacer"></span>' +
           '<button type="button" class="x-btn" data-action="repo-remove" data-repository-id="' + esc(grant.id) + '" aria-label="Remove ' + esc(grant.fullName) + '">&times;</button></div>';
@@ -5558,7 +5914,7 @@ details[open].advanced summary::before {
   }
 
   function repositoriesPanelHtml(draft) {
-    var capabilityHint = '<p class="hint ptab-hint">Coding runs in a sandbox when this profile has enabled repository grants and the install-wide tier is on.</p>';
+    var capabilityHint = '<p class="hint ptab-hint">Coding runs in a sandbox when this Agent has enabled repository grants and the install-wide tier is on.</p>';
     if (!state.githubStatusLoaded) {
       return capabilityHint + '<div class="empty"><p class="hint">Loading GitHub connection&hellip;</p></div>';
     }
@@ -5568,17 +5924,17 @@ details[open].advanced summary::before {
         '<button type="button" class="btn btn-soft btn-sm" data-action="github-refresh">Retry</button></div>';
     }
     if (status.mode !== "app") {
-      return capabilityHint + '<div class="empty"><p class="field-label">Connect GitHub to give this profile access to repositories.</p>' +
+      return capabilityHint + '<div class="empty"><p class="field-label">Connect GitHub to give this Agent access to repositories.</p>' +
         '<button type="button" class="btn btn-primary" data-action="open-settings" data-section="github-settings">Connect GitHub</button></div>';
     }
     var groups = repositoryGroups(draft);
     var selectedCount = enabledRepositoryGrants(draft).length;
     var content;
     if (!selectedCount) {
-      content = '<div class="empty"><p class="field-label">No repositories selected</p><p class="hint">Choose the repositories this profile can read and change.</p>' +
+      content = '<div class="empty"><p class="field-label">No repositories selected</p><p class="hint">Choose the repositories this Agent can read and change.</p>' +
         '<button type="button" class="btn btn-primary" data-action="repo-add">Add repositories</button></div>';
     } else {
-      content = '<div class="repo-panel-head"><p class="hint ptab-hint">Repositories this profile can work with.</p>' +
+      content = '<div class="repo-panel-head"><p class="hint ptab-hint">Repositories this Agent can work with.</p>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="repo-add">Add repositories</button></div>' +
         '<div class="repo-groups">' + groups.map(repositoryGroupHtml).join("") + '</div>';
     }
@@ -5770,7 +6126,7 @@ details[open].advanced summary::before {
     return '<div class="oauth-account" role="status">' +
       '<div class="oauth-account-copy"><span class="oauth-account-status">Connected</span>' +
       '<span class="oauth-account-name">' + esc(accountName) + '</span>' +
-      '<span class="oauth-account-detail">Selected Google services are available to this profile.</span></div>' +
+      '<span class="oauth-account-detail">Selected Google services are available to this Agent.</span></div>' +
       '<div class="oauth-account-actions">' +
       '<button type="button" class="link-btn" data-action="apiconn-oauth-start">Reconnect</button>' +
       '<button type="button" class="link-btn" data-action="apiconn-oauth-disconnect">Disconnect</button></div></div>';
@@ -5789,7 +6145,7 @@ details[open].advanced summary::before {
       '<span class="field-label">' + esc(preset.name) + '</span><span class="conn-url-chip mono">Google APIs</span></div>' +
       '<div class="oauth-account"><div class="oauth-account-copy"><span class="oauth-account-status">Account safety</span>' +
       '<span class="oauth-account-name">Use a dedicated Google account for Chickpea when possible.</span>' +
-      '<span class="oauth-account-detail">Only grant the Gmail, Calendar, and Drive access this profile needs.</span></div></div>' +
+      '<span class="oauth-account-detail">Only grant the Gmail, Calendar, and Drive access this Agent needs.</span></div></div>' +
       googleConnectedAccountHtml(editor) +
       '<div class="field"><label class="field-label">Google app audience</label>' +
       '<div class="seg" role="group" aria-label="Google app audience">' +
@@ -5918,8 +6274,8 @@ details[open].advanced summary::before {
     var isOAuth = conn.authMode === "oauth";
     var title = isOAuth ? "Disconnect " + conn.displayName + "?" : "Remove " + conn.displayName + "?";
     var body = isOAuth
-      ? "This disconnects the account and removes its tool approvals from this profile. Chickpea's stored OAuth tokens and client registration are deleted when you save."
-      : "This drops the connection and its tool approvals from this profile. Its stored token and header values are deleted when you save.";
+      ? "This disconnects the account and removes its tool approvals from this Agent. Chickpea's stored OAuth tokens and client registration are deleted when you save."
+      : "This drops the connection and its tool approvals from this Agent. Its stored token and header values are deleted when you save.";
     return '<div class="modal-backdrop">' +
       '<div class="modal-card" role="dialog" aria-modal="true" aria-label="' + (isOAuth ? "Disconnect account" : "Remove connection") + '">' +
       '<h2 class="modal-title">' + esc(title) + '</h2>' +
@@ -5942,7 +6298,7 @@ details[open].advanced summary::before {
       '<h2 class="modal-title">' + (isOAuth ? "Disconnect " : "Remove ") + esc(conn.displayName) + '?</h2>' +
       '<p class="modal-body">' + (isOAuth
         ? "This disconnects the account and removes its API access policy. Chickpea's stored OAuth client and tokens are deleted when you save."
-        : "This drops the API policy from this profile. Its stored credential is deleted when you save.") + '</p>' +
+        : "This drops the API policy from this Agent. Its stored credential is deleted when you save.") + '</p>' +
       '<div class="modal-foot"><span class="spacer"></span>' +
       '<button type="button" class="btn btn-ghost" data-action="apiconn-remove-cancel">Cancel</button>' +
       '<button type="button" class="btn btn-danger" data-action="apiconn-remove-confirm">' + (isOAuth ? "Disconnect and remove" : "Remove connection") + '</button>' +
@@ -6037,7 +6393,7 @@ details[open].advanced summary::before {
       details = '<div class="well" style="display:flex; gap:12px; align-items:flex-start;">' +
         '<span aria-hidden="true" style="width:40px; height:40px; border-radius:10px; display:grid; place-items:center; background:var(--well); font-size:20px;">+</span>' +
         '<div><div class="field-label">Create a dedicated Slack identity</div>' +
-        '<p class="hint">Chickpea saves this Profile first, then guides you through a separate Slack app install. Canceling setup leaves the Profile on ' + esc(slackIdentityMention(workspaceDefault)) + '.</p></div></div>';
+        '<p class="hint">Chickpea saves this Agent first, then guides you through a separate Slack app install. Canceling setup leaves the Agent on ' + esc(slackIdentityMention(workspaceDefault)) + '.</p></div></div>';
     } else {
       var selected = selectedProfileSlackIdentity(draft) || workspaceDefault;
       if (selected) {
@@ -6062,7 +6418,7 @@ details[open].advanced summary::before {
       : "";
 
     return '<section class="section"><div class="section-head"><div><h2 class="section-title">Replies as</h2>' +
-      '<p class="hint">Choose which Slack identity this Profile uses for new conversations.</p></div></div>' +
+      '<p class="hint">Choose which Slack identity this Agent uses for new conversations.</p></div></div>' +
       '<div class="field"><label class="field-label" for="p-slack-identity">Identity</label>' +
       '<span class="select-wrap"><select class="input" id="p-slack-identity" data-action="profile-slack-identity">' + options + '</select>' + icon("chevron-down", "select-caret") + '</span></div>' +
       details + wildcard + '</section>';
@@ -6077,18 +6433,19 @@ details[open].advanced summary::before {
   }
 
   function profileInstructionsFieldHtml(draft, showPlaceholder) {
-    var err = state.profileError === "Profile instructions are required.";
+    var err = state.profileError === "Agent instructions are required.";
     var placeholder = showPlaceholder
       ? ' placeholder="e.g. Answer teammates&rsquo; product questions in a warm, concise voice. When you&rsquo;re unsure, say so and point to #support instead of guessing."'
       : "";
-    return '<textarea class="textarea" id="p-instr" name="instructions" aria-label="Profile instructions"' + (err ? ' style="outline:2px solid var(--danger); outline-offset:-1px;"' : "") + placeholder + ' data-action="profile-instructions">' + esc(draft.instructions) + '</textarea>' +
-      (err ? '<p class="field-error">Profile instructions are required.</p>' : "");
+    return '<textarea class="textarea" id="p-instr" name="instructions" aria-label="Agent instructions"' + (err ? ' style="outline:2px solid var(--danger); outline-offset:-1px;"' : "") + placeholder + ' data-action="profile-instructions">' + esc(draft.instructions) + '</textarea>' +
+      (err ? '<p class="field-error">Agent instructions are required.</p>' : "");
   }
 
   function profileGenericErrorHtml() {
     if (!state.profileError) return "";
-    if (state.profileError === "Name is required." || state.profileError === "Profile instructions are required.") return "";
-    return '<p class="field-error" role="alert" aria-live="polite">' + esc(state.profileError) + '</p>';
+    if (state.profileError === "Name is required." || state.profileError === "Agent instructions are required.") return "";
+    return '<div class="field-error" role="alert" aria-live="polite">' + esc(state.profileError) +
+      (state.profileConflict ? ' <button type="button" class="btn btn-soft btn-sm" data-action="reload-profile">Reload latest Agent</button>' : '') + '</div>';
   }
 
   // ---- Create (card 10) ----------------------------------------------------
@@ -6096,19 +6453,19 @@ details[open].advanced summary::before {
   function profileCreateHtml() {
     var draft = state.profileDraft || newProfileDraft();
     return '<div style="display:flex; flex-direction:column; gap:6px;">' +
-      '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Profiles</button>' +
-      '<h1 class="page-title">New profile</h1>' +
-      '<p class="hint">Create reusable behavior, then choose whether it inherits ' + slackMentionHtml() + ' or gets a dedicated Slack identity.</p></div>' +
+      '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Agents</button>' +
+      '<span class="agent-kicker">Agent</span><h1 class="page-title">New Agent</h1>' +
+      '<p class="hint">Define reusable behavior first. After saving, add this Agent to a Channel and try it in Slack.</p></div>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Details</h2></div></div>' +
       '<div class="form-grid">' +
       profileNameFieldHtml(draft) +
       modelFieldHtml(draft) +
       '</div></section>' +
-      profileIdentityHtml(draft) +
       profileTabsHtml(draft) +
+      agentAdvancedHtml(draft) +
       '<div class="save-bar">' + profileGenericErrorHtml() +
       '<button type="button" class="btn btn-ghost" data-action="cancel-create">Cancel</button>' +
-      '<button type="button" class="btn btn-primary" data-action="save-profile">Create profile</button></div>';
+      '<button type="button" class="btn btn-primary" data-action="save-profile">Create Agent</button></div>';
   }
 
   // ---- Edit (card 11) + edge states (card 12) ------------------------------
@@ -6118,23 +6475,21 @@ details[open].advanced summary::before {
     // The name lives in the title with an inline rename affordance (pencil →
     // input; Enter/blur commit, Escape reverts) — there is no Name field below.
     var titleRow = state.profileRenaming
-      ? '<input class="input page-title-input" id="p-name" name="name" type="text" value="' + esc(draft.name) + '" aria-label="Profile name" data-action="profile-name">'
-      : '<span class="title-row"><h1 class="page-title">' + esc(draft.name || "Profile") + '</h1>' +
-        '<button type="button" class="rename-btn" data-action="profile-rename" aria-label="Rename profile">' + icon("pencil") + '</button></span>';
+      ? '<input class="input page-title-input" id="p-name" name="name" type="text" value="' + esc(draft.name) + '" aria-label="Agent name" data-action="profile-name">'
+      : '<span class="title-row"><h1 class="page-title">' + esc(draft.name || "Agent") + '</h1>' +
+        '<button type="button" class="rename-btn" data-action="profile-rename" aria-label="Rename Agent">' + icon("pencil") + '</button></span>';
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
-      '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Profiles</button>' +
+      '<button type="button" class="link-btn agent-roster-back" style="align-self:flex-start;" data-action="profiles-back">&larr; All Agents</button>' +
+      '<span class="agent-kicker">Agent</span>' +
       titleRow +
-      '<p class="hint">Edit this reusable behavior and the Slack identity it uses for new conversations.</p></div>' +
+      '<p class="hint">Configure how it thinks, what it can use, and where it works.</p></div>' +
       '<label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (draft.enabled ? "Enabled" : "Disabled") + '</span>' +
-      '<span class="toggle"><span class="thumb"></span><input type="checkbox" name="profile-enabled" data-action="profile-enable-toggle" ' + (draft.enabled ? "checked" : "") + ' aria-label="Profile enabled"></span></label></div>' +
+      '<span class="toggle"><span class="thumb"></span><input type="checkbox" name="profile-enabled" data-action="profile-enable-toggle" ' + (draft.enabled ? "checked" : "") + ' aria-label="Agent enabled"></span></label></div>' +
       disableConfirmHtml(draft) +
-      '<section class="section"><div class="section-head"><div><h2 class="section-title">Details</h2></div></div>' +
-      '<div class="form-grid">' +
-      modelFieldHtml(draft) +
-      '</div></section>' +
-      profileIdentityHtml(draft) +
       profileTabsHtml(draft) +
       usedInHtml(draft) +
+      '<section class="section"><div class="section-head"><div><h2 class="section-title">Model</h2><p class="hint">The intelligence this Agent uses for every response.</p></div></div><div class="agent-model-row"><div><strong>' + esc(modelLabel(draft)) + '</strong><span class="hint">Changes apply to new threads.</span></div>' + modelFieldHtml(draft) + '</div></section>' +
+      agentAdvancedHtml(draft) +
       profileFooterHtml(draft) +
       '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + (saveBarCueActive() ? " cue" : "") + '">' +
       '<div class="save-bar-inner">' +
@@ -6145,24 +6500,32 @@ details[open].advanced summary::before {
       '<div aria-hidden="true" style="height:56px"></div>';
   }
 
+  function agentAdvancedHtml(draft) {
+    var identityName = slackIdentityMentionForId(effectiveSlackIdentityId(draft.slackIdentityId || ""));
+    var sandboxReady = enabledRepositoryGrants(draft).length > 0;
+    return '<details class="advanced"><summary>Advanced</summary><div class="channel-advanced-content">' +
+      '<div class="agent-advanced-row"><span><strong>Slack identity</strong><small class="hint">Who sends this Agent\\'s replies in Slack.</small></span><span class="mono">' + esc(identityName) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="open-settings" data-section="slack">Manage</button></div>' +
+      profileIdentityHtml(draft) +
+      '<div class="agent-advanced-row"><span><strong>Coding sandbox</strong><small class="hint">Run code and work with granted repositories in an isolated environment.</small></span><span class="badge ' + (sandboxReady ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (sandboxReady ? "Available" : "Needs repository") + '</span><button type="button" class="btn btn-soft btn-sm" data-action="open-settings" data-section="sandbox">Settings</button></div>' +
+      '</div></details>';
+  }
+
   function usedInHtml(draft) {
     var dm = agentHasDmDefault(draft.id);
     var concrete = concreteAssignmentsForAgent(draft.id);
-    var rows = "";
+    var rows = '<div class="where-list">';
     if (dm) {
-      rows += '<div class="bundle-row"><span class="b-name">Direct messages</span><span class="b-meta">all workspaces &middot; the DM default</span><span class="spacer"></span><span class="chip">locked</span></div>';
+      rows += '<span class="where-pill dm">' + icon("check") + 'Direct messages <small>identity-bound</small></span>';
     }
     concrete.forEach(function (assignment) {
-      rows += '<div class="bundle-row"><span class="b-name mono" style="font-weight:500;">' + esc(channelLabel(assignment)) + '</span>' +
-        '<span class="b-meta">' + esc(assignment.channelId) + '</span><span class="spacer"></span>' +
-        '<button type="button" class="link-btn" data-action="open-channel-from-profile" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '">Open channel &nearr;</button>' +
-        '<button type="button" class="btn btn-danger btn-sm" data-action="detach-channel" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '">Detach</button></div>';
+      rows += '<button type="button" class="where-pill" data-action="open-channel-from-profile" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '"># ' + esc(normalizeChannelLabel(assignment.channelLabel) || assignment.channelId) + ' <span aria-hidden="true">&nearr;</span></button>';
     });
-    if (!rows) {
-      rows = '<div class="empty"><p class="field-label">Not attached to any channels yet</p><p class="hint">Use Add to channels below, or attach it from a channel page.</p></div>';
+    rows += '</div>';
+    if (!dm && concrete.length === 0) {
+      rows = '<div class="empty"><p class="field-label">This Agent is not placed yet</p><p class="hint">Add it to a Channel, then open that Channel to try it.</p></div>';
     }
-    var hint = 'Editing here changes how ' + esc(draft.name || "this profile") + ' answers in all of these. <b style="font-weight:500; color:var(--text);">Changes apply to new threads</b> &mdash; threads already underway keep the config they started with.';
-    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Used in</h2><p class="hint">' + hint + '</p></div></div>' + rows + '</section>';
+    var hint = 'Open a Channel to add local instructions or manage exact-Channel memory. Agent changes apply to new threads.';
+    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Where it works</h2><p class="hint">' + hint + '</p></div><button type="button" class="btn btn-soft btn-sm" data-action="attach-open">Add to Channels</button></div>' + rows + attachPickerHtml(draft) + attachNoticeHtml() + '</section>';
   }
 
   function channelNameLink(assignment) {
@@ -6186,15 +6549,16 @@ details[open].advanced summary::before {
   function profileFooterHtml(draft) {
     var dm = agentHasDmDefault(draft.id);
     var concrete = concreteAssignmentsForAgent(draft.id);
-    var blocked = dm || concrete.length > 0;
-    var name = esc(draft.name || "This profile");
+    var liveRoots = draft.deletion && Array.isArray(draft.deletion.liveSnapshotRoots) ? draft.deletion.liveSnapshotRoots.length : 0;
+    var projectedBlocked = !!(draft.deletion && draft.deletion.blocked);
+    var blocked = dm || concrete.length > 0 || projectedBlocked;
+    var name = esc(draft.name || "This Agent");
     var usage = name + " used in " + channelCountLabel(concrete.length) + (dm ? " + DMs" : "");
     var deleteTitle = blocked
-      ? (dm ? "The DM default can\\u2019t be deleted. Detach it everywhere first." : "Detach it from every channel first.")
+      ? (dm ? "The DM default can\\u2019t be deleted. Detach it everywhere first." : concrete.length ? "Detach it from every channel first." : liveRoots ? "This Agent still has live Slack threads. Wait for them to expire first." : "Remove every Channel placement and Slack identity reference first.")
       : "This can\\u2019t be undone.";
     return '<div class="profile-foot">' +
-      '<button type="button" class="btn btn-danger" data-action="delete-profile"' + (blocked ? " disabled" : "") + ' title="' + deleteTitle + '">Delete profile</button>' +
-      '<button type="button" class="btn btn-soft" data-action="attach-open">Add to channels</button>' +
+      '<button type="button" class="btn btn-danger" data-action="delete-profile"' + (blocked ? " disabled" : "") + ' title="' + deleteTitle + '">Delete Agent</button>' +
       '<span class="hint">' + usage + '</span>' +
       '</div>' + attachPickerHtml(draft) + attachNoticeHtml();
   }
@@ -6249,9 +6613,9 @@ details[open].advanced summary::before {
     }
     var candidates = attachCandidates(draft.id);
     if (!candidates.length) {
-      return '<div class="bundle-row"><span class="hint">All available Slack channels already use this profile.</span>' +
+      return '<div class="bundle-row"><span class="hint">All available Slack Channels already use this Agent.</span>' +
         '<span class="spacer"></span>' +
-        '<button type="button" class="btn btn-soft btn-sm" data-action="attach-new-channel" data-agent="' + esc(draft.id) + '">Add a new channel with this profile</button>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="attach-new-channel" data-agent="' + esc(draft.id) + '">Add a new Channel with this Agent</button>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Close</button></div>';
     }
     var agentsById = new Map();
@@ -6287,7 +6651,7 @@ details[open].advanced summary::before {
     } else {
       scope = "It stops answering right away.";
     }
-    return '<div class="callout">' + icon("exclamation-triangle", "ic-l g") + '<span>Disable ' + esc(draft.name || "this profile") + '? ' + scope + ' Threads already underway finish on the config they started with.</span></div>' +
+    return '<div class="callout">' + icon("exclamation-triangle", "ic-l g") + '<span>Disable ' + esc(draft.name || "this Agent") + '? ' + scope + ' Threads already underway finish on the config they started with.</span></div>' +
       '<div style="display:flex; gap:10px;"><button type="button" class="btn btn-soft btn-sm" data-action="disable-keep">Keep enabled</button><button type="button" class="btn btn-danger btn-sm" data-action="disable-confirm">Disable everywhere</button></div>';
   }
 
@@ -6384,7 +6748,7 @@ details[open].advanced summary::before {
       if (sawConfigured) {
         return html + '<div class="combo-foot">Star models in Settings to add picker shortcuts, or type any provider/model specifier.</div>' + settingsRow + '</div>';
       }
-      return html + '<div class="combo-group">no providers configured</div><div class="combo-foot">No provider keys on this install yet. Type any provider/model specifier to pin one now, or set <span class="mono" style="color:var(--text-2);">SLACK_TAG_MODEL</span> (<span class="mono" style="color:var(--text-2);">provider/model</span>) as an offline/dev fallback so an unpinned profile still replies.</div>' + settingsRow + '</div>';
+      return html + '<div class="combo-group">no providers configured</div><div class="combo-foot">No provider keys on this install yet. Type any provider/model specifier to pin one now, or set <span class="mono" style="color:var(--text-2);">SLACK_TAG_MODEL</span> (<span class="mono" style="color:var(--text-2);">provider/model</span>) as an offline/dev fallback so an unpinned Agent still replies.</div>' + settingsRow + '</div>';
     }
     return html + '<div class="combo-foot">Anthropic and OpenAI list their live models; OpenRouter and Workers AI show your starred favorites. Type any provider/model specifier.</div>' + settingsRow + '</div>';
   }
@@ -6740,7 +7104,7 @@ details[open].advanced summary::before {
 
   function scheduledAuthorityCopy(routine) {
     if (routine.authorityMode === "live_channel_v1") {
-      return "Each occurrence re-resolves current channel membership, profile, connections, credentials, repository grants, and policy. It has the same authority as a live @mention in the owning channel; saved or fetched content cannot widen that authority.";
+      return "Each occurrence re-resolves current Channel membership, Agent, connectors, credentials, repository grants, and policy. It has the same authority as a live @mention in the owning Channel; saved or fetched content cannot widen that authority.";
     }
     return "Authority mode: " + String(routine.authorityMode || "unknown") + ". Access is resolved again when each occurrence starts.";
   }
@@ -7168,6 +7532,289 @@ details[open].advanced summary::before {
     });
   }
 
+  function ownerMemoryBase(ownerKind, workspaceId, ownerId) {
+    return "/admin/api/audit/memory/owners/" + encodeURIComponent(ownerKind) + "/" +
+      encodeURIComponent(workspaceId) + "/" + encodeURIComponent(ownerId);
+  }
+
+  function loadOwnerMemory(ownerKind, workspaceId, ownerId, keepSelection) {
+    if (!ownerKind || !workspaceId || !ownerId) return Promise.resolve();
+    var memory = state.ownerMemory;
+    var sameOwner = ownerMemoryMatches(ownerKind, workspaceId, ownerId);
+    if (sameOwner && memory.dirty) return Promise.resolve();
+    var requestId = memory.requestId + 1;
+    state.ownerMemory = {
+      ownerKind: ownerKind,
+      workspaceId: workspaceId,
+      ownerId: ownerId,
+      files: sameOwner ? memory.files : null,
+      selectedFile: sameOwner && keepSelection ? memory.selectedFile : "MEMORY.md",
+      detail: null,
+      history: [],
+      draft: null,
+      dirty: false,
+      loading: true,
+      busy: "load",
+      error: "",
+      notice: "",
+      conflict: null,
+      deleteConfirm: false,
+      createDraft: null,
+      requestId: requestId
+    };
+    render();
+    return api(ownerMemoryBase(ownerKind, workspaceId, ownerId) + "/files").then(function (body) {
+      var current = state.ownerMemory;
+      if (current.requestId !== requestId || !ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
+      current.files = body.files || [];
+      current.loading = false;
+      current.busy = "";
+      var selected = current.files.find(function (file) {
+        return (file.generated ? "MEMORY.md" : file.entryId) === current.selectedFile;
+      });
+      if (!selected) current.selectedFile = "MEMORY.md";
+      render();
+      if (current.selectedFile !== "MEMORY.md") return loadOwnerMemoryEntry(current.selectedFile);
+    }).catch(function (error) {
+      var current = state.ownerMemory;
+      if (current.requestId !== requestId || !ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
+      current.loading = false;
+      current.busy = "";
+      current.error = error.serverMessage || error.message || "Could not load memory files.";
+      render();
+    });
+  }
+
+  function selectOwnerMemoryFile(entryId) {
+    var memory = state.ownerMemory;
+    if (memory.dirty) { memory.error = "Save or discard this draft before opening another file."; render(); return; }
+    if (memory.busy) return;
+    memory.selectedFile = entryId || "MEMORY.md";
+    memory.detail = null;
+    memory.history = [];
+    memory.draft = null;
+    memory.error = "";
+    memory.notice = "";
+    memory.conflict = null;
+    memory.deleteConfirm = false;
+    render();
+    if (memory.selectedFile !== "MEMORY.md") loadOwnerMemoryEntry(memory.selectedFile);
+  }
+
+  function loadOwnerMemoryEntry(entryId) {
+    var memory = state.ownerMemory;
+    if (!entryId || !memory.ownerKind) return Promise.resolve();
+    var requestId = ++memory.requestId;
+    var base = ownerMemoryBase(memory.ownerKind, memory.workspaceId, memory.ownerId) + "/entries/" + encodeURIComponent(entryId);
+    memory.busy = "load";
+    memory.error = "";
+    render();
+    return Promise.all([api(base), api(base + "/history")]).then(function (parts) {
+      var current = state.ownerMemory;
+      if (current.requestId !== requestId || current.selectedFile !== entryId) return;
+      current.detail = parts[0];
+      current.history = parts[1].revisions || [];
+      current.draft = {
+        description: parts[0].entry.description || "",
+        type: parts[0].entry.type || "fact",
+        body: parts[0].entry.body || ""
+      };
+      current.dirty = false;
+      current.busy = "";
+      current.conflict = null;
+      current.deleteConfirm = false;
+      render();
+    }).catch(function (error) {
+      var current = state.ownerMemory;
+      if (current.requestId !== requestId || current.selectedFile !== entryId) return;
+      current.busy = "";
+      current.error = error.serverMessage || error.message || "Could not load this memory file.";
+      render();
+    });
+  }
+
+  function markOwnerMemoryDirty() {
+    var memory = state.ownerMemory;
+    memory.dirty = true;
+    memory.error = "";
+    memory.notice = "";
+    memory.conflict = null;
+    memory.deleteConfirm = false;
+    var save = document.querySelector('[data-action="owner-memory-save"]');
+    var discard = document.querySelector('[data-action="owner-memory-discard"]');
+    if (save) save.disabled = false;
+    if (discard) discard.disabled = false;
+  }
+
+  function saveOwnerMemoryEntry() {
+    var memory = state.ownerMemory;
+    if (!memory.detail || !memory.draft || !memory.dirty || memory.busy) return;
+    var entry = memory.detail.entry;
+    var base = ownerMemoryBase(memory.ownerKind, memory.workspaceId, memory.ownerId);
+    var ownerKey = memory.ownerKind + ":" + memory.workspaceId + ":" + memory.ownerId;
+    memory.busy = "save";
+    memory.error = "";
+    memory.notice = "";
+    render();
+    return api(base + "/entries/" + encodeURIComponent(entry.entryId), {
+      method: "PUT",
+      headers: { "content-type": "application/json", "idempotency-key": "admin-ui:owner-memory:" + Date.now() + ":" + Math.random().toString(36).slice(2) },
+      body: JSON.stringify({ expectedVersion: entry.version, description: memory.draft.description, type: memory.draft.type, body: memory.draft.body })
+    }).then(function (body) {
+      var current = state.ownerMemory;
+      if (ownerKey !== current.ownerKind + ":" + current.workspaceId + ":" + current.ownerId) return;
+      current.detail = { entry: body.entry, projected: body.projected, owner: current.detail.owner };
+      current.draft = { description: body.entry.description || "", type: body.entry.type || "fact", body: body.entry.body || "" };
+      current.dirty = false;
+      current.busy = "";
+      current.notice = "Memory file saved.";
+      return loadOwnerMemory(current.ownerKind, current.workspaceId, current.ownerId, true);
+    }).catch(function (error) {
+      var current = state.ownerMemory;
+      if (ownerKey !== current.ownerKind + ":" + current.workspaceId + ":" + current.ownerId) return;
+      current.busy = "";
+      if (error.payload && error.payload.error === "memory_version_conflict") {
+        current.error = "This file changed elsewhere. Your draft is preserved.";
+        current.conflict = { currentVersion: error.payload.currentVersion };
+      } else {
+        current.error = error.serverMessage || error.message || "Could not save this memory file.";
+      }
+      render();
+    });
+  }
+
+  function discardOwnerMemoryDraft() {
+    var memory = state.ownerMemory;
+    if (!memory.detail) return;
+    var entry = memory.detail.entry;
+    memory.draft = { description: entry.description || "", type: entry.type || "fact", body: entry.body || "" };
+    memory.dirty = false;
+    memory.error = "";
+    memory.notice = "Draft discarded.";
+    memory.conflict = null;
+    render();
+  }
+
+  function openOwnerMemoryCreate() {
+    var memory = state.ownerMemory;
+    if (!memory.ownerKind || memory.busy || memory.dirty) return;
+    memory.createDraft = { slug: "", description: "", type: "fact", body: "" };
+    memory.dirty = true;
+    memory.error = "";
+    memory.notice = "";
+    render();
+  }
+
+  function cancelOwnerMemoryCreate() {
+    var memory = state.ownerMemory;
+    if (!memory.createDraft || memory.busy) return;
+    memory.createDraft = null;
+    memory.dirty = false;
+    memory.error = "";
+    memory.notice = "Draft discarded.";
+    render();
+  }
+
+  function createOwnerMemoryEntry() {
+    var memory = state.ownerMemory;
+    if (!memory.createDraft || memory.busy) return;
+    var draft = memory.createDraft;
+    var slug = String(draft.slug || "").trim().replace(/\.md$/i, "");
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(slug)) {
+      memory.error = "Filename must start with a letter or number and use only letters, numbers, hyphens, or underscores.";
+      render();
+      return;
+    }
+    if (!String(draft.description || "").trim()) {
+      memory.error = "Description is required.";
+      render();
+      return;
+    }
+    var ownerKind = memory.ownerKind;
+    var workspaceId = memory.workspaceId;
+    var ownerId = memory.ownerId;
+    memory.busy = "create";
+    memory.error = "";
+    render();
+    return api(ownerMemoryBase(ownerKind, workspaceId, ownerId) + "/entries", {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "admin-ui:owner-memory-create:" + Date.now() + ":" + Math.random().toString(36).slice(2) },
+      body: JSON.stringify({ slug: slug, description: String(draft.description).trim(), type: draft.type, body: draft.body })
+    }).then(function (body) {
+      var current = state.ownerMemory;
+      if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
+      current.busy = "";
+      current.dirty = false;
+      current.createDraft = null;
+      current.selectedFile = body.entry.entryId;
+      current.notice = "Memory file created.";
+      return loadOwnerMemory(ownerKind, workspaceId, ownerId, true);
+    }).catch(function (error) {
+      var current = state.ownerMemory;
+      if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
+      current.busy = "";
+      current.error = error.serverMessage || error.message || "Could not create this memory file.";
+      render();
+    });
+  }
+
+  function deleteOwnerMemoryEntry() {
+    var memory = state.ownerMemory;
+    if (!memory.detail || memory.dirty || memory.busy) return;
+    var entry = memory.detail.entry;
+    var ownerKind = memory.ownerKind;
+    var workspaceId = memory.workspaceId;
+    var ownerId = memory.ownerId;
+    memory.busy = "delete";
+    memory.error = "";
+    render();
+    return api(ownerMemoryBase(ownerKind, workspaceId, ownerId) + "/entries/" + encodeURIComponent(entry.entryId), {
+      method: "DELETE",
+      headers: { "content-type": "application/json", "idempotency-key": "admin-ui:owner-memory-delete:" + Date.now() + ":" + Math.random().toString(36).slice(2) },
+      body: JSON.stringify({ expectedVersion: entry.version, acknowledgeIrreversible: true })
+    }).then(function () {
+      var current = state.ownerMemory;
+      if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
+      current.busy = "";
+      current.deleteConfirm = false;
+      current.selectedFile = "MEMORY.md";
+      current.notice = "Memory file forgotten.";
+      return loadOwnerMemory(ownerKind, workspaceId, ownerId, true);
+    }).catch(function (error) {
+      var current = state.ownerMemory;
+      if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
+      current.busy = "";
+      current.deleteConfirm = false;
+      current.error = error.status === 409
+        ? "This file changed elsewhere. Reload it before forgetting it."
+        : error.serverMessage || error.message || "Could not forget this memory file.";
+      render();
+    });
+  }
+
+  function resolveOwnerMemoryReview() {
+    var memory = state.ownerMemory;
+    if (!memory.detail || !memory.detail.unresolvedReview || memory.busy) return;
+    var entry = memory.detail.entry;
+    var review = memory.detail.unresolvedReview;
+    memory.busy = "review";
+    memory.error = "";
+    render();
+    return api("/admin/api/audit/memory/entries/" + encodeURIComponent(entry.entryId) + "/reviews/" + encodeURIComponent(review.eventId) + "/resolve", {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "admin-ui:owner-memory-review:" + Date.now() + ":" + Math.random().toString(36).slice(2) },
+      body: JSON.stringify({ expectedVersion: entry.version, resolution: "confirmed" })
+    }).then(function () {
+      memory.busy = "";
+      memory.notice = "Review resolved.";
+      return loadOwnerMemoryEntry(entry.entryId);
+    }).catch(function (error) {
+      memory.busy = "";
+      memory.error = error.serverMessage || error.message || "Could not resolve this review.";
+      render();
+    });
+  }
+
   function openAuditLogs(storeId, channelId, entryId) {
     state.view = "audit";
     state.profileScreen = "list";
@@ -7494,7 +8141,7 @@ details[open].advanced summary::before {
 
   function githubDisconnectPanelHtml() {
     return '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect GitHub</span>' +
-      '<span class="hint">Removes stored GitHub App credentials from Chickpea. Environment-configured App credentials stay active, and repository selections on profiles stay saved.</span></div>' +
+      '<span class="hint">Removes stored GitHub App credentials from Chickpea. Environment-configured App credentials stay active, and repository selections on Agents stay saved.</span></div>' +
       '<button type="button" class="btn btn-danger" data-action="github-disconnect-open"' + (state.githubBusy ? " disabled" : "") + '>Disconnect</button></div>';
   }
 
@@ -7542,7 +8189,7 @@ details[open].advanced summary::before {
       ? '<span class="badge badge-on"><span class="dot"></span>Connected</span>'
       : '<span class="badge badge-off"><span class="dot"></span>Not connected</span>';
     var head = '<div class="section-head"><div><h2 class="section-title">GitHub</h2>' +
-      '<p class="hint">Connect GitHub once, then grant repository access per profile.</p></div>' + badge + '</div>';
+      '<p class="hint">Connect GitHub once, then grant repository access per Agent.</p></div>' + badge + '</div>';
     if (!state.githubStatusLoaded) {
       return '<section class="section" id="github-settings">' + head + '<p class="hint">Loading GitHub settings&hellip;</p></section>';
     }
@@ -7655,7 +8302,7 @@ details[open].advanced summary::before {
       '<input class="input mono" id="sandbox-monthly-cap" type="number" min="0" max="100000" step="1" value="' + esc(String(sandboxDraft.monthlySessionCap)) + '" data-action="sandbox-monthly-cap"' + disabled + '>' +
       '<p class="hint">New coding sessions decline cleanly at this UTC-month limit. Set to <span class="mono">0</span> for no cap.</p></div>' +
       '<div class="field" style="margin-top:14px;"><span class="field-label">Package registry access</span>' +
-      '<p class="hint">GitHub access comes from profile repository grants. These are the only optional package hosts.</p>' + hostRows + '</div>' +
+      '<p class="hint">GitHub access comes from Agent repository grants. These are the only optional package hosts.</p>' + hostRows + '</div>' +
       '</div></details>' +
       '<div><button type="button" class="btn btn-soft" data-action="sandbox-save"' + disabled + '>' + (state.sandboxSaving === "advanced" ? "Saving&hellip;" : "Save advanced settings") + '</button></div>';
   }
@@ -7700,9 +8347,9 @@ details[open].advanced summary::before {
 
   function managedIdentityDmText(identity) {
     if (!identity.globalDmAllowed && identity.dmState === "on") return "Off by workspace control";
-    if (identity.dmState === "needs_setup") return "Needs a Profile";
+    if (identity.dmState === "needs_setup") return "Needs an Agent";
     if (identity.dmState === "off") return "Off";
-    return identity.dmProfile ? "Go to " + identity.dmProfile.name : "Profile unavailable";
+    return identity.dmProfile ? "Handled by " + identity.dmProfile.name : "Agent unavailable";
   }
 
   function managedIdentityCredentialText(identity) {
@@ -7722,9 +8369,9 @@ details[open].advanced summary::before {
     var actionLabel = slackIdentityOpenLabel(identity);
     var action = slackIdentityOpenAction(identity);
     var profileCount = (identity.profiles || []).length;
-    var profileUsage = "Used by " + profileCount + " Profile" + (profileCount === 1 ? "" : "s");
+    var profileUsage = "Used by " + profileCount + " Agent" + (profileCount === 1 ? "" : "s");
     var dmMeta = slackIdentityNeedsSetup(identity)
-      ? '<div class="identity-meta"><strong>Profile usage</strong><span>' + esc(profileUsage) + '</span></div>'
+      ? '<div class="identity-meta"><strong>Agent usage</strong><span>' + esc(profileUsage) + '</span></div>'
       : '<div class="identity-meta"><strong>Direct messages</strong><span>' + esc(managedIdentityDmText(identity)) + '</span><span>' + esc(profileUsage) + '</span></div>';
     return '<div class="identity-row">' + managedIdentityAvatarHtml(identity) +
       '<div class="slack-identity-copy"><span class="slack-identity-name">@' + esc(identity.displayName || "Chickpea") + '</span>' +
@@ -7739,7 +8386,7 @@ details[open].advanced summary::before {
     var rows = identities.map(slackIdentityListRowHtml).join("");
     var create = '<button type="button" class="btn btn-primary i-lead" data-action="slack-identity-create-open">' + icon("plus") + 'Add Slack identity</button>';
     return '<div class="section-head"><div><h1 class="page-title">Slack identities</h1>' +
-      '<p class="hint">Manage the Slack apps Chickpea can reply through. Profiles choose an identity under Replies as.</p></div>' + create + '</div>' +
+      '<p class="hint">Manage the Slack apps Chickpea can reply through. Agents choose an identity under Replies as.</p></div>' + create + '</div>' +
       (state.slackIdentityNotice ? '<p class="inline-status" role="status">' + esc(state.slackIdentityNotice) + '</p>' : '') +
       (!state.slackIdentities.globalDmAllowed ? '<div class="callout">The workspace DM ceiling is off. Identity-level DM settings are preserved, but no Slack identity admits DM work.</div>' : '') +
       '<div class="identity-list">' + (rows || '<div class="empty"><p class="hint">The workspace-default identity appears after Slack is installed.</p></div>') + '</div>';
@@ -7756,10 +8403,10 @@ details[open].advanced summary::before {
     return '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-identities-back">&larr; All identities</button>' +
       '<div class="section-head"><div><h1 class="page-title">Add a Slack identity</h1><p class="hint">This is optional. Each distinct mention, avatar, and DM conversation requires another Slack app installation and invitations to the channels where it should answer.</p></div></div>' +
       '<form class="section identity-wizard" data-action="slack-identity-create-form">' +
-      '<div class="callout">A dedicated identity is a real Slack app, not a cosmetic sender name. Profiles can share it after setup.</div>' +
+      '<div class="callout">A dedicated identity is a real Slack app, not a cosmetic sender name. Agents can share it after setup.</div>' +
       '<div class="form-grid"><div class="field"><label class="field-label" for="identity-app-name">Slack app name</label><input class="input" id="identity-app-name" name="appName" maxlength="35" required value="' + esc(draft.appName) + '" data-action="slack-identity-create-app-name"><p class="hint">Shown in Slack app settings. 35 characters maximum.</p></div>' +
       '<div class="field"><label class="field-label" for="identity-bot-name">Mention name</label><input class="input" id="identity-bot-name" name="displayName" maxlength="80" required value="' + esc(draft.displayName) + '" data-action="slack-identity-create-display-name"><p class="hint">Slack turns this into the bot&rsquo;s native mention after installation.</p></div></div>' +
-      '<div class="field"><label class="field-label" for="identity-dm-profile">DMs handled by</label><span class="select-wrap"><select class="input" id="identity-dm-profile" name="initialDmAgentId" data-action="slack-identity-create-dm">' + enabledIdentityProfileOptions(draft.initialDmAgentId) + '</select>' + icon("chevron-down", "select-caret") + '</span><p class="hint">This Profile handles future DMs to the new app. Creating from Settings does not change its Replies as selection.</p></div>' +
+      '<div class="field"><label class="field-label" for="identity-dm-profile">DMs handled by</label><span class="select-wrap"><select class="input" id="identity-dm-profile" name="initialDmAgentId" data-action="slack-identity-create-dm">' + enabledIdentityProfileOptions(draft.initialDmAgentId) + '</select>' + icon("chevron-down", "select-caret") + '</span><p class="hint">This Agent handles future DMs to the new app. Creating from Settings does not change its Replies as selection.</p></div>' +
       (state.slackIdentityActionError ? '<p class="field-error" role="alert">' + esc(state.slackIdentityActionError) + '</p>' : '') +
       '<div class="save-bar"><button type="button" class="btn btn-ghost" data-action="slack-identities-back">Cancel</button><span class="spacer"></span><button type="submit" class="btn btn-primary"' + (state.slackIdentityBusy ? " disabled" : "") + '>' + (state.slackIdentityBusy ? "Creating&hellip;" : "Continue to Slack setup") + '</button></div></form>';
   }
@@ -7795,13 +8442,13 @@ details[open].advanced summary::before {
       : "";
     var verifyBody = identity.lifecycle === "credentials_pending" ? setupAvatarAction + '<p class="hint">In Slack, save the prefilled Request URL so Slack sends its signed challenge. Then verify it here. If the challenge expired, use Slack&rsquo;s Retry button and try again.</p><button type="button" class="btn btn-primary" data-action="slack-identity-verify"' + (state.slackIdentityBusy ? " disabled" : "") + '>' + (state.slackIdentityBusy === "verify" ? "Verifying&hellip;" : "Verify signed callback") + '</button>' : '<p class="hint">Available after the credentials are validated.</p>';
     var attachmentNote = reconnecting
-      ? "This identity is paused until Slack signs the new callback. Verification does not change any Profile&rsquo;s Replies as selection."
+      ? "This identity is paused until Slack signs the new callback. Verification does not change any Agent&rsquo;s Replies as selection."
       : identity.setupSourceProfileId
-      ? "Your current Profile identity stays unchanged until all checks pass."
-      : "Completing a Settings-origin setup does not change any Profile&rsquo;s Replies as selection.";
+      ? "Your current Agent identity stays unchanged until all checks pass."
+      : "Completing a Settings-origin setup does not change any Agent&rsquo;s Replies as selection.";
     var cancelBody = reconnecting
       ? '<div class="callout"><b>Reconnect in progress.</b> Replacement credentials are already stored. Finish signed verification, or paste another valid credential pair to restart this step; this established identity cannot be deleted as a setup draft.</div>'
-      : '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Cancel this setup</span><span class="hint">Any pasted credentials and pending callback are erased before the draft is removed. A Profile-origin setup keeps its previous Replies as identity.</span></div><button type="button" class="btn btn-danger btn-sm" data-action="slack-identity-cancel-open"' + (state.slackIdentityBusy ? " disabled" : "") + '>Cancel setup</button></div>';
+      : '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Cancel this setup</span><span class="hint">Any pasted credentials and pending callback are erased before the draft is removed. An Agent-origin setup keeps its previous Replies as identity.</span></div><button type="button" class="btn btn-danger btn-sm" data-action="slack-identity-cancel-open"' + (state.slackIdentityBusy ? " disabled" : "") + '>Cancel setup</button></div>';
     return '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-identities-back">&larr; All identities</button><div class="section-head"><div><h1 class="page-title">' + (reconnecting ? "Reconnect " : "Set up ") + '@' + esc(identity.displayName || "identity") + '</h1><p class="hint">Resume safely at any time. ' + attachmentNote + '</p></div></div><div class="identity-wizard">' +
       identityStepHtml(1, "Choose identity and DM routing", intentBody, stage === 1, stage > 1) +
       identityStepHtml(2, "Create and install the Slack app", manifestBody, stage === 2, stage > 2) +
@@ -7814,7 +8461,7 @@ details[open].advanced summary::before {
 
   function identityProfilesHtml(identity) {
     var profiles = identity.profiles || [];
-    if (!profiles.length) return '<p class="hint">No Profile currently selects this identity under Replies as.</p>';
+    if (!profiles.length) return '<p class="hint">No Agent currently selects this identity under Replies as.</p>';
     return '<div class="identity-profile-list">' + profiles.map(function (profile) {
       return '<div class="identity-profile-row"><span>' + esc(profile.name) + '</span><span class="badge ' + (profile.enabled ? "badge-on" : "badge-off") + '">' + (profile.enabled ? "Enabled" : "Disabled") + '</span></div>';
     }).join("") + '</div>';
@@ -7831,14 +8478,14 @@ details[open].advanced summary::before {
     var consoleLink = slackIdentityAvatarSettingsLinkHtml(identity);
     var dmOptions = enabledIdentityProfileOptions(state.slackIdentityDmDraft.dmAgentId);
     var dmReady = identity.lifecycle === "connected" || identity.lifecycle === "degraded";
-    var dmDestination = identity.dmProfile ? identity.dmProfile.name : "the selected Profile";
-    var dmBody = '<p class="hint">Each Slack identity has its own DM conversation. Choose which Profile handles it; memory stays with the Slack conversation.</p>' +
+    var dmDestination = identity.dmProfile ? identity.dmProfile.name : "the selected Agent";
+    var dmBody = '<p class="hint">Each Slack identity has its own DM conversation. Choose which Agent handles it; memory stays with the Slack conversation.</p>' +
       (!dmReady && state.slackIdentityDmDraft.dmState === "on" ? '<div class="callout">DMs will go to ' + esc(dmDestination) + ' once this identity is connected.</div>' : '') +
       (!identity.globalDmAllowed ? '<div class="callout">The workspace DM ceiling is off, so this identity is effectively off even if its remembered setting is on.</div>' : '') +
       '<div class="form-grid"><div class="field"><label class="field-label">Direct messages</label><span class="select-wrap"><select class="input" data-action="slack-identity-dm-state"><option value="on"' + (state.slackIdentityDmDraft.dmState === "on" ? " selected" : "") + '>On</option><option value="off"' + (state.slackIdentityDmDraft.dmState === "off" ? " selected" : "") + '>Off</option></select>' + icon("chevron-down", "select-caret") + '</span></div><div class="field"><label class="field-label">DMs handled by</label><span class="select-wrap"><select class="input" data-action="slack-identity-dm-agent">' + dmOptions + '</select>' + icon("chevron-down", "select-caret") + '</span></div></div><button type="button" class="btn btn-soft btn-sm" data-action="slack-identity-dm-save"' + (state.slackIdentityBusy || identity.lifecycle === "retired" ? " disabled" : "") + '>Save DM behavior</button>';
     var reconnect = state.slackIdentityReconnectOpen ? '<form data-action="slack-identity-reconnect-form"><div class="form-grid"><div class="field"><label class="field-label">New Bot User OAuth Token</label><input class="input mono" type="password" name="botToken" autocomplete="off" value="' + esc(state.slackIdentityCredentialDraft.botToken) + '" data-action="slack-identity-credential-token"></div><div class="field"><label class="field-label">New Signing Secret</label><input class="input mono" type="password" name="signingSecret" autocomplete="off" value="' + esc(state.slackIdentityCredentialDraft.signingSecret) + '" data-action="slack-identity-credential-secret"></div></div><div style="display:flex; gap:8px;"><button type="button" class="btn btn-ghost btn-sm" data-action="slack-identity-reconnect-cancel">Cancel</button><button type="submit" class="btn btn-primary btn-sm"' + (state.slackIdentityBusy ? " disabled" : "") + '>Validate new credentials</button></div></form>' : '<button type="button" class="btn btn-soft btn-sm" data-action="slack-identity-reconnect-open"' + (isDefault || identity.lifecycle === "retired" ? " disabled" : "") + '>Reconnect or rotate</button>';
     var blockers = [];
-    if ((identity.profiles || []).length) blockers.push("move " + identity.profiles.length + " Profile" + (identity.profiles.length === 1 ? "" : "s"));
+    if ((identity.profiles || []).length) blockers.push("move " + identity.profiles.length + " Agent" + (identity.profiles.length === 1 ? "" : "s"));
     if (identity.dmState !== "off") blockers.push("turn DMs off");
     if (identity.pendingDeliveryCount) blockers.push("wait for " + identity.pendingDeliveryCount + " pending deliver" + (identity.pendingDeliveryCount === 1 ? "y" : "ies"));
     var retireBody = isDefault ? '<p class="hint">The workspace-default identity cannot be retired. Disconnect it from the Slack workspace overview after every credentialed dedicated identity is canceled or retired.</p>' : identity.lifecycle === "retired" ? '<p class="hint">This non-secret tombstone remains while old thread snapshots and delivery references can still name it. The Slack app was not uninstalled or revoked.</p>' : '<p class="hint">Local retirement deletes Chickpea&rsquo;s credentials but does not uninstall or revoke the Slack app. Old frozen threads may become unavailable.</p>' + (blockers.length ? '<p class="field-error">Before retiring: ' + esc(blockers.join(", ")) + '.</p>' : '') + '<button type="button" class="btn btn-danger btn-sm" data-action="slack-identity-retire-open"' + (blockers.length || state.slackIdentityBusy ? " disabled" : "") + '>Retire locally</button>';
@@ -7847,7 +8494,7 @@ details[open].advanced summary::before {
       (state.slackIdentityNotice ? '<p class="inline-status" role="status">' + esc(state.slackIdentityNotice) + '</p>' : '') +
       (state.slackIdentityActionError ? '<p class="field-error" role="alert">' + esc(state.slackIdentityActionError) + '</p>' : '') +
       '<div class="identity-detail-grid"><section class="section"><div class="section-head"><div><h2 class="section-title">Appearance</h2><p class="hint">Slack is the source of truth.</p></div></div><div class="kv"><dt>Last refreshed</dt><dd>' + esc(observed) + '</dd></div><div class="action-well">' + consoleLink + '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-identity-detail-refresh"' + (state.slackIdentityBusy ? " disabled" : "") + '>' + icon("arrow-path") + 'Refresh</button></div></section>' +
-      '<section class="section"><div class="section-head"><div><h2 class="section-title">Profile usage</h2><p class="hint">Profiles select this identity under Replies as. Channel assignments still choose behavior.</p></div></div>' + identityProfilesHtml(identity) + '</section>' +
+      '<section class="section"><div class="section-head"><div><h2 class="section-title">Agent usage</h2><p class="hint">Agents select this identity under Replies as. Channel assignments still choose behavior.</p></div></div>' + identityProfilesHtml(identity) + '</section>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Direct messages</h2></div></div>' + dmBody + '</section>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Connection</h2><p class="hint">' + esc(managedIdentityCredentialDetail(identity)) + '</p></div></div>' + reconnect + '</section></div>' +
       '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">' + (isDefault ? "Workspace identity" : "Retire identity") + '</span>' + retireBody + '</div></div>';
@@ -7861,7 +8508,12 @@ details[open].advanced summary::before {
   }
 
   function settingsMainHtml() {
-    if (state.settingsSection === "slack") return slackIdentitiesSettingsHtml();
+    if (state.settingsSection === "slack") {
+      var identitySettings = slackIdentitiesSettingsHtml();
+      return state.slackIdentityScreen === "list"
+        ? identitySettings + slackWorkspaceSettingsHtml()
+        : identitySettings;
+    }
     var head = '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Settings</h1>' +
       '<p class="hint">Configure GitHub, model providers, and outbound internet access for the sandbox.</p></div>';
@@ -7987,7 +8639,7 @@ details[open].advanced summary::before {
     var selectedLabel = draft === "subscription" ? "ChatGPT subscription" : "OpenAI API key";
     var hint = changed
       ? "Save to use " + selectedLabel + " for every OpenAI call."
-      : "Applies to every OpenAI model and profile.";
+      : "Applies to every OpenAI model and Agent.";
     var disabled = state.openAiAuthMethodBusy || !changed;
     return '<div class="openai-auth-choice"><label class="field-label" for="openai-auth-method">Use for OpenAI calls</label>' +
       '<div class="openai-auth-choice-row"><span class="select-wrap"><select class="input" id="openai-auth-method" data-action="openai-auth-method"' + (state.openAiAuthMethodBusy ? " disabled" : "") + '>' +
@@ -8171,9 +8823,9 @@ details[open].advanced summary::before {
     if (subscriptionReady) {
       consequence = lead + 'The connected ChatGPT subscription becomes the OpenAI method automatically.';
     } else if (count === 0) {
-      consequence = lead + 'No profiles are pinned to an ' + esc(meta.name) + ' model right now, so nothing stops answering. ' + envNote;
+      consequence = lead + 'No Agents are pinned to an ' + esc(meta.name) + ' model right now, so nothing stops answering. ' + envNote;
     } else {
-      consequence = lead + '<b style="font-weight:500; color:var(--text);">' + count + ' profile' + (count === 1 ? "" : "s") + '</b> ' + (count === 1 ? "is" : "are") +
+      consequence = lead + '<b style="font-weight:500; color:var(--text);">' + count + ' Agent' + (count === 1 ? "" : "s") + '</b> ' + (count === 1 ? "is" : "are") +
         ' pinned to an ' + esc(meta.name) + ' model &mdash; ' + names + '. They keep their pin, but until an ' + esc(meta.name) +
         ' key returns each fails at reply time: the thread gets one sanitized line &mdash; <i>&ldquo;I reached the Slack thread, but the model provider call failed before completion.&rdquo;</i> &mdash; and no provider error leaks to Slack. Re-pin them to another provider to keep answering. ' + envNote;
     }
@@ -8196,12 +8848,12 @@ details[open].advanced summary::before {
     var count = providerModelCount(id, providerSummaryById(id));
     var preamble = isOr ? "" : '<p class="hint">No key to manage. The <span class="mono" style="color:var(--text-2);">env.AI</span> binding lists models and runs turns on the Cloudflare target with zero credentials &mdash; this is the model a keyless button deploy answers with. Catalog-free <span class="mono" style="color:var(--text-2);">cloudflare/*</span> models declare no context window, so auto-compaction stays off for them.</p>';
     var intro = isOr
-      ? '<p class="hint">OpenRouter serves ' + esc(favSearchCountLabel(id)) + ', so the profile picker shows only the ones you star here. Search the live list &mdash; name, context length, and price per row &mdash; then star to add.</p>'
-      : '<p class="hint">The binding lists ' + esc(favSearchCountLabel(id)) + ' and keeps growing, so the profile picker shows only the ones you star here &mdash; same as OpenRouter. Search the live <span class="mono" style="color:var(--text-2);">env.AI.models()</span> list, then star to add. Four defaults ship pre-starred, so the keyless picker works out of the box.</p>';
+      ? '<p class="hint">OpenRouter serves ' + esc(favSearchCountLabel(id)) + ', so the Agent picker shows only the ones you star here. Search the live list &mdash; name, context length, and price per row &mdash; then star to add.</p>'
+      : '<p class="hint">The binding lists ' + esc(favSearchCountLabel(id)) + ' and keeps growing, so the Agent picker shows only the ones you star here &mdash; same as OpenRouter. Search the live <span class="mono" style="color:var(--text-2);">env.AI.models()</span> list, then star to add. Four defaults ship pre-starred, so the keyless picker works out of the box.</p>';
     var search = '<input class="input" type="search" value="' + esc(query) + '" placeholder="' + esc((count != null ? "Search " + count + " " : "Search ") + (isOr ? "OpenRouter" : "Workers AI") + " models…") + '" aria-label="Search ' + (isOr ? "OpenRouter" : "Workers AI") + ' models" data-action="fav-search" data-provider="' + esc(id) + '">';
     var foot = isOr
-      ? '<p class="hint">Star adds a model to every profile\\'s OpenRouter group; unstar removes it. Prices are input / output per 1M tokens, straight from OpenRouter\\'s public list.</p>'
-      : '<p class="hint">Star adds a model to every profile\\'s Workers AI group; unstar removes it. No per-row price or context here: Workers AI is billed in Neurons through the binding, and <span class="mono" style="color:var(--text-2);">cloudflare/*</span> models declare no context window. <span class="mono" style="color:var(--text-2);">@cf/zai-org/glm-5.2</span> is the seed default a keyless deploy pins &mdash; keep it starred to keep that default in the picker.</p>';
+      ? '<p class="hint">Star adds a model to every Agent\\'s OpenRouter group; unstar removes it. Prices are input / output per 1M tokens, straight from OpenRouter\\'s public list.</p>'
+      : '<p class="hint">Star adds a model to every Agent\\'s Workers AI group; unstar removes it. No per-row price or context here: Workers AI is billed in Neurons through the binding, and <span class="mono" style="color:var(--text-2);">cloudflare/*</span> models declare no context window. <span class="mono" style="color:var(--text-2);">@cf/zai-org/glm-5.2</span> is the seed default a keyless deploy pins &mdash; keep it starred to keep that default in the picker.</p>';
     return preamble +
       '<p class="field-label">Models in your picker</p>' + intro + search +
       '<div id="fav-results-' + esc(id) + '">' + favResultsHtml(id) + '</div>' +
@@ -8394,7 +9046,7 @@ details[open].advanced summary::before {
     var displayName = String(form.get("displayName") || "").trim();
     var dmAgentId = String(form.get("initialDmAgentId") || "");
     if (!appName || !displayName || !dmAgentId) {
-      state.slackIdentityActionError = "Choose both names and an enabled Profile to handle DMs.";
+      state.slackIdentityActionError = "Choose both names and an enabled Agent to handle DMs.";
       render();
       return;
     }
@@ -8513,8 +9165,8 @@ details[open].advanced summary::before {
       state.slackIdentityScreen = "detail";
       state.slackIdentityDetail = { identity: body.identity, setup: null };
       state.slackIdentityNotice = body.attachedProfileId
-        ? "Identity connected and attached to its creating Profile."
-        : "Identity connected. No Profile's Replies as selection was changed.";
+        ? "Identity connected and attached to its creating Agent."
+        : "Identity connected. No Agent's Replies as selection was changed.";
       state.slackIdentityDmDraft = { dmState: body.identity.dmState, dmAgentId: body.identity.dmAgentId || "" };
       mergeSlackIdentitySummary(body.identity);
       render();
@@ -9589,7 +10241,8 @@ details[open].advanced summary::before {
   function instructionLayersHtml(layers) {
     return layers.map(function (layer) {
       var ember = layer.source === "channel";
-      return '<span class="layer-tag ' + (ember ? "ember" : "") + '">' + esc(layer.label) + '</span><span class="' + (ember ? "from-addendum" : "") + '">' + esc(layer.text) + '</span>';
+      var label = String(layer.label || "").toLowerCase() === "profile" ? "Agent" : layer.label;
+      return '<span class="layer-tag ' + (ember ? "ember" : "") + '">' + esc(label) + '</span><span class="' + (ember ? "from-addendum" : "") + '">' + esc(layer.text) + '</span>';
     }).join("");
   }
 
@@ -9608,6 +10261,7 @@ details[open].advanced summary::before {
     // ghost-example placeholder shows until the operator writes them).
     return {
       id: "",
+      revision: 1,
       name: "",
       instructions: "",
       enabled: true,
@@ -9632,6 +10286,7 @@ details[open].advanced summary::before {
   function cloneAgent(agent) {
     return {
       id: agent.id,
+      revision: Number.isInteger(agent.revision) ? agent.revision : 1,
       name: agent.name,
       instructions: agent.instructions,
       enabled: agent.enabled,
@@ -9657,6 +10312,7 @@ details[open].advanced summary::before {
         return copy;
       }),
       slackIdentityId: agent.slackIdentityId || "",
+      deletion: agent.deletion || null,
       acknowledgeUnenumeratedChannels: false,
       pendingSecrets: {},
       removedConnections: [],
@@ -9854,7 +10510,7 @@ details[open].advanced summary::before {
   function selectActive(workspaceId, channelId) {
     state.channelScreen = "detail";
     state.active = { workspaceId: workspaceId, channelId: channelId };
-    var assignment = activeAssignment();
+    var assignment = activeChannelRecord();
     state.channelDraft = channelDraftFrom(assignment);
     state.channelFormDraft.workspaceId = workspaceId || state.channelFormDraft.workspaceId;
     state.dirty = false;
@@ -9866,7 +10522,8 @@ details[open].advanced summary::before {
     // render() only paints the "Resolving..." placeholder.
     Promise.all([
       loadEffective(),
-      loadChannelScheduledRoutines(workspaceId, channelId)
+      loadChannelScheduledRoutines(workspaceId, channelId),
+      loadOwnerMemory("channel", workspaceId, channelId)
     ]).then(render);
   }
 
@@ -9875,14 +10532,22 @@ details[open].advanced summary::before {
 
   function onboardingResponseSignature(value) {
     if (!value) return "";
-    return [value.revision, value.stage, value.tryStartedAt, value.completedAt].join("|");
+    return [value.revision, value.stage, value.tryStartedAt, value.completedAt, value.agentId, value.redirectTo].join("|");
   }
 
   function loadOnboarding(shouldRender) {
     return api("/admin/api/onboarding").then(function (body) {
+      var previousStage = state.onboarding && state.onboarding.stage;
       var changed = onboardingResponseSignature(state.onboarding) !== onboardingResponseSignature(body) || !!state.onboardingError;
       state.onboarding = body;
       state.onboardingError = "";
+      if (previousStage === "try" && body.stage === "complete") {
+        var destination = agentById(body.agentId) || defaultAgent();
+        if (destination) {
+          openProfileEditor(destination);
+          return body;
+        }
+      }
       if (shouldRender !== false && changed) render();
       return body;
     }).catch(function (error) {
@@ -9948,7 +10613,7 @@ details[open].advanced summary::before {
       return;
     }
     if (!workspace || !workspace.id || !agent) {
-      state.onboardingError = "Setup is missing its workspace or Default profile. Refresh and try again.";
+      state.onboardingError = "Setup is missing its workspace or Default Agent. Refresh and try again.";
       render();
       return;
     }
@@ -9956,7 +10621,7 @@ details[open].advanced summary::before {
     state.onboardingError = "";
     render();
     var savedAssignment = null;
-    putAssignment(workspace.id, channel.id, agent.id, true, undefined, channel.name).then(function (result) {
+    putAssignment(workspace.id, channel.id, agent.id, true, undefined, channel.name, undefined, null).then(function (result) {
       if (!result || result.isMember !== true) {
         state.onboardingBusy = false;
         state.onboardingError = result && result.isMember === false
@@ -10036,6 +10701,11 @@ details[open].advanced summary::before {
             ? "This install does not have an active setup journey."
             : ((error && (error.serverMessage || error.message)) || "Could not load setup.")
         };
+      }),
+      api("/admin/api/channels").then(function (body) {
+        return { channels: body.channels || [], error: "" };
+      }).catch(function (error) {
+        return { channels: [], error: (error && (error.serverMessage || error.message)) || "Could not load Channels." };
       })
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
@@ -10050,6 +10720,8 @@ details[open].advanced summary::before {
       state.slackIdentities = parts[6] || { identities: [], globalDmAllowed: true };
       state.onboarding = parts[7].body;
       state.onboardingError = parts[7].error;
+      state.channelIndex = parts[8].channels;
+      state.channelIndexError = parts[8].error;
       if (state.active) {
         var assignment = activeAssignment();
         if (assignment) {
@@ -10081,8 +10753,9 @@ details[open].advanced summary::before {
       .catch(function (error) { state.effectiveError = error.serverMessage || error.message; });
   }
 
-  function putAssignment(workspaceId, channelId, agentId, enabled, addendum, label, participationMode) {
+  function putAssignment(workspaceId, channelId, agentId, enabled, addendum, label, participationMode, expectedAgentId) {
     var body = { workspaceId: workspaceId, channelId: channelId, agentId: agentId, enabled: enabled };
+    if (expectedAgentId !== undefined) body.expectedAgentId = expectedAgentId;
     var normalizedLabel = normalizeChannelLabel(label);
     if (normalizedLabel) body.channelLabel = normalizedLabel;
     if (addendum !== undefined) body.channelPromptAddendum = addendum;
@@ -10248,6 +10921,16 @@ details[open].advanced summary::before {
       render();
       return;
     }
+    if (state.ownerMemory.dirty && (
+      action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
+      action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back" ||
+      action === "edit-profile" || action === "new-profile" || action === "open-channel-from-profile" ||
+      action === "open-channel-index" || action === "select-channel"
+    )) {
+      state.ownerMemory.error = "Save or discard this memory draft before navigating away.";
+      render();
+      return;
+    }
 
     // Disconnect is an atomic transition. Do not let navigation or another
     // action make the operation appear canceled while its request is live.
@@ -10291,6 +10974,16 @@ details[open].advanced summary::before {
     // Channels is the platform overview. Concrete rows remain detail screens
     // underneath it; the brand and top-level Channels button always return here.
     if (action === "open-channels") { openChannels(); }
+    if (action === "open-channel-index") {
+      selectActive(target.getAttribute("data-workspace") || connectedTeamId(), target.getAttribute("data-channel") || "");
+      render();
+    }
+    if (action === "channel-index-add") {
+      state.addChannelOpen = true;
+      state.addChannelSelected = target.getAttribute("data-channel") || "";
+      state.channelFormDraft.workspaceId = target.getAttribute("data-workspace") || connectedTeamId();
+      render();
+    }
     // Profiles is now a main-panel destination — open lands on the overview,
     // or (with a data-agent) directly on that profile's edit detail (the
     // channel-page Profile row's Edit affordance).
@@ -10489,7 +11182,14 @@ details[open].advanced summary::before {
     if (action === "slack-identity-confirm-apply") { applySlackIdentityConfirmation(); }
     if (action === "slack-behavior-retry") { loadSlackBehavior(); }
     if (action === "slack-test") { testSlackConnection(); }
-    if (action === "slack-update-open" && slackConnectionMutable()) { state.addChannelOpen = false; state.slackUpdateOpen = true; state.slackError = ""; state.slackRepair = null; render(); }
+    if (action === "slack-update-open" && slackConnectionMutable()) {
+      state.addChannelOpen = false;
+      state.slackUpdateOpen = true;
+      state.slackError = "";
+      state.slackRepair = null;
+      if (state.view !== "settings" || state.settingsSection !== "slack") openSettings("slack");
+      else render();
+    }
     if (action === "slack-update-close" && !state.slackConnectionBusy) { state.slackUpdateOpen = false; state.slackDraft = { botToken: "", signingSecret: "" }; state.slackError = ""; state.slackRepair = null; render(); }
     if (action === "slack-disconnect-open" && slackConnectionMutable()) {
       state.slackDisconnectConfirm = true;
@@ -10603,6 +11303,24 @@ details[open].advanced summary::before {
     if (action === "memory-use-latest") { useLatestMemoryEntry(); }
     if (action === "memory-delete-open" && state.memoryDetail) { state.memoryDeleteConfirm = true; render(); }
     if (action === "memory-resolve-review") { resolveMemoryReview(); }
+    if (action === "owner-memory-retry") {
+      loadOwnerMemory(state.ownerMemory.ownerKind, state.ownerMemory.workspaceId, state.ownerMemory.ownerId, true);
+    }
+    if (action === "owner-memory-file") { selectOwnerMemoryFile(target.getAttribute("data-file") || "MEMORY.md"); }
+    if (action === "owner-memory-save") { saveOwnerMemoryEntry(); }
+    if (action === "owner-memory-discard") { discardOwnerMemoryDraft(); }
+    if (action === "owner-memory-create-open") { openOwnerMemoryCreate(); }
+    if (action === "owner-memory-create-cancel") { cancelOwnerMemoryCreate(); }
+    if (action === "owner-memory-create-confirm") { createOwnerMemoryEntry(); }
+    if (action === "owner-memory-delete-open" && state.ownerMemory.detail && !state.ownerMemory.dirty) { state.ownerMemory.deleteConfirm = true; render(); }
+    if (action === "owner-memory-delete-cancel") { state.ownerMemory.deleteConfirm = false; render(); }
+    if (action === "owner-memory-delete-confirm") { deleteOwnerMemoryEntry(); }
+    if (action === "owner-memory-resolve-review") { resolveOwnerMemoryReview(); }
+    if (action === "owner-memory-use-latest") {
+      state.ownerMemory.dirty = false;
+      state.ownerMemory.conflict = null;
+      loadOwnerMemoryEntry(state.ownerMemory.selectedFile);
+    }
     if (state.githubBusy && action.indexOf("github-") === 0) return;
     if (action === "github-manifest-open") {
       state.githubManifestOpen = true;
@@ -10702,6 +11420,7 @@ details[open].advanced summary::before {
     if (action === "profile-model") { openModelPicker(); }
     if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); state.profileDirty = true; closeModelPicker(); }
     if (action === "save-profile") { saveProfile(); }
+    if (action === "reload-profile") { reloadProfile(); }
     if (action === "discard-profile") { discardProfile(); }
     if (action === "delete-profile") { deleteProfile(); }
     if (action === "detach-channel") { detachProfileChannel(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); }
@@ -11015,6 +11734,16 @@ details[open].advanced summary::before {
   document.addEventListener("input", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
+    if (action === "channels-index-query") {
+      var channelQueryCaret = target.selectionStart;
+      state.channelIndexQuery = target.value;
+      render();
+      var search = document.getElementById("channels-index-query");
+      if (search && search.focus) search.focus();
+      if (search && channelQueryCaret != null && search.setSelectionRange) {
+        try { search.setSelectionRange(channelQueryCaret, channelQueryCaret); } catch (error) { /* ignore */ }
+      }
+    }
     if (action === "team-invite-email") {
       state.teamInviteDraft.email = target.value;
       state.teamError = "";
@@ -11022,6 +11751,15 @@ details[open].advanced summary::before {
     if (state.memoryDraft) {
       if (action === "memory-description") { state.memoryDraft.description = target.value; markMemoryDirty(); }
       if (action === "memory-body") { state.memoryDraft.body = target.value; markMemoryDirty(); }
+    }
+    if (state.ownerMemory.draft) {
+      if (action === "owner-memory-description") { state.ownerMemory.draft.description = target.value; markOwnerMemoryDirty(); }
+      if (action === "owner-memory-body") { state.ownerMemory.draft.body = target.value; markOwnerMemoryDirty(); }
+    }
+    if (state.ownerMemory.createDraft) {
+      if (action === "owner-memory-create-slug") { state.ownerMemory.createDraft.slug = target.value; state.ownerMemory.error = ""; }
+      if (action === "owner-memory-create-description") { state.ownerMemory.createDraft.description = target.value; state.ownerMemory.error = ""; }
+      if (action === "owner-memory-create-body") { state.ownerMemory.createDraft.body = target.value; state.ownerMemory.error = ""; }
     }
     if (action === "scheduled-filter-workspace") state.scheduledFilters.workspaceId = target.value;
     if (action === "scheduled-filter-channel") state.scheduledFilters.channelId = target.value;
@@ -11195,6 +11933,16 @@ details[open].advanced summary::before {
     if (action === "memory-type" && state.memoryDraft) {
       state.memoryDraft.type = target.value;
       markMemoryDirty();
+      render();
+    }
+    if (action === "owner-memory-type" && state.ownerMemory.draft) {
+      state.ownerMemory.draft.type = target.value;
+      markOwnerMemoryDirty();
+      render();
+    }
+    if (action === "owner-memory-create-type" && state.ownerMemory.createDraft) {
+      state.ownerMemory.createDraft.type = target.value;
+      state.ownerMemory.error = "";
       render();
     }
     if (action === "scheduled-filter-scope") {
@@ -11401,6 +12149,15 @@ details[open].advanced summary::before {
   }
 
   document.addEventListener("keydown", function (event) {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      if (state.ownerMemory.dirty) {
+        event.preventDefault();
+        if (state.ownerMemory.createDraft) createOwnerMemoryEntry();
+        else saveOwnerMemoryEntry();
+        return;
+      }
+      if (state.profileScreen === "edit" && state.profileDirty) { event.preventDefault(); saveProfile(); return; }
+    }
     if (state.sandboxConfirm && state.sandboxSaving && event.key === "Tab") {
       event.preventDefault();
       var pendingSandboxDialog = document.querySelector('[data-role="sandbox-confirm-dialog"]');
@@ -11514,7 +12271,7 @@ details[open].advanced summary::before {
     var tabButton = event.target && event.target.closest && event.target.closest(".ptab");
     if (tabButton && (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End")) {
       event.preventDefault();
-      var order = ["instructions", "skills", "connections", "repositories"];
+      var order = ["instructions", "skills", "connections", "repositories", "memory"];
       var current = order.indexOf(state.profileTab || "instructions");
       var next =
         event.key === "ArrowLeft" ? (current + order.length - 1) % order.length :
@@ -11534,6 +12291,7 @@ details[open].advanced summary::before {
       if (
         (state.profileScreen === "edit" && state.profileDirty) ||
         state.memoryDirty ||
+        state.ownerMemory.dirty ||
         state.slackConnectionBusy === "update" ||
         state.slackConnectionBusy === "disconnect" ||
         state.githubBusy === "disconnect"
@@ -11581,6 +12339,12 @@ details[open].advanced summary::before {
         render();
         return;
       }
+      if (state.ownerMemory.dirty && targetPath !== canonicalPath()) {
+        history.pushState(null, "", canonicalPath());
+        state.ownerMemory.error = "Save or discard this memory draft before navigating away.";
+        render();
+        return;
+      }
       applyRoute(targetPath);
     });
   }
@@ -11589,6 +12353,11 @@ details[open].advanced summary::before {
   // directly on a profile's edit detail when a target id is supplied (the
   // channel-page Profile row's Edit affordance).
   function enterProfiles(targetAgentId) {
+    if (state.ownerMemory.dirty && (!targetAgentId || targetAgentId !== state.ownerMemory.ownerId)) {
+      state.ownerMemory.error = "Save or discard this memory draft before opening another Agent.";
+      render();
+      return;
+    }
     state.view = "profiles";
     resetProfileTransientState();
     var target = targetAgentId ? agentById(targetAgentId) : null;
@@ -11597,6 +12366,7 @@ details[open].advanced summary::before {
       state.editingAgentId = target.id;
       state.profileLastAgentId = target.id;
       state.profileDraft = cloneAgent(target);
+      loadOwnerMemory("agent", connectedTeamId(), target.id);
     } else {
       state.profileScreen = "list";
       state.profileDraft = null;
@@ -11853,7 +12623,8 @@ details[open].advanced summary::before {
     var message = error && error.message;
     if (message === "channel_not_found") return "Slack could not find that channel in the connected workspace. Check the ID, and invite the connected Slack app if it is private.";
     if (message === "workspace_mismatch") return "That channel belongs to a different workspace than the one Chickpea is connected to.";
-    if (message === "unknown_agent") return "The profile no longer exists. Reload and try again.";
+    if (message === "unknown_agent") return "The Agent no longer exists. Reload and try again.";
+    if (message === "channel_assignment_changed") return "This Channel's assigned Agent changed elsewhere. Reload the Channel, review the latest Agent, then try again.";
     return message || "Could not add the channel.";
   }
 
@@ -11864,7 +12635,7 @@ details[open].advanced summary::before {
   function addChannel(formData) {
     var agent = agentById(state.addChannelAgentId) || defaultAgent();
     var fail = function (message) { state.addChannelError = message; render(); };
-    if (!agent) { fail("Create a profile before adding a channel."); return; }
+    if (!agent) { fail("Create an Agent before adding a Channel."); return; }
     if (!isSlackConnected()) { fail("Connect @Chickpea first."); return; }
     var workspaceId = connectedTeamId();
     if (!workspaceId) { fail("Could not determine the connected workspace. Click Refresh and try again."); return; }
@@ -11886,7 +12657,7 @@ details[open].advanced summary::before {
       fail("Channel " + channelId + " is already assigned. Select it from the list to edit.");
       return;
     }
-    putAssignment(workspaceId, channelId, agent.id, true, undefined, label).then(function (result) {
+    putAssignment(workspaceId, channelId, agent.id, true, undefined, label, undefined, null).then(function (result) {
       state.addChannelOpen = false;
       state.addChannelManual = false;
       state.addChannelError = "";
@@ -11895,7 +12666,7 @@ details[open].advanced summary::before {
       state.active = { workspaceId: workspaceId, channelId: channelId };
       state.channelScreen = "detail";
       // Slack's authoritative name (server override) becomes the display label.
-      var savedLabel = normalizeChannelLabel((result && result.assignment && result.assignment.channelLabel) || label || channelId);
+      var savedLabel = normalizeChannelLabel((result && result.channel && result.channel.label) || label || channelId);
       state.addChannelInvite = result && result.isMember === false
         ? channelInviteWarning(savedLabel)
         : "";
@@ -11904,15 +12675,15 @@ details[open].advanced summary::before {
   }
 
   function attachSelectedProfile() {
-    var assignment = activeAssignment();
+    var assignment = activeChannelRecord();
     var select = document.querySelector('[data-role="swap-profile"]');
     if (!assignment || !select) return;
     // Swap only the profile; keep the channel's persisted enabled/instructions
     // so an unsaved textarea edit is not committed as a side effect.
-    putAssignment(assignment.workspaceId, assignment.channelId, select.value, assignment.enabled, assignment.channelPromptAddendum, assignment.channelLabel, assignment.participationMode).then(function () {
+    putAssignment(assignment.workspaceId, assignment.channelId, select.value, assignment.enabled, assignment.channelPromptAddendum, assignment.channelLabel, assignment.participationMode || state.channelDraft.participationMode, assignment.agentId || null).then(function () {
       state.swapOpen = false;
       return refreshData();
-    }).catch(function (error) { state.saveError = error.message; render(); });
+    }).catch(function (error) { state.saveError = addChannelErrorText(error); render(); });
   }
 
   function detachProfile() {
@@ -11921,13 +12692,13 @@ details[open].advanced summary::before {
     api("/admin/api/assignments?workspaceId=" + encodeURIComponent(assignment.workspaceId) + "&channelId=" + encodeURIComponent(assignment.channelId), { method: "DELETE" }).then(function () {
       state.active = null;
       return refreshData();
-    }).catch(function (error) { state.saveError = error.message; render(); });
+    }).catch(function (error) { state.saveError = addChannelErrorText(error); render(); });
   }
 
   function saveChannel() {
-    var assignment = activeAssignment();
+    var assignment = activeChannelRecord();
     if (!assignment) return;
-    putAssignment(assignment.workspaceId, assignment.channelId, assignment.agentId, state.channelDraft.enabled, state.channelDraft.channelPromptAddendum, assignment.channelLabel, state.channelDraft.participationMode).then(function () {
+    putAssignment(assignment.workspaceId, assignment.channelId, assignment.agentId, state.channelDraft.enabled, state.channelDraft.channelPromptAddendum, assignment.channelLabel, state.channelDraft.participationMode, assignment.agentId).then(function () {
       state.dirty = false;
       state.saveError = "";
       return refreshData();
@@ -12408,7 +13179,7 @@ details[open].advanced summary::before {
     var persistedServers = ((savedAgent && savedAgent.mcpServers) || draft.mcpServers || []).map(cloneConnection);
     var persistedIndex = persistedServers.findIndex(function (connection) { return connection.id === editor.id; });
     if (persistedIndex < 0) {
-      editor.toolAccessError = "This connection is no longer available. Reload the profile and try again.";
+      editor.toolAccessError = "This connector is no longer available. Reload the Agent and try again.";
       render();
       return;
     }
@@ -13087,7 +13858,7 @@ details[open].advanced summary::before {
   function isEditLeaveAction(action) {
     return action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back" ||
-      action === "edit-profile" || action === "new-profile";
+      action === "edit-profile" || action === "new-profile" || action === "open-channel-from-profile";
   }
 
   // Perform a confirmed leave — the edit draft is dropped and the pending
@@ -13145,7 +13916,7 @@ details[open].advanced summary::before {
         var identity = slackIdentityById(identityId);
         return identity ? identity.displayName : identityId;
       });
-      return "This Profile still handles DMs" + (identityLabels.length ? " for " + identityLabels.join(", ") : "") + ". In Settings → Slack → Identities, choose another DM Profile or turn off DMs first.";
+      return "This Agent still handles DMs" + (identityLabels.length ? " for " + identityLabels.join(", ") : "") + ". In Settings → Slack → Identities, choose another DM Agent or turn off DMs first.";
     }
     if (payload && payload.error === "slack_identity_not_in_channels") {
       var channels = (payload.channels || []).map(function (channel) {
@@ -13157,7 +13928,7 @@ details[open].advanced summary::before {
       return "Acknowledge the wildcard channel warning before switching identities.";
     }
     if (payload && payload.error === "profile_slack_identity_changed") {
-      return "This Profile's Slack identity changed in another session. Reload and try again.";
+      return "This Agent's Slack identity changed in another session. Reload and try again.";
     }
     if (payload && payload.error === "slack_identity_changed") {
       return "This Slack identity changed in another session. Reload and try again.";
@@ -13221,6 +13992,7 @@ details[open].advanced summary::before {
     // Clear any stale field error BEFORE the commit gates below render — a
     // fixed-but-uncleared error would otherwise resurface on a hidden panel.
     state.profileError = "";
+    state.profileConflict = false;
     // Commit an open inline skill editor into the draft first — a filled-but-
     // not-"Added" skill must be saved, not silently dropped. Abort on invalid,
     // jumping to the tab that carries the inline error so it is visible.
@@ -13230,7 +14002,7 @@ details[open].advanced summary::before {
     if (!commitOpenConnectionEditor()) { showProfileTab("connections"); if (onFailed) onFailed(); return; }
     if (!commitOpenApiConnectionEditor()) { showProfileTab("connections"); if (onFailed) onFailed(); return; }
     if (!draft.name) { state.profileError = "Name is required."; render(); if (onFailed) onFailed(); return; }
-    if (!draft.instructions) { state.profileError = "Profile instructions are required."; state.profileTab = "instructions"; render(); if (onFailed) onFailed(); return; }
+    if (!draft.instructions) { state.profileError = "Agent instructions are required."; state.profileTab = "instructions"; render(); if (onFailed) onFailed(); return; }
     // An open repository picker holds checkbox changes the user has made but
     // not yet Applied; saving must not silently serialize the stale grant
     // list. Committing equals clicking Apply — which is what the checked
@@ -13263,7 +14035,10 @@ details[open].advanced summary::before {
     // Capture the draft carrying the transient secrets + removals BEFORE the
     // post-save re-clone wipes them, so the secret PUT/DELETE still run.
     var secretsDraft = draft;
-    if (isEdit) body.model = draft.model || null;
+    if (isEdit) {
+      body.model = draft.model || null;
+      body.expectedRevision = Number.isInteger(draft.revision) ? draft.revision : 1;
+    }
     else {
       if (draft.model) body.model = draft.model;
       body.id = slugId(draft.name);
@@ -13330,8 +14105,8 @@ details[open].advanced summary::before {
             state.profileDraft.removedApiConnections = secretsDraft.removedApiConnections || [];
             var putFailed = secretFailures.some(function (failure) { return failure.op === "put"; });
             state.profileError = putFailed
-              ? "Profile saved, but a credential could not be stored — open the connection and Save again."
-              : "Profile saved, but a credential could not be removed — Save again to retry.";
+              ? "Agent saved, but a credential could not be stored — open the connector and Save again."
+              : "Agent saved, but a credential could not be removed — Save again to retry.";
             state.profileDirty = true;
             render();
             if (onFailed) onFailed();
@@ -13355,9 +14130,16 @@ details[open].advanced summary::before {
       state.editingAgentId = null;
       return refreshData();
     }).catch(function (error) {
+      if (error && error.payload && error.payload.error === "agent_revision_conflict") {
+        state.profileConflict = true;
+        state.profileError = "This Agent changed in another session. Your draft is preserved; reload the latest Agent before saving again.";
+        render();
+        if (onFailed) onFailed();
+        return;
+      }
       var identityMessage = profileIdentityErrorText(error);
       state.profileError = error && error.profilePolicySaved
-        ? "Profile changes were saved, but its Slack identity was not changed. " + identityMessage
+        ? "Agent changes were saved, but its Slack identity was not changed. " + identityMessage
         : identityMessage;
       render();
       if (onFailed) onFailed();
@@ -13368,6 +14150,7 @@ details[open].advanced summary::before {
     var saved = agentById(state.editingAgentId);
     state.profileDraft = saved ? cloneAgent(saved) : newProfileDraft();
     state.profileError = "";
+    state.profileConflict = false;
     state.profileDirty = false;
     state.disableConfirm = false;
     state.skillEditor = null;
@@ -13380,16 +14163,40 @@ details[open].advanced summary::before {
     render();
   }
 
+  function reloadProfile() {
+    var draft = state.profileDraft;
+    if (!draft || !draft.id) return;
+    state.profileError = "";
+    return api("/admin/api/agents/" + encodeURIComponent(draft.id)).then(function (body) {
+      var latest = body && body.agent;
+      if (!latest) throw new Error("Agent response was missing.");
+      var index = state.agents.findIndex(function (agent) { return agent.id === latest.id; });
+      if (index >= 0) state.agents[index] = latest;
+      else state.agents.push(latest);
+      openProfileEditor(latest);
+    }).catch(function (error) {
+      state.profileError = error.serverMessage || error.message || "Could not reload this Agent.";
+      state.profileConflict = true;
+      render();
+    });
+  }
+
   function deleteProfileErrorText(error) {
     // The delete button is disabled while assigned, but the server is the guard
     // of record (409 agent_still_assigned) — surface it honestly if it ever races.
     if (error && error.message === "agent_still_assigned") {
-      return "This profile is still attached to a channel. Detach it everywhere first.";
+      return "This Agent is still attached to a Channel. Detach it everywhere first.";
+    }
+    if (error && error.payload && error.payload.error === "agent_still_referenced") {
+      return "This Agent is still used by a Channel placement or Slack identity. Remove every reference before deleting it.";
+    }
+    if (error && error.payload && error.payload.error === "agent_live_snapshot_roots") {
+      return "This Agent still has live Slack threads. Wait for those conversations to expire before deleting it.";
     }
     if (error && error.payload && error.payload.error === "agent_slack_dm_handler") {
       return profileIdentityErrorText(error);
     }
-    return (error && error.message) || "Could not delete the profile.";
+    return (error && error.message) || "Could not delete the Agent.";
   }
 
   function deleteProfile() {
@@ -13424,8 +14231,8 @@ details[open].advanced summary::before {
     var enabled = assignment ? assignment.enabled : true;
     var addendum = assignment ? assignment.channelPromptAddendum : undefined;
     var label = assignment && assignment.channelLabel ? assignment.channelLabel : channel.name;
-    putAssignment(workspaceId, channel.id, draft.id, enabled, addendum, label, assignment && assignment.participationMode).then(function (result) {
-      var savedLabel = normalizeChannelLabel((result && result.assignment && result.assignment.channelLabel) || label || channel.id);
+    putAssignment(workspaceId, channel.id, draft.id, enabled, addendum, label, assignment && assignment.participationMode, assignment ? assignment.agentId : null).then(function (result) {
+      var savedLabel = normalizeChannelLabel((result && result.channel && result.channel.label) || label || channel.id);
       var needsInvite = result && result.isMember !== undefined ? result.isMember === false : channel.isMember === false;
       state.attachPicker = false;
       state.attachChannelSelected = "";
@@ -13444,7 +14251,7 @@ details[open].advanced summary::before {
   // Boot: capture the deep link BEFORE the first data render (which would
   // otherwise sync the URL to the default state), apply it once data is
   // loaded, then turn URL sync on with a replace so landing on /admin becomes
-  // the canonical Channels overview without adding a history entry.
+  // the canonical Default Agent without adding a history entry.
   function oauthReturnFromSearch(search) {
     if (!search) return null;
     var params = new URLSearchParams(search);
@@ -13468,7 +14275,7 @@ details[open].advanced summary::before {
   if (USAGE_ADMIN_UI && initialRoute === "/admin/usage") applyUsageQuery(location.search || "");
   state.oauthReturn = canNavigate ? oauthReturnFromSearch(location.search || "") : null;
   refreshData(false).then(function () {
-    if (initialRoute !== "/admin") applyRoute(initialRoute);
+    applyRoute(initialRoute);
     if (state.oauthReturn && state.profileDraft && state.profileScreen === "edit") {
       state.oauthReturn.agentId = state.profileDraft.id;
       state.profileTab = "connections";

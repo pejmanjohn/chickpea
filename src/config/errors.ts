@@ -21,6 +21,19 @@ export class AgentExistsError extends Error {
   }
 }
 
+export class AgentRevisionConflictError extends Error {
+  constructor(
+    readonly agentId: string,
+    readonly expectedRevision: number,
+    readonly actualRevision: number,
+  ) {
+    super(
+      `Agent ${agentId} changed (expected revision ${expectedRevision}, actual ${actualRevision})`,
+    );
+    this.name = 'AgentRevisionConflictError';
+  }
+}
+
 export class AgentStillAssignedError extends Error {
   constructor(
     readonly agentId: string,
@@ -58,6 +71,20 @@ export class AgentSlackIdentityConflictError extends Error {
       `Agent ${agentId} changed Slack identity (expected ${expectedIdentityId ?? 'workspace default'}, actual ${actualIdentityId ?? 'workspace default'})`,
     );
     this.name = 'AgentSlackIdentityConflictError';
+  }
+}
+
+export class ChannelAssignmentConflictError extends Error {
+  constructor(
+    readonly workspaceId: string,
+    readonly channelId: string,
+    readonly expectedAgentId: string | null,
+    readonly actualAgentId: string | null,
+  ) {
+    super(
+      `Channel ${workspaceId}/${channelId} changed assignment (expected ${expectedAgentId ?? 'unassigned'}, actual ${actualAgentId ?? 'unassigned'})`,
+    );
+    this.name = 'ChannelAssignmentConflictError';
   }
 }
 

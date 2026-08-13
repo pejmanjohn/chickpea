@@ -16,6 +16,7 @@ import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
 const AGENT: CustomAgentConfig = {
   id: 'agent_runtime',
+  revision: 1,
   name: 'Runtime',
   instructions: 'Use the available evidence. A legitimate value is sk-live-looking-but-not-secret.',
   enabled: true,

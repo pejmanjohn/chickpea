@@ -39,6 +39,7 @@ import {
 import type { McpConnectInput, McpDiscoveryResult } from '../src/config/mcp-test.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
+import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
 import { beginOnboardingJourney } from '../src/config/onboarding-state.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
@@ -135,6 +136,7 @@ interface AdminHarnessOptions {
   slackState?: SlackStateStore;
   identity?: IdentityStore;
   work?: WorkStore;
+  snapshots?: AgentSnapshotStore;
   slackConversationsInfo?: (
     botToken: string,
     channelId: string,
@@ -192,6 +194,7 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
       ...(options.slackState ? { slackState: options.slackState } : {}),
       ...(options.identity ? { identity: options.identity } : {}),
       ...(options.work ? { work: options.work } : {}),
+      ...(options.snapshots ? { snapshots: options.snapshots } : {}),
       ...(options.slackConversationsInfo
         ? { slackConversationsInfo: options.slackConversationsInfo }
         : {}),
@@ -382,6 +385,7 @@ async function withCloudflareUserAgent<T>(run: () => Promise<T>): Promise<T> {
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
     id: 'agent_admin',
+    revision: 1,
     name: 'Admin Agent',
     instructions: 'Use admin-managed instructions.',
     enabled: true,
@@ -573,7 +577,7 @@ test('MCP OAuth callback is public, state-gated, enables all tools on first conn
     assert.equal(success.status, 303);
     assert.equal(
       success.headers.get('location'),
-      '/admin/profiles/agent_admin?oauth=connected&connection=notion',
+      '/admin/agents/agent_admin?oauth=connected&connection=notion',
     );
     assert.equal(success.headers.get('referrer-policy'), 'no-referrer');
     assert.equal(success.headers.get('cache-control'), 'no-store');
@@ -603,7 +607,7 @@ test('MCP OAuth callback is public, state-gated, enables all tools on first conn
     assert.equal(denied.status, 303);
     assert.equal(
       denied.headers.get('location'),
-      '/admin/profiles/agent_admin?oauth=cancelled&connection=notion',
+      '/admin/agents/agent_admin?oauth=cancelled&connection=notion',
     );
     assert.deepEqual(cancelled, ['denied-state']);
 
@@ -614,7 +618,7 @@ test('MCP OAuth callback is public, state-gated, enables all tools on first conn
     assert.equal(providerFailure.status, 303);
     assert.equal(
       providerFailure.headers.get('location'),
-      '/admin/profiles/agent_admin?oauth=failed&connection=notion',
+      '/admin/agents/agent_admin?oauth=failed&connection=notion',
     );
     assert.deepEqual(cancelled, ['denied-state', 'failed-state']);
 
@@ -668,7 +672,7 @@ test('MCP OAuth reconnect preserves approvals without enabling newly discovered 
     assert.equal(response.status, 303);
     assert.equal(
       response.headers.get('location'),
-      '/admin/profiles/agent_admin?oauth=connected&connection=linear-mcp',
+      '/admin/agents/agent_admin?oauth=connected&connection=linear-mcp',
     );
     const connected = (await store.getAgent('agent_admin')).mcpServers[0];
     assert.deepEqual(connected?.discoveredTools, [
@@ -721,7 +725,7 @@ test('MCP OAuth callback preserves tool policy across post-authorization verific
     assert.equal(response.status, 303);
     assert.equal(
       response.headers.get('location'),
-      '/admin/profiles/agent_admin?oauth=verification_failed&connection=notion',
+      '/admin/agents/agent_admin?oauth=verification_failed&connection=notion',
     );
     const failed = (await store.getAgent('agent_admin')).mcpServers[0];
     assert.equal(failed?.lifecycleStatus, 'failed');
@@ -763,7 +767,7 @@ test('MCP OAuth callback returns exchange failures to the affected connection', 
     assert.equal(response.status, 303);
     assert.equal(
       response.headers.get('location'),
-      '/admin/profiles/agent_admin?oauth=failed&connection=linear-mcp',
+      '/admin/agents/agent_admin?oauth=failed&connection=linear-mcp',
     );
     assert.equal(response.headers.get('location')?.includes('provider-code'), false);
   } finally {
@@ -1055,7 +1059,7 @@ test('client-routed admin paths serve the SPA page and POST login keeps a safe d
     const app = appWithAdmin(store);
 
     // A deep page path serves the same SPA (client router takes it from there).
-    const page = await app.request('/admin/profiles/agent_default', { headers: auth(ADMIN_TOKEN) });
+    const page = await app.request('/admin/agents/agent_default', { headers: auth(ADMIN_TOKEN) });
     assert.equal(page.status, 200);
     assert.equal(page.headers.get('cache-control'), 'no-store');
     assert.match(await page.text(), /Chickpea/);
@@ -1472,7 +1476,7 @@ test('admin API rejects unpinned agents that cannot resolve a model in the curre
         assert.deepEqual(await response.json(), {
           error: 'model_not_resolvable',
           message:
-            'No model pinned for agent agent_admin. Pin a model in /admin (Profiles -> Model), or set SLACK_TAG_MODEL for offline/dev unpinned-profile fallback.',
+            'No model pinned for agent agent_admin. Pin a model in /admin (Agents -> Model), or set SLACK_TAG_MODEL for offline/dev unpinned-agent fallback.',
         });
       },
     );
@@ -1541,6 +1545,58 @@ test('admin API reports every Agent reference before disable or atomic delete', 
   }
 });
 
+test('admin API projects live frozen thread roots and blocks Agent deletion', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const roots = [{
+    threadKey: 'T_ADMIN:C_FROZEN:1710000000.000100',
+    agentId: 'agent_admin',
+    lastActivityAt: 1_800_000_000_000,
+  }];
+  const snapshots: AgentSnapshotStore = {
+    async get() { return undefined; },
+    async putIfAbsent(_threadKey, snapshot) { return snapshot; },
+    async listLiveRootsByAgent(agentId) {
+      return agentId === 'agent_admin' ? roots : [];
+    },
+  };
+  try {
+    await store.createAgent(agent());
+    const app = appWithAdminOptions(store, { snapshots });
+
+    const getResponse = await app.request('/admin/api/agents/agent_admin', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(getResponse.status, 200);
+    const getBody = await getResponse.json() as {
+      agent: { deletion: { blocked: boolean; liveSnapshotRoots: unknown[] } };
+    };
+    const expectedRoots = [{
+      threadKey: roots[0]!.threadKey,
+      workspaceId: 'T_ADMIN',
+      channelId: 'C_FROZEN',
+      threadTs: '1710000000.000100',
+      lastActivityAt: roots[0]!.lastActivityAt,
+      channelHref: '/admin/channels/T_ADMIN/C_FROZEN',
+    }];
+    assert.equal(getBody.agent.deletion.blocked, true);
+    assert.deepEqual(getBody.agent.deletion.liveSnapshotRoots, expectedRoots);
+
+    const deleteResponse = await app.request('/admin/api/agents/agent_admin', {
+      method: 'DELETE',
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(deleteResponse.status, 409);
+    assert.deepEqual(await deleteResponse.json(), {
+      error: 'agent_live_snapshot_roots',
+      agentId: 'agent_admin',
+      roots: expectedRoots,
+    });
+    assert.equal((await store.getAgent('agent_admin')).id, 'agent_admin');
+  } finally {
+    store.close();
+  }
+});
+
 test('admin API reports Slack DM identity blockers for Agent disable and delete', async () => {
   const profileId = 'agent_dm_handler';
   const identityId = 'slack_identity_dm_handler';
@@ -1582,7 +1638,7 @@ test('admin API reports Slack DM identity blockers for Agent disable and delete'
     const disabled = await app.request(`/admin/api/agents/${profileId}`, {
       method: 'PATCH',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
-      body: JSON.stringify({ enabled: false }),
+      body: JSON.stringify({ expectedRevision: 1, enabled: false }),
     });
     assert.equal(disabled.status, 409);
     assert.deepEqual(await disabled.json(), disableExpected);
@@ -1615,6 +1671,7 @@ test('admin API rejects patches that leave an agent without a resolvable model',
         const app = appWithAdmin(store);
         const unpinnedAgent: CustomAgentConfig = {
           id: 'agent_admin',
+          revision: 1,
           name: 'Admin Agent',
           instructions: 'Use admin-managed instructions.',
           enabled: true,
@@ -1628,14 +1685,14 @@ test('admin API rejects patches that leave an agent without a resolvable model',
         const response = await app.request('/admin/api/agents/agent_admin', {
           method: 'PATCH',
           headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
-          body: JSON.stringify({ description: 'Still unresolvable after patch.' }),
+          body: JSON.stringify({ expectedRevision: 1, description: 'Still unresolvable after patch.' }),
         });
 
         assert.equal(response.status, 422);
         assert.deepEqual(await response.json(), {
           error: 'model_not_resolvable',
           message:
-            'No model pinned for agent agent_admin. Pin a model in /admin (Profiles -> Model), or set SLACK_TAG_MODEL for offline/dev unpinned-profile fallback.',
+            'No model pinned for agent agent_admin. Pin a model in /admin (Agents -> Model), or set SLACK_TAG_MODEL for offline/dev unpinned-agent fallback.',
         });
       },
     );
@@ -1778,18 +1835,35 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
       method: 'PATCH',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
+        expectedRevision: 1,
         instructions: 'Updated runtime instructions.',
         model: 'local-stub/admin-updated',
       }),
     });
     assert.equal(patchAgent.status, 200);
-    assert.deepEqual(await patchAgent.json(), {
-      agent: {
-        ...createdAgent,
-        instructions: 'Updated runtime instructions.',
-        model: 'local-stub/admin-updated',
-      },
+    const patchedBody = await patchAgent.json() as {
+      agent: CustomAgentConfig & { tabs: string[] };
+    };
+    assert.equal(patchedBody.agent.revision, 2);
+    assert.equal(patchedBody.agent.instructions, 'Updated runtime instructions.');
+    assert.equal(patchedBody.agent.model, 'local-stub/admin-updated');
+    assert.deepEqual(patchedBody.agent.tabs, [
+      'instructions', 'skills', 'connectors', 'repositories', 'memory',
+    ]);
+
+    const stalePatch = await app.request('/admin/api/agents/agent_admin', {
+      method: 'PATCH',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: 1, name: 'Lost concurrent draft' }),
     });
+    assert.equal(stalePatch.status, 409);
+    assert.deepEqual(await stalePatch.json(), {
+      error: 'agent_revision_conflict',
+      agentId: 'agent_admin',
+      expectedRevision: 1,
+      actualRevision: 2,
+    });
+    assert.equal((await store.getAgent('agent_admin')).name, createdAgent.name);
 
     const getAgent = await app.request('/admin/api/agents/agent_admin', {
       headers: auth(ADMIN_TOKEN),
@@ -2185,7 +2259,7 @@ test('profile writes strictly admit OpenAI installation lanes and the Anthropic 
   const rejectedPatch = await app.request('/admin/api/agents/agent_catalog_openai', {
     method: 'PATCH',
     headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'openai/gpt-not-admitted' }),
+    body: JSON.stringify({ expectedRevision: 1, model: 'openai/gpt-not-admitted' }),
   });
   assert.equal(rejectedPatch.status, 400);
   assert.match(
@@ -2333,9 +2407,9 @@ test('effective config endpoint uses SLACK_TAG_MODEL for an unpinned profile on 
 
         assert.equal(response.status, 200);
         const body = (await response.json()) as {
-          config: { model: string; provider: string; profile: { model: string | null } };
+          config: { model: string; provider: string; agent: { model: string | null } };
         };
-        assert.equal(body.config.profile.model, null);
+        assert.equal(body.config.agent.model, null);
         assert.equal(body.config.model, 'local-stub/node-unpinned-fallback');
         assert.equal(body.config.provider, 'local-stub');
       },
@@ -2355,7 +2429,7 @@ test('admin API clears a pinned model with PATCH model: null', async () => {
       const response = await app.request('/admin/api/agents/agent_admin', {
         method: 'PATCH',
         headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
-        body: JSON.stringify({ model: null }),
+        body: JSON.stringify({ expectedRevision: 1, model: null }),
       });
 
       assert.equal(response.status, 200);
@@ -2423,7 +2497,7 @@ test('admin API accepts exact apiConnection hosts and round-trips every field', 
     const patch = await app.request('/admin/api/agents/agent_api_connection', {
       method: 'PATCH',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
-      body: JSON.stringify({ apiConnections: patched }),
+      body: JSON.stringify({ expectedRevision: 1, apiConnections: patched }),
     });
     assert.equal(patch.status, 200);
     const body = (await patch.json()) as { agent: CustomAgentConfig };
@@ -2493,6 +2567,7 @@ test('admin API accepts exact Google OAuth policy and rejects client-side wideni
       method: 'PATCH',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
+        expectedRevision: 1,
         apiConnections: [
           googleApiConnection(undefined, {
             allowedHosts: ['gmail.googleapis.com', 'www.googleapis.com', 'evil.example.com'],
@@ -2533,6 +2608,7 @@ test('editing Google OAuth scopes invalidates old tokens and resets connection s
       method: 'PATCH',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
+        expectedRevision: 1,
         apiConnections: [googleApiConnection(nextScopes, {
           lifecycleStatus: 'ready',
           statusText: 'Connected',
@@ -2569,7 +2645,7 @@ test('removing Google OAuth policy through the profile API deletes its stored OA
     const response = await app.request('/admin/api/agents/agent_google', {
       method: 'PATCH',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
-      body: JSON.stringify({ apiConnections: [] }),
+      body: JSON.stringify({ expectedRevision: 1, apiConnections: [] }),
     });
 
     assert.equal(response.status, 200);
@@ -2698,7 +2774,7 @@ test('Google OAuth callback is public, state-gated, and marks the API connection
     assert.equal(completed.status, 303);
     assert.equal(
       completed.headers.get('location'),
-      '/admin/profiles/agent_google?oauth=connected&connection=google-workspace&lane=api',
+      '/admin/agents/agent_google?oauth=connected&connection=google-workspace&lane=api',
     );
     const saved = await store.getAgent('agent_google');
     assert.deepEqual(saved.apiConnections[0], googleApiConnection(undefined, {
@@ -2738,7 +2814,7 @@ test('Google OAuth callback deletes tokens when the saved connection changes dur
     assert.equal(completed.status, 303);
     assert.equal(
       completed.headers.get('location'),
-      '/admin/profiles/agent_google?oauth=failed&connection=google-workspace&lane=api',
+      '/admin/agents/agent_google?oauth=failed&connection=google-workspace&lane=api',
     );
     assert.ok(
       (await settings.getSettings(apiOAuthSettingKeys(REF_FOR_TEST))).every(
@@ -3007,7 +3083,7 @@ test('admin API accepts an agent with a valid mcpServers entry and round-trips i
     const patch = await app.request('/admin/api/agents/agent_mcp', {
       method: 'PATCH',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
-      body: JSON.stringify({ mcpServers: patched }),
+      body: JSON.stringify({ expectedRevision: 1, mcpServers: patched }),
     });
     assert.equal(patch.status, 200);
     const body = (await patch.json()) as { agent: CustomAgentConfig };
@@ -4507,7 +4583,7 @@ test('Slack identity Admin resources are gated, bounded, and secret-free', async
       assert.equal(listBody.identities[0]?.kind, 'workspace_default');
       assert.equal(listBody.identities[0]?.credentialsWritable, false);
       assert.deepEqual(
-        (listBody.identities[1]?.profiles as Array<{ id: string; name: string }>),
+        (listBody.identities[1]?.agents as Array<{ id: string; name: string }>),
         [],
       );
       assert.deepEqual(
@@ -4616,7 +4692,7 @@ test('Profile-origin identity setup replaces its captured prior identity and rej
         method: 'POST',
         headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
         body: JSON.stringify({
-          source: 'profile',
+          source: 'agent',
           initialDmAgentId: profileId,
           displayName: 'Finance Next',
         }),
@@ -4671,13 +4747,13 @@ test('Profile-origin identity setup replaces its captured prior identity and rej
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
         expectedRevision: pending.connectionRevision,
-        expectedProfileIdentityId: null,
+        expectedAgentIdentityId: null,
       }),
     });
     assert.equal(stale.status, 409);
     assert.deepEqual(await stale.json(), {
-      error: 'profile_slack_identity_changed',
-      profileId,
+      error: 'agent_slack_identity_changed',
+      agentId: profileId,
       expectedIdentityId: prior.id,
       actualIdentityId: concurrent.id,
     });
@@ -4695,7 +4771,7 @@ test('Profile-origin identity setup replaces its captured prior identity and rej
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
         expectedRevision: pending.connectionRevision,
-        expectedProfileIdentityId: null,
+        expectedAgentIdentityId: null,
       }),
     });
     assert.equal(completed.status, 200, await completed.clone().text());
@@ -4776,7 +4852,7 @@ test('verified Slack identity reconnect requeues its unavailable delivery recove
         headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
         body: JSON.stringify({
           expectedRevision: reconnecting.connectionRevision,
-          expectedProfileIdentityId: null,
+          expectedAgentIdentityId: null,
         }),
       },
     );
@@ -4849,13 +4925,13 @@ test('Slack identity DM and Profile mutations are explicit and stale-write fence
     const attached = await withEnv(
       {},
       () => app.request(
-        '/admin/api/slack-identities/slack_identity_finance/profiles/agent_legal',
+        '/admin/api/slack-identities/slack_identity_finance/agents/agent_legal',
         {
           method: 'POST',
           headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
           body: JSON.stringify({
             expectedRevision: 4,
-            expectedProfileIdentityId: null,
+            expectedAgentIdentityId: null,
             acknowledgeUnenumeratedChannels: false,
           }),
         },
@@ -4957,7 +5033,7 @@ test('Slack identity preflight is Profile-mutation-free and requires wildcard ac
     });
     const app = appWithAdminOptions(store, { settings });
     const endpoint =
-      '/admin/api/slack-identities/slack_identity_legal/profiles/agent_finance';
+      '/admin/api/slack-identities/slack_identity_legal/agents/agent_finance';
 
     const blocked = await withEnv(
       {},
@@ -4966,7 +5042,7 @@ test('Slack identity preflight is Profile-mutation-free and requires wildcard ac
         headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
         body: JSON.stringify({
           expectedRevision: legalIdentity.connectionRevision,
-          expectedProfileIdentityId: financeIdentity.id,
+          expectedAgentIdentityId: financeIdentity.id,
           acknowledgeUnenumeratedChannels: false,
           preflightOnly: true,
         }),
@@ -4983,7 +5059,7 @@ test('Slack identity preflight is Profile-mutation-free and requires wildcard ac
         headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
         body: JSON.stringify({
           expectedRevision: legalIdentity.connectionRevision,
-          expectedProfileIdentityId: financeIdentity.id,
+          expectedAgentIdentityId: financeIdentity.id,
           acknowledgeUnenumeratedChannels: true,
           preflightOnly: true,
         }),
@@ -5066,13 +5142,13 @@ test('Slack identity preflight names every concrete channel missing the selected
         SLACK_API_URL: `${fake.url}/api/`,
       },
       () => app.request(
-        '/admin/api/slack-identities/slack_identity_finance/profiles/agent_finance',
+        '/admin/api/slack-identities/slack_identity_finance/agents/agent_finance',
         {
           method: 'POST',
           headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
           body: JSON.stringify({
             expectedRevision: identity.connectionRevision,
-            expectedProfileIdentityId: null,
+            expectedAgentIdentityId: null,
             acknowledgeUnenumeratedChannels: false,
             preflightOnly: true,
           }),
@@ -5367,21 +5443,21 @@ test('Slack identity audit records each Profile attachment at the same identity 
       updatedAt: 1_800_000_000_000,
     });
     const app = appWithAdminOptions(store, { settings });
-    for (const profileId of ['agent_finance', 'agent_legal']) {
+    for (const agentId of ['agent_finance', 'agent_legal']) {
       const response = await withEnv(
         {},
         () => app.request(
-          `/admin/api/slack-identities/${identity.id}/profiles/${profileId}`,
+          `/admin/api/slack-identities/${identity.id}/agents/${agentId}`,
           {
             method: 'POST',
             headers: {
               ...auth(ADMIN_TOKEN),
               'content-type': 'application/json',
-              'x-request-id': `attach-${profileId}`,
+              'x-request-id': `attach-${agentId}`,
             },
             body: JSON.stringify({
               expectedRevision: identity.connectionRevision,
-              expectedProfileIdentityId: null,
+              expectedAgentIdentityId: null,
               acknowledgeUnenumeratedChannels: false,
             }),
           },
@@ -5396,6 +5472,55 @@ test('Slack identity audit records each Profile attachment at the same identity 
     assert.notEqual(attachmentEvents[0]?.idempotencyKey, attachmentEvents[1]?.idempotencyKey);
   } finally {
     settings.close();
+    store.close();
+  }
+});
+
+test('Agent-first admin projections expose capabilities, placements, readiness, and no Profile page', async () => {
+  const configured = agent({
+    id: 'agent_ops',
+    name: 'Operations',
+    skills: [{ name: 'project-health', description: 'Review project health.', instructions: 'Find blockers.', enabled: true }],
+    mcpServers: [mcpServer({ id: 'linear', displayName: 'Linear', presetId: 'linear' })],
+    repositories: [{ id: 'repo_ops', installationId: 42, accountLogin: 'acme', fullName: 'acme/ops', enabled: true }],
+  });
+  const store = new SqliteConfigStore(':memory:', { agents: [configured], assignments: [] });
+  try {
+    await store.putChannel({
+      workspaceId: 'T123', channelId: 'C456', label: 'operations',
+      additionalInstructions: 'Keep updates concise.', participationMode: 'ambient', lifecycle: 'active',
+    });
+    await store.putAssignment({ workspaceId: 'T123', channelId: 'C456', agentId: configured.id });
+    await store.createSlackIdentity({
+      id: 'slack_identity_ops', ingressKey: 'identity_ingress_ops_0123456789abcdef',
+      kind: 'dedicated', lifecycle: 'connected', teamId: 'T123', dmState: 'on',
+      dmAgentId: configured.id, credentialProvenance: 'stored', connectionRevision: 1,
+      health: 'healthy', createdAt: 1, updatedAt: 1,
+    });
+    const app = appWithAdmin(store);
+    const detailResponse = await app.request(`/admin/api/agents/${configured.id}`, { headers: auth(ADMIN_TOKEN) });
+    assert.equal(detailResponse.status, 200);
+    const detail = (await detailResponse.json()) as any;
+    assert.deepEqual(detail.agent.tabs, ['instructions', 'skills', 'connectors', 'repositories', 'memory']);
+    assert.equal(detail.agent.capabilityPreviews.skills[0].name, 'project-health');
+    assert.equal(detail.agent.capabilityPreviews.connectors[0].name, 'Linear');
+    assert.equal(detail.agent.capabilityPreviews.repositories[0].name, 'acme/ops');
+    assert.equal(detail.agent.whereItWorks.channels[0].channelName, 'operations');
+    assert.equal(detail.agent.whereItWorks.directMessages[0].identityId, 'slack_identity_ops');
+    assert.deepEqual(detail.agent.memoryOwner, { ownerKind: 'agent', workspaceId: 'T123', ownerId: 'agent_ops' });
+    assert.equal(detail.agent.deletion.blocked, true);
+
+    const channelsResponse = await app.request('/admin/api/channels', { headers: auth(ADMIN_TOKEN) });
+    assert.equal(channelsResponse.status, 200);
+    const channels = (await channelsResponse.json()) as any;
+    assert.equal(channels.channels[0].assignment.agentId, 'agent_ops');
+    assert.equal(channels.channels[0].assignment.agentName, 'Operations');
+    assert.equal(channels.channels[0].readiness.code, 'ready');
+    assert.equal(channels.channels[0].links.agent, '/admin/agents/agent_ops');
+
+    const removedProfilePage = await app.request('/admin/profiles/agent_ops', { headers: auth(ADMIN_TOKEN) });
+    assert.equal(removedProfilePage.status, 404);
+  } finally {
     store.close();
   }
 });

@@ -18,12 +18,14 @@ test('onboarding journey is resumable and completes monotonically', async () => 
 
   const trying = await startOnboardingTry(settings, {
     expectedRevision: begun.revision,
+    agentId: 'agent_default',
     workspaceId: 'T123',
     channelId: 'C456',
     channelName: '#general',
     tryStartedAt: 300,
   });
   assert.equal(trying.journey.selectedChannelName, 'general');
+  assert.equal(trying.journey.agentId, 'agent_default');
   const completed = await completeOnboardingJourney(settings, trying.revision, 400);
   assert.equal(completed.journey.state, 'complete');
   assert.equal((await readOnboardingJourney(settings))?.journey.completedAt, 400);
@@ -36,6 +38,7 @@ test('onboarding journey rejects stale and malformed state', async () => {
   const begun = await beginOnboardingJourney(settings, 100);
   const trying = await startOnboardingTry(settings, {
     expectedRevision: begun.revision,
+    agentId: 'agent_default',
     workspaceId: 'T123',
     channelId: 'C456',
     channelName: 'general',
@@ -43,6 +46,7 @@ test('onboarding journey rejects stale and malformed state', async () => {
   });
   await assert.rejects(() => startOnboardingTry(settings, {
     expectedRevision: begun.revision,
+    agentId: 'agent_default',
     workspaceId: 'T123',
     channelId: 'C999',
     channelName: 'random',

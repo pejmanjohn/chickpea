@@ -99,6 +99,37 @@ test('owner-native create replay is idempotent and updates preserve the winning 
   }
 });
 
+test('runtime owner reads exclude expired rows before crossing the store boundary', async () => {
+  const store = new SqliteMemoryStateStore(':memory:', () => createdAt);
+  try {
+    const owner = await store.ensureOwner({
+      workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: 'agent_ops',
+    });
+    const active = await store.createOwnerEntry(ownerCreateInput());
+    const expiring = await store.createOwnerEntry(ownerCreateInput({
+      entryId: 'mem_owner_expired',
+      slug: 'expired-convention',
+      idempotencyKey: 'memory:owner:create:expired',
+    }));
+    await store.transitionOwnerEntry({
+      entryId: expiring.entryId,
+      expectedVersion: expiring.version,
+      transition: 'expire',
+      actorId: 'admin',
+      actorClass: 'operator',
+      idempotencyKey: 'memory:owner:expire:1',
+    });
+
+    assert.equal((await store.listOwnerEntries(owner)).length, 2);
+    assert.deepEqual(
+      await store.listOwnerEntries(owner, { readableAt: createdAt }),
+      [active],
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test('owner slugs are unique per owner and write origin is optional provenance', async () => {
   const store = new SqliteMemoryStateStore(':memory:', () => createdAt);
   try {

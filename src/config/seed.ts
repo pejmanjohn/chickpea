@@ -16,6 +16,7 @@ export function createSeededAgents(
   const target = options.target ?? (isCloudflareTarget() ? 'cloudflare' : 'node');
   const defaultAgent: CustomAgentConfig = {
     id: 'agent_default',
+    revision: 1,
     name: 'Default',
     // PROFILE layer only — the runtime composes the RUNTIME and GUARDRAIL layers
     // separately. A neutral, general-purpose voice with zero product-specific

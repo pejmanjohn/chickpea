@@ -80,11 +80,13 @@ import {
   type EffectiveSlackConfig,
 } from '../config/effective-config.ts';
 import {
+  AgentRevisionConflictError,
   AgentSlackIdentityConflictError,
   AgentExistsError,
   AgentStillAssignedError,
   AgentStillSlackDmHandlerError,
   AgentStillReferencedError,
+  ChannelAssignmentConflictError,
   ModelResolutionError,
   NoAssignmentError,
   SlackIdentityExistsError,
@@ -192,6 +194,7 @@ import { sandboxBindingInstalled } from '../sandbox/select.ts';
 import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
+  getAgentSnapshotStore,
   getConfigStore,
   getIdentityStore,
   getMemoryStateStore,
@@ -204,12 +207,15 @@ import {
   readRuntimeDrainStatus,
   type PlatformEnv,
 } from '../config/state-backend.ts';
+import type { AgentSnapshotStore } from '../config/snapshot-store.ts';
 import type { RuntimeDrainStatus } from '../config/state-rpc.ts';
 import { generateSlackIdentityIngressKey, type ConfigStore } from '../config/store.ts';
+import type { AgentCreateInput } from '../config/types.ts';
 import type { MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
+import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { hasDeliveredOnboardingReply } from './onboarding-proof.ts';
 import type {
   AuthProviderConfig,
@@ -357,6 +363,7 @@ interface AdminRoutesOptions {
   // routes; absent, the platform backend is resolved per request (c.env is the
   // Cloudflare bindings object there; Node ignores it).
   store?: ConfigStore | undefined;
+  snapshots?: AgentSnapshotStore | undefined;
   // Same seam for the Slack-connection wizard's settings persistence.
   settings?: SettingsStore | undefined;
   memory?: MemoryStateStore | undefined;
@@ -775,18 +782,17 @@ const agentSchema = v.object({
   repositories: v.optional(repositoriesSchema, []),
 });
 
-const agentPatchSchema = v.partial(
-  v.object({
-    name: nonEmptyString,
-    instructions: nonEmptyString,
-    enabled: v.boolean(),
-    model: v.nullable(modelSpecifier),
-    skills: skillsSchema,
-    mcpServers: mcpServersSchema,
-    apiConnections: apiConnectionsSchema,
-    repositories: repositoriesSchema,
-  }),
-);
+const agentPatchSchema = v.object({
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  name: v.optional(nonEmptyString),
+  instructions: v.optional(nonEmptyString),
+  enabled: v.optional(v.boolean()),
+  model: v.optional(v.nullable(modelSpecifier)),
+  skills: v.optional(skillsSchema),
+  mcpServers: v.optional(mcpServersSchema),
+  apiConnections: v.optional(apiConnectionsSchema),
+  repositories: v.optional(repositoriesSchema),
+});
 
 const githubOrgSchema = v.pipe(
   v.string(),
@@ -878,6 +884,7 @@ const assignmentSchema = v.object({
   channelId: nonEmptyString,
   agentId: nonEmptyString,
   enabled: v.boolean(),
+  expectedAgentId: v.optional(v.nullable(agentIdSchema)),
   channelLabel: v.optional(v.string()),
   channelPromptAddendum: v.optional(v.string()),
   participationMode: v.optional(v.picklist(['ambient', 'mention_only'])),
@@ -897,7 +904,7 @@ const onboardingTrySchema = v.strictObject({
 
 const slackIdentityRevisionSchema = v.pipe(v.number(), v.integer(), v.minValue(0));
 const slackIdentityCreateSchema = v.strictObject({
-  source: v.picklist(['profile', 'settings']),
+  source: v.picklist(['agent', 'settings']),
   initialDmAgentId: agentIdSchema,
   appName: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(35))),
   displayName: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(80))),
@@ -917,16 +924,16 @@ const slackIdentityRevisionOnlySchema = v.strictObject({
 });
 const slackIdentityVerifySchema = v.strictObject({
   expectedRevision: slackIdentityRevisionSchema,
-  expectedProfileIdentityId: v.optional(v.nullable(v.pipe(v.string(), v.regex(AGENT_ID_PATTERN)))),
+  expectedAgentIdentityId: v.optional(v.nullable(v.pipe(v.string(), v.regex(AGENT_ID_PATTERN)))),
 });
 const slackIdentityDmSchema = v.strictObject({
   expectedRevision: slackIdentityRevisionSchema,
   dmState: v.picklist(['on', 'off', 'needs_setup']),
   dmAgentId: v.optional(agentIdSchema),
 });
-const slackIdentityAttachProfileSchema = v.strictObject({
+const slackIdentityAttachAgentSchema = v.strictObject({
   expectedRevision: slackIdentityRevisionSchema,
-  expectedProfileIdentityId: v.nullable(v.pipe(v.string(), v.regex(AGENT_ID_PATTERN))),
+  expectedAgentIdentityId: v.nullable(v.pipe(v.string(), v.regex(AGENT_ID_PATTERN))),
   acknowledgeUnenumeratedChannels: v.optional(v.boolean(), false),
   preflightOnly: v.optional(v.boolean(), false),
 });
@@ -1028,6 +1035,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const passwordAuthByContext = new WeakMap<object, Promise<PasswordAuthContext | undefined>>();
   const tokenFromOptions = Object.hasOwn(options, 'adminToken');
   const store = (c: Context) => options.store ?? getConfigStore(c.env as PlatformEnv | undefined);
+  const snapshots = (c: Context) =>
+    options.snapshots ?? getAgentSnapshotStore(c.env as PlatformEnv | undefined);
   const identity = (c: Context) =>
     options.identity ?? getIdentityStore(c.env as PlatformEnv | undefined);
   const settings = (c: Context) =>
@@ -2742,12 +2751,46 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/agents', async (c) => {
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
+    const configStore = store(c);
+    const [rawAgents, assignments, identities, channels] = await Promise.all([
+      configStore.listAgents(),
+      configStore.listAssignments(),
+      configStore.listSlackIdentities(),
+      configStore.listChannels(),
+    ]);
     const agents = await Promise.all(
-      (await store(c).listAgents()).map((agent) =>
+      rawAgents.map((agent) =>
         withApiConnectionSources(agent, platformEnv, settingsStore),
       ),
     );
-    return c.json({ agents });
+    const roots = await Promise.all(
+      agents.map((agent) => snapshots(c).listLiveRootsByAgent(agent.id)),
+    );
+    return c.json({
+      agents: await Promise.all(agents.map((agent, index) =>
+        agentAdminProjection(agent, configStore, snapshots(c), {
+          assignments: assignments.filter(({ agentId }) => agentId === agent.id),
+          identities: identities.filter((identity) =>
+            identity.id === (agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) ||
+            identity.dmAgentId === agent.id
+          ),
+          references: {
+            agentId: agent.id,
+            channelAssignments: assignments
+              .filter(({ agentId }) => agentId === agent.id)
+              .map(({ workspaceId, channelId }) => ({ workspaceId, channelId })),
+            dmIdentityIds: identities
+              .filter(({ dmAgentId }) => dmAgentId === agent.id)
+              .map(({ id }) => id),
+            identityReferenceIds: identities
+              .filter(({ setupIntent }) => setupIntent?.sourceAgentId === agent.id)
+              .map(({ id }) => id),
+          },
+          channels,
+          snapshotRoots: roots[index]!,
+        })
+      )),
+    });
   });
 
   app.get('/admin/api/model-catalog', async (c) => {
@@ -3051,7 +3094,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json({
       ok: true,
       provider: providerSummary(id, resolved.source),
-      pinnedProfileCount: await countPinnedProfiles(store(c), id),
+      pinnedAgentCount: await countPinnedAgents(store(c), id),
     });
   });
 
@@ -3256,15 +3299,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/github/status', async (c) => {
     try {
       const connection = await getGithubConnection(settings(c));
-      // Profiles holding grants are reported up front so the UI can warn
+      // Agents holding grants are reported up front so the UI can warn
       // before a disconnect, not after (DELETE also reports, but too late).
-      const referencingProfiles = (await store(c).listAgents())
+      const referencingAgents = (await store(c).listAgents())
         .filter((agent) => agent.repositories.length > 0)
         .map(({ id, name }) => ({ id, name }));
       if (connection.mode !== 'app') {
         return c.json({
           mode: connection.mode,
-          referencingProfiles,
+          referencingAgents,
         });
       }
       // A revoked/rejected App key must still yield a recoverable status: the
@@ -3278,7 +3321,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ...(connection.appSlug ? { appSlug: connection.appSlug } : {}),
           installations: [],
           installationsUnavailable: true,
-          referencingProfiles,
+          referencingAgents,
         });
       }
       const withCounts = await Promise.all(
@@ -3301,7 +3344,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         mode: 'app' as const,
         ...(connection.appSlug ? { appSlug: connection.appSlug } : {}),
         installations: withCounts,
-        referencingProfiles,
+        referencingAgents,
       });
     } catch (err) {
       return internalError(c, err);
@@ -3368,7 +3411,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.delete('/admin/api/github', async (c) => {
     try {
-      const referencingProfiles = (await store(c).listAgents())
+      const referencingAgents = (await store(c).listAgents())
         .filter((agent) => agent.repositories.length > 0)
         .map(({ id, name }) => ({ id, name }));
       await settings(c).applySettingsPatch({
@@ -3378,7 +3421,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           LEGACY_GITHUB_PAT_SETTING_KEY,
         ],
       });
-      return c.json({ ok: true, referencingProfiles });
+      return c.json({ ok: true, referencingAgents });
     } catch (err) {
       return internalError(c, err);
     }
@@ -3920,13 +3963,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/agents/:id', async (c) => {
     try {
       const agent = await store(c).getAgent(c.req.param('id'));
-      return c.json({
-        agent: await withApiConnectionSources(
-          agent,
-          c.env as PlatformEnv | undefined,
-          settings(c),
-        ),
-      });
+      const enriched = await withApiConnectionSources(
+        agent,
+        c.env as PlatformEnv | undefined,
+        settings(c),
+      );
+      return c.json({ agent: await agentAdminProjection(enriched, store(c), snapshots(c)) });
     } catch (err) {
       if (err instanceof UnknownAgentError) {
         return c.json({ error: 'not_found' }, 404);
@@ -3945,6 +3987,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const configStore = store(c);
       const agentId = c.req.param('id');
       const current = await configStore.getAgent(agentId);
+      if (current.revision !== parsed.output.expectedRevision) {
+        throw new AgentRevisionConflictError(
+          agentId,
+          parsed.output.expectedRevision,
+          current.revision,
+        );
+      }
       const patch = toAgentPatch(parsed.output);
       if (patch.apiConnections) {
         patch.apiConnections = await normalizeApiOAuthPatch(
@@ -3969,18 +4018,31 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (modelError) {
         return modelNotResolvable(c, modelError);
       }
+      const updated = await configStore.updateAgent(
+        agentId,
+        patch,
+        parsed.output.expectedRevision,
+      );
       return c.json({
-        agent: await configStore.updateAgent(agentId, patch),
+        agent: await agentAdminProjection(updated, configStore, snapshots(c)),
         ...providerWarnings(next.model, providerIds()),
       });
     } catch (err) {
       if (err instanceof UnknownAgentError) {
         return c.json({ error: 'not_found' }, 404);
       }
+      if (err instanceof AgentRevisionConflictError) {
+        return c.json({
+          error: 'agent_revision_conflict',
+          agentId: err.agentId,
+          expectedRevision: err.expectedRevision,
+          actualRevision: err.actualRevision,
+        }, 409);
+      }
       if (err instanceof AgentStillSlackDmHandlerError) {
         return c.json({
           error: 'agent_slack_dm_handler',
-          profileId: err.agentId,
+          agentId: err.agentId,
           identityIds: err.identityIds.split(', ').filter(Boolean),
         }, 409);
       }
@@ -4021,6 +4083,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (agentReferenceCount(references) > 0) {
       return c.json({ error: 'agent_still_referenced', references }, 409);
     }
+    const liveSnapshotRoots = projectLiveSnapshotRoots(
+      await snapshots(c).listLiveRootsByAgent(agentId),
+    );
+    if (liveSnapshotRoots.length > 0) {
+      return c.json({
+        error: 'agent_live_snapshot_roots',
+        agentId,
+        roots: liveSnapshotRoots,
+      }, 409);
+    }
     // Persist the cleanup inventory before deleting the Agent. The marker is
     // independent of the config row, so settings cleanup can be retried after a
     // partial failure or an ambiguous DO/RPC response where the delete committed
@@ -4058,8 +4130,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
 
     try {
-      // Config and Agent-owned memory delete in one state transaction. Live
-      // roots are not blockers; they seal fail-closed on their next use.
+      // Config and Agent-owned memory delete in one state transaction after
+      // every durable reference and live frozen root has been cleared.
       await configStore.deleteAgentWithMemory(
         agentId,
         agentDeleteIdempotencyKey(c, agentId),
@@ -4091,7 +4163,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (err instanceof AgentStillSlackDmHandlerError) {
         return c.json({
           error: 'agent_slack_dm_handler',
-          profileId: err.agentId,
+          agentId: err.agentId,
           identityIds: err.identityIds.split(', ').filter(Boolean),
         }, 409);
       }
@@ -4148,6 +4220,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({
         stage: 'complete',
         revision: snapshot.revision,
+        agentId: journey.agentId ?? null,
+        redirectTo: journey.agentId
+          ? `/admin/agents/${encodeURIComponent(journey.agentId)}`
+          : null,
         workspace: journey.selectedWorkspaceId
           ? { id: journey.selectedWorkspaceId, name: null }
           : null,
@@ -4164,6 +4240,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({
         stage: 'connect_slack',
         revision: snapshot.revision,
+        agentId: null,
+        redirectTo: null,
         workspace: null,
         channel: null,
         tryStartedAt: null,
@@ -4190,6 +4268,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({
         stage: snapshot.journey.state === 'complete' ? 'complete' : 'try',
         revision: snapshot.revision,
+        agentId: journey.agentId ?? null,
+        redirectTo: snapshot.journey.state === 'complete' && journey.agentId
+          ? `/admin/agents/${encodeURIComponent(journey.agentId)}`
+          : null,
         workspace: {
           id: journey.selectedWorkspaceId,
           name: slack.teamId === journey.selectedWorkspaceId ? (slack.teamName ?? null) : null,
@@ -4203,6 +4285,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json({
       stage: 'choose_channel',
       revision: snapshot.revision,
+      agentId: null,
+      redirectTo: null,
       workspace: { id: slack.teamId, name: slack.teamName ?? null },
       channel: null,
       tryStartedAt: null,
@@ -4271,6 +4355,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       const started = await startOnboardingTry(settings(c), {
         expectedRevision: snapshot.revision,
+        agentId: assignment.agentId,
         workspaceId: parsed.output.workspaceId,
         channelId: parsed.output.channelId,
         channelName:
@@ -4293,6 +4378,122 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     const assignment = await store(c).getAssignment(key.workspaceId, key.channelId);
     return assignment ? c.json({ assignment }) : c.json({ error: 'not_found' }, 404);
+  });
+
+  app.get('/admin/api/channels', async (c) => {
+    const configStore = store(c);
+    const [configuredChannels, assignments, agents, credentials] = await Promise.all([
+      configStore.listChannels(),
+      configStore.listAssignments(),
+      configStore.listAgents(),
+      resolveSlackCredentials(c.env as PlatformEnv | undefined, settings(c)),
+    ]);
+    let discoveredChannels: Awaited<ReturnType<typeof listSlackChannels>>['channels'] = [];
+    let discoveryError: string | null = null;
+    if (credentials.botToken) {
+      try {
+        discoveredChannels = (await listSlackChannels(credentials.botToken, {
+          refresh: c.req.query('refresh') === '1',
+        })).channels;
+      } catch (error) {
+        discoveryError = error instanceof SlackChannelsError
+          ? error.slackError
+          : 'slack_list_failed';
+      }
+    }
+    const teamInfo = await resolveTeamInfoSafely(
+      c.env as PlatformEnv | undefined,
+      settings(c),
+    );
+    const channelsByKey = new Map(
+      configuredChannels.map((channel) => [
+        `${channel.workspaceId}\u0000${channel.channelId}`,
+        {
+          channel,
+          discovered: discoveredChannels.find(({ id }) => id === channel.channelId),
+        },
+      ]),
+    );
+    if (teamInfo.teamId) {
+      for (const discovered of discoveredChannels) {
+        const key = `${teamInfo.teamId}\u0000${discovered.id}`;
+        if (!channelsByKey.has(key)) {
+          channelsByKey.set(key, {
+            channel: {
+              workspaceId: teamInfo.teamId,
+              channelId: discovered.id,
+              label: discovered.name,
+              participationMode: 'ambient',
+              lifecycle: 'active',
+            },
+            discovered,
+          });
+        }
+      }
+    }
+    const assignmentsByChannel = new Map(
+      assignments.map((assignment) => [
+        `${assignment.workspaceId}\u0000${assignment.channelId}`,
+        assignment,
+      ]),
+    );
+    const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
+    return c.json({
+      channels: [...channelsByKey.values()].map(({ channel, discovered }) => {
+        const assignment = assignmentsByChannel.get(
+          `${channel.workspaceId}\u0000${channel.channelId}`,
+        );
+        const assignedAgent = assignment ? agentsById.get(assignment.agentId) : undefined;
+        const readiness = channel.lifecycle === 'archived'
+          ? { ready: false, code: 'channel_archived', reasons: ['Channel is archived.'] }
+          : !assignment
+            ? { ready: false, code: 'unassigned', reasons: ['Choose an Agent.'] }
+            : !assignedAgent
+              ? { ready: false, code: 'agent_missing', reasons: ['Assigned Agent no longer exists.'] }
+              : !assignedAgent.enabled
+                ? { ready: false, code: 'agent_disabled', reasons: ['Assigned Agent is disabled.'] }
+                : discovered?.isMember === false
+                  ? { ready: false, code: 'membership_required', reasons: ['Invite Chickpea to this channel.'] }
+                  : { ready: true, code: 'ready', reasons: [] };
+        return {
+          workspaceId: channel.workspaceId,
+          channelId: channel.channelId,
+          channelName: channel.label ?? channel.channelId,
+          source: discovered
+            ? (configuredChannels.some((candidate) =>
+                candidate.workspaceId === channel.workspaceId &&
+                candidate.channelId === channel.channelId)
+              ? 'configured_and_discovered'
+              : 'discovered')
+            : 'configured',
+          isPrivate: discovered?.isPrivate ?? null,
+          isMember: discovered?.isMember ?? null,
+          assignment: assignment
+            ? {
+                agentId: assignment.agentId,
+                agentName: assignedAgent?.name ?? null,
+                agentEnabled: assignedAgent?.enabled ?? false,
+              }
+            : null,
+          behavior: {
+            participationMode: channel.participationMode,
+            hasAdditionalInstructions: Boolean(channel.additionalInstructions?.trim()),
+            lifecycle: channel.lifecycle,
+          },
+          readiness,
+          links: {
+            channel: `/admin/channels/${encodeURIComponent(channel.workspaceId)}/${encodeURIComponent(channel.channelId)}`,
+            agent: assignment
+              ? `/admin/agents/${encodeURIComponent(assignment.agentId)}`
+              : null,
+          },
+        };
+      }),
+      discovery: {
+        connected: Boolean(credentials.botToken),
+        error: discoveryError,
+      },
+    });
   });
 
   app.put('/admin/api/assignments', async (c) => {
@@ -4384,17 +4585,30 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const assignment = toAssignment(input);
     const channel = toChannel(input, authoritativeLabel);
     try {
-      await store(c).putChannel(channel);
-      const saved = input.enabled
-        ? await store(c).putAssignment(assignment)
-        : (await store(c).deleteAssignment(assignment.workspaceId, assignment.channelId), null);
-      return c.json({
-        assignment: saved,
+      const current = await store(c).getAssignment(assignment.workspaceId, assignment.channelId);
+      const placement = await store(c).putChannelPlacement({
         channel,
+        agentId: input.enabled ? assignment.agentId : null,
+        expectedAgentId: Object.prototype.hasOwnProperty.call(input, 'expectedAgentId')
+          ? input.expectedAgentId ?? null
+          : current?.agentId ?? null,
+      });
+      return c.json({
+        assignment: placement.assignment,
+        channel: placement.channel,
         ...(isMember !== undefined ? { isMember } : {}),
         ...(joined !== undefined ? { joined } : {}),
       });
     } catch (err) {
+      if (err instanceof ChannelAssignmentConflictError) {
+        return c.json({
+          error: 'channel_assignment_changed',
+          workspaceId: err.workspaceId,
+          channelId: err.channelId,
+          expectedAgentId: err.expectedAgentId,
+          actualAgentId: err.actualAgentId,
+        }, 409);
+      }
       if (err instanceof UnknownAgentError) {
         return c.json({ error: 'unknown_agent' }, 404);
       }
@@ -4512,7 +4726,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!dmAgent.enabled) {
         return c.json({
           error: 'slack_identity_dm_profile_disabled',
-          message: 'Choose an enabled Profile to handle DMs for this identity.',
+          message: 'Choose an enabled Agent to handle DMs for this identity.',
         }, 409);
       }
       const now = Date.now();
@@ -4536,7 +4750,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ...(parsed.output.displayName
             ? { displayName: parsed.output.displayName }
             : {}),
-          ...(parsed.output.source === 'profile'
+          ...(parsed.output.source === 'agent'
             ? {
                 sourceAgentId: dmAgent.id,
                 sourceAgentSlackIdentityId: dmAgent.slackIdentityId ?? null,
@@ -4695,7 +4909,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             'sourceAgentSlackIdentityId',
           )
           ? before.setupIntent?.sourceAgentSlackIdentityId ?? null
-          : parsed.output.expectedProfileIdentityId ?? null
+          : parsed.output.expectedAgentIdentityId ?? null
         : undefined;
       const identity = await completeSlackIdentityConnection({
         config: configStore,
@@ -4737,7 +4951,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       return c.json({
         identity: await safeSlackIdentityResponse(c, identity),
-        attachedProfileId: attachAgentId ?? null,
+        attachedAgentId: attachAgentId ?? null,
       });
     } catch (error) {
       return slackIdentityAdminError(c, error);
@@ -4811,7 +5025,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.post(
-    '/admin/api/slack-identities/:identityId/profiles/:agentId',
+    '/admin/api/slack-identities/:identityId/agents/:agentId',
     async (c) => {
       const identityId = c.req.param('identityId');
       const agentId = c.req.param('agentId');
@@ -4819,7 +5033,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return invalidRequest(c);
       }
       const parsed = v.safeParse(
-        slackIdentityAttachProfileSchema,
+        slackIdentityAttachAgentSchema,
         await readJson(c.req),
       );
       if (!parsed.success) return invalidRequest(c);
@@ -4841,12 +5055,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               before.connectionRevision,
             );
           }
-          const currentProfile = await configStore.getAgent(agentId);
-          const currentIdentityId = currentProfile.slackIdentityId ?? null;
-          if (currentIdentityId !== parsed.output.expectedProfileIdentityId) {
+          const currentAgent = await configStore.getAgent(agentId);
+          const currentIdentityId = currentAgent.slackIdentityId ?? null;
+          if (currentIdentityId !== parsed.output.expectedAgentIdentityId) {
             throw new AgentSlackIdentityConflictError(
               agentId,
-              parsed.output.expectedProfileIdentityId,
+              parsed.output.expectedAgentIdentityId,
               currentIdentityId,
             );
           }
@@ -4865,18 +5079,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (!readiness.ready) return c.json(readiness, 409);
         if (parsed.output.preflightOnly) {
           return c.json({
-            profile: await configStore.getAgent(agentId),
+            agent: await configStore.getAgent(agentId),
             identity: await safeSlackIdentityResponse(c, before),
             membership: readiness,
             preflightOnly: true,
             newThreadsOnly: true,
           });
         }
-        const profile = await configStore.attachAgentToSlackIdentity(
+        const agent = await configStore.attachAgentToSlackIdentity(
           agentId,
           identityId,
           parsed.output.expectedRevision,
-          parsed.output.expectedProfileIdentityId,
+          parsed.output.expectedAgentIdentityId,
         );
         await appendSlackIdentityAudit(
           configStore,
@@ -4886,7 +5100,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           before,
         );
         return c.json({
-          profile,
+          agent,
           identity: await safeSlackIdentityResponse(c, before),
           membership: readiness,
           newThreadsOnly: true,
@@ -4962,12 +5176,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         before.dmState !== 'off' ||
         pendingDeliveryCount > 0
       ) {
-        const profiles = await Promise.all(
+        const agents = await Promise.all(
           references.agentIds.map((agentId) => configStore.getAgent(agentId)),
         );
         return c.json({
           error: 'slack_identity_retirement_blocked',
-          profiles: profiles.map(({ id, name }) => ({ id, name })),
+          agents: agents.map(({ id, name }) => ({ id, name })),
           dmState: before.dmState,
           dmAgentId: before.dmAgentId ?? null,
           pendingDeliveryCount,
@@ -5581,7 +5795,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         slackAppRevoked: false,
         configurationPreserved: true,
         message:
-          'Disconnected Chickpea locally. The Slack app was not uninstalled or revoked, and profiles, channel assignments, transcripts, and the public URL were preserved.',
+          'Disconnected Chickpea locally. The Slack app was not uninstalled or revoked, and Agents, channel assignments, transcripts, and the public URL were preserved.',
       });
     } catch (err) {
       return internalError(c, err);
@@ -5627,10 +5841,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   // SPA catch-all, registered LAST: every client-routed page path
-  // (/admin/profiles, /admin/channels/T/C, ...) serves the same page so deep
+  // (/admin/agents, /admin/channels/T/C, ...) serves the same page so deep
   // links and refreshes work. Unmatched /admin/api/* stays a 404, never HTML.
   app.get('/admin/sessions', (c) => c.redirect('/admin/channels'));
   app.get('/admin/sessions/*', (c) => c.redirect('/admin/channels'));
+  app.get('/admin/profiles', (c) => c.notFound());
+  app.get('/admin/profiles/*', (c) => c.notFound());
   app.get('/admin/*', (c) => {
     const pathname = new URL(c.req.url).pathname;
     if (pathname.startsWith('/admin/api/')) return c.notFound();
@@ -5645,7 +5861,7 @@ function mcpOAuthAdminRedirect(
   ref: { agentId: string; connectionId: string },
 ): string {
   return (
-    `/admin/profiles/${encodeURIComponent(ref.agentId)}` +
+    `/admin/agents/${encodeURIComponent(ref.agentId)}` +
     `?oauth=${status}&connection=${encodeURIComponent(ref.connectionId)}`
   );
 }
@@ -5655,7 +5871,7 @@ function apiOAuthAdminRedirect(
   ref: ApiOAuthRef,
 ): string {
   return (
-    `/admin/profiles/${encodeURIComponent(ref.agentId)}` +
+    `/admin/agents/${encodeURIComponent(ref.agentId)}` +
     `?oauth=${status}&connection=${encodeURIComponent(ref.connectionId)}&lane=api`
   );
 }
@@ -6280,7 +6496,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentConfig {
+function toAgentConfig(input: v.InferOutput<typeof agentSchema>): AgentCreateInput {
   return {
     id: input.id,
     name: input.name,
@@ -6423,7 +6639,9 @@ function toRepositories(
   }));
 }
 
-type AgentPatch = Partial<Omit<CustomAgentConfig, 'id' | 'model'>> & { model?: string | null };
+type AgentPatch = Partial<Omit<CustomAgentConfig, 'id' | 'revision' | 'model'>> & {
+  model?: string | null;
+};
 
 function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch {
   const patch: AgentPatch = {};
@@ -6449,11 +6667,11 @@ async function slackIdentityAdminResponse(
   slackStateStore: SlackStateStore,
   workspaceCredentialSources?: SlackCredentialSources | Promise<SlackCredentialSources>,
 ) {
-  const profiles = await configStore.listAgentsForSlackIdentity(identity.id);
-  let dmProfile: CustomAgentConfig | undefined;
+  const agents = await configStore.listAgentsForSlackIdentity(identity.id);
+  let dmAgent: CustomAgentConfig | undefined;
   if (identity.dmAgentId) {
     try {
-      dmProfile = await configStore.getAgent(identity.dmAgentId);
+      dmAgent = await configStore.getAgent(identity.dmAgentId);
     } catch (error) {
       if (!(error instanceof UnknownAgentError)) throw error;
     }
@@ -6482,8 +6700,8 @@ async function slackIdentityAdminResponse(
     effectiveDmState: globalDmAllowed ? identity.dmState : 'off',
     globalDmAllowed,
     dmAgentId: identity.dmAgentId ?? null,
-    dmProfile: dmProfile
-      ? { id: dmProfile.id, name: dmProfile.name, enabled: dmProfile.enabled }
+    dmAgent: dmAgent
+      ? { id: dmAgent.id, name: dmAgent.name, enabled: dmAgent.enabled }
       : null,
     credentialProvenance: identity.credentialProvenance,
     credentialsWritable:
@@ -6501,9 +6719,9 @@ async function slackIdentityAdminResponse(
       : identity.health,
     healthDetail: identity.healthDetail ?? null,
     consoleUrl: slackIdentityConsoleUrl(identity.appId),
-    profiles: profiles.map(({ id, name, enabled }) => ({ id, name, enabled })),
+    agents: agents.map(({ id, name, enabled }) => ({ id, name, enabled })),
     pendingDeliveryCount,
-    setupSourceProfileId: identity.setupIntent?.sourceAgentId ?? null,
+    setupSourceAgentId: identity.setupIntent?.sourceAgentId ?? null,
     setupReconnecting: identity.setupIntent?.reconnecting === true,
     createdAt: identity.createdAt,
     updatedAt: identity.updatedAt,
@@ -6719,8 +6937,8 @@ function slackIdentityAdminError(c: Context, error: unknown) {
   }
   if (error instanceof AgentSlackIdentityConflictError) {
     return c.json({
-      error: 'profile_slack_identity_changed',
-      profileId: error.agentId,
+      error: 'agent_slack_identity_changed',
+      agentId: error.agentId,
       expectedIdentityId: error.expectedIdentityId,
       actualIdentityId: error.actualIdentityId,
     }, 409);
@@ -7128,7 +7346,7 @@ function normalizeEgressDomain(domain: string): string {
   return new URL(result.url).hostname.toLowerCase();
 }
 
-async function countPinnedProfiles(configStore: ConfigStore, provider: string): Promise<number> {
+async function countPinnedAgents(configStore: ConfigStore, provider: string): Promise<number> {
   const agents = await configStore.listAgents();
   return agents.filter((agent) => modelBelongsToProvider(agent.model, provider)).length;
 }
@@ -7173,13 +7391,139 @@ function agentDeleteIdempotencyKey(c: Context, agentId: string): string {
     : `admin:agent-delete:${agentId}:${randomUUID()}`;
 }
 
+async function agentAdminProjection(
+  agent: CustomAgentConfig,
+  configStore: ConfigStore,
+  snapshotStore: AgentSnapshotStore,
+  preloaded?: {
+    assignments: ChannelAssignment[];
+    identities: SlackIdentity[];
+    references: AgentReferenceSummary;
+    channels: ChannelConfig[];
+    snapshotRoots: Awaited<ReturnType<AgentSnapshotStore['listLiveRootsByAgent']>>;
+  },
+): Promise<object> {
+  const projectionData = preloaded ?? await (async () => {
+    const [assignments, identities, references, channels, snapshotRoots] = await Promise.all([
+      configStore.listAssignmentsForAgent(agent.id),
+      configStore.listSlackIdentitiesForAgent(agent.id),
+      configStore.getAgentReferences(agent.id),
+      configStore.listChannels(),
+      snapshotStore.listLiveRootsByAgent(agent.id),
+    ]);
+    return { assignments, identities, references, channels, snapshotRoots };
+  })();
+  const { assignments, identities, references, channels, snapshotRoots } = projectionData;
+  const channelsByKey = new Map(
+    channels.map((channel) => [
+      `${channel.workspaceId}\u0000${channel.channelId}`,
+      channel,
+    ]),
+  );
+  const workspaceId = assignments[0]?.workspaceId ??
+    identities.find((identity) => identity.dmAgentId === agent.id)?.teamId ??
+    identities.find((identity) => identity.teamId)?.teamId;
+  return {
+    ...agent,
+    tabs: ['instructions', 'skills', 'connectors', 'repositories', 'memory'],
+    capabilityPreviews: {
+      skills: agent.skills.map(({ name, description, enabled }) => ({ name, description, enabled })),
+      connectors: [
+        ...agent.mcpServers.map(({ id, displayName, enabled, lifecycleStatus, presetId }) => ({
+          id,
+          name: displayName,
+          kind: 'mcp',
+          enabled,
+          status: lifecycleStatus,
+          ...(presetId ? { presetId } : {}),
+        })),
+        ...agent.apiConnections.map(({ id, displayName, enabled, lifecycleStatus, presetId }) => ({
+          id,
+          name: displayName,
+          kind: 'api',
+          enabled,
+          status: lifecycleStatus ?? 'ready',
+          ...(presetId ? { presetId } : {}),
+        })),
+      ],
+      repositories: agent.repositories.map(({ id, fullName, accountLogin, enabled }) => ({
+        id,
+        name: fullName || accountLogin,
+        enabled,
+      })),
+    },
+    identity: (() => {
+      const selectedId = agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
+      const selected = identities.find(({ id }) => id === selectedId);
+      return selected
+        ? {
+            id: selected.id,
+            displayName: selected.observedDisplayName ??
+              selected.setupIntent?.displayName ??
+              (selected.kind === 'workspace_default' ? 'Chickpea' : selected.id),
+            lifecycle: selected.lifecycle,
+            health: selected.health,
+          }
+        : null;
+    })(),
+    whereItWorks: {
+      channels: assignments.map((assignment) => {
+        const channel = channelsByKey.get(
+          `${assignment.workspaceId}\u0000${assignment.channelId}`,
+        );
+        return {
+          workspaceId: assignment.workspaceId,
+          channelId: assignment.channelId,
+          channelName: channel?.label ?? assignment.channelId,
+          participationMode: channel?.participationMode ?? 'ambient',
+          href: `/admin/channels/${encodeURIComponent(assignment.workspaceId)}/${encodeURIComponent(assignment.channelId)}`,
+        };
+      }),
+      directMessages: identities
+        .filter((identity) => identity.dmAgentId === agent.id)
+        .map((identity) => ({
+          identityId: identity.id,
+          identityName: identity.observedDisplayName ??
+            identity.setupIntent?.displayName ??
+            (identity.kind === 'workspace_default' ? 'Chickpea' : identity.id),
+          workspaceId: identity.teamId ?? null,
+          state: identity.dmState,
+        })),
+    },
+    memoryOwner: workspaceId
+      ? { ownerKind: 'agent', workspaceId, ownerId: agent.id }
+      : null,
+    deletion: {
+      blocked: agentReferenceCount(references) > 0 || snapshotRoots.length > 0,
+      references,
+      liveSnapshotRoots: projectLiveSnapshotRoots(snapshotRoots),
+    },
+  };
+}
+
+function projectLiveSnapshotRoots(
+  roots: Awaited<ReturnType<AgentSnapshotStore['listLiveRootsByAgent']>>,
+): Array<object> {
+  return roots.map((root) => {
+    const { workspaceId, channelId, threadTs } = parseSlackThreadKey(root.threadKey);
+    return {
+      threadKey: root.threadKey,
+      workspaceId,
+      channelId,
+      threadTs,
+      lastActivityAt: root.lastActivityAt,
+      channelHref: `/admin/channels/${encodeURIComponent(workspaceId)}/${encodeURIComponent(channelId)}`,
+    };
+  });
+}
+
 function effectiveConfigResponse(config: EffectiveSlackConfig): object {
   return {
     workspaceId: config.workspaceId,
     channelId: config.channelId,
     agentId: config.agentId,
     slackIdentityId: config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-    profile: {
+    agent: {
       id: config.agent.id,
       name: config.agent.name,
       enabled: config.agent.enabled,

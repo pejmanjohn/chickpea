@@ -25,6 +25,7 @@ import {
 
 const AGENT: CustomAgentConfig = {
   id: 'agent_test',
+  revision: 1,
   name: 'Test',
   instructions: 'do the thing',
   enabled: true,

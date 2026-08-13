@@ -40,6 +40,7 @@ const assignment: ResolvedAssignment = {
   },
   agent: {
     id: 'agent_usage',
+    revision: 1,
     name: 'Usage profile',
     instructions: 'private instructions',
     enabled: true,

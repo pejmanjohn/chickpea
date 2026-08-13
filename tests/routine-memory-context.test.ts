@@ -20,6 +20,7 @@ const NOW = Date.UTC(2026, 7, 12, 12);
 function agent(id: string, name: string): CustomAgentConfig {
   return {
     id,
+    revision: 1,
     name,
     instructions: `Act as ${name}.`,
     enabled: true,

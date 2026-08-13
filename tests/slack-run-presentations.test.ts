@@ -425,6 +425,7 @@ test('presentation recovery authority survives the independent TurnJob terminal 
         agentId: 'agent_default',
         agent: {
           id: 'agent_default',
+          revision: 1,
           name: 'Default',
           instructions: 'Help.',
           enabled: true,
@@ -464,7 +465,7 @@ test('presentation recovery authority survives the independent TurnJob terminal 
         channelId: ROOT.channelId,
         agentId: 'agent_default',
         agent: {
-          id: 'agent_default', name: 'Default', instructions: 'Help.', enabled: true,
+          id: 'agent_default', revision: 1, name: 'Default', instructions: 'Help.', enabled: true,
           skills: [], mcpServers: [], apiConnections: [], repositories: [],
         },
       },

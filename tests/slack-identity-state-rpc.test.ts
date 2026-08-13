@@ -33,6 +33,7 @@ const identity: SlackIdentity = {
 
 const attachedProfile: CustomAgentConfig = {
   id: 'agent_finance',
+  revision: 1,
   name: 'Finance',
   instructions: 'Review finance work.',
   enabled: true,

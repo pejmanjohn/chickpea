@@ -1,7 +1,9 @@
 import {
+  AgentRevisionConflictError,
   AgentSlackIdentityConflictError,
   AgentExistsError,
   AgentStillReferencedError,
+  ChannelAssignmentConflictError,
   SlackIdentityExistsError,
   SlackIdentityLifecycleError,
   SlackIdentityRevisionConflictError,
@@ -17,8 +19,11 @@ import { seededAgents, seededAssignments } from './seed.ts';
 import {
   WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type AgentReferenceSummary,
+  type AgentCreateInput,
   type ChannelAssignment,
   type ChannelConfig,
+  type ChannelPlacementMutation,
+  type ChannelPlacementResult,
   type CustomAgentConfig,
   type SlackIdentity,
   type SlackIdentityDmState,
@@ -29,7 +34,7 @@ import type { StateDb } from '../state/state-db.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 
 export interface ConfigSeed {
-  agents: readonly CustomAgentConfig[];
+  agents: readonly AgentCreateInput[];
   assignments: readonly ConfigSeedAssignment[];
   channels?: readonly ChannelConfig[];
 }
@@ -52,6 +57,7 @@ const SCHEMA_VERSION_KEY = 'schema_version';
 
 interface AgentRow {
   id: string;
+  revision: number;
   name: string;
   instructions: string;
   enabled: number;
@@ -103,7 +109,7 @@ interface SlackIdentityRow {
 
 /** PATCH shape: `model: null` clears a pinned model; omitting it keeps the pin. */
 export type ConfigAgentPatch = Partial<
-  Omit<CustomAgentConfig, 'id' | 'model' | 'slackIdentityId'>
+  Omit<CustomAgentConfig, 'id' | 'revision' | 'model' | 'slackIdentityId'>
 > & {
   model?: string | null;
   slackIdentityId?: string | null;
@@ -165,8 +171,8 @@ export type OAuthReauthorizationTarget =
 export interface ConfigStore {
   listAgents(): Promise<CustomAgentConfig[]>;
   getAgent(agentId: string): Promise<CustomAgentConfig>;
-  createAgent(agent: CustomAgentConfig): Promise<CustomAgentConfig>;
-  updateAgent(agentId: string, patch: ConfigAgentPatch): Promise<CustomAgentConfig>;
+  createAgent(agent: AgentCreateInput): Promise<CustomAgentConfig>;
+  updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): Promise<CustomAgentConfig>;
   markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean>;
   deleteAgent(agentId: string): Promise<boolean>;
   deleteAgentWithMemory(
@@ -176,6 +182,7 @@ export interface ConfigStore {
   listChannels(): Promise<ChannelConfig[]>;
   getChannel(workspaceId: string, channelId: string): Promise<ChannelConfig | undefined>;
   putChannel(channel: ChannelConfig): Promise<ChannelConfig>;
+  putChannelPlacement(input: ChannelPlacementMutation): Promise<ChannelPlacementResult>;
   listAssignments(): Promise<ChannelAssignment[]>;
   getAssignment(workspaceId: string, channelId: string): Promise<ChannelAssignment | undefined>;
   listAssignmentsForAgent(agentId: string): Promise<ChannelAssignment[]>;
@@ -276,7 +283,7 @@ export class ConfigStoreLogic {
     return rowToAgent(row as unknown as AgentRow);
   }
 
-  createAgent(agent: CustomAgentConfig): CustomAgentConfig {
+  createAgent(agent: AgentCreateInput): CustomAgentConfig {
     if (agent.slackIdentityId) {
       this.requireAssignableSlackIdentity(agent.slackIdentityId);
     }
@@ -295,8 +302,13 @@ export class ConfigStoreLogic {
     return this.getAgent(agent.id);
   }
 
-  updateAgent(agentId: string, patch: ConfigAgentPatch): CustomAgentConfig {
+  updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): CustomAgentConfig {
     const current = this.getAgent(agentId);
+    const actualRevision = current.revision;
+    const requiredRevision = expectedRevision ?? actualRevision;
+    if (requiredRevision !== actualRevision) {
+      throw new AgentRevisionConflictError(agentId, requiredRevision, actualRevision);
+    }
     const model = patch.model === undefined ? (current.model ?? null) : patch.model;
     const slackIdentityId =
       patch.slackIdentityId === undefined
@@ -313,8 +325,8 @@ export class ConfigStoreLogic {
       `UPDATE config_agents
        SET name = ?, instructions = ?, enabled = ?, model = ?,
            skills_json = ?, mcp_servers_json = ?, api_connections_json = ?, repositories_json = ?,
-           slack_identity_id = ?
-       WHERE id = ?`,
+           slack_identity_id = ?, revision = revision + 1
+       WHERE id = ? AND revision = ?`,
       next.name,
       next.instructions,
       next.enabled ? 1 : 0,
@@ -325,7 +337,15 @@ export class ConfigStoreLogic {
       JSON.stringify(next.repositories),
       slackIdentityId,
       agentId,
+      requiredRevision,
     );
+    const updated = this.db.get('SELECT revision FROM config_agents WHERE id = ?', agentId) as
+      | { revision: number }
+      | undefined;
+    if (!updated || Number(updated.revision) !== requiredRevision + 1) {
+      const latest = this.getAgent(agentId);
+      throw new AgentRevisionConflictError(agentId, requiredRevision, latest.revision);
+    }
     return this.getAgent(agentId);
   }
 
@@ -347,7 +367,7 @@ export class ConfigStoreLogic {
         statusText: 'Reconnect required',
       };
       return this.db.run(
-        'UPDATE config_agents SET mcp_servers_json = ? WHERE id = ?',
+        'UPDATE config_agents SET mcp_servers_json = ?, revision = revision + 1 WHERE id = ?',
         JSON.stringify(mcpServers),
         target.agentId,
       ).changes === 1;
@@ -368,7 +388,7 @@ export class ConfigStoreLogic {
       statusText: 'Reconnect required',
     };
     return this.db.run(
-      'UPDATE config_agents SET api_connections_json = ? WHERE id = ?',
+      'UPDATE config_agents SET api_connections_json = ?, revision = revision + 1 WHERE id = ?',
       JSON.stringify(apiConnections),
       target.agentId,
     ).changes === 1;
@@ -428,6 +448,35 @@ export class ConfigStoreLogic {
   putChannel(channel: ChannelConfig): ChannelConfig {
     this.putChannelRow(channel);
     return this.getChannel(channel.workspaceId, channel.channelId) as ChannelConfig;
+  }
+
+  putChannelPlacement(input: ChannelPlacementMutation): ChannelPlacementResult {
+    if (input.agentId) this.getAgent(input.agentId);
+    return this.db.transaction(() => {
+      const current = this.getAssignment(input.channel.workspaceId, input.channel.channelId);
+      if ((current?.agentId ?? null) !== input.expectedAgentId) {
+        throw new ChannelAssignmentConflictError(
+          input.channel.workspaceId,
+          input.channel.channelId,
+          input.expectedAgentId,
+          current?.agentId ?? null,
+        );
+      }
+      this.putChannelRow(input.channel);
+      let assignment: ChannelAssignment | null = null;
+      if (input.agentId) {
+        assignment = {
+          workspaceId: input.channel.workspaceId,
+          channelId: input.channel.channelId,
+          agentId: input.agentId,
+        };
+        this.putAssignmentRow(assignment);
+        this.syncDefaultDmIdentityFromAssignment(assignment);
+      } else {
+        this.deleteAssignmentRow(input.channel.workspaceId, input.channel.channelId);
+      }
+      return { channel: this.getChannel(input.channel.workspaceId, input.channel.channelId)!, assignment };
+    });
   }
 
   private putChannelRow(channel: ChannelConfig): void {
@@ -1064,14 +1113,15 @@ export class ConfigStoreLogic {
     });
   }
 
-  private insertAgent(agent: CustomAgentConfig): { changes: number } {
+  private insertAgent(agent: AgentCreateInput): { changes: number } {
     return this.db.run(
       `INSERT INTO config_agents (
-        id, name, instructions, enabled, model,
+        id, revision, name, instructions, enabled, model,
         skills_json, mcp_servers_json, api_connections_json, repositories_json,
         slack_identity_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
+      1,
       agent.name,
       agent.instructions,
       agent.enabled ? 1 : 0,
@@ -1156,7 +1206,7 @@ export class ConfigStoreLogic {
   // per-Agent OpenAI auth experiment moved to one installation setting. v6
   // added the original assignment-owned participation ceiling. v7 adds
   // SlackIdentity policy and the reserved workspace-default backfill. v8
-  // separates durable Channel state from Agent placement.
+  // separates durable Channel state from Agent placement. v10 adds Agent CAS.
   private runMigrations(): void {
     const MIGRATIONS: Array<{ version: number; up: (db: StateDb) => void }> = [
       {
@@ -1350,6 +1400,17 @@ export class ConfigStoreLogic {
           );
         },
       },
+      {
+        version: 10,
+        up: (db) => {
+          const hasRevision = db
+            .all('PRAGMA table_info(config_agents)')
+            .some((column) => column.name === 'revision');
+          if (!hasRevision) {
+            db.exec('ALTER TABLE config_agents ADD COLUMN revision INTEGER NOT NULL DEFAULT 1');
+          }
+        },
+      },
     ];
     const row = this.db.get('SELECT value FROM config_meta WHERE key = ?', SCHEMA_VERSION_KEY) as
       | { value: string }
@@ -1398,12 +1459,12 @@ export class SqliteConfigStore implements ConfigStore {
     return this.logic.getAgent(agentId);
   }
 
-  async createAgent(agent: CustomAgentConfig): Promise<CustomAgentConfig> {
+  async createAgent(agent: AgentCreateInput): Promise<CustomAgentConfig> {
     return this.logic.createAgent(agent);
   }
 
-  async updateAgent(agentId: string, patch: ConfigAgentPatch): Promise<CustomAgentConfig> {
-    return this.logic.updateAgent(agentId, patch);
+  async updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): Promise<CustomAgentConfig> {
+    return this.logic.updateAgent(agentId, patch, expectedRevision);
   }
 
   async markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean> {
@@ -1431,6 +1492,10 @@ export class SqliteConfigStore implements ConfigStore {
 
   async putChannel(channel: ChannelConfig): Promise<ChannelConfig> {
     return this.logic.putChannel(channel);
+  }
+
+  async putChannelPlacement(input: ChannelPlacementMutation): Promise<ChannelPlacementResult> {
+    return this.logic.putChannelPlacement(input);
   }
 
   async listAssignments(): Promise<ChannelAssignment[]> {
@@ -1614,6 +1679,7 @@ function isConstraintViolation(err: unknown): boolean {
 function rowToAgent(row: AgentRow): CustomAgentConfig {
   return {
     id: row.id,
+    revision: Number(row.revision ?? 1),
     name: row.name,
     instructions: row.instructions,
     enabled: Boolean(row.enabled),

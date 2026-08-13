@@ -1,9 +1,11 @@
 import {
+  AgentRevisionConflictError,
   AgentSlackIdentityConflictError,
   AgentExistsError,
   AgentStillAssignedError,
   AgentStillSlackDmHandlerError,
   AgentStillReferencedError,
+  ChannelAssignmentConflictError,
   SlackIdentityExistsError,
   SlackIdentityLifecycleError,
   SlackIdentityRevisionConflictError,
@@ -23,11 +25,14 @@ import type {
   SlackIdentityPatch,
 } from './store.ts';
 import type {
+  AgentCreateInput,
   AgentSnapshot,
   AgentSnapshotRootReference,
   AgentReferenceSummary,
   ChannelAssignment,
   ChannelConfig,
+  ChannelPlacementMutation,
+  ChannelPlacementResult,
   CustomAgentConfig,
   SlackIdentity,
   SlackIdentityDmState,
@@ -229,6 +234,12 @@ function unwrap<T>(result: StateRpcResult<T>): T {
       throw new UnknownAgentError(details?.agentId ?? 'unknown');
     case 'agent_exists':
       throw new AgentExistsError(details?.agentId ?? 'unknown');
+    case 'agent_revision_conflict':
+      throw new AgentRevisionConflictError(
+        details?.agentId ?? 'unknown',
+        Number(details?.expectedRevision ?? 0),
+        Number(details?.actualRevision ?? 0),
+      );
     case 'agent_still_assigned':
       throw new AgentStillAssignedError(details?.agentId ?? 'unknown', details?.keys ?? '');
     case 'agent_slack_dm_handler':
@@ -246,6 +257,13 @@ function unwrap<T>(result: StateRpcResult<T>): T {
         details?.agentId ?? 'unknown',
         details?.expectedIdentityId || null,
         details?.actualIdentityId || null,
+      );
+    case 'channel_assignment_conflict':
+      throw new ChannelAssignmentConflictError(
+        details?.workspaceId ?? 'unknown',
+        details?.channelId ?? 'unknown',
+        details?.expectedAgentId || null,
+        details?.actualAgentId || null,
       );
     case 'unknown_slack_identity':
       throw new UnknownSlackIdentityError(details?.identityId ?? 'unknown');
@@ -665,12 +683,12 @@ export class CfConfigStore implements ConfigStore {
     return unwrap(await this.stub.configGetAgent(agentId));
   }
 
-  async createAgent(agent: CustomAgentConfig): Promise<CustomAgentConfig> {
+  async createAgent(agent: AgentCreateInput): Promise<CustomAgentConfig> {
     return unwrap(await this.stub.configCreateAgent(agent));
   }
 
-  async updateAgent(agentId: string, patch: ConfigAgentPatch): Promise<CustomAgentConfig> {
-    return unwrap(await this.stub.configUpdateAgent(agentId, patch));
+  async updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): Promise<CustomAgentConfig> {
+    return unwrap(await this.stub.configUpdateAgent(agentId, patch, expectedRevision));
   }
 
   async markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean> {
@@ -698,6 +716,10 @@ export class CfConfigStore implements ConfigStore {
 
   async putChannel(channel: ChannelConfig): Promise<ChannelConfig> {
     return unwrap(await this.stub.configPutChannel(channel));
+  }
+
+  async putChannelPlacement(input: ChannelPlacementMutation): Promise<ChannelPlacementResult> {
+    return unwrap(await this.stub.configPutChannelPlacement(input));
   }
 
   async listAssignments(): Promise<ChannelAssignment[]> {
@@ -1164,8 +1186,15 @@ export class CfMemoryStateStore implements MemoryStateStore {
     return response.entries;
   }
 
-  async listOwnerEntries(owner: MemoryOwnerRef): Promise<OwnerMemoryEntry[]> {
-    const response = await this.execute({ kind: 'list_owner_entries', owner });
+  async listOwnerEntries(
+    owner: MemoryOwnerRef,
+    filter?: { readableAt?: number },
+  ): Promise<OwnerMemoryEntry[]> {
+    const response = await this.execute({
+      kind: 'list_owner_entries',
+      owner,
+      ...(filter?.readableAt === undefined ? {} : { readableAt: filter.readableAt }),
+    });
     if (response.kind !== 'owner_entries') throw unexpectedMemoryResponse();
     return response.entries;
   }

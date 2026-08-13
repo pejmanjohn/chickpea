@@ -200,6 +200,7 @@ test('OpenAI method selection is installation-wide and validates connections and
     headers: { ...auth(), 'content-type': 'application/json' },
     body: JSON.stringify({
       id: 'agent_incompatible',
+      revision: 1,
       name: 'Incompatible profile',
       instructions: 'Use a Platform-only OpenAI model.',
       enabled: true,
@@ -238,7 +239,7 @@ test('OpenAI method selection is installation-wide and validates connections and
   const supportedPatch = await app.request('/admin/api/agents/agent_incompatible', {
     method: 'PATCH',
     headers: { ...auth(), 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'openai/gpt-5.4' }),
+    body: JSON.stringify({ expectedRevision: 1, model: 'openai/gpt-5.4' }),
   });
   assert.equal(supportedPatch.status, 200);
 
@@ -277,6 +278,7 @@ test('OpenAI method selection is installation-wide and validates connections and
     headers: { ...auth(), 'content-type': 'application/json' },
     body: JSON.stringify({
       id: 'agent_unreleased',
+      revision: 1,
       name: 'Unreleased subscription model',
       instructions: 'Reject models absent from Chickpea\'s compatibility release.',
       enabled: true,
@@ -290,6 +292,7 @@ test('OpenAI method selection is installation-wide and validates connections and
     headers: { ...auth(), 'content-type': 'application/json' },
     body: JSON.stringify({
       id: 'agent_unsupported',
+      revision: 1,
       name: 'Unsupported profile',
       instructions: 'Reject this while Subscription is selected.',
       enabled: true,

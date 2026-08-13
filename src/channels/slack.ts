@@ -983,7 +983,19 @@ async function processSlackEvent(
     return;
   }
 
-  if (admissionTruth.eligible) {
+  // Canonical Work admission stores a concrete configured model. A missing
+  // model is an operator configuration error, but it must still follow the
+  // established legacy turn path so Slack receives one sanitized failure
+  // instead of an intake exception and silence.
+  let modelReadyForCanonicalAdmission = true;
+  try {
+    void (assignment.model ?? resolveAgentModel(assignment.agent));
+  } catch (error) {
+    if (!(error instanceof ModelResolutionError)) throw error;
+    modelReadyForCanonicalAdmission = false;
+  }
+
+  if (admissionTruth.eligible && modelReadyForCanonicalAdmission) {
     let egressPolicy;
     try {
       egressPolicy = parseEgressPolicy(

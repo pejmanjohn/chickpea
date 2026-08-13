@@ -18,7 +18,7 @@ test('fresh identity state installs only legacy compatibility and Chickpea contr
     assert.deepEqual(
       db.all('SELECT version FROM identity_migrations ORDER BY version')
         .map((row) => Number(row.version)),
-      [1, 2, 3],
+      [1, 2, 3, 4],
     );
     const tables = new Set(
       db.all("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -83,7 +83,7 @@ test('bba9f97 unreleased password v2 converges through compatibility migration',
     assert.deepEqual(
       db.all('SELECT version FROM identity_migrations ORDER BY version')
         .map((row) => Number(row.version)),
-      [1, 2, 3],
+      [1, 2, 3, 4],
     );
     assert.equal(tableExists(db, 'identity_password_credentials'), false);
     assert.equal(tableExists(db, 'identity_password_reset_capabilities'), false);

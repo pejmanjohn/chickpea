@@ -249,7 +249,13 @@ export class MemoryStoreLogic {
       case 'apply_owner_import':
         return { kind: 'owner_entries', entries: this.applyOwnerImport(request.input) };
       case 'list_owner_entries':
-        return { kind: 'owner_entries', entries: this.listOwnerEntries(request.owner) };
+        return {
+          kind: 'owner_entries',
+          entries: this.listOwnerEntries(
+            request.owner,
+            request.readableAt === undefined ? undefined : { readableAt: request.readableAt },
+          ),
+        };
       case 'list_owner_revisions':
         return { kind: 'revisions', revisions: this.listOwnerRevisions(request.entryId) };
       case 'reset_owner':
@@ -355,6 +361,8 @@ export class MemoryStoreLogic {
       throw new MemoryStateError('memory_owner_invalid', 'Memory owner identifiers are invalid.');
     }
     const storeId = ownerMemoryStoreId(owner);
+    const existing = this.getOwner(storeId);
+    if (existing) return existing;
     this.db.run(
       `INSERT OR IGNORE INTO memory_owners (
         store_id, workspace_id, owner_kind, owner_id, lifecycle, reset_epoch,
@@ -772,11 +780,25 @@ export class MemoryStoreLogic {
     return row ? rowToOwnerEntry(row as unknown as OwnerEntryRow) : undefined;
   }
 
-  listOwnerEntries(owner: MemoryOwnerRef): OwnerMemoryEntry[] {
+  listOwnerEntries(
+    owner: MemoryOwnerRef,
+    filter?: { readableAt?: number },
+  ): OwnerMemoryEntry[] {
     const storeId = ownerMemoryStoreId(owner);
-    return this.db.all(
-      'SELECT * FROM memory_owner_entries WHERE store_id = ? ORDER BY slug, entry_id', storeId,
-    ).map((row) => rowToOwnerEntry(row as unknown as OwnerEntryRow));
+    const rows = filter?.readableAt === undefined
+      ? this.db.all(
+          'SELECT * FROM memory_owner_entries WHERE store_id = ? ORDER BY slug, entry_id',
+          storeId,
+        )
+      : this.db.all(
+          `SELECT * FROM memory_owner_entries
+           WHERE store_id = ? AND status IN ('active', 'stale')
+             AND (expires_at IS NULL OR expires_at > ?)
+           ORDER BY slug, entry_id`,
+          storeId,
+          filter.readableAt,
+        );
+    return rows.map((row) => rowToOwnerEntry(row as unknown as OwnerEntryRow));
   }
 
   listOwnerRevisions(entryId: string): MemoryRevision[] {
@@ -2858,8 +2880,11 @@ export class SqliteMemoryStateStore implements MemoryStateStore {
     return this.logic.applyOwnerImport(input);
   }
 
-  async listOwnerEntries(owner: MemoryOwnerRef): Promise<OwnerMemoryEntry[]> {
-    return this.logic.listOwnerEntries(owner);
+  async listOwnerEntries(
+    owner: MemoryOwnerRef,
+    filter?: { readableAt?: number },
+  ): Promise<OwnerMemoryEntry[]> {
+    return this.logic.listOwnerEntries(owner, filter);
   }
 
   async listOwnerRevisions(entryId: string): Promise<MemoryRevision[]> {

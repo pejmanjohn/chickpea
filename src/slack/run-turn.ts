@@ -325,7 +325,10 @@ export async function runTurn(
       options,
     });
   }
-  const preparedMemory = memoryCommand
+  // Delivery-only recovery replays the exact persisted answer. It must not
+  // re-resolve current Agent/Channel memory (which could both block recovery
+  // on a changed lease and unnecessarily touch live state).
+  const preparedMemory = memoryCommand || options.replayText !== undefined
     ? undefined
     : await prepareMemoryTurn({
         turn,

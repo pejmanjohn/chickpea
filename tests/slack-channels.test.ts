@@ -41,6 +41,7 @@ function auth(): Record<string, string> {
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
     id: 'agent_channels',
+    revision: 1,
     name: 'Channels Agent',
     instructions: 'Answer with channel context.',
     enabled: true,
@@ -430,12 +431,12 @@ test('assignment PUT adopts Slack authoritative name and passes membership throu
         });
         assert.equal(response.status, 200);
         const body = (await response.json()) as {
-          assignment: { channelLabel?: string };
+          channel: { label?: string };
           isMember?: boolean;
           joined?: boolean;
         };
         // Slack's authoritative name wins over the typed label...
-        assert.equal(body.assignment.channelLabel, 'canonical-name');
+        assert.equal(body.channel.label, 'canonical-name');
         // ...and membership is surfaced for the UI's invite reminder...
         assert.equal(body.isMember, false);
         // ...and no self-join was attempted for a private channel.
@@ -640,11 +641,11 @@ test('assignment PUT keeps offline behavior when no Slack connection exists', as
       });
       assert.equal(response.status, 200);
       const body = (await response.json()) as {
-        assignment: { channelLabel?: string };
+        channel: { label?: string };
         isMember?: boolean;
       };
       // No connection → no override, no membership field: exactly the old shape.
-      assert.equal(body.assignment.channelLabel, 'dev-typed-label');
+      assert.equal(body.channel.label, 'dev-typed-label');
       assert.equal('isMember' in body, false);
     } finally {
       settings.close();

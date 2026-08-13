@@ -28,6 +28,9 @@ export interface LaneInstance {
   postEvent(payload: unknown, opts?: { tamper?: boolean }): Promise<PostEventResult>;
   adminRequest(path: string, init?: RequestInit): Promise<PostEventResult>;
   backend: FakeSlackBackend;
+  /** Bounded child-process output for diagnosing a failed end-to-end lane. */
+  debugOutput?(): string;
+  configDbPath?: string;
   /** Poll the wire log until it is idle (no new entries for ~150ms, cap ~5s). */
   quiesce(): Promise<void>;
   stop(): Promise<void>;

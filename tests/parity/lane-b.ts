@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { SqliteConfigStore } from '../../src/config/store.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../../src/config/types.ts';
 import {
   FakeSlackBackend,
   type FakeSlackBehaviorConfig,
@@ -75,6 +76,15 @@ export const laneB: Lane = {
       configDir = mkdtempSync(join(tmpdir(), 'chickpea-parity-config-'));
       const configDbPath = join(configDir, 'state.db');
       const store = new SqliteConfigStore(configDbPath, config.configSeed);
+      const identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+      await store.updateSlackIdentity(identity.id, identity.connectionRevision, {
+        lifecycle: 'connected',
+        teamId: config.slack?.identity?.teamId ?? 'T_DEMO',
+        appId: config.slack?.identity?.appId ?? 'A_DEMO',
+        botUserId: config.slack?.identity?.botUserId ?? 'U_BOT',
+        credentialProvenance: 'stored',
+        health: 'healthy',
+      });
       store.close();
       configEnv.SLACK_STATE_DB_PATH = configDbPath;
       configEnv.LOCAL_STUB_MODELS = config.configSeed.agents
@@ -155,6 +165,8 @@ export const laneB: Lane = {
 
     return {
       backend,
+      debugOutput: () => serverOutput.slice(-20_000),
+      ...(configDir ? { configDbPath: join(configDir, 'state.db') } : {}),
       async postEvent(payload, opts) {
         const { headers, body } = await signedInit(payload, opts?.tamper === true);
         const response = await fetch(eventsUrl, { method: 'POST', headers, body });
@@ -173,7 +185,9 @@ export const laneB: Lane = {
       async stop() {
         await stopChild(child);
         await backend.close();
-        if (configDir) rmSync(configDir, { recursive: true, force: true });
+        if (configDir && process.env.KEEP_PARITY_CONFIG !== '1') {
+          rmSync(configDir, { recursive: true, force: true });
+        }
       },
     };
   },
@@ -201,9 +215,26 @@ function slackFixturesFor(config: ScenarioLaneConfig): FakeSlackBehaviorConfig |
   const channels = new Map<string, FakeSlackChannel>();
   for (const channel of derived) channels.set(channel.id, channel);
   for (const channel of config.slack?.channels ?? []) channels.set(channel.id, channel);
+  const identity = {
+    appId: 'A_DEMO',
+    botUserId: 'U_BOT',
+    teamId: 'T_DEMO',
+    ...config.slack?.identity,
+  };
+  const channelMembers = config.slack?.channelMembers ?? Object.fromEntries(
+    [...channels.keys()].map((channelId) => [channelId, ['U_ALICE', 'U_BOB', identity.botUserId]]),
+  );
+  const workspaceUsers = config.slack?.workspaceUsers ?? [
+    { id: 'U_ALICE', teamId: identity.teamId },
+    { id: 'U_BOB', teamId: identity.teamId },
+    { id: identity.botUserId, teamId: identity.teamId, isBot: true, isAppUser: true },
+  ];
   return {
     ...config.slack,
+    identity,
     ...(channels.size > 0 ? { channels: [...channels.values()] } : {}),
+    channelMembers,
+    workspaceUsers,
   };
 }
 

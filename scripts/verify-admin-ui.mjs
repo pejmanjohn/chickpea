@@ -3,11 +3,11 @@
  * Prove the /admin configuration loop without Slack credentials:
  *   1. mount the real Hono admin routes against an in-memory SQLite store,
  *   2. exchange the POSTed admin token for a browser session cookie,
- *   3. create a profile and addendum-bearing assignment through /admin/api,
+ *   3. create an Agent and addendum-bearing Channel placement through /admin/api,
  *   4. read the server-side effective-config panel data,
  *   5. edit the addendum and prove the panel data changes in the same process,
- *   6. seed the real Memory store and prove scope/index, conflict, and
- *      irreversible-delete contracts through the authenticated admin plane.
+ *   6. seed Agent and exact-Channel memory and prove owner/index, conflict,
+ *      history, and irreversible-delete contracts through the authenticated admin plane.
  */
 import {
   assertNodeVersion,
@@ -26,6 +26,7 @@ const MODEL_SPECIFIER = 'local-stub/admin-ui-model';
 const FIRST_ADDENDUM = 'ADMIN_UI_ADDENDUM_V1: prefer release readiness.';
 const SECOND_ADDENDUM = 'ADMIN_UI_ADDENDUM_V2: prefer launch-risk deltas.';
 const MEMORY_ENTRY_ID = 'mem_admin_ui_release';
+const AGENT_MEMORY_ENTRY_ID = 'mem_admin_ui_agent';
 const ROUTINE_ID = 'routine_admin_ui_release';
 
 const results = [];
@@ -132,8 +133,8 @@ try {
     startedAt: usageNow - 10_000,
     installationId: 'admin-ui-installation',
     workspaceId: WORKSPACE_ID,
-    profileId: AGENT_ID,
-    profileLabel: 'Admin UI Profile',
+    agentId: AGENT_ID,
+    agentLabel: 'Admin UI Agent',
     channelId: CHANNEL_ID,
     channelLabel: CHANNEL_LABEL,
     conversationKind: 'named_channel',
@@ -166,26 +167,48 @@ try {
     priceVersionId: 'openai_2026-07-28',
     priceUnknownReason: null,
   });
-  const publicMemory = await memory.ensurePublicStore(WORKSPACE_ID);
-  await memory.observeChannelScope({
+  const channelMemory = await memory.ensureOwner({
     workspaceId: WORKSPACE_ID,
-    channelId: CHANNEL_ID,
-    privacy: 'public',
-    displayName: CHANNEL_LABEL,
-    observedAt: Date.now(),
+    ownerKind: 'channel',
+    ownerId: CHANNEL_ID,
   });
-  await memory.createEntry({
-    entryId: MEMORY_ENTRY_ID,
-    storeId: publicMemory.storeId,
+  const agentMemory = await memory.ensureOwner({
     workspaceId: WORKSPACE_ID,
-    sourceChannelId: CHANNEL_ID,
+    ownerKind: 'agent',
+    ownerId: AGENT_ID,
+  });
+  await memory.createOwnerEntry({
+    entryId: AGENT_MEMORY_ENTRY_ID,
+    storeId: agentMemory.storeId,
+    workspaceId: WORKSPACE_ID,
+    slug: 'release-principles',
+    description: 'Reusable release principles.',
+    type: 'preference',
+    body: 'Prefer small, reversible releases.',
+    actorId: 'U_ADMIN_UI_MEMBER',
+    actorClass: 'member',
+    writeOrigin: { kind: 'admin' },
+    idempotencyKey: 'admin-ui-agent-memory-create',
+  });
+  await memory.createOwnerEntry({
+    entryId: MEMORY_ENTRY_ID,
+    storeId: channelMemory.storeId,
+    workspaceId: WORKSPACE_ID,
     slug: 'release-guidance',
     description: 'Use the release checklist.',
     type: 'project',
     body: 'Run focused tests before release.',
     actorId: 'U_ADMIN_UI_MEMBER',
     actorClass: 'member',
-    idempotencyKey: 'admin-ui-memory-create',
+    writeOrigin: { kind: 'slack_channel', channelId: CHANNEL_ID },
+    idempotencyKey: 'admin-ui-channel-memory-create',
+  });
+  await memory.observeChannelScope({
+    workspaceId: WORKSPACE_ID,
+    channelId: CHANNEL_ID,
+    privacy: 'public',
+    displayName: CHANNEL_LABEL,
+    observedAt: Date.now(),
   });
   const routineService = new RoutineService(routines, {
     now: Date.now,
@@ -364,13 +387,13 @@ try {
 
   const created = await adminBody(app, 'POST', '/admin/api/agents', {
     id: AGENT_ID,
-    name: 'Admin UI Profile',
-    instructions: 'ADMIN_UI_PROFILE_INSTRUCTIONS: answer from the admin-created profile.',
+    name: 'Admin UI Agent',
+    instructions: 'ADMIN_UI_AGENT_INSTRUCTIONS: answer from the admin-created Agent.',
     enabled: true,
     model: MODEL_SPECIFIER,
   });
   record(
-    'POST /admin/api/agents creates the profile',
+    'POST /admin/api/agents creates the Agent',
     created.status === 201 && created.body?.agent?.id === AGENT_ID,
     `status=${created.status}`,
   );
@@ -386,8 +409,8 @@ try {
   record(
     'PUT /admin/api/assignments creates the labeled addendum assignment',
     assigned.status === 200 &&
-      assigned.body?.assignment?.channelLabel === CHANNEL_LABEL &&
-      assigned.body?.assignment?.channelPromptAddendum === FIRST_ADDENDUM,
+      assigned.body?.channel?.label === CHANNEL_LABEL &&
+      assigned.body?.channel?.additionalInstructions === FIRST_ADDENDUM,
     `status=${assigned.status}`,
   );
 
@@ -426,21 +449,30 @@ try {
     `status=${second.status} hashChanged=${String(secondConfig?.snapshotHash !== firstConfig?.snapshotHash)}`,
   );
 
-  const scopes = await adminJson(app, '/admin/api/audit/memory/scopes');
-  const files = await adminJson(
+  const owners = await adminJson(app, `/admin/api/audit/memory/owners?workspaceId=${WORKSPACE_ID}`);
+  const channelFiles = await adminJson(
     app,
-    `/admin/api/audit/memory/stores/${encodeURIComponent(publicMemory.storeId)}/files` +
-      `?sourceChannelId=${encodeURIComponent(CHANNEL_ID)}`,
+    `/admin/api/audit/memory/owners/channel/${WORKSPACE_ID}/${CHANNEL_ID}/files`,
+  );
+  const agentFiles = await adminJson(
+    app,
+    `/admin/api/audit/memory/owners/agent/${WORKSPACE_ID}/${AGENT_ID}/files`,
   );
   record(
-    'Memory scope tree and generated channel index use the real state store',
-    scopes.status === 200 &&
-      scopes.body?.scopes?.[0]?.channelId === CHANNEL_ID &&
-      files.status === 200 &&
-      files.body?.files?.[0]?.name === 'MEMORY.md' &&
-      files.body?.files?.[1]?.name === 'release-guidance.md',
-    `scopes=${scopes.status} files=${files.status}`,
+    'Memory owner tree separates Agent memory from exact-Channel memory',
+    owners.status === 200 &&
+      owners.body?.owners?.some((owner) => owner.ownerKind === 'agent' && owner.ownerId === AGENT_ID) &&
+      owners.body?.owners?.some((owner) => owner.ownerKind === 'channel' && owner.ownerId === CHANNEL_ID) &&
+      channelFiles.status === 200 &&
+      channelFiles.body?.files?.[0]?.name === 'MEMORY.md' &&
+      channelFiles.body?.files?.[1]?.name === 'release-guidance.md' &&
+      agentFiles.status === 200 &&
+      agentFiles.body?.files?.[1]?.name === 'release-principles.md',
+    `owners=${owners.status} channel=${channelFiles.status} agent=${agentFiles.status}`,
   );
+
+  const channelEntryPath =
+    `/admin/api/audit/memory/owners/channel/${WORKSPACE_ID}/${CHANNEL_ID}/entries/${MEMORY_ENTRY_ID}`;
 
   const editBody = JSON.stringify({
     expectedVersion: 1,
@@ -448,12 +480,12 @@ try {
     type: 'project',
     body: 'Run focused tests and the durability gate before release.',
   });
-  const edit = await adminJson(app, `/admin/api/audit/memory/entries/${MEMORY_ENTRY_ID}`, {
+  const edit = await adminJson(app, channelEntryPath, {
     method: 'PUT',
     headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-edit' },
     body: editBody,
   });
-  const conflict = await adminJson(app, `/admin/api/audit/memory/entries/${MEMORY_ENTRY_ID}`, {
+  const conflict = await adminJson(app, channelEntryPath, {
     method: 'PUT',
     headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-conflict' },
     body: editBody,
@@ -465,21 +497,28 @@ try {
     `edit=${edit.status} conflict=${conflict.status}`,
   );
 
+  const history = await adminJson(app, `${channelEntryPath}/history`);
+  record(
+    'Channel memory history stays under the exact owner route',
+    history.status === 200 && history.body?.revisions?.length === 2,
+    `status=${history.status} revisions=${String(history.body?.revisions?.length)}`,
+  );
+
   const unacknowledgedDelete = await adminJson(
     app,
-    `/admin/api/audit/memory/entries/${MEMORY_ENTRY_ID}`,
+    channelEntryPath,
     {
       method: 'DELETE',
       headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-delete-rejected' },
       body: JSON.stringify({ expectedVersion: 2, acknowledgeIrreversible: false }),
     },
   );
-  const deleted = await adminJson(app, `/admin/api/audit/memory/entries/${MEMORY_ENTRY_ID}`, {
+  const deleted = await adminJson(app, channelEntryPath, {
     method: 'DELETE',
     headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-delete' },
     body: JSON.stringify({ expectedVersion: 2, acknowledgeIrreversible: true }),
   });
-  const deletedEntry = await memory.getEntry(MEMORY_ENTRY_ID);
+  const deletedEntry = await memory.getOwnerEntry(MEMORY_ENTRY_ID);
   record(
     'Memory delete requires explicit acknowledgement and scrubs canonical content',
     unacknowledgedDelete.status === 400 && deleted.status === 200 &&

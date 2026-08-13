@@ -100,6 +100,13 @@ const backend = new FakeSlackBackend({
         teamId: 'T_DEMO',
       },
     ],
+    channelMembers: {
+      C_EXEC: ['U_ALICE', 'U_BOT'],
+    },
+    workspaceUsers: [
+      { id: 'U_ALICE', teamId: 'T_DEMO' },
+      { id: 'U_BOT', teamId: 'T_DEMO', isBot: true, isAppUser: true },
+    ],
   },
   provider: { mode: 'ok' },
 });

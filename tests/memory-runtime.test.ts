@@ -45,7 +45,7 @@ const runtimeAssignment: ResolvedAssignment = {
   agentId: 'agent_runtime',
   model: 'local-stub/runtime-memory',
   agent: {
-    id: 'agent_runtime', name: 'Runtime Agent', instructions: 'Be useful.', enabled: true,
+    id: 'agent_runtime', revision: 1, name: 'Runtime Agent', instructions: 'Be useful.', enabled: true,
     skills: [], mcpServers: [], apiConnections: [], repositories: [],
   },
 };

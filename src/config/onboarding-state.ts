@@ -6,6 +6,7 @@ export interface OnboardingJourney {
   version: 2;
   state: 'active' | 'complete';
   startedAt: number;
+  agentId?: string;
   selectedWorkspaceId?: string;
   selectedChannelId?: string;
   selectedChannelName?: string;
@@ -48,6 +49,7 @@ export async function startOnboardingTry(
   settings: SettingsStore,
   input: {
     expectedRevision: string;
+    agentId: string;
     workspaceId: string;
     channelId: string;
     channelName: string;
@@ -58,6 +60,7 @@ export async function startOnboardingTry(
   if (current.state !== 'active') return { journey: current, revision: input.expectedRevision };
   const journey: OnboardingJourney = {
     ...current,
+    agentId: agentId(input.agentId),
     selectedWorkspaceId: slackId(input.workspaceId, 'workspaceId'),
     selectedChannelId: slackId(input.channelId, 'channelId'),
     selectedChannelName: channelName(input.channelName),
@@ -73,7 +76,8 @@ export async function completeOnboardingJourney(
 ): Promise<OnboardingSnapshot> {
   const current = parseOnboardingJourney(expectedRevision);
   if (current.state === 'complete') return { journey: current, revision: expectedRevision };
-  if (!current.selectedWorkspaceId || !current.selectedChannelId || !current.tryStartedAt) {
+  if (!current.agentId || !current.selectedWorkspaceId || !current.selectedChannelId ||
+      !current.tryStartedAt) {
     throw new Error('Onboarding cannot complete before Try begins.');
   }
   return writeJourney(settings, expectedRevision, {
@@ -97,6 +101,7 @@ export function parseOnboardingJourney(raw: string): OnboardingJourney {
     version: 2,
     state: value.state as OnboardingJourney['state'],
     startedAt: value.startedAt,
+    ...(typeof value.agentId === 'string' ? { agentId: agentId(value.agentId) } : {}),
     ...(typeof value.selectedWorkspaceId === 'string'
       ? { selectedWorkspaceId: slackId(value.selectedWorkspaceId, 'workspaceId') }
       : {}),
@@ -109,14 +114,22 @@ export function parseOnboardingJourney(raw: string): OnboardingJourney {
     ...(isTime(value.tryStartedAt) ? { tryStartedAt: value.tryStartedAt } : {}),
     ...(isTime(value.completedAt) ? { completedAt: value.completedAt } : {}),
   };
-  const selected = Boolean(journey.selectedWorkspaceId && journey.selectedChannelId &&
+  const selected = Boolean(journey.agentId && journey.selectedWorkspaceId && journey.selectedChannelId &&
     journey.selectedChannelName && journey.tryStartedAt);
-  if (Boolean(journey.selectedWorkspaceId || journey.selectedChannelId ||
+  if (Boolean(journey.agentId || journey.selectedWorkspaceId || journey.selectedChannelId ||
       journey.selectedChannelName || journey.tryStartedAt) !== selected ||
       (journey.state === 'complete' && (!selected || !journey.completedAt))) {
     throw new Error('Stored onboarding journey is invalid.');
   }
   return journey;
+}
+
+function agentId(value: string): string {
+  const normalized = value.trim();
+  if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(normalized)) {
+    throw new Error('agentId is invalid.');
+  }
+  return normalized;
 }
 
 async function writeJourney(

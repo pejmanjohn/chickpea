@@ -24,7 +24,7 @@ const enabled: RoutineCapability = {
 const config: EffectiveSlackConfig = {
   workspaceId: 'T_ACCEPT', channelId: 'C_ACCEPT', agentId: 'agent_accept',
   agent: {
-    id: 'agent_accept', name: 'Acceptance', instructions: 'Use current channel authority.',
+    id: 'agent_accept', revision: 1, name: 'Acceptance', instructions: 'Use current channel authority.',
     enabled: true, model: 'anthropic/claude-haiku-4-5', skills: [], mcpServers: [],
     apiConnections: [], repositories: [],
   },

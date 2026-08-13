@@ -21,7 +21,9 @@ import { getConfigStore } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import {
   AgentSlackIdentityConflictError,
+  AgentRevisionConflictError,
   AgentStillReferencedError,
+  ChannelAssignmentConflictError,
 } from '../src/config/errors.ts';
 import {
   WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
@@ -40,6 +42,7 @@ function tempDbPath(): { dir: string; path: string } {
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
     id: 'agent_test',
+    revision: 1,
     name: 'Test Agent',
     instructions: 'Answer from the test fixture.',
     enabled: true,
@@ -88,6 +91,45 @@ test('Channel config survives Agent placement changes and unassignment', async (
   assert.equal(await store.getAssignment('T_TEST', 'C_TEST'), undefined);
   assert.deepEqual(await store.getChannel('T_TEST', 'C_TEST'), channel());
   store.close();
+});
+
+test('channel placement mutation atomically fences stale assignment edits', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [
+      agent({ id: 'agent_one' }),
+      agent({ id: 'agent_two' }),
+    ],
+    assignments: [],
+  });
+  const channel: ChannelConfig = {
+    workspaceId: 'T123',
+    channelId: 'C456',
+    label: 'ops',
+    additionalInstructions: 'Initial.',
+    participationMode: 'ambient',
+    lifecycle: 'active',
+  };
+  try {
+    await store.putChannelPlacement({ channel, agentId: 'agent_one', expectedAgentId: null });
+    const winner = await store.putChannelPlacement({
+      channel: { ...channel, additionalInstructions: 'Winner.' },
+      agentId: 'agent_two',
+      expectedAgentId: 'agent_one',
+    });
+    assert.equal(winner.assignment?.agentId, 'agent_two');
+    await assert.rejects(
+      () => store.putChannelPlacement({
+        channel: { ...channel, additionalInstructions: 'Stale loser.' },
+        agentId: 'agent_one',
+        expectedAgentId: 'agent_one',
+      }),
+      ChannelAssignmentConflictError,
+    );
+    assert.equal((await store.getAssignment('T123', 'C456'))?.agentId, 'agent_two');
+    assert.equal((await store.getChannel('T123', 'C456'))?.additionalInstructions, 'Winner.');
+  } finally {
+    store.close();
+  }
 });
 
 test('Agent references enumerate placements, DM bindings, and identity setup references', async () => {
@@ -195,6 +237,18 @@ test('SqliteConfigStore round-trips agent and assignment CRUD', async () => {
   });
   assert.equal(updated.instructions, 'Use the updated runtime instructions.');
   assert.equal(updated.model, 'local-stub/agent-updated');
+  assert.equal(updated.revision, 2);
+
+  await assert.rejects(
+    () => store.updateAgent(created.id, { name: 'Stale draft' }, 1),
+    (error: unknown) => {
+      assert.ok(error instanceof AgentRevisionConflictError);
+      assert.equal(error.expectedRevision, 1);
+      assert.equal(error.actualRevision, 2);
+      return true;
+    },
+  );
+  assert.equal((await store.getAgent(created.id)).name, created.name);
 
   const createdAssignment = assignment();
   await store.putChannel(channel());
@@ -889,7 +943,7 @@ test('SqliteConfigStore migrates the legacy v1 default-models column without los
       .all() as Array<{ id: string }>;
     migratedDb.close();
 
-    assert.equal(version.value, '9');
+    assert.equal(version.value, '10');
     assert.equal(
       agentColumns.some(({ name }) => name === 'default_models_json'),
       false,
@@ -928,7 +982,7 @@ test('fresh databases start at the clean current config schema', () => {
       .all('config_slack_identities') as Array<{ name: string }>;
     db.close();
 
-    assert.equal(version.value, '9');
+    assert.equal(version.value, '10');
     assert.deepEqual(
       agentColumns.map(({ name }) => name),
       [
@@ -942,6 +996,7 @@ test('fresh databases start at the clean current config schema', () => {
         'api_connections_json',
         'repositories_json',
         'slack_identity_id',
+        'revision',
       ],
     );
     assert.deepEqual(
@@ -1268,6 +1323,7 @@ test('a disabled legacy seed becomes an unassigned Channel without a Channel fal
     agents: [
       {
         id: 'agent_default',
+        revision: 1,
         name: 'Default',
         instructions: 'Default instructions.',
         enabled: true,

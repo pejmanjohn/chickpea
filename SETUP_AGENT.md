@@ -18,15 +18,15 @@ reinstalling. Let your human paste secrets if your environment's policy
 prefers that; everything else is clicking.
 
 **GitHub features are configured separately:** finish Slack setup here, then
-use **Settings → GitHub → Create GitHub App** before adding repositories to a
-profile. The GitHub App is also a prerequisite for the optional coding
+use **Settings → GitHub → Create GitHub App** before granting repositories to an
+Agent. The GitHub App is also a prerequisite for the optional coding
 sandbox.
 
 **The default Cloudflare deployment is intentionally slim:** it does not
 build the Ubuntu coding image or provision Container infrastructure. Ordinary
 Slack replies do not need it. To add it later, use **Settings → Coding sandbox
 → Install coding sandbox**, then follow the exact Cloudflare redeploy steps
-shown there. The Sandbox profile requires Workers Paid; the first image build
+shown there. The Sandbox deployment profile requires Workers Paid; the first image build
 can take several minutes. Node and other non-Cloudflare installs use the
 standard in-memory bash sandbox, without host filesystem or host git/SSH
 credential access. The complete install, enable, rollback, and cleanup flow is
@@ -82,13 +82,15 @@ in the [coding sandbox deployment runbook](docs/runbooks/coding-sandbox-deployme
    workspace from step 2**. If it names the wrong one, delete the app in
    Slack's console and restart from step 1; do not proceed.
 
-8. **Add a channel.** In `/admin`, add the channel the bot should answer in
-   (the picker lists channels by name). Chickpea joins an assigned public
-   channel automatically. For a private channel, invite the bot first with
-   `/invite @Chickpea`, then refresh the picker and add it.
+8. **Choose a Channel.** In `/admin`, choose the first Channel where the seeded
+   Default Agent should work (the picker lists Channels by name). Chickpea joins
+   an assigned public Channel automatically. For a private Channel, invite the
+   bot first with `/invite @Chickpea`, then refresh the picker and choose it.
 
-9. **Verify.** Mention `@Chickpea` in the assigned channel with any question. One
-   streamed reply should arrive in a thread, footed with the profile and
-   model that answered. If nothing arrives within a minute: `/admin` shows
+9. **Verify.** Mention `@Chickpea` in the assigned Channel with any question. One
+   streamed reply should arrive in a thread, footed with the Agent and model
+   that answered. Onboarding completes only after this real reply, then opens
+   the Default Agent with the Channel visible under **Where it works**. If
+   nothing arrives within a minute: `/admin` shows
    the connection state, and `npx wrangler tail <worker-name>` shows each
    event's outcome live.
