@@ -1640,6 +1640,7 @@ details[open].advanced summary::before {
 .agent-placement-group { min-width: 0; }
 .agent-placement-group h3 { color: var(--text-3); font-size: .625rem; letter-spacing: .08em; margin: 0 0 7px; text-transform: uppercase; }
 .agent-placement-empty { color: var(--text-3); font-size: .75rem; margin: 0; }
+.agent-dm-status { color: var(--text-2); font-size: .75rem; font-weight: 700; margin: 0; }
 .agent-placement-card > .btn { white-space: nowrap; }
 .agent-placement-card > .bundle-row, .agent-placement-card > .callout { grid-column: 1 / -1; }
 .agent-model-card .agent-model-row { background: transparent; padding: 0; }
@@ -1678,7 +1679,6 @@ details[open].advanced summary::before {
   padding: 7px 11px;
 }
 button.where-pill, button.capability-pill { cursor: pointer; }
-.where-pill.dm { background: var(--ember-tint); color: var(--ember-deep); }
 .owner-memory-intro { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 14px; justify-content: space-between; }
 .owner-memory-intro p { margin: 0; }
 .owner-memory-assignee { background: #f2e8d5; border-radius: 999px; color: var(--text-2); font-size: .6875rem; font-weight: 750; padding: 6px 9px; }
@@ -5317,14 +5317,17 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return profileOverviewHtml();
   }
 
+  function dmIdentityForAgent(agentId) {
+    return ((state.slackIdentities && state.slackIdentities.identities) || []).find(function (identity) {
+      return identity.dmAgentId === agentId && identity.effectiveDmState === "on";
+    }) || null;
+  }
+
   function agentHasDmDefault(agentId) {
     var legacyDefault = state.assignments.some(function (assignment) {
       return assignment.agentId === agentId && assignment.workspaceId === "*" && assignment.channelId === "*";
     });
-    var identityDefault = ((state.slackIdentities && state.slackIdentities.identities) || []).some(function (identity) {
-      return identity.dmAgentId === agentId && identity.effectiveDmState === "on";
-    });
-    return legacyDefault || identityDefault;
+    return legacyDefault || !!dmIdentityForAgent(agentId);
   }
 
   function concreteAssignmentsForAgent(agentId) {
@@ -7068,7 +7071,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var guidance = "Deleting this Agent cannot be undone.";
     if (dm) {
       title = "The DM default can\u2019t be deleted. Detach it everywhere first.";
-      guidance = "Move its identity-bound Direct messages. Detach it from every Channel before deleting this Agent.";
+      guidance = "Move its Direct message routing in identity settings. Detach it from every Channel before deleting this Agent.";
     } else if (concrete.length) {
       title = "Detach it from every channel first.";
       guidance = "Detach it from every Channel before deleting this Agent.";
@@ -7136,6 +7139,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function usedInHtml(draft) {
+    var dmIdentity = dmIdentityForAgent(draft.id);
     var dm = agentHasDmDefault(draft.id);
     var concrete = concreteAssignmentsForAgent(draft.id);
     var channelRows = '<div class="where-list">';
@@ -7145,7 +7149,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     channelRows += '</div>';
     if (!concrete.length) channelRows = '<p class="agent-placement-empty">No Channels yet. Add this Agent to one when it is ready.</p>';
     var dmRows = dm
-      ? '<button type="button" class="where-pill dm" data-action="open-settings" data-section="slack">' + icon("robot") + 'Direct messages <small>identity-bound</small></button>'
+      ? '<p class="agent-dm-status">On via ' + esc(dmIdentity ? slackIdentityMention(dmIdentity) : slackIdentityMentionForId(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID)) + '</p>'
       : '<p class="agent-placement-empty">No Slack identity routes Direct messages to this Agent.</p>';
     return '<section class="agent-detail-card agent-placement-card"><div class="agent-card-heading"><span class="agent-card-icon">' + icon("hash") + '</span><div><h2>Where it works</h2><p>Open a Channel to tune local behavior there.</p></div></div>' +
       '<div class="agent-placement-groups"><div class="agent-placement-group"><h3>Channels</h3>' + channelRows + '</div><div class="agent-placement-group"><h3>Direct messages</h3>' + dmRows + '</div></div>' +

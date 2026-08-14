@@ -4289,7 +4289,7 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(harness.app.innerHTML, /class="agent-tabs-card"/);
   assert.match(harness.app.innerHTML, /class="[^"]*agent-placement-card[^"]*"[\s\S]*?<h2>Where it works<\/h2>/);
   assert.match(harness.app.innerHTML, /<h3[^>]*>Channels<\/h3>[\s\S]*?# eng-releases/);
-  assert.match(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>[\s\S]*?identity-bound/);
+  assert.match(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>/);
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
   assert.match(harness.app.innerHTML, /class="[^"]*agent-model-card[^"]*"[\s\S]*?<h2>Model<\/h2>/);
   assert.match(harness.app.innerHTML, /class="advanced agent-advanced-card"[\s\S]*?Slack identity[\s\S]*?Coding sandbox/);
@@ -4307,16 +4307,58 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.agent-profile-page \.ptabs\s*\{[^}]*overflow-x:\s*auto;/s);
 });
 
-test('Where it works separates empty Channel placement from identity-bound Direct messages', async () => {
+test('Where it works keeps Channel placements and renders Direct messages as non-interactive identity status', async () => {
+  const identities = multiSlackIdentitiesFixture();
+  const workspaceIdentity = identities.identities.find((identity) =>
+    identity.id === 'slack_identity_default'
+  );
+  assert.ok(workspaceIdentity);
+  workspaceIdentity.displayName = 'Pea & Ops';
+
   const harness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_release',
-    assignments: [],
+    slackIdentities: identities,
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /<h3[^>]*>Channels<\/h3>[\s\S]*?No Channels yet/);
-  assert.match(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>[\s\S]*?data-action="open-settings" data-section="slack"/);
+  assert.match(harness.app.innerHTML, /data-action="open-channel-from-profile"[^>]*># eng-releases/);
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
+
+  const dmHeadingAt = harness.app.innerHTML.indexOf('<h3>Direct messages</h3>');
+  const addActionAt = harness.app.innerHTML.indexOf('data-action="attach-open"', dmHeadingAt);
+  assert.notEqual(dmHeadingAt, -1);
+  assert.notEqual(addActionAt, -1);
+  const addButtonAt = harness.app.innerHTML.lastIndexOf('<button', addActionAt);
+  const dmSection = harness.app.innerHTML.slice(dmHeadingAt, addButtonAt);
+  assert.match(dmSection, /class="agent-dm-status">On via @Pea &amp; Ops<\/p>/);
+  assert.doesNotMatch(dmSection, /identity-bound|<button|data-action=/);
+
+  const fallbackHarness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    assignments: [{
+      workspaceId: '*',
+      channelId: '*',
+      agentId: releaseAgent.id,
+      enabled: true,
+    }],
+    slackIdentities: { identities: [], globalDmAllowed: true },
+  });
+  await flushAsync();
+  assert.match(fallbackHarness.app.innerHTML, /class="agent-dm-status">On via @Chickpea<\/p>/);
+
+  const noDmHarness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    assignments: [],
+    slackIdentities: { identities: [], globalDmAllowed: true },
+  });
+  await flushAsync();
+
+  assert.match(noDmHarness.app.innerHTML, /<h3[^>]*>Channels<\/h3>[\s\S]*?No Channels yet/);
+  assert.match(
+    noDmHarness.app.innerHTML,
+    /<h3[^>]*>Direct messages<\/h3>[\s\S]*?No Slack identity routes Direct messages to this Agent\./,
+  );
+  assert.match(noDmHarness.app.innerHTML, /data-action="attach-open">Add to channels/);
 });
 
 test('Agent placements prefer the projected Slack Channel name over a raw Channel ID', async () => {
