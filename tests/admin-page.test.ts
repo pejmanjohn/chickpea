@@ -456,6 +456,8 @@ function runAdminPageHarness(
     usageAdminUi?: boolean;
     usageApiError?: boolean;
     usageCoverage?: { pricedOperationCount: number; meteredOperationCount: number };
+    usageClassifierOnly?: boolean;
+    usageNextCursor?: string | null;
   } = {},
 ): {
   app: FakeElement;
@@ -465,6 +467,7 @@ function runAdminPageHarness(
   listeners: Record<string, Listener>;
   putAssignments: unknown[];
   onboardingTryPosts: Array<Record<string, unknown>>;
+  onboardingCompletePosts: Array<Record<string, unknown>>;
   slackPosts: unknown[];
   resolveSlackPost(callIndex: number, result?: SlackPostResultFixture): void;
   onboardingCredentialValues(): { botToken: string; signingSecret: string };
@@ -609,6 +612,7 @@ function runAdminPageHarness(
   const listeners: Record<string, Listener> = {};
   const putAssignments: unknown[] = [];
   const onboardingTryPosts: Array<Record<string, unknown>> = [];
+  const onboardingCompletePosts: Array<Record<string, unknown>> = [];
   const slackPosts: unknown[] = [];
   const slackPostResolvers: Array<((result: SlackPostResultFixture) => void) | undefined> = [];
   const onboardingCredentialDom = {
@@ -1164,12 +1168,27 @@ function runAdminPageHarness(
       if (harnessOptions.usageApiError) return Promise.resolve(jsonResponse({ error: 'usage_unavailable' }, 503));
       if (path.startsWith('/admin/api/usage/overview')) {
         return Promise.resolve(jsonResponse({
-          current: { from: usageNow - 30 * 86400000, to: usageNow, groupBy: 'channel', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: usageTotals, groups: [{ key: 'direct_message', label: null, ...usageTotals }] },
+          current: { from: usageNow - 30 * 86400000, to: usageNow, groupBy: 'channel', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: usageTotals, groups: [{ key: 'direct_message', label: null, ...usageTotals }, { key: 'C0EXR3L9T', label: null, ...usageTotals }] },
           previous: { from: usageNow - 60 * 86400000, to: usageNow - 30 * 86400000, groupBy: 'channel', currency: 'USD', mixedCurrency: false, availableCurrencies: ['USD'], totals: { ...usageTotals, operationCount: 2, estimateAmountMicros: 10000 }, groups: [] },
         }));
       }
       if (path.startsWith('/admin/api/usage/operations')) {
-        return Promise.resolve(jsonResponse({ items: [usageOperation], nextCursor: null }));
+        const classifierOperation = {
+          ...usageOperation,
+          operation: {
+            ...usageOperation.operation,
+            operationId: 'op_classification_fixture',
+            operationKind: 'interaction_classification',
+            status: 'failed',
+          },
+          measurements: [],
+        };
+        return Promise.resolve(jsonResponse({
+          items: harnessOptions.usageClassifierOnly
+            ? [classifierOperation]
+            : [usageOperation, classifierOperation],
+          nextCursor: harnessOptions.usageNextCursor ?? null,
+        }));
       }
       if (path === '/admin/api/usage/metadata') {
         return Promise.resolve(jsonResponse({
@@ -1697,8 +1716,26 @@ function runAdminPageHarness(
         revision: JSON.stringify({ ...body, tryStartedAt: 1_800_000_000_000 }),
         workspace: { id: String(body.workspaceId), name: 'Acme Inc' },
         channel: { id: String(body.channelId), name: String(body.channelName) },
+        agentId: 'agent_default',
         tryStartedAt: 1_800_000_000_000,
         completedAt: null,
+      };
+      return Promise.resolve(jsonResponse(onboarding));
+    }
+    if (path === '/admin/api/onboarding/complete' && method === 'POST') {
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      onboardingCompletePosts.push(body);
+      onboarding = {
+        ...(onboarding ?? {
+          workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+          channel: { id: 'C_NEW', name: 'new-channel' },
+          tryStartedAt: 1_800_000_000_000,
+        }),
+        stage: 'complete',
+        revision: JSON.stringify({ state: 'complete', completedAt: 1_800_000_005_000 }),
+        completedAt: 1_800_000_005_000,
+        agentId: 'agent_default',
+        redirectTo: '/admin/agents/agent_default',
       };
       return Promise.resolve(jsonResponse(onboarding));
     }
@@ -2377,6 +2414,7 @@ function runAdminPageHarness(
     listeners,
     putAssignments,
     onboardingTryPosts,
+    onboardingCompletePosts,
     slackPosts,
     resolveSlackPost(callIndex: number, result: SlackPostResultFixture = {}) {
       const resolve = slackPostResolvers[callIndex];
@@ -3138,7 +3176,7 @@ test('Agent and Channel routes share the attached Agent roster and lower navigat
   assert.match(harness.app.innerHTML, /Assigned Agent/);
   assert.match(harness.app.innerHTML, /Release Profile/);
   assert.doesNotMatch(harness.app.innerHTML, /Access summary/);
-  assert.match(harness.app.innerHTML, /Resolved configuration/);
+  assert.doesNotMatch(harness.app.innerHTML, /Resolved configuration/);
   assert.match(harness.app.innerHTML, /When it speaks/);
   assert.match(harness.app.innerHTML, /Try it in Slack/);
   assert.match(harness.app.innerHTML, /Additional instructions/);
@@ -3917,7 +3955,7 @@ test('identity membership blockers name channels and require wildcard acknowledg
   assert.match(harness.app.innerHTML, /#finance/);
 });
 
-test('Channel Advanced shows the resolved Slack identity for new threads', async () => {
+test('Channel Advanced keeps resolved identity details out of the customer-facing page', async () => {
   const harness = runAdminPageHarness({
     slackIdentities: multiSlackIdentitiesFixture(),
     effectiveSlackIdentityId: 'slack_identity_finance',
@@ -3934,8 +3972,7 @@ test('Channel Advanced shows the resolved Slack identity for new threads', async
   });
   await flushAsync();
   assert.doesNotMatch(harness.app.innerHTML, /Access summary/);
-  assert.match(harness.app.innerHTML, /<h2 class="section-title">Resolved configuration<\/h2>/);
-  assert.match(harness.app.innerHTML, /<dt>Replies as<\/dt><dd>@Finance[^<]*new threads only/);
+  assert.doesNotMatch(harness.app.innerHTML, /Resolved configuration|<dt>Replies as<\/dt>/);
 });
 
 test('Add to channels loads the Slack catalog and can attach an unassigned workspace channel', async () => {
@@ -4301,6 +4338,7 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
 
   assert.match(harness.app.innerHTML, /class="agent-profile-page"/);
   assert.match(harness.app.innerHTML, /<header class="agent-profile-header">[\s\S]*?<span class="agent-kicker">Agent<\/span>[\s\S]*?<h1 class="page-title">Release Profile<\/h1>/);
+  assert.match(harness.app.innerHTML, /class="agent-replies-as">Replies as <span class="mono">@Chickpea<\/span>/);
   assert.match(harness.app.innerHTML, /aria-label="Agent setup"/);
   for (const tab of ['Instructions', 'Skills', 'Connectors', 'Repositories', 'Memory']) {
     assert.match(harness.app.innerHTML, new RegExp(`role="tab"[^>]*>${tab}`));
@@ -4312,7 +4350,8 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>/);
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
   assert.match(harness.app.innerHTML, /class="[^"]*agent-model-card[^"]*"[\s\S]*?<h2>Model<\/h2>/);
-  assert.match(harness.app.innerHTML, /class="advanced agent-advanced-card"[\s\S]*?Slack identity[\s\S]*?Coding sandbox/);
+  assert.match(harness.app.innerHTML, /class="advanced agent-advanced-card"[\s\S]*?<h2 class="section-title">Replies as<\/h2>[\s\S]*?Coding sandbox/);
+  assert.doesNotMatch(harness.app.innerHTML, /<strong>Slack identity<\/strong>/);
   assert.ok(
     harness.app.innerHTML.indexOf('class="agent-model-card"') < harness.app.innerHTML.indexOf('class="advanced agent-advanced-card"'),
     'Model must remain outside and before Agent Advanced',
@@ -4472,7 +4511,7 @@ test('Channel detail prefers the projected Slack Channel name over a raw Channel
   assert.doesNotMatch(harness.app.innerHTML, /#C0EXR3L9T/);
 });
 
-test('Channel detail follows the Agent-first hierarchy and contains resolved configuration', async () => {
+test('Channel detail follows the Agent-first hierarchy without internal resolved configuration', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin/channels/T_DESIGN/C0EXR3L9T' });
   await flushAsync();
 
@@ -4484,7 +4523,8 @@ test('Channel detail follows the Agent-first hierarchy and contains resolved con
   assert.match(html, /<h2 class="section-title">Inherited capabilities<\/h2>/);
   assert.match(html, /class="channel-participation-card"[\s\S]*?<h2 class="section-title">When it speaks<\/h2>/);
   assert.match(html, /class="channel-try-card"[\s\S]*?Try it in Slack[\s\S]*?data-action="copy-channel-prompt"[\s\S]*?Open #eng-releases/);
-  assert.match(html, /<details class="advanced channel-advanced-card"[\s\S]*?<h2 class="section-title">Resolved configuration<\/h2>/);
+  assert.match(html, /<details class="advanced channel-advanced-card"[\s\S]*?<h2 class="section-title">Channel memory<\/h2>/);
+  assert.doesNotMatch(html, /Resolved configuration|Channel ID|Workspace ID/);
   assert.doesNotMatch(html, /Access summary/);
 
   const order = [
@@ -4568,7 +4608,7 @@ test('Channel header keeps readiness, assignment, disabled, loading, and effecti
   await flushAsync();
   assert.match(failed.app.innerHTML, /class="channel-detail-status needs-attention"[^>]*>Needs attention/);
   assert.match(failed.app.innerHTML, /class="channel-header-error" role="alert">Choose a model on Release Profile\.<\/p>/);
-  assert.match(failed.app.innerHTML, /<h2 class="section-title">Resolved configuration<\/h2>[\s\S]*?Configuration issue/);
+  assert.doesNotMatch(failed.app.innerHTML, /Resolved configuration|Configuration issue/);
 });
 
 test('Channel capability groups use real previews, empty states, and owning-Agent navigation', async () => {
@@ -4589,7 +4629,8 @@ test('Channel capability groups use real previews, empty states, and owning-Agen
   assert.match(html, /class="channel-capability-group" data-capability="skill"[\s\S]*?Skills[\s\S]*?one[\s\S]*?\+1 more/);
   assert.match(html, /class="channel-capability-group" data-capability="connector"[\s\S]*?Connectors[\s\S]*?conn-logo[\s\S]*?Linear/);
   assert.match(html, /class="channel-capability-group" data-capability="repository"[\s\S]*?Repositories[\s\S]*?None added/);
-  assert.match(html, /data-action="open-profiles" data-agent="agent_release"[^>]*>Open Agent capabilities/);
+  assert.match(html, /Skills, Connectors, and Repositories come from <button[^>]*data-action="open-profiles" data-agent="agent_release"[^>]*>Release Profile <span aria-hidden="true">&nearr;<\/span><\/button>/);
+  assert.doesNotMatch(html, /Open Agent capabilities/);
 });
 
 test('Channel participation remains a Channel-only draft and survives a failed save', async () => {
@@ -8895,7 +8936,7 @@ test('the existing mobile menu is the sole narrow Agent roster transition with f
   assert.equal(harness.focusedAction(), 'mobile-menu-trigger');
 });
 
-test('profile save and access summary render server model-resolution messages', async () => {
+test('profile save and Channel readiness render server model-resolution messages', async () => {
   const serverMessage = 'No model pinned for agent agent_no_model. Pin a model in /admin (Agents -> Model).';
   const harness = runAdminPageHarness({
     agentWriteError: { status: 422, error: 'model_not_resolvable', message: serverMessage },
@@ -8930,8 +8971,7 @@ test('profile save and access summary render server model-resolution messages', 
   });
   await flushAsync();
 
-  assert.match(accessHarness.app.innerHTML, /<p class="field-label">Configuration issue<\/p>/);
-  assert.match(accessHarness.app.innerHTML, /No model pinned for agent agent_no_model/);
+  assert.match(accessHarness.app.innerHTML, /class="channel-header-error" role="alert">No model pinned for agent agent_no_model/);
   assert.doesNotMatch(accessHarness.app.innerHTML, /<p class="field-label">No enabled profile<\/p>/);
 });
 
@@ -8949,13 +8989,13 @@ test('selecting a channel re-renders after effective config finishes resolving',
     }),
   });
 
-  assert.match(harness.app.innerHTML, /Resolving\.\.\./);
+  assert.match(harness.app.innerHTML, /class="channel-detail-status resolving"[^>]*>Resolving/);
   harness.resolveOpsEffective();
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /#C_OPS/);
   assert.match(harness.app.innerHTML, /local-stub\/ops/);
-  assert.doesNotMatch(harness.app.innerHTML, /Resolving\.\.\./);
+  assert.doesNotMatch(harness.app.innerHTML, /channel-detail-status resolving/);
 });
 
 test('the attached Agent roster summarizes placements instead of grouping Channel rows', async () => {
@@ -9792,6 +9832,33 @@ test('onboarding assigns one returned Slack channel and lands directly in Try Ch
     harness.app.innerHTML,
     /@Chickpea Give me three useful ways you can help this channel, each with an example prompt I could try next\./,
   );
+  assert.match(harness.app.innerHTML, /data-action="onboarding-proceed-dashboard"[^>]*>Proceed to Dashboard<\/button>/);
+});
+
+test('onboarding can finish from Try Chickpea without waiting for a Slack reply', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    agents: [seededAgents[0]],
+    onboarding: {
+      stage: 'try',
+      revision: '{"version":2,"state":"active","tryStartedAt":1800000000000}',
+      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+      channel: { id: 'C_NEW', name: 'new-channel' },
+      tryStartedAt: 1_800_000_000_000,
+      completedAt: null,
+      agentId: 'agent_default',
+    },
+  });
+  await flushAsync();
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-proceed-dashboard' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.onboardingCompletePosts, [{
+    expectedRevision: '{"version":2,"state":"active","tryStartedAt":1800000000000}',
+  }]);
+  assert.equal(harness.locationPath(), '/admin/agents/agent_default');
+  assert.match(harness.app.innerHTML, /class="agent-profile-page"/);
 });
 
 test('onboarding stays on channel selection until Slack membership is positively verified', async () => {
@@ -9871,7 +9938,7 @@ test('completed onboarding confirms the reply and hands off to the canonical Age
 
   assert.match(harness.app.innerHTML, /Reply confirmed in #new-channel/);
   assert.match(harness.app.innerHTML, /<h1 class="onboarding-title">Chickpea is ready<\/h1>/);
-  assert.match(harness.app.innerHTML, /Continue in the Default Agent/);
+  assert.match(harness.app.innerHTML, /Continue in Release Profile/);
   assert.doesNotMatch(harness.app.innerHTML, /aria-label="Admin navigation"/);
   assert.match(harness.app.innerHTML, /class="btn btn-primary" data-action="open-profiles" data-agent="agent_release">Open Release Profile/);
   assert.match(harness.app.innerHTML, /class="btn btn-soft" href="https:\/\/app\.slack\.com\/client\/T_DESIGN\/C_NEW"/);
@@ -9979,8 +10046,9 @@ test('wizard paste-back submit posts both credentials and renders the connected 
 
   // Trimmed on the client before the POST.
   assert.deepEqual(harness.slackPosts, [{ botToken: 'xoxb-pasted', signingSecret: 'pasted-secret' }]);
-  // The connected funnel's dismissable success toast names the team + bot.
-  assert.match(harness.app.innerHTML, /Connected to <b[^>]*>Acme Inc<\/b> as <span[^>]*>@tag<\/span>/);
+  // Connection success is reflected in the page itself; it does not leave a
+  // stale, dismissible banner sitting above the Channels content.
+  assert.doesNotMatch(harness.app.innerHTML, /Connected to <b[^>]*>Acme Inc<\/b> as <span[^>]*>@tag<\/span>/);
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
 });
 
@@ -11189,6 +11257,8 @@ test('Usage shows concise spend, expanded token columns, and non-interactive act
   assert.match(html, /<option value="channel" selected>Channel<\/option>/);
   assert.match(html, /Spend by channel/);
   assert.match(html, /data-value="direct_message" data-label="Direct message">Direct message<\/button>/);
+  assert.match(html, /data-value="C0EXR3L9T" data-label="#eng-releases">#eng-releases<\/button>/);
+  assert.doesNotMatch(html, />#C0EXR3L9T<\/button>/);
   assert.doesNotMatch(html, /#direct_message/);
   assert.doesNotMatch(html, />#null<\/button>/);
   assert.match(html, /Recent <span class="usage-term-help"[^>]*>activity<\/span>/);
@@ -11197,11 +11267,26 @@ test('Usage shows concise spend, expanded token columns, and non-interactive act
   assert.match(html, /<td class="number">1,200<\/td><td class="number">300<\/td><td class="number">1,500<\/td>/);
   assert.match(html, /class="usage-token-total" tabindex="0" data-tooltip="1,000 input · 250 output"[^>]*>1,250<\/span>/);
   assert.match(html, /Direct message/);
+  assert.doesNotMatch(html, /Interaction classification|op_classification_fixture/);
   assert.doesNotMatch(html, /data-action="usage-select-operation"|Activity details|data-operation="op_usage_fixture"/);
   assert.doesNotMatch(html, /Provider setup|Provider limits|Known estimate|Work instance|Retention and lifecycle/);
   assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
   assert.match(html, /Release &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(html, /authorization: Bearer|apiKey|clientSecret/i);
+});
+
+test('Usage preserves pagination when a page contains only hidden classifier work', async () => {
+  const harness = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    usageClassifierOnly: true,
+    usageNextCursor: 'cursor_after_internal_work',
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /No customer activity on this page/);
+  assert.match(harness.app.innerHTML, /data-action="usage-load-more"[^>]*>Load more<\/button>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Interaction classification|op_classification_fixture/);
 });
 
 test('Usage combines matching coverage gaps and hides the note when coverage is complete', async () => {
@@ -11839,6 +11924,7 @@ test('Settings shows the Workers AI row on the Cloudflare target with no per-row
   assert.match(html, /<span class="prov-name">Workers AI<\/span>/);
   assert.match(html, /Always available<\/span><span class="hint">Keyless · billed in Neurons/);
   assert.match(html, /via the Workers AI binding/);
+  assert.doesNotMatch(html, /declares no context window|auto-compaction stays off/);
   // Seed default renders as a starred favorite, provider-native, with NO meta.
   assert.match(html, /<span class="fav-model">@cf\/zai-org\/glm-5\.2<\/span><\/div>/);
   assert.match(html, /keep it starred to keep that default in the picker/);
@@ -11994,7 +12080,7 @@ test('the profile Model picker suppresses configured provider groups with no fav
   assert.match(harness.app.innerHTML, /Star models in Settings to add picker shortcuts/);
 });
 
-test('node-target Default seed is unpinned and its profile editor renders the pick-a-model prompt', async () => {
+test('node-target Sprout seed is unpinned and its profile editor renders the pick-a-model prompt', async () => {
   const defaultProfile = seededAgents.find((agent) => agent.id === 'agent_default');
   assert.ok(defaultProfile);
   assert.equal(defaultProfile.model, undefined);
@@ -12021,7 +12107,7 @@ test('node-target Default seed is unpinned and its profile editor renders the pi
   await flushAsync();
   const html = harness.app.innerHTML;
 
-  assert.match(html, /<h1 class="page-title">Default<\/h1>/);
+  assert.match(html, /<h1 class="page-title">Sprout<\/h1>/);
   assert.match(html, /value="" autocomplete="off" role="combobox" aria-expanded="true" aria-haspopup="listbox" placeholder="Pick a model &mdash; none pinned"/);
   assert.match(html, /<div class="combo-group">no providers configured<\/div>/);
   assert.match(html, /SLACK_TAG_MODEL/);

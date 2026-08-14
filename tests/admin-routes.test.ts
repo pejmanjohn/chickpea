@@ -40,7 +40,7 @@ import type { McpConnectInput, McpDiscoveryResult } from '../src/config/mcp-test
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
-import { beginOnboardingJourney } from '../src/config/onboarding-state.ts';
+import { beginOnboardingJourney, startOnboardingTry } from '../src/config/onboarding-state.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import {
@@ -1811,6 +1811,45 @@ test('onboarding API derives live stages and completes only after a delivered se
     const complete = await app.request('/admin/api/onboarding', { headers: auth(ADMIN_TOKEN) });
     assert.equal(complete.status, 200);
     assert.equal((await complete.json() as { stage: string }).stage, 'complete');
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('onboarding Try can be explicitly completed without a Slack reply', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const begun = await beginOnboardingJourney(settings, 1_800_000_000_000);
+    const started = await startOnboardingTry(settings, {
+      expectedRevision: begun.revision,
+      agentId: 'agent_default',
+      workspaceId: 'TDESIGN',
+      channelId: 'CSTART',
+      channelName: 'start-here',
+      tryStartedAt: 1_800_000_001_000,
+    });
+    const app = appWithAdminOptions(store, { settings });
+    const response = await app.request('/admin/api/onboarding/complete', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: started.revision }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = await response.json() as { stage: string; agentId: string; redirectTo: string };
+    assert.equal(body.stage, 'complete');
+    assert.equal(body.agentId, 'agent_default');
+    assert.equal(body.redirectTo, '/admin/agents/agent_default');
+
+    const replay = await app.request('/admin/api/onboarding/complete', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: started.revision }),
+    });
+    assert.equal(replay.status, 409);
+    assert.deepEqual(await replay.json(), { error: 'onboarding_changed' });
   } finally {
     settings.close();
     store.close();

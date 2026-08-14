@@ -458,8 +458,11 @@ test('protected join and member pages keep provider details out of the normal fl
     role: 'member', status: 'active',
   });
   assert.match(account, /Open Slack/);
-  assert.match(account, /Your Chickpea account is active/);
+  assert.match(account, /class="shell primary-admin-shell"/);
+  assert.match(account, /class="rail primary-shell-sidebar"/);
+  assert.match(account, /class="active" href="\/admin\/account" aria-current="page">Account/);
+  assert.match(account, /<h1>Your account<\/h1>/);
   assert.doesNotMatch(account, />member</i);
-  assert.doesNotMatch(account, /Cloudflare|Access|Zero Trust/i);
+  assert.doesNotMatch(account, /Cloudflare Access|Zero Trust/i);
   assert.doesNotMatch(account, /Settings|Profiles|Team/);
 });

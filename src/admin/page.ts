@@ -20,9 +20,6 @@ export function renderAdminPage(
   // product-focused and does not expose this deployment detail.
   const isCloudflare = isCloudflareTarget();
   const targetChip = isCloudflare ? 'cloudflare · workers' : 'local · node';
-  const providerHint = isCloudflare
-    ? 'Read-only &mdash; the Workers AI binding is always available; configure others via wrangler secrets (built-ins) or src/app.ts (custom).'
-    : 'Read-only &mdash; configured via .env (built-ins) or src/app.ts (custom).';
   const usageAdminUi = options.usageAdminUi === true;
   return `<!doctype html>
 <html lang="en">
@@ -1611,6 +1608,8 @@ details[open].advanced summary::before {
 .agent-profile-header { align-items: center; display: flex; gap: 24px; justify-content: space-between; }
 .agent-profile-heading { display: flex; flex: 1; flex-direction: column; gap: 7px; min-width: 0; }
 .agent-profile-heading .page-title { font-size: clamp(2rem, 3.4vw, 2.75rem); letter-spacing: -.04em; line-height: 1.06; }
+.agent-replies-as { color: var(--text-2); font-size: .75rem; line-height: 1.4; margin: -1px 0 0; }
+.agent-replies-as .mono { color: var(--text); font-weight: 700; }
 .agent-profile-header-actions { align-items: center; display: flex; flex: none; gap: 10px; }
 .agent-status-chip { align-items: center; border-radius: 999px; display: inline-flex; font-size: .75rem; font-weight: 750; gap: 7px; padding: 8px 12px; }
 .agent-status-chip > span { background: currentColor; border-radius: 50%; height: 7px; width: 7px; }
@@ -2556,10 +2555,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // checkpoint, and 3 reveals install credentials. Client-side only — Slack
     // owns app creation, so there is no server signal for the transition.
     slackStep: 1,
-    // Set from a just-completed connect (POST result carries team + botName);
-    // drives the dismissable success toast in the connected funnel.
-    slackToast: null,
-    slackToastDismissed: false,
     // Post-onboarding Slack management state. The behavior payload comes from
     // /admin/api/slack-behavior as { value, source } entries so env-managed
     // toggles stay visibly read-only instead of pretending a stored write won.
@@ -4002,7 +3997,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var groups = summary.groups || [];
     if (!groups.length) return '<div class="empty"><p class="hint">No breakdown data for this period.</p></div>';
     var rows = groups.map(function (group) {
-      var label = group.label || (state.usageGroupBy === "channel" && group.key === "direct_message" ? "Direct message" : group.key) || "Unknown";
+      var assignment = state.usageGroupBy === "channel" ? state.assignments.find(function (candidate) { return candidate.channelId === group.key; }) : null;
+      var label = group.label || (assignment && normalizeChannelLabel(assignment.channelLabel)) || (state.usageGroupBy === "channel" && group.key === "direct_message" ? "Direct message" : group.key) || "Unknown";
       label = state.usageGroupBy === "channel" && label !== "Direct message" && !String(label).startsWith("#") ? "#" + label : label;
       return '<tr><td><button type="button" class="usage-row-action" data-action="usage-group-filter" data-value="' + esc(group.key) + '" data-label="' + esc(label) + '">' + esc(label) + '</button></td>' +
         '<td class="number">' + usageInt(group.operationCount) + '</td><td class="number">' + usageInt(group.inputTokens) + '</td>' +
@@ -4014,8 +4010,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function usageOperationsHtml() {
     if (!state.usageOperations) return '<div class="empty"><p class="hint">Loading activity&hellip;</p></div>';
-    if (!state.usageOperations.length) return '<div class="empty"><p class="hint">No activity matches this period' + (state.usageOperationFilter ? ' and filter' : '') + '.</p></div>';
-    var rows = state.usageOperations.map(function (detail) {
+    var visibleOperations = state.usageOperations.filter(function (detail) {
+      return detail && detail.operation && detail.operation.operationKind !== "interaction_classification";
+    });
+    var loadMore = state.usageNextCursor ? '<button type="button" class="btn btn-ghost" data-action="usage-load-more"' + (state.usageLoadingMore ? ' disabled' : '') + '>' + (state.usageLoadingMore ? 'Loading&hellip;' : 'Load more') + '</button>' : '';
+    if (!visibleOperations.length) return '<div class="empty"><p class="hint">No customer activity on this page' + (state.usageOperationFilter ? ' for this filter' : '') + '.</p>' + loadMore + '</div>';
+    var rows = visibleOperations.map(function (detail) {
       var operation = detail.operation;
       var input = usageOperationTokens(detail, "inputTokens");
       var output = usageOperationTokens(detail, "outputTokens");
@@ -4025,7 +4025,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         '<td>' + usageStatusBadge(operation.status) + '</td><td class="number">' + usageTokenTotalHtml(input, output, total) + '</td><td class="number">' + usageMoney(usageOperationAmount(detail), "USD") + '</td></tr>';
     }).join("");
     return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Channel or routine</th><th>Agent</th><th>Provider</th><th>Model</th><th>Status</th><th class="number">Tokens</th><th class="number">Spend</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-      (state.usageNextCursor ? '<button type="button" class="btn btn-ghost" data-action="usage-load-more"' + (state.usageLoadingMore ? ' disabled' : '') + '>' + (state.usageLoadingMore ? 'Loading&hellip;' : 'Load more') + '</button>' : '');
+      loadMore;
   }
 
   function usageMainHtml() {
@@ -4252,7 +4252,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       var completedAgent = agentById(completedAgentId) || defaultAgent();
       return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Reply confirmed in #' + esc(channel.name) + '</span>' +
         '<h1 class="onboarding-title">Chickpea is ready</h1>' +
-        '<p class="onboarding-lede">Your setup is working. Continue in the Default Agent to shape what Chickpea knows and can do.</p>' +
+        '<p class="onboarding-lede">Your setup is working. Continue in ' + esc((completedAgent && completedAgent.name) || "your Agent") + ' to shape what Chickpea knows and can do.</p>' +
         '<div class="onboarding-actions onboarding-completion-actions"><button type="button" class="btn btn-primary" data-action="open-profiles" data-agent="' + esc(completedAgentId) + '">Open ' + esc((completedAgent && completedAgent.name) || "Default Agent") + '</button>' +
         '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Open #' + esc(channel.name) + ' in Slack</a></div></section>';
     }
@@ -4264,7 +4264,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '<p class="onboarding-status" role="status">' + esc(state.onboardingNotice || 'Waiting for Chickpea to reply…') + '</p></div>' +
       (state.onboardingError ? '<div class="onboarding-actions"><span class="field-error" role="alert">' + esc(state.onboardingError) + '</span><button type="button" class="btn btn-soft" data-action="retry-onboarding">Check again</button></div>' : '') +
       '<div class="onboarding-actions"><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Open #' + esc(channel.name) + ' in Slack</a>' +
-      '<button type="button" class="btn btn-soft" data-action="copy-onboarding-prompt">Copy message</button></div></section>';
+      '<button type="button" class="btn btn-soft" data-action="copy-onboarding-prompt">Copy message</button>' +
+      '<button type="button" class="btn btn-ghost" data-action="onboarding-proceed-dashboard"' + (state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Opening dashboard&hellip;' : 'Proceed to Dashboard') + '</button></div></section>';
   }
 
   function onboardingMainHtml() {
@@ -4348,7 +4349,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       if (connected) {
         // Connected + zero channels: the funnel is the single focus of the
         // screen — replaced by the picker when the operator opens it.
-        var body = state.addChannelOpen ? addPanel : (successToastHtml() + funnelHtml());
+        var body = state.addChannelOpen ? addPanel : funnelHtml();
         return '<main class="main"><div class="main-inner">' + invite + body + slackBottom + '</div></main>';
       }
       // Transient null connection (a failed connection fetch): keep a minimal,
@@ -4438,7 +4439,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         '<button type="button" class="btn btn-soft btn-sm" data-action="slack-behavior-retry">Retry</button></div>';
     }
     return '<div class="behavior-list">' +
-      slackBehaviorRowHtml("allowDms", "Allow direct messages", "Chickpea answers Slack DMs with the install\'s Default Agent and provider budget.") +
+      slackBehaviorRowHtml("allowDms", "Allow direct messages", "Chickpea answers Slack DMs with the install\'s base Agent and provider budget.") +
       slackBehaviorRowHtml("unassignedHint", "Help people configure unassigned channels", "When someone mentions " + slackMentionText() + " in an unassigned channel, Chickpea privately shares setup steps.") +
       slackBehaviorRowHtml("welcomeOnJoin", "Post a welcome when " + slackMentionText() + " joins an assigned channel", "Chickpea starts the conversation with a short welcome message.") +
       slackBehaviorRowHtml("ambientParticipation", "Allow ambient participation", "Chickpea may selectively respond to useful unmentioned messages in assigned channels. Turn this off for an installation-wide mention-only rollback.") +
@@ -4621,7 +4622,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       return head + '<div class="empty"><p class="field-label">Slack settings are unavailable</p><p class="hint">Reload the page to try the connection again.</p></div>';
     }
     if (!isSlackConnected()) return channelsIndexHtml() + '<section class="channels-connection-card" aria-label="Connect Slack">' + slackStepperHtml() + '</section>';
-    return successToastHtml() + channelsIndexHtml();
+    return channelsIndexHtml();
   }
 
   function slackWorkspaceSettingsHtml() {
@@ -4656,7 +4657,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       (!mutable ? '<span class="hint">This connection is managed by the environment and is read-only here.</span>' : "") +
       (state.slackDisconnectError ? '<span class="inline-status error">' + esc(state.slackDisconnectError) + '</span>' : "") + '</div>' +
       '<button type="button" class="btn btn-danger" data-action="slack-disconnect-open"' + (mutable && !connectionBusy ? "" : " disabled") + '>Disconnect</button></div></section>';
-    return successToastHtml() + workspace + behavior + connection;
+    return workspace + behavior + connection;
   }
 
   function slackDisconnectModalHtml() {
@@ -4734,20 +4735,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   // ---- Connected funnel (card 04) ------------------------------------------
-
-  function successToastHtml() {
-    if (!state.slackToast || state.slackToastDismissed) return "";
-    var team = state.slackToast.team;
-    var botName = state.slackToast.botName || slackDisplayName();
-    var who = team
-      ? 'Connected to <b style="font-weight:500; color:var(--text);">' + esc(team) + '</b> as <span class="mono" style="color:var(--text);">@' + esc(botName) + '</span>'
-      : 'Connected as <span class="mono" style="color:var(--text);">@' + esc(botName) + '</span>';
-    return '<div class="success-toast" role="status">' +
-      '<span style="color:var(--ok); display:inline-flex;">' + icon("check") + '</span>' +
-      '<span style="color:var(--text-2);">' + who + '</span>' +
-      '<span style="flex:1;"></span>' +
-      '<button type="button" class="x-btn" data-action="dismiss-slack-toast" aria-label="Dismiss">' + icon("x-mark") + '</button></div>';
-  }
 
   function funnelHtml() {
     return '<div class="empty" style="align-items:center; text-align:center; gap:14px; padding:46px 32px;">' +
@@ -5098,11 +5085,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         return null;
       }
       state.slackDraft = { botToken: "", signingSecret: "" };
-      // The connected funnel's success toast is driven off the POST result
-      // (team + botName): the follow-up GET reports connected but not botName,
-      // so capture them here. Reset the stepper for any later reconnect.
-      state.slackToast = { team: (result && result.team) || "", botName: (result && result.botName) || "" };
-      state.slackToastDismissed = false;
+      // Reset the stepper for any later reconnect. Connection success is
+      // reflected by the durable connected workspace state after refresh.
       state.slackStep = 1;
       state.slackRepair = null;
       state.slackUpdateOpen = false;
@@ -5243,8 +5227,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var skills = previews.skills || (agent && agent.skills) || [];
     var connectors = previews.connectors || ((agent && agent.mcpServers) || []).concat((agent && agent.apiConnections) || []);
     var repositories = previews.repositories || (agent && agent.repositories) || [];
-    return '<section class="section channel-capabilities-section"><div class="section-head"><div><h2 class="section-title">Inherited capabilities</h2><p class="hint">Skills, Connectors, and Repositories come from the assigned Agent and stay shared everywhere it works.</p></div>' +
-      (agent ? '<button type="button" class="btn btn-ghost btn-sm" data-action="open-profiles" data-agent="' + esc(agent.id) + '">Open Agent capabilities</button>' : "") + '</div>' +
+    return '<section class="section channel-capabilities-section"><div class="section-head"><div><h2 class="section-title">Inherited capabilities</h2><p class="hint">Skills, Connectors, and Repositories come from ' +
+      (agent ? '<button type="button" class="link-btn" data-action="open-profiles" data-agent="' + esc(agent.id) + '">' + esc(agent.name || "Agent") + ' <span aria-hidden="true">&nearr;</span></button>' : 'the assigned Agent') +
+      ' and stay shared everywhere it works.</p></div></div>' +
       '<div class="channel-capability-groups">' + channelCapabilityGroupHtml("skill", "Skills", skills) + channelCapabilityGroupHtml("connector", "Connectors", connectors) + channelCapabilityGroupHtml("repository", "Repositories", repositories) + '</div></section>';
   }
 
@@ -5265,32 +5250,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function advancedHtml(assignment) {
-    var resolution;
-    if (state.effectiveError) {
-      resolution = '<div class="empty"><p class="field-label">Configuration issue</p><p class="hint">' + esc(state.effectiveError) + '</p></div>';
-    } else if (!state.effective) {
-      resolution = '<div class="well"><dl><div class="kv"><dt>Status</dt><dd>Resolving...</dd></div></dl></div>';
-    } else {
-      var profile = state.effective.agent || state.effective.profile;
-      resolution = '<div class="well"><dl>' +
-        '<div class="kv"><dt>Agent</dt><dd>' + esc(profile.name) + ' ' + enabledBadge(profile.enabled) + '</dd></div>' +
-        '<div class="kv"><dt>Replies as</dt><dd>' + esc(slackIdentityMentionForId(state.effective.slackIdentityId)) + ' &mdash; new threads only</dd></div>' +
-        '<div class="kv"><dt>Instructions</dt><dd><div class="instructions-preview">' + instructionLayersHtml(state.effective.instructionLayers) + '</div></dd></div>' +
-        '<div class="kv"><dt>Model</dt><dd class="mono">' + esc(state.effective.model || "unknown") + '</dd></div>' +
-        '<div class="kv"><dt>Provider</dt><dd class="mono">' + esc(state.effective.provider || "unknown") + '</dd></div>' +
-        '<div class="kv"><dt>Snapshot</dt><dd class="mono">sha256:' + esc(shortHash(state.effective.snapshotHash)) + ' · new threads only</dd></div>' +
-        '</dl></div>';
-    }
     var assignedMemoryAgent = agentById(assignment.agentId);
     return '<details class="advanced channel-advanced-card"' + (state.channelAdvancedOpen ? " open" : "") + '><summary data-action="channel-advanced-toggle">Advanced</summary><div class="channel-advanced-content">' +
       '<section class="channel-advanced-section"><div class="section-head"><div><h2 class="section-title">Additional instructions</h2><p class="hint">Appended after the assigned Agent instructions in this Channel only.</p></div></div>' +
       '<div class="field"><label class="field-label" for="addendum">Channel additional instructions</label><textarea class="textarea" id="addendum" rows="6" data-action="channel-addendum" placeholder="Add context unique to this Channel">' + esc(state.channelDraft.channelPromptAddendum || "") + '</textarea></div></section>' +
       '<section class="channel-advanced-section"><div class="section-head"><div><h2 class="section-title">Channel memory</h2><p class="hint">Exact-Channel files stay here even if the assigned Agent changes.</p></div></div>' + ownerMemoryPanelHtml("channel", assignment.channelId, assignment.channelLabel || assignment.channelId, assignedMemoryAgent ? assignedMemoryAgent.name : "No Agent assigned") + '</section>' +
-      '<section class="channel-advanced-section"><div class="section-head"><div><h2 class="section-title">Resolved configuration</h2><p class="hint">Technical values used for new threads. Existing threads keep the snapshot they started with.</p></div></div><div class="channel-resolution-card">' + resolution +
-      '<div class="adv-rows"><dl style="display:contents;"><div class="kv"><dt>Channel ID</dt><dd class="mono">' + esc(assignment.channelId) + '</dd></div>' +
-      '<div class="kv"><dt>Workspace ID</dt><dd class="mono">' + esc(assignment.workspaceId) + '</dd></div>' +
-      '<div class="kv"><dt>Providers</dt><dd style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">' + providerBadges() + '<span class="hint" style="font-size:0.75rem;">${providerHint}</span></dd></div>' +
-      '</dl></div></div></section></div></details>';
+      '</div></details>';
   }
 
   function saveBarHtml() {
@@ -7109,9 +7074,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       : '<span class="title-row"><h1 class="page-title">' + esc(draft.name || "Agent") + '</h1>' +
         '<button type="button" class="rename-btn" data-action="profile-rename" aria-label="Rename Agent">' + icon("pencil") + '</button></span>';
     var introduction = agentIntroduction(draft.instructions);
+    var replyIdentity = selectedProfileSlackIdentity(draft) || workspaceDefaultSlackIdentity();
+    var replyIdentityLabel = slackIdentityMention(replyIdentity);
     return '<div class="agent-profile-page">' +
       '<button type="button" class="link-btn agent-roster-back" style="align-self:flex-start;" data-action="profiles-back">&larr; All Agents</button>' +
-      '<header class="agent-profile-header"><div class="agent-profile-heading"><span class="agent-kicker">Agent</span>' + titleRow + '</div>' + agentLifecycleHtml(draft) + '</header>' +
+      '<header class="agent-profile-header"><div class="agent-profile-heading"><span class="agent-kicker">Agent</span>' + titleRow + '<p class="agent-replies-as">Replies as <span class="mono">' + esc(replyIdentityLabel) + '</span></p></div>' + agentLifecycleHtml(draft) + '</header>' +
       '<p class="agent-profile-intro" title="' + esc(introduction) + '" aria-label="' + esc(introduction) + '">' + esc(introduction) + '</p>' +
       disableConfirmHtml(draft) +
       profileTabsHtml(draft) +
@@ -7128,10 +7095,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function agentAdvancedHtml(draft) {
-    var identityName = slackIdentityMentionForId(effectiveSlackIdentityId(draft.slackIdentityId || ""));
     var sandboxReady = enabledRepositoryGrants(draft).length > 0;
     return '<details class="advanced agent-advanced-card"><summary>' + icon("gear") + '<span>Advanced</span></summary><div class="channel-advanced-content">' +
-      '<div class="agent-advanced-row"><span><strong>Slack identity</strong><small class="hint">Who sends this Agent\\'s replies in Slack.</small></span><span class="mono">' + esc(identityName) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="open-settings" data-section="slack">Manage</button></div>' +
       profileIdentityHtml(draft) +
       '<div class="agent-advanced-row"><span><strong>Coding sandbox</strong><small class="hint">Run code and work with granted repositories in an isolated environment.</small></span><span class="badge ' + (sandboxReady ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (sandboxReady ? "Available" : "Needs repository") + '</span><button type="button" class="btn btn-soft btn-sm" data-action="open-settings" data-section="sandbox">Settings</button></div>' +
       '</div></details>';
@@ -8899,8 +8864,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         sandboxAdvancedHtml(disabled);
     }
 
-    var beta = '<div class="callout"><p class="field-label">Updating an older Sandbox beta?</p><p class="hint">Keep the Sandbox build profile before your next update to retain the binding. Choosing the default slim profile intentionally removes Container access and leaves runtime enablement ineffective until you reinstall.</p></div>';
-    return '<section class="section" id="sandbox-settings">' + head + body + paidNote + beta + live + progress + '</section>';
+    return '<section class="section" id="sandbox-settings">' + head + body + paidNote + live + progress + '</section>';
   }
 
   function sandboxAdvancedHtml(disabled) {
@@ -9463,14 +9427,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var isOr = id === "openrouter";
     var query = (favUiFor(id).query) || "";
     var count = providerModelCount(id, providerSummaryById(id));
-    var preamble = isOr ? "" : '<p class="hint">No key to manage. The <span class="mono" style="color:var(--text-2);">env.AI</span> binding lists models and runs turns on the Cloudflare target with zero credentials &mdash; this is the model a keyless button deploy answers with. Catalog-free <span class="mono" style="color:var(--text-2);">cloudflare/*</span> models declare no context window, so auto-compaction stays off for them.</p>';
+    var preamble = isOr ? "" : '<p class="hint">No key to manage. The <span class="mono" style="color:var(--text-2);">env.AI</span> binding lists models and runs turns on the Cloudflare target with zero credentials &mdash; this is the model a keyless button deploy answers with.</p>';
     var intro = isOr
       ? '<p class="hint">OpenRouter serves ' + esc(favSearchCountLabel(id)) + ', so the Agent picker shows only the ones you star here. Search the live list &mdash; name, context length, and price per row &mdash; then star to add.</p>'
       : '<p class="hint">The binding lists ' + esc(favSearchCountLabel(id)) + ' and keeps growing, so the Agent picker shows only the ones you star here &mdash; same as OpenRouter. Search the live <span class="mono" style="color:var(--text-2);">env.AI.models()</span> list, then star to add. Four defaults ship pre-starred, so the keyless picker works out of the box.</p>';
     var search = '<input class="input" type="search" value="' + esc(query) + '" placeholder="' + esc((count != null ? "Search " + count + " " : "Search ") + (isOr ? "OpenRouter" : "Workers AI") + " models…") + '" aria-label="Search ' + (isOr ? "OpenRouter" : "Workers AI") + ' models" data-action="fav-search" data-provider="' + esc(id) + '">';
     var foot = isOr
       ? '<p class="hint">Star adds a model to every Agent\\'s OpenRouter group; unstar removes it. Prices are input / output per 1M tokens, straight from OpenRouter\\'s public list.</p>'
-      : '<p class="hint">Star adds a model to every Agent\\'s Workers AI group; unstar removes it. No per-row price or context here: Workers AI is billed in Neurons through the binding, and <span class="mono" style="color:var(--text-2);">cloudflare/*</span> models declare no context window. <span class="mono" style="color:var(--text-2);">@cf/zai-org/glm-5.2</span> is the seed default a keyless deploy pins &mdash; keep it starred to keep that default in the picker.</p>';
+      : '<p class="hint">Star adds a model to every Agent\\'s Workers AI group; unstar removes it. Workers AI is billed in Neurons through the binding. <span class="mono" style="color:var(--text-2);">@cf/zai-org/glm-5.2</span> is the seed default a keyless deploy pins &mdash; keep it starred to keep that default in the picker.</p>';
     return preamble +
       '<p class="field-label">Models in your picker</p>' + intro + search +
       '<div id="fav-results-' + esc(id) + '">' + favResultsHtml(id) + '</div>' +
@@ -11249,7 +11213,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       return;
     }
     if (!workspace || !workspace.id || !agent) {
-      state.onboardingError = "Setup is missing its workspace or Default Agent. Refresh and try again.";
+      state.onboardingError = "Setup is missing its workspace or base Agent. Refresh and try again.";
       render();
       return;
     }
@@ -11297,6 +11261,26 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }).catch(function (error) {
       state.onboardingBusy = false;
       state.onboardingError = addChannelErrorText(error);
+      render();
+    });
+  }
+
+  function proceedFromOnboardingTry() {
+    if (state.onboardingBusy || !state.onboarding || state.onboarding.stage !== "try") return;
+    state.onboardingBusy = true;
+    state.onboardingError = "";
+    render();
+    postJson("/admin/api/onboarding/complete", "POST", {
+      expectedRevision: state.onboarding.revision
+    }).then(function (body) {
+      state.onboarding = body;
+      state.onboardingBusy = false;
+      var destination = agentById(body.agentId) || defaultAgent();
+      if (destination) openProfileEditor(destination);
+      else render();
+    }).catch(function (error) {
+      state.onboardingBusy = false;
+      state.onboardingError = (error && (error.serverMessage || error.message)) || "Could not open the dashboard.";
       render();
     });
   }
@@ -11816,9 +11800,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }
     if (action === "refresh-onboarding-channels") { loadSlackChannels(true); }
     if (action === "retry-onboarding") { state.onboardingError = ""; loadOnboarding(true); }
+    if (action === "onboarding-proceed-dashboard") { proceedFromOnboardingTry(); }
     if (action === "copy-onboarding-prompt") { copyOnboardingPrompt(); }
     if (action === "copy-channel-prompt") { copyChannelPrompt(); }
-    if (action === "dismiss-slack-toast") { state.slackToastDismissed = true; render(); }
     if (action === "select-channel") { state.view = "channels"; state.channelScreen = "detail"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
     if (action === "channel-advanced-toggle") {
       var channelAdvancedDetails = target.closest("details");
@@ -15179,6 +15163,9 @@ input { background:#fff; border:0; border-radius:var(--radius); box-shadow:inset
 input:focus-visible { outline:2px solid #b05415; outline-offset:-1px; }
 button { align-items:center; background:var(--ember); border:0; border-radius:var(--radius); box-shadow:0 2.5px 0 #b27e1f; color:#3a2a08; cursor:pointer; display:inline-flex; font:inherit; font-size:0.8125rem; font-weight:700; justify-content:center; min-height:36px; padding:8px 14px; }
 button:hover { background:var(--ember-bright); }
+button[aria-busy="true"]::before { content:""; width:14px; height:14px; margin-right:8px; border:2px solid rgba(59,50,32,.28); border-top-color:var(--text); border-radius:50%; animation:auth-spin .7s linear infinite; }
+button:disabled { cursor:not-allowed; opacity:.65; }
+@keyframes auth-spin { to { transform:rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -15192,8 +15179,9 @@ button:hover { background:var(--ember-bright); }
     <input id="token" name="token" type="password" autocomplete="off" autofocus placeholder="TAG_ADMIN_TOKEN">
   </div>
   <input name="returnTo" type="hidden" value="${returnTo}">
-  <button type="submit">Sign in</button>
+  <button type="submit" data-submitting-label="Signing in&hellip;">Sign in</button>
 </form>
+<script>${authFormSubmitClientScript()}</script>
 </body>
 </html>`;
 }
@@ -15214,7 +15202,7 @@ export function renderPasswordLogin(
       <label for="password">Password</label>
       <input id="password" name="password" type="password" autocomplete="current-password" required ${options.invalid ? 'aria-describedby="auth-error"' : ''}>
       <input name="returnTo" type="hidden" value="${escapeHtmlAttribute(options.returnTo ?? '/admin')}">
-      <button type="submit">Sign in</button>
+      <button type="submit" data-submitting-label="Signing in&hellip;">Sign in</button>
     </form>`,
   });
 }
@@ -15256,7 +15244,7 @@ export function renderPasswordOwnerSetupPage(
       <input id="password-confirmation" name="passwordConfirmation" type="password" autocomplete="new-password" required minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="256" aria-describedby="password-confirmation-error">
       <p id="password-confirmation-error" class="field-error" role="alert" aria-live="polite" hidden></p>
       <input id="owner-setup-capability" name="recoveryToken" type="hidden">
-      <button id="owner-setup-submit" type="submit" disabled>Create owner account</button>
+      <button id="owner-setup-submit" type="submit" data-submitting-label="Creating account&hellip;" disabled>Create owner account</button>
     </form><script src="/admin/setup/client.js" defer></script>`,
   });
 }
@@ -15277,7 +15265,7 @@ export function renderPasswordChangePage(options: { error?: boolean } = {}): str
       <input id="new-password" name="newPassword" type="password" autocomplete="new-password" required minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="256" aria-describedby="${options.error ? 'auth-error ' : ''}password-help password-error">
       <p id="password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
       <p id="password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
-      <button type="submit">Change password and sign out</button>
+      <button type="submit" data-submitting-label="Changing password&hellip;">Change password and sign out</button>
     </form><script src="/admin/password/client.js" defer></script>`,
   });
 }
@@ -15308,7 +15296,7 @@ export function renderPasswordRecoveryPage(options: { error?: boolean; success?:
       <p id="password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
       <label for="recovery-token">Deployment recovery secret</label>
       <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required ${options.error ? 'aria-describedby="auth-error"' : ''}>
-      <button type="submit">Replace owner password</button>
+      <button type="submit" data-submitting-label="Replacing password&hellip;">Replace owner password</button>
     </form><script src="/admin/password/client.js" defer></script>`,
   });
 }
@@ -15330,6 +15318,23 @@ export function passwordFormClientScript(): string {
   })();`;
 }
 
+export function authFormSubmitClientScript(): string {
+  return `(function(){
+    document.querySelectorAll('form').forEach(function(form){
+      form.addEventListener('submit',function(event){
+        Promise.resolve().then(function(){
+          if(event.defaultPrevented)return;
+          var button=form.querySelector('button[type="submit"]');
+          if(!button||button.disabled)return;
+          button.disabled=true;
+          button.setAttribute('aria-busy','true');
+          button.textContent=button.getAttribute('data-submitting-label')||'Working…';
+        });
+      });
+    });
+  })();`;
+}
+
 function renderPasswordPage(input: {
   title: string;
   eyebrow: string;
@@ -15342,7 +15347,7 @@ function renderPasswordPage(input: {
 <title>Chickpea · ${escapeHtmlAttribute(input.title)}</title>${ADMIN_FAVICON}
 <style>
 :root{--canvas:#f4ebd8;--card:#fffdf6;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--line:rgba(59,50,32,.16);--danger:#a83f34}*{box-sizing:border-box}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,sans-serif;padding:16px}main{width:min(520px,100%);background:var(--card);border:1px solid var(--line);border-radius:20px;padding:clamp(22px,6vw,42px);box-shadow:0 12px 34px rgba(59,50,32,.09)}.auth-brand{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;margin:-6px 0 28px;text-align:center}.auth-brand-mark{width:54px;height:54px;display:block}.auth-brand-name{font-size:1.3rem;font-weight:800;letter-spacing:-.01em}.eyebrow{margin:0;color:var(--muted);font-size:.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}h1{margin:7px 0 9px;font-size:clamp(1.7rem,7vw,2.45rem);line-height:1.08}p{color:var(--muted);line-height:1.55}label{display:flex;justify-content:space-between;gap:12px;margin:17px 0 6px;font-weight:750}label span{color:var(--muted);font-size:.76rem;font-weight:500}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;padding:11px 12px;font:inherit}input[aria-invalid="true"]{border-color:var(--danger)}.field-help,.field-error{margin:6px 0 0;font-size:.82rem;line-height:1.4}.field-error{color:var(--danger);font-weight:700}button,.primary{display:flex;align-items:center;justify-content:center;width:100%;min-height:46px;margin-top:22px;border:0;border-radius:12px;background:var(--gold);color:var(--ink);font:inherit;font-weight:800;text-decoration:none;cursor:pointer;box-shadow:0 2.5px 0 #b27e1f;transition:transform .08s ease,box-shadow .08s ease}button:active:not(:disabled){transform:translateY(2px);box-shadow:0 .5px 0 #b27e1f}button[aria-busy="true"]::before{content:"";width:16px;height:16px;margin-right:9px;border:2px solid rgba(59,50,32,.28);border-top-color:var(--ink);border-radius:50%;animation:spin .7s linear infinite}button:disabled{cursor:not-allowed;opacity:.62;box-shadow:none}input:focus-visible,button:focus-visible,.primary:focus-visible{outline:3px solid rgba(176,84,21,.42);outline-offset:2px}.error{margin:16px 0;border-left:4px solid var(--danger);background:#fff3ee;color:var(--danger);padding:12px;font-weight:700;line-height:1.45}[hidden]{display:none!important}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:360px){body{padding:8px}main{border-radius:14px;padding:20px 16px}label{display:block}label span{display:block;margin-top:2px}}
-</style></head><body><main aria-labelledby="auth-title">${AUTH_BRAND_HTML}<p class="eyebrow">${escapeHtmlAttribute(input.eyebrow)}</p><h1 id="auth-title">${escapeHtmlAttribute(input.title)}</h1>${input.intro ? `<p>${escapeHtmlAttribute(input.intro)}</p>` : ''}${input.error ?? ''}${input.body}</main></body></html>`;
+</style></head><body><main aria-labelledby="auth-title">${AUTH_BRAND_HTML}<p class="eyebrow">${escapeHtmlAttribute(input.eyebrow)}</p><h1 id="auth-title">${escapeHtmlAttribute(input.title)}</h1>${input.intro ? `<p>${escapeHtmlAttribute(input.intro)}</p>` : ''}${input.error ?? ''}${input.body}</main><script>${authFormSubmitClientScript()}</script></body></html>`;
 }
 
 export function renderAuthSetupPage(
@@ -15594,31 +15599,35 @@ export function renderMemberAccountPage(input: {
   status: 'active' | 'suspended' | 'removed';
 }): string {
   const name = escapeHtmlAttribute(input.displayName || input.email);
+  const managementNavigation = input.role === 'member'
+    ? ''
+    : `<a href="/admin">Agents</a><a href="/admin/channels">Channels</a><a href="/admin/team">Team</a><a href="/admin/usage">Usage</a><a href="/admin/settings">Settings</a>`;
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chickpea · Your account</title>${ADMIN_FAVICON}
 <style>
-:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --green:#6fa25b; }
-* { box-sizing:border-box; } body { margin:0; min-height:100dvh; display:grid; place-items:center; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:20px; }
-main { width:min(560px,100%); background:var(--card); border:1px solid var(--line); border-radius:20px; padding:clamp(24px,6vw,42px); box-shadow:0 10px 30px rgba(59,50,32,.09); }
-h1 { margin:8px 0 6px; font-size:clamp(1.65rem,6vw,2.35rem); } p { color:var(--muted); line-height:1.55; } .eyebrow { font-size:.78rem; font-weight:800; text-transform:uppercase; letter-spacing:.08em; }
-.account { border:1px solid var(--line); border-radius:14px; padding:16px; margin:22px 0; display:grid; gap:5px; } .email { overflow-wrap:anywhere; } .badge { width:max-content; background:rgba(111,162,91,.16); color:#4e7a3e; border-radius:999px; padding:4px 10px; font-weight:800; font-size:.75rem; }
-.button { display:inline-flex; align-items:center; justify-content:center; min-height:42px; padding:10px 18px; border-radius:12px; background:var(--gold); color:var(--ink); font-weight:800; text-decoration:none; box-shadow:0 2.5px 0 #b27e1f; }
-.button:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:3px; } .note { margin-top:20px; font-size:.82rem; }
-</style></head><body><main>
+:root { --canvas:#f4ead2; --paper:#fffdf7; --rail:rgba(255,253,247,.74); --ink:#3b3220; --muted:#74664d; --gold:#dda033; --line:#e8deca; --green:#4e7a3e; }
+* { box-sizing:border-box; } body { margin:0; min-height:100dvh; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,-apple-system,sans-serif; }
+.shell { display:flex; min-height:100dvh; gap:24px; padding-right:24px; }
+.rail { background:var(--rail); border-right:1px solid rgba(130,105,58,.12); display:flex; flex:0 0 292px; flex-direction:column; padding:27px 22px 22px; }
+.brand { align-items:center; display:flex; gap:10px; padding:0 3px 25px; font-size:1.25rem; font-weight:800; }.brand .auth-brand-mark{height:30px;width:30px}.brand .auth-brand-name{font-size:inherit}.brand .auth-brand{align-items:center;display:flex;flex-direction:row;gap:10px;margin:0;text-align:left}
+.rail-label { color:var(--muted); font-size:.68rem; font-weight:800; letter-spacing:.11em; margin:12px 6px; text-transform:uppercase; }.nav { display:flex; flex-direction:column; gap:5px; margin-top:auto; padding-top:20px; border-top:1px solid var(--line); }.nav a { border-radius:10px; color:var(--muted); font-size:.78rem; padding:9px 10px; text-decoration:none; }.nav a:hover,.nav a:focus-visible { background:#f4e8cc; color:var(--ink); }.nav a.active { background:#f4e8cc; color:var(--ink); font-weight:700; }
+main { align-self:center; background:var(--paper); border:1px solid rgba(118,94,51,.08); border-radius:18px; height:calc(100dvh - 44px); margin:22px auto; max-width:1180px; overflow:auto; padding:clamp(34px,5vw,72px); width:100%; }.content { max-width:720px; }
+.eyebrow { color:var(--muted); font-size:.72rem; font-weight:800; letter-spacing:.1em; margin:0 0 7px; text-transform:uppercase; } h1 { font-size:clamp(2rem,4vw,2.75rem); letter-spacing:-.04em; margin:0 0 8px; } p { color:var(--muted); line-height:1.55; }.lede{margin:0 0 26px}
+.account { border:1px solid var(--line); border-radius:16px; display:grid; gap:18px; padding:22px; }.account-head{align-items:flex-start;display:flex;gap:16px;justify-content:space-between}.identity{display:grid;gap:4px;min-width:0}.identity strong{font-size:1rem}.email{color:var(--muted);overflow-wrap:anywhere}.badges{display:flex;flex-wrap:wrap;gap:7px}.badge{background:rgba(111,162,91,.15);border-radius:999px;color:var(--green);font-size:.72rem;font-weight:800;padding:5px 9px}.badge.role{background:#f8edd3;color:#8b6518}.actions{align-items:center;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:10px;padding-top:18px}
+.button,button { align-items:center; background:var(--gold); border:0; border-radius:11px; box-shadow:0 2px 0 #b27e1f; color:var(--ink); cursor:pointer; display:inline-flex; font:inherit; font-size:.8rem; font-weight:800; justify-content:center; min-height:40px; padding:9px 15px; text-decoration:none; }.button.secondary{background:#fff;box-shadow:inset 0 0 0 1px var(--line)}form{margin:0}.note{font-size:.78rem;margin:20px 2px 0}.button:focus-visible,button:focus-visible,.nav a:focus-visible{outline:3px solid rgba(221,160,51,.4);outline-offset:2px}
+@media(max-width:740px){.shell{display:block;padding:0}.rail{display:none}main{border-radius:14px;height:auto;margin:10px;min-height:calc(100dvh - 20px);padding:28px 20px;width:calc(100% - 20px)}.account-head{flex-direction:column}}
+</style></head><body><div class="shell primary-admin-shell"><aside class="rail primary-shell-sidebar"><div class="brand">${AUTH_BRAND_HTML}</div><p class="rail-label">Account</p><nav class="nav" aria-label="Admin navigation">${managementNavigation}<a class="active" href="/admin/account" aria-current="page">Account</a></nav></aside><main><div class="content">
   <p class="eyebrow">${escapeHtmlAttribute(input.organizationName)}</p>
-  <h1>Hi, ${name}</h1>
-  <p>Your Chickpea account is active.</p>
-  <section class="account" aria-label="Account details">
-    <strong>${name}</strong><span class="email">${escapeHtmlAttribute(input.email)}</span>
-    ${input.role === 'owner' ? '<span class="badge">Owner</span>' : ''}<span class="badge">${escapeHtmlAttribute(input.status)}</span>
-  </section>
-  <a class="button" href="slack://open">Open Slack</a>
-  <p><a href="/admin/account/password">Change password</a></p>
-  <form method="post" action="/admin/logout"><button class="button" type="submit">Sign out</button></form>
+  <h1>Your account</h1>
+  <p class="lede">Manage your Chickpea sign-in and workspace access.</p>
+  <section class="account" aria-label="Account details"><div class="account-head"><div class="identity"><strong>${name}</strong><span class="email">${escapeHtmlAttribute(input.email)}</span></div><div class="badges">${input.role === 'owner' ? '<span class="badge role">Owner</span>' : ''}<span class="badge">${escapeHtmlAttribute(input.status)}</span></div></div><div class="actions">
+    <a class="button" href="slack://open">Open Slack</a><a class="button secondary" href="/admin/account/password">Change password</a>
+    <form method="post" action="/admin/logout"><button class="button secondary" type="submit">Sign out</button></form>
+  </div></section>
   <p class="note">Need help signing in? Ask the Chickpea owner.</p>
-</main></body></html>`;
+</div></main></div></body></html>`;
 }
 
 function escapeHtmlAttribute(value: string): string {

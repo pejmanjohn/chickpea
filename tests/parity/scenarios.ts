@@ -1109,7 +1109,7 @@ export const scenarios: Scenario[] = [
       const streamedStop = instance.backend.callsOfMethod('chat.stopStream').at(-1);
       assert.ok(streamedStop);
       assertFooterBlock(streamedStop.body.blocks, {
-        agentName: 'Default',
+        agentName: 'Sprout',
         modelLabel: 'local-stub/parity-stub-1',
         configureUrl: 'https://demo.example/admin?agent=agent_default',
       });
@@ -1129,7 +1129,7 @@ export const scenarios: Scenario[] = [
       const fallbackPost = instance.backend.callsOfMethod('chat.postMessage').at(-1);
       assert.ok(fallbackPost);
       assertFooterBlock(fallbackPost.body.blocks, {
-        agentName: 'Default',
+        agentName: 'Sprout',
         modelLabel: 'local-stub/parity-stub-1',
         configureUrl: 'https://demo.example/admin?agent=agent_default',
       });
@@ -1153,7 +1153,7 @@ export const scenarios: Scenario[] = [
       const failureStop = instance.backend.callsOfMethod('chat.stopStream').at(-1);
       assert.ok(failureStop);
       assertFooterBlock(failureStop.body.blocks, {
-        agentName: 'Default',
+        agentName: 'Sprout',
         modelLabel: 'local-stub/parity-stub-1',
         configureUrl: 'https://demo.example/admin?agent=agent_default',
       });

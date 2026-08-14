@@ -17,7 +17,7 @@ export function createSeededAgents(
   const defaultAgent: CustomAgentConfig = {
     id: 'agent_default',
     revision: 1,
-    name: 'Default',
+    name: 'Sprout',
     // PROFILE layer only — the runtime composes the RUNTIME and GUARDRAIL layers
     // separately. A neutral, general-purpose voice with zero product-specific
     // opinion, so first-run onboarding involves no profile decisions.

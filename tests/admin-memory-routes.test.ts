@@ -4,15 +4,23 @@ import { test } from 'node:test';
 import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
+import { nativePasswordPrimitive } from '../src/auth/password.ts';
+import { deriveBetterAuthSecret } from '../src/auth/recovery-secret.ts';
+import { PasswordOwnerSetupService } from '../src/auth/setup.ts';
 import { decodeMemoryArchive, encodeMemoryArchive } from '../src/memory/archive.ts';
 import { projectMemoryEntry, projectMemoryFiles } from '../src/memory/markdown.ts';
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 
 const ADMIN_TOKEN = 'admin-memory-secret';
 const NOW = Date.UTC(2026, 6, 25, 12);
+const PASSWORD_ORIGIN = 'https://memory.chickpea.example';
+const PASSWORD_RECOVERY = '6e'.repeat(32);
+const OWNER_PASSWORD = 'several unrelated words 5729';
 
 async function harness() {
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
@@ -50,6 +58,90 @@ async function harness() {
 }
 
 const auth = { authorization: `Bearer ${ADMIN_TOKEN}` };
+
+test('password owner sessions can read Channel memory without an authentication availability error', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const memory = new SqliteMemoryStateStore(':memory:', () => NOW);
+  const routines = new SqliteRoutineStore(':memory:', () => NOW);
+  const identity = new SqliteIdentityStore(':memory:');
+  const backend = new NodeBetterAuthBackend(':memory:');
+  const environment = {
+    backend,
+    baseURL: PASSWORD_ORIGIN,
+    password: nativePasswordPrimitive(),
+    recoveryToken: PASSWORD_RECOVERY,
+    secret: await deriveBetterAuthSecret(PASSWORD_RECOVERY),
+  };
+  try {
+    await memory.observeChannelScope({
+      workspaceId: 'T_TEST', channelId: 'C_PRODUCT', privacy: 'public',
+      displayName: 'product', observedAt: NOW,
+    });
+    const owner = await memory.ensureOwner({
+      workspaceId: 'T_TEST', ownerKind: 'channel', ownerId: 'C_PRODUCT',
+    });
+    await memory.createOwnerEntry({
+      entryId: 'mem_password_owner', storeId: owner.storeId, workspaceId: 'T_TEST',
+      slug: 'password-owner-guidance', description: 'Available to the signed-in owner.',
+      type: 'fact', body: 'Password sessions can read this Channel memory.',
+      actorId: 'U_OWNER', actorClass: 'operator', idempotencyKey: 'memory:password-owner',
+    });
+    await new PasswordOwnerSetupService(identity, environment).complete({
+      canonicalOrigin: PASSWORD_ORIGIN,
+      email: 'owner@example.com',
+      organizationName: 'Acme',
+      password: OWNER_PASSWORD,
+      recoveryToken: PASSWORD_RECOVERY,
+    });
+    const app = new Hono();
+    app.route('/', createAdminRoutes({
+      store: config,
+      settings,
+      memory,
+      routines,
+      identity,
+      betterAuthEnvironment: environment,
+      recoveryToken: PASSWORD_RECOVERY,
+      knownProviders: new Set(),
+    }));
+    const loginBody = new URLSearchParams({
+      email: 'owner@example.com',
+      password: OWNER_PASSWORD,
+      returnTo: '/admin/channels/C_PRODUCT',
+    }).toString();
+    const login = await app.request(new Request(`${PASSWORD_ORIGIN}/admin/login`, {
+      method: 'POST',
+      headers: {
+        origin: PASSWORD_ORIGIN,
+        'content-type': 'application/x-www-form-urlencoded',
+        'content-length': String(new TextEncoder().encode(loginBody).byteLength),
+      },
+      body: loginBody,
+      redirect: 'manual',
+    }));
+    assert.equal(login.status, 303, await login.clone().text());
+    const cookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+    assert.match(cookie, /better-auth\.session_token=/);
+
+    const files = await app.request(
+      `${PASSWORD_ORIGIN}/admin/api/audit/memory/owners/channel/T_TEST/C_PRODUCT/files`,
+      { headers: { cookie } },
+    );
+    assert.equal(files.status, 200, await files.clone().text());
+    assert.deepEqual(
+      ((await files.json()) as { files: Array<{ name: string }> }).files.map(({ name }) => name),
+      ['MEMORY.md', 'password-owner-guidance.md'],
+    );
+  } finally {
+    backend.close();
+    identity.close();
+    routines.close();
+    memory.close();
+    settings.close();
+    config.close();
+  }
+});
 
 test('owner memory creation is authenticated, route-owned, validated, and idempotent', async () => {
   const h = await harness();

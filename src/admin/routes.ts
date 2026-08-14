@@ -903,6 +903,10 @@ const onboardingTrySchema = v.strictObject({
   channelName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
 });
 
+const onboardingCompleteSchema = v.strictObject({
+  expectedRevision: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
+});
+
 const slackIdentityRevisionSchema = v.pipe(v.number(), v.integer(), v.minValue(0));
 const slackIdentityCreateSchema = v.strictObject({
   source: v.picklist(['agent', 'settings']),
@@ -4392,6 +4396,28 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           parsed.output.channelName,
       });
       return onboardingResponse(c, started);
+    } catch (error) {
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/onboarding/complete', async (c) => {
+    const parsed = v.safeParse(onboardingCompleteSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const snapshot = await readOnboardingJourney(settings(c));
+      if (!snapshot) return c.json({ error: 'onboarding_not_found' }, 404);
+      if (snapshot.revision !== parsed.output.expectedRevision) {
+        return c.json({ error: 'onboarding_changed' }, 409);
+      }
+      if (snapshot.journey.state === 'complete') return onboardingResponse(c, snapshot);
+      if (!snapshot.journey.tryStartedAt) {
+        return c.json({ error: 'onboarding_try_required' }, 409);
+      }
+      return onboardingResponse(
+        c,
+        await completeOnboardingJourney(settings(c), snapshot.revision),
+      );
     } catch (error) {
       return internalError(c, error);
     }

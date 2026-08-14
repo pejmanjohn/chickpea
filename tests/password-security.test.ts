@@ -15,6 +15,7 @@ import {
   renderResetBootstrapPage,
 } from '../src/join/page.ts';
 import {
+  authFormSubmitClientScript,
   passwordFormClientScript,
   renderPasswordLogin,
   renderPasswordOwnerSetupPage,
@@ -97,4 +98,24 @@ test('change and offline recovery forms expose the shared password requirement a
     assert.match(html, /\/admin\/password\/client\.js/);
   }
   assert.match(passwordFormClientScript(), /more character/);
+});
+
+test('sign-in, sign-up, and password forms expose native submission plus a duplicate-safe busy state', () => {
+  for (const html of [
+    renderPasswordLogin(),
+    renderPasswordOwnerSetupPage(),
+    renderPasswordChangePage(),
+    renderPasswordRecoveryPage(),
+    renderPasswordInvitationPage(),
+    renderPasswordResetPage(),
+  ]) {
+    assert.match(html, /<form/);
+    assert.match(html, /type="submit"/);
+    assert.match(html, /data-submitting-label=/);
+  }
+  assert.match(renderPasswordLogin(), /<input id="password"[^>]*required/);
+  assert.match(authFormSubmitClientScript(), /button\.disabled=true/);
+  assert.match(authFormSubmitClientScript(), /setAttribute\('aria-busy','true'\)/);
+  assert.match(passwordInvitationClientScript(), /if \(busy\) return/);
+  assert.match(passwordResetClientScript(), /if \(busy\) return/);
 });

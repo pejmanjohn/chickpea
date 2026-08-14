@@ -778,14 +778,14 @@ test('SqliteConfigStore seeds an empty file database exactly once', async () => 
   }
 });
 
-test('default seed ships a single Default profile plus the direct-message wildcard only', async () => {
+test('default seed ships a single Sprout Agent plus the direct-message wildcard only', async () => {
   const store = new SqliteConfigStore(':memory:');
 
   const agents = await store.listAgents();
   assert.equal(agents.length, 1);
   assert.deepEqual(
     agents.map((item) => item.name),
-    ['Default'],
+    ['Sprout'],
   );
 
   const [defaultAgent] = agents;
@@ -812,7 +812,7 @@ test('default seed ships a single Default profile plus the direct-message wildca
   store.close();
 });
 
-test('Cloudflare first-boot seed pins Default to the keyless Workers AI binding model', () => {
+test('Cloudflare first-boot seed pins Sprout to the keyless Workers AI binding model', () => {
   const [defaultAgent] = createSeededAgents({ target: 'cloudflare' });
 
   assert.ok(defaultAgent);

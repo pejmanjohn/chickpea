@@ -19,7 +19,10 @@ form { display:grid; gap:16px; margin-top:22px; } label { display:grid; gap:7px;
 input { width:100%; min-height:46px; border:1px solid var(--line); border-radius:10px; padding:10px 12px; background:#fff; color:var(--ink); font:inherit; }
 input:focus,button:focus,a:focus { outline:3px solid rgba(221,160,51,.34); outline-offset:2px; }
 button,.button { display:inline-flex; min-height:46px; align-items:center; justify-content:center; border:0; border-radius:10px; padding:11px 18px; background:var(--ink); color:#fff; font:700 1rem inherit; text-decoration:none; cursor:pointer; }
+button[aria-busy="true"]::before { content:""; width:16px; height:16px; margin-right:9px; border:2px solid rgba(255,255,255,.35); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; }
+button:disabled { cursor:not-allowed; opacity:.65; }
 [hidden] { display:none !important; } .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:18px; }
+@keyframes spin { to { transform:rotate(360deg); } }
 </style>`;
 
 export function renderJoinBootstrapPage(): string {
@@ -165,10 +168,10 @@ export function renderPasswordInvitationPage(): string {
     <label>Create a password <span>${PASSWORD_MIN_CODE_POINTS} or more characters</span><input id="password" name="password" type="password" autocomplete="new-password" minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="512" aria-describedby="enrollment-password-help enrollment-password-error" required></label>
     <p id="enrollment-password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
     <p id="enrollment-password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
-    <button type="submit">Create account and join</button>
+    <button type="submit" data-submitting-label="Creating account&hellip;">Create account and join</button>
   </form>
   <div id="existing" hidden><p>That email already has an account. Sign in normally to continue this exact invitation.</p><a class="button" href="/admin/login?returnTo=%2Fadmin%2Fjoin">Sign in to continue</a></div>
-  <div id="authenticated" hidden><p>You are signed in as the invited account.</p><button id="accept" type="button">Accept invitation</button></div>
+  <div id="authenticated" hidden><p>You are signed in as the invited account.</p><button id="accept" type="button" data-submitting-label="Joining&hellip;">Accept invitation</button></div>
   <p id="status" class="status" role="status" aria-live="polite"></p>
 </main><script src="/admin/join/password-client.js" defer></script></body></html>`;
 }
@@ -186,6 +189,7 @@ export function passwordInvitationClientScript(): string {
   var existing = document.getElementById("existing");
   var authenticated = document.getElementById("authenticated");
   var accept = document.getElementById("accept");
+  var busy = false;
   var credential = "";
   try { credential = sessionStorage.getItem(key) || ""; } catch (_) {}
   var split = credential.indexOf(".");
@@ -213,6 +217,16 @@ export function passwordInvitationClientScript(): string {
     return fetch(path, { method:"POST", credentials:"same-origin", headers:{"content-type":"application/json"}, body:JSON.stringify(body) });
   }
   function complete(extra) {
+    if (busy) return;
+    busy = true;
+    var submit = form && form.querySelector ? form.querySelector('button[type="submit"]') : null;
+    var button = extra && Object.keys(extra).length ? submit : accept;
+    if (submit) submit.disabled = true;
+    if (accept) accept.disabled = true;
+    if (button) {
+      button.setAttribute("aria-busy", "true");
+      button.textContent = button.getAttribute("data-submitting-label") || "Working…";
+    }
     if (status) { status.className = "status"; status.textContent = "Activating your membership…"; }
     post("/admin/join", Object.assign({ operationId:operationId, token:token }, extra || {})).then(function (response) {
       if (response.status === 409) return response.json().then(function (body) { throw new Error(body.error || "conflict"); });
@@ -223,6 +237,9 @@ export function passwordInvitationClientScript(): string {
       token = ""; operationId = ""; credential = "";
       location.replace(body.redirect || "/admin/channels");
     }).catch(function (error) {
+      busy = false;
+      if (submit) { submit.disabled = false; submit.removeAttribute("aria-busy"); submit.textContent = "Create account and join"; }
+      if (accept) { accept.disabled = false; accept.removeAttribute("aria-busy"); accept.textContent = "Accept invitation"; }
       if (error && error.message === "existing_account") {
         if (form) form.hidden = true;
         if (existing) existing.hidden = false;
@@ -269,7 +286,7 @@ export function renderPasswordResetPage(): string {
     <label>New password <span>${PASSWORD_MIN_CODE_POINTS} or more characters</span><input id="new-password" name="newPassword" type="password" autocomplete="new-password" minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="512" aria-describedby="reset-password-help reset-password-error" required></label>
     <p id="reset-password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
     <p id="reset-password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
-    <button type="submit">Replace password</button>
+    <button type="submit" data-submitting-label="Replacing password&hellip;">Replace password</button>
   </form>
   <p id="status" class="status" role="status" aria-live="polite"></p>
 </main><script src="/admin/reset/client.js" defer></script></body></html>`;
@@ -285,6 +302,7 @@ export function passwordResetClientScript(): string {
   var form = document.getElementById("reset-form");
   var passwordInput = document.getElementById("new-password");
   var passwordError = document.getElementById("reset-password-error");
+  var busy = false;
   var credential = "";
   try { credential = sessionStorage.getItem(key) || ""; } catch (_) {}
   var split = credential.indexOf(".");
@@ -321,6 +339,10 @@ export function passwordResetClientScript(): string {
   if (form) form.addEventListener("submit", function (event) {
     event.preventDefault();
     if (!validatePassword(true) || !form.checkValidity()) { form.reportValidity(); return; }
+    if (busy) return;
+    busy = true;
+    var submit = form.querySelector('button[type="submit"]');
+    if (submit) { submit.disabled=true; submit.setAttribute("aria-busy","true"); submit.textContent=submit.getAttribute("data-submitting-label")||"Working…"; }
     if (status) { status.className="status"; status.textContent="Replacing your password…"; }
     post({ operationId:operationId, token:token, newPassword:document.getElementById("new-password").value }).then(function (response) {
       if (response.status === 409) throw new Error("conflict");
@@ -330,7 +352,11 @@ export function passwordResetClientScript(): string {
       try { sessionStorage.removeItem(key); } catch (_) {}
       token=""; operationId=""; credential="";
       location.replace(body.redirect || "/admin/login");
-    }).catch(function (error) { fail(error.message === "conflict" ? "You are signed in as a different user. Sign out before using this reset link." : "The password could not be replaced. Check the password requirements or ask for a new link."); });
+    }).catch(function (error) {
+      busy=false;
+      if (submit) { submit.disabled=false; submit.removeAttribute("aria-busy"); submit.textContent="Replace password"; }
+      fail(error.message === "conflict" ? "You are signed in as a different user. Sign out before using this reset link." : "The password could not be replaced. Check the password requirements or ask for a new link.");
+    });
   });
 })();`;
 }
