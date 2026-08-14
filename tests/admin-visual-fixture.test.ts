@@ -286,7 +286,7 @@ test('visual fixture executable removes temporary state when the process exits',
   assert.equal(existsSync(stateDirectory), false);
 });
 
-test('production Admin markup exposes only scoped Agent and Channel foundation hooks', () => {
+test('production Admin markup exposes the shared primary shell and scoped Agent and Channel hooks', () => {
   const html = renderAdminPage();
   const firstPaint = html.split('<script>')[0] ?? '';
 
@@ -301,7 +301,8 @@ test('production Admin markup exposes only scoped Agent and Channel foundation h
 
   assert.match(firstPaint, /<div id="app" class="frame">/);
   assert.match(html, /app\.className = "frame onboarding-frame"/);
-  assert.match(html, /<nav class="rail" aria-label="Settings">/);
+  assert.match(html, /isPrimaryAdminSurface\(\) \? " primary-admin-shell"/);
+  assert.match(html, /<nav class="rail' \+ \(primaryShell \? ' primary-shell-sidebar' : ''\) \+ '" aria-label="Settings">/);
   assert.match(html, /<a class="section-nav-item" href="\/admin\/account">Account<\/a>/);
   assert.doesNotMatch(html, /fixtureState|fixtureCredential|agent_research|C_RELEASES|T_VISUAL/);
   assert.doesNotMatch(html, /\.onboarding[^,{]*,\s*\.admin-surface|\.settings[^,{]*,\s*\.admin-surface/);

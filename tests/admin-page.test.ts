@@ -27,6 +27,7 @@ interface FakeResponse {
 
 interface FakeElement {
   innerHTML: string;
+  className?: string;
 }
 
 interface FakeRegion {
@@ -2667,6 +2668,7 @@ test('Settings Slack identities is a durable default-first management screen', a
   await flushAsync();
 
   assert.equal(harness.locationPath(), '/admin/settings/slack/identities');
+  assert.equal(harness.app.className, 'frame primary-admin-shell');
   assert.match(harness.app.innerHTML, /<h1 class="page-title">Slack identities<\/h1>/);
   assert.match(harness.app.innerHTML, /@Chickpea/);
   assert.match(harness.app.innerHTML, /Workspace default/);
@@ -2809,6 +2811,7 @@ test('dedicated setup resumes without returned secrets and completes the signed 
   const submit = harness.listeners.submit;
   assert.ok(click && submit);
 
+  assert.equal(harness.app.className, 'frame');
   assert.match(harness.app.innerHTML, /Set up @Launch/);
   assert.match(harness.app.innerHTML, /Create and install the Slack app/);
   assert.match(harness.app.innerHTML, /exact Slack page to change its avatar/);
@@ -2930,6 +2933,7 @@ test('identity detail separates Slack appearance, DM confirmation, reconnect, an
   const submit = harness.listeners.submit;
   assert.ok(click && change && submit);
 
+  assert.equal(harness.app.className, 'frame');
   assert.match(harness.app.innerHTML, /Slack is the source of truth/);
   assert.match(harness.app.innerHTML, /href="https:\/\/api\.slack\.com\/apps\/A_FINANCE\/general"/);
   assert.match(harness.app.innerHTML, /Agent usage/);
@@ -3086,8 +3090,10 @@ test('Agent and Channel routes share the attached Agent roster and lower navigat
   const html = harness.app.innerHTML;
   assert.equal(harness.locationPath(), '/admin/channels');
   assert.deepEqual(harness.historyReplaces, []);
-  assert.match(html, /<aside class="rail agent-shell-sidebar">/);
-  assert.match(html, /class="agent-shell-brand"[\s\S]*?data-action="go-home"[\s\S]*?Chickpea[\s\S]*?class="chip"/);
+  assert.equal(harness.app.className, 'frame primary-admin-shell admin-surface admin-surface-channels-index');
+  assert.match(html, /<aside class="rail primary-shell-sidebar agent-shell-sidebar">/);
+  assert.match(html, /class="primary-shell-brand"[\s\S]*?data-action="go-home"[\s\S]*?Chickpea/);
+  assert.doesNotMatch(html, /cloudflare · workers|local · node/);
   assert.match(html, /<nav class="agent-roster" aria-label="Agents">/);
   assert.match(html, /class="agent-roster-item" data-action="edit-profile" data-agent="agent_release"/);
   assert.match(html, /class="agent-roster-item" data-action="edit-profile" data-agent="agent_ops"/);
@@ -4267,7 +4273,8 @@ test('agent-first Admin lands on the Default Agent with Channels in lower naviga
   await flushAsync();
 
   assert.equal(harness.locationPath(), '/admin/agents/agent_release');
-  assert.match(harness.app.innerHTML, /<aside class="rail agent-shell-sidebar">/);
+  assert.equal(harness.app.className, 'frame primary-admin-shell admin-surface admin-surface-agent-detail');
+  assert.match(harness.app.innerHTML, /<aside class="rail primary-shell-sidebar agent-shell-sidebar">/);
   assert.match(harness.app.innerHTML, /<nav class="agent-roster" aria-label="Agents">/);
   assert.match(harness.app.innerHTML, /<span class="section-eyebrow">Agents<\/span>/);
   assert.match(harness.app.innerHTML, /class="agent-roster-item active" data-action="edit-profile" data-agent="agent_release"[^>]*aria-current="page"/);
@@ -4289,7 +4296,7 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(harness.app.innerHTML, /class="agent-tabs-card"/);
   assert.match(harness.app.innerHTML, /class="[^"]*agent-placement-card[^"]*"[\s\S]*?<h2>Where it works<\/h2>/);
   assert.match(harness.app.innerHTML, /<h3[^>]*>Channels<\/h3>[\s\S]*?# eng-releases/);
-  assert.match(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>[\s\S]*?identity-bound/);
+  assert.match(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>/);
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
   assert.match(harness.app.innerHTML, /class="[^"]*agent-model-card[^"]*"[\s\S]*?<h2>Model<\/h2>/);
   assert.match(harness.app.innerHTML, /class="advanced agent-advanced-card"[\s\S]*?Slack identity[\s\S]*?Coding sandbox/);
@@ -4307,16 +4314,100 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.agent-profile-page \.ptabs\s*\{[^}]*overflow-x:\s*auto;/s);
 });
 
-test('Where it works separates empty Channel placement from identity-bound Direct messages', async () => {
+test('Where it works keeps Channel placements and renders Direct messages as non-interactive identity status', async () => {
+  const identities = multiSlackIdentitiesFixture();
+  const workspaceIdentity = identities.identities.find((identity) =>
+    identity.id === 'slack_identity_default'
+  );
+  assert.ok(workspaceIdentity);
+  workspaceIdentity.displayName = 'Pea & Ops';
+
   const harness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_release',
-    assignments: [],
+    slackIdentities: identities,
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /<h3[^>]*>Channels<\/h3>[\s\S]*?No Channels yet/);
-  assert.match(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>[\s\S]*?data-action="open-settings" data-section="slack"/);
+  assert.match(harness.app.innerHTML, /data-action="open-channel-from-profile"[^>]*># eng-releases/);
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
+
+  const dmHeadingAt = harness.app.innerHTML.indexOf('<h3>Direct messages</h3>');
+  const addActionAt = harness.app.innerHTML.indexOf('data-action="attach-open"', dmHeadingAt);
+  assert.notEqual(dmHeadingAt, -1);
+  assert.notEqual(addActionAt, -1);
+  const addButtonAt = harness.app.innerHTML.lastIndexOf('<button', addActionAt);
+  const dmSection = harness.app.innerHTML.slice(dmHeadingAt, addButtonAt);
+  assert.match(dmSection, /class="agent-dm-status">On via @Pea &amp; Ops<\/p>/);
+  assert.doesNotMatch(dmSection, /identity-bound|<button|data-action=/);
+
+  const secondIdentity = identities.identities.find((identity) =>
+    identity.id === 'slack_identity_finance'
+  );
+  assert.ok(secondIdentity);
+  secondIdentity.dmAgentId = releaseAgent.id;
+  secondIdentity.dmProfile = { id: releaseAgent.id, name: releaseAgent.name, enabled: true };
+  const multipleHarness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    slackIdentities: identities,
+  });
+  await flushAsync();
+  assert.match(multipleHarness.app.innerHTML, /class="agent-dm-status">On via @Pea &amp; Ops \+1<\/p>/);
+
+  const pendingHarness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    slackIdentities: {
+      identities: [incompleteSlackIdentityFixture()],
+      globalDmAllowed: true,
+    },
+  });
+  await flushAsync();
+  assert.match(pendingHarness.app.innerHTML, /class="agent-dm-status">Setup pending for @Launch<\/p>/);
+  assert.doesNotMatch(pendingHarness.app.innerHTML, /class="agent-dm-status">On via @Launch<\/p>/);
+
+  const offIdentity = incompleteSlackIdentityFixture({
+    lifecycle: 'connected',
+    effectiveDmState: 'off',
+  });
+  const offHarness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    assignments: [{
+      workspaceId: '*',
+      channelId: '*',
+      agentId: releaseAgent.id,
+      enabled: true,
+    }],
+    slackIdentities: { identities: [offIdentity], globalDmAllowed: true },
+  });
+  await flushAsync();
+  assert.match(offHarness.app.innerHTML, /<h3>Direct messages<\/h3><p class="agent-placement-empty">Off<\/p>/);
+  assert.doesNotMatch(offHarness.app.innerHTML, /class="agent-dm-status">On via @Launch<\/p>/);
+
+  const fallbackHarness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    assignments: [{
+      workspaceId: '*',
+      channelId: '*',
+      agentId: releaseAgent.id,
+      enabled: true,
+    }],
+    slackIdentities: { identities: [], globalDmAllowed: true },
+  });
+  await flushAsync();
+  assert.match(fallbackHarness.app.innerHTML, /class="agent-dm-status">On via @Chickpea<\/p>/);
+
+  const noDmHarness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    assignments: [],
+    slackIdentities: { identities: [], globalDmAllowed: true },
+  });
+  await flushAsync();
+
+  assert.match(noDmHarness.app.innerHTML, /<h3[^>]*>Channels<\/h3>[\s\S]*?No Channels yet/);
+  assert.match(
+    noDmHarness.app.innerHTML,
+    /<h3[^>]*>Direct messages<\/h3>[\s\S]*?No Slack identity routes Direct messages to this Agent\./,
+  );
+  assert.match(noDmHarness.app.innerHTML, /data-action="attach-open">Add to channels/);
 });
 
 test('Agent placements prefer the projected Slack Channel name over a raw Channel ID', async () => {
@@ -4810,7 +4901,7 @@ test('disconnected Channel detail keeps the same Agent shell and truthful Slack 
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /<aside class="rail agent-shell-sidebar">/);
+  assert.match(harness.app.innerHTML, /<aside class="rail primary-shell-sidebar agent-shell-sidebar">/);
   assert.match(harness.app.innerHTML, /<nav class="agent-roster" aria-label="Agents">/);
   assert.match(harness.app.innerHTML, /class="agent-roster-item active" data-action="edit-profile" data-agent="agent_release"/);
   assert.match(harness.app.innerHTML, /class="agent-slack-status disconnected"[^>]*>Not connected<\/span>/);
@@ -8773,8 +8864,8 @@ test('the existing mobile menu is the sole narrow Agent roster transition with f
   await flushAsync();
 
   const page = renderAdminPage();
-  assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.admin-surface > \.topbar\s*\{[^}]*display:\s*flex;/s);
-  assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.admin-surface \.agent-shell-sidebar\s*\{[^}]*display:\s*none;/s);
+  assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.primary-admin-shell > \.topbar\s*\{[^}]*display:\s*flex;/s);
+  assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*display:\s*none;/s);
   assert.equal((harness.app.innerHTML.match(/aria-label="Agents"/g) ?? []).length, 1);
   assert.match(harness.app.innerHTML, /data-action="mobile-agents-open"/);
 
@@ -9002,7 +9093,7 @@ test('the attached Agent shell stays available while channel setup waits for Sla
   // Disconnected: setup stays focused while the shared roster and stable
   // section switcher remain available.
   assert.match(harness.app.innerHTML, /Connect @Chickpea/);
-  assert.match(harness.app.innerHTML, /<aside class="rail agent-shell-sidebar">/);
+  assert.match(harness.app.innerHTML, /<aside class="rail primary-shell-sidebar agent-shell-sidebar">/);
   assert.match(harness.app.innerHTML, /<nav class="agent-roster" aria-label="Agents">/);
   assert.match(harness.app.innerHTML, /class="agent-slack-status disconnected"[^>]*>Not connected<\/span>/);
   assert.match(harness.app.innerHTML, /class="section-nav-item" data-action="open-profiles"[^>]*>Agents<\/button>/);
@@ -9950,20 +10041,39 @@ test('the left rail keeps one coherent section switcher and section-specific nav
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'open-profiles', 'data-section-switcher': 'true' }) });
   assert.equal(harness.locationPath(), '/admin/agents/agent_release');
-  assert.match(harness.app.innerHTML, /<aside class="rail agent-shell-sidebar">/);
+  assert.match(harness.app.innerHTML, /<aside class="rail primary-shell-sidebar agent-shell-sidebar">/);
   assert.match(harness.app.innerHTML, /class="agent-roster-item active" data-action="edit-profile" data-agent="agent_release"/);
   assert.match(harness.app.innerHTML, /class="section-nav-item active" data-action="open-profiles"/);
+
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  assert.equal(harness.locationPath(), '/admin/agents/new');
+  assert.equal(harness.app.className, 'frame primary-admin-shell admin-surface');
+  assert.match(harness.app.innerHTML, /<aside class="rail primary-shell-sidebar agent-shell-sidebar">/);
+  assert.match(harness.app.innerHTML, /data-action="new-profile"[^>]*>[^<]*<svg[\s\S]*?New Agent<\/button>/);
+
+  click({ target: actionTarget({ 'data-action': 'open-team', 'data-section-switcher': 'true' }) });
+  await flushAsync();
+  assert.equal(harness.locationPath(), '/admin/team');
+  assert.equal(harness.app.className, 'frame primary-admin-shell');
+  assert.match(harness.app.innerHTML, /<nav class="rail primary-shell-sidebar" aria-label="Team">/);
+  assert.match(harness.app.innerHTML, /class="primary-shell-brand[^"]*"[\s\S]*?Chickpea/);
+  assert.match(harness.app.innerHTML, /<span class="chan-name">Members<\/span>/);
+  assert.equal((harness.app.innerHTML.match(/aria-label="Admin navigation"/g) ?? []).length, 1);
+  assert.doesNotMatch(harness.app.innerHTML, /cloudflare · workers|local · node/);
 
   click({ target: actionTarget({ 'data-action': 'open-usage', 'data-section-switcher': 'true' }) });
   await flushAsync();
   assert.equal(harness.locationPath(), '/admin/usage');
-  assert.match(harness.app.innerHTML, /<nav class="rail" aria-label="Usage">/);
+  assert.equal(harness.app.className, 'frame primary-admin-shell');
+  assert.match(harness.app.innerHTML, /<nav class="rail primary-shell-sidebar" aria-label="Usage">/);
   assert.match(harness.app.innerHTML, /<span class="chan-name">Overview<\/span>/);
   assert.doesNotMatch(harness.app.innerHTML, /<span class="chan-name">Model settings<\/span>/);
 
   click({ target: actionTarget({ 'data-action': 'open-settings', 'data-section-switcher': 'true' }) });
   await flushAsync();
   assert.equal(harness.locationPath(), '/admin/settings/providers');
+  assert.equal(harness.app.className, 'frame primary-admin-shell');
+  assert.match(harness.app.innerHTML, /<nav class="rail primary-shell-sidebar" aria-label="Settings">/);
   assert.match(harness.app.innerHTML, /class="chan-item active" data-action="settings-section" data-section="providers"/);
 
   click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'github' }) });
@@ -9973,12 +10083,24 @@ test('the left rail keeps one coherent section switcher and section-specific nav
   assert.match(harness.app.innerHTML, /data-settings-panel="github"><section/);
 });
 
+test('the unified primary shell keeps a darker canvas around its white paper panel and collapses on mobile', () => {
+  const page = renderAdminPage();
+  assert.match(page, /\.primary-admin-shell\s*\{[^}]*background:\s*var\(--admin-visual-canvas\);[^}]*max-width:\s*none;/s);
+  assert.match(page, /\.primary-admin-shell > \.topbar\s*\{[^}]*display:\s*none;/s);
+  assert.match(page, /\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*border-radius:\s*0;[^}]*box-shadow:\s*none;[^}]*width:\s*292px;/s);
+  assert.match(page, /\.primary-admin-shell \.main\s*\{[^}]*background:\s*var\(--admin-visual-paper\);[^}]*height:\s*calc\(100% - 44px\);[^}]*margin:\s*22px 24px;[^}]*max-width:\s*none;[^}]*width:\s*auto;/s);
+  assert.match(page, /\.team-main\s*\{[^}]*max-width:\s*760px;/s);
+  assert.match(page, /\.usage-main\s*\{[^}]*max-width:\s*1100px;/s);
+  assert.match(page, /@media \(max-width: 1000px\)[\s\S]*?\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*width:\s*228px;[^}]*\}[\s\S]*?\.primary-admin-shell \.main\s*\{[^}]*margin-left:\s*15px;[^}]*margin-right:\s*15px;/s);
+  assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.primary-admin-shell > \.topbar\s*\{[^}]*display:\s*flex;[^}]*\}[\s\S]*?\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*display:\s*none;/s);
+});
+
 test('legacy Sessions page URLs return to the default Agent without loading Run data', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin/sessions/run_session_fixture' });
   await flushAsync();
 
   assert.equal(harness.locationPath(), '/admin/agents/agent_release');
-  assert.match(harness.app.innerHTML, /<aside class="rail agent-shell-sidebar">/);
+  assert.match(harness.app.innerHTML, /<aside class="rail primary-shell-sidebar agent-shell-sidebar">/);
   assert.doesNotMatch(harness.app.innerHTML, /Sessions|open-sessions|Run inspector/);
 });
 

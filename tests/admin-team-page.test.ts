@@ -105,6 +105,7 @@ async function createHarness(
   const fixture = teamFixture(viewerRole);
   let html = '';
   const app = {
+    className: '',
     get innerHTML() { return html; },
     set innerHTML(value: string) { html = value; },
   };
@@ -211,6 +212,11 @@ async function createHarness(
 test('Team page keeps invitations and membership status inside Chickpea', async () => {
   const harness = await createHarness();
   assert.equal(harness.location.pathname, '/admin/team');
+  assert.equal(harness.app.className, 'frame primary-admin-shell');
+  assert.match(harness.app.innerHTML, /<nav class="rail primary-shell-sidebar" aria-label="Team">/);
+  assert.match(harness.app.innerHTML, /class="primary-shell-brand[^"]*"[\s\S]*?data-action="go-home"[\s\S]*?Chickpea/);
+  assert.equal((harness.app.innerHTML.match(/aria-label="Admin navigation"/g) ?? []).length, 1);
+  assert.doesNotMatch(harness.app.innerHTML, /cloudflare · workers|local · node/);
   assert.match(harness.app.innerHTML, /data-action="open-team"[^>]*aria-current="page"/);
   assert.match(harness.app.innerHTML, /Waiting to join/);
   assert.match(harness.app.innerHTML, /joiner@example\.com/);

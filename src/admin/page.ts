@@ -14,10 +14,9 @@ const SLACK_LOGO_DATA_URL =
 export function renderAdminPage(
   options: { usageAdminUi?: boolean } = {},
 ): string {
-  // Target-aware chrome: the header chip and the provider-hint copy differ
-  // between the Node and Cloudflare runtimes. Resolved server-side (the inline
-  // script has no runtime-target check of its own) and interpolated as plain
-  // text into both the first-paint skeleton and the inlined script.
+  // Target-aware setup and provider copy differs between the Node and
+  // Cloudflare runtimes. The primary Admin chrome intentionally stays
+  // product-focused and does not expose this deployment detail.
   const isCloudflare = isCloudflareTarget();
   const targetChip = isCloudflare ? 'cloudflare · workers' : 'local · node';
   const providerHint = isCloudflare
@@ -1243,15 +1242,17 @@ details[open].advanced summary::before {
 .topbar-menu > summary:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
 .actions-list { align-items: center; display: flex; gap: 9px; }
 
-/* ---- attached Agent-first shell (Agent detail + Channel surfaces) ---- */
-.agent-shell-brand { display: none; }
-.admin-surface {
+/* ---- unified primary Admin shell ------------------------------------- */
+.primary-admin-shell {
+  --admin-visual-canvas: #f4ead2;
+  --admin-visual-paper: #fffdf7;
+  --admin-visual-line: #e8deca;
   background: var(--admin-visual-canvas);
   max-width: none;
 }
-.admin-surface > .topbar { display: none; }
-.admin-surface .body { gap: 0; padding: 0; }
-.admin-surface .agent-shell-sidebar {
+.primary-admin-shell > .topbar { display: none; }
+.primary-admin-shell .body { gap: 0; padding: 0; }
+.primary-admin-shell .primary-shell-sidebar {
   background: rgba(255, 253, 247, .74);
   border-radius: 0;
   border-right: 1px solid rgba(130, 105, 58, .12);
@@ -1259,22 +1260,29 @@ details[open].advanced summary::before {
   padding: 27px 22px 22px;
   width: 292px;
 }
-.admin-surface .agent-shell-brand {
+.primary-admin-shell .primary-shell-brand {
   align-items: center;
   display: flex;
   gap: 11px;
   padding: 0 3px 25px;
 }
-.admin-surface .agent-shell-brand .brand-home { flex: 1; }
-.admin-surface .agent-shell-brand .brand-name { font-size: 1.25rem; }
-.admin-surface .agent-shell-brand .chip {
-  border-radius: 999px;
-  margin-left: auto;
-  overflow-wrap: normal;
-  padding: 6px 8px;
-  white-space: nowrap;
+.primary-admin-shell .primary-shell-brand .brand-home { flex: 1; }
+.primary-admin-shell .primary-shell-brand .brand-name { font-size: 1.25rem; }
+.primary-admin-shell .primary-shell-sidebar .rail-context { padding-bottom: 14px; }
+.primary-admin-shell .primary-shell-sidebar .rail-head { padding-left: 3px; padding-right: 3px; }
+.primary-admin-shell .primary-shell-sidebar .section-switcher { border-color: var(--admin-visual-line); }
+.primary-admin-shell .main {
+  align-self: center;
+  background: var(--admin-visual-paper);
+  border: 1px solid rgba(118, 94, 51, .08);
+  height: calc(100% - 44px);
+  margin: 22px 24px;
+  max-width: none;
+  width: auto;
 }
-.admin-surface .agent-shell-sidebar .rail-context { padding-bottom: 14px; }
+
+/* Agent and Channel pages keep their specialized rail and content density
+   inside the shared attached shell. */
 .admin-surface .agent-shell-sidebar .rail-head { padding: 0 3px 8px; }
 .agent-slack-context { padding: 0 3px 8px; }
 .agent-slack-row {
@@ -1315,7 +1323,7 @@ details[open].advanced summary::before {
 }
 .agent-roster-item:hover { background: rgba(232, 216, 182, .5); }
 .agent-roster-item.active { background: #f4e8cc; box-shadow: inset 3px 0 var(--admin-visual-gold); }
-.agent-roster-item:focus-visible, .agent-shell-brand .brand-home:focus-visible {
+.agent-roster-item:focus-visible, .primary-shell-brand .brand-home:focus-visible {
   outline: 2px solid var(--ember-press);
   outline-offset: 2px;
 }
@@ -1350,13 +1358,7 @@ details[open].advanced summary::before {
   white-space: nowrap;
 }
 .agent-roster-add { margin: 5px 0 0; padding-left: 12px; }
-.admin-surface .agent-shell-sidebar .section-switcher { border-color: var(--admin-visual-line); }
 .admin-surface .main {
-  align-self: center;
-  border: 1px solid rgba(118, 94, 51, .08);
-  height: calc(100% - 44px);
-  margin: 22px 32px;
-  max-width: var(--admin-visual-content-width);
   padding: 44px 46px 48px;
 }
 .mobile-agent-roster { display: flex; flex-direction: column; gap: 4px; min-width: min(340px, calc(100vw - 40px)); }
@@ -1364,17 +1366,17 @@ details[open].advanced summary::before {
 .mobile-agent-roster .agent-roster-add { margin-left: 0; }
 
 @media (max-width: 1000px) {
-  .admin-surface .agent-shell-sidebar { width: 228px; }
-  .admin-surface .agent-shell-brand .chip { display: none; }
-  .admin-surface .main { margin-left: 15px; margin-right: 15px; padding: 32px 28px; }
+  .primary-admin-shell .primary-shell-sidebar { width: 228px; }
+  .primary-admin-shell .main { margin-left: 15px; margin-right: 15px; }
+  .admin-surface .main { padding: 32px 28px; }
 }
 
 @media (max-width: 740px) {
-  .admin-surface { height: auto; overflow: visible; }
-  .admin-surface > .topbar { display: flex; }
-  .admin-surface .body { flex-direction: column; overflow: visible; }
-  .admin-surface .agent-shell-sidebar { display: none; }
-  .admin-surface .main {
+  .primary-admin-shell { height: auto; overflow: visible; }
+  .primary-admin-shell > .topbar { display: flex; }
+  .primary-admin-shell .body { flex-direction: column; overflow: visible; }
+  .primary-admin-shell .primary-shell-sidebar { display: none; }
+  .primary-admin-shell .main {
     align-self: auto;
     height: auto;
     margin: 10px;
@@ -1382,10 +1384,10 @@ details[open].advanced summary::before {
     padding: 26px 20px;
     width: calc(100% - 20px);
   }
-  .admin-surface .topbar .topbar-menu,
-  .admin-surface .topbar .topbar-menu > summary { display: inline-flex; }
-  .admin-surface .topbar .actions-list { display: none; }
-  .admin-surface .topbar-menu[open] ~ .actions-list {
+  .primary-admin-shell .topbar .topbar-menu,
+  .primary-admin-shell .topbar .topbar-menu > summary { display: inline-flex; }
+  .primary-admin-shell .topbar .actions-list { display: none; }
+  .primary-admin-shell .topbar-menu[open] ~ .actions-list {
     align-items: stretch;
     background: var(--bg);
     border-radius: 16px;
@@ -1640,6 +1642,7 @@ details[open].advanced summary::before {
 .agent-placement-group { min-width: 0; }
 .agent-placement-group h3 { color: var(--text-3); font-size: .625rem; letter-spacing: .08em; margin: 0 0 7px; text-transform: uppercase; }
 .agent-placement-empty { color: var(--text-3); font-size: .75rem; margin: 0; }
+.agent-dm-status { color: var(--text-2); font-size: .75rem; font-weight: 700; margin: 0; }
 .agent-placement-card > .btn { white-space: nowrap; }
 .agent-placement-card > .bundle-row, .agent-placement-card > .callout { grid-column: 1 / -1; }
 .agent-model-card .agent-model-row { background: transparent; padding: 0; }
@@ -1678,7 +1681,6 @@ details[open].advanced summary::before {
   padding: 7px 11px;
 }
 button.where-pill, button.capability-pill { cursor: pointer; }
-.where-pill.dm { background: var(--ember-tint); color: var(--ember-deep); }
 .owner-memory-intro { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 14px; justify-content: space-between; }
 .owner-memory-intro p { margin: 0; }
 .owner-memory-assignee { background: #f2e8d5; border-radius: 999px; color: var(--text-2); font-size: .6875rem; font-weight: 750; padding: 6px 9px; }
@@ -2310,7 +2312,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 }
 
 /* ---- team and invitation admission ------------------------------------- */
-.team-main { display: grid; gap: 22px; }
+.team-main { display: grid; gap: 22px; max-width: 760px; }
 .team-hero { align-items: flex-start; display: flex; gap: 16px; justify-content: space-between; }
 .team-count { background: var(--ember-tint); border-radius: 999px; color: var(--ember-deep); font-size: .75rem; font-weight: 800; padding: 6px 10px; white-space: nowrap; }
 .team-card { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--card-shadow); padding: 18px; }
@@ -2358,7 +2360,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     <div class="brand">
       <span class="avatar">T<svg class="pea" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><g class="pea-eyes"><circle class="pea-eye" cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle class="pea-eye" cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle></g><g class="pea-lids"><path d="M16.4 24.2 Q18.5 22 20.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path d="M27.4 24.2 Q29.5 22 31.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path></g><path class="pea-smile" d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path class="pea-grin" d="M18.5 28.5 Q24 35.5 29.5 28.5 Z" fill="#3B3220"></path><circle class="pea-blush" cx="15.5" cy="28.5" r="2" fill="#DC8A4F"></circle><circle class="pea-blush" cx="32.5" cy="28.5" r="2" fill="#DC8A4F"></circle></svg></span>
       <span class="brand-name">Chickpea</span>
-      <span class="chip">${targetChip}</span>
     </div>
     <div class="actions">
       <button type="button" class="btn btn-soft" disabled>Agents</button>
@@ -3108,14 +3109,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       app.innerHTML = onboardingShellHtml() + overlays;
     } else {
       var adminSurfaceClass = "";
-      if (state.view === "profiles" && state.profileScreen === "edit") {
-        adminSurfaceClass = " admin-surface admin-surface-agent-detail";
+      if (state.view === "profiles") {
+        adminSurfaceClass = " admin-surface" + (state.profileScreen === "edit" ? " admin-surface-agent-detail" : "");
       } else if (state.view === "channels" && state.channelScreen === "overview") {
         adminSurfaceClass = " admin-surface admin-surface-channels-index";
       } else if (state.view === "channels" && state.channelScreen === "detail") {
         adminSurfaceClass = " admin-surface admin-surface-channel-detail";
       }
-      app.className = "frame" + adminSurfaceClass;
+      app.className = "frame" + (isPrimaryAdminSurface() ? " primary-admin-shell" : "") + adminSurfaceClass;
       app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + overlays;
     }
     if (isOnboardingSlackConnection()) {
@@ -3296,7 +3297,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         '<a class="btn btn-soft" href="/admin/account">Account</a>';
     // The brand doubles as a home affordance to the canonical Agent.
     return '<header class="topbar' + (scoped ? ' admin-mobile-topbar' : '') + '">' +
-      '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + '<span class="brand-name">Chickpea</span></button><span class="chip">${targetChip}</span></div>' +
+      '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + '<span class="brand-name">Chickpea</span></button></div>' +
       '<details class="topbar-menu"' + (mobileRoster ? ' open' : '') + '><summary aria-label="Menu" data-role="mobile-menu-trigger">' + icon("bars-3") + '</summary></details>' +
       '<div class="actions actions-list">' + actions + '</div>' +
       "</header>";
@@ -3311,8 +3312,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function isAgentChannelSurface() {
-    return (state.view === "profiles" && state.profileScreen === "edit") ||
-      state.view === "channels";
+    return state.view === "profiles" || state.view === "channels";
+  }
+
+  function isPrimaryAdminSurface() {
+    if (state.view === "profiles" || state.view === "channels" || state.view === "team" || state.view === "usage") return true;
+    if (state.view !== "settings") return false;
+    return state.settingsSection !== "slack" ||
+      (state.slackIdentityScreen !== "detail" && state.slackIdentityScreen !== "setup");
   }
 
   function selectedAgentIdForRoster() {
@@ -3385,11 +3392,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (state.view === "onboarding") return onboardingRailHtml();
     if (state.view === "usage") return usageRailHtml();
     if (state.view === "team") return teamRailHtml();
-    if (isAgentChannelSurface()) return profilesRailHtml(true);
-    if (state.view === "profiles") return profilesRailHtml(false);
+    if (isAgentChannelSurface()) return profilesRailHtml();
     if (state.view === "settings") return settingsRailHtml();
     if (state.view === "audit") return state.auditDomain === "scheduled-work" ? scheduledWorkRailHtml() : auditRailHtml();
     return channelsRailHtml();
+  }
+
+  function primaryShellBrandHtml() {
+    return '<div class="primary-shell-brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + '<span class="brand-name">Chickpea</span></button></div>';
   }
 
   function onboardingRailHtml() {
@@ -3451,7 +3461,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function usageRailHtml() {
-    return '<nav class="rail" aria-label="Usage"><div class="rail-context">' +
+    return '<nav class="rail primary-shell-sidebar" aria-label="Usage">' + primaryShellBrandHtml() + '<div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Usage</span></div>' +
       '<button type="button" class="chan-item active" data-action="open-usage"><span class="chan-name">Overview</span><span class="chan-meta">Spend and usage</span></button>' +
       '</div>' + sectionSwitcherHtml() + '</nav>';
@@ -3463,7 +3473,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var pending = invitations.filter(function (invitation) {
       return invitation.status === "pending" && Number(invitation.expiresAt) > Date.now();
     });
-    return '<nav class="rail" aria-label="Team"><div class="rail-context">' +
+    return '<nav class="rail primary-shell-sidebar" aria-label="Team">' + primaryShellBrandHtml() + '<div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Team</span></div>' +
       '<button type="button" class="chan-item active" data-action="open-team" aria-current="page"><span class="chan-name">Members</span><span class="chan-meta">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></button>' +
       '<div class="ws-row">Join links</div>' +
@@ -3537,39 +3547,20 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(invitation.email) + '</div><div class="team-row-sub">Expires ' + esc(new Date(invitation.expiresAt).toLocaleString()) + '</div><div class="team-statuses"><span class="team-status">Waiting to join</span></div>' + guidance + '</div><div class="team-row-actions">' + actions + '</div></article>';
   }
 
-  function profilesRailHtml(attached) {
-    if (attached) {
-      var connected = isSlackConnected();
-      var workspaceLabel = railGroupLabel(connectedTeamId());
-      var status = connected
-        ? '<span class="agent-slack-status">Connected</span>'
-        : '<span class="agent-slack-status disconnected">Not connected</span>';
-      return '<aside class="rail agent-shell-sidebar">' +
-        '<div class="agent-shell-brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + '<span class="brand-name">Chickpea</span></button><span class="chip">${targetChip}</span></div>' +
-        '<div class="rail-context"><div class="rail-head"><span class="section-eyebrow">Agents</span></div>' +
-        '<div class="agent-slack-context"><div class="agent-slack-row"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack' + status + '</div>' +
-        '<div class="ws-row agent-workspace-row">' + icon("chevron-down") + esc(workspaceLabel) + '</div></div>' +
-        '<nav class="agent-roster" aria-label="Agents">' + agentRosterItemsHtml() +
-        '<button type="button" class="agent-roster-item agent-roster-add" data-action="new-profile">' + icon("plus") + 'New Agent</button></nav></div>' +
-        sectionSwitcherHtml() + '</aside>';
-    }
-    var html = '<nav class="rail" aria-label="Agents"><div class="rail-context">' +
-      '<div class="rail-head"><span class="section-eyebrow">Agents</span></div>' +
-      '<button type="button" class="platform-row" data-action="open-profiles"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack' +
-      (isSlackConnected() ? '<span class="platform-status">Connected</span>' : '') + '</button>' +
-      '<div class="ws-row">Your Agents</div>';
-    if (!state.agents.length) {
-      html += '<div class="empty" style="margin:8px; padding:12px;"><p class="hint">No Agents yet</p></div>';
-    } else {
-      state.agents.forEach(function (agent) {
-        var active = state.profileScreen === "edit" && state.editingAgentId === agent.id;
-        var meta = agentPlacementMeta(agent);
-        html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="edit-profile" data-agent="' + esc(agent.id) + '">' +
-          '<span class="chan-name">' + esc(agent.name) + '</span><span class="chan-meta">' + esc(meta) + '</span></button>';
-      });
-    }
-    html += '<button type="button" class="rail-add' + (state.profileScreen === "create" ? " active" : "") + '" data-action="new-profile">' + icon("plus") + 'New Agent</button>';
-    return html + '</div>' + sectionSwitcherHtml() + '</nav>';
+  function profilesRailHtml() {
+    var connected = isSlackConnected();
+    var workspaceLabel = railGroupLabel(connectedTeamId());
+    var status = connected
+      ? '<span class="agent-slack-status">Connected</span>'
+      : '<span class="agent-slack-status disconnected">Not connected</span>';
+    return '<aside class="rail primary-shell-sidebar agent-shell-sidebar">' +
+      primaryShellBrandHtml() +
+      '<div class="rail-context"><div class="rail-head"><span class="section-eyebrow">Agents</span></div>' +
+      '<div class="agent-slack-context"><div class="agent-slack-row"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack' + status + '</div>' +
+      '<div class="ws-row agent-workspace-row">' + icon("chevron-down") + esc(workspaceLabel) + '</div></div>' +
+      '<nav class="agent-roster" aria-label="Agents">' + agentRosterItemsHtml() +
+      '<button type="button" class="agent-roster-item agent-roster-add" data-action="new-profile">' + icon("plus") + 'New Agent</button></nav></div>' +
+      sectionSwitcherHtml() + '</aside>';
   }
 
   function settingsRailHtml() {
@@ -3580,7 +3571,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       { id: "sandbox", name: "Coding sandbox", meta: "Workspace runtime" },
       { id: "outbound", name: "Outbound access", meta: "Network policy" }
     ];
-    var html = '<nav class="rail" aria-label="Settings"><div class="rail-context">' +
+    var primaryShell = isPrimaryAdminSurface();
+    var html = '<nav class="rail' + (primaryShell ? ' primary-shell-sidebar' : '') + '" aria-label="Settings">' +
+      (primaryShell ? primaryShellBrandHtml() : '') + '<div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Settings</span></div>';
     sections.forEach(function (section) {
       var active = state.settingsSection === section.id;
@@ -5317,14 +5310,36 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return profileOverviewHtml();
   }
 
-  function agentHasDmDefault(agentId) {
-    var legacyDefault = state.assignments.some(function (assignment) {
+  function dmIdentitiesForAgent(agentId) {
+    return ((state.slackIdentities && state.slackIdentities.identities) || []).filter(function (identity) {
+      return identity.dmAgentId === agentId;
+    });
+  }
+
+  function isUsableDmIdentity(identity) {
+    return identity.effectiveDmState === "on" &&
+      (identity.lifecycle === "connected" || identity.lifecycle === "degraded");
+  }
+
+  function isPendingDmIdentity(identity) {
+    return identity.lifecycle === "setup_incomplete" || identity.lifecycle === "credentials_pending";
+  }
+
+  function dmIdentitySummary(identities) {
+    var firstMention = slackIdentityMention(identities[0]);
+    return firstMention + (identities.length > 1 ? " +" + (identities.length - 1) : "");
+  }
+
+  function agentHasLegacyDmDefault(agentId) {
+    return state.assignments.some(function (assignment) {
       return assignment.agentId === agentId && assignment.workspaceId === "*" && assignment.channelId === "*";
     });
-    var identityDefault = ((state.slackIdentities && state.slackIdentities.identities) || []).some(function (identity) {
-      return identity.dmAgentId === agentId && identity.effectiveDmState === "on";
-    });
-    return legacyDefault || identityDefault;
+  }
+
+  function agentHasDmDefault(agentId) {
+    var identities = dmIdentitiesForAgent(agentId);
+    if (identities.length) return identities.some(isUsableDmIdentity);
+    return agentHasLegacyDmDefault(agentId);
   }
 
   function concreteAssignmentsForAgent(agentId) {
@@ -7068,7 +7083,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var guidance = "Deleting this Agent cannot be undone.";
     if (dm) {
       title = "The DM default can\u2019t be deleted. Detach it everywhere first.";
-      guidance = "Move its identity-bound Direct messages. Detach it from every Channel before deleting this Agent.";
+      guidance = "Move its Direct message routing in identity settings. Detach it from every Channel before deleting this Agent.";
     } else if (concrete.length) {
       title = "Detach it from every channel first.";
       guidance = "Detach it from every Channel before deleting this Agent.";
@@ -7136,7 +7151,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function usedInHtml(draft) {
-    var dm = agentHasDmDefault(draft.id);
+    var dmIdentities = dmIdentitiesForAgent(draft.id);
+    var usableDmIdentities = dmIdentities.filter(isUsableDmIdentity);
+    var pendingDmIdentities = dmIdentities.filter(isPendingDmIdentity);
     var concrete = concreteAssignmentsForAgent(draft.id);
     var channelRows = '<div class="where-list">';
     concrete.forEach(function (assignment) {
@@ -7144,9 +7161,18 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     });
     channelRows += '</div>';
     if (!concrete.length) channelRows = '<p class="agent-placement-empty">No Channels yet. Add this Agent to one when it is ready.</p>';
-    var dmRows = dm
-      ? '<button type="button" class="where-pill dm" data-action="open-settings" data-section="slack">' + icon("robot") + 'Direct messages <small>identity-bound</small></button>'
-      : '<p class="agent-placement-empty">No Slack identity routes Direct messages to this Agent.</p>';
+    var dmRows;
+    if (usableDmIdentities.length) {
+      dmRows = '<p class="agent-dm-status">On via ' + esc(dmIdentitySummary(usableDmIdentities)) + '</p>';
+    } else if (pendingDmIdentities.length) {
+      dmRows = '<p class="agent-dm-status">Setup pending for ' + esc(dmIdentitySummary(pendingDmIdentities)) + '</p>';
+    } else if (dmIdentities.length) {
+      dmRows = '<p class="agent-placement-empty">Off</p>';
+    } else if (agentHasLegacyDmDefault(draft.id)) {
+      dmRows = '<p class="agent-dm-status">On via ' + esc(slackIdentityMentionForId(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID)) + '</p>';
+    } else {
+      dmRows = '<p class="agent-placement-empty">No Slack identity routes Direct messages to this Agent.</p>';
+    }
     return '<section class="agent-detail-card agent-placement-card"><div class="agent-card-heading"><span class="agent-card-icon">' + icon("hash") + '</span><div><h2>Where it works</h2><p>Open a Channel to tune local behavior there.</p></div></div>' +
       '<div class="agent-placement-groups"><div class="agent-placement-group"><h3>Channels</h3>' + channelRows + '</div><div class="agent-placement-group"><h3>Direct messages</h3>' + dmRows + '</div></div>' +
       '<button type="button" class="btn btn-soft btn-sm" data-action="attach-open">Add to channels</button>' + attachPickerHtml(draft) + attachNoticeHtml() + '</section>';
