@@ -19,6 +19,11 @@ interface UsageAdminApiOptions {
   work?: (c: Context) => WorkStore;
 }
 
+const CUSTOMER_USAGE_OPERATION_KINDS = [
+  'interactive_turn',
+  'routine_run',
+] satisfies UsageOperationKind[];
+
 export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
   const app = new Hono();
 
@@ -29,7 +34,7 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
 
   app.get('/usage/summary', async (c) => {
     try {
-      const query = parseUsageQuery(c, true);
+      const query = parseCustomerUsageQuery(c, true);
       return c.json(redactAggregateLabels(
         await options.store(c).summarize(query),
         query.groupBy,
@@ -41,7 +46,7 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
 
   app.get('/usage/overview', async (c) => {
     try {
-      const query = parseUsageQuery(c, true);
+      const query = parseCustomerUsageQuery(c, true);
       const duration = query.to - query.from;
       const previousFrom = Math.max(0, query.from - duration);
       const [current, previous] = await Promise.all([
@@ -98,7 +103,7 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
 
   app.get('/usage/operations', async (c) => {
     try {
-      const page = await options.store(c).listOperations(parseUsageQuery(c, false));
+      const page = await options.store(c).listOperations(parseCustomerUsageQuery(c, false));
       const visibility = await usageRunVisibility(options.work?.(c), page.items);
       return c.json({
         items: page.items.map((detail) => usageDetailProjection(
@@ -227,14 +232,16 @@ async function usageRunVisibility(
   }
 }
 
-function parseUsageQuery(c: Context, includeGroup: boolean): UsageQuery {
+function parseCustomerUsageQuery(c: Context, includeGroup: boolean): UsageQuery {
   const from = numberQuery(c, 'from');
   const to = numberQuery(c, 'to');
   const limit = optionalNumberQuery(c, 'limit');
   const groupBy = includeGroup ? c.req.query('groupBy') : undefined;
   const currency = c.req.query('currency');
   const cursor = c.req.query('cursor');
-  const filters: UsageFilters = {};
+  const filters: UsageFilters = {
+    workKind: [...CUSTOMER_USAGE_OPERATION_KINDS],
+  };
   assignCsv(filters, 'workspace', c.req.query('workspace'));
   assignCsv(filters, 'agent', c.req.query('agent'));
   assignCsv(filters, 'channel', c.req.query('channel'));
@@ -242,7 +249,6 @@ function parseUsageQuery(c: Context, includeGroup: boolean): UsageQuery {
   assignCsv(filters, 'provider', c.req.query('provider'));
   assignCsv(filters, 'credential', c.req.query('credential'));
   assignCsv(filters, 'model', c.req.query('model'));
-  assignCsv(filters, 'workKind', c.req.query('workKind'));
   assignCsv(filters, 'status', c.req.query('status'));
   return {
     from,

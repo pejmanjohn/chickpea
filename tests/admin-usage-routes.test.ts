@@ -82,6 +82,48 @@ test('usage Admin APIs are authenticated, bounded, and expose no content fields'
       priceVersionId: null,
       priceUnknownReason: 'price_unknown',
     });
+    await usage.admitOperation({
+      operationId: 'op_admin_classifier',
+      operationKind: 'interaction_classification',
+      sourceId: 'op_admin_classifier',
+      startedAt: 1_500,
+      installationId: 'installation',
+      workspaceId: 'T_ADMIN',
+      agentId: 'agent_default',
+      agentLabel: 'Default',
+      channelId: 'C_ADMIN',
+      channelLabel: 'admin-lab',
+      conversationKind: 'named_channel',
+      requestedProvider: 'openai',
+      requestedModel: 'gpt-4.1-mini',
+      credentialRefId: 'cred_openai_environment',
+      credentialVersion: 1,
+    });
+    await usage.recordTerminal({
+      operationId: 'op_admin_classifier',
+      executionId: 'exec_admin_classifier',
+      status: 'failed',
+      finishedAt: 1_750,
+      observedAt: 1_750,
+      providerRoute: 'openai',
+      requestedProvider: 'openai',
+      requestedModel: 'gpt-4.1-mini',
+      returnedProvider: null,
+      returnedModel: null,
+      credentialRefId: 'cred_openai_environment',
+      credentialVersion: 1,
+      usageCompleteness: 'not_reported',
+      inputTokens: null,
+      outputTokens: null,
+      totalTokens: null,
+      usageUnknownReason: 'provider_request_unknown',
+      estimateCompleteness: 'unknown',
+      estimateAmountMicros: null,
+      estimateCurrency: null,
+      priceVersionId: null,
+      priceUnknownReason: 'price_unknown',
+    });
+    assert.equal((await usage.summarize({ from: 1, to: 3_000 })).totals.operationCount, 2);
 
     const app = createAdminRoutes({ adminToken: 'usage-test-token', usage });
     const unauthorized = await app.request('/admin/api/usage/summary?from=1&to=3000');
@@ -128,6 +170,12 @@ test('usage Admin APIs are authenticated, bounded, and expose no content fields'
     );
     assert.equal(instances.status, 200);
     const instancesText = await instances.text();
+    const instancesBody = JSON.parse(instancesText) as Record<string, any>;
+    assert.deepEqual(
+      instancesBody.items.map((item: Record<string, any>) => item.operation.operationId),
+      ['op_admin'],
+    );
+    assert.doesNotMatch(instancesText, /interaction_classification|op_admin_classifier/);
     assert.doesNotMatch(instancesText, /prompt|resultText|authorization|apiKey/i);
 
     const invalid = await app.request(
