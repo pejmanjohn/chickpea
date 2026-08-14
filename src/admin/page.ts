@@ -1709,14 +1709,49 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 .owner-memory-history > summary { color: #695d48; cursor: pointer; font-size: .6875rem; font-weight: 750; }
 .owner-memory-status { color: var(--text-3); font-size: .75rem; min-height: 18px; }
 .owner-memory-status.error { color: var(--danger); }
-.channel-agent-hero { align-items: flex-start; background: var(--ember-tint); }
+.channel-detail-page { display: flex; flex-direction: column; gap: 24px; }
+.channel-detail-header { align-items: flex-start; display: flex; gap: 24px; justify-content: space-between; }
+.channel-detail-head-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.channel-detail-head-copy .link-btn { align-self: flex-start; margin-bottom: 3px; }
+.channel-detail-controls { align-items: center; display: flex; flex: none; gap: 12px; padding-top: 25px; }
+.channel-detail-status { align-items: center; display: inline-flex; font-size: .6875rem; font-weight: 800; gap: 7px; white-space: nowrap; }
+.channel-detail-status::before { background: currentColor; border-radius: 50%; content: ""; height: 7px; width: 7px; }
+.channel-detail-status.ready { color: var(--ok); }
+.channel-detail-status.needs-attention, .channel-detail-status.unassigned { color: #9d6e19; }
+.channel-detail-status.resolving, .channel-detail-status.disabled { color: var(--text-3); }
+.channel-enabled-control { align-items: center; display: flex; gap: 9px; }
+.channel-enabled-label { color: var(--text-2); font-size: .6875rem; font-weight: 700; }
+.channel-header-error { background: #fbf1da; border-radius: 10px; color: #835e1e; font-size: .75rem; margin-top: 7px; padding: 9px 11px; }
+.channel-agent-section, .channel-capabilities-section, .channel-participation-section, .channel-try-section { margin-top: 0; }
+.channel-agent-hero { align-items: center; background: var(--ember-tint); display: grid; grid-template-columns: auto minmax(0, 1fr) auto; padding: 18px; }
+.channel-agent-hero > .agent-roster-icon { height: 44px; width: 44px; }
+.channel-agent-hero > .agent-roster-icon .ic { height: 21px; width: 21px; }
+.channel-agent-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .channel-agent-hero h2 { color: var(--text); font-family: var(--display); font-size: 1.15rem; margin: 0; }
+.channel-agent-intro { color: var(--text-2); display: -webkit-box; font-size: .75rem; line-height: 1.45; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.channel-agent-meta { color: var(--text-3); font-size: .65625rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channel-agent-actions { align-items: center; display: flex; gap: 8px; }
 .channel-capability-groups { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .channel-capability-group { background: var(--well); border-radius: 14px; min-width: 0; padding: 13px; }
-.channel-capability-group > strong { color: var(--text); display: block; font-size: .75rem; margin-bottom: 8px; }
-.channel-try-card { align-items: flex-start; }
+.channel-capability-group-head { align-items: center; display: flex; gap: 8px; margin-bottom: 10px; }
+.channel-capability-icon { align-items: center; background: #eee7d9; border-radius: 8px; color: #78684c; display: inline-flex; flex: none; height: 28px; justify-content: center; width: 28px; }
+.channel-capability-group-head strong { color: var(--text); font-size: .75rem; }
+.channel-participation-card { align-items: center; background: var(--well); border-radius: 14px; display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr) minmax(220px, 300px); padding: 16px 18px; }
+.channel-participation-copy { display: flex; flex-direction: column; gap: 3px; }
+.channel-participation-card .field { min-width: 0; }
+.channel-try-card { align-items: center; display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr) auto; }
+.channel-try-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .channel-try-prompt { color: var(--text); font-size: .8125rem; font-weight: 700; line-height: 1.55; }
-.channel-advanced-content { display: flex; flex-direction: column; gap: 16px; padding: 14px 0 2px; }
+.channel-try-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.channel-try-status { color: var(--text-3); display: block; font-size: .6875rem; min-height: 17px; }
+.channel-try-status.error { color: var(--danger); }
+.channel-advanced-card { background: var(--well); border: 1px solid var(--line); border-radius: 16px; padding: 0 18px; }
+.channel-advanced-card > summary { color: var(--text); font-size: .8125rem; font-weight: 800; min-height: 54px; }
+.channel-advanced-card[open] > summary { border-bottom: 1px solid var(--line); }
+.channel-advanced-content { display: flex; flex-direction: column; gap: 22px; padding: 20px 0 2px; }
+.channel-advanced-section + .channel-advanced-section { border-top: 1px solid var(--line); padding-top: 20px; }
+.channel-resolution-card { background: var(--bg); border: 1px solid var(--line); border-radius: 13px; padding: 14px; }
+.channel-resolution-card .well { background: transparent; padding: 0; }
 .channels-index-head { align-items: flex-start; display: flex; gap: 20px; justify-content: space-between; }
 .channels-index-head-copy { display: flex; flex-direction: column; gap: 5px; max-width: 620px; }
 .channels-index-head .btn-primary { flex: none; margin-top: 2px; }
@@ -1783,7 +1818,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   .owner-memory-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .owner-memory-actions .spacer { display: none; }
   .owner-memory-actions .btn { width: 100%; }
-  .agent-model-row, .channel-try-card { align-items: stretch; flex-direction: column; }
+  .agent-model-row { align-items: stretch; flex-direction: column; }
+  .channel-detail-header { flex-direction: column; gap: 14px; }
+  .channel-detail-controls { justify-content: space-between; padding-top: 0; width: 100%; }
+  .channel-agent-hero { align-items: flex-start; grid-template-columns: auto minmax(0, 1fr); }
+  .channel-agent-actions { grid-column: 1 / -1; justify-content: flex-end; width: 100%; }
+  .channel-participation-card, .channel-try-card { align-items: stretch; grid-template-columns: 1fr; }
+  .channel-try-actions { justify-content: flex-start; }
   .channels-index-head { align-items: stretch; flex-direction: column; }
   .channels-index-head .btn-primary { align-self: flex-start; }
   .channels-overview-card { grid-template-columns: 1fr; }
@@ -2377,6 +2418,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // Channel-memory actions re-render the page. Preserve this disclosure so
     // those actions do not hide their own form inside a collapsed <details>.
     channelAdvancedOpen: false,
+    channelTryNotice: "",
+    channelTryError: false,
     dirty: false,
     saveError: "",
     // Agents are the primary authoring destination. channelScreen distinguishes
@@ -4328,22 +4371,26 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       ? '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="channel-back" data-agent="' + esc(agent.id) + '">&larr; ' + esc(agent.name) + '</button>'
       : '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="channel-back">&larr; Channels</button>';
     var enabled = state.channelDraft.enabled;
-    return '<main class="main"><div class="main-inner">' + invite + addPanel +
-      '<div class="main-head"><div style="display:flex; flex-direction:column; gap:2px;">' +
+    var detailStatus = channelDetailStatus(agent);
+    var headerError = state.effectiveError
+      ? '<p class="channel-header-error" role="alert">' + esc(state.effectiveError) + '</p>'
+      : "";
+    return '<main class="main"><div class="main-inner"><div class="channel-detail-page">' + invite + addPanel +
+      '<header class="channel-detail-header"><div class="channel-detail-head-copy">' +
       channelBack +
       '<span class="agent-kicker">Slack Channel</span>' +
       '<h1 class="page-title mono-title">' + esc(channelLabel(assignment)) + '</h1>' +
       '<p class="hint">Its assigned Agent supplies the capabilities; this page holds only Channel-local behavior and memory.</p>' +
-      '</div><label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (enabled ? "Enabled" : "Disabled") + '</span>' +
-      '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="channel-enabled" ' + (enabled ? "checked" : "") + ' aria-label="Channel enabled"></span></label></div>' +
+      headerError + '</div><div class="channel-detail-controls"><span class="channel-detail-status ' + detailStatus.key + '" title="' + esc(detailStatus.reason) + '" role="status">' + esc(detailStatus.label) + '</span>' +
+      '<label class="channel-enabled-control"><span class="channel-enabled-label">' + (enabled ? "Enabled" : "Disabled") + '</span>' +
+      '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="channel-enabled" ' + (enabled ? "checked" : "") + ' aria-label="Channel enabled"></span></label></div></header>' +
       profileSectionHtml(agent, assignment) +
       channelCapabilitiesHtml(agent) +
-      accessSummaryHtml() +
       channelInstructionsHtml() +
       channelTryHtml(assignment) +
       advancedHtml(assignment) +
       saveBarHtml() +
-      '</div></main>';
+      '</div></div></main>';
   }
 
   // ---- Channels > Slack overview ------------------------------------------
@@ -5144,19 +5191,40 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     });
   }
 
+  function channelDetailStatus(agent) {
+    var projection = activeChannelProjection();
+    var readiness = projection && projection.readiness;
+    if (!agent) return { key: "unassigned", label: "Needs Agent", reason: "Choose an Agent before this Channel can answer." };
+    if (!state.channelDraft.enabled) return { key: "disabled", label: "Disabled", reason: "This Channel is disabled." };
+    if (agent.enabled === false) return { key: "needs-attention", label: "Needs attention", reason: "Enable the assigned Agent." };
+    if (state.effectiveError) return { key: "needs-attention", label: "Needs attention", reason: state.effectiveError };
+    if (readiness && readiness.ready === false) {
+      return {
+        key: "needs-attention",
+        label: "Needs attention",
+        reason: readiness.reasons && readiness.reasons.length ? readiness.reasons.join(". ") : "Review this Channel's setup."
+      };
+    }
+    if (!state.effective) return { key: "resolving", label: "Resolving", reason: "Resolving the Agent and Channel configuration." };
+    return { key: "ready", label: "Ready", reason: "This Channel has a resolved Agent configuration." };
+  }
+
   function profileSectionHtml(agent, assignment) {
     var identityName = slackIdentityMentionForId(state.effective && state.effective.slackIdentityId);
     var row = agent
-      ? '<div class="channel-agent-hero"><div><span class="agent-kicker">Assigned Agent</span><h2>' + esc(agent.name) + '</h2><span class="hint">' + esc(modelLabel(agent)) + ' · replies as ' + esc(identityName) + ' · Agent changes apply to new threads</span></div>' +
-        '<button type="button" class="btn btn-soft btn-sm" data-action="open-profiles" data-agent="' + esc(agent.id) + '">Manage Agent</button>' +
-        '<button type="button" class="btn btn-soft btn-sm" data-action="toggle-swap">Change Agent</button></div>'
-      : '<div class="empty"><p class="field-label">No Agent assigned</p><p class="hint">Choose an Agent before this Channel can answer.</p><button type="button" class="btn btn-soft btn-sm" data-action="toggle-swap">Choose Agent</button></div>';
+      ? '<div class="channel-agent-hero"><span class="agent-roster-icon variant-' + agentIconVariant(agent.id) + '" aria-hidden="true">' + icon("robot") + '</span>' +
+        '<div class="channel-agent-copy"><span class="agent-kicker">Assigned Agent</span><h2>' + esc(agent.name) + '</h2>' +
+        '<p class="channel-agent-intro" title="' + esc(agentIntroduction(agent.instructions)) + '">' + esc(agentIntroduction(agent.instructions)) + '</p>' +
+        '<span class="channel-agent-meta">' + esc(modelLabel(agent)) + ' · replies as ' + esc(identityName) + ' · Agent changes apply to new threads</span></div>' +
+        '<div class="channel-agent-actions"><button type="button" class="btn btn-soft btn-sm" data-action="open-profiles" data-agent="' + esc(agent.id) + '">View Agent</button>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="toggle-swap">Change Agent</button></div></div>'
+      : '<div class="empty channel-agent-empty"><p class="field-label">No Agent assigned</p><p class="hint">Choose an Agent before this Channel can answer.</p><button type="button" class="btn btn-soft btn-sm" data-action="toggle-swap">Choose Agent</button></div>';
     if (state.swapOpen) {
       row += '<div class="bundle-row"><span class="select-wrap"><select class="input" aria-label="Assigned Agent" data-role="swap-profile">' + state.agents.map(function (candidate) {
         return '<option value="' + esc(candidate.id) + '"' + (candidate.id === assignment.agentId ? " selected" : "") + '>' + esc(candidate.name) + '</option>';
       }).join("") + '</select>' + icon("chevron-down", "select-caret") + '</span><button type="button" class="btn btn-primary btn-sm" data-action="attach-selected-profile">Use Agent</button></div>';
     }
-    return '<section class="section" aria-label="Assigned Agent">' + row + '</section>';
+    return '<section class="section channel-agent-section" aria-label="Assigned Agent">' + row + '</section>';
   }
 
   function channelCapabilityGroupHtml(kind, title, items) {
@@ -5172,7 +5240,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }).join("");
     if (extra) pills += '<span class="capability-preview-pill">+' + extra + ' more</span>';
     if (!pills) pills = '<span class="hint">None added</span>';
-    return '<div class="channel-capability-group"><strong>' + title + '</strong><div class="capability-preview-list">' + pills + '</div></div>';
+    var headingIcon = kind === "repository" ? "repository" : kind === "connector" ? "gear" : "sparkle";
+    return '<div class="channel-capability-group" data-capability="' + kind + '"><div class="channel-capability-group-head"><span class="channel-capability-icon" aria-hidden="true">' + icon(headingIcon) + '</span><strong>' + title + '</strong></div><div class="capability-preview-list">' + pills + '</div></div>';
   }
 
   function channelCapabilitiesHtml(agent) {
@@ -5180,69 +5249,54 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var skills = previews.skills || (agent && agent.skills) || [];
     var connectors = previews.connectors || ((agent && agent.mcpServers) || []).concat((agent && agent.apiConnections) || []);
     var repositories = previews.repositories || (agent && agent.repositories) || [];
-    return '<section class="section"><div class="section-head"><div><h2 class="section-title">What this Agent can use</h2><p class="hint">Inherited from the assigned Agent. Manage capabilities on the Agent; this Channel never forks them.</p></div>' +
-      (agent ? '<button type="button" class="btn btn-ghost btn-sm" data-action="open-profiles" data-agent="' + esc(agent.id) + '">Open Agent</button>' : "") + '</div>' +
+    return '<section class="section channel-capabilities-section"><div class="section-head"><div><h2 class="section-title">Inherited capabilities</h2><p class="hint">Skills, Connectors, and Repositories come from the assigned Agent and stay shared everywhere it works.</p></div>' +
+      (agent ? '<button type="button" class="btn btn-ghost btn-sm" data-action="open-profiles" data-agent="' + esc(agent.id) + '">Open Agent capabilities</button>' : "") + '</div>' +
       '<div class="channel-capability-groups">' + channelCapabilityGroupHtml("skill", "Skills", skills) + channelCapabilityGroupHtml("connector", "Connectors", connectors) + channelCapabilityGroupHtml("repository", "Repositories", repositories) + '</div></section>';
   }
 
   function channelInstructionsHtml() {
-    return '<section class="section"><div class="section-head"><div><h2 class="section-title">When it speaks</h2><p class="hint">Mentions always receive a response. Ambient participation can also contribute when it is useful.</p></div></div>' +
-      '<div class="field"><label class="field-label" for="participation-mode">Participation mode</label>' +
+    return '<section class="section channel-participation-section"><div class="channel-participation-card"><div class="channel-participation-copy"><h2 class="section-title">When it speaks</h2><p class="hint">Mentions always receive a response. Ambient participation can also contribute when it is useful.</p></div>' +
+      '<div class="field"><label class="field-label" for="participation-mode">Participation</label>' +
       '<span class="select-wrap"><select class="input" id="participation-mode" data-action="channel-participation">' +
       '<option value="ambient"' + (state.channelDraft.participationMode === "ambient" ? " selected" : "") + '>Ambient (mentions guaranteed)</option>' +
       '<option value="mention_only"' + (state.channelDraft.participationMode === "mention_only" ? " selected" : "") + '>Mention only</option></select>' + icon("chevron-down", "select-caret") + '</span>' +
-      '<p class="hint">This changes only participation. The Agent, capabilities, identity, and memory stay the same.</p></div></section>';
+      '<p class="hint">Channel-only; the Agent stays unchanged.</p></div></div></section>';
   }
 
   function channelTryHtml(assignment) {
     var deepLink = "https://app.slack.com/client/" + encodeURIComponent(assignment.workspaceId) + "/" + encodeURIComponent(assignment.channelId);
-    return '<section class="section"><div class="channel-try-card"><div><span class="agent-kicker">Try it in Slack</span><p class="channel-try-prompt">' + esc(ONBOARDING_PROMPT) + '</p><span class="hint">A real Slack reply is the proof that this placement is ready.</span></div><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Open ' + esc(channelLabel(assignment)) + '</a></div></section>';
-  }
-
-  function accessSummaryHtml() {
-    var body = "";
-    if (state.effectiveError) {
-      body = '<div class="empty"><p class="field-label">Configuration issue</p><p class="hint">' + esc(state.effectiveError) + '</p></div>';
-    } else if (!state.effective) {
-      body = '<div class="well"><dl><div class="kv"><dt>Status</dt><dd>Resolving...</dd></div></dl></div>';
-    } else {
-      var profile = state.effective.agent || state.effective.profile;
-      // Trimmed to the four human-meaningful rows ("what will it do"); Model,
-      // Provider, and Snapshot are diagnostic and move under Advanced (card 07).
-      body = '<div class="well"><dl>' +
-        '<div class="kv"><dt>Agent</dt><dd>' + esc(profile.name) + ' ' + enabledBadge(profile.enabled) + '</dd></div>' +
-        '<div class="kv"><dt>Replies as</dt><dd>' + esc(slackIdentityMentionForId(state.effective.slackIdentityId)) + ' &mdash; new threads only</dd></div>' +
-        '<div class="kv"><dt>Instructions</dt><dd><div class="instructions-preview">' + instructionLayersHtml(state.effective.instructionLayers) + '</div></dd></div>' +
-        '</dl></div>';
-    }
-    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Access summary</h2><p class="hint">Resolved from the assigned Agent and this Channel\\'s instructions. New threads pick this up; existing threads keep the snapshot they started with.</p></div></div>' + body + '</section>';
+    var noticeClass = state.channelTryError ? " error" : "";
+    return '<section class="section channel-try-section"><div class="channel-try-card"><div class="channel-try-copy"><span class="agent-kicker">Try it in Slack</span><p class="channel-try-prompt">' + esc(ONBOARDING_PROMPT) + '</p><span class="hint">A real Slack reply is the proof that this placement is ready.</span><span class="channel-try-status' + noticeClass + '" role="status">' + esc(state.channelTryNotice) + '</span></div>' +
+      '<div class="channel-try-actions"><button type="button" class="btn btn-soft" data-action="copy-channel-prompt">Copy prompt</button><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Open ' + esc(channelLabel(assignment)) + '</a></div></div></section>';
   }
 
   function advancedHtml(assignment) {
-    // The diagnostic rows trimmed out of the Access summary (card 07): the raw
-    // model/provider specifiers and the thread-snapshot hash, resolved from the
-    // effective config when it is available.
-    var diagnostics = "";
-    if (state.effective) {
-      // The RESOLVED model/provider the runtime actually runs. Unpinned profiles
-      // resolve only through SLACK_TAG_MODEL; otherwise the effective-config
-      // request renders the configuration issue above.
-      diagnostics =
+    var resolution;
+    if (state.effectiveError) {
+      resolution = '<div class="empty"><p class="field-label">Configuration issue</p><p class="hint">' + esc(state.effectiveError) + '</p></div>';
+    } else if (!state.effective) {
+      resolution = '<div class="well"><dl><div class="kv"><dt>Status</dt><dd>Resolving...</dd></div></dl></div>';
+    } else {
+      var profile = state.effective.agent || state.effective.profile;
+      resolution = '<div class="well"><dl>' +
+        '<div class="kv"><dt>Agent</dt><dd>' + esc(profile.name) + ' ' + enabledBadge(profile.enabled) + '</dd></div>' +
+        '<div class="kv"><dt>Replies as</dt><dd>' + esc(slackIdentityMentionForId(state.effective.slackIdentityId)) + ' &mdash; new threads only</dd></div>' +
+        '<div class="kv"><dt>Instructions</dt><dd><div class="instructions-preview">' + instructionLayersHtml(state.effective.instructionLayers) + '</div></dd></div>' +
         '<div class="kv"><dt>Model</dt><dd class="mono">' + esc(state.effective.model || "unknown") + '</dd></div>' +
         '<div class="kv"><dt>Provider</dt><dd class="mono">' + esc(state.effective.provider || "unknown") + '</dd></div>' +
-        '<div class="kv"><dt>Snapshot</dt><dd class="mono">sha256:' + esc(shortHash(state.effective.snapshotHash)) + ' · new threads only</dd></div>';
+        '<div class="kv"><dt>Snapshot</dt><dd class="mono">sha256:' + esc(shortHash(state.effective.snapshotHash)) + ' · new threads only</dd></div>' +
+        '</dl></div>';
     }
     var assignedMemoryAgent = agentById(assignment.agentId);
-    return '<details class="advanced"' + (state.channelAdvancedOpen ? " open" : "") + '><summary data-action="channel-advanced-toggle">Advanced</summary><div class="channel-advanced-content">' +
-      '<section><div class="section-head"><div><h2 class="section-title">Additional instructions</h2><p class="hint">Appended after the assigned Agent instructions in this Channel only.</p></div></div>' +
+    return '<details class="advanced channel-advanced-card"' + (state.channelAdvancedOpen ? " open" : "") + '><summary data-action="channel-advanced-toggle">Advanced</summary><div class="channel-advanced-content">' +
+      '<section class="channel-advanced-section"><div class="section-head"><div><h2 class="section-title">Additional instructions</h2><p class="hint">Appended after the assigned Agent instructions in this Channel only.</p></div></div>' +
       '<div class="field"><label class="field-label" for="addendum">Channel additional instructions</label><textarea class="textarea" id="addendum" rows="6" data-action="channel-addendum" placeholder="Add context unique to this Channel">' + esc(state.channelDraft.channelPromptAddendum || "") + '</textarea></div></section>' +
-      '<section><div class="section-head"><div><h2 class="section-title">Channel memory</h2><p class="hint">Exact-Channel files stay here even if the assigned Agent changes.</p></div></div>' + ownerMemoryPanelHtml("channel", assignment.channelId, assignment.channelLabel || assignment.channelId, assignedMemoryAgent ? assignedMemoryAgent.name : "No Agent assigned") + '</section>' +
-      '<div class="adv-rows"><dl style="display:contents;">' +
-      diagnostics +
-      '<div class="kv"><dt>Channel ID</dt><dd class="mono">' + esc(assignment.channelId) + '</dd></div>' +
+      '<section class="channel-advanced-section"><div class="section-head"><div><h2 class="section-title">Channel memory</h2><p class="hint">Exact-Channel files stay here even if the assigned Agent changes.</p></div></div>' + ownerMemoryPanelHtml("channel", assignment.channelId, assignment.channelLabel || assignment.channelId, assignedMemoryAgent ? assignedMemoryAgent.name : "No Agent assigned") + '</section>' +
+      '<section class="channel-advanced-section"><div class="section-head"><div><h2 class="section-title">Resolved configuration</h2><p class="hint">Technical values used for new threads. Existing threads keep the snapshot they started with.</p></div></div><div class="channel-resolution-card">' + resolution +
+      '<div class="adv-rows"><dl style="display:contents;"><div class="kv"><dt>Channel ID</dt><dd class="mono">' + esc(assignment.channelId) + '</dd></div>' +
       '<div class="kv"><dt>Workspace ID</dt><dd class="mono">' + esc(assignment.workspaceId) + '</dd></div>' +
       '<div class="kv"><dt>Providers</dt><dd style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">' + providerBadges() + '<span class="hint" style="font-size:0.75rem;">${providerHint}</span></dd></div>' +
-      '</dl></div></div></details>';
+      '</dl></div></div></section></div></details>';
   }
 
   function saveBarHtml() {
@@ -11062,6 +11116,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var assignment = activeChannelRecord();
     state.channelDraft = channelDraftFrom(assignment);
     state.channelAdvancedOpen = false;
+    state.channelTryNotice = "";
+    state.channelTryError = false;
     state.channelFormDraft.workspaceId = workspaceId || state.channelFormDraft.workspaceId;
     state.dirty = false;
     state.saveError = "";
@@ -11224,6 +11280,22 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     try {
       Promise.resolve(navigator.clipboard.writeText(ONBOARDING_PROMPT)).then(function () {
         state.onboardingNotice = "Prompt copied.";
+        render();
+      }).catch(copyFailed);
+    } catch (_) { copyFailed(); }
+  }
+
+  function copyChannelPrompt() {
+    var copyFailed = function () {
+      state.channelTryNotice = "Copy failed. Select the prompt and copy it manually.";
+      state.channelTryError = true;
+      render();
+    };
+    if (!navigator.clipboard || !navigator.clipboard.writeText) { copyFailed(); return; }
+    try {
+      Promise.resolve(navigator.clipboard.writeText(ONBOARDING_PROMPT)).then(function () {
+        state.channelTryNotice = "Prompt copied.";
+        state.channelTryError = false;
         render();
       }).catch(copyFailed);
     } catch (_) { copyFailed(); }
@@ -11703,6 +11775,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "refresh-onboarding-channels") { loadSlackChannels(true); }
     if (action === "retry-onboarding") { state.onboardingError = ""; loadOnboarding(true); }
     if (action === "copy-onboarding-prompt") { copyOnboardingPrompt(); }
+    if (action === "copy-channel-prompt") { copyChannelPrompt(); }
     if (action === "dismiss-slack-toast") { state.slackToastDismissed = true; render(); }
     if (action === "select-channel") { state.view = "channels"; state.channelScreen = "detail"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
     if (action === "channel-advanced-toggle") {
