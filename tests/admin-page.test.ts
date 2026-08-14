@@ -406,7 +406,7 @@ function runAdminPageHarness(
     egressPolicy?: EgressPolicyFixture;
     sandboxStatus?: SandboxStatusFixture;
     sandboxMutationError?: { status: number; error: string; message?: string };
-    clipboard?: 'available' | 'missing' | 'reject' | 'throw';
+    clipboard?: 'available' | 'defer' | 'missing' | 'reject' | 'throw';
     modelCatalogStatus?: ModelCatalogStatusFixture;
     deferModelCatalogStatus?: boolean;
     modelCatalogRefreshError?: { status: number; error: string; message?: string };
@@ -540,6 +540,7 @@ function runAdminPageHarness(
   memoryReviewPosts: Array<Record<string, unknown>>;
   scheduledControlPosts: Array<{ routineId: string; body: Record<string, unknown>; idempotencyKey: string }>;
   clipboardWrites: string[];
+  resolveClipboardWrite(): void;
   gallerySearchFocusCalls(): number;
   gallerySearchSelections: Array<[number, number]>;
   resolveOpsEffective(): void;
@@ -684,6 +685,7 @@ function runAdminPageHarness(
   const memoryReviewPosts: Array<Record<string, unknown>> = [];
   const scheduledControlPosts: Array<{ routineId: string; body: Record<string, unknown>; idempotencyKey: string }> = [];
   const clipboardWrites: string[] = [];
+  let clipboardWriteResolver: (() => void) | null = null;
   let gallerySearchFocusCalls = 0;
   let skillBrowseFocusCalls = 0;
   let skillBrowseHostUpdates = 0;
@@ -2340,6 +2342,9 @@ function runAdminPageHarness(
               clipboardWrites.push(text);
               if (options.clipboard === 'throw') throw new Error('clipboard blocked');
               if (options.clipboard === 'reject') return Promise.reject(new Error('clipboard blocked'));
+              if (options.clipboard === 'defer') {
+                return new Promise<void>((resolve) => { clipboardWriteResolver = resolve; });
+              }
               return Promise.resolve();
             },
           },
@@ -2457,6 +2462,12 @@ function runAdminPageHarness(
     memoryReviewPosts,
     scheduledControlPosts,
     clipboardWrites,
+    resolveClipboardWrite() {
+      assert.ok(clipboardWriteResolver, 'expected a clipboard write to be pending');
+      const resolve = clipboardWriteResolver;
+      clipboardWriteResolver = null;
+      resolve();
+    },
     gallerySearchFocusCalls: () => gallerySearchFocusCalls,
     gallerySearchSelections,
     resolveOpsEffective() {
@@ -4292,7 +4303,7 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(page, /\.agent-profile-intro\s*\{[^}]*white-space:\s*nowrap;[^}]*text-overflow:\s*ellipsis;/s);
   assert.match(page, /\.agent-tabs-card\s*\{[^}]*border-radius:\s*16px;[^}]*overflow:\s*hidden;/s);
   assert.match(page, /\.agent-placement-card > \.bundle-row, \.agent-placement-card > \.callout\s*\{[^}]*grid-column:\s*1 \/ -1;/s);
-  assert.match(page, /@container \(max-width: 680px\)[\s\S]*?\.agent-profile-header[^{]*\{[^}]*align-items:\s*flex-start;[^}]*flex-direction:\s*column;/s);
+  assert.match(page, /@container \(max-width: 750px\)[\s\S]*?\.agent-profile-header[^{]*\{[^}]*align-items:\s*flex-start;[^}]*flex-direction:\s*column;/s);
   assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.agent-profile-page \.ptabs\s*\{[^}]*overflow-x:\s*auto;/s);
 });
 
@@ -4385,8 +4396,8 @@ test('Channel detail follows the Agent-first hierarchy and contains resolved con
   assert.deepEqual([...order].sort((a, b) => a - b), order);
 
   const page = renderAdminPage();
-  assert.match(page, /@container \(max-width: 680px\)[\s\S]*?\.channel-detail-header\s*\{[^}]*flex-direction:\s*column;/s);
-  assert.match(page, /@container \(max-width: 680px\)[\s\S]*?\.channel-agent-hero[\s\S]*?\.channel-participation-card,[\s\S]*?\.channel-try-card\s*\{[^}]*grid-template-columns:\s*1fr;/s);
+  assert.match(page, /@container \(max-width: 750px\)[\s\S]*?\.channel-detail-header\s*\{[^}]*flex-direction:\s*column;/s);
+  assert.match(page, /@container \(max-width: 750px\)[\s\S]*?\.channel-agent-hero[\s\S]*?\.channel-participation-card,[\s\S]*?\.channel-try-card\s*\{[^}]*grid-template-columns:\s*1fr;/s);
 });
 
 test('Channel header keeps readiness, assignment, disabled, loading, and effective errors truthful', async () => {
@@ -4511,6 +4522,20 @@ test('Channel Slack proof copies the exact prompt and reports clipboard failure 
   assert.deepEqual(available.clipboardWrites, ['@Chickpea Give me three useful ways you can help this channel, each with an example prompt I could try next.']);
   assert.match(available.app.innerHTML, /class="channel-try-status" role="status">Prompt copied\.<\/span>/);
   assert.match(available.app.innerHTML, /href="https:\/\/app\.slack\.com\/client\/T_DESIGN\/C0EXR3L9T" target="_blank" rel="noopener noreferrer"/);
+
+  const stale = runAdminPageHarness({
+    initialPath: '/admin/channels/T_DESIGN/C0EXR3L9T', clipboard: 'defer',
+  });
+  await flushAsync();
+  stale.listeners.click?.({ target: actionTarget({ 'data-action': 'copy-channel-prompt' }) });
+  stale.listeners.click?.({ target: actionTarget({
+    'data-action': 'select-channel', 'data-workspace': 'T_DESIGN', 'data-channel': 'C_OPS',
+  }) });
+  await flushAsync();
+  stale.resolveClipboardWrite();
+  await flushAsync();
+  assert.equal(stale.locationPath(), '/admin/channels/T_DESIGN/C_OPS');
+  assert.doesNotMatch(stale.app.innerHTML, /Prompt copied\./);
 
   for (const clipboard of ['missing', 'reject', 'throw'] as const) {
     const failed = runAdminPageHarness({
@@ -4665,6 +4690,10 @@ test('Channels table keeps Channel, Agent, and discovered destinations separate'
       workspaceId: 'T_DESIGN', channelId: 'C_READY', channelName: 'eng-releases',
       assignment: { agentId: 'agent_release', agentName: 'Release Profile', agentEnabled: true },
       behavior: { participationMode: 'ambient' }, readiness: { ready: true },
+    }, {
+      workspaceId: 'T_DESIGN', channelId: 'C_DISCOVERED', channelName: 'customer-voice',
+      assignment: null, behavior: { participationMode: 'mention_only' }, readiness: null,
+      source: 'discovered',
     }],
     slackChannels: channelsFixture([
       { id: 'C_READY', name: 'eng-releases' },
@@ -4689,6 +4718,10 @@ test('Channels table keeps Channel, Agent, and discovered destinations separate'
 
   const discoveredHarness = runAdminPageHarness(fixtures);
   await flushAsync();
+  assert.match(
+    discoveredHarness.app.innerHTML,
+    /data-action="channel-index-add" data-workspace="T_DESIGN" data-channel="C_DISCOVERED"/,
+  );
   discoveredHarness.listeners.click?.({ target: actionTarget({
     'data-action': 'channel-index-add', 'data-workspace': 'T_DESIGN', 'data-channel': 'C_DISCOVERED',
   }) });
@@ -4713,7 +4746,7 @@ test('Channels columns truncate long visible values while retaining complete acc
   const page = renderAdminPage();
   assert.match(page, /\.channels-index-name, \.channels-index-agent-name, \.channels-index-behavior strong\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
   assert.match(page, /\.channels-index-row\s*\{[^}]*grid-template-columns:\s*minmax\(180px, 1\.15fr\) minmax\(220px, 1\.35fr\) minmax\(180px, 1fr\) 110px;/s);
-  assert.match(page, /@container \(max-width: 680px\)[\s\S]*?\.channels-index-table-head\s*\{[^}]*display:\s*none;[\s\S]*?\.channels-index-row\s*\{[^}]*grid-template-columns:\s*1fr;/s);
+  assert.match(page, /@container \(max-width: 750px\)[\s\S]*?\.channels-index-table-head\s*\{[^}]*display:\s*none;[\s\S]*?\.channels-index-row\s*\{[^}]*grid-template-columns:\s*1fr;/s);
   assert.match(page, /\.channels-index-cell::before\s*\{[^}]*content:\s*attr\(data-label\);/s);
 });
 
@@ -4866,8 +4899,8 @@ test('shared owner memory uses the prototype file rail, accessible ellipsis, and
   assert.match(page, /\.owner-memory-layout\s*\{[^}]*grid-template-columns:\s*210px minmax\(0, 1fr\);/s);
   assert.match(page, /\.owner-memory-file-name\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
   assert.match(page, /\.owner-memory-source\s*\{[^}]*background:\s*#2f2b24;[^}]*color:\s*#eee6d6;[^}]*overflow:\s*auto;/s);
-  assert.match(page, /@container \(max-width: 680px\)[\s\S]*?\.owner-memory-layout\s*\{[^}]*grid-template-columns:\s*1fr;/s);
-  assert.match(page, /@container \(max-width: 680px\)[\s\S]*?\.owner-memory-file-list\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/s);
+  assert.match(page, /@container \(max-width: 750px\)[\s\S]*?\.owner-memory-layout\s*\{[^}]*grid-template-columns:\s*1fr;/s);
+  assert.match(page, /@container \(max-width: 750px\)[\s\S]*?\.owner-memory-file-list\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/s);
 });
 
 test('Agent owner memory creates a constrained Markdown file with an idempotency key', async () => {

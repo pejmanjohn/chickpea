@@ -29,6 +29,26 @@ interface ChannelProjection {
   source: string;
 }
 
+interface AgentProjection {
+  id: string;
+  capabilityPreviews: {
+    skills: Array<{ name: string }>;
+    connectors: Array<{ name: string }>;
+    repositories: Array<{ name: string }>;
+  };
+}
+
+interface MemoryOwnerProjection {
+  ownerKind: string;
+  ownerId: string;
+}
+
+interface SlackFixtureResponse {
+  ok: boolean;
+  error?: string;
+  channel?: { id: string };
+}
+
 async function loadFixtureModule(): Promise<VisualFixtureModule> {
   // The executable stays plain Node ESM so `npm run admin:visual-fixture` does
   // not need a second build or browser dependency. Its TypeScript imports are
@@ -56,12 +76,12 @@ async function login(fixture: VisualFixture): Promise<string> {
   return cookie;
 }
 
-async function fixtureJson(fixture: VisualFixture, path: string): Promise<any> {
+async function fixtureJson<T>(fixture: VisualFixture, path: string): Promise<T> {
   const response = await fetch(`${fixture.baseUrl}${path}`, {
     headers: { authorization: `Bearer ${fixture.adminToken}` },
   });
   assert.equal(response.status, 200, path);
-  return response.json();
+  return response.json() as Promise<T>;
 }
 
 async function waitForFixtureStatePath(child: ReturnType<typeof spawn>): Promise<string> {
@@ -95,17 +115,21 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
   const { startAdminVisualFixture } = await loadFixtureModule();
   const fixture = await startAdminVisualFixture();
   try {
-    const agents = await fixtureJson(fixture, '/admin/api/agents');
+    const agents = await fixtureJson<{ agents: AgentProjection[] }>(fixture, '/admin/api/agents');
     assert.deepEqual(
-      agents.agents.map((agent: any) => agent.id),
+      agents.agents.map((agent) => agent.id),
       ['agent_customer', 'agent_release', 'agent_research'],
     );
-    const research = agents.agents.find((agent: any) => agent.id === 'agent_research');
-    assert.equal(research.capabilityPreviews.skills[0].name, 'research-brief');
-    assert.equal(research.capabilityPreviews.connectors[0].name, 'Linear');
-    assert.equal(research.capabilityPreviews.repositories[0].name, 'acme/research');
+    const research = agents.agents.find((agent) => agent.id === 'agent_research');
+    assert.ok(research);
+    assert.equal(research.capabilityPreviews.skills[0]?.name, 'research-brief');
+    assert.equal(research.capabilityPreviews.connectors[0]?.name, 'Linear');
+    assert.equal(research.capabilityPreviews.repositories[0]?.name, 'acme/research');
 
-    const channels = await fixtureJson(fixture, '/admin/api/channels');
+    const channels = await fixtureJson<{ channels: ChannelProjection[] }>(
+      fixture,
+      '/admin/api/channels',
+    );
     const byId = new Map<string, ChannelProjection>(
       channels.channels.map((channel: ChannelProjection) => [channel.channelId, channel]),
     );
@@ -116,32 +140,79 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
     assert.equal(byId.get('C_UNASSIGNED')?.readiness.code, 'unassigned');
     assert.equal(byId.get('C_DISCOVERED')?.source, 'discovered');
 
-    const owners = await fixtureJson(
+    const owners = await fixtureJson<{ owners: MemoryOwnerProjection[] }>(
       fixture,
       '/admin/api/audit/memory/owners?workspaceId=T_VISUAL',
     );
-    assert.ok(owners.owners.some((owner: any) =>
+    assert.ok(owners.owners.some((owner) =>
       owner.ownerKind === 'agent' && owner.ownerId === 'agent_research'));
-    assert.ok(owners.owners.some((owner: any) =>
+    assert.ok(owners.owners.some((owner) =>
       owner.ownerKind === 'channel' && owner.ownerId === 'C_RELEASES'));
 
-    const agentFiles = await fixtureJson(
+    const agentFiles = await fixtureJson<{ files: Array<{ name: string }> }>(
       fixture,
       '/admin/api/audit/memory/owners/agent/T_VISUAL/agent_research/files',
     );
-    const channelFiles = await fixtureJson(
+    const channelFiles = await fixtureJson<{ files: Array<{ name: string }> }>(
       fixture,
       '/admin/api/audit/memory/owners/channel/T_VISUAL/C_RELEASES/files',
     );
-    assert.deepEqual(agentFiles.files.map((file: any) => file.name), [
+    assert.deepEqual(agentFiles.files.map((file) => file.name), [
       'MEMORY.md',
       'audience-notes.md',
       'research-principles.md',
     ]);
-    assert.deepEqual(channelFiles.files.map((file: any) => file.name), [
+    assert.deepEqual(channelFiles.files.map((file) => file.name), [
       'MEMORY.md',
       'release-checklist.md',
     ]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('visual fixture fake Slack fails closed and returns requested records', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+  const fixture = await startAdminVisualFixture();
+  const callSlack = async (
+    method: string,
+    token: string | null,
+    body: Record<string, string> = {},
+  ): Promise<SlackFixtureResponse> => {
+    const headers: Record<string, string> = {
+      'content-type': 'application/x-www-form-urlencoded',
+    };
+    if (token) headers.authorization = `Bearer ${token}`;
+    const response = await fetch(`${fixture.baseUrl}/__admin_visual_fixture/slack/${method}`, {
+      method: 'POST',
+      headers,
+      body: new URLSearchParams(body),
+    });
+    assert.equal(response.status, 200, method);
+    return response.json() as Promise<SlackFixtureResponse>;
+  };
+
+  try {
+    assert.deepEqual(await callSlack('auth.test', null), { ok: false, error: 'invalid_auth' });
+    assert.deepEqual(await callSlack('auth.test', 'xoxb-wrong'), { ok: false, error: 'invalid_auth' });
+    assert.deepEqual(
+      await callSlack('users.info', 'xoxb-local-admin-visual-fixture', { user: 'U_WRONG' }),
+      { ok: false, error: 'user_not_found' },
+    );
+    const channel = await callSlack(
+      'conversations.info',
+      'xoxb-local-admin-visual-fixture',
+      { channel: 'C_SUPPORT' },
+    );
+    assert.equal(channel.channel?.id, 'C_SUPPORT');
+    assert.deepEqual(
+      await callSlack(
+        'conversations.info',
+        'xoxb-local-admin-visual-fixture',
+        { channel: 'C_MISSING' },
+      ),
+      { ok: false, error: 'channel_not_found' },
+    );
   } finally {
     await fixture.close();
   }
@@ -225,6 +296,8 @@ test('production Admin markup exposes only scoped Agent and Channel foundation h
   assert.match(html, /--admin-visual-font:/);
   assert.match(html, /\.admin-surface\s+\.admin-visual-icon-tile/);
   assert.match(html, /\.admin-surface\s+\.admin-visual-status/);
+  assert.match(html, /--admin-visual-muted:\s*#7f7055/);
+  assert.match(html, /--admin-visual-green:\s*#4e7a3e/);
 
   assert.match(firstPaint, /<div id="app" class="frame">/);
   assert.match(html, /app\.className = "frame onboarding-frame"/);

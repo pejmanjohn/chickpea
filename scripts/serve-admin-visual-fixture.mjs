@@ -273,7 +273,7 @@ async function seedMemory(memory) {
   });
 }
 
-function fakeSlackResponse(pathname) {
+function fakeSlackResponse(pathname, body) {
   if (pathname.endsWith('/conversations.list')) {
     return {
       ok: true,
@@ -292,6 +292,9 @@ function fakeSlackResponse(pathname) {
     };
   }
   if (pathname.endsWith('/users.info')) {
+    if (body.user !== LOCAL_SLACK_BOT_ID) {
+      return { ok: false, error: 'user_not_found' };
+    }
     return {
       ok: true,
       user: {
@@ -303,7 +306,10 @@ function fakeSlackResponse(pathname) {
     };
   }
   if (pathname.endsWith('/conversations.info')) {
-    return { ok: true, channel: VISUAL_CHANNELS[0] };
+    const channel = VISUAL_CHANNELS.find((candidate) => candidate.id === body.channel);
+    return channel
+      ? { ok: true, channel }
+      : { ok: false, error: 'channel_not_found' };
   }
   return { ok: false, error: 'fixture_endpoint_not_found' };
 }
@@ -435,9 +441,13 @@ export async function startAdminVisualFixture(options = {}) {
 
     const adminToken = `visual-${randomBytes(18).toString('base64url')}`;
     const app = new Hono();
-    app.post('/__admin_visual_fixture/slack/:method', (c) => {
-      const result = fakeSlackResponse(c.req.path);
-      return c.json(result, result.ok ? 200 : 404);
+    app.post('/__admin_visual_fixture/slack/:method', async (c) => {
+      if (c.req.header('authorization') !== `Bearer ${LOCAL_SLACK_TOKEN}`) {
+        return c.json({ ok: false, error: 'invalid_auth' });
+      }
+      const body = await c.req.parseBody();
+      const result = fakeSlackResponse(c.req.path, body);
+      return c.json(result, result.error === 'fixture_endpoint_not_found' ? 404 : 200);
     });
     app.route('/', createAdminRoutes({
       store,

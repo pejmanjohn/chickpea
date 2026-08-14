@@ -76,7 +76,7 @@ ${ADMIN_FAVICON}
 .admin-surface {
   --admin-visual-font: "Avenir Next", Avenir, ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --admin-visual-ink: #403726;
-  --admin-visual-muted: #8f7f63;
+  --admin-visual-muted: #7f7055;
   --admin-visual-faint: #b2a487;
   --admin-visual-gold: #dda126;
   --admin-visual-gold-dark: #b77806;
@@ -84,7 +84,7 @@ ${ADMIN_FAVICON}
   --admin-visual-paper: #fffdf7;
   --admin-visual-paper-soft: #fbf7ec;
   --admin-visual-line: #e8deca;
-  --admin-visual-green: #5e9957;
+  --admin-visual-green: #4e7a3e;
   --admin-visual-green-soft: #eaf2e2;
   --admin-visual-shadow: 0 1px 0 rgba(73, 57, 27, .12), 0 22px 60px rgba(89, 65, 24, .06);
   --admin-visual-radius-sm: 10px;
@@ -1659,7 +1659,7 @@ details[open].advanced summary::before {
   padding: 14px 16px;
 }
 .agent-model-row > div, .agent-advanced-row > span, .channel-agent-hero > div { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
-.agent-model-row .field { min-width: min(100%, 360px); }
+.agent-model-row .field { flex: 1; min-width: 0; }
 .agent-advanced-row + .agent-advanced-row { border-top: 1px solid var(--line); border-radius: 0; }
 .agent-advanced-row .btn { flex-shrink: 0; }
 .where-list, .capability-preview-list { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -1804,7 +1804,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 .channels-index-empty .field-label { margin-bottom: 4px; }
 .channels-index-fallback { margin: 0; }
 .channels-connection-card { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 24px; }
-@container (max-width: 680px) {
+@container (max-width: 750px) {
   .agent-profile-header { align-items: flex-start; flex-direction: column; }
   .agent-profile-header-actions { width: 100%; }
   .agent-overflow { margin-left: auto; }
@@ -2420,6 +2420,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     channelAdvancedOpen: false,
     channelTryNotice: "",
     channelTryError: false,
+    channelTryRequestId: 0,
     dirty: false,
     saveError: "",
     // Agents are the primary authoring destination. channelScreen distinguishes
@@ -4500,7 +4501,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         assignment: channel.assignment || null,
         behavior: channel.behavior || {},
         readiness: channel.readiness || null,
-        configured: true
+        configured: channel.source !== "discovered"
       };
     });
     if (!projected.length) {
@@ -7113,7 +7114,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       disableConfirmHtml(draft) +
       profileTabsHtml(draft) +
       usedInHtml(draft) +
-      '<section class="agent-detail-card agent-model-card"><div class="agent-card-heading"><span class="agent-card-icon">' + icon("robot") + '</span><div><h2>Model</h2><p>The intelligence this Agent uses for every response.</p></div></div><div class="agent-model-row"><div><strong>' + esc(modelLabel(draft)) + '</strong><span class="hint">Changes apply to new threads.</span></div>' + modelFieldHtml(draft) + '</div></section>' +
+      '<section class="agent-detail-card agent-model-card"><div class="agent-card-heading"><span class="agent-card-icon">' + icon("robot") + '</span><div><h2>Model</h2><p>The intelligence this Agent uses for every response. Changes apply to new threads.</p></div></div><div class="agent-model-row">' + modelFieldHtml(draft) + '</div></section>' +
       agentAdvancedHtml(draft) +
       '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + (saveBarCueActive() ? " cue" : "") + '">' +
       '<div class="save-bar-inner">' +
@@ -11116,6 +11117,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var assignment = activeChannelRecord();
     state.channelDraft = channelDraftFrom(assignment);
     state.channelAdvancedOpen = false;
+    state.channelTryRequestId += 1;
     state.channelTryNotice = "";
     state.channelTryError = false;
     state.channelFormDraft.workspaceId = workspaceId || state.channelFormDraft.workspaceId;
@@ -11286,7 +11288,18 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function copyChannelPrompt() {
+    var requestId = state.channelTryRequestId + 1;
+    state.channelTryRequestId = requestId;
+    var workspaceId = state.active && state.active.workspaceId;
+    var channelId = state.active && state.active.channelId;
+    var isCurrentChannel = function () {
+      return state.channelTryRequestId === requestId &&
+        state.active &&
+        state.active.workspaceId === workspaceId &&
+        state.active.channelId === channelId;
+    };
     var copyFailed = function () {
+      if (!isCurrentChannel()) return;
       state.channelTryNotice = "Copy failed. Select the prompt and copy it manually.";
       state.channelTryError = true;
       render();
@@ -11294,6 +11307,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (!navigator.clipboard || !navigator.clipboard.writeText) { copyFailed(); return; }
     try {
       Promise.resolve(navigator.clipboard.writeText(ONBOARDING_PROMPT)).then(function () {
+        if (!isCurrentChannel()) return;
         state.channelTryNotice = "Prompt copied.";
         state.channelTryError = false;
         render();
