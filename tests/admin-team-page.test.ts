@@ -58,7 +58,7 @@ function teamFixture(viewerRole: 'owner' | 'admin' = 'owner') {
     role: 'member',
     status: 'pending',
     inviteLink: 'https://chickpea.example.com/join#invite=invitation_pending.stable-secret',
-    expiresAt: 1_786_704_800_000,
+    expiresAt: 4_102_444_800_000,
     createdAt: 1_786_100_000_000,
     updatedAt: 1_786_100_000_000,
   };
