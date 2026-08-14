@@ -4340,6 +4340,48 @@ test('Where it works keeps Channel placements and renders Direct messages as non
   assert.match(dmSection, /class="agent-dm-status">On via @Pea &amp; Ops<\/p>/);
   assert.doesNotMatch(dmSection, /identity-bound|<button|data-action=/);
 
+  const secondIdentity = identities.identities.find((identity) =>
+    identity.id === 'slack_identity_finance'
+  );
+  assert.ok(secondIdentity);
+  secondIdentity.dmAgentId = releaseAgent.id;
+  secondIdentity.dmProfile = { id: releaseAgent.id, name: releaseAgent.name, enabled: true };
+  const multipleHarness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    slackIdentities: identities,
+  });
+  await flushAsync();
+  assert.match(multipleHarness.app.innerHTML, /class="agent-dm-status">On via @Pea &amp; Ops \+1<\/p>/);
+
+  const pendingHarness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    slackIdentities: {
+      identities: [incompleteSlackIdentityFixture()],
+      globalDmAllowed: true,
+    },
+  });
+  await flushAsync();
+  assert.match(pendingHarness.app.innerHTML, /class="agent-dm-status">Setup pending for @Launch<\/p>/);
+  assert.doesNotMatch(pendingHarness.app.innerHTML, /class="agent-dm-status">On via @Launch<\/p>/);
+
+  const offIdentity = incompleteSlackIdentityFixture({
+    lifecycle: 'connected',
+    effectiveDmState: 'off',
+  });
+  const offHarness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    assignments: [{
+      workspaceId: '*',
+      channelId: '*',
+      agentId: releaseAgent.id,
+      enabled: true,
+    }],
+    slackIdentities: { identities: [offIdentity], globalDmAllowed: true },
+  });
+  await flushAsync();
+  assert.match(offHarness.app.innerHTML, /<h3>Direct messages<\/h3><p class="agent-placement-empty">Off<\/p>/);
+  assert.doesNotMatch(offHarness.app.innerHTML, /class="agent-dm-status">On via @Launch<\/p>/);
+
   const fallbackHarness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_release',
     assignments: [{

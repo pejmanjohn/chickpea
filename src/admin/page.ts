@@ -5310,10 +5310,24 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return profileOverviewHtml();
   }
 
-  function dmIdentityForAgent(agentId) {
-    return ((state.slackIdentities && state.slackIdentities.identities) || []).find(function (identity) {
-      return identity.dmAgentId === agentId && identity.effectiveDmState === "on";
-    }) || null;
+  function dmIdentitiesForAgent(agentId) {
+    return ((state.slackIdentities && state.slackIdentities.identities) || []).filter(function (identity) {
+      return identity.dmAgentId === agentId;
+    });
+  }
+
+  function isUsableDmIdentity(identity) {
+    return identity.effectiveDmState === "on" &&
+      (identity.lifecycle === "connected" || identity.lifecycle === "degraded");
+  }
+
+  function isPendingDmIdentity(identity) {
+    return identity.lifecycle === "setup_incomplete" || identity.lifecycle === "credentials_pending";
+  }
+
+  function dmIdentitySummary(identities) {
+    var firstMention = slackIdentityMention(identities[0]);
+    return firstMention + (identities.length > 1 ? " +" + (identities.length - 1) : "");
   }
 
   function agentHasLegacyDmDefault(agentId) {
@@ -5323,7 +5337,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function agentHasDmDefault(agentId) {
-    return agentHasLegacyDmDefault(agentId) || !!dmIdentityForAgent(agentId);
+    var identities = dmIdentitiesForAgent(agentId);
+    if (identities.length) return identities.some(isUsableDmIdentity);
+    return agentHasLegacyDmDefault(agentId);
   }
 
   function concreteAssignmentsForAgent(agentId) {
@@ -7135,8 +7151,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function usedInHtml(draft) {
-    var dmIdentity = dmIdentityForAgent(draft.id);
-    var dm = agentHasLegacyDmDefault(draft.id) || !!dmIdentity;
+    var dmIdentities = dmIdentitiesForAgent(draft.id);
+    var usableDmIdentities = dmIdentities.filter(isUsableDmIdentity);
+    var pendingDmIdentities = dmIdentities.filter(isPendingDmIdentity);
     var concrete = concreteAssignmentsForAgent(draft.id);
     var channelRows = '<div class="where-list">';
     concrete.forEach(function (assignment) {
@@ -7144,9 +7161,18 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     });
     channelRows += '</div>';
     if (!concrete.length) channelRows = '<p class="agent-placement-empty">No Channels yet. Add this Agent to one when it is ready.</p>';
-    var dmRows = dm
-      ? '<p class="agent-dm-status">On via ' + esc(dmIdentity ? slackIdentityMention(dmIdentity) : slackIdentityMentionForId(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID)) + '</p>'
-      : '<p class="agent-placement-empty">No Slack identity routes Direct messages to this Agent.</p>';
+    var dmRows;
+    if (usableDmIdentities.length) {
+      dmRows = '<p class="agent-dm-status">On via ' + esc(dmIdentitySummary(usableDmIdentities)) + '</p>';
+    } else if (pendingDmIdentities.length) {
+      dmRows = '<p class="agent-dm-status">Setup pending for ' + esc(dmIdentitySummary(pendingDmIdentities)) + '</p>';
+    } else if (dmIdentities.length) {
+      dmRows = '<p class="agent-placement-empty">Off</p>';
+    } else if (agentHasLegacyDmDefault(draft.id)) {
+      dmRows = '<p class="agent-dm-status">On via ' + esc(slackIdentityMentionForId(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID)) + '</p>';
+    } else {
+      dmRows = '<p class="agent-placement-empty">No Slack identity routes Direct messages to this Agent.</p>';
+    }
     return '<section class="agent-detail-card agent-placement-card"><div class="agent-card-heading"><span class="agent-card-icon">' + icon("hash") + '</span><div><h2>Where it works</h2><p>Open a Channel to tune local behavior there.</p></div></div>' +
       '<div class="agent-placement-groups"><div class="agent-placement-group"><h3>Channels</h3>' + channelRows + '</div><div class="agent-placement-group"><h3>Direct messages</h3>' + dmRows + '</div></div>' +
       '<button type="button" class="btn btn-soft btn-sm" data-action="attach-open">Add to channels</button>' + attachPickerHtml(draft) + attachNoticeHtml() + '</section>';
