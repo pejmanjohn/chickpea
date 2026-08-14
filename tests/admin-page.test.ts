@@ -385,6 +385,7 @@ function runAdminPageHarness(
     initialPath?: string;
     slackChannels?: SlackChannelsFixture;
     channelIndex?: Array<Record<string, unknown>>;
+    channelIndexError?: { status: number; error: string; message?: string };
     onboarding?: OnboardingFixture | null;
     slackChannelFailures?: number;
     putIsMember?: boolean;
@@ -1393,6 +1394,12 @@ function runAdminPageHarness(
       return Promise.resolve(agent ? jsonResponse({ agent }) : jsonResponse({ error: 'not_found' }, 404));
     }
     if (path === '/admin/api/channels' && method === 'GET') {
+      if (harnessOptions.channelIndexError) {
+        return Promise.resolve(jsonResponse(
+          harnessOptions.channelIndexError,
+          harnessOptions.channelIndexError.status,
+        ));
+      }
       return Promise.resolve(jsonResponse({ channels: harnessOptions.channelIndex ?? [] }));
     }
     if (path === '/admin/api/agents' && method === 'POST') {
@@ -2959,7 +2966,7 @@ test('Slack identity loading never blocks core admin rendering', async () => {
 
   assert.equal(channelsHarness.slackIdentityCalls(), 1);
   assert.match(channelsHarness.app.innerHTML, /<h1 class="page-title">Channels<\/h1>/);
-  assert.match(channelsHarness.app.innerHTML, /Configured and discovered/);
+  assert.match(channelsHarness.app.innerHTML, /Channel assignments/);
   assert.doesNotMatch(channelsHarness.app.innerHTML, /Refreshing&hellip;/);
 
   const profilesHarness = runAdminPageHarness({
@@ -4356,7 +4363,7 @@ test('Channels stay secondary and derive their detail from the assigned Agent', 
   assert.equal(harness.locationPath(), '/admin/channels');
   assert.match(harness.app.innerHTML, /<h1 class="page-title">Channels<\/h1>/);
   assert.match(harness.app.innerHTML, /Assigned Agent: Release Profile/);
-  assert.match(harness.app.innerHTML, /placeholder="Search Channels or Agents"/);
+  assert.match(harness.app.innerHTML, /placeholder="Find a Channel or Agent"/);
 
   harness.listeners.click?.({
     target: actionTarget({
@@ -4375,6 +4382,170 @@ test('Channels stay secondary and derive their detail from the assigned Agent', 
   assert.match(harness.app.innerHTML, /Additional instructions/);
   assert.match(harness.app.innerHTML, /Channel memory/);
   assert.match(harness.app.innerHTML, /Exact-Channel files stay here even if the assigned Agent changes/);
+});
+
+test('Channels index matches the operational summary and assignment-table hierarchy', async () => {
+  const disabledOps = { ...opsAgent, enabled: false };
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/channels',
+    agents: [releaseAgent, disabledOps],
+    assignments: [],
+    channelIndex: [
+      {
+        workspaceId: 'T_DESIGN', channelId: 'C_READY', channelName: 'eng-releases',
+        assignment: { agentId: 'agent_release', agentName: 'Release Profile', agentEnabled: true },
+        behavior: { participationMode: 'ambient', hasAdditionalInstructions: true },
+        readiness: { ready: true, code: 'ready', reasons: [] },
+      },
+      {
+        workspaceId: 'T_DESIGN', channelId: 'C_DISABLED', channelName: 'incident-response',
+        assignment: { agentId: 'agent_ops', agentName: 'Ops Profile', agentEnabled: false },
+        behavior: { participationMode: 'mention_only', hasAdditionalInstructions: false },
+        readiness: { ready: false, code: 'agent_disabled', reasons: ['Enable the assigned Agent'] },
+      },
+      {
+        workspaceId: 'T_DESIGN', channelId: 'C_UNASSIGNED', channelName: 'planning',
+        assignment: null,
+        behavior: { participationMode: 'mention_only', hasAdditionalInstructions: false },
+        readiness: { ready: false, code: 'unassigned', reasons: ['Choose an Agent'] },
+      },
+    ],
+    slackChannels: channelsFixture([
+      { id: 'C_READY', name: 'eng-releases' },
+      { id: 'C_DISABLED', name: 'incident-response' },
+      { id: 'C_UNASSIGNED', name: 'planning' },
+      { id: 'C_DISCOVERED', name: 'customer-voice' },
+    ]),
+  });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /<span class="agent-kicker">Slack<\/span><h1 class="page-title">Channels<\/h1>/);
+  assert.match(html, /data-action="toggle-add-channel"[^>]*>[^<]*<svg[\s\S]*?Add Channel<\/button>/);
+  assert.match(html, /<dt>Configured Channels<\/dt><dd>3<\/dd>/);
+  assert.match(html, /<dt>Enabled Agents<\/dt><dd>1<\/dd>/);
+  assert.match(html, /class="channels-slack-state connected"[^>]*>[\s\S]*?Slack connected/);
+  assert.match(html, /role="table" aria-label="Channel assignments"/);
+  for (const heading of ['Channel', 'Agent', 'Behavior', 'Status']) {
+    assert.match(html, new RegExp(`role="columnheader"[^>]*>${heading}<`));
+  }
+  assert.match(html, /data-channel-state="ready"[\s\S]*?#eng-releases[\s\S]*?Release Profile[\s\S]*?Mentions \+ useful moments[\s\S]*?Channel instructions added[\s\S]*?Ready/);
+  assert.match(html, /data-channel-state="agent-disabled"[\s\S]*?#incident-response[\s\S]*?Ops Profile[\s\S]*?Mentions only[\s\S]*?Agent disabled/);
+  assert.match(html, /data-channel-state="unassigned"[\s\S]*?#planning[\s\S]*?No Agent assigned[\s\S]*?Needs Agent/);
+  assert.match(html, /data-channel-state="discovered"[\s\S]*?#customer-voice[\s\S]*?Choose an Agent[\s\S]*?Not configured/);
+  assert.doesNotMatch(html, /class="channels-index-open"|>Open Agent<|&rsaquo;/);
+});
+
+test('Channels summary reports healthy, degraded, and disconnected Slack truth', async () => {
+  const healthy = runAdminPageHarness({ initialPath: '/admin/channels' });
+  await flushAsync();
+  assert.match(healthy.app.innerHTML, /channels-slack-state connected[\s\S]*?Slack connected/);
+
+  const degradedIdentities = multiSlackIdentitiesFixture();
+  const workspaceDefault = degradedIdentities.identities.find((identity) => identity.kind === 'workspace_default');
+  assert.ok(workspaceDefault);
+  workspaceDefault.health = 'degraded';
+  const degraded = runAdminPageHarness({
+    initialPath: '/admin/channels',
+    slackIdentities: degradedIdentities,
+  });
+  await flushAsync();
+  assert.match(degraded.app.innerHTML, /channels-slack-state degraded[\s\S]*?Slack needs attention/);
+
+  const disconnected = runAdminPageHarness({
+    initialPath: '/admin/channels',
+    slackConnection: disconnectedSlackFixture(),
+  });
+  await flushAsync();
+  assert.match(disconnected.app.innerHTML, /channels-slack-state disconnected[\s\S]*?Slack disconnected/);
+  assert.match(disconnected.app.innerHTML, /Connect @Chickpea/);
+});
+
+test('Channels search preserves its query and filters Channel and Agent names', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/channels',
+    channelIndex: [
+      {
+        workspaceId: 'T_DESIGN', channelId: 'C_RELEASE', channelName: 'eng-releases',
+        assignment: { agentId: 'agent_release', agentName: 'Release Profile', agentEnabled: true },
+        behavior: { participationMode: 'ambient' }, readiness: { ready: true },
+      },
+      {
+        workspaceId: 'T_DESIGN', channelId: 'C_OPS', channelName: 'incident-room',
+        assignment: { agentId: 'agent_ops', agentName: 'Ops Profile', agentEnabled: true },
+        behavior: { participationMode: 'mention_only' }, readiness: { ready: true },
+      },
+    ],
+  });
+  await flushAsync();
+
+  harness.listeners.input?.({ target: inputTarget({ 'data-action': 'channels-index-query' }, 'Ops Profile') });
+  assert.match(harness.app.innerHTML, /id="channels-index-query"[^>]*value="Ops Profile"/);
+  assert.match(harness.app.innerHTML, /#incident-room/);
+  assert.doesNotMatch(harness.app.innerHTML, /#eng-releases/);
+
+  harness.listeners.input?.({ target: inputTarget({ 'data-action': 'channels-index-query' }, 'missing') });
+  assert.match(harness.app.innerHTML, /No Channels or Agents match/);
+  assert.match(harness.app.innerHTML, /Try a different Channel or Agent name\./);
+});
+
+test('Channels table keeps Channel, Agent, and discovered destinations separate', async () => {
+  const fixtures = {
+    initialPath: '/admin/channels',
+    channelIndex: [{
+      workspaceId: 'T_DESIGN', channelId: 'C_READY', channelName: 'eng-releases',
+      assignment: { agentId: 'agent_release', agentName: 'Release Profile', agentEnabled: true },
+      behavior: { participationMode: 'ambient' }, readiness: { ready: true },
+    }],
+    slackChannels: channelsFixture([
+      { id: 'C_READY', name: 'eng-releases' },
+      { id: 'C_DISCOVERED', name: 'customer-voice' },
+    ]),
+  };
+
+  const channelHarness = runAdminPageHarness(fixtures);
+  await flushAsync();
+  channelHarness.listeners.click?.({ target: actionTarget({
+    'data-action': 'open-channel-index', 'data-workspace': 'T_DESIGN', 'data-channel': 'C_READY',
+  }) });
+  await flushAsync();
+  assert.equal(channelHarness.locationPath(), '/admin/channels/T_DESIGN/C_READY');
+
+  const agentHarness = runAdminPageHarness(fixtures);
+  await flushAsync();
+  agentHarness.listeners.click?.({ target: actionTarget({
+    'data-action': 'open-profiles', 'data-agent': 'agent_release',
+  }) });
+  assert.equal(agentHarness.locationPath(), '/admin/agents/agent_release');
+
+  const discoveredHarness = runAdminPageHarness(fixtures);
+  await flushAsync();
+  discoveredHarness.listeners.click?.({ target: actionTarget({
+    'data-action': 'channel-index-add', 'data-workspace': 'T_DESIGN', 'data-channel': 'C_DISCOVERED',
+  }) });
+  assert.match(discoveredHarness.app.innerHTML, /<h2 class="section-title">Add a channel<\/h2>/);
+  assert.match(discoveredHarness.app.innerHTML, /<option value="C_DISCOVERED" selected>/);
+});
+
+test('Channels projection fallback keeps saved assignments, counts, and recovery copy', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/channels',
+    channelIndexError: { status: 503, error: 'projection_unavailable', message: 'Try again later' },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /The Channel index could not refresh\. Showing saved assignments/);
+  assert.match(harness.app.innerHTML, /<dt>Configured Channels<\/dt><dd>2<\/dd>/);
+  assert.match(harness.app.innerHTML, /data-channel-state="saved"[\s\S]*?#eng-releases[\s\S]*?Saved/);
+  assert.match(harness.app.innerHTML, /data-action="open-channel-index" data-workspace="T_DESIGN" data-channel="C0EXR3L9T"/);
+});
+
+test('Channels columns truncate long visible values while retaining complete accessible text', () => {
+  const page = renderAdminPage();
+  assert.match(page, /\.channels-index-name, \.channels-index-agent-name, \.channels-index-behavior strong\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
+  assert.match(page, /\.channels-index-row\s*\{[^}]*grid-template-columns:\s*minmax\(180px, 1\.15fr\) minmax\(220px, 1\.35fr\) minmax\(180px, 1fr\) 110px;/s);
+  assert.match(page, /@container \(max-width: 680px\)[\s\S]*?\.channels-index-table-head\s*\{[^}]*display:\s*none;[\s\S]*?\.channels-index-row\s*\{[^}]*grid-template-columns:\s*1fr;/s);
+  assert.match(page, /\.channels-index-cell::before\s*\{[^}]*content:\s*attr\(data-label\);/s);
 });
 
 test('moving a Channel sends placement CAS and preserves Channel-local instructions', async () => {

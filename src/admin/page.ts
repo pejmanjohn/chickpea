@@ -1717,17 +1717,58 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 .channel-try-card { align-items: flex-start; }
 .channel-try-prompt { color: var(--text); font-size: .8125rem; font-weight: 700; line-height: 1.55; }
 .channel-advanced-content { display: flex; flex-direction: column; gap: 16px; padding: 14px 0 2px; }
-.channels-index-head { align-items: flex-start; display: flex; gap: 16px; justify-content: space-between; }
-.channels-index-tools { align-items: center; display: flex; gap: 8px; }
-.channels-index-tools .input { min-width: min(320px, 45vw); }
-.channels-index-list { display: flex; flex-direction: column; gap: 8px; }
-.channels-index-row { align-items: center; background: var(--well); border: 0; border-radius: 14px; box-shadow: inset 0 0 0 1px var(--line); color: inherit; display: flex; font: inherit; gap: 12px; min-height: 62px; padding: 11px 13px; text-align: left; width: 100%; }
-.channels-index-open { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: flex; flex: 1; font: inherit; gap: 12px; min-width: 0; padding: 0; text-align: left; }
-.channels-index-open:hover .channels-index-name { color: var(--ember-press); }
-.channels-index-name { color: var(--text); font-size: .875rem; font-weight: 700; }
-.channels-index-copy { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
-.channels-index-copy small { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.channel-platform-mark { align-items: center; background: #fff; border-radius: 10px; display: inline-flex; height: 34px; justify-content: center; width: 34px; }
+.channels-index-head { align-items: flex-start; display: flex; gap: 20px; justify-content: space-between; }
+.channels-index-head-copy { display: flex; flex-direction: column; gap: 5px; max-width: 620px; }
+.channels-index-head .btn-primary { flex: none; margin-top: 2px; }
+.channels-overview-card {
+  align-items: stretch;
+  background: var(--well);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 330px);
+  padding: 17px 18px;
+}
+.channels-overview-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.channels-summary-stat { border-right: 1px solid var(--line); display: flex; flex-direction: column-reverse; gap: 3px; justify-content: center; min-width: 0; padding: 0 18px; }
+.channels-summary-stat:first-child { padding-left: 0; }
+.channels-summary-stat:last-child { border-right: 0; }
+.channels-summary-stat dt { color: var(--text-3); font-size: .6875rem; font-weight: 700; }
+.channels-summary-stat dd { color: var(--text); font-size: 1.1rem; font-weight: 800; line-height: 1.25; }
+.channels-slack-state { align-items: center; display: inline-flex; font-size: .75rem; font-weight: 750; gap: 7px; white-space: nowrap; }
+.channels-slack-state::before, .channel-status::before { background: currentColor; border-radius: 50%; content: ""; flex: none; height: 7px; width: 7px; }
+.channels-slack-state.connected, .channel-status.ready { color: var(--ok); }
+.channels-slack-state.degraded, .channel-status.needs-attention, .channel-status.agent-disabled, .channel-status.unassigned { color: #9d6e19; }
+.channels-slack-state.disconnected, .channel-status.saved, .channel-status.discovered { color: var(--text-3); }
+.channels-index-search { align-self: center; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.channels-index-search .field-label { font-size: .6875rem; }
+.channels-index-table { background: var(--bg); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+.channels-index-table-head, .channels-index-row { display: grid; grid-template-columns: minmax(180px, 1.15fr) minmax(220px, 1.35fr) minmax(180px, 1fr) 110px; }
+.channels-index-table-head { background: var(--well); border-bottom: 1px solid var(--line); color: var(--text-3); font-size: .625rem; font-weight: 800; letter-spacing: .07em; padding: 10px 16px; text-transform: uppercase; }
+.channels-index-list { display: flex; flex-direction: column; }
+.channels-index-row { align-items: center; border-bottom: 1px solid var(--line); min-height: 72px; padding: 10px 16px; }
+.channels-index-row:last-child { border-bottom: 0; }
+.channels-index-row:hover { background: #fffcf3; }
+.channels-index-cell { align-items: center; display: flex; min-width: 0; padding-right: 14px; }
+.channels-index-cell::before { content: attr(data-label); display: none; }
+.channels-index-channel, .channels-index-agent { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: flex; font: inherit; gap: 10px; min-width: 0; padding: 3px; text-align: left; width: 100%; }
+.channels-index-channel:hover .channels-index-name, .channels-index-agent:hover .channels-index-agent-name { color: var(--ember-press); }
+.channels-index-channel:focus-visible, .channels-index-agent:focus-visible { border-radius: 9px; outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.channel-hash { align-items: center; background: #eee7d9; border-radius: 10px; color: #796b53; display: inline-flex; flex: none; font-family: var(--mono); font-size: 1rem; font-weight: 700; height: 34px; justify-content: center; width: 34px; }
+.channels-index-agent .agent-roster-icon { height: 34px; width: 34px; }
+.channels-index-copy, .channels-index-agent-copy, .channels-index-behavior { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.channels-index-name, .channels-index-agent-name, .channels-index-behavior strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channels-index-name, .channels-index-agent-name { color: var(--text); font-size: .8125rem; font-weight: 750; }
+.channels-index-copy small, .channels-index-agent-copy small, .channels-index-behavior small { color: var(--text-3); font-size: .65625rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channels-index-behavior strong { color: var(--text-2); font-size: .75rem; font-weight: 650; }
+.channels-index-agent-empty { color: var(--text-3); display: flex; flex-direction: column; font-size: .75rem; gap: 2px; min-width: 0; }
+.channels-index-agent-empty strong { color: var(--text-2); }
+.channel-status { align-items: center; display: inline-flex; font-size: .6875rem; font-weight: 750; gap: 7px; white-space: nowrap; }
+.channels-index-empty { padding: 36px 20px; text-align: center; }
+.channels-index-empty .field-label { margin-bottom: 4px; }
+.channels-index-fallback { margin: 0; }
+.channels-connection-card { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 24px; }
 @container (max-width: 680px) {
   .agent-profile-header { align-items: flex-start; flex-direction: column; }
   .agent-profile-header-actions { width: 100%; }
@@ -1743,9 +1784,18 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   .owner-memory-actions .spacer { display: none; }
   .owner-memory-actions .btn { width: 100%; }
   .agent-model-row, .channel-try-card { align-items: stretch; flex-direction: column; }
-  .channels-index-head, .channels-index-tools { align-items: stretch; flex-direction: column; }
-  .channels-index-tools .input { min-width: 0; width: 100%; }
-  .channels-index-row { align-items: flex-start; flex-wrap: wrap; }
+  .channels-index-head { align-items: stretch; flex-direction: column; }
+  .channels-index-head .btn-primary { align-self: flex-start; }
+  .channels-overview-card { grid-template-columns: 1fr; }
+  .channels-overview-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .channels-summary-stat:nth-child(2) { border-right: 0; }
+  .channels-summary-stat:last-child { border-right: 0; border-top: 1px solid var(--line); grid-column: 1 / -1; margin-top: 12px; padding: 12px 0 0; }
+  .channels-index-table-head { display: none; }
+  .channels-index-row { align-items: stretch; gap: 13px; grid-template-columns: 1fr; padding: 15px; }
+  .channels-index-row + .channels-index-row { border-top: 7px solid var(--well); }
+  .channels-index-cell { align-items: flex-start; display: grid; gap: 8px; grid-template-columns: 76px minmax(0, 1fr); padding-right: 0; }
+  .channels-index-cell::before { color: var(--text-3); display: block; font-size: .625rem; font-weight: 800; letter-spacing: .06em; padding-top: 7px; text-transform: uppercase; }
+  .channels-index-channel, .channels-index-agent { padding: 0; }
 }
 
 @media (max-width: 740px) {
@@ -4442,41 +4492,85 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return projected;
   }
 
+  function channelsSlackStatus() {
+    if (!isSlackConnected()) return { key: "disconnected", label: "Slack disconnected" };
+    var workspaceIdentity = workspaceDefaultSlackIdentity();
+    if (workspaceIdentity && (workspaceIdentity.health === "degraded" || workspaceIdentity.health === "disconnected" || workspaceIdentity.lifecycle !== "connected")) {
+      return { key: "degraded", label: "Slack needs attention" };
+    }
+    return { key: "connected", label: "Slack connected" };
+  }
+
+  function channelIndexState(channel, agent) {
+    if (!channel.configured) return { key: "discovered", label: "Not configured" };
+    if (!channel.assignment || !channel.assignment.agentId) return { key: "unassigned", label: "Needs Agent" };
+    if (channel.assignment.agentEnabled === false || (agent && agent.enabled === false)) {
+      return { key: "agent-disabled", label: "Agent disabled" };
+    }
+    if (channel.readiness && channel.readiness.ready === false) return { key: "needs-attention", label: "Needs attention" };
+    if (channel.readiness && channel.readiness.ready === true) return { key: "ready", label: "Ready" };
+    return { key: "saved", label: "Saved" };
+  }
+
   function channelsIndexHtml() {
     if (state.addChannelOpen) {
       return '<button type="button" class="link-btn" data-action="toggle-add-channel">&larr; Channels</button>' + addChannelPanelHtml();
     }
+    var allChannels = configuredChannelsForIndex();
     var query = String(state.channelIndexQuery || "").trim().toLowerCase();
-    var channels = configuredChannelsForIndex().filter(function (channel) {
+    var channels = allChannels.filter(function (channel) {
       if (!query) return true;
       var agentName = channel.assignment && channel.assignment.agentName || "";
       return (channel.channelName + " " + channel.channelId + " " + agentName).toLowerCase().indexOf(query) >= 0;
     });
     var error = state.channelIndexError
-      ? '<p class="inline-status error" role="status">The Channel projection could not refresh. Showing saved assignments.</p>'
+      ? '<p class="inline-status error channels-index-fallback" role="status">The Channel index could not refresh. Showing saved assignments; reconnect or reload to try again.</p>'
       : "";
     var rows = channels.map(function (channel) {
       var assignment = channel.assignment;
       var agent = assignment && agentById(assignment.agentId);
-      var agentName = (assignment && assignment.agentName) || (agent && agent.name) || "No Agent assigned";
+      var agentName = (assignment && assignment.agentName) || (agent && agent.name) || (channel.configured ? "No Agent assigned" : "Choose an Agent");
       var behavior = channel.behavior || {};
-      var mode = behavior.participationMode === "mention_only" ? "Mention only" : "Ambient";
-      var additional = behavior.hasAdditionalInstructions ? " · Additional instructions" : "";
-      var ready = !channel.readiness || channel.readiness.ready !== false;
+      var mode = channel.configured
+        ? (behavior.participationMode === "mention_only" ? "Mentions only" : "Mentions + useful moments")
+        : "Set when added";
+      var behaviorNote = behavior.hasAdditionalInstructions
+        ? "Channel instructions added"
+        : (channel.configured ? "Uses the Agent's default guidance" : "Choose behavior when adding");
+      var rowState = channelIndexState(channel, agent);
       var action = channel.configured ? "open-channel-index" : "channel-index-add";
-      return '<div class="channels-index-row"><button type="button" class="channels-index-open" data-action="' + action + '" data-workspace="' + esc(channel.workspaceId) + '" data-channel="' + esc(channel.channelId) + '">' +
-        '<span class="channel-platform-mark"><span class="platform-logo slack-logo-image" aria-hidden="true"></span></span>' +
-        '<span class="channels-index-copy"><span class="channels-index-name">#' + esc(normalizeChannelLabel(channel.channelName)) + '</span><small>' + esc(channel.configured ? "Assigned Agent: " + agentName + " · " + mode + additional : "Discovered in Slack · choose an Agent to add it") + '</small></span>' +
-        '<span class="badge ' + (channel.configured && ready ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (channel.configured ? (ready ? "Ready" : "Needs attention") : "Not configured") + '</span>' +
-        '<span aria-hidden="true">' + (channel.configured ? "&rsaquo;" : "+") + '</span></button>' +
-        (assignment && assignment.agentId ? '<button type="button" class="btn btn-ghost btn-sm" data-action="open-profiles" data-agent="' + esc(assignment.agentId) + '">Open Agent</button>' : "") + '</div>';
+      var channelName = "#" + normalizeChannelLabel(channel.channelName);
+      var channelAction = channel.configured ? "Open Channel " : "Add Channel ";
+      var agentControl = assignment && assignment.agentId
+        ? '<button type="button" class="channels-index-agent" data-action="open-profiles" data-agent="' + esc(assignment.agentId) + '" aria-label="Assigned Agent: ' + esc(agentName) + '">' +
+          '<span class="agent-roster-icon variant-' + agentIconVariant(assignment.agentId) + '" aria-hidden="true">' + icon("robot") + '</span>' +
+          '<span class="channels-index-agent-copy"><span class="channels-index-agent-name" title="' + esc(agentName) + '">' + esc(agentName) + '</span><small>Assigned Agent</small></span></button>'
+        : '<span class="channels-index-agent-empty"><strong>' + esc(agentName) + '</strong><span>' + esc(channel.configured ? "Choose in Channel" : "Add this Channel first") + '</span></span>';
+      var readinessReason = channel.readiness && channel.readiness.reasons && channel.readiness.reasons.length
+        ? channel.readiness.reasons.join(". ")
+        : rowState.label;
+      return '<div class="channels-index-row" role="row" data-channel-state="' + rowState.key + '">' +
+        '<div class="channels-index-cell" role="cell" data-label="Channel"><button type="button" class="channels-index-channel" data-action="' + action + '" data-workspace="' + esc(channel.workspaceId) + '" data-channel="' + esc(channel.channelId) + '" aria-label="' + esc(channelAction + channelName) + '">' +
+        '<span class="channel-hash" aria-hidden="true">#</span><span class="channels-index-copy"><span class="channels-index-name" title="' + esc(channelName) + '">' + esc(channelName) + '</span><small title="' + esc(channel.channelId) + '">' + esc(channel.configured ? "Configured in Slack" : "Discovered in Slack") + '</small></span></button></div>' +
+        '<div class="channels-index-cell" role="cell" data-label="Agent">' + agentControl + '</div>' +
+        '<div class="channels-index-cell" role="cell" data-label="Behavior"><span class="channels-index-behavior" title="' + esc(mode + ". " + behaviorNote) + '"><strong>' + esc(mode) + '</strong><small>' + esc(behaviorNote) + '</small></span></div>' +
+        '<div class="channels-index-cell" role="cell" data-label="Status"><span class="channel-status ' + rowState.key + '" title="' + esc(readinessReason) + '">' + esc(rowState.label) + '</span></div></div>';
     }).join("");
     if (!rows) {
-      rows = '<div class="empty"><p class="field-label">' + (query ? "No Channels match" : "No Channels yet") + '</p><p class="hint">' + (query ? "Try another Channel or Agent name." : "Add one Slack Channel, then choose its Agent.") + '</p></div>';
+      rows = '<div class="channels-index-empty"><p class="field-label">' + (query ? "No Channels or Agents match" : "No Channels yet") + '</p><p class="hint">' + (query ? "Try a different Channel or Agent name." : "Add one Slack Channel, then choose its Agent.") + '</p></div>';
     }
-    return '<div class="channels-index-head"><div><span class="agent-kicker">Secondary placement index</span><h1 class="page-title">Channels</h1><p class="hint">See where Agents work and open a Channel for its local behavior and memory.</p></div>' +
-      '<div class="channels-index-tools"><label class="sr-only" for="channels-index-query">Search Channels</label><input class="input" id="channels-index-query" type="search" value="' + esc(state.channelIndexQuery) + '" placeholder="Search Channels or Agents" data-action="channels-index-query"><button type="button" class="btn btn-primary" data-action="toggle-add-channel">' + icon("plus") + 'Add Channel</button></div></div>' +
-      error + '<section class="section"><div class="section-head"><div><h2 class="section-title">Configured and discovered</h2><p class="hint">Configured Channels show their assigned Agent; discovered Channels stay secondary until added.</p></div></div><div class="channels-index-list">' + rows + '</div></section>';
+    var configuredCount = allChannels.filter(function (channel) { return channel.configured; }).length;
+    var enabledAgentCount = state.agents.filter(function (candidate) { return candidate.enabled !== false; }).length;
+    var slackStatus = channelsSlackStatus();
+    var addDisabled = !isSlackConnected();
+    return '<div class="channels-index-head"><div class="channels-index-head-copy"><span class="agent-kicker">Slack</span><h1 class="page-title">Channels</h1><p class="hint">See which Agent works in each Slack Channel and whether anything needs attention.</p></div>' +
+      '<button type="button" class="btn btn-primary" data-action="toggle-add-channel"' + (addDisabled ? ' disabled title="Connect @Chickpea first"' : '') + '>' + icon("plus") + 'Add Channel</button></div>' +
+      '<div class="channels-overview-card"><dl class="channels-overview-stats"><div class="channels-summary-stat"><dt>Configured Channels</dt><dd>' + configuredCount + '</dd></div>' +
+      '<div class="channels-summary-stat"><dt>Enabled Agents</dt><dd>' + enabledAgentCount + '</dd></div>' +
+      '<div class="channels-summary-stat"><dt>Connection</dt><dd><span class="channels-slack-state ' + slackStatus.key + '">' + esc(slackStatus.label) + '</span></dd></div></dl>' +
+      '<label class="channels-index-search" for="channels-index-query"><span class="field-label">Find a Channel or Agent</span><input class="input" id="channels-index-query" type="search" value="' + esc(state.channelIndexQuery) + '" placeholder="Find a Channel or Agent" data-action="channels-index-query"></label></div>' +
+      error + '<section class="section"><div class="section-head"><div><h2 class="section-title" id="channel-assignments-heading">Channel assignments</h2><p class="hint">Open a Channel for local behavior and memory, or open its Agent to change shared capabilities.</p></div></div>' +
+      '<div class="channels-index-table" role="table" aria-label="Channel assignments"><div class="channels-index-table-head" role="row"><span role="columnheader">Channel</span><span role="columnheader">Agent</span><span role="columnheader">Behavior</span><span role="columnheader">Status</span></div><div class="channels-index-list" role="rowgroup">' + rows + '</div></div></section>';
   }
 
   function slackOverviewHtml() {
@@ -4485,9 +4579,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (!state.slack) {
       return head + '<div class="empty"><p class="field-label">Slack settings are unavailable</p><p class="hint">Reload the page to try the connection again.</p></div>';
     }
-    if (!isSlackConnected()) {
-      return head + slackStepperHtml();
-    }
+    if (!isSlackConnected()) return channelsIndexHtml() + '<section class="channels-connection-card" aria-label="Connect Slack">' + slackStepperHtml() + '</section>';
     return successToastHtml() + channelsIndexHtml();
   }
 
