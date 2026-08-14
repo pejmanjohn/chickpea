@@ -6,7 +6,7 @@
  * store in one temporary SQLite file, and removes that directory on shutdown.
  */
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -385,7 +385,7 @@ export async function startAdminVisualFixture(options = {}) {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;
       }
-      if (existsSync(stateDirectory)) rmSync(stateDirectory, { recursive: true, force: true });
+      rmSync(stateDirectory, { recursive: true, force: true });
       activeFixture = false;
     }
     await serverClosing;

@@ -3050,7 +3050,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       // Re-home focus after every render so it never falls back to <body>.
       if (state.slackDisconnectBusy) focusSlackDisconnectDialog();
       else if (state.slackDisconnectError) focusSlackLiveRegion("slack-disconnect-error");
-      else focusSlackDisconnectAction("slack-disconnect-cancel");
+      else focusAction("slack-disconnect-cancel");
     }
     if (state.githubDisconnectConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
@@ -3060,7 +3060,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       });
       if (state.githubBusy === "disconnect") focusGithubDisconnectDialog();
       else if (state.githubDisconnectError) focusSlackLiveRegion("github-disconnect-error");
-      else focusSlackDisconnectAction("github-disconnect-cancel");
+      else focusAction("github-disconnect-cancel");
     }
     if (state.sandboxConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
@@ -3211,8 +3211,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function agentIconVariant(agentId) {
+    var value = String(agentId || "");
     var hash = 0;
-    for (var index = 0; index < String(agentId || "").length; index += 1) hash += String(agentId).charCodeAt(index);
+    for (var index = 0; index < value.length; index += 1) hash += value.charCodeAt(index);
     return hash % 3;
   }
 
@@ -3448,8 +3449,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     } else {
       state.agents.forEach(function (agent) {
         var active = state.profileScreen === "edit" && state.editingAgentId === agent.id;
-        var channelCount = concreteAssignmentsForAgent(agent.id).length;
-        var meta = channelCountLabel(channelCount) + (agentHasDmDefault(agent.id) ? " + Direct messages" : "");
+        var meta = agentPlacementMeta(agent);
         html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="edit-profile" data-agent="' + esc(agent.id) + '">' +
           '<span class="chan-name">' + esc(agent.name) + '</span><span class="chan-meta">' + esc(meta) + '</span></button>';
       });
@@ -4560,7 +4560,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="sandbox-confirm-cancel"' + (busy ? " disabled" : "") + '>Go back</button><span class="spacer"></span><button type="button" class="btn btn-primary" data-action="sandbox-enable-confirm"' + (!state.sandboxReadyAttested || busy ? " disabled" : "") + '>' + (state.sandboxSaving === "enable" ? "Enabling&hellip;" : "Enable coding sandbox") + '</button></div></div></div>';
   }
 
-  function focusSlackDisconnectAction(action) {
+  function focusAction(action) {
     var control = document.querySelector('[data-action="' + action + '"]');
     if (control && control.focus) control.focus();
   }
@@ -6890,18 +6890,21 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var liveRoots = draft.deletion && Array.isArray(draft.deletion.liveSnapshotRoots) ? draft.deletion.liveSnapshotRoots.length : 0;
     var projectedBlocked = !!(draft.deletion && draft.deletion.blocked);
     var blocked = dm || concrete.length > 0 || projectedBlocked;
-    var title = blocked
-      ? (dm ? "The DM default can\u2019t be deleted. Detach it everywhere first." : concrete.length ? "Detach it from every channel first." : liveRoots ? "This Agent still has live Slack threads. Wait for them to expire first." : "Remove every Channel placement and Slack identity reference first.")
-      : "This can\u2019t be undone.";
-    var guidance = dm
-      ? "Move its identity-bound Direct messages. Detach it from every Channel before deleting this Agent."
-      : concrete.length
-        ? "Detach it from every Channel before deleting this Agent."
-        : liveRoots
-          ? "Wait for its live Slack threads to expire before deleting this Agent."
-          : projectedBlocked
-            ? "Remove every Channel placement and Slack identity reference before deleting this Agent."
-            : "Deleting this Agent cannot be undone.";
+    var title = "This can\u2019t be undone.";
+    var guidance = "Deleting this Agent cannot be undone.";
+    if (dm) {
+      title = "The DM default can\u2019t be deleted. Detach it everywhere first.";
+      guidance = "Move its identity-bound Direct messages. Detach it from every Channel before deleting this Agent.";
+    } else if (concrete.length) {
+      title = "Detach it from every channel first.";
+      guidance = "Detach it from every Channel before deleting this Agent.";
+    } else if (liveRoots) {
+      title = "This Agent still has live Slack threads. Wait for them to expire first.";
+      guidance = "Wait for its live Slack threads to expire before deleting this Agent.";
+    } else if (projectedBlocked) {
+      title = "Remove every Channel placement and Slack identity reference first.";
+      guidance = "Remove every Channel placement and Slack identity reference before deleting this Agent.";
+    }
     return { blocked: blocked, title: title, guidance: guidance };
   }
 
@@ -11295,7 +11298,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         state.slackDisconnectConfirm = false;
         state.slackDisconnectError = "";
         render();
-        focusSlackDisconnectAction("slack-disconnect-open");
+        focusAction("slack-disconnect-open");
       } else if (action === "slack-disconnect-confirm") {
         disconnectSlack();
       }
@@ -11308,7 +11311,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         state.githubDisconnectConfirm = false;
         state.githubDisconnectError = "";
         render();
-        focusSlackDisconnectAction("github-disconnect-open");
+        focusAction("github-disconnect-open");
       } else if (action === "github-disconnect-confirm") {
         disconnectGithub();
       }
@@ -11901,26 +11904,23 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.profileOverflowOpen = !state.profileOverflowOpen;
       var overflowOpening = state.profileOverflowOpen;
       render();
-      var overflowFocus = document.querySelector(overflowOpening
-        ? '[data-action="' + (state.profileDraft.enabled ? "agent-lifecycle-disable" : "agent-lifecycle-enable") + '"]'
-        : '[data-action="agent-overflow-toggle"]');
-      if (overflowFocus && overflowFocus.focus) overflowFocus.focus();
+      focusAction(overflowOpening
+        ? (state.profileDraft.enabled ? "agent-lifecycle-disable" : "agent-lifecycle-enable")
+        : "agent-overflow-toggle");
     }
     if (action === "agent-lifecycle-enable" && state.profileDraft) {
       state.profileDraft.enabled = true;
       state.profileOverflowOpen = false;
       markProfileDirty();
       render();
-      var enabledTrigger = document.querySelector('[data-action="agent-overflow-toggle"]');
-      if (enabledTrigger && enabledTrigger.focus) enabledTrigger.focus();
+      focusAction("agent-overflow-toggle");
     }
     if (action === "agent-lifecycle-disable" && state.profileDraft) {
       state.profileOverflowOpen = false;
       if (allAssignmentsForAgent(state.profileDraft.id).length > 0) state.disableConfirm = true;
       else { state.profileDraft.enabled = false; markProfileDirty(); }
       render();
-      var disabledTrigger = document.querySelector('[data-action="agent-overflow-toggle"]');
-      if (disabledTrigger && disabledTrigger.focus) disabledTrigger.focus();
+      focusAction("agent-overflow-toggle");
     }
     if (action === "save-profile") { saveProfile(); }
     if (action === "reload-profile") { reloadProfile(); }
@@ -11928,8 +11928,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "delete-profile") { deleteProfile(); }
     if (action === "detach-channel") { detachProfileChannel(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); }
     if (action === "open-channel-from-profile") { state.view = "channels"; state.channelScreen = "detail"; state.profileScreen = "list"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
-    if (action === "disable-keep") { state.disableConfirm = false; render(); var keptTrigger = document.querySelector('[data-action="agent-overflow-toggle"]'); if (keptTrigger && keptTrigger.focus) keptTrigger.focus(); }
-    if (action === "disable-confirm") { if (state.profileDraft) state.profileDraft.enabled = false; state.disableConfirm = false; state.profileDirty = true; render(); var confirmedTrigger = document.querySelector('[data-action="agent-overflow-toggle"]'); if (confirmedTrigger && confirmedTrigger.focus) confirmedTrigger.focus(); }
+    if (action === "disable-keep") { state.disableConfirm = false; render(); focusAction("agent-overflow-toggle"); }
+    if (action === "disable-confirm") { if (state.profileDraft) state.profileDraft.enabled = false; state.disableConfirm = false; state.profileDirty = true; render(); focusAction("agent-overflow-toggle"); }
     // Custom-skills editor: open blank / open seeded / remove / save / cancel.
     // Each editor open captures the current field text off state.skillEditor so
     // the inline error survives a re-render (input handlers mirror keystrokes).
@@ -12724,7 +12724,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.githubDisconnectConfirm = false;
       state.githubDisconnectError = "";
       render();
-      focusSlackDisconnectAction("github-disconnect-open");
+      focusAction("github-disconnect-open");
       return;
     }
     if (state.slackDisconnectConfirm && event.key === "Tab") {
@@ -12755,7 +12755,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.slackDisconnectConfirm = false;
       state.slackDisconnectError = "";
       render();
-      focusSlackDisconnectAction("slack-disconnect-open");
+      focusAction("slack-disconnect-open");
       return;
     }
     var agentOverflowTrigger = event.target && event.target.closest && event.target.closest(".agent-overflow-trigger");
@@ -12764,8 +12764,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       if (!state.profileOverflowOpen) {
         state.profileOverflowOpen = true;
         render();
-        var firstLifecycleAction = document.querySelector('[data-action="' + (state.profileDraft && state.profileDraft.enabled ? "agent-lifecycle-disable" : "agent-lifecycle-enable") + '"]');
-        if (firstLifecycleAction && firstLifecycleAction.focus) firstLifecycleAction.focus();
+        focusAction(state.profileDraft && state.profileDraft.enabled ? "agent-lifecycle-disable" : "agent-lifecycle-enable");
       }
       return;
     }
@@ -12773,8 +12772,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       event.preventDefault();
       state.profileOverflowOpen = false;
       render();
-      var lifecycleTrigger = document.querySelector('[data-action="agent-overflow-toggle"]');
-      if (lifecycleTrigger && lifecycleTrigger.focus) lifecycleTrigger.focus();
+      focusAction("agent-overflow-toggle");
       return;
     }
     if (state.profileRenaming) {
