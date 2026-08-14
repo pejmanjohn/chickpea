@@ -1251,7 +1251,7 @@ details[open].advanced summary::before {
   max-width: none;
 }
 .primary-admin-shell > .topbar { display: none; }
-.primary-admin-shell .body { gap: 0; padding: 0; }
+.primary-admin-shell .body { gap: 24px; padding: 0 24px 0 0; }
 .primary-admin-shell .primary-shell-sidebar {
   background: rgba(255, 253, 247, .74);
   border-radius: 0;
@@ -1276,9 +1276,9 @@ details[open].advanced summary::before {
   background: var(--admin-visual-paper);
   border: 1px solid rgba(118, 94, 51, .08);
   height: calc(100% - 44px);
-  margin: 22px 24px;
-  max-width: none;
-  width: auto;
+  margin: 22px auto;
+  max-width: 1440px;
+  width: 100%;
 }
 
 /* Agent and Channel pages keep their specialized rail and content density
@@ -1322,7 +1322,7 @@ details[open].advanced summary::before {
   width: 100%;
 }
 .agent-roster-item:hover { background: rgba(232, 216, 182, .5); }
-.agent-roster-item.active { background: #f4e8cc; box-shadow: inset 3px 0 var(--admin-visual-gold); }
+.agent-roster-item.active { background: #f4e8cc; }
 .agent-roster-item:focus-visible, .primary-shell-brand .brand-home:focus-visible {
   outline: 2px solid var(--ember-press);
   outline-offset: 2px;
@@ -1366,15 +1366,15 @@ details[open].advanced summary::before {
 .mobile-agent-roster .agent-roster-add { margin-left: 0; }
 
 @media (max-width: 1000px) {
+  .primary-admin-shell .body { gap: 15px; padding-right: 15px; }
   .primary-admin-shell .primary-shell-sidebar { width: 228px; }
-  .primary-admin-shell .main { margin-left: 15px; margin-right: 15px; }
   .admin-surface .main { padding: 32px 28px; }
 }
 
 @media (max-width: 740px) {
   .primary-admin-shell { height: auto; overflow: visible; }
   .primary-admin-shell > .topbar { display: flex; }
-  .primary-admin-shell .body { flex-direction: column; overflow: visible; }
+  .primary-admin-shell .body { flex-direction: column; gap: 0; overflow: visible; padding-right: 0; }
   .primary-admin-shell .primary-shell-sidebar { display: none; }
   .primary-admin-shell .main {
     align-self: auto;

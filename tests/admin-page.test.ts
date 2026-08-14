@@ -10083,16 +10083,23 @@ test('the left rail keeps one coherent section switcher and section-specific nav
   assert.match(harness.app.innerHTML, /data-settings-panel="github"><section/);
 });
 
-test('the unified primary shell keeps a darker canvas around its white paper panel and collapses on mobile', () => {
+test('the unified primary shell centers a capped white paper panel within the post-sidebar canvas and collapses on mobile', () => {
   const page = renderAdminPage();
   assert.match(page, /\.primary-admin-shell\s*\{[^}]*background:\s*var\(--admin-visual-canvas\);[^}]*max-width:\s*none;/s);
   assert.match(page, /\.primary-admin-shell > \.topbar\s*\{[^}]*display:\s*none;/s);
+  assert.match(page, /\.primary-admin-shell \.body\s*\{[^}]*gap:\s*24px;[^}]*padding:\s*0 24px 0 0;/s);
   assert.match(page, /\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*border-radius:\s*0;[^}]*box-shadow:\s*none;[^}]*width:\s*292px;/s);
-  assert.match(page, /\.primary-admin-shell \.main\s*\{[^}]*background:\s*var\(--admin-visual-paper\);[^}]*height:\s*calc\(100% - 44px\);[^}]*margin:\s*22px 24px;[^}]*max-width:\s*none;[^}]*width:\s*auto;/s);
+  assert.match(page, /\.primary-admin-shell \.main\s*\{[^}]*background:\s*var\(--admin-visual-paper\);[^}]*height:\s*calc\(100% - 44px\);[^}]*margin:\s*22px auto;[^}]*max-width:\s*1440px;[^}]*width:\s*100%;/s);
   assert.match(page, /\.team-main\s*\{[^}]*max-width:\s*760px;/s);
   assert.match(page, /\.usage-main\s*\{[^}]*max-width:\s*1100px;/s);
-  assert.match(page, /@media \(max-width: 1000px\)[\s\S]*?\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*width:\s*228px;[^}]*\}[\s\S]*?\.primary-admin-shell \.main\s*\{[^}]*margin-left:\s*15px;[^}]*margin-right:\s*15px;/s);
-  assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.primary-admin-shell > \.topbar\s*\{[^}]*display:\s*flex;[^}]*\}[\s\S]*?\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*display:\s*none;/s);
+  assert.match(page, /@media \(max-width: 1000px\)[\s\S]*?\.primary-admin-shell \.body\s*\{[^}]*gap:\s*15px;[^}]*padding-right:\s*15px;[^}]*\}[\s\S]*?\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*width:\s*228px;/s);
+  assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.primary-admin-shell > \.topbar\s*\{[^}]*display:\s*flex;[^}]*\}[\s\S]*?\.primary-admin-shell \.body\s*\{[^}]*gap:\s*0;[^}]*padding-right:\s*0;[^}]*\}[\s\S]*?\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*display:\s*none;/s);
+});
+
+test('the selected Agent roster pill uses only its soft background for emphasis', () => {
+  const page = renderAdminPage();
+  assert.match(page, /\.agent-roster-item\.active\s*\{\s*background:\s*#f4e8cc;\s*\}/s);
+  assert.doesNotMatch(page, /\.agent-roster-item\.active\s*\{[^}]*box-shadow:/s);
 });
 
 test('legacy Sessions page URLs return to the default Agent without loading Run data', async () => {
