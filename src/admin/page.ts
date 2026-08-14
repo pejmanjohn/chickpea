@@ -100,9 +100,9 @@ ${ADMIN_FAVICON}
   --admin-visual-status-attention: #d99b29;
   /* Semantic accents stay stable across Agent tabs and Channel summaries so
      the same concept keeps the same visual cue wherever it appears. */
-  --semantic-instructions-fg: #a36d08;
-  --semantic-instructions-bg: #f5e7c7;
-  --semantic-instructions-line: #ead29f;
+  --semantic-instructions-fg: #b96c06;
+  --semantic-instructions-bg: #fbefe0;
+  --semantic-instructions-line: #f6d9b6;
   --semantic-skill-fg: #5f8d58;
   --semantic-skill-bg: #e7f1e3;
   --semantic-skill-line: #d1e3cb;
@@ -115,12 +115,12 @@ ${ADMIN_FAVICON}
   --semantic-memory-fg: #7d6091;
   --semantic-memory-bg: #efe6f4;
   --semantic-memory-line: #dfcfe8;
-  --semantic-channel-fg: #2592be;
-  --semantic-channel-bg: #e9f5fb;
-  --semantic-channel-line: #cbe7f2;
-  --semantic-model-fg: #526ca9;
-  --semantic-model-bg: #e6edf8;
-  --semantic-model-line: #ccd8ec;
+  --semantic-channel-fg: #4b863d;
+  --semantic-channel-bg: #ebf0e2;
+  --semantic-channel-line: #bacfac;
+  --semantic-model-fg: #7554ca;
+  --semantic-model-bg: #eee5f6;
+  --semantic-model-line: #cbb7ec;
   --semantic-slack-bg: #f0eafa;
   --semantic-slack-line: #ddd2ef;
   --semantic-neutral-fg: #78684c;

@@ -4376,7 +4376,10 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(page, /\.admin-surface \.agent-profile-page\s*\{[^}]*font-family:\s*"Avenir Next"/s);
   assert.match(page, /\.agent-profile-intro\s*\{[^}]*white-space:\s*nowrap;[^}]*text-overflow:\s*ellipsis;/s);
   assert.match(page, /\.agent-tabs-card\s*\{[^}]*border-radius:\s*16px;[^}]*overflow:\s*hidden;/s);
-  assert.match(page, /--semantic-instructions-fg:\s*#a36d08;[\s\S]*?--semantic-memory-bg:\s*#efe6f4;/s);
+  assert.match(
+    page,
+    /--semantic-instructions-fg:\s*#b96c06;[\s\S]*?--semantic-instructions-bg:\s*#fbefe0;[\s\S]*?--semantic-channel-fg:\s*#4b863d;[\s\S]*?--semantic-channel-bg:\s*#ebf0e2;[\s\S]*?--semantic-model-fg:\s*#7554ca;[\s\S]*?--semantic-model-bg:\s*#eee5f6;/s,
+  );
   assert.match(page, /\.semantic-icon\.tone-instructions\s*\{[^}]*background:\s*var\(--semantic-instructions-bg\);[^}]*color:\s*var\(--semantic-instructions-fg\);/s);
   assert.match(page, /\.semantic-icon\.tone-connector\s*\{[^}]*background:\s*var\(--semantic-connector-bg\);[^}]*color:\s*var\(--semantic-connector-fg\);/s);
   assert.match(page, /\.semantic-icon\.tone-model\s*\{[^}]*background:\s*var\(--semantic-model-bg\);[^}]*color:\s*var\(--semantic-model-fg\);/s);
