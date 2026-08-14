@@ -1679,19 +1679,34 @@ details[open].advanced summary::before {
 }
 button.where-pill, button.capability-pill { cursor: pointer; }
 .where-pill.dm { background: var(--ember-tint); color: var(--ember-deep); }
-.owner-memory-intro { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
-.owner-memory-layout { display: grid; gap: 14px; grid-template-columns: minmax(150px, .42fr) minmax(0, 1.58fr); min-height: 340px; }
-.owner-memory-files { background: var(--well); border: 1px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; gap: 4px; padding: 8px; }
-.owner-memory-files > button { background: transparent; border: 0; border-radius: 10px; color: var(--text-2); cursor: pointer; display: flex; flex-direction: column; font: inherit; gap: 2px; padding: 9px 10px; text-align: left; }
-.owner-memory-files > button:hover, .owner-memory-files > button.on { background: var(--bg); color: var(--text); }
-.owner-memory-files strong { font-family: var(--mono); font-size: .75rem; overflow-wrap: anywhere; }
-.owner-memory-files small { color: var(--text-3); font-size: .6875rem; }
-.owner-memory-editor { background: var(--well); border: 1px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 15px; }
-.owner-memory-editor-head { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; }
-.owner-memory-editor h3 { color: var(--text); font-family: var(--mono); font-size: .875rem; margin: 0; }
-.owner-memory-source { background: var(--bg); border-radius: 12px; color: var(--text-2); font-family: var(--mono); font-size: .75rem; line-height: 1.65; margin: 0; min-height: 220px; overflow: auto; padding: 14px; white-space: pre-wrap; }
-.owner-memory-fields { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) minmax(120px, .45fr); }
-.owner-memory-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.owner-memory-intro { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 14px; justify-content: space-between; }
+.owner-memory-intro p { margin: 0; }
+.owner-memory-assignee { background: #f2e8d5; border-radius: 999px; color: var(--text-2); font-size: .6875rem; font-weight: 750; padding: 6px 9px; }
+.owner-memory-layout { border: 1px solid #e7dcc7; border-radius: 12px; display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: 465px; overflow: hidden; }
+.agent-tabs-card [id="ptab-panel-memory"] .owner-memory-layout { border-bottom: 0; border-left: 0; border-radius: 0; border-right: 0; margin: 8px -28px -28px; }
+.owner-memory-files { background: #fbf6ea; border-right: 1px solid #e7dcc7; min-width: 0; padding: 18px 12px; }
+.owner-memory-files-head { align-items: center; color: #74664e; display: flex; font-size: .6875rem; font-weight: 800; justify-content: space-between; letter-spacing: .11em; padding: 0 8px 10px; text-transform: uppercase; }
+.owner-memory-files-head small { align-items: center; background: #ece0c9; border-radius: 999px; display: inline-flex; font-size: .625rem; height: 21px; justify-content: center; letter-spacing: 0; min-width: 21px; }
+.owner-memory-file-list { display: grid; gap: 4px; }
+.owner-memory-file, .owner-memory-add { background: transparent; border: 1px solid transparent; border-radius: 9px; color: var(--text-2); cursor: pointer; display: flex; flex-direction: column; font: inherit; gap: 3px; min-width: 0; padding: 10px; text-align: left; width: 100%; }
+.owner-memory-file:hover, .owner-memory-add:hover { background: #f5ead4; }
+.owner-memory-file:disabled, .owner-memory-add:disabled { cursor: not-allowed; opacity: .55; }
+.owner-memory-file.on { background: #f2e3c2; border-color: #dec999; box-shadow: inset 3px 0 var(--admin-visual-gold); color: var(--text); }
+.owner-memory-file-name { font-family: var(--mono); font-size: .6875rem; font-weight: 750; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
+.owner-memory-file-meta, .owner-memory-add small { color: var(--text-3); font-size: .625rem; text-transform: capitalize; }
+.owner-memory-add { border-top-color: #e7dcc7; margin-top: 9px; }
+.owner-memory-editor { background: #fffdf8; display: flex; flex-direction: column; gap: 13px; min-width: 0; padding: 22px 24px 24px; }
+.owner-memory-editor-head { align-items: flex-start; border-bottom: 1px solid #eee4d1; display: flex; gap: 18px; justify-content: space-between; padding-bottom: 16px; }
+.owner-memory-editor h3 { color: var(--text); font-family: var(--mono); font-size: 1rem; letter-spacing: -.02em; margin: 0 0 4px; }
+.owner-memory-form { display: grid; gap: 13px; }
+.owner-memory-form input[readonly] { background: #f5efe3; color: #81755f; }
+.owner-memory-state { align-items: center; background: var(--ok-tint); border-radius: 999px; color: var(--ok); display: inline-flex; font-size: .625rem; font-weight: 800; padding: 6px 9px; text-transform: capitalize; }
+.owner-memory-state.readonly { background: #ece6d9; color: #776c58; }
+.owner-memory-source { background: #2f2b24; border-radius: 11px; color: #eee6d6; font-family: var(--mono); font-size: .6875rem; line-height: 1.75; margin: 5px 0 0; min-height: 315px; overflow: auto; padding: 18px; white-space: pre-wrap; }
+.owner-memory-fields { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr) 180px; }
+.owner-memory-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; padding-top: 1px; }
+.owner-memory-history { border-top: 1px solid #eee4d1; padding-top: 11px; }
+.owner-memory-history > summary { color: #695d48; cursor: pointer; font-size: .6875rem; font-weight: 750; }
 .owner-memory-status { color: var(--text-3); font-size: .75rem; min-height: 18px; }
 .owner-memory-status.error { color: var(--danger); }
 .channel-agent-hero { align-items: flex-start; background: var(--ember-tint); }
@@ -1720,8 +1735,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   .agent-detail-card, .agent-placement-card, .agent-model-card { align-items: stretch; grid-template-columns: 1fr; }
   .agent-placement-groups { grid-template-columns: 1fr; }
   .owner-memory-layout { grid-template-columns: 1fr; }
-  .owner-memory-files { max-height: 180px; overflow-y: auto; }
+  .agent-tabs-card [id="ptab-panel-memory"] .owner-memory-layout { margin: 8px -20px -20px; }
+  .owner-memory-files { border-bottom: 1px solid #e7dcc7; border-right: 0; max-height: none; overflow: visible; }
+  .owner-memory-file-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .owner-memory-fields, .channel-capability-groups { grid-template-columns: 1fr; }
+  .owner-memory-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .owner-memory-actions .spacer { display: none; }
+  .owner-memory-actions .btn { width: 100%; }
   .agent-model-row, .channel-try-card { align-items: stretch; flex-direction: column; }
   .channels-index-head, .channels-index-tools { align-items: stretch; flex-direction: column; }
   .channels-index-tools .input { min-width: 0; width: 100%; }
@@ -5120,10 +5140,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         '<div class="kv"><dt>Provider</dt><dd class="mono">' + esc(state.effective.provider || "unknown") + '</dd></div>' +
         '<div class="kv"><dt>Snapshot</dt><dd class="mono">sha256:' + esc(shortHash(state.effective.snapshotHash)) + ' · new threads only</dd></div>';
     }
+    var assignedMemoryAgent = agentById(assignment.agentId);
     return '<details class="advanced"' + (state.channelAdvancedOpen ? " open" : "") + '><summary data-action="channel-advanced-toggle">Advanced</summary><div class="channel-advanced-content">' +
       '<section><div class="section-head"><div><h2 class="section-title">Additional instructions</h2><p class="hint">Appended after the assigned Agent instructions in this Channel only.</p></div></div>' +
       '<div class="field"><label class="field-label" for="addendum">Channel additional instructions</label><textarea class="textarea" id="addendum" rows="6" data-action="channel-addendum" placeholder="Add context unique to this Channel">' + esc(state.channelDraft.channelPromptAddendum || "") + '</textarea></div></section>' +
-      '<section><div class="section-head"><div><h2 class="section-title">Channel memory</h2><p class="hint">Exact-Channel files stay here even if the assigned Agent changes.</p></div></div>' + ownerMemoryPanelHtml("channel", assignment.channelId, assignment.channelLabel || assignment.channelId) + '</section>' +
+      '<section><div class="section-head"><div><h2 class="section-title">Channel memory</h2><p class="hint">Exact-Channel files stay here even if the assigned Agent changes.</p></div></div>' + ownerMemoryPanelHtml("channel", assignment.channelId, assignment.channelLabel || assignment.channelId, assignedMemoryAgent ? assignedMemoryAgent.name : "No Agent assigned") + '</section>' +
       '<div class="adv-rows"><dl style="display:contents;">' +
       diagnostics +
       '<div class="kv"><dt>Channel ID</dt><dd class="mono">' + esc(assignment.channelId) + '</dd></div>' +
@@ -5447,8 +5468,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       skillImportPickerHtml(imp) + "</div>";
   }
 
-  function ownerMemoryEntryCount() {
-    return (state.ownerMemory.files || []).filter(function (file) { return !file.generated; }).length;
+  function ownerMemoryFileCount() {
+    return (state.ownerMemory.files || []).length;
   }
 
   function ownerMemoryMatches(ownerKind, workspaceId, ownerId) {
@@ -5456,13 +5477,16 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return memory.ownerKind === ownerKind && memory.workspaceId === workspaceId && memory.ownerId === ownerId;
   }
 
-  function ownerMemoryPanelHtml(ownerKind, ownerId, ownerLabel) {
+  function ownerMemoryPanelHtml(ownerKind, ownerId, ownerLabel, assignedAgentName) {
     var workspaceId = connectedTeamId();
     var memory = state.ownerMemory;
     var ownerName = ownerKind === "channel" ? channelLabel({ channelLabel: ownerLabel, channelId: ownerId }) : ownerLabel;
     var reach = ownerKind === "agent"
       ? "This memory follows " + ownerName + " everywhere it works."
       : "This memory stays only in " + ownerName + ", even if its Agent changes.";
+    var assignee = ownerKind === "channel"
+      ? '<span class="owner-memory-assignee">Assigned Agent: ' + esc(assignedAgentName || "No Agent assigned") + '</span>'
+      : "";
     if (!ownerId) {
       return '<div class="empty"><p class="field-label">Save this Agent to add memory</p><p class="hint">Memory files bind to the durable Agent id.</p></div>';
     }
@@ -5487,22 +5511,23 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var files = memory.files.map(function (file) {
       var key = file.generated ? "MEMORY.md" : file.entryId;
       var selectedFile = selected && key === (selected.generated ? "MEMORY.md" : selected.entryId);
-      return '<button type="button" class="' + (selectedFile ? "on" : "") + '" data-action="owner-memory-file" data-file="' + esc(key) + '"' + (selectedFile ? ' aria-current="true"' : '') + '>' +
-        '<strong>' + esc(file.name) + '</strong><small>' + (file.generated ? "Generated · read-only" : esc((file.status || "active") + " · v" + (file.version || 1))) + '</small></button>';
+      var meta = file.generated ? "Generated · read-only" : (file.status || "active") + " · v" + (file.version || 1);
+      return '<button type="button" class="owner-memory-file' + (selectedFile ? " on" : "") + '" data-action="owner-memory-file" data-file="' + esc(key) + '" aria-label="Open memory file ' + esc(file.name) + ', ' + esc(meta) + '"' + (selectedFile ? ' aria-current="page"' : '') + '>' +
+        '<strong class="owner-memory-file-name" title="' + esc(file.name) + '">' + esc(file.name) + '</strong><small class="owner-memory-file-meta">' + esc(meta) + '</small></button>';
     }).join("");
     var editor;
     if (memory.createDraft) {
       var create = memory.createDraft;
-      editor = '<section class="owner-memory-editor"><div class="owner-memory-editor-head"><div><h3>New memory file</h3><p class="hint">Create one focused Markdown file for this ' + (ownerKind === "agent" ? "Agent" : "Channel") + '.</p></div></div>' +
+      editor = '<section class="owner-memory-editor"><div class="owner-memory-editor-head"><div><h3>New memory file</h3><p class="hint">Create one focused Markdown file for this ' + (ownerKind === "agent" ? "Agent" : "Channel") + '.</p></div></div><div class="owner-memory-form">' +
         '<div class="owner-memory-fields"><div class="field"><label class="field-label" for="owner-memory-create-slug">Filename</label><div style="display:flex;align-items:center;gap:6px;"><input class="input mono" id="owner-memory-create-slug" value="' + esc(create.slug) + '" placeholder="project-context" data-action="owner-memory-create-slug"><span class="mono">.md</span></div><p class="hint">Letters, numbers, hyphens, and underscores only.</p></div>' +
         '<div class="field"><label class="field-label" for="owner-memory-create-type">Type</label><select class="input" id="owner-memory-create-type" data-action="owner-memory-create-type">' + ["fact", "decision", "project", "feedback", "preference"].map(function (type) { return '<option value="' + type + '"' + (create.type === type ? " selected" : "") + '>' + type.charAt(0).toUpperCase() + type.slice(1) + '</option>'; }).join("") + '</select></div></div>' +
         '<div class="field"><label class="field-label" for="owner-memory-create-description">Description</label><input class="input" id="owner-memory-create-description" value="' + esc(create.description) + '" data-action="owner-memory-create-description"></div>' +
         '<div class="field"><label class="field-label" for="owner-memory-create-body">Markdown body</label><textarea class="textarea" id="owner-memory-create-body" rows="9" data-action="owner-memory-create-body">' + esc(create.body) + '</textarea></div>' +
-        '<div class="owner-memory-actions"><span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-create-cancel"' + (memory.busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="owner-memory-create-confirm"' + (memory.busy ? " disabled" : "") + '>' + (memory.busy === "create" ? "Creating&hellip;" : "Create file") + '</button></div></section>';
+        '<div class="owner-memory-actions"><span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-create-cancel"' + (memory.busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="owner-memory-create-confirm"' + (memory.busy ? " disabled" : "") + '>' + (memory.busy === "create" ? "Creating&hellip;" : "Create file") + '</button></div></div></section>';
     } else if (!selected) {
       editor = '<div class="empty"><p class="field-label">No memory files yet</p><p class="hint">Create a Markdown file to give this ' + (ownerKind === "agent" ? "Agent" : "Channel") + ' durable context.</p></div>';
     } else if (selected.generated) {
-      editor = '<section class="owner-memory-editor"><div class="owner-memory-editor-head"><div><h3>MEMORY.md</h3><p class="hint">Generated index · edit individual files to change it.</p></div><span class="chip">Read-only</span></div>' +
+      editor = '<section class="owner-memory-editor"><div class="owner-memory-editor-head"><div><h3>MEMORY.md</h3><p class="hint">Generated index · edit individual files to change it.</p></div><span class="owner-memory-state readonly">Read-only</span></div>' +
         '<pre class="owner-memory-source">' + esc(selected.content || "# Memory\\n") + '</pre></section>';
     } else if (!memory.detail || memory.detail.entry.entryId !== selected.entryId) {
       editor = '<section class="owner-memory-editor"><p class="hint">' + (memory.busy === "load" ? "Loading file&hellip;" : "Choose this file again to load it.") + '</p></section>';
@@ -5511,21 +5536,23 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       var draft = memory.draft || { description: entry.description || "", type: entry.type || "fact", body: entry.body || "" };
       var review = memory.detail.unresolvedReview;
       var reviewHtml = review ? '<div class="memory-review"><strong>Review requested</strong><span>' + esc(review.reasonCode || "Needs operator review") + '</span><span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-resolve-review">Mark reviewed</button></div>' : "";
-      var historyHtml = '<details><summary>Version history (' + memory.history.length + ')</summary><div class="adv-rows">' + (memory.history.length ? memory.history.map(function (revision) {
+      var historyHtml = '<details class="owner-memory-history"><summary>Version history (' + memory.history.length + ')</summary><div class="adv-rows">' + (memory.history.length ? memory.history.map(function (revision) {
         return '<div class="kv"><dt>Version ' + Number(revision.version || 0) + '</dt><dd>' + esc((revision.actorClass || "operator") + " · " + formatMemoryDate(revision.createdAt || revision.modifiedAt || revision.timestamp)) + '</dd></div>';
       }).join("") : '<p class="hint">No earlier versions.</p>') + '</div></details>';
-      editor = '<section class="owner-memory-editor"><div class="owner-memory-editor-head"><div><h3>' + esc(selected.name) + '</h3><p class="hint">Version ' + Number(entry.version) + ' · ' + esc(reach) + '</p></div><span class="badge badge-on"><span class="dot"></span>' + esc(entry.status || "active") + '</span></div>' +
-        '<div class="owner-memory-fields"><div class="field"><label class="field-label" for="owner-memory-description">Description</label><input class="input" id="owner-memory-description" value="' + esc(draft.description) + '" data-action="owner-memory-description"></div>' +
+      editor = '<section class="owner-memory-editor"><div class="owner-memory-editor-head"><div><h3>' + esc(selected.name) + '</h3><p class="hint">Version ' + Number(entry.version) + ' · ' + esc(reach) + '</p></div><span class="owner-memory-state">' + esc(entry.status || "active") + '</span></div><div class="owner-memory-form">' +
+        '<div class="owner-memory-fields"><div class="field"><label class="field-label" for="owner-memory-name">Filename</label><input class="input mono" id="owner-memory-name" value="' + esc(selected.name) + '" readonly aria-readonly="true"></div>' +
         '<div class="field"><label class="field-label" for="owner-memory-type">Type</label><select class="input" id="owner-memory-type" data-action="owner-memory-type">' + ["fact", "decision", "project", "feedback", "preference"].map(function (type) { return '<option value="' + type + '"' + (draft.type === type ? " selected" : "") + '>' + type.charAt(0).toUpperCase() + type.slice(1) + '</option>'; }).join("") + '</select></div></div>' +
+        '<div class="field"><label class="field-label" for="owner-memory-description">Description</label><input class="input" id="owner-memory-description" value="' + esc(draft.description) + '" data-action="owner-memory-description"></div>' +
         '<div class="field"><label class="field-label" for="owner-memory-body">Markdown body</label><textarea class="textarea" id="owner-memory-body" rows="9" data-action="owner-memory-body">' + esc(draft.body) + '</textarea></div>' +
         reviewHtml + historyHtml +
         (memory.conflict ? '<div class="callout"><span>Your draft is preserved. This file changed elsewhere.</span><button type="button" class="btn btn-soft btn-sm" data-action="owner-memory-use-latest">Load latest</button></div>' : '') +
         (memory.deleteConfirm ? '<div class="callout" role="alert"><span>Forget this file? This is irreversible and removes it from the generated MEMORY.md.</span><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-delete-cancel">Cancel</button><button type="button" class="btn btn-danger btn-sm" data-action="owner-memory-delete-confirm">Forget file</button></div>' : '') +
-        '<div class="owner-memory-actions"><button type="button" class="btn btn-danger btn-sm" data-action="owner-memory-delete-open"' + (memory.dirty || memory.busy || entry.status === "forgotten" ? " disabled" : "") + '>Forget file</button><span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-discard"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>Discard</button><button type="button" class="btn btn-primary btn-sm" data-action="owner-memory-save"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>' + (memory.busy === "save" ? "Saving&hellip;" : "Save file") + '</button></div></section>';
+        '<div class="owner-memory-actions"><button type="button" class="btn btn-danger btn-sm" data-action="owner-memory-delete-open"' + (memory.dirty || memory.busy || entry.status === "forgotten" ? " disabled" : "") + '>Forget file</button><span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-discard"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>Discard</button><button type="button" class="btn btn-primary btn-sm" data-action="owner-memory-save"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>' + (memory.busy === "save" ? "Saving&hellip;" : "Save file") + '</button></div></div></section>';
     }
-    return '<div class="owner-memory-intro"><p class="hint">' + esc(reach) + ' MEMORY.md is generated; individual Markdown files are editable.</p></div>' +
-      '<div class="owner-memory-layout"><aside class="owner-memory-files" aria-label="Memory files">' + files +
-      '<button type="button" data-action="owner-memory-create-open"' + (memory.busy || memory.dirty ? " disabled" : "") + '><strong>+ Add file</strong><small>Markdown memory</small></button></aside>' + editor + '</div>' + status;
+    var fileCount = memory.files.length;
+    return '<div class="owner-memory-intro"><p class="hint">' + esc(reach) + ' MEMORY.md is generated; individual Markdown files are editable.</p>' + assignee + '</div>' +
+      '<div class="owner-memory-layout"><aside class="owner-memory-files" aria-label="Memory files"><div class="owner-memory-files-head"><span>Files</span><small aria-label="' + fileCount + ' memory ' + (fileCount === 1 ? "file" : "files") + '">' + fileCount + '</small></div><div class="owner-memory-file-list">' + files + '</div>' +
+      '<button type="button" class="owner-memory-add" data-action="owner-memory-create-open"' + (memory.busy || memory.dirty ? " disabled" : "") + '><strong>+ Add file</strong><small>Markdown memory</small></button></aside>' + editor + '</div>' + status;
   }
 
   // ---- Capability tabs (Instructions / Skills / Connectors / Repositories / Memory) -
@@ -5552,7 +5579,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       { id: "skills", label: "Skills", count: (draft.skills || []).length, icon: "sparkle", description: "Repeatable ways this Agent knows how to help." },
       { id: "connections", label: "Connectors", count: (draft.mcpServers || []).length + (draft.apiConnections || []).length, icon: "check", description: "Apps and services this Agent can read from or act in." },
       { id: "repositories", label: "Repositories", count: repositoryCount, icon: "repository", description: "Code and documentation this Agent can work with." },
-      { id: "memory", label: "Memory", count: ownerMemoryEntryCount(), icon: "robot", description: "Durable context this Agent can use wherever it works." }
+      { id: "memory", label: "Memory", count: ownerMemoryFileCount(), icon: "robot", description: "Durable context this Agent can use wherever it works." }
     ];
     var bar = tabs.map(function (tab) {
       var on = tab.id === active;

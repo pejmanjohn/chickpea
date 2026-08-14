@@ -436,6 +436,7 @@ function runAdminPageHarness(
     mcpTestResult?: { ok: true; tools: Array<{ name: string; title?: string; description?: string }> } | { ok: false; code: string; message: string };
     memoryScopes?: MemoryScopeFixture[];
     memoryFiles?: Record<string, unknown[]>;
+    ownerMemoryFiles?: unknown[];
     deferMemoryFiles?: boolean;
     memorySaveError?: { status: number; error: string; currentVersion?: number };
     memoryDeleteError?: { status: number; error: string };
@@ -797,7 +798,7 @@ function runAdminPageHarness(
   const memoryHistory: Array<Record<string, unknown>> = [
     { entryId: 'mem_release', version: 1, operation: 'create', createdAt: 1753444800000 },
   ];
-  let defaultMemoryFiles: unknown[] = [
+  let defaultMemoryFiles: unknown[] = options.ownerMemoryFiles ?? [
     { name: 'MEMORY.md', path: 'channel/C0EXR3L9T/MEMORY.md', generated: true, entryId: null, content: '# Channel Memory Index\n\n- [release-guidance](release-guidance.md) — Use the checklist.\n' },
     { name: 'release-guidance.md', path: 'channel/C0EXR3L9T/release-guidance.md', generated: false, entryId: 'mem_release', version: 1, status: 'active', description: 'Use the checklist.' },
   ];
@@ -4397,6 +4398,7 @@ test('moving a Channel sends placement CAS and preserves Channel-local instructi
     channelPromptAddendum: 'Release channel addendum.',
     participationMode: 'ambient',
   });
+  assert.match(harness.app.innerHTML, /class="owner-memory-assignee">Assigned Agent: Ops Profile<\/span>/);
 });
 
 test('configured unassigned Channels keep their detail and offer an Agent chooser', async () => {
@@ -4471,11 +4473,14 @@ test('Agent owner memory exposes generated index, editable files, history, revie
   const harness = runAdminPageHarness({ initialPath: '/admin' });
   await flushAsync();
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  assert.match(harness.app.innerHTML, /class="owner-memory-files-head"[\s\S]*?<span>Files<\/span>[\s\S]*?aria-label="2 memory files">2<\/small>/);
+  assert.match(harness.app.innerHTML, /data-tab="memory"[^>]*>Memory<span class="ptab-count">2<\/span>/);
   assert.match(harness.app.innerHTML, /# Channel Memory Index/);
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-file', 'data-file': 'mem_release' }) });
   await flushAsync();
   assert.match(harness.app.innerHTML, /Markdown body/);
+  assert.match(harness.app.innerHTML, /<label class="field-label" for="owner-memory-name">Filename<\/label><input class="input mono" id="owner-memory-name" value="release-guidance\.md" readonly aria-readonly="true">/);
   assert.match(harness.app.innerHTML, /Version history \(1\)/);
   assert.match(harness.app.innerHTML, /Review requested/);
 
@@ -4500,6 +4505,31 @@ test('Agent owner memory exposes generated index, editable files, history, revie
   assert.deepEqual(harness.memoryDeletes.at(-1), { expectedVersion: 2, acknowledgeIrreversible: true });
 });
 
+test('shared owner memory uses the prototype file rail, accessible ellipsis, and dark generated source', async () => {
+  const longName = 'a-very-long-memory-filename-that-must-stay-on-one-line.md';
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    ownerMemoryFiles: [
+      { name: 'MEMORY.md', path: 'agent/agent_release/MEMORY.md', generated: true, entryId: null, content: '# Agent index\n\n<script>unsafe()</script>\n' },
+      { name: longName, path: `agent/agent_release/${longName}`, generated: false, entryId: 'mem_release', version: 1, status: 'active', description: 'Long filename proof.' },
+    ],
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+
+  assert.match(harness.app.innerHTML, new RegExp(`class="owner-memory-file"[^>]*aria-label="Open memory file ${longName}, active · v1"`));
+  assert.match(harness.app.innerHTML, new RegExp(`class="owner-memory-file-name" title="${longName}">${longName}<\\/strong>`));
+  assert.doesNotMatch(harness.app.innerHTML, /<script>unsafe\(\)<\/script>/);
+  assert.match(harness.app.innerHTML, /&lt;script&gt;unsafe\(\)&lt;\/script&gt;/);
+
+  const page = renderAdminPage();
+  assert.match(page, /\.owner-memory-layout\s*\{[^}]*grid-template-columns:\s*210px minmax\(0, 1fr\);/s);
+  assert.match(page, /\.owner-memory-file-name\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
+  assert.match(page, /\.owner-memory-source\s*\{[^}]*background:\s*#2f2b24;[^}]*color:\s*#eee6d6;[^}]*overflow:\s*auto;/s);
+  assert.match(page, /@container \(max-width: 680px\)[\s\S]*?\.owner-memory-layout\s*\{[^}]*grid-template-columns:\s*1fr;/s);
+  assert.match(page, /@container \(max-width: 680px\)[\s\S]*?\.owner-memory-file-list\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/s);
+});
+
 test('Agent owner memory creates a constrained Markdown file with an idempotency key', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin' });
   await flushAsync();
@@ -4520,6 +4550,8 @@ test('Agent owner memory creates a constrained Markdown file with an idempotency
   });
   assert.match(harness.memoryCreates[0]?.idempotencyKey ?? '', /^admin-ui:owner-memory-create:/);
   assert.match(harness.app.innerHTML, /launch-context\.md/);
+  assert.match(harness.app.innerHTML, /class="owner-memory-files-head"[\s\S]*?aria-label="3 memory files">3<\/small>/);
+  assert.match(harness.app.innerHTML, /data-tab="memory"[^>]*>Memory<span class="ptab-count">3<\/span>/);
 });
 
 test('Agent saves use the projected revision and preserve a draft on concurrent edit conflict', async () => {
@@ -4564,6 +4596,7 @@ test('Channel Advanced edits the exact-Channel owner memory rather than an Agent
   const harness = runAdminPageHarness({ initialPath: '/admin/channels/T_DESIGN/C0EXR3L9T' });
   await flushAsync();
   assert.match(harness.app.innerHTML, /This memory stays only in #eng-releases, even if its Agent changes/);
+  assert.match(harness.app.innerHTML, /class="owner-memory-assignee">Assigned Agent: Release Profile<\/span>/);
   assert.match(harness.app.innerHTML, /# Channel Memory Index/);
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-file', 'data-file': 'mem_release' }) });
