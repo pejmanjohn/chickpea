@@ -98,6 +98,34 @@ ${ADMIN_FAVICON}
   --admin-visual-reading-width: 820px;
   --admin-visual-status-ready: var(--admin-visual-green);
   --admin-visual-status-attention: #d99b29;
+  /* Semantic accents stay stable across Agent tabs and Channel summaries so
+     the same concept keeps the same visual cue wherever it appears. */
+  --semantic-instructions-fg: #a36d08;
+  --semantic-instructions-bg: #f5e7c7;
+  --semantic-instructions-line: #ead29f;
+  --semantic-skill-fg: #5f8d58;
+  --semantic-skill-bg: #e7f1e3;
+  --semantic-skill-line: #d1e3cb;
+  --semantic-connector-fg: #b66253;
+  --semantic-connector-bg: #f6e5e1;
+  --semantic-connector-line: #ebccc5;
+  --semantic-repository-fg: #526ca9;
+  --semantic-repository-bg: #e6edf8;
+  --semantic-repository-line: #ccd8ec;
+  --semantic-memory-fg: #7d6091;
+  --semantic-memory-bg: #efe6f4;
+  --semantic-memory-line: #dfcfe8;
+  --semantic-channel-fg: #2592be;
+  --semantic-channel-bg: #e9f5fb;
+  --semantic-channel-line: #cbe7f2;
+  --semantic-model-fg: #526ca9;
+  --semantic-model-bg: #e6edf8;
+  --semantic-model-line: #ccd8ec;
+  --semantic-slack-bg: #f0eafa;
+  --semantic-slack-line: #ddd2ef;
+  --semantic-neutral-fg: #78684c;
+  --semantic-neutral-bg: #eee7d9;
+  --semantic-neutral-line: #dfd4c0;
 
   /* Existing controls inherit the scoped type and palette without a markup or
      save/route change. Later units consume the named visual primitives below. */
@@ -1608,7 +1636,8 @@ details[open].advanced summary::before {
 .agent-profile-header { align-items: center; display: flex; gap: 24px; justify-content: space-between; }
 .agent-profile-heading { display: flex; flex: 1; flex-direction: column; gap: 7px; min-width: 0; }
 .agent-profile-heading .page-title { font-size: clamp(2rem, 3.4vw, 2.75rem); letter-spacing: -.04em; line-height: 1.06; }
-.agent-replies-as { color: var(--text-2); font-size: .75rem; line-height: 1.4; margin: -1px 0 0; }
+.agent-replies-as { align-items: center; color: var(--text-2); display: flex; font-size: .75rem; gap: 6px; line-height: 1.4; margin: -1px 0 0; }
+.agent-replies-slack { flex: none; height: 15px; width: 15px; }
 .agent-replies-as .mono { color: var(--text); font-weight: 700; }
 .agent-profile-header-actions { align-items: center; display: flex; flex: none; gap: 10px; }
 .agent-status-chip { align-items: center; border-radius: 999px; display: inline-flex; font-size: .75rem; font-weight: 750; gap: 7px; padding: 8px 12px; }
@@ -1629,7 +1658,17 @@ details[open].advanced summary::before {
 .agent-tabs-card .ptabs { background: #f5ecd9; border: 0; border-bottom: 1px solid #dfd2b9; border-radius: 0; padding: 10px; }
 .agent-tabs-card .ptab-panel { background: var(--bg); border: 0; border-radius: 0; min-height: 315px; padding: 28px; }
 .agent-tab-head { align-items: flex-start; display: flex; gap: 12px; margin-bottom: 8px; }
-.agent-tab-icon, .agent-card-icon { align-items: center; background: #faf3e2; border: 1px solid #e9ddc5; border-radius: 10px; color: var(--ember-press); display: inline-flex; flex: none; height: 34px; justify-content: center; width: 34px; }
+.agent-tab-icon, .agent-card-icon { flex: none; height: 34px; width: 34px; }
+.semantic-icon { align-items: center; border: 1px solid transparent; border-radius: 10px; display: inline-flex; flex: none; justify-content: center; }
+.semantic-icon.tone-instructions { background: var(--semantic-instructions-bg); border-color: var(--semantic-instructions-line); color: var(--semantic-instructions-fg); }
+.semantic-icon.tone-skill, .semantic-icon.tone-capability { background: var(--semantic-skill-bg); border-color: var(--semantic-skill-line); color: var(--semantic-skill-fg); }
+.semantic-icon.tone-connector { background: var(--semantic-connector-bg); border-color: var(--semantic-connector-line); color: var(--semantic-connector-fg); }
+.semantic-icon.tone-repository { background: var(--semantic-repository-bg); border-color: var(--semantic-repository-line); color: var(--semantic-repository-fg); }
+.semantic-icon.tone-model { background: var(--semantic-model-bg); border-color: var(--semantic-model-line); color: var(--semantic-model-fg); }
+.semantic-icon.tone-memory { background: var(--semantic-memory-bg); border-color: var(--semantic-memory-line); color: var(--semantic-memory-fg); }
+.semantic-icon.tone-channel { background: var(--semantic-channel-bg); border-color: var(--semantic-channel-line); color: var(--semantic-channel-fg); }
+.semantic-icon.tone-neutral { background: var(--semantic-neutral-bg); border-color: var(--semantic-neutral-line); color: var(--semantic-neutral-fg); }
+.semantic-icon.tone-slack { background: var(--semantic-slack-bg); border-color: var(--semantic-slack-line); }
 .agent-tab-head h2, .agent-card-heading h2 { color: var(--text); font-size: 1.05rem; letter-spacing: -.015em; margin: 0 0 4px; }
 .agent-tab-head p, .agent-card-heading p { color: var(--text-3); font-size: .75rem; line-height: 1.45; margin: 0; }
 .agent-instructions-editor .textarea { background: #fdf9f0; font-size: .875rem; line-height: 1.65; min-height: 170px; }
@@ -1736,8 +1775,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 .channel-capability-groups { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .channel-capability-group { background: var(--well); border-radius: 14px; min-width: 0; padding: 13px; }
 .channel-capability-group-head { align-items: center; display: flex; gap: 8px; margin-bottom: 10px; }
-.channel-capability-icon { align-items: center; background: #eee7d9; border-radius: 8px; color: #78684c; display: inline-flex; flex: none; height: 28px; justify-content: center; width: 28px; }
+.channel-capability-icon { border-radius: 8px; height: 28px; width: 28px; }
 .channel-capability-group-head strong { color: var(--text); font-size: .75rem; }
+.channel-section-heading { align-items: flex-start; display: flex; gap: 11px; justify-content: flex-start; }
+.channel-section-icon { height: 34px; width: 34px; }
+.channel-section-heading > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.channel-section-heading .section-title, .channel-section-heading .hint { margin: 0; }
+.channel-section-slack-mark { height: 18px; width: 18px; }
 .channel-participation-card { align-items: center; background: var(--well); border-radius: 14px; display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr) minmax(220px, 300px); padding: 16px 18px; }
 .channel-participation-copy { display: flex; flex-direction: column; gap: 3px; }
 .channel-participation-card .field { min-width: 0; }
@@ -1792,7 +1836,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 .channels-index-channel, .channels-index-agent { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: flex; font: inherit; gap: 10px; min-width: 0; padding: 3px; text-align: left; width: 100%; }
 .channels-index-channel:hover .channels-index-name, .channels-index-agent:hover .channels-index-agent-name { color: var(--ember-press); }
 .channels-index-channel:focus-visible, .channels-index-agent:focus-visible { border-radius: 9px; outline: 2px solid var(--ember-press); outline-offset: 2px; }
-.channel-hash { align-items: center; background: #eee7d9; border-radius: 10px; color: #796b53; display: inline-flex; flex: none; font-family: var(--mono); font-size: 1rem; font-weight: 700; height: 34px; justify-content: center; width: 34px; }
+.channel-hash { align-items: center; background: var(--semantic-channel-bg); border-radius: 10px; color: var(--semantic-channel-fg); display: inline-flex; flex: none; font-family: var(--mono); font-size: 1rem; font-weight: 700; height: 34px; justify-content: center; width: 34px; }
 .channels-index-agent .agent-roster-icon { height: 34px; width: 34px; }
 .channels-index-copy, .channels-index-agent-copy, .channels-index-behavior { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .channels-index-name, .channels-index-agent-name, .channels-index-behavior strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -5219,7 +5263,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (extra) pills += '<span class="capability-preview-pill">+' + extra + ' more</span>';
     if (!pills) pills = '<span class="hint">None added</span>';
     var headingIcon = kind === "repository" ? "repository" : kind === "connector" ? "gear" : "sparkle";
-    return '<div class="channel-capability-group" data-capability="' + kind + '"><div class="channel-capability-group-head"><span class="channel-capability-icon" aria-hidden="true">' + icon(headingIcon) + '</span><strong>' + title + '</strong></div><div class="capability-preview-list">' + pills + '</div></div>';
+    var tone = kind === "repository" ? "repository" : kind === "connector" ? "connector" : "skill";
+    return '<div class="channel-capability-group" data-capability="' + kind + '"><div class="channel-capability-group-head"><span class="channel-capability-icon semantic-icon tone-' + tone + '" aria-hidden="true">' + icon(headingIcon) + '</span><strong>' + title + '</strong></div><div class="capability-preview-list">' + pills + '</div></div>';
   }
 
   function channelCapabilitiesHtml(agent) {
@@ -5227,14 +5272,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var skills = previews.skills || (agent && agent.skills) || [];
     var connectors = previews.connectors || ((agent && agent.mcpServers) || []).concat((agent && agent.apiConnections) || []);
     var repositories = previews.repositories || (agent && agent.repositories) || [];
-    return '<section class="section channel-capabilities-section"><div class="section-head"><div><h2 class="section-title">Inherited capabilities</h2><p class="hint">Skills, Connectors, and Repositories come from ' +
+    return '<section class="section channel-capabilities-section"><div class="section-head channel-section-heading"><span class="channel-section-icon semantic-icon tone-capability" aria-hidden="true">' + icon("sparkle") + '</span><div><h2 class="section-title">Inherited capabilities</h2><p class="hint">Skills, Connectors, and Repositories come from ' +
       (agent ? '<button type="button" class="link-btn" data-action="open-profiles" data-agent="' + esc(agent.id) + '">' + esc(agent.name || "Agent") + ' <span aria-hidden="true">&nearr;</span></button>' : 'the assigned Agent') +
       ' and stay shared everywhere it works.</p></div></div>' +
       '<div class="channel-capability-groups">' + channelCapabilityGroupHtml("skill", "Skills", skills) + channelCapabilityGroupHtml("connector", "Connectors", connectors) + channelCapabilityGroupHtml("repository", "Repositories", repositories) + '</div></section>';
   }
 
   function channelInstructionsHtml() {
-    return '<section class="section channel-participation-section"><div class="channel-participation-card"><div class="channel-participation-copy"><h2 class="section-title">When it speaks</h2><p class="hint">Mentions always receive a response. Ambient participation can also contribute when it is useful.</p></div>' +
+    return '<section class="section channel-participation-section"><div class="channel-participation-card"><div class="channel-participation-copy"><div class="channel-section-heading"><span class="channel-section-icon semantic-icon tone-slack" role="img" aria-label="Slack"><span class="channel-section-slack-mark slack-logo-image" aria-hidden="true"></span></span><div><h2 class="section-title">When it speaks</h2><p class="hint">Mentions always receive a response. Ambient participation can also contribute when it is useful.</p></div></div></div>' +
       '<div class="field"><label class="field-label" for="participation-mode">Participation</label>' +
       '<span class="select-wrap"><select class="input" id="participation-mode" data-action="channel-participation">' +
       '<option value="ambient"' + (state.channelDraft.participationMode === "ambient" ? " selected" : "") + '>Ambient (mentions guaranteed)</option>' +
@@ -5689,11 +5734,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     };
     var repositoryCount = enabledRepositoryGrants(draft).length;
     var tabs = [
-      { id: "instructions", label: "Instructions", count: 0, icon: "pencil", description: "The role, priorities, and boundaries this Agent follows everywhere it works." },
-      { id: "skills", label: "Skills", count: (draft.skills || []).length, icon: "sparkle", description: "Repeatable ways this Agent knows how to help." },
-      { id: "connections", label: "Connectors", count: (draft.mcpServers || []).length + (draft.apiConnections || []).length, icon: "check", description: "Apps and services this Agent can read from or act in." },
-      { id: "repositories", label: "Repositories", count: repositoryCount, icon: "repository", description: "Code and documentation this Agent can work with." },
-      { id: "memory", label: "Memory", count: ownerMemoryFileCount(), icon: "robot", description: "Durable context this Agent can use wherever it works." }
+      { id: "instructions", label: "Instructions", count: 0, icon: "pencil", tone: "instructions", description: "The role, priorities, and boundaries this Agent follows everywhere it works." },
+      { id: "skills", label: "Skills", count: (draft.skills || []).length, icon: "sparkle", tone: "skill", description: "Repeatable ways this Agent knows how to help." },
+      { id: "connections", label: "Connectors", count: (draft.mcpServers || []).length + (draft.apiConnections || []).length, icon: "check", tone: "connector", description: "Apps and services this Agent can read from or act in." },
+      { id: "repositories", label: "Repositories", count: repositoryCount, icon: "repository", tone: "repository", description: "Code and documentation this Agent can work with." },
+      { id: "memory", label: "Memory", count: ownerMemoryFileCount(), icon: "robot", tone: "memory", description: "Durable context this Agent can use wherever it works." }
     ];
     var bar = tabs.map(function (tab) {
       var on = tab.id === active;
@@ -5703,7 +5748,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }).join("");
     function panel(tab, html) {
       return '<div class="ptab-panel" id="ptab-panel-' + tab.id + '" role="tabpanel" aria-labelledby="ptab-' + tab.id + '"' + (tab.id === active ? "" : " hidden") + '>' +
-        '<div class="agent-tab-head"><span class="agent-tab-icon">' + icon(tab.icon) + '</span><div><h2>' + tab.label + '</h2><p>' + tab.description + '</p></div></div>' + html + '</div>';
+        '<div class="agent-tab-head"><span class="agent-tab-icon semantic-icon tone-' + tab.tone + '" aria-hidden="true">' + icon(tab.icon) + '</span><div><h2>' + tab.label + '</h2><p>' + tab.description + '</p></div></div>' + html + '</div>';
     }
     return '<section class="agent-tabs-card">' +
       '<div class="ptab-tray">' +
@@ -7078,12 +7123,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var replyIdentityLabel = slackIdentityMention(replyIdentity);
     return '<div class="agent-profile-page">' +
       '<button type="button" class="link-btn agent-roster-back" style="align-self:flex-start;" data-action="profiles-back">&larr; All Agents</button>' +
-      '<header class="agent-profile-header"><div class="agent-profile-heading"><span class="agent-kicker">Agent</span>' + titleRow + '<p class="agent-replies-as">Replies as <span class="mono">' + esc(replyIdentityLabel) + '</span></p></div>' + agentLifecycleHtml(draft) + '</header>' +
+      '<header class="agent-profile-header"><div class="agent-profile-heading"><span class="agent-kicker">Agent</span>' + titleRow + '<p class="agent-replies-as"><span class="agent-replies-slack slack-logo-image" role="img" aria-label="Slack"></span>Replies as <span class="mono">' + esc(replyIdentityLabel) + '</span></p></div>' + agentLifecycleHtml(draft) + '</header>' +
       '<p class="agent-profile-intro" title="' + esc(introduction) + '" aria-label="' + esc(introduction) + '">' + esc(introduction) + '</p>' +
       disableConfirmHtml(draft) +
       profileTabsHtml(draft) +
       usedInHtml(draft) +
-      '<section class="agent-detail-card agent-model-card"><div class="agent-card-heading"><span class="agent-card-icon">' + icon("robot") + '</span><div><h2>Model</h2><p>The intelligence this Agent uses for every response. Changes apply to new threads.</p></div></div><div class="agent-model-row">' + modelFieldHtml(draft) + '</div></section>' +
+      '<section class="agent-detail-card agent-model-card"><div class="agent-card-heading"><span class="agent-card-icon semantic-icon tone-model" aria-hidden="true">' + icon("robot") + '</span><div><h2>Model</h2><p>The intelligence this Agent uses for every response. Changes apply to new threads.</p></div></div><div class="agent-model-row">' + modelFieldHtml(draft) + '</div></section>' +
       agentAdvancedHtml(draft) +
       '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + (saveBarCueActive() ? " cue" : "") + '">' +
       '<div class="save-bar-inner">' +
@@ -7125,7 +7170,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     } else {
       dmRows = '<p class="agent-placement-empty">No Slack identity routes Direct messages to this Agent.</p>';
     }
-    return '<section class="agent-detail-card agent-placement-card"><div class="agent-card-heading"><span class="agent-card-icon">' + icon("hash") + '</span><div><h2>Where it works</h2><p>Open a Channel to tune local behavior there.</p></div></div>' +
+    return '<section class="agent-detail-card agent-placement-card"><div class="agent-card-heading"><span class="agent-card-icon semantic-icon tone-channel" aria-hidden="true">' + icon("hash") + '</span><div><h2>Where it works</h2><p>Open a Channel to tune local behavior there.</p></div></div>' +
       '<div class="agent-placement-groups"><div class="agent-placement-group"><h3>Channels</h3>' + channelRows + '</div><div class="agent-placement-group"><h3>Direct messages</h3>' + dmRows + '</div></div>' +
       '<button type="button" class="btn btn-soft btn-sm" data-action="attach-open">Add to channels</button>' + attachPickerHtml(draft) + attachNoticeHtml() + '</section>';
   }

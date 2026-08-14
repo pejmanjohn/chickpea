@@ -281,7 +281,8 @@ try {
       sessionCookie.startsWith('flue_admin=') &&
       pageResponse.status === 200 &&
       pageResponse.headers.get('cache-control') === 'no-store' &&
-      pageHtml.includes('Resolved configuration') &&
+      pageHtml.includes('Inherited capabilities') &&
+      !pageHtml.includes('Resolved configuration') &&
       pageHtml.includes('data-action="copy-channel-prompt"'),
     `login=${login.status} page=${pageResponse.status}`,
   );

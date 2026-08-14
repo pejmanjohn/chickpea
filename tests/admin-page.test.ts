@@ -4338,18 +4338,33 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
 
   assert.match(harness.app.innerHTML, /class="agent-profile-page"/);
   assert.match(harness.app.innerHTML, /<header class="agent-profile-header">[\s\S]*?<span class="agent-kicker">Agent<\/span>[\s\S]*?<h1 class="page-title">Release Profile<\/h1>/);
-  assert.match(harness.app.innerHTML, /class="agent-replies-as">Replies as <span class="mono">@Chickpea<\/span>/);
+  assert.match(
+    harness.app.innerHTML,
+    /class="agent-replies-as"><span class="agent-replies-slack slack-logo-image" role="img" aria-label="Slack"><\/span>Replies as <span class="mono">@Chickpea<\/span>/,
+  );
   assert.match(harness.app.innerHTML, /aria-label="Agent setup"/);
   for (const tab of ['Instructions', 'Skills', 'Connectors', 'Repositories', 'Memory']) {
     assert.match(harness.app.innerHTML, new RegExp(`role="tab"[^>]*>${tab}`));
   }
   assert.match(harness.app.innerHTML, /aria-label="Agent instructions"/);
   assert.match(harness.app.innerHTML, /class="agent-tabs-card"/);
-  assert.match(harness.app.innerHTML, /class="[^"]*agent-placement-card[^"]*"[\s\S]*?<h2>Where it works<\/h2>/);
+  for (const [tab, tone] of [
+    ['instructions', 'instructions'],
+    ['skills', 'skill'],
+    ['connections', 'connector'],
+    ['repositories', 'repository'],
+    ['memory', 'memory'],
+  ]) {
+    assert.match(
+      harness.app.innerHTML,
+      new RegExp(`id="ptab-panel-${tab}"[\\s\\S]*?class="agent-tab-icon semantic-icon tone-${tone}"`),
+    );
+  }
+  assert.match(harness.app.innerHTML, /class="[^"]*agent-placement-card[^"]*"[\s\S]*?class="agent-card-icon semantic-icon tone-channel"[\s\S]*?<h2>Where it works<\/h2>/);
   assert.match(harness.app.innerHTML, /<h3[^>]*>Channels<\/h3>[\s\S]*?# eng-releases/);
   assert.match(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>/);
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
-  assert.match(harness.app.innerHTML, /class="[^"]*agent-model-card[^"]*"[\s\S]*?<h2>Model<\/h2>/);
+  assert.match(harness.app.innerHTML, /class="[^"]*agent-model-card[^"]*"[\s\S]*?class="agent-card-icon semantic-icon tone-model"[\s\S]*?<h2>Model<\/h2>/);
   assert.match(harness.app.innerHTML, /class="advanced agent-advanced-card"[\s\S]*?<h2 class="section-title">Replies as<\/h2>[\s\S]*?Coding sandbox/);
   assert.doesNotMatch(harness.app.innerHTML, /<strong>Slack identity<\/strong>/);
   assert.ok(
@@ -4361,6 +4376,12 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(page, /\.admin-surface \.agent-profile-page\s*\{[^}]*font-family:\s*"Avenir Next"/s);
   assert.match(page, /\.agent-profile-intro\s*\{[^}]*white-space:\s*nowrap;[^}]*text-overflow:\s*ellipsis;/s);
   assert.match(page, /\.agent-tabs-card\s*\{[^}]*border-radius:\s*16px;[^}]*overflow:\s*hidden;/s);
+  assert.match(page, /--semantic-instructions-fg:\s*#a36d08;[\s\S]*?--semantic-memory-bg:\s*#efe6f4;/s);
+  assert.match(page, /\.semantic-icon\.tone-instructions\s*\{[^}]*background:\s*var\(--semantic-instructions-bg\);[^}]*color:\s*var\(--semantic-instructions-fg\);/s);
+  assert.match(page, /\.semantic-icon\.tone-connector\s*\{[^}]*background:\s*var\(--semantic-connector-bg\);[^}]*color:\s*var\(--semantic-connector-fg\);/s);
+  assert.match(page, /\.semantic-icon\.tone-model\s*\{[^}]*background:\s*var\(--semantic-model-bg\);[^}]*color:\s*var\(--semantic-model-fg\);/s);
+  assert.match(page, /\.semantic-icon\.tone-slack\s*\{[^}]*background:\s*var\(--semantic-slack-bg\);[^}]*border-color:\s*var\(--semantic-slack-line\);/s);
+  assert.match(page, /\.channel-hash\s*\{[^}]*background:\s*var\(--semantic-channel-bg\);[^}]*color:\s*var\(--semantic-channel-fg\);/s);
   assert.match(page, /\.agent-placement-card > \.bundle-row, \.agent-placement-card > \.callout\s*\{[^}]*grid-column:\s*1 \/ -1;/s);
   assert.match(page, /@container \(max-width: 750px\)[\s\S]*?\.agent-profile-header[^{]*\{[^}]*align-items:\s*flex-start;[^}]*flex-direction:\s*column;/s);
   assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.agent-profile-page \.ptabs\s*\{[^}]*overflow-x:\s*auto;/s);
@@ -4521,7 +4542,8 @@ test('Channel detail follows the Agent-first hierarchy without internal resolved
   assert.match(html, /class="channel-enabled-control"[\s\S]*?Enabled[\s\S]*?aria-label="Channel enabled"/);
   assert.match(html, /class="channel-agent-hero"[\s\S]*?agent-roster-icon[\s\S]*?<h2>Release Profile<\/h2>[\s\S]*?Answer with release context\.[\s\S]*?>View Agent<\/button>[\s\S]*?>Change Agent<\/button>/);
   assert.match(html, /<h2 class="section-title">Inherited capabilities<\/h2>/);
-  assert.match(html, /class="channel-participation-card"[\s\S]*?<h2 class="section-title">When it speaks<\/h2>/);
+  assert.match(html, /class="[^"]*channel-section-heading[^"]*"[\s\S]*?class="channel-section-icon semantic-icon tone-capability"[\s\S]*?<h2 class="section-title">Inherited capabilities<\/h2>/);
+  assert.match(html, /class="channel-participation-card"[\s\S]*?class="channel-section-icon semantic-icon tone-slack"[\s\S]*?class="[^"]*slack-logo-image[^"]*"[\s\S]*?<h2 class="section-title">When it speaks<\/h2>/);
   assert.match(html, /class="channel-try-card"[\s\S]*?Try it in Slack[\s\S]*?data-action="copy-channel-prompt"[\s\S]*?Open #eng-releases/);
   assert.match(html, /<details class="advanced channel-advanced-card"[\s\S]*?<h2 class="section-title">Channel memory<\/h2>/);
   assert.doesNotMatch(html, /Resolved configuration|Channel ID|Workspace ID/);
@@ -4629,6 +4651,9 @@ test('Channel capability groups use real previews, empty states, and owning-Agen
   assert.match(html, /class="channel-capability-group" data-capability="skill"[\s\S]*?Skills[\s\S]*?one[\s\S]*?\+1 more/);
   assert.match(html, /class="channel-capability-group" data-capability="connector"[\s\S]*?Connectors[\s\S]*?conn-logo[\s\S]*?Linear/);
   assert.match(html, /class="channel-capability-group" data-capability="repository"[\s\S]*?Repositories[\s\S]*?None added/);
+  assert.match(html, /data-capability="skill"[\s\S]*?class="channel-capability-icon semantic-icon tone-skill"/);
+  assert.match(html, /data-capability="connector"[\s\S]*?class="channel-capability-icon semantic-icon tone-connector"/);
+  assert.match(html, /data-capability="repository"[\s\S]*?class="channel-capability-icon semantic-icon tone-repository"/);
   assert.match(html, /Skills, Connectors, and Repositories come from <button[^>]*data-action="open-profiles" data-agent="agent_release"[^>]*>Release Profile <span aria-hidden="true">&nearr;<\/span><\/button>/);
   assert.doesNotMatch(html, /Open Agent capabilities/);
 });
