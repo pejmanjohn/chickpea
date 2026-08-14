@@ -70,7 +70,10 @@ function createHarness() {
       import { readFileSync, statSync, writeFileSync } from 'node:fs';
       const args = process.argv.slice(2);
       if (args[0] === 'secret' && args[1] === 'list') {
-        if (process.env.DEPLOY_TEST_SECRET_LIST_NOT_FOUND === '1') {
+        if (process.env.DEPLOY_TEST_SECRET_LIST_NOT_FOUND === '1' ||
+            (!Object.hasOwn(process.env, 'DEPLOY_TEST_SECRET_LIST') &&
+             process.env.DEPLOY_TEST_WORKER_EXISTS !== '1' &&
+             process.env.DEPLOY_TEST_SECRET_LIST_DENIED !== '1')) {
           process.stderr.write('Worker "chickpea" not found.');
           process.exit(1);
         }
@@ -79,6 +82,32 @@ function createHarness() {
           process.exit(1);
         }
         process.stdout.write(process.env.DEPLOY_TEST_SECRET_LIST || '[]');
+        process.exit(0);
+      }
+      if (args[0] === 'deployments' && args[1] === 'status' && args.includes('--json')) {
+        if (process.env.DEPLOY_TEST_STALLED_INSPECTION === 'status') {
+          await new Promise(() => setInterval(() => {}, 1_000));
+        }
+        process.stdout.write(process.env.DEPLOY_TEST_DEPLOYMENT_STATUS || JSON.stringify({
+          versions: [{ version_id: 'deployed-version', percentage: 100 }],
+        }));
+        process.exit(0);
+      }
+      if (args[0] === 'versions' && args[1] === 'view' && args.includes('--json')) {
+        if (process.env.DEPLOY_TEST_STALLED_INSPECTION === 'version') {
+          await new Promise(() => setInterval(() => {}, 1_000));
+        }
+        const views = process.env.DEPLOY_TEST_VERSION_VIEWS
+          ? JSON.parse(process.env.DEPLOY_TEST_VERSION_VIEWS)
+          : {};
+        process.stdout.write(JSON.stringify(views[args[2]] || {
+          resources: { bindings: [{
+            name: 'AUTH_DB',
+            type: 'd1',
+            id: process.env.DEPLOY_TEST_DEPLOYED_AUTH_DB_ID || 'test-database-id',
+            database_id: process.env.DEPLOY_TEST_DEPLOYED_AUTH_DB_ID || 'test-database-id',
+          }] },
+        }));
         process.exit(0);
       }
       if (args[0] === 'd1' && args[1] === 'list' && args.includes('--json')) {
@@ -345,6 +374,136 @@ test('fresh source reuses an existing named AUTH_DB without creating another', (
   ), 'utf8'));
   assert.equal(config.d1_databases[0].database_id, 'existing-database-id');
 });
+
+test('an existing Worker reuses its deployed AUTH_DB id instead of another same-named database', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([{ name: 'CHICKPEA_AUTH_SECRET' }]),
+    DEPLOY_TEST_DEPLOYED_AUTH_DB_ID: 'deployed-database-id',
+    DEPLOY_TEST_D1_LIST: JSON.stringify([{
+      name: 'chickpea-auth-db',
+      uuid: 'different-same-named-database-id',
+    }]),
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Preserving the deployed AUTH_DB database/);
+  const invoked = commands(harness.logPath);
+  assert.match(invoked[0] ?? '', /^wrangler:\["secret","list",/);
+  assert.match(invoked[1] ?? '', /^wrangler:\["deployments","status","--json",/);
+  assert.match(invoked[2] ?? '', /^wrangler:\["versions","view","deployed-version","--json",/);
+  assert.equal(invoked.some((command) => command === 'wrangler:["d1","list","--json"]'), false);
+  const config = JSON.parse(readFileSync(path.join(
+    harness.root,
+    'dist-cf',
+    'chickpea',
+    'wrangler.json',
+  ), 'utf8'));
+  assert.equal(config.d1_databases[0].database_id, 'deployed-database-id');
+});
+
+test('an existing Worker refuses a generated AUTH_DB id that differs from production', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { databaseId: 'stale-database-id' });
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([{ name: 'CHICKPEA_AUTH_SECRET' }]),
+    DEPLOY_TEST_DEPLOYED_AUTH_DB_ID: 'deployed-database-id',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /generated AUTH_DB.*differs from the deployed database/i);
+  const invoked = commands(harness.logPath);
+  assert.equal(invoked.some((command) => command.includes('"migrations","apply"')), false);
+  assert.equal(invoked.some((command) => command.startsWith('wrangler:["deploy"')), false);
+});
+
+test('an existing Worker refuses an active rollout split across AUTH_DB databases', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { databaseId: '' });
+  const deploymentStatus = {
+    versions: [
+      { version_id: 'version-a', percentage: 50 },
+      { version_id: 'version-b', percentage: 50 },
+    ],
+  };
+  const versionViews = {
+    'version-a': { resources: { bindings: [{ name: 'AUTH_DB', type: 'd1', id: 'database-a' }] } },
+    'version-b': { resources: { bindings: [{ name: 'AUTH_DB', type: 'd1', id: 'database-b' }] } },
+  };
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([{ name: 'CHICKPEA_AUTH_SECRET' }]),
+    DEPLOY_TEST_DEPLOYMENT_STATUS: JSON.stringify(deploymentStatus),
+    DEPLOY_TEST_VERSION_VIEWS: JSON.stringify(versionViews),
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /active Worker versions use different AUTH_DB databases/i);
+  const invoked = commands(harness.logPath);
+  assert.equal(invoked.some((command) => command.includes('"migrations","apply"')), false);
+  assert.equal(invoked.some((command) => command.startsWith('wrangler:["deploy"')), false);
+});
+
+test('an existing Worker refuses serving versions that disagree about whether AUTH_DB is bound', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { databaseId: '' });
+  const deploymentStatus = {
+    versions: [
+      { version_id: 'version-with-auth-db', percentage: 50 },
+      { version_id: 'version-without-auth-db', percentage: 50 },
+    ],
+  };
+  const versionViews = {
+    'version-with-auth-db': {
+      resources: { bindings: [{ name: 'AUTH_DB', type: 'd1', id: 'database-a' }] },
+    },
+    'version-without-auth-db': { resources: { bindings: [] } },
+  };
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([{ name: 'CHICKPEA_AUTH_SECRET' }]),
+    DEPLOY_TEST_DEPLOYMENT_STATUS: JSON.stringify(deploymentStatus),
+    DEPLOY_TEST_VERSION_VIEWS: JSON.stringify(versionViews),
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /active Worker versions disagree about whether AUTH_DB is bound/i);
+  const invoked = commands(harness.logPath);
+  assert.equal(invoked.some((command) => command.includes('"migrations","apply"')), false);
+  assert.equal(invoked.some((command) => command.startsWith('wrangler:["deploy"')), false);
+});
+
+for (const stalledInspection of ['status', 'version']) {
+  test(`a stalled ${stalledInspection} inspection aborts before AUTH_DB migration or Worker deploy`, (context) => {
+    const harness = createHarness();
+    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+    writeCutoverArtifact(harness, { databaseId: '' });
+
+    const result = runHarness(harness, ['--skip-build'], {
+      DEPLOY_TEST_SECRET_LIST: JSON.stringify([{ name: 'CHICKPEA_AUTH_SECRET' }]),
+      DEPLOY_TEST_STALLED_INSPECTION: stalledInspection,
+      CHICKPEA_DEPLOY_INSPECTION_TIMEOUT_MS: '100',
+    }, 2_000);
+
+    assert.equal(result.status, 1, result.stderr);
+    if (stalledInspection === 'status') {
+      assert.match(result.stderr, /Unable to inspect the active Worker deployment.*Refusing an update/s);
+    } else {
+      assert.match(result.stderr, /Unable to inspect active Worker version deployed-version.*Refusing an update/s);
+    }
+    const invoked = commands(harness.logPath);
+    assert.equal(invoked.some((command) => command.includes('"migrations","apply"')), false);
+    assert.equal(invoked.some((command) => command.startsWith('wrangler:["deploy"')), false);
+  });
+}
 
 test('fresh AUTH_DB provisioning revalidates the rebuilt database identity before migration or upload', (context) => {
   const harness = createHarness();

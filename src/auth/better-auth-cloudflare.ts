@@ -4,10 +4,14 @@ import type { D1Database } from '@cloudflare/workers-types';
 import type {
   BetterAuthDatabaseBackend,
   BetterAuthMembershipRecord,
+  BetterAuthOwnerSetupAuthorityExpectation,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
 } from './better-auth-backend.ts';
 import {
+  BETTER_AUTH_IDENTITY_AUTHORITY_SQL,
+  BETTER_AUTH_OWNER_SETUP_AUTHORITY_SQL,
+  betterAuthOwnerSetupAuthorityBindings,
   mapBetterAuthMembership,
   mapBetterAuthOrganization,
   mapBetterAuthUser,
@@ -33,6 +37,21 @@ export interface CloudflareBetterAuthEnv {
 
 export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
   constructor(readonly database: D1Database) {}
+
+  async hasIdentityAuthority(): Promise<boolean> {
+    const row = await this.database.prepare(BETTER_AUTH_IDENTITY_AUTHORITY_SQL)
+      .first<{ present: number }>();
+    return Boolean(row?.present);
+  }
+
+  async matchesOwnerSetupAuthority(
+    input: BetterAuthOwnerSetupAuthorityExpectation,
+  ): Promise<boolean> {
+    const row = await this.database.prepare(BETTER_AUTH_OWNER_SETUP_AUTHORITY_SQL)
+      .bind(...betterAuthOwnerSetupAuthorityBindings(input))
+      .first<{ matches: number }>();
+    return Boolean(row?.matches);
+  }
 
   async absoluteExpiryForToken(token: string): Promise<Date | null> {
     const row = await this.database.prepare(

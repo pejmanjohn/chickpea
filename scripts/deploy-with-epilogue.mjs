@@ -466,8 +466,16 @@ if (preflightOnly) {
 
 const AUTH_SECRET = 'CHICKPEA_AUTH_SECRET';
 const LEGACY_AUTH_SECRET = 'CHICKPEA_RECOVERY_TOKEN';
+const DEFAULT_ACTIVE_WORKER_INSPECTION_TIMEOUT_MS = 30_000;
+const configuredInspectionTimeout = Number(
+  process.env.CHICKPEA_DEPLOY_INSPECTION_TIMEOUT_MS,
+);
+const activeWorkerInspectionTimeoutMs = Number.isFinite(configuredInspectionTimeout) &&
+  configuredInspectionTimeout > 0
+  ? Math.min(configuredInspectionTimeout, DEFAULT_ACTIVE_WORKER_INSPECTION_TIMEOUT_MS)
+  : DEFAULT_ACTIVE_WORKER_INSPECTION_TIMEOUT_MS;
 
-function remoteWorkerSecretNames(artifact) {
+function inspectRemoteWorker(artifact) {
   const result = spawnSync(
     process.execPath,
     [
@@ -486,7 +494,9 @@ function remoteWorkerSecretNames(artifact) {
     throw new Error(`Unable to inspect Worker secrets: ${result.error.message}`);
   }
   const detail = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-  if (result.status !== 0 && /Worker\s+"[^"]+"[^\n]*not found/i.test(detail)) return new Set();
+  if (result.status !== 0 && /Worker\s+"[^"]+"[^\n]*not found/i.test(detail)) {
+    return { exists: false, names: new Set() };
+  }
   if (result.status !== 0) {
     throw new Error(
       'Unable to inspect Worker secrets. The deploy credential must allow secret listing before Chickpea can deploy safely.',
@@ -501,7 +511,115 @@ function remoteWorkerSecretNames(artifact) {
   if (!Array.isArray(entries) || entries.some((entry) => typeof entry?.name !== 'string')) {
     throw new Error('Worker secret discovery returned an unexpected response.');
   }
-  return new Set(entries.map((entry) => entry.name));
+  return { exists: true, names: new Set(entries.map((entry) => entry.name)) };
+}
+
+function deployedAuthDatabaseId(artifact) {
+  const status = spawnSync(
+    process.execPath,
+    [
+      wranglerBin,
+      'deployments',
+      'status',
+      '--json',
+      '--config',
+      artifact.configPath,
+      ...deploymentResourceArgs(),
+    ],
+    {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      timeout: activeWorkerInspectionTimeoutMs,
+    },
+  );
+  if (status.error) {
+    throw new Error(
+      'Unable to inspect the active Worker deployment. Refusing an update without its current AUTH_DB binding.',
+    );
+  }
+  if (status.status !== 0) {
+    throw new Error(
+      'Unable to inspect the active Worker deployment. Refusing an update without its current AUTH_DB binding.',
+    );
+  }
+  let deployment;
+  try {
+    deployment = JSON.parse(status.stdout);
+  } catch {
+    throw new Error('Active Worker deployment discovery returned an unreadable response.');
+  }
+  const versions = Array.isArray(deployment?.versions)
+    ? deployment.versions.filter((version) => Number(version?.percentage) > 0)
+    : [];
+  if (versions.length === 0 || versions.some((version) =>
+    typeof version?.version_id !== 'string' || !version.version_id.trim()
+  )) {
+    throw new Error('Active Worker deployment discovery returned no readable serving versions.');
+  }
+
+  const databaseIds = [];
+  let versionsWithoutAuthDatabase = 0;
+  for (const version of versions) {
+    const view = spawnSync(
+      process.execPath,
+      [
+        wranglerBin,
+        'versions',
+        'view',
+        version.version_id,
+        '--json',
+        '--config',
+        artifact.configPath,
+        ...deploymentResourceArgs(),
+      ],
+      {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        timeout: activeWorkerInspectionTimeoutMs,
+      },
+    );
+    if (view.error) {
+      throw new Error(
+        `Unable to inspect active Worker version ${version.version_id}. ` +
+        'Refusing an update without its current AUTH_DB binding.',
+      );
+    }
+    if (view.status !== 0) {
+      throw new Error(
+        `Unable to inspect active Worker version ${version.version_id}. ` +
+        'Refusing an update without its current AUTH_DB binding.',
+      );
+    }
+    let details;
+    try {
+      details = JSON.parse(view.stdout);
+    } catch {
+      throw new Error(`Active Worker version ${version.version_id} returned unreadable binding details.`);
+    }
+    const bindings = (details?.resources?.bindings ?? []).filter(
+      (binding) => binding?.name === 'AUTH_DB' && binding?.type === 'd1',
+    );
+    if (bindings.length > 1) {
+      throw new Error(`Active Worker version ${version.version_id} has duplicate AUTH_DB bindings.`);
+    }
+    if (bindings.length === 0) {
+      versionsWithoutAuthDatabase += 1;
+      continue;
+    }
+    const databaseId = bindings[0].database_id ?? bindings[0].id;
+    if (typeof databaseId !== 'string' || !databaseId.trim()) {
+      throw new Error(`Active Worker version ${version.version_id} has an unreadable AUTH_DB binding.`);
+    }
+    databaseIds.push(databaseId.trim());
+  }
+  if (versionsWithoutAuthDatabase > 0 && databaseIds.length > 0) {
+    throw new Error('Active Worker versions disagree about whether AUTH_DB is bound; refusing to guess.');
+  }
+  const uniqueIds = [...new Set(databaseIds)];
+  if (uniqueIds.length > 1) {
+    throw new Error('Active Worker versions use different AUTH_DB databases; refusing to update either one.');
+  }
+  return uniqueIds[0];
 }
 
 async function prepareDeploymentAuthority(artifact, secretNames) {
@@ -550,10 +668,25 @@ function deploymentResourceArgs() {
   return args;
 }
 
-function ensureAuthDatabase(artifact) {
+function ensureAuthDatabase(artifact, deployedDatabaseId) {
   const authDb = (artifact.config.d1_databases ?? []).find(
     (binding) => binding.binding === 'AUTH_DB',
   );
+  if (deployedDatabaseId) {
+    const generatedId = typeof authDb?.database_id === 'string'
+      ? authDb.database_id.trim()
+      : '';
+    if (generatedId && generatedId !== deployedDatabaseId) {
+      throw new Error(
+        `The generated AUTH_DB database (${generatedId}) differs from the deployed database ` +
+        `(${deployedDatabaseId}); refusing to replace customer auth data.`,
+      );
+    }
+    process.stdout.write('Preserving the deployed AUTH_DB database...\n');
+    authDb.database_id = deployedDatabaseId;
+    writeFileSync(artifact.configPath, `${JSON.stringify(artifact.config, null, 2)}\n`);
+    return validateDeploymentArtifact(requireBuiltArtifact(), { requireDatabaseId: true });
+  }
   if (typeof authDb?.database_id === 'string' && authDb.database_id.trim()) return artifact;
   const existingId = existingAuthDatabaseId(authDb?.database_name || 'chickpea-auth-db');
   if (existingId) {
@@ -628,16 +761,19 @@ function existingAuthDatabaseId(databaseName) {
 }
 
 let deploymentAuthority;
-let remoteSecretNames;
+let remoteWorker;
 if (!deployArgs.includes('--dry-run')) {
   try {
-    remoteSecretNames = remoteWorkerSecretNames(builtArtifact);
-    builtArtifact = ensureAuthDatabase(builtArtifact);
+    remoteWorker = inspectRemoteWorker(builtArtifact);
+    const liveAuthDatabaseId = remoteWorker.exists
+      ? deployedAuthDatabaseId(builtArtifact)
+      : undefined;
+    builtArtifact = ensureAuthDatabase(builtArtifact, liveAuthDatabaseId);
     // This is the final gate immediately before the first mutation of an
     // existing customer resource. It intentionally reruns after both D1 reuse
     // injection and D1 provisioning/rebuild.
     builtArtifact = validateDeploymentArtifact(builtArtifact, { requireDatabaseId: true });
-    deploymentAuthority = await prepareDeploymentAuthority(builtArtifact, remoteSecretNames);
+    deploymentAuthority = await prepareDeploymentAuthority(builtArtifact, remoteWorker.names);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

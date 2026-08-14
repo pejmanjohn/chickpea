@@ -1,6 +1,12 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
-import type { IdentityResolution, IdentityStore } from '../identity/types.ts';
+import type {
+  AuthControl,
+  AuthOperation,
+  IdentityResolution,
+  IdentityStore,
+  Organization,
+} from '../identity/types.ts';
 import { normalizeCloudflareAccessIssuer } from './cloudflare-access.ts';
 import { AuthDeniedError } from './service.ts';
 import type { ExternalIdentity } from './types.ts';
@@ -29,6 +35,83 @@ export interface CompletePasswordOwnerSetupResult {
   headers: Headers;
 }
 
+export type PasswordOwnerSetupReadiness =
+  | { state: 'fresh'; control: AuthControl }
+  | {
+      state: 'orphaned';
+      control: AuthControl;
+      orphanedOrganizationId: string;
+      authorityPresent: boolean;
+    }
+  | { state: 'configured'; control: AuthControl }
+  | { state: 'inconsistent'; control: AuthControl };
+
+export interface PasswordOwnerSetupAuthoritySnapshot {
+  control: AuthControl;
+  legacyOrganization: Organization | undefined;
+}
+
+/**
+ * Classifies the split Chickpea/Better Auth authority without changing either
+ * store. Orphan recovery is intentionally narrower than "organization not
+ * found": Better Auth must be empty or exactly match one pending recovery
+ * operation bound to the unchanged orphaned control.
+ */
+export async function resolvePasswordOwnerSetupReadiness(
+  identity: IdentityStore,
+  environment: BetterAuthEnvironment,
+  canonicalOrigin: string,
+  snapshot?: PasswordOwnerSetupAuthoritySnapshot,
+): Promise<PasswordOwnerSetupReadiness> {
+  const origin = requireSupportedOrigin(canonicalOrigin);
+  const [control, legacyOrganization] = snapshot
+    ? [snapshot.control, snapshot.legacyOrganization]
+    : await Promise.all([
+        identity.ensureAuthControl(),
+        identity.getOrganization(),
+      ]);
+  if (legacyOrganization) return { state: 'inconsistent', control };
+  if (control.authMode === 'unconfigured') {
+    return control.canonicalAdminOrigin === null && control.betterAuthOrganizationId === null
+      ? { state: 'fresh', control }
+      : { state: 'inconsistent', control };
+  }
+  if (control.authMode !== 'password_active' ||
+      !control.canonicalAdminOrigin ||
+      !control.betterAuthOrganizationId ||
+      control.canonicalAdminOrigin !== origin ||
+      environment.baseURL !== origin) {
+    return { state: 'inconsistent', control };
+  }
+  const organization = await environment.backend.getOrganization(control.betterAuthOrganizationId);
+  if (organization) return { state: 'configured', control };
+  const authorityPresent = await environment.backend.hasIdentityAuthority();
+  if (authorityPresent) {
+    const pending = await identity.listAuthOperations(
+      'owner_setup',
+      control.betterAuthOrganizationId,
+    );
+    for (const operation of pending) {
+      if (orphanOperationBoundToControl(operation, control) &&
+          await ownerSetupAuthorityMatches(environment, operation)) {
+        return {
+          state: 'orphaned',
+          control,
+          orphanedOrganizationId: control.betterAuthOrganizationId,
+          authorityPresent,
+        };
+      }
+    }
+    return { state: 'inconsistent', control };
+  }
+  return {
+    state: 'orphaned',
+    control,
+    orphanedOrganizationId: control.betterAuthOrganizationId,
+    authorityPresent,
+  };
+}
+
 /** Trusted, recovery-gated wrapper around Better Auth's otherwise dark signup path. */
 export class PasswordOwnerSetupService {
   constructor(
@@ -40,7 +123,7 @@ export class PasswordOwnerSetupService {
   ) {}
 
   async complete(input: CompletePasswordOwnerSetupInput): Promise<CompletePasswordOwnerSetupResult> {
-    const capabilityHash = this.setupCapability
+    const initialCapabilityHash = this.setupCapability
       ? await verifiedSetupCapabilityHash(input.recoveryToken, this.setupCapability, this.now)
       : ownerSetupCapabilityHash(
           requireMatchingRecoverySecret(input.recoveryToken, this.environment.recoveryToken),
@@ -54,14 +137,47 @@ export class PasswordOwnerSetupService {
     const displayName = displayNameFromEmail(email);
     assertPasswordPolicy(input.password, { email, organizationName });
 
-    const [control, legacyOrganization] = await Promise.all([
-      this.identity.ensureAuthControl(),
-      this.identity.getOrganization(),
-    ]);
-    if (control.authMode !== 'unconfigured' || legacyOrganization) throw new AuthDeniedError();
+    const readiness = await resolvePasswordOwnerSetupReadiness(
+      this.identity,
+      this.environment,
+      canonicalOrigin,
+    );
+    if (readiness.state !== 'fresh' && readiness.state !== 'orphaned') {
+      throw new AuthDeniedError();
+    }
+    const control = readiness.control;
+    const capabilityHash = readiness.state === 'orphaned'
+      ? orphanedOwnerSetupCapabilityHash(
+          initialCapabilityHash,
+          control,
+          readiness.orphanedOrganizationId,
+        )
+      : initialCapabilityHash;
     let operation = await this.identity.findAuthOperation('owner_setup', capabilityHash);
+    if (readiness.state === 'orphaned') {
+      const pendingRecoveryOperations = (await this.identity.listAuthOperations(
+        'owner_setup',
+        readiness.orphanedOrganizationId,
+      )).filter((candidate) => candidate.status === 'pending');
+      if (operation) {
+        if (!orphanOperationBoundToControl(operation, control)) throw new AuthDeniedError();
+        const operationId = operation.id;
+        if (pendingRecoveryOperations.some((candidate) => candidate.id !== operationId)) {
+          throw new AuthDeniedError();
+        }
+      }
+      if (!operation && (readiness.authorityPresent || pendingRecoveryOperations.length > 0)) {
+        throw new AuthDeniedError();
+      }
+    }
     operation ??= await this.identity.createAuthOperation({
       kind: 'owner_setup',
+      ...(readiness.state === 'orphaned'
+        ? {
+            organizationId: readiness.orphanedOrganizationId,
+            targetCredentialVersion: control.revision,
+          }
+        : {}),
       expectedEmail: email,
       capabilityHash,
       expiresAt: this.setupCapability
@@ -70,6 +186,15 @@ export class PasswordOwnerSetupService {
     });
     if (operation.expectedNormalizedEmail !== email || operation.status !== 'pending') {
       throw new AuthDeniedError();
+    }
+    if (readiness.state === 'orphaned') {
+      const pendingRecoveryOperations = (await this.identity.listAuthOperations(
+        'owner_setup',
+        readiness.orphanedOrganizationId,
+      )).filter((candidate) => candidate.status === 'pending');
+      if (pendingRecoveryOperations.length !== 1 ||
+          pendingRecoveryOperations[0]?.id !== operation.id) throw new AuthDeniedError();
+      await requireMatchingOwnerSetupAuthority(this.environment, operation);
     }
 
     const auth = createBetterAuth({
@@ -100,6 +225,9 @@ export class PasswordOwnerSetupService {
         step: 1,
         betterAuthUserId: userId,
       });
+    }
+    if (readiness.state === 'orphaned') {
+      await requireMatchingOwnerSetupAuthority(this.environment, operation);
     }
 
     let organizationId = operation.betterAuthOrganizationId;
@@ -138,6 +266,9 @@ export class PasswordOwnerSetupService {
         betterAuthMembershipId: membershipId,
       });
     }
+    if (readiness.state === 'orphaned') {
+      await requireMatchingOwnerSetupAuthority(this.environment, operation);
+    }
     if (!organizationId || !membershipId) throw new AuthDeniedError();
     const completedOrganizationId = organizationId;
     const completedMembershipId = membershipId;
@@ -163,11 +294,18 @@ export class PasswordOwnerSetupService {
       body: { email, password: input.password },
       returnHeaders: true,
     });
+    if (readiness.state === 'orphaned') {
+      await requireMatchingOwnerSetupAuthority(this.environment, operation);
+    }
     await this.identity.completePasswordSetup({
       operationId: operation.id,
       capabilityHash,
       expectedStep: 2,
       expectedControlRevision: control.revision,
+      expectedControlAuthMode: readiness.state === 'fresh' ? 'unconfigured' : 'password_active',
+      expectedBetterAuthOrganizationId: readiness.state === 'fresh'
+        ? null
+        : readiness.orphanedOrganizationId,
       canonicalAdminOrigin: canonicalOrigin,
       betterAuthOrganizationId: completedOrganizationId,
     });
@@ -328,6 +466,67 @@ function ownerSetupCapabilityHash(
     .update(email)
     .update('\0')
     .update(canonicalOrigin)
+    .digest('hex');
+}
+
+function orphanOperationBoundToControl(
+  operation: AuthOperation,
+  control: AuthControl,
+): boolean {
+  return operation.kind === 'owner_setup' && operation.status === 'pending' &&
+    operation.organizationId === control.betterAuthOrganizationId &&
+    operation.targetCredentialVersion === control.revision;
+}
+
+async function ownerSetupAuthorityMatches(
+  environment: BetterAuthEnvironment,
+  operation: AuthOperation,
+): Promise<boolean> {
+  if (operation.step === 0) {
+    if (operation.betterAuthUserId || operation.betterAuthOrganizationId ||
+        operation.betterAuthMembershipId) return false;
+  } else if (operation.step === 1) {
+    if (!operation.betterAuthUserId || operation.betterAuthOrganizationId ||
+        operation.betterAuthMembershipId) return false;
+  } else if (operation.step === 2) {
+    if (!operation.betterAuthUserId || !operation.betterAuthOrganizationId ||
+        !operation.betterAuthMembershipId) return false;
+  } else {
+    return false;
+  }
+  return environment.backend.matchesOwnerSetupAuthority({
+    expectedEmail: operation.expectedNormalizedEmail,
+    operationCreatedAt: operation.createdAt,
+    step: operation.step,
+    betterAuthUserId: operation.betterAuthUserId,
+    betterAuthOrganizationId: operation.betterAuthOrganizationId,
+    betterAuthMembershipId: operation.betterAuthMembershipId,
+  });
+}
+
+async function requireMatchingOwnerSetupAuthority(
+  environment: BetterAuthEnvironment,
+  operation: AuthOperation,
+): Promise<void> {
+  if (!await ownerSetupAuthorityMatches(environment, operation)) {
+    throw new AuthDeniedError();
+  }
+}
+
+function orphanedOwnerSetupCapabilityHash(
+  capabilityHash: string,
+  control: AuthControl,
+  orphanedOrganizationId: string,
+): string {
+  return createHash('sha256')
+    .update('chickpea/orphaned-owner-setup/v1\0')
+    .update(capabilityHash)
+    .update('\0')
+    .update(control.installationId)
+    .update('\0')
+    .update(String(control.revision))
+    .update('\0')
+    .update(orphanedOrganizationId)
     .digest('hex');
 }
 

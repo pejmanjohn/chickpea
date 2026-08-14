@@ -334,6 +334,7 @@ import { AuthRecoveryService, PasswordOwnerRecoveryService } from '../auth/recov
 import {
   AuthSetupService,
   PasswordOwnerSetupService,
+  resolvePasswordOwnerSetupReadiness,
   validRecoveryToken,
 } from '../auth/setup.ts';
 import { PasswordPolicyError, assertPasswordPolicy } from '../auth/password-policy.ts';
@@ -1646,7 +1647,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       identityStore.ensureAuthControl(),
       identityStore.getOrganization(),
     ]);
-    if (control.authMode === 'password_active') return c.redirect('/admin/login', 303);
+    if (control.authMode === 'password_active') {
+      const environment = options.betterAuthEnvironment ??
+        await resolveBetterAuthEnvironment({
+          control,
+          platformEnv: c.env as PlatformEnv | undefined,
+          recoveryToken: token,
+          authSecret: authSecret(c),
+          passwordShardKey: requestAuthSourceKey(c.req.raw, isCloudflareTarget()),
+        });
+      if (!environment) return c.json({ error: 'authentication_unavailable' }, 503);
+      try {
+        const readiness = await resolvePasswordOwnerSetupReadiness(
+          identityStore,
+          environment,
+          requestOrigin(c),
+          { control, legacyOrganization: organization },
+        );
+        if (readiness.state === 'configured') return c.redirect('/admin/login', 303);
+        if (readiness.state === 'orphaned') {
+          return c.html(renderPasswordOwnerSetupPage());
+        }
+        return c.json({ error: 'authentication_unavailable' }, 409);
+      } catch {
+        return c.json({ error: 'authentication_unavailable' }, 503);
+      }
+    }
     if (organization?.authMode === 'access_active') return c.redirect('/admin', 303);
     if (!organization && control.authMode === 'unconfigured') {
       return c.html(renderPasswordOwnerSetupPage());
@@ -1722,6 +1748,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       throw new AuthDeniedError();
     } catch (error) {
       await limiter.recordFailure('setup', source);
+      if (!(error instanceof AuthDeniedError) && !(error instanceof PasswordPolicyError)) {
+        return c.json({ error: 'authentication_unavailable' }, 503);
+      }
       const organization = await identity(c).getOrganization();
       const config = organization?.authMode === 'access_pending'
         ? await identity(c).getAuthProviderConfig('cloudflare_access')

@@ -834,10 +834,22 @@ export class IdentityStoreLogic {
         'betterAuthOrganizationId',
         256,
       );
+      const expectedControlAuthMode = input.expectedControlAuthMode;
+      if (!['unconfigured', 'password_active'].includes(expectedControlAuthMode)) {
+        throw identityError('identity_invalid', 'Expected authentication mode is invalid.');
+      }
+      const expectedBetterAuthOrganizationId = input.expectedBetterAuthOrganizationId === null
+        ? null
+        : strictText(
+            input.expectedBetterAuthOrganizationId,
+            'expectedBetterAuthOrganizationId',
+            256,
+          );
       if (operation.kind !== 'owner_setup' || operation.step !== input.expectedStep ||
           operation.betterAuthOrganizationId !== organizationId ||
           !operation.betterAuthUserId || !operation.betterAuthMembershipId ||
-          control.authMode !== 'unconfigured' ||
+          control.authMode !== expectedControlAuthMode ||
+          control.betterAuthOrganizationId !== expectedBetterAuthOrganizationId ||
           control.revision !== input.expectedControlRevision) {
         throw identityError('auth_operation_conflict', 'Owner setup changed concurrently.');
       }
@@ -845,8 +857,9 @@ export class IdentityStoreLogic {
         `UPDATE identity_auth_controls
          SET auth_mode = 'password_active', canonical_admin_origin = ?,
              better_auth_organization_id = ?, revision = revision + 1, updated_at = ?
-         WHERE installation_id = ? AND auth_mode = 'unconfigured' AND revision = ?`,
-        origin, organizationId, at, control.installationId, control.revision,
+         WHERE installation_id = ? AND auth_mode = ? AND revision = ?`,
+        origin, organizationId, at, control.installationId, expectedControlAuthMode,
+        control.revision,
       );
       const consumed = this.db.run(
         `UPDATE identity_auth_operations

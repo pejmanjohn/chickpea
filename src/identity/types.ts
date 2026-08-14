@@ -387,6 +387,8 @@ export interface CompletePasswordSetupInput {
   capabilityHash: string;
   expectedStep: number;
   expectedControlRevision: number;
+  expectedControlAuthMode: 'unconfigured' | 'password_active';
+  expectedBetterAuthOrganizationId: string | null;
   canonicalAdminOrigin: string;
   betterAuthOrganizationId: string;
   at?: number;

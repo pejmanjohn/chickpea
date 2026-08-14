@@ -154,3 +154,133 @@ test('fresh Worker setup needs no recovery token and rejects mismatched confirma
   settings.close();
   identity.close();
 });
+
+test('a new private setup link repairs only a proven-empty orphaned password authority', async () => {
+  const issuedAt = Date.now();
+  const initialCapability = await mintSetupCapability({ now: () => issuedAt });
+  const identity = new SqliteIdentityStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const backend = new NodeBetterAuthBackend(':memory:');
+  const environment = {
+    backend,
+    baseURL: ORIGIN,
+    password: nativePasswordPrimitive(),
+    recoveryToken: AUTHORITY,
+    secret: await deriveBetterAuthSecret(AUTHORITY),
+  };
+  const app = createAdminRoutes({
+    identity,
+    settings,
+    betterAuthEnvironment: environment,
+    authSecret: AUTHORITY,
+  });
+  const bindings = (capability: { digest: string; issuedAt: number }) => ({
+    CHICKPEA_AUTH_SECRET: AUTHORITY,
+    [SETUP_CAPABILITY_DIGEST_BINDING]: capability.digest,
+    [SETUP_CAPABILITY_ISSUED_AT_BINDING]: String(capability.issuedAt),
+  });
+  const submit = (
+    target: ReturnType<typeof createAdminRoutes>,
+    capability: { capability: string; digest: string; issuedAt: number },
+    email: string,
+  ) => {
+    const body = new URLSearchParams({
+      ownerEmail: email,
+      password: PASSWORD,
+      passwordConfirmation: PASSWORD,
+      recoveryToken: capability.capability,
+    }).toString();
+    return target.request(`${ORIGIN}/admin/setup`, {
+      method: 'POST',
+      headers: {
+        origin: ORIGIN,
+        'sec-fetch-site': 'same-origin',
+        'content-type': 'application/x-www-form-urlencoded',
+        'content-length': String(Buffer.byteLength(body)),
+      },
+      body,
+    }, bindings(capability));
+  };
+
+  const initial = await submit(app, initialCapability, 'owner@example.com');
+  assert.equal(initial.status, 303, await initial.clone().text());
+  const originalControl = await identity.getAuthControl();
+  assert.equal(originalControl?.authMode, 'password_active');
+  assert.ok(originalControl?.betterAuthOrganizationId);
+
+  const repairCapability = await mintSetupCapability({ now: () => issuedAt + 1_000 });
+  const configured = await app.request(
+    `${ORIGIN}/admin/setup`,
+    {},
+    bindings(repairCapability),
+  );
+  assert.equal(configured.status, 303);
+  assert.equal(configured.headers.get('location'), '/admin/login');
+
+  backend.database.exec(`
+    DELETE FROM session;
+    DELETE FROM member;
+    DELETE FROM organization;
+  `);
+  assert.equal((await app.request(
+    `${ORIGIN}/admin/setup`,
+    {},
+    bindings(repairCapability),
+  )).status, 409);
+  assert.equal((await submit(
+    app,
+    repairCapability,
+    'replacement@example.com',
+  )).status, 401);
+  assert.deepEqual(await identity.getAuthControl(), originalControl);
+
+  backend.database.exec(`
+    DELETE FROM account;
+    DELETE FROM "user";
+  `);
+
+  const unavailableBackend = new Proxy(backend, {
+    get(target, property, receiver) {
+      if (property === 'getOrganization') {
+        return async () => { throw new Error('simulated D1 outage'); };
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const unavailableApp = createAdminRoutes({
+    identity,
+    settings,
+    betterAuthEnvironment: { ...environment, backend: unavailableBackend },
+    authSecret: AUTHORITY,
+  });
+  assert.equal((await unavailableApp.request(
+    `${ORIGIN}/admin/setup`,
+    {},
+    bindings(repairCapability),
+  )).status, 503);
+  assert.equal((await submit(
+    unavailableApp,
+    repairCapability,
+    'replacement@example.com',
+  )).status, 503);
+  assert.deepEqual(await identity.getAuthControl(), originalControl);
+
+  const repairPage = await app.request(`${ORIGIN}/admin/setup`, {}, bindings(repairCapability));
+  assert.equal(repairPage.status, 200);
+  assert.match(await repairPage.text(), /Create your Chickpea workspace/);
+  const repaired = await submit(app, repairCapability, 'replacement@example.com');
+  assert.equal(repaired.status, 303, await repaired.clone().text());
+  assert.equal(repaired.headers.get('location'), '/admin/onboarding');
+  const repairedControl = await identity.getAuthControl();
+  assert.equal(repairedControl?.authMode, 'password_active');
+  assert.notEqual(
+    repairedControl?.betterAuthOrganizationId,
+    originalControl?.betterAuthOrganizationId,
+  );
+  assert.equal((await backend.findUserByEmail('replacement@example.com'))?.email, 'replacement@example.com');
+
+  backend.close();
+  settings.close();
+  identity.close();
+});

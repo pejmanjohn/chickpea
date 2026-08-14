@@ -6,10 +6,14 @@ import { resolveStateDbPath } from '../state/node-state-db.ts';
 import type {
   BetterAuthDatabaseBackend,
   BetterAuthMembershipRecord,
+  BetterAuthOwnerSetupAuthorityExpectation,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
 } from './better-auth-backend.ts';
 import {
+  BETTER_AUTH_IDENTITY_AUTHORITY_SQL,
+  BETTER_AUTH_OWNER_SETUP_AUTHORITY_SQL,
+  betterAuthOwnerSetupAuthorityBindings,
   mapBetterAuthMembership,
   mapBetterAuthOrganization,
   mapBetterAuthUser,
@@ -34,6 +38,20 @@ export class NodeBetterAuthBackend implements BetterAuthDatabaseBackend {
     this.database.exec('PRAGMA busy_timeout = 5000;');
     if (path !== ':memory:') this.database.exec('PRAGMA journal_mode = WAL;');
     applyBetterAuthMigrations(this.database, migrationsDirectory);
+  }
+
+  async hasIdentityAuthority(): Promise<boolean> {
+    const row = this.database.prepare(BETTER_AUTH_IDENTITY_AUTHORITY_SQL)
+      .get() as { present?: number } | undefined;
+    return Boolean(row?.present);
+  }
+
+  async matchesOwnerSetupAuthority(
+    input: BetterAuthOwnerSetupAuthorityExpectation,
+  ): Promise<boolean> {
+    const row = this.database.prepare(BETTER_AUTH_OWNER_SETUP_AUTHORITY_SQL)
+      .get(...betterAuthOwnerSetupAuthorityBindings(input)) as { matches?: number } | undefined;
+    return Boolean(row?.matches);
   }
 
   async absoluteExpiryForToken(token: string): Promise<Date | null> {

@@ -8,14 +8,43 @@ import {
 import {
   passwordInvitationClientScript,
   passwordResetClientScript,
+  renderInvitationJoinPage,
+  renderJoinBootstrapPage,
   renderPasswordInvitationPage,
   renderPasswordResetPage,
+  renderResetBootstrapPage,
 } from '../src/join/page.ts';
 import {
   passwordFormClientScript,
+  renderPasswordLogin,
+  renderPasswordOwnerSetupPage,
   renderPasswordChangePage,
   renderPasswordRecoveryPage,
 } from '../src/admin/page.ts';
+
+test('password sign-in and account creation share the centered Chickpea brand', () => {
+  for (const html of [
+    renderPasswordLogin(),
+    renderPasswordOwnerSetupPage(),
+    renderPasswordChangePage(),
+    renderPasswordRecoveryPage(),
+    renderPasswordRecoveryPage({ success: true }),
+    renderJoinBootstrapPage(),
+    renderResetBootstrapPage(),
+    renderInvitationJoinPage({ email: 'teammate@example.com' }),
+    renderPasswordInvitationPage(),
+    renderPasswordResetPage(),
+  ]) {
+    assert.match(html, /class="auth-brand" aria-label="Chickpea"/);
+    assert.match(html, /class="auth-brand-mark"/);
+    assert.match(html, /class="auth-brand-name">Chickpea</);
+    assert.match(html, /\.auth-brand-mark\{width:54px;height:54px/);
+    assert.match(
+      html,
+      /\.auth-brand\s*\{[^}]*display:flex;[^}]*align-items:center;[^}]*justify-content:center;[^}]*text-align:center/,
+    );
+  }
+});
 
 test('password policy enforces Unicode length bounds without composition rules', () => {
   assert.throws(
