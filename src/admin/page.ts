@@ -69,6 +69,85 @@ ${ADMIN_FAVICON}
   --press-shadow: 0 2px 0 rgba(59, 50, 32, 0.14);     /* NEW */
   --pop-shadow: 0 10px 26px -10px rgba(59, 50, 32, 0.4); /* NEW */
 }
+/* Agent and Channel visual foundation. These custom properties deliberately
+   live on page-level surface hooks instead of :root: Settings, Team, Usage,
+   Audit, Account, identity management, and onboarding keep their current
+   composition while later visual units can share the prototype primitives. */
+.admin-surface {
+  --admin-visual-font: "Avenir Next", Avenir, ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --admin-visual-ink: #403726;
+  --admin-visual-muted: #8f7f63;
+  --admin-visual-faint: #b2a487;
+  --admin-visual-gold: #dda126;
+  --admin-visual-gold-dark: #b77806;
+  --admin-visual-canvas: #f4ead2;
+  --admin-visual-paper: #fffdf7;
+  --admin-visual-paper-soft: #fbf7ec;
+  --admin-visual-line: #e8deca;
+  --admin-visual-green: #5e9957;
+  --admin-visual-green-soft: #eaf2e2;
+  --admin-visual-shadow: 0 1px 0 rgba(73, 57, 27, .12), 0 22px 60px rgba(89, 65, 24, .06);
+  --admin-visual-radius-sm: 10px;
+  --admin-visual-radius-md: 14px;
+  --admin-visual-radius-lg: 20px;
+  --admin-visual-space-1: 4px;
+  --admin-visual-space-2: 8px;
+  --admin-visual-space-3: 12px;
+  --admin-visual-space-4: 16px;
+  --admin-visual-space-5: 24px;
+  --admin-visual-space-6: 32px;
+  --admin-visual-icon-size: 34px;
+  --admin-visual-content-width: 1180px;
+  --admin-visual-reading-width: 820px;
+  --admin-visual-status-ready: var(--admin-visual-green);
+  --admin-visual-status-attention: #d99b29;
+
+  /* Existing controls inherit the scoped type and palette without a markup or
+     save/route change. Later units consume the named visual primitives below. */
+  --font: var(--admin-visual-font);
+  --display: var(--admin-visual-font);
+  --bg: var(--admin-visual-paper);
+  --well: var(--admin-visual-paper-soft);
+  --line: var(--admin-visual-line);
+  --line-strong: #ded2bb;
+  --text: var(--admin-visual-ink);
+  --text-2: #6e6048;
+  --text-3: var(--admin-visual-muted);
+  --ember: var(--admin-visual-gold);
+  --ember-press: var(--admin-visual-gold-dark);
+  --ok: var(--admin-visual-green);
+  --ok-solid: var(--admin-visual-green);
+  --ok-tint: var(--admin-visual-green-soft);
+  --radius: var(--admin-visual-radius-md);
+  --card-shadow: var(--admin-visual-shadow);
+}
+.admin-surface .admin-visual-surface {
+  background: var(--admin-visual-paper);
+  border: 1px solid var(--admin-visual-line);
+  border-radius: var(--admin-visual-radius-lg);
+  box-shadow: var(--admin-visual-shadow);
+}
+.admin-surface .admin-visual-icon-tile {
+  align-items: center;
+  border-radius: var(--admin-visual-radius-sm);
+  display: inline-flex;
+  height: var(--admin-visual-icon-size);
+  justify-content: center;
+  width: var(--admin-visual-icon-size);
+}
+.admin-surface .admin-visual-status {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: .75rem;
+  font-weight: 700;
+  gap: 7px;
+  padding: 8px 12px;
+}
+.admin-surface .admin-visual-status[data-status="ready"] { background: var(--admin-visual-green-soft); color: var(--admin-visual-status-ready); }
+.admin-surface .admin-visual-status[data-status="attention"] { background: #fbf1da; color: #9d6e19; }
+.admin-surface .admin-visual-width { max-width: var(--admin-visual-content-width); }
+.admin-surface .admin-visual-reading-width { max-width: var(--admin-visual-reading-width); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { color-scheme: light; }
 body {
@@ -2686,7 +2765,15 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       app.className = "frame onboarding-frame";
       app.innerHTML = onboardingShellHtml() + overlays;
     } else {
-      app.className = "frame";
+      var adminSurfaceClass = "";
+      if (state.view === "profiles" && state.profileScreen === "edit") {
+        adminSurfaceClass = " admin-surface admin-surface-agent-detail";
+      } else if (state.view === "channels" && state.channelScreen === "overview") {
+        adminSurfaceClass = " admin-surface admin-surface-channels-index";
+      } else if (state.view === "channels" && state.channelScreen === "detail") {
+        adminSurfaceClass = " admin-surface admin-surface-channel-detail";
+      }
+      app.className = "frame" + adminSurfaceClass;
       app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + overlays;
     }
     if (isOnboardingSlackConnection()) {

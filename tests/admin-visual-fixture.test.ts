@@ -1,0 +1,235 @@
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+import { renderAdminPage } from '../src/admin/page.ts';
+
+interface VisualFixture {
+  address: string;
+  adminToken: string;
+  baseUrl: string;
+  canonicalStates: Record<string, { path: string; actions: readonly string[] }>;
+  stateDbPath: string;
+  stateDirectory: string;
+  close(): Promise<void>;
+}
+
+interface VisualFixtureModule {
+  startAdminVisualFixture(options?: { host?: string; port?: number }): Promise<VisualFixture>;
+}
+
+interface ChannelProjection {
+  assignment: unknown;
+  channelId: string;
+  readiness: { code: string };
+  source: string;
+}
+
+async function loadFixtureModule(): Promise<VisualFixtureModule> {
+  // The executable stays plain Node ESM so `npm run admin:visual-fixture` does
+  // not need a second build or browser dependency. Its TypeScript imports are
+  // loaded through the same tsx seam as the existing offline harnesses.
+  // @ts-expect-error The local executable intentionally has no declaration file.
+  return import('../scripts/serve-admin-visual-fixture.mjs') as Promise<VisualFixtureModule>;
+}
+
+async function login(fixture: VisualFixture): Promise<string> {
+  const response = await fetch(`${fixture.baseUrl}/admin/login`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      token: fixture.adminToken,
+      returnTo: '/admin/agents/agent_research',
+    }),
+  });
+  assert.equal(response.status, 303);
+  assert.equal(response.headers.get('location'), '/admin/agents/agent_research');
+  const cookie = response.headers.get('set-cookie')?.split(';')[0];
+  if (!cookie?.startsWith('flue_admin=')) {
+    assert.fail('expected the real Admin login route to set a session cookie');
+  }
+  return cookie;
+}
+
+async function fixtureJson(fixture: VisualFixture, path: string): Promise<any> {
+  const response = await fetch(`${fixture.baseUrl}${path}`, {
+    headers: { authorization: `Bearer ${fixture.adminToken}` },
+  });
+  assert.equal(response.status, 200, path);
+  return response.json();
+}
+
+async function waitForFixtureStatePath(child: ReturnType<typeof spawn>): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let output = '';
+    const timer = setTimeout(() => {
+      reject(new Error(`visual fixture did not start:\n${output}`));
+    }, 10_000);
+    const finish = (callback: () => void) => {
+      clearTimeout(timer);
+      child.stdout?.off('data', onData);
+      child.off('exit', onExit);
+      callback();
+    };
+    const onData = (chunk: unknown) => {
+      output += String(chunk);
+      const statePath = output.match(/Temporary state: (.+)\r?\n/)?.[1];
+      if (statePath) finish(() => resolve(statePath));
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      finish(() => reject(new Error(
+        `visual fixture exited before startup (code ${String(code)}, signal ${String(signal)}):\n${output}`,
+      )));
+    };
+    child.stdout?.on('data', onData);
+    child.once('exit', onExit);
+  });
+}
+
+test('visual fixture seeds the real Agent, Channel, readiness, capability, and memory projections', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+  const fixture = await startAdminVisualFixture();
+  try {
+    const agents = await fixtureJson(fixture, '/admin/api/agents');
+    assert.deepEqual(
+      agents.agents.map((agent: any) => agent.id),
+      ['agent_customer', 'agent_release', 'agent_research'],
+    );
+    const research = agents.agents.find((agent: any) => agent.id === 'agent_research');
+    assert.equal(research.capabilityPreviews.skills[0].name, 'research-brief');
+    assert.equal(research.capabilityPreviews.connectors[0].name, 'Linear');
+    assert.equal(research.capabilityPreviews.repositories[0].name, 'acme/research');
+
+    const channels = await fixtureJson(fixture, '/admin/api/channels');
+    const byId = new Map<string, ChannelProjection>(
+      channels.channels.map((channel: ChannelProjection) => [channel.channelId, channel]),
+    );
+    assert.equal(byId.get('C_RELEASES')?.source, 'configured_and_discovered');
+    assert.equal(byId.get('C_RELEASES')?.readiness.code, 'ready');
+    assert.equal(byId.get('C_SUPPORT')?.readiness.code, 'membership_required');
+    assert.equal(byId.get('C_UNASSIGNED')?.assignment, null);
+    assert.equal(byId.get('C_UNASSIGNED')?.readiness.code, 'unassigned');
+    assert.equal(byId.get('C_DISCOVERED')?.source, 'discovered');
+
+    const owners = await fixtureJson(
+      fixture,
+      '/admin/api/audit/memory/owners?workspaceId=T_VISUAL',
+    );
+    assert.ok(owners.owners.some((owner: any) =>
+      owner.ownerKind === 'agent' && owner.ownerId === 'agent_research'));
+    assert.ok(owners.owners.some((owner: any) =>
+      owner.ownerKind === 'channel' && owner.ownerId === 'C_RELEASES'));
+
+    const agentFiles = await fixtureJson(
+      fixture,
+      '/admin/api/audit/memory/owners/agent/T_VISUAL/agent_research/files',
+    );
+    const channelFiles = await fixtureJson(
+      fixture,
+      '/admin/api/audit/memory/owners/channel/T_VISUAL/C_RELEASES/files',
+    );
+    assert.deepEqual(agentFiles.files.map((file: any) => file.name), [
+      'MEMORY.md',
+      'audience-notes.md',
+      'research-principles.md',
+    ]);
+    assert.deepEqual(channelFiles.files.map((file: any) => file.name), [
+      'MEMORY.md',
+      'release-checklist.md',
+    ]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('canonical visual states use authenticated production URLs and UI actions only', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+  const fixture = await startAdminVisualFixture();
+  try {
+    const unauthenticated = await fetch(`${fixture.baseUrl}/admin/agents/agent_research`, {
+      redirect: 'manual',
+    });
+    assert.equal(unauthenticated.status, 401);
+    const cookie = await login(fixture);
+
+    assert.deepEqual(fixture.canonicalStates, {
+      agentInstructions: { path: '/admin/agents/agent_research', actions: [] },
+      agentMemory: { path: '/admin/agents/agent_research', actions: ['Memory'] },
+      channelsIndex: { path: '/admin/channels', actions: [] },
+      channelDetail: { path: '/admin/channels/T_VISUAL/C_RELEASES', actions: [] },
+      channelAdvanced: {
+        path: '/admin/channels/T_VISUAL/C_RELEASES',
+        actions: ['Advanced'],
+      },
+    });
+
+    for (const state of Object.values(fixture.canonicalStates)) {
+      assert.equal(new URL(state.path, fixture.baseUrl).search, '');
+      const page = await fetch(`${fixture.baseUrl}${state.path}`, { headers: { cookie } });
+      assert.equal(page.status, 200, state.path);
+      const html = await page.text();
+      assert.match(html, /<title>Chickpea · \/admin<\/title>/);
+      assert.match(html, /api\("\/admin\/api\/agents"\)/);
+      assert.doesNotMatch(html, /data-action="fixture-|visualFixture|fixtureState/);
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('visual fixture rejects non-loopback binding and removes its temporary state', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+  await assert.rejects(
+    startAdminVisualFixture({ host: '0.0.0.0' }),
+    /loopback/i,
+  );
+
+  const fixture = await startAdminVisualFixture({ host: '127.0.0.1', port: 0 });
+  assert.equal(fixture.address, '127.0.0.1');
+  assert.ok(fixture.stateDbPath.startsWith(fixture.stateDirectory));
+  assert.ok(existsSync(fixture.stateDirectory));
+  await fixture.close();
+  assert.equal(existsSync(fixture.stateDirectory), false);
+});
+
+test('visual fixture executable removes temporary state when the process exits', async (context) => {
+  const scriptPath = fileURLToPath(new URL('../scripts/serve-admin-visual-fixture.mjs', import.meta.url));
+  const child = spawn(process.execPath, [scriptPath, '--host', '127.0.0.1', '--port', '0']);
+  context.after(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  });
+
+  const stateDbPath = await waitForFixtureStatePath(child);
+  const stateDirectory = dirname(stateDbPath);
+  assert.ok(existsSync(stateDbPath));
+  const exited = once(child, 'exit');
+  assert.equal(child.kill('SIGTERM'), true);
+  const [code, signal] = await exited;
+  assert.equal(code, 0);
+  assert.equal(signal, null);
+  assert.equal(existsSync(stateDirectory), false);
+});
+
+test('production Admin markup exposes only scoped Agent and Channel foundation hooks', () => {
+  const html = renderAdminPage();
+  const firstPaint = html.split('<script>')[0] ?? '';
+
+  assert.match(html, /admin-surface-agent-detail/);
+  assert.match(html, /admin-surface-channels-index/);
+  assert.match(html, /admin-surface-channel-detail/);
+  assert.match(html, /--admin-visual-font:/);
+  assert.match(html, /\.admin-surface\s+\.admin-visual-icon-tile/);
+  assert.match(html, /\.admin-surface\s+\.admin-visual-status/);
+
+  assert.match(firstPaint, /<div id="app" class="frame">/);
+  assert.match(html, /app\.className = "frame onboarding-frame"/);
+  assert.match(html, /<nav class="rail" aria-label="Settings">/);
+  assert.match(html, /<a class="section-nav-item" href="\/admin\/account">Account<\/a>/);
+  assert.doesNotMatch(html, /fixtureState|fixtureCredential|agent_research|C_RELEASES|T_VISUAL/);
+  assert.doesNotMatch(html, /\.onboarding[^,{]*,\s*\.admin-surface|\.settings[^,{]*,\s*\.admin-surface/);
+});
