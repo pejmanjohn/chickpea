@@ -1243,7 +1243,6 @@ details[open].advanced summary::before {
 .actions-list { align-items: center; display: flex; gap: 9px; }
 
 /* ---- unified primary Admin shell ------------------------------------- */
-.agent-shell-brand { display: none; }
 .primary-admin-shell {
   --admin-visual-canvas: #f4ead2;
   --admin-visual-paper: #fffdf7;
@@ -1284,7 +1283,6 @@ details[open].advanced summary::before {
 
 /* Agent and Channel pages keep their specialized rail and content density
    inside the shared attached shell. */
-.admin-surface .agent-shell-sidebar .rail-context { padding-bottom: 14px; }
 .admin-surface .agent-shell-sidebar .rail-head { padding: 0 3px 8px; }
 .agent-slack-context { padding: 0 3px 8px; }
 .agent-slack-row {
@@ -1325,7 +1323,7 @@ details[open].advanced summary::before {
 }
 .agent-roster-item:hover { background: rgba(232, 216, 182, .5); }
 .agent-roster-item.active { background: #f4e8cc; box-shadow: inset 3px 0 var(--admin-visual-gold); }
-.agent-roster-item:focus-visible, .agent-shell-brand .brand-home:focus-visible {
+.agent-roster-item:focus-visible, .primary-shell-brand .brand-home:focus-visible {
   outline: 2px solid var(--ember-press);
   outline-offset: 2px;
 }
@@ -3394,15 +3392,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (state.view === "onboarding") return onboardingRailHtml();
     if (state.view === "usage") return usageRailHtml();
     if (state.view === "team") return teamRailHtml();
-    if (isAgentChannelSurface()) return profilesRailHtml(true);
-    if (state.view === "profiles") return profilesRailHtml(false);
+    if (isAgentChannelSurface()) return profilesRailHtml();
     if (state.view === "settings") return settingsRailHtml();
     if (state.view === "audit") return state.auditDomain === "scheduled-work" ? scheduledWorkRailHtml() : auditRailHtml();
     return channelsRailHtml();
   }
 
   function primaryShellBrandHtml() {
-    return '<div class="primary-shell-brand agent-shell-brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + '<span class="brand-name">Chickpea</span></button></div>';
+    return '<div class="primary-shell-brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + '<span class="brand-name">Chickpea</span></button></div>';
   }
 
   function onboardingRailHtml() {
@@ -3550,39 +3547,20 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(invitation.email) + '</div><div class="team-row-sub">Expires ' + esc(new Date(invitation.expiresAt).toLocaleString()) + '</div><div class="team-statuses"><span class="team-status">Waiting to join</span></div>' + guidance + '</div><div class="team-row-actions">' + actions + '</div></article>';
   }
 
-  function profilesRailHtml(attached) {
-    if (attached) {
-      var connected = isSlackConnected();
-      var workspaceLabel = railGroupLabel(connectedTeamId());
-      var status = connected
-        ? '<span class="agent-slack-status">Connected</span>'
-        : '<span class="agent-slack-status disconnected">Not connected</span>';
-      return '<aside class="rail primary-shell-sidebar agent-shell-sidebar">' +
-        primaryShellBrandHtml() +
-        '<div class="rail-context"><div class="rail-head"><span class="section-eyebrow">Agents</span></div>' +
-        '<div class="agent-slack-context"><div class="agent-slack-row"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack' + status + '</div>' +
-        '<div class="ws-row agent-workspace-row">' + icon("chevron-down") + esc(workspaceLabel) + '</div></div>' +
-        '<nav class="agent-roster" aria-label="Agents">' + agentRosterItemsHtml() +
-        '<button type="button" class="agent-roster-item agent-roster-add" data-action="new-profile">' + icon("plus") + 'New Agent</button></nav></div>' +
-        sectionSwitcherHtml() + '</aside>';
-    }
-    var html = '<nav class="rail" aria-label="Agents"><div class="rail-context">' +
-      '<div class="rail-head"><span class="section-eyebrow">Agents</span></div>' +
-      '<button type="button" class="platform-row" data-action="open-profiles"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack' +
-      (isSlackConnected() ? '<span class="platform-status">Connected</span>' : '') + '</button>' +
-      '<div class="ws-row">Your Agents</div>';
-    if (!state.agents.length) {
-      html += '<div class="empty" style="margin:8px; padding:12px;"><p class="hint">No Agents yet</p></div>';
-    } else {
-      state.agents.forEach(function (agent) {
-        var active = state.profileScreen === "edit" && state.editingAgentId === agent.id;
-        var meta = agentPlacementMeta(agent);
-        html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="edit-profile" data-agent="' + esc(agent.id) + '">' +
-          '<span class="chan-name">' + esc(agent.name) + '</span><span class="chan-meta">' + esc(meta) + '</span></button>';
-      });
-    }
-    html += '<button type="button" class="rail-add' + (state.profileScreen === "create" ? " active" : "") + '" data-action="new-profile">' + icon("plus") + 'New Agent</button>';
-    return html + '</div>' + sectionSwitcherHtml() + '</nav>';
+  function profilesRailHtml() {
+    var connected = isSlackConnected();
+    var workspaceLabel = railGroupLabel(connectedTeamId());
+    var status = connected
+      ? '<span class="agent-slack-status">Connected</span>'
+      : '<span class="agent-slack-status disconnected">Not connected</span>';
+    return '<aside class="rail primary-shell-sidebar agent-shell-sidebar">' +
+      primaryShellBrandHtml() +
+      '<div class="rail-context"><div class="rail-head"><span class="section-eyebrow">Agents</span></div>' +
+      '<div class="agent-slack-context"><div class="agent-slack-row"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack' + status + '</div>' +
+      '<div class="ws-row agent-workspace-row">' + icon("chevron-down") + esc(workspaceLabel) + '</div></div>' +
+      '<nav class="agent-roster" aria-label="Agents">' + agentRosterItemsHtml() +
+      '<button type="button" class="agent-roster-item agent-roster-add" data-action="new-profile">' + icon("plus") + 'New Agent</button></nav></div>' +
+      sectionSwitcherHtml() + '</aside>';
   }
 
   function settingsRailHtml() {
@@ -5338,11 +5316,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }) || null;
   }
 
-  function agentHasDmDefault(agentId) {
-    var legacyDefault = state.assignments.some(function (assignment) {
+  function agentHasLegacyDmDefault(agentId) {
+    return state.assignments.some(function (assignment) {
       return assignment.agentId === agentId && assignment.workspaceId === "*" && assignment.channelId === "*";
     });
-    return legacyDefault || !!dmIdentityForAgent(agentId);
+  }
+
+  function agentHasDmDefault(agentId) {
+    return agentHasLegacyDmDefault(agentId) || !!dmIdentityForAgent(agentId);
   }
 
   function concreteAssignmentsForAgent(agentId) {
@@ -7155,7 +7136,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function usedInHtml(draft) {
     var dmIdentity = dmIdentityForAgent(draft.id);
-    var dm = agentHasDmDefault(draft.id);
+    var dm = agentHasLegacyDmDefault(draft.id) || !!dmIdentity;
     var concrete = concreteAssignmentsForAgent(draft.id);
     var channelRows = '<div class="where-list">';
     concrete.forEach(function (assignment) {

@@ -3092,7 +3092,7 @@ test('Agent and Channel routes share the attached Agent roster and lower navigat
   assert.deepEqual(harness.historyReplaces, []);
   assert.equal(harness.app.className, 'frame primary-admin-shell admin-surface admin-surface-channels-index');
   assert.match(html, /<aside class="rail primary-shell-sidebar agent-shell-sidebar">/);
-  assert.match(html, /class="primary-shell-brand agent-shell-brand"[\s\S]*?data-action="go-home"[\s\S]*?Chickpea/);
+  assert.match(html, /class="primary-shell-brand"[\s\S]*?data-action="go-home"[\s\S]*?Chickpea/);
   assert.doesNotMatch(html, /cloudflare · workers|local · node/);
   assert.match(html, /<nav class="agent-roster" aria-label="Agents">/);
   assert.match(html, /class="agent-roster-item" data-action="edit-profile" data-agent="agent_release"/);
