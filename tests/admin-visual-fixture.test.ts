@@ -299,7 +299,8 @@ test('production Admin markup exposes the shared primary shell and scoped Agent 
   assert.match(html, /--admin-visual-muted:\s*#7f7055/);
   assert.match(html, /--admin-visual-green:\s*#4e7a3e/);
 
-  assert.match(firstPaint, /<div id="app" class="frame">/);
+  assert.match(firstPaint, /<div id="app" class="frame primary-admin-shell" aria-busy="true">/);
+  assert.match(firstPaint, /<nav class="rail primary-shell-sidebar" aria-label="Loading Chickpea">/);
   assert.match(html, /app\.className = "frame onboarding-frame"/);
   assert.match(html, /isPrimaryAdminSurface\(\) \? " primary-admin-shell"/);
   assert.match(html, /<nav class="rail' \+ \(primaryShell \? ' primary-shell-sidebar' : ''\) \+ '" aria-label="Settings">/);

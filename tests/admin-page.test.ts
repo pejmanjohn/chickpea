@@ -431,6 +431,7 @@ function runAdminPageHarness(
     skillResolveError?: { status: number; error: string; message?: string };
     skillResolveFetch?: (source: string) => Promise<FakeResponse>;
     githubStatus?: GithubStatusFixture;
+    settingsLoadFetch?: (path: string, method: string) => Promise<FakeResponse> | undefined;
     githubRepoPages?: Record<string, GithubRepoPageFixture>;
     githubRepoError?: { status: number; error: string; message?: string };
     githubRepoFetch?: (path: string) => Promise<FakeResponse>;
@@ -522,6 +523,7 @@ function runAdminPageHarness(
   agentPostBodies: Array<Record<string, unknown>>;
   skillResolvePosts: Array<{ source: string }>;
   githubRepoCalls: string[];
+  settingsGetCalls: string[];
   skillBrowseFocusCalls(): number;
   skillBrowseHostUpdates(): number;
   skillBrowseHtml(): string;
@@ -659,6 +661,7 @@ function runAdminPageHarness(
   const agentPostBodies: Array<Record<string, unknown>> = [];
   const skillResolvePosts: Array<{ source: string }> = [];
   const githubRepoCalls: string[] = [];
+  const settingsGetCalls: string[] = [];
   const mcpTestPosts: Array<Record<string, unknown>> = [];
   const oauthStartPosts: Array<{
     agentId: string;
@@ -784,6 +787,7 @@ function runAdminPageHarness(
   const apiOAuthStartError = options.apiOAuthStartError;
   const deferAgentPatch = options.deferAgentPatch === true;
   const githubStatus = options.githubStatus;
+  const settingsLoadFetch = options.settingsLoadFetch;
   const githubRepoPages = options.githubRepoPages;
   const githubRepoError = options.githubRepoError;
   const githubRepoFetch = options.githubRepoFetch;
@@ -1147,6 +1151,14 @@ function runAdminPageHarness(
 
   const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
+    if (
+      method === 'GET' &&
+      ['/admin/api/github/status', '/admin/api/egress', '/admin/api/sandbox/status'].includes(path)
+    ) {
+      settingsGetCalls.push(path);
+    }
+    const settingsLoadResponse = settingsLoadFetch?.(path, method);
+    if (settingsLoadResponse) return settingsLoadResponse;
     if (path.startsWith('/admin/api/usage/')) {
       usageApiCalls.push(path);
       if (harnessOptions.usageApiError) return Promise.resolve(jsonResponse({ error: 'usage_unavailable' }, 503));
@@ -2444,6 +2456,7 @@ function runAdminPageHarness(
     agentPostBodies,
     skillResolvePosts,
     githubRepoCalls,
+    settingsGetCalls,
     skillBrowseFocusCalls: () => skillBrowseFocusCalls,
     skillBrowseHostUpdates: () => skillBrowseHostUpdates,
     skillBrowseHtml: () => skillBrowseHost.innerHTML,
@@ -10083,6 +10096,80 @@ test('the left rail keeps one coherent section switcher and section-specific nav
   assert.match(harness.app.innerHTML, /data-settings-panel="github"><section/);
 });
 
+test('leaving Slack settings starts the GitHub, sandbox, and outbound settings loads', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/slack/identities',
+    githubStatus: { mode: 'none', referencingProfiles: [] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'github' }) });
+  await flushAsync();
+  const initializedSettingsGets = [...harness.settingsGetCalls];
+  assert.doesNotMatch(harness.app.innerHTML, /Loading GitHub settings/);
+  assert.match(harness.app.innerHTML, /data-action="github-manifest-open"/);
+
+  click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'sandbox' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /Loading sandbox settings/);
+  assert.match(harness.app.innerHTML, /Not installed|Unsupported on Node/);
+
+  click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'outbound' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /Loading outbound policy/);
+  assert.match(harness.app.innerHTML, /data-action="egress-save"/);
+  assert.deepEqual(harness.settingsGetCalls, initializedSettingsGets);
+});
+
+test('leaving Settings while its shared loads are pending ignores their stale completions', async () => {
+  const pending = new Map<string, (response: FakeResponse) => void>();
+  const deferredPaths = new Set([
+    '/admin/api/providers',
+    '/admin/api/github/status',
+    '/admin/api/egress',
+    '/admin/api/sandbox/status',
+  ]);
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/slack/identities',
+    settingsLoadFetch(path, method) {
+      if (method !== 'GET' || !deferredPaths.has(path)) return undefined;
+      return new Promise<FakeResponse>((resolve) => pending.set(path, resolve));
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'github' }) });
+  assert.equal(pending.size, deferredPaths.size);
+  click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'slack' }) });
+  const renderCountAfterLeaving = harness.renderHistory.length;
+
+  pending.get('/admin/api/providers')?.(jsonResponse({ providers: [] }));
+  pending.get('/admin/api/github/status')?.(jsonResponse({ mode: 'none', referencingProfiles: [] }));
+  pending.get('/admin/api/egress')?.(jsonResponse({ policy: { mode: 'allowlist', domains: [] } }));
+  pending.get('/admin/api/sandbox/status')?.(jsonResponse({
+    installRequested: false,
+    installed: false,
+    storedEnabled: false,
+    enabled: false,
+    instanceType: 'standard-1',
+    allowedHosts: [],
+    monthlySessionCap: 0,
+    monthlySessionCapConfigured: false,
+    target: 'node',
+    githubConnected: false,
+    repositoryGrantReady: false,
+    unmetPrerequisites: ['cloudflare_target'],
+    workersPaidNote: null,
+  }));
+  await flushAsync();
+
+  assert.equal(harness.renderHistory.length, renderCountAfterLeaving);
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Slack identities<\/h1>/);
+  assert.match(harness.app.innerHTML, /class="chan-item active" data-action="settings-section" data-section="slack"/);
+});
+
 test('the unified primary shell centers a capped white paper panel within the post-sidebar canvas and collapses on mobile', () => {
   const page = renderAdminPage();
   assert.match(page, /\.primary-admin-shell\s*\{[^}]*background:\s*var\(--admin-visual-canvas\);[^}]*max-width:\s*none;/s);
@@ -10094,6 +10181,33 @@ test('the unified primary shell centers a capped white paper panel within the po
   assert.match(page, /\.usage-main\s*\{[^}]*max-width:\s*1100px;/s);
   assert.match(page, /@media \(max-width: 1000px\)[\s\S]*?\.primary-admin-shell \.body\s*\{[^}]*gap:\s*15px;[^}]*padding-right:\s*15px;[^}]*\}[\s\S]*?\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*width:\s*228px;/s);
   assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.primary-admin-shell > \.topbar\s*\{[^}]*display:\s*flex;[^}]*\}[\s\S]*?\.primary-admin-shell \.body\s*\{[^}]*gap:\s*0;[^}]*padding-right:\s*0;[^}]*\}[\s\S]*?\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*display:\s*none;/s);
+});
+
+test('the server first paint uses the modern attached shell while Admin data loads', () => {
+  const firstPaint = renderAdminPage().split('<script>')[0] ?? '';
+
+  assert.match(firstPaint, /<div id="app" class="frame primary-admin-shell" aria-busy="true">/);
+  assert.match(firstPaint, /<nav class="rail primary-shell-sidebar" aria-label="Loading Chickpea">/);
+  assert.match(firstPaint, /<details class="topbar-menu"><summary aria-label="Menu"/);
+  assert.match(firstPaint, /<div class="actions actions-list">[\s\S]*?Loading workspace/);
+  assert.match(firstPaint, /<main class="main"><div class="main-inner"><div class="empty" role="status">/);
+  assert.doesNotMatch(firstPaint, /<div id="app" class="frame">\s*<header class="topbar">/s);
+  assert.doesNotMatch(firstPaint, /<button type="button" class="btn btn-soft" disabled>Agents<\/button>/);
+});
+
+test('model controls omit the long Workers AI compaction warning', async () => {
+  const workersAiAgent = { ...releaseAgent, model: 'cloudflare/@cf/zai-org/glm-5.2' };
+  const harness = runAdminPageHarness({ cloudflare: true, agents: [workersAiAgent] });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': releaseAgent.id }) });
+  assert.match(harness.app.innerHTML, /cloudflare\/@cf\/zai-org\/glm-5\.2/);
+  assert.doesNotMatch(harness.app.innerHTML, /declares no context window|auto-compaction is off|long threads grow unbounded|Pin a catalog model/);
+
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /declares no context window|auto-compaction is off|long threads grow unbounded|Pin a catalog model/);
 });
 
 test('the selected Agent roster pill uses only its soft background for emphasis', () => {

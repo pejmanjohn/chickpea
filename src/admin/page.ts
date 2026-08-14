@@ -2355,24 +2355,21 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 </style>
 </head>
 <body>
-<div id="app" class="frame">
+<div id="app" class="frame primary-admin-shell" aria-busy="true">
   <header class="topbar">
     <div class="brand">
-      <span class="avatar">T<svg class="pea" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><g class="pea-eyes"><circle class="pea-eye" cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle class="pea-eye" cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle></g><g class="pea-lids"><path d="M16.4 24.2 Q18.5 22 20.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path d="M27.4 24.2 Q29.5 22 31.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path></g><path class="pea-smile" d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path class="pea-grin" d="M18.5 28.5 Q24 35.5 29.5 28.5 Z" fill="#3B3220"></path><circle class="pea-blush" cx="15.5" cy="28.5" r="2" fill="#DC8A4F"></circle><circle class="pea-blush" cx="32.5" cy="28.5" r="2" fill="#DC8A4F"></circle></svg></span>
+      <span class="avatar"><svg class="pea" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><g class="pea-eyes"><circle class="pea-eye" cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle class="pea-eye" cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle></g><g class="pea-lids"><path d="M16.4 24.2 Q18.5 22 20.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path d="M27.4 24.2 Q29.5 22 31.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path></g><path class="pea-smile" d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path class="pea-grin" d="M18.5 28.5 Q24 35.5 29.5 28.5 Z" fill="#3B3220"></path><circle class="pea-blush" cx="15.5" cy="28.5" r="2" fill="#DC8A4F"></circle><circle class="pea-blush" cx="32.5" cy="28.5" r="2" fill="#DC8A4F"></circle></svg></span>
       <span class="brand-name">Chickpea</span>
     </div>
-    <div class="actions">
-      <button type="button" class="btn btn-soft" disabled>Agents</button>
-      <button type="button" class="btn btn-soft" disabled>Channels</button>
-      <button type="button" class="btn btn-soft" disabled>Settings</button>
-    </div>
+    <details class="topbar-menu"><summary aria-label="Menu"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"></path></svg></summary></details>
+    <div class="actions actions-list"><span class="hint">Loading workspace&hellip;</span></div>
   </header>
   <div class="body">
-    <nav class="rail" aria-label="Agents">
-      <div class="rail-head"><span class="section-eyebrow">Agents</span></div>
-      <div class="ws-row"><svg class="ic" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z"/></svg>Workspace</div>
+    <nav class="rail primary-shell-sidebar" aria-label="Loading Chickpea">
+      <div class="primary-shell-brand"><span class="brand-home"><span class="avatar"><svg class="pea" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><circle cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle><path d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path></svg></span><span class="brand-name">Chickpea</span></span></div>
+      <div class="rail-context"><div class="rail-head"><span class="section-eyebrow">Loading workspace</span></div></div>
     </nav>
-    <main class="main"><div class="main-inner"><div class="empty"><h1 class="page-title">Loading admin...</h1><p class="hint">Reading local configuration.</p></div></div></main>
+    <main class="main"><div class="main-inner"><div class="empty" role="status"><h1 class="page-title">Loading Chickpea&hellip;</h1><p class="hint">Reading your workspace configuration.</p></div></div></main>
   </div>
 </div>
 <script>
@@ -2593,6 +2590,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     settings: null,
     settingsSection: "providers",
     settingsLoaded: false,
+    settingsLoadGeneration: 0,
     settingsError: "",
     modelCatalog: null,
     modelCatalogLoaded: false,
@@ -3103,6 +3101,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function render() {
     var app = document.getElementById("app");
+    if (app.removeAttribute) app.removeAttribute("aria-busy");
     var overlays = teamRemoveModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + memoryDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml() + slackIdentityConfirmModalHtml();
     if (state.view === "onboarding") {
       app.className = "frame onboarding-frame";
@@ -5395,7 +5394,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function modelFieldHtml(draft) {
     var model = draft.model || "";
     var warning = modelWarning(model);
-    var caveat = modelCompactionCaveat(model);
     var open = state.modelPickerOpen;
     // Click-to-open combobox (F6): the input is always the current pin; clicking
     // or focusing it opens the grouped options popover below, and typing filters.
@@ -5408,19 +5406,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '</div>' +
       '<p class="hint">Suggestions come from your providers in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button></p>' +
       (warning ? '<p class="field-error">' + esc(warning) + '</p>' : "") +
-      (caveat ? '<p class="hint warn-accent">' + caveat + '</p>' : "") +
       '</div>';
-  }
-
-  function modelCompactionCaveat(model) {
-    // Every binding-backed cloudflare/* model resolves with contextWindow 0, so
-    // Flue never threshold-compacts it (measured: DM transcripts grow unbounded).
-    // The REST cloudflare-workers-ai/* provider is exempt (it declares a floor),
-    // and "cloudflare/" only prefix-matches the binding provider.
-    if (model && model.indexOf("cloudflare/") === 0) {
-      return "This model resolves through the Workers AI binding, which declares no context window &mdash; so auto-compaction is off and long threads grow unbounded. Pin a catalog model (Claude, GPT) for bounded, auto-compacting context.";
-    }
-    return "";
   }
 
   // Custom-skill rules mirror the server-side valibot schema so an inline error
@@ -9884,7 +9870,16 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     });
   }
 
+  function settingsLoadIsCurrent(generation) {
+    return generation === undefined || generation === state.settingsLoadGeneration;
+  }
+
+  function renderSettingsLoad(generation) {
+    if (settingsLoadIsCurrent(generation)) render();
+  }
+
   function openSettings(sectionId) {
+    var generation = ++state.settingsLoadGeneration;
     state.view = "settings";
     state.settingsSection = normalizeSettingsSection(sectionId || state.settingsSection);
     state.profileScreen = "list";
@@ -9906,23 +9901,23 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       return;
     }
     render();
-    loadSettings().then(render);
-    loadModelCatalogStatus().then(render);
-    loadGithubStatus().then(render);
-    loadEgress().then(render);
-    loadSandboxStatus().then(render);
+    loadSettings(generation).then(function () { renderSettingsLoad(generation); });
+    loadModelCatalogStatus(generation).then(function () { renderSettingsLoad(generation); });
+    loadGithubStatus(generation).then(function () { renderSettingsLoad(generation); });
+    loadEgress(generation).then(function () { renderSettingsLoad(generation); });
+    loadSandboxStatus(generation).then(function () { renderSettingsLoad(generation); });
   }
 
-  function loadGithubStatus() {
+  function loadGithubStatus(generation) {
     var requestId = ++state.githubStatusRequestId;
     state.githubError = "";
     return api("/admin/api/github/status").then(function (body) {
-      if (requestId !== state.githubStatusRequestId) return;
+      if (requestId !== state.githubStatusRequestId || !settingsLoadIsCurrent(generation)) return;
       state.githubStatus = body;
       state.githubStatusLoaded = true;
       state.githubBusy = "";
     }).catch(function (error) {
-      if (requestId !== state.githubStatusRequestId) return;
+      if (requestId !== state.githubStatusRequestId || !settingsLoadIsCurrent(generation)) return;
       state.githubStatusLoaded = true;
       state.githubBusy = "";
       state.githubError = (error && (error.serverMessage || error.message)) || "Could not load GitHub settings.";
@@ -10221,9 +10216,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     });
   }
 
-  function loadSettings() {
+  function loadSettings(generation) {
     state.settingsError = "";
     return api("/admin/api/providers").then(function (body) {
+      if (!settingsLoadIsCurrent(generation)) return;
       state.settings = body;
       state.settingsLoaded = true;
       var openAi = providerSummaryById("openai");
@@ -10240,20 +10236,21 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         loadProviderModels("workers-ai");
       }
     }).catch(function (error) {
+      if (!settingsLoadIsCurrent(generation)) return;
       state.settingsError = error.message;
       state.settingsLoaded = true;
     });
   }
 
-  function loadModelCatalogStatus() {
+  function loadModelCatalogStatus(generation) {
     var requestId = ++state.modelCatalogRequestId;
     state.modelCatalogError = "";
     return api("/admin/api/model-catalog").then(function (body) {
-      if (requestId !== state.modelCatalogRequestId) return;
+      if (requestId !== state.modelCatalogRequestId || !settingsLoadIsCurrent(generation)) return;
       state.modelCatalog = body;
       state.modelCatalogLoaded = true;
     }).catch(function (error) {
-      if (requestId !== state.modelCatalogRequestId) return;
+      if (requestId !== state.modelCatalogRequestId || !settingsLoadIsCurrent(generation)) return;
       state.modelCatalogLoaded = true;
       state.modelCatalogError = (error && (error.serverMessage || error.message)) || "Could not load the model list status.";
     });
@@ -10476,13 +10473,15 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     egressDraft = { mode: policy.mode, domains: domains };
   }
 
-  function loadEgress() {
+  function loadEgress(generation) {
     state.egressError = "";
     return api("/admin/api/egress").then(function (body) {
+      if (!settingsLoadIsCurrent(generation)) return;
       state.egress = body.policy;
       seedEgressDraft(body.policy);
       state.egressLoaded = true;
     }).catch(function (error) {
+      if (!settingsLoadIsCurrent(generation)) return;
       state.egressError = (error && (error.serverMessage || error.message)) || "Could not load outbound access.";
       state.egressLoaded = true;
     });
@@ -10497,13 +10496,15 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     };
   }
 
-  function loadSandboxStatus() {
+  function loadSandboxStatus(generation) {
     state.sandboxError = "";
     return api("/admin/api/sandbox/status").then(function (body) {
+      if (!settingsLoadIsCurrent(generation)) return;
       state.sandboxStatus = body;
       seedSandboxDraft(body);
       state.sandboxLoaded = true;
     }).catch(function (error) {
+      if (!settingsLoadIsCurrent(generation)) return;
       state.sandboxStatus = null;
       state.sandboxError = (error && (error.serverMessage || error.message)) || "Could not load sandbox settings.";
       state.sandboxLoaded = true;
@@ -11957,7 +11958,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "open-settings") { openSettings(target.getAttribute("data-section") || ""); }
     if (action === "settings-section") {
       var nextSettingsSection = normalizeSettingsSection(target.getAttribute("data-section") || "providers");
-      if (nextSettingsSection === "slack") openSettings("slack");
+      if (nextSettingsSection === "slack" || state.settingsSection === "slack") openSettings(nextSettingsSection);
       else {
         state.settingsSection = nextSettingsSection;
         render();
