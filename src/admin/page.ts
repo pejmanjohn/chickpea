@@ -1243,6 +1243,165 @@ details[open].advanced summary::before {
 .topbar-menu > summary:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
 .actions-list { align-items: center; display: flex; gap: 9px; }
 
+/* ---- attached Agent-first shell (Agent detail + Channel surfaces) ---- */
+.agent-shell-brand { display: none; }
+.admin-surface {
+  background: var(--admin-visual-canvas);
+  max-width: none;
+}
+.admin-surface > .topbar { display: none; }
+.admin-surface .body { gap: 0; padding: 0; }
+.admin-surface .agent-shell-sidebar {
+  background: rgba(255, 253, 247, .74);
+  border-radius: 0;
+  border-right: 1px solid rgba(130, 105, 58, .12);
+  box-shadow: none;
+  padding: 27px 22px 22px;
+  width: 292px;
+}
+.admin-surface .agent-shell-brand {
+  align-items: center;
+  display: flex;
+  gap: 11px;
+  padding: 0 3px 25px;
+}
+.admin-surface .agent-shell-brand .brand-home { flex: 1; }
+.admin-surface .agent-shell-brand .brand-name { font-size: 1.25rem; }
+.admin-surface .agent-shell-brand .chip {
+  border-radius: 999px;
+  margin-left: auto;
+  overflow-wrap: normal;
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+.admin-surface .agent-shell-sidebar .rail-context { padding-bottom: 14px; }
+.admin-surface .agent-shell-sidebar .rail-head { padding: 0 3px 8px; }
+.agent-slack-context { padding: 0 3px 8px; }
+.agent-slack-row {
+  align-items: center;
+  color: var(--text);
+  display: flex;
+  font-size: .8125rem;
+  font-weight: 700;
+  gap: 10px;
+  min-height: 42px;
+}
+.agent-slack-row .platform-logo { height: 22px; width: 22px; }
+.agent-slack-status {
+  align-items: center;
+  color: var(--ok);
+  display: inline-flex;
+  font-size: .6875rem;
+  gap: 5px;
+  margin-left: auto;
+}
+.agent-slack-status::before { background: currentColor; border-radius: 50%; content: ""; height: 7px; width: 7px; }
+.agent-slack-status.disconnected { color: var(--text-3); }
+.agent-workspace-row { margin: 3px 0 2px; padding: 6px 0; }
+.agent-roster { display: flex; flex-direction: column; gap: 4px; }
+.agent-roster-item {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 9px;
+  text-align: left;
+  width: 100%;
+}
+.agent-roster-item:hover { background: rgba(232, 216, 182, .5); }
+.agent-roster-item.active { background: #f4e8cc; box-shadow: inset 3px 0 var(--admin-visual-gold); }
+.agent-roster-item:focus-visible, .agent-shell-brand .brand-home:focus-visible {
+  outline: 2px solid var(--ember-press);
+  outline-offset: 2px;
+}
+.agent-roster-icon {
+  align-items: center;
+  background: #e6edf8;
+  border-radius: 10px;
+  color: #526ca9;
+  display: inline-flex;
+  flex: none;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+.agent-roster-icon.variant-1 { background: #e7f1e3; color: #5f8d58; }
+.agent-roster-icon.variant-2 { background: #efe6f4; color: #7d6091; }
+.agent-roster-icon .ic { height: 18px; width: 18px; }
+.agent-roster-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.agent-roster-name {
+  font-size: .75rem;
+  font-weight: 750;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-roster-meta {
+  color: var(--text-3);
+  font-size: .625rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-roster-add { margin: 5px 0 0; padding-left: 12px; }
+.admin-surface .agent-shell-sidebar .section-switcher { border-color: var(--admin-visual-line); }
+.admin-surface .main {
+  align-self: center;
+  border: 1px solid rgba(118, 94, 51, .08);
+  height: calc(100% - 44px);
+  margin: 22px 32px;
+  max-width: var(--admin-visual-content-width);
+  padding: 44px 46px 48px;
+}
+.mobile-agent-roster { display: flex; flex-direction: column; gap: 4px; min-width: min(340px, calc(100vw - 40px)); }
+.mobile-agent-roster-head { align-items: center; display: flex; gap: 10px; justify-content: space-between; padding: 4px 6px 8px; }
+.mobile-agent-roster .agent-roster-add { margin-left: 0; }
+
+@media (max-width: 1000px) {
+  .admin-surface .agent-shell-sidebar { width: 228px; }
+  .admin-surface .agent-shell-brand .chip { display: none; }
+  .admin-surface .main { margin-left: 15px; margin-right: 15px; padding: 32px 28px; }
+}
+
+@media (max-width: 740px) {
+  .admin-surface { height: auto; overflow: visible; }
+  .admin-surface > .topbar { display: flex; }
+  .admin-surface .body { flex-direction: column; overflow: visible; }
+  .admin-surface .agent-shell-sidebar { display: none; }
+  .admin-surface .main {
+    align-self: auto;
+    height: auto;
+    margin: 10px;
+    max-height: none;
+    padding: 26px 20px;
+    width: calc(100% - 20px);
+  }
+  .admin-surface .topbar .topbar-menu,
+  .admin-surface .topbar .topbar-menu > summary { display: inline-flex; }
+  .admin-surface .topbar .actions-list { display: none; }
+  .admin-surface .topbar-menu[open] ~ .actions-list {
+    align-items: stretch;
+    background: var(--bg);
+    border-radius: 16px;
+    box-shadow: 0 12px 30px rgba(59, 50, 32, .22), inset 0 0 0 1.5px rgba(59, 50, 32, .08);
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100dvh - 76px);
+    overflow-y: auto;
+    padding: 6px;
+    position: absolute;
+    right: 20px;
+    top: 54px;
+    z-index: 30;
+  }
+}
+
 /* ---- wizard steps ---- */
 .stepper { display: flex; flex-direction: column; gap: 22px; }
 .step-block { display: flex; gap: 13px; }
@@ -2196,9 +2355,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // null. The DELETE of its secrets is issued on the next profile save.
     connectionRemove: null,
     apiConnectionRemove: null,
-    // When the user tries to leave a dirty profile editor, this holds the
-    // pending navigation { action, agent } and the confirm modal is shown.
+    // When the user tries to leave a dirty Agent or Channel editor, this holds
+    // the pending navigation and the shared confirmation modal is shown.
     leavePrompt: null,
+    // The existing mobile hamburger is the narrow-screen transition into the
+    // Agent roster. Focus is explicitly returned to its trigger on close.
+    mobileAgentRosterOpen: false,
+    mobileAgentRosterFocus: "",
     slack: null,
     onboarding: null,
     onboardingError: "",
@@ -2433,6 +2596,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       repository: "M3 1.5A1.5 1.5 0 0 0 1.5 3v9.25A2.25 2.25 0 0 0 3.75 14.5H14a.75.75 0 0 0 .75-.75V3A1.5 1.5 0 0 0 13.25 1.5H3Zm0 1.5h10.25v8.5H3.75c-.263 0-.516.045-.75.128V3Zm.75 2.25A.75.75 0 0 1 6.5 4.5h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1-.75-.75Z",
       "arrow-path": "M13.836 2.477a.75.75 0 0 1 .75.75v3.182a.75.75 0 0 1-.75.75h-3.182a.75.75 0 0 1 0-1.5h1.37l-.84-.841a4.5 4.5 0 0 0-7.08.932.75.75 0 0 1-1.3-.75 6 6 0 0 1 9.44-1.242l.842.84V3.227a.75.75 0 0 1 .75-.75Zm-.911 7.5A.75.75 0 0 1 13.2 11a6 6 0 0 1-9.44 1.241l-.84-.84v1.372a.75.75 0 0 1-1.5 0V9.591a.75.75 0 0 1 .75-.75H5.35a.75.75 0 0 1 0 1.5H3.98l.841.84a4.5 4.5 0 0 0 7.08-.932.75.75 0 0 1 1.025-.272Z",
       "exclamation-triangle": "M6.701 2.25c.577-1 2.02-1 2.598 0l5.196 9a1.5 1.5 0 0 1-1.299 2.25H2.804a1.5 1.5 0 0 1-1.299-2.25l5.196-9ZM8 5a.75.75 0 0 1 .75.75v2.5a.75.75 0 0 1-1.5 0v-2.5A.75.75 0 0 1 8 5Zm0 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z",
+      robot: "M6.5 1.75a1.5 1.5 0 0 1 3 0v.5h1.75A2.75 2.75 0 0 1 14 5v5a2.75 2.75 0 0 1-2.75 2.75h-.5v1a.75.75 0 0 1-1.5 0v-1h-2.5v1a.75.75 0 0 1-1.5 0v-1h-.5A2.75 2.75 0 0 1 2 10V5a2.75 2.75 0 0 1 2.75-2.75H6.5v-.5Zm-1.75 2A1.25 1.25 0 0 0 3.5 5v5c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25V5c0-.69-.56-1.25-1.25-1.25h-6.5ZM6 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2Zm4 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2ZM5.75 9h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1 0-1.5Z",
       "bars-3": "M2 4.75A.75.75 0 0 1 2.75 4h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 4.75Zm0 3.5A.75.75 0 0 1 2.75 7.5h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 8.25Zm0 3.5a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z"
     };
     return '<svg class="ic' + (extra ? " " + extra : "") + '" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="' + paths[name] + '"/></svg>';
@@ -2622,6 +2786,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   // Open a profile's edit screen (from a click or a route), resetting every
   // transient editor state.
   function openProfileEditor(selected) {
+    state.mobileAgentRosterOpen = false;
     state.view = "profiles";
     state.profileScreen = "edit";
     state.editingAgentId = selected.id;
@@ -2633,6 +2798,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function openNewProfile() {
+    state.mobileAgentRosterOpen = false;
     state.view = "profiles";
     state.profileScreen = "create";
     state.profileDraft = newProfileDraft();
@@ -2794,6 +2960,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         state.slackOnboardingFocus = pendingOnboardingFocus;
       }
     }
+    if (state.mobileAgentRosterFocus) {
+      var mobileRosterFocus = state.mobileAgentRosterFocus === "close"
+        ? document.querySelector('[data-action="mobile-agents-close"]')
+        : document.querySelector('.topbar-menu > summary');
+      state.mobileAgentRosterFocus = "";
+      if (mobileRosterFocus && mobileRosterFocus.focus) mobileRosterFocus.focus();
+    }
     if (state.teamRemoveConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
         if (!region) return;
@@ -2909,16 +3082,17 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   // The unsaved-changes guard modal. Rendered only while state.leavePrompt is
-  // set (the user tried to leave a dirty profile editor). The backdrop carries
+  // set (the user tried to leave a dirty Agent or Channel editor). The backdrop carries
   // NO data-action, so a click outside the card is inert (Keep editing is the
   // explicit cancel); the dispatcher's closest("[data-action]") would otherwise
   // treat a backdrop click as an action.
   function leavePromptModalHtml() {
     if (!state.leavePrompt) return "";
+    var subject = state.leavePrompt.kind === "channel" ? "Channel" : "Agent";
     return '<div class="modal-backdrop">' +
       '<div class="modal-card" role="dialog" aria-modal="true" aria-label="Unsaved changes">' +
       '<h2 class="modal-title">Unsaved changes</h2>' +
-      '<p class="modal-body">This Agent has changes you haven&rsquo;t saved. Save them before leaving, or discard them.</p>' +
+      '<p class="modal-body">This ' + subject + ' has changes you haven&rsquo;t saved. Save them before leaving, or discard them.</p>' +
       '<div class="modal-foot">' +
       '<button type="button" class="btn btn-ghost" data-action="leave-cancel">Keep editing</button>' +
       '<span class="spacer"></span>' +
@@ -2933,17 +3107,22 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var connectedBadge = isSlackConnected()
       ? '<span class="badge badge-on"><span class="dot"></span>Connected</span>'
       : "";
-    // The brand doubles as a home affordance back to the Channels overview.
-    return '<header class="topbar">' +
+    var scoped = isAgentChannelSurface();
+    var mobileRoster = scoped && state.mobileAgentRosterOpen;
+    var actions = mobileRoster
+      ? mobileAgentRosterHtml()
+      : connectedBadge +
+        '<button type="button" class="btn btn-soft' + (primarySection() === "profiles" ? " nav-active" : "") + '" data-action="' + (scoped ? "mobile-agents-open" : "open-profiles") + '" data-section-switcher="true">Agents</button>' +
+        '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-channels" data-section-switcher="true">Channels</button>' +
+        '<button type="button" class="btn btn-soft' + (primarySection() === "team" ? " nav-active" : "") + '" data-action="open-team" data-section-switcher="true">Team</button>' +
+        (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (primarySection() === "usage" ? " nav-active" : "") + '" data-action="open-usage" data-section-switcher="true">Usage</button>' : '') +
+        '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>' +
+        '<a class="btn btn-soft" href="/admin/account">Account</a>';
+    // The brand doubles as a home affordance to the canonical Agent.
+    return '<header class="topbar' + (scoped ? ' admin-mobile-topbar' : '') + '">' +
       '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + '<span class="brand-name">Chickpea</span></button><span class="chip">${targetChip}</span></div>' +
-      '<details class="topbar-menu"><summary aria-label="Menu">' + icon("bars-3") + '</summary></details>' +
-      '<div class="actions actions-list">' + connectedBadge +
-      '<button type="button" class="btn btn-soft' + (primarySection() === "profiles" ? " nav-active" : "") + '" data-action="open-profiles" data-section-switcher="true">Agents</button>' +
-      '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-channels" data-section-switcher="true">Channels</button>' +
-      '<button type="button" class="btn btn-soft' + (primarySection() === "team" ? " nav-active" : "") + '" data-action="open-team" data-section-switcher="true">Team</button>' +
-      (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (primarySection() === "usage" ? " nav-active" : "") + '" data-action="open-usage" data-section-switcher="true">Usage</button>' : '') +
-      '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>' +
-      '<a class="btn btn-soft" href="/admin/account">Account</a></div>' +
+      '<details class="topbar-menu"' + (mobileRoster ? ' open' : '') + '><summary aria-label="Menu" data-role="mobile-menu-trigger">' + icon("bars-3") + '</summary></details>' +
+      '<div class="actions actions-list">' + actions + '</div>' +
       "</header>";
   }
 
@@ -2953,6 +3132,51 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function primarySection() {
     return state.view === "audit" ? "channels" : state.view;
+  }
+
+  function isAgentChannelSurface() {
+    return (state.view === "profiles" && state.profileScreen === "edit") ||
+      state.view === "channels";
+  }
+
+  function selectedAgentIdForRoster() {
+    if (state.view === "profiles" && state.profileScreen === "edit") return state.editingAgentId || "";
+    if (state.view === "channels" && state.channelScreen === "detail") {
+      var activeChannel = activeChannelRecord();
+      return activeChannel && activeChannel.agentId || "";
+    }
+    return "";
+  }
+
+  function agentIconVariant(agentId) {
+    var hash = 0;
+    for (var index = 0; index < String(agentId || "").length; index += 1) hash += String(agentId).charCodeAt(index);
+    return hash % 3;
+  }
+
+  function agentPlacementMeta(agent) {
+    var channelCount = concreteAssignmentsForAgent(agent.id).length;
+    return channelCountLabel(channelCount) + (agentHasDmDefault(agent.id) ? " + Direct messages" : "");
+  }
+
+  function agentRosterItemsHtml() {
+    var selectedAgentId = selectedAgentIdForRoster();
+    return state.agents.map(function (agent) {
+      var active = agent.id === selectedAgentId;
+      var meta = agentPlacementMeta(agent);
+      return '<button type="button" class="agent-roster-item' + (active ? ' active' : '') + '" data-action="edit-profile" data-agent="' + esc(agent.id) + '"' +
+        (active ? ' aria-current="page"' : '') + ' aria-label="Open Agent ' + esc(agent.name) + ', ' + esc(meta) + '">' +
+        '<span class="agent-roster-icon variant-' + agentIconVariant(agent.id) + '" aria-hidden="true">' + icon("robot") + '</span>' +
+        '<span class="agent-roster-copy"><span class="agent-roster-name" title="' + esc(agent.name) + '">' + esc(agent.name) + '</span>' +
+        '<span class="agent-roster-meta" title="' + esc(meta) + '">' + esc(meta) + '</span></span></button>';
+    }).join("");
+  }
+
+  function mobileAgentRosterHtml() {
+    return '<div class="mobile-agent-roster" role="group" aria-label="Choose an Agent">' +
+      '<div class="mobile-agent-roster-head"><strong>Agents</strong><button type="button" class="btn btn-ghost btn-sm" data-action="mobile-agents-close">Close</button></div>' +
+      agentRosterItemsHtml() +
+      '<button type="button" class="agent-roster-item agent-roster-add" data-action="new-profile">' + icon("plus") + 'New Agent</button></div>';
   }
 
   function sectionSwitcherHtml() {
@@ -2984,7 +3208,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (state.view === "onboarding") return onboardingRailHtml();
     if (state.view === "usage") return usageRailHtml();
     if (state.view === "team") return teamRailHtml();
-    if (state.view === "profiles") return profilesRailHtml();
+    if (isAgentChannelSurface()) return profilesRailHtml(true);
+    if (state.view === "profiles") return profilesRailHtml(false);
     if (state.view === "settings") return settingsRailHtml();
     if (state.view === "audit") return state.auditDomain === "scheduled-work" ? scheduledWorkRailHtml() : auditRailHtml();
     return channelsRailHtml();
@@ -3135,7 +3360,22 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(invitation.email) + '</div><div class="team-row-sub">Expires ' + esc(new Date(invitation.expiresAt).toLocaleString()) + '</div><div class="team-statuses"><span class="team-status">Waiting to join</span></div>' + guidance + '</div><div class="team-row-actions">' + actions + '</div></article>';
   }
 
-  function profilesRailHtml() {
+  function profilesRailHtml(attached) {
+    if (attached) {
+      var connected = isSlackConnected();
+      var workspaceLabel = railGroupLabel(connectedTeamId());
+      var status = connected
+        ? '<span class="agent-slack-status">Connected</span>'
+        : '<span class="agent-slack-status disconnected">Not connected</span>';
+      return '<aside class="rail agent-shell-sidebar">' +
+        '<div class="agent-shell-brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + '<span class="brand-name">Chickpea</span></button><span class="chip">${targetChip}</span></div>' +
+        '<div class="rail-context"><div class="rail-head"><span class="section-eyebrow">Agents</span></div>' +
+        '<div class="agent-slack-context"><div class="agent-slack-row"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack' + status + '</div>' +
+        '<div class="ws-row agent-workspace-row">' + icon("chevron-down") + esc(workspaceLabel) + '</div></div>' +
+        '<nav class="agent-roster" aria-label="Agents">' + agentRosterItemsHtml() +
+        '<button type="button" class="agent-roster-item agent-roster-add" data-action="new-profile">' + icon("plus") + 'New Agent</button></nav></div>' +
+        sectionSwitcherHtml() + '</aside>';
+    }
     var html = '<nav class="rail" aria-label="Agents"><div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Agents</span></div>' +
       '<button type="button" class="platform-row" data-action="open-profiles"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack' +
@@ -3952,10 +4192,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       return '<main class="main"><div class="main-inner">' + invite + addPanel + emptyBlock + '</div></main>';
     }
     var agent = agentById(assignment.agentId);
+    var channelBack = agent
+      ? '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="channel-back" data-agent="' + esc(agent.id) + '">&larr; ' + esc(agent.name) + '</button>'
+      : '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="channel-back">&larr; Channels</button>';
     var enabled = state.channelDraft.enabled;
     return '<main class="main"><div class="main-inner">' + invite + addPanel +
       '<div class="main-head"><div style="display:flex; flex-direction:column; gap:2px;">' +
-      '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="open-channels">&larr; All Channels</button>' +
+      channelBack +
       '<span class="agent-kicker">Slack Channel</span>' +
       '<h1 class="page-title mono-title">' + esc(channelLabel(assignment)) + '</h1>' +
       '<p class="hint">Its assigned Agent supplies the capabilities; this page holds only Channel-local behavior and memory.</p>' +
@@ -11012,6 +11255,18 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       }
       return;
     }
+    if (action === "mobile-agents-open") {
+      state.mobileAgentRosterOpen = true;
+      state.mobileAgentRosterFocus = "close";
+      render();
+      return;
+    }
+    if (action === "mobile-agents-close") {
+      state.mobileAgentRosterOpen = false;
+      state.mobileAgentRosterFocus = "trigger";
+      render();
+      return;
+    }
     if (state.view === "audit" && state.memoryDirty && (
       action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "audit-tab-scheduled"
@@ -11024,7 +11279,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back" ||
       action === "edit-profile" || action === "new-profile" || action === "open-channel-from-profile" ||
-      action === "open-channel-index" || action === "select-channel"
+      action === "open-channel-index" || action === "select-channel" || action === "channel-back"
     )) {
       state.ownerMemory.error = "Save or discard this memory draft before navigating away.";
       render();
@@ -11051,17 +11306,26 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // open, no other click acts; and an attempt to leave a dirty editor opens
     // it instead of navigating.
     if (action === "leave-cancel") { state.leavePrompt = null; render(); return; }
-    if (action === "leave-discard") { performProfileLeave(state.leavePrompt); return; }
+    if (action === "leave-discard") {
+      if (state.leavePrompt && state.leavePrompt.kind === "channel") performChannelLeave(state.leavePrompt);
+      else performProfileLeave(state.leavePrompt);
+      return;
+    }
     if (action === "leave-save") {
       var pendingLeave = state.leavePrompt;
       state.leavePrompt = null;
-      saveProfile(function () { performProfileLeave(pendingLeave); });
+      if (pendingLeave && pendingLeave.kind === "channel") {
+        saveChannel(function () { performChannelLeave(pendingLeave); });
+      } else {
+        saveProfile(function () { performProfileLeave(pendingLeave); });
+      }
       return;
     }
     if (state.leavePrompt) { return; }
     if (action === "edit-profile" && state.profileScreen === "edit" && target.getAttribute("data-agent") === state.editingAgentId) return;
     if (state.profileScreen === "edit" && state.profileDirty && isEditLeaveAction(action)) {
       state.leavePrompt = {
+        kind: "profile",
         action: action,
         agent: (target.getAttribute("data-agent") || ""),
         section: (target.getAttribute("data-section") || "")
@@ -11069,10 +11333,27 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       render();
       return;
     }
+    if (state.view === "channels" && state.channelScreen === "detail" && state.dirty && isChannelLeaveAction(action) && !channelLeaveTargetIsCurrent(action, target)) {
+      state.leavePrompt = {
+        kind: "channel",
+        action: action,
+        agent: target.getAttribute("data-agent") || "",
+        section: target.getAttribute("data-section") || "",
+        workspace: target.getAttribute("data-workspace") || "",
+        channel: target.getAttribute("data-channel") || ""
+      };
+      render();
+      return;
+    }
 
     // Channels is the platform overview. Concrete rows remain detail screens
-    // underneath it; the brand and top-level Channels button always return here.
+    // underneath it; the top-level Channels button always returns here.
     if (action === "open-channels") { openChannels(); }
+    if (action === "channel-back") {
+      var channelBackAgent = agentById(target.getAttribute("data-agent") || "");
+      if (channelBackAgent) openProfileEditor(channelBackAgent);
+      else openChannels();
+    }
     if (action === "open-channel-index") {
       selectActive(target.getAttribute("data-workspace") || connectedTeamId(), target.getAttribute("data-channel") || "");
       render();
@@ -11166,8 +11447,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }
     if (action === "open-usage" && USAGE_ADMIN_UI) { openUsage(); }
     if (action === "open-audit") { openAuditLogs("", "", ""); }
-    // Brand-as-home: the reliable exit back to the Channels overview.
-    if (action === "go-home") { openChannels(); }
+    // Brand-as-home: the reliable exit to the canonical Agent.
+    if (action === "go-home") { openHome(); }
     // Stepper: mark step 1 done and reveal step 2. Not preventing default lets
     // the Create anchor still open Slack in a new tab.
     if (action === "advance-slack-step") { state.slackStep = 2; state.slackError = ""; state.slackRepair = null; render(); }
@@ -12393,6 +12674,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     window.addEventListener("beforeunload", function (event) {
       if (
         (state.profileScreen === "edit" && state.profileDirty) ||
+        (state.view === "channels" && state.channelScreen === "detail" && state.dirty) ||
         state.memoryDirty ||
         state.ownerMemory.dirty ||
         state.slackConnectionBusy === "update" ||
@@ -12430,9 +12712,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         state.githubDisconnectConfirm = false;
         state.githubDisconnectError = "";
       }
-      if (state.profileScreen === "edit" && state.profileDirty && targetPath !== canonicalPath()) {
+      if (state.ownerMemory.dirty && targetPath !== canonicalPath()) {
         history.pushState(null, "", canonicalPath());
-        state.leavePrompt = { action: "route", path: targetPath };
+        state.ownerMemory.error = "Save or discard this memory draft before navigating away.";
         render();
         return;
       }
@@ -12442,9 +12724,15 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         render();
         return;
       }
-      if (state.ownerMemory.dirty && targetPath !== canonicalPath()) {
+      if (state.profileScreen === "edit" && state.profileDirty && targetPath !== canonicalPath()) {
         history.pushState(null, "", canonicalPath());
-        state.ownerMemory.error = "Save or discard this memory draft before navigating away.";
+        state.leavePrompt = { kind: "profile", action: "route", path: targetPath };
+        render();
+        return;
+      }
+      if (state.view === "channels" && state.channelScreen === "detail" && state.dirty && targetPath !== canonicalPath()) {
+        history.pushState(null, "", canonicalPath());
+        state.leavePrompt = { kind: "channel", action: "route", path: targetPath };
         render();
         return;
       }
@@ -12476,6 +12764,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.editingAgentId = null;
     }
     render();
+  }
+
+  function openHome() {
+    var homeAgent = defaultAgent();
+    if (homeAgent) openProfileEditor(homeAgent);
+    else enterProfiles(null);
   }
 
   function openChannels() {
@@ -12798,13 +13092,15 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }).catch(function (error) { state.saveError = addChannelErrorText(error); render(); });
   }
 
-  function saveChannel() {
+  function saveChannel(onSaved) {
     var assignment = activeChannelRecord();
     if (!assignment) return;
     putAssignment(assignment.workspaceId, assignment.channelId, assignment.agentId, state.channelDraft.enabled, state.channelDraft.channelPromptAddendum, assignment.channelLabel, state.channelDraft.participationMode, assignment.agentId).then(function () {
       state.dirty = false;
       state.saveError = "";
-      return refreshData();
+      return refreshData().then(function () {
+        if (onSaved) onSaved();
+      });
     }).catch(function (error) { state.saveError = error.message; render(); });
   }
 
@@ -13964,6 +14260,18 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       action === "edit-profile" || action === "new-profile" || action === "open-channel-from-profile";
   }
 
+  function isChannelLeaveAction(action) {
+    return action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
+      action === "open-audit" || action === "open-usage" || action === "go-home" || action === "channel-back" ||
+      action === "edit-profile" || action === "new-profile" || action === "open-channel-index" || action === "select-channel";
+  }
+
+  function channelLeaveTargetIsCurrent(action, target) {
+    if ((action !== "select-channel" && action !== "open-channel-index") || !state.active) return false;
+    return target.getAttribute("data-workspace") === state.active.workspaceId &&
+      target.getAttribute("data-channel") === state.active.channelId;
+  }
+
   // Perform a confirmed leave — the edit draft is dropped and the pending
   // navigation is carried out. Used by both "Discard & leave" and the
   // after-save continuation.
@@ -13995,7 +14303,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       openUsage();
     } else if (action === "open-team") {
       openTeam();
-    } else if (action === "go-home" || action === "open-channels") {
+    } else if (action === "go-home") {
+      openHome();
+    } else if (action === "open-channels") {
       openChannels();
     } else if (action === "edit-profile") {
       var selected = agentById((pending && pending.agent) || "");
@@ -14004,11 +14314,50 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     } else if (action === "new-profile") {
       openNewProfile();
     } else if (action === "open-profiles") {
-      enterProfiles((pending && pending.agent) || state.profileLastAgentId || ((state.agents[0] && state.agents[0].id) || ""));
+      enterProfiles((pending && pending.agent) || null);
     } else {
       state.view = "profiles";
       state.profileScreen = "list";
       render();
+    }
+  }
+
+  function performChannelLeave(pending) {
+    state.leavePrompt = null;
+    state.dirty = false;
+    state.saveError = "";
+    var action = pending ? pending.action : "open-channels";
+    if (action === "route") {
+      applyRoute(pending.path);
+    } else if (action === "edit-profile") {
+      var selected = agentById((pending && pending.agent) || "");
+      if (selected) openProfileEditor(selected);
+      else openHome();
+    } else if (action === "new-profile") {
+      openNewProfile();
+    } else if (action === "open-profiles") {
+      enterProfiles((pending && pending.agent) || state.profileLastAgentId || ((defaultAgent() && defaultAgent().id) || ""));
+    } else if (action === "open-settings") {
+      openSettings((pending && pending.section) || "");
+    } else if (action === "open-audit") {
+      openAuditLogs("", "", "");
+    } else if (action === "open-usage") {
+      openUsage();
+    } else if (action === "open-team") {
+      openTeam();
+    } else if (action === "go-home") {
+      openHome();
+    } else if (action === "channel-back") {
+      var backAgent = agentById((pending && pending.agent) || "");
+      if (backAgent) openProfileEditor(backAgent);
+      else openChannels();
+    } else if (action === "select-channel" || action === "open-channel-index") {
+      state.view = "channels";
+      state.channelScreen = "detail";
+      selectActive((pending && pending.workspace) || connectedTeamId(), (pending && pending.channel) || "");
+      render();
+    } else {
+      openChannels();
     }
   }
 
