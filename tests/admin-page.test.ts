@@ -206,6 +206,18 @@ function actionTarget(attributes: Record<string, string>): FakeTarget {
   };
 }
 
+function actionClassTarget(attributes: Record<string, string>, className: string): FakeTarget {
+  return {
+    closest(selector: string) {
+      if (selector === '[data-action]' || selector === `.${className}`) return this;
+      return null;
+    },
+    getAttribute(name: string) {
+      return attributes[name] ?? null;
+    },
+  };
+}
+
 function valueTarget(
   attributes: Record<string, string>,
   value: string,
@@ -944,6 +956,9 @@ function runAdminPageHarness(
       if ((id === 'slack-permission-heading' || id === 'onboarding-connected-heading' || id === 'onboarding-channel-heading') && appHtml.includes(`id="${id}"`)) {
         return focusElement(id);
       }
+      if (id.startsWith('ptab-') && appHtml.includes(`id="${id}"`)) {
+        return focusElement(id);
+      }
       // The favorites search re-renders only its own results container; hand it a
       // tracked fake element so a keystroke's filtered output is observable.
       if (id.startsWith('fav-results-')) {
@@ -1008,6 +1023,13 @@ function runAdminPageHarness(
       }
       if (selector === '[data-action="mobile-agents-close"]' && appHtml.includes('data-action="mobile-agents-close"')) {
         return focusElement('mobile-agents-close');
+      }
+      const agentOverflowAction = selector.match(/^\[data-action="(agent-lifecycle-(?:enable|disable)|delete-profile)"\]$/)?.[1];
+      if (agentOverflowAction && appHtml.includes(`data-action="${agentOverflowAction}"`)) {
+        return focusElement(agentOverflowAction);
+      }
+      if (selector === '[data-action="agent-overflow-toggle"]' && appHtml.includes('data-action="agent-overflow-toggle"')) {
+        return focusElement('agent-overflow-toggle');
       }
       if (selector === '.topbar-menu > summary' && appHtml.includes('data-role="mobile-menu-trigger"')) {
         return focusElement('mobile-menu-trigger');
@@ -3596,7 +3618,7 @@ test('admin page renders channel labels, profile secondary text, and singular ch
   // Drilling into an Agent opens the full-page editor whose placement section
   // links directly to the Channel detail.
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
-  assert.match(harness.app.innerHTML, /<h2 class="section-title">Where it works<\/h2>/);
+  assert.match(harness.app.innerHTML, /class="[^"]*agent-placement-card[^"]*"[\s\S]*?<h2>Where it works<\/h2>/);
   assert.match(harness.app.innerHTML, /data-action="open-channel-from-profile"[^>]*># eng-releases/);
 });
 
@@ -3605,30 +3627,26 @@ test('the profile editor blocks delete while assigned and confirms disable every
   await flushAsync();
 
   const click = harness.listeners.click;
-  const change = harness.listeners.change;
-  assert.ok(click && change);
+  assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
 
-  // Delete is disabled while the profile is attached (the server 409s too); the
-  // footer's usage count explains why.
+  // Lifecycle actions live in one accessible header overflow. Delete is
+  // disabled while the Agent is attached (the server 409s too), and the menu
+  // keeps the blocker visible rather than relying on a disabled control title.
+  click({ target: actionTarget({ 'data-action': 'agent-overflow-toggle' }) });
+  assert.match(harness.app.innerHTML, /role="menu" aria-label="Agent lifecycle actions"/);
   assert.match(harness.app.innerHTML, /data-action="delete-profile" disabled[^>]*>Delete Agent<\/button>/);
-  assert.match(harness.app.innerHTML, /used in 1 channel/);
+  assert.match(harness.app.innerHTML, /Detach it from every Channel before deleting this Agent/);
+  assert.equal(harness.focusedAction(), 'agent-lifecycle-disable');
 
-  // Turning the enable toggle off on an assigned profile asks for confirmation
+  // Choosing Disable on an assigned Agent asks for confirmation
   // (stops-everywhere) before it commits, rather than silently disabling it.
-  change({
-    target: {
-      checked: false,
-      closest: () => null,
-      getAttribute(name: string) {
-        return name === 'data-action' ? 'profile-enable-toggle' : null;
-      },
-    } as unknown as FakeTarget,
-  });
+  click({ target: actionTarget({ 'data-action': 'agent-lifecycle-disable' }) });
   assert.match(harness.app.innerHTML, /Disable Release Profile\?/);
   assert.match(harness.app.innerHTML, /data-action="disable-confirm"/);
   assert.match(harness.app.innerHTML, /data-action="disable-keep"/);
+  assert.equal(harness.focusedAction(), 'agent-overflow-toggle');
 });
 
 test('Profile disable and delete explain how to move an active Slack DM binding', async () => {
@@ -3650,22 +3668,14 @@ test('Profile disable and delete explain how to move an active Slack DM binding'
   });
   await flushAsync();
   const click = harness.listeners.click;
-  const change = harness.listeners.change;
-  assert.ok(click && change);
+  assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
   click({
     target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': dmAgent.id }),
   });
 
-  change({
-    target: {
-      checked: false,
-      closest: () => null,
-      getAttribute(name: string) {
-        return name === 'data-action' ? 'profile-enable-toggle' : null;
-      },
-    } as unknown as FakeTarget,
-  });
+  click({ target: actionTarget({ 'data-action': 'agent-overflow-toggle' }) });
+  click({ target: actionTarget({ 'data-action': 'agent-lifecycle-disable' }) });
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
   assert.match(
@@ -4128,9 +4138,13 @@ test('profile capability tabs switch the visible panel on click', async () => {
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
 
   // Instructions is the default tab: its panel is visible, the others [hidden].
-  assert.match(harness.app.innerHTML, /id="ptab-instructions" class="ptab on"/);
+  assert.match(harness.app.innerHTML, /id="ptab-instructions" class="ptab on" role="tab" aria-selected="true" tabindex="0" aria-controls="ptab-panel-instructions"/);
+  assert.match(harness.app.innerHTML, /id="ptab-skills" class="ptab" role="tab" aria-selected="false" tabindex="-1" aria-controls="ptab-panel-skills"/);
   assert.match(harness.app.innerHTML, /id="ptab-panel-skills"[^>]* hidden/);
   assert.doesNotMatch(harness.app.innerHTML, /id="ptab-panel-instructions"[^>]* hidden/);
+  assert.match(harness.app.innerHTML, /<h2[^>]*>Instructions<\/h2>/);
+  assert.match(harness.app.innerHTML, /The role, priorities, and boundaries this Agent follows everywhere it works/);
+  assert.match(harness.app.innerHTML, /aria-label="Agent instructions"/);
 
   // Clicking the Skills tab swaps the visible panel and the active pill.
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
@@ -4143,6 +4157,15 @@ test('profile capability tabs switch the visible panel on click', async () => {
   assert.match(harness.app.innerHTML, /id="ptab-connections" class="ptab on"/);
   assert.doesNotMatch(harness.app.innerHTML, /id="ptab-panel-connections"[^>]* hidden/);
 
+  // Roving keyboard navigation activates and focuses the next tab.
+  harness.listeners.keydown?.({
+    target: actionClassTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }, 'ptab'),
+    key: 'ArrowRight',
+    preventDefault() {},
+  });
+  assert.match(harness.app.innerHTML, /id="ptab-repositories" class="ptab on" role="tab" aria-selected="true" tabindex="0"/);
+  assert.equal(harness.focusedAction(), 'ptab-repositories');
+
   // Mid-typed whitespace survives a tab round-trip: the keystroke mirror (not
   // a trimming collectProfileDraft) carries the draft across the re-render.
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'instructions' }) });
@@ -4150,6 +4173,71 @@ test('profile capability tabs switch the visible panel on click', async () => {
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'instructions' }) });
   assert.match(harness.app.innerHTML, /Answer carefully\.\n\n- next bullet </);
+  assert.equal((harness.app.innerHTML.match(/class="save-bar-sticky/g) ?? []).length, 1);
+});
+
+test('Agent introduction is a presentation-only first paragraph with a neutral fallback', async () => {
+  const richHarness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_intro',
+    agents: [{
+      ...releaseAgent,
+      id: 'agent_intro',
+      name: 'Introduction Agent',
+      instructions: '**Answer** [release questions](https://example.com/release) with `care` and _clarity_.\n\nKeep this second paragraph out.',
+    }],
+    assignments: [],
+  });
+  await flushAsync();
+
+  assert.match(
+    richHarness.app.innerHTML,
+    /class="agent-profile-intro"[^>]*aria-label="Answer release questions with care and clarity\."[^>]*>Answer release questions with care and clarity\.<\/p>/,
+  );
+  assert.match(richHarness.app.innerHTML, /Keep this second paragraph out/);
+  richHarness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'profile-instructions' }, 'Edited instructions.'),
+  });
+  richHarness.listeners.click?.({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(Object.hasOwn(richHarness.agentPatchBodies[0]?.body ?? {}, 'introduction'), false);
+
+  const emptyHarness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_empty_intro',
+    agents: [{ ...releaseAgent, id: 'agent_empty_intro', instructions: '   \n\n  ' }],
+    assignments: [],
+  });
+  await flushAsync();
+  assert.match(
+    emptyHarness.app.innerHTML,
+    /Configure how this Agent thinks, what it can use, and where it works\./,
+  );
+});
+
+test('Agent lifecycle overflow is the sole truthful control and restores keyboard focus', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin' });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /class="agent-status-chip enabled"[^>]*>[^<]*<span[^>]*><\/span>Active<\/span>/);
+  assert.match(harness.app.innerHTML, /data-action="agent-overflow-toggle"[^>]*aria-label="Actions for Release Profile"[^>]*aria-haspopup="menu"[^>]*aria-expanded="false"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="profile-enable-toggle"|class="profile-foot"/);
+
+  harness.listeners.keydown?.({
+    target: actionClassTarget({ 'data-action': 'agent-overflow-toggle' }, 'agent-overflow-trigger'),
+    key: 'Enter',
+    preventDefault() {},
+  });
+  assert.match(harness.app.innerHTML, /data-action="agent-overflow-toggle"[^>]*aria-expanded="true"/);
+  assert.match(harness.app.innerHTML, /role="menu" aria-label="Agent lifecycle actions"/);
+  assert.match(harness.app.innerHTML, /role="menuitem" data-action="agent-lifecycle-disable">Disable Agent<\/button>/);
+  assert.equal(harness.focusedAction(), 'agent-lifecycle-disable');
+
+  harness.listeners.keydown?.({
+    target: actionClassTarget({ 'data-action': 'agent-lifecycle-disable' }, 'agent-overflow-menuitem'),
+    key: 'Escape',
+    preventDefault() {},
+  });
+  assert.doesNotMatch(harness.app.innerHTML, /role="menu" aria-label="Agent lifecycle actions"/);
+  assert.equal(harness.focusedAction(), 'agent-overflow-toggle');
 });
 
 test('agent-first Admin lands on the Default Agent with Channels in lower navigation', async () => {
@@ -4169,16 +4257,44 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   const harness = runAdminPageHarness({ initialPath: '/admin' });
   await flushAsync();
 
+  assert.match(harness.app.innerHTML, /class="agent-profile-page"/);
+  assert.match(harness.app.innerHTML, /<header class="agent-profile-header">[\s\S]*?<span class="agent-kicker">Agent<\/span>[\s\S]*?<h1 class="page-title">Release Profile<\/h1>/);
   assert.match(harness.app.innerHTML, /aria-label="Agent setup"/);
   for (const tab of ['Instructions', 'Skills', 'Connectors', 'Repositories', 'Memory']) {
     assert.match(harness.app.innerHTML, new RegExp(`role="tab"[^>]*>${tab}`));
   }
   assert.match(harness.app.innerHTML, /aria-label="Agent instructions"/);
-  assert.match(harness.app.innerHTML, /<h2 class="section-title">Model<\/h2>/);
-  assert.match(harness.app.innerHTML, /<h2 class="section-title">Where it works<\/h2>/);
-  assert.match(harness.app.innerHTML, /Direct messages/);
-  assert.match(harness.app.innerHTML, /Slack identity/);
-  assert.match(harness.app.innerHTML, /Coding sandbox/);
+  assert.match(harness.app.innerHTML, /class="agent-tabs-card"/);
+  assert.match(harness.app.innerHTML, /class="[^"]*agent-placement-card[^"]*"[\s\S]*?<h2>Where it works<\/h2>/);
+  assert.match(harness.app.innerHTML, /<h3[^>]*>Channels<\/h3>[\s\S]*?# eng-releases/);
+  assert.match(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>[\s\S]*?identity-bound/);
+  assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
+  assert.match(harness.app.innerHTML, /class="[^"]*agent-model-card[^"]*"[\s\S]*?<h2>Model<\/h2>/);
+  assert.match(harness.app.innerHTML, /class="advanced agent-advanced-card"[\s\S]*?Slack identity[\s\S]*?Coding sandbox/);
+  assert.ok(
+    harness.app.innerHTML.indexOf('class="agent-model-card"') < harness.app.innerHTML.indexOf('class="advanced agent-advanced-card"'),
+    'Model must remain outside and before Agent Advanced',
+  );
+
+  const page = renderAdminPage();
+  assert.match(page, /\.admin-surface \.agent-profile-page\s*\{[^}]*font-family:\s*"Avenir Next"/s);
+  assert.match(page, /\.agent-profile-intro\s*\{[^}]*white-space:\s*nowrap;[^}]*text-overflow:\s*ellipsis;/s);
+  assert.match(page, /\.agent-tabs-card\s*\{[^}]*border-radius:\s*16px;[^}]*overflow:\s*hidden;/s);
+  assert.match(page, /\.agent-placement-card > \.bundle-row, \.agent-placement-card > \.callout\s*\{[^}]*grid-column:\s*1 \/ -1;/s);
+  assert.match(page, /@container \(max-width: 680px\)[\s\S]*?\.agent-profile-header[^{]*\{[^}]*align-items:\s*flex-start;[^}]*flex-direction:\s*column;/s);
+  assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.agent-profile-page \.ptabs\s*\{[^}]*overflow-x:\s*auto;/s);
+});
+
+test('Where it works separates empty Channel placement from identity-bound Direct messages', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    assignments: [],
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /<h3[^>]*>Channels<\/h3>[\s\S]*?No Channels yet/);
+  assert.match(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>[\s\S]*?data-action="open-settings" data-section="slack"/);
+  assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
 });
 
 test('Agent placements prefer the projected Slack Channel name over a raw Channel ID', async () => {
@@ -4439,7 +4555,9 @@ test('Agent deletion is disabled while projected live Slack thread roots exist',
     }],
   });
   await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'agent-overflow-toggle' }) });
   assert.match(harness.app.innerHTML, /data-action="delete-profile" disabled title="This Agent still has live Slack threads\. Wait for them to expire first\."/);
+  assert.match(harness.app.innerHTML, /Wait for its live Slack threads to expire before deleting this Agent/);
 });
 
 test('Channel Advanced edits the exact-Channel owner memory rather than an Agent scalar', async () => {

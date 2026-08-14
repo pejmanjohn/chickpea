@@ -1603,6 +1603,51 @@ details[open].advanced summary::before {
 .ptab-panel .skill-form .conn-tool, .ptab-panel .skill-form .import-row { background: var(--bg); box-shadow: 0 1.5px 0 rgba(59, 50, 32, 0.08); }
 
 /* ---- Agent-first detail and owner memory -------------------------------- */
+.agent-profile-page { display: flex; flex-direction: column; gap: 15px; min-width: 0; }
+.admin-surface .agent-profile-page { font-family: "Avenir Next", Avenir, ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.agent-profile-header { align-items: center; display: flex; gap: 24px; justify-content: space-between; }
+.agent-profile-heading { display: flex; flex: 1; flex-direction: column; gap: 7px; min-width: 0; }
+.agent-profile-heading .page-title { font-size: clamp(2rem, 3.4vw, 2.75rem); letter-spacing: -.04em; line-height: 1.06; }
+.agent-profile-header-actions { align-items: center; display: flex; flex: none; gap: 10px; }
+.agent-status-chip { align-items: center; border-radius: 999px; display: inline-flex; font-size: .75rem; font-weight: 750; gap: 7px; padding: 8px 12px; }
+.agent-status-chip > span { background: currentColor; border-radius: 50%; height: 7px; width: 7px; }
+.agent-status-chip.enabled { background: var(--ok-tint); color: var(--ok); }
+.agent-status-chip.disabled { background: var(--well); color: var(--text-3); }
+.agent-profile-intro { color: var(--text-3); font-size: .9375rem; margin: -5px 0 15px; max-width: 78ch; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.agent-overflow { position: relative; }
+.agent-overflow-trigger { align-items: center; background: var(--bg); border: 1px solid var(--admin-visual-line); border-radius: 10px; color: var(--text); cursor: pointer; display: inline-flex; height: 38px; justify-content: center; width: 42px; }
+.agent-overflow-trigger:focus-visible, .agent-overflow-menu button:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.agent-overflow-menu { background: var(--bg); border: 1px solid var(--admin-visual-line); border-radius: 12px; box-shadow: var(--pop-shadow); display: flex; flex-direction: column; gap: 3px; min-width: 240px; padding: 6px; position: absolute; right: 0; top: calc(100% + 6px); z-index: 25; }
+.agent-overflow-menu button { background: transparent; border: 0; border-radius: 8px; color: var(--text); cursor: pointer; font: inherit; font-size: .8125rem; font-weight: 700; padding: 9px 10px; text-align: left; }
+.agent-overflow-menu button:hover { background: var(--well); }
+.agent-overflow-menu button.danger { color: var(--danger); }
+.agent-overflow-menu button:disabled { cursor: not-allowed; opacity: .48; }
+.agent-overflow-guidance { border-top: 1px solid var(--line); color: var(--text-3); font-size: .6875rem; line-height: 1.45; margin: 3px 4px 0; padding: 8px 6px 3px; }
+.agent-tabs-card { border: 1px solid #dfd2b9; border-radius: 16px; background: var(--bg); overflow: hidden; }
+.agent-tabs-card .ptabs { background: #f5ecd9; border: 0; border-bottom: 1px solid #dfd2b9; border-radius: 0; padding: 10px; }
+.agent-tabs-card .ptab-panel { background: var(--bg); border: 0; border-radius: 0; min-height: 315px; padding: 28px; }
+.agent-tab-head { align-items: flex-start; display: flex; gap: 12px; margin-bottom: 8px; }
+.agent-tab-icon, .agent-card-icon { align-items: center; background: #faf3e2; border: 1px solid #e9ddc5; border-radius: 10px; color: var(--ember-press); display: inline-flex; flex: none; height: 34px; justify-content: center; width: 34px; }
+.agent-tab-head h2, .agent-card-heading h2 { color: var(--text); font-size: 1.05rem; letter-spacing: -.015em; margin: 0 0 4px; }
+.agent-tab-head p, .agent-card-heading p { color: var(--text-3); font-size: .75rem; line-height: 1.45; margin: 0; }
+.agent-instructions-editor .textarea { background: #fdf9f0; font-size: .875rem; line-height: 1.65; min-height: 170px; }
+.agent-instructions-guidance { align-items: flex-start; background: var(--well); border-radius: 10px; color: var(--text-3); display: flex; font-size: .75rem; gap: 8px; line-height: 1.45; margin: 12px 0 0; padding: 10px 12px; }
+.agent-detail-card { align-items: center; background: var(--bg); border: 1px solid var(--admin-visual-line); border-radius: 14px; display: grid; gap: 22px; min-height: 105px; padding: 18px 20px; }
+.agent-placement-card { grid-template-columns: 245px minmax(0, 1fr) auto; }
+.agent-model-card { grid-template-columns: 245px minmax(0, 1fr); }
+.agent-card-heading { align-items: flex-start; display: flex; gap: 12px; }
+.agent-placement-groups { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; }
+.agent-placement-group { min-width: 0; }
+.agent-placement-group h3 { color: var(--text-3); font-size: .625rem; letter-spacing: .08em; margin: 0 0 7px; text-transform: uppercase; }
+.agent-placement-empty { color: var(--text-3); font-size: .75rem; margin: 0; }
+.agent-placement-card > .btn { white-space: nowrap; }
+.agent-placement-card > .bundle-row, .agent-placement-card > .callout { grid-column: 1 / -1; }
+.agent-model-card .agent-model-row { background: transparent; padding: 0; }
+.agent-advanced-card { margin-top: 7px; }
+.agent-advanced-card > summary { align-items: center; display: flex; font-weight: 750; gap: 9px; padding: 16px 18px; }
+.agent-advanced-card > summary::before { display: none; }
+.agent-advanced-card > summary::after { color: var(--text-3); content: "›"; font-size: 1.15rem; margin-left: auto; }
+.agent-advanced-card[open] > summary::after { transform: rotate(90deg); }
 .agent-kicker { color: var(--ember-deep); font-family: var(--mono); font-size: .6875rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .agent-model-row, .agent-advanced-row, .channel-agent-hero, .channel-try-card {
   align-items: center;
@@ -1669,6 +1714,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 .channels-index-copy small { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .channel-platform-mark { align-items: center; background: #fff; border-radius: 10px; display: inline-flex; height: 34px; justify-content: center; width: 34px; }
 @container (max-width: 680px) {
+  .agent-profile-header { align-items: flex-start; flex-direction: column; }
+  .agent-profile-header-actions { width: 100%; }
+  .agent-overflow { margin-left: auto; }
+  .agent-detail-card, .agent-placement-card, .agent-model-card { align-items: stretch; grid-template-columns: 1fr; }
+  .agent-placement-groups { grid-template-columns: 1fr; }
   .owner-memory-layout { grid-template-columns: 1fr; }
   .owner-memory-files { max-height: 180px; overflow-y: auto; }
   .owner-memory-fields, .channel-capability-groups { grid-template-columns: 1fr; }
@@ -1676,6 +1726,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   .channels-index-head, .channels-index-tools { align-items: stretch; flex-direction: column; }
   .channels-index-tools .input { min-width: 0; width: 100%; }
   .channels-index-row { align-items: flex-start; flex-wrap: wrap; }
+}
+
+@media (max-width: 740px) {
+  .agent-profile-page .ptabs { overflow-x: auto; }
+  .agent-profile-page .agent-tabs-card .ptab-panel { padding: 20px; }
+  .agent-profile-page .save-bar-inner { align-items: stretch; }
 }
 
 /* ---- profile repositories ---------------------------------------------- */
@@ -2279,6 +2335,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     profileLastAgentId: null,
     profileDirty: false,
     disableConfirm: false,
+    profileOverflowOpen: false,
     editingAgentId: null,
     profileDraft: null,
     profileError: "",
@@ -2597,6 +2654,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       "arrow-path": "M13.836 2.477a.75.75 0 0 1 .75.75v3.182a.75.75 0 0 1-.75.75h-3.182a.75.75 0 0 1 0-1.5h1.37l-.84-.841a4.5 4.5 0 0 0-7.08.932.75.75 0 0 1-1.3-.75 6 6 0 0 1 9.44-1.242l.842.84V3.227a.75.75 0 0 1 .75-.75Zm-.911 7.5A.75.75 0 0 1 13.2 11a6 6 0 0 1-9.44 1.241l-.84-.84v1.372a.75.75 0 0 1-1.5 0V9.591a.75.75 0 0 1 .75-.75H5.35a.75.75 0 0 1 0 1.5H3.98l.841.84a4.5 4.5 0 0 0 7.08-.932.75.75 0 0 1 1.025-.272Z",
       "exclamation-triangle": "M6.701 2.25c.577-1 2.02-1 2.598 0l5.196 9a1.5 1.5 0 0 1-1.299 2.25H2.804a1.5 1.5 0 0 1-1.299-2.25l5.196-9ZM8 5a.75.75 0 0 1 .75.75v2.5a.75.75 0 0 1-1.5 0v-2.5A.75.75 0 0 1 8 5Zm0 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z",
       robot: "M6.5 1.75a1.5 1.5 0 0 1 3 0v.5h1.75A2.75 2.75 0 0 1 14 5v5a2.75 2.75 0 0 1-2.75 2.75h-.5v1a.75.75 0 0 1-1.5 0v-1h-2.5v1a.75.75 0 0 1-1.5 0v-1h-.5A2.75 2.75 0 0 1 2 10V5a2.75 2.75 0 0 1 2.75-2.75H6.5v-.5Zm-1.75 2A1.25 1.25 0 0 0 3.5 5v5c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25V5c0-.69-.56-1.25-1.25-1.25h-6.5ZM6 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2Zm4 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2ZM5.75 9h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1 0-1.5Z",
+      ellipsis: "M3.75 8a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Zm5.5 0a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Zm5.5 0a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Z",
+      gear: "M8.75 1.25a.75.75 0 0 0-1.5 0v.58a6.2 6.2 0 0 0-1.38.57l-.41-.41A.75.75 0 0 0 4.4 3.05l.41.41c-.24.44-.43.9-.57 1.38h-.58a.75.75 0 0 0 0 1.5h.58c.14.48.33.94.57 1.38l-.41.41A.75.75 0 1 0 5.46 9.2l.41-.41c.44.24.9.43 1.38.57v.58a.75.75 0 0 0 1.5 0v-.58a6.2 6.2 0 0 0 1.38-.57l.41.41a.75.75 0 1 0 1.06-1.06l-.41-.41c.24-.44.43-.9.57-1.38h.58a.75.75 0 0 0 0-1.5h-.58a6.2 6.2 0 0 0-.57-1.38l.41-.41A.75.75 0 0 0 10.54 2l-.41.41a6.2 6.2 0 0 0-1.38-.57v-.59ZM8 7.5a1.9 1.9 0 1 1 0-3.8 1.9 1.9 0 0 1 0 3.8Z",
+      hash: "M5.9 2.14a.75.75 0 0 1 .71.97L6.08 4.8h3.4l.6-1.91a.75.75 0 1 1 1.43.44l-.46 1.47h1.7a.75.75 0 0 1 0 1.5h-2.17l-1 3.2h2.17a.75.75 0 0 1 0 1.5H9.11l-.6 1.91a.75.75 0 1 1-1.43-.44L7.54 11h-3.4l-.6 1.91a.75.75 0 1 1-1.43-.44L2.57 11H.75a.75.75 0 0 1 0-1.5h2.29l1-3.2H1.75a.75.75 0 0 1 0-1.5h2.76l.68-2.17a.75.75 0 0 1 .71-.52Zm-.29 4.16-1 3.2H8l1-3.2H5.61Z",
+      sparkle: "M8 1.25a.75.75 0 0 1 .72.54l.52 1.83a4.5 4.5 0 0 0 3.14 3.14l1.83.52a.75.75 0 0 1 0 1.44l-1.83.52a4.5 4.5 0 0 0-3.14 3.14l-.52 1.83a.75.75 0 0 1-1.44 0l-.52-1.83a4.5 4.5 0 0 0-3.14-3.14l-1.83-.52a.75.75 0 0 1 0-1.44l1.83-.52a4.5 4.5 0 0 0 3.14-3.14l.52-1.83A.75.75 0 0 1 8 1.25Z",
       "bars-3": "M2 4.75A.75.75 0 0 1 2.75 4h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 4.75Zm0 3.5A.75.75 0 0 1 2.75 7.5h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 8.25Zm0 3.5a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z"
     };
     return '<svg class="ic' + (extra ? " " + extra : "") + '" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="' + paths[name] + '"/></svg>';
@@ -2765,6 +2826,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.profileConflict = false;
     state.profileDirty = false;
     state.disableConfirm = false;
+    state.profileOverflowOpen = false;
     state.profileTab = "instructions";
     state.profileRenaming = null;
     state.attachPicker = false;
@@ -5486,11 +5548,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     };
     var repositoryCount = enabledRepositoryGrants(draft).length;
     var tabs = [
-      { id: "instructions", label: "Instructions", count: 0 },
-      { id: "skills", label: "Skills", count: (draft.skills || []).length },
-      { id: "connections", label: "Connectors", count: (draft.mcpServers || []).length + (draft.apiConnections || []).length },
-      { id: "repositories", label: "Repositories", count: repositoryCount },
-      { id: "memory", label: "Memory", count: ownerMemoryEntryCount() }
+      { id: "instructions", label: "Instructions", count: 0, icon: "pencil", description: "The role, priorities, and boundaries this Agent follows everywhere it works." },
+      { id: "skills", label: "Skills", count: (draft.skills || []).length, icon: "sparkle", description: "Repeatable ways this Agent knows how to help." },
+      { id: "connections", label: "Connectors", count: (draft.mcpServers || []).length + (draft.apiConnections || []).length, icon: "check", description: "Apps and services this Agent can read from or act in." },
+      { id: "repositories", label: "Repositories", count: repositoryCount, icon: "repository", description: "Code and documentation this Agent can work with." },
+      { id: "memory", label: "Memory", count: ownerMemoryEntryCount(), icon: "robot", description: "Durable context this Agent can use wherever it works." }
     ];
     var bar = tabs.map(function (tab) {
       var on = tab.id === active;
@@ -5498,24 +5560,25 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         (tab.count ? '<span class="ptab-count">' + tab.count + '</span>' : "") +
         (!on && attention[tab.id] ? '<span class="ptab-dot" aria-hidden="true"></span>' : "") + '</button>';
     }).join("");
-    function panel(id, html) {
-      return '<div class="ptab-panel" id="ptab-panel-' + id + '" role="tabpanel" aria-labelledby="ptab-' + id + '"' + (id === active ? "" : " hidden") + '>' + html + '</div>';
+    function panel(tab, html) {
+      return '<div class="ptab-panel" id="ptab-panel-' + tab.id + '" role="tabpanel" aria-labelledby="ptab-' + tab.id + '"' + (tab.id === active ? "" : " hidden") + '>' +
+        '<div class="agent-tab-head"><span class="agent-tab-icon">' + icon(tab.icon) + '</span><div><h2>' + tab.label + '</h2><p>' + tab.description + '</p></div></div>' + html + '</div>';
     }
-    return '<section class="section">' +
+    return '<section class="agent-tabs-card">' +
       '<div class="ptab-tray">' +
       '<div class="ptabs" role="tablist" aria-label="Agent setup">' + bar + '</div>' +
-      panel("instructions", instructionsPanelHtml(draft, state.profileScreen === "create")) +
-      panel("skills", skillsPanelHtml(draft)) +
-      panel("connections", connectionsPanelHtml(draft)) +
-      panel("repositories", repositoriesPanelHtml(draft)) +
-      panel("memory", ownerMemoryPanelHtml("agent", draft.id, draft.name)) +
+      panel(tabs[0], instructionsPanelHtml(draft, state.profileScreen === "create")) +
+      panel(tabs[1], skillsPanelHtml(draft)) +
+      panel(tabs[2], connectionsPanelHtml(draft)) +
+      panel(tabs[3], repositoriesPanelHtml(draft)) +
+      panel(tabs[4], ownerMemoryPanelHtml("agent", draft.id, draft.name)) +
       '</div>' +
       '</section>';
   }
 
   function instructionsPanelHtml(draft, showPlaceholder) {
-    return '<p class="hint ptab-hint">These travel with the Agent everywhere it works. Channels can add their own instructions without replacing this behavior.</p>' +
-      '<div class="field">' + profileInstructionsFieldHtml(draft, showPlaceholder) + '</div>';
+    return '<div class="field agent-instructions-editor">' + profileInstructionsFieldHtml(draft, showPlaceholder) +
+      '<p class="agent-instructions-guidance">' + icon("check") + '<span>Channels can add local instructions without replacing this Agent behavior.</span></p></div>';
   }
 
   function skillsPanelHtml(draft) {
@@ -6803,6 +6866,61 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   // ---- Edit (card 11) + edge states (card 12) ------------------------------
 
+  function agentIntroduction(instructions) {
+    var paragraph = String(instructions || "").replace(/\\r\\n?/g, "\\n").split(/\\n\\s*\\n/).map(function (value) {
+      return value.trim();
+    }).find(function (value) { return !!value; }) || "";
+    var plain = paragraph
+      .replace(/^\\s{0,3}#{1,6}\\s+/gm, "")
+      .replace(/^\\s{0,3}>\\s?/gm, "")
+      .replace(/^\\s{0,3}(?:[-*+] |\\d+[.)] )/gm, "")
+      .replace(/!\\[([^\\]]*)\\]\\([^)]*\\)/g, "$1")
+      .replace(/\\[([^\\]]+)\\]\\([^)]*\\)/g, "$1")
+      .replace(/<\\/?[^>]+>/g, "")
+      .replace(/[*_~]+/g, "")
+      .replace(new RegExp(String.fromCharCode(96), "g"), "")
+      .replace(/\\s+/g, " ")
+      .trim();
+    return plain || "Configure how this Agent thinks, what it can use, and where it works.";
+  }
+
+  function profileDeletionState(draft) {
+    var dm = agentHasDmDefault(draft.id);
+    var concrete = concreteAssignmentsForAgent(draft.id);
+    var liveRoots = draft.deletion && Array.isArray(draft.deletion.liveSnapshotRoots) ? draft.deletion.liveSnapshotRoots.length : 0;
+    var projectedBlocked = !!(draft.deletion && draft.deletion.blocked);
+    var blocked = dm || concrete.length > 0 || projectedBlocked;
+    var title = blocked
+      ? (dm ? "The DM default can\u2019t be deleted. Detach it everywhere first." : concrete.length ? "Detach it from every channel first." : liveRoots ? "This Agent still has live Slack threads. Wait for them to expire first." : "Remove every Channel placement and Slack identity reference first.")
+      : "This can\u2019t be undone.";
+    var guidance = dm
+      ? "Move its identity-bound Direct messages. Detach it from every Channel before deleting this Agent."
+      : concrete.length
+        ? "Detach it from every Channel before deleting this Agent."
+        : liveRoots
+          ? "Wait for its live Slack threads to expire before deleting this Agent."
+          : projectedBlocked
+            ? "Remove every Channel placement and Slack identity reference before deleting this Agent."
+            : "Deleting this Agent cannot be undone.";
+    return { blocked: blocked, title: title, guidance: guidance };
+  }
+
+  function agentLifecycleHtml(draft) {
+    var deletion = profileDeletionState(draft);
+    var open = !!state.profileOverflowOpen;
+    var lifecycleAction = draft.enabled ? "agent-lifecycle-disable" : "agent-lifecycle-enable";
+    var lifecycleLabel = draft.enabled ? "Disable Agent" : "Enable Agent";
+    var menu = open
+      ? '<div class="agent-overflow-menu" role="menu" aria-label="Agent lifecycle actions">' +
+        '<button type="button" class="agent-overflow-menuitem" role="menuitem" data-action="' + lifecycleAction + '">' + lifecycleLabel + '</button>' +
+        '<button type="button" class="agent-overflow-menuitem danger" role="menuitem" data-action="delete-profile"' + (deletion.blocked ? " disabled" : "") + ' title="' + deletion.title + '">Delete Agent</button>' +
+        '<p class="agent-overflow-guidance">' + deletion.guidance + '</p></div>'
+      : "";
+    return '<div class="agent-profile-header-actions">' +
+      '<span class="agent-status-chip ' + (draft.enabled ? "enabled" : "disabled") + '"><span aria-hidden="true"></span>' + (draft.enabled ? "Active" : "Disabled") + '</span>' +
+      '<div class="agent-overflow"><button type="button" class="agent-overflow-trigger" data-action="agent-overflow-toggle" aria-label="Actions for ' + esc(draft.name || "Agent") + '" aria-haspopup="menu" aria-expanded="' + (open ? "true" : "false") + '">' + icon("ellipsis") + '</button>' + menu + '</div></div>';
+  }
+
   function profileEditHtml() {
     var draft = state.profileDraft;
     // The name lives in the title with an inline rename affordance (pencil →
@@ -6811,32 +6929,29 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       ? '<input class="input page-title-input" id="p-name" name="name" type="text" value="' + esc(draft.name) + '" aria-label="Agent name" data-action="profile-name">'
       : '<span class="title-row"><h1 class="page-title">' + esc(draft.name || "Agent") + '</h1>' +
         '<button type="button" class="rename-btn" data-action="profile-rename" aria-label="Rename Agent">' + icon("pencil") + '</button></span>';
-    return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
+    var introduction = agentIntroduction(draft.instructions);
+    return '<div class="agent-profile-page">' +
       '<button type="button" class="link-btn agent-roster-back" style="align-self:flex-start;" data-action="profiles-back">&larr; All Agents</button>' +
-      '<span class="agent-kicker">Agent</span>' +
-      titleRow +
-      '<p class="hint">Configure how it thinks, what it can use, and where it works.</p></div>' +
-      '<label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (draft.enabled ? "Enabled" : "Disabled") + '</span>' +
-      '<span class="toggle"><span class="thumb"></span><input type="checkbox" name="profile-enabled" data-action="profile-enable-toggle" ' + (draft.enabled ? "checked" : "") + ' aria-label="Agent enabled"></span></label></div>' +
+      '<header class="agent-profile-header"><div class="agent-profile-heading"><span class="agent-kicker">Agent</span>' + titleRow + '</div>' + agentLifecycleHtml(draft) + '</header>' +
+      '<p class="agent-profile-intro" title="' + esc(introduction) + '" aria-label="' + esc(introduction) + '">' + esc(introduction) + '</p>' +
       disableConfirmHtml(draft) +
       profileTabsHtml(draft) +
       usedInHtml(draft) +
-      '<section class="section"><div class="section-head"><div><h2 class="section-title">Model</h2><p class="hint">The intelligence this Agent uses for every response.</p></div></div><div class="agent-model-row"><div><strong>' + esc(modelLabel(draft)) + '</strong><span class="hint">Changes apply to new threads.</span></div>' + modelFieldHtml(draft) + '</div></section>' +
+      '<section class="agent-detail-card agent-model-card"><div class="agent-card-heading"><span class="agent-card-icon">' + icon("robot") + '</span><div><h2>Model</h2><p>The intelligence this Agent uses for every response.</p></div></div><div class="agent-model-row"><div><strong>' + esc(modelLabel(draft)) + '</strong><span class="hint">Changes apply to new threads.</span></div>' + modelFieldHtml(draft) + '</div></section>' +
       agentAdvancedHtml(draft) +
-      profileFooterHtml(draft) +
       '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + (saveBarCueActive() ? " cue" : "") + '">' +
       '<div class="save-bar-inner">' +
       '<p class="save-note">&#9679; Unsaved changes &mdash; applies to new threads</p>' + profileGenericErrorHtml() +
       '<button type="button" class="btn btn-ghost" data-action="discard-profile">Discard</button>' +
       '<button type="button" class="btn btn-primary" data-action="save-profile">Save changes</button>' +
       '</div></div>' +
-      '<div aria-hidden="true" style="height:56px"></div>';
+      '<div aria-hidden="true" style="height:56px"></div></div>';
   }
 
   function agentAdvancedHtml(draft) {
     var identityName = slackIdentityMentionForId(effectiveSlackIdentityId(draft.slackIdentityId || ""));
     var sandboxReady = enabledRepositoryGrants(draft).length > 0;
-    return '<details class="advanced"><summary>Advanced</summary><div class="channel-advanced-content">' +
+    return '<details class="advanced agent-advanced-card"><summary>' + icon("gear") + '<span>Advanced</span></summary><div class="channel-advanced-content">' +
       '<div class="agent-advanced-row"><span><strong>Slack identity</strong><small class="hint">Who sends this Agent\\'s replies in Slack.</small></span><span class="mono">' + esc(identityName) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="open-settings" data-section="slack">Manage</button></div>' +
       profileIdentityHtml(draft) +
       '<div class="agent-advanced-row"><span><strong>Coding sandbox</strong><small class="hint">Run code and work with granted repositories in an isolated environment.</small></span><span class="badge ' + (sandboxReady ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (sandboxReady ? "Available" : "Needs repository") + '</span><button type="button" class="btn btn-soft btn-sm" data-action="open-settings" data-section="sandbox">Settings</button></div>' +
@@ -6846,19 +6961,18 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function usedInHtml(draft) {
     var dm = agentHasDmDefault(draft.id);
     var concrete = concreteAssignmentsForAgent(draft.id);
-    var rows = '<div class="where-list">';
-    if (dm) {
-      rows += '<span class="where-pill dm">' + icon("check") + 'Direct messages <small>identity-bound</small></span>';
-    }
+    var channelRows = '<div class="where-list">';
     concrete.forEach(function (assignment) {
-      rows += '<button type="button" class="where-pill" data-action="open-channel-from-profile" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '"># ' + esc(normalizeChannelLabel(assignment.channelLabel) || assignment.channelId) + ' <span aria-hidden="true">&nearr;</span></button>';
+      channelRows += '<button type="button" class="where-pill" data-action="open-channel-from-profile" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '"># ' + esc(normalizeChannelLabel(assignment.channelLabel) || assignment.channelId) + ' <span aria-hidden="true">&nearr;</span></button>';
     });
-    rows += '</div>';
-    if (!dm && concrete.length === 0) {
-      rows = '<div class="empty"><p class="field-label">This Agent is not placed yet</p><p class="hint">Add it to a Channel, then open that Channel to try it.</p></div>';
-    }
-    var hint = 'Open a Channel to add local instructions or manage exact-Channel memory. Agent changes apply to new threads.';
-    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Where it works</h2><p class="hint">' + hint + '</p></div><button type="button" class="btn btn-soft btn-sm" data-action="attach-open">Add to Channels</button></div>' + rows + attachPickerHtml(draft) + attachNoticeHtml() + '</section>';
+    channelRows += '</div>';
+    if (!concrete.length) channelRows = '<p class="agent-placement-empty">No Channels yet. Add this Agent to one when it is ready.</p>';
+    var dmRows = dm
+      ? '<button type="button" class="where-pill dm" data-action="open-settings" data-section="slack">' + icon("robot") + 'Direct messages <small>identity-bound</small></button>'
+      : '<p class="agent-placement-empty">No Slack identity routes Direct messages to this Agent.</p>';
+    return '<section class="agent-detail-card agent-placement-card"><div class="agent-card-heading"><span class="agent-card-icon">' + icon("hash") + '</span><div><h2>Where it works</h2><p>Open a Channel to tune local behavior there.</p></div></div>' +
+      '<div class="agent-placement-groups"><div class="agent-placement-group"><h3>Channels</h3>' + channelRows + '</div><div class="agent-placement-group"><h3>Direct messages</h3>' + dmRows + '</div></div>' +
+      '<button type="button" class="btn btn-soft btn-sm" data-action="attach-open">Add to channels</button>' + attachPickerHtml(draft) + attachNoticeHtml() + '</section>';
   }
 
   function channelNameLink(assignment) {
@@ -6874,26 +6988,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (parts.length === 1) return parts[0];
     if (parts.length === 2) return parts[0] + " and " + parts[1];
     return parts.slice(0, -1).join(", ") + ", and " + parts[parts.length - 1];
-  }
-
-  // Compact footer row (mirrors the reference pattern): destructive action,
-  // the attach affordance, and the usage count that doubles as the reason the
-  // Delete button is disabled while attachments exist.
-  function profileFooterHtml(draft) {
-    var dm = agentHasDmDefault(draft.id);
-    var concrete = concreteAssignmentsForAgent(draft.id);
-    var liveRoots = draft.deletion && Array.isArray(draft.deletion.liveSnapshotRoots) ? draft.deletion.liveSnapshotRoots.length : 0;
-    var projectedBlocked = !!(draft.deletion && draft.deletion.blocked);
-    var blocked = dm || concrete.length > 0 || projectedBlocked;
-    var name = esc(draft.name || "This Agent");
-    var usage = name + " used in " + channelCountLabel(concrete.length) + (dm ? " + DMs" : "");
-    var deleteTitle = blocked
-      ? (dm ? "The DM default can\\u2019t be deleted. Detach it everywhere first." : concrete.length ? "Detach it from every channel first." : liveRoots ? "This Agent still has live Slack threads. Wait for them to expire first." : "Remove every Channel placement and Slack identity reference first.")
-      : "This can\\u2019t be undone.";
-    return '<div class="profile-foot">' +
-      '<button type="button" class="btn btn-danger" data-action="delete-profile"' + (blocked ? " disabled" : "") + ' title="' + deleteTitle + '">Delete Agent</button>' +
-      '<span class="hint">' + usage + '</span>' +
-      '</div>' + attachPickerHtml(draft) + attachNoticeHtml();
   }
 
   function attachNoticeHtml() {
@@ -11803,14 +11897,39 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // the filter in the input listener below.
     if (action === "profile-model") { openModelPicker(); }
     if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); state.profileDirty = true; closeModelPicker(); }
+    if (action === "agent-overflow-toggle" && state.profileDraft) {
+      state.profileOverflowOpen = !state.profileOverflowOpen;
+      var overflowOpening = state.profileOverflowOpen;
+      render();
+      var overflowFocus = document.querySelector(overflowOpening
+        ? '[data-action="' + (state.profileDraft.enabled ? "agent-lifecycle-disable" : "agent-lifecycle-enable") + '"]'
+        : '[data-action="agent-overflow-toggle"]');
+      if (overflowFocus && overflowFocus.focus) overflowFocus.focus();
+    }
+    if (action === "agent-lifecycle-enable" && state.profileDraft) {
+      state.profileDraft.enabled = true;
+      state.profileOverflowOpen = false;
+      markProfileDirty();
+      render();
+      var enabledTrigger = document.querySelector('[data-action="agent-overflow-toggle"]');
+      if (enabledTrigger && enabledTrigger.focus) enabledTrigger.focus();
+    }
+    if (action === "agent-lifecycle-disable" && state.profileDraft) {
+      state.profileOverflowOpen = false;
+      if (allAssignmentsForAgent(state.profileDraft.id).length > 0) state.disableConfirm = true;
+      else { state.profileDraft.enabled = false; markProfileDirty(); }
+      render();
+      var disabledTrigger = document.querySelector('[data-action="agent-overflow-toggle"]');
+      if (disabledTrigger && disabledTrigger.focus) disabledTrigger.focus();
+    }
     if (action === "save-profile") { saveProfile(); }
     if (action === "reload-profile") { reloadProfile(); }
     if (action === "discard-profile") { discardProfile(); }
     if (action === "delete-profile") { deleteProfile(); }
     if (action === "detach-channel") { detachProfileChannel(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); }
     if (action === "open-channel-from-profile") { state.view = "channels"; state.channelScreen = "detail"; state.profileScreen = "list"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
-    if (action === "disable-keep") { state.disableConfirm = false; render(); }
-    if (action === "disable-confirm") { if (state.profileDraft) state.profileDraft.enabled = false; state.disableConfirm = false; state.profileDirty = true; render(); }
+    if (action === "disable-keep") { state.disableConfirm = false; render(); var keptTrigger = document.querySelector('[data-action="agent-overflow-toggle"]'); if (keptTrigger && keptTrigger.focus) keptTrigger.focus(); }
+    if (action === "disable-confirm") { if (state.profileDraft) state.profileDraft.enabled = false; state.disableConfirm = false; state.profileDirty = true; render(); var confirmedTrigger = document.querySelector('[data-action="agent-overflow-toggle"]'); if (confirmedTrigger && confirmedTrigger.focus) confirmedTrigger.focus(); }
     // Custom-skills editor: open blank / open seeded / remove / save / cancel.
     // Each editor open captures the current field text off state.skillEditor so
     // the inline error survives a re-render (input handlers mirror keystrokes).
@@ -12637,6 +12756,25 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.slackDisconnectError = "";
       render();
       focusSlackDisconnectAction("slack-disconnect-open");
+      return;
+    }
+    var agentOverflowTrigger = event.target && event.target.closest && event.target.closest(".agent-overflow-trigger");
+    if (agentOverflowTrigger && (event.key === "Enter" || event.key === " " || event.key === "ArrowDown")) {
+      event.preventDefault();
+      if (!state.profileOverflowOpen) {
+        state.profileOverflowOpen = true;
+        render();
+        var firstLifecycleAction = document.querySelector('[data-action="' + (state.profileDraft && state.profileDraft.enabled ? "agent-lifecycle-disable" : "agent-lifecycle-enable") + '"]');
+        if (firstLifecycleAction && firstLifecycleAction.focus) firstLifecycleAction.focus();
+      }
+      return;
+    }
+    if (state.profileOverflowOpen && (event.key === "Escape" || event.key === "Esc")) {
+      event.preventDefault();
+      state.profileOverflowOpen = false;
+      render();
+      var lifecycleTrigger = document.querySelector('[data-action="agent-overflow-toggle"]');
+      if (lifecycleTrigger && lifecycleTrigger.focus) lifecycleTrigger.focus();
       return;
     }
     if (state.profileRenaming) {
