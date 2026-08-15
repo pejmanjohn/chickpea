@@ -172,6 +172,7 @@ import {
 import {
   cachedProviderModelCount,
   getProviderFavorites,
+  getWorkersAiEnabled,
   isAdminProviderId,
   isFavoriteProviderId,
   listProviderModels,
@@ -180,6 +181,7 @@ import {
   ProviderModelsUnavailableError,
   ProviderUnreachableError,
   putProviderFavorites,
+  putWorkersAiEnabled,
   validateProviderApiKey,
   type AdminProviderId,
 } from '../config/provider-models.ts';
@@ -505,6 +507,9 @@ const openAiSubscriptionAttemptSchema = v.object({
 const openAiSubscriptionStartSchema = v.object({});
 const openAiAuthMethodSchema = v.object({
   method: v.picklist(['api_key', 'subscription']),
+});
+const workersAiEnabledSchema = v.object({
+  enabled: v.boolean(),
 });
 const modelCatalogModeSchema = v.strictObject({
   mode: v.picklist(['hosted', 'bundled']),
@@ -2857,42 +2862,31 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   // The profile picker's single source of provider groups + suggestions.
-  // Reviewed catalog entries augment both API-key providers and define the
-  // complete Subscription list. OpenRouter and the keyless
+  // Reviewed catalog entries augment the API-key providers. OpenRouter and the keyless
   // Workers AI binding show ONLY the user's starred favorites (curated in the
   // Settings managers), so this route folds those favorites into their
   // suggestions — the per-provider search/favorites endpoints stay the editors.
   app.get('/admin/api/models', async (c) => {
     const settingsStore = settings(c);
     await refreshCatalog(c, false);
-    const [subscription, activeAuthMethod] = await Promise.all([
+    const [subscription, activeAuthMethod, workersAiEnabled] = await Promise.all([
       getOpenAiSubscriptionAuthorizationStatus(settingsStore),
       resolveOpenAiAuthMethod(settingsStore),
+      getWorkersAiEnabled(settingsStore),
     ]);
-    const subscriptionModels = activeCatalogModels('openai_subscription');
     const openAiApiModels = activeCatalogModels('openai_api_key');
     const anthropicApiModels = activeCatalogModels('anthropic_api_key');
     const providers = await Promise.all(
-      modelProviders().map(async (provider) => {
+      modelProviders()
+        .filter((provider) => provider.id !== 'cloudflare' || workersAiEnabled)
+        .map(async (provider) => {
         if (provider.id === 'openai') {
-          const subscriptionConfigured = (
-            subscription.state === 'connected' ||
-            subscription.state === 'account_change_confirmation_required' ||
-            (subscription.state === 'authorizing' && Boolean(subscription.accountFingerprint))
-          );
-          const subscriptionActive = activeAuthMethod === 'subscription';
           return {
             ...provider,
-            configured: subscriptionActive
-              ? subscriptionConfigured
-              : provider.configured,
-            source: subscriptionActive ? 'ChatGPT subscription' : provider.source,
-            suggestions: subscriptionActive
-              ? subscriptionModels.map((model) => model.canonical)
-              : uniqueStrings([
-                  ...openAiApiModels.map((model) => model.canonical),
-                  ...provider.suggestions,
-                ]),
+            suggestions: uniqueStrings([
+              ...openAiApiModels.map((model) => model.canonical),
+              ...provider.suggestions,
+            ]),
             authMethods: {
               activeMethod: activeAuthMethod,
               apiKeyConfigured: provider.configured,
@@ -2920,7 +2914,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           };
         }
         return provider;
-      }),
+        }),
     );
     return c.json({ providers });
   });
@@ -2928,10 +2922,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/providers', async (c) => {
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
-    const [sources, subscription, activeAuthMethod] = await Promise.all([
+    const [sources, subscription, activeAuthMethod, workersAiEnabled] = await Promise.all([
       describeProviderKeySources(platformEnv, settingsStore),
       getOpenAiSubscriptionAuthorizationStatus(settingsStore),
       resolveOpenAiAuthMethod(settingsStore),
+      getWorkersAiEnabled(settingsStore),
     ]);
     return c.json({
       providers: [
@@ -2941,8 +2936,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             ? { activeAuthMethod, subscription }
             : {}),
         })),
-        providerSummary('workers-ai', workersAiStatus(platformEnv)),
+        {
+          ...providerSummary('workers-ai', workersAiStatus(platformEnv)),
+          enabled: workersAiEnabled,
+        },
       ],
+    });
+  });
+
+  app.put('/admin/api/providers/workers-ai/enabled', async (c) => {
+    const parsed = v.safeParse(workersAiEnabledSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    return c.json({
+      provider: 'workers-ai',
+      enabled: await putWorkersAiEnabled(parsed.output.enabled, settings(c)),
     });
   });
 
@@ -2956,26 +2963,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) return invalidRequest(c);
     const method = parsed.output.method;
     const settingsStore = settings(c);
-    if (method === 'api_key') {
-      const key = await resolveProviderApiKey(
-        'openai',
-        c.env as PlatformEnv | undefined,
-        settingsStore,
-      );
-      if (key.source === 'missing') {
-        return c.json({
-          error: 'openai_api_key_missing',
-          message: 'Add an OpenAI API key before selecting it.',
-        }, 409);
-      }
-    } else {
-      const subscription = await getOpenAiSubscriptionAuthorizationStatus(settingsStore);
-      if (!openAiSubscriptionIsReady(subscription)) {
-        return c.json({
-          error: 'openai_subscription_missing',
-          message: 'Connect a ChatGPT subscription before selecting it.',
-        }, 409);
-      }
+    if (method !== 'api_key') {
+      return c.json({
+        error: 'openai_auth_method_unsupported',
+        message: 'OpenAI now uses Platform API keys only.',
+      }, 410);
+    }
+    const key = await resolveProviderApiKey(
+      'openai',
+      c.env as PlatformEnv | undefined,
+      settingsStore,
+    );
+    if (key.source === 'missing') {
+      return c.json({
+        error: 'openai_api_key_missing',
+        message: 'Add an OpenAI API key before selecting it.',
+      }, 409);
     }
     return c.json({
       activeAuthMethod: await saveOpenAiAuthMethod(settingsStore, method),
@@ -3117,13 +3120,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       settingsStore,
       usage(c),
     );
-    if (
-      id === 'openai' &&
-      resolved.source === 'missing' &&
-      openAiSubscriptionIsReady(await getOpenAiSubscriptionAuthorizationStatus(settingsStore))
-    ) {
-      await saveOpenAiAuthMethod(settingsStore, 'subscription');
-    }
     return c.json({
       ok: true,
       provider: providerSummary(id, resolved.source),
@@ -3141,15 +3137,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const settingsStore = settings(c);
       if (id === 'openai' || id === 'anthropic') {
         await refreshCatalog(c, c.req.query('refresh') === '1');
-      }
-      if (id === 'openai' && await resolveOpenAiAuthMethod(settingsStore) === 'subscription') {
-        const snapshot = activeModelCatalogSnapshot();
-        return c.json({
-          provider: id,
-          models: activeCatalogModels('openai_subscription').map((model) => ({ id: model.id })),
-          cached: true,
-          source: snapshot.source,
-        });
       }
       const result = await listProviderModels(id, {
         store: settingsStore,
@@ -7345,12 +7332,6 @@ async function safeModelCatalogStatus(settingsStore: SettingsStore): Promise<{
       lkgAvailable: false,
     };
   }
-}
-
-function openAiSubscriptionIsReady(
-  status: Awaited<ReturnType<typeof getOpenAiSubscriptionAuthorizationStatus>>,
-): boolean {
-  return status.state === 'connected' || status.state === 'account_change_confirmation_required';
 }
 
 interface ProviderSummary {

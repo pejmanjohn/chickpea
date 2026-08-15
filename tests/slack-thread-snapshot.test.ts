@@ -283,7 +283,7 @@ test('agent snapshots freeze only non-secret model credential attribution', () =
   assert.doesNotMatch(JSON.stringify(snapshot), /apiKey|authorization|secret/i);
 });
 
-test('OpenAI method authority resolves installation-wide while the thread model remains frozen', async () => {
+test('legacy OpenAI method state normalizes installation-wide while the thread model remains frozen', async () => {
   const configStore = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -297,7 +297,7 @@ test('OpenAI method authority resolves installation-wide while the thread model 
     const snapshot = snapshotFromEffectiveConfig(config, 1_000);
 
     await saveOpenAiAuthMethod(settings, 'subscription');
-    assert.equal(await resolveOpenAiAuthMethod(settings), 'subscription');
+    assert.equal(await resolveOpenAiAuthMethod(settings), 'api_key');
     assert.doesNotMatch(
       JSON.stringify(snapshot),
       /accessToken|refreshToken|idToken|accountId|identityKey|attemptCapability/,
@@ -308,7 +308,7 @@ test('OpenAI method authority resolves installation-wide while the thread model 
   }
 });
 
-test('slack-thread constructs an isolated subscription model while a Platform key remains configured', async () => {
+test('slack-thread uses the Platform model after a legacy Subscription selection', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-openai-subscription-route-'));
   const dbPath = join(dir, 'state.db');
   const accessToken = 'subscription-access-must-stay-boundary-only';
@@ -349,7 +349,7 @@ test('slack-thread constructs an isolated subscription model while a Platform ke
           id: 'T_SNAPSHOT:C_OPENAI_RUNTIME:1782771902.000100',
           env: {},
         });
-        assert.equal(runtime.model, 'openai-subscription/gpt-5.4');
+        assert.equal(runtime.model, 'openai/gpt-5.4');
         const visible = JSON.stringify(runtime);
         assert.doesNotMatch(visible, new RegExp(accessToken));
         assert.doesNotMatch(visible, new RegExp(apiKey));

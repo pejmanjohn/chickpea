@@ -318,7 +318,7 @@ test('credential invalidation removes an in-flight reconnect so cancel cannot re
   assert.equal(await settings.getSetting(openAiSubscriptionSettingKeys().tokens), undefined);
 });
 
-test('a first credential commit can select Subscription in the same settings patch', async (t) => {
+test('a first credential commit cannot reactivate the retired Subscription lane', async (t) => {
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => settings.close());
 
@@ -328,7 +328,7 @@ test('a first credential commit can select Subscription in the same settings pat
     randomBytes: randomBytes(1),
   }, { selectAuthMethod: true });
 
-  assert.equal(await resolveOpenAiAuthMethod(settings), 'subscription');
+  assert.equal(await resolveOpenAiAuthMethod(settings), 'api_key');
 });
 
 test('disconnect deletes every secret record while preserving a safe disconnected status', async (t) => {

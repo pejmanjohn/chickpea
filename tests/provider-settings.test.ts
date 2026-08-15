@@ -600,6 +600,99 @@ test('provider favorites seed Workers AI defaults and round-trip curated arrays'
   }
 });
 
+test('Workers AI can be disabled without deleting its selected models', async () => {
+  const app = new Hono();
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  app.route('/', createAdminRoutes({
+    store: config,
+    settings,
+    adminToken: ADMIN_TOKEN,
+    knownProviders: new Set(['cloudflare']),
+  }));
+  try {
+    const initialProviders = await app.request('/admin/api/providers', { headers: auth() });
+    assert.equal(initialProviders.status, 200);
+    const initialBody = (await initialProviders.json()) as {
+      providers: Array<{ id: string; enabled?: boolean }>;
+    };
+    assert.equal(initialBody.providers.find((provider) => provider.id === 'workers-ai')?.enabled, true);
+
+    const initialModels = await app.request('/admin/api/models', { headers: auth() });
+    assert.equal(initialModels.status, 200);
+    const initialModelBody = (await initialModels.json()) as {
+      providers: Array<{ id: string; suggestions: string[] }>;
+    };
+    assert.deepEqual(
+      initialModelBody.providers.find((provider) => provider.id === 'cloudflare')?.suggestions,
+      WORKERS_AI_DEFAULT_FAVORITES.map((model) => `cloudflare/${model}`),
+    );
+
+    const disabled = await app.request('/admin/api/providers/workers-ai/enabled', {
+      method: 'PUT',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    assert.equal(disabled.status, 200);
+    assert.deepEqual(await disabled.json(), {
+      provider: 'workers-ai',
+      enabled: false,
+    });
+    const disabledModels = await app.request('/admin/api/models', { headers: auth() });
+    assert.equal(disabledModels.status, 200);
+    const disabledModelBody = (await disabledModels.json()) as {
+      providers: Array<{ id: string }>;
+    };
+    assert.equal(disabledModelBody.providers.some((provider) => provider.id === 'cloudflare'), false);
+
+    const favorites = await app.request('/admin/api/providers/workers-ai/favorites', {
+      headers: auth(),
+    });
+    assert.deepEqual(await favorites.json(), {
+      provider: 'workers-ai',
+      favorites: WORKERS_AI_DEFAULT_FAVORITES,
+    });
+
+    const invalid = await app.request('/admin/api/providers/workers-ai/enabled', {
+      method: 'PUT',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: 'false' }),
+    });
+    assert.equal(invalid.status, 400);
+    const providersAfterInvalid = await app.request('/admin/api/providers', { headers: auth() });
+    const providersAfterInvalidBody = (await providersAfterInvalid.json()) as {
+      providers: Array<{ id: string; enabled?: boolean }>;
+    };
+    assert.equal(
+      providersAfterInvalidBody.providers.find((provider) => provider.id === 'workers-ai')?.enabled,
+      false,
+    );
+
+    const enabled = await app.request('/admin/api/providers/workers-ai/enabled', {
+      method: 'PUT',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    });
+    assert.equal(enabled.status, 200);
+    assert.deepEqual(await enabled.json(), {
+      provider: 'workers-ai',
+      enabled: true,
+    });
+    const reenabledModels = await app.request('/admin/api/models', { headers: auth() });
+    assert.equal(reenabledModels.status, 200);
+    const reenabledModelBody = (await reenabledModels.json()) as {
+      providers: Array<{ id: string; suggestions: string[] }>;
+    };
+    assert.deepEqual(
+      reenabledModelBody.providers.find((provider) => provider.id === 'cloudflare')?.suggestions,
+      WORKERS_AI_DEFAULT_FAVORITES.map((model) => `cloudflare/${model}`),
+    );
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
 test('models endpoint applies stored provider keys before composing provider groups', async () => {
   const app = new Hono();
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });

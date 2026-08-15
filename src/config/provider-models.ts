@@ -60,6 +60,8 @@ export const PROVIDER_FAVORITES_SETTING_KEYS = {
   'workers-ai': 'provider.workers-ai.favorites',
 } as const;
 
+const WORKERS_AI_ENABLED_SETTING_KEY = 'provider.workers-ai.enabled';
+
 const MODEL_CACHE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_PROVIDER_FETCH_TIMEOUT_MS = 8_000;
 const OPENAI_CHAT_MODEL_PREFIXES = ['gpt-', 'o1', 'o3', 'o4', 'o5', 'chatgpt-', 'codex-'];
@@ -156,6 +158,18 @@ export async function putProviderFavorites(
   const normalized = uniqueNonEmptyStrings(favorites);
   await store.setSetting(PROVIDER_FAVORITES_SETTING_KEYS[id], JSON.stringify(normalized));
   return normalized;
+}
+
+export async function getWorkersAiEnabled(store: SettingsStore): Promise<boolean> {
+  return await store.getSetting(WORKERS_AI_ENABLED_SETTING_KEY) !== 'false';
+}
+
+export async function putWorkersAiEnabled(
+  enabled: boolean,
+  store: SettingsStore,
+): Promise<boolean> {
+  await store.setSetting(WORKERS_AI_ENABLED_SETTING_KEY, String(enabled));
+  return enabled;
 }
 
 async function fetchProviderModels(

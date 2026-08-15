@@ -2214,21 +2214,16 @@ test('model list routes refresh with the requested force and retain active inven
   };
   assert.equal(
     modelBody.providers.find((provider) => provider.id === 'openai')?.suggestions.includes(
-      'openai/gpt-admin-hosted',
+      'openai/gpt-admin-api-hosted',
     ),
     true,
   );
+  assert.equal(await settings.getSetting('provider.openai.authMethod'), 'api_key');
 
-  const subscription = await app.request('/admin/api/providers/openai/models?refresh=1', {
+  const openAiModels = await app.request('/admin/api/providers/openai/models?refresh=1', {
     headers: auth(ADMIN_TOKEN),
   });
-  assert.equal(subscription.status, 200);
-  const subscriptionBody = (await subscription.json()) as {
-    source: string;
-    models: Array<{ id: string }>;
-  };
-  assert.equal(subscriptionBody.source, 'hosted');
-  assert.equal(subscriptionBody.models.some((model) => model.id === 'gpt-admin-hosted'), true);
+  assert.equal(openAiModels.status, 409);
 
   await settings.setSetting('provider.openai.authMethod', 'api_key');
   const apiKeyModels = await app.request('/admin/api/models', { headers: auth(ADMIN_TOKEN) });
@@ -2276,7 +2271,7 @@ test('model list routes refresh with the requested force and retain active inven
   assert.equal(activeModelCatalogSnapshot().revision, 70);
 });
 
-test('profile writes strictly admit OpenAI installation lanes and the Anthropic API-key lane', async (t) => {
+test('profile writes reject retired OpenAI Subscription-only models and admit the Anthropic API-key lane', async (t) => {
   resetModelCatalogActivationForTests();
   t.after(resetModelCatalogActivationForTests);
   const catalogEntries = [
@@ -2297,7 +2292,7 @@ test('profile writes strictly admit OpenAI installation lanes and the Anthropic 
   await settings.setSetting('provider.openai.authMethod', 'subscription');
   const app = appWithAdminOptions(store, { settings });
 
-  const acceptedOpenAi = await app.request('/admin/api/agents', {
+  const rejectedOpenAi = await app.request('/admin/api/agents', {
     method: 'POST',
     headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
     body: JSON.stringify(agent({
@@ -2305,17 +2300,10 @@ test('profile writes strictly admit OpenAI installation lanes and the Anthropic 
       model: 'openai/gpt-admin-subscription-only',
     })),
   });
-  assert.equal(acceptedOpenAi.status, 201);
-
-  const rejectedPatch = await app.request('/admin/api/agents/agent_catalog_openai', {
-    method: 'PATCH',
-    headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
-    body: JSON.stringify({ expectedRevision: 1, model: 'openai/gpt-not-admitted' }),
-  });
-  assert.equal(rejectedPatch.status, 400);
+  assert.equal(rejectedOpenAi.status, 400);
   assert.match(
-    ((await rejectedPatch.json()) as { message: string }).message,
-    /subscription does not support/i,
+    ((await rejectedOpenAi.json()) as { message: string }).message,
+    /API-key catalog does not support/i,
   );
 
   const acceptedAnthropic = await app.request('/admin/api/agents', {

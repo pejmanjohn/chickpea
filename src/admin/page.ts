@@ -1079,21 +1079,11 @@ details[open].advanced summary::before {
 .prov-body .input { background: var(--bg); }
 .openai-auth-list { display: flex; flex-direction: column; gap: 10px; }
 .openai-auth-option { background: var(--bg); border-radius: 14px; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; }
-.openai-auth-option.active { box-shadow: inset 0 0 0 1.5px var(--ok-solid); }
 .openai-auth-head { align-items: center; display: flex; flex-wrap: wrap; gap: 10px 12px; }
 .openai-auth-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 190px; }
 .openai-auth-title { color: var(--text); font-size: 0.875rem; font-weight: 700; }
 .openai-auth-meta { color: var(--text-3); font-size: 0.75rem; }
 .openai-auth-option .input { background: var(--well); }
-.openai-auth-footer { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 12px; justify-content: space-between; }
-.openai-auth-footer .hint { flex: 1; min-width: 220px; }
-.openai-auth-choice { background: var(--well); border-radius: 14px; display: flex; flex-direction: column; gap: 7px; padding: 14px 16px; }
-.openai-auth-choice-row { align-items: stretch; display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) auto; }
-.openai-auth-choice-row .btn { min-width: 72px; }
-@media (max-width: 620px) {
-  .openai-auth-choice-row { grid-template-columns: 1fr; }
-  .openai-auth-choice-row .btn { justify-self: start; }
-}
 .paste-row { display: flex; flex-wrap: wrap; gap: 9px; }
 .paste-row .input { flex: 1; min-width: 220px; }
 .github-installations { display: flex; flex-direction: column; gap: 10px; }
@@ -1112,6 +1102,24 @@ details[open].advanced summary::before {
 .star.on { color: #d9962c; }
 .star:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
 .fav-empty { color: var(--text-3); font-size: 0.8125rem; padding: 6px 2px; }
+.fav-provider .prov-head { padding: 17px 18px; }
+.fav-provider-id { align-items: center; flex-direction: row; flex-wrap: wrap; gap: 10px; }
+.fav-provider .badge-on { background: var(--ok-tint); box-shadow: none; color: var(--ok); }
+.fav-provider-controls { align-items: center; display: flex; gap: 10px; }
+.fav-provider-error { padding: 0 18px 14px; }
+.fav-provider-body { gap: 0; padding: 0 18px 16px; }
+.fav-summary { align-items: center; display: flex; gap: 16px; justify-content: space-between; min-height: 56px; }
+.fav-summary-copy { align-items: baseline; display: flex; flex-wrap: wrap; gap: 8px 18px; min-width: 0; }
+.fav-summary-title { color: var(--text); font-size: 0.875rem; font-weight: 700; }
+.fav-summary-count { color: var(--text-3); font-size: 0.8125rem; }
+.fav-manager { border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; padding: 14px 0 4px; }
+.fav-selected { border-top: 1px solid var(--line); display: flex; flex-direction: column; }
+.fav-selected .fav-row { background: transparent; border-radius: 0; box-shadow: none; min-height: 44px; padding: 10px 2px; }
+.fav-selected .fav-row + .fav-row { border-top: 1px solid var(--line); }
+.fav-provider-editor { padding-top: 15px; }
+@media (max-width: 620px) {
+  .fav-summary { align-items: flex-start; flex-direction: column; padding: 14px 0; }
+}
 .raw-error {
   background: var(--danger-well);
   border-radius: 12px;
@@ -2631,24 +2639,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     settingsSection: "providers",
     settingsLoaded: false,
     settingsLoadGeneration: 0,
+    providerSettingsRequestId: 0,
     settingsError: "",
     modelCatalog: null,
     modelCatalogLoaded: false,
     modelCatalogError: "",
     modelCatalogBusy: false,
     modelCatalogRequestId: 0,
-    // The device user code and attempt capability exist only in this page's
-    // memory. Reloading or opening Settings elsewhere can observe the safe
-    // authorizing status, but cannot display, poll, cancel, or confirm this attempt.
-    openAiSubscriptionAttempt: null,
-    openAiSubscriptionBusy: "",
-    openAiSubscriptionError: "",
-    openAiSubscriptionDisconnectConfirm: false,
-    openAiSubscriptionCopyStatus: "",
-    openAiAuthMethodDraft: "",
-    openAiAuthMethodDirty: false,
-    openAiAuthMethodBusy: false,
-    openAiAuthMethodError: "",
     // App-level GitHub credentials and installations. Secrets never enter this
     // object: status is write-only metadata plus profile references for the
     // pre-disconnect warning.
@@ -7348,6 +7345,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var sawConfigured = false;
     state.models.providers.forEach(function (provider) {
       if (!provider.configured) return;
+      if (provider.id === "cloudflare" && providerSummaryById("workers-ai").enabled === false) return;
       var adminId = pickerAdminIdFor(provider.id);
       // Skip the REST cloudflare-workers-ai provider — the keyless binding
       // "cloudflare" provider is the one the picker surfaces.
@@ -9155,7 +9153,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       });
       var rows = providers.map(providerRowHtml).join("");
       providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2>' +
-        '<p class="hint">Connect the credentials Chickpea can use. OpenAI can keep both an API key and ChatGPT subscription connected, with one method selected for all OpenAI calls.</p></div></div>' +
+        '<p class="hint">Connect the API credentials Chickpea can use.</p></div></div>' +
         modelCatalogStatusHtml() + rows + '</section>';
     }
     return head +
@@ -9220,10 +9218,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var id = summary.id;
     var meta = providerMeta(id);
     var ui = state.provUi[id] || {};
+    if (isFavoriteProvider(id)) return favoriteProviderRowHtml(summary, ui, meta);
     var body = "";
     if (ui.removeOpen) body = removeConfirmHtml(id, summary);
     else if (ui.open) body = pasteBodyHtml(id, ui, meta);
-    else if (isFavoriteProvider(id)) body = favManagerHtml(id);
     if (id === "openai") return openAiProviderRowHtml(summary, ui, body, meta);
     var head = '<div class="prov-head">' +
       '<div class="prov-id"><span class="prov-name">' + esc(meta.name) + '</span>' +
@@ -9234,46 +9232,48 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return '<div class="prov-row">' + head + (body ? '<div class="prov-body">' + body + '</div>' : "") + '</div>';
   }
 
-  function openAiProviderRowHtml(summary, ui, apiEditor, meta) {
-    var subscription = summary.subscription || { state: "disconnected", updatedAt: 0 };
-    var apiConnected = summary.status === "stored" || summary.status === "env";
-    var subscriptionConnected = subscription.state === "connected" || subscription.state === "account_change_confirmation_required";
-    var activeMethod = summary.activeAuthMethod === "subscription" ? "subscription" : "api_key";
-    var connectedCount = (apiConnected ? 1 : 0) + (subscriptionConnected ? 1 : 0);
-    var showSelection = connectedCount === 2;
-    var apiBadge = '<span class="badge ' + (apiConnected ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (apiConnected ? "Connected" : "Not connected") + '</span>';
-    var apiSource = summary.status === "env" ? "Environment managed" : summary.status === "stored" ? "Saved in Chickpea" : "Platform billing";
-    var apiSelected = showSelection && activeMethod === "api_key";
-    var apiInUse = apiSelected ? '<span class="badge badge-on"><span class="dot"></span>Selected</span>' : "";
-    var apiOption = '<div class="openai-auth-option ' + (apiSelected ? "active" : "") + '"><div class="openai-auth-head">' +
-      '<div class="openai-auth-copy"><span class="openai-auth-title">API key</span><span class="openai-auth-meta">' + esc(apiSource) + '</span></div>' +
-      apiInUse + apiBadge + providerActionsHtml("openai", summary, ui) + '</div>' +
-      (apiEditor ? '<div class="openai-auth-editor">' + apiEditor + '</div>' : "") + '</div>';
-    var head = '<div class="prov-head"><div class="prov-id"><span class="prov-name">' + esc(meta.name) + '</span>' +
-      '<span class="prov-sub">' + esc(meta.sub) + ' &middot; <span class="mono-frag">' + esc(meta.frag) + '</span></span></div>' +
-      '<div class="prov-status"><span class="hint">' + connectedCount + ' of 2 connected</span></div></div>';
-    return '<div class="prov-row">' + head + '<div class="prov-body">' +
-      openAiAuthMethodControlHtml(summary, apiConnected, subscriptionConnected) +
-      '<div class="openai-auth-list">' + apiOption + openAiSubscriptionHtml(subscription, activeMethod, showSelection) + '</div></div></div>';
+  function favoriteProviderRowHtml(summary, ui, meta) {
+    var id = summary.id;
+    var editor = "";
+    if (ui.removeOpen) editor = removeConfirmHtml(id, summary);
+    else if (ui.open) editor = pasteBodyHtml(id, ui, meta);
+    var actions = id === "workers-ai"
+      ? '<div class="fav-provider-controls"><label class="toggle"><span class="thumb"></span><input type="checkbox" data-action="workers-ai-enabled"' + (summary.enabled !== false ? " checked" : "") + ' aria-label="Use Workers AI in Agent model pickers"' + (ui.enabledBusy ? " disabled" : "") + '></label></div>'
+      : providerActionsHtml(id, summary, ui);
+    var head = '<div class="prov-head"><div class="prov-id fav-provider-id"><span class="prov-name">' + esc(meta.name) + '</span>' +
+      favoriteProviderStatusHtml(id, summary) + '</div>' + actions + '</div>';
+    var error = ui.enabledError
+      ? '<div class="fav-provider-error"><p class="field-error" role="alert">' + esc(ui.enabledError) + '</p>' +
+        (ui.enabledRetry ? '<button type="button" class="btn btn-ghost btn-sm" data-action="workers-ai-refresh"' + (ui.enabledBusy ? " disabled" : "") + '>Try again</button>' : "") + '</div>'
+      : "";
+    var body = editor
+      ? '<div class="prov-body fav-provider-body fav-provider-editor">' + editor + '</div>'
+      : favoriteProviderBodyHtml(id);
+    return '<div class="prov-row fav-provider">' + head + error + body + '</div>';
   }
 
-  function openAiAuthMethodControlHtml(summary, apiConnected, subscriptionConnected) {
-    if (!apiConnected || !subscriptionConnected) return "";
-    var saved = summary.activeAuthMethod === "subscription" ? "subscription" : "api_key";
-    var draft = state.openAiAuthMethodDraft === "subscription" ? "subscription" : "api_key";
-    var changed = draft !== saved;
-    var selectedLabel = draft === "subscription" ? "ChatGPT subscription" : "OpenAI API key";
-    var hint = changed
-      ? "Save to use " + selectedLabel + " for every OpenAI call."
-      : "Applies to every OpenAI model and Agent.";
-    var disabled = state.openAiAuthMethodBusy || !changed;
-    return '<div class="openai-auth-choice"><label class="field-label" for="openai-auth-method">Use for OpenAI calls</label>' +
-      '<div class="openai-auth-choice-row"><span class="select-wrap"><select class="input" id="openai-auth-method" data-action="openai-auth-method"' + (state.openAiAuthMethodBusy ? " disabled" : "") + '>' +
-      '<option value="subscription"' + (draft === "subscription" ? " selected" : "") + '>ChatGPT subscription</option>' +
-      '<option value="api_key"' + (draft === "api_key" ? " selected" : "") + '>OpenAI API key</option></select>' + icon("chevron-down", "select-caret") + '</span>' +
-      '<button type="button" class="btn btn-primary" data-action="openai-auth-method-save"' + (disabled ? " disabled" : "") + '>' + (state.openAiAuthMethodBusy ? "Saving&hellip;" : "Save") + '</button></div>' +
-      '<p class="hint">' + esc(hint) + '</p>' +
-      (state.openAiAuthMethodError ? '<p class="field-error" role="alert">' + esc(state.openAiAuthMethodError) + '</p>' : "") + '</div>';
+  function favoriteProviderStatusHtml(id, summary) {
+    if (id === "workers-ai") {
+      var enabled = summary.enabled !== false;
+      return '<span class="badge ' + (enabled ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (enabled ? "On" : "Off") + '</span>';
+    }
+    if (summary.status === "stored" || summary.status === "env") {
+      return '<span class="badge badge-on"><span class="dot"></span>Connected</span>';
+    }
+    return '<span class="badge badge-off"><span class="dot"></span>API key required</span>';
+  }
+
+  function openAiProviderRowHtml(summary, ui, apiEditor, meta) {
+    var apiConnected = summary.status === "stored" || summary.status === "env";
+    var apiBadge = '<span class="badge ' + (apiConnected ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (apiConnected ? "Connected" : "Not connected") + '</span>';
+    var apiSource = summary.status === "env" ? "Environment managed" : summary.status === "stored" ? "Saved in Chickpea" : "Platform billing";
+    var apiOption = '<div class="openai-auth-option"><div class="openai-auth-head">' +
+      '<div class="openai-auth-copy"><span class="openai-auth-title">API key</span><span class="openai-auth-meta">' + esc(apiSource) + '</span></div>' +
+      apiBadge + providerActionsHtml("openai", summary, ui) + '</div>' +
+      (apiEditor ? '<div class="openai-auth-editor">' + apiEditor + '</div>' : "") + '</div>';
+    var head = '<div class="prov-head"><div class="prov-id"><span class="prov-name">' + esc(meta.name) + '</span>' +
+      '<span class="prov-sub">' + esc(meta.sub) + ' &middot; <span class="mono-frag">' + esc(meta.frag) + '</span></span></div></div>';
+    return '<div class="prov-row">' + head + '<div class="prov-body"><div class="openai-auth-list">' + apiOption + '</div></div></div>';
   }
 
   function providerStatusHtml(id, summary) {
@@ -9301,73 +9301,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       return '<div class="prov-status"><span class="badge badge-off"><span class="dot"></span>' + (id === "openai" ? "API key missing" : "Missing") + '</span></div>';
     }
     return '<div class="prov-status">' + chip + '<span class="hint">' + esc(parts.join(" · ")) + '</span></div>';
-  }
-
-  function openAiSubscriptionSummary() {
-    return providerSummaryById("openai").subscription || { state: "disconnected", updatedAt: 0 };
-  }
-
-  function openAiSubscriptionFailureText(code) {
-    if (code === "auth_reconnect_required") return "Authorization expired or was revoked. Reconnect before OpenAI calls can continue.";
-    if (code === "authorization_expired") return "The authorization window expired. Start again when you are ready.";
-    if (code === "entitlement_denied") return "This ChatGPT account is not entitled to the requested model.";
-    if (code === "subscription_quota_exhausted") return "The ChatGPT subscription quota is exhausted. Chickpea will not switch to API billing.";
-    if (code === "client_rejected" || code === "originator_rejected") return "OpenAI rejected Chickpea's experimental client identity. Subscription calls are stopped.";
-    if (code === "protocol_drift" || code === "invalid_response") return "OpenAI's private interface changed. Subscription calls are stopped until Chickpea is updated.";
-    if (code === "request_timeout" || code === "provider_unavailable") return "OpenAI subscription service is temporarily unavailable. Try again without changing billing methods.";
-    return "Subscription authorization needs attention.";
-  }
-
-  function openAiSubscriptionHtml(status, activeMethod, showSelection) {
-    var attempt = state.openAiSubscriptionAttempt;
-    var busy = state.openAiSubscriptionBusy;
-    var stateName = status.state || "disconnected";
-    var badge = stateName === "connected"
-      ? '<span class="badge badge-on"><span class="dot"></span>Connected</span>'
-      : stateName === "authorizing"
-        ? '<span class="badge badge-off"><span class="dot"></span>Authorizing</span>'
-        : stateName === "account_change_confirmation_required"
-          ? '<span class="badge badge-off"><span class="dot"></span>Confirm account change</span>'
-          : stateName === "reconnect_required"
-            ? '<span class="badge badge-off"><span class="dot"></span>Reconnect required</span>'
-            : '<span class="badge badge-off"><span class="dot"></span>Not connected</span>';
-    var actions = "";
-    var detail = "";
-    if (stateName === "authorizing" && attempt) {
-      detail = '<div class="callout"><span><b>Open the authorization page, then enter this one-time code:</b><br>' +
-        '<a href="' + esc(attempt.verificationUri) + '" target="_blank" rel="noopener noreferrer">' + esc(attempt.verificationUri) + ' &nearr;</a><br>' +
-        '<span class="mono" style="font-size:1.15rem; letter-spacing:.08em;">' + esc(attempt.userCode) + '</span> ' +
-        '<button type="button" class="btn btn-ghost btn-sm" data-action="openai-subscription-copy-code">Copy code</button>' +
-        (state.openAiSubscriptionCopyStatus ? '<span class="inline-status" role="status">' + esc(state.openAiSubscriptionCopyStatus) + '</span>' : "") +
-        '</span></div>';
-      actions = '<button type="button" class="btn btn-soft btn-sm" data-action="openai-subscription-poll"' + (busy ? " disabled" : "") + '>' + (busy === "poll" ? "Checking&hellip;" : "Check connection") + '</button>' +
-        '<button type="button" class="btn btn-ghost btn-sm" data-action="openai-subscription-cancel"' + (busy ? " disabled" : "") + '>Cancel</button>';
-    } else if (stateName === "authorizing") {
-      detail = '<p class="hint">Authorization was started in another page or before this reload. The code and browser capability cannot be recovered here; wait for that page to finish, or retry after the attempt expires.</p>';
-    } else if (stateName === "account_change_confirmation_required" && attempt) {
-      detail = '<div class="callout">This would replace the connected ChatGPT account with <span class="mono">' + esc(status.accountFingerprint || "a different account") + '</span>. OpenAI calls stay on the current account until you confirm.</div>';
-      actions = '<button type="button" class="btn btn-primary btn-sm" data-action="openai-subscription-confirm-account"' + (busy ? " disabled" : "") + '>Confirm account change</button>' +
-        '<button type="button" class="btn btn-ghost btn-sm" data-action="openai-subscription-cancel"' + (busy ? " disabled" : "") + '>Keep current account</button>';
-    } else if (stateName === "connected") {
-      detail = status.accountFingerprint ? '<p class="hint">Account <span class="mono">' + esc(status.accountFingerprint) + '</span></p>' : "";
-      actions = '<button type="button" class="btn btn-soft btn-sm" data-action="openai-subscription-start"' + (busy ? " disabled" : "") + '>Reconnect</button>' +
-        '<button type="button" class="btn btn-danger btn-sm" data-action="openai-subscription-disconnect-open"' + (busy ? " disabled" : "") + '>Disconnect</button>';
-    } else {
-      if (status.failureCode) detail = '<p class="field-error" role="alert">' + esc(openAiSubscriptionFailureText(status.failureCode)) + '</p>';
-      actions = '<button type="button" class="btn btn-primary btn-sm" data-action="openai-subscription-start"' + (busy ? " disabled" : "") + '>' + (busy === "start" ? "Starting&hellip;" : stateName === "reconnect_required" ? "Reconnect subscription" : "Connect subscription") + '</button>';
-    }
-    if (state.openAiSubscriptionDisconnectConfirm) {
-      detail += '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect the ChatGPT subscription?</span><span class="hint">Stored tokens and account identity are deleted immediately. A connected API key becomes the OpenAI method automatically; without one, OpenAI calls stop.</span></div>' +
-        '<button type="button" class="btn btn-soft btn-sm" data-action="openai-subscription-disconnect-cancel">Keep connected</button>' +
-        '<button type="button" class="btn btn-danger btn-sm" data-action="openai-subscription-disconnect-confirm"' + (busy ? " disabled" : "") + '>Disconnect</button></div>';
-      actions = "";
-    }
-    var subscriptionSelected = showSelection && activeMethod === "subscription";
-    var inUse = subscriptionSelected ? '<span class="badge badge-on"><span class="dot"></span>Selected</span>' : "";
-    return '<div class="openai-auth-option ' + (subscriptionSelected ? "active" : "") + '"><div class="openai-auth-head"><div class="openai-auth-copy">' +
-      '<span class="openai-auth-title">ChatGPT subscription</span><span class="openai-auth-meta">ChatGPT plan</span></div>' + inUse + badge +
-      (actions ? '<div class="prov-actions">' + actions + '</div>' : "") + '</div>' +
-      detail + (state.openAiSubscriptionError ? '<p class="field-error" role="alert">' + esc(state.openAiSubscriptionError) + '</p>' : "") + '</div>';
   }
 
   function providerActionsHtml(id, summary, ui) {
@@ -9443,12 +9376,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var envNote = 'An <span class="mono" style="color:var(--text);">' + esc(meta.env) + '</span> in the environment, if set, still applies.';
     var lead = 'Remove the stored ' + esc(meta.name) + ' key? ';
     var consequence;
-    var subscriptionReady = id === "openai" && summary && summary.subscription && (
-      summary.subscription.state === "connected" || summary.subscription.state === "account_change_confirmation_required"
-    );
-    if (subscriptionReady) {
-      consequence = lead + 'The connected ChatGPT subscription becomes the OpenAI method automatically.';
-    } else if (count === 0) {
+    if (count === 0) {
       consequence = lead + 'No Agents are pinned to an ' + esc(meta.name) + ' model right now, so nothing stops answering. ' + envNote;
     } else {
       consequence = lead + '<b style="font-weight:500; color:var(--text);">' + count + ' Agent' + (count === 1 ? "" : "s") + '</b> ' + (count === 1 ? "is" : "are") +
@@ -9462,29 +9390,25 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '<button type="button" class="btn btn-danger btn-sm" data-action="prov-remove-confirm" data-provider="' + esc(id) + '">Remove key</button></div>';
   }
 
-  function favSearchCountLabel(id) {
-    var count = providerModelCount(id, providerSummaryById(id));
-    if (id === "openrouter") return (count != null ? count : "many") + " models";
-    return (count != null ? count : "many") + " text-generation models";
+  function favoriteProviderBodyHtml(id) {
+    var ui = favUiFor(id);
+    var favs = favoritesFor(id);
+    var open = !!ui.open;
+    var buttonLabel = open ? "Done" : (favs.length ? "Manage models" : "Choose models");
+    var summary = '<div class="fav-summary"><div class="fav-summary-copy"><span class="fav-summary-title">Models</span>' +
+      '<span class="fav-summary-count">' + favs.length + ' selected</span></div>' +
+      '<button type="button" class="btn btn-soft btn-sm" data-action="fav-manager-toggle" data-provider="' + esc(id) + '" aria-expanded="' + (open ? "true" : "false") + '" aria-controls="fav-manager-' + esc(id) + '">' + buttonLabel + '</button></div>';
+    return '<div class="prov-body fav-provider-body">' + summary +
+      (open ? favManagerHtml(id) : "") + favSelectedHtml(id) + '</div>';
   }
 
   function favManagerHtml(id) {
-    var isOr = id === "openrouter";
     var query = (favUiFor(id).query) || "";
     var count = providerModelCount(id, providerSummaryById(id));
-    var preamble = isOr ? "" : '<p class="hint">No key to manage. The <span class="mono" style="color:var(--text-2);">env.AI</span> binding lists models and runs turns on the Cloudflare target with zero credentials &mdash; this is the model a keyless button deploy answers with.</p>';
-    var intro = isOr
-      ? '<p class="hint">OpenRouter serves ' + esc(favSearchCountLabel(id)) + ', so the Agent picker shows only the ones you star here. Search the live list &mdash; name, context length, and price per row &mdash; then star to add.</p>'
-      : '<p class="hint">The binding lists ' + esc(favSearchCountLabel(id)) + ' and keeps growing, so the Agent picker shows only the ones you star here &mdash; same as OpenRouter. Search the live <span class="mono" style="color:var(--text-2);">env.AI.models()</span> list, then star to add. Four defaults ship pre-starred, so the keyless picker works out of the box.</p>';
-    var search = '<input class="input" type="search" value="' + esc(query) + '" placeholder="' + esc((count != null ? "Search " + count + " " : "Search ") + (isOr ? "OpenRouter" : "Workers AI") + " models…") + '" aria-label="Search ' + (isOr ? "OpenRouter" : "Workers AI") + ' models" data-action="fav-search" data-provider="' + esc(id) + '">';
-    var foot = isOr
-      ? '<p class="hint">Star adds a model to every Agent\\'s OpenRouter group; unstar removes it. Prices are input / output per 1M tokens, straight from OpenRouter\\'s public list.</p>'
-      : '<p class="hint">Star adds a model to every Agent\\'s Workers AI group; unstar removes it. Workers AI is billed in Neurons through the binding. <span class="mono" style="color:var(--text-2);">@cf/zai-org/glm-5.2</span> is the seed default a keyless deploy pins &mdash; keep it starred to keep that default in the picker.</p>';
-    return preamble +
-      '<p class="field-label">Models in your picker</p>' + intro + search +
-      '<div id="fav-results-' + esc(id) + '">' + favResultsHtml(id) + '</div>' +
-      '<div id="fav-starred-' + esc(id) + '">' + favStarredHtml(id) + '</div>' +
-      foot;
+    var providerName = id === "openrouter" ? "OpenRouter" : "Workers AI";
+    var search = '<input id="fav-search-' + esc(id) + '" class="input" type="search" value="' + esc(query) + '" placeholder="' + esc((count != null ? "Search " + count + " " : "Search ") + providerName + " models…") + '" aria-label="Search ' + providerName + ' models" data-action="fav-search" data-provider="' + esc(id) + '">';
+    return '<div class="fav-manager" id="fav-manager-' + esc(id) + '">' + search +
+      '<div id="fav-results-' + esc(id) + '">' + favResultsHtml(id) + '</div></div>';
   }
 
   function favResultsHtml(id) {
@@ -9503,23 +9427,22 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }).slice(0, 20);
     var header = '<p class="fav-sub" style="padding:6px 0 3px;">Results for &ldquo;' + esc(raw) + '&rdquo;</p>';
     if (matches.length === 0) return header + '<p class="fav-empty">No unstarred matches.</p>';
-    return header + '<div class="fav-list">' + matches.map(function (model) { return favRowHtml(id, model, false); }).join("") + '</div>';
+    return header + '<div class="fav-list">' + matches.map(function (model) { return favRowHtml(id, model, false, true); }).join("") + '</div>';
   }
 
-  function favStarredHtml(id) {
+  function favSelectedHtml(id) {
     var favs = favoritesFor(id);
+    if (favs.length === 0) return "";
     var models = state.providerModels[id] || [];
     var byId = {};
     models.forEach(function (model) { byId[model.id] = model; });
-    var header = '<p class="fav-sub" style="padding:6px 0 3px;">In your picker &middot; ' + favs.length + ' starred</p>';
-    if (favs.length === 0) return header + '<p class="fav-empty">Nothing starred yet. Search above and star a model to add it to the picker.</p>';
-    var rows = favs.map(function (mid) { return favRowHtml(id, byId[mid] || { id: mid }, true); }).join("");
-    return header + '<div class="fav-list">' + rows + '</div>';
+    var rows = favs.map(function (mid) { return favRowHtml(id, byId[mid] || { id: mid }, true, false); }).join("");
+    return '<div class="fav-selected" id="fav-starred-' + esc(id) + '">' + rows + '</div>';
   }
 
-  function favRowHtml(id, model, on) {
+  function favRowHtml(id, model, on, showMeta) {
     var metaHtml = "";
-    if (id === "openrouter") {
+    if (showMeta && id === "openrouter") {
       var m = favMetaHtml(model);
       if (m) metaHtml = '<span class="fav-meta">' + m + '</span>';
     }
@@ -10227,15 +10150,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function loadSettings(generation) {
+    var requestId = ++state.providerSettingsRequestId;
     state.settingsError = "";
     return api("/admin/api/providers").then(function (body) {
-      if (!settingsLoadIsCurrent(generation)) return;
+      if (requestId !== state.providerSettingsRequestId || !settingsLoadIsCurrent(generation)) return;
       state.settings = body;
       state.settingsLoaded = true;
-      var openAi = providerSummaryById("openai");
-      if (!state.openAiAuthMethodDirty) {
-        state.openAiAuthMethodDraft = openAi.activeAuthMethod === "subscription" ? "subscription" : "api_key";
-      }
       // Load favorites + the live model lists for the curated providers so their
       // managers render metas and counts. OpenRouter's list is public (no key);
       // Workers AI needs the binding, present only on the Cloudflare target.
@@ -10246,7 +10166,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         loadProviderModels("workers-ai");
       }
     }).catch(function (error) {
-      if (!settingsLoadIsCurrent(generation)) return;
+      if (requestId !== state.providerSettingsRequestId || !settingsLoadIsCurrent(generation)) return;
       state.settingsError = error.message;
       state.settingsLoaded = true;
     });
@@ -10306,175 +10226,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     });
   }
 
-  function saveOpenAiAuthMethod() {
-    if (state.openAiAuthMethodBusy || !state.openAiAuthMethodDirty) return;
-    var method = state.openAiAuthMethodDraft === "subscription" ? "subscription" : "api_key";
-    state.openAiAuthMethodBusy = true;
-    state.openAiAuthMethodError = "";
-    render();
-    postJson("/admin/api/providers/openai/auth-method", "PUT", { method: method }).then(function (body) {
-      state.openAiAuthMethodBusy = false;
-      state.openAiAuthMethodDirty = false;
-      state.openAiAuthMethodError = "";
-      providerSummaryById("openai").activeAuthMethod = body.activeAuthMethod;
-      invalidateOpenAiProviderModels();
-      render();
-      return refreshModels();
-    }).catch(function (error) {
-      state.openAiAuthMethodBusy = false;
-      state.openAiAuthMethodError = (error && (error.serverMessage || error.message)) || "Could not change the OpenAI authentication method.";
-      render();
-    });
-  }
-
-  function setOpenAiSubscriptionStatus(status) {
-    var summary = providerSummaryById("openai");
-    summary.subscription = status;
-  }
-
   function invalidateOpenAiProviderModels() {
     state.providerModels.openai = null;
     state.providerModelsError.openai = false;
     favUiFor("openai").error = "";
-  }
-
-  function scheduleOpenAiSubscriptionPoll() {
-    var attempt = state.openAiSubscriptionAttempt;
-    if (!attempt || typeof setTimeout !== "function") return;
-    var capability = attempt.attemptCapability;
-    var delay = Math.max(0, Math.min(60000, Number(attempt.nextPollAt || Date.now()) - Date.now()));
-    setTimeout(function () {
-      if (state.openAiSubscriptionAttempt && state.openAiSubscriptionAttempt.attemptCapability === capability) {
-        pollOpenAiSubscription();
-      }
-    }, delay);
-  }
-
-  function startOpenAiSubscription() {
-    if (state.openAiSubscriptionBusy) return;
-    state.openAiSubscriptionBusy = "start";
-    state.openAiSubscriptionError = "";
-    state.openAiSubscriptionDisconnectConfirm = false;
-    render();
-    postJson("/admin/api/providers/openai/subscription/start", "POST", {}).then(function (started) {
-      state.openAiSubscriptionBusy = "";
-      state.openAiSubscriptionAttempt = started;
-      state.openAiSubscriptionCopyStatus = "";
-      setOpenAiSubscriptionStatus({ state: "authorizing", updatedAt: Date.now() });
-      render();
-      scheduleOpenAiSubscriptionPoll();
-    }).catch(function (error) {
-      state.openAiSubscriptionBusy = "";
-      state.openAiSubscriptionError = openAiSubscriptionFailureText(error && error.message);
-      render();
-    });
-  }
-
-  function pollOpenAiSubscription() {
-    var attempt = state.openAiSubscriptionAttempt;
-    if (!attempt || state.openAiSubscriptionBusy) return;
-    state.openAiSubscriptionBusy = "poll";
-    state.openAiSubscriptionError = "";
-    render();
-    postJson("/admin/api/providers/openai/subscription/poll", "POST", {
-      attemptCapability: attempt.attemptCapability
-    }).then(function (result) {
-      state.openAiSubscriptionBusy = "";
-      if (result.state === "pending") {
-        attempt.expiresAt = result.expiresAt;
-        attempt.nextPollAt = result.nextPollAt;
-        render();
-        scheduleOpenAiSubscriptionPoll();
-        return;
-      }
-      setOpenAiSubscriptionStatus(result);
-      if (result.state === "connected") {
-        state.openAiSubscriptionAttempt = null;
-        invalidateOpenAiProviderModels();
-        return loadSettings().then(function () { refreshModels(); render(); });
-      }
-      render();
-      refreshModels();
-    }).catch(function (error) {
-      state.openAiSubscriptionBusy = "";
-      state.openAiSubscriptionError = openAiSubscriptionFailureText(error && error.message);
-      if (error && (error.message === "authorization_expired" || error.message === "authorization_missing" || error.message === "attempt_forbidden")) {
-        state.openAiSubscriptionAttempt = null;
-      }
-      render();
-    });
-  }
-
-  function cancelOpenAiSubscription() {
-    var attempt = state.openAiSubscriptionAttempt;
-    if (!attempt || state.openAiSubscriptionBusy) return;
-    state.openAiSubscriptionBusy = "cancel";
-    state.openAiSubscriptionError = "";
-    render();
-    postJson("/admin/api/providers/openai/subscription/cancel", "POST", {
-      attemptCapability: attempt.attemptCapability
-    }).then(function (status) {
-      state.openAiSubscriptionBusy = "";
-      state.openAiSubscriptionAttempt = null;
-      setOpenAiSubscriptionStatus(status);
-      render();
-    }).catch(function (error) {
-      state.openAiSubscriptionBusy = "";
-      state.openAiSubscriptionError = openAiSubscriptionFailureText(error && error.message);
-      render();
-    });
-  }
-
-  function confirmOpenAiSubscriptionAccount() {
-    var attempt = state.openAiSubscriptionAttempt;
-    if (!attempt || state.openAiSubscriptionBusy) return;
-    state.openAiSubscriptionBusy = "confirm";
-    state.openAiSubscriptionError = "";
-    render();
-    postJson("/admin/api/providers/openai/subscription/confirm-account", "POST", {
-      attemptCapability: attempt.attemptCapability
-    }).then(function (status) {
-      state.openAiSubscriptionBusy = "";
-      state.openAiSubscriptionAttempt = null;
-      setOpenAiSubscriptionStatus(status);
-      invalidateOpenAiProviderModels();
-      return loadSettings().then(function () { refreshModels(); render(); });
-    }).catch(function (error) {
-      state.openAiSubscriptionBusy = "";
-      state.openAiSubscriptionError = openAiSubscriptionFailureText(error && error.message);
-      render();
-    });
-  }
-
-  function disconnectOpenAiSubscriptionConnection() {
-    if (state.openAiSubscriptionBusy) return;
-    state.openAiSubscriptionBusy = "disconnect";
-    state.openAiSubscriptionError = "";
-    render();
-    api("/admin/api/providers/openai/subscription", { method: "DELETE" }).then(function (body) {
-      state.openAiSubscriptionBusy = "";
-      state.openAiSubscriptionAttempt = null;
-      state.openAiSubscriptionDisconnectConfirm = false;
-      setOpenAiSubscriptionStatus(body.status);
-      invalidateOpenAiProviderModels();
-      return loadSettings().then(function () { refreshModels(); render(); });
-    }).catch(function (error) {
-      state.openAiSubscriptionBusy = "";
-      state.openAiSubscriptionError = openAiSubscriptionFailureText(error && error.message);
-      render();
-    });
-  }
-
-  function copyOpenAiSubscriptionCode() {
-    var code = state.openAiSubscriptionAttempt && state.openAiSubscriptionAttempt.userCode;
-    if (!code || !navigator.clipboard || !navigator.clipboard.writeText) return;
-    navigator.clipboard.writeText(code).then(function () {
-      state.openAiSubscriptionCopyStatus = "Copied";
-      render();
-    }).catch(function () {
-      state.openAiSubscriptionCopyStatus = "Copy failed — select the code manually";
-      render();
-    });
   }
 
   function seedEgressDraft(policy) {
@@ -10521,7 +10276,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     });
   }
 
-  function sandboxMutationError(error, fallback) {
+  function mutationErrorText(error, fallback) {
     return (error && (error.serverMessage || error.message)) || fallback;
   }
 
@@ -10544,7 +10299,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       render();
     }).catch(function (error) {
       state.sandboxSaving = false;
-      state.sandboxError = sandboxMutationError(error, "Could not request Sandbox installation.");
+      state.sandboxError = mutationErrorText(error, "Could not request Sandbox installation.");
       render();
     });
   }
@@ -10565,7 +10320,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       render();
     }).catch(function (error) {
       state.sandboxSaving = false;
-      state.sandboxError = sandboxMutationError(error, "Could not cancel the installation request.");
+      state.sandboxError = mutationErrorText(error, "Could not cancel the installation request.");
       render();
     });
   }
@@ -10585,7 +10340,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       render();
     }).catch(function (error) {
       state.sandboxSaving = false;
-      state.sandboxError = sandboxMutationError(error, "Could not check Sandbox installation.");
+      state.sandboxError = mutationErrorText(error, "Could not check Sandbox installation.");
       render();
     });
   }
@@ -10616,7 +10371,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       render();
     }).catch(function (error) {
       state.sandboxSaving = false;
-      state.sandboxError = sandboxMutationError(error, "Could not save Sandbox settings.");
+      state.sandboxError = mutationErrorText(error, "Could not save Sandbox settings.");
       render();
     });
   }
@@ -10638,7 +10393,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       render();
     }).catch(function (error) {
       state.sandboxSaving = false;
-      state.sandboxError = sandboxMutationError(error, "Could not save Sandbox settings.");
+      state.sandboxError = mutationErrorText(error, "Could not save Sandbox settings.");
       render();
     });
   }
@@ -10692,8 +10447,59 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     });
   }
 
+  function refreshModelsRequired() {
+    return api("/admin/api/models").then(function (body) { state.models = body; });
+  }
+
   function refreshModels() {
-    return api("/admin/api/models").then(function (body) { state.models = body; }).catch(function () {});
+    return refreshModelsRequired().catch(function () {});
+  }
+
+  function refreshWorkersAiModels() {
+    var ui = provUiFor("workers-ai");
+    if (ui.enabledBusy) return;
+    ui.enabledBusy = true;
+    ui.enabledError = "";
+    ui.enabledRetry = false;
+    render();
+    return refreshModelsRequired().then(function () {
+      ui.enabledBusy = false;
+      ui.enabledError = "";
+      ui.enabledRetry = false;
+      render();
+    }).catch(function () {
+      ui.enabledBusy = false;
+      ui.enabledError = "Workers AI is on, but its model suggestions could not be refreshed. Try again or reload this page.";
+      ui.enabledRetry = true;
+      render();
+    });
+  }
+
+  function setWorkersAiEnabled(enabled) {
+    var ui = provUiFor("workers-ai");
+    if (ui.enabledBusy) return;
+    // A providers GET started before this mutation must not overwrite the
+    // confirmed response when it eventually resolves.
+    state.providerSettingsRequestId += 1;
+    ui.enabledBusy = true;
+    ui.enabledError = "";
+    ui.enabledRetry = false;
+    render();
+    postJson("/admin/api/providers/workers-ai/enabled", "PUT", { enabled: enabled }).then(function (body) {
+      ui.enabledBusy = false;
+      var summary = providerSummaryById("workers-ai");
+      if (summary) summary.enabled = body.enabled;
+      if (!body.enabled && state.models && state.models.providers) {
+        state.models.providers = state.models.providers.filter(function (provider) { return provider.id !== "cloudflare"; });
+        render();
+        return;
+      }
+      return refreshWorkersAiModels();
+    }).catch(function (error) {
+      ui.enabledBusy = false;
+      ui.enabledError = mutationErrorText(error, "Could not update Workers AI.");
+      render();
+    });
   }
 
   // Open the profile Model combobox (F6) and lazily fetch the dynamic lists it
@@ -12148,16 +11954,18 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "prov-remove") { openProviderRemove(target.getAttribute("data-provider")); }
     if (action === "prov-remove-cancel") { closeProviderRemove(target.getAttribute("data-provider")); }
     if (action === "prov-remove-confirm") { removeProviderKey(target.getAttribute("data-provider")); }
-    if (action === "openai-auth-method-save") { saveOpenAiAuthMethod(); }
-    if (action === "openai-subscription-start") { startOpenAiSubscription(); }
-    if (action === "openai-subscription-poll") { pollOpenAiSubscription(); }
-    if (action === "openai-subscription-cancel") { cancelOpenAiSubscription(); }
-    if (action === "openai-subscription-confirm-account") { confirmOpenAiSubscriptionAccount(); }
-    if (action === "openai-subscription-copy-code") { copyOpenAiSubscriptionCode(); }
-    if (action === "openai-subscription-disconnect-open") { state.openAiSubscriptionDisconnectConfirm = true; state.openAiSubscriptionError = ""; render(); }
-    if (action === "openai-subscription-disconnect-cancel") { state.openAiSubscriptionDisconnectConfirm = false; render(); }
-    if (action === "openai-subscription-disconnect-confirm") { disconnectOpenAiSubscriptionConnection(); }
+    if (action === "fav-manager-toggle") {
+      var favoriteProvider = target.getAttribute("data-provider");
+      var favoriteUi = favUiFor(favoriteProvider);
+      favoriteUi.open = !favoriteUi.open;
+      render();
+      if (favoriteUi.open) {
+        var favoriteSearch = document.getElementById("fav-search-" + favoriteProvider);
+        if (favoriteSearch && favoriteSearch.focus) favoriteSearch.focus();
+      }
+    }
     if (action === "fav-star") { toggleFavorite(target.getAttribute("data-provider"), target.getAttribute("data-model")); }
+    if (action === "workers-ai-refresh") { refreshWorkersAiModels(); }
     // Open the Model combobox (F6) when the input is clicked/focused. The input
     // carries data-action="profile-model"; the same action feeds keystrokes to
     // the filter in the input listener below.
@@ -12659,6 +12467,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "slack-identity-create-dm") state.slackIdentityCreateDraft.initialDmAgentId = target.value;
     if (action === "slack-identity-dm-state") state.slackIdentityDmDraft.dmState = target.value === "on" ? "on" : "off";
     if (action === "slack-identity-dm-agent") state.slackIdentityDmDraft.dmAgentId = target.value;
+    if (action === "workers-ai-enabled") setWorkersAiEnabled(!!target.checked);
     if (action === "team-member-status") {
       updateTeamMembership(target.getAttribute("data-membership") || "", "status", target.value);
     }
@@ -12751,12 +12560,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       if (target.checked && sandboxHostIndex < 0) sandboxDraft.allowedHosts.push(sandboxHost);
       if (!target.checked && sandboxHostIndex >= 0) sandboxDraft.allowedHosts.splice(sandboxHostIndex, 1);
       state.sandboxError = "";
-      render();
-    }
-    if (action === "openai-auth-method" && !state.openAiAuthMethodBusy) {
-      state.openAiAuthMethodDraft = target.value === "subscription" ? "subscription" : "api_key";
-      state.openAiAuthMethodDirty = state.openAiAuthMethodDraft !== (providerSummaryById("openai").activeAuthMethod === "subscription" ? "subscription" : "api_key");
-      state.openAiAuthMethodError = "";
       render();
     }
     if (action === "channel-enabled") {

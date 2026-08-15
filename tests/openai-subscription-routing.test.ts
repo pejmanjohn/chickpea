@@ -12,7 +12,6 @@ import type { CustomAgentConfig } from '../src/config/types.ts';
 import { resetModelCatalogActivationForTests } from '../src/model-catalog/catalog.ts';
 import { acceptModelCatalogCandidate } from '../src/model-catalog/store.ts';
 import { OpenAiSubscriptionError } from '../src/openai-subscription/errors.ts';
-import type { BindOpenAiSubscriptionProviderOptions } from '../src/openai-subscription/provider.ts';
 
 function profile(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
@@ -30,7 +29,7 @@ function profile(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig 
   };
 }
 
-test('subscription routing maps to the isolated provider without resolving the Platform key', async () => {
+test('a legacy Subscription selection is normalized to the Platform API-key route', async () => {
   const agents = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const applied: string[] = [];
@@ -45,11 +44,12 @@ test('subscription routing maps to the isolated provider without resolving the P
     });
 
     assert.deepEqual(route, {
-      model: 'openai-subscription/gpt-5.4',
-      providerAuthRoute: 'openai_subscription',
+      model: 'openai/gpt-5.4',
+      providerAuthRoute: 'openai_api_key',
     });
-    assert.equal(subscriptionBinds, 1);
-    assert.deepEqual(applied, []);
+    assert.equal(subscriptionBinds, 0);
+    assert.deepEqual(applied, ['openai']);
+    assert.equal(await settings.getSetting(OPENAI_AUTH_METHOD_SETTING_KEY), 'api_key');
   } finally {
     settings.close();
     agents.close();
@@ -81,26 +81,27 @@ test('API-key routing preserves the canonical provider and never binds Subscript
   }
 });
 
-test('invalid installation method state fails before either credential lane', async () => {
+test('invalid legacy installation method state is normalized to the API-key lane', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const events: string[] = [];
   try {
     await settings.setSetting(OPENAI_AUTH_METHOD_SETTING_KEY, 'unexpected');
-    await assert.rejects(
-      () => resolveRuntimeModel('agent_openai_route', 'openai/gpt-5.4', {
+    assert.deepEqual(
+      await resolveRuntimeModel('agent_openai_route', 'openai/gpt-5.4', {
         settings,
         applyProviderKey: async (id) => { events.push(`key:${id}`); },
         bindSubscription: async () => { events.push('subscription'); },
       }),
-      /Stored OpenAI authentication method is invalid/,
+      { model: 'openai/gpt-5.4', providerAuthRoute: 'openai_api_key' },
     );
-    assert.deepEqual(events, []);
+    assert.deepEqual(events, ['key:openai']);
+    assert.equal(await settings.getSetting(OPENAI_AUTH_METHOD_SETTING_KEY), 'api_key');
   } finally {
     settings.close();
   }
 });
 
-test('a frozen OpenAI model follows the installation method on the next Agent construction', async () => {
+test('a frozen OpenAI model stays on API-key routing after a legacy Subscription write', async () => {
   const agents = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const events: string[] = [];
@@ -113,15 +114,15 @@ test('a frozen OpenAI model follows the installation method on the next Agent co
       bindSubscription: async () => { events.push('subscription'); },
     });
 
-    assert.equal(route.providerAuthRoute, 'openai_subscription');
-    assert.deepEqual(events, ['subscription']);
+    assert.equal(route.providerAuthRoute, 'openai_api_key');
+    assert.deepEqual(events, ['key:openai']);
   } finally {
     settings.close();
     agents.close();
   }
 });
 
-test('subscription failures and unsupported models fail closed without crossing credential lanes', async () => {
+test('retired Subscription callbacks cannot intercept OpenAI API-key routing', async () => {
   const agents = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const applied: string[] = [];
@@ -129,8 +130,8 @@ test('subscription failures and unsupported models fail closed without crossing 
   try {
     const agent = await agents.createAgent(profile());
     await saveOpenAiAuthMethod(settings, 'subscription');
-    await assert.rejects(
-      () => resolveRuntimeModel(agent.id, 'openai/gpt-5.4', {
+    assert.deepEqual(
+      await resolveRuntimeModel(agent.id, 'openai/gpt-5.4', {
         settings,
         applyProviderKey: async (id) => { applied.push(id); },
         bindSubscription: async () => {
@@ -138,8 +139,7 @@ test('subscription failures and unsupported models fail closed without crossing 
           throw new OpenAiSubscriptionError('auth_reconnect_required');
         },
       }),
-      (error: unknown) =>
-        error instanceof OpenAiSubscriptionError && error.code === 'auth_reconnect_required',
+      { model: 'openai/gpt-5.4', providerAuthRoute: 'openai_api_key' },
     );
     await assert.rejects(
       () => resolveRuntimeModel(agent.id, 'openai/../not-allowlisted', {
@@ -147,12 +147,11 @@ test('subscription failures and unsupported models fail closed without crossing 
         applyProviderKey: async (id) => { applied.push(id); },
         bindSubscription: async () => { binds += 1; },
       }),
-      (error: unknown) =>
-        error instanceof OpenAiSubscriptionError && error.code === 'unsupported_model',
+      /not supported by this Chickpea release/i,
     );
 
-    assert.equal(binds, 1, 'the invalid model must fail before credential binding');
-    assert.deepEqual(applied, [], 'neither failure may resolve the Platform API key');
+    assert.equal(binds, 0);
+    assert.deepEqual(applied, ['openai']);
   } finally {
     settings.close();
     agents.close();
@@ -200,7 +199,7 @@ test('profiles cannot address the internal subscription provider directly', asyn
   );
 });
 
-test('runtime admission loads a persisted hosted route without any catalog fetch', async (t) => {
+test('runtime admission rejects a persisted Subscription-only hosted route without fetching', async (t) => {
   resetModelCatalogActivationForTests();
   t.after(resetModelCatalogActivationForTests);
   const settings = new SqliteSettingsStore(':memory:');
@@ -223,27 +222,19 @@ test('runtime admission loads a persisted hosted route without any catalog fetch
 
   const originalFetch = globalThis.fetch;
   let fetches = 0;
-  let captured: BindOpenAiSubscriptionProviderOptions | undefined;
   globalThis.fetch = async () => {
     fetches += 1;
     throw new Error('runtime catalog admission must not fetch');
   };
   try {
-    const resolved = await resolveRuntimeModel(
-      'agent_openai_route',
-      'openai/gpt-hosted-runtime',
-      {
-        settings,
-        bindSubscription: async (options) => { captured = options; },
-      },
+    await assert.rejects(
+      () => resolveRuntimeModel(
+        'agent_openai_route',
+        'openai/gpt-hosted-runtime',
+        { settings, bindSubscription: async () => { throw new Error('must not bind'); } },
+      ),
+      /not supported by this Chickpea release/i,
     );
-    assert.match(
-      resolved.model,
-      /^chickpea-openai-subscription-r73-[a-f0-9]{12}\/gpt-hosted-runtime$/,
-    );
-    assert.equal(canonicalRuntimeModel(resolved.model), 'openai/gpt-hosted-runtime');
-    assert.equal(captured?.route?.snapshot.source, 'hosted');
-    assert.equal(captured?.route?.snapshot.revision, 73);
     assert.equal(fetches, 0);
   } finally {
     globalThis.fetch = originalFetch;
