@@ -61,6 +61,11 @@ export function ChickpeaRoutineExecution({ id }: { id: string }) {
   return data.runtimePlan.instructions;
 }
 
+// MUST stay a top-level string literal: the Flue build reads it statically to
+// derive Durable Object class and binding names before any code runs, so a
+// reference to a constant fails the build. `src/agents/names.ts` mirrors this
+// value for runtime policy, and `tests/agent-names.test.ts` asserts the two
+// never drift apart.
 ChickpeaRoutineExecution.agentName = 'chickpea-routine-execution-v2';
 ChickpeaRoutineExecution.initialData = v.custom<RoutineExecutionInitialData>((value) => {
   try {

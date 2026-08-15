@@ -3273,7 +3273,13 @@ test('profile-scoped MCP test overrides stored secrets with body-supplied values
 });
 
 test('profile-scoped MCP test backs an un-retyped header with its stored value via headerNames', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  // The connection must exist to hold stored secrets: the secrets PUT route
+  // 404s for an unknown connection, so "a stored value with no saved
+  // connection" is not a state the app can reach.
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_test', mcpServers: [mcpServer({ headerNames: ['X-Api-Key'] })] })],
+    assignments: [],
+  });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     // Operator stored X-Api-Key earlier; on re-test they don't retype it, but
@@ -3301,6 +3307,121 @@ test('profile-scoped MCP test backs an un-retyped header with its stored value v
     });
     assert.equal(response.status, 200);
     assert.equal(calls[0]?.headers['X-Api-Key'], 'stored-key');
+  } finally {
+    settings.close?.();
+    store.close();
+  }
+});
+
+test('profile-scoped MCP test never sends stored secrets to a URL the connection was not saved against', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_test', mcpServers: [mcpServer({ headerNames: ['X-Api-Key'] })] })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting('mcp.agent_test.linear-mcp.bearer', 'stored-bearer');
+    await settings.setSetting('mcp.agent_test.linear-mcp.header.X-Api-Key', 'stored-key');
+    const calls: McpConnectInput[] = [];
+    const app = appWithAdminOptions(store, {
+      settings,
+      discoverMcp: async (input) => {
+        calls.push(input);
+        return { tools: [] };
+      },
+    });
+
+    // Same connection id, attacker-chosen host. The stored bearer and header are
+    // write-only everywhere else, so replaying them here would be a read-back.
+    const response = await app.request('/admin/api/agents/agent_test/mcp/test', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'linear-mcp',
+        url: 'https://collector.invalid/mcp',
+        transport: 'streamable-http',
+        authMode: 'bearer',
+        headerNames: ['X-Api-Key'],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.headers['X-Api-Key'], undefined);
+    assert.equal(
+      Object.entries(calls[0]?.headers ?? {}).some(
+        ([, value]) => typeof value === 'string' && value.includes('stored-'),
+      ),
+      false,
+      'no stored secret may reach a host the connection was not saved against',
+    );
+  } finally {
+    settings.close?.();
+    store.close();
+  }
+});
+
+test('repointing an MCP connection at a new origin drops its stored secrets', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_test', mcpServers: [mcpServer({ headerNames: ['X-Api-Key'] })] })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting('mcp.agent_test.linear-mcp.bearer', 'stored-bearer');
+    await settings.setSetting('mcp.agent_test.linear-mcp.header.X-Api-Key', 'stored-key');
+    const app = appWithAdminOptions(store, { settings });
+
+    const response = await app.request('/admin/api/agents/agent_test', {
+      method: 'PATCH',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        expectedRevision: 1,
+        mcpServers: [mcpServer({
+          url: 'https://collector.example/mcp',
+          headerNames: ['X-Api-Key'],
+        })],
+      }),
+    });
+    assert.equal(response.status, 200);
+    // Secrets are keyed by connection id, so without this they would be sent to
+    // the new origin on the next turn.
+    assert.equal(await settings.getSetting('mcp.agent_test.linear-mcp.bearer'), undefined);
+    assert.equal(
+      await settings.getSetting('mcp.agent_test.linear-mcp.header.X-Api-Key'),
+      undefined,
+    );
+  } finally {
+    settings.close?.();
+    store.close();
+  }
+});
+
+test('editing an MCP connection without changing its origin keeps its stored secrets', async () => {
+  const store = new SqliteConfigStore(':memory:', {
+    agents: [agent({ id: 'agent_test', mcpServers: [mcpServer({ headerNames: ['X-Api-Key'] })] })],
+    assignments: [],
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting('mcp.agent_test.linear-mcp.bearer', 'stored-bearer');
+    const app = appWithAdminOptions(store, { settings });
+
+    // Negative control: a same-origin path/display edit must not force the
+    // operator to re-enter a credential they never moved.
+    const response = await app.request('/admin/api/agents/agent_test', {
+      method: 'PATCH',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        expectedRevision: 1,
+        mcpServers: [mcpServer({
+          displayName: 'Linear (prod)',
+          url: 'https://mcp.linear.app/mcp/v2',
+          headerNames: ['X-Api-Key'],
+        })],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(await settings.getSetting('mcp.agent_test.linear-mcp.bearer'), 'stored-bearer');
   } finally {
     settings.close?.();
     store.close();

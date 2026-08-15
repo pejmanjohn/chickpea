@@ -909,6 +909,7 @@ export function useRuntimePlanAgent(
   }
 }
 
+// Must stay a static literal — see the note on ChickpeaRoutineExecution.
 ChickpeaSlack.agentName = 'chickpea-slack-v2';
 ChickpeaSlack.initialData = v.custom<RuntimePlanV2>((value) => {
   try {

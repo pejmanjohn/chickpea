@@ -233,6 +233,17 @@ const SANDBOX_BLOCKED_STATUS = 520;
  */
 export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
   interceptHttps = true;
+  // Interception only covers HTTP and HTTPS. The container base class defaults
+  // `enableInternet` to true (@cloudflare/containers container.js:325), which
+  // leaves a raw, unmediated socket path alongside the intercepted one — a
+  // shell in this container could reach any host with `nc`, a raw TCP client,
+  // or DNS tunnelling and never touch `Sandbox.outbound`. The SDK's own
+  // outbound-interception example pairs `enableInternet = false` with
+  // `interceptHttps = true` for exactly this reason. The static catch-all
+  // below already forces intercept-all mode, so github.com, api.github.com and
+  // the allowlisted package registries keep flowing through the Worker
+  // handlers; this only removes the path that bypasses them.
+  enableInternet = false;
 
   async prepareTurn(turnId: string): Promise<void> {
     await this.policyState().prepareTurn(turnId);

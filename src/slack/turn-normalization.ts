@@ -47,6 +47,20 @@ export function normalizeSlackTurn(
     if (options.botUserId && payload.event.user === options.botUserId) {
       return { status: 'ignored', reason: 'self_message' };
     }
+    // The self-check above only catches this app's own user id. Any OTHER app
+    // that mentions this one would otherwise drive a full billable turn, and
+    // this app's reply can mention it back — an unbounded two-bot loop with a
+    // model call per hop. The message branch already refuses app-authored
+    // events; mentions must refuse them on the same terms.
+    if (isAppAuthoredMessage(payload.event)) {
+      return { status: 'ignored', reason: 'bot_message' };
+    }
+    // A webhook-authored mention can arrive with no `user` at all. Without an
+    // author there is no actor to authorize, so fail closed rather than run a
+    // turn attributed to the empty string.
+    if (!payload.event.user) {
+      return { status: 'ignored', reason: 'missing_user' };
+    }
 
     return runnableTurn({
       payload,
@@ -235,7 +249,11 @@ function isChannelConversation(event: SlackMessageEvent): boolean {
   return event.channel_type === 'channel' || event.channel_type === 'group';
 }
 
-function isAppAuthoredMessage(event: SlackMessageEvent): boolean {
+function isAppAuthoredMessage(event: {
+  bot_id?: string;
+  app_id?: string;
+  bot_profile?: { app_id?: string };
+}): boolean {
   return Boolean(event.bot_id || event.app_id || event.bot_profile?.app_id);
 }
 

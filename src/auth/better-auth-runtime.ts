@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 
 import {
   getIdentityStore,
@@ -23,8 +24,24 @@ interface BetterAuthRuntimeOptions {
   recoveryToken?: string;
 }
 
+/**
+ * Every other unauthenticated POST surface caps its body before buffering
+ * (`/admin/login`, `/admin/setup`, `/admin/recovery`, `/admin/join`,
+ * `/admin/reset`, `/admin/migrate` — see src/admin/routes.ts:1324-1343). This
+ * one did not, so an anonymous client could stream an unbounded body into
+ * sign-in. A sign-in payload is an email plus a password; 32 KiB is generous.
+ * hono's bodyLimit reads chunk-by-chunk and bails on the running total, so a
+ * chunked request with no content-length cannot walk past it.
+ */
+const AUTH_ROUTE_BODY_LIMIT_BYTES = 32 * 1024;
+
 export function createBetterAuthRuntimeRoutes(options: BetterAuthRuntimeOptions = {}): Hono {
   const app = new Hono();
+
+  app.use('/api/auth/*', bodyLimit({
+    maxSize: AUTH_ROUTE_BODY_LIMIT_BYTES,
+    onError: (c) => c.json({ error: 'request_too_large' }, 413),
+  }));
 
   app.all('/api/auth/*', async (c) => {
     try {

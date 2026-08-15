@@ -194,3 +194,42 @@ test('natural-language channel history windows do not match adjacent words', () 
     'last_week',
   );
 });
+
+// The message branch already refuses app-authored events. Mentions did not,
+// so any OTHER Slack app that mentioned this one drove a full billable turn —
+// and this app's reply can mention it back, which is an unbounded two-bot loop
+// with a model call on every hop.
+test('app-authored mentions are ignored on the same terms as app-authored messages', () => {
+  const options = { slackIdentityId: 'slack_identity_default', botUserId: 'U_BOT' };
+
+  for (const authorship of [
+    { bot_id: 'B_OTHER' },
+    { app_id: 'A_OTHER' },
+    { bot_profile: { app_id: 'A_OTHER' } },
+  ]) {
+    const mention = normalizeSlackTurn(
+      fixture({ event: { ...authorship, user: 'U_OTHER_BOT' } }),
+      options,
+    );
+    assert.equal(mention.status, 'ignored', JSON.stringify(authorship));
+    assert.equal(
+      mention.status === 'ignored' ? mention.reason : undefined,
+      'bot_message',
+      JSON.stringify(authorship),
+    );
+  }
+
+  // Negative control: a human mention with no authorship stamps still runs.
+  const human = normalizeSlackTurn(fixture(), options);
+  assert.equal(human.status, 'runnable');
+});
+
+test('a mention with no author is ignored rather than run as the empty user', () => {
+  const options = { slackIdentityId: 'slack_identity_default', botUserId: 'U_BOT' };
+  const anonymous = normalizeSlackTurn(fixture({ event: { user: '' } }), options);
+  assert.equal(anonymous.status, 'ignored');
+  assert.equal(
+    anonymous.status === 'ignored' ? anonymous.reason : undefined,
+    'missing_user',
+  );
+});

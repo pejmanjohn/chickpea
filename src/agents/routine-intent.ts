@@ -54,6 +54,7 @@ export function ChickpeaRoutineIntent() {
   return instructions;
 }
 
+// Must stay a static literal — see the note on ChickpeaRoutineExecution.
 ChickpeaRoutineIntent.agentName = 'chickpea-routine-intent-v2';
 ChickpeaRoutineIntent.initialData = RoutineIntentInitialDataSchema;
 

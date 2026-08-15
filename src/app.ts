@@ -2,6 +2,7 @@ import { instrument } from '@flue/runtime';
 import { Hono } from 'hono';
 
 import { createAdminRoutes } from './admin/routes.ts';
+import { CHICKPEA_SLACK_AGENT_NAME } from './agents/names.ts';
 import { createJoinRoutes } from './join/routes.ts';
 import { createBetterAuthRuntimeRoutes } from './auth/better-auth-runtime.ts';
 import { activityStatusForObservation } from './activity/status.ts';
@@ -39,7 +40,7 @@ instrument({
   key: Symbol.for('chickpea.activity-status'),
   interceptor: async (_operation, _context, next) => next(),
   observe(event, context) {
-    if (context.agentName !== 'chickpea-slack-v2') return;
+    if (context.agentName !== CHICKPEA_SLACK_AGENT_NAME) return;
     const status = activityStatusForObservation(event);
     if (
       status &&

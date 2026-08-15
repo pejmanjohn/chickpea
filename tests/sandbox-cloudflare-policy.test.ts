@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import type { TurnPullRequestProgress } from '../src/config/state-rpc.ts';
@@ -129,4 +130,20 @@ test('pull request progress records when the captured turn id still matches', as
   assert.deepEqual(await state.getTurnProgress(), {
     pullRequest: PULL_REQUEST,
   });
+});
+
+// The Worker-side egress handlers only ever see HTTP and HTTPS. The container
+// base class defaults `enableInternet` to true, which leaves a raw socket path
+// that never reaches `Sandbox.outbound` — a shell in the container could use it
+// to reach any host directly. Cloudflare's own outbound-interception example
+// pairs `enableInternet = false` with `interceptHttps = true`; assert both,
+// because losing either one silently reopens the unmediated path.
+test('the Cloudflare Sandbox class mediates outbound traffic and disables raw internet', () => {
+  const source = readFileSync(new URL('../src/cloudflare.ts', import.meta.url), 'utf8');
+  const classBody = source.slice(
+    source.indexOf('export class Sandbox extends CloudflareSandbox'),
+  );
+  assert.match(classBody.slice(0, 2_000), /^\s*interceptHttps = true;/m);
+  assert.match(classBody.slice(0, 2_000), /^\s*enableInternet = false;/m);
+  assert.match(source, /Sandbox\.outbound = denySandboxOutbound;/);
 });

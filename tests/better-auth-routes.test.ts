@@ -146,6 +146,35 @@ test('runtime keeps every Better Auth endpoint dark until password mode commits'
   identity.close();
 });
 
+// Every other unauthenticated POST surface caps its body before buffering.
+// This one is reachable by any anonymous client whenever the install is in
+// password mode, so an uncapped body is free memory pressure.
+test('the unauthenticated auth routes cap the request body before buffering it', async () => {
+  const identity = new SqliteIdentityStore(':memory:');
+  await identity.ensureAuthControl();
+  const app = createBetterAuthRuntimeRoutes({ identity, recoveryToken: '0'.repeat(64) });
+
+  // Streamed with no content-length, so the cap cannot be satisfied by
+  // trusting a header the client controls.
+  const oversized = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (let index = 0; index < 8; index += 1) {
+        controller.enqueue(new Uint8Array(16 * 1024));
+      }
+      controller.close();
+    },
+  });
+  const response = await app.request(new Request(`${ORIGIN}/api/auth/sign-in/email`, {
+    method: 'POST',
+    headers: { origin: ORIGIN, 'content-type': 'application/json' },
+    body: oversized,
+    // @ts-expect-error -- undici requires duplex for a streaming body
+    duplex: 'half',
+  }));
+  assert.equal(response.status, 413);
+  identity.close();
+});
+
 function jsonRequest(
   path: string,
   body: Record<string, unknown>,

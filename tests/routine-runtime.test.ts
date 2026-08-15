@@ -200,3 +200,52 @@ test('membership pagination failures and missing Slack credentials never fall ba
     (error: unknown) => error instanceof RoutineRuntimeError && error.failureClass === 'credential_unavailable',
   );
 });
+
+// A routine's body can be rewritten by any channel member (commands.ts gates on
+// channel membership alone), but the execution-time eligibility gate only ever
+// checked creatorUserId. That let an editor who has since left the channel keep
+// a rewritten task running under the original creator's standing eligibility.
+// The author of the CURRENT definition must be eligible too.
+test('runtime access fails closed when the last editor left the channel', async () => {
+  const edited = { ...routine, updatedBy: 'U_EDITOR' } satisfies RoutineDefinition;
+
+  await assert.rejects(
+    () => resolveRoutineRuntimeAccess(run, edited, undefined, dependencies({
+      // Creator is still present; the editor is not.
+      members: async () => ({
+        ok: true, error: undefined, memberIds: ['U_BOT', 'U_CREATOR'],
+        nextCursor: undefined, retryAfterMs: undefined,
+      }),
+    })),
+    (error: unknown) => error instanceof RoutineRuntimeError &&
+      error.failureClass === 'creator_ineligible',
+  );
+
+  // Negative control: both present, so the routine still runs.
+  const access = await resolveRoutineRuntimeAccess(run, edited, undefined, dependencies({
+    members: async () => ({
+      ok: true, error: undefined, memberIds: ['U_BOT', 'U_CREATOR', 'U_EDITOR'],
+      nextCursor: undefined, retryAfterMs: undefined,
+    }),
+  }));
+  assert.equal(typeof access.accessHash, 'string');
+});
+
+test('the editor identity is part of the routine access hash', async () => {
+  const members = async () => ({
+    ok: true as const, error: undefined, memberIds: ['U_BOT', 'U_CREATOR', 'U_EDITOR'],
+    nextCursor: undefined, retryAfterMs: undefined,
+  });
+  const byCreator = await resolveRoutineRuntimeAccess(
+    run, routine, undefined, dependencies({ members }),
+  );
+  const byEditor = await resolveRoutineRuntimeAccess(
+    run,
+    { ...routine, updatedBy: 'U_EDITOR' } satisfies RoutineDefinition,
+    undefined,
+    dependencies({ members }),
+  );
+  // A change of author is a change of authority and must invalidate any
+  // decision cached against the previous hash.
+  assert.notEqual(byCreator.accessHash, byEditor.accessHash);
+});

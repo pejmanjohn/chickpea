@@ -8,6 +8,13 @@ export interface SlackAppMentionEvent {
   channel: string;
   event_ts: string;
   thread_ts?: string;
+  // Slack stamps these on app-authored mentions exactly as it does on
+  // app-authored messages. They must be observable here so the same echo filter
+  // can run: without it another bot that mentions this app starts a paid turn,
+  // and this app's reply can mention it back.
+  bot_id?: string;
+  app_id?: string;
+  bot_profile?: { app_id?: string };
 }
 
 export interface SlackMessageEvent {

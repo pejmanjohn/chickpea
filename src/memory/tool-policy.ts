@@ -7,6 +7,11 @@ import type {
   LlmMessage,
 } from '@flue/runtime';
 
+import {
+  MANAGED_SUBMISSION_AGENT_NAMES,
+  UNATTENDED_AGENT_NAMES,
+} from '../agents/names.ts';
+
 export const MEMORY_CURRENT_REQUEST_ENVELOPE_START =
   '--- BEGIN CHICKPEA CURRENT REQUEST POLICY v1 ---';
 export const MEMORY_CURRENT_REQUEST_ENVELOPE_END =
@@ -271,7 +276,7 @@ export const memoryToolPolicyInterceptor: FlueExecutionInterceptor = async (
     active === undefined
   ) {
     return submissionPolicy.run(
-      { requireExplicitEffectIntent: context.agentName === 'routine' },
+      { requireExplicitEffectIntent: isUnattendedAgent(context.agentName) },
       next,
     );
   }
@@ -337,7 +342,13 @@ export function assertCurrentRequestSideEffectAllowed(action: string): void {
 }
 
 function isManagedCurrentRequestAgent(agentName: string | undefined): boolean {
-  return agentName === 'slack-thread' || agentName === 'routine';
+  return agentName !== undefined &&
+    (MANAGED_SUBMISSION_AGENT_NAMES as readonly string[]).includes(agentName);
+}
+
+function isUnattendedAgent(agentName: string | undefined): boolean {
+  return agentName !== undefined &&
+    (UNATTENDED_AGENT_NAMES as readonly string[]).includes(agentName);
 }
 
 function normalizedCurrentRequest(currentRequest: string): string {

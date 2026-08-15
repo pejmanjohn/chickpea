@@ -178,11 +178,38 @@ export async function resolveRoutineRuntimeAccess(
     throw new RoutineRuntimeError('access_denied', 'Current channel membership could not be verified.');
   }
 
+  // Any channel member may rewrite a routine's body, so the creator is not
+  // necessarily the author of what is about to run. Anchoring eligibility only
+  // to the creator let an editor who has since left the channel keep their
+  // rewritten task executing under someone else's standing authority. Require
+  // the author of the CURRENT definition to be eligible too.
+  const editorUserId = routine.updatedBy;
+  if (editorUserId && editorUserId !== routine.creatorUserId) {
+    if (editorUserId === botUserId) {
+      throw new RoutineRuntimeError('creator_ineligible', 'The routine editor is no longer eligible.');
+    }
+    const editorIsMember = await hasChannelMember(
+      botToken,
+      routine.channelId,
+      editorUserId,
+      getMembers,
+    );
+    if (editorIsMember === false) {
+      throw new RoutineRuntimeError('creator_ineligible', 'The routine editor left this channel.');
+    }
+    if (editorIsMember === undefined) {
+      throw new RoutineRuntimeError('access_denied', 'Current channel membership could not be verified.');
+    }
+  }
+
   const accessHash = hashRoutineValue(
     JSON.stringify({
       config: computeSnapshotHash(config),
       slackIdentityId,
       creatorUserId: routine.creatorUserId,
+      // A change of author is a change of authority: keep it in the hash so a
+      // decision cached against the previous author is invalidated.
+      editorUserId: editorUserId ?? null,
       botUserId,
       channelId: facts.id,
       channelPrivate: facts.private,

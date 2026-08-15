@@ -3647,17 +3647,27 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
-    // Start from stored/env secrets for this profile-local connection, then let
-    // any value typed into the unsaved form win — the operator is testing
-    // exactly what they typed.
-    const resolved = await resolveMcpSecrets(
-      { agentId, connectionId: input.id },
-      // Union of the connection's known header names and any typed this session,
-      // so a stored value backs a header the operator didn't re-enter.
-      [...new Set([...(input.headerNames ?? []), ...Object.keys(input.headers ?? {})])],
-      platformEnv,
-      settingsStore,
-    );
+    // Stored and env-supplied secrets belong to the connection's SAVED origin.
+    // Backfilling them for an arbitrary tested URL turns this route into a
+    // credential read-back: the values are write-only everywhere else, and
+    // MCP_AGENT_*_BEARER cannot be written through the API at all, so an
+    // operator could otherwise post their own host here and read them off the
+    // wire. Resolve stored secrets only when the tested origin is the one they
+    // were saved against; a new or redirected target must be typed in full.
+    const storedOrigin = await savedMcpConnectionOrigin(store(c), agentId, input.id);
+    const testsSavedOrigin =
+      storedOrigin !== undefined && storedOrigin === safeUrlOrigin(validated.url);
+    const resolved = testsSavedOrigin
+      ? await resolveMcpSecrets(
+          { agentId, connectionId: input.id },
+          // Union of the connection's known header names and any typed this
+          // session, so a stored value backs a header the operator didn't
+          // re-enter.
+          [...new Set([...(input.headerNames ?? []), ...Object.keys(input.headers ?? {})])],
+          platformEnv,
+          settingsStore,
+        )
+      : { headers: {} };
     const merged: ResolvedMcpSecrets = {
       ...(input.bearerToken !== undefined ? { bearer: input.bearerToken } : {}),
       headers: { ...resolved.headers, ...(input.headers ?? {}) },
@@ -4037,6 +4047,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const modelError = modelResolutionError(next);
       if (modelError) {
         return modelNotResolvable(c, modelError);
+      }
+      // Repointing a connection at a new origin must not carry the previous
+      // origin's credential across. Secrets are keyed by connection id and this
+      // route deliberately never writes them, so drop the stale ones instead.
+      //
+      // Deliberately BEFORE the update: if the write then fails, the operator
+      // re-enters a secret, which is recoverable and visible. Deleting after
+      // the write would mean a failure there leaves the connection already
+      // pointing at the new origin with the old credential still attached —
+      // which is precisely the leak this closes, and no later PATCH would
+      // detect it, because by then the stored URL already matches.
+      const repointed = mcpConnectionsWithChangedOrigin(current.mcpServers, patch.mcpServers);
+      for (const { connectionId, headerNames } of repointed) {
+        const ref = { agentId, connectionId };
+        await deleteMcpSecrets(ref, headerNames, c.env as PlatformEnv | undefined, settings(c));
+        await deleteMcpOAuthSettings(ref, settings(c));
       }
       const updated = await configStore.updateAgent(
         agentId,
@@ -7462,6 +7488,63 @@ function agentStillReferenced(c: Context, error: AgentStillReferencedError): Res
     error: 'agent_still_referenced',
     references: error.references.split(', ').filter(Boolean),
   }, 409);
+}
+
+/** Origin of a URL, or undefined when it will not parse. Never throws. */
+function safeUrlOrigin(value: string): string | undefined {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The origin an MCP connection's stored secrets were saved against. Returns
+ * undefined when the agent or connection does not exist, so callers fail closed
+ * and send no stored credential.
+ */
+async function savedMcpConnectionOrigin(
+  configStore: Pick<ConfigStore, 'getAgent'>,
+  agentId: string,
+  connectionId: string,
+): Promise<string | undefined> {
+  try {
+    const connection = (await configStore.getAgent(agentId)).mcpServers.find(
+      (server) => server.id === connectionId,
+    );
+    return connection ? safeUrlOrigin(connection.url) : undefined;
+  } catch (error) {
+    if (error instanceof UnknownAgentError) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * Stored MCP secrets are keyed by connection id, not by URL, so repointing a
+ * connection at a new origin would otherwise carry the old origin's credential
+ * to the new one on the next turn. Drop the secrets whenever an existing
+ * connection's origin changes; the operator re-enters them for the new target.
+ */
+function mcpConnectionsWithChangedOrigin(
+  current: CustomAgentConfig['mcpServers'],
+  next: CustomAgentConfig['mcpServers'] | undefined,
+): { connectionId: string; headerNames: string[] }[] {
+  if (!next) return [];
+  const nextById = new Map(next.map((server) => [server.id, server]));
+  const changed: { connectionId: string; headerNames: string[] }[] = [];
+  for (const existing of current) {
+    const replacement = nextById.get(existing.id);
+    if (!replacement) continue;
+    const before = safeUrlOrigin(existing.url);
+    const after = safeUrlOrigin(replacement.url);
+    if (before !== undefined && after !== undefined && before === after) continue;
+    changed.push({
+      connectionId: existing.id,
+      headerNames: [...new Set([...existing.headerNames, ...replacement.headerNames])],
+    });
+  }
+  return changed;
 }
 
 function agentDeleteIdempotencyKey(c: Context, agentId: string): string {

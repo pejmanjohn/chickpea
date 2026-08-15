@@ -74,6 +74,7 @@
     "verify:model-catalog:served": "node scripts/check-model-catalog-freshness.mjs",
     "verify:model-compatibility:live": "node --import tsx scripts/verify-model-compatibility-live.mjs",
     "verify:oss-export": "node scripts/verify-oss-export.mjs",
+    "verify:lockfile-integrity": "node scripts/verify-lockfile-integrity.mjs",
     "auth:recover": "node --import tsx scripts/recover-auth.mjs",
     "auth:blocklist:build": "node scripts/generate-common-passwords.mjs",
     "slack:bridge": "node scripts/slack-socket-bridge.mjs",

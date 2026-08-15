@@ -8,6 +8,8 @@ import type {
 } from '@flue/runtime';
 import type { SecureFetch } from 'just-bash';
 
+import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
+import { ChickpeaSlack } from '../src/agents/slack-thread.ts';
 import { createScopedFetch } from '../src/config/egress.ts';
 import {
   MEMORY_CURRENT_REQUEST_ENVELOPE_END,
@@ -68,7 +70,7 @@ function turnRequest(promptText: string): FlueObservation {
 async function withSubmissionPolicy<T>(
   promptText: string | undefined,
   run: (context: FlueExecutionContext) => Promise<T>,
-  agentName = 'slack-thread',
+  agentName: string = ChickpeaSlack.agentName,
 ): Promise<T> {
   const context: FlueExecutionContext = {
     agentName,
@@ -104,7 +106,7 @@ test('routine submissions require explicit saved-task authority even without mem
       callTool(context, 'mcp__asana__create_task', async () => 'created'),
       (error: unknown) => error instanceof Error && error.name === 'CurrentRequestSideEffectDeniedError',
     );
-  }, 'routine');
+  }, ChickpeaRoutineExecution.agentName);
 
   const writePrompt = assembleSlackPrompt(
     turn('Update the connected project tracker with unresolved blockers.'),
@@ -125,7 +127,7 @@ test('routine submissions require explicit saved-task authority even without mem
       await callTool(context, 'mcp__linear__update_project', async () => 'updated'),
       'updated',
     );
-  }, 'routine');
+  }, ChickpeaRoutineExecution.agentName);
 });
 
 test('routine artifact delivery requires an explicit saved artifact task', async () => {
@@ -153,7 +155,7 @@ test('routine artifact delivery requires an explicit saved artifact task', async
       await callTool(context, 'post_artifact', async () => 'uploaded'),
       'uploaded',
     );
-  }, 'routine');
+  }, ChickpeaRoutineExecution.agentName);
 
   const externalWritePrompt = routinePrompt(WRITE_REQUEST);
   await withSubmissionPolicy(externalWritePrompt, async (context) => {
@@ -161,7 +163,7 @@ test('routine artifact delivery requires an explicit saved artifact task', async
       callTool(context, 'post_artifact', async () => 'uploaded'),
       (error: unknown) => error instanceof Error && error.name === 'CurrentRequestSideEffectDeniedError',
     );
-  }, 'routine');
+  }, ChickpeaRoutineExecution.agentName);
 
   const readOnlyPrompt = routinePrompt(READ_ONLY_REQUEST);
   await withSubmissionPolicy(readOnlyPrompt, async (context) => {
@@ -169,7 +171,74 @@ test('routine artifact delivery requires an explicit saved artifact task', async
       callTool(context, 'post_artifact', async () => 'uploaded'),
       (error: unknown) => error instanceof Error && error.name === 'CurrentRequestSideEffectDeniedError',
     );
-  }, 'routine');
+  }, ChickpeaRoutineExecution.agentName);
+});
+
+// The gate is only reachable for agent names isManagedCurrentRequestAgent accepts.
+// Source those names from the agent classes themselves so a future rename fails
+// here instead of silently disabling the gate in production.
+test('the side-effect gate engages for the deployed agent names, not just legacy ones', async () => {
+  const memoryBlock = 'Advisory memory: the team likes tasks filed in Asana.';
+  const injectedWrite = prompt(READ_ONLY_REQUEST, memoryBlock);
+  assert.equal(parseCurrentRequestEnvelope(injectedWrite)?.memoryInfluenced, true);
+  assert.equal(
+    parseCurrentRequestEnvelope(injectedWrite)?.explicitExternalSideEffectIntent,
+    false,
+  );
+
+  for (const agentName of [
+    ChickpeaSlack.agentName,
+    ChickpeaRoutineExecution.agentName,
+  ]) {
+    await withSubmissionPolicy(injectedWrite, async (context) => {
+      await assert.rejects(
+        callTool(context, 'mcp__asana__create_task', async () => 'created'),
+        (error: unknown) =>
+          error instanceof Error && error.name === 'CurrentRequestSideEffectDeniedError',
+        `advisory memory must not authorize an external write for agent "${agentName}"`,
+      );
+      await assert.rejects(
+        callTool(context, 'post_artifact', async () => 'uploaded'),
+        (error: unknown) =>
+          error instanceof Error && error.name === 'CurrentRequestSideEffectDeniedError',
+        `advisory memory must not authorize artifact delivery for agent "${agentName}"`,
+      );
+    }, agentName);
+  }
+
+  // Negative control: an explicit human write request still passes for the same
+  // deployed agent name, so the gate is closed on injection, not on everything.
+  const explicitWrite = prompt(WRITE_REQUEST, memoryBlock);
+  await withSubmissionPolicy(explicitWrite, async (context) => {
+    assert.equal(
+      await callTool(context, 'mcp__asana__create_task', async () => 'created'),
+      'created',
+    );
+  }, ChickpeaSlack.agentName);
+});
+
+// The routine agents must additionally carry the stricter posture: a saved task
+// authorizes writes only when the task text itself asks for one, regardless of
+// whether any memory was selected.
+test('deployed routine agents keep requireExplicitEffectIntent', async () => {
+  const readPrompt = assembleSlackPrompt(
+    turn(READ_ONLY_REQUEST),
+    {
+      mode: 'channel_history',
+      truncated: false,
+      degradations: [],
+      messages: [{ userId: 'U', text: READ_ONLY_REQUEST, ts: '2.0', isTrigger: true }],
+    },
+  );
+  assert.equal(parseCurrentRequestEnvelope(readPrompt)?.memoryInfluenced, false);
+
+  await withSubmissionPolicy(readPrompt, async (context) => {
+    await assert.rejects(
+      callTool(context, 'mcp__asana__create_task', async () => 'created'),
+      (error: unknown) =>
+        error instanceof Error && error.name === 'CurrentRequestSideEffectDeniedError',
+    );
+  }, ChickpeaRoutineExecution.agentName);
 });
 
 async function callTool<T>(
