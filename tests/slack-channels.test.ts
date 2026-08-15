@@ -21,6 +21,7 @@ import { recordPendingSlackChallenge } from '../src/slack/identity-handshake.ts'
 import { FakeSlackBackend, type FakeSlackBackendConfig } from './parity/fake-slack.ts';
 import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 const ADMIN_TOKEN = 'channels-admin-token';
 
@@ -35,7 +36,7 @@ const NO_SLACK_ENV: NodeJS.ProcessEnv = {
 };
 
 function auth(): Record<string, string> {
-  return { authorization: `Bearer ${ADMIN_TOKEN}` };
+  return testAdminHeaders(ADMIN_TOKEN);
 }
 
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
@@ -56,7 +57,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
 
 function appWith(settings: SqliteSettingsStore, store?: SqliteConfigStore): Hono {
   const app = new Hono();
-  app.route('/', createAdminRoutes({ settings, store, adminToken: ADMIN_TOKEN }));
+  app.route('/', createAdminRoutes({ settings, store, ...testAdminAuthority(ADMIN_TOKEN) }));
   return app;
 }
 
@@ -755,22 +756,17 @@ test('resolveSlackPublicUrl prefers env, falls back to the stored origin, else u
   });
 });
 
-test('an admin API request opportunistically persists the resolved origin to slack.publicUrl', async () => {
+test('an authenticated admin request cannot rewrite slack.publicUrl from its Host header', async () => {
   await withEnv({ ...NO_SLACK_ENV }, async () => {
     const settings = new SqliteSettingsStore(':memory:');
     invalidateStoredSlackPublicUrl();
     try {
       const app = appWith(settings);
-      // A plain admin API GET (no env pin) must pin the request origin so the
-      // Slack "Configure" link later resolves it.
       const response = await app.request('http://tag.example.test/admin/api/agents', {
         headers: auth(),
       });
       assert.equal(response.status, 200);
-      assert.equal(
-        await settings.getSetting(SLACK_SETTING_KEYS.publicUrl),
-        'http://tag.example.test',
-      );
+      assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.publicUrl), undefined);
     } finally {
       settings.close();
       invalidateStoredSlackPublicUrl();

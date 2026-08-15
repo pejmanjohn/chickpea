@@ -57,6 +57,7 @@ import slackAppManifest from '../slack-app-manifest.json' with { type: 'json' };
 import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
 import { captureSlackIdentityOperationalEvents } from './helpers/slack-identity-observability.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 const ADMIN_TOKEN = 'wizard-admin-token';
 
@@ -267,14 +268,14 @@ function appWith(settings: SettingsStore, store?: SqliteConfigStore): Hono {
   const app = new Hono();
   app.route('/', createAdminRoutes({
     settings,
-    adminToken: ADMIN_TOKEN,
+    ...testAdminAuthority(ADMIN_TOKEN),
     ...(store ? { store } : {}),
   }));
   return app;
 }
 
 function auth(): Record<string, string> {
-  return { authorization: `Bearer ${ADMIN_TOKEN}` };
+  return testAdminHeaders(ADMIN_TOKEN);
 }
 
 async function postCreds(app: Hono, body: unknown): Promise<Response> {
@@ -560,35 +561,35 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
-test('slack-connection endpoints are 404 when TAG_ADMIN_TOKEN is unset (fail-closed gate)', async () => {
+test('slack-connection endpoints fail closed without Slack session authority', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   try {
     const app = new Hono();
     app.route('/', createAdminRoutes({ settings, adminToken: undefined }));
     const get = await app.request('/admin/api/slack-connection', { headers: auth() });
-    assert.equal(get.status, 404);
+    assert.equal(get.status, 503);
     const post = await postCreds(app, { botToken: 'xoxb-x', signingSecret: 's' });
-    assert.equal(post.status, 404);
+    assert.equal(post.status, 503);
     const testConnection = await app.request('/admin/api/slack-connection/test', {
       method: 'POST',
       headers: auth(),
     });
-    assert.equal(testConnection.status, 404);
+    assert.equal(testConnection.status, 503);
     const identity = await app.request('/admin/api/slack-identity', { headers: auth() });
-    assert.equal(identity.status, 404);
+    assert.equal(identity.status, 503);
     const disconnect = await app.request('/admin/api/slack-connection', {
       method: 'DELETE',
       headers: auth(),
     });
-    assert.equal(disconnect.status, 404);
+    assert.equal(disconnect.status, 503);
     const getBehavior = await app.request('/admin/api/slack-behavior', { headers: auth() });
-    assert.equal(getBehavior.status, 404);
+    assert.equal(getBehavior.status, 503);
     const putBehavior = await app.request('/admin/api/slack-behavior', {
       method: 'PUT',
       headers: { ...auth(), 'content-type': 'application/json' },
       body: JSON.stringify({ allowDms: false }),
     });
-    assert.equal(putBehavior.status, 404);
+    assert.equal(putBehavior.status, 503);
   } finally {
     settings.close();
   }
@@ -911,7 +912,7 @@ test('connection test validates the current resolved bot token without mutating 
         const app = appWith(settings);
         const response = await app.request('/admin/api/slack-connection/test', {
           method: 'POST',
-          headers: auth(),
+          headers: { ...auth(), 'content-type': 'application/json' },
         });
         assert.equal(response.status, 200);
         assert.deepEqual(await response.json(), {
@@ -958,7 +959,7 @@ test('connection test distinguishes missing, Slack-rejected, and unreachable cre
       const app = appWith(settings);
       const missing = await app.request('/admin/api/slack-connection/test', {
         method: 'POST',
-        headers: auth(),
+        headers: { ...auth(), 'content-type': 'application/json' },
       });
       assert.equal(missing.status, 409);
       assert.deepEqual(await missing.json(), { error: 'slack_not_configured' });
@@ -971,7 +972,7 @@ test('connection test distinguishes missing, Slack-rejected, and unreachable cre
         const app = appWith(settings);
         const rejected = await app.request('/admin/api/slack-connection/test', {
           method: 'POST',
-          headers: auth(),
+          headers: { ...auth(), 'content-type': 'application/json' },
         });
         assert.equal(rejected.status, 422);
         assert.deepEqual(await rejected.json(), {
@@ -992,7 +993,7 @@ test('connection test distinguishes missing, Slack-rejected, and unreachable cre
       await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: staleSlack.baseUrl }, async () => {
         const stale = await appWith(settings).request('/admin/api/slack-connection/test', {
           method: 'POST',
-          headers: auth(),
+          headers: { ...auth(), 'content-type': 'application/json' },
         });
         assert.equal(stale.status, 422);
         assert.deepEqual(await stale.json(), {
@@ -1010,7 +1011,7 @@ test('connection test distinguishes missing, Slack-rejected, and unreachable cre
       const app = appWith(settings);
       const unreachable = await app.request('/admin/api/slack-connection/test', {
         method: 'POST',
-        headers: auth(),
+        headers: { ...auth(), 'content-type': 'application/json' },
       });
       assert.equal(unreachable.status, 502);
       assert.deepEqual(await unreachable.json(), { error: 'slack_unreachable' });

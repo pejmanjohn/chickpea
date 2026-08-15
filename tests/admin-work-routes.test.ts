@@ -12,6 +12,7 @@ import type {
   WorkId,
   WorkStore,
 } from '../src/work/types.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 const NOW = 1_900_000_000_000;
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -21,9 +22,9 @@ test('Sessions routes are authenticated and cursor pagination is stable across n
   try {
     await seedRun(work, 'page_a', NOW);
     await seedRun(work, 'page_b', NOW + 1);
-    const app = createAdminRoutes({ adminToken: 'sessions-token', work });
+    const app = createAdminRoutes({ work, ...testAdminAuthority('sessions-token') });
     assert.equal((await app.request('/admin/api/sessions')).status, 401);
-    const headers = { authorization: 'Bearer sessions-token' };
+    const headers = testAdminHeaders('sessions-token');
     const first = await app.request('/admin/api/sessions?limit=1', { headers });
     assert.equal(first.status, 200);
     const firstBody = await first.json() as Record<string, any>;

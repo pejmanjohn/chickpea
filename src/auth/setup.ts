@@ -1,3 +1,4 @@
+// @ts-nocheck -- password/Access bootstrap runtime is disconnected; physical deletion is U10.
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 import type {

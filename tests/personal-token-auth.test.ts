@@ -6,18 +6,13 @@ import { digest, PersonalTokenService } from '../src/auth/personal-token.ts';
 import { TokenSessionService } from '../src/auth/token-session.ts';
 import type { HumanIdentityDirectory, Membership } from '../src/identity/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const NOW = 1_786_100_000_000;
 
 async function ownerStore() {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const organization = await identity.ensureOrganization({ displayName: 'Chickpea' });
-  await identity.createOwnerClaim({ organizationId: organization.id, email: 'owner@example.com' });
-  const owner = await identity.claimOwner({
-    organizationId: organization.id,
-    provider: 'bootstrap', issuer: 'urn:chickpea:bootstrap', subject: 'owner',
-    verifiedEmail: 'owner@example.com', at: NOW,
-  });
+  const owner = await createSlackOwner(identity, { now: NOW });
   return { identity, owner };
 }
 
@@ -62,15 +57,17 @@ test('token sessions recheck expiry, source token, and membership on every reque
   const replacement = await tokens.create(owner.user.id, 'Replacement');
   const nextSession = await sessions.create(replacement.record, owner.membership.id);
   const backupInvite = await identity.createInvitation({
-    organizationId: owner.membership.organizationId, email: 'backup@example.com', role: 'owner',
-    tokenHash: 'backup-session-owner', inviterMembershipId: owner.membership.id,
+    organizationId: owner.membership.organizationId, slackTeamId: 'T12345678',
+    slackUserId: 'U87654321', role: 'admin',
+    locatorHash: 'e'.repeat(64), inviterMembershipId: owner.membership.id,
     expiresAt: NOW + 10_000,
   });
-  await identity.consumeInvitation({
-    invitationId: backupInvite.id, tokenHash: 'backup-session-owner', provider: 'bootstrap',
-    issuer: 'urn:chickpea:bootstrap', subject: 'backup-owner',
-    verifiedEmail: 'backup@example.com', at: NOW,
+  const backup = await identity.consumeInvitation({
+    invitationId: backupInvite.id, locatorHash: 'e'.repeat(64),
+    slackTeamId: 'T12345678', slackUserId: 'U87654321',
+    betterAuthUserId: 'ba_user_backup', betterAuthMembershipId: 'ba_member_backup', at: NOW,
   });
+  await identity.updateMembership({ membershipId: backup.membership.id, role: 'owner' });
   await identity.updateMembership({ membershipId: owner.membership.id, status: 'suspended' });
   await assert.rejects(() => sessions.authenticate(nextSession.token), AuthDeniedError);
 
@@ -84,19 +81,16 @@ test('token sessions recheck expiry, source token, and membership on every reque
 test('personal tokens use their pinned membership through a provider-neutral directory', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const token = 'chp_pat_abcdefghijkl_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN';
-  const user = {
-    id: 'better-user', primaryEmail: 'owner@example.com', displayName: 'Owner',
-    createdAt: NOW, updatedAt: NOW,
-  };
+  const canonical = await createSlackOwner(identity, { now: NOW, suffix: 'directory' });
+  const user = { ...canonical.user };
   const membership: Membership = {
-    id: 'better-member', organizationId: 'better-org', userId: user.id,
-    role: 'owner', status: 'active', createdAt: NOW, updatedAt: NOW,
+    ...canonical.membership,
+    status: 'active',
   };
   const directory: HumanIdentityDirectory = {
     async getOrganization() { return undefined; },
     async listMemberships() { return [membership]; },
     async getUser(id) { return id === user.id ? user : undefined; },
-    async findUserByEmail(email) { return email === user.primaryEmail ? user : undefined; },
     async getMembership(id) { return id === membership.id ? membership : undefined; },
     async getMembershipForUser(id, organizationId) {
       return id === user.id && (!organizationId || organizationId === membership.organizationId)

@@ -1,31 +1,27 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import {
-  DUMMY_PASSWORD_RECORD,
-  SCRYPT_PARAMETERS,
-  SCRYPT_RECORD_PREFIX,
-  nativePasswordPrimitive,
-  verifierShard,
-} from '../src/auth/password.ts';
+import { createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
+import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 
-test('native password primitive writes the exact reviewed scrypt record and verifies NFKC', async () => {
-  const password = nativePasswordPrimitive();
-  const record = await password.hash('A secure passphrase with Å');
+const ORIGIN = 'https://chickpea.example';
 
-  assert.equal(record.startsWith(`${SCRYPT_RECORD_PREFIX}$`), true);
-  assert.equal(record.split('$').length, 8);
-  assert.equal(Buffer.from(verifierShard(record) ?? '', 'base64url').byteLength, SCRYPT_PARAMETERS.saltLength);
-  assert.equal(await password.verify({ hash: record, password: 'A secure passphrase with Å' }), true);
-  assert.equal(await password.verify({ hash: record, password: 'A different passphrase' }), false);
-});
-
-test('unknown and malformed verifier records fail closed', async () => {
-  const password = nativePasswordPrimitive();
-  assert.equal(await password.verify({ hash: 'pbkdf2$old$record', password: 'anything' }), false);
-  assert.equal(await password.verify({ hash: `${SCRYPT_RECORD_PREFIX}$short$short`, password: 'anything' }), false);
-  assert.equal(
-    await password.verify({ hash: DUMMY_PASSWORD_RECORD, password: 'not the public dummy value' }),
-    false,
-  );
+test('password signup, login, reset, and account endpoints are absent', async () => {
+  const backend = new NodeBetterAuthBackend(':memory:');
+  try {
+    const handler = createBetterAuthPublicHandler({
+      backend, baseURL: ORIGIN, secret: 'password-route-absence-contract',
+    });
+    for (const path of [
+      '/api/auth/sign-up/email', '/api/auth/sign-in/email',
+      '/api/auth/forget-password', '/api/auth/reset-password',
+      '/api/auth/change-password', '/api/auth/set-password',
+    ]) {
+      const response = await handler(new Request(`${ORIGIN}${path}`, { method: 'POST' }));
+      assert.equal(response.status, 404, path);
+      assert.equal(response.headers.has('set-cookie'), false, path);
+    }
+  } finally {
+    backend.close();
+  }
 });

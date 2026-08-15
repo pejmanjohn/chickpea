@@ -2,6 +2,7 @@ import { instrument } from '@flue/runtime';
 import { Hono } from 'hono';
 
 import { createAdminRoutes } from './admin/routes.ts';
+import { getIdentityStore, type PlatformEnv } from './config/state-backend.ts';
 import { createJoinRoutes } from './join/routes.ts';
 import { createBetterAuthRuntimeRoutes } from './auth/better-auth-runtime.ts';
 import { activityStatusForObservation } from './activity/status.ts';
@@ -91,6 +92,11 @@ instrument({
 });
 
 const app = new Hono();
+app.use('*', async (c, next) => {
+  const control = await getIdentityStore(c.env as PlatformEnv | undefined).getAuthControl();
+  if (control?.healthGate === 'recovery_only') return c.notFound();
+  return next();
+});
 // Starts the shared startup/periodic wake for durable compatibility TurnJobs
 // and ledger-authoritative interactive Runs. Ledger admission stays default-off
 // and exact-channel scoped by SLACK_TAG_LEDGER_CANARY_CHANNELS.

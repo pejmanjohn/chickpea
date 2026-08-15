@@ -218,8 +218,8 @@ import type { WorkStore } from '../work/types.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { hasDeliveredOnboardingReply } from './onboarding-proof.ts';
 import type {
-  AuthProviderConfig,
   HumanIdentityDirectory,
+  IdentityResolution,
   IdentityStore,
 } from '../identity/types.ts';
 import type { SlackStateStore } from '../slack/claim-store.ts';
@@ -344,10 +344,47 @@ import {
   PasswordTeamLifecycleService,
 } from '../auth/password-team.ts';
 import { digest, PersonalTokenService } from '../auth/personal-token.ts';
-import { TokenSessionService } from '../auth/token-session.ts';
 import type { AdminAuthenticationService, AuthPrincipal, ExternalIdentity } from '../auth/types.ts';
 
 type AccessVerificationPurpose = 'activation' | 'recovery';
+interface RetiredAuthProviderConfig {
+  issuer: string | null;
+  audience: string | null;
+  state: 'pending' | 'active' | 'disabled';
+}
+interface RetiredActorHandoff {
+  issuer: string;
+  subject: string;
+  slackIdentityId: string;
+  slackIdentityRevision: number;
+}
+interface RetiredIdentityStore {
+  getAuthProviderConfig(kind: string): Promise<RetiredAuthProviderConfig | undefined>;
+  resolveExternalIdentity(
+    provider: string,
+    issuer: string,
+    subject: string,
+  ): Promise<IdentityResolution | undefined>;
+  getActorIdentityBindingHandoff(tokenHash: string): Promise<RetiredActorHandoff | undefined>;
+  consumeActorIdentityBindingHandoff(
+    tokenHash: string,
+    consumedAt: number,
+  ): Promise<RetiredActorHandoff | undefined>;
+  bindActorExternalIdentity(input: {
+    provider: 'slack';
+    issuer: string;
+    subject: string;
+    userId: string;
+    organizationId: string;
+    membershipId: string;
+  }): Promise<void>;
+  consumeInvitation(input: Record<string, unknown>): Promise<IdentityResolution>;
+  updateOrganizationAuth(input: {
+    organizationId: string;
+    authMode: string;
+    canonicalAdminOrigin?: string;
+  }): Promise<unknown>;
+}
 interface PasswordAuthContext {
   environment: BetterAuthEnvironment;
   directory: BetterAuthDirectory;
@@ -355,7 +392,7 @@ interface PasswordAuthContext {
 }
 type AccessAssertionVerifier = (
   request: Request,
-  config: AuthProviderConfig,
+  config: RetiredAuthProviderConfig,
   purpose: AccessVerificationPurpose,
 ) => Promise<ExternalIdentity>;
 
@@ -1040,6 +1077,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.snapshots ?? getAgentSnapshotStore(c.env as PlatformEnv | undefined);
   const identity = (c: Context) =>
     options.identity ?? getIdentityStore(c.env as PlatformEnv | undefined);
+  // These methods exist only in route bodies made unreachable above. Keeping
+  // the cast local lets U10 delete the retired handlers without weakening the
+  // Slack-native IdentityStore contract used by live routes.
+  const retiredIdentity = (c: Context) => identity(c) as unknown as RetiredIdentityStore;
   const settings = (c: Context) =>
     options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
   const memory = (c: Context) =>
@@ -1052,6 +1093,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.work ?? getWorkStore(c.env as PlatformEnv | undefined);
   const slackState = (c: Context) =>
     options.slackState ?? getSlackStateStore(c.env as PlatformEnv | undefined);
+  app.use('*', async (c, next) => {
+    const retired = [
+      '/admin/migrate', '/admin/setup', '/admin/recovery', '/admin/join', '/admin/login',
+      '/admin/reset', '/admin/account', '/admin/slack-actor',
+      '/admin/api/team', '/admin/api/account',
+    ];
+    if (retired.some((path) => c.req.path === path || c.req.path.startsWith(`${path}/`))) {
+      return c.notFound();
+    }
+    const control = await identity(c).getAuthControl();
+    if (control?.healthGate === 'recovery_only') return c.notFound();
+    return next();
+  });
   const runtimeDrain = options.runtimeDrain ?? readRuntimeDrainStatus;
   const usageAdminUi = (c: Context): boolean => {
     if (options.usageAdminUi !== undefined) return options.usageAdminUi;
@@ -1128,14 +1182,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const pending = (async () => {
       const identityStore = identity(c);
       const control = await identityStore.getAuthControl();
-      if (control?.authMode !== 'password_active' ||
+      if (control?.authMode !== 'slack_active' || control.healthGate !== 'normal' ||
           !control.betterAuthOrganizationId ||
           !control.canonicalAdminOrigin) return undefined;
       const environment = options.betterAuthEnvironment ?? await resolveBetterAuthEnvironment({
           control,
           platformEnv: c.env as PlatformEnv | undefined,
           recoveryToken: recoveryToken(c),
-          passwordShardKey: requestAuthSourceKey(c.req.raw, isCloudflareTarget()),
         });
       if (!environment) return undefined;
       if (environment.baseURL !== control.canonicalAdminOrigin) return undefined;
@@ -1173,7 +1226,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const { environment, directory, organizationId } = passwordContext;
       return new AuthService({
         identity: identityStore,
-        passwordAuthenticator: new BetterAuthSessionAuthenticator({
+        sessionAuthenticator: new BetterAuthSessionAuthenticator({
           ...environment,
           directory,
           organizationId,
@@ -1183,32 +1236,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     const organization = await identityStore.getOrganization();
     if (!organization) return undefined;
-    if (organization.authMode === 'access_active') {
-      const config = await identityStore.getAuthProviderConfig('cloudflare_access');
-      if (!config?.issuer || !config.audience || config.state !== 'active') return undefined;
-      return new AuthService({
-        identity: identityStore,
-        authenticators: [new CloudflareAccessAuthenticator({
-          issuer: config.issuer,
-          audience: config.audience,
-        })],
-      });
-    }
-    if (organization.authMode === 'token_active') {
-      return new AuthService({
-        identity: identityStore,
-        personalTokens: new PersonalTokenService(identityStore),
-        tokenSessions: new TokenSessionService(identityStore),
-      });
-    }
     return undefined;
   };
   const legacyAuthenticationAllowed = async (c: Context): Promise<boolean> => {
-    if (tokenFromOptions) return options.authService === undefined;
-    const control = await identity(c).getAuthControl();
-    if (control?.authMode === 'password_active') return false;
-    const organization = await identity(c).getOrganization();
-    return !organization || ['unconfigured', 'access_pending', 'legacy_shared'].includes(organization.authMode);
+    void c;
+    return false;
   };
   const modelProviders = () =>
     options.knownProviders
@@ -1342,6 +1374,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({ error: 'authentication_unavailable' }, 503);
     }
     if (authService) {
+      if (isAdminLoginPost(c)) return c.notFound();
       if (isAdminLoginPost(c)) {
         const login = await readAdminLogin(c);
         const passwordContext = await passwordAuthContext(c);
@@ -1357,8 +1390,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           }
           const handler = createBetterAuthEnvironmentPublicHandler({
             environment: passwordContext.environment,
-            identity: identity(c),
-            directory: passwordContext.directory,
           });
           const response = await handler(betterAuthJsonRequest(
             c.req.raw,
@@ -1435,7 +1466,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           }
           throw error;
         }
-        if (principal.role === 'member' && isAdminPageGet(c) &&
+        if ((principal.role as string) === 'member' && isAdminPageGet(c) &&
             !['/admin/account', '/admin/account/password'].includes(c.req.path)) {
           return c.redirect('/admin/account', 303);
         }
@@ -1478,31 +1509,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         if (isAdminPageGet(c)) {
           authResponseHeaders(c);
-          return c.html(
-            (await passwordAuthContext(c))
-              ? renderPasswordLogin({
-                  returnTo: safeAdminReturnPath(c.req.query('returnTo') ?? c.req.path),
-                })
-              : renderAdminLogin({ returnTo: safeAdminReturnPath(c.req.path) }),
-            401,
-          );
+          return c.json({ error: 'authentication_required' }, 401);
         }
         return c.json({ error: 'unauthorized' }, 401);
       }
     }
     try {
       const control = await identity(c).ensureAuthControl();
-      if (
-        control?.authMode === 'unconfigured' &&
-        isAdminPageGet(c) &&
-        ownerSetupAvailable(c) &&
-        !adminToken()
-      ) {
-        return c.redirect('/admin/setup', 303);
-      }
-      if (control?.authMode === 'invalid' && isAdminPageGet(c) && recoveryToken(c)) {
-        return c.redirect('/admin/recovery', 303);
-      }
+      void control;
     } catch {
       return c.json({ error: 'authentication_unavailable' }, 503);
     }
@@ -1647,14 +1661,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       identityStore.ensureAuthControl(),
       identityStore.getOrganization(),
     ]);
-    if (control.authMode === 'password_active') {
+    if ((control.authMode as string) === 'password_active') {
       const environment = options.betterAuthEnvironment ??
         await resolveBetterAuthEnvironment({
           control,
           platformEnv: c.env as PlatformEnv | undefined,
           recoveryToken: token,
           authSecret: authSecret(c),
-          passwordShardKey: requestAuthSourceKey(c.req.raw, isCloudflareTarget()),
         });
       if (!environment) return c.json({ error: 'authentication_unavailable' }, 503);
       try {
@@ -1673,12 +1686,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return c.json({ error: 'authentication_unavailable' }, 503);
       }
     }
-    if (organization?.authMode === 'access_active') return c.redirect('/admin', 303);
+    if ((organization?.authMode as string | undefined) === 'access_active') return c.redirect('/admin', 303);
     if (!organization && control.authMode === 'unconfigured') {
       return c.html(renderPasswordOwnerSetupPage());
     }
-    if (organization?.authMode === 'access_pending') {
-      const config = await identityStore.getAuthProviderConfig('cloudflare_access');
+    if ((organization?.authMode as string | undefined) === 'access_pending') {
+      const config = await (identityStore as unknown as RetiredIdentityStore)
+        .getAuthProviderConfig('cloudflare_access');
       return c.html(renderAuthSetupPage({
         state: 'access_pending',
         origin: requestOrigin(c),
@@ -1723,7 +1737,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             platformEnv: c.env as PlatformEnv | undefined,
             recoveryToken: token,
             authSecret: authSecret(c),
-            passwordShardKey: source,
           });
         if (!environment) throw new AuthDeniedError();
         const result = await new PasswordOwnerSetupService(
@@ -1752,11 +1765,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return c.json({ error: 'authentication_unavailable' }, 503);
       }
       const organization = await identity(c).getOrganization();
-      const config = organization?.authMode === 'access_pending'
-        ? await identity(c).getAuthProviderConfig('cloudflare_access')
+      const config = (organization?.authMode as string | undefined) === 'access_pending'
+        ? await retiredIdentity(c).getAuthProviderConfig('cloudflare_access')
         : undefined;
       return c.html(
-        !passwordSetup && organization?.authMode === 'access_pending'
+        !passwordSetup && (organization?.authMode as string | undefined) === 'access_pending'
           ? renderAuthSetupPage({
             state: 'access_pending',
             error: true,
@@ -1781,16 +1794,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({ error: 'authentication_unavailable' }, 503);
     }
     try {
-      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      const config = await retiredIdentity(c).getAuthProviderConfig('cloudflare_access');
       if (!config || config.state !== 'pending') throw new AuthDeniedError();
       const external = await verifyAccessAssertion(c.req.raw, config, 'activation');
       await new AuthSetupService(identity(c), { recoveryToken: token }).activateAccess(external);
       return c.redirect('/admin/ready', 303);
     } catch {
       const organization = await identity(c).getOrganization();
-      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      const config = await retiredIdentity(c).getAuthProviderConfig('cloudflare_access');
       return c.html(
-        organization?.authMode === 'legacy_shared'
+        (organization?.authMode as string | undefined) === 'legacy_shared'
           ? renderAuthMigrationPage({ error: true })
           : renderAuthSetupPage({
             state: 'access_pending',
@@ -1816,11 +1829,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     try {
       const control = await identity(c).getAuthControl();
-      if (control?.authMode === 'password_active') {
+      if ((control?.authMode as string | undefined) === 'password_active') {
         if (!await passwordAuthContext(c)) throw new AuthDeniedError();
         return c.html(renderPasswordRecoveryPage());
       }
-      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      const config = await retiredIdentity(c).getAuthProviderConfig('cloudflare_access');
       if (!config || config.state !== 'active') throw new AuthDeniedError();
       await verifyAccessAssertion(c.req.raw, config, 'recovery');
       return c.html(renderAuthRecoveryPage());
@@ -1842,7 +1855,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       await limiter.assertAllowed('recovery', source);
       const control = await identity(c).getAuthControl();
-      passwordRecovery = control?.authMode === 'password_active';
+      passwordRecovery = (control?.authMode as string | undefined) === 'password_active';
       if (passwordRecovery) {
         if (!control?.canonicalAdminOrigin ||
             !validAuthFormPost(c, control.canonicalAdminOrigin)) throw new AuthDeniedError();
@@ -1864,7 +1877,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       const form = v.safeParse(authRecoverySchema, await readForm(c));
       if (!form.success) throw new AuthDeniedError();
-      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      const config = await retiredIdentity(c).getAuthProviderConfig('cloudflare_access');
       if (!config || config.state !== 'active') throw new AuthDeniedError();
       const external = await verifyAccessAssertion(c.req.raw, config, 'recovery');
       const recovery = new AuthRecoveryService(identity(c), { recoveryToken: token });
@@ -1938,10 +1951,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c.header('Content-Security-Policy', invitationJoinCsp());
     try {
       if (await passwordAuthContext(c)) return c.html(renderPasswordInvitationPage());
-      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      const config = await retiredIdentity(c).getAuthProviderConfig('cloudflare_access');
       if (!config || config.state !== 'active') throw new AuthDeniedError();
       const external = await verifyAccessAssertion(c.req.raw, config, 'activation');
-      const existing = await identity(c).resolveExternalIdentity(
+      const existing = await retiredIdentity(c).resolveExternalIdentity(
         external.provider,
         external.issuer,
         external.subject,
@@ -2025,7 +2038,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return c.json({ redirect: '/admin/channels' });
       }
       const organization = await identity(c).getOrganization();
-      const config = await identity(c).getAuthProviderConfig('cloudflare_access');
+      const config = await retiredIdentity(c).getAuthProviderConfig('cloudflare_access');
       if (!organization?.canonicalAdminOrigin || !config || config.state !== 'active') {
         throw new AuthDeniedError();
       }
@@ -2033,7 +2046,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const parsed = v.safeParse(invitationJoinSchema, await readJson(c.req));
       if (!parsed.success) throw new AuthDeniedError();
       const external = await verifyAccessAssertion(c.req.raw, config, 'activation');
-      const resolution = await identity(c).consumeInvitation({
+      const resolution = await retiredIdentity(c).consumeInvitation({
         invitationId: parsed.output.invitationId,
         tokenHash: digest(parsed.output.token),
         provider: external.provider,
@@ -2511,7 +2524,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const parsed = v.safeParse(v.object({ token: v.pipe(v.string(), v.minLength(4), v.maxLength(512)) }), await readForm(c));
     if (!parsed.success) return c.html(renderSlackActorBindingResult(false), 400);
     const tokenHash = digest(parsed.output.token);
-    const handoff = await identity(c).getActorIdentityBindingHandoff(tokenHash);
+    const handoff = await retiredIdentity(c).getActorIdentityBindingHandoff(tokenHash);
     if (!handoff) return c.html(renderSlackActorBindingResult(false), 409);
     const [slackIdentity, directory, overlay] = await Promise.all([
       store(c).getSlackIdentity(handoff.slackIdentityId), humanDirectory(c),
@@ -2526,9 +2539,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         slackIdentity.teamId !== handoff.issuer) {
       return c.html(renderSlackActorBindingResult(false), 409);
     }
-    const consumed = await identity(c).consumeActorIdentityBindingHandoff(tokenHash, Date.now());
+    const consumed = await retiredIdentity(c).consumeActorIdentityBindingHandoff(tokenHash, Date.now());
     if (!consumed) return c.html(renderSlackActorBindingResult(false), 409);
-    await identity(c).bindActorExternalIdentity({
+    await retiredIdentity(c).bindActorExternalIdentity({
       provider: 'slack', issuer: consumed.issuer, subject: consumed.subject,
       userId: principal.userId, organizationId: principal.organizationId,
       membershipId: principal.membershipId,
@@ -2547,7 +2560,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/migrate', async (c) => {
     authResponseHeaders(c);
     const organization = await identity(c).getOrganization();
-    if (organization?.authMode === 'access_active' || organization?.authMode === 'token_active') {
+    if ((organization?.authMode as string | undefined) === 'access_active' ||
+        (organization?.authMode as string | undefined) === 'token_active') {
       return c.redirect('/admin', 303);
     }
     const token = recoveryToken(c);
@@ -2581,7 +2595,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         audience: form.output.audience,
         canonicalAdminOrigin: requestOrigin(c),
       });
-      await identity(c).updateOrganizationAuth({
+      await retiredIdentity(c).updateOrganizationAuth({
         organizationId: pending.organization.id,
         authMode: 'legacy_shared',
         canonicalAdminOrigin: requestOrigin(c),
@@ -2607,8 +2621,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!context) return c.redirect('/admin/login', 303);
     const handler = createBetterAuthEnvironmentPublicHandler({
       environment: context.environment,
-      identity: identity(c),
-      directory: context.directory,
     });
     const response = await handler(betterAuthJsonRequest(
       c.req.raw,
@@ -2641,10 +2653,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ]);
       if (!user || !organization) throw new AuthDeniedError();
       assertPasswordPolicy(parsed.output.newPassword, {
-        email: user.primaryEmail,
+        email: (user as unknown as { primaryEmail: string }).primaryEmail,
         organizationName: organization.displayName,
       });
-      const auth = createBetterAuth({ ...context.environment, allowSignUp: false });
+      const auth = createBetterAuth(context.environment);
       await auth.api.changePassword({
         body: {
           currentPassword: parsed.output.currentPassword,
@@ -2675,7 +2687,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.html(renderMemberAccountPage({
       organizationName: organization.displayName,
       displayName: user.displayName,
-      email: user.primaryEmail,
+      email: (user as unknown as { primaryEmail: string }).primaryEmail,
       role: membership.role,
       status: membership.status,
     }));
@@ -6407,7 +6419,7 @@ function isAdminPageGet(c: Context): boolean {
 }
 
 function permissionForAdminRequest(c: Context, principal: AuthPrincipal): Permission {
-  if (principal.role === 'member' && isAdminPageGet(c)) return 'account.view';
+  if ((principal.role as string) === 'member' && isAdminPageGet(c)) return 'account.view';
   if (c.req.path === '/admin/account' || c.req.path === '/admin/api/account' ||
       c.req.path === '/admin/account/password' || c.req.path === '/admin/logout') {
     return 'account.view';

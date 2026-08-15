@@ -26,6 +26,7 @@ import {
 } from '../src/slack/run-turn.ts';
 import { slackThreadKey } from '../src/slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const baseTurn: NormalizedSlackTurn = {
   workspaceId: 'T_RUNTIME',
@@ -149,7 +150,7 @@ test('owner-native runtime reads frozen Agent memory plus exact Channel memory o
   }
 });
 
-test('DM runtime keeps reads available and requires authenticated Admin handoff for writes', async () => {
+test('DM runtime keeps reads available and denies unbound Slack identities for writes', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-owner-dm-runtime-'));
   const previous = snapshotEnvironment();
   try {
@@ -218,7 +219,7 @@ test('DM runtime keeps reads available and requires authenticated Admin handoff 
       client: {} as WebClient,
       presenter: { async deliverFinal(text: string) { delivered.push(text); } } as unknown as WebClientPresenter,
     }), true);
-    assert.match(delivered.at(-1) ?? '', /Connect your Slack account from authenticated Chickpea Admin/);
+    assert.match(delivered.at(-1) ?? '', /not an active Chickpea Owner or Admin/);
     assert.equal((await state.listOwnerEntries(agentOwner)).length, 1);
   } finally {
     process.env.SLACK_STATE_DB_PATH = ':memory:';
@@ -237,33 +238,27 @@ test('DM Agent-memory writes bind exact mutation and execute once for an active 
     await config.createAgent(runtimeAssignment.agent);
     const slackIdentity = await config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
     await config.updateSlackIdentity(slackIdentity.id, slackIdentity.connectionRevision, {
-      lifecycle: 'connected', teamId: 'T_RUNTIME', appId: 'A_RUNTIME', botUserId: 'U_BOT',
+      lifecycle: 'connected', teamId: 'T12345678', appId: 'A_RUNTIME', botUserId: 'U_BOT',
       dmState: 'on', dmAgentId: 'agent_runtime', credentialProvenance: 'stored', health: 'healthy',
     });
     const identity = getIdentityStore();
-    const organization = await identity.ensureOrganization({ displayName: 'Chickpea' });
-    await identity.createOwnerClaim({ organizationId: organization.id, email: 'owner@example.com' });
-    const owner = await identity.claimOwner({
-      organizationId: organization.id, provider: 'test', issuer: 'test', subject: 'owner',
-      verifiedEmail: 'owner@example.com', at: Date.now(),
-    });
-    await identity.bindActorExternalIdentity({
-      provider: 'slack', issuer: 'T_RUNTIME', subject: 'U_MEMBER', userId: owner.user.id,
-      organizationId: organization.id, membershipId: owner.membership.id,
+    const owner = await createSlackOwner(identity, {
+      teamId: 'T12345678', userId: 'U12345678', now: Date.now(),
     });
     const state = getMemoryStateStore();
     const dmTurn: NormalizedSlackTurn = {
-      ...baseTurn, channelId: 'D_RUNTIME', source: 'dm_message', channelType: 'im',
+      ...baseTurn, workspaceId: 'T12345678', userId: 'U12345678',
+      channelId: 'D_RUNTIME', source: 'dm_message', channelType: 'im',
       contextMode: 'dm_history', eventId: 'E_DM_WRITE_REQUEST', text: '!remember launch-owner — Launch owner is Alice',
     };
-    const dmAssignment = { ...runtimeAssignment, channelId: 'D_RUNTIME' };
+    const dmAssignment = { ...runtimeAssignment, workspaceId: 'T12345678', channelId: 'D_RUNTIME' };
     const delivered: string[] = [];
     const presenter = { async deliverFinal(text: string) { delivered.push(text); } } as unknown as WebClientPresenter;
     assert.equal(await handleMemoryCommand({ turn: dmTurn, assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter }), true);
     assert.match(delivered.at(-1) ?? '', /save to Agent Runtime Agent; every channel where it works may use it/i);
     const token = delivered.at(-1)?.match(/!memory confirm ([A-Za-z0-9._-]+)/)?.[1];
     assert.ok(token);
-    const ownerRef = { workspaceId: 'T_RUNTIME', ownerKind: 'agent' as const, ownerId: 'agent_runtime' };
+    const ownerRef = { workspaceId: 'T12345678', ownerKind: 'agent' as const, ownerId: 'agent_runtime' };
     assert.equal((await state.listOwnerEntries(ownerRef)).length, 0);
     assert.equal(await handleMemoryCommand({
       turn: { ...dmTurn, eventId: 'E_DM_WRITE_CONFIRM', text: `!memory confirm ${token}` },
@@ -298,9 +293,10 @@ test('DM Agent-memory writes bind exact mutation and execute once for an active 
     }), true);
     const reboundToken = delivered.at(-1)?.match(/!memory confirm ([A-Za-z0-9._-]+)/)?.[1];
     assert.ok(reboundToken);
-    await identity.bindActorExternalIdentity({
-      provider: 'slack', issuer: 'T_RUNTIME', subject: 'U_MEMBER',
-      userId: 'rebound-user', organizationId: organization.id, membershipId: 'rebound-membership',
+    await identity.setMembershipAccessOverlay({
+      membershipId: owner.membership.id,
+      organizationId: owner.membership.organizationId,
+      accessStatus: 'suspended',
     });
     assert.equal(await handleMemoryCommand({
       turn: { ...dmTurn, eventId: 'E_DM_REBOUND_CONFIRM', text: `!memory confirm ${reboundToken}` },

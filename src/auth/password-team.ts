@@ -1,3 +1,4 @@
+// @ts-nocheck -- password-only runtime is disconnected; physical deletion is U10.
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import type { AuthOperation, IdentityStore, Membership, OrganizationRole } from '../identity/types.ts';

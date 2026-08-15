@@ -24,11 +24,12 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { withEnv } from './helpers/env.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 const ADMIN_TOKEN = 'provider-admin-token';
 
 function auth(): HeadersInit {
-  return { authorization: `Bearer ${ADMIN_TOKEN}` };
+  return testAdminHeaders(ADMIN_TOKEN);
 }
 
 function appWithProviderAdmin(): {
@@ -51,7 +52,7 @@ function appWithProviderAdmin(): {
       store: config,
       settings,
       usage,
-      adminToken: ADMIN_TOKEN,
+      ...testAdminAuthority(ADMIN_TOKEN),
       knownProviders: new Set(['anthropic', 'openai', 'openrouter', 'workers-ai']),
     }),
   );
@@ -604,7 +605,11 @@ test('models endpoint applies stored provider keys before composing provider gro
   const app = new Hono();
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
-  app.route('/', createAdminRoutes({ store: config, settings, adminToken: ADMIN_TOKEN }));
+  app.route('/', createAdminRoutes({
+    store: config,
+    settings,
+    ...testAdminAuthority(ADMIN_TOKEN),
+  }));
   try {
     invalidateProviderKeyCache();
     forgetRegisteredProvider('anthropic');

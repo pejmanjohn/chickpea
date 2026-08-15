@@ -1,362 +1,147 @@
 import type { StateDb } from '../state/state-db.ts';
 
-export const IDENTITY_SCHEMA_VERSION = 4;
+export const IDENTITY_SCHEMA_VERSION = 1;
+export const IDENTITY_SCHEMA_MARKER = 'slack-native-v1';
 
-interface IdentityMigration {
-  version: number;
-  apply(db: StateDb): void;
-}
-
-/**
- * The shipped U8 schema. Existing Access/token/shared installations continue
- * to use these tables until their mode-specific U14 migration. Fresh password
- * installations never make this directory canonical.
- */
+/** Fresh Slack-native TAG_STATE schema. Earlier ledgers are incompatible by design. */
 export const IDENTITY_SCHEMA_V1_STATEMENTS = [
-  `CREATE TABLE IF NOT EXISTS identity_organizations (
-    organization_id TEXT PRIMARY KEY,
-    display_name TEXT NOT NULL,
-    auth_mode TEXT NOT NULL,
-    canonical_admin_origin TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+  `CREATE TABLE identity_schema_metadata (
+    schema_key TEXT PRIMARY KEY CHECK (schema_key = 'identity'), schema_marker TEXT NOT NULL
   )`,
-  `CREATE TABLE IF NOT EXISTS identity_users (
-    user_id TEXT PRIMARY KEY,
-    primary_email TEXT NOT NULL,
-    display_name TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+  `CREATE TABLE identity_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`,
+  `CREATE TABLE identity_auth_controls (
+    installation_id TEXT PRIMARY KEY,
+    auth_mode TEXT NOT NULL CHECK (auth_mode IN ('unconfigured', 'slack_active')),
+    health_gate TEXT NOT NULL CHECK (health_gate IN ('normal', 'recovery_only')),
+    canonical_admin_origin TEXT, better_auth_organization_id TEXT,
+    revision INTEGER NOT NULL CHECK (revision > 0), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
   )`,
-  `CREATE TABLE IF NOT EXISTS identity_external_bindings (
-    binding_id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES identity_users(user_id),
-    provider TEXT NOT NULL,
-    issuer TEXT NOT NULL,
-    subject TEXT NOT NULL,
-    verified_email TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    UNIQUE (provider, issuer, subject)
+  `CREATE TABLE identity_organizations (
+    organization_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, slack_team_id TEXT UNIQUE,
+    auth_mode TEXT NOT NULL CHECK (auth_mode IN ('unconfigured', 'slack_active')),
+    canonical_admin_origin TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
   )`,
-  `CREATE TABLE IF NOT EXISTS identity_memberships (
+  `CREATE TABLE identity_users (
+    user_id TEXT PRIMARY KEY, slack_team_id TEXT NOT NULL, slack_user_id TEXT NOT NULL,
+    display_name TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    UNIQUE (slack_team_id, slack_user_id)
+  )`,
+  `CREATE TABLE identity_memberships (
     membership_id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES identity_organizations(organization_id),
     user_id TEXT NOT NULL REFERENCES identity_users(user_id),
-    role TEXT NOT NULL,
-    status TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    UNIQUE (organization_id, user_id)
+    role TEXT NOT NULL CHECK (role IN ('owner', 'admin')),
+    status TEXT NOT NULL CHECK (status IN ('active', 'suspended', 'removed')),
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE (organization_id, user_id)
   )`,
-  `CREATE TABLE IF NOT EXISTS identity_owner_claims (
-    owner_claim_id TEXT PRIMARY KEY,
-    organization_id TEXT NOT NULL UNIQUE REFERENCES identity_organizations(organization_id),
-    normalized_email TEXT NOT NULL,
-    status TEXT NOT NULL,
-    binding_id TEXT REFERENCES identity_external_bindings(binding_id),
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+  `CREATE TABLE identity_slack_bindings (
+    binding_id TEXT PRIMARY KEY, slack_team_id TEXT NOT NULL, slack_user_id TEXT NOT NULL,
+    user_id TEXT NOT NULL UNIQUE REFERENCES identity_users(user_id),
+    organization_id TEXT NOT NULL REFERENCES identity_organizations(organization_id),
+    membership_id TEXT NOT NULL UNIQUE REFERENCES identity_memberships(membership_id),
+    better_auth_user_id TEXT NOT NULL UNIQUE, better_auth_membership_id TEXT NOT NULL UNIQUE,
+    revision INTEGER NOT NULL CHECK (revision > 0), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    UNIQUE (slack_team_id, slack_user_id)
   )`,
-  `CREATE TABLE IF NOT EXISTS identity_invitations (
+  `CREATE TABLE identity_owner_claims (
+    claim_key TEXT PRIMARY KEY CHECK (claim_key = 'first_owner'), owner_claim_id TEXT NOT NULL UNIQUE,
+    operation_id TEXT NOT NULL UNIQUE,
+    organization_id TEXT REFERENCES identity_organizations(organization_id), slack_team_id TEXT NOT NULL,
+    slack_user_id TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('reserved', 'active', 'tombstoned')),
+    membership_id TEXT REFERENCES identity_memberships(membership_id),
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE identity_invitations (
     invitation_id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES identity_organizations(organization_id),
-    normalized_email TEXT NOT NULL,
-    role TEXT NOT NULL,
-    token_hash TEXT NOT NULL,
-    status TEXT NOT NULL,
+    slack_team_id TEXT NOT NULL, slack_user_id TEXT NOT NULL, display_name TEXT,
+    role TEXT NOT NULL CHECK (role = 'admin'), locator_hash TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'revoked', 'expired')),
     inviter_membership_id TEXT NOT NULL REFERENCES identity_memberships(membership_id),
     accepted_membership_id TEXT REFERENCES identity_memberships(membership_id),
-    expires_at INTEGER NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
   )`,
-  `CREATE INDEX IF NOT EXISTS identity_invitations_state_idx
+  `CREATE INDEX identity_invitations_state_idx
    ON identity_invitations (organization_id, status, expires_at)`,
-  `CREATE TABLE IF NOT EXISTS identity_personal_tokens (
+  `CREATE UNIQUE INDEX identity_invitations_pending_tuple_uidx
+   ON identity_invitations (organization_id, slack_team_id, slack_user_id) WHERE status = 'pending'`,
+  `CREATE TABLE identity_auth_operations (
+    operation_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('first_owner_claim', 'invitation_admission', 'login')),
+    organization_id TEXT REFERENCES identity_organizations(organization_id),
+    expected_slack_team_id TEXT NOT NULL, expected_slack_user_id TEXT NOT NULL,
+    chickpea_role TEXT CHECK (chickpea_role IN ('owner', 'admin')),
+    capability_hash TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('reserved', 'reconciling', 'active', 'tombstoned', 'expired')),
+    step INTEGER NOT NULL CHECK (step >= 0), better_auth_user_id TEXT,
+    better_auth_organization_id TEXT, better_auth_membership_id TEXT, chickpea_membership_id TEXT,
+    expires_at INTEGER NOT NULL, activated_at INTEGER, tombstoned_at INTEGER,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX identity_auth_operations_state_idx
+   ON identity_auth_operations (kind, status, expires_at)`,
+  `CREATE UNIQUE INDEX identity_auth_operations_first_owner_uidx
+   ON identity_auth_operations (kind)
+   WHERE kind = 'first_owner_claim' AND status IN ('reserved', 'reconciling', 'active')`,
+  `CREATE UNIQUE INDEX identity_auth_operations_tuple_uidx
+   ON identity_auth_operations (kind, organization_id, expected_slack_team_id, expected_slack_user_id)
+   WHERE status IN ('reserved', 'reconciling', 'active')`,
+  `CREATE TABLE identity_membership_access_overlays (
+    membership_id TEXT PRIMARY KEY, organization_id TEXT NOT NULL,
+    access_status TEXT NOT NULL CHECK (access_status IN ('active', 'suspended')),
+    membership_version INTEGER NOT NULL CHECK (membership_version > 0),
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE identity_personal_tokens (
     personal_token_id TEXT PRIMARY KEY,
+    organization_id TEXT REFERENCES identity_organizations(organization_id),
     user_id TEXT NOT NULL REFERENCES identity_users(user_id),
-    token_hash TEXT NOT NULL UNIQUE,
-    prefix TEXT NOT NULL,
-    label TEXT NOT NULL,
-    status TEXT NOT NULL,
-    last_used_at INTEGER,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    membership_id TEXT REFERENCES identity_memberships(membership_id),
+    token_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, label TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'revoked')), last_used_at INTEGER,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
   )`,
-  `CREATE INDEX IF NOT EXISTS identity_personal_tokens_prefix_idx
-   ON identity_personal_tokens (prefix, status)`,
-  `CREATE TABLE IF NOT EXISTS identity_browser_sessions (
+  `CREATE INDEX identity_personal_tokens_prefix_idx ON identity_personal_tokens (prefix, status)`,
+  `CREATE TABLE identity_browser_sessions (
     browser_session_id TEXT PRIMARY KEY,
+    organization_id TEXT REFERENCES identity_organizations(organization_id),
     user_id TEXT NOT NULL REFERENCES identity_users(user_id),
+    membership_id TEXT REFERENCES identity_memberships(membership_id),
     personal_token_id TEXT NOT NULL REFERENCES identity_personal_tokens(personal_token_id),
-    session_hash TEXT NOT NULL UNIQUE,
-    prefix TEXT NOT NULL,
-    expires_at INTEGER NOT NULL,
-    last_seen_at INTEGER NOT NULL,
-    revoked_at INTEGER,
-    created_at INTEGER NOT NULL
+    session_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL,
+    expires_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, revoked_at INTEGER, created_at INTEGER NOT NULL
   )`,
-  `CREATE INDEX IF NOT EXISTS identity_browser_sessions_prefix_idx
-   ON identity_browser_sessions (prefix, expires_at)`,
-  `CREATE TABLE IF NOT EXISTS identity_auth_provider_configs (
-    auth_provider_config_id TEXT PRIMARY KEY,
-    organization_id TEXT NOT NULL REFERENCES identity_organizations(organization_id),
-    kind TEXT NOT NULL,
-    state TEXT NOT NULL,
-    issuer TEXT,
-    audience TEXT,
-    admission_state TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    UNIQUE (organization_id, kind)
-  )`,
-  `CREATE TABLE IF NOT EXISTS identity_auth_rate_limits (
-    bucket TEXT NOT NULL,
-    key_hash TEXT NOT NULL,
-    window_start INTEGER NOT NULL,
-    failures INTEGER NOT NULL,
+  `CREATE INDEX identity_browser_sessions_prefix_idx ON identity_browser_sessions (prefix, expires_at)`,
+  `CREATE TABLE identity_auth_rate_limits (
+    bucket TEXT NOT NULL, key_hash TEXT NOT NULL, window_start INTEGER NOT NULL, failures INTEGER NOT NULL,
     PRIMARY KEY (bucket, key_hash)
   )`,
 ] as const;
 
-const CHICKPEA_CONTROL_STATEMENTS = [
-  `CREATE TABLE IF NOT EXISTS identity_auth_controls (
-    installation_id TEXT PRIMARY KEY,
-    auth_mode TEXT NOT NULL,
-    canonical_admin_origin TEXT,
-    better_auth_organization_id TEXT,
-    revision INTEGER NOT NULL CHECK (revision > 0),
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS identity_auth_operations (
-    operation_id TEXT PRIMARY KEY,
-    kind TEXT NOT NULL,
-    organization_id TEXT,
-    expected_normalized_email TEXT NOT NULL,
-    capability_hash TEXT NOT NULL UNIQUE,
-    status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'revoked', 'expired')),
-    step INTEGER NOT NULL CHECK (step >= 0),
-    better_auth_user_id TEXT,
-    better_auth_organization_id TEXT,
-    better_auth_membership_id TEXT,
-    better_auth_invitation_id TEXT,
-    target_credential_version INTEGER,
-    expires_at INTEGER NOT NULL,
-    consumed_at INTEGER,
-    revoked_at INTEGER,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS identity_auth_operations_state_idx
-   ON identity_auth_operations (kind, status, expires_at)`,
-  `CREATE TABLE IF NOT EXISTS identity_membership_access_overlays (
-    membership_id TEXT PRIMARY KEY,
-    organization_id TEXT NOT NULL,
-    access_status TEXT NOT NULL CHECK (access_status IN ('active', 'suspended')),
-    membership_version INTEGER NOT NULL CHECK (membership_version > 0),
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS identity_membership_access_overlays_org_idx
-   ON identity_membership_access_overlays (organization_id, access_status)`,
-] as const;
-
-const MIGRATIONS: readonly IdentityMigration[] = [
-  { version: 1, apply: (db) => runStatements(db, IDENTITY_SCHEMA_V1_STATEMENTS) },
-  {
-    version: 2,
-    apply: (db) => {
-      runStatements(db, CHICKPEA_CONTROL_STATEMENTS);
-      rebuildChickpeaCredentialTables(db);
-    },
-  },
-  {
-    // bba9f97 briefly used version 2 for a custom PBKDF2/session schema. That
-    // code never shipped, but this compatibility step makes an existing dev
-    // database converge without re-running or trusting that schema.
-    version: 3,
-    apply: (db) => {
-      runStatements(db, CHICKPEA_CONTROL_STATEMENTS);
-      rebuildChickpeaCredentialTables(db);
-      db.exec('DROP TABLE IF EXISTS identity_password_reset_capabilities');
-      db.exec('DROP TABLE IF EXISTS identity_password_credentials');
-    },
-  },
-  {
-    version: 4,
-    apply: (db) => runStatements(db, [
-      `CREATE TABLE IF NOT EXISTS identity_actor_external_bindings (
-        binding_id TEXT PRIMARY KEY,
-        provider TEXT NOT NULL CHECK (provider = 'slack'),
-        issuer TEXT NOT NULL,
-        subject TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        organization_id TEXT NOT NULL,
-        membership_id TEXT NOT NULL,
-        revision INTEGER NOT NULL CHECK (revision > 0),
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        UNIQUE (provider, issuer, subject)
-      )`,
-      `CREATE TABLE IF NOT EXISTS identity_actor_binding_handoffs (
-        handoff_id TEXT PRIMARY KEY,
-        token_hash TEXT NOT NULL UNIQUE,
-        issuer TEXT NOT NULL,
-        subject TEXT NOT NULL,
-        slack_identity_id TEXT NOT NULL,
-        slack_identity_revision INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL,
-        consumed_at INTEGER
-      )`,
-    ]),
-  },
-];
-
-/** Apply each Chickpea state change exactly once on Node or DO SQLite. */
 export function installIdentityMigrations(db: StateDb): void {
-  db.exec(
-    `CREATE TABLE IF NOT EXISTS identity_migrations (
-      version INTEGER PRIMARY KEY,
-      applied_at INTEGER NOT NULL
-    )`,
-  );
-  for (const migration of MIGRATIONS) {
-    db.transaction(() => {
-      if (db.get('SELECT 1 AS applied FROM identity_migrations WHERE version = ?', migration.version)) {
-        return;
-      }
-      migration.apply(db);
-      db.run(
-        'INSERT INTO identity_migrations (version, applied_at) VALUES (?, ?)',
-        migration.version,
-        Date.now(),
-      );
-    });
-  }
-}
-
-function runStatements(db: StateDb, statements: readonly string[]): void {
-  for (const statement of statements) db.exec(statement);
-}
-
-function rebuildChickpeaCredentialTables(db: StateDb): void {
-  rebuildLegacyBrowserSessions(db);
-  rebuildPersonalTokens(db);
-}
-
-function rebuildPersonalTokens(db: StateDb): void {
-  const columns = tableColumns(db, 'identity_personal_tokens');
-  if (columns.has('organization_id') && columns.has('membership_id')) return;
-
-  db.exec('DROP INDEX IF EXISTS identity_personal_tokens_prefix_idx');
-  db.exec('ALTER TABLE identity_personal_tokens RENAME TO identity_personal_tokens_pre_control');
-  db.exec(
-    `CREATE TABLE identity_personal_tokens (
-      personal_token_id TEXT PRIMARY KEY,
-      organization_id TEXT,
-      user_id TEXT NOT NULL,
-      membership_id TEXT,
-      token_hash TEXT NOT NULL UNIQUE,
-      prefix TEXT NOT NULL,
-      label TEXT NOT NULL,
-      status TEXT NOT NULL,
-      last_used_at INTEGER,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    )`,
-  );
-  db.exec(
-    `INSERT INTO identity_personal_tokens (
-       personal_token_id, organization_id, user_id, membership_id, token_hash,
-       prefix, label, status, last_used_at, created_at, updated_at
-     )
-     SELECT token.personal_token_id,
-            (SELECT membership.organization_id FROM identity_memberships membership
-             WHERE membership.user_id = token.user_id ORDER BY membership.created_at LIMIT 1),
-            token.user_id,
-            (SELECT membership.membership_id FROM identity_memberships membership
-             WHERE membership.user_id = token.user_id ORDER BY membership.created_at LIMIT 1),
-            token.token_hash, token.prefix, token.label, token.status,
-            token.last_used_at, token.created_at, token.updated_at
-     FROM identity_personal_tokens_pre_control token`,
-  );
-  db.exec('DROP TABLE identity_personal_tokens_pre_control');
-  db.exec(
-    `CREATE INDEX identity_personal_tokens_prefix_idx
-     ON identity_personal_tokens (prefix, status)`,
-  );
-}
-
-function rebuildLegacyBrowserSessions(db: StateDb): void {
-  const columns = tableColumns(db, 'identity_browser_sessions');
-  if (columns.has('organization_id') && columns.has('membership_id') && columns.has('expires_at')) {
+  const ledgerExists = Boolean(db.get(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'identity_migrations'",
+  ));
+  if (ledgerExists) {
+    const markerTableExists = Boolean(db.get(
+      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'identity_schema_metadata'",
+    ));
+    const marker = markerTableExists
+      ? db.get("SELECT schema_marker FROM identity_schema_metadata WHERE schema_key = 'identity'")?.schema_marker
+      : undefined;
+    const versions = db.all('SELECT version FROM identity_migrations ORDER BY version')
+      .map((row) => Number(row.version));
+    if (marker !== IDENTITY_SCHEMA_MARKER || versions.length !== 1 || versions[0] !== 1) {
+      throw new Error('TAG_STATE contains an incompatible pre-Slack identity schema; use a fresh deployment.');
+    }
     return;
   }
-
-  const generalized = columns.has('authenticator_kind');
-  db.exec('DROP INDEX IF EXISTS identity_browser_sessions_prefix_idx');
-  db.exec('DROP INDEX IF EXISTS identity_browser_sessions_credential_idx');
-  db.exec('ALTER TABLE identity_browser_sessions RENAME TO identity_browser_sessions_pre_control');
-  db.exec(
-    `CREATE TABLE identity_browser_sessions (
-      browser_session_id TEXT PRIMARY KEY,
-      organization_id TEXT,
-      user_id TEXT NOT NULL,
-      membership_id TEXT,
-      personal_token_id TEXT NOT NULL,
-      session_hash TEXT NOT NULL UNIQUE,
-      prefix TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      last_seen_at INTEGER NOT NULL,
-      revoked_at INTEGER,
-      created_at INTEGER NOT NULL
-    )`,
-  );
-  if (generalized) {
-    db.exec(
-      `INSERT INTO identity_browser_sessions (
-         browser_session_id, organization_id, user_id, membership_id,
-         personal_token_id, session_hash, prefix, expires_at, last_seen_at,
-         revoked_at, created_at
-       )
-       SELECT session.browser_session_id,
-              (SELECT membership.organization_id FROM identity_memberships membership
-               WHERE membership.membership_id = session.membership_id),
-              session.user_id, session.membership_id, session.personal_token_id,
-              session.session_hash, session.prefix,
-              MIN(session.idle_expires_at, session.absolute_expires_at),
-              session.last_seen_at, session.revoked_at, session.created_at
-       FROM identity_browser_sessions_pre_control session
-       WHERE session.authenticator_kind = 'personal_token'
-         AND session.personal_token_id IS NOT NULL`,
+  db.transaction(() => {
+    for (const statement of IDENTITY_SCHEMA_V1_STATEMENTS) db.exec(statement);
+    db.run(
+      'INSERT INTO identity_schema_metadata (schema_key, schema_marker) VALUES (?, ?)',
+      'identity', IDENTITY_SCHEMA_MARKER,
     );
-  } else {
-    db.exec(
-      `INSERT INTO identity_browser_sessions (
-         browser_session_id, organization_id, user_id, membership_id,
-         personal_token_id, session_hash, prefix, expires_at, last_seen_at,
-         revoked_at, created_at
-       )
-       SELECT session.browser_session_id,
-              (SELECT membership.organization_id FROM identity_memberships membership
-               WHERE membership.user_id = session.user_id ORDER BY membership.created_at LIMIT 1),
-              session.user_id,
-              (SELECT membership.membership_id FROM identity_memberships membership
-               WHERE membership.user_id = session.user_id ORDER BY membership.created_at LIMIT 1),
-              session.personal_token_id, session.session_hash, session.prefix,
-              session.expires_at, session.last_seen_at, session.revoked_at, session.created_at
-       FROM identity_browser_sessions_pre_control session`,
-    );
-  }
-  db.exec('DROP TABLE identity_browser_sessions_pre_control');
-  db.exec(
-    `CREATE INDEX identity_browser_sessions_prefix_idx
-     ON identity_browser_sessions (prefix, expires_at)`,
-  );
-}
-
-function tableColumns(db: StateDb, table: string): Set<string> {
-  return new Set(db.all(`PRAGMA table_info(${table})`).map((row) => String(row.name)));
+    db.run('INSERT INTO identity_migrations (version, applied_at) VALUES (?, ?)', 1, Date.now());
+  });
 }

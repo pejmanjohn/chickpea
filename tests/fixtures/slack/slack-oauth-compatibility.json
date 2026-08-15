@@ -38,15 +38,15 @@
     "localSourcePins": [
       {
         "path": "src/auth/better-auth.ts",
-        "sha256": "419548a8ae34933aa614866a87efab2d14d915ff5e85a2ffb04056cf37df5f22"
+        "sha256": "e19d9aeb892ea8505b784edb40b7db6dd59f6994aafbb0ae170129747ce5df48"
       },
       {
         "path": "src/auth/better-auth-routes.ts",
-        "sha256": "c16ebf72649491e1e8781a057651e20e9e65da49a35ec060cc42153c488fd558"
+        "sha256": "c7432248ced396aeda6636d726d0549a53065d6b481d4b237591c9d724672910"
       },
       {
         "path": "scripts/generate-better-auth-bootstrap.ts",
-        "sha256": "c1febf8c8505c9eff9065eb4033bdc399ef61ed2fb220b635ba8229716e2a7ce"
+        "sha256": "3dce562391e2d5de6f7e43d5da19aab3c9f9f86f462ce31559b1d75acba66ef9"
       }
     ]
   },

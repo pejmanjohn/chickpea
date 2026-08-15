@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { assertNodeVersion, loadTsModule } from './lib/offline-harness.mjs';
 
 const DEFAULT_HOST = '127.0.0.1';
-const WORKSPACE_ID = 'T_VISUAL';
+const WORKSPACE_ID = 'TVISUAL';
 const LOCAL_SLACK_TOKEN = 'xoxb-local-admin-visual-fixture';
 const LOCAL_SLACK_SECRET = 'local-admin-visual-signing-secret';
 const LOCAL_SLACK_BOT_ID = 'U_VISUAL_BOT';
@@ -30,9 +30,9 @@ export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
   agentInstructions: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze([]) }),
   agentMemory: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze(['Memory']) }),
   channelsIndex: Object.freeze({ path: '/admin/channels', actions: Object.freeze([]) }),
-  channelDetail: Object.freeze({ path: '/admin/channels/T_VISUAL/C_RELEASES', actions: Object.freeze([]) }),
+  channelDetail: Object.freeze({ path: '/admin/channels/TVISUAL/C_RELEASES', actions: Object.freeze([]) }),
   channelAdvanced: Object.freeze({
-    path: '/admin/channels/T_VISUAL/C_RELEASES',
+    path: '/admin/channels/TVISUAL/C_RELEASES',
     actions: Object.freeze(['Advanced']),
   }),
 });
@@ -47,6 +47,40 @@ const VISUAL_CHANNELS = Object.freeze([
 ]);
 
 let activeFixture = false;
+
+async function seedVisualSlackOwner(identity) {
+  const operation = await identity.createAuthOperation({
+    id: 'first_owner_visual',
+    kind: 'first_owner_claim',
+    expectedSlackTeamId: WORKSPACE_ID,
+    expectedSlackUserId: 'UVISUALOWNER',
+    chickpeaRole: 'owner',
+    capabilityHash: 'a'.repeat(64),
+    expiresAt: Date.now() + 60_000,
+  });
+  await identity.createOwnerClaim({
+    operationId: operation.id,
+    slackTeamId: WORKSPACE_ID,
+    slackUserId: 'UVISUALOWNER',
+  });
+  await identity.advanceAuthOperation({
+    operationId: operation.id,
+    capabilityHash: 'a'.repeat(64),
+    step: 1,
+    betterAuthUserId: 'ba_user_visual',
+    betterAuthOrganizationId: '11111111-1111-4111-8111-111111111111',
+    betterAuthMembershipId: 'ba_member_visual',
+  });
+  return identity.claimOwner({
+    operationId: operation.id,
+    organizationId: 'org_oss',
+    slackTeamId: WORKSPACE_ID,
+    slackUserId: 'UVISUALOWNER',
+    displayName: 'Visual Owner',
+    betterAuthUserId: 'ba_user_visual',
+    betterAuthMembershipId: 'ba_member_visual',
+  });
+}
 
 function assertLoopbackHost(host) {
   if (host !== '127.0.0.1' && host !== '::1') {
@@ -438,6 +472,7 @@ export async function startAdminVisualFixture(options = {}) {
     await seedConfig(store);
     await seedSettings(settings, slackTokenFingerprint);
     await seedMemory(memory);
+    const owner = await seedVisualSlackOwner(identity);
 
     const adminToken = `visual-${randomBytes(18).toString('base64url')}`;
     const app = new Hono();
@@ -460,7 +495,23 @@ export async function startAdminVisualFixture(options = {}) {
       snapshots,
       identity,
       usageAdminUi: true,
-      adminToken,
+      authService: {
+        async authenticateRequest(request) {
+          if (request.headers.get('authorization') !== `Bearer ${adminToken}`) {
+            throw new Error('Authentication unavailable.');
+          }
+          return {
+            userId: owner.user.id,
+            membershipId: owner.membership.id,
+            organizationId: owner.membership.organizationId,
+            role: 'owner',
+            authenticatorKind: 'visual_slack_session',
+            credentialId: 'visual_session',
+            correlationId: 'visual_request',
+            machine: false,
+          };
+        },
+      },
       knownProviders: new Set(['local-stub']),
       runtimeDrain: async () => ({
         drained: true,
@@ -482,6 +533,16 @@ export async function startAdminVisualFixture(options = {}) {
       throw new Error(`Admin visual fixture did not bind to loopback: ${String(bound)}.`);
     }
     baseUrl = `http://${urlHost(bound.address)}:${bound.port}`;
+    const control = await identity.getAuthControl();
+    await identity.updateAuthControl({
+      expectedRevision: control.revision,
+      canonicalAdminOrigin: baseUrl,
+    });
+    await identity.updateOrganizationAuth({
+      organizationId: owner.membership.organizationId,
+      authMode: 'slack_active',
+      canonicalAdminOrigin: baseUrl,
+    });
 
     // These values are visibly fake and useful only while this loopback server
     // exists. Setting the complete triple prevents ambient real Slack

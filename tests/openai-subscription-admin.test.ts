@@ -19,11 +19,12 @@ import { MODEL_CATALOG_SETTING_KEYS } from '../src/model-catalog/store.ts';
 import { OPENAI_SUBSCRIPTION_MODELS } from '../src/openai-subscription/protocol.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { withEnv } from './helpers/env.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 const ADMIN_TOKEN = 'provider-admin-token';
 
 function auth(): HeadersInit {
-  return { authorization: `Bearer ${ADMIN_TOKEN}` };
+  return testAdminHeaders(ADMIN_TOKEN);
 }
 
 async function withFetch<T>(fetchImpl: typeof fetch, run: () => Promise<T>): Promise<T> {
@@ -70,7 +71,7 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
   app.route('/', createAdminRoutes({
     store: config,
     settings,
-    adminToken: ADMIN_TOKEN,
+    ...testAdminAuthority(ADMIN_TOKEN),
     openAiSubscriptionProtocol: protocol,
     openAiSubscriptionNow: () => currentTime,
     openAiSubscriptionRandomBytes: (length) => new Uint8Array(length).fill(9),
@@ -191,7 +192,7 @@ test('OpenAI method selection is installation-wide and validates connections and
   app.route('/', createAdminRoutes({
     store: config,
     settings,
-    adminToken: ADMIN_TOKEN,
+    ...testAdminAuthority(ADMIN_TOKEN),
     knownProviders: new Set(['openai', 'anthropic']),
   }));
 
@@ -328,7 +329,7 @@ test('OpenAI subscription admin routes map safe failure codes to stable HTTP sta
   app.route('/', createAdminRoutes({
     store: config,
     settings,
-    adminToken: ADMIN_TOKEN,
+    ...testAdminAuthority(ADMIN_TOKEN),
     openAiSubscriptionProtocol: {
       start: async () => { throw startError; },
       poll: async () => ({ state: 'pending' }),

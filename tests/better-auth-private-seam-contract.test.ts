@@ -15,7 +15,6 @@ import {
   slackAccountId,
 } from '../src/auth/better-auth.ts';
 import { generateBetterAuthBootstrapSql } from '../scripts/generate-better-auth-bootstrap.ts';
-import { nativePasswordPrimitive } from '../src/auth/password.ts';
 
 const ORIGIN = 'https://chickpea.example';
 const SECRET = Buffer.from(Uint8Array.from({ length: 32 }, (_, index) => (index * 71 + 19) % 256))
@@ -28,12 +27,17 @@ const GENERATED_SCHEMA = new URL(
   './fixtures/better-auth/1.6.26/0001_better_auth.sql',
   import.meta.url,
 );
+const COMMITTED_SCHEMA = new URL(
+  '../migrations/better-auth/0001_better_auth.sql',
+  import.meta.url,
+);
 
 test('U0 production seam and pinned bootstrap schema stay generated from one source', async () => {
   assert.equal(BETTER_AUTH_PRIVATE_SESSION_PATH, '/chickpea-private/issue-session');
   assert.equal(slackAccountId('T123', 'U456'), 'slack:T123:U456');
   const generated = await generateBetterAuthBootstrapSql();
   assert.equal(generated, await readFile(GENERATED_SCHEMA, 'utf8'));
+  assert.equal(generated, await readFile(COMMITTED_SCHEMA, 'utf8'));
   assert.match(generated, /account_providerId_accountId_uidx/);
   assert.match(generated, /member_organizationId_userId_uidx/);
 });
@@ -123,10 +127,6 @@ test('the public allowlist rejects a direct generic OAuth callback probe', async
       backend,
       baseURL: ORIGIN,
       secret: SECRET,
-      password: nativePasswordPrimitive(),
-      loginSourceAllowed: async () => true,
-      loginIdentityAllowed: async () => true,
-      sourceKey: () => 'contract-probe',
     });
 
     const response = await publicHandler(new Request(

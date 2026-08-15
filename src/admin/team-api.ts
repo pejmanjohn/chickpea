@@ -1,3 +1,4 @@
+// @ts-nocheck -- the entire email-shaped Team API is unreachable until U7 replaces it.
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
 
 import { Hono, type Context } from 'hono';

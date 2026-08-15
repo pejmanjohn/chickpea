@@ -40,17 +40,11 @@ import type {
 } from './types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import type {
-  ActivateAccessOwnerInput,
   AdvanceAuthOperationInput,
   AuthOperationKind,
-  ActorIdentityBindingHandoff,
-  BindActorExternalIdentityInput,
-  BootstrapTokenOwnerInput,
   ClaimOwnerInput,
   ConsumeAuthOperationInput,
-  CompletePasswordSetupInput,
   ConsumeInvitationInput,
-  ConfigureAuthProviderInput,
   CreateBrowserSessionRecordInput,
   CreateAuthOperationInput,
   CreateInvitationInput,
@@ -63,7 +57,6 @@ import type {
   IdentityStore,
   RecordIdentityAuthAuditInput,
   ResendInvitationInput,
-  ReplaceAccessOwnerBindingInput,
   SetMembershipAccessOverlayInput,
   UpdateMembershipInput,
   UpdateAuthControlInput,
@@ -407,11 +400,6 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
     return response.operation;
   }
-  async completePasswordSetup(input: CompletePasswordSetupInput) {
-    const response = await this.execute({ kind: 'complete_password_setup', input });
-    if (response.kind !== 'auth_control' || !response.control) throw unexpectedIdentityResponse();
-    return response.control;
-  }
   async revokeAuthOperation(operationId: string) {
     const response = await this.execute({ kind: 'revoke_auth_operation', operationId });
     if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
@@ -454,24 +442,9 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
     return response.resolution;
   }
-  async bootstrapTokenOwner(input: BootstrapTokenOwnerInput) {
-    const response = await this.execute({ kind: 'bootstrap_token_owner', input });
-    if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
-    return response.resolution;
-  }
-  async activateAccessOwner(input: ActivateAccessOwnerInput) {
-    const response = await this.execute({ kind: 'activate_access_owner', input });
-    if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
-    return response.resolution;
-  }
-  async replaceAccessOwnerBinding(input: ReplaceAccessOwnerBindingInput) {
-    const response = await this.execute({ kind: 'replace_access_owner_binding', input });
-    if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
-    return response.resolution;
-  }
-  async resolveExternalIdentity(provider: string, issuer: string, subject: string, organizationId?: string) {
+  async resolveSlackIdentity(slackTeamId: string, slackUserId: string, organizationId?: string) {
     const response = await this.execute({
-      kind: 'resolve_external_identity', provider, issuer, subject,
+      kind: 'resolve_slack_identity', slackTeamId, slackUserId,
       ...(organizationId === undefined ? {} : { organizationId }),
     });
     if (response.kind !== 'identity_resolution') throw unexpectedIdentityResponse();
@@ -482,29 +455,10 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'external_identities') throw unexpectedIdentityResponse();
     return response.externalIdentities;
   }
-  async resolveActorExternalIdentity(provider: 'slack', issuer: string, subject: string) {
-    const response = await this.execute({ kind: 'resolve_actor_external_identity', provider, issuer, subject });
-    if (response.kind !== 'actor_external_identity') throw unexpectedIdentityResponse();
-    return orUndefined(response.binding);
-  }
-  async bindActorExternalIdentity(input: BindActorExternalIdentityInput) {
-    const response = await this.execute({ kind: 'bind_actor_external_identity', input });
-    if (response.kind !== 'actor_external_identity' || !response.binding) throw unexpectedIdentityResponse();
-    return response.binding;
-  }
-  async createActorIdentityBindingHandoff(input: ActorIdentityBindingHandoff) {
-    const response = await this.execute({ kind: 'create_actor_identity_binding_handoff', input });
-    if (response.kind !== 'ok') throw unexpectedIdentityResponse();
-  }
-  async getActorIdentityBindingHandoff(tokenHash: string) {
-    const response = await this.execute({ kind: 'get_actor_identity_binding_handoff', tokenHash });
-    if (response.kind !== 'actor_identity_binding_handoff') throw unexpectedIdentityResponse();
-    return orUndefined(response.handoff);
-  }
-  async consumeActorIdentityBindingHandoff(tokenHash: string, consumedAt: number) {
-    const response = await this.execute({ kind: 'consume_actor_identity_binding_handoff', tokenHash, consumedAt });
-    if (response.kind !== 'actor_identity_binding_handoff') throw unexpectedIdentityResponse();
-    return orUndefined(response.handoff);
+  async resolveActorExternalIdentity(provider: 'slack', slackTeamId: string, slackUserId: string) {
+    if (provider !== 'slack') return undefined;
+    const resolution = await this.resolveSlackIdentity(slackTeamId, slackUserId);
+    return resolution?.binding;
   }
   async listMemberships() {
     const response = await this.execute({ kind: 'list_memberships' });
@@ -513,11 +467,6 @@ export class CfIdentityStore implements IdentityStore {
   }
   async getUser(userId: string) {
     const response = await this.execute({ kind: 'get_user', userId });
-    if (response.kind !== 'user') throw unexpectedIdentityResponse();
-    return orUndefined(response.user);
-  }
-  async findUserByEmail(email: string) {
-    const response = await this.execute({ kind: 'find_user_by_email', email });
     if (response.kind !== 'user') throw unexpectedIdentityResponse();
     return orUndefined(response.user);
   }
@@ -609,24 +558,6 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'browser_session') throw unexpectedIdentityResponse();
     return response.browserSession;
   }
-  async configureAuthProvider(input: ConfigureAuthProviderInput) {
-    const response = await this.execute({ kind: 'configure_auth_provider', input });
-    if (response.kind !== 'auth_provider_config' || !response.config) throw unexpectedIdentityResponse();
-    return response.config;
-  }
-  async getAuthProviderConfig(providerKind: string) {
-    const response = await this.execute({ kind: 'get_auth_provider_config', providerKind });
-    if (response.kind !== 'auth_provider_config') throw unexpectedIdentityResponse();
-    return orUndefined(response.config);
-  }
-  async updateAuthProviderAudience(providerKind: string, audience: string, actorMembershipId?: string) {
-    const response = await this.execute({
-      kind: 'update_auth_provider_audience', providerKind, audience,
-      ...(actorMembershipId === undefined ? {} : { actorMembershipId }),
-    });
-    if (response.kind !== 'auth_provider_config' || !response.config) throw unexpectedIdentityResponse();
-    return response.config;
-  }
   async updateOrganizationAuth(input: UpdateOrganizationAuthInput) {
     const response = await this.execute({ kind: 'update_organization_auth', input });
     if (response.kind !== 'organization' || !response.organization) throw unexpectedIdentityResponse();
@@ -652,7 +583,7 @@ export class CfIdentityStore implements IdentityStore {
   }
   async exportSummary() {
     const response = await this.execute({ kind: 'export_summary' });
-    if (response.kind !== 'export_summary') throw unexpectedIdentityResponse();
+    if (response.kind !== 'identity_export') throw unexpectedIdentityResponse();
     return response.summary;
   }
   async listAuditEvents(limit?: number) {

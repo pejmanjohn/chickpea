@@ -1,19 +1,14 @@
 import type { AuditEvent } from '../audit/types.ts';
 
-export type OrganizationRole = 'owner' | 'admin' | 'member';
+export type OrganizationRole = 'owner' | 'admin';
 export type MembershipStatus = 'active' | 'suspended' | 'removed';
-export type AuthMode =
-  | 'unconfigured'
-  | 'password_active'
-  | 'access_pending'
-  | 'access_active'
-  | 'token_active'
-  | 'legacy_shared'
-  | 'invalid';
+export type AuthMode = 'unconfigured' | 'slack_active';
+export type AuthHealthGate = 'normal' | 'recovery_only';
 
 export interface Organization {
   id: string;
   displayName: string;
+  slackTeamId: string | null;
   authMode: AuthMode;
   canonicalAdminOrigin: string | null;
   createdAt: number;
@@ -22,57 +17,31 @@ export interface Organization {
 
 export interface User {
   id: string;
-  primaryEmail: string;
+  slackTeamId: string;
+  slackUserId: string;
   displayName: string | null;
   createdAt: number;
   updatedAt: number;
 }
 
-export interface ExternalIdentityBinding {
-  id: string;
-  userId: string;
-  provider: string;
-  issuer: string;
-  subject: string;
-  verifiedEmail: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-/** Explicit authenticated-user binding. Never inferred from email or display name. */
-export interface ActorExternalIdentityBinding {
+/** Immutable canonical Slack-to-Chickpea membership binding. */
+export interface SlackIdentityBinding {
   id: string;
   provider: 'slack';
-  issuer: string;
-  subject: string;
+  slackTeamId: string;
+  slackUserId: string;
   userId: string;
   organizationId: string;
   membershipId: string;
+  betterAuthUserId: string;
+  betterAuthMembershipId: string;
   revision: number;
   createdAt: number;
   updatedAt: number;
 }
 
-export interface BindActorExternalIdentityInput {
-  provider: 'slack';
-  issuer: string;
-  subject: string;
-  userId: string;
-  organizationId: string;
-  membershipId: string;
-  at?: number;
-}
-
-export interface ActorIdentityBindingHandoff {
-  handoffId: string;
-  tokenHash: string;
-  issuer: string;
-  subject: string;
-  slackIdentityId: string;
-  slackIdentityRevision: number;
-  expiresAt: number;
-  consumedAt: number | null;
-}
+export type ExternalIdentityBinding = SlackIdentityBinding;
+export type ActorExternalIdentityBinding = SlackIdentityBinding;
 
 export interface Membership {
   id: string;
@@ -86,10 +55,12 @@ export interface Membership {
 
 export interface OwnerClaim {
   id: string;
-  organizationId: string;
-  normalizedEmail: string;
-  status: 'pending' | 'claimed' | 'replaced';
-  bindingId: string | null;
+  operationId: string;
+  organizationId: string | null;
+  slackTeamId: string;
+  slackUserId: string;
+  status: 'reserved' | 'active' | 'tombstoned';
+  membershipId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -97,9 +68,11 @@ export interface OwnerClaim {
 export interface Invitation {
   id: string;
   organizationId: string;
-  normalizedEmail: string;
-  role: OrganizationRole;
-  tokenHash: string;
+  slackTeamId: string;
+  slackUserId: string;
+  displayName: string | null;
+  role: 'admin';
+  locatorHash: string;
   status: 'pending' | 'accepted' | 'revoked' | 'expired';
   inviterMembershipId: string;
   acceptedMembershipId: string | null;
@@ -136,18 +109,6 @@ export interface BrowserSessionRecord {
   createdAt: number;
 }
 
-export interface AuthProviderConfig {
-  id: string;
-  organizationId: string;
-  kind: string;
-  state: 'pending' | 'active' | 'disabled';
-  issuer: string | null;
-  audience: string | null;
-  admissionState: 'action_required' | 'admin_confirmed' | 'assertion_observed' | null;
-  createdAt: number;
-  updatedAt: number;
-}
-
 export interface AuthRateLimitState {
   bucket: string;
   keyHash: string;
@@ -155,19 +116,13 @@ export interface AuthRateLimitState {
   failures: number;
 }
 
-export type AuthOperationKind =
-  | 'owner_setup'
-  | 'invitation_enrollment'
-  | 'administrative_reset'
-  | 'owner_recovery'
-  | 'legacy_migration';
+export type AuthOperationKind = 'first_owner_claim' | 'invitation_admission' | 'login';
+export type AuthOperationStatus = 'reserved' | 'reconciling' | 'active' | 'tombstoned' | 'expired';
 
-export type AuthOperationStatus = 'pending' | 'consumed' | 'revoked' | 'expired';
-
-/** Chickpea-owned installation state. Better Auth owns the referenced organization. */
 export interface AuthControl {
   installationId: string;
   authMode: AuthMode;
+  healthGate: AuthHealthGate;
   canonicalAdminOrigin: string | null;
   betterAuthOrganizationId: string | null;
   revision: number;
@@ -175,26 +130,23 @@ export interface AuthControl {
   updatedAt: number;
 }
 
-/**
- * Durable coordinator for cross-store setup/enrollment operations. All Better
- * Auth identifiers are opaque strings and intentionally have no SQLite FK.
- */
 export interface AuthOperation {
   id: string;
   kind: AuthOperationKind;
   organizationId: string | null;
-  expectedNormalizedEmail: string;
+  expectedSlackTeamId: string;
+  expectedSlackUserId: string;
+  chickpeaRole: OrganizationRole | null;
   capabilityHash: string;
   status: AuthOperationStatus;
   step: number;
   betterAuthUserId: string | null;
   betterAuthOrganizationId: string | null;
   betterAuthMembershipId: string | null;
-  betterAuthInvitationId: string | null;
-  targetCredentialVersion: number | null;
+  chickpeaMembershipId: string | null;
   expiresAt: number;
-  consumedAt: number | null;
-  revokedAt: number | null;
+  activatedAt: number | null;
+  tombstonedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -232,57 +184,37 @@ export interface RecordIdentityAuthAuditInput {
 
 export interface IdentityResolution {
   user: User;
-  binding: ExternalIdentityBinding;
+  binding: SlackIdentityBinding;
   membership: Membership;
 }
 
 export interface EnsureOrganizationInput {
   displayName: string;
+  slackTeamId?: string | null;
 }
 
 export interface CreateOwnerClaimInput {
-  organizationId: string;
-  email: string;
-}
-
-export interface BindExternalIdentityInput {
-  organizationId: string;
-  provider: string;
-  issuer: string;
-  subject: string;
-  verifiedEmail: string;
-  displayName?: string | null;
+  operationId: string;
+  slackTeamId: string;
+  slackUserId: string;
+  organizationId?: string | null;
   at?: number;
 }
 
-export type ClaimOwnerInput = BindExternalIdentityInput;
-
-export interface ConfigureAuthProviderInput {
+export interface ClaimOwnerInput {
+  operationId: string;
   organizationId: string;
-  kind: string;
-  state: AuthProviderConfig['state'];
-  issuer?: string | null;
-  audience?: string | null;
-  admissionState?: AuthProviderConfig['admissionState'];
+  slackTeamId: string;
+  slackUserId: string;
+  displayName?: string | null;
+  betterAuthUserId: string;
+  betterAuthMembershipId: string;
+  at?: number;
 }
 
-export interface UpdateOrganizationAuthInput {
-  organizationId: string;
-  authMode: AuthMode;
-  canonicalAdminOrigin?: string | null;
-}
-
-export interface ActivateAccessOwnerInput extends ClaimOwnerInput {
-  audience: string;
-  canonicalAdminOrigin: string;
-}
-
-export interface BootstrapTokenOwnerInput extends ClaimOwnerInput {
-  displayName: string;
-  canonicalAdminOrigin: string;
-}
-
-export interface ReplaceAccessOwnerBindingInput extends BindExternalIdentityInput {}
+export type BootstrapTokenOwnerInput = ClaimOwnerInput;
+export type ActivateAccessOwnerInput = ClaimOwnerInput;
+export type ReplaceAccessOwnerBindingInput = never;
 
 export interface UpdateMembershipInput {
   membershipId: string;
@@ -293,27 +225,29 @@ export interface UpdateMembershipInput {
 
 export interface CreateInvitationInput {
   organizationId: string;
-  email: string;
-  role: OrganizationRole;
-  tokenHash: string;
+  slackTeamId: string;
+  slackUserId: string;
+  displayName?: string | null;
+  role: 'admin';
+  locatorHash: string;
   inviterMembershipId: string;
   expiresAt: number;
 }
 
 export interface ResendInvitationInput {
   invitationId: string;
-  tokenHash: string;
+  locatorHash: string;
   expiresAt: number;
 }
 
 export interface ConsumeInvitationInput {
   invitationId: string;
-  tokenHash: string;
-  provider: string;
-  issuer: string;
-  subject: string;
-  verifiedEmail: string;
+  locatorHash: string;
+  slackTeamId: string;
+  slackUserId: string;
   displayName?: string | null;
+  betterAuthUserId: string;
+  betterAuthMembershipId: string;
   at?: number;
 }
 
@@ -344,12 +278,14 @@ export interface CreateBrowserSessionRecordInput {
 export interface EnsureAuthControlInput {
   installationId?: string;
   authMode?: AuthMode;
+  healthGate?: AuthHealthGate;
 }
 
 export interface UpdateAuthControlInput {
   installationId?: string;
   expectedRevision: number;
   authMode?: AuthMode;
+  healthGate?: AuthHealthGate;
   canonicalAdminOrigin?: string | null;
   betterAuthOrganizationId?: string | null;
 }
@@ -358,20 +294,22 @@ export interface CreateAuthOperationInput {
   id?: string;
   kind: AuthOperationKind;
   organizationId?: string | null;
-  expectedEmail: string;
+  expectedSlackTeamId: string;
+  expectedSlackUserId: string;
+  chickpeaRole?: OrganizationRole | null;
   capabilityHash: string;
   expiresAt: number;
-  targetCredentialVersion?: number | null;
 }
 
 export interface AdvanceAuthOperationInput {
   operationId: string;
   capabilityHash: string;
   step: number;
+  status?: 'reconciling';
   betterAuthUserId?: string | null;
   betterAuthOrganizationId?: string | null;
   betterAuthMembershipId?: string | null;
-  betterAuthInvitationId?: string | null;
+  chickpeaMembershipId?: string | null;
   at?: number;
 }
 
@@ -382,88 +320,59 @@ export interface ConsumeAuthOperationInput {
   at?: number;
 }
 
-export interface CompletePasswordSetupInput {
-  operationId: string;
-  capabilityHash: string;
-  expectedStep: number;
-  expectedControlRevision: number;
-  expectedControlAuthMode: 'unconfigured' | 'password_active';
-  expectedBetterAuthOrganizationId: string | null;
-  canonicalAdminOrigin: string;
-  betterAuthOrganizationId: string;
-  at?: number;
+export interface UpdateOrganizationAuthInput {
+  organizationId: string;
+  authMode: AuthMode;
+  canonicalAdminOrigin?: string | null;
 }
 
 export interface IdentityExportSummary {
   organization: Organization | null;
   users: User[];
-  externalIdentities: ExternalIdentityBinding[];
+  slackBindings: SlackIdentityBinding[];
   memberships: Membership[];
-  ownerClaim: Omit<OwnerClaim, 'normalizedEmail'> & { emailConfigured: boolean } | null;
-  invitations: Array<Omit<Invitation, 'tokenHash' | 'normalizedEmail'> & { emailConfigured: boolean }>;
+  ownerClaim: OwnerClaim | null;
+  invitations: Array<Omit<Invitation, 'locatorHash'>>;
   personalTokens: Array<Omit<PersonalTokenRecord, 'tokenHash'>>;
   browserSessions: Array<Omit<BrowserSessionRecord, 'sessionHash'>>;
   authControl: AuthControl | null;
-  authOperations: Array<Omit<AuthOperation, 'capabilityHash' | 'expectedNormalizedEmail'> & {
-    emailConfigured: boolean;
-  }>;
+  authOperations: Array<Omit<AuthOperation, 'capabilityHash'>>;
 }
 
-/** Provider-neutral read contract implemented by legacy state now and Better Auth in U9. */
 export interface HumanIdentityDirectory {
   getOrganization(): Promise<Organization | undefined>;
   listMemberships(): Promise<Membership[]>;
   getUser(userId: string): Promise<User | undefined>;
-  findUserByEmail(email: string): Promise<User | undefined>;
   getMembership(membershipId: string): Promise<Membership | undefined>;
   getMembershipForUser(userId: string, organizationId?: string): Promise<Membership | undefined>;
 }
 
-/** Chickpea-owned control, capability, PAT, throttle, and audit state. */
-export interface ChickpeaIdentityControlStore {
+export interface IdentityStore extends HumanIdentityDirectory {
   ensureAuthControl(input?: EnsureAuthControlInput): Promise<AuthControl>;
   getAuthControl(installationId?: string): Promise<AuthControl | undefined>;
   updateAuthControl(input: UpdateAuthControlInput): Promise<AuthControl>;
   createAuthOperation(input: CreateAuthOperationInput): Promise<AuthOperation>;
-  reservePendingAuthOperation(input: CreateAuthOperationInput): Promise<{
-    operation: AuthOperation;
-    created: boolean;
-  }>;
+  reservePendingAuthOperation(input: CreateAuthOperationInput): Promise<{ operation: AuthOperation; created: boolean }>;
   getAuthOperation(operationId: string): Promise<AuthOperation | undefined>;
   findAuthOperation(kind: AuthOperationKind, capabilityHash: string): Promise<AuthOperation | undefined>;
   listAuthOperations(kind?: AuthOperationKind, organizationId?: string): Promise<AuthOperation[]>;
   advanceAuthOperation(input: AdvanceAuthOperationInput): Promise<AuthOperation>;
   consumeAuthOperation(input: ConsumeAuthOperationInput): Promise<AuthOperation>;
-  completePasswordSetup(input: CompletePasswordSetupInput): Promise<AuthControl>;
   revokeAuthOperation(operationId: string): Promise<AuthOperation>;
   getMembershipAccessOverlay(membershipId: string): Promise<MembershipAccessOverlay | undefined>;
   setMembershipAccessOverlay(input: SetMembershipAccessOverlayInput): Promise<MembershipAccessOverlay>;
-}
-
-/**
- * Transitional composite. Legacy directory mutations remain mode-scoped until
- * U14; new password-mode code depends on the two narrow interfaces above.
- */
-export interface IdentityStore extends HumanIdentityDirectory, ChickpeaIdentityControlStore {
   ensureOrganization(input: EnsureOrganizationInput): Promise<Organization>;
+  getOrganization(): Promise<Organization | undefined>;
   createOwnerClaim(input: CreateOwnerClaimInput): Promise<OwnerClaim>;
   getOwnerClaim(): Promise<OwnerClaim | undefined>;
   claimOwner(input: ClaimOwnerInput): Promise<IdentityResolution>;
-  bootstrapTokenOwner(input: BootstrapTokenOwnerInput): Promise<IdentityResolution>;
-  activateAccessOwner(input: ActivateAccessOwnerInput): Promise<IdentityResolution>;
-  replaceAccessOwnerBinding(input: ReplaceAccessOwnerBindingInput): Promise<IdentityResolution>;
-  resolveExternalIdentity(
-    provider: string,
-    issuer: string,
-    subject: string,
-    organizationId?: string,
-  ): Promise<IdentityResolution | undefined>;
-  listExternalIdentities(): Promise<ExternalIdentityBinding[]>;
-  resolveActorExternalIdentity(provider: 'slack', issuer: string, subject: string): Promise<ActorExternalIdentityBinding | undefined>;
-  bindActorExternalIdentity(input: BindActorExternalIdentityInput): Promise<ActorExternalIdentityBinding>;
-  createActorIdentityBindingHandoff(input: ActorIdentityBindingHandoff): Promise<void>;
-  getActorIdentityBindingHandoff(tokenHash: string): Promise<ActorIdentityBindingHandoff | undefined>;
-  consumeActorIdentityBindingHandoff(tokenHash: string, consumedAt: number): Promise<ActorIdentityBindingHandoff | undefined>;
+  resolveSlackIdentity(slackTeamId: string, slackUserId: string, organizationId?: string): Promise<IdentityResolution | undefined>;
+  listExternalIdentities(): Promise<SlackIdentityBinding[]>;
+  resolveActorExternalIdentity(provider: 'slack', slackTeamId: string, slackUserId: string): Promise<SlackIdentityBinding | undefined>;
+  listMemberships(): Promise<Membership[]>;
+  getUser(userId: string): Promise<User | undefined>;
+  getMembership(membershipId: string): Promise<Membership | undefined>;
+  getMembershipForUser(userId: string, organizationId?: string): Promise<Membership | undefined>;
   updateMembership(input: UpdateMembershipInput): Promise<Membership>;
   createInvitation(input: CreateInvitationInput): Promise<Invitation>;
   resendInvitation(input: ResendInvitationInput): Promise<Invitation>;
@@ -479,20 +388,9 @@ export interface IdentityStore extends HumanIdentityDirectory, ChickpeaIdentityC
   createBrowserSession(input: CreateBrowserSessionRecordInput): Promise<BrowserSessionRecord>;
   findBrowserSessions(prefix: string): Promise<BrowserSessionRecord[]>;
   revokeBrowserSession(sessionId: string): Promise<BrowserSessionRecord>;
-  configureAuthProvider(input: ConfigureAuthProviderInput): Promise<AuthProviderConfig>;
-  getAuthProviderConfig(kind: string): Promise<AuthProviderConfig | undefined>;
-  updateAuthProviderAudience(
-    kind: string,
-    audience: string,
-    actorMembershipId?: string,
-  ): Promise<AuthProviderConfig>;
   updateOrganizationAuth(input: UpdateOrganizationAuthInput): Promise<Organization>;
   getAuthRateLimit(bucket: string, keyHash: string): Promise<AuthRateLimitState | undefined>;
-  recordAuthRateFailure(
-    bucket: string,
-    keyHash: string,
-    windowStart: number,
-  ): Promise<AuthRateLimitState>;
+  recordAuthRateFailure(bucket: string, keyHash: string, windowStart: number): Promise<AuthRateLimitState>;
   clearAuthRateLimit(bucket: string, keyHash: string): Promise<void>;
   recordAuthAudit(input: RecordIdentityAuthAuditInput): Promise<void>;
   exportSummary(): Promise<IdentityExportSummary>;
@@ -510,7 +408,6 @@ export type IdentityRpcRequest =
   | { kind: 'list_auth_operations'; operationKind?: AuthOperationKind; organizationId?: string }
   | { kind: 'advance_auth_operation'; input: AdvanceAuthOperationInput }
   | { kind: 'consume_auth_operation'; input: ConsumeAuthOperationInput }
-  | { kind: 'complete_password_setup'; input: CompletePasswordSetupInput }
   | { kind: 'revoke_auth_operation'; operationId: string }
   | { kind: 'get_membership_access_overlay'; membershipId: string }
   | { kind: 'set_membership_access_overlay'; input: SetMembershipAccessOverlayInput }
@@ -519,25 +416,10 @@ export type IdentityRpcRequest =
   | { kind: 'create_owner_claim'; input: CreateOwnerClaimInput }
   | { kind: 'get_owner_claim' }
   | { kind: 'claim_owner'; input: ClaimOwnerInput }
-  | { kind: 'bootstrap_token_owner'; input: BootstrapTokenOwnerInput }
-  | { kind: 'activate_access_owner'; input: ActivateAccessOwnerInput }
-  | { kind: 'replace_access_owner_binding'; input: ReplaceAccessOwnerBindingInput }
-  | {
-      kind: 'resolve_external_identity';
-      provider: string;
-      issuer: string;
-      subject: string;
-      organizationId?: string;
-    }
+  | { kind: 'resolve_slack_identity'; slackTeamId: string; slackUserId: string; organizationId?: string }
   | { kind: 'list_external_identities' }
-  | { kind: 'resolve_actor_external_identity'; provider: 'slack'; issuer: string; subject: string }
-  | { kind: 'bind_actor_external_identity'; input: BindActorExternalIdentityInput }
-  | { kind: 'create_actor_identity_binding_handoff'; input: ActorIdentityBindingHandoff }
-  | { kind: 'get_actor_identity_binding_handoff'; tokenHash: string }
-  | { kind: 'consume_actor_identity_binding_handoff'; tokenHash: string; consumedAt: number }
   | { kind: 'list_memberships' }
   | { kind: 'get_user'; userId: string }
-  | { kind: 'find_user_by_email'; email: string }
   | { kind: 'get_membership'; membershipId: string }
   | { kind: 'get_membership_for_user'; userId: string; organizationId?: string }
   | { kind: 'update_membership'; input: UpdateMembershipInput }
@@ -555,14 +437,6 @@ export type IdentityRpcRequest =
   | { kind: 'create_browser_session'; input: CreateBrowserSessionRecordInput }
   | { kind: 'find_browser_sessions'; prefix: string }
   | { kind: 'revoke_browser_session'; sessionId: string }
-  | { kind: 'configure_auth_provider'; input: ConfigureAuthProviderInput }
-  | { kind: 'get_auth_provider_config'; providerKind: string }
-  | {
-      kind: 'update_auth_provider_audience';
-      providerKind: string;
-      audience: string;
-      actorMembershipId?: string;
-    }
   | { kind: 'update_organization_auth'; input: UpdateOrganizationAuthInput }
   | { kind: 'get_auth_rate_limit'; bucket: string; keyHash: string }
   | { kind: 'record_auth_rate_failure'; bucket: string; keyHash: string; windowStart: number }
@@ -580,9 +454,7 @@ export type IdentityRpcResponse =
   | { kind: 'organization'; organization: Organization | null }
   | { kind: 'owner_claim'; ownerClaim: OwnerClaim | null }
   | { kind: 'identity_resolution'; resolution: IdentityResolution | null }
-  | { kind: 'external_identities'; externalIdentities: ExternalIdentityBinding[] }
-  | { kind: 'actor_external_identity'; binding: ActorExternalIdentityBinding | null }
-  | { kind: 'actor_identity_binding_handoff'; handoff: ActorIdentityBindingHandoff | null }
+  | { kind: 'external_identities'; externalIdentities: SlackIdentityBinding[] }
   | { kind: 'memberships'; memberships: Membership[] }
   | { kind: 'user'; user: User | null }
   | { kind: 'membership'; membership: Membership | null }
@@ -593,8 +465,7 @@ export type IdentityRpcResponse =
   | { kind: 'personal_tokens'; personalTokens: PersonalTokenRecord[] }
   | { kind: 'browser_session'; browserSession: BrowserSessionRecord }
   | { kind: 'browser_sessions'; browserSessions: BrowserSessionRecord[] }
-  | { kind: 'auth_provider_config'; config: AuthProviderConfig | null }
   | { kind: 'auth_rate_limit'; state: AuthRateLimitState | null }
-  | { kind: 'ok' }
-  | { kind: 'export_summary'; summary: IdentityExportSummary }
-  | { kind: 'audit_events'; events: AuditEvent[] };
+  | { kind: 'identity_export'; summary: IdentityExportSummary }
+  | { kind: 'audit_events'; events: AuditEvent[] }
+  | { kind: 'ok' };

@@ -52,6 +52,7 @@ import {
 } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { FakeSlackBackend } from './parity/fake-slack.ts';
 import { writeSlackIdentityCredentials } from '../src/slack/identity-credentials.ts';
 import {
@@ -164,7 +165,9 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
     createAdminRoutes({
       store,
       settings,
-      adminToken: token,
+      ...(token
+        ? testAdminAuthority(token, undefined, options.identity)
+        : (options.identity ? { identity: options.identity } : {})),
       knownProviders: new Set(['local-stub']),
       ...(options.discoverMcp ? { discoverMcp: options.discoverMcp } : {}),
       ...(options.startMcpOAuth ? { startMcpOAuth: options.startMcpOAuth } : {}),
@@ -192,7 +195,6 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
         : {}),
       ...(options.runtimeDrain ? { runtimeDrain: options.runtimeDrain } : {}),
       ...(options.slackState ? { slackState: options.slackState } : {}),
-      ...(options.identity ? { identity: options.identity } : {}),
       ...(options.work ? { work: options.work } : {}),
       ...(options.snapshots ? { snapshots: options.snapshots } : {}),
       ...(options.slackConversationsInfo
@@ -297,7 +299,7 @@ function googleApiConnection(
 }
 
 function auth(token: string): HeadersInit {
-  return { authorization: `Bearer ${token}` };
+  return testAdminHeaders(token, { 'content-type': 'application/json' });
 }
 
 function deliveredOnboardingRun(
@@ -775,7 +777,7 @@ test('MCP OAuth callback returns exchange failures to the affected connection', 
   }
 });
 
-test('admin API returns 404 for every admin route when TAG_ADMIN_TOKEN is unset', async () => {
+test('admin API fails closed when no Slack session authority is configured', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store, undefined);
@@ -792,15 +794,15 @@ test('admin API returns 404 for every admin route when TAG_ADMIN_TOKEN is unset'
       body: new URLSearchParams({ token: ADMIN_TOKEN }).toString(),
     });
 
-    assert.equal(apiResponse.status, 404);
-    assert.equal(pageResponse.status, 404);
+    assert.equal(apiResponse.status, 503);
+    assert.equal(pageResponse.status, 503);
     assert.equal(loginResponse.status, 404);
   } finally {
     store.close();
   }
 });
 
-test('admin API rejects a wrong bearer token and accepts the configured admin token', async () => {
+test('admin API rejects a wrong session and accepts the Slack-owner test session', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
@@ -1004,7 +1006,7 @@ test('turn recovery inventory and explicit terminalization are admin-gated', asy
   }
 });
 
-test('admin POST login exchanges the body token for a hashed HttpOnly cookie', async () => {
+test('legacy shared-token login is absent and cannot create a browser session', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
@@ -1014,21 +1016,8 @@ test('admin POST login exchanges the body token for a hashed HttpOnly cookie', a
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ token: ADMIN_TOKEN, returnTo: '/admin' }).toString(),
     });
-    assert.equal(login.status, 303);
-    assert.equal(login.headers.get('location'), '/admin');
-
-    const cookie = login.headers.get('set-cookie') ?? '';
-    assert.match(cookie, /flue_admin=/);
-    assert.match(cookie, /HttpOnly/);
-    assert.match(cookie, /SameSite=Lax/);
-    // The cookie carries a hash, never the raw admin token.
-    assert.doesNotMatch(cookie, new RegExp(ADMIN_TOKEN));
-
-    const cookieValue = cookie.split(';')[0] as string;
-    const api = await app.request('/admin/api/agents', {
-      headers: { cookie: cookieValue },
-    });
-    assert.equal(api.status, 200);
+    assert.equal(login.status, 404);
+    assert.equal(login.headers.get('set-cookie'), null);
 
     // Query parameters are never credentials: GETs cannot create a session,
     // even if they carry the right token.
@@ -1036,8 +1025,6 @@ test('admin POST login exchanges the body token for a hashed HttpOnly cookie', a
     assert.equal(queryAttempt.status, 401);
     assert.equal(queryAttempt.headers.get('set-cookie'), null);
 
-    // The return path is local admin UI only; an absolute URL cannot turn the
-    // login exchange into an open redirect.
     const unsafeReturn = await app.request('/admin/login', {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -1046,14 +1033,14 @@ test('admin POST login exchanges the body token for a hashed HttpOnly cookie', a
         returnTo: 'https://example.test/steal',
       }).toString(),
     });
-    assert.equal(unsafeReturn.status, 303);
-    assert.equal(unsafeReturn.headers.get('location'), '/admin');
+    assert.equal(unsafeReturn.status, 404);
+    assert.equal(unsafeReturn.headers.get('location'), null);
   } finally {
     store.close();
   }
 });
 
-test('client-routed admin paths serve the SPA page and POST login keeps a safe deep path', async () => {
+test('client-routed admin paths serve the SPA and legacy login stays absent', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
@@ -1081,24 +1068,17 @@ test('client-routed admin paths serve the SPA page and POST login keeps a safe d
     assert.equal(retiredSessionsPage.status, 302);
     assert.equal(retiredSessionsPage.headers.get('location'), '/admin/channels');
 
-    // A body-authenticated login can return to the same client-routed path.
     const login = await app.request('/admin/login', {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ token: ADMIN_TOKEN, returnTo: '/admin/profiles' }).toString(),
     });
-    assert.equal(login.status, 303);
-    assert.equal(login.headers.get('location'), '/admin/profiles');
-    assert.match(login.headers.get('set-cookie') ?? '', /flue_admin=/);
+    assert.equal(login.status, 404);
+    assert.equal(login.headers.get('set-cookie'), null);
 
-    // An unauthenticated deep page GET gets the HTML login form, not JSON.
     const anon = await app.request('/admin/channels/T_X/C_Y');
     assert.equal(anon.status, 401);
-    assert.match(anon.headers.get('content-type') ?? '', /text\/html/);
-    assert.match(
-      await anon.text(),
-      /name="returnTo"[^>]*value="\/admin\/channels\/T_X\/C_Y"/,
-    );
+    assert.deepEqual(await anon.json(), { error: 'authentication_required' });
 
     // Unknown API paths stay 404 — never swallowed by the SPA catch-all.
     const api = await app.request('/admin/api/nope', { headers: auth(ADMIN_TOKEN) });
@@ -1108,32 +1088,23 @@ test('client-routed admin paths serve the SPA page and POST login keeps a safe d
   }
 });
 
-test('unauthenticated page GET renders a login form while XHR/API still gets JSON 401', async () => {
+test('unauthenticated page and API requests return Slack-session auth failures', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
 
-    // A browser navigating to /admin with no session gets the POST token-entry
-    // form (401, HTML) instead of a bare JSON error.
     const page = await app.request('/admin');
     assert.equal(page.status, 401);
-    assert.match(page.headers.get('content-type') ?? '', /text\/html/);
-    const html = await page.text();
-    assert.match(html, /name="token"/);
-    assert.match(html, /method="post" action="\/admin\/login"/);
-    assert.match(html, /Sign in to Chickpea/);
+    assert.deepEqual(await page.json(), { error: 'authentication_required' });
 
-    // A rejected body token is never echoed and never creates a session.
     const rejected = await app.request('/admin/login', {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ token: 'do-not-reflect', returnTo: '/admin' }).toString(),
     });
-    assert.equal(rejected.status, 401);
+    assert.equal(rejected.status, 404);
     assert.equal(rejected.headers.get('set-cookie'), null);
-    const rejectedHtml = await rejected.text();
-    assert.match(rejectedHtml, /was not accepted/);
-    assert.doesNotMatch(rejectedHtml, /do-not-reflect/);
+    assert.doesNotMatch(await rejected.text(), /do-not-reflect/);
 
     // API/XHR callers under /admin/* keep the JSON 401 they can handle.
     const api = await app.request('/admin/api/agents');
@@ -1144,7 +1115,7 @@ test('unauthenticated page GET renders a login form while XHR/API still gets JSO
   }
 });
 
-test('admin login rejects non-form and oversized bodies without setting a cookie', async () => {
+test('legacy admin login remains absent for every request body shape', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
@@ -1153,7 +1124,7 @@ test('admin login rejects non-form and oversized bodies without setting a cookie
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ token: ADMIN_TOKEN }),
     });
-    assert.equal(nonForm.status, 401);
+    assert.equal(nonForm.status, 404);
     assert.equal(nonForm.headers.get('set-cookie'), null);
 
     const oversizedRequest = new Request('http://localhost/admin/login', {
@@ -1165,7 +1136,7 @@ test('admin login rejects non-form and oversized bodies without setting a cookie
     });
     assert.equal(oversizedRequest.headers.get('content-length'), null);
     const oversized = await app.request(oversizedRequest);
-    assert.equal(oversized.status, 401);
+    assert.equal(oversized.status, 404);
     assert.equal(oversized.headers.get('set-cookie'), null);
     assert.doesNotMatch(await oversized.text(), /🐣{16}/);
   } finally {
@@ -1955,7 +1926,7 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
   }
 });
 
-test('main app owns the authenticated admin route without a Flue HTTP router', async () => {
+test('main app owns the fail-closed admin route without a Flue HTTP router', async () => {
   await withEnv(
     {
       TAG_ADMIN_TOKEN: 'mounted-admin-token',
@@ -1966,9 +1937,8 @@ test('main app owns the authenticated admin route without a Flue HTTP router', a
         headers: auth('mounted-admin-token'),
       });
 
-      assert.equal(response.status, 200);
-      const body = (await response.json()) as { agents?: unknown };
-      assert.equal(Array.isArray(body.agents), true);
+      assert.equal(response.status, 503);
+      assert.deepEqual(await response.json(), { error: 'authentication_unavailable' });
     },
   );
 });

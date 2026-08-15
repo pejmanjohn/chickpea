@@ -57,25 +57,6 @@ async function loadFixtureModule(): Promise<VisualFixtureModule> {
   return import('../scripts/serve-admin-visual-fixture.mjs') as Promise<VisualFixtureModule>;
 }
 
-async function login(fixture: VisualFixture): Promise<string> {
-  const response = await fetch(`${fixture.baseUrl}/admin/login`, {
-    method: 'POST',
-    redirect: 'manual',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      token: fixture.adminToken,
-      returnTo: '/admin/agents/agent_research',
-    }),
-  });
-  assert.equal(response.status, 303);
-  assert.equal(response.headers.get('location'), '/admin/agents/agent_research');
-  const cookie = response.headers.get('set-cookie')?.split(';')[0];
-  if (!cookie?.startsWith('flue_admin=')) {
-    assert.fail('expected the real Admin login route to set a session cookie');
-  }
-  return cookie;
-}
-
 async function fixtureJson<T>(fixture: VisualFixture, path: string): Promise<T> {
   const response = await fetch(`${fixture.baseUrl}${path}`, {
     headers: { authorization: `Bearer ${fixture.adminToken}` },
@@ -142,7 +123,7 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
 
     const owners = await fixtureJson<{ owners: MemoryOwnerProjection[] }>(
       fixture,
-      '/admin/api/audit/memory/owners?workspaceId=T_VISUAL',
+      '/admin/api/audit/memory/owners?workspaceId=TVISUAL',
     );
     assert.ok(owners.owners.some((owner) =>
       owner.ownerKind === 'agent' && owner.ownerId === 'agent_research'));
@@ -151,11 +132,11 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
 
     const agentFiles = await fixtureJson<{ files: Array<{ name: string }> }>(
       fixture,
-      '/admin/api/audit/memory/owners/agent/T_VISUAL/agent_research/files',
+      '/admin/api/audit/memory/owners/agent/TVISUAL/agent_research/files',
     );
     const channelFiles = await fixtureJson<{ files: Array<{ name: string }> }>(
       fixture,
-      '/admin/api/audit/memory/owners/channel/T_VISUAL/C_RELEASES/files',
+      '/admin/api/audit/memory/owners/channel/TVISUAL/C_RELEASES/files',
     );
     assert.deepEqual(agentFiles.files.map((file) => file.name), [
       'MEMORY.md',
@@ -226,22 +207,24 @@ test('canonical visual states use authenticated production URLs and UI actions o
       redirect: 'manual',
     });
     assert.equal(unauthenticated.status, 401);
-    const cookie = await login(fixture);
+    const authorization = `Bearer ${fixture.adminToken}`;
 
     assert.deepEqual(fixture.canonicalStates, {
       agentInstructions: { path: '/admin/agents/agent_research', actions: [] },
       agentMemory: { path: '/admin/agents/agent_research', actions: ['Memory'] },
       channelsIndex: { path: '/admin/channels', actions: [] },
-      channelDetail: { path: '/admin/channels/T_VISUAL/C_RELEASES', actions: [] },
+      channelDetail: { path: '/admin/channels/TVISUAL/C_RELEASES', actions: [] },
       channelAdvanced: {
-        path: '/admin/channels/T_VISUAL/C_RELEASES',
+        path: '/admin/channels/TVISUAL/C_RELEASES',
         actions: ['Advanced'],
       },
     });
 
     for (const state of Object.values(fixture.canonicalStates)) {
       assert.equal(new URL(state.path, fixture.baseUrl).search, '');
-      const page = await fetch(`${fixture.baseUrl}${state.path}`, { headers: { cookie } });
+      const page = await fetch(`${fixture.baseUrl}${state.path}`, {
+        headers: { authorization },
+      });
       assert.equal(page.status, 200, state.path);
       const html = await page.text();
       assert.match(html, /<title>Chickpea · \/admin<\/title>/);
@@ -305,6 +288,6 @@ test('production Admin markup exposes the shared primary shell and scoped Agent 
   assert.match(html, /isPrimaryAdminSurface\(\) \? " primary-admin-shell"/);
   assert.match(html, /<nav class="rail' \+ \(primaryShell \? ' primary-shell-sidebar' : ''\) \+ '" aria-label="Settings">/);
   assert.match(html, /<a class="section-nav-item" href="\/admin\/account">Account<\/a>/);
-  assert.doesNotMatch(html, /fixtureState|fixtureCredential|agent_research|C_RELEASES|T_VISUAL/);
+  assert.doesNotMatch(html, /fixtureState|fixtureCredential|agent_research|C_RELEASES|TVISUAL/);
   assert.doesNotMatch(html, /\.onboarding[^,{]*,\s*\.admin-surface|\.settings[^,{]*,\s*\.admin-surface/);
 });

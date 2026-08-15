@@ -4,8 +4,6 @@ import { setSessionCookie } from 'better-auth/cookies';
 import { getOrgAdapter, organization } from 'better-auth/plugins';
 
 import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
-import type { PasswordPrimitive } from './password.ts';
-import { PASSWORD_MIN_CODE_POINTS } from './password-policy.ts';
 
 export const BETTER_AUTH_BASE_PATH = '/api/auth';
 export const SESSION_IDLE_SECONDS = 4 * 60 * 60;
@@ -62,9 +60,6 @@ export interface CreateBetterAuthInput {
   backend: BetterAuthDatabaseBackend;
   baseURL: string;
   secret: string;
-  password: PasswordPrimitive;
-  allowSignUp?: boolean;
-  autoSignInAfterSignUp?: boolean;
   privateSeam?: BetterAuthPrivateSeam;
 }
 
@@ -115,15 +110,15 @@ function createOptions(
     trustedOrigins: [input.baseURL],
     database: input.backend.database,
     emailAndPassword: {
-      disableSignUp: !(input.allowSignUp ?? false),
-      enabled: true,
-      autoSignIn: input.autoSignInAfterSignUp ?? true,
-      minPasswordLength: PASSWORD_MIN_CODE_POINTS,
-      // Chickpea enforces 128 Unicode code points and 512 UTF-8 bytes before
-      // trusted credential writes. This ceiling keeps Better Auth from
-      // rejecting a valid 128-code-point non-BMP password by UTF-16 length.
-      maxPasswordLength: 512,
-      password: input.password,
+      enabled: false,
+      disableSignUp: true,
+    },
+    account: {
+      accountLinking: {
+        enabled: false,
+        disableImplicitLinking: true,
+        trustedProviders: [],
+      },
     },
     session: {
       additionalFields: {
@@ -181,7 +176,7 @@ function createOptions(
     },
     plugins: [
       organization({
-        allowUserToCreateOrganization: true,
+        allowUserToCreateOrganization: false,
         cancelPendingInvitationsOnReInvite: true,
         invitationExpiresIn: 7 * 24 * 60 * 60,
         async sendInvitationEmail() {},

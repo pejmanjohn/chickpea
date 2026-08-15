@@ -1,38 +1,27 @@
 import { randomUUID } from 'node:crypto';
 
 import { AuditStoreLogic } from '../audit/store.ts';
-import type { AuditEvent } from '../audit/types.ts';
-import { openStateDb, type NodeStateDb } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
+import { NodeStateDb, openStateDb } from '../state/node-state-db.ts';
 import { identityError } from './errors.ts';
 import { installIdentityMigrations } from './migrations.ts';
 import type {
-  BindExternalIdentityInput,
-  BindActorExternalIdentityInput,
-  ActorExternalIdentityBinding,
-  ActorIdentityBindingHandoff,
-  ActivateAccessOwnerInput,
   AdvanceAuthOperationInput,
   AuthControl,
   AuthOperation,
   AuthOperationKind,
-  AuthProviderConfig,
   AuthRateLimitState,
-  BootstrapTokenOwnerInput,
   BrowserSessionRecord,
   ClaimOwnerInput,
-  ConsumeInvitationInput,
   ConsumeAuthOperationInput,
-  CompletePasswordSetupInput,
-  ConfigureAuthProviderInput,
+  ConsumeInvitationInput,
+  CreateAuthOperationInput,
   CreateBrowserSessionRecordInput,
   CreateInvitationInput,
-  CreateAuthOperationInput,
   CreateOwnerClaimInput,
   CreatePersonalTokenRecordInput,
-  EnsureOrganizationInput,
   EnsureAuthControlInput,
-  ExternalIdentityBinding,
+  EnsureOrganizationInput,
   IdentityExportSummary,
   IdentityResolution,
   IdentityRpcRequest,
@@ -46,1657 +35,663 @@ import type {
   PersonalTokenRecord,
   RecordIdentityAuthAuditInput,
   ResendInvitationInput,
-  ReplaceAccessOwnerBindingInput,
+  RotatePersonalTokenResult,
   SetMembershipAccessOverlayInput,
-  UpdateMembershipInput,
+  SlackIdentityBinding,
   UpdateAuthControlInput,
+  UpdateMembershipInput,
   UpdateOrganizationAuthInput,
   User,
 } from './types.ts';
 
-interface IdentityStoreOptions {
-  now?: () => number;
-}
+interface IdentityStoreOptions { now?: () => number }
 
-interface OrganizationRow {
-  organization_id: string;
-  display_name: string;
-  auth_mode: Organization['authMode'];
-  canonical_admin_origin: string | null;
-  created_at: number;
-  updated_at: number;
-}
-
-interface UserRow {
-  user_id: string;
-  primary_email: string;
-  display_name: string | null;
-  created_at: number;
-  updated_at: number;
-}
-
-interface BindingRow {
-  binding_id: string;
-  user_id: string;
-  provider: string;
-  issuer: string;
-  subject: string;
-  verified_email: string;
-  created_at: number;
-  updated_at: number;
-}
-
-interface ActorBindingRow {
-  binding_id: string; provider: 'slack'; issuer: string; subject: string;
-  user_id: string; organization_id: string; membership_id: string;
-  revision: number; created_at: number; updated_at: number;
-}
-
-interface MembershipRow {
-  membership_id: string;
-  organization_id: string;
-  user_id: string;
-  role: Membership['role'];
-  status: Membership['status'];
-  created_at: number;
-  updated_at: number;
-}
-
-interface OwnerClaimRow {
-  owner_claim_id: string;
-  organization_id: string;
-  normalized_email: string;
-  status: OwnerClaim['status'];
-  binding_id: string | null;
-  created_at: number;
-  updated_at: number;
-}
-
-interface InvitationRow {
-  invitation_id: string;
-  organization_id: string;
-  normalized_email: string;
-  role: Invitation['role'];
-  token_hash: string;
-  status: Invitation['status'];
-  inviter_membership_id: string;
-  accepted_membership_id: string | null;
-  expires_at: number;
-  created_at: number;
-  updated_at: number;
-}
-
-interface PersonalTokenRow {
-  personal_token_id: string;
-  organization_id: string | null;
-  user_id: string;
-  membership_id: string | null;
-  token_hash: string;
-  prefix: string;
-  label: string;
-  status: PersonalTokenRecord['status'];
-  last_used_at: number | null;
-  created_at: number;
-  updated_at: number;
-}
-
-interface BrowserSessionRow {
-  browser_session_id: string;
-  organization_id: string | null;
-  user_id: string;
-  membership_id: string | null;
-  personal_token_id: string;
-  session_hash: string;
-  prefix: string;
-  expires_at: number;
-  last_seen_at: number;
-  revoked_at: number | null;
-  created_at: number;
-}
-
-interface AuthProviderConfigRow {
-  auth_provider_config_id: string;
-  organization_id: string;
-  kind: string;
-  state: AuthProviderConfig['state'];
-  issuer: string | null;
-  audience: string | null;
-  admission_state: AuthProviderConfig['admissionState'];
-  created_at: number;
-  updated_at: number;
-}
-
-interface AuthRateLimitRow {
-  bucket: string;
-  key_hash: string;
-  window_start: number;
-  failures: number;
-}
-
-interface AuthControlRow {
-  installation_id: string;
-  auth_mode: AuthControl['authMode'];
-  canonical_admin_origin: string | null;
-  better_auth_organization_id: string | null;
-  revision: number;
-  created_at: number;
-  updated_at: number;
-}
-
-interface AuthOperationRow {
-  operation_id: string;
-  kind: AuthOperation['kind'];
-  organization_id: string | null;
-  expected_normalized_email: string;
-  capability_hash: string;
-  status: AuthOperation['status'];
-  step: number;
-  better_auth_user_id: string | null;
-  better_auth_organization_id: string | null;
-  better_auth_membership_id: string | null;
-  better_auth_invitation_id: string | null;
-  target_credential_version: number | null;
-  expires_at: number;
-  consumed_at: number | null;
-  revoked_at: number | null;
-  created_at: number;
-  updated_at: number;
-}
-
-const OSS_ORGANIZATION_ID = 'org_oss';
 const DEFAULT_INSTALLATION_ID = 'installation_oss';
+const DEFAULT_ORGANIZATION_ID = 'org_oss';
 
-/**
- * Target-neutral identity lifecycle logic. Callers get transaction-oriented
- * operations instead of direct table access so the Node and Durable Object
- * paths enforce the same ownership and invitation invariants.
- */
 export class IdentityStoreLogic {
   private readonly audit: AuditStoreLogic;
   private readonly now: () => number;
 
-  constructor(
-    private readonly db: StateDb,
-    options: IdentityStoreOptions = {},
-  ) {
+  constructor(private readonly db: StateDb, options: IdentityStoreOptions = {}) {
     this.now = options.now ?? Date.now;
+    installIdentityMigrations(db);
     this.audit = new AuditStoreLogic(db);
-    this.initializeSchema();
   }
 
   execute(request: IdentityRpcRequest): IdentityRpcResponse {
     switch (request.kind) {
-      case 'ensure_auth_control':
-        return { kind: 'auth_control', control: this.ensureAuthControl(request.input) };
-      case 'get_auth_control':
-        return { kind: 'auth_control', control: this.getAuthControl(request.installationId) ?? null };
-      case 'update_auth_control':
-        return { kind: 'auth_control', control: this.updateAuthControl(request.input) };
-      case 'create_auth_operation':
-        return { kind: 'auth_operation', operation: this.createAuthOperation(request.input) };
+      case 'ensure_auth_control': return { kind: 'auth_control', control: this.ensureAuthControl(request.input) };
+      case 'get_auth_control': return { kind: 'auth_control', control: this.getAuthControl(request.installationId) ?? null };
+      case 'update_auth_control': return { kind: 'auth_control', control: this.updateAuthControl(request.input) };
+      case 'create_auth_operation': return { kind: 'auth_operation', operation: this.createAuthOperation(request.input) };
       case 'reserve_pending_auth_operation': {
-        const reservation = this.reservePendingAuthOperation(request.input);
-        return { kind: 'auth_operation_reservation', ...reservation };
+        const result = this.reservePendingAuthOperation(request.input);
+        return { kind: 'auth_operation_reservation', ...result };
       }
-      case 'get_auth_operation':
-        return { kind: 'auth_operation', operation: this.getAuthOperation(request.operationId) ?? null };
-      case 'find_auth_operation':
-        return {
-          kind: 'auth_operation',
-          operation: this.findAuthOperation(request.operationKind, request.capabilityHash) ?? null,
-        };
-      case 'list_auth_operations':
-        return {
-          kind: 'auth_operations',
-          operations: this.listAuthOperations(request.operationKind, request.organizationId),
-        };
-      case 'advance_auth_operation':
-        return { kind: 'auth_operation', operation: this.advanceAuthOperation(request.input) };
-      case 'consume_auth_operation':
-        return { kind: 'auth_operation', operation: this.consumeAuthOperation(request.input) };
-      case 'complete_password_setup':
-        return { kind: 'auth_control', control: this.completePasswordSetup(request.input) };
-      case 'revoke_auth_operation':
-        return { kind: 'auth_operation', operation: this.revokeAuthOperation(request.operationId) };
-      case 'get_membership_access_overlay':
-        return {
-          kind: 'membership_access_overlay',
-          overlay: this.getMembershipAccessOverlay(request.membershipId) ?? null,
-        };
-      case 'set_membership_access_overlay':
-        return {
-          kind: 'membership_access_overlay',
-          overlay: this.setMembershipAccessOverlay(request.input),
-        };
-      case 'ensure_organization':
-        return { kind: 'organization', organization: this.ensureOrganization(request.input) };
-      case 'get_organization':
-        return { kind: 'organization', organization: this.getOrganization() ?? null };
-      case 'create_owner_claim':
-        return { kind: 'owner_claim', ownerClaim: this.createOwnerClaim(request.input) };
-      case 'get_owner_claim':
-        return { kind: 'owner_claim', ownerClaim: this.getOwnerClaim() ?? null };
-      case 'claim_owner':
-        return { kind: 'identity_resolution', resolution: this.claimOwner(request.input) };
-      case 'bootstrap_token_owner':
-        return { kind: 'identity_resolution', resolution: this.bootstrapTokenOwner(request.input) };
-      case 'activate_access_owner':
-        return { kind: 'identity_resolution', resolution: this.activateAccessOwner(request.input) };
-      case 'replace_access_owner_binding':
-        return {
-          kind: 'identity_resolution',
-          resolution: this.replaceAccessOwnerBinding(request.input),
-        };
-      case 'resolve_external_identity':
-        return {
-          kind: 'identity_resolution',
-          resolution: this.resolveExternalIdentity(
-            request.provider,
-            request.issuer,
-            request.subject,
-            request.organizationId,
-          ) ?? null,
-        };
-      case 'list_external_identities':
-        return { kind: 'external_identities', externalIdentities: this.listExternalIdentities() };
-      case 'resolve_actor_external_identity':
-        return { kind: 'actor_external_identity', binding: this.resolveActorExternalIdentity(request.provider, request.issuer, request.subject) ?? null };
-      case 'bind_actor_external_identity':
-        return { kind: 'actor_external_identity', binding: this.bindActorExternalIdentity(request.input) };
-      case 'create_actor_identity_binding_handoff':
-        this.createActorIdentityBindingHandoff(request.input); return { kind: 'ok' };
-      case 'get_actor_identity_binding_handoff':
-        return { kind: 'actor_identity_binding_handoff', handoff: this.getActorIdentityBindingHandoff(request.tokenHash) ?? null };
-      case 'consume_actor_identity_binding_handoff':
-        return { kind: 'actor_identity_binding_handoff', handoff: this.consumeActorIdentityBindingHandoff(request.tokenHash, request.consumedAt) ?? null };
-      case 'list_memberships':
-        return { kind: 'memberships', memberships: this.listMemberships() };
-      case 'get_user':
-        return { kind: 'user', user: this.getUser(request.userId) ?? null };
-      case 'find_user_by_email':
-        return { kind: 'user', user: this.findUserByEmail(request.email) ?? null };
-      case 'get_membership':
-        return { kind: 'membership', membership: this.getMembership(request.membershipId) ?? null };
+      case 'get_auth_operation': return { kind: 'auth_operation', operation: this.getAuthOperation(request.operationId) ?? null };
+      case 'find_auth_operation': return { kind: 'auth_operation', operation: this.findAuthOperation(request.operationKind, request.capabilityHash) ?? null };
+      case 'list_auth_operations': return { kind: 'auth_operations', operations: this.listAuthOperations(request.operationKind, request.organizationId) };
+      case 'advance_auth_operation': return { kind: 'auth_operation', operation: this.advanceAuthOperation(request.input) };
+      case 'consume_auth_operation': return { kind: 'auth_operation', operation: this.consumeAuthOperation(request.input) };
+      case 'revoke_auth_operation': return { kind: 'auth_operation', operation: this.revokeAuthOperation(request.operationId) };
+      case 'get_membership_access_overlay': return { kind: 'membership_access_overlay', overlay: this.getMembershipAccessOverlay(request.membershipId) ?? null };
+      case 'set_membership_access_overlay': return { kind: 'membership_access_overlay', overlay: this.setMembershipAccessOverlay(request.input) };
+      case 'ensure_organization': return { kind: 'organization', organization: this.ensureOrganization(request.input) };
+      case 'get_organization': return { kind: 'organization', organization: this.getOrganization() ?? null };
+      case 'create_owner_claim': return { kind: 'owner_claim', ownerClaim: this.createOwnerClaim(request.input) };
+      case 'get_owner_claim': return { kind: 'owner_claim', ownerClaim: this.getOwnerClaim() ?? null };
+      case 'claim_owner': return { kind: 'identity_resolution', resolution: this.claimOwner(request.input) };
+      case 'resolve_slack_identity': return { kind: 'identity_resolution', resolution: this.resolveSlackIdentity(request.slackTeamId, request.slackUserId, request.organizationId) ?? null };
+      case 'list_external_identities': return { kind: 'external_identities', externalIdentities: this.listExternalIdentities() };
+      case 'list_memberships': return { kind: 'memberships', memberships: this.listMemberships() };
+      case 'get_user': return { kind: 'user', user: this.getUser(request.userId) ?? null };
+      case 'get_membership': return { kind: 'membership', membership: this.getMembership(request.membershipId) ?? null };
       case 'get_membership_for_user': {
         const membership = this.getMembershipForUser(request.userId, request.organizationId);
         return { kind: 'memberships', memberships: membership ? [membership] : [] };
       }
-      case 'update_membership':
-        return { kind: 'membership', membership: this.updateMembership(request.input) };
-      case 'create_invitation':
-        return { kind: 'invitation', invitation: this.createInvitation(request.input) };
-      case 'resend_invitation':
-        return { kind: 'invitation', invitation: this.resendInvitation(request.input) };
-      case 'revoke_invitation':
-        return { kind: 'invitation', invitation: this.revokeInvitation(request.invitationId) };
-      case 'consume_invitation':
-        return { kind: 'identity_resolution', resolution: this.consumeInvitation(request.input) };
-      case 'list_invitations':
-        return { kind: 'invitations', invitations: this.listInvitations() };
-      case 'create_personal_token':
-        return { kind: 'personal_token', personalToken: this.createPersonalToken(request.input) };
-      case 'rotate_personal_token':
-        return { kind: 'personal_token_rotation', result: this.rotatePersonalToken(request.input) };
-      case 'find_personal_tokens':
-        return { kind: 'personal_tokens', personalTokens: this.findPersonalTokens(request.prefix) };
+      case 'update_membership': return { kind: 'membership', membership: this.updateMembership(request.input) };
+      case 'create_invitation': return { kind: 'invitation', invitation: this.createInvitation(request.input) };
+      case 'resend_invitation': return { kind: 'invitation', invitation: this.resendInvitation(request.input) };
+      case 'revoke_invitation': return { kind: 'invitation', invitation: this.revokeInvitation(request.invitationId) };
+      case 'consume_invitation': return { kind: 'identity_resolution', resolution: this.consumeInvitation(request.input) };
+      case 'list_invitations': return { kind: 'invitations', invitations: this.listInvitations() };
+      case 'create_personal_token': return { kind: 'personal_token', personalToken: this.createPersonalToken(request.input) };
+      case 'rotate_personal_token': return { kind: 'personal_token_rotation', result: this.rotatePersonalToken(request.input) };
+      case 'find_personal_tokens': return { kind: 'personal_tokens', personalTokens: this.findPersonalTokens(request.prefix) };
       case 'get_personal_token': {
         const token = this.getPersonalToken(request.tokenId);
         return { kind: 'personal_tokens', personalTokens: token ? [token] : [] };
       }
-      case 'revoke_personal_token':
-        return { kind: 'personal_token', personalToken: this.revokePersonalToken(request.tokenId) };
-      case 'touch_personal_token':
-        return { kind: 'personal_token', personalToken: this.touchPersonalToken(request.tokenId) };
-      case 'create_browser_session':
-        return { kind: 'browser_session', browserSession: this.createBrowserSession(request.input) };
-      case 'find_browser_sessions':
-        return { kind: 'browser_sessions', browserSessions: this.findBrowserSessions(request.prefix) };
-      case 'revoke_browser_session':
-        return { kind: 'browser_session', browserSession: this.revokeBrowserSession(request.sessionId) };
-      case 'configure_auth_provider':
-        return { kind: 'auth_provider_config', config: this.configureAuthProvider(request.input) };
-      case 'get_auth_provider_config':
-        return { kind: 'auth_provider_config', config: this.getAuthProviderConfig(request.providerKind) ?? null };
-      case 'update_auth_provider_audience':
-        return {
-          kind: 'auth_provider_config',
-          config: this.updateAuthProviderAudience(
-            request.providerKind,
-            request.audience,
-            request.actorMembershipId,
-          ),
-        };
-      case 'update_organization_auth':
-        return { kind: 'organization', organization: this.updateOrganizationAuth(request.input) };
-      case 'get_auth_rate_limit':
-        return {
-          kind: 'auth_rate_limit',
-          state: this.getAuthRateLimit(request.bucket, request.keyHash) ?? null,
-        };
-      case 'record_auth_rate_failure':
-        return {
-          kind: 'auth_rate_limit',
-          state: this.recordAuthRateFailure(request.bucket, request.keyHash, request.windowStart),
-        };
-      case 'clear_auth_rate_limit':
-        this.clearAuthRateLimit(request.bucket, request.keyHash);
-        return { kind: 'ok' };
-      case 'record_identity_auth_audit':
-        this.recordAuthAudit(request.input);
-        return { kind: 'ok' };
-      case 'export_summary':
-        return { kind: 'export_summary', summary: this.exportSummary() };
-      case 'list_identity_audit_events':
-        return { kind: 'audit_events', events: this.listAuditEvents(request.limit) };
+      case 'revoke_personal_token': return { kind: 'personal_token', personalToken: this.revokePersonalToken(request.tokenId) };
+      case 'touch_personal_token': return { kind: 'personal_token', personalToken: this.touchPersonalToken(request.tokenId) };
+      case 'create_browser_session': return { kind: 'browser_session', browserSession: this.createBrowserSession(request.input) };
+      case 'find_browser_sessions': return { kind: 'browser_sessions', browserSessions: this.findBrowserSessions(request.prefix) };
+      case 'revoke_browser_session': return { kind: 'browser_session', browserSession: this.revokeBrowserSession(request.sessionId) };
+      case 'update_organization_auth': return { kind: 'organization', organization: this.updateOrganizationAuth(request.input) };
+      case 'get_auth_rate_limit': return { kind: 'auth_rate_limit', state: this.getAuthRateLimit(request.bucket, request.keyHash) ?? null };
+      case 'record_auth_rate_failure': return { kind: 'auth_rate_limit', state: this.recordAuthRateFailure(request.bucket, request.keyHash, request.windowStart) };
+      case 'clear_auth_rate_limit': this.clearAuthRateLimit(request.bucket, request.keyHash); return { kind: 'ok' };
+      case 'record_identity_auth_audit': this.recordAuthAudit(request.input); return { kind: 'ok' };
+      case 'export_summary': return { kind: 'identity_export', summary: this.exportSummary() };
+      case 'list_identity_audit_events': return { kind: 'audit_events', events: this.listAuditEvents(request.limit) };
     }
-  }
-
-  resolveActorExternalIdentity(provider: 'slack', issuer: string, subject: string): ActorExternalIdentityBinding | undefined {
-    const row = this.db.get(
-      `SELECT * FROM identity_actor_external_bindings WHERE provider = ? AND issuer = ? AND subject = ?`,
-      provider, strictText(issuer, 'issuer', 256), strictText(subject, 'subject', 256),
-    ) as ActorBindingRow | undefined;
-    return row ? actorBindingFromRow(row) : undefined;
-  }
-
-  bindActorExternalIdentity(input: BindActorExternalIdentityInput): ActorExternalIdentityBinding {
-    if (input.provider !== 'slack') throw identityError('identity_invalid', 'Actor identity provider is invalid.');
-    const issuer = strictText(input.issuer, 'issuer', 256);
-    const subject = strictText(input.subject, 'subject', 256);
-    const userId = strictText(input.userId, 'userId', 256);
-    const organizationId = strictText(input.organizationId, 'organizationId', 256);
-    const membershipId = strictText(input.membershipId, 'membershipId', 256);
-    const at = input.at ?? this.now();
-    const current = this.resolveActorExternalIdentity('slack', issuer, subject);
-    if (current && current.userId === userId && current.organizationId === organizationId && current.membershipId === membershipId) return current;
-    if (current) {
-      this.db.run(
-        `UPDATE identity_actor_external_bindings SET user_id = ?, organization_id = ?, membership_id = ?, revision = revision + 1, updated_at = ? WHERE binding_id = ?`,
-        userId, organizationId, membershipId, at, current.id,
-      );
-      return this.resolveActorExternalIdentity('slack', issuer, subject)!;
-    }
-    const id = `actor_binding_${randomUUID()}`;
-    this.db.run(
-      `INSERT INTO identity_actor_external_bindings (binding_id, provider, issuer, subject, user_id, organization_id, membership_id, revision, created_at, updated_at) VALUES (?, 'slack', ?, ?, ?, ?, ?, 1, ?, ?)`,
-      id, issuer, subject, userId, organizationId, membershipId, at, at,
-    );
-    return this.resolveActorExternalIdentity('slack', issuer, subject)!;
-  }
-
-  createActorIdentityBindingHandoff(input: ActorIdentityBindingHandoff): void {
-    if (!input.handoffId || !input.tokenHash || !input.issuer || !input.subject || !input.slackIdentityId ||
-        !Number.isSafeInteger(input.slackIdentityRevision) || input.slackIdentityRevision < 0 ||
-        !Number.isSafeInteger(input.expiresAt) || input.expiresAt <= this.now() || input.consumedAt !== null) {
-      throw identityError('identity_invalid', 'Slack actor binding handoff is invalid.');
-    }
-    this.db.run(
-      `INSERT INTO identity_actor_binding_handoffs (handoff_id, token_hash, issuer, subject, slack_identity_id, slack_identity_revision, expires_at, consumed_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
-      input.handoffId, input.tokenHash, input.issuer, input.subject, input.slackIdentityId,
-      input.slackIdentityRevision, input.expiresAt,
-    );
-  }
-
-  getActorIdentityBindingHandoff(tokenHash: string): ActorIdentityBindingHandoff | undefined {
-    const row = this.db.get(
-      `SELECT * FROM identity_actor_binding_handoffs WHERE token_hash = ? AND consumed_at IS NULL AND expires_at >= ?`,
-      strictText(tokenHash, 'tokenHash', 512), this.now(),
-    ) as Record<string, unknown> | undefined;
-    return row ? actorHandoffFromRow(row) : undefined;
-  }
-
-  consumeActorIdentityBindingHandoff(tokenHash: string, consumedAt: number): ActorIdentityBindingHandoff | undefined {
-    return this.db.transaction(() => {
-      const current = this.getActorIdentityBindingHandoff(tokenHash);
-      if (!current || current.expiresAt < consumedAt) return undefined;
-      const changed = this.db.run(
-        `UPDATE identity_actor_binding_handoffs SET consumed_at = ? WHERE handoff_id = ? AND consumed_at IS NULL`,
-        consumedAt, current.handoffId,
-      ).changes;
-      return changed === 1 ? { ...current, consumedAt } : undefined;
-    });
   }
 
   ensureAuthControl(input: EnsureAuthControlInput = {}): AuthControl {
-    const installationId = input.installationId === undefined
-      ? DEFAULT_INSTALLATION_ID
-      : strictText(input.installationId, 'installationId', 256);
+    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
     const existing = this.getAuthControl(installationId);
     if (existing) return existing;
-    const authMode = input.authMode ?? 'unconfigured';
-    validateAuthMode(authMode);
     const at = this.now();
     this.db.run(
-      `INSERT OR IGNORE INTO identity_auth_controls (
-         installation_id, auth_mode, canonical_admin_origin,
-         better_auth_organization_id, revision, created_at, updated_at
-       ) VALUES (?, ?, NULL, NULL, 1, ?, ?)`,
-      installationId, authMode, at, at,
+      `INSERT INTO identity_auth_controls (
+        installation_id, auth_mode, health_gate, canonical_admin_origin,
+        better_auth_organization_id, revision, created_at, updated_at
+      ) VALUES (?, ?, ?, NULL, NULL, 1, ?, ?)`,
+      installationId, input.authMode ?? 'unconfigured', input.healthGate ?? 'normal', at, at,
     );
     return this.requiredAuthControl(installationId);
   }
 
   getAuthControl(installationId = DEFAULT_INSTALLATION_ID): AuthControl | undefined {
-    const row = this.db.get(
-      'SELECT * FROM identity_auth_controls WHERE installation_id = ?',
-      strictText(installationId, 'installationId', 256),
-    );
-    return row ? rowToAuthControl(row as unknown as AuthControlRow) : undefined;
+    const row = this.db.get('SELECT * FROM identity_auth_controls WHERE installation_id = ?', installationId);
+    return row ? authControlFromRow(row) : undefined;
   }
 
   updateAuthControl(input: UpdateAuthControlInput): AuthControl {
     const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
     const current = this.requiredAuthControl(installationId);
-    if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision <= 0) {
-      throw identityError('identity_invalid', 'Control revision is invalid.');
-    }
-    const authMode = input.authMode ?? current.authMode;
-    validateAuthMode(authMode);
     const origin = input.canonicalAdminOrigin === undefined
       ? current.canonicalAdminOrigin
       : input.canonicalAdminOrigin === null ? null : validOrigin(input.canonicalAdminOrigin);
-    const betterAuthOrganizationId = input.betterAuthOrganizationId === undefined
-      ? current.betterAuthOrganizationId
-      : input.betterAuthOrganizationId === null
-        ? null
-        : strictText(input.betterAuthOrganizationId, 'betterAuthOrganizationId', 256);
-    const at = this.now();
-    const result = this.db.run(
-      `UPDATE identity_auth_controls
-       SET auth_mode = ?, canonical_admin_origin = ?, better_auth_organization_id = ?,
-           revision = revision + 1, updated_at = ?
+    const changed = this.db.run(
+      `UPDATE identity_auth_controls SET auth_mode = ?, health_gate = ?, canonical_admin_origin = ?,
+       better_auth_organization_id = ?, revision = revision + 1, updated_at = ?
        WHERE installation_id = ? AND revision = ?`,
-      authMode, origin, betterAuthOrganizationId, at, current.installationId,
-      input.expectedRevision,
-    );
-    if (result.changes !== 1) {
-      throw identityError('auth_control_conflict', 'Authentication control changed concurrently.');
-    }
-    return this.requiredAuthControl(current.installationId);
-  }
-
-  getMembershipAccessOverlay(membershipId: string): MembershipAccessOverlay | undefined {
-    const row = this.db.get(
-      `SELECT membership_id, organization_id, access_status, membership_version,
-              created_at, updated_at
-       FROM identity_membership_access_overlays WHERE membership_id = ?`,
-      strictText(membershipId, 'membershipId', 256),
-    ) as Record<string, unknown> | undefined;
-    if (!row) return undefined;
-    return {
-      membershipId: String(row.membership_id),
-      organizationId: String(row.organization_id),
-      accessStatus: row.access_status === 'suspended' ? 'suspended' : 'active',
-      membershipVersion: Number(row.membership_version),
-      createdAt: Number(row.created_at),
-      updatedAt: Number(row.updated_at),
-    };
-  }
-
-  setMembershipAccessOverlay(input: SetMembershipAccessOverlayInput): MembershipAccessOverlay {
-    const membershipId = strictText(input.membershipId, 'membershipId', 256);
-    const organizationId = strictText(input.organizationId, 'organizationId', 256);
-    const actorMembershipId = input.actorMembershipId === undefined
-      ? null
-      : strictText(input.actorMembershipId, 'actorMembershipId', 256);
-    const accessStatus = input.accessStatus;
-    if (accessStatus !== 'active' && accessStatus !== 'suspended') {
-      throw identityError('identity_invalid', 'Membership access status is invalid.');
-    }
-    const current = this.getMembershipAccessOverlay(membershipId);
-    const ownerMembershipIds = input.ownerMembershipIds?.map((id) =>
-      strictText(id, 'ownerMembershipId', 256));
-    if (ownerMembershipIds && new Set(ownerMembershipIds).size !== ownerMembershipIds.length) {
-      throw identityError('identity_invalid', 'Owner membership list contains duplicates.');
-    }
-    if (accessStatus === 'suspended' && ownerMembershipIds?.includes(membershipId)) {
-      const hasOtherActiveOwner = ownerMembershipIds.some((ownerId) =>
-        ownerId !== membershipId &&
-        this.getMembershipAccessOverlay(ownerId)?.accessStatus !== 'suspended');
-      if (!hasOtherActiveOwner) {
-        throw identityError('last_owner_required', 'At least one active owner is required.', {
-          membershipId,
-        });
-      }
-    }
-    const expectedVersion = input.expectedVersion;
-    if (expectedVersion !== undefined &&
-        (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0 ||
-         (current?.membershipVersion ?? 0) !== expectedVersion)) {
-      throw identityError('auth_operation_conflict', 'Membership access changed concurrently.');
-    }
-    if (current && current.organizationId !== organizationId) {
-      throw identityError('identity_invalid', 'Membership access organization is immutable.');
-    }
-    const at = input.at ?? this.now();
-    const nextVersion = (current?.membershipVersion ?? 0) + 1;
-    this.db.transaction(() => {
-      this.db.run(
-        `INSERT INTO identity_membership_access_overlays (
-           membership_id, organization_id, access_status, membership_version,
-           created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(membership_id) DO UPDATE SET
-           access_status = excluded.access_status,
-           membership_version = excluded.membership_version,
-           updated_at = excluded.updated_at`,
-        membershipId,
-        organizationId,
-        accessStatus,
-        nextVersion,
-        current?.createdAt ?? at,
-        at,
-      );
-      this.appendAudit(
-        'identity.membership_access_updated',
-        membershipId,
-        at,
-        actorMembershipId,
-        { accessStatus, membershipVersion: String(nextVersion) },
-      );
-    });
-    return this.getMembershipAccessOverlay(membershipId)!;
+      input.authMode ?? current.authMode,
+      input.healthGate ?? current.healthGate,
+      origin,
+      input.betterAuthOrganizationId === undefined
+        ? current.betterAuthOrganizationId
+        : input.betterAuthOrganizationId,
+      this.now(), installationId, input.expectedRevision,
+    ).changes;
+    if (changed !== 1) throw identityError('auth_control_conflict', 'Authentication control changed concurrently.');
+    return this.requiredAuthControl(installationId);
   }
 
   createAuthOperation(input: CreateAuthOperationInput): AuthOperation {
-    const id = input.id === undefined ? newId('auth_operation') : strictText(input.id, 'operationId', 256);
-    const email = normalizeEmail(input.expectedEmail);
-    const capabilityHash = credentialHash(input.capabilityHash);
-    const organizationId = input.organizationId === undefined || input.organizationId === null
-      ? null
-      : strictText(input.organizationId, 'organizationId', 256);
-    const targetCredentialVersion = input.targetCredentialVersion ?? null;
-    if (targetCredentialVersion !== null &&
-        (!Number.isSafeInteger(targetCredentialVersion) || targetCredentialVersion <= 0)) {
-      throw identityError('identity_invalid', 'Target credential version is invalid.');
-    }
+    validateOperationInput(input);
+    const id = input.id ?? newId('authop');
     const at = this.now();
-    if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= at) {
-      throw identityError('identity_invalid', 'Operation expiry must be in the future.');
-    }
-    validateAuthOperationKind(input.kind);
-    const existingRow = this.db.get(
-      `SELECT * FROM identity_auth_operations
-       WHERE operation_id = ? OR capability_hash = ? LIMIT 1`,
-      id, capabilityHash,
-    );
-    const existing = existingRow
-      ? rowToAuthOperation(existingRow as unknown as AuthOperationRow)
-      : undefined;
-    if (existing) {
-      if (existing.id === id && existing.kind === input.kind &&
-          existing.expectedNormalizedEmail === email && existing.capabilityHash === capabilityHash &&
-          existing.organizationId === organizationId && existing.expiresAt === input.expiresAt &&
-          existing.targetCredentialVersion === targetCredentialVersion) return existing;
-      throw identityError('auth_operation_conflict', 'Authentication operation already exists.');
-    }
-    const inserted = this.db.run(
-      `INSERT OR IGNORE INTO identity_auth_operations (
-         operation_id, kind, organization_id, expected_normalized_email,
-         capability_hash, status, step, better_auth_user_id,
-         better_auth_organization_id, better_auth_membership_id,
-         better_auth_invitation_id, target_credential_version, expires_at,
-         consumed_at, revoked_at, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, NULL, NULL, ?, ?, NULL, NULL, ?, ?)`,
-      id, input.kind, organizationId, email, capabilityHash,
-      targetCredentialVersion, input.expiresAt, at, at,
-    );
-    if (inserted.changes !== 1) {
-      const racedRow = this.db.get(
-        `SELECT * FROM identity_auth_operations
-         WHERE operation_id = ? OR capability_hash = ? LIMIT 1`,
-        id, capabilityHash,
+    try {
+      this.db.run(
+        `INSERT INTO identity_auth_operations (
+          operation_id, kind, organization_id, expected_slack_team_id, expected_slack_user_id,
+          chickpea_role, capability_hash, status, step, better_auth_user_id,
+          better_auth_organization_id, better_auth_membership_id, chickpea_membership_id,
+          expires_at, activated_at, tombstoned_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', 0, NULL, NULL, NULL, NULL, ?, NULL, NULL, ?, ?)`,
+        id, input.kind, input.organizationId ?? null,
+        slackId(input.expectedSlackTeamId, 'Slack team ID'),
+        slackId(input.expectedSlackUserId, 'Slack user ID'),
+        input.chickpeaRole ?? null, credentialHash(input.capabilityHash), input.expiresAt, at, at,
       );
-      const raced = racedRow
-        ? rowToAuthOperation(racedRow as unknown as AuthOperationRow)
-        : undefined;
-      if (raced && raced.id === id && raced.kind === input.kind &&
-          raced.expectedNormalizedEmail === email && raced.capabilityHash === capabilityHash &&
-          raced.organizationId === organizationId && raced.expiresAt === input.expiresAt &&
-          raced.targetCredentialVersion === targetCredentialVersion) return raced;
-      throw identityError('auth_operation_conflict', 'Authentication operation already exists.');
+    } catch (error) {
+      const replay = this.getAuthOperation(id);
+      if (replay && operationMatchesInput(replay, input)) return replay;
+      throw identityError('auth_operation_conflict', 'Authentication operation conflicts with existing authority.');
     }
     return this.requiredAuthOperation(id);
   }
 
-  reservePendingAuthOperation(input: CreateAuthOperationInput): {
-    operation: AuthOperation;
-    created: boolean;
-  } {
-    const email = normalizeEmail(input.expectedEmail);
-    credentialHash(input.capabilityHash);
-    const organizationId = input.organizationId === undefined || input.organizationId === null
-      ? null
-      : strictText(input.organizationId, 'organizationId', 256);
-    const targetCredentialVersion = input.targetCredentialVersion ?? null;
-    if (targetCredentialVersion !== null &&
-        (!Number.isSafeInteger(targetCredentialVersion) || targetCredentialVersion <= 0)) {
-      throw identityError('identity_invalid', 'Target credential version is invalid.');
-    }
-    validateAuthOperationKind(input.kind);
-    const at = this.now();
-    if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= at) {
-      throw identityError('identity_invalid', 'Operation expiry must be in the future.');
-    }
-    this.db.run(
-      `UPDATE identity_auth_operations
-       SET status = 'expired', updated_at = ?
-       WHERE kind = ? AND organization_id IS ? AND expected_normalized_email = ?
-         AND status = 'pending' AND expires_at <= ?`,
-      at, input.kind, organizationId, email, at,
-    );
-    const existingRow = this.db.get(
-      `SELECT * FROM identity_auth_operations
-       WHERE kind = ? AND organization_id IS ? AND expected_normalized_email = ?
-         AND status = 'pending'
-       ORDER BY created_at, operation_id
-       LIMIT 1`,
-      input.kind, organizationId, email,
-    );
-    if (existingRow) {
-      return {
-        operation: rowToAuthOperation(existingRow as unknown as AuthOperationRow),
-        created: false,
-      };
+  reservePendingAuthOperation(input: CreateAuthOperationInput): { operation: AuthOperation; created: boolean } {
+    validateOperationInput(input);
+    const existing = input.kind === 'first_owner_claim'
+      ? this.db.get(
+        `SELECT * FROM identity_auth_operations WHERE kind = 'first_owner_claim'
+         AND status IN ('reserved', 'reconciling', 'active') LIMIT 1`,
+      )
+      : this.db.get(
+        `SELECT * FROM identity_auth_operations WHERE kind = ? AND organization_id IS ?
+         AND expected_slack_team_id = ? AND expected_slack_user_id = ?
+         AND status IN ('reserved', 'reconciling', 'active') LIMIT 1`,
+        input.kind, input.organizationId ?? null, input.expectedSlackTeamId, input.expectedSlackUserId,
+      );
+    if (existing) {
+      const operation = authOperationFromRow(existing);
+      if (!operationMatchesInput(operation, input)) {
+        throw identityError('auth_operation_conflict', 'Authentication operation is already reserved.');
+      }
+      return { operation, created: false };
     }
     return { operation: this.createAuthOperation(input), created: true };
   }
 
   getAuthOperation(operationId: string): AuthOperation | undefined {
-    const row = this.db.get(
-      'SELECT * FROM identity_auth_operations WHERE operation_id = ?',
-      strictText(operationId, 'operationId', 256),
-    );
-    return row ? rowToAuthOperation(row as unknown as AuthOperationRow) : undefined;
+    const row = this.db.get('SELECT * FROM identity_auth_operations WHERE operation_id = ?', operationId);
+    return row ? authOperationFromRow(row) : undefined;
   }
 
   findAuthOperation(kind: AuthOperationKind, capabilityHash: string): AuthOperation | undefined {
-    validateAuthOperationKind(kind);
     const row = this.db.get(
-      `SELECT * FROM identity_auth_operations
-       WHERE kind = ? AND capability_hash = ?`,
+      'SELECT * FROM identity_auth_operations WHERE kind = ? AND capability_hash = ?',
       kind, credentialHash(capabilityHash),
     );
-    return row ? rowToAuthOperation(row as unknown as AuthOperationRow) : undefined;
+    return row ? authOperationFromRow(row) : undefined;
   }
 
   listAuthOperations(kind?: AuthOperationKind, organizationId?: string): AuthOperation[] {
-    if (kind !== undefined) validateAuthOperationKind(kind);
-    const normalizedOrganizationId = organizationId === undefined
-      ? undefined
-      : strictText(organizationId, 'organizationId', 256);
-    return this.db
-      .all(
-        `SELECT * FROM identity_auth_operations
-         WHERE (? IS NULL OR kind = ?)
-           AND (? IS NULL OR organization_id = ?)
-         ORDER BY created_at, operation_id`,
-        kind ?? null,
-        kind ?? null,
-        normalizedOrganizationId ?? null,
-        normalizedOrganizationId ?? null,
-      )
-      .map((row) => rowToAuthOperation(row as unknown as AuthOperationRow));
+    const clauses: string[] = [];
+    const params: string[] = [];
+    if (kind) { clauses.push('kind = ?'); params.push(kind); }
+    if (organizationId) { clauses.push('organization_id = ?'); params.push(organizationId); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    return this.db.all(
+      `SELECT * FROM identity_auth_operations ${where} ORDER BY created_at, operation_id`,
+      ...params,
+    ).map(authOperationFromRow);
   }
 
   advanceAuthOperation(input: AdvanceAuthOperationInput): AuthOperation {
-    const current = this.requiredPendingAuthOperation(
-      input.operationId,
-      input.capabilityHash,
-      input.at ?? this.now(),
-    );
-    if (!Number.isSafeInteger(input.step) || input.step < current.step || input.step > current.step + 1) {
-      throw identityError('auth_operation_step_invalid', 'Authentication operation step is invalid.');
-    }
-    const next = {
-      user: mergeOpaqueId(current.betterAuthUserId, input.betterAuthUserId, 'betterAuthUserId'),
-      organization: mergeOpaqueId(
-        current.betterAuthOrganizationId,
-        input.betterAuthOrganizationId,
-        'betterAuthOrganizationId',
-      ),
-      membership: mergeOpaqueId(
-        current.betterAuthMembershipId,
-        input.betterAuthMembershipId,
-        'betterAuthMembershipId',
-      ),
-      invitation: mergeOpaqueId(
-        current.betterAuthInvitationId,
-        input.betterAuthInvitationId,
-        'betterAuthInvitationId',
-      ),
-    };
     const at = input.at ?? this.now();
-    const advanced = this.db.run(
-      `UPDATE identity_auth_operations
-       SET step = ?, better_auth_user_id = ?, better_auth_organization_id = ?,
-           better_auth_membership_id = ?, better_auth_invitation_id = ?, updated_at = ?
-       WHERE operation_id = ? AND status = 'pending' AND step = ?`,
-      input.step, next.user, next.organization, next.membership, next.invitation,
-      at, current.id, current.step,
-    );
-    if (advanced.changes !== 1) {
-      const latest = this.requiredAuthOperation(current.id);
-      mergeOpaqueId(latest.betterAuthUserId, input.betterAuthUserId, 'betterAuthUserId');
-      mergeOpaqueId(
-        latest.betterAuthOrganizationId,
-        input.betterAuthOrganizationId,
-        'betterAuthOrganizationId',
-      );
-      mergeOpaqueId(
-        latest.betterAuthMembershipId,
-        input.betterAuthMembershipId,
-        'betterAuthMembershipId',
-      );
-      mergeOpaqueId(
-        latest.betterAuthInvitationId,
-        input.betterAuthInvitationId,
-        'betterAuthInvitationId',
-      );
-      if (latest.status !== 'pending' || latest.step !== input.step) {
-        throw identityError('auth_operation_conflict', 'Authentication operation changed concurrently.');
-      }
-      return latest;
+    const current = this.requiredLiveOperation(input.operationId, input.capabilityHash, at);
+    if (!Number.isSafeInteger(input.step) || input.step <= current.step) {
+      throw identityError('auth_operation_step_invalid', 'Authentication operation step must advance.');
     }
+    const values = {
+      user: mergeOpaque(current.betterAuthUserId, input.betterAuthUserId, 'Better Auth user ID'),
+      organization: mergeOpaque(current.betterAuthOrganizationId, input.betterAuthOrganizationId, 'Better Auth organization ID'),
+      member: mergeOpaque(current.betterAuthMembershipId, input.betterAuthMembershipId, 'Better Auth membership ID'),
+      chickpeaMember: mergeOpaque(current.chickpeaMembershipId, input.chickpeaMembershipId, 'Chickpea membership ID'),
+    };
+    this.db.run(
+      `UPDATE identity_auth_operations SET status = 'reconciling', step = ?, better_auth_user_id = ?,
+       better_auth_organization_id = ?, better_auth_membership_id = ?, chickpea_membership_id = ?, updated_at = ?
+       WHERE operation_id = ? AND status IN ('reserved', 'reconciling')`,
+      input.step, values.user, values.organization, values.member, values.chickpeaMember, at, current.id,
+    );
     return this.requiredAuthOperation(current.id);
   }
 
   consumeAuthOperation(input: ConsumeAuthOperationInput): AuthOperation {
     const at = input.at ?? this.now();
-    const current = this.requiredPendingAuthOperation(input.operationId, input.capabilityHash, at);
-    if (!Number.isSafeInteger(input.expectedStep) || current.step !== input.expectedStep) {
-      throw identityError('auth_operation_step_invalid', 'Authentication operation is incomplete.');
+    const current = this.requiredLiveOperation(input.operationId, input.capabilityHash, at);
+    if (current.step !== input.expectedStep || !current.betterAuthUserId ||
+        !current.betterAuthOrganizationId || !current.betterAuthMembershipId ||
+        !current.chickpeaMembershipId) {
+      throw identityError('auth_operation_step_invalid', 'Authentication operation is not ready to activate.');
     }
-    const result = this.db.run(
-      `UPDATE identity_auth_operations
-       SET status = 'consumed', consumed_at = ?, updated_at = ?
-       WHERE operation_id = ? AND status = 'pending' AND step = ?`,
-      at, at, current.id, current.step,
-    );
-    if (result.changes !== 1) {
-      throw identityError('auth_operation_unavailable', 'Authentication operation is unavailable.');
-    }
-    return this.requiredAuthOperation(current.id);
-  }
-
-  completePasswordSetup(input: CompletePasswordSetupInput): AuthControl {
-    const at = input.at ?? this.now();
-    return this.db.transaction(() => {
-      const operation = this.requiredPendingAuthOperation(
-        input.operationId,
-        input.capabilityHash,
-        at,
-      );
-      const control = this.requiredAuthControl(DEFAULT_INSTALLATION_ID);
-      const origin = validOrigin(input.canonicalAdminOrigin);
-      const organizationId = strictText(
-        input.betterAuthOrganizationId,
-        'betterAuthOrganizationId',
-        256,
-      );
-      const expectedControlAuthMode = input.expectedControlAuthMode;
-      if (!['unconfigured', 'password_active'].includes(expectedControlAuthMode)) {
-        throw identityError('identity_invalid', 'Expected authentication mode is invalid.');
-      }
-      const expectedBetterAuthOrganizationId = input.expectedBetterAuthOrganizationId === null
-        ? null
-        : strictText(
-            input.expectedBetterAuthOrganizationId,
-            'expectedBetterAuthOrganizationId',
-            256,
-          );
-      if (operation.kind !== 'owner_setup' || operation.step !== input.expectedStep ||
-          operation.betterAuthOrganizationId !== organizationId ||
-          !operation.betterAuthUserId || !operation.betterAuthMembershipId ||
-          control.authMode !== expectedControlAuthMode ||
-          control.betterAuthOrganizationId !== expectedBetterAuthOrganizationId ||
-          control.revision !== input.expectedControlRevision) {
-        throw identityError('auth_operation_conflict', 'Owner setup changed concurrently.');
-      }
-      const activated = this.db.run(
-        `UPDATE identity_auth_controls
-         SET auth_mode = 'password_active', canonical_admin_origin = ?,
-             better_auth_organization_id = ?, revision = revision + 1, updated_at = ?
-         WHERE installation_id = ? AND auth_mode = ? AND revision = ?`,
-        origin, organizationId, at, control.installationId, expectedControlAuthMode,
-        control.revision,
-      );
-      const consumed = this.db.run(
-        `UPDATE identity_auth_operations
-         SET status = 'consumed', consumed_at = ?, updated_at = ?
-         WHERE operation_id = ? AND status = 'pending' AND step = ?`,
-        at, at, operation.id, operation.step,
-      );
-      if (activated.changes !== 1 || consumed.changes !== 1) {
-        throw identityError('auth_operation_conflict', 'Owner setup changed concurrently.');
-      }
-      this.appendAudit(
-        'identity.password_owner_setup_completed',
-        control.installationId,
-        at,
-        operation.betterAuthMembershipId,
-        { organizationId },
-      );
-      return this.requiredAuthControl(control.installationId);
-    });
-  }
-
-  revokeAuthOperation(operationId: string): AuthOperation {
-    const current = this.requiredAuthOperation(operationId);
-    if (current.status !== 'pending') return current;
-    const at = this.now();
     this.db.run(
-      `UPDATE identity_auth_operations
-       SET status = 'revoked', revoked_at = ?, updated_at = ?
-       WHERE operation_id = ? AND status = 'pending'`,
+      `UPDATE identity_auth_operations SET status = 'active', activated_at = ?, updated_at = ?
+       WHERE operation_id = ? AND status IN ('reserved', 'reconciling')`,
       at, at, current.id,
     );
     return this.requiredAuthOperation(current.id);
   }
 
-  ensureOrganization(input: EnsureOrganizationInput): Organization {
-    const displayName = nonEmpty(input.displayName, 'displayName');
-    const existing = this.getOrganization();
-    if (existing) return existing;
-    const at = this.now();
-    try {
-      this.db.transaction(() => {
-        this.db.run(
-          `INSERT INTO identity_organizations (
-             organization_id, display_name, auth_mode, canonical_admin_origin,
-             created_at, updated_at
-           ) VALUES (?, ?, 'unconfigured', NULL, ?, ?)`,
-          OSS_ORGANIZATION_ID,
-          displayName,
-          at,
-          at,
-        );
-        this.appendAudit('identity.organization_initialized', OSS_ORGANIZATION_ID, at);
-      });
-    } catch (error) {
-      const raced = this.getOrganization();
-      if (raced) return raced;
-      throw error;
+  revokeAuthOperation(operationId: string): AuthOperation {
+    const current = this.requiredAuthOperation(operationId);
+    if (current.status === 'active') {
+      throw identityError('auth_operation_unavailable', 'Active authority cannot be tombstoned.');
     }
+    const at = this.now();
+    this.db.run(
+      `UPDATE identity_auth_operations SET status = 'tombstoned', tombstoned_at = ?, updated_at = ?
+       WHERE operation_id = ? AND status IN ('reserved', 'reconciling')`,
+      at, at, operationId,
+    );
+    return this.requiredAuthOperation(operationId);
+  }
+
+  ensureOrganization(input: EnsureOrganizationInput): Organization {
+    const existing = this.getOrganization();
+    if (existing) {
+      if (input.slackTeamId && existing.slackTeamId && input.slackTeamId !== existing.slackTeamId) {
+        throw identityError('organization_missing', 'The installation is bound to another Slack workspace.');
+      }
+      return existing;
+    }
+    const at = this.now();
+    this.db.run(
+      `INSERT INTO identity_organizations (
+        organization_id, display_name, slack_team_id, auth_mode, canonical_admin_origin, created_at, updated_at
+      ) VALUES (?, ?, ?, 'unconfigured', NULL, ?, ?)`,
+      DEFAULT_ORGANIZATION_ID, strictText(input.displayName, 'display name', 120),
+      input.slackTeamId ? slackId(input.slackTeamId, 'Slack team ID') : null, at, at,
+    );
     return this.requiredOrganization();
   }
 
   getOrganization(): Organization | undefined {
-    const row = this.db.get(
-      'SELECT * FROM identity_organizations WHERE organization_id = ?',
-      OSS_ORGANIZATION_ID,
-    );
-    return row ? rowToOrganization(row as unknown as OrganizationRow) : undefined;
+    const row = this.db.get('SELECT * FROM identity_organizations ORDER BY created_at LIMIT 1');
+    return row ? organizationFromRow(row) : undefined;
   }
 
   createOwnerClaim(input: CreateOwnerClaimInput): OwnerClaim {
-    this.requireOrganization(input.organizationId);
-    const email = normalizeEmail(input.email);
     const existing = this.getOwnerClaim();
     if (existing) {
-      if (existing.normalizedEmail === email) return existing;
-      throw identityError(
-        'owner_claim_conflict',
-        'The pending owner is already configured for another email.',
-        { ownerClaimId: existing.id },
-      );
+      if (existing.operationId === input.operationId && existing.slackTeamId === input.slackTeamId &&
+          existing.slackUserId === input.slackUserId) return existing;
+      throw identityError('owner_claim_conflict', 'The singleton first-Owner claim is already reserved.');
     }
-    const at = this.now();
-    const ownerClaimId = newId('owner_claim');
-    this.db.transaction(() => {
-      this.db.run(
-        `INSERT INTO identity_owner_claims (
-           owner_claim_id, organization_id, normalized_email, status,
-           binding_id, created_at, updated_at
-         ) VALUES (?, ?, ?, 'pending', NULL, ?, ?)`,
-        ownerClaimId,
-        input.organizationId,
-        email,
-        at,
-        at,
-      );
-      this.appendAudit('identity.owner_claim_created', ownerClaimId, at);
-    });
+    const operation = this.requiredAuthOperation(input.operationId);
+    if (operation.kind !== 'first_owner_claim' || operation.expectedSlackTeamId !== input.slackTeamId ||
+        operation.expectedSlackUserId !== input.slackUserId || operation.status !== 'reserved') {
+      throw identityError('owner_claim_conflict', 'The first-Owner operation does not match this Slack identity.');
+    }
+    const at = input.at ?? this.now();
+    this.db.run(
+      `INSERT INTO identity_owner_claims (
+        claim_key, owner_claim_id, operation_id, organization_id, slack_team_id, slack_user_id,
+        status, membership_id, created_at, updated_at
+      ) VALUES ('first_owner', ?, ?, ?, ?, ?, 'reserved', NULL, ?, ?)`,
+      newId('ownerclaim'), input.operationId, input.organizationId ?? null,
+      slackId(input.slackTeamId, 'Slack team ID'), slackId(input.slackUserId, 'Slack user ID'), at, at,
+    );
     return this.requiredOwnerClaim();
   }
 
   getOwnerClaim(): OwnerClaim | undefined {
-    const row = this.db.get(
-      `SELECT * FROM identity_owner_claims
-       WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1`,
-      OSS_ORGANIZATION_ID,
-    );
-    return row ? rowToOwnerClaim(row as unknown as OwnerClaimRow) : undefined;
+    const row = this.db.get("SELECT * FROM identity_owner_claims WHERE claim_key = 'first_owner'");
+    return row ? ownerClaimFromRow(row) : undefined;
   }
 
   claimOwner(input: ClaimOwnerInput): IdentityResolution {
-    this.requireOrganization(input.organizationId);
-    const email = normalizeEmail(input.verifiedEmail);
-    validateExternalIdentity(input);
-    const existing = this.resolveExternalIdentity(
-      input.provider,
-      input.issuer,
-      input.subject,
-      input.organizationId,
-    );
-    const claim = this.getOwnerClaim();
-    if (!claim) throw identityError('owner_claim_missing', 'Owner setup has not been initialized.');
-    if (claim.status === 'claimed') {
-      if (existing?.binding.id === claim.bindingId && existing.membership.role === 'owner') {
-        return existing;
+    return this.db.transaction(() => {
+      const claim = this.requiredOwnerClaim();
+      if (claim.status === 'active') {
+        const existing = this.resolveSlackIdentity(input.slackTeamId, input.slackUserId, input.organizationId);
+        if (existing?.membership.id === claim.membershipId) return existing;
+        throw identityError('owner_already_claimed', 'The first Owner has already been claimed.');
       }
-      throw identityError('owner_already_claimed', 'The owner claim has already been consumed.');
-    }
-    if (claim.normalizedEmail !== email) {
-      throw identityError('owner_email_mismatch', 'The verified identity does not match the owner claim.');
-    }
-    if (existing) {
-      throw identityError(
-        'external_identity_conflict',
-        'The external identity is already bound.',
-        { bindingId: existing.binding.id },
-      );
-    }
-
-    const at = input.at ?? this.now();
-    const ids = { user: newId('user'), binding: newId('binding'), membership: newId('membership') };
-    this.db.transaction(() => {
-      this.insertIdentity(ids, input, email, 'owner', at);
-      const updated = this.db.run(
-        `UPDATE identity_owner_claims
-         SET status = 'claimed', binding_id = ?, updated_at = ?
-         WHERE owner_claim_id = ? AND status = 'pending'`,
-        ids.binding,
-        at,
-        claim.id,
-      );
-      if (updated.changes !== 1) {
-        throw identityError('owner_already_claimed', 'The owner claim has already been consumed.');
+      if (claim.status !== 'reserved' || claim.operationId !== input.operationId ||
+          claim.slackTeamId !== input.slackTeamId || claim.slackUserId !== input.slackUserId) {
+        throw identityError('owner_claim_conflict', 'The verified Slack identity does not own this claim.');
       }
-      this.appendAudit('identity.owner_claimed', ids.membership, at, ids.membership);
-    });
-    return this.requiredResolution(input.provider, input.issuer, input.subject, input.organizationId);
-  }
-
-  bootstrapTokenOwner(input: BootstrapTokenOwnerInput): IdentityResolution {
-    if (input.organizationId !== OSS_ORGANIZATION_ID) {
-      throw identityError('identity_invalid', 'Token authentication organization is invalid.');
-    }
-    const displayName = nonEmpty(input.displayName, 'displayName');
-    const email = normalizeEmail(input.verifiedEmail);
-    validateExternalIdentity(input);
-    const canonicalAdminOrigin = validOrigin(input.canonicalAdminOrigin);
-    if (this.getOrganization()) {
-      throw identityError('identity_invalid', 'Token authentication is already initialized.');
-    }
-
-    const at = input.at ?? this.now();
-    const ownerClaimId = newId('owner_claim');
-    const ids = { user: newId('user'), binding: newId('binding'), membership: newId('membership') };
-    this.db.transaction(() => {
-      this.db.run(
-        `INSERT INTO identity_organizations (
-           organization_id, display_name, auth_mode, canonical_admin_origin,
-           created_at, updated_at
-         ) VALUES (?, ?, 'unconfigured', NULL, ?, ?)`,
-        OSS_ORGANIZATION_ID, displayName, at, at,
-      );
-      this.db.run(
-        `INSERT INTO identity_owner_claims (
-           owner_claim_id, organization_id, normalized_email, status,
-           binding_id, created_at, updated_at
-         ) VALUES (?, ?, ?, 'pending', NULL, ?, ?)`,
-        ownerClaimId, OSS_ORGANIZATION_ID, email, at, at,
-      );
-      this.insertIdentity(ids, input, email, 'owner', at);
-      if (this.db.run(
-        `UPDATE identity_owner_claims
-         SET status = 'claimed', binding_id = ?, updated_at = ?
-         WHERE owner_claim_id = ? AND status = 'pending'`,
-        ids.binding, at, ownerClaimId,
-      ).changes !== 1) {
-        throw identityError('owner_already_claimed', 'The owner claim has already been consumed.');
+      const operation = this.requiredAuthOperation(input.operationId);
+      if (!['reserved', 'reconciling'].includes(operation.status) ||
+          operation.expectedSlackTeamId !== input.slackTeamId ||
+          operation.expectedSlackUserId !== input.slackUserId ||
+          operation.chickpeaRole !== 'owner' ||
+          operation.betterAuthUserId !== input.betterAuthUserId ||
+          operation.betterAuthMembershipId !== input.betterAuthMembershipId ||
+          !operation.betterAuthOrganizationId) {
+        throw identityError('owner_claim_conflict', 'The first-Owner operation is unavailable.');
       }
-      this.db.run(
-        `UPDATE identity_organizations
-         SET auth_mode = 'token_active', canonical_admin_origin = ?, updated_at = ?
-         WHERE organization_id = ?`,
-        canonicalAdminOrigin, at, OSS_ORGANIZATION_ID,
-      );
-      this.appendAudit('identity.organization_initialized', OSS_ORGANIZATION_ID, at);
-      this.appendAudit('identity.owner_claim_created', ownerClaimId, at);
-      this.appendAudit('identity.token_auth_activated', ids.membership, at, ids.membership);
-    });
-    return this.requiredResolution(input.provider, input.issuer, input.subject, OSS_ORGANIZATION_ID);
-  }
-
-  activateAccessOwner(input: ActivateAccessOwnerInput): IdentityResolution {
-    this.requireOrganization(input.organizationId);
-    const email = normalizeEmail(input.verifiedEmail);
-    validateExternalIdentity(input);
-    const issuer = strictText(input.issuer, 'issuer', 1_024);
-    const audience = strictText(input.audience, 'audience', 1_024);
-    const canonicalAdminOrigin = validOrigin(input.canonicalAdminOrigin);
-    const existing = this.resolveExternalIdentity(
-      input.provider, issuer, input.subject, input.organizationId,
-    );
-    const claim = this.getOwnerClaim();
-    if (!claim) throw identityError('owner_claim_missing', 'Owner setup has not been initialized.');
-    if (claim.status === 'claimed') {
-      if (existing?.binding.id === claim.bindingId && existing.membership.role === 'owner') return existing;
-      throw identityError('owner_already_claimed', 'The owner claim has already been consumed.');
-    }
-    if (claim.normalizedEmail !== email) {
-      throw identityError('owner_email_mismatch', 'The verified identity does not match the owner claim.');
-    }
-    if (existing) {
-      throw identityError('external_identity_conflict', 'The external identity is already bound.', {
-        bindingId: existing.binding.id,
+      const organization = this.ensureOrganization({
+        displayName: 'Chickpea', slackTeamId: input.slackTeamId,
       });
-    }
-    const provider = this.getAuthProviderConfig(input.provider);
-    if (!provider || provider.state !== 'pending' || provider.issuer !== issuer || provider.audience !== audience) {
-      throw identityError('identity_invalid', 'Access provider configuration is not ready.');
-    }
-
-    const at = input.at ?? this.now();
-    const ids = { user: newId('user'), binding: newId('binding'), membership: newId('membership') };
-    this.db.transaction(() => {
-      this.insertIdentity(ids, input, email, 'owner', at);
-      if (this.db.run(
-        `UPDATE identity_owner_claims SET status = 'claimed', binding_id = ?, updated_at = ?
-         WHERE owner_claim_id = ? AND status = 'pending'`,
-        ids.binding, at, claim.id,
-      ).changes !== 1) {
-        throw identityError('owner_already_claimed', 'The owner claim has already been consumed.');
+      if (organization.id !== input.organizationId) {
+        throw identityError('organization_missing', 'The first-Owner organization is invalid.');
       }
+      const resolution = this.insertCanonicalIdentity({ ...input, role: 'owner' });
+      const at = input.at ?? this.now();
       this.db.run(
-        `UPDATE identity_auth_provider_configs SET state = 'active', updated_at = ?
-         WHERE auth_provider_config_id = ? AND state = 'pending'`,
-        at, provider.id,
+        `UPDATE identity_owner_claims SET organization_id = ?, status = 'active', membership_id = ?, updated_at = ?
+         WHERE claim_key = 'first_owner' AND status = 'reserved'`,
+        organization.id, resolution.membership.id, at,
       );
       this.db.run(
-        `UPDATE identity_organizations
-         SET auth_mode = 'access_active', canonical_admin_origin = ?, updated_at = ?
-         WHERE organization_id = ?`,
-        canonicalAdminOrigin, at, input.organizationId,
+        `UPDATE identity_organizations SET slack_team_id = ?, auth_mode = 'slack_active', updated_at = ?
+         WHERE organization_id = ? AND (slack_team_id IS NULL OR slack_team_id = ?)`,
+        input.slackTeamId, at, organization.id, input.slackTeamId,
       );
-      this.appendAudit('identity.access_activated', ids.membership, at, ids.membership);
+      this.db.run(
+        `UPDATE identity_auth_operations SET status = 'active', chickpea_role = 'owner',
+         better_auth_user_id = ?, better_auth_membership_id = ?, chickpea_membership_id = ?,
+         activated_at = ?, updated_at = ? WHERE operation_id = ?`,
+        input.betterAuthUserId, input.betterAuthMembershipId, resolution.membership.id,
+        at, at, operation.id,
+      );
+      const control = this.ensureAuthControl();
+      if (control.authMode !== 'slack_active') {
+        this.updateAuthControl({
+          expectedRevision: control.revision,
+          authMode: 'slack_active',
+          betterAuthOrganizationId: operation.betterAuthOrganizationId,
+        });
+      }
+      return this.requiredResolution(input.slackTeamId, input.slackUserId, organization.id);
     });
-    return this.requiredResolution(input.provider, issuer, input.subject, input.organizationId);
   }
 
-  replaceAccessOwnerBinding(input: ReplaceAccessOwnerBindingInput): IdentityResolution {
-    const organization = this.requireOrganization(input.organizationId);
-    if (organization.authMode !== 'access_active') {
-      throw identityError('identity_invalid', 'Access authentication is not active.');
-    }
-    validateExternalIdentity(input);
-    const email = normalizeEmail(input.verifiedEmail);
-    const provider = this.getAuthProviderConfig(input.provider);
-    if (!provider || provider.state !== 'active' || provider.issuer !== input.issuer) {
-      throw identityError('identity_invalid', 'Access provider configuration is not active.');
-    }
-    const claim = this.getOwnerClaim();
-    if (!claim || claim.status !== 'claimed' || !claim.bindingId) {
-      throw identityError('owner_claim_missing', 'The active owner binding was not found.');
-    }
-    const currentRow = this.db.get(
-      'SELECT * FROM identity_external_bindings WHERE binding_id = ?',
-      claim.bindingId,
-    );
-    const current = currentRow
-      ? rowToBinding(currentRow as unknown as BindingRow)
-      : undefined;
-    if (!current || current.provider !== input.provider || current.issuer !== input.issuer ||
-        normalizeEmail(current.verifiedEmail) !== email) {
-      throw identityError('owner_email_mismatch', 'The verified identity does not match the owner.');
-    }
-    const membership = this.getMembershipForUser(current.userId, input.organizationId);
-    if (!membership || membership.role !== 'owner' || membership.status !== 'active') {
-      throw identityError('last_owner_required', 'An active owner binding is required.');
-    }
-    const existing = this.resolveExternalIdentity(
-      input.provider, input.issuer, input.subject, input.organizationId,
-    );
-    if (existing) {
-      if (existing.binding.id === current.id && existing.membership.id === membership.id) return existing;
-      throw identityError('external_identity_conflict', 'The external identity is already bound.');
-    }
-
-    const at = input.at ?? this.now();
-    const replacementId = newId('binding');
-    this.db.transaction(() => {
-      this.db.run(
-        `INSERT INTO identity_external_bindings (
-           binding_id, user_id, provider, issuer, subject, verified_email, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        replacementId,
-        current.userId,
-        input.provider,
-        input.issuer,
-        input.subject,
-        email,
-        at,
-        at,
-      );
-      if (this.db.run(
-        `UPDATE identity_owner_claims SET binding_id = ?, updated_at = ?
-         WHERE owner_claim_id = ? AND binding_id = ? AND status = 'claimed'`,
-        replacementId, at, claim.id, current.id,
-      ).changes !== 1) {
-        throw identityError('owner_already_claimed', 'The owner binding changed during recovery.');
-      }
-      this.db.run('DELETE FROM identity_external_bindings WHERE binding_id = ?', current.id);
-      this.appendAudit('identity.access_owner_binding_replaced', membership.id, at, membership.id);
-    });
-    return this.requiredResolution(input.provider, input.issuer, input.subject, input.organizationId);
-  }
-
-  resolveExternalIdentity(
-    provider: string,
-    issuer: string,
-    subject: string,
-    organizationId = OSS_ORGANIZATION_ID,
+  resolveSlackIdentity(
+    slackTeamIdValue: string,
+    slackUserIdValue: string,
+    organizationId?: string,
   ): IdentityResolution | undefined {
     const row = this.db.get(
       `SELECT
-         b.binding_id AS b_binding_id, b.user_id AS b_user_id,
-         b.provider AS b_provider, b.issuer AS b_issuer, b.subject AS b_subject,
-         b.verified_email AS b_verified_email, b.created_at AS b_created_at,
-         b.updated_at AS b_updated_at,
-         u.user_id AS u_user_id, u.primary_email AS u_primary_email,
-         u.display_name AS u_display_name, u.created_at AS u_created_at,
-         u.updated_at AS u_updated_at,
-         m.membership_id AS m_membership_id, m.organization_id AS m_organization_id,
-         m.user_id AS m_user_id, m.role AS m_role, m.status AS m_status,
-         m.created_at AS m_created_at, m.updated_at AS m_updated_at
-       FROM identity_external_bindings b
+        b.*, u.display_name AS u_display_name, u.created_at AS u_created_at, u.updated_at AS u_updated_at,
+        m.role AS m_role, m.status AS m_status, m.created_at AS m_created_at, m.updated_at AS m_updated_at
+       FROM identity_slack_bindings b
        JOIN identity_users u ON u.user_id = b.user_id
-       JOIN identity_memberships m ON m.user_id = u.user_id AND m.organization_id = ?
-       WHERE b.provider = ? AND b.issuer = ? AND b.subject = ?`,
-      organizationId,
-      provider,
-      issuer,
-      subject,
+       JOIN identity_memberships m ON m.membership_id = b.membership_id
+       WHERE b.slack_team_id = ? AND b.slack_user_id = ? ${organizationId ? 'AND b.organization_id = ?' : ''}
+       LIMIT 1`,
+      slackTeamIdValue, slackUserIdValue, ...(organizationId ? [organizationId] : []),
     );
-    if (!row) return undefined;
-    return joinedRowToResolution(row);
+    return row ? resolutionFromRow(row) : undefined;
   }
 
-  listExternalIdentities(): ExternalIdentityBinding[] {
-    return this.db
-      .all('SELECT * FROM identity_external_bindings ORDER BY created_at, binding_id')
-      .map((row) => rowToBinding(row as unknown as BindingRow));
+  listExternalIdentities(): SlackIdentityBinding[] {
+    return this.db.all('SELECT * FROM identity_slack_bindings ORDER BY created_at, binding_id')
+      .map(slackBindingFromRow);
+  }
+
+  resolveActorExternalIdentity(
+    provider: 'slack',
+    slackTeamIdValue: string,
+    slackUserIdValue: string,
+  ): SlackIdentityBinding | undefined {
+    if (provider !== 'slack') return undefined;
+    return this.resolveSlackIdentity(slackTeamIdValue, slackUserIdValue)?.binding;
   }
 
   listMemberships(): Membership[] {
-    return this.db
-      .all('SELECT * FROM identity_memberships ORDER BY created_at, membership_id')
-      .map((row) => rowToMembership(row as unknown as MembershipRow));
+    return this.db.all('SELECT * FROM identity_memberships ORDER BY created_at, membership_id')
+      .map(membershipFromRow);
   }
 
   getUser(userId: string): User | undefined {
     const row = this.db.get('SELECT * FROM identity_users WHERE user_id = ?', userId);
-    return row ? rowToUser(row as unknown as UserRow) : undefined;
-  }
-
-  findUserByEmail(email: string): User | undefined {
-    const row = this.db.get(
-      'SELECT * FROM identity_users WHERE primary_email = ?',
-      normalizeEmail(email),
-    );
-    return row ? rowToUser(row as unknown as UserRow) : undefined;
+    return row ? userFromRow(row) : undefined;
   }
 
   getMembership(membershipId: string): Membership | undefined {
-    const row = this.db.get(
-      'SELECT * FROM identity_memberships WHERE membership_id = ?',
-      strictText(membershipId, 'membershipId', 256),
-    );
-    return row ? rowToMembership(row as unknown as MembershipRow) : undefined;
+    const row = this.db.get('SELECT * FROM identity_memberships WHERE membership_id = ?', membershipId);
+    return row ? membershipFromRow(row) : undefined;
   }
 
-  getMembershipForUser(
-    userId: string,
-    organizationId = OSS_ORGANIZATION_ID,
-  ): Membership | undefined {
+  getMembershipForUser(userId: string, organizationId?: string): Membership | undefined {
     const row = this.db.get(
-      `SELECT * FROM identity_memberships WHERE user_id = ? AND organization_id = ?`,
-      userId,
-      organizationId,
+      `SELECT * FROM identity_memberships WHERE user_id = ? ${organizationId ? 'AND organization_id = ?' : ''}
+       ORDER BY created_at LIMIT 1`,
+      userId, ...(organizationId ? [organizationId] : []),
     );
-    return row ? rowToMembership(row as unknown as MembershipRow) : undefined;
+    return row ? membershipFromRow(row) : undefined;
   }
 
   updateMembership(input: UpdateMembershipInput): Membership {
-    const current = this.getMembership(input.membershipId);
-    if (!current) {
-      throw identityError('membership_missing', 'Membership was not found.', {
-        membershipId: input.membershipId,
-      });
-    }
-    const role = input.role ?? current.role;
-    const status = input.status ?? current.status;
-    if (current.role === 'owner' && current.status === 'active' &&
-        (role !== 'owner' || status !== 'active')) {
-      const count = Number(
-        this.db.get(
-          `SELECT COUNT(*) AS count FROM identity_memberships
-           WHERE organization_id = ? AND role = 'owner' AND status = 'active'
-             AND membership_id <> ?`,
+    return this.db.transaction(() => {
+      const current = this.requiredMembership(input.membershipId);
+      const role = input.role ?? current.role;
+      const status = input.status ?? current.status;
+      if (current.role === 'owner' && current.status === 'active' &&
+          (role !== 'owner' || status !== 'active')) {
+        const owners = Number(this.db.get(
+          `SELECT count(*) AS count FROM identity_memberships
+           WHERE organization_id = ? AND role = 'owner' AND status = 'active'`,
           current.organizationId,
-          current.id,
-        )?.count ?? 0,
-      );
-      if (count === 0) {
-        throw identityError('last_owner_required', 'At least one active owner is required.', {
-          membershipId: current.id,
-        });
+        )?.count ?? 0);
+        if (owners <= 1) throw identityError('last_owner_required', 'At least one active Owner is required.');
       }
-    }
-    const at = this.now();
-    this.db.transaction(() => {
       this.db.run(
-        `UPDATE identity_memberships SET role = ?, status = ?, updated_at = ?
-         WHERE membership_id = ?`,
-        role,
-        status,
-        at,
-        current.id,
+        'UPDATE identity_memberships SET role = ?, status = ?, updated_at = ? WHERE membership_id = ?',
+        role, status, this.now(), current.id,
       );
-      this.appendAudit(
-        'identity.membership_updated',
-        current.id,
-        at,
-        input.actorMembershipId ?? null,
-        { role, status },
-      );
+      return this.requiredMembership(current.id);
     });
-    return this.requiredMembership(current.id);
   }
 
   createInvitation(input: CreateInvitationInput): Invitation {
-    this.requireOrganization(input.organizationId);
-    const inviter = this.getMembership(input.inviterMembershipId);
-    if (!inviter || inviter.organizationId !== input.organizationId ||
-        inviter.status !== 'active' || !['owner', 'admin'].includes(inviter.role) ||
-        (input.role === 'owner' && inviter.role !== 'owner')) {
-      throw identityError('inviter_not_authorized', 'The inviter cannot grant this role.');
+    const inviter = this.requiredMembership(input.inviterMembershipId);
+    if (inviter.organizationId !== input.organizationId || inviter.role !== 'owner' || inviter.status !== 'active') {
+      throw identityError('inviter_not_authorized', 'Only an active Owner can invite an Admin.');
     }
-    const email = normalizeEmail(input.email);
-    validateTokenHash(input.tokenHash);
+    const organization = this.requiredOrganization();
+    if (organization.id !== input.organizationId || organization.slackTeamId !== input.slackTeamId) {
+      throw identityError('identity_invalid', 'Invitation Slack workspace does not match the installation.');
+    }
+    const existingRow = this.db.get(
+      `SELECT * FROM identity_invitations WHERE organization_id = ? AND slack_team_id = ?
+       AND slack_user_id = ? AND status = 'pending' LIMIT 1`,
+      input.organizationId, input.slackTeamId, input.slackUserId,
+    );
+    if (existingRow) return invitationFromRow(existingRow);
     const at = this.now();
-    if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= at) {
-      throw identityError('identity_invalid', 'Invitation expiry must be in the future.');
-    }
-    const id = newId('invitation');
-    this.db.transaction(() => {
-      this.db.run(
-        `INSERT INTO identity_invitations (
-           invitation_id, organization_id, normalized_email, role, token_hash,
-           status, inviter_membership_id, accepted_membership_id, expires_at,
-           created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, 'pending', ?, NULL, ?, ?, ?)`,
-        id,
-        input.organizationId,
-        email,
-        input.role,
-        input.tokenHash,
-        input.inviterMembershipId,
-        input.expiresAt,
-        at,
-        at,
-      );
-      this.appendAudit('identity.invitation_created', id, at, inviter.id, { role: input.role });
-    });
+    const id = newId('invite');
+    this.db.run(
+      `INSERT INTO identity_invitations (
+        invitation_id, organization_id, slack_team_id, slack_user_id, display_name, role,
+        locator_hash, status, inviter_membership_id, accepted_membership_id,
+        expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, ?, ?, ?)`,
+      id, input.organizationId, slackId(input.slackTeamId, 'Slack team ID'),
+      slackId(input.slackUserId, 'Slack user ID'), cleanDisplayName(input.displayName),
+      input.role, credentialHash(input.locatorHash), input.inviterMembershipId,
+      input.expiresAt, at, at,
+    );
     return this.requiredInvitation(id);
   }
 
   resendInvitation(input: ResendInvitationInput): Invitation {
-    validateTokenHash(input.tokenHash);
-    const invitation = this.requiredInvitation(input.invitationId);
-    if (invitation.status !== 'pending') {
-      throw identityError('invitation_not_pending', 'Invitation is no longer pending.', {
-        invitationId: invitation.id,
-      });
-    }
-    const at = this.now();
-    if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= at) {
-      throw identityError('identity_invalid', 'Invitation expiry must be in the future.');
-    }
-    this.db.transaction(() => {
-      this.db.run(
-        `UPDATE identity_invitations SET token_hash = ?, expires_at = ?, updated_at = ?
-         WHERE invitation_id = ? AND status = 'pending'`,
-        input.tokenHash,
-        input.expiresAt,
-        at,
-        invitation.id,
-      );
-      this.appendAudit('identity.invitation_resent', invitation.id, at, null);
-    });
-    return this.requiredInvitation(invitation.id);
+    const current = this.requiredInvitation(input.invitationId);
+    if (current.status !== 'pending') throw identityError('invitation_not_pending', 'Invitation is unavailable.');
+    this.db.run(
+      `UPDATE identity_invitations SET locator_hash = ?, expires_at = ?, updated_at = ?
+       WHERE invitation_id = ? AND status = 'pending'`,
+      credentialHash(input.locatorHash), input.expiresAt, this.now(), current.id,
+    );
+    return this.requiredInvitation(current.id);
   }
 
   revokeInvitation(invitationId: string): Invitation {
-    const invitation = this.requiredInvitation(invitationId);
-    if (invitation.status !== 'pending') {
-      throw identityError('invitation_not_pending', 'Invitation is no longer pending.', {
-        invitationId,
-      });
-    }
-    const at = this.now();
-    this.db.transaction(() => {
-      this.db.run(
-        `UPDATE identity_invitations SET status = 'revoked', updated_at = ?
-         WHERE invitation_id = ? AND status = 'pending'`,
-        at,
-        invitationId,
-      );
-      this.appendAudit('identity.invitation_revoked', invitationId, at, null);
-    });
-    return this.requiredInvitation(invitationId);
+    const current = this.requiredInvitation(invitationId);
+    if (current.status !== 'pending') throw identityError('invitation_not_pending', 'Invitation is unavailable.');
+    this.db.run(
+      "UPDATE identity_invitations SET status = 'revoked', updated_at = ? WHERE invitation_id = ?",
+      this.now(), current.id,
+    );
+    return this.requiredInvitation(current.id);
   }
 
   consumeInvitation(input: ConsumeInvitationInput): IdentityResolution {
-    validateTokenHash(input.tokenHash);
-    validateExternalIdentity(input);
-    const email = normalizeEmail(input.verifiedEmail);
-    const invitation = this.requiredInvitation(input.invitationId);
-    const at = input.at ?? this.now();
-    if (invitation.status !== 'pending') {
-      throw identityError('invitation_not_pending', 'Invitation is no longer pending.', {
-        invitationId: invitation.id,
-      });
-    }
-    if (invitation.expiresAt <= at) {
-      this.db.run(
-        `UPDATE identity_invitations SET status = 'expired', updated_at = ?
-         WHERE invitation_id = ? AND status = 'pending'`,
-        at,
-        invitation.id,
-      );
-      throw identityError('invitation_expired', 'Invitation has expired.', {
-        invitationId: invitation.id,
-      });
-    }
-    if (invitation.tokenHash !== input.tokenHash) {
-      throw identityError('invitation_token_invalid', 'Invitation is unavailable.');
-    }
-    if (invitation.normalizedEmail !== email) {
-      throw identityError('invitation_email_mismatch', 'Verified email does not match invitation.');
-    }
-    const existing = this.resolveExternalIdentity(
-      input.provider,
-      input.issuer,
-      input.subject,
-      invitation.organizationId,
-    );
-    if (existing) {
-      throw identityError('external_identity_conflict', 'The external identity is already bound.', {
-        bindingId: existing.binding.id,
-      });
-    }
-    const ids = { user: newId('user'), binding: newId('binding'), membership: newId('membership') };
-    this.db.transaction(() => {
-      this.insertIdentity(ids, { ...input, organizationId: invitation.organizationId }, email,
-        invitation.role, at);
-      const accepted = this.db.run(
-        `UPDATE identity_invitations
-         SET status = 'accepted', accepted_membership_id = ?, updated_at = ?
-         WHERE invitation_id = ? AND status = 'pending' AND token_hash = ?`,
-        ids.membership,
-        at,
-        invitation.id,
-        input.tokenHash,
-      );
-      if (accepted.changes !== 1) {
-        throw identityError('invitation_not_pending', 'Invitation is no longer pending.', {
-          invitationId: invitation.id,
-        });
+    return this.db.transaction(() => {
+      const invitation = this.requiredInvitation(input.invitationId);
+      const at = input.at ?? this.now();
+      if (invitation.status !== 'pending') throw identityError('invitation_not_pending', 'Invitation is unavailable.');
+      if (invitation.expiresAt <= at) {
+        this.db.run("UPDATE identity_invitations SET status = 'expired', updated_at = ? WHERE invitation_id = ?", at, invitation.id);
+        throw identityError('invitation_expired', 'Invitation has expired.');
       }
-      this.appendAudit('identity.invitation_accepted', invitation.id, at, ids.membership, {
+      if (invitation.locatorHash !== credentialHash(input.locatorHash)) {
+        throw identityError('invitation_token_invalid', 'Invitation is unavailable.');
+      }
+      if (invitation.slackTeamId !== input.slackTeamId || invitation.slackUserId !== input.slackUserId) {
+        throw identityError('invitation_identity_mismatch', 'Slack identity does not match invitation.');
+      }
+      const resolution = this.insertCanonicalIdentity({
+        operationId: `invitation:${invitation.id}`,
+        organizationId: invitation.organizationId,
+        slackTeamId: input.slackTeamId,
+        slackUserId: input.slackUserId,
+        displayName: input.displayName ?? invitation.displayName,
+        betterAuthUserId: input.betterAuthUserId,
+        betterAuthMembershipId: input.betterAuthMembershipId,
         role: invitation.role,
+        at,
       });
+      this.db.run(
+        `UPDATE identity_invitations SET status = 'accepted', accepted_membership_id = ?, updated_at = ?
+         WHERE invitation_id = ? AND status = 'pending'`,
+        resolution.membership.id, at, invitation.id,
+      );
+      return resolution;
     });
-    return this.requiredResolution(
-      input.provider,
-      input.issuer,
-      input.subject,
-      invitation.organizationId,
-    );
   }
 
   listInvitations(): Invitation[] {
-    return this.db
-      .all('SELECT * FROM identity_invitations ORDER BY created_at, invitation_id')
-      .map((row) => rowToInvitation(row as unknown as InvitationRow));
+    return this.db.all('SELECT * FROM identity_invitations ORDER BY created_at, invitation_id')
+      .map(invitationFromRow);
+  }
+
+  getMembershipAccessOverlay(membershipId: string): MembershipAccessOverlay | undefined {
+    const row = this.db.get(
+      'SELECT * FROM identity_membership_access_overlays WHERE membership_id = ?', membershipId,
+    );
+    return row ? overlayFromRow(row) : undefined;
+  }
+
+  setMembershipAccessOverlay(input: SetMembershipAccessOverlayInput): MembershipAccessOverlay {
+    const current = this.getMembershipAccessOverlay(input.membershipId);
+    if (input.expectedVersion !== undefined && (current?.membershipVersion ?? 0) !== input.expectedVersion) {
+      throw identityError('membership_conflict', 'Membership access changed concurrently.');
+    }
+    const at = input.at ?? this.now();
+    this.db.run(
+      `INSERT INTO identity_membership_access_overlays (
+        membership_id, organization_id, access_status, membership_version, created_at, updated_at
+      ) VALUES (?, ?, ?, 1, ?, ?)
+      ON CONFLICT (membership_id) DO UPDATE SET access_status = excluded.access_status,
+        membership_version = identity_membership_access_overlays.membership_version + 1,
+        updated_at = excluded.updated_at`,
+      input.membershipId, input.organizationId, input.accessStatus, at, at,
+    );
+    return this.getMembershipAccessOverlay(input.membershipId)!;
   }
 
   createPersonalToken(input: CreatePersonalTokenRecordInput): PersonalTokenRecord {
-    const token = this.preparePersonalToken(input);
-    this.db.transaction(() => {
-      this.insertPersonalToken(input, token);
-      this.appendAudit('identity.personal_token_created', token.id, token.at, null);
-    });
-    return this.requiredPersonalToken(token.id);
+    const id = newId('pat');
+    const at = this.now();
+    this.db.run(
+      `INSERT INTO identity_personal_tokens (
+        personal_token_id, organization_id, user_id, membership_id, token_hash, prefix,
+        label, status, last_used_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, ?, ?)`,
+      id, input.organizationId ?? null, input.userId, input.membershipId ?? null,
+      credentialHash(input.tokenHash), credentialPrefix(input.prefix),
+      strictText(input.label, 'token label', 120), at, at,
+    );
+    return this.requiredPersonalToken(id);
   }
 
-  rotatePersonalToken(input: CreatePersonalTokenRecordInput): {
-    personalToken: PersonalTokenRecord;
-    revokedCount: number;
-  } {
-    const token = this.preparePersonalToken(input);
-    let revokedCount = 0;
-    this.db.transaction(() => {
-      this.insertPersonalToken(input, token);
-      this.db.run(
-        `UPDATE identity_browser_sessions SET revoked_at = ?
-         WHERE revoked_at IS NULL AND personal_token_id IN (
-           SELECT personal_token_id FROM identity_personal_tokens
-           WHERE user_id = ? AND personal_token_id <> ? AND status = 'active'
-         )`,
-        token.at, input.userId, token.id,
-      );
-      revokedCount = this.db.run(
+  rotatePersonalToken(input: CreatePersonalTokenRecordInput): RotatePersonalTokenResult {
+    return this.db.transaction(() => {
+      const at = this.now();
+      const revoked = this.db.run(
         `UPDATE identity_personal_tokens SET status = 'revoked', updated_at = ?
-         WHERE user_id = ? AND personal_token_id <> ? AND status = 'active'`,
-        token.at, input.userId, token.id,
+         WHERE user_id = ? AND status = 'active'`,
+        at, input.userId,
       ).changes;
-      this.appendAudit('identity.personal_token_rotated', token.id, token.at, null, {
-        revokedCount: String(revokedCount),
-      });
+      return { personalToken: this.createPersonalToken(input), revokedCount: revoked };
     });
-    return { personalToken: this.requiredPersonalToken(token.id), revokedCount };
   }
 
   findPersonalTokens(prefix: string): PersonalTokenRecord[] {
-    return this.db
-      .all(
-        'SELECT * FROM identity_personal_tokens WHERE prefix = ? ORDER BY created_at, personal_token_id',
-        credentialPrefix(prefix),
-      )
-      .map((row) => rowToPersonalToken(row as unknown as PersonalTokenRow));
+    return this.db.all(
+      "SELECT * FROM identity_personal_tokens WHERE prefix = ? AND status = 'active' ORDER BY created_at",
+      credentialPrefix(prefix),
+    ).map(personalTokenFromRow);
   }
 
   getPersonalToken(tokenId: string): PersonalTokenRecord | undefined {
-    const row = this.db.get(
-      'SELECT * FROM identity_personal_tokens WHERE personal_token_id = ?',
-      tokenId,
-    );
-    return row ? rowToPersonalToken(row as unknown as PersonalTokenRow) : undefined;
+    const row = this.db.get('SELECT * FROM identity_personal_tokens WHERE personal_token_id = ?', tokenId);
+    return row ? personalTokenFromRow(row) : undefined;
   }
 
   revokePersonalToken(tokenId: string): PersonalTokenRecord {
-    const token = this.requiredPersonalToken(tokenId);
-    if (token.status === 'revoked') return token;
-    const at = this.now();
-    this.db.transaction(() => {
-      this.db.run(
-        `UPDATE identity_personal_tokens SET status = 'revoked', updated_at = ?
-         WHERE personal_token_id = ?`,
-        at,
-        tokenId,
-      );
-      this.db.run(
-        `UPDATE identity_browser_sessions SET revoked_at = ?
-         WHERE personal_token_id = ? AND revoked_at IS NULL`,
-        at,
-        tokenId,
-      );
-      this.appendAudit('identity.personal_token_revoked', tokenId, at, null);
-    });
+    const current = this.requiredPersonalToken(tokenId);
+    this.db.run(
+      "UPDATE identity_personal_tokens SET status = 'revoked', updated_at = ? WHERE personal_token_id = ?",
+      this.now(), current.id,
+    );
     return this.requiredPersonalToken(tokenId);
   }
 
   touchPersonalToken(tokenId: string): PersonalTokenRecord {
-    this.requiredPersonalToken(tokenId);
-    const at = this.now();
+    const current = this.requiredPersonalToken(tokenId);
     this.db.run(
-      `UPDATE identity_personal_tokens SET last_used_at = ?, updated_at = ?
-       WHERE personal_token_id = ?`,
-      at,
-      at,
-      tokenId,
+      'UPDATE identity_personal_tokens SET last_used_at = ?, updated_at = ? WHERE personal_token_id = ?',
+      this.now(), this.now(), current.id,
     );
     return this.requiredPersonalToken(tokenId);
   }
 
   createBrowserSession(input: CreateBrowserSessionRecordInput): BrowserSessionRecord {
-    const token = this.requiredPersonalToken(input.personalTokenId);
-    if (token.userId !== input.userId || token.status !== 'active') {
-      throw identityError('identity_invalid', 'Session source token is unavailable.');
-    }
-    const organizationId = input.organizationId ?? token.organizationId;
-    const membershipId = input.membershipId ?? token.membershipId;
-    if (organizationId !== token.organizationId || membershipId !== token.membershipId) {
-      throw identityError('identity_invalid', 'Session membership does not match its source token.');
-    }
-    validateTokenHash(input.sessionHash);
-    const prefix = credentialPrefix(input.prefix);
+    const id = newId('session');
     const at = this.now();
-    if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= at) {
-      throw identityError('identity_invalid', 'Session expiry is invalid.');
-    }
-    const id = newId('browser_session');
     this.db.run(
       `INSERT INTO identity_browser_sessions (
-         browser_session_id, organization_id, user_id, membership_id,
-         personal_token_id, session_hash, prefix, expires_at, last_seen_at,
-         revoked_at, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-      id,
-      organizationId,
-      input.userId,
-      membershipId,
-      input.personalTokenId,
-      input.sessionHash,
-      prefix,
-      input.expiresAt,
-      at,
-      at,
+        browser_session_id, organization_id, user_id, membership_id, personal_token_id,
+        session_hash, prefix, expires_at, last_seen_at, revoked_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+      id, input.organizationId ?? null, input.userId, input.membershipId ?? null,
+      input.personalTokenId, credentialHash(input.sessionHash), credentialPrefix(input.prefix),
+      input.expiresAt, at, at,
     );
     return this.requiredBrowserSession(id);
   }
 
   findBrowserSessions(prefix: string): BrowserSessionRecord[] {
-    return this.db
-      .all(
-        'SELECT * FROM identity_browser_sessions WHERE prefix = ? ORDER BY created_at, browser_session_id',
-        credentialPrefix(prefix),
-      )
-      .map((row) => rowToBrowserSession(row as unknown as BrowserSessionRow));
+    return this.db.all(
+      `SELECT * FROM identity_browser_sessions WHERE prefix = ? AND revoked_at IS NULL
+       AND expires_at > ? ORDER BY created_at`,
+      credentialPrefix(prefix), this.now(),
+    ).map(browserSessionFromRow);
   }
 
   revokeBrowserSession(sessionId: string): BrowserSessionRecord {
-    const session = this.requiredBrowserSession(sessionId);
-    if (session.revokedAt !== null) return session;
+    const current = this.requiredBrowserSession(sessionId);
     this.db.run(
-      'UPDATE identity_browser_sessions SET revoked_at = ? WHERE browser_session_id = ?',
-      this.now(),
-      sessionId,
+      'UPDATE identity_browser_sessions SET revoked_at = ? WHERE browser_session_id = ? AND revoked_at IS NULL',
+      this.now(), current.id,
     );
     return this.requiredBrowserSession(sessionId);
   }
 
-  configureAuthProvider(input: ConfigureAuthProviderInput): AuthProviderConfig {
-    this.requireOrganization(input.organizationId);
-    const kind = nonEmpty(input.kind, 'kind');
-    const issuer = input.issuer === undefined || input.issuer === null
-      ? null : strictText(input.issuer, 'issuer', 1_024);
-    const audience = input.audience === undefined || input.audience === null
-      ? null : strictText(input.audience, 'audience', 1_024);
-    const existing = this.getAuthProviderConfig(kind);
-    const at = this.now();
-    if (existing) {
-      this.db.run(
-        `UPDATE identity_auth_provider_configs
-         SET state = ?, issuer = ?, audience = ?, admission_state = ?, updated_at = ?
-         WHERE auth_provider_config_id = ?`,
-        input.state, issuer, audience, input.admissionState ?? existing.admissionState,
-        at, existing.id,
-      );
-      const updated = this.requiredAuthProviderConfig(kind);
-      this.appendAudit('identity.auth_provider_configured', updated.id, at, null, {
-        state: updated.state,
-      });
-      return updated;
-    }
-    const id = newId('auth_provider');
-    this.db.run(
-      `INSERT INTO identity_auth_provider_configs (
-         auth_provider_config_id, organization_id, kind, state, issuer, audience,
-         admission_state, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      id, input.organizationId, kind, input.state, issuer, audience,
-      input.admissionState ?? null, at, at,
-    );
-    this.appendAudit('identity.auth_provider_configured', id, at, null, { state: input.state });
-    return this.requiredAuthProviderConfig(kind);
-  }
-
-  getAuthProviderConfig(kind: string): AuthProviderConfig | undefined {
-    const row = this.db.get(
-      'SELECT * FROM identity_auth_provider_configs WHERE organization_id = ? AND kind = ?',
-      OSS_ORGANIZATION_ID, kind,
-    );
-    return row ? rowToAuthProviderConfig(row as unknown as AuthProviderConfigRow) : undefined;
-  }
-
-  updateAuthProviderAudience(
-    kind: string,
-    audience: string,
-    actorMembershipId?: string,
-  ): AuthProviderConfig {
-    const current = this.requiredAuthProviderConfig(kind);
-    if (current.state !== 'active') {
-      throw identityError('identity_invalid', 'Authentication provider is not active.');
-    }
-    const at = this.now();
-    this.db.run(
-      `UPDATE identity_auth_provider_configs SET audience = ?, updated_at = ?
-       WHERE auth_provider_config_id = ?`,
-      strictText(audience, 'audience', 1_024), at, current.id,
-    );
-    this.appendAudit('identity.auth_provider_audience_repaired', current.id, at, actorMembershipId ?? null);
-    return this.requiredAuthProviderConfig(kind);
-  }
-
   updateOrganizationAuth(input: UpdateOrganizationAuthInput): Organization {
-    this.requireOrganization(input.organizationId);
+    const current = this.requiredOrganization();
+    if (current.id !== input.organizationId) throw identityError('organization_missing', 'Organization was not found.');
     const origin = input.canonicalAdminOrigin === undefined
-      ? this.requiredOrganization().canonicalAdminOrigin
+      ? current.canonicalAdminOrigin
       : input.canonicalAdminOrigin === null ? null : validOrigin(input.canonicalAdminOrigin);
-    const at = this.now();
     this.db.run(
-      `UPDATE identity_organizations SET auth_mode = ?, canonical_admin_origin = ?, updated_at = ?
-       WHERE organization_id = ?`,
-      input.authMode, origin, at, input.organizationId,
+      'UPDATE identity_organizations SET auth_mode = ?, canonical_admin_origin = ?, updated_at = ? WHERE organization_id = ?',
+      input.authMode, origin, this.now(), current.id,
     );
-    this.appendAudit('identity.organization_auth_updated', input.organizationId, at, null, {
-      mode: input.authMode,
-    });
     return this.requiredOrganization();
   }
 
@@ -1705,28 +700,19 @@ export class IdentityStoreLogic {
       'SELECT * FROM identity_auth_rate_limits WHERE bucket = ? AND key_hash = ?',
       nonEmpty(bucket, 'bucket'), credentialHash(keyHash),
     );
-    return row ? rowToAuthRateLimit(row as unknown as AuthRateLimitRow) : undefined;
+    return row ? rateLimitFromRow(row) : undefined;
   }
 
   recordAuthRateFailure(bucket: string, keyHash: string, windowStart: number): AuthRateLimitState {
-    const safeBucket = nonEmpty(bucket, 'bucket');
-    const safeHash = credentialHash(keyHash);
-    if (!Number.isSafeInteger(windowStart) || windowStart < 0) {
-      throw identityError('identity_invalid', 'Rate-limit window is invalid.');
-    }
     this.db.run(
-      `INSERT INTO identity_auth_rate_limits (bucket, key_hash, window_start, failures)
-       VALUES (?, ?, ?, 1)
+      `INSERT INTO identity_auth_rate_limits (bucket, key_hash, window_start, failures) VALUES (?, ?, ?, 1)
        ON CONFLICT (bucket, key_hash) DO UPDATE SET
-         failures = CASE
-           WHEN identity_auth_rate_limits.window_start = excluded.window_start
-             THEN identity_auth_rate_limits.failures + 1
-           ELSE 1
-         END,
+         failures = CASE WHEN identity_auth_rate_limits.window_start = excluded.window_start
+           THEN identity_auth_rate_limits.failures + 1 ELSE 1 END,
          window_start = excluded.window_start`,
-      safeBucket, safeHash, windowStart,
+      nonEmpty(bucket, 'bucket'), credentialHash(keyHash), windowStart,
     );
-    return this.getAuthRateLimit(safeBucket, safeHash)!;
+    return this.getAuthRateLimit(bucket, keyHash)!;
   }
 
   clearAuthRateLimit(bucket: string, keyHash: string): void {
@@ -1736,295 +722,86 @@ export class IdentityStoreLogic {
     );
   }
 
-  exportSummary(): IdentityExportSummary {
-    const users = this.db.all('SELECT * FROM identity_users ORDER BY created_at, user_id')
-      .map((row) => rowToUser(row as unknown as UserRow));
-    const claim = this.getOwnerClaim();
-    return {
-      organization: this.getOrganization() ?? null,
-      users,
-      externalIdentities: this.listExternalIdentities(),
-      memberships: this.listMemberships(),
-      ownerClaim: claim ? {
-        id: claim.id,
-        organizationId: claim.organizationId,
-        status: claim.status,
-        bindingId: claim.bindingId,
-        createdAt: claim.createdAt,
-        updatedAt: claim.updatedAt,
-        emailConfigured: true,
-      } : null,
-      invitations: this.listInvitations().map(({ tokenHash: _tokenHash, normalizedEmail: _email, ...row }) => ({
-        ...row,
-        emailConfigured: true,
-      })),
-      personalTokens: this.db.all(
-        'SELECT * FROM identity_personal_tokens ORDER BY created_at, personal_token_id',
-      ).map((row) => {
-        const { tokenHash: _hash, ...safe } = rowToPersonalToken(row as unknown as PersonalTokenRow);
-        return safe;
-      }),
-      browserSessions: this.db.all(
-        'SELECT * FROM identity_browser_sessions ORDER BY created_at, browser_session_id',
-      ).map((row) => {
-        const { sessionHash: _hash, ...safe } = rowToBrowserSession(row as unknown as BrowserSessionRow);
-        return safe;
-      }),
-      authControl: this.getAuthControl() ?? null,
-      authOperations: this.db.all(
-        'SELECT * FROM identity_auth_operations ORDER BY created_at, operation_id',
-      ).map((row) => {
-        const {
-          capabilityHash: _hash,
-          expectedNormalizedEmail: _email,
-          ...safe
-        } = rowToAuthOperation(row as unknown as AuthOperationRow);
-        return { ...safe, emailConfigured: true };
-      }),
-    };
-  }
-
-  listAuditEvents(limit = 100): AuditEvent[] {
-    return this.audit.list({ domain: 'identity', limit });
-  }
-
   recordAuthAudit(input: RecordIdentityAuthAuditInput): void {
-    const action = safeAuditToken(input.action, 'action');
-    const correlationId = safeAuditToken(input.correlationId, 'correlationId');
-    const authenticatorKind = safeAuditToken(input.authenticatorKind, 'authenticatorKind');
-    const reasonCode = input.reasonCode === undefined || input.reasonCode === null
-      ? null
-      : safeAuditToken(input.reasonCode, 'reasonCode');
     this.audit.append({
-      eventId: newId('audit'),
-      domain: 'identity',
-      eventType: `identity.${input.event}`,
-      outcome: input.outcome,
-      actorClass: input.membershipId ? 'membership' : 'system',
-      actorId: input.membershipId ?? null,
-      subjectId: input.userId ?? null,
-      createdAt: input.at ?? this.now(),
-      reasonCode,
-      metadataJson: JSON.stringify({ action, correlationId, authenticatorKind }),
+      eventId: newId('audit'), domain: 'identity', eventType: `identity.${input.event}`,
+      outcome: input.outcome, actorClass: input.authenticatorKind,
+      actorId: input.membershipId ?? null, subjectId: input.userId ?? null,
+      createdAt: input.at ?? this.now(), reasonCode: input.reasonCode ?? null,
+      metadataJson: JSON.stringify({
+        action: safeAudit(input.action), correlationId: safeAudit(input.correlationId),
+        authenticatorKind: safeAudit(input.authenticatorKind),
+      }),
     });
   }
 
-  private initializeSchema(): void {
-    installIdentityMigrations(this.db);
+  listAuditEvents(limit = 100) { return this.audit.list({ domain: 'identity', limit }); }
+
+  exportSummary(): IdentityExportSummary {
+    return {
+      organization: this.getOrganization() ?? null,
+      users: this.db.all('SELECT * FROM identity_users ORDER BY created_at, user_id').map(userFromRow),
+      slackBindings: this.listExternalIdentities(),
+      memberships: this.listMemberships(),
+      ownerClaim: this.getOwnerClaim() ?? null,
+      invitations: this.listInvitations().map(({ locatorHash: _locatorHash, ...invitation }) => invitation),
+      personalTokens: this.db.all('SELECT * FROM identity_personal_tokens ORDER BY created_at')
+        .map(personalTokenFromRow).map(({ tokenHash: _tokenHash, ...token }) => token),
+      browserSessions: this.db.all('SELECT * FROM identity_browser_sessions ORDER BY created_at')
+        .map(browserSessionFromRow).map(({ sessionHash: _sessionHash, ...session }) => session),
+      authControl: this.getAuthControl() ?? null,
+      authOperations: this.listAuthOperations().map(({ capabilityHash: _capabilityHash, ...operation }) => operation),
+    };
   }
 
-  private insertIdentity(
-    ids: { user: string; binding: string; membership: string },
-    input: BindExternalIdentityInput,
-    email: string,
-    role: Membership['role'],
-    at: number,
-  ): void {
+  private insertCanonicalIdentity(input: ClaimOwnerInput & { role: Membership['role'] }): IdentityResolution {
+    const existing = this.resolveSlackIdentity(input.slackTeamId, input.slackUserId);
+    if (existing) {
+      if (existing.membership.organizationId !== input.organizationId ||
+          existing.binding.betterAuthUserId !== input.betterAuthUserId ||
+          existing.binding.betterAuthMembershipId !== input.betterAuthMembershipId) {
+        throw identityError('external_identity_conflict', 'Slack identity is already bound.');
+      }
+      return existing;
+    }
+    const at = input.at ?? this.now();
+    const userId = newId('user');
+    const membershipId = newId('membership');
+    const bindingId = newId('slackbinding');
     this.db.run(
       `INSERT INTO identity_users (
-         user_id, primary_email, display_name, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?)`,
-      ids.user,
-      email,
-      input.displayName?.trim() || null,
-      at,
-      at,
-    );
-    this.db.run(
-      `INSERT INTO identity_external_bindings (
-         binding_id, user_id, provider, issuer, subject, verified_email, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ids.binding,
-      ids.user,
-      input.provider,
-      input.issuer,
-      input.subject,
-      email,
-      at,
-      at,
+        user_id, slack_team_id, slack_user_id, display_name, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+      userId, slackId(input.slackTeamId, 'Slack team ID'),
+      slackId(input.slackUserId, 'Slack user ID'), cleanDisplayName(input.displayName), at, at,
     );
     this.db.run(
       `INSERT INTO identity_memberships (
-         membership_id, organization_id, user_id, role, status, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, 'active', ?, ?)`,
-      ids.membership,
-      input.organizationId,
-      ids.user,
-      role,
-      at,
-      at,
+        membership_id, organization_id, user_id, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+      membershipId, input.organizationId, userId, input.role, at, at,
     );
-  }
-
-  private preparePersonalToken(input: CreatePersonalTokenRecordInput): {
-    id: string;
-    organizationId: string | null;
-    membershipId: string | null;
-    prefix: string;
-    label: string;
-    at: number;
-  } {
-    const explicitOrganization = input.organizationId ?? null;
-    const explicitMembership = input.membershipId ?? null;
-    if ((explicitOrganization === null) !== (explicitMembership === null)) {
-      throw identityError('identity_invalid', 'Token organization and membership must be provided together.');
-    }
-    let organizationId = explicitOrganization;
-    let membershipId = explicitMembership;
-    if (organizationId === null || membershipId === null) {
-      if (!this.getUser(input.userId)) {
-        throw identityError('identity_invalid', 'Token user was not found.');
-      }
-      const membership = this.getMembershipForUser(input.userId);
-      organizationId = membership?.organizationId ?? null;
-      membershipId = membership?.id ?? null;
-    } else {
-      organizationId = strictText(organizationId, 'organizationId', 256);
-      membershipId = strictText(membershipId, 'membershipId', 256);
-    }
-    validateTokenHash(input.tokenHash);
-    return {
-      id: newId('personal_token'),
-      organizationId,
-      membershipId,
-      prefix: credentialPrefix(input.prefix),
-      label: nonEmpty(input.label, 'label'),
-      at: this.now(),
-    };
-  }
-
-  private insertPersonalToken(
-    input: CreatePersonalTokenRecordInput,
-    token: {
-      id: string;
-      organizationId: string | null;
-      membershipId: string | null;
-      prefix: string;
-      label: string;
-      at: number;
-    },
-  ): void {
     this.db.run(
-      `INSERT INTO identity_personal_tokens (
-         personal_token_id, organization_id, user_id, membership_id, token_hash,
-         prefix, label, status, last_used_at, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, ?, ?)`,
-      token.id, token.organizationId, input.userId, token.membershipId,
-      input.tokenHash, token.prefix, token.label, token.at, token.at,
+      `INSERT INTO identity_slack_bindings (
+        binding_id, slack_team_id, slack_user_id, user_id, organization_id, membership_id,
+        better_auth_user_id, better_auth_membership_id, revision, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      bindingId, input.slackTeamId, input.slackUserId, userId, input.organizationId,
+      membershipId, nonEmpty(input.betterAuthUserId, 'Better Auth user ID'),
+      nonEmpty(input.betterAuthMembershipId, 'Better Auth membership ID'), at, at,
     );
+    return this.requiredResolution(input.slackTeamId, input.slackUserId, input.organizationId);
   }
 
-  private appendAudit(
-    eventType: string,
-    subjectId: string,
-    at: number,
-    actorId: string | null = null,
-    metadata: Record<string, string> = {},
-  ): void {
-    this.audit.append({
-      eventId: newId('audit'),
-      domain: 'identity',
-      eventType,
-      outcome: 'success',
-      actorClass: actorId ? 'membership' : 'system',
-      actorId,
-      subjectId,
-      createdAt: at,
-      metadataJson: JSON.stringify(metadata),
-    });
-  }
-
-  private requireOrganization(id: string): Organization {
-    const organization = this.getOrganization();
-    if (!organization || organization.id !== id) {
-      throw identityError('organization_missing', 'Organization was not found.', { organizationId: id });
-    }
-    return organization;
-  }
-
-  private requiredOrganization(): Organization {
-    const organization = this.getOrganization();
-    if (!organization) throw identityError('organization_missing', 'Organization was not found.');
-    return organization;
-  }
-
-  private requiredOwnerClaim(): OwnerClaim {
-    const claim = this.getOwnerClaim();
-    if (!claim) throw identityError('owner_claim_missing', 'Owner claim was not found.');
-    return claim;
-  }
-
-  private requiredMembership(id: string): Membership {
-    const membership = this.getMembership(id);
-    if (!membership) throw identityError('membership_missing', 'Membership was not found.', { membershipId: id });
-    return membership;
-  }
-
-  private requiredInvitation(id: string): Invitation {
-    const row = this.db.get('SELECT * FROM identity_invitations WHERE invitation_id = ?', id);
-    if (!row) throw identityError('invitation_missing', 'Invitation was not found.', { invitationId: id });
-    return rowToInvitation(row as unknown as InvitationRow);
-  }
-
-  private requiredPersonalToken(id: string): PersonalTokenRecord {
-    const row = this.db.get(
-      'SELECT * FROM identity_personal_tokens WHERE personal_token_id = ?',
-      id,
-    );
-    if (!row) {
-      throw identityError('personal_token_missing', 'Personal token was not found.', { tokenId: id });
-    }
-    return rowToPersonalToken(row as unknown as PersonalTokenRow);
-  }
-
-  private requiredBrowserSession(id: string): BrowserSessionRecord {
-    const row = this.db.get(
-      'SELECT * FROM identity_browser_sessions WHERE browser_session_id = ?',
-      id,
-    );
-    if (!row) {
-      throw identityError('browser_session_missing', 'Browser session was not found.', { sessionId: id });
-    }
-    return rowToBrowserSession(row as unknown as BrowserSessionRow);
-  }
-
-  private requiredAuthProviderConfig(kind: string): AuthProviderConfig {
-    const config = this.getAuthProviderConfig(kind);
-    if (!config) throw identityError('identity_invalid', 'Authentication provider was not found.');
-    return config;
-  }
-
-  private requiredAuthControl(installationId: string): AuthControl {
-    const control = this.getAuthControl(installationId);
-    if (!control) {
-      throw identityError('auth_control_missing', 'Authentication control was not found.');
-    }
-    return control;
-  }
-
-  private requiredAuthOperation(operationId: string): AuthOperation {
-    const operation = this.getAuthOperation(operationId);
-    if (!operation) {
-      throw identityError('auth_operation_missing', 'Authentication operation was not found.');
-    }
-    return operation;
-  }
-
-  private requiredPendingAuthOperation(
-    operationId: string,
-    capabilityHash: string,
-    at: number,
-  ): AuthOperation {
+  private requiredLiveOperation(operationId: string, capabilityHash: string, at: number): AuthOperation {
     const operation = this.requiredAuthOperation(operationId);
-    if (operation.status !== 'pending' ||
+    if (!['reserved', 'reconciling'].includes(operation.status) ||
         operation.capabilityHash !== credentialHash(capabilityHash)) {
       throw identityError('auth_operation_unavailable', 'Authentication operation is unavailable.');
     }
     if (operation.expiresAt <= at) {
       this.db.run(
-        `UPDATE identity_auth_operations
-         SET status = 'expired', updated_at = ?
-         WHERE operation_id = ? AND status = 'pending'`,
+        "UPDATE identity_auth_operations SET status = 'expired', updated_at = ? WHERE operation_id = ?",
         at, operation.id,
       );
       throw identityError('auth_operation_expired', 'Authentication operation has expired.');
@@ -2032,445 +809,269 @@ export class IdentityStoreLogic {
     return operation;
   }
 
-  private requiredResolution(
-    provider: string,
-    issuer: string,
-    subject: string,
-    organizationId: string,
-  ): IdentityResolution {
-    const resolution = this.resolveExternalIdentity(provider, issuer, subject, organizationId);
-    if (!resolution) {
-      throw identityError('identity_invalid', 'Identity was not readable after creation.');
-    }
-    return resolution;
+  private requiredAuthControl(id: string): AuthControl {
+    const value = this.getAuthControl(id);
+    if (!value) throw identityError('auth_control_missing', 'Authentication control was not found.');
+    return value;
+  }
+  private requiredAuthOperation(id: string): AuthOperation {
+    const value = this.getAuthOperation(id);
+    if (!value) throw identityError('auth_operation_missing', 'Authentication operation was not found.');
+    return value;
+  }
+  private requiredOrganization(): Organization {
+    const value = this.getOrganization();
+    if (!value) throw identityError('organization_missing', 'Organization was not found.');
+    return value;
+  }
+  private requiredOwnerClaim(): OwnerClaim {
+    const value = this.getOwnerClaim();
+    if (!value) throw identityError('owner_claim_missing', 'First-Owner claim was not found.');
+    return value;
+  }
+  private requiredMembership(id: string): Membership {
+    const value = this.getMembership(id);
+    if (!value) throw identityError('membership_missing', 'Membership was not found.');
+    return value;
+  }
+  private requiredInvitation(id: string): Invitation {
+    const row = this.db.get('SELECT * FROM identity_invitations WHERE invitation_id = ?', id);
+    if (!row) throw identityError('invitation_missing', 'Invitation was not found.');
+    return invitationFromRow(row);
+  }
+  private requiredPersonalToken(id: string): PersonalTokenRecord {
+    const value = this.getPersonalToken(id);
+    if (!value) throw identityError('personal_token_missing', 'Personal token was not found.');
+    return value;
+  }
+  private requiredBrowserSession(id: string): BrowserSessionRecord {
+    const row = this.db.get('SELECT * FROM identity_browser_sessions WHERE browser_session_id = ?', id);
+    if (!row) throw identityError('browser_session_missing', 'Browser session was not found.');
+    return browserSessionFromRow(row);
+  }
+  private requiredResolution(teamId: string, userId: string, organizationId: string): IdentityResolution {
+    const value = this.resolveSlackIdentity(teamId, userId, organizationId);
+    if (!value) throw identityError('identity_invalid', 'Slack identity was not readable.');
+    return value;
   }
 }
 
 export class SqliteIdentityStore implements IdentityStore {
   private readonly db: NodeStateDb;
   private readonly logic: IdentityStoreLogic;
-
   constructor(path: string, options: IdentityStoreOptions = {}) {
     this.db = openStateDb(path);
     this.logic = new IdentityStoreLogic(this.db, options);
   }
-
   async ensureAuthControl(input: EnsureAuthControlInput = {}) { return this.logic.ensureAuthControl(input); }
-  async getAuthControl(installationId?: string) { return this.logic.getAuthControl(installationId); }
+  async getAuthControl(id?: string) { return this.logic.getAuthControl(id); }
   async updateAuthControl(input: UpdateAuthControlInput) { return this.logic.updateAuthControl(input); }
   async createAuthOperation(input: CreateAuthOperationInput) { return this.logic.createAuthOperation(input); }
-  async reservePendingAuthOperation(input: CreateAuthOperationInput) {
-    return this.logic.reservePendingAuthOperation(input);
-  }
-  async getAuthOperation(operationId: string) { return this.logic.getAuthOperation(operationId); }
-  async findAuthOperation(kind: AuthOperationKind, capabilityHash: string) {
-    return this.logic.findAuthOperation(kind, capabilityHash);
-  }
-  async listAuthOperations(kind?: AuthOperationKind, organizationId?: string) {
-    return this.logic.listAuthOperations(kind, organizationId);
-  }
-  async advanceAuthOperation(input: AdvanceAuthOperationInput) {
-    return this.logic.advanceAuthOperation(input);
-  }
-  async consumeAuthOperation(input: ConsumeAuthOperationInput) {
-    return this.logic.consumeAuthOperation(input);
-  }
-  async completePasswordSetup(input: CompletePasswordSetupInput) {
-    return this.logic.completePasswordSetup(input);
-  }
-  async revokeAuthOperation(operationId: string) { return this.logic.revokeAuthOperation(operationId); }
-  async getMembershipAccessOverlay(membershipId: string) {
-    return this.logic.getMembershipAccessOverlay(membershipId);
-  }
-  async setMembershipAccessOverlay(input: SetMembershipAccessOverlayInput) {
-    return this.logic.setMembershipAccessOverlay(input);
-  }
+  async reservePendingAuthOperation(input: CreateAuthOperationInput) { return this.logic.reservePendingAuthOperation(input); }
+  async getAuthOperation(id: string) { return this.logic.getAuthOperation(id); }
+  async findAuthOperation(kind: AuthOperationKind, hash: string) { return this.logic.findAuthOperation(kind, hash); }
+  async listAuthOperations(kind?: AuthOperationKind, organizationId?: string) { return this.logic.listAuthOperations(kind, organizationId); }
+  async advanceAuthOperation(input: AdvanceAuthOperationInput) { return this.logic.advanceAuthOperation(input); }
+  async consumeAuthOperation(input: ConsumeAuthOperationInput) { return this.logic.consumeAuthOperation(input); }
+  async revokeAuthOperation(id: string) { return this.logic.revokeAuthOperation(id); }
+  async getMembershipAccessOverlay(id: string) { return this.logic.getMembershipAccessOverlay(id); }
+  async setMembershipAccessOverlay(input: SetMembershipAccessOverlayInput) { return this.logic.setMembershipAccessOverlay(input); }
   async ensureOrganization(input: EnsureOrganizationInput) { return this.logic.ensureOrganization(input); }
   async getOrganization() { return this.logic.getOrganization(); }
   async createOwnerClaim(input: CreateOwnerClaimInput) { return this.logic.createOwnerClaim(input); }
   async getOwnerClaim() { return this.logic.getOwnerClaim(); }
   async claimOwner(input: ClaimOwnerInput) { return this.logic.claimOwner(input); }
-  async bootstrapTokenOwner(input: BootstrapTokenOwnerInput) {
-    return this.logic.bootstrapTokenOwner(input);
-  }
-  async activateAccessOwner(input: ActivateAccessOwnerInput) { return this.logic.activateAccessOwner(input); }
-  async replaceAccessOwnerBinding(input: ReplaceAccessOwnerBindingInput) {
-    return this.logic.replaceAccessOwnerBinding(input);
-  }
-  async resolveExternalIdentity(provider: string, issuer: string, subject: string, organizationId?: string) {
-    return this.logic.resolveExternalIdentity(provider, issuer, subject, organizationId);
-  }
+  async resolveSlackIdentity(teamId: string, userId: string, organizationId?: string) { return this.logic.resolveSlackIdentity(teamId, userId, organizationId); }
   async listExternalIdentities() { return this.logic.listExternalIdentities(); }
-  async resolveActorExternalIdentity(provider: 'slack', issuer: string, subject: string) {
-    return this.logic.resolveActorExternalIdentity(provider, issuer, subject);
-  }
-  async bindActorExternalIdentity(input: BindActorExternalIdentityInput) {
-    return this.logic.bindActorExternalIdentity(input);
-  }
-  async createActorIdentityBindingHandoff(input: ActorIdentityBindingHandoff) { this.logic.createActorIdentityBindingHandoff(input); }
-  async getActorIdentityBindingHandoff(tokenHash: string) { return this.logic.getActorIdentityBindingHandoff(tokenHash); }
-  async consumeActorIdentityBindingHandoff(tokenHash: string, consumedAt: number) { return this.logic.consumeActorIdentityBindingHandoff(tokenHash, consumedAt); }
+  async resolveActorExternalIdentity(provider: 'slack', teamId: string, userId: string) { return this.logic.resolveActorExternalIdentity(provider, teamId, userId); }
   async listMemberships() { return this.logic.listMemberships(); }
-  async getUser(userId: string) { return this.logic.getUser(userId); }
-  async findUserByEmail(email: string) { return this.logic.findUserByEmail(email); }
-  async getMembership(membershipId: string) { return this.logic.getMembership(membershipId); }
-  async getMembershipForUser(userId: string, organizationId?: string) {
-    return this.logic.getMembershipForUser(userId, organizationId);
-  }
+  async getUser(id: string) { return this.logic.getUser(id); }
+  async getMembership(id: string) { return this.logic.getMembership(id); }
+  async getMembershipForUser(userId: string, organizationId?: string) { return this.logic.getMembershipForUser(userId, organizationId); }
   async updateMembership(input: UpdateMembershipInput) { return this.logic.updateMembership(input); }
   async createInvitation(input: CreateInvitationInput) { return this.logic.createInvitation(input); }
   async resendInvitation(input: ResendInvitationInput) { return this.logic.resendInvitation(input); }
-  async revokeInvitation(invitationId: string) { return this.logic.revokeInvitation(invitationId); }
+  async revokeInvitation(id: string) { return this.logic.revokeInvitation(id); }
   async consumeInvitation(input: ConsumeInvitationInput) { return this.logic.consumeInvitation(input); }
   async listInvitations() { return this.logic.listInvitations(); }
   async createPersonalToken(input: CreatePersonalTokenRecordInput) { return this.logic.createPersonalToken(input); }
-  async rotatePersonalToken(input: CreatePersonalTokenRecordInput) {
-    return this.logic.rotatePersonalToken(input);
-  }
+  async rotatePersonalToken(input: CreatePersonalTokenRecordInput) { return this.logic.rotatePersonalToken(input); }
   async findPersonalTokens(prefix: string) { return this.logic.findPersonalTokens(prefix); }
-  async getPersonalToken(tokenId: string) { return this.logic.getPersonalToken(tokenId); }
-  async revokePersonalToken(tokenId: string) { return this.logic.revokePersonalToken(tokenId); }
-  async touchPersonalToken(tokenId: string) { return this.logic.touchPersonalToken(tokenId); }
+  async getPersonalToken(id: string) { return this.logic.getPersonalToken(id); }
+  async revokePersonalToken(id: string) { return this.logic.revokePersonalToken(id); }
+  async touchPersonalToken(id: string) { return this.logic.touchPersonalToken(id); }
   async createBrowserSession(input: CreateBrowserSessionRecordInput) { return this.logic.createBrowserSession(input); }
   async findBrowserSessions(prefix: string) { return this.logic.findBrowserSessions(prefix); }
-  async revokeBrowserSession(sessionId: string) { return this.logic.revokeBrowserSession(sessionId); }
-  async configureAuthProvider(input: ConfigureAuthProviderInput) { return this.logic.configureAuthProvider(input); }
-  async getAuthProviderConfig(kind: string) { return this.logic.getAuthProviderConfig(kind); }
-  async updateAuthProviderAudience(kind: string, audience: string, actorMembershipId?: string) {
-    return this.logic.updateAuthProviderAudience(kind, audience, actorMembershipId);
-  }
-  async updateOrganizationAuth(input: UpdateOrganizationAuthInput) {
-    return this.logic.updateOrganizationAuth(input);
-  }
-  async getAuthRateLimit(bucket: string, keyHash: string) {
-    return this.logic.getAuthRateLimit(bucket, keyHash);
-  }
-  async recordAuthRateFailure(bucket: string, keyHash: string, windowStart: number) {
-    return this.logic.recordAuthRateFailure(bucket, keyHash, windowStart);
-  }
-  async clearAuthRateLimit(bucket: string, keyHash: string) {
-    this.logic.clearAuthRateLimit(bucket, keyHash);
-  }
-  async recordAuthAudit(input: RecordIdentityAuthAuditInput) {
-    this.logic.recordAuthAudit(input);
-  }
+  async revokeBrowserSession(id: string) { return this.logic.revokeBrowserSession(id); }
+  async updateOrganizationAuth(input: UpdateOrganizationAuthInput) { return this.logic.updateOrganizationAuth(input); }
+  async getAuthRateLimit(bucket: string, hash: string) { return this.logic.getAuthRateLimit(bucket, hash); }
+  async recordAuthRateFailure(bucket: string, hash: string, window: number) { return this.logic.recordAuthRateFailure(bucket, hash, window); }
+  async clearAuthRateLimit(bucket: string, hash: string) { this.logic.clearAuthRateLimit(bucket, hash); }
+  async recordAuthAudit(input: RecordIdentityAuthAuditInput) { this.logic.recordAuthAudit(input); }
   async exportSummary() { return this.logic.exportSummary(); }
   async listAuditEvents(limit?: number) { return this.logic.listAuditEvents(limit); }
-  close(): void { this.db.close(); }
+  close() { this.db.close(); }
 }
 
-function normalizeEmail(value: string): string {
-  const email = value.trim().toLowerCase();
-  if (email.length < 3 || email.length > 320 || !email.includes('@') || /[\u0000-\u0020\u007f]/.test(email)) {
-    throw identityError('identity_invalid', 'Email address is invalid.');
-  }
-  return email;
-}
-
-function validateAuthMode(value: AuthControl['authMode']): void {
-  if (![
-    'unconfigured', 'password_active', 'access_pending', 'access_active',
-    'token_active', 'legacy_shared', 'invalid',
-  ].includes(value)) {
-    throw identityError('identity_invalid', 'Authentication mode is invalid.');
-  }
-}
-
-function validateAuthOperationKind(value: AuthOperationKind): void {
-  if (![
-    'owner_setup', 'invitation_enrollment', 'administrative_reset',
-    'owner_recovery', 'legacy_migration',
-  ].includes(value)) {
+function validateOperationInput(input: CreateAuthOperationInput): void {
+  if (!['first_owner_claim', 'invitation_admission', 'login'].includes(input.kind)) {
     throw identityError('identity_invalid', 'Authentication operation kind is invalid.');
   }
+  slackId(input.expectedSlackTeamId, 'Slack team ID');
+  slackId(input.expectedSlackUserId, 'Slack user ID');
+  credentialHash(input.capabilityHash);
+  if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= 0) {
+    throw identityError('identity_invalid', 'Authentication operation expiry is invalid.');
+  }
 }
 
-function mergeOpaqueId(
-  current: string | null,
-  candidate: string | null | undefined,
-  field: string,
-): string | null {
+function operationMatchesInput(operation: AuthOperation, input: CreateAuthOperationInput): boolean {
+  return operation.kind === input.kind && operation.organizationId === (input.organizationId ?? null) &&
+    operation.expectedSlackTeamId === input.expectedSlackTeamId &&
+    operation.expectedSlackUserId === input.expectedSlackUserId &&
+    operation.chickpeaRole === (input.chickpeaRole ?? null) &&
+    operation.capabilityHash === credentialHash(input.capabilityHash) &&
+    operation.expiresAt === input.expiresAt;
+}
+
+function mergeOpaque(current: string | null, candidate: string | null | undefined, field: string): string | null {
   if (candidate === undefined || candidate === null) return current;
-  const normalized = strictText(candidate, field, 256);
-  if (current !== null && current !== normalized) {
-    throw identityError('auth_operation_conflict', `Authentication operation ${field} is immutable.`);
-  }
+  const normalized = nonEmpty(candidate, field);
+  if (current && current !== normalized) throw identityError('auth_operation_conflict', `${field} is immutable.`);
   return normalized;
 }
 
-function safeAuditToken(value: string, field: string): string {
-  const result = value.trim();
-  if (!result || result.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(result)) {
-    throw identityError('identity_invalid', `Auth audit ${field} is invalid.`);
-  }
-  return result;
+function slackId(value: string, field: string): string {
+  const normalized = value.trim();
+  if (!/^[A-Za-z0-9]{2,64}$/.test(normalized)) throw identityError('identity_invalid', `${field} is invalid.`);
+  return normalized;
 }
 
-function nonEmpty(value: string, field: string): string {
-  const result = value.trim();
-  if (!result || result.length > 256 || /[\u0000-\u001f\u007f]/.test(result)) {
-    throw identityError('identity_invalid', `${field} is invalid.`);
-  }
-  return result;
-}
-
-function validateExternalIdentity(input: Pick<BindExternalIdentityInput, 'provider' | 'issuer' | 'subject'>): void {
-  nonEmpty(input.provider, 'provider');
-  nonEmpty(input.issuer, 'issuer');
-  nonEmpty(input.subject, 'subject');
-}
-
-function validateTokenHash(value: string): void {
-  if (!value || value.length > 256 || /\s/.test(value)) {
-    throw identityError('identity_invalid', 'Credential hash is invalid.');
-  }
-}
-
-function credentialPrefix(value: string): string {
-  const prefix = value.trim();
-  if (!/^[A-Za-z0-9_-]{6,64}$/.test(prefix)) {
-    throw identityError('identity_invalid', 'Credential prefix is invalid.');
-  }
-  return prefix;
-}
-
-function credentialHash(value: string): string {
-  if (!/^[a-f0-9]{64}$/.test(value)) {
-    throw identityError('identity_invalid', 'Credential digest is invalid.');
-  }
-  return value;
-}
-
-function strictText(value: string, field: string, max: number): string {
-  const result = value.trim();
-  if (!result || result.length > max || /[\u0000-\u001f\u007f]/.test(result)) {
-    throw identityError('identity_invalid', `${field} is invalid.`);
-  }
-  return result;
+function cleanDisplayName(value: string | null | undefined): string | null {
+  if (value === undefined || value === null || !value.trim()) return null;
+  return strictText(value, 'display name', 120);
 }
 
 function validOrigin(value: string): string {
   try {
     const url = new URL(value);
-    const loopbackHttp = url.protocol === 'http:' &&
-      ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-    if ((url.protocol !== 'https:' && !loopbackHttp) || url.username || url.password || url.pathname !== '/' ||
-        url.search || url.hash) throw new Error('invalid');
+    const loopback = url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    if ((url.protocol !== 'https:' && !loopback) || url.username || url.password ||
+        url.pathname !== '/' || url.search || url.hash) throw new Error('invalid');
     return url.origin;
   } catch {
     throw identityError('identity_invalid', 'Canonical Admin origin is invalid.');
   }
 }
 
-function newId(prefix: string): string {
-  return `${prefix}_${randomUUID().replaceAll('-', '')}`;
+function credentialHash(value: string): string {
+  if (!/^[a-f0-9]{64}$/.test(value)) throw identityError('identity_invalid', 'Credential digest is invalid.');
+  return value;
 }
+function credentialPrefix(value: string): string {
+  const normalized = value.trim();
+  if (!/^[A-Za-z0-9_-]{6,64}$/.test(normalized)) throw identityError('identity_invalid', 'Credential prefix is invalid.');
+  return normalized;
+}
+function nonEmpty(value: string, field: string): string {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 256 || /[\u0000-\u001f\u007f]/.test(normalized)) {
+    throw identityError('identity_invalid', `${field} is invalid.`);
+  }
+  return normalized;
+}
+function strictText(value: string, field: string, max: number): string {
+  const normalized = nonEmpty(value, field);
+  if (normalized.length > max) throw identityError('identity_invalid', `${field} is invalid.`);
+  return normalized;
+}
+function safeAudit(value: string): string {
+  const normalized = value.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(normalized)) {
+    throw identityError('identity_invalid', 'Audit field is invalid.');
+  }
+  return normalized;
+}
+function newId(prefix: string): string { return `${prefix}_${randomUUID().replaceAll('-', '')}`; }
 
-function rowToOrganization(row: OrganizationRow): Organization {
-  return {
-    id: row.organization_id,
-    displayName: row.display_name,
-    authMode: row.auth_mode,
-    canonicalAdminOrigin: row.canonical_admin_origin,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function authControlFromRow(row: Record<string, unknown>): AuthControl {
+  return { installationId: String(row.installation_id), authMode: row.auth_mode as AuthControl['authMode'],
+    healthGate: row.health_gate as AuthControl['healthGate'],
+    canonicalAdminOrigin: nullableString(row.canonical_admin_origin),
+    betterAuthOrganizationId: nullableString(row.better_auth_organization_id), revision: Number(row.revision),
+    createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
 }
-
-function rowToUser(row: UserRow): User {
-  return {
-    id: row.user_id,
-    primaryEmail: row.primary_email,
-    displayName: row.display_name,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function authOperationFromRow(row: Record<string, unknown>): AuthOperation {
+  return { id: String(row.operation_id), kind: row.kind as AuthOperation['kind'],
+    organizationId: nullableString(row.organization_id), expectedSlackTeamId: String(row.expected_slack_team_id),
+    expectedSlackUserId: String(row.expected_slack_user_id), chickpeaRole: row.chickpea_role as AuthOperation['chickpeaRole'],
+    capabilityHash: String(row.capability_hash), status: row.status as AuthOperation['status'], step: Number(row.step),
+    betterAuthUserId: nullableString(row.better_auth_user_id), betterAuthOrganizationId: nullableString(row.better_auth_organization_id),
+    betterAuthMembershipId: nullableString(row.better_auth_membership_id), chickpeaMembershipId: nullableString(row.chickpea_membership_id),
+    expiresAt: Number(row.expires_at), activatedAt: nullableNumber(row.activated_at), tombstonedAt: nullableNumber(row.tombstoned_at),
+    createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
 }
-
-function rowToBinding(row: BindingRow): ExternalIdentityBinding {
-  return {
-    id: row.binding_id,
-    userId: row.user_id,
-    provider: row.provider,
-    issuer: row.issuer,
-    subject: row.subject,
-    verifiedEmail: row.verified_email,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function organizationFromRow(row: Record<string, unknown>): Organization {
+  return { id: String(row.organization_id), displayName: String(row.display_name),
+    slackTeamId: nullableString(row.slack_team_id), authMode: row.auth_mode as Organization['authMode'],
+    canonicalAdminOrigin: nullableString(row.canonical_admin_origin), createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
 }
-
-function actorBindingFromRow(row: ActorBindingRow): ActorExternalIdentityBinding {
-  return {
-    id: row.binding_id,
-    provider: 'slack',
-    issuer: row.issuer,
-    subject: row.subject,
-    userId: row.user_id,
-    organizationId: row.organization_id,
-    membershipId: row.membership_id,
-    revision: row.revision,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function userFromRow(row: Record<string, unknown>): User {
+  return { id: String(row.user_id), slackTeamId: String(row.slack_team_id), slackUserId: String(row.slack_user_id),
+    displayName: nullableString(row.display_name), createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
 }
-
-function actorHandoffFromRow(row: Record<string, unknown>): ActorIdentityBindingHandoff {
-  return {
-    handoffId: String(row.handoff_id), tokenHash: String(row.token_hash),
-    issuer: String(row.issuer), subject: String(row.subject),
-    slackIdentityId: String(row.slack_identity_id), slackIdentityRevision: Number(row.slack_identity_revision),
-    expiresAt: Number(row.expires_at), consumedAt: row.consumed_at === null ? null : Number(row.consumed_at),
-  };
+function membershipFromRow(row: Record<string, unknown>): Membership {
+  return { id: String(row.membership_id), organizationId: String(row.organization_id), userId: String(row.user_id),
+    role: row.role as Membership['role'], status: row.status as Membership['status'],
+    createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
 }
-
-function rowToMembership(row: MembershipRow): Membership {
-  return {
-    id: row.membership_id,
-    organizationId: row.organization_id,
-    userId: row.user_id,
-    role: row.role,
-    status: row.status,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function slackBindingFromRow(row: Record<string, unknown>): SlackIdentityBinding {
+  return { id: String(row.binding_id), provider: 'slack', slackTeamId: String(row.slack_team_id),
+    slackUserId: String(row.slack_user_id), userId: String(row.user_id), organizationId: String(row.organization_id),
+    membershipId: String(row.membership_id), betterAuthUserId: String(row.better_auth_user_id),
+    betterAuthMembershipId: String(row.better_auth_membership_id), revision: Number(row.revision),
+    createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
 }
-
-function rowToOwnerClaim(row: OwnerClaimRow): OwnerClaim {
-  return {
-    id: row.owner_claim_id,
-    organizationId: row.organization_id,
-    normalizedEmail: row.normalized_email,
-    status: row.status,
-    bindingId: row.binding_id,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function ownerClaimFromRow(row: Record<string, unknown>): OwnerClaim {
+  return { id: String(row.owner_claim_id), operationId: String(row.operation_id), organizationId: nullableString(row.organization_id),
+    slackTeamId: String(row.slack_team_id), slackUserId: String(row.slack_user_id), status: row.status as OwnerClaim['status'],
+    membershipId: nullableString(row.membership_id), createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
 }
-
-function rowToInvitation(row: InvitationRow): Invitation {
-  return {
-    id: row.invitation_id,
-    organizationId: row.organization_id,
-    normalizedEmail: row.normalized_email,
-    role: row.role,
-    tokenHash: row.token_hash,
-    status: row.status,
-    inviterMembershipId: row.inviter_membership_id,
-    acceptedMembershipId: row.accepted_membership_id,
-    expiresAt: row.expires_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function invitationFromRow(row: Record<string, unknown>): Invitation {
+  return { id: String(row.invitation_id), organizationId: String(row.organization_id), slackTeamId: String(row.slack_team_id),
+    slackUserId: String(row.slack_user_id), displayName: nullableString(row.display_name), role: row.role as Invitation['role'],
+    locatorHash: String(row.locator_hash), status: row.status as Invitation['status'], inviterMembershipId: String(row.inviter_membership_id),
+    acceptedMembershipId: nullableString(row.accepted_membership_id), expiresAt: Number(row.expires_at),
+    createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
 }
-
-function rowToPersonalToken(row: PersonalTokenRow): PersonalTokenRecord {
-  return {
-    id: row.personal_token_id,
-    organizationId: row.organization_id,
-    userId: row.user_id,
-    membershipId: row.membership_id,
-    tokenHash: row.token_hash,
-    prefix: row.prefix,
-    label: row.label,
-    status: row.status,
-    lastUsedAt: row.last_used_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function overlayFromRow(row: Record<string, unknown>): MembershipAccessOverlay {
+  return { membershipId: String(row.membership_id), organizationId: String(row.organization_id),
+    accessStatus: row.access_status as MembershipAccessOverlay['accessStatus'], membershipVersion: Number(row.membership_version),
+    createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
 }
-
-function rowToBrowserSession(row: BrowserSessionRow): BrowserSessionRecord {
-  return {
-    id: row.browser_session_id,
-    organizationId: row.organization_id,
-    userId: row.user_id,
-    membershipId: row.membership_id,
-    personalTokenId: row.personal_token_id,
-    sessionHash: row.session_hash,
-    prefix: row.prefix,
-    expiresAt: row.expires_at,
-    lastSeenAt: row.last_seen_at,
-    revokedAt: row.revoked_at,
-    createdAt: row.created_at,
-  };
+function personalTokenFromRow(row: Record<string, unknown>): PersonalTokenRecord {
+  return { id: String(row.personal_token_id), organizationId: nullableString(row.organization_id), userId: String(row.user_id),
+    membershipId: nullableString(row.membership_id), tokenHash: String(row.token_hash), prefix: String(row.prefix),
+    label: String(row.label), status: row.status as PersonalTokenRecord['status'], lastUsedAt: nullableNumber(row.last_used_at),
+    createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
 }
-
-function rowToAuthControl(row: AuthControlRow): AuthControl {
-  return {
-    installationId: row.installation_id,
-    authMode: row.auth_mode,
-    canonicalAdminOrigin: row.canonical_admin_origin,
-    betterAuthOrganizationId: row.better_auth_organization_id,
-    revision: row.revision,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function browserSessionFromRow(row: Record<string, unknown>): BrowserSessionRecord {
+  return { id: String(row.browser_session_id), organizationId: nullableString(row.organization_id), userId: String(row.user_id),
+    membershipId: nullableString(row.membership_id), personalTokenId: String(row.personal_token_id), sessionHash: String(row.session_hash),
+    prefix: String(row.prefix), expiresAt: Number(row.expires_at), lastSeenAt: Number(row.last_seen_at),
+    revokedAt: nullableNumber(row.revoked_at), createdAt: Number(row.created_at) };
 }
-
-function rowToAuthOperation(row: AuthOperationRow): AuthOperation {
-  return {
-    id: row.operation_id,
-    kind: row.kind,
-    organizationId: row.organization_id,
-    expectedNormalizedEmail: row.expected_normalized_email,
-    capabilityHash: row.capability_hash,
-    status: row.status,
-    step: row.step,
-    betterAuthUserId: row.better_auth_user_id,
-    betterAuthOrganizationId: row.better_auth_organization_id,
-    betterAuthMembershipId: row.better_auth_membership_id,
-    betterAuthInvitationId: row.better_auth_invitation_id,
-    targetCredentialVersion: row.target_credential_version,
-    expiresAt: row.expires_at,
-    consumedAt: row.consumed_at,
-    revokedAt: row.revoked_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function rateLimitFromRow(row: Record<string, unknown>): AuthRateLimitState {
+  return { bucket: String(row.bucket), keyHash: String(row.key_hash), windowStart: Number(row.window_start), failures: Number(row.failures) };
 }
-
-function rowToAuthProviderConfig(row: AuthProviderConfigRow): AuthProviderConfig {
-  return {
-    id: row.auth_provider_config_id,
-    organizationId: row.organization_id,
-    kind: row.kind,
-    state: row.state,
-    issuer: row.issuer,
-    audience: row.audience,
-    admissionState: row.admission_state,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function resolutionFromRow(row: Record<string, unknown>): IdentityResolution {
+  const binding = slackBindingFromRow(row);
+  return { binding,
+    user: { id: binding.userId, slackTeamId: binding.slackTeamId, slackUserId: binding.slackUserId,
+      displayName: nullableString(row.u_display_name), createdAt: Number(row.u_created_at), updatedAt: Number(row.u_updated_at) },
+    membership: { id: binding.membershipId, organizationId: binding.organizationId, userId: binding.userId,
+      role: row.m_role as Membership['role'], status: row.m_status as Membership['status'],
+      createdAt: Number(row.m_created_at), updatedAt: Number(row.m_updated_at) } };
 }
-
-function rowToAuthRateLimit(row: AuthRateLimitRow): AuthRateLimitState {
-  return {
-    bucket: row.bucket,
-    keyHash: row.key_hash,
-    windowStart: row.window_start,
-    failures: row.failures,
-  };
-}
-
-function joinedRowToResolution(row: Record<string, unknown>): IdentityResolution {
-  return {
-    user: rowToUser({
-      user_id: String(row.u_user_id), primary_email: String(row.u_primary_email),
-      display_name: row.u_display_name === null ? null : String(row.u_display_name),
-      created_at: Number(row.u_created_at), updated_at: Number(row.u_updated_at),
-    }),
-    binding: rowToBinding({
-      binding_id: String(row.b_binding_id), user_id: String(row.b_user_id),
-      provider: String(row.b_provider), issuer: String(row.b_issuer), subject: String(row.b_subject),
-      verified_email: String(row.b_verified_email), created_at: Number(row.b_created_at),
-      updated_at: Number(row.b_updated_at),
-    }),
-    membership: rowToMembership({
-      membership_id: String(row.m_membership_id), organization_id: String(row.m_organization_id),
-      user_id: String(row.m_user_id), role: row.m_role as Membership['role'],
-      status: row.m_status as Membership['status'], created_at: Number(row.m_created_at),
-      updated_at: Number(row.m_updated_at),
-    }),
-  };
-}
+function nullableString(value: unknown): string | null { return value === null || value === undefined ? null : String(value); }
+function nullableNumber(value: unknown): number | null { return value === null || value === undefined ? null : Number(value); }

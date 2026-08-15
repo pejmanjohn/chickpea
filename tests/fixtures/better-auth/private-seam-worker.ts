@@ -9,7 +9,6 @@ import {
   type BetterAuthAdmissionOperation,
   type ReconcileSlackIdentityInput,
 } from '../../../src/auth/better-auth.ts';
-import type { PasswordPrimitive } from '../../../src/auth/password.ts';
 
 interface Env {
   AUTH_DB: D1Database;
@@ -22,11 +21,6 @@ const ORGANIZATION = {
   slug: 'chickpea',
 } as const;
 const admissions = new Map<string, BetterAuthAdmissionOperation>();
-
-const unusedPassword: PasswordPrimitive = {
-  async hash() { throw new Error('Password hashing is outside the U0 Worker seam.'); },
-  async verify() { return false; },
-};
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -56,8 +50,6 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
     backend,
     baseURL: url.origin,
     secret: SECRET,
-    password: unusedPassword,
-    allowSignUp: false,
     privateSeam,
   });
 
@@ -157,11 +149,7 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
       backend,
       baseURL: url.origin,
       secret: SECRET,
-      password: unusedPassword,
       privateSeam,
-      loginSourceAllowed: async () => true,
-      loginIdentityAllowed: async () => true,
-      sourceKey: () => 'u0-worker-fixture',
     })(request);
   }
 

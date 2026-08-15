@@ -28,6 +28,11 @@ command. The replacement personal token is printed once after old tokens and
 their browser sessions are revoked.`;
 
 export async function recoverTokenMode(options) {
+  void options;
+  throw new Error(
+    'Legacy token/password recovery is disabled. Slack credential repair is available only through recovery_only.',
+  );
+  /* c8 ignore start -- retained only until U10 removes the legacy implementation. */
   const expected = validRecoveryToken(options.expectedRecoveryToken);
   if (!constantCredentialEquals(options.recoveryProof, expected)) {
     throw new Error('Recovery proof was not accepted.');
@@ -95,6 +100,7 @@ export async function recoverTokenMode(options) {
   } finally {
     identity.close();
   }
+  /* c8 ignore stop */
 }
 
 async function readRecoveryProof() {

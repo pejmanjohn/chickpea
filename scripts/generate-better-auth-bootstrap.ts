@@ -7,7 +7,6 @@ import { getMigrations } from 'better-auth/db/migration';
 
 import type { BetterAuthDatabaseBackend } from '../src/auth/better-auth-backend.ts';
 import { createBetterAuthOptions } from '../src/auth/better-auth.ts';
-import type { PasswordPrimitive } from '../src/auth/password.ts';
 
 export const PINNED_BETTER_AUTH_VERSION = '1.6.26';
 
@@ -15,16 +14,10 @@ export async function generateBetterAuthBootstrapSql(): Promise<string> {
   const database = new DatabaseSync(':memory:');
   try {
     const backend = { database } as unknown as BetterAuthDatabaseBackend;
-    const password: PasswordPrimitive = {
-      async hash() { throw new Error('Schema generation cannot hash passwords.'); },
-      async verify() { throw new Error('Schema generation cannot verify passwords.'); },
-    };
     const options = createBetterAuthOptions({
       backend,
       baseURL: 'https://schema.chickpea.invalid',
       secret: 'schema-only-secret-is-never-used-at-runtime',
-      password,
-      allowSignUp: false,
     });
     const migrations = await getMigrations(options);
     const generated = (await migrations.compileMigrations()).trim();

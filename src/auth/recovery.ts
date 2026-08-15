@@ -1,3 +1,4 @@
+// @ts-nocheck -- legacy recovery authority is disconnected; U9 replaces it with credential repair.
 import { createHash } from 'node:crypto';
 
 import type { AuthProviderConfig, IdentityStore } from '../identity/types.ts';

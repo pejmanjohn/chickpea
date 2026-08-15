@@ -5,18 +5,15 @@ import {
 import type { AuthControl } from '../identity/types.ts';
 import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
 import {
-  cloudflarePasswordPrimitive,
   D1BetterAuthBackend,
   type CloudflareBetterAuthEnv,
 } from './better-auth-cloudflare.ts';
 import { getNodeBetterAuthBackend } from './better-auth-node.ts';
-import { nativePasswordPrimitive, type PasswordPrimitive } from './password.ts';
 import { decodeRecoverySecret, deriveBetterAuthSecret } from './recovery-secret.ts';
 
 export interface BetterAuthEnvironment {
   backend: BetterAuthDatabaseBackend;
   baseURL: string;
-  password: PasswordPrimitive;
   recoveryToken: string;
   secret: string;
   cloudflareEnv?: CloudflareBetterAuthEnv;
@@ -27,7 +24,6 @@ interface ResolveBetterAuthEnvironmentInput {
   platformEnv?: PlatformEnv | undefined;
   recoveryToken?: string | undefined;
   authSecret?: string | undefined;
-  passwordShardKey?: string | undefined;
 }
 
 interface ResolveBetterAuthBootstrapEnvironmentInput {
@@ -35,13 +31,13 @@ interface ResolveBetterAuthBootstrapEnvironmentInput {
   platformEnv?: PlatformEnv | undefined;
   recoveryToken?: string | undefined;
   authSecret?: string | undefined;
-  passwordShardKey?: string | undefined;
 }
 
 export async function resolveBetterAuthEnvironment(
   input: ResolveBetterAuthEnvironmentInput,
 ): Promise<BetterAuthEnvironment | undefined> {
-  if (input.control.authMode !== 'password_active' ||
+  if (input.control.authMode !== 'slack_active' ||
+      input.control.healthGate !== 'normal' ||
       !input.control.canonicalAdminOrigin ||
       !input.control.betterAuthOrganizationId) return undefined;
   return resolveBetterAuthBootstrapEnvironment({
@@ -49,7 +45,6 @@ export async function resolveBetterAuthEnvironment(
     platformEnv: input.platformEnv,
     recoveryToken: input.recoveryToken,
     authSecret: input.authSecret,
-    passwordShardKey: input.passwordShardKey ?? input.control.installationId,
   });
 }
 
@@ -67,10 +62,6 @@ export async function resolveBetterAuthBootstrapEnvironment(
     return {
       backend: new D1BetterAuthBackend(cloudflareEnv.AUTH_DB),
       baseURL: input.canonicalOrigin,
-      password: cloudflarePasswordPrimitive(
-        cloudflareEnv,
-        input.passwordShardKey ?? 'owner-setup',
-      ),
       secret,
       // Setup/recovery are split from signing in U2. Until then, keep the
       // internal authority available as the existing non-browser limiter
@@ -84,7 +75,6 @@ export async function resolveBetterAuthBootstrapEnvironment(
   return {
     backend: getNodeBetterAuthBackend(),
     baseURL: input.canonicalOrigin,
-    password: nativePasswordPrimitive(),
     recoveryToken: recoveryToken ?? secret,
     secret,
   };
@@ -116,8 +106,7 @@ function validStableAuthSecret(value: string): string {
 function cloudflareAuthEnv(env: PlatformEnv | undefined): CloudflareBetterAuthEnv | undefined {
   if (!env) return undefined;
   const authDb = env.AUTH_DB as { prepare?: unknown } | undefined;
-  const authGuard = env.AUTH_GUARD as { getByName?: unknown } | undefined;
-  if (typeof authDb?.prepare !== 'function' || typeof authGuard?.getByName !== 'function') {
+  if (typeof authDb?.prepare !== 'function') {
     return undefined;
   }
   return env as unknown as CloudflareBetterAuthEnv;

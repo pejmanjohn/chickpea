@@ -10,6 +10,7 @@ import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 const ADMIN_TOKEN = 'admin-memory-secret';
 const NOW = Date.UTC(2026, 6, 25, 12);
@@ -44,12 +45,13 @@ async function harness() {
   });
   const app = new Hono();
   app.route('/', createAdminRoutes({
-    store: config, settings, memory, routines, adminToken: ADMIN_TOKEN, knownProviders: new Set(),
+    store: config, settings, memory, routines, ...testAdminAuthority(ADMIN_TOKEN),
+    knownProviders: new Set(),
   }));
   return { app, config, settings, memory, routines, publicStore, entry, agentOwner, channelOwner, ownerEntry };
 }
 
-const auth = { authorization: `Bearer ${ADMIN_TOKEN}` };
+const auth = testAdminHeaders(ADMIN_TOKEN);
 
 test('owner memory creation is authenticated, route-owned, validated, and idempotent', async () => {
   const h = await harness();
@@ -73,15 +75,10 @@ test('owner memory creation is authenticated, route-owned, validated, and idempo
       body: JSON.stringify(body),
     })).status, 401);
 
-    const login = await h.app.request('/admin/login', {
-      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ token: ADMIN_TOKEN }).toString(), redirect: 'manual',
-    });
-    const cookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';
     assert.equal((await h.app.request(`${channelBase}/entries`, {
       method: 'POST',
       headers: {
-        cookie,
+        authorization: `Bearer ${ADMIN_TOKEN}`,
         origin: 'https://evil.example',
         'content-type': 'application/json',
         'idempotency-key': 'owner-create-cross-origin',
@@ -312,13 +309,13 @@ test('memory admin edit is idempotent, versioned, validated, and same-origin for
     assert.equal(conflict.status, 409);
     assert.deepEqual(await conflict.json(), { error: 'memory_version_conflict', currentVersion: 2 });
 
-    const login = await h.app.request('/admin/login', {
-      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ token: ADMIN_TOKEN }).toString(), redirect: 'manual',
-    });
-    const cookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';
     const crossOrigin = await h.app.request('/admin/api/audit/memory/entries/mem_product', {
-      method: 'PUT', headers: { cookie, origin: 'https://evil.example', 'content-type': 'application/json', 'idempotency-key': 'admin-edit-3' }, body,
+      method: 'PUT', headers: {
+        authorization: `Bearer ${ADMIN_TOKEN}`,
+        origin: 'https://evil.example',
+        'content-type': 'application/json',
+        'idempotency-key': 'admin-edit-3',
+      }, body,
     });
     assert.equal(crossOrigin.status, 403);
   } finally {
