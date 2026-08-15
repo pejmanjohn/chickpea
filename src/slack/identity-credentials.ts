@@ -3,7 +3,11 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import { getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
 import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
-import type { IdentityStore, SlackCredentialRevision } from '../identity/types.ts';
+import type {
+  IdentityStore,
+  SlackCredentialRevision,
+  StageSlackCredentialRevisionInput,
+} from '../identity/types.ts';
 import { generateCredentialKeyring, loadCredentialKeyring } from './credential-keyring.ts';
 import {
   decryptSlackSecretEnvelope,
@@ -168,6 +172,19 @@ export async function stageSlackCredentialBundle(
   dependencies: SlackCredentialDependencies,
   input: StageSlackCredentialBundleInput,
 ): Promise<SlackCredentialRevision> {
+  const prepared = await prepareSlackCredentialBundle(dependencies, input);
+  try {
+    return await dependencies.state.stageSlackCredentialRevision(prepared);
+  } catch (error) {
+    throw credentialRevisionError(input.identityId, error);
+  }
+}
+
+/** Encrypt a candidate without persisting it, for a caller-owned atomic transaction. */
+export async function prepareSlackCredentialBundle(
+  dependencies: SlackCredentialDependencies,
+  input: StageSlackCredentialBundleInput,
+): Promise<StageSlackCredentialRevisionInput> {
   validateBundleShape(input.identityClass, input.purpose, input.secrets);
   const existingControl = await dependencies.state.getSlackCredentialControl();
   const control = existingControl ?? await dependencies.state.ensureSlackCredentialControl({
@@ -185,25 +202,21 @@ export async function stageSlackCredentialBundle(
     envelopeContext(control.deploymentId, input, revision),
     input.secrets,
   );
-  try {
-    return await dependencies.state.stageSlackCredentialRevision({
-      expectedRotationEpoch: control.rotationEpoch,
-      expectedActiveRevision: input.expectedActiveRevision,
-      revision,
-      identityId: input.identityId,
-      identityClass: input.identityClass,
-      purpose: input.purpose,
-      appId: input.appId,
-      teamId: input.teamId ?? null,
-      botUserId: input.botUserId ?? null,
-      grantedScopes: input.grantedScopes ?? [],
-      validatedAt: input.validatedAt ?? null,
-      manifestFingerprint: input.manifestFingerprint ?? null,
-      envelope,
-    });
-  } catch (error) {
-    throw credentialRevisionError(input.identityId, error);
-  }
+  return {
+    expectedRotationEpoch: control.rotationEpoch,
+    expectedActiveRevision: input.expectedActiveRevision,
+    revision,
+    identityId: input.identityId,
+    identityClass: input.identityClass,
+    purpose: input.purpose,
+    appId: input.appId,
+    teamId: input.teamId ?? null,
+    botUserId: input.botUserId ?? null,
+    grantedScopes: input.grantedScopes ?? [],
+    validatedAt: input.validatedAt ?? null,
+    manifestFingerprint: input.manifestFingerprint ?? null,
+    envelope,
+  };
 }
 
 export async function promoteSlackCredentialBundle(

@@ -119,6 +119,21 @@ test('Cloudflare proxy forwards encrypted credential revisions without projectio
   assert.deepEqual(calls, [{ kind: 'stage_slack_credential_revision', input }]);
 });
 
+test('Cloudflare proxy forwards durable Slack setup transaction reads', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const transaction = {
+    id: 'setup_default', locatorHash: 'a'.repeat(64),
+    state: 'awaiting_app_creation' as const, revision: 1, destination: '/admin',
+    manifestFingerprint: null, appId: null, credentialRevision: null,
+    lastErrorCode: null, expiresAt: 20, consumedAt: null, createdAt: 10, updatedAt: 10,
+  };
+  const stub = rpcStub(calls, { kind: 'slack_setup_transaction', transaction });
+  const store = new CfIdentityStore(stub);
+
+  assert.deepEqual(await store.getSlackSetupTransaction(transaction.id), transaction);
+  assert.deepEqual(calls, [{ kind: 'get_slack_setup_transaction', setupId: transaction.id }]);
+});
+
 function rpcStub(
   calls: IdentityRpcRequest[],
   response: IdentityRpcResponse,

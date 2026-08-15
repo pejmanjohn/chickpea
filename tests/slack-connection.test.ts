@@ -73,7 +73,7 @@ test('dedicated Slack manifests parameterize only identity fields and retain lif
     requestUrl,
   });
 
-  assert.equal(manifest.$schema, undefined);
+  assert.equal('$schema' in manifest, false);
   assert.equal(manifest.display_information.name, 'Finance Copilot');
   assert.equal(manifest.features.bot_user.display_name, 'Finance');
   assert.equal(manifest.settings.event_subscriptions.request_url, requestUrl);
@@ -86,8 +86,8 @@ test('dedicated Slack manifests parameterize only identity fields and retain lif
   );
   assert.deepEqual(
     manifest.oauth_config,
-    slackAppManifest.oauth_config,
-    'dedicated apps must inherit the canonical scopes',
+    { scopes: { bot: slackAppManifest.oauth_config.scopes.bot } },
+    'dedicated apps inherit bot scopes without gaining control-plane OIDC',
   );
 
   const prefill = new URL(slackManifestPrefillUrl(manifest));

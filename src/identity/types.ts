@@ -228,6 +228,63 @@ export interface SlackCredentialRetentionResult {
   scrubbedCredentialCandidates: number;
 }
 
+export type SlackSetupState =
+  | 'awaiting_app_creation'
+  | 'app_creation_pending'
+  | 'ambiguous_external_effect'
+  | 'app_created'
+  | 'approval_pending'
+  | 'expired'
+  | 'consumed';
+
+/** Internal durable setup record. Raw setup capabilities are never stored. */
+export interface SlackSetupTransaction {
+  id: string;
+  locatorHash: string;
+  state: SlackSetupState;
+  revision: number;
+  destination: string;
+  manifestFingerprint: string | null;
+  appId: string | null;
+  credentialRevision: string | null;
+  lastErrorCode: string | null;
+  expiresAt: number;
+  consumedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ReserveSlackSetupTransactionInput {
+  locatorHash: string;
+  issuedAt: number;
+  expiresAt: number;
+  destination: string;
+}
+
+export interface SlackSetupTransitionInput {
+  setupId: string;
+  expectedRevision: number;
+}
+
+export interface BeginSlackAppCreationInput extends SlackSetupTransitionInput {
+  manifestFingerprint: string;
+}
+
+export interface FailSlackAppCreationInput extends SlackSetupTransitionInput {
+  state: 'awaiting_app_creation' | 'ambiguous_external_effect';
+  errorCode: string;
+}
+
+export interface RecordSlackAppCreationSuccessInput extends SlackSetupTransitionInput {
+  appId: string;
+  manifestFingerprint: string;
+  credential: StageSlackCredentialRevisionInput;
+}
+
+export interface MarkSlackSetupApprovalPendingInput extends SlackSetupTransitionInput {
+  appId: string;
+}
+
 export interface AuthOperation {
   id: string;
   kind: AuthOperationKind;
@@ -435,6 +492,7 @@ export interface IdentityExportSummary {
   browserSessions: Array<Omit<BrowserSessionRecord, 'sessionHash'>>;
   authControl: AuthControl | null;
   authOperations: Array<Omit<AuthOperation, 'capabilityHash'>>;
+  slackSetupTransactions: Array<Omit<SlackSetupTransaction, 'locatorHash'>>;
 }
 
 export interface HumanIdentityDirectory {
@@ -462,6 +520,15 @@ export interface IdentityStore extends HumanIdentityDirectory {
   rewrapSlackCredentialRevision(input: RewrapSlackCredentialRevisionInput): Promise<SlackCredentialRevision>;
   countLiveSlackCredentialRevisionsByKey(keyId: string, expectedRotationEpoch: number): Promise<number>;
   sweepSlackIdentityRetention(at: number, candidateMaxAgeMs: number): Promise<SlackCredentialRetentionResult>;
+  reserveSlackSetupTransaction(input: ReserveSlackSetupTransactionInput): Promise<SlackSetupTransaction>;
+  getSlackSetupTransaction(setupId: string): Promise<SlackSetupTransaction | undefined>;
+  findSlackSetupTransaction(locatorHash: string): Promise<SlackSetupTransaction | undefined>;
+  beginSlackAppCreation(input: BeginSlackAppCreationInput): Promise<SlackSetupTransaction>;
+  failSlackAppCreation(input: FailSlackAppCreationInput): Promise<SlackSetupTransaction>;
+  recordSlackAppCreationSuccess(input: RecordSlackAppCreationSuccessInput): Promise<SlackSetupTransaction>;
+  restartSlackAppCreation(input: SlackSetupTransitionInput): Promise<SlackSetupTransaction>;
+  markSlackSetupApprovalPending(input: MarkSlackSetupApprovalPendingInput): Promise<SlackSetupTransaction>;
+  resumeSlackSetupAfterApproval(input: SlackSetupTransitionInput): Promise<SlackSetupTransaction>;
   createAuthOperation(input: CreateAuthOperationInput): Promise<AuthOperation>;
   reservePendingAuthOperation(input: CreateAuthOperationInput): Promise<{ operation: AuthOperation; created: boolean }>;
   getAuthOperation(operationId: string): Promise<AuthOperation | undefined>;
@@ -525,6 +592,15 @@ export type IdentityRpcRequest =
   | { kind: 'rewrap_slack_credential_revision'; input: RewrapSlackCredentialRevisionInput }
   | { kind: 'count_live_slack_credential_revisions_by_key'; keyId: string; expectedRotationEpoch: number }
   | { kind: 'sweep_slack_identity_retention'; at: number; candidateMaxAgeMs: number }
+  | { kind: 'reserve_slack_setup_transaction'; input: ReserveSlackSetupTransactionInput }
+  | { kind: 'get_slack_setup_transaction'; setupId: string }
+  | { kind: 'find_slack_setup_transaction'; locatorHash: string }
+  | { kind: 'begin_slack_app_creation'; input: BeginSlackAppCreationInput }
+  | { kind: 'fail_slack_app_creation'; input: FailSlackAppCreationInput }
+  | { kind: 'record_slack_app_creation_success'; input: RecordSlackAppCreationSuccessInput }
+  | { kind: 'restart_slack_app_creation'; input: SlackSetupTransitionInput }
+  | { kind: 'mark_slack_setup_approval_pending'; input: MarkSlackSetupApprovalPendingInput }
+  | { kind: 'resume_slack_setup_after_approval'; input: SlackSetupTransitionInput }
   | { kind: 'create_auth_operation'; input: CreateAuthOperationInput }
   | { kind: 'reserve_pending_auth_operation'; input: CreateAuthOperationInput }
   | { kind: 'get_auth_operation'; operationId: string }
@@ -577,6 +653,7 @@ export type IdentityRpcResponse =
   | { kind: 'slack_credential_count'; count: number }
   | { kind: 'slack_credential_presence'; present: boolean }
   | { kind: 'slack_credential_retention'; result: SlackCredentialRetentionResult }
+  | { kind: 'slack_setup_transaction'; transaction: SlackSetupTransaction | null }
   | { kind: 'auth_operation'; operation: AuthOperation | null }
   | { kind: 'auth_operation_reservation'; operation: AuthOperation; created: boolean }
   | { kind: 'auth_operations'; operations: AuthOperation[] }

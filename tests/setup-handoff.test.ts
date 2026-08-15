@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import vm from 'node:vm';
 
-import { passwordOwnerSetupClientScript } from '../src/auth/setup-handoff.ts';
+import {
+  passwordOwnerSetupClientScript,
+  safeSetupDestination,
+  slackSetupClientScript,
+} from '../src/auth/setup-handoff.ts';
 
 const CAPABILITY = '9d'.repeat(32);
 const STORAGE_KEY = 'chickpea.owner-setup.v1';
@@ -197,4 +201,23 @@ test('the successful ready page clears the setup capability from same-tab storag
     },
   });
   assert.equal(stored.has(STORAGE_KEY), false);
+});
+
+test('Slack setup accepts only same-origin Admin destinations', () => {
+  assert.equal(safeSetupDestination('/admin/channels'), '/admin/channels');
+  assert.equal(safeSetupDestination('/admin/api/secrets'), '/admin');
+  assert.equal(safeSetupDestination('/admin/api'), '/admin');
+  assert.equal(safeSetupDestination('/admin/../logout'), '/admin');
+  assert.equal(safeSetupDestination('/admin/%2e%2e/logout'), '/admin');
+  assert.equal(safeSetupDestination('/admin/channels?next=/logout'), '/admin');
+  assert.equal(safeSetupDestination('//attacker.example/admin'), '/admin');
+  assert.equal(safeSetupDestination('https://attacker.example/admin'), '/admin');
+});
+
+test('Slack setup client preserves the private fragment for resumable same-tab requests', () => {
+  assert.doesNotMatch(slackSetupClientScript(), /password/i);
+  assert.match(slackSetupClientScript(), /chickpea\.slack-setup\.v1/);
+  assert.match(slackSetupClientScript(), /history\.replaceState/);
+  assert.match(slackSetupClientScript(), /ambiguous_external_effect/);
+  assert.match(slackSetupClientScript(), /Inspect your Slack apps/i);
 });

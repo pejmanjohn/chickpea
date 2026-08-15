@@ -9,7 +9,6 @@ import {
   renderAdminLogin,
   renderPasswordChangePage,
   renderPasswordLogin,
-  renderPasswordOwnerSetupPage,
   renderPasswordRecoveryPage,
   renderAdminPage,
   renderAuthMigrationPage,
@@ -25,7 +24,7 @@ import { createRoutineAdminApi } from './routines-api.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
-import { passwordOwnerSetupClientScript } from '../auth/setup-handoff.ts';
+import { safeSetupDestination, slackSetupClientScript } from '../auth/setup-handoff.ts';
 import {
   SETUP_CAPABILITY_DIGEST_BINDING,
   SETUP_CAPABILITY_ISSUED_AT_BINDING,
@@ -59,7 +58,6 @@ import {
 } from '../config/api-oauth.ts';
 import { isValidApiOAuthConnectionPolicy } from '../config/api-oauth-policy.ts';
 import {
-  beginOnboardingJourney,
   completeOnboardingJourney,
   readOnboardingJourney,
   startOnboardingTry,
@@ -223,6 +221,7 @@ import type {
   HumanIdentityDirectory,
   IdentityResolution,
   IdentityStore,
+  SlackSetupTransaction,
 } from '../identity/types.ts';
 import type { SlackStateStore } from '../slack/claim-store.ts';
 import {
@@ -296,9 +295,15 @@ import {
   type SlackIdentityBootstrapErrorCode,
 } from '../slack/identity-bootstrap.ts';
 import {
+  buildSlackAppManifest,
   buildSlackIdentityManifest,
   slackManifestPrefillUrl,
 } from '../slack/identity-manifest.ts';
+import {
+  openSlackSetupTransaction,
+  SlackAppCreationError,
+  SlackAppCreationService,
+} from '../slack/app-creation.ts';
 import { missingRequiredSlackBotScopes } from '../slack/scopes.ts';
 import {
   clearSlackIdentityCredentials,
@@ -322,7 +327,6 @@ import {
   BetterAuthSessionAuthenticator,
 } from '../auth/better-auth-principal.ts';
 import {
-  resolveBetterAuthBootstrapEnvironment,
   resolveBetterAuthEnvironment,
   type BetterAuthEnvironment,
 } from '../auth/better-auth-environment.ts';
@@ -331,16 +335,14 @@ import { createBetterAuth } from '../auth/better-auth.ts';
 import { AuthorizationError, requirePermission, type Permission } from '../auth/permissions.ts';
 import { validateMutationProvenance } from '../auth/request-provenance.ts';
 import { CloudflareAccessAuthenticator, verifyCloudflareAccessRecoveryAssertion } from '../auth/cloudflare-access.ts';
-import { AuthRateLimiter } from '../auth/rate-limit.ts';
+import { AuthRateLimitError, AuthRateLimiter } from '../auth/rate-limit.ts';
 import { requestAuthSourceKey } from '../auth/source-key.ts';
 import { AuthRecoveryService, PasswordOwnerRecoveryService } from '../auth/recovery.ts';
 import {
   AuthSetupService,
-  PasswordOwnerSetupService,
-  resolvePasswordOwnerSetupReadiness,
   validRecoveryToken,
 } from '../auth/setup.ts';
-import { PasswordPolicyError, assertPasswordPolicy } from '../auth/password-policy.ts';
+import { assertPasswordPolicy } from '../auth/password-policy.ts';
 import {
   PasswordEnrollmentService,
   PasswordLifecycleError,
@@ -484,6 +486,8 @@ interface AdminRoutesOptions {
   modelCatalogTimeoutMs?: number | undefined;
   slackIdentityBootstrap?: SlackIdentityBootstrapDeps | undefined;
   slackConversationsInfo?: typeof slackConversationsInfo | undefined;
+  slackAppCreationFetch?: typeof fetch | undefined;
+  slackAppCreationNow?: (() => number) | undefined;
 }
 
 const ADMIN_COOKIE = 'flue_admin';
@@ -498,13 +502,6 @@ const authSetupSchema = v.strictObject({
   recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
   issuer: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024)),
   audience: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024)),
-});
-const passwordOwnerSetupSchema = v.strictObject({
-  ownerEmail: v.pipe(v.string(), v.trim(), v.email(), v.maxLength(320)),
-  organizationName: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128))),
-  password: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
-  passwordConfirmation: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
-  recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
 });
 const passwordChangeSchema = v.strictObject({
   currentPassword: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
@@ -1125,7 +1122,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.slackState ?? getSlackStateStore(c.env as PlatformEnv | undefined);
   app.use('*', async (c, next) => {
     const retired = [
-      '/admin/migrate', '/admin/setup', '/admin/recovery', '/admin/join', '/admin/login',
+      '/admin/migrate', '/admin/recovery', '/admin/join', '/admin/login',
       '/admin/reset', '/admin/account', '/admin/slack-actor',
       '/admin/api/team', '/admin/api/account',
     ];
@@ -1150,11 +1147,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const bound = (c.env as PlatformEnv | undefined)?.CHICKPEA_RECOVERY_TOKEN;
     return typeof bound === 'string' ? bound : process.env.CHICKPEA_RECOVERY_TOKEN;
   };
-  const authSecret = (c: Context): string | undefined => {
-    if (Object.hasOwn(options, 'authSecret')) return options.authSecret;
-    const bound = (c.env as PlatformEnv | undefined)?.CHICKPEA_AUTH_SECRET;
-    return typeof bound === 'string' ? bound : process.env.CHICKPEA_AUTH_SECRET;
-  };
   const setupCapability = (c: Context): { digest: string; issuedAt: number } | undefined => {
     const env = c.env as PlatformEnv | undefined;
     const digestValue = env?.[SETUP_CAPABILITY_DIGEST_BINDING] ??
@@ -1167,9 +1159,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       : Number.NaN;
     return digest && Number.isSafeInteger(issuedAt) ? { digest, issuedAt } : undefined;
   };
-  const ownerSetupAvailable = (c: Context): boolean => Boolean(
-    (setupCapability(c) && authSecret(c)) || recoveryToken(c),
-  );
   const authRateLimiter = (c: Context, token: string): AuthRateLimiter =>
     options.authRateLimiter ?? new AuthRateLimiter(identity(c), { pepper: token });
   const recordSandboxAudit = async (
@@ -1664,10 +1653,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   };
 
-  // Setup is public only until an authenticator becomes active. The recovery
-  // credential authorizes the bounded owner bootstrap but is never itself a
-  // browser login. Fresh installs create a Better Auth owner/session; the
-  // legacy Access form remains available only for an already-pending install.
+  // The deploy-time capability authorizes only the bounded Slack app bootstrap.
+  // It is never a browser login, and the resumable transaction remains private
+  // until Slack OIDC establishes the first Owner in the later setup step.
   app.use('/admin/setup', authSetupBodyLimit);
   app.use('/admin/setup/*', authSetupBodyLimit);
   app.use('/admin/recovery', authSetupBodyLimit);
@@ -1676,144 +1664,108 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/setup/client.js', (c) => {
     authResponseHeaders(c);
     c.header('Content-Type', 'application/javascript; charset=UTF-8');
-    return c.body(passwordOwnerSetupClientScript());
+    return c.body(slackSetupClientScript());
   });
 
   app.get('/admin/setup', async (c) => {
     authResponseHeaders(c);
-    const token = recoveryToken(c);
     const capability = setupCapability(c);
-    if (!ownerSetupAvailable(c)) return c.notFound();
-    if (!capability && token && !isValidRecoveryConfiguration(token)) {
-      return c.json({ error: 'authentication_unavailable' }, 503);
-    }
-    const identityStore = identity(c);
-    const [control, organization] = await Promise.all([
-      identityStore.ensureAuthControl(),
-      identityStore.getOrganization(),
-    ]);
-    if ((control.authMode as string) === 'password_active') {
-      const environment = options.betterAuthEnvironment ??
-        await resolveBetterAuthEnvironment({
-          control,
-          platformEnv: c.env as PlatformEnv | undefined,
-          recoveryToken: token,
-          authSecret: authSecret(c),
-        });
-      if (!environment) return c.json({ error: 'authentication_unavailable' }, 503);
-      try {
-        const readiness = await resolvePasswordOwnerSetupReadiness(
-          identityStore,
-          environment,
-          requestOrigin(c),
-          { control, legacyOrganization: organization },
-        );
-        if (readiness.state === 'configured') return c.redirect('/admin/login', 303);
-        if (readiness.state === 'orphaned') {
-          return c.html(renderPasswordOwnerSetupPage());
-        }
-        return c.json({ error: 'authentication_unavailable' }, 409);
-      } catch {
-        return c.json({ error: 'authentication_unavailable' }, 503);
-      }
-    }
-    if ((organization?.authMode as string | undefined) === 'access_active') return c.redirect('/admin', 303);
-    if (!organization && control.authMode === 'unconfigured') {
-      return c.html(renderPasswordOwnerSetupPage());
-    }
-    if ((organization?.authMode as string | undefined) === 'access_pending') {
-      const config = await (identityStore as unknown as RetiredIdentityStore)
-        .getAuthProviderConfig('cloudflare_access');
-      return c.html(renderAuthSetupPage({
-        state: 'access_pending',
-        origin: requestOrigin(c),
-        ...(config?.issuer === undefined ? {} : { issuer: config.issuer }),
-        ...(config?.audience === undefined ? {} : { audience: config.audience }),
-      }));
-    }
-    return c.json({ error: 'authentication_unavailable' }, 409);
+    if (!capability) return c.notFound();
+    c.header('Cache-Control', 'no-store');
+    c.header('Referrer-Policy', 'no-referrer');
+    return c.html(renderSlackSetupPage({
+      destination: safeSetupDestination(c.req.query('destination')),
+      manifest: buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) }),
+    }));
   });
 
   app.post('/admin/setup', async (c) => {
     authResponseHeaders(c);
-    const token = recoveryToken(c);
     const capability = setupCapability(c);
-    if (!ownerSetupAvailable(c)) return c.notFound();
-    if (!capability && token && !isValidRecoveryConfiguration(token)) {
-      return c.json({ error: 'authentication_unavailable' }, 503);
-    }
+    if (!capability) return c.notFound();
+    c.header('Cache-Control', 'no-store');
+    c.header('Referrer-Policy', 'no-referrer');
     const source = authSourceKey(c);
-    const limiterPepper = authSecret(c) ?? token ?? capability?.digest;
-    if (!limiterPepper) return c.notFound();
-    const limiter = authRateLimiter(c, limiterPepper);
-    let passwordSetup = false;
-    let ownerSetupValues: { ownerEmail?: string } = {};
+    const limiter = authRateLimiter(c, capability.digest);
+    let setup: SlackSetupTransaction | undefined;
+    let action = 'open';
     try {
-      await limiter.assertAllowed('setup', source);
+      await limiter.assertAllowed('slack_setup_source', source);
       if (!validAuthFormPost(c, requestOrigin(c))) throw new AuthDeniedError();
       const rawForm = await readForm(c);
-      passwordSetup = Object.hasOwn(rawForm, 'password');
-      if (passwordSetup) {
-        ownerSetupValues = {
-          ownerEmail: preservedFormValue(rawForm.ownerEmail, 320),
-        };
-        const organization = await identity(c).getOrganization();
-        if (organization) throw new AuthDeniedError();
-        const form = v.safeParse(passwordOwnerSetupSchema, rawForm);
-        if (!form.success) throw new AuthDeniedError();
-        if (form.output.password !== form.output.passwordConfirmation) throw new AuthDeniedError();
-        const environment = options.betterAuthEnvironment ??
-          await resolveBetterAuthBootstrapEnvironment({
-            canonicalOrigin: requestOrigin(c),
-            platformEnv: c.env as PlatformEnv | undefined,
-            recoveryToken: token,
-            authSecret: authSecret(c),
-          });
-        if (!environment) throw new AuthDeniedError();
-        const result = await new PasswordOwnerSetupService(
-          identity(c),
-          environment,
-          Date.now,
-          capability,
-          async () => { await beginOnboardingJourney(settings(c)); },
-        ).complete({
-          canonicalOrigin: requestOrigin(c),
-          email: form.output.ownerEmail,
-          password: form.output.password,
-          recoveryToken: form.output.recoveryToken,
+      action = boundedSetupField(rawForm.action ?? 'open', 32);
+      setup = await openSlackSetupTransaction(identity(c), {
+        capability: boundedSetupField(rawForm.capability, 512),
+        authority: capability,
+        ...(rawForm.destination === undefined ? {} : { destination: rawForm.destination }),
+        ...(options.slackAppCreationNow ? { now: options.slackAppCreationNow } : {}),
+      });
+      await Promise.all([
+        limiter.assertAllowed(`slack_setup_operation_${action}`, setup.id),
+        limiter.assertAllowed('slack_setup_deployment', 'deployment'),
+      ]);
+      const credentials = slackCredentialDependencies(c);
+      if (!credentials) return c.json({ error: 'slack_setup_unavailable' }, 503);
+      const service = new SlackAppCreationService({
+        identity: identity(c), credentials,
+        ...(options.slackAppCreationFetch ? { fetch: options.slackAppCreationFetch } : {}),
+        ...(options.slackAppCreationNow ? { now: options.slackAppCreationNow } : {}),
+      });
+      const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
+      if (action === 'create') {
+        setup = await service.create({
+          setupId: setup.id, expectedRevision: setup.revision,
+          configurationToken: boundedSetupField(rawForm.configurationToken, 512), manifest,
         });
-        copyAuthResponseCookies(c, result.headers);
-        await limiter.recordSuccess('setup', source);
-        return c.redirect('/admin/onboarding', 303);
+      } else if (action === 'adopt') {
+        setup = await service.adoptManual({
+          setupId: setup.id, expectedRevision: setup.revision,
+          appId: boundedSetupField(rawForm.appId, 64),
+          clientId: boundedSetupField(rawForm.clientId, 256),
+          clientSecret: boundedSetupField(rawForm.clientSecret, 4_096),
+          signingSecret: boundedSetupField(rawForm.signingSecret, 4_096),
+          expectedManifest: manifest,
+          observedManifest: JSON.parse(boundedSetupField(rawForm.observedManifest, 7_500)),
+        });
+      } else if (action === 'restart') {
+        setup = await service.restart({ setupId: setup.id, expectedRevision: setup.revision });
+      } else if (action === 'inspect') {
+        setup = await service.inspect(setup.id);
+      } else if (action !== 'open') {
+        throw new AuthDeniedError();
       }
-      // Fresh OSS setup is password-based. Cloudflare Access remains readable
-      // only for installations that were already pending before this flow;
-      // stale copies of the retired form must never create a new Access setup.
-      throw new AuthDeniedError();
+      await Promise.all([
+        limiter.recordSuccess('slack_setup_source', source),
+        limiter.recordSuccess(`slack_setup_operation_${action}`, setup.id),
+        limiter.recordSuccess('slack_setup_deployment', 'deployment'),
+      ]);
+      return c.html(renderSlackSetupPage({ setup, destination: setup.destination, manifest }));
     } catch (error) {
-      await limiter.recordFailure('setup', source);
-      if (!(error instanceof AuthDeniedError) && !(error instanceof PasswordPolicyError)) {
-        return c.json({ error: 'authentication_unavailable' }, 503);
+      if (error instanceof AuthRateLimitError) {
+        c.header('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))));
+        return c.html(renderSlackSetupPage({
+          ...(setup ? { setup } : {}),
+          destination: setup?.destination ?? '/admin',
+          manifest: buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) }),
+          error: 'rate_limited',
+        }), 429);
       }
-      const organization = await identity(c).getOrganization();
-      const config = (organization?.authMode as string | undefined) === 'access_pending'
-        ? await retiredIdentity(c).getAuthProviderConfig('cloudflare_access')
-        : undefined;
-      return c.html(
-        !passwordSetup && (organization?.authMode as string | undefined) === 'access_pending'
-          ? renderAuthSetupPage({
-            state: 'access_pending',
-            error: true,
-            origin: requestOrigin(c),
-            ...(config?.issuer === undefined ? {} : { issuer: config.issuer }),
-            ...(config?.audience === undefined ? {} : { audience: config.audience }),
-          })
-          : renderPasswordOwnerSetupPage({
-            error: error instanceof PasswordPolicyError ? error.code : true,
-            ...ownerSetupValues,
-          }),
-        401,
-      );
+      await limiter.recordFailure('slack_setup_source', source);
+      if (setup) await Promise.all([
+        limiter.recordFailure(`slack_setup_operation_${action}`, setup.id),
+        limiter.recordFailure('slack_setup_deployment', 'deployment'),
+      ]);
+      const code = error instanceof SlackAppCreationError ? error.code : 'setup_invalid';
+      const status = code === 'ambiguous_external_effect' ? 409
+        : code === 'setup_expired' ? 410
+        : code === 'setup_conflict' ? 409
+        : 400;
+      return c.html(renderSlackSetupPage({
+        ...(setup ? { setup } : {}),
+        destination: setup?.destination ?? '/admin',
+        manifest: buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) }),
+        error: code,
+      }), status);
     }
   });
 
@@ -6436,6 +6388,70 @@ function isLoopbackHttpOrigin(value: string): boolean {
     ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
 }
 
+function boundedSetupField(value: string | undefined, maximum: number): string {
+  const normalized = value?.trim() ?? '';
+  if (!normalized || normalized.length > maximum || /[\u0000-\u001f\u007f]/.test(normalized)) {
+    throw new SlackAppCreationError('setup_invalid', 'Slack setup input is invalid.');
+  }
+  return normalized;
+}
+
+function renderSlackSetupPage(input: {
+  setup?: SlackSetupTransaction;
+  destination: string;
+  manifest: ReturnType<typeof buildSlackAppManifest>;
+  error?: string;
+}): string {
+  const state = input.setup?.state ?? 'capability_required';
+  const manifestJson = JSON.stringify(input.manifest, null, 2);
+  const prefill = slackManifestPrefillUrl(input.manifest);
+  const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeSetupHtml(input.destination)}">`;
+  const stateNotice = input.error
+    ? `<p role="alert">${escapeSetupHtml(slackSetupMessage(input.error))}</p>`
+    : `<p id="slack-setup-status">${escapeSetupHtml(slackSetupMessage(state))}</p>`;
+  const open = !input.setup
+    ? `<form method="post" action="/admin/setup"><input type="hidden" name="action" value="open">${hidden}<button type="submit">Continue private setup</button></form>`
+    : '';
+  const create = input.setup?.state === 'awaiting_app_creation'
+    ? `<section><h2>Create programmatically</h2><p>The short-lived configuration token is sent once to Slack and is never stored.</p><form method="post" action="/admin/setup"><input type="hidden" name="action" value="create">${hidden}<label>Slack configuration token <input type="password" name="configurationToken" autocomplete="off" maxlength="512" required></label><button type="submit">Create Slack app</button></form></section>`
+    : '';
+  const manual = input.setup && ['awaiting_app_creation', 'ambiguous_external_effect'].includes(input.setup.state)
+    ? `<section><h2>Adopt a manually created app</h2><p><a href="${escapeSetupHtml(prefill)}" rel="noreferrer">Create from the exact manifest in Slack</a>, then export that app's manifest and supply its write-only credentials.</p><details><summary>Expected manifest</summary><pre>${escapeSetupHtml(manifestJson)}</pre></details><form method="post" action="/admin/setup"><input type="hidden" name="action" value="adopt">${hidden}<label>App ID <input type="password" name="appId" autocomplete="off" maxlength="64" required></label><label>Client ID <input type="password" name="clientId" autocomplete="off" maxlength="256" required></label><label>Client secret <input type="password" name="clientSecret" autocomplete="off" maxlength="4096" required></label><label>Signing secret <input type="password" name="signingSecret" autocomplete="off" maxlength="4096" required></label><label>Exported app manifest <textarea name="observedManifest" maxlength="7500" required></textarea></label><button type="submit">Validate and adopt</button></form></section>`
+    : '';
+  const ambiguous = input.setup?.state === 'ambiguous_external_effect'
+    ? `<section><h2>Slack result needs inspection</h2><p>Inspect your Slack apps before choosing. Creating again automatically could create a duplicate.</p><form method="post" action="/admin/setup"><input type="hidden" name="action" value="inspect">${hidden}<button type="submit">Inspect stored state</button></form><form method="post" action="/admin/setup"><input type="hidden" name="action" value="restart">${hidden}<button type="submit">I inspected Slack; restart creation</button></form></section>`
+    : '';
+  const interrupted = input.setup?.state === 'app_creation_pending'
+    ? `<section><h2>Creation was interrupted</h2><p>Inspect the persisted attempt. After the interruption grace period it will become an explicit ambiguity decision.</p><form method="post" action="/admin/setup"><input type="hidden" name="action" value="inspect">${hidden}<button type="submit">Inspect interrupted attempt</button></form></section>`
+    : '';
+  const created = input.setup && ['app_created', 'approval_pending'].includes(input.setup.state)
+    ? `<section><h2>App created</h2><p>Bot installation and Owner sign-in are separate journeys. Continue with bot installation first; an approval pause keeps this seven-day setup transaction while resume starts a fresh OAuth attempt.</p><p><a href="${escapeSetupHtml(input.destination)}">Continue to Admin</a></p></section>`
+    : '';
+  return `<!doctype html><html data-slack-setup-state="${escapeSetupHtml(state)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Set up Slack · Chickpea</title><style>body{font-family:system-ui;max-width:46rem;margin:6vh auto;padding:1.5rem;color:#392f1f}section{margin:2rem 0;padding:1.25rem;border:1px solid #d8d0c2;border-radius:.75rem}label{display:block;margin:1rem 0}input,textarea{box-sizing:border-box;width:100%;padding:.7rem}textarea{min-height:16rem}button{padding:.7rem 1rem}</style></head><body><main><h1>Create your Slack app</h1>${stateNotice}${open}${create}${manual}${interrupted}${ambiguous}${created}</main><script src="/admin/setup/client.js" defer></script></body></html>`;
+}
+
+function slackSetupMessage(code: string): string {
+  switch (code) {
+    case 'capability_required': return 'Open this page from the private deployment setup link.';
+    case 'awaiting_app_creation': return 'Choose programmatic creation or the convergent manual manifest path.';
+    case 'app_creation_pending': return 'Slack app creation was interrupted. Inspect the durable state before continuing.';
+    case 'ambiguous_external_effect': return 'Inspect your Slack apps, then adopt the matching app or explicitly restart.';
+    case 'app_created': return 'Slack app credentials were encrypted and the setup can continue.';
+    case 'approval_pending': return 'Slack approval is pending; this setup remains resumable for seven days.';
+    case 'setup_expired': return 'This private setup link expired. Create a new deployment setup link.';
+    case 'setup_conflict': return 'Setup changed in another tab. Reload and inspect the current state.';
+    case 'invalid_configuration_token': return 'Slack rejected the configuration token. Paste a fresh token and retry.';
+    case 'invalid_manifest': return 'The Slack app callbacks, scopes, or events do not match this deployment.';
+    case 'rate_limited': return 'Too many setup attempts. Wait for the retry window before continuing.';
+    default: return 'Slack setup could not continue. Check the private link and submitted fields.';
+  }
+}
+
+function escapeSetupHtml(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+}
+
 function authSourceKey(c: Context): string {
   return requestAuthSourceKey(c.req.raw);
 }
@@ -6500,7 +6516,7 @@ function slackManifestUrl(requestUrl: string): string {
   // reject a non-HTTPS Request URL. Public installs take the validated builder
   // path below; the Admin UI already explains that setup needs its public URL.
   if (new URL(requestUrl).protocol !== 'https:') {
-    const { $schema: _schema, ...manifest } = structuredClone(slackAppManifest);
+    const manifest = structuredClone(slackAppManifest);
     manifest.settings.event_subscriptions.request_url = requestUrl;
     return `https://api.slack.com/apps?new_app=1&manifest_json=${
       encodeURIComponent(JSON.stringify(manifest))
@@ -6595,10 +6611,6 @@ function isHumanAuthFormMutation(c: Context): boolean {
 
 function renderSlackActorBindingResult(success: boolean): string {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Connect Slack · Chickpea</title></head><body style="font-family:system-ui;max-width:36rem;margin:10vh auto;padding:2rem;color:#392f1f"><h1>${success ? 'Slack account connected' : 'This connection link is unavailable'}</h1><p>${success ? 'Return to Slack and send your Agent-memory request again.' : 'Request a new connection link from Chickpea in Slack.'}</p></body></html>`;
-}
-
-function preservedFormValue(value: unknown, maxLength: number): string {
-  return typeof value === 'string' ? value.slice(0, maxLength) : '';
 }
 
 function betterAuthJsonRequest(

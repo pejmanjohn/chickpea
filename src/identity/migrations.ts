@@ -43,6 +43,21 @@ export const IDENTITY_SCHEMA_V1_STATEMENTS = [
     ON identity_slack_credential_revisions (identity_id) WHERE status = 'candidate'`,
   `CREATE INDEX identity_slack_credential_key_idx
     ON identity_slack_credential_revisions (key_id, status, rotation_epoch)`,
+  `CREATE TABLE identity_slack_setup_transactions (
+    setup_id TEXT PRIMARY KEY CHECK (setup_id = 'setup_default'),
+    locator_hash TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL CHECK (state IN (
+      'awaiting_app_creation', 'app_creation_pending', 'ambiguous_external_effect',
+      'app_created', 'approval_pending', 'expired', 'consumed'
+    )),
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    destination TEXT NOT NULL,
+    manifest_fingerprint TEXT, app_id TEXT, credential_revision TEXT,
+    last_error_code TEXT, expires_at INTEGER NOT NULL, consumed_at INTEGER,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX identity_slack_setup_state_idx
+    ON identity_slack_setup_transactions (state, expires_at)`,
   `CREATE TABLE identity_organizations (
     organization_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, slack_team_id TEXT UNIQUE,
     auth_mode TEXT NOT NULL CHECK (auth_mode IN ('unconfigured', 'slack_active')),
