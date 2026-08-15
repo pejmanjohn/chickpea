@@ -70,7 +70,7 @@ function fromSources(
     return { value: defaultOnBoolean(stored), source: 'stored' };
   }
   return {
-    value: key === 'progressiveStreaming' || key === 'nativeTasks' ? false : true,
+    value: key !== 'progressiveStreaming',
     source: 'default',
   };
 }

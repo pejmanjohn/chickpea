@@ -7375,7 +7375,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       }
       return html + '<div class="combo-group">no providers configured</div><div class="combo-foot">No provider keys on this install yet. Type any provider/model specifier to pin one now, or set <span class="mono" style="color:var(--text-2);">SLACK_TAG_MODEL</span> (<span class="mono" style="color:var(--text-2);">provider/model</span>) as an offline/dev fallback so an unpinned Agent still replies.</div>' + settingsRow + '</div>';
     }
-    return html + '<div class="combo-foot">Anthropic and OpenAI list their live models; OpenRouter and Workers AI show your starred favorites. Type any provider/model specifier.</div>' + settingsRow + '</div>';
+    return html + settingsRow + '</div>';
   }
 
   // ---- Audit Logs > Memory -------------------------------------------------

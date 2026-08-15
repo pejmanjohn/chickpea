@@ -727,7 +727,7 @@ function runAdminPageHarness(
     welcomeOnJoin: { value: true, source: 'default' },
     ambientParticipation: { value: true, source: 'default' },
     progressiveStreaming: { value: false, source: 'default' },
-    nativeTasks: { value: false, source: 'default' },
+    nativeTasks: { value: true, source: 'default' },
   };
   let slackBehaviorGetFailures = options.slackBehaviorGetFailures ?? 0;
   const slackBehaviorPutError = options.slackBehaviorPutError;
@@ -3487,7 +3487,7 @@ test('Slack behavior writes serialize and environment-managed settings stay read
       welcomeOnJoin: { value: true, source: 'default' },
       ambientParticipation: { value: true, source: 'default' },
       progressiveStreaming: { value: false, source: 'default' },
-      nativeTasks: { value: false, source: 'default' },
+      nativeTasks: { value: true, source: 'default' },
     },
   });
   await flushAsync();
@@ -12027,6 +12027,10 @@ test('the profile Model picker labels Cloudflare binding suggestions as workers-
   // The binding group's options carry the cloudflare/ specifier prefix, built
   // from the starred favorites (not the leaked src path or a raw @cf id).
   assert.match(harness.app.innerHTML, /data-model="cloudflare\/@cf\/zai-org\/glm-5\.2"/);
+  assert.doesNotMatch(
+    harness.app.innerHTML,
+    /Anthropic and OpenAI list their live models/,
+  );
 });
 
 test('the profile Model picker renders the FULL live Anthropic list with a user-facing source', async () => {

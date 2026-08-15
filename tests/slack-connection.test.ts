@@ -1397,7 +1397,7 @@ test('Slack behavior settings default on, persist booleans, and report provenanc
         welcomeOnJoin: { value: true, source: 'default' },
         ambientParticipation: { value: true, source: 'default' },
         progressiveStreaming: { value: false, source: 'default' },
-        nativeTasks: { value: false, source: 'default' },
+        nativeTasks: { value: true, source: 'default' },
       });
 
       const saved = await app.request('/admin/api/slack-behavior', {
@@ -1456,7 +1456,7 @@ test('Slack behavior multi-key updates use one atomic settings patch', async () 
         welcomeOnJoin: { value: false, source: 'stored' },
         ambientParticipation: { value: true, source: 'default' },
         progressiveStreaming: { value: false, source: 'default' },
-        nativeTasks: { value: false, source: 'default' },
+        nativeTasks: { value: true, source: 'default' },
       });
       assert.equal(patchCalls, 1);
     });
@@ -1479,7 +1479,7 @@ test('Slack behavior env overrides are read-only and PUT is atomic', async () =>
           welcomeOnJoin: { value: false, source: 'env' },
           ambientParticipation: { value: true, source: 'default' },
           progressiveStreaming: { value: false, source: 'default' },
-          nativeTasks: { value: false, source: 'default' },
+          nativeTasks: { value: true, source: 'default' },
         });
 
         const conflict = await app.request('/admin/api/slack-behavior', {
@@ -1525,7 +1525,7 @@ test('blank Slack behavior env placeholders do not lock browser-managed settings
           welcomeOnJoin: { value: true, source: 'default' },
           ambientParticipation: { value: true, source: 'default' },
           progressiveStreaming: { value: false, source: 'default' },
-          nativeTasks: { value: false, source: 'default' },
+          nativeTasks: { value: true, source: 'default' },
         });
 
         const saved = await app.request('/admin/api/slack-behavior', {
@@ -1540,7 +1540,7 @@ test('blank Slack behavior env placeholders do not lock browser-managed settings
           welcomeOnJoin: { value: true, source: 'default' },
           ambientParticipation: { value: true, source: 'default' },
           progressiveStreaming: { value: false, source: 'default' },
-          nativeTasks: { value: false, source: 'default' },
+          nativeTasks: { value: true, source: 'default' },
         });
       },
     );
