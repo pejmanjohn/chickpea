@@ -16,6 +16,33 @@ export const IDENTITY_SCHEMA_V1_STATEMENTS = [
     canonical_admin_origin TEXT, better_auth_organization_id TEXT,
     revision INTEGER NOT NULL CHECK (revision > 0), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
   )`,
+  `CREATE TABLE identity_slack_credential_controls (
+    installation_id TEXT PRIMARY KEY,
+    deployment_id TEXT NOT NULL UNIQUE,
+    current_key_id TEXT NOT NULL,
+    rotation_epoch INTEGER NOT NULL CHECK (rotation_epoch > 0),
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE identity_slack_credential_revisions (
+    identity_id TEXT NOT NULL,
+    identity_class TEXT NOT NULL CHECK (identity_class IN ('workspace_default', 'dedicated_bot')),
+    purpose TEXT NOT NULL CHECK (purpose IN ('app_credentials', 'connected_credentials', 'bot_credentials')),
+    revision TEXT NOT NULL, base_revision TEXT,
+    status TEXT NOT NULL CHECK (status IN ('candidate', 'active', 'tombstoned')),
+    app_id TEXT NOT NULL, team_id TEXT, bot_user_id TEXT,
+    granted_scopes_json TEXT NOT NULL,
+    validated_at INTEGER, manifest_fingerprint TEXT,
+    rotation_epoch INTEGER NOT NULL CHECK (rotation_epoch > 0),
+    envelope_version INTEGER, envelope_algorithm TEXT, key_id TEXT, nonce TEXT, ciphertext TEXT,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, tombstoned_at INTEGER,
+    PRIMARY KEY (identity_id, revision)
+  )`,
+  `CREATE UNIQUE INDEX identity_slack_credential_active_uidx
+    ON identity_slack_credential_revisions (identity_id) WHERE status = 'active'`,
+  `CREATE UNIQUE INDEX identity_slack_credential_candidate_uidx
+    ON identity_slack_credential_revisions (identity_id) WHERE status = 'candidate'`,
+  `CREATE INDEX identity_slack_credential_key_idx
+    ON identity_slack_credential_revisions (key_id, status, rotation_epoch)`,
   `CREATE TABLE identity_organizations (
     organization_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, slack_team_id TEXT UNIQUE,
     auth_mode TEXT NOT NULL CHECK (auth_mode IN ('unconfigured', 'slack_active')),

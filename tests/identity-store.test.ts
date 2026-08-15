@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { IdentityStateError } from '../src/identity/errors.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
 
 const NOW = 1_786_000_000_000;
 const TEAM = 'T12345678';
@@ -129,6 +130,179 @@ test('identity export contains Slack authority and no credential locators', asyn
   assert.doesNotMatch(serialized, new RegExp(CAPABILITY));
   assert.equal(exported.authOperations[0]?.chickpeaRole, 'owner');
 });
+
+test('credential realm metadata stays immutable across promotion and tombstone recovery', async () => {
+  let now = NOW;
+  const store = new SqliteIdentityStore(':memory:', { now: () => now });
+  try {
+    const control = await store.ensureSlackCredentialControl({ currentKeyId: 'key_v1' });
+    const app = await store.stageSlackCredentialRevision(credentialRevisionInput({
+      revision: 'revision_app',
+      expectedRotationEpoch: control.rotationEpoch,
+      expectedActiveRevision: null,
+      purpose: 'app_credentials',
+      teamId: null,
+    }));
+    await store.promoteSlackCredentialRevision({
+      identityId: app.identityId,
+      candidateRevision: app.revision,
+      expectedActiveRevision: null,
+      expectedRotationEpoch: control.rotationEpoch,
+    });
+    now += 1;
+    const connected = await store.stageSlackCredentialRevision(credentialRevisionInput({
+      revision: 'revision_connected',
+      expectedRotationEpoch: control.rotationEpoch,
+      expectedActiveRevision: app.revision,
+      purpose: 'connected_credentials',
+      teamId: 'TACME',
+      botUserId: 'UBOT',
+    }));
+    await store.promoteSlackCredentialRevision({
+      identityId: connected.identityId,
+      candidateRevision: connected.revision,
+      expectedActiveRevision: app.revision,
+      expectedRotationEpoch: control.rotationEpoch,
+    });
+    await assert.rejects(
+      () => store.stageSlackCredentialRevision(credentialRevisionInput({
+        revision: 'revision_wrong_app',
+        expectedRotationEpoch: control.rotationEpoch,
+        expectedActiveRevision: connected.revision,
+        purpose: 'connected_credentials',
+        appId: 'AOTHER',
+        teamId: 'TACME',
+      })),
+      /app identity is immutable/,
+    );
+    await assert.rejects(
+      () => store.stageSlackCredentialRevision(credentialRevisionInput({
+        revision: 'revision_wrong_manifest',
+        expectedRotationEpoch: control.rotationEpoch,
+        expectedActiveRevision: connected.revision,
+        purpose: 'connected_credentials',
+        teamId: 'TACME',
+        manifestFingerprint: 'manifest-v2',
+      })),
+      /manifest is immutable/,
+    );
+    const lateCandidate = await store.stageSlackCredentialRevision(credentialRevisionInput({
+      revision: 'revision_late_callback',
+      expectedRotationEpoch: control.rotationEpoch,
+      expectedActiveRevision: connected.revision,
+      purpose: 'connected_credentials',
+      teamId: 'TACME',
+    }));
+    await store.tombstoneSlackCredentialRevision({
+      identityId: connected.identityId,
+      revision: connected.revision,
+      expectedRotationEpoch: control.rotationEpoch,
+    });
+    await assert.rejects(
+      () => store.promoteSlackCredentialRevision({
+        identityId: lateCandidate.identityId,
+        candidateRevision: lateCandidate.revision,
+        expectedActiveRevision: null,
+        expectedRotationEpoch: control.rotationEpoch,
+      }),
+      /candidate is not promotable/,
+    );
+    await store.tombstoneSlackCredentialRevision({
+      identityId: lateCandidate.identityId,
+      revision: lateCandidate.revision,
+      expectedRotationEpoch: control.rotationEpoch,
+    });
+    await assert.rejects(
+      () => store.stageSlackCredentialRevision(credentialRevisionInput({
+        revision: 'revision_wrong_team_after_tombstone',
+        expectedRotationEpoch: control.rotationEpoch,
+        expectedActiveRevision: null,
+        purpose: 'connected_credentials',
+        teamId: 'TOTHER',
+      })),
+      /workspace identity is immutable/,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('retention scrubs inactive ciphertext while preserving active bindings and body-free audit facts', async () => {
+  let now = NOW;
+  const store = new SqliteIdentityStore(':memory:', { now: () => now });
+  try {
+    const control = await store.ensureSlackCredentialControl({ currentKeyId: 'key_v1' });
+    const active = await store.stageSlackCredentialRevision(credentialRevisionInput({
+      revision: 'revision_active',
+      expectedRotationEpoch: control.rotationEpoch,
+      expectedActiveRevision: null,
+      purpose: 'connected_credentials',
+      teamId: 'TACME',
+    }));
+    await store.promoteSlackCredentialRevision({
+      identityId: active.identityId,
+      candidateRevision: active.revision,
+      expectedActiveRevision: null,
+      expectedRotationEpoch: control.rotationEpoch,
+    });
+    const candidate = await store.stageSlackCredentialRevision(credentialRevisionInput({
+      revision: 'revision_inactive',
+      expectedRotationEpoch: control.rotationEpoch,
+      expectedActiveRevision: active.revision,
+      purpose: 'connected_credentials',
+      teamId: 'TACME',
+    }));
+    await store.recordAuthAudit({
+      event: 'authorization', outcome: 'success', action: 'credential.candidate_staged',
+      correlationId: 'retention_fact_1', authenticatorKind: 'deployment_token',
+    });
+    now += 60_000;
+    const swept = await store.sweepSlackIdentityRetention(now, 30_000);
+    assert.equal(swept.scrubbedCredentialCandidates, 1);
+    assert.equal((await store.getActiveSlackCredentialRevision(active.identityId))?.revision, active.revision);
+    const scrubbed = await store.getSlackCredentialRevision(candidate.identityId, candidate.revision);
+    assert.equal(scrubbed?.status, 'tombstoned');
+    assert.equal(scrubbed?.envelope, null);
+    assert.equal((await store.listAuditEvents()).length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+function credentialRevisionInput(overrides: {
+  revision: string;
+  expectedRotationEpoch: number;
+  expectedActiveRevision: string | null;
+  purpose: 'app_credentials' | 'connected_credentials';
+  appId?: string;
+  teamId: string | null;
+  botUserId?: string;
+  manifestFingerprint?: string;
+}) {
+  return {
+    identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    identityClass: 'workspace_default' as const,
+    purpose: overrides.purpose,
+    revision: overrides.revision,
+    expectedRotationEpoch: overrides.expectedRotationEpoch,
+    expectedActiveRevision: overrides.expectedActiveRevision,
+    appId: overrides.appId ?? 'AAPP',
+    teamId: overrides.teamId,
+    botUserId: overrides.purpose === 'connected_credentials'
+      ? overrides.botUserId ?? 'UBOT'
+      : null,
+    grantedScopes: overrides.purpose === 'connected_credentials' ? ['chat:write'] : [],
+    validatedAt: overrides.purpose === 'connected_credentials' ? NOW : null,
+    manifestFingerprint: overrides.manifestFingerprint ?? 'manifest-v1',
+    envelope: {
+      version: 1 as const,
+      algorithm: 'AES-GCM-256' as const,
+      keyId: 'key_v1',
+      nonce: 'AAAAAAAAAAAAAAAA',
+      ciphertext: 'A'.repeat(22),
+    },
+  };
+}
 
 async function claimFirstOwner(store: SqliteIdentityStore) {
   const operation = await store.createAuthOperation({

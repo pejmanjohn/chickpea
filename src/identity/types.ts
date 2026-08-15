@@ -1,4 +1,9 @@
 import type { AuditEvent } from '../audit/types.ts';
+import type {
+  SlackCredentialIdentityClass,
+  SlackCredentialPurpose,
+  SlackSecretEnvelope,
+} from '../slack/secret-envelope.ts';
 
 export type OrganizationRole = 'owner' | 'admin';
 export type MembershipStatus = 'active' | 'suspended' | 'removed';
@@ -128,6 +133,99 @@ export interface AuthControl {
   revision: number;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface SlackCredentialControl {
+  installationId: string;
+  deploymentId: string;
+  currentKeyId: string;
+  rotationEpoch: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type SlackCredentialRevisionStatus = 'candidate' | 'active' | 'tombstoned';
+
+/** Internal encrypted-state record. It is deliberately absent from exports/admin projections. */
+export interface SlackCredentialRevision {
+  identityId: string;
+  identityClass: SlackCredentialIdentityClass;
+  purpose: SlackCredentialPurpose;
+  revision: string;
+  /** Active revision this candidate was staged against; immutable callback fence. */
+  baseRevision: string | null;
+  status: SlackCredentialRevisionStatus;
+  appId: string;
+  teamId: string | null;
+  botUserId: string | null;
+  grantedScopes: string[];
+  validatedAt: number | null;
+  manifestFingerprint: string | null;
+  rotationEpoch: number;
+  envelope: SlackSecretEnvelope | null;
+  createdAt: number;
+  updatedAt: number;
+  tombstonedAt: number | null;
+}
+
+export interface EnsureSlackCredentialControlInput {
+  installationId?: string;
+  currentKeyId: string;
+}
+
+export interface BeginSlackCredentialRotationInput {
+  installationId?: string;
+  expectedEpoch: number;
+  expectedCurrentKeyId: string;
+  nextKeyId: string;
+}
+
+export interface StageSlackCredentialRevisionInput {
+  installationId?: string;
+  expectedRotationEpoch: number;
+  expectedActiveRevision: string | null;
+  revision: string;
+  identityId: string;
+  identityClass: SlackCredentialIdentityClass;
+  purpose: SlackCredentialPurpose;
+  appId: string;
+  teamId?: string | null;
+  botUserId?: string | null;
+  grantedScopes?: string[];
+  validatedAt?: number | null;
+  manifestFingerprint?: string | null;
+  envelope: SlackSecretEnvelope;
+}
+
+export interface PromoteSlackCredentialRevisionInput {
+  installationId?: string;
+  identityId: string;
+  candidateRevision: string;
+  expectedActiveRevision: string | null;
+  expectedRotationEpoch: number;
+}
+
+export interface TombstoneSlackCredentialRevisionInput {
+  installationId?: string;
+  identityId: string;
+  revision: string;
+  expectedRotationEpoch: number;
+}
+
+export interface RewrapSlackCredentialRevisionInput {
+  installationId?: string;
+  identityId: string;
+  revision: string;
+  expectedKeyId: string;
+  expectedRotationEpoch: number;
+  envelope: SlackSecretEnvelope;
+}
+
+export interface SlackCredentialRetentionResult {
+  expiredAuthOperations: number;
+  expiredInvitations: number;
+  expiredBrowserSessions: number;
+  scrubbedCredentialCandidates: number;
 }
 
 export interface AuthOperation {
@@ -351,6 +449,19 @@ export interface IdentityStore extends HumanIdentityDirectory {
   ensureAuthControl(input?: EnsureAuthControlInput): Promise<AuthControl>;
   getAuthControl(installationId?: string): Promise<AuthControl | undefined>;
   updateAuthControl(input: UpdateAuthControlInput): Promise<AuthControl>;
+  ensureSlackCredentialControl(input: EnsureSlackCredentialControlInput): Promise<SlackCredentialControl>;
+  getSlackCredentialControl(installationId?: string): Promise<SlackCredentialControl | undefined>;
+  beginSlackCredentialRotation(input: BeginSlackCredentialRotationInput): Promise<SlackCredentialControl>;
+  stageSlackCredentialRevision(input: StageSlackCredentialRevisionInput): Promise<SlackCredentialRevision>;
+  getActiveSlackCredentialRevision(identityId: string): Promise<SlackCredentialRevision | undefined>;
+  getSlackCredentialRevision(identityId: string, revision: string): Promise<SlackCredentialRevision | undefined>;
+  hasSlackCredentialHistory(identityId: string): Promise<boolean>;
+  listLiveSlackCredentialRevisions(): Promise<SlackCredentialRevision[]>;
+  promoteSlackCredentialRevision(input: PromoteSlackCredentialRevisionInput): Promise<SlackCredentialRevision>;
+  tombstoneSlackCredentialRevision(input: TombstoneSlackCredentialRevisionInput): Promise<SlackCredentialRevision>;
+  rewrapSlackCredentialRevision(input: RewrapSlackCredentialRevisionInput): Promise<SlackCredentialRevision>;
+  countLiveSlackCredentialRevisionsByKey(keyId: string, expectedRotationEpoch: number): Promise<number>;
+  sweepSlackIdentityRetention(at: number, candidateMaxAgeMs: number): Promise<SlackCredentialRetentionResult>;
   createAuthOperation(input: CreateAuthOperationInput): Promise<AuthOperation>;
   reservePendingAuthOperation(input: CreateAuthOperationInput): Promise<{ operation: AuthOperation; created: boolean }>;
   getAuthOperation(operationId: string): Promise<AuthOperation | undefined>;
@@ -401,6 +512,19 @@ export type IdentityRpcRequest =
   | { kind: 'ensure_auth_control'; input: EnsureAuthControlInput }
   | { kind: 'get_auth_control'; installationId?: string }
   | { kind: 'update_auth_control'; input: UpdateAuthControlInput }
+  | { kind: 'ensure_slack_credential_control'; input: EnsureSlackCredentialControlInput }
+  | { kind: 'get_slack_credential_control'; installationId?: string }
+  | { kind: 'begin_slack_credential_rotation'; input: BeginSlackCredentialRotationInput }
+  | { kind: 'stage_slack_credential_revision'; input: StageSlackCredentialRevisionInput }
+  | { kind: 'get_active_slack_credential_revision'; identityId: string }
+  | { kind: 'get_slack_credential_revision'; identityId: string; revision: string }
+  | { kind: 'has_slack_credential_history'; identityId: string }
+  | { kind: 'list_live_slack_credential_revisions' }
+  | { kind: 'promote_slack_credential_revision'; input: PromoteSlackCredentialRevisionInput }
+  | { kind: 'tombstone_slack_credential_revision'; input: TombstoneSlackCredentialRevisionInput }
+  | { kind: 'rewrap_slack_credential_revision'; input: RewrapSlackCredentialRevisionInput }
+  | { kind: 'count_live_slack_credential_revisions_by_key'; keyId: string; expectedRotationEpoch: number }
+  | { kind: 'sweep_slack_identity_retention'; at: number; candidateMaxAgeMs: number }
   | { kind: 'create_auth_operation'; input: CreateAuthOperationInput }
   | { kind: 'reserve_pending_auth_operation'; input: CreateAuthOperationInput }
   | { kind: 'get_auth_operation'; operationId: string }
@@ -447,6 +571,12 @@ export type IdentityRpcRequest =
 
 export type IdentityRpcResponse =
   | { kind: 'auth_control'; control: AuthControl | null }
+  | { kind: 'slack_credential_control'; control: SlackCredentialControl | null }
+  | { kind: 'slack_credential_revision'; revision: SlackCredentialRevision | null }
+  | { kind: 'slack_credential_revisions'; revisions: SlackCredentialRevision[] }
+  | { kind: 'slack_credential_count'; count: number }
+  | { kind: 'slack_credential_presence'; present: boolean }
+  | { kind: 'slack_credential_retention'; result: SlackCredentialRetentionResult }
   | { kind: 'auth_operation'; operation: AuthOperation | null }
   | { kind: 'auth_operation_reservation'; operation: AuthOperation; created: boolean }
   | { kind: 'auth_operations'; operations: AuthOperation[] }

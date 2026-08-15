@@ -56,7 +56,7 @@ Protect only `<origin>/admin` and `<origin>/admin/*`. Slack events, Slack intera
 
 ## Node deployments
 
-Node uses the same built-in setup, login, invitation, role, reset, and recovery behavior over the process-cached SQLite auth database. Put every non-loopback deployment behind HTTPS, restrict the SQLite file to the service account, back it up with its WAL state, and avoid multiple processes unless you provide a supported shared database.
+Node uses the same built-in setup, login, invitation, role, reset, and recovery behavior over the process-cached SQLite auth database. Slack credential encryption uses a separate auto-minted mode-0600 keyring at `<SLACK_STATE_DB_PATH>.credential-keyring.json` by default; `CHICKPEA_CREDENTIAL_KEYRING_PATH` can place it on separately protected storage and is required for in-memory state. Back up and restore that keyring together with the state database. A missing live key enters `recovery_only`; it never falls back to Slack environment variables or `CHICKPEA_AUTH_SECRET`. Put every non-loopback deployment behind HTTPS, restrict the SQLite and keyring files to the service account, and avoid multiple processes unless you provide a supported shared database.
 
 The older explicit personal-token bootstrap remains a compatibility path for an installation already using token mode. A personal token is a machine credential, not password-lifecycle authority.
 

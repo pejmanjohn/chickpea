@@ -18,7 +18,7 @@ const DEFAULT_HOST = '127.0.0.1';
 const WORKSPACE_ID = 'TVISUAL';
 const LOCAL_SLACK_TOKEN = 'xoxb-local-admin-visual-fixture';
 const LOCAL_SLACK_SECRET = 'local-admin-visual-signing-secret';
-const LOCAL_SLACK_BOT_ID = 'U_VISUAL_BOT';
+const LOCAL_SLACK_BOT_ID = 'UVISUALBOT';
 const ENV_KEYS = [
   'SLACK_API_URL',
   'SLACK_BOT_TOKEN',
@@ -227,7 +227,7 @@ async function seedConfig(store) {
   await store.updateSlackIdentity(defaultIdentity.id, defaultIdentity.connectionRevision, {
     lifecycle: 'connected',
     teamId: WORKSPACE_ID,
-    appId: 'A_VISUAL',
+    appId: 'AVISUAL',
     botUserId: LOCAL_SLACK_BOT_ID,
     credentialProvenance: 'workspace_default',
     observedDisplayName: 'Chickpea',
@@ -236,17 +236,8 @@ async function seedConfig(store) {
   });
 }
 
-async function seedSettings(settings, slackTokenFingerprint) {
-  const values = {
-    'slack.connectionRevision': 'visual-fixture-1',
-    'slack.botToken': LOCAL_SLACK_TOKEN,
-    'slack.signingSecret': LOCAL_SLACK_SECRET,
-    'slack.botUserId': LOCAL_SLACK_BOT_ID,
-    'slack.teamId': WORKSPACE_ID,
-    'slack.teamName': 'Acme Design',
-    'slack.teamTokenFingerprint': slackTokenFingerprint(LOCAL_SLACK_TOKEN),
-  };
-  for (const [key, value] of Object.entries(values)) await settings.setSetting(key, value);
+async function seedSettings(settings) {
+  await settings.setSetting('slack.teamName', 'Acme Design');
 }
 
 async function seedMemory(memory) {
@@ -318,7 +309,7 @@ function fakeSlackResponse(pathname, body) {
   if (pathname.endsWith('/auth.test')) {
     return {
       ok: true,
-      app_id: 'A_VISUAL',
+      app_id: 'AVISUAL',
       team: 'Acme Design',
       team_id: WORKSPACE_ID,
       user_id: LOCAL_SLACK_BOT_ID,
@@ -444,12 +435,13 @@ export async function startAdminVisualFixture(options = {}) {
     const { SqliteSlackStateStore } = await loadTsModule('src/slack/claim-store.ts');
     const { SqliteAgentSnapshotStore } = await loadTsModule('src/config/snapshot-store.ts');
     const { SqliteIdentityStore } = await loadTsModule('src/identity/store.ts');
+    const { generateCredentialKeyring } = await loadTsModule('src/slack/credential-keyring.ts');
+    const { writeSlackIdentityCredentials } = await loadTsModule('src/slack/identity-credentials.ts');
     const {
       invalidateSlackChannelsCache,
     } = await loadTsModule('src/slack/channels.ts');
     const {
       invalidateStoredSlackCredentials,
-      slackTokenFingerprint,
     } = await loadTsModule('src/slack/credentials.ts');
 
     invalidateSlackChannelsCache();
@@ -470,7 +462,23 @@ export async function startAdminVisualFixture(options = {}) {
     stores.push(store, settings, memory, routines, usage, work, slackState, snapshots, identity);
 
     await seedConfig(store);
-    await seedSettings(settings, slackTokenFingerprint);
+    await seedSettings(settings);
+    const slackCredentials = {
+      state: identity,
+      keyring: generateCredentialKeyring(),
+    };
+    await writeSlackIdentityCredentials(
+      slackCredentials,
+      'slack_identity_default',
+      null,
+      {
+        botToken: LOCAL_SLACK_TOKEN,
+        signingSecret: LOCAL_SLACK_SECRET,
+        botUserId: LOCAL_SLACK_BOT_ID,
+        appId: 'AVISUAL',
+        teamId: WORKSPACE_ID,
+      },
+    );
     await seedMemory(memory);
     const owner = await seedVisualSlackOwner(identity);
 
@@ -494,6 +502,7 @@ export async function startAdminVisualFixture(options = {}) {
       slackState,
       snapshots,
       identity,
+      slackCredentials,
       usageAdminUi: true,
       authService: {
         async authenticateRequest(request) {
@@ -544,12 +553,8 @@ export async function startAdminVisualFixture(options = {}) {
       canonicalAdminOrigin: baseUrl,
     });
 
-    // These values are visibly fake and useful only while this loopback server
-    // exists. Setting the complete triple prevents ambient real Slack
-    // credentials from winning the production resolver's env-first policy.
-    process.env.SLACK_BOT_TOKEN = LOCAL_SLACK_TOKEN;
-    process.env.SLACK_SIGNING_SECRET = LOCAL_SLACK_SECRET;
-    process.env.SLACK_BOT_USER_ID = LOCAL_SLACK_BOT_ID;
+    // The API endpoint is process-local. Slack secrets stay exclusively in the
+    // encrypted fixture revision and never become runtime environment inputs.
     process.env.SLACK_API_URL = `${baseUrl}/__admin_visual_fixture/slack`;
 
     return {

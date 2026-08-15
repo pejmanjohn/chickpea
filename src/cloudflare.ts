@@ -147,6 +147,7 @@ import type { UsageRpcRequest, UsageRpcResponse, UsageStore } from './usage/type
 import { WorkStoreLogic } from './work/store.ts';
 import { IdentityStateError } from './identity/errors.ts';
 import { IdentityStoreLogic } from './identity/store.ts';
+import type { IdentityStore } from './identity/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from './identity/types.ts';
 import {
   DurableRunDriver,
@@ -1534,7 +1535,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 
   private createAlarmIdentityResolver(stores: TagStateStores): SlackIdentityExecutionResolver {
-    const localSettings = localSettingsStore(stores);
     return cacheSlackIdentityExecutionContexts(
       (identityId) => resolveSlackIdentityExecutionContext(
           identityId,
@@ -1545,7 +1545,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
               updateSlackIdentity: async (id, expectedRevision, patch) =>
                 stores.config.updateSlackIdentity(id, expectedRevision, patch),
             },
-            settings: localSettings,
+            credentialDependencies: {
+              // The alarm is already executing inside TAG_STATE; using the
+              // local logic avoids a self-RPC while retaining durable state.
+              state: stores.identity as unknown as IdentityStore,
+              env: this.env as PlatformEnv,
+            },
           },
         ),
     );

@@ -54,7 +54,11 @@ import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { FakeSlackBackend } from './parity/fake-slack.ts';
-import { writeSlackIdentityCredentials } from '../src/slack/identity-credentials.ts';
+import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import {
+  writeSlackIdentityCredentials,
+  type SlackCredentialDependencies,
+} from '../src/slack/identity-credentials.ts';
 import {
   SLACK_SETTING_KEYS,
   type SlackConversationsInfoResult,
@@ -136,6 +140,7 @@ interface AdminHarnessOptions {
   runtimeDrain?: () => Promise<RuntimeDrainStatus>;
   slackState?: SlackStateStore;
   identity?: IdentityStore;
+  slackCredentials?: SlackCredentialDependencies;
   work?: WorkStore;
   snapshots?: AgentSnapshotStore;
   slackConversationsInfo?: (
@@ -195,6 +200,7 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
         : {}),
       ...(options.runtimeDrain ? { runtimeDrain: options.runtimeDrain } : {}),
       ...(options.slackState ? { slackState: options.slackState } : {}),
+      ...(options.slackCredentials ? { slackCredentials: options.slackCredentials } : {}),
       ...(options.work ? { work: options.work } : {}),
       ...(options.snapshots ? { snapshots: options.snapshots } : {}),
       ...(options.slackConversationsInfo
@@ -894,9 +900,24 @@ test('runtime drain fails closed when the state store is unavailable', async () 
 test('Slack presentation diagnostics are admin-only and workspace-scoped', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
-  await settings.setSetting('slack.teamId', 'T_AUTHORIZED');
+  const credentialState = new SqliteIdentityStore(':memory:');
+  const slackCredentials = {
+    state: credentialState,
+    keyring: generateCredentialKeyring(),
+  };
+  await writeSlackIdentityCredentials(
+    slackCredentials,
+    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    null,
+    {
+      botToken: 'xoxb-presentations',
+      signingSecret: 'presentations-signing-secret',
+      appId: 'APRESENTATIONS',
+      teamId: 'TAUTHORIZED',
+    },
+  );
   const summary = {
-    workspaceId: 'T_AUTHORIZED',
+    workspaceId: 'TAUTHORIZED',
     total: 2,
     truncated: false,
     streamStates: { finalized: 2 },
@@ -906,12 +927,12 @@ test('Slack presentation diagnostics are admin-only and workspace-scoped', async
   };
   const slackState = {
     summarizeRunPresentations: async (workspaceId: string) => {
-      assert.equal(workspaceId, 'T_AUTHORIZED');
+      assert.equal(workspaceId, 'TAUTHORIZED');
       return summary;
     },
   } as unknown as SlackStateStore;
   try {
-    const app = appWithAdminOptions(store, { settings, slackState });
+    const app = appWithAdminOptions(store, { settings, slackState, slackCredentials });
     assert.equal(
       (await app.request('/admin/api/runtime/slack-presentations?workspaceId=T_AUTHORIZED')).status,
       401,
@@ -924,13 +945,14 @@ test('Slack presentation diagnostics are admin-only and workspace-scoped', async
     assert.equal(wrongWorkspace.headers.get('cache-control'), 'no-store');
 
     const response = await app.request(
-      '/admin/api/runtime/slack-presentations?workspaceId=T_AUTHORIZED',
+      '/admin/api/runtime/slack-presentations?workspaceId=TAUTHORIZED',
       { headers: auth(ADMIN_TOKEN) },
     );
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.deepEqual(await response.json(), summary);
   } finally {
+    credentialState.close();
     settings.close();
     store.close();
   }
@@ -1675,6 +1697,11 @@ test('admin API rejects patches that leave an agent without a resolvable model',
 test('onboarding API derives live stages and completes only after a delivered selected-channel mention', async () => {
   const store = new SqliteConfigStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
+  const credentialState = new SqliteIdentityStore(':memory:');
+  const slackCredentials = {
+    state: credentialState,
+    keyring: generateCredentialKeyring(),
+  };
   let delivered: WorkRunListItem | undefined;
   let onboardingChannelMember = true;
   const work = {
@@ -1687,6 +1714,7 @@ test('onboarding API derives live stages and completes only after a delivered se
     const app = appWithAdminOptions(store, {
       settings,
       work,
+      slackCredentials,
       slackConversationsInfo: async (_botToken, channelId) => ({
         ok: true,
         error: undefined,
@@ -1709,18 +1737,25 @@ test('onboarding API derives live stages and completes only after a delivered se
     await store.updateSlackIdentity(identity.id, identity.connectionRevision, {
       lifecycle: 'connected',
       teamId: 'TDESIGN',
-      botUserId: 'U_CHICKPEA',
+      appId: 'AONBOARDING',
+      botUserId: 'UCHICKPEA',
       credentialProvenance: 'stored',
       health: 'healthy',
     });
+    await writeSlackIdentityCredentials(
+      slackCredentials,
+      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      null,
+      {
+        botToken: 'xoxb-test',
+        signingSecret: 'signing-test',
+        botUserId: 'UCHICKPEA',
+        appId: 'AONBOARDING',
+        teamId: 'TDESIGN',
+      },
+    );
     await settings.applySettingsPatch({
-      set: [
-        { key: SLACK_SETTING_KEYS.botToken, value: 'xoxb-test' },
-        { key: SLACK_SETTING_KEYS.signingSecret, value: 'signing-test' },
-        { key: SLACK_SETTING_KEYS.botUserId, value: 'U_CHICKPEA' },
-        { key: SLACK_SETTING_KEYS.teamId, value: 'TDESIGN' },
-        { key: SLACK_SETTING_KEYS.teamName, value: 'Acme Inc' },
-      ],
+      set: [{ key: SLACK_SETTING_KEYS.teamName, value: 'Acme Inc' }],
     });
 
     const choose = await app.request('/admin/api/onboarding', { headers: auth(ADMIN_TOKEN) });
@@ -1783,6 +1818,7 @@ test('onboarding API derives live stages and completes only after a delivered se
     assert.equal(complete.status, 200);
     assert.equal((await complete.json() as { stage: string }).stage, 'complete');
   } finally {
+    credentialState.close();
     settings.close();
     store.close();
   }
@@ -4631,6 +4667,11 @@ test('Profile-origin identity setup replaces its captured prior identity and rej
     assignments: [],
   });
   const settings = new SqliteSettingsStore(':memory:');
+  const credentialState = new SqliteIdentityStore(':memory:');
+  const slackCredentials = {
+    state: credentialState,
+    keyring: generateCredentialKeyring(),
+  };
   const connectedIdentity = (
     id: string,
     ingressKey: string,
@@ -4667,7 +4708,7 @@ test('Profile-origin identity setup replaces its captured prior identity and rej
       prior.connectionRevision,
       null,
     );
-    const app = appWithAdminOptions(store, { settings });
+    const app = appWithAdminOptions(store, { settings, slackCredentials });
     const created = await withEnv(
       {},
       () => app.request('/admin/api/slack-identities', {
@@ -4688,17 +4729,19 @@ test('Profile-origin identity setup replaces its captured prior identity and rej
 
     const pending = await store.updateSlackIdentity(draft.id, draft.connectionRevision, {
       lifecycle: 'credentials_pending',
-      teamId: 'T_ACME',
+      teamId: 'TACME',
       appId: 'A0FINANCENEXT',
-      botUserId: 'U_FINANCE_NEXT',
+      botUserId: 'UFINANCENEXT',
       credentialProvenance: 'stored',
       health: 'healthy',
     });
     const signingSecret = 'finance-next-signing-secret';
-    await writeSlackIdentityCredentials(settings, pending.id, null, {
+    await writeSlackIdentityCredentials(slackCredentials, pending.id, null, {
       botToken: 'xoxb-finance-next',
       signingSecret,
-      botUserId: 'U_FINANCE_NEXT',
+      botUserId: 'UFINANCENEXT',
+      appId: 'A0FINANCENEXT',
+      teamId: 'TACME',
     });
     const recordChallenge = async () => {
       const timestamp = String(Math.floor(Date.now() / 1_000));
@@ -4764,6 +4807,7 @@ test('Profile-origin identity setup replaces its captured prior identity and rej
     assert.equal(connected.setupIntent?.sourceAgentSlackIdentityId, undefined);
     assert.equal(await readPendingSlackChallenge(settings, pending.id), undefined);
   } finally {
+    credentialState.close();
     settings.close();
     store.close();
   }
@@ -4775,6 +4819,11 @@ test('verified Slack identity reconnect requeues its unavailable delivery recove
     assignments: [],
   });
   const settings = new SqliteSettingsStore(':memory:');
+  const credentialState = new SqliteIdentityStore(':memory:');
+  const slackCredentials = {
+    state: credentialState,
+    keyring: generateCredentialKeyring(),
+  };
   const retried: string[] = [];
   const slackState = {
     retrySlackIdentityRecovery: async (identityId: string) => {
@@ -4790,9 +4839,9 @@ test('verified Slack identity reconnect requeues its unavailable delivery recove
       ingressKey: 'identity_ingress_finance_0123456789abcdef',
       kind: 'dedicated',
       lifecycle: 'credentials_pending',
-      teamId: 'T_ACME',
+      teamId: 'TACME',
       appId: 'A0FINANCE',
-      botUserId: 'U_FINANCE',
+      botUserId: 'UFINANCE',
       dmState: 'on',
       dmAgentId: 'agent_finance',
       credentialProvenance: 'stored',
@@ -4806,10 +4855,12 @@ test('verified Slack identity reconnect requeues its unavailable delivery recove
       createdAt: 1_800_000_000_000,
       updatedAt: 1_800_000_000_000,
     });
-    await writeSlackIdentityCredentials(settings, reconnecting.id, null, {
+    await writeSlackIdentityCredentials(slackCredentials, reconnecting.id, null, {
       botToken: 'xoxb-finance-rotated',
       signingSecret,
-      botUserId: 'U_FINANCE',
+      botUserId: 'UFINANCE',
+      appId: 'A0FINANCE',
+      teamId: 'TACME',
     });
     const timestamp = String(Math.floor(Date.now() / 1_000));
     const rawBody = JSON.stringify({
@@ -4826,7 +4877,7 @@ test('verified Slack identity reconnect requeues its unavailable delivery recove
     });
     assert.equal(challenge.accepted, true);
 
-    const app = appWithAdminOptions(store, { settings, slackState });
+    const app = appWithAdminOptions(store, { settings, slackState, slackCredentials });
     const response = await app.request(
       `/admin/api/slack-identities/${reconnecting.id}/verify`,
       {
@@ -4843,6 +4894,7 @@ test('verified Slack identity reconnect requeues its unavailable delivery recove
     assert.deepEqual(retried, [reconnecting.id]);
     assert.equal((await store.getSlackIdentity(reconnecting.id)).lifecycle, 'connected');
   } finally {
+    credentialState.close();
     settings.close();
     store.close();
   }
@@ -4854,10 +4906,34 @@ test('workspace-default Slack identity reports stored credentials as browser-wri
     assignments: [],
   });
   const settings = new SqliteSettingsStore(':memory:');
+  const credentialState = new SqliteIdentityStore(':memory:');
+  const slackCredentials = {
+    state: credentialState,
+    keyring: generateCredentialKeyring(),
+  };
   try {
-    await settings.setSetting('slack.botToken', 'xoxb-stored');
-    await settings.setSetting('slack.signingSecret', 'stored-secret');
-    const app = appWithAdminOptions(store, { settings });
+    const identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+    await store.updateSlackIdentity(identity.id, identity.connectionRevision, {
+      lifecycle: 'connected',
+      teamId: 'TSTORED',
+      appId: 'ASTORED',
+      botUserId: 'USTORED',
+      credentialProvenance: 'stored',
+      health: 'healthy',
+    });
+    await writeSlackIdentityCredentials(
+      slackCredentials,
+      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      null,
+      {
+        botToken: 'xoxb-stored',
+        signingSecret: 'stored-secret',
+        botUserId: 'USTORED',
+        appId: 'ASTORED',
+        teamId: 'TSTORED',
+      },
+    );
+    const app = appWithAdminOptions(store, { settings, slackCredentials });
 
     const response = await app.request('/admin/api/slack-identities', {
       headers: auth(ADMIN_TOKEN),
@@ -4870,6 +4946,7 @@ test('workspace-default Slack identity reports stored credentials as browser-wri
     assert.equal(body.identities[0]?.credentialsWritable, true);
     assert.equal(body.identities[0]?.lifecycle, 'connected');
   } finally {
+    credentialState.close();
     settings.close();
     store.close();
   }
@@ -5068,7 +5145,12 @@ test('Slack identity preflight names every concrete channel missing the selected
   if (skip) return t.skip(skip);
   const backend = new FakeSlackBackend({
     slack: {
-      identity: { teamId: 'T_ACME', teamName: 'Acme Inc' },
+      identity: {
+        teamId: 'TACME',
+        appId: 'A0FINANCE',
+        botUserId: 'UFINANCE',
+        teamName: 'Acme Inc',
+      },
       channels: [
         { id: 'C_PRIVATE', name: 'private-deals', isPrivate: true, isMember: false },
         { id: 'C_FINANCE', name: 'finance', isPrivate: true, isMember: false },
@@ -5080,14 +5162,14 @@ test('Slack identity preflight names every concrete channel missing the selected
     agents: [agent({ id: 'agent_finance', name: 'Finance' })],
     assignments: [
       {
-        workspaceId: 'T_ACME',
+        workspaceId: 'TACME',
         channelId: 'C_PRIVATE',
         channelLabel: 'stale-private-name',
         agentId: 'agent_finance',
         enabled: true,
       },
       {
-        workspaceId: 'T_ACME',
+        workspaceId: 'TACME',
         channelId: 'C_FINANCE',
         agentId: 'agent_finance',
         enabled: true,
@@ -5095,14 +5177,19 @@ test('Slack identity preflight names every concrete channel missing the selected
     ],
   });
   const settings = new SqliteSettingsStore(':memory:');
+  const credentialState = new SqliteIdentityStore(':memory:');
+  const slackCredentials = {
+    state: credentialState,
+    keyring: generateCredentialKeyring(),
+  };
   const identity: SlackIdentity = {
     id: 'slack_identity_finance',
     ingressKey: 'identity_ingress_finance_0123456789abcdef',
     kind: 'dedicated',
     lifecycle: 'connected',
-    teamId: 'T_ACME',
+    teamId: 'TACME',
     appId: 'A0FINANCE',
-    botUserId: 'U_FINANCE',
+    botUserId: 'UFINANCE',
     dmState: 'on',
     dmAgentId: 'agent_finance',
     credentialProvenance: 'stored',
@@ -5113,12 +5200,14 @@ test('Slack identity preflight names every concrete channel missing the selected
   };
   try {
     await store.createSlackIdentity(identity);
-    await writeSlackIdentityCredentials(settings, identity.id, null, {
+    await writeSlackIdentityCredentials(slackCredentials, identity.id, null, {
       botToken: 'xoxb-finance',
       signingSecret: 'finance-secret',
-      botUserId: 'U_FINANCE',
+      botUserId: 'UFINANCE',
+      appId: 'A0FINANCE',
+      teamId: 'TACME',
     });
-    const app = appWithAdminOptions(store, { settings });
+    const app = appWithAdminOptions(store, { settings, slackCredentials });
     const response = await withEnv(
       {
         SLACK_API_URL: `${fake.url}/api/`,
@@ -5144,13 +5233,14 @@ test('Slack identity preflight names every concrete channel missing the selected
     };
     assert.equal(body.error, 'slack_identity_not_in_channels');
     assert.deepEqual(body.channels, [
-      { workspaceId: 'T_ACME', channelId: 'C_FINANCE', label: 'finance' },
-      { workspaceId: 'T_ACME', channelId: 'C_PRIVATE', label: 'private-deals' },
+      { workspaceId: 'TACME', channelId: 'C_FINANCE', label: 'finance' },
+      { workspaceId: 'TACME', channelId: 'C_PRIVATE', label: 'private-deals' },
     ]);
     assert.equal((await store.getAgent('agent_finance')).slackIdentityId, undefined);
     assert.equal(backend.callsOfMethod('conversations.join').length, 0);
   } finally {
     await fake.close();
+    credentialState.close();
     settings.close();
     store.close();
   }

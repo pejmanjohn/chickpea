@@ -13,7 +13,10 @@ import {
   slackConversationsInfo,
   slackIdentityAuthTest,
 } from './credentials.ts';
-import { resolveSlackIdentityCredentials } from './identity-credentials.ts';
+import {
+  resolveSlackIdentityCredentials,
+  type SlackCredentialResolutionDependencies,
+} from './identity-credentials.ts';
 import { createSlackWebClient } from './web-client.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import { isDirectSlackTurn } from './work-admission.ts';
@@ -106,6 +109,7 @@ export async function resolveSlackIdentityExecutionContext(
   options: {
     config?: SlackIdentityPolicyReader;
     settings?: SettingsStore;
+    credentialDependencies?: SlackCredentialResolutionDependencies;
     now?: () => number;
   } = {},
 ): Promise<SlackIdentityExecutionContext> {
@@ -140,7 +144,11 @@ export async function resolveSlackIdentityExecutionContext(
 
   let credentials: Awaited<ReturnType<typeof resolveSlackIdentityCredentials>>;
   try {
-    credentials = await resolveSlackIdentityCredentials(identityId, env, options.settings);
+    credentials = await resolveSlackIdentityCredentials(
+      identityId,
+      env,
+      options.credentialDependencies ?? options.settings,
+    );
   } catch {
     throw new SlackIdentityUnavailableError(identityId, 'credential_resolution_failed', {
       retryable: true,

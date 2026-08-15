@@ -22,6 +22,10 @@ export type IdentityErrorCode =
   | 'auth_operation_unavailable'
   | 'auth_operation_expired'
   | 'auth_operation_step_invalid'
+  | 'credential_control_missing'
+  | 'credential_rotation_conflict'
+  | 'credential_revision_missing'
+  | 'credential_revision_conflict'
   | 'identity_invalid';
 
 export class IdentityStateError extends Error {

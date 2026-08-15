@@ -10,6 +10,8 @@ import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../../src/config/types.ts';
 import { createBetterAuth, type BetterAuthAdmissionOperation } from '../../src/auth/better-auth.ts';
 import { NodeBetterAuthBackend } from '../../src/auth/better-auth-node.ts';
 import { SqliteIdentityStore } from '../../src/identity/store.ts';
+import { loadOrCreateNodeCredentialKeyring } from '../../src/slack/credential-keyring.ts';
+import { writeSlackIdentityCredentials } from '../../src/slack/identity-credentials.ts';
 import {
   FakeSlackBackend,
   type FakeSlackBehaviorConfig,
@@ -78,27 +80,55 @@ export const laneB: Lane = {
     const port = await getFreePort();
     const baseUrl = `http://127.0.0.1:${port}`;
     const eventsUrl = `${baseUrl}${EVENTS_PATH}`;
-    let configDir: string | undefined;
+    const configDir = mkdtempSync(join(tmpdir(), 'chickpea-parity-config-'));
+    const configDbPath = join(configDir, 'state.db');
+    const authDbPath = join(configDir, 'auth.db');
+    const credentialKeyringPath = join(configDir, 'credential-keyring.json');
     let adminCookie: string | undefined;
-    const configEnv: Record<string, string> = {};
-    if (config.configSeed) {
-      configDir = mkdtempSync(join(tmpdir(), 'chickpea-parity-config-'));
-      const configDbPath = join(configDir, 'state.db');
-      const authDbPath = join(configDir, 'auth.db');
-      const store = new SqliteConfigStore(configDbPath, config.configSeed);
-      const identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-      await store.updateSlackIdentity(identity.id, identity.connectionRevision, {
-        lifecycle: 'connected',
-        teamId: config.slack?.identity?.teamId ?? 'T_DEMO',
-        appId: config.slack?.identity?.appId ?? 'A_DEMO',
-        botUserId: config.slack?.identity?.botUserId ?? 'U_BOT',
-        credentialProvenance: 'stored',
-        health: 'healthy',
-      });
+    const configEnv: Record<string, string> = {
+      SLACK_STATE_DB_PATH: configDbPath,
+      CHICKPEA_AUTH_DB_PATH: authDbPath,
+      CHICKPEA_AUTH_SECRET: PARITY_AUTH_SECRET,
+      CHICKPEA_CREDENTIAL_KEYRING_PATH: credentialKeyringPath,
+    };
+    const store = config.configSeed
+      ? new SqliteConfigStore(configDbPath, config.configSeed)
+      : new SqliteConfigStore(configDbPath);
+    try {
+      if (config.configSeed) {
+        const identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+        await store.updateSlackIdentity(identity.id, identity.connectionRevision, {
+          lifecycle: 'connected',
+          teamId: config.slack?.identity?.teamId ?? 'T_DEMO',
+          appId: config.slack?.identity?.appId ?? 'A_DEMO',
+          botUserId: config.slack?.identity?.botUserId ?? 'U_BOT',
+          credentialProvenance: 'stored',
+          health: 'healthy',
+        });
+      }
+    } finally {
       store.close();
-      configEnv.SLACK_STATE_DB_PATH = configDbPath;
-      configEnv.CHICKPEA_AUTH_DB_PATH = authDbPath;
-      configEnv.CHICKPEA_AUTH_SECRET = PARITY_AUTH_SECRET;
+    }
+    const credentialState = new SqliteIdentityStore(configDbPath);
+    try {
+      await writeSlackIdentityCredentials(
+        {
+          state: credentialState,
+          keyring: loadOrCreateNodeCredentialKeyring({ path: credentialKeyringPath }),
+        },
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        null,
+        {
+          botToken: 'test-bot-token',
+          signingSecret: PARITY_SIGNING_SECRET,
+          appId: 'APARITY',
+          teamId: 'TPARITY',
+        },
+      );
+    } finally {
+      credentialState.close();
+    }
+    if (config.configSeed) {
       adminCookie = await seedParityAdminSession(configDbPath, authDbPath, baseUrl);
       configEnv.LOCAL_STUB_MODELS = config.configSeed.agents
         .flatMap((agent) => agent.model?.startsWith('local-stub/')
@@ -106,12 +136,6 @@ export const laneB: Lane = {
           : [])
         .join(',');
     }
-
-    // `undefined` (omitted) → default bot id; `null` → boot WITHOUT a bot id.
-    // An explicitly-empty SLACK_BOT_USER_ID is the Flue channel's fail-closed
-    // knob (skips the auth.test fallback that would otherwise resolve U_BOT).
-    const slackBotUserId =
-      config.botUserId === undefined ? 'U_BOT' : (config.botUserId ?? '');
 
     // Scrub ambient provider credentials so provider-key availability never
     // leaks from a developer/CI shell into scenarios. Scenario model routing is
@@ -133,12 +157,9 @@ export const laneB: Lane = {
       env: {
         ...ambientEnv,
         PORT: String(port),
-        SLACK_SIGNING_SECRET: PARITY_SIGNING_SECRET,
-        SLACK_BOT_TOKEN: 'test-bot-token',
         SLACK_API_URL: `${fake.url}/api/`,
         LOCAL_STUB_URL: `${fake.url}/v1`,
         SLACK_TAG_MODEL: 'local-stub/parity-stub-1',
-        SLACK_BOT_USER_ID: slackBotUserId,
         // `src/db.node.ts` uses file-backed persistence by default. Every Lane B
         // scenario spawns a fresh process, so pin
         // an in-memory DB to keep each scenario's conversation state isolated
@@ -163,7 +184,7 @@ export const laneB: Lane = {
     } catch (error) {
       await stopChild(child);
       await backend.close();
-      if (configDir) rmSync(configDir, { recursive: true, force: true });
+      rmSync(configDir, { recursive: true, force: true });
       throw error;
     }
 
@@ -174,7 +195,7 @@ export const laneB: Lane = {
     return {
       backend,
       debugOutput: () => serverOutput.slice(-20_000),
-      ...(configDir ? { configDbPath: join(configDir, 'state.db') } : {}),
+      configDbPath,
       async postEvent(payload, opts) {
         const { headers, body } = await signedInit(payload, opts?.tamper === true);
         const response = await fetch(eventsUrl, { method: 'POST', headers, body });
@@ -195,7 +216,7 @@ export const laneB: Lane = {
       async stop() {
         await stopChild(child);
         await backend.close();
-        if (configDir && process.env.KEEP_PARITY_CONFIG !== '1') {
+        if (process.env.KEEP_PARITY_CONFIG !== '1') {
           rmSync(configDir, { recursive: true, force: true });
         }
       },

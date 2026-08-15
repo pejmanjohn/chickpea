@@ -41,6 +41,7 @@ import type {
 import { IdentityStateError } from '../identity/errors.ts';
 import type {
   AdvanceAuthOperationInput,
+  BeginSlackCredentialRotationInput,
   AuthOperationKind,
   ClaimOwnerInput,
   ConsumeAuthOperationInput,
@@ -52,12 +53,17 @@ import type {
   CreatePersonalTokenRecordInput,
   EnsureOrganizationInput,
   EnsureAuthControlInput,
+  EnsureSlackCredentialControlInput,
   IdentityRpcRequest,
   IdentityRpcResponse,
   IdentityStore,
   RecordIdentityAuthAuditInput,
+  PromoteSlackCredentialRevisionInput,
+  RewrapSlackCredentialRevisionInput,
   ResendInvitationInput,
   SetMembershipAccessOverlayInput,
+  StageSlackCredentialRevisionInput,
+  TombstoneSlackCredentialRevisionInput,
   UpdateMembershipInput,
   UpdateAuthControlInput,
   UpdateOrganizationAuthInput,
@@ -358,6 +364,88 @@ export class CfIdentityStore implements IdentityStore {
     const response = await this.execute({ kind: 'update_auth_control', input });
     if (response.kind !== 'auth_control' || !response.control) throw unexpectedIdentityResponse();
     return response.control;
+  }
+  async ensureSlackCredentialControl(input: EnsureSlackCredentialControlInput) {
+    const response = await this.execute({ kind: 'ensure_slack_credential_control', input });
+    if (response.kind !== 'slack_credential_control' || !response.control) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.control;
+  }
+  async getSlackCredentialControl(installationId?: string) {
+    const response = await this.execute({
+      kind: 'get_slack_credential_control',
+      ...(installationId === undefined ? {} : { installationId }),
+    });
+    if (response.kind !== 'slack_credential_control') throw unexpectedIdentityResponse();
+    return orUndefined(response.control);
+  }
+  async beginSlackCredentialRotation(input: BeginSlackCredentialRotationInput) {
+    const response = await this.execute({ kind: 'begin_slack_credential_rotation', input });
+    if (response.kind !== 'slack_credential_control' || !response.control) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.control;
+  }
+  async stageSlackCredentialRevision(input: StageSlackCredentialRevisionInput) {
+    const response = await this.execute({ kind: 'stage_slack_credential_revision', input });
+    if (response.kind !== 'slack_credential_revision' || !response.revision) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.revision;
+  }
+  async getActiveSlackCredentialRevision(identityId: string) {
+    const response = await this.execute({ kind: 'get_active_slack_credential_revision', identityId });
+    if (response.kind !== 'slack_credential_revision') throw unexpectedIdentityResponse();
+    return orUndefined(response.revision);
+  }
+  async getSlackCredentialRevision(identityId: string, revision: string) {
+    const response = await this.execute({ kind: 'get_slack_credential_revision', identityId, revision });
+    if (response.kind !== 'slack_credential_revision') throw unexpectedIdentityResponse();
+    return orUndefined(response.revision);
+  }
+  async hasSlackCredentialHistory(identityId: string) {
+    const response = await this.execute({ kind: 'has_slack_credential_history', identityId });
+    if (response.kind !== 'slack_credential_presence') throw unexpectedIdentityResponse();
+    return response.present;
+  }
+  async listLiveSlackCredentialRevisions() {
+    const response = await this.execute({ kind: 'list_live_slack_credential_revisions' });
+    if (response.kind !== 'slack_credential_revisions') throw unexpectedIdentityResponse();
+    return response.revisions;
+  }
+  async promoteSlackCredentialRevision(input: PromoteSlackCredentialRevisionInput) {
+    const response = await this.execute({ kind: 'promote_slack_credential_revision', input });
+    if (response.kind !== 'slack_credential_revision' || !response.revision) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.revision;
+  }
+  async tombstoneSlackCredentialRevision(input: TombstoneSlackCredentialRevisionInput) {
+    const response = await this.execute({ kind: 'tombstone_slack_credential_revision', input });
+    if (response.kind !== 'slack_credential_revision' || !response.revision) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.revision;
+  }
+  async rewrapSlackCredentialRevision(input: RewrapSlackCredentialRevisionInput) {
+    const response = await this.execute({ kind: 'rewrap_slack_credential_revision', input });
+    if (response.kind !== 'slack_credential_revision' || !response.revision) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.revision;
+  }
+  async countLiveSlackCredentialRevisionsByKey(keyId: string, expectedRotationEpoch: number) {
+    const response = await this.execute({
+      kind: 'count_live_slack_credential_revisions_by_key', keyId, expectedRotationEpoch,
+    });
+    if (response.kind !== 'slack_credential_count') throw unexpectedIdentityResponse();
+    return response.count;
+  }
+  async sweepSlackIdentityRetention(at: number, candidateMaxAgeMs: number) {
+    const response = await this.execute({ kind: 'sweep_slack_identity_retention', at, candidateMaxAgeMs });
+    if (response.kind !== 'slack_credential_retention') throw unexpectedIdentityResponse();
+    return response.result;
   }
   async createAuthOperation(input: CreateAuthOperationInput) {
     const response = await this.execute({ kind: 'create_auth_operation', input });

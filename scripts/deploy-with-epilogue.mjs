@@ -15,6 +15,7 @@
  * failed deploy), and stdout is scanned line-by-line rather than buffered.
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   existsSync,
   mkdtempSync,
@@ -466,6 +467,10 @@ if (preflightOnly) {
 
 const AUTH_SECRET = 'CHICKPEA_AUTH_SECRET';
 const LEGACY_AUTH_SECRET = 'CHICKPEA_RECOVERY_TOKEN';
+const CREDENTIAL_CURRENT_KEY = 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID';
+const CREDENTIAL_KEY_PREFIX = 'CHICKPEA_CREDENTIAL_KEY_';
+const INITIAL_CREDENTIAL_KEY_ID = 'key_v1';
+const INITIAL_CREDENTIAL_KEY_SLOT = `${CREDENTIAL_KEY_PREFIX}KEY_V1`;
 const DEFAULT_ACTIVE_WORKER_INSPECTION_TIMEOUT_MS = 30_000;
 const configuredInspectionTimeout = Number(
   process.env.CHICKPEA_DEPLOY_INSPECTION_TIMEOUT_MS,
@@ -626,6 +631,20 @@ async function prepareDeploymentAuthority(artifact, secretNames) {
   const generatedSecrets = {};
   if (!secretNames.has(AUTH_SECRET) && !secretNames.has(LEGACY_AUTH_SECRET)) {
     generatedSecrets[AUTH_SECRET] = (await mintSetupCapability()).capability;
+  }
+  const hasCredentialCurrent = secretNames.has(CREDENTIAL_CURRENT_KEY);
+  const credentialSlots = [...secretNames].filter((name) =>
+    name.startsWith(CREDENTIAL_KEY_PREFIX) && name !== CREDENTIAL_CURRENT_KEY
+  );
+  if (!hasCredentialCurrent && credentialSlots.length === 0) {
+    generatedSecrets[CREDENTIAL_CURRENT_KEY] = INITIAL_CREDENTIAL_KEY_ID;
+    generatedSecrets[INITIAL_CREDENTIAL_KEY_SLOT] = randomBytes(32).toString('base64url');
+  } else if (!hasCredentialCurrent || credentialSlots.length === 0) {
+    throw new Error(
+      'Cloudflare Slack credential encryption is only partially provisioned. ' +
+      'Restore CHICKPEA_CREDENTIAL_KEY_CURRENT_ID and its versioned ' +
+      'CHICKPEA_CREDENTIAL_KEY_<ID> slot before deploying.',
+    );
   }
   const setup = await mintSetupCapability();
   artifact.config.vars = {

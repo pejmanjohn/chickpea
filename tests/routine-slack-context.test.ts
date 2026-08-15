@@ -55,12 +55,12 @@ test('mentioned-channel controls require current bot and actor membership', asyn
   };
   try {
     assert.equal(
-      await canManageRoutineChannel('T_TEST', 'C_OTHER', 'U_MEMBER', undefined),
+      await canManageRoutineChannel('T_TEST', 'C_OTHER', 'U_MEMBER', undefined, 'xoxb-test'),
       true,
     );
     members = ['U_BOT'];
     assert.equal(
-      await canManageRoutineChannel('T_TEST', 'C_OTHER', 'U_MEMBER', undefined),
+      await canManageRoutineChannel('T_TEST', 'C_OTHER', 'U_MEMBER', undefined, 'xoxb-test'),
       false,
     );
   } finally {

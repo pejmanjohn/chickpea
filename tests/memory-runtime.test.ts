@@ -6,7 +6,12 @@ import { test } from 'node:test';
 
 import type { WebClient } from '@slack/web-api';
 
-import { getConfigStore, getIdentityStore, getMemoryStateStore } from '../src/config/state-backend.ts';
+import {
+  getConfigStore,
+  getIdentityStore,
+  getMemoryStateStore,
+  getSlackCredentialDependencies,
+} from '../src/config/state-backend.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
 import { bindAuthorizedMemoryScope } from '../src/memory/scope.ts';
@@ -26,13 +31,17 @@ import {
 } from '../src/slack/run-turn.ts';
 import { slackThreadKey } from '../src/slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import {
+  resolveSlackIdentityCredentials,
+  writeSlackIdentityCredentials,
+} from '../src/slack/identity-credentials.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const baseTurn: NormalizedSlackTurn = {
   workspaceId: 'T_RUNTIME',
   channelId: 'C_RUNTIME',
   eventId: 'E1',
-  text: '<@U_BOT> Please remember that answers should use short bullets.',
+  text: '<@UBOT> Please remember that answers should use short bullets.',
   userId: 'U_MEMBER',
   messageTs: '1782770400.000100',
   threadTs: '1782770400.000100',
@@ -51,6 +60,30 @@ const runtimeAssignment: ResolvedAssignment = {
   },
 };
 
+async function installRuntimeSlackCredentials(
+  botToken = 'xoxb-test-not-a-real-token',
+  signingSecret = 'test-signing-secret',
+): Promise<void> {
+  const credentials = getSlackCredentialDependencies();
+  const current = await resolveSlackIdentityCredentials(
+    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    undefined,
+    credentials,
+  );
+  await writeSlackIdentityCredentials(
+    credentials,
+    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    current.connectionRevision,
+    {
+      botToken,
+      signingSecret,
+      botUserId: 'UBOT',
+      appId: 'ARUNTIME',
+      teamId: 'TRUNTIME',
+    },
+  );
+}
+
 test('owner-native runtime reads frozen Agent memory plus exact Channel memory only', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-owner-runtime-red-'));
   const previous = snapshotEnvironment();
@@ -58,13 +91,14 @@ test('owner-native runtime reads frozen Agent memory plus exact Channel memory o
   try {
     process.env.SLACK_STATE_DB_PATH = join(directory, 'state.db');
     process.env.SLACK_BOT_TOKEN = 'xoxb-owner-runtime';
-    process.env.SLACK_BOT_USER_ID = 'U_BOT';
+    process.env.SLACK_BOT_USER_ID = 'UBOT';
+    await installRuntimeSlackCredentials('xoxb-owner-runtime');
     globalThis.fetch = fakeSlackFetch;
     const config = getConfigStore();
     await config.createAgent(runtimeAssignment.agent);
     const defaultIdentity = await config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
     await config.updateSlackIdentity(defaultIdentity.id, defaultIdentity.connectionRevision, {
-      lifecycle: 'connected', teamId: 'T_RUNTIME', appId: 'A_RUNTIME', botUserId: 'U_BOT',
+      lifecycle: 'connected', teamId: 'T_RUNTIME', appId: 'A_RUNTIME', botUserId: 'UBOT',
       dmState: 'on', dmAgentId: 'agent_runtime', credentialProvenance: 'stored', health: 'healthy',
     });
     await config.putChannel({
@@ -93,7 +127,7 @@ test('owner-native runtime reads frozen Agent memory plus exact Channel memory o
       body: 'Use the Channel roadmap.', idempotencyKey: 'seed-channel',
     });
     const prepared = await prepareMemoryTurn({
-      turn: { ...baseTurn, eventId: 'E_OWNER', text: '<@U_BOT> What roadmap should I use?' },
+      turn: { ...baseTurn, eventId: 'E_OWNER', text: '<@UBOT> What roadmap should I use?' },
       assignment: runtimeAssignment,
       platformEnv: undefined,
       client: {} as WebClient,
@@ -117,7 +151,7 @@ test('owner-native runtime reads frozen Agent memory plus exact Channel memory o
       body: 'Never disclose this.', idempotencyKey: 'seed-other-channel',
     });
     const isolated = await prepareMemoryTurn({
-      turn: { ...baseTurn, eventId: 'E_OWNER_ISOLATION', text: '<@U_BOT> Tell me the other channel secret' },
+      turn: { ...baseTurn, eventId: 'E_OWNER_ISOLATION', text: '<@UBOT> Tell me the other channel secret' },
       assignment: runtimeAssignment,
       platformEnv: undefined,
       client: {} as WebClient,
@@ -126,7 +160,7 @@ test('owner-native runtime reads frozen Agent memory plus exact Channel memory o
 
     const delivered: string[] = [];
     assert.equal(await handleMemoryCommand({
-      turn: { ...baseTurn, eventId: 'E_OWNER_WRITE', text: '<@U_BOT> Please remember that launches need approval.' },
+      turn: { ...baseTurn, eventId: 'E_OWNER_WRITE', text: '<@UBOT> Please remember that launches need approval.' },
       assignment: runtimeAssignment,
       platformEnv: undefined,
       client: {} as WebClient,
@@ -159,7 +193,7 @@ test('DM runtime keeps reads available and denies unbound Slack identities for w
     await config.createAgent(runtimeAssignment.agent);
     const identity = await config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
     await config.updateSlackIdentity(identity.id, identity.connectionRevision, {
-      lifecycle: 'connected', teamId: 'T_RUNTIME', appId: 'A_RUNTIME', botUserId: 'U_BOT',
+      lifecycle: 'connected', teamId: 'T_RUNTIME', appId: 'A_RUNTIME', botUserId: 'UBOT',
       dmState: 'on', dmAgentId: 'agent_runtime', credentialProvenance: 'stored', health: 'healthy',
     });
     const state = getMemoryStateStore();
@@ -238,7 +272,7 @@ test('DM Agent-memory writes bind exact mutation and execute once for an active 
     await config.createAgent(runtimeAssignment.agent);
     const slackIdentity = await config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
     await config.updateSlackIdentity(slackIdentity.id, slackIdentity.connectionRevision, {
-      lifecycle: 'connected', teamId: 'T12345678', appId: 'A_RUNTIME', botUserId: 'U_BOT',
+      lifecycle: 'connected', teamId: 'T12345678', appId: 'A_RUNTIME', botUserId: 'UBOT',
       dmState: 'on', dmAgentId: 'agent_runtime', credentialProvenance: 'stored', health: 'healthy',
     });
     const identity = getIdentityStore();
@@ -336,7 +370,7 @@ test('runTurn fails closed before provider or Slack when trusted owner binding c
     await runTurn(turn, { ...runtimeAssignment, channelId: 'D_RUNTIME' }, undefined, {
       identityContext: {
         identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-        botToken: 'xoxb-owner-binding-fence', botUserId: 'U_BOT', teamId: 'T_RUNTIME', client,
+        botToken: 'xoxb-owner-binding-fence', botUserId: 'UBOT', teamId: 'T_RUNTIME', client,
       },
       usageRecordingEnabled: false,
       async agentPrompt(): Promise<AgentDispatchResult> {
@@ -364,7 +398,7 @@ test('runTurn sends authorized Agent memory to the actual provider input without
     await config.createAgent(runtimeAssignment.agent);
     const identity = await config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
     await config.updateSlackIdentity(identity.id, identity.connectionRevision, {
-      lifecycle: 'connected', teamId: 'T_RUNTIME', appId: 'A_RUNTIME', botUserId: 'U_BOT',
+      lifecycle: 'connected', teamId: 'T_RUNTIME', appId: 'A_RUNTIME', botUserId: 'UBOT',
       dmState: 'on', dmAgentId: 'agent_runtime', credentialProvenance: 'stored', health: 'healthy',
     });
     const state = getMemoryStateStore();
@@ -394,7 +428,7 @@ test('runTurn sends authorized Agent memory to the actual provider input without
     await runTurn(turn, assignment, undefined, {
       identityContext: {
         identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-        botToken: 'xoxb-provider-test', botUserId: 'U_BOT', teamId: 'T_RUNTIME', client,
+        botToken: 'xoxb-provider-test', botUserId: 'UBOT', teamId: 'T_RUNTIME', client,
       },
       usageRecordingEnabled: false,
       async agentPrompt(input): Promise<AgentDispatchResult> {
@@ -428,7 +462,7 @@ test('runTurn emits no provider call or Slack final when the owner lease is stal
     await config.createAgent(runtimeAssignment.agent);
     const identity = await config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
     await config.updateSlackIdentity(identity.id, identity.connectionRevision, {
-      lifecycle: 'connected', teamId: 'T_RUNTIME', appId: 'A_RUNTIME', botUserId: 'U_BOT',
+      lifecycle: 'connected', teamId: 'T_RUNTIME', appId: 'A_RUNTIME', botUserId: 'UBOT',
       dmState: 'on', dmAgentId: 'agent_runtime', credentialProvenance: 'stored', health: 'healthy',
     });
     const state = getMemoryStateStore();
@@ -461,7 +495,7 @@ test('runTurn emits no provider call or Slack final when the owner lease is stal
     await runTurn(turn, { ...runtimeAssignment, channelId: 'D_RUNTIME' }, undefined, {
       identityContext: {
         identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-        botToken: 'xoxb-provider-fence', botUserId: 'U_BOT', teamId: 'T_RUNTIME', client,
+        botToken: 'xoxb-provider-fence', botUserId: 'UBOT', teamId: 'T_RUNTIME', client,
       },
       usageRecordingEnabled: false,
       async onRuntimePlan(candidate) {
@@ -501,8 +535,9 @@ test('Slack commands persist memory even when a legacy disable override remains'
     process.env.SLACK_STATE_DB_PATH = join(directory, 'state.db');
     process.env.SLACK_BOT_TOKEN = 'xoxb-test-not-a-real-token';
     process.env.SLACK_SIGNING_SECRET = 'test-signing-secret';
-    process.env.SLACK_BOT_USER_ID = 'U_BOT';
+    process.env.SLACK_BOT_USER_ID = 'UBOT';
     process.env.SLACK_TAG_MEMORY_ENABLED = 'false';
+    await installRuntimeSlackCredentials();
     globalThis.fetch = fakeSlackFetch;
     const client = {} as WebClient;
     const presenter = {
@@ -518,7 +553,7 @@ test('Slack commands persist memory even when a legacy disable override remains'
     assert.match(delivered[0] ?? '', /Saved workspace memory `answers-should-use-short-bullets`/);
 
     await handleMemoryCommand({
-      turn: { ...baseTurn, eventId: 'E_HELP', text: '<@U_BOT> !memory help' },
+      turn: { ...baseTurn, eventId: 'E_HELP', text: '<@UBOT> !memory help' },
       platformEnv: undefined,
       client,
       presenter,
@@ -532,7 +567,7 @@ test('Slack commands persist memory even when a legacy disable override remains'
     const queryTurn = {
       ...baseTurn,
       eventId: 'E2',
-      text: '<@U_BOT> How should you format the answer?',
+      text: '<@UBOT> How should you format the answer?',
     };
     const first = await prepareMemoryTurn({ turn: queryTurn, platformEnv: undefined, client });
     assert.match(first.conversationKey, /:memory-e1$/);
@@ -559,7 +594,7 @@ test('Slack commands persist memory even when a legacy disable override remains'
         ...baseTurn,
         eventId: 'E4',
         messageTs: '1782770402.000100',
-        text: '<@U_BOT> !memory update answers-should-use-short-bullets — Keep answers extremely concise.\nUse at most three bullets.',
+        text: '<@UBOT> !memory update answers-should-use-short-bullets — Keep answers extremely concise.\nUse at most three bullets.',
       },
       platformEnv: undefined,
       client,
@@ -592,7 +627,8 @@ test('a committed memory receipt retries Slack delivery without replaying the mu
     process.env.SLACK_STATE_DB_PATH = join(directory, 'state.db');
     process.env.SLACK_BOT_TOKEN = 'xoxb-test-not-a-real-token';
     process.env.SLACK_SIGNING_SECRET = 'test-signing-secret';
-    process.env.SLACK_BOT_USER_ID = 'U_BOT';
+    process.env.SLACK_BOT_USER_ID = 'UBOT';
+    await installRuntimeSlackCredentials();
     globalThis.fetch = fakeSlackFetch;
     const presenter = {
       async deliverFinal(text: string) {
@@ -650,7 +686,8 @@ test('a teammate-addressed implicit thread reply cannot mutate memory', async ()
     process.env.SLACK_STATE_DB_PATH = join(directory, 'state.db');
     process.env.SLACK_BOT_TOKEN = 'xoxb-test-not-a-real-token';
     process.env.SLACK_SIGNING_SECRET = 'test-signing-secret';
-    process.env.SLACK_BOT_USER_ID = 'U_BOT';
+    process.env.SLACK_BOT_USER_ID = 'UBOT';
+    await installRuntimeSlackCredentials();
     globalThis.fetch = fakeSlackFetch;
 
     const handled = await handleMemoryCommand({
@@ -689,7 +726,8 @@ test('private-channel forget requires public/<slug> for retained public memory',
     process.env.SLACK_STATE_DB_PATH = join(directory, 'state.db');
     process.env.SLACK_BOT_TOKEN = 'xoxb-test-not-a-real-token';
     process.env.SLACK_SIGNING_SECRET = 'test-signing-secret';
-    process.env.SLACK_BOT_USER_ID = 'U_BOT';
+    process.env.SLACK_BOT_USER_ID = 'UBOT';
+    await installRuntimeSlackCredentials();
     globalThis.fetch = fakePrivateSlackFetch;
     const state = getMemoryStateStore();
     const store = await state.ensurePublicStore('T_RUNTIME');
@@ -716,7 +754,7 @@ test('private-channel forget requires public/<slug> for retained public memory',
       turn: {
         ...baseTurn,
         eventId: 'E_FORGET_UNQUALIFIED',
-        text: '<@U_BOT> !forget retained-public',
+        text: '<@UBOT> !forget retained-public',
       },
       platformEnv: undefined,
       client: {} as WebClient,
@@ -728,7 +766,7 @@ test('private-channel forget requires public/<slug> for retained public memory',
       turn: {
         ...baseTurn,
         eventId: 'E_FORGET_QUALIFIED',
-        text: '<@U_BOT> !forget public/retained-public',
+        text: '<@UBOT> !forget public/retained-public',
       },
       platformEnv: undefined,
       client: {} as WebClient,
@@ -752,7 +790,8 @@ test('cross-channel disclosure includes the exact review command grammar', async
     process.env.SLACK_STATE_DB_PATH = join(directory, 'state.db');
     process.env.SLACK_BOT_TOKEN = 'xoxb-test-not-a-real-token';
     process.env.SLACK_SIGNING_SECRET = 'test-signing-secret';
-    process.env.SLACK_BOT_USER_ID = 'U_BOT';
+    process.env.SLACK_BOT_USER_ID = 'UBOT';
+    await installRuntimeSlackCredentials();
     globalThis.fetch = fakeSlackFetch;
     const state = getMemoryStateStore();
     const store = await state.ensurePublicStore('T_RUNTIME');
@@ -774,7 +813,7 @@ test('cross-channel disclosure includes the exact review command grammar', async
       turn: {
         ...baseTurn,
         eventId: 'E_CROSS_CHANNEL_HELP',
-        text: '<@U_BOT> What release checklist should I run before deployment?',
+        text: '<@UBOT> What release checklist should I run before deployment?',
       },
       platformEnv: undefined,
       client: {} as WebClient,
@@ -831,7 +870,7 @@ test('memory quarantine hides all pre-trigger transcript history when live Slack
     delete process.env.SLACK_BOT_TOKEN;
     delete process.env.SLACK_BOT_USER_ID;
     const prepared = await prepareMemoryTurn({
-      turn: { ...baseTurn, eventId: 'E_QUARANTINE', text: '<@U_BOT> What do you remember?' },
+      turn: { ...baseTurn, eventId: 'E_QUARANTINE', text: '<@UBOT> What do you remember?' },
       platformEnv: undefined,
       client: {} as WebClient,
     });
@@ -855,6 +894,7 @@ test('memory authorization uses the admitted identity token without changing its
     process.env.SLACK_STATE_DB_PATH = join(directory, 'state.db');
     process.env.SLACK_BOT_TOKEN = 'xoxb-workspace-default';
     process.env.SLACK_BOT_USER_ID = 'U_DEFAULT';
+    await installRuntimeSlackCredentials('xoxb-workspace-default');
     globalThis.fetch = async (input, init) => {
       authorizations.push(String(new Headers(init?.headers).get('authorization')));
       return fakeSlackFetch(input);
@@ -870,7 +910,7 @@ test('memory authorization uses the admitted identity token without changing its
       platformEnv: undefined,
       client: {} as WebClient,
       botToken: 'xoxb-finance',
-      botUserId: 'U_BOT',
+      botUserId: 'UBOT',
     });
 
     assert.ok(prepared.conversationKey.startsWith(slackThreadKey(baseTurn)));
@@ -893,10 +933,11 @@ test('an empty memory selection returns a no-op delivery lease', async () => {
     process.env.SLACK_STATE_DB_PATH = join(directory, 'state.db');
     process.env.SLACK_BOT_TOKEN = 'xoxb-empty-lease';
     process.env.SLACK_SIGNING_SECRET = 'test-signing-secret';
-    process.env.SLACK_BOT_USER_ID = 'U_BOT';
+    process.env.SLACK_BOT_USER_ID = 'UBOT';
+    await installRuntimeSlackCredentials('xoxb-empty-lease');
     globalThis.fetch = fakeSlackFetch;
     const prepared = await prepareMemoryTurn({
-      turn: { ...baseTurn, eventId: 'E_EMPTY_LEASE', text: '<@U_BOT> Hello' },
+      turn: { ...baseTurn, eventId: 'E_EMPTY_LEASE', text: '<@UBOT> Hello' },
       platformEnv: undefined,
       client: {} as WebClient,
     });
@@ -926,7 +967,8 @@ test('delivery validates channel transition versions but ignores an unrelated tr
     process.env.SLACK_STATE_DB_PATH = join(directory, 'state.db');
     process.env.SLACK_BOT_TOKEN = 'xoxb-test-not-a-real-token';
     process.env.SLACK_SIGNING_SECRET = 'test-signing-secret';
-    process.env.SLACK_BOT_USER_ID = 'U_BOT';
+    process.env.SLACK_BOT_USER_ID = 'UBOT';
+    await installRuntimeSlackCredentials();
     globalThis.fetch = fakeSlackFetch;
     const client = {} as WebClient;
     const state = getMemoryStateStore();
@@ -937,7 +979,7 @@ test('delivery validates channel transition versions but ignores an unrelated tr
       type: 'project', body: 'Validate before delivery.', actorId: 'U_MEMBER', actorClass: 'member',
       idempotencyKey: 'lease-seed',
     });
-    const query = { ...baseTurn, eventId: 'E_LEASE', text: '<@U_BOT> What is the checklist?' };
+    const query = { ...baseTurn, eventId: 'E_LEASE', text: '<@UBOT> What is the checklist?' };
     const prepared = await prepareMemoryTurn({ turn: query, platformEnv: undefined, client });
     assert.equal(await prepared.validateLease(), true);
 
@@ -985,14 +1027,14 @@ async function fakeSlackFetch(input: string | URL | Request): Promise<Response> 
       body = { ok: true, user: { id: 'U_MEMBER', team_id: 'T_RUNTIME' } };
       break;
     case 'conversations.members':
-      body = { ok: true, members: ['U_MEMBER', 'U_BOT'], response_metadata: { next_cursor: '' } };
+      body = { ok: true, members: ['U_MEMBER', 'UBOT'], response_metadata: { next_cursor: '' } };
       break;
     case 'users.list':
       body = {
         ok: true,
         members: [
           { id: 'U_MEMBER', team_id: 'T_RUNTIME' },
-          { id: 'U_BOT', team_id: 'T_RUNTIME', is_bot: true, is_app_user: true },
+          { id: 'UBOT', team_id: 'T_RUNTIME', is_bot: true, is_app_user: true },
         ],
         response_metadata: { next_cursor: '' },
       };

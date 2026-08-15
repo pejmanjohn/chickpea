@@ -14,6 +14,8 @@ import {
 import {
   resolveSlackIdentityCredentials,
   writeSlackIdentityCredentials,
+  type SlackCredentialDependencies,
+  type SlackCredentialResolutionDependencies,
 } from './identity-credentials.ts';
 import {
   cancelPendingSlackIdentitySecrets,
@@ -64,6 +66,7 @@ export interface ValidatedSlackIdentityInstallation {
   teamName?: string;
   appId: string;
   botUserId: string;
+  grantedScopes: string[];
   botName?: string;
   displayName?: string;
   avatarUrl?: string;
@@ -253,6 +256,7 @@ export async function validateSlackIdentityBotInstallation(
     ...(auth.teamName ? { teamName: auth.teamName } : {}),
     appId,
     botUserId: auth.botUserId,
+    grantedScopes: auth.grantedScopes ?? [],
     ...(auth.botName ? { botName: auth.botName } : {}),
     ...(profile.displayName ? { displayName: profile.displayName } : {}),
     ...(avatarUrl ? { avatarUrl } : {}),
@@ -270,6 +274,7 @@ export async function beginSlackIdentityConnection(
     expectedTeamId: string;
     botToken: string;
     signingSecret: string;
+    credentialDependencies?: SlackCredentialDependencies | undefined;
   },
   deps: SlackIdentityBootstrapDeps = {},
 ): Promise<SlackIdentity> {
@@ -284,7 +289,7 @@ export async function beginSlackIdentityConnection(
   const previousCredentials = await resolveSlackIdentityCredentials(
     input.identityId,
     undefined,
-    input.settings,
+    input.credentialDependencies ?? input.settings,
   );
   const validated = await validateSlackIdentityBotInstallation(
     {
@@ -328,13 +333,17 @@ export async function beginSlackIdentityConnection(
     },
   );
   await writeSlackIdentityCredentials(
-    input.settings,
+    input.credentialDependencies ?? input.settings,
     input.identityId,
     previousCredentials.connectionRevision,
     {
       botToken: input.botToken,
       signingSecret: input.signingSecret,
       botUserId: validated.botUserId,
+      appId: validated.appId,
+      teamId: validated.teamId,
+      grantedScopes: validated.grantedScopes,
+      validatedAt: validated.observedAt,
     },
   );
   return pending;
@@ -347,6 +356,7 @@ export async function completeSlackIdentityConnection(input: {
   expectedRevision: number;
   attachAgentId?: string;
   expectedAgentIdentityId?: string | null;
+  credentialDependencies?: SlackCredentialResolutionDependencies | undefined;
 }): Promise<SlackIdentity> {
   const identity = await input.config.getSlackIdentity(input.identityId);
   requireRevision(identity, input.expectedRevision);
@@ -359,7 +369,7 @@ export async function completeSlackIdentityConnection(input: {
   const credentials = await resolveSlackIdentityCredentials(
     input.identityId,
     undefined,
-    input.settings,
+    input.credentialDependencies ?? input.settings,
   );
   if (!credentials.signingSecret || !credentials.botToken) {
     throw new SlackIdentityBootstrapError(
@@ -406,6 +416,7 @@ export async function completeWorkspaceDefaultSlackConnectionIfVerified(input: {
   config: ConfigStore;
   settings: SettingsStore;
   identityId: string;
+  credentialDependencies?: SlackCredentialResolutionDependencies | undefined;
 }): Promise<SlackIdentity | undefined> {
   const identity = await input.config.getSlackIdentity(input.identityId);
   if (identity.kind !== 'workspace_default' || identity.lifecycle !== 'credentials_pending') {
@@ -417,7 +428,7 @@ export async function completeWorkspaceDefaultSlackConnectionIfVerified(input: {
   const credentials = await resolveSlackIdentityCredentials(
     identity.id,
     undefined,
-    input.settings,
+    input.credentialDependencies ?? input.settings,
   );
   if (!credentials.botToken || !credentials.signingSecret) return undefined;
   const verification = await verifyPendingSlackChallenge(
@@ -456,6 +467,7 @@ export async function cancelSlackIdentityConnection(input: {
   settings: SettingsStore;
   identityId: string;
   expectedRevision: number;
+  credentialDependencies?: SlackCredentialDependencies | undefined;
 }): Promise<SlackIdentity> {
   const identity = await input.config.getSlackIdentity(input.identityId);
   requireRevision(identity, input.expectedRevision);
@@ -472,12 +484,13 @@ export async function cancelSlackIdentityConnection(input: {
   const credentials = await resolveSlackIdentityCredentials(
     input.identityId,
     undefined,
-    input.settings,
+    input.credentialDependencies ?? input.settings,
   );
   await cancelPendingSlackIdentitySecrets(
     input.settings,
     input.identityId,
     credentials.connectionRevision,
+    input.credentialDependencies,
   );
   return input.config.updateSlackIdentity(input.identityId, input.expectedRevision, {
     lifecycle: 'setup_incomplete',
@@ -500,6 +513,7 @@ export async function refreshSlackIdentityHealth(
     settings: SettingsStore;
     identityId: string;
     expectedRevision: number;
+    credentialDependencies?: SlackCredentialResolutionDependencies | undefined;
   },
   deps: SlackIdentityBootstrapDeps = {},
 ): Promise<SlackIdentityHealthResult> {
@@ -519,7 +533,7 @@ export async function refreshSlackIdentityHealth(
   const credentials = await resolveSlackIdentityCredentials(
     input.identityId,
     undefined,
-    input.settings,
+    input.credentialDependencies ?? input.settings,
   );
   if (!credentials.botToken) {
     const degraded = await input.config.updateSlackIdentity(

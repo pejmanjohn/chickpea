@@ -197,6 +197,12 @@ test('successful deploy generates stable auth and prints the setup link immediat
   const capture = JSON.parse(readFileSync(harness.secretCapturePath, 'utf8'));
   assert.equal(capture.mode, 0o600);
   assert.match(capture.values.CHICKPEA_AUTH_SECRET, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(capture.values.CHICKPEA_CREDENTIAL_KEY_CURRENT_ID, 'key_v1');
+  assert.match(capture.values.CHICKPEA_CREDENTIAL_KEY_KEY_V1, /^[A-Za-z0-9_-]{43}$/);
+  assert.notEqual(
+    capture.values.CHICKPEA_CREDENTIAL_KEY_KEY_V1,
+    capture.values.CHICKPEA_AUTH_SECRET,
+  );
   assert.equal(existsSync(capture.path), false);
   assert.doesNotMatch(result.stdout, /Checking the public setup URL|setup is responding/);
   assert.match(result.stdout, /✔ Worker deployed/);
@@ -250,11 +256,19 @@ test('existing auth or legacy recovery authority is preserved across deploys', (
 
   const currentResult = runHarness(current, ['--skip-build'], {
     DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
-    DEPLOY_TEST_SECRET_LIST: JSON.stringify([{ name: 'CHICKPEA_AUTH_SECRET' }]),
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
   });
   const legacyResult = runHarness(legacy, ['--skip-build'], {
     DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
-    DEPLOY_TEST_SECRET_LIST: JSON.stringify([{ name: 'CHICKPEA_RECOVERY_TOKEN' }]),
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_RECOVERY_TOKEN' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
   });
 
   assert.equal(currentResult.status, 0, currentResult.stderr);
@@ -263,6 +277,43 @@ test('existing auth or legacy recovery authority is preserved across deploys', (
   assert.equal(existsSync(legacy.secretCapturePath), false);
   assert.equal(commands(current.logPath).at(-1), 'wrangler:["deploy"]');
   assert.equal(commands(legacy.logPath).at(-1), 'wrangler:["deploy"]');
+});
+
+test('ordinary deploy preserves the existing versioned credential root', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V2' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(harness.secretCapturePath), false);
+  const invoked = commands(harness.logPath);
+  assert.match(invoked.at(-1) ?? '', /^wrangler:\["deploy"\]$/);
+});
+
+test('partially provisioned credential roots fail before deployment mutation', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+    ]),
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /credential encryption is only partially provisioned/);
+  assert.equal(existsSync(harness.secretCapturePath), false);
+  assert.doesNotMatch(readFileSync(harness.logPath, 'utf8'), /\["deploy"/);
+  assert.doesNotMatch(readFileSync(harness.logPath, 'utf8'), /"migrations","apply"/);
 });
 
 test('new Worker not-found is fresh, but a denied secret inventory stops before mutation', (context) => {
@@ -310,7 +361,11 @@ test('failed deploy removes its mode-0600 secret file and retry rotates only set
   rmSync(harness.secretCapturePath, { force: true });
   const retried = runHarness(harness, ['--skip-build'], {
     DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
-    DEPLOY_TEST_SECRET_LIST: JSON.stringify([{ name: 'CHICKPEA_AUTH_SECRET' }]),
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
   });
   assert.equal(retried.status, 0, retried.stderr);
   const retriedConfig = JSON.parse(readFileSync(

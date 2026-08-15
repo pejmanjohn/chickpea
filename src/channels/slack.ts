@@ -124,11 +124,11 @@ function detach(
   }
 }
 
-// Bot user id resolution: prefer the configured value (env, then the
-// wizard-stored setting — resolveSlackCredentials preserves the env
-// "explicitly empty = no bot user id, do not probe" knob, S14); otherwise
-// resolve once via auth.test() and cache. On auth.test failure leave it
-// undefined so message-family events fail closed in normalization.
+// Bot user id resolution: prefer the value from the one active encrypted
+// credential revision; otherwise resolve once via auth.test() and cache it by
+// that revision's bot token. Environment values are not credential sources.
+// On auth.test failure leave it undefined so message-family events fail closed
+// in normalization.
 let probedBotIdentity:
   | { botToken: string | undefined; botUserId: string | undefined }
   | undefined;
@@ -287,7 +287,6 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   const credentials = await resolveSlackIdentityCredentials(
     identity.id,
     platformEnv,
-    stores.settings,
   );
   const { signingSecret } = credentials;
   if (!signingSecret) {
@@ -341,6 +340,10 @@ const scopedIdentityEventsHandler: SlackRouteHandler = async (c, next) => {
           config: stores.config,
           settings: stores.settings,
           identityId: candidate.identity.id,
+          credentialDependencies: {
+            state: stores.identity,
+            env: platformEnv,
+          },
         });
       } catch (error) {
         console.error(
@@ -355,7 +358,6 @@ const scopedIdentityEventsHandler: SlackRouteHandler = async (c, next) => {
   const credentials = await resolveSlackIdentityCredentials(
     candidate.identity.id,
     platformEnv,
-    stores.settings,
   );
   if (!credentials.signingSecret) {
     return c.json({ error: 'slack_not_configured' }, 401);
@@ -600,15 +602,14 @@ async function processSlackEvent(
   // threads stay continuable); on Cloudflare they proxy the state Durable
   // Object, which is why the handler threads `c.env` through.
   const stores = resolveStores(platformEnv);
-  // Runtime behavior follows the same env > stored > default contract the
-  // admin exposes. Resolve against THIS request's settings store so Node and
-  // Cloudflare (Durable Object-backed) observe the same saved switches.
+  // Behavior switches (not credentials) follow the admin's env > stored >
+  // default contract. Resolve against THIS request's settings store so Node
+  // and Cloudflare (Durable Object-backed) observe the same saved switches.
   const behavior = await resolveSlackBehaviorSettings(platformEnv, stores.settings);
   const identity = await stores.config.getSlackIdentity(slackIdentityId);
   const credentials = await resolveSlackIdentityCredentials(
     slackIdentityId,
     platformEnv,
-    stores.settings,
   );
 
   if (payload.event.type === 'member_joined_channel') {

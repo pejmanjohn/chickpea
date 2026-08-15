@@ -200,6 +200,8 @@ import {
   getMemoryStateStore,
   getRoutineStore,
   getSettingsStore,
+  getSlackCredentialDependencies,
+  getSlackCredentialResolutionDependencies,
   getSlackStateStore,
   getUsageStore,
   getWorkStore,
@@ -265,7 +267,6 @@ import {
 import { listSlackChannels, SlackChannelsError } from '../slack/channels.ts';
 import {
   describeSlackCredentialSources,
-  primeStoredSlackCredentials,
   readSlackConnectionRevision,
   readStoredSlackTeamInfo,
   resolveSlackCredentials,
@@ -276,7 +277,6 @@ import {
   slackBotIdentityInfo,
   slackConversationsInfo,
   slackConversationsJoin,
-  slackTokenFingerprint,
   SLACK_SETTING_KEYS,
   type SlackCredentialSources,
   type SlackTeamInfo,
@@ -304,6 +304,9 @@ import {
   clearSlackIdentityCredentials,
   resolveSlackIdentityCredentials,
   SlackIdentityCredentialRevisionError,
+  writeSlackIdentityCredentials,
+  type SlackCredentialDependencies,
+  type SlackCredentialResolutionDependencies,
 } from '../slack/identity-credentials.ts';
 import {
   purgePendingSlackChallenge,
@@ -415,6 +418,13 @@ interface AdminRoutesOptions {
   authService?: AdminAuthenticationService | undefined;
   betterAuthEnvironment?: BetterAuthEnvironment | undefined;
   identity?: IdentityStore | undefined;
+  /**
+   * Explicit encrypted Slack credential realm for tests and embedded hosts.
+   * Production resolves persistent TAG_STATE and its target keyring from the
+   * request environment. Merely injecting an auth IdentityStore must never
+   * cause an unrelated keyring file to be created.
+   */
+  slackCredentials?: SlackCredentialDependencies | undefined;
   authSecret?: string | undefined;
   recoveryToken?: string | undefined;
   authRateLimiter?: AuthRateLimiter | undefined;
@@ -929,8 +939,8 @@ const assignmentSchema = v.object({
 });
 
 const slackConnectionSchema = v.object({
-  botToken: nonEmptyString,
-  signingSecret: nonEmptyString,
+  botToken: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(16_384)),
+  signingSecret: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4_096)),
 });
 
 const onboardingTrySchema = v.strictObject({
@@ -954,8 +964,8 @@ const slackIdentitySetupIntentSchema = v.strictObject({
 });
 const slackIdentityConnectSchema = v.strictObject({
   expectedRevision: slackIdentityRevisionSchema,
-  botToken: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(8_192)),
-  signingSecret: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(8_192)),
+  botToken: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(16_384)),
+  signingSecret: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4_096)),
 });
 const slackIdentityRevisionOnlySchema = v.strictObject({
   expectedRevision: slackIdentityRevisionSchema,
@@ -1083,6 +1093,26 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const retiredIdentity = (c: Context) => identity(c) as unknown as RetiredIdentityStore;
   const settings = (c: Context) =>
     options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
+  const slackCredentialDependencies = (
+    c: Context,
+  ): SlackCredentialDependencies | undefined => {
+    if (options.slackCredentials) return options.slackCredentials;
+    // Existing route unit tests inject SettingsStore plus a narrow auth-only
+    // IdentityStore. They stay on the test-only encrypted compatibility realm;
+    // only an explicit credential realm may pair injected state with a keyring.
+    if (options.settings) return undefined;
+    return getSlackCredentialDependencies(c.env as PlatformEnv | undefined);
+  };
+  const slackCredentialWriteTarget = (c: Context) =>
+    slackCredentialDependencies(c) ?? settings(c);
+  const slackCredentialResolutionDependencies = (
+    c: Context,
+  ): SlackCredentialResolutionDependencies | undefined =>
+    options.slackCredentials
+      ? options.slackCredentials
+      : options.settings
+      ? undefined
+      : getSlackCredentialResolutionDependencies(c.env as PlatformEnv | undefined);
   const memory = (c: Context) =>
     options.memory ?? getMemoryStateStore(c.env as PlatformEnv | undefined);
   const routines = (c: Context) =>
@@ -1264,6 +1294,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ? await describeSlackCredentialSources(
             c.env as PlatformEnv | undefined,
             settings(c),
+            slackCredentialResolutionDependencies(c),
           )
         : undefined,
     );
@@ -2728,6 +2759,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const connected = await readStoredSlackTeamInfo(
         c.env as PlatformEnv | undefined,
         settings(c),
+        slackCredentialResolutionDependencies(c),
       );
       if (!connected.teamId || connected.teamId !== workspaceId) {
         c.header('Cache-Control', 'no-store');
@@ -4233,10 +4265,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       config: store(c),
       settings: settingsStore,
       identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      ...(slackCredentialDependencies(c)
+        ? { credentialDependencies: slackCredentialDependencies(c) }
+        : {}),
     });
     const [credentials, teamInfo, defaultIdentity] = await Promise.all([
-      describeSlackCredentialSources(c.env as PlatformEnv | undefined, settingsStore),
-      readStoredSlackTeamInfo(c.env as PlatformEnv | undefined, settingsStore),
+      describeSlackCredentialSources(
+        c.env as PlatformEnv | undefined,
+        settingsStore,
+        slackCredentialResolutionDependencies(c),
+      ),
+      readStoredSlackTeamInfo(
+        c.env as PlatformEnv | undefined,
+        settingsStore,
+        slackCredentialResolutionDependencies(c),
+      ),
       store(c).getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID),
     ]);
     const connected =
@@ -4373,6 +4416,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const { botToken } = await resolveSlackCredentials(
         c.env as PlatformEnv | undefined,
         settings(c),
+        slackCredentialResolutionDependencies(c),
       );
       if (!botToken) return c.json({ error: 'slack_not_connected' }, 409);
       let membership: Awaited<ReturnType<typeof slackConversationsInfo>>;
@@ -4449,7 +4493,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       configStore.listChannels(),
       configStore.listAssignments(),
       configStore.listAgents(),
-      resolveSlackCredentials(c.env as PlatformEnv | undefined, settings(c)),
+      resolveSlackCredentials(
+        c.env as PlatformEnv | undefined,
+        settings(c),
+        slackCredentialResolutionDependencies(c),
+      ),
     ]);
     let discoveredChannels: Awaited<ReturnType<typeof listSlackChannels>>['channels'] = [];
     let discoveryError: string | null = null;
@@ -4467,6 +4515,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const teamInfo = await resolveTeamInfoSafely(
       c.env as PlatformEnv | undefined,
       settings(c),
+      slackCredentialResolutionDependencies(c),
     );
     const channelsByKey = new Map(
       configuredChannels.map((channel) => [
@@ -4574,14 +4623,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // concrete workspace+channel. Wildcards ('*') are scope rules, not real
     // channels, and a credential-less (offline/dev) install keeps the exact
     // pre-validation behavior so those setups and tests never break.
-    const { botToken } = await resolveSlackCredentials(platformEnv, settingsStore);
+    const { botToken } = await resolveSlackCredentials(
+      platformEnv,
+      settingsStore,
+      slackCredentialResolutionDependencies(c),
+    );
     const isWildcard = input.workspaceId === '*' || input.channelId === '*';
 
     let isMember: boolean | undefined;
     let joined: boolean | undefined;
     let authoritativeLabel: string | undefined;
     if (botToken && !isWildcard) {
-      const teamInfo = await resolveTeamInfoSafely(platformEnv, settingsStore);
+      const teamInfo = await resolveTeamInfoSafely(
+        platformEnv,
+        settingsStore,
+        slackCredentialResolutionDependencies(c),
+      );
       // (a) The channel must live in the CONNECTED workspace. Without this
       //     check, a channel id copied from another workspace could be accepted
       //     even though the configured bot can never reach it.
@@ -4688,11 +4745,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/slack-channels', async (c) => {
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
-    const { botToken } = await resolveSlackCredentials(platformEnv, settingsStore);
+    const { botToken } = await resolveSlackCredentials(
+      platformEnv,
+      settingsStore,
+      slackCredentialResolutionDependencies(c),
+    );
     if (!botToken) {
       return c.json({ error: 'slack_not_configured' }, 409);
     }
-    const teamInfo = await resolveTeamInfoSafely(platformEnv, settingsStore);
+    const teamInfo = await resolveTeamInfoSafely(
+      platformEnv,
+      settingsStore,
+      slackCredentialResolutionDependencies(c),
+    );
     try {
       const { channels, truncated } = await listSlackChannels(botToken, {
         refresh: c.req.query('refresh') === '1',
@@ -4767,6 +4832,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               ? describeSlackCredentialSources(
                   c.env as PlatformEnv | undefined,
                   settings(c),
+                  slackCredentialResolutionDependencies(c),
                 )
               : undefined,
           ),
@@ -4922,6 +4988,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const teamInfo = await resolveTeamInfoSafely(
         c.env as PlatformEnv | undefined,
         settings(c),
+        slackCredentialResolutionDependencies(c),
       );
       const expectedTeamId = base.teamId ?? teamInfo.teamId;
       if (!expectedTeamId) {
@@ -4939,6 +5006,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           expectedTeamId,
           botToken: parsed.output.botToken,
           signingSecret: parsed.output.signingSecret,
+          ...(slackCredentialDependencies(c)
+            ? { credentialDependencies: slackCredentialDependencies(c) }
+            : {}),
         },
         options.slackIdentityBootstrap,
       );
@@ -4984,6 +5054,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(attachAgentId ? { attachAgentId } : {}),
         ...(attachAgentId
           ? { expectedAgentIdentityId: expectedAgentIdentityId ?? null }
+          : {}),
+        ...(slackCredentialDependencies(c)
+          ? { credentialDependencies: slackCredentialDependencies(c) }
           : {}),
       });
       await appendSlackIdentityAudit(
@@ -5037,6 +5110,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           settings: settings(c),
           identityId,
           expectedRevision: parsed.output.expectedRevision,
+          ...(slackCredentialDependencies(c)
+            ? { credentialDependencies: slackCredentialDependencies(c) }
+            : {}),
         },
         options.slackIdentityBootstrap,
       );
@@ -5136,6 +5212,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ...((c.env as PlatformEnv | undefined) !== undefined
             ? { env: c.env as PlatformEnv }
             : {}),
+          ...(slackCredentialResolutionDependencies(c)
+            ? { credentialDependencies: slackCredentialResolutionDependencies(c) }
+            : {}),
           identityId,
           agentId,
           acknowledgeUnenumeratedChannels:
@@ -5196,6 +5275,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         settings: settings(c),
         identityId,
         expectedRevision: parsed.output.expectedRevision,
+        ...(slackCredentialDependencies(c)
+          ? { credentialDependencies: slackCredentialDependencies(c) }
+          : {}),
       });
       let deleted = false;
       if (parsed.output.deleteDraft) {
@@ -5259,10 +5341,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const credentials = await resolveSlackIdentityCredentials(
         identityId,
         c.env as PlatformEnv | undefined,
-        settings(c),
+        slackCredentialResolutionDependencies(c) ?? settings(c),
       );
       await clearSlackIdentityCredentials(
-        settings(c),
+        slackCredentialWriteTarget(c),
         identityId,
         credentials.connectionRevision,
       );
@@ -5290,22 +5372,25 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  // First-run Slack-connection wizard state: per-credential provenance
-  // (env > stored > missing) plus the manifest deep-link with this install's
-  // events URL substituted server-side — the one setup step every Slack bot
-  // makes users do by hand. Passing the settings store explicitly bypasses
-  // the resolver's 60s cache, so the card always shows fresh provenance.
+  // First-run Slack-connection wizard state: one active encrypted bundle plus
+  // the manifest deep-link with this install's events URL substituted
+  // server-side. The canonical public revision supplies the team identity.
   app.get('/admin/api/slack-connection', async (c) => {
     try {
       const settingsStore = settings(c);
       const credentials = await describeSlackCredentialSources(
         c.env as PlatformEnv | undefined,
         settingsStore,
+        slackCredentialResolutionDependencies(c),
       );
       // STORED-only (no network on admin load): the connected workspace name is
       // populated by the wizard save for new installs, and by the first
       // channels-list / assignment backfill for pre-existing ones.
-      const teamInfo = await readStoredSlackTeamInfo(c.env as PlatformEnv | undefined, settingsStore);
+      const teamInfo = await readStoredSlackTeamInfo(
+        c.env as PlatformEnv | undefined,
+        settingsStore,
+        slackCredentialResolutionDependencies(c),
+      );
       const defaultIdentity = await store(c).getSlackIdentity(
         WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
       );
@@ -5340,6 +5425,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const credentials = await resolveSlackCredentials(
         c.env as PlatformEnv | undefined,
         settings(c),
+        slackCredentialResolutionDependencies(c),
       );
       botToken = credentials.botToken;
       botUserId = credentials.botUserId;
@@ -5446,10 +5532,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       settingsStore = settings(c);
       [expectedRevision, defaultIdentityBefore, priorCredentialSources, priorCredentials] =
         await Promise.all([
-          readSlackConnectionRevision(settingsStore),
+          readSlackConnectionRevision(
+            settingsStore,
+            slackCredentialResolutionDependencies(c),
+          ),
           store(c).getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID),
-          describeSlackCredentialSources(c.env as PlatformEnv | undefined, settingsStore),
-          resolveSlackCredentials(c.env as PlatformEnv | undefined, settingsStore),
+          describeSlackCredentialSources(
+            c.env as PlatformEnv | undefined,
+            settingsStore,
+            slackCredentialResolutionDependencies(c),
+          ),
+          resolveSlackCredentials(
+            c.env as PlatformEnv | undefined,
+            settingsStore,
+            slackCredentialResolutionDependencies(c),
+          ),
         ]);
     } catch (err) {
       return internalError(c, err);
@@ -5592,17 +5689,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           healthDetail: null,
         },
       );
-      const nextRevision = randomUUID();
-      const writes = [
-        { key: SLACK_SETTING_KEYS.connectionRevision, value: nextRevision },
-        { key: SLACK_SETTING_KEYS.botToken, value: botToken },
-        { key: SLACK_SETTING_KEYS.signingSecret, value: signingSecret },
-        { key: SLACK_SETTING_KEYS.botUserId, value: validated.botUserId },
-        { key: SLACK_SETTING_KEYS.teamId, value: validated.teamId },
+      const nextRevision = await writeSlackIdentityCredentials(
+        slackCredentialWriteTarget(c),
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        expectedRevision,
         {
-          key: SLACK_SETTING_KEYS.teamTokenFingerprint,
-          value: slackTokenFingerprint(botToken),
+          botToken,
+          signingSecret,
+          botUserId: validated.botUserId,
+          appId: validated.appId,
+          teamId: validated.teamId,
+          grantedScopes: validated.grantedScopes ?? [],
+          validatedAt: validated.observedAt,
         },
+      );
+      const writes = [
         ...(validated.teamName
           ? [{ key: SLACK_SETTING_KEYS.teamName, value: validated.teamName }]
           : []),
@@ -5610,14 +5711,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const deletes = [
         ...(validated.teamName ? [] : [SLACK_SETTING_KEYS.teamName]),
       ];
-      // Persist the connected workspace identity from the same auth.test: the
-      // admin names the workspace, and the assignment PUT rejects channels from
-      // any OTHER workspace against this stored team id.
+      // Persist only human-friendly presentation metadata. The authoritative
+      // team ID is already part of the promoted encrypted revision's public
+      // metadata, so this patch cannot split authorization state.
       const applied = await settingsStore.applySettingsPatch({
-        expected: {
-          key: SLACK_SETTING_KEYS.connectionRevision,
-          value: expectedRevision,
-        },
         set: writes,
         delete: deletes,
       });
@@ -5630,15 +5727,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           409,
         );
       }
-      // Prime the resolver cache in THIS isolate so the very next signed
-      // event verifies with the just-stored secret instead of waiting out
-      // the cache TTL.
-      primeStoredSlackCredentials({
-        botToken,
-        signingSecret,
-        botUserId: validated.botUserId,
-      }, nextRevision);
-      if ((await readSlackConnectionRevision(settingsStore)) !== nextRevision) {
+      if ((await readSlackConnectionRevision(
+        settingsStore,
+        slackCredentialResolutionDependencies(c),
+      )) !== nextRevision) {
         return c.json(
           {
             error: 'slack_connection_changed',
@@ -5710,6 +5802,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         await resolveSlackCredentials(
           c.env as PlatformEnv | undefined,
           settings(c),
+          slackCredentialResolutionDependencies(c),
         )
       ).botToken;
     } catch (err) {
@@ -5765,7 +5858,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         const credentials = await resolveSlackIdentityCredentials(
           identity.id,
           c.env as PlatformEnv | undefined,
-          settingsStore,
+          slackCredentialResolutionDependencies(c) ?? settingsStore,
         );
         if (credentials.botToken || credentials.signingSecret) {
           dedicatedWithCredentials.push({
@@ -5784,29 +5877,33 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           identities: dedicatedWithCredentials,
         }, 409);
       }
-      const expectedRevision = await readSlackConnectionRevision(settingsStore);
+      const expectedRevision = await readSlackConnectionRevision(
+        settingsStore,
+        slackCredentialResolutionDependencies(c),
+      );
       const sources = await describeSlackCredentialSources(
         c.env as PlatformEnv | undefined,
         settingsStore,
+        slackCredentialResolutionDependencies(c),
       );
-      if (sources.botToken !== 'stored' || sources.signingSecret !== 'stored') {
+      const hasStoredCredentials =
+        sources.botToken === 'stored' && sources.signingSecret === 'stored';
+      const resumesTombstonedDisconnect =
+        expectedRevision === null &&
+        ['credentials_pending', 'connected', 'degraded'].includes(
+          defaultIdentityBefore.lifecycle,
+        );
+      if (!hasStoredCredentials && !resumesTombstonedDisconnect) {
         return c.json({ error: 'slack_connection_read_only' }, 409);
       }
 
-      const nextRevision = randomUUID();
+      // Clear non-authoritative presentation/setup metadata first. If this
+      // store is unavailable, the active credential revision remains intact.
+      // Once the credential tombstone wins, a retry may resume from the stale
+      // connected lifecycle without restoring or regenerating secrets.
       const applied = await settingsStore.applySettingsPatch({
-        expected: {
-          key: SLACK_SETTING_KEYS.connectionRevision,
-          value: expectedRevision,
-        },
-        set: [{ key: SLACK_SETTING_KEYS.connectionRevision, value: nextRevision }],
         delete: [
-          SLACK_SETTING_KEYS.botToken,
-          SLACK_SETTING_KEYS.signingSecret,
-          SLACK_SETTING_KEYS.botUserId,
-          SLACK_SETTING_KEYS.teamId,
           SLACK_SETTING_KEYS.teamName,
-          SLACK_SETTING_KEYS.teamTokenFingerprint,
           slackIdentityPendingEnvelopeSettingKey(
             WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
           ),
@@ -5821,13 +5918,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           409,
         );
       }
-      // Replace (rather than merely invalidate) this isolate's credential
-      // cache so the next event fails closed immediately without a store read.
-      primeStoredSlackCredentials({
-        botToken: undefined,
-        signingSecret: undefined,
-        botUserId: undefined,
-      }, nextRevision);
+      if (hasStoredCredentials) {
+        await clearSlackIdentityCredentials(
+          slackCredentialWriteTarget(c),
+          WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+          expectedRevision,
+        );
+      }
       const defaultIdentityCurrent = await configStore.getSlackIdentity(
         WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
       );
@@ -5863,6 +5960,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           'Disconnected Chickpea locally. The Slack app was not uninstalled or revoked, and Agents, channel assignments, transcripts, and the public URL were preserved.',
       });
     } catch (err) {
+      if (err instanceof SlackIdentityCredentialRevisionError) {
+        return c.json(
+          {
+            error: 'slack_connection_changed',
+            message: 'Slack connection changed before it could be disconnected. Try again.',
+          },
+          409,
+        );
+      }
       return internalError(c, err);
     }
   });
@@ -6837,6 +6943,7 @@ type SlackIdentityMembershipReadiness =
 async function preflightSlackIdentityMembership(input: {
   config: ConfigStore;
   settings: SettingsStore;
+  credentialDependencies?: SlackCredentialResolutionDependencies | undefined;
   env?: PlatformEnv;
   identityId: string;
   agentId: string;
@@ -6865,7 +6972,7 @@ async function preflightSlackIdentityMembership(input: {
   const credentials = await resolveSlackIdentityCredentials(
     identity.id,
     input.env,
-    input.settings,
+    input.credentialDependencies ?? input.settings,
   );
   if (!credentials.botToken) {
     return {
@@ -7127,9 +7234,10 @@ function toChannel(
 async function resolveTeamInfoSafely(
   env: PlatformEnv | undefined,
   store: SettingsStore,
+  credentialDependencies?: SlackCredentialResolutionDependencies,
 ): Promise<SlackTeamInfo> {
   try {
-    return await resolveSlackTeamInfo(env, store);
+    return await resolveSlackTeamInfo(env, store, credentialDependencies);
   } catch {
     return { teamId: undefined, teamName: undefined };
   }

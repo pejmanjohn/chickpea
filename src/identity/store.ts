@@ -11,6 +11,7 @@ import type {
   AuthOperation,
   AuthOperationKind,
   AuthRateLimitState,
+  BeginSlackCredentialRotationInput,
   BrowserSessionRecord,
   ClaimOwnerInput,
   ConsumeAuthOperationInput,
@@ -21,6 +22,7 @@ import type {
   CreateOwnerClaimInput,
   CreatePersonalTokenRecordInput,
   EnsureAuthControlInput,
+  EnsureSlackCredentialControlInput,
   EnsureOrganizationInput,
   IdentityExportSummary,
   IdentityResolution,
@@ -34,13 +36,20 @@ import type {
   OwnerClaim,
   PersonalTokenRecord,
   RecordIdentityAuthAuditInput,
+  PromoteSlackCredentialRevisionInput,
+  RewrapSlackCredentialRevisionInput,
   ResendInvitationInput,
   RotatePersonalTokenResult,
   SetMembershipAccessOverlayInput,
+  SlackCredentialControl,
+  SlackCredentialRetentionResult,
+  SlackCredentialRevision,
+  StageSlackCredentialRevisionInput,
   SlackIdentityBinding,
   UpdateAuthControlInput,
   UpdateMembershipInput,
   UpdateOrganizationAuthInput,
+  TombstoneSlackCredentialRevisionInput,
   User,
 } from './types.ts';
 
@@ -64,6 +73,19 @@ export class IdentityStoreLogic {
       case 'ensure_auth_control': return { kind: 'auth_control', control: this.ensureAuthControl(request.input) };
       case 'get_auth_control': return { kind: 'auth_control', control: this.getAuthControl(request.installationId) ?? null };
       case 'update_auth_control': return { kind: 'auth_control', control: this.updateAuthControl(request.input) };
+      case 'ensure_slack_credential_control': return { kind: 'slack_credential_control', control: this.ensureSlackCredentialControl(request.input) };
+      case 'get_slack_credential_control': return { kind: 'slack_credential_control', control: this.getSlackCredentialControl(request.installationId) ?? null };
+      case 'begin_slack_credential_rotation': return { kind: 'slack_credential_control', control: this.beginSlackCredentialRotation(request.input) };
+      case 'stage_slack_credential_revision': return { kind: 'slack_credential_revision', revision: this.stageSlackCredentialRevision(request.input) };
+      case 'get_active_slack_credential_revision': return { kind: 'slack_credential_revision', revision: this.getActiveSlackCredentialRevision(request.identityId) ?? null };
+      case 'get_slack_credential_revision': return { kind: 'slack_credential_revision', revision: this.getSlackCredentialRevision(request.identityId, request.revision) ?? null };
+      case 'has_slack_credential_history': return { kind: 'slack_credential_presence', present: this.hasSlackCredentialHistory(request.identityId) };
+      case 'list_live_slack_credential_revisions': return { kind: 'slack_credential_revisions', revisions: this.listLiveSlackCredentialRevisions() };
+      case 'promote_slack_credential_revision': return { kind: 'slack_credential_revision', revision: this.promoteSlackCredentialRevision(request.input) };
+      case 'tombstone_slack_credential_revision': return { kind: 'slack_credential_revision', revision: this.tombstoneSlackCredentialRevision(request.input) };
+      case 'rewrap_slack_credential_revision': return { kind: 'slack_credential_revision', revision: this.rewrapSlackCredentialRevision(request.input) };
+      case 'count_live_slack_credential_revisions_by_key': return { kind: 'slack_credential_count', count: this.countLiveSlackCredentialRevisionsByKey(request.keyId, request.expectedRotationEpoch) };
+      case 'sweep_slack_identity_retention': return { kind: 'slack_credential_retention', result: this.sweepSlackIdentityRetention(request.at, request.candidateMaxAgeMs) };
       case 'create_auth_operation': return { kind: 'auth_operation', operation: this.createAuthOperation(request.input) };
       case 'reserve_pending_auth_operation': {
         const result = this.reservePendingAuthOperation(request.input);
@@ -159,6 +181,311 @@ export class IdentityStoreLogic {
     ).changes;
     if (changed !== 1) throw identityError('auth_control_conflict', 'Authentication control changed concurrently.');
     return this.requiredAuthControl(installationId);
+  }
+
+  ensureSlackCredentialControl(
+    input: EnsureSlackCredentialControlInput,
+  ): SlackCredentialControl {
+    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
+    const existing = this.getSlackCredentialControl(installationId);
+    if (existing) return existing;
+    const at = this.now();
+    try {
+      this.db.run(
+        `INSERT INTO identity_slack_credential_controls (
+          installation_id, deployment_id, current_key_id, rotation_epoch, created_at, updated_at
+        ) VALUES (?, ?, ?, 1, ?, ?)`,
+        installationId, newId('deployment'), nonEmpty(input.currentKeyId, 'credential key ID'), at, at,
+      );
+    } catch {
+      const winner = this.getSlackCredentialControl(installationId);
+      if (winner) return winner;
+      throw identityError('credential_revision_conflict', 'Slack credential control could not be initialized.');
+    }
+    return this.requiredSlackCredentialControl(installationId);
+  }
+
+  getSlackCredentialControl(
+    installationId = DEFAULT_INSTALLATION_ID,
+  ): SlackCredentialControl | undefined {
+    const row = this.db.get(
+      'SELECT * FROM identity_slack_credential_controls WHERE installation_id = ?',
+      installationId,
+    );
+    return row ? slackCredentialControlFromRow(row) : undefined;
+  }
+
+  beginSlackCredentialRotation(
+    input: BeginSlackCredentialRotationInput,
+  ): SlackCredentialControl {
+    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
+    if (!Number.isSafeInteger(input.expectedEpoch) || input.expectedEpoch < 1) {
+      throw identityError('identity_invalid', 'Slack credential rotation epoch is invalid.');
+    }
+    const expectedKeyId = nonEmpty(input.expectedCurrentKeyId, 'credential key ID');
+    const nextKeyId = nonEmpty(input.nextKeyId, 'credential key ID');
+    if (expectedKeyId === nextKeyId) {
+      throw identityError('identity_invalid', 'Slack credential rotation requires a new key.');
+    }
+    const changed = this.db.run(
+      `UPDATE identity_slack_credential_controls
+       SET current_key_id = ?, rotation_epoch = rotation_epoch + 1, updated_at = ?
+       WHERE installation_id = ? AND rotation_epoch = ? AND current_key_id = ?`,
+      nextKeyId, this.now(), installationId, input.expectedEpoch, expectedKeyId,
+    ).changes;
+    if (changed !== 1) {
+      throw identityError('credential_rotation_conflict', 'Slack credential encryption epoch changed.');
+    }
+    return this.requiredSlackCredentialControl(installationId);
+  }
+
+  stageSlackCredentialRevision(
+    input: StageSlackCredentialRevisionInput,
+  ): SlackCredentialRevision {
+    validateCredentialRevisionInput(input);
+    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
+    return this.db.transaction(() => {
+      const control = this.requiredSlackCredentialControl(installationId);
+      requireCredentialEpoch(control, input.expectedRotationEpoch);
+      if (input.envelope.keyId !== control.currentKeyId) {
+        throw identityError('credential_rotation_conflict', 'Slack credential encryption epoch changed.');
+      }
+      const active = this.getActiveSlackCredentialRevision(input.identityId);
+      if ((active?.revision ?? null) !== input.expectedActiveRevision) {
+        throw identityError('credential_revision_conflict', 'Slack credential revision changed concurrently.');
+      }
+      const latestRow = this.db.get(
+        `SELECT * FROM identity_slack_credential_revisions
+         WHERE identity_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+        input.identityId,
+      );
+      const latest = latestRow ? slackCredentialRevisionFromRow(latestRow) : undefined;
+      // Realm identity remains immutable even after a recovery tombstone has
+      // scrubbed the prior ciphertext. Tombstoning is revocation, never a way
+      // to repoint an identity at a different app or workspace.
+      if (latest) requireCredentialTransition(latest, input);
+      const existing = this.getSlackCredentialRevision(input.identityId, input.revision);
+      if (existing) {
+        if (credentialRevisionMatches(existing, input)) return existing;
+        throw identityError('credential_revision_conflict', 'Slack credential revision conflicts with existing state.');
+      }
+      const at = this.now();
+      try {
+        this.db.run(
+          `INSERT INTO identity_slack_credential_revisions (
+            identity_id, identity_class, purpose, revision, base_revision, status,
+            app_id, team_id, bot_user_id,
+            granted_scopes_json, validated_at, manifest_fingerprint, rotation_epoch,
+            envelope_version, envelope_algorithm, key_id, nonce, ciphertext,
+            created_at, updated_at, tombstoned_at
+          ) VALUES (?, ?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+          nonEmpty(input.identityId, 'Slack identity ID'), input.identityClass, input.purpose,
+          nonEmpty(input.revision, 'credential revision'), input.expectedActiveRevision,
+          nonEmpty(input.appId, 'Slack app ID'),
+          input.teamId ?? null, input.botUserId ?? null,
+          JSON.stringify(normalizeScopes(input.grantedScopes ?? [])), input.validatedAt ?? null,
+          input.manifestFingerprint ?? null, control.rotationEpoch,
+          input.envelope.version, input.envelope.algorithm, input.envelope.keyId,
+          input.envelope.nonce, input.envelope.ciphertext, at, at,
+        );
+      } catch {
+        throw identityError('credential_revision_conflict', 'Slack credential candidate changed concurrently.');
+      }
+      return this.requiredSlackCredentialRevision(input.identityId, input.revision);
+    });
+  }
+
+  getActiveSlackCredentialRevision(identityId: string): SlackCredentialRevision | undefined {
+    const row = this.db.get(
+      `SELECT * FROM identity_slack_credential_revisions
+       WHERE identity_id = ? AND status = 'active'`,
+      nonEmpty(identityId, 'Slack identity ID'),
+    );
+    return row ? slackCredentialRevisionFromRow(row) : undefined;
+  }
+
+  getSlackCredentialRevision(
+    identityId: string,
+    revision: string,
+  ): SlackCredentialRevision | undefined {
+    const row = this.db.get(
+      `SELECT * FROM identity_slack_credential_revisions
+       WHERE identity_id = ? AND revision = ?`,
+      nonEmpty(identityId, 'Slack identity ID'), nonEmpty(revision, 'credential revision'),
+    );
+    return row ? slackCredentialRevisionFromRow(row) : undefined;
+  }
+
+  hasSlackCredentialHistory(identityId: string): boolean {
+    return Boolean(this.db.get(
+      'SELECT 1 AS present FROM identity_slack_credential_revisions WHERE identity_id = ? LIMIT 1',
+      nonEmpty(identityId, 'Slack identity ID'),
+    ));
+  }
+
+  listLiveSlackCredentialRevisions(): SlackCredentialRevision[] {
+    return this.db.all(
+      `SELECT * FROM identity_slack_credential_revisions
+       WHERE status IN ('active', 'candidate') ORDER BY identity_id, created_at, revision`,
+    ).map(slackCredentialRevisionFromRow);
+  }
+
+  promoteSlackCredentialRevision(
+    input: PromoteSlackCredentialRevisionInput,
+  ): SlackCredentialRevision {
+    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
+    return this.db.transaction(() => {
+      const control = this.requiredSlackCredentialControl(installationId);
+      requireCredentialEpoch(control, input.expectedRotationEpoch);
+      const active = this.getActiveSlackCredentialRevision(input.identityId);
+      if ((active?.revision ?? null) !== input.expectedActiveRevision) {
+        throw identityError('credential_revision_conflict', 'Slack credential revision changed concurrently.');
+      }
+      const candidate = this.requiredSlackCredentialRevision(
+        input.identityId,
+        input.candidateRevision,
+      );
+      if (candidate.status !== 'candidate' || !candidate.envelope ||
+          candidate.baseRevision !== input.expectedActiveRevision ||
+          candidate.rotationEpoch !== control.rotationEpoch ||
+          candidate.envelope.keyId !== control.currentKeyId) {
+        throw identityError('credential_revision_conflict', 'Slack credential candidate is not promotable.');
+      }
+      const at = this.now();
+      if (active) {
+        this.db.run(
+          `UPDATE identity_slack_credential_revisions
+           SET status = 'tombstoned', envelope_version = NULL, envelope_algorithm = NULL,
+             key_id = NULL, nonce = NULL, ciphertext = NULL, tombstoned_at = ?, updated_at = ?
+           WHERE identity_id = ? AND revision = ? AND status = 'active'`,
+          at, at, active.identityId, active.revision,
+        );
+      }
+      const changed = this.db.run(
+        `UPDATE identity_slack_credential_revisions
+         SET status = 'active', updated_at = ?
+         WHERE identity_id = ? AND revision = ? AND status = 'candidate'`,
+        at, input.identityId, input.candidateRevision,
+      ).changes;
+      if (changed !== 1) {
+        throw identityError('credential_revision_conflict', 'Slack credential promotion lost its compare-and-set.');
+      }
+      return this.requiredSlackCredentialRevision(input.identityId, input.candidateRevision);
+    });
+  }
+
+  tombstoneSlackCredentialRevision(
+    input: TombstoneSlackCredentialRevisionInput,
+  ): SlackCredentialRevision {
+    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
+    return this.db.transaction(() => {
+      const control = this.requiredSlackCredentialControl(installationId);
+      requireCredentialEpoch(control, input.expectedRotationEpoch);
+      const current = this.requiredSlackCredentialRevision(input.identityId, input.revision);
+      if (current.status === 'tombstoned') {
+        const active = this.getActiveSlackCredentialRevision(input.identityId);
+        if (active && active.revision !== input.revision) {
+          throw identityError(
+            'credential_revision_conflict',
+            'Slack credential revision changed concurrently.',
+          );
+        }
+        return current;
+      }
+      const at = this.now();
+      this.db.run(
+        `UPDATE identity_slack_credential_revisions
+         SET status = 'tombstoned', envelope_version = NULL, envelope_algorithm = NULL,
+           key_id = NULL, nonce = NULL, ciphertext = NULL, tombstoned_at = ?, updated_at = ?
+         WHERE identity_id = ? AND revision = ? AND status IN ('active', 'candidate')`,
+        at, at, input.identityId, input.revision,
+      );
+      return this.requiredSlackCredentialRevision(input.identityId, input.revision);
+    });
+  }
+
+  rewrapSlackCredentialRevision(
+    input: RewrapSlackCredentialRevisionInput,
+  ): SlackCredentialRevision {
+    const installationId = input.installationId ?? DEFAULT_INSTALLATION_ID;
+    return this.db.transaction(() => {
+      const control = this.requiredSlackCredentialControl(installationId);
+      requireCredentialEpoch(control, input.expectedRotationEpoch);
+      if (input.envelope.keyId !== control.currentKeyId) {
+        throw identityError('credential_rotation_conflict', 'Slack credential encryption epoch changed.');
+      }
+      const current = this.requiredSlackCredentialRevision(input.identityId, input.revision);
+      if (!current.envelope || current.status === 'tombstoned' ||
+          current.envelope.keyId !== input.expectedKeyId) {
+        throw identityError('credential_revision_conflict', 'Slack credential rewrap lost its compare-and-set.');
+      }
+      const changed = this.db.run(
+        `UPDATE identity_slack_credential_revisions SET
+          envelope_version = ?, envelope_algorithm = ?, key_id = ?, nonce = ?, ciphertext = ?,
+          rotation_epoch = ?, updated_at = ?
+         WHERE identity_id = ? AND revision = ? AND status IN ('active', 'candidate')
+           AND key_id = ? AND rotation_epoch = ?`,
+        input.envelope.version, input.envelope.algorithm, input.envelope.keyId,
+        input.envelope.nonce, input.envelope.ciphertext, control.rotationEpoch, this.now(),
+        input.identityId, input.revision, input.expectedKeyId, current.rotationEpoch,
+      ).changes;
+      if (changed !== 1) {
+        throw identityError('credential_revision_conflict', 'Slack credential rewrap lost its compare-and-set.');
+      }
+      return this.requiredSlackCredentialRevision(input.identityId, input.revision);
+    });
+  }
+
+  countLiveSlackCredentialRevisionsByKey(
+    keyId: string,
+    expectedRotationEpoch: number,
+  ): number {
+    const control = this.requiredSlackCredentialControl(DEFAULT_INSTALLATION_ID);
+    requireCredentialEpoch(control, expectedRotationEpoch);
+    return Number(this.db.get(
+      `SELECT COUNT(*) AS count FROM identity_slack_credential_revisions
+       WHERE status IN ('active', 'candidate') AND key_id = ?`,
+      nonEmpty(keyId, 'credential key ID'),
+    )?.count ?? 0);
+  }
+
+  sweepSlackIdentityRetention(
+    at: number,
+    candidateMaxAgeMs: number,
+  ): SlackCredentialRetentionResult {
+    if (!Number.isSafeInteger(at) || at < 0 ||
+        !Number.isSafeInteger(candidateMaxAgeMs) || candidateMaxAgeMs < 1) {
+      throw identityError('identity_invalid', 'Slack identity retention boundary is invalid.');
+    }
+    return this.db.transaction(() => {
+      const expiredAuthOperations = this.db.run(
+        `UPDATE identity_auth_operations SET status = 'expired', updated_at = ?
+         WHERE status IN ('reserved', 'reconciling') AND expires_at <= ?`,
+        at, at,
+      ).changes;
+      const expiredInvitations = this.db.run(
+        `UPDATE identity_invitations SET status = 'expired', updated_at = ?
+         WHERE status = 'pending' AND expires_at <= ?`,
+        at, at,
+      ).changes;
+      const expiredBrowserSessions = this.db.run(
+        'DELETE FROM identity_browser_sessions WHERE expires_at <= ?',
+        at,
+      ).changes;
+      const scrubbedCredentialCandidates = this.db.run(
+        `UPDATE identity_slack_credential_revisions
+         SET status = 'tombstoned', envelope_version = NULL, envelope_algorithm = NULL,
+           key_id = NULL, nonce = NULL, ciphertext = NULL, tombstoned_at = ?, updated_at = ?
+         WHERE status = 'candidate' AND created_at <= ?`,
+        at, at, at - candidateMaxAgeMs,
+      ).changes;
+      return {
+        expiredAuthOperations,
+        expiredInvitations,
+        expiredBrowserSessions,
+        scrubbedCredentialCandidates,
+      };
+    });
   }
 
   createAuthOperation(input: CreateAuthOperationInput): AuthOperation {
@@ -814,6 +1141,23 @@ export class IdentityStoreLogic {
     if (!value) throw identityError('auth_control_missing', 'Authentication control was not found.');
     return value;
   }
+  private requiredSlackCredentialControl(id: string): SlackCredentialControl {
+    const value = this.getSlackCredentialControl(id);
+    if (!value) {
+      throw identityError('credential_control_missing', 'Slack credential control was not found.');
+    }
+    return value;
+  }
+  private requiredSlackCredentialRevision(
+    identityId: string,
+    revision: string,
+  ): SlackCredentialRevision {
+    const value = this.getSlackCredentialRevision(identityId, revision);
+    if (!value) {
+      throw identityError('credential_revision_missing', 'Slack credential revision was not found.');
+    }
+    return value;
+  }
   private requiredAuthOperation(id: string): AuthOperation {
     const value = this.getAuthOperation(id);
     if (!value) throw identityError('auth_operation_missing', 'Authentication operation was not found.');
@@ -866,6 +1210,19 @@ export class SqliteIdentityStore implements IdentityStore {
   async ensureAuthControl(input: EnsureAuthControlInput = {}) { return this.logic.ensureAuthControl(input); }
   async getAuthControl(id?: string) { return this.logic.getAuthControl(id); }
   async updateAuthControl(input: UpdateAuthControlInput) { return this.logic.updateAuthControl(input); }
+  async ensureSlackCredentialControl(input: EnsureSlackCredentialControlInput) { return this.logic.ensureSlackCredentialControl(input); }
+  async getSlackCredentialControl(id?: string) { return this.logic.getSlackCredentialControl(id); }
+  async beginSlackCredentialRotation(input: BeginSlackCredentialRotationInput) { return this.logic.beginSlackCredentialRotation(input); }
+  async stageSlackCredentialRevision(input: StageSlackCredentialRevisionInput) { return this.logic.stageSlackCredentialRevision(input); }
+  async getActiveSlackCredentialRevision(identityId: string) { return this.logic.getActiveSlackCredentialRevision(identityId); }
+  async getSlackCredentialRevision(identityId: string, revision: string) { return this.logic.getSlackCredentialRevision(identityId, revision); }
+  async hasSlackCredentialHistory(identityId: string) { return this.logic.hasSlackCredentialHistory(identityId); }
+  async listLiveSlackCredentialRevisions() { return this.logic.listLiveSlackCredentialRevisions(); }
+  async promoteSlackCredentialRevision(input: PromoteSlackCredentialRevisionInput) { return this.logic.promoteSlackCredentialRevision(input); }
+  async tombstoneSlackCredentialRevision(input: TombstoneSlackCredentialRevisionInput) { return this.logic.tombstoneSlackCredentialRevision(input); }
+  async rewrapSlackCredentialRevision(input: RewrapSlackCredentialRevisionInput) { return this.logic.rewrapSlackCredentialRevision(input); }
+  async countLiveSlackCredentialRevisionsByKey(keyId: string, epoch: number) { return this.logic.countLiveSlackCredentialRevisionsByKey(keyId, epoch); }
+  async sweepSlackIdentityRetention(at: number, candidateMaxAgeMs: number) { return this.logic.sweepSlackIdentityRetention(at, candidateMaxAgeMs); }
   async createAuthOperation(input: CreateAuthOperationInput) { return this.logic.createAuthOperation(input); }
   async reservePendingAuthOperation(input: CreateAuthOperationInput) { return this.logic.reservePendingAuthOperation(input); }
   async getAuthOperation(id: string) { return this.logic.getAuthOperation(id); }
@@ -923,6 +1280,144 @@ function validateOperationInput(input: CreateAuthOperationInput): void {
   if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= 0) {
     throw identityError('identity_invalid', 'Authentication operation expiry is invalid.');
   }
+}
+
+function validateCredentialRevisionInput(input: StageSlackCredentialRevisionInput): void {
+  const allowedPurpose = input.identityClass === 'workspace_default'
+    ? input.purpose === 'app_credentials' || input.purpose === 'connected_credentials'
+    : input.purpose === 'bot_credentials';
+  if (!allowedPurpose) {
+    throw identityError('identity_invalid', 'Slack credential purpose does not match its identity class.');
+  }
+  if (!Number.isSafeInteger(input.expectedRotationEpoch) || input.expectedRotationEpoch < 1) {
+    throw identityError('identity_invalid', 'Slack credential rotation epoch is invalid.');
+  }
+  if (input.purpose === 'connected_credentials' && !input.teamId) {
+    throw identityError('identity_invalid', 'Connected Slack credentials require a workspace.');
+  }
+  if (input.purpose === 'app_credentials' && input.teamId !== undefined && input.teamId !== null) {
+    throw identityError('identity_invalid', 'Pre-install Slack app credentials cannot bind a workspace.');
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(input.envelope.keyId) ||
+      !/^[A-Za-z0-9_-]{16}$/.test(input.envelope.nonce) ||
+      !/^[A-Za-z0-9_-]{22,131072}$/.test(input.envelope.ciphertext)) {
+    throw identityError('identity_invalid', 'Slack credential envelope is invalid.');
+  }
+  if (!/^[a-z0-9][a-z0-9_-]{0,127}$/.test(input.identityId)) {
+    throw identityError('identity_invalid', 'Slack identity ID is invalid.');
+  }
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(input.revision)) {
+    throw identityError('identity_invalid', 'Credential revision is invalid.');
+  }
+  slackId(input.appId, 'Slack app ID');
+  if (input.teamId) slackId(input.teamId, 'Slack team ID');
+  if (input.botUserId) slackId(input.botUserId, 'Slack bot user ID');
+  if (input.manifestFingerprint !== undefined && input.manifestFingerprint !== null) {
+    strictText(input.manifestFingerprint, 'manifest fingerprint', 256);
+  }
+  if (input.validatedAt !== undefined && input.validatedAt !== null &&
+      (!Number.isSafeInteger(input.validatedAt) || input.validatedAt < 0)) {
+    throw identityError('identity_invalid', 'Slack credential validation time is invalid.');
+  }
+  if (input.envelope.version !== 1 || input.envelope.algorithm !== 'AES-GCM-256') {
+    throw identityError('identity_invalid', 'Slack credential envelope is invalid.');
+  }
+  normalizeScopes(input.grantedScopes ?? []);
+}
+
+function requireCredentialTransition(
+  active: SlackCredentialRevision,
+  input: StageSlackCredentialRevisionInput,
+): void {
+  if (active.identityClass !== input.identityClass) {
+    throw identityError('credential_revision_conflict', 'Slack credential identity class is immutable.');
+  }
+  if (active.appId !== input.appId) {
+    throw identityError('credential_revision_conflict', 'Slack credential app identity is immutable.');
+  }
+  const nextTeamId = input.teamId ?? null;
+  if (active.teamId && active.teamId !== nextTeamId) {
+    throw identityError('credential_revision_conflict', 'Slack credential workspace identity is immutable.');
+  }
+  if (active.purpose === 'connected_credentials' && input.purpose === 'app_credentials') {
+    throw identityError('credential_revision_conflict', 'Connected Slack credentials cannot be downgraded.');
+  }
+  if (active.manifestFingerprint !== (input.manifestFingerprint ?? null)) {
+    throw identityError('credential_revision_conflict', 'Slack credential manifest is immutable.');
+  }
+}
+
+function normalizeScopes(values: readonly string[]): string[] {
+  if (values.length > 128) throw identityError('identity_invalid', 'Slack granted scopes are invalid.');
+  const normalized = [...new Set(values.map((value) => value.trim()))].sort();
+  if (normalized.some((value) => !/^[a-z][a-z0-9_.:-]{0,127}$/.test(value))) {
+    throw identityError('identity_invalid', 'Slack granted scopes are invalid.');
+  }
+  return normalized;
+}
+
+function requireCredentialEpoch(control: SlackCredentialControl, expectedEpoch: number): void {
+  if (control.rotationEpoch !== expectedEpoch) {
+    throw identityError('credential_rotation_conflict', 'Slack credential encryption epoch changed.');
+  }
+}
+
+function credentialRevisionMatches(
+  revision: SlackCredentialRevision,
+  input: StageSlackCredentialRevisionInput,
+): boolean {
+  return revision.status === 'candidate' && revision.identityClass === input.identityClass &&
+    revision.purpose === input.purpose && revision.baseRevision === input.expectedActiveRevision &&
+    revision.appId === input.appId &&
+    revision.teamId === (input.teamId ?? null) && revision.botUserId === (input.botUserId ?? null) &&
+    revision.manifestFingerprint === (input.manifestFingerprint ?? null) &&
+    revision.validatedAt === (input.validatedAt ?? null) &&
+    JSON.stringify(revision.grantedScopes) === JSON.stringify(normalizeScopes(input.grantedScopes ?? [])) &&
+    revision.rotationEpoch === input.expectedRotationEpoch &&
+    JSON.stringify(revision.envelope) === JSON.stringify(input.envelope);
+}
+
+function slackCredentialControlFromRow(row: Record<string, unknown>): SlackCredentialControl {
+  return {
+    installationId: String(row.installation_id),
+    deploymentId: String(row.deployment_id),
+    currentKeyId: String(row.current_key_id),
+    rotationEpoch: Number(row.rotation_epoch),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function slackCredentialRevisionFromRow(row: Record<string, unknown>): SlackCredentialRevision {
+  const hasEnvelope = row.ciphertext !== null && row.ciphertext !== undefined;
+  return {
+    identityId: String(row.identity_id),
+    identityClass: String(row.identity_class) as SlackCredentialRevision['identityClass'],
+    purpose: String(row.purpose) as SlackCredentialRevision['purpose'],
+    revision: String(row.revision),
+    baseRevision: row.base_revision === null ? null : String(row.base_revision),
+    status: String(row.status) as SlackCredentialRevision['status'],
+    appId: String(row.app_id),
+    teamId: row.team_id === null || row.team_id === undefined ? null : String(row.team_id),
+    botUserId: row.bot_user_id === null || row.bot_user_id === undefined ? null : String(row.bot_user_id),
+    grantedScopes: JSON.parse(String(row.granted_scopes_json)) as string[],
+    validatedAt: row.validated_at === null || row.validated_at === undefined
+      ? null : Number(row.validated_at),
+    manifestFingerprint: row.manifest_fingerprint === null || row.manifest_fingerprint === undefined
+      ? null : String(row.manifest_fingerprint),
+    rotationEpoch: Number(row.rotation_epoch),
+    envelope: hasEnvelope ? {
+      version: Number(row.envelope_version) as 1,
+      algorithm: String(row.envelope_algorithm) as 'AES-GCM-256',
+      keyId: String(row.key_id),
+      nonce: String(row.nonce),
+      ciphertext: String(row.ciphertext),
+    } : null,
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+    tombstonedAt: row.tombstoned_at === null || row.tombstoned_at === undefined
+      ? null : Number(row.tombstoned_at),
+  };
 }
 
 function operationMatchesInput(operation: AuthOperation, input: CreateAuthOperationInput): boolean {

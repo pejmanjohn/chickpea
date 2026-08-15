@@ -13382,7 +13382,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function slackScopeCredentialRepairHtml(storedActionHtml) {
     if (slackConnectionMutable()) return storedActionHtml;
-    return '<p class="hint">After reinstalling, replace <span class="mono">SLACK_BOT_TOKEN</span> in your deployment and redeploy Chickpea.</p>';
+    return '<p class="hint">After reinstalling, reconnect Slack in Chickpea so the complete encrypted credential bundle can be replaced.</p>';
   }
 
   function addChannelErrorText(error) {

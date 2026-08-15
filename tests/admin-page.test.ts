@@ -9039,25 +9039,6 @@ test('add-channel missing_scope links reinstall and opens credential replacement
   assert.doesNotMatch(harness.app.innerHTML, /<h2 class="section-title">Add a channel<\/h2>/);
 });
 
-test('add-channel missing_scope explains deployment-managed token repair', async () => {
-  const connection = connectedSlackFixture();
-  connection.credentials = { botToken: 'env', signingSecret: 'env', botUserId: 'env' };
-  const harness = runAdminPageHarness({
-    assignments: [],
-    slackConnection: connection,
-    slackChannelFailures: 2,
-  });
-  await flushAsync();
-  const click = harness.listeners.click;
-  assert.ok(click);
-
-  click({ target: actionTarget({ 'data-action': 'toggle-add-channel' }) });
-  await flushAsync();
-
-  assert.match(harness.app.innerHTML, /replace <span class="mono">SLACK_BOT_TOKEN<\/span> in your deployment and redeploy Chickpea/);
-  assert.doesNotMatch(harness.app.innerHTML, /data-action="slack-update-open">Update credentials/);
-});
-
 test('add-channel submit PUTs the connected workspace id and surfaces the invite reminder', async () => {
   const harness = runAdminPageHarness({
     assignments: [],

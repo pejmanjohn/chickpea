@@ -26,6 +26,11 @@ test('fresh TAG_STATE installs one Slack-native identity schema in place', () =>
     assert.match(sql, /slack_team_id/);
     assert.match(sql, /slack_user_id/);
     assert.match(sql, /recovery_only/);
+    assert.match(sql, /identity_slack_credential_controls/);
+    assert.match(sql, /identity_slack_credential_revisions/);
+    assert.match(sql, /ciphertext/);
+    assert.match(sql, /rotation_epoch/);
+    assert.doesNotMatch(sql, /bot_token|signing_secret|client_secret/);
     assert.doesNotMatch(sql, /email/);
     assert.doesNotMatch(sql, /password/);
     assert.doesNotMatch(sql, /actor_identity_binding_handoff/);

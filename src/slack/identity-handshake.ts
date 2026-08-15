@@ -8,7 +8,8 @@ import {
 } from '../config/types.ts';
 import {
   clearSlackIdentityCredentials,
-  slackIdentityCredentialSettingKeys,
+  slackIdentityPendingMetadataSettingKey,
+  type SlackCredentialDependencies,
 } from './identity-credentials.ts';
 
 export const MAX_PENDING_SLACK_CHALLENGE_BYTES = 1_048_576;
@@ -68,8 +69,7 @@ export function slackIdentityPendingEnvelopeSettingKey(identityId: string): stri
   if (identityId === WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) {
     return 'slack.pendingEnvelope';
   }
-  const revisionKey = slackIdentityCredentialSettingKeys(identityId).connectionRevision;
-  return revisionKey.replace(/\.connectionRevision$/, '.pendingEnvelope');
+  return slackIdentityPendingMetadataSettingKey(identityId);
 }
 
 /** Store one fresh, structurally valid, signed-header-bearing challenge for <=24h. */
@@ -232,13 +232,18 @@ export async function cancelPendingSlackIdentitySecrets(
   store: SettingsStore,
   identityId: string,
   expectedCredentialRevision: string | null,
+  credentialDependencies?: SlackCredentialDependencies,
 ): Promise<string> {
-  return clearSlackIdentityCredentials(
-    store,
+  const revision = await clearSlackIdentityCredentials(
+    credentialDependencies ?? store,
     identityId,
     expectedCredentialRevision,
-    [slackIdentityPendingEnvelopeSettingKey(identityId)],
+    credentialDependencies ? [] : [slackIdentityPendingEnvelopeSettingKey(identityId)],
   );
+  if (credentialDependencies) {
+    await store.deleteSetting(slackIdentityPendingEnvelopeSettingKey(identityId));
+  }
+  return revision;
 }
 
 function parseChallengeBody(rawBody: string): {

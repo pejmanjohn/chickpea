@@ -554,7 +554,7 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S11',
-    title: 'filtered message events never reach the wire',
+    title: 'filtered message events stop after one cached Slack identity probe',
     config: {},
     async run(instance) {
       const missingUser = channelThreadMessage({ event_id: 'Ev_MSG_MISSING_USER' });
@@ -587,7 +587,11 @@ export const scenarios: Scenario[] = [
         assert.equal(response.status, 200);
       }
       await instance.quiesce();
-      assert.equal(instance.backend.wireLog.length, 0);
+      assert.equal(instance.backend.callsOfMethod('auth.test').length, 1);
+      assert.equal(instance.backend.providerCalls().length, 0);
+      assert.equal(instance.backend.finals().length, 0);
+      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 0);
+      assert.equal(instance.backend.callsOfMethod('chat.postEphemeral').length, 0);
     },
   },
   {
@@ -620,8 +624,8 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S14',
-    title: 'fail-closed without a bot user id: mention runs, thread reply does not',
-    config: demoChannelConfig({ botUserId: null }),
+    title: 'bot identity probes Slack when the encrypted revision omits cached bot metadata',
+    config: demoChannelConfig({ env: { SLACK_BOT_USER_ID: '' } }),
     async run(instance) {
       await instance.postEvent(appMention());
       await instance.quiesce();
@@ -629,7 +633,7 @@ export const scenarios: Scenario[] = [
 
       await instance.postEvent(channelThreadMessage());
       await instance.quiesce();
-      assert.equal(instance.backend.finals().length, 1);
+      assert.equal(instance.backend.finals().length, 2);
     },
   },
   {

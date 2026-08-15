@@ -7,6 +7,7 @@ import type {
   IdentityResolution,
   IdentityRpcRequest,
   IdentityRpcResponse,
+  SlackCredentialRevision,
 } from '../src/identity/types.ts';
 
 const resolution: IdentityResolution = {
@@ -76,6 +77,46 @@ test('Cloudflare proxy forwards Slack-keyed operation reservations', async () =>
 
   assert.deepEqual(await store.reservePendingAuthOperation(input), { operation, created: true });
   assert.deepEqual(calls, [{ kind: 'reserve_pending_auth_operation', input }]);
+});
+
+test('Cloudflare proxy forwards encrypted credential revisions without projection changes', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const input = {
+    expectedRotationEpoch: 1,
+    expectedActiveRevision: null,
+    revision: 'revision_rpc_1',
+    identityId: 'slack_workspace_default',
+    identityClass: 'workspace_default' as const,
+    purpose: 'connected_credentials' as const,
+    appId: 'AAPP',
+    teamId: 'TACME',
+    botUserId: 'UBOT',
+    grantedScopes: ['chat:write'],
+    validatedAt: 10,
+    manifestFingerprint: 'manifest-v1',
+    envelope: {
+      version: 1 as const,
+      algorithm: 'AES-GCM-256' as const,
+      keyId: 'key_v1',
+      nonce: 'AAAAAAAAAAAAAAAA',
+      ciphertext: 'A'.repeat(22),
+    },
+  };
+  const revision: SlackCredentialRevision = {
+    ...input,
+    baseRevision: null,
+    status: 'candidate',
+    rotationEpoch: 1,
+    envelope: input.envelope,
+    createdAt: 10,
+    updatedAt: 10,
+    tombstonedAt: null,
+  };
+  const stub = rpcStub(calls, { kind: 'slack_credential_revision', revision });
+  const store = new CfIdentityStore(stub);
+
+  assert.deepEqual(await store.stageSlackCredentialRevision(input), revision);
+  assert.deepEqual(calls, [{ kind: 'stage_slack_credential_revision', input }]);
 });
 
 function rpcStub(

@@ -2,12 +2,9 @@ import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node
 import type { StateDb } from '../state/state-db.ts';
 
 /**
- * Operator settings persisted by the app itself — key/value strings written
- * from /admin (the first-run Slack-connection wizard stores bot token, signing
- * secret, and bot user id here as 'slack.*' keys). Environment variables take
- * precedence over stored settings at the resolution layer, so a `wrangler
- * secret put` / .env value always wins; this store is the fallback for
- * installs configured entirely through the browser.
+ * Operator settings persisted by the app itself. Customer Slack credential
+ * bundles are deliberately excluded: they live only as encrypted revisions in
+ * TAG_STATE, while this store retains public presentation/configuration data.
  */
 export interface SettingsStore {
   getSetting(key: string): Promise<string | undefined>;
