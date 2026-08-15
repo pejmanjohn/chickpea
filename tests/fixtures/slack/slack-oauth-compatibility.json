@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "evidenceTest": "tests/better-auth-private-seam-contract.test.ts",
+  "betterAuth": {
+    "package": "better-auth",
+    "version": "1.6.26",
+    "localContract": {
+      "reconciliation": "verified-local",
+      "sessionIssuance": "verified-local",
+      "publicBoundary": "verified-local"
+    },
+    "sourcePins": [
+      {
+        "path": "package.json",
+        "sha256": "151f04c86f9830715cb0d7f931e6fe1cdd7daaf88b511df1ab50c1e6ba6bca5f"
+      },
+      {
+        "path": "dist/api/index.mjs",
+        "sha256": "ed9ff22e34787cf2402c2f986517f4e861d4263cea7da49e6c5edc858e997dbf"
+      },
+      {
+        "path": "dist/context/create-context.mjs",
+        "sha256": "f0b2703838a4f5a190932936ecea080abdd76d393a669d851bb75ea48e9e4b41"
+      },
+      {
+        "path": "dist/cookies/index.mjs",
+        "sha256": "c9fae72096771f4136183278073d1e97c327c599d553d6171af1b6f72a50a18f"
+      },
+      {
+        "path": "dist/db/internal-adapter.mjs",
+        "sha256": "4d36b9ce26412ae79b98aaf389be7ecc80ea84023959d4640a2e7cc3e18fc53a"
+      },
+      {
+        "path": "dist/plugins/organization/adapter.mjs",
+        "sha256": "c12b81a4d2cb5489269a14a746b3eba34522e92002b691773c3c6af8e9c9b482"
+      }
+    ],
+    "localSourcePins": [
+      {
+        "path": "src/auth/better-auth.ts",
+        "sha256": "419548a8ae34933aa614866a87efab2d14d915ff5e85a2ffb04056cf37df5f22"
+      },
+      {
+        "path": "src/auth/better-auth-routes.ts",
+        "sha256": "c16ebf72649491e1e8781a057651e20e9e65da49a35ec060cc42153c488fd558"
+      },
+      {
+        "path": "scripts/generate-better-auth-bootstrap.ts",
+        "sha256": "c1febf8c8505c9eff9065eb4033bdc399ef61ed2fb220b635ba8229716e2a7ce"
+      }
+    ]
+  },
+  "slack": {
+    "expectedGrantModel": {
+      "botAndOidcGrants": "separate",
+      "oidcScopes": [
+        "openid",
+        "profile"
+      ],
+      "oidcEmailScopeAllowed": false,
+      "defaultClientMode": "confidential",
+      "installerUserMustEqualOidcSubject": true,
+      "workspaceMustEqualBotInstall": true,
+      "slackAuthGrantsProductRole": false
+    },
+    "configurationToken": {
+      "status": "pending-external-proof",
+      "receipt": null
+    },
+    "confidentialBotAndOidc": {
+      "status": "pending-external-proof",
+      "receipt": null
+    },
+    "pkcePublicClient": {
+      "status": "pending-external-proof",
+      "receipt": null
+    }
+  },
+  "redaction": {
+    "containsSecrets": false,
+    "containsSlackIdentifiers": false
+  }
+}

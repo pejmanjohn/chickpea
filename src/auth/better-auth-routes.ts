@@ -1,5 +1,9 @@
 import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
-import { createBetterAuth, requireSupportedOrigin } from './better-auth.ts';
+import {
+  createBetterAuth,
+  requireSupportedOrigin,
+  type BetterAuthPrivateSeam,
+} from './better-auth.ts';
 import { DUMMY_PASSWORD_RECORD, type PasswordPrimitive } from './password.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
 
@@ -22,6 +26,7 @@ export interface BetterAuthPublicHandlerInput {
   baseURL: string;
   secret: string;
   password: PasswordPrimitive;
+  privateSeam?: BetterAuthPrivateSeam;
   loginSourceAllowed(source: string): Promise<boolean>;
   loginIdentityAllowed(email: string): Promise<boolean>;
   loginResult?(source: string, email: string, credentialExists: boolean, success: boolean): Promise<void>;
