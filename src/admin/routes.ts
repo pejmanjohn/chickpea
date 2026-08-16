@@ -333,8 +333,11 @@ import {
 } from '../auth/better-auth-principal.ts';
 import {
   resolveBetterAuthEnvironment,
+  resolveBetterAuthBootstrapEnvironment,
   type BetterAuthEnvironment,
 } from '../auth/better-auth-environment.ts';
+import { SlackAdmissionService } from '../auth/slack-admission.ts';
+import { SlackOidcError } from '../auth/slack-oidc.ts';
 import { createBetterAuthEnvironmentPublicHandler } from '../auth/better-auth-runtime.ts';
 import { createBetterAuth } from '../auth/better-auth.ts';
 import { AuthorizationError, requirePermission, type Permission } from '../auth/permissions.ts';
@@ -432,6 +435,7 @@ interface AdminRoutesOptions {
    * cause an unrelated keyring file to be created.
    */
   slackCredentials?: SlackCredentialDependencies | undefined;
+  slackAdmissionService?: SlackAdmissionService | undefined;
   authSecret?: string | undefined;
   recoveryToken?: string | undefined;
   authRateLimiter?: AuthRateLimiter | undefined;
@@ -504,6 +508,7 @@ const MAX_ADMIN_LOGIN_BODY_BYTES = 4_096;
 const MAX_SLACK_IDENTITY_ADMIN_BODY_BYTES = 64 * 1_024;
 const MAX_AUTH_SETUP_BODY_BYTES = 8_192;
 const SLACK_INSTALL_BROWSER_COOKIE = '__Secure-chickpea_slack_install';
+const SLACK_OIDC_BROWSER_COOKIE = '__Secure-chickpea_slack_oidc';
 const MAX_ADMIN_MUTATION_BODY_BYTES = 1024 * 1024;
 
 const authSetupSchema = v.strictObject({
@@ -1182,6 +1187,47 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ...(options.slackIdentityBootstrap ? { bootstrap: options.slackIdentityBootstrap } : {}),
     });
   };
+  const slackAdmissionContext = async (c: Context): Promise<{
+    service: SlackAdmissionService;
+    limiterSecret: string;
+  } | undefined> => {
+    if (options.slackAdmissionService) {
+      const limiterSecret = options.authSecret ?? options.recoveryToken;
+      if (!limiterSecret) return undefined;
+      return {
+        service: options.slackAdmissionService,
+        limiterSecret,
+      };
+    }
+    const credentials = slackCredentialDependencies(c);
+    if (!credentials) return undefined;
+    const identityStore = identity(c);
+    const control = await identityStore.getAuthControl();
+    const environment = options.betterAuthEnvironment ?? (
+      control?.authMode === 'slack_active'
+        ? await resolveBetterAuthEnvironment({
+            control,
+            platformEnv: c.env as PlatformEnv | undefined,
+            recoveryToken: recoveryToken(c),
+            authSecret: options.authSecret,
+          })
+        : await resolveBetterAuthBootstrapEnvironment({
+            canonicalOrigin: requestOrigin(c),
+            platformEnv: c.env as PlatformEnv | undefined,
+            recoveryToken: recoveryToken(c),
+            authSecret: options.authSecret,
+          })
+    );
+    if (!environment || environment.baseURL !== requestOrigin(c)) return undefined;
+    return {
+      service: new SlackAdmissionService({
+        identity: identityStore,
+        credentials,
+        environment,
+      }),
+      limiterSecret: environment.secret,
+    };
+  };
   const authRateLimiter = (c: Context, token: string): AuthRateLimiter =>
     options.authRateLimiter ?? new AuthRateLimiter(identity(c), { pepper: token });
   const recordSandboxAudit = async (
@@ -1552,7 +1598,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         if (isAdminPageGet(c)) {
           authResponseHeaders(c);
-          return c.json({ error: 'authentication_required' }, 401);
+          const query = new URLSearchParams({ destination: safeAdminReturnPath(c.req.path) });
+          return c.redirect(`/auth/slack/sign-in?${query.toString()}`, 303);
         }
         return c.json({ error: 'unauthorized' }, 401);
       }
@@ -1830,6 +1877,139 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         clearSlackInstallBrowserCookie(c);
       }
       return c.json({ error: slackInstallPublicError(error) }, slackInstallHttpStatus(error));
+    }
+  });
+
+  // Sign in with Slack is a separate confidential OIDC grant. Its cookie is
+  // narrower than the bot-install cookie and carries only the raw nonce plus
+  // an independent browser binding; TAG_STATE stores their hashes.
+  app.use('/auth/slack/oidc/*', authSetupBodyLimit);
+  app.get('/auth/slack/sign-in', async (c) => {
+    authResponseHeaders(c);
+    const context = await slackAdmissionContext(c).catch(() => undefined);
+    if (!context) return c.notFound();
+    return c.html(renderSlackSignInPage(safeSetupDestination(c.req.query('destination'))), 401);
+  });
+  app.post('/auth/slack/oidc/start', async (c) => {
+    authResponseHeaders(c);
+    const context = await slackAdmissionContext(c).catch(() => undefined);
+    if (!context) return c.notFound();
+    if (!validAuthFormPost(c, requestOrigin(c))) return c.json({ error: 'forbidden' }, 403);
+    const form = await readForm(c);
+    const purpose = form.purpose === 'first_owner' ? 'first_owner' :
+      form.purpose === 'login' ? 'login' : undefined;
+    if (!purpose) return c.json({ error: 'invalid_state' }, 400);
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, context.limiterSecret);
+    const browserBinding = `${randomUUID().replaceAll('-', '')}${randomUUID().replaceAll('-', '')}`;
+    let operationKey = purpose;
+    try {
+      await Promise.all([
+        limiter.assertAllowed('slack_oidc_start_source', source),
+        limiter.assertAllowed('slack_oidc_start_deployment', 'deployment'),
+      ]);
+      let started;
+      if (purpose === 'first_owner') {
+        const authority = setupCapability(c);
+        if (!authority) return c.notFound();
+        const setup = await openSlackSetupTransaction(identity(c), {
+          capability: boundedSetupField(form.capability, 512),
+          authority,
+          ...(form.destination === undefined ? {} : { destination: form.destination }),
+        });
+        operationKey = setup.id;
+        await limiter.assertAllowed('slack_oidc_start_operation', operationKey);
+        started = await context.service.startFirstOwner({
+          setupId: setup.id,
+          expectedSetupRevision: setup.revision,
+          browserBinding,
+          redirectUri: `${requestOrigin(c)}/auth/slack/oidc/callback`,
+          destination: setup.destination,
+        });
+      } else {
+        operationKey = 'login';
+        await limiter.assertAllowed('slack_oidc_start_operation', operationKey);
+        started = await context.service.startLogin({
+          browserBinding,
+          redirectUri: `${requestOrigin(c)}/auth/slack/oidc/callback`,
+          destination: safeSetupDestination(form.destination),
+        });
+      }
+      setCookie(c, SLACK_OIDC_BROWSER_COOKIE,
+        encodeSlackOidcCookie(purpose, browserBinding, started.nonce), {
+          path: '/auth/slack/oidc', httpOnly: true, secure: true, sameSite: 'Lax',
+          maxAge: Math.max(1, Math.floor((started.expiresAt - Date.now()) / 1_000)),
+        });
+      await Promise.all([
+        limiter.recordSuccess('slack_oidc_start_source', source),
+        limiter.recordSuccess('slack_oidc_start_operation', operationKey),
+      ]);
+      return c.redirect(started.authorizationUrl, 302);
+    } catch (error) {
+      await Promise.all([
+        limiter.recordFailure('slack_oidc_start_source', source),
+        limiter.recordFailure('slack_oidc_start_operation', operationKey),
+      ]);
+      if (error instanceof AuthRateLimitError) {
+        c.header('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))));
+        return c.json({ error: 'rate_limited' }, 429);
+      }
+      return c.json({ error: slackOidcPublicError(error) }, slackOidcHttpStatus(error));
+    }
+  });
+  app.get('/auth/slack/oidc/callback', async (c) => {
+    authResponseHeaders(c);
+    const context = await slackAdmissionContext(c).catch(() => undefined);
+    if (!context) return c.notFound();
+    const state = c.req.query('state')?.trim() ?? '';
+    const code = c.req.query('code')?.trim();
+    const providerError = c.req.query('error')?.trim();
+    const cookie = decodeSlackOidcCookie(getCookie(c, SLACK_OIDC_BROWSER_COOKIE));
+    if (!cookie || state.length < 32 || state.length > 512 ||
+        (code !== undefined && code.length > 2_048) ||
+        (providerError !== undefined && providerError.length > 128)) {
+      clearSlackOidcBrowserCookie(c);
+      return c.json({ error: 'invalid_state' }, 400);
+    }
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, context.limiterSecret);
+    try {
+      await Promise.all([
+        limiter.assertAllowed('slack_oidc_callback_source', source),
+        limiter.assertAllowed('slack_oidc_callback_operation', state),
+        limiter.assertAllowed('slack_oidc_callback_deployment', 'deployment'),
+      ]);
+      const result = await context.service.callback({
+        purpose: cookie.purpose,
+        state,
+        nonce: cookie.nonce,
+        browserBinding: cookie.browserBinding,
+        redirectUri: `${requestOrigin(c)}/auth/slack/oidc/callback`,
+        request: c.req.raw,
+        ...(code === undefined ? {} : { code }),
+        ...(providerError === undefined ? {} : { error: providerError }),
+      });
+      copyAuthResponseCookies(c, result.sessionResponse.headers);
+      clearSlackOidcBrowserCookie(c);
+      await Promise.all([
+        limiter.recordSuccess('slack_oidc_callback_source', source),
+        limiter.recordSuccess('slack_oidc_callback_operation', state),
+      ]);
+      return c.redirect(result.destination, 303);
+    } catch (error) {
+      await Promise.all([
+        limiter.recordFailure('slack_oidc_callback_source', source),
+        limiter.recordFailure('slack_oidc_callback_operation', state),
+      ]);
+      if (!(error instanceof SlackOidcError) ||
+          !['slack_unreachable', 'processing', 'session_unavailable'].includes(error.code)) {
+        clearSlackOidcBrowserCookie(c);
+      }
+      if (error instanceof AuthRateLimitError) {
+        c.header('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))));
+        return c.json({ error: 'rate_limited' }, 429);
+      }
+      return c.json({ error: slackOidcPublicError(error) }, slackOidcHttpStatus(error));
     }
   });
 
@@ -6616,7 +6796,7 @@ function renderSlackSetupPage(input: {
     ? `<section><h2>Verify Slack Events</h2><p>Chickpea is waiting for Slack's signed Events API challenge for this exact app and workspace.</p><form method="post" action="/auth/slack/install/finalize">${hidden}<button type="submit">Check verification</button></form></section>`
     : '';
   const installed = input.setup?.state === 'bot_installed'
-    ? `<section><h2>Slack bot installed</h2><p>The exact signed Events challenge was verified and the encrypted bot credential is active. Owner sign-in is the next setup step.</p></section>`
+    ? `<section><h2>Slack bot installed</h2><p>The exact signed Events challenge was verified. Sign in as the same Slack member who installed the app to become the first Chickpea Owner.</p><form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="first_owner">${hidden}<button type="submit">Continue with Slack</button></form></section>`
     : '';
   const failed = input.setup?.state === 'install_failed'
     ? `<section><h2>Installation could not be verified</h2><p>The inactive bot credential was discarded. Restart deployment setup to try with a fresh Slack app installation.</p></section>`
@@ -6680,6 +6860,52 @@ function clearSlackInstallBrowserCookie(c: Context): void {
   deleteCookie(c, SLACK_INSTALL_BROWSER_COOKIE, {
     path: '/auth/slack/install', secure: true, httpOnly: true, sameSite: 'Lax',
   });
+}
+
+function encodeSlackOidcCookie(
+  purpose: 'first_owner' | 'login',
+  browserBinding: string,
+  nonce: string,
+): string {
+  return `${purpose}.${browserBinding}.${nonce}`;
+}
+
+function decodeSlackOidcCookie(value: string | undefined): {
+  purpose: 'first_owner' | 'login';
+  browserBinding: string;
+  nonce: string;
+} | undefined {
+  if (!value || value.length > 1_100) return undefined;
+  const [purpose, browserBinding, nonce, extra] = value.split('.');
+  if (extra !== undefined || (purpose !== 'first_owner' && purpose !== 'login') ||
+      !browserBinding || browserBinding.length < 32 || browserBinding.length > 512 ||
+      !nonce || nonce.length < 32 || nonce.length > 512 ||
+      /\s/.test(browserBinding) || /\s/.test(nonce)) return undefined;
+  return { purpose, browserBinding, nonce };
+}
+
+function clearSlackOidcBrowserCookie(c: Context): void {
+  deleteCookie(c, SLACK_OIDC_BROWSER_COOKIE, {
+    path: '/auth/slack/oidc', secure: true, httpOnly: true, sameSite: 'Lax',
+  });
+}
+
+function slackOidcPublicError(error: unknown): string {
+  return error instanceof SlackOidcError ? error.code : 'identity_unavailable';
+}
+
+function slackOidcHttpStatus(error: unknown): 400 | 403 | 409 | 410 | 503 {
+  if (!(error instanceof SlackOidcError)) return 400;
+  if (error.code === 'expired_state') return 410;
+  if (['processing', 'stale_revision'].includes(error.code)) return 409;
+  if (error.code === 'slack_unreachable') return 503;
+  if (error.code === 'session_unavailable') return 503;
+  if (['inactive_user', 'user_mismatch', 'workspace_mismatch'].includes(error.code)) return 403;
+  return 400;
+}
+
+function renderSlackSignInPage(destination: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Sign in · Chickpea</title><style>body{font-family:system-ui;max-width:30rem;margin:12vh auto;padding:1.5rem;color:#392f1f}button{width:100%;padding:.8rem 1rem;font:inherit}</style></head><body><main><h1>Sign in to Chickpea</h1><p>Use your invited identity in the connected Slack workspace.</p><form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="login"><input type="hidden" name="destination" value="${escapeSetupHtml(destination)}"><button type="submit">Continue with Slack</button></form></main></body></html>`;
 }
 
 function escapeSetupHtml(value: string): string {

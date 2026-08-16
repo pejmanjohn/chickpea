@@ -332,6 +332,87 @@ export interface SlackOAuthAttempt {
   updatedAt: number;
 }
 
+export type SlackOidcPurpose = 'first_owner' | 'invitation' | 'login';
+export type SlackOidcAttemptStatus =
+  | 'pending'
+  | 'processing'
+  | 'admitted'
+  | 'succeeded'
+  | 'denied'
+  | 'failed'
+  | 'expired';
+
+/** Durable OIDC callback authority. Raw state, nonce, cookies, codes, and tokens are never stored. */
+export interface SlackOidcAttempt {
+  id: string;
+  purpose: SlackOidcPurpose;
+  operationId: string | null;
+  setupId: string | null;
+  setupRevision: number | null;
+  stateHash: string;
+  nonceHash: string;
+  browserHash: string;
+  appId: string;
+  clientId: string;
+  credentialRevision: string;
+  redirectUri: string;
+  destination: string;
+  expectedTeamId: string;
+  expectedSlackUserId: string | null;
+  admittedTeamId: string | null;
+  admittedSlackUserId: string | null;
+  status: SlackOidcAttemptStatus;
+  leaseGeneration: number;
+  leaseExpiresAt: number | null;
+  resultCode: string | null;
+  expiresAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CreateSlackOidcAttemptInput {
+  id: string;
+  purpose: SlackOidcPurpose;
+  operationId?: string | null;
+  setupId?: string | null;
+  setupRevision?: number | null;
+  stateHash: string;
+  nonceHash: string;
+  browserHash: string;
+  appId: string;
+  clientId: string;
+  credentialRevision: string;
+  redirectUri: string;
+  destination: string;
+  expectedTeamId: string;
+  expectedSlackUserId?: string | null;
+  expiresAt: number;
+}
+
+export interface AcquireSlackOidcAttemptInput {
+  stateHash: string;
+  browserHash: string;
+  purpose: SlackOidcPurpose;
+  redirectUri: string;
+  leaseExpiresAt: number;
+}
+
+export interface AdmitSlackOidcAttemptInput {
+  attemptId: string;
+  expectedLeaseGeneration: number;
+  capabilityHash: string;
+  slackTeamId: string;
+  slackUserId: string;
+  expiresAt: number;
+}
+
+export interface SettleSlackOidcAttemptInput {
+  attemptId: string;
+  expectedLeaseGeneration: number;
+  status: 'succeeded' | 'denied' | 'failed';
+  resultCode: string;
+}
+
 export interface CreateSlackOAuthAttemptInput {
   id: string;
   kind: SlackOAuthAttemptKind;
@@ -491,6 +572,13 @@ export interface ClaimOwnerInput {
   betterAuthUserId: string;
   betterAuthMembershipId: string;
   at?: number;
+}
+
+export interface ActivateFirstOwnerInput extends ClaimOwnerInput {
+  setupId: string;
+  expectedSetupRevision: number;
+  oidcAttemptId: string;
+  expectedOidcLeaseGeneration: number;
 }
 
 export type BootstrapTokenOwnerInput = ClaimOwnerInput;
@@ -665,6 +753,11 @@ export interface IdentityStore extends HumanIdentityDirectory {
   recordSlackEventsProof(input: RecordSlackEventsProofInput): Promise<SlackEventsProof>;
   promoteSlackBotInstallation(input: PromoteSlackBotInstallationInput): Promise<SlackSetupTransaction>;
   failSlackBotInstallation(input: FailSlackBotInstallationInput): Promise<SlackSetupTransaction>;
+  createSlackOidcAttempt(input: CreateSlackOidcAttemptInput): Promise<SlackOidcAttempt>;
+  getSlackOidcAttempt(attemptId: string): Promise<SlackOidcAttempt | undefined>;
+  acquireSlackOidcAttempt(input: AcquireSlackOidcAttemptInput): Promise<SlackOidcAttempt>;
+  admitSlackOidcAttempt(input: AdmitSlackOidcAttemptInput): Promise<AuthOperation>;
+  settleSlackOidcAttempt(input: SettleSlackOidcAttemptInput): Promise<SlackOidcAttempt>;
   createAuthOperation(input: CreateAuthOperationInput): Promise<AuthOperation>;
   reservePendingAuthOperation(input: CreateAuthOperationInput): Promise<{ operation: AuthOperation; created: boolean }>;
   getAuthOperation(operationId: string): Promise<AuthOperation | undefined>;
@@ -680,6 +773,7 @@ export interface IdentityStore extends HumanIdentityDirectory {
   createOwnerClaim(input: CreateOwnerClaimInput): Promise<OwnerClaim>;
   getOwnerClaim(): Promise<OwnerClaim | undefined>;
   claimOwner(input: ClaimOwnerInput): Promise<IdentityResolution>;
+  activateFirstOwner(input: ActivateFirstOwnerInput): Promise<IdentityResolution>;
   resolveSlackIdentity(slackTeamId: string, slackUserId: string, organizationId?: string): Promise<IdentityResolution | undefined>;
   listExternalIdentities(): Promise<SlackIdentityBinding[]>;
   resolveActorExternalIdentity(provider: 'slack', slackTeamId: string, slackUserId: string): Promise<SlackIdentityBinding | undefined>;
@@ -747,6 +841,11 @@ export type IdentityRpcRequest =
   | { kind: 'record_slack_events_proof'; input: RecordSlackEventsProofInput }
   | { kind: 'promote_slack_bot_installation'; input: PromoteSlackBotInstallationInput }
   | { kind: 'fail_slack_bot_installation'; input: FailSlackBotInstallationInput }
+  | { kind: 'create_slack_oidc_attempt'; input: CreateSlackOidcAttemptInput }
+  | { kind: 'get_slack_oidc_attempt'; attemptId: string }
+  | { kind: 'acquire_slack_oidc_attempt'; input: AcquireSlackOidcAttemptInput }
+  | { kind: 'admit_slack_oidc_attempt'; input: AdmitSlackOidcAttemptInput }
+  | { kind: 'settle_slack_oidc_attempt'; input: SettleSlackOidcAttemptInput }
   | { kind: 'create_auth_operation'; input: CreateAuthOperationInput }
   | { kind: 'reserve_pending_auth_operation'; input: CreateAuthOperationInput }
   | { kind: 'get_auth_operation'; operationId: string }
@@ -762,6 +861,7 @@ export type IdentityRpcRequest =
   | { kind: 'create_owner_claim'; input: CreateOwnerClaimInput }
   | { kind: 'get_owner_claim' }
   | { kind: 'claim_owner'; input: ClaimOwnerInput }
+  | { kind: 'activate_first_owner'; input: ActivateFirstOwnerInput }
   | { kind: 'resolve_slack_identity'; slackTeamId: string; slackUserId: string; organizationId?: string }
   | { kind: 'list_external_identities' }
   | { kind: 'list_memberships' }
@@ -801,6 +901,7 @@ export type IdentityRpcResponse =
   | { kind: 'slack_credential_retention'; result: SlackCredentialRetentionResult }
   | { kind: 'slack_setup_transaction'; transaction: SlackSetupTransaction | null }
   | { kind: 'slack_oauth_attempt'; attempt: SlackOAuthAttempt | null }
+  | { kind: 'slack_oidc_attempt'; attempt: SlackOidcAttempt | null }
   | { kind: 'slack_events_proof'; proof: SlackEventsProof | null }
   | { kind: 'auth_operation'; operation: AuthOperation | null }
   | { kind: 'auth_operation_reservation'; operation: AuthOperation; created: boolean }

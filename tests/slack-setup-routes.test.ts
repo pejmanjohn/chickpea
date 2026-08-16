@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto';
 import { test } from 'node:test';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import { SlackAdmissionService } from '../src/auth/slack-admission.ts';
 import { AuthRateLimiter } from '../src/auth/rate-limit.ts';
 import { mintSetupCapability } from '../src/auth/setup-capability.mjs';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -367,6 +368,71 @@ test('public Slack callback is rate limited without exchanging an unrecognized s
     identity.close();
     config.close();
     settings.close();
+  }
+});
+
+test('Slack-only sign-in uses a narrow nonce cookie and restores the safe Admin destination', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  let startInput: Record<string, unknown> | undefined;
+  let callbackInput: Record<string, unknown> | undefined;
+  const state = 'state-0123456789abcdefghijklmnopqrstuvwxyz';
+  const nonce = 'nonce-0123456789abcdefghijklmnopqrstuvwxyz';
+  const service = {
+    async startLogin(input: Record<string, unknown>) {
+      startInput = input;
+      return {
+        attemptId: 'slackoidc_route', state, nonce, expiresAt: Date.now() + 900_000,
+        authorizationUrl: `https://slack.com/openid/connect/authorize?state=${state}`,
+      };
+    },
+    async callback(input: Record<string, unknown>) {
+      callbackInput = input;
+      return {
+        destination: '/admin/channels',
+        sessionResponse: new Response('{}', {
+          headers: { 'set-cookie': 'better-auth.session_token=session-secret; Path=/; HttpOnly; Secure' },
+        }),
+      };
+    },
+  } as unknown as SlackAdmissionService;
+  try {
+    const app = createAdminRoutes({
+      identity,
+      slackAdmissionService: service,
+      authSecret: Buffer.alloc(32, 5).toString('base64url'),
+    });
+    const page = await app.request(`${ORIGIN}/auth/slack/sign-in?destination=/admin/channels`);
+    assert.equal(page.status, 401);
+    const html = await page.text();
+    assert.match(html, /Continue with Slack/);
+    assert.doesNotMatch(html, /password|email/i);
+
+    const start = await app.request(`${ORIGIN}/auth/slack/oidc/start`, {
+      method: 'POST', headers: formHeaders(), body: new URLSearchParams({
+        purpose: 'login', destination: '/admin/channels',
+      }),
+    });
+    assert.equal(start.status, 302);
+    assert.equal(start.headers.get('location'), `https://slack.com/openid/connect/authorize?state=${state}`);
+    assert.equal('userId' in (startInput ?? {}), false, 'normal login cannot select a Slack subject');
+    const cookie = start.headers.get('set-cookie')!;
+    assert.match(cookie, /__Secure-chickpea_slack_oidc=login\./);
+    assert.match(cookie, /Path=\/auth\/slack\/oidc/i);
+    assert.match(cookie, /HttpOnly/i);
+    assert.match(cookie, /Secure/i);
+    assert.match(cookie, /SameSite=Lax/i);
+    assert.doesNotMatch(cookie, new RegExp(state));
+    const callback = await app.request(
+      `${ORIGIN}/auth/slack/oidc/callback?state=${state}&code=oidc-code`,
+      { headers: { cookie: cookie.split(';', 1)[0]! } },
+    );
+    assert.equal(callback.status, 303, await callback.clone().text());
+    assert.equal(callback.headers.get('location'), '/admin/channels');
+    assert.match(callback.headers.get('set-cookie') ?? '', /better-auth\.session_token=session-secret/);
+    assert.equal(callbackInput?.nonce, nonce);
+    assert.equal(callbackInput?.purpose, 'login');
+  } finally {
+    identity.close();
   }
 });
 

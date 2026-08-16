@@ -8,6 +8,9 @@ import { identityError } from './errors.ts';
 import { installIdentityMigrations } from './migrations.ts';
 import type {
   AdvanceAuthOperationInput,
+  ActivateFirstOwnerInput,
+  AdmitSlackOidcAttemptInput,
+  AcquireSlackOidcAttemptInput,
   AuthControl,
   AuthOperation,
   AuthOperationKind,
@@ -24,6 +27,7 @@ import type {
   CreateOwnerClaimInput,
   CreatePersonalTokenRecordInput,
   CreateSlackOAuthAttemptInput,
+  CreateSlackOidcAttemptInput,
   AcquireSlackOAuthAttemptInput,
   EnsureAuthControlInput,
   EnsureSlackCredentialControlInput,
@@ -60,7 +64,9 @@ import type {
   PromoteSlackBotInstallationInput,
   FailSlackBotInstallationInput,
   SettleSlackOAuthAttemptInput,
+  SettleSlackOidcAttemptInput,
   SlackOAuthAttempt,
+  SlackOidcAttempt,
   SlackEventsProof,
   StageSlackCredentialRevisionInput,
   SlackIdentityBinding,
@@ -123,6 +129,11 @@ export class IdentityStoreLogic {
       case 'record_slack_events_proof': return { kind: 'slack_events_proof', proof: this.recordSlackEventsProof(request.input) };
       case 'promote_slack_bot_installation': return { kind: 'slack_setup_transaction', transaction: this.promoteSlackBotInstallation(request.input) };
       case 'fail_slack_bot_installation': return { kind: 'slack_setup_transaction', transaction: this.failSlackBotInstallation(request.input) };
+      case 'create_slack_oidc_attempt': return { kind: 'slack_oidc_attempt', attempt: this.createSlackOidcAttempt(request.input) };
+      case 'get_slack_oidc_attempt': return { kind: 'slack_oidc_attempt', attempt: this.getSlackOidcAttempt(request.attemptId) ?? null };
+      case 'acquire_slack_oidc_attempt': return { kind: 'slack_oidc_attempt', attempt: this.acquireSlackOidcAttempt(request.input) };
+      case 'admit_slack_oidc_attempt': return { kind: 'auth_operation', operation: this.admitSlackOidcAttempt(request.input) };
+      case 'settle_slack_oidc_attempt': return { kind: 'slack_oidc_attempt', attempt: this.settleSlackOidcAttempt(request.input) };
       case 'create_auth_operation': return { kind: 'auth_operation', operation: this.createAuthOperation(request.input) };
       case 'reserve_pending_auth_operation': {
         const result = this.reservePendingAuthOperation(request.input);
@@ -141,6 +152,7 @@ export class IdentityStoreLogic {
       case 'create_owner_claim': return { kind: 'owner_claim', ownerClaim: this.createOwnerClaim(request.input) };
       case 'get_owner_claim': return { kind: 'owner_claim', ownerClaim: this.getOwnerClaim() ?? null };
       case 'claim_owner': return { kind: 'identity_resolution', resolution: this.claimOwner(request.input) };
+      case 'activate_first_owner': return { kind: 'identity_resolution', resolution: this.activateFirstOwner(request.input) };
       case 'resolve_slack_identity': return { kind: 'identity_resolution', resolution: this.resolveSlackIdentity(request.slackTeamId, request.slackUserId, request.organizationId) ?? null };
       case 'list_external_identities': return { kind: 'external_identities', externalIdentities: this.listExternalIdentities() };
       case 'list_memberships': return { kind: 'memberships', memberships: this.listMemberships() };
@@ -509,8 +521,12 @@ export class IdentityStoreLogic {
         'DELETE FROM identity_browser_sessions WHERE expires_at <= ?',
         at,
       ).changes;
-      const deletedSlackOAuthAttempts = this.db.run(
+      const deletedBotOAuthAttempts = this.db.run(
         'DELETE FROM identity_slack_oauth_attempts WHERE expires_at <= ?',
+        at,
+      ).changes;
+      const deletedSlackOidcAttempts = this.db.run(
+        'DELETE FROM identity_slack_oidc_attempts WHERE expires_at <= ?',
         at,
       ).changes;
       const scrubbedCredentialCandidates = this.db.run(
@@ -533,7 +549,7 @@ export class IdentityStoreLogic {
         expiredAuthOperations,
         expiredInvitations,
         expiredBrowserSessions,
-        deletedSlackOAuthAttempts,
+        deletedSlackOAuthAttempts: deletedBotOAuthAttempts + deletedSlackOidcAttempts,
         deletedOrphanedSlackEventsProofs,
         scrubbedCredentialCandidates,
       };
@@ -1118,6 +1134,230 @@ export class IdentityStoreLogic {
     return attempt;
   }
 
+  private requiredSlackOidcAttempt(attemptId: string): SlackOidcAttempt {
+    const attempt = this.getSlackOidcAttempt(attemptId);
+    if (!attempt) throw identityError('auth_operation_missing', 'Slack OIDC attempt was not found.');
+    return attempt;
+  }
+
+  private requiredSlackOidcLease(attemptId: string, leaseGeneration: number): SlackOidcAttempt {
+    if (!Number.isSafeInteger(leaseGeneration) || leaseGeneration < 1) {
+      throw identityError('identity_invalid', 'Slack OIDC processing lease is invalid.');
+    }
+    const attempt = this.requiredSlackOidcAttempt(attemptId);
+    if (attempt.status !== 'processing' || attempt.leaseGeneration !== leaseGeneration ||
+        attempt.leaseExpiresAt === null || attempt.leaseExpiresAt <= this.now()) {
+      throw identityError('auth_operation_conflict', 'Slack OIDC processing lease is unavailable.');
+    }
+    return attempt;
+  }
+
+  createSlackOidcAttempt(input: CreateSlackOidcAttemptInput): SlackOidcAttempt {
+    if (!['first_owner', 'invitation', 'login'].includes(input.purpose)) {
+      throw identityError('identity_invalid', 'Slack OIDC purpose is invalid.');
+    }
+    const at = this.now();
+    if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= at) {
+      throw identityError('identity_invalid', 'Slack OIDC expiry is invalid.');
+    }
+    const teamId = slackId(input.expectedTeamId, 'Slack team ID');
+    const expectedUserId = input.expectedSlackUserId
+      ? slackId(input.expectedSlackUserId, 'Slack user ID')
+      : null;
+    if (input.purpose !== 'login' && !expectedUserId) {
+      throw identityError('identity_invalid', 'Slack OIDC admission requires an exact user.');
+    }
+    if (input.purpose === 'first_owner' && (!input.setupId || !input.setupRevision || !input.operationId)) {
+      throw identityError('identity_invalid', 'First-Owner OIDC must bind setup and operation authority.');
+    }
+    if (input.purpose === 'login' && (input.setupId || input.setupRevision || input.operationId)) {
+      throw identityError('identity_invalid', 'Normal Slack login cannot select an authority before proof.');
+    }
+    try {
+      this.db.run(
+        `INSERT INTO identity_slack_oidc_attempts (
+          attempt_id, purpose, operation_id, setup_id, setup_revision,
+          state_hash, nonce_hash, browser_hash, app_id, client_id, credential_revision,
+          redirect_uri, destination, expected_team_id, expected_slack_user_id,
+          admitted_team_id, admitted_slack_user_id, status, lease_generation,
+          lease_expires_at, result_code, expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
+          'pending', 0, NULL, NULL, ?, ?, ?)`,
+        nonEmpty(input.id, 'Slack OIDC attempt ID'), input.purpose, input.operationId ?? null,
+        input.setupId ?? null, input.setupRevision ?? null,
+        oauthHash(input.stateHash, 'Slack OIDC state hash'),
+        oauthHash(input.nonceHash, 'Slack OIDC nonce hash'),
+        oauthHash(input.browserHash, 'Slack OIDC browser hash'),
+        slackId(input.appId, 'Slack app ID'), strictText(input.clientId, 'Slack client ID', 256),
+        nonEmpty(input.credentialRevision, 'Slack credential revision'),
+        validHttpsCallback(input.redirectUri), safeStoredAdminDestination(input.destination),
+        teamId, expectedUserId, input.expiresAt, at, at,
+      );
+    } catch {
+      throw identityError('auth_operation_conflict', 'Slack OIDC attempt changed concurrently.');
+    }
+    return this.requiredSlackOidcAttempt(input.id);
+  }
+
+  getSlackOidcAttempt(attemptId: string): SlackOidcAttempt | undefined {
+    const row = this.db.get(
+      'SELECT * FROM identity_slack_oidc_attempts WHERE attempt_id = ?',
+      nonEmpty(attemptId, 'Slack OIDC attempt ID'),
+    );
+    return row ? slackOidcAttemptFromRow(row) : undefined;
+  }
+
+  acquireSlackOidcAttempt(input: AcquireSlackOidcAttemptInput): SlackOidcAttempt {
+    const stateHash = oauthHash(input.stateHash, 'Slack OIDC state hash');
+    const browserHash = oauthHash(input.browserHash, 'Slack OIDC browser hash');
+    const redirectUri = validHttpsCallback(input.redirectUri);
+    const acquired = this.db.transaction((): SlackOidcAttempt | undefined => {
+      const row = this.db.get('SELECT * FROM identity_slack_oidc_attempts WHERE state_hash = ?', stateHash);
+      if (!row) throw identityError('auth_operation_missing', 'Slack OIDC state is invalid.');
+      const attempt = slackOidcAttemptFromRow(row);
+      const at = this.now();
+      if (attempt.browserHash !== browserHash || attempt.purpose !== input.purpose ||
+          attempt.redirectUri !== redirectUri) {
+        throw identityError('auth_operation_conflict', 'Slack OIDC callback binding does not match.');
+      }
+      if (attempt.expiresAt <= at) {
+        this.db.run(
+          `UPDATE identity_slack_oidc_attempts SET status = 'expired', result_code = 'expired',
+           lease_expires_at = NULL, updated_at = ? WHERE attempt_id = ?`,
+          at, attempt.id,
+        );
+        return undefined;
+      }
+      // A response may be lost after durable admission or session issuance.
+      // Only the exact original browser/state binding may resume that result.
+      if (attempt.status === 'admitted' || attempt.status === 'succeeded') return attempt;
+      const reclaim = attempt.status === 'processing' &&
+        attempt.leaseExpiresAt !== null && attempt.leaseExpiresAt <= at;
+      if (attempt.status !== 'pending' && !reclaim) {
+        throw identityError('auth_operation_conflict',
+          attempt.status === 'processing'
+            ? 'Slack OIDC processing lease is already held.'
+            : 'Slack OIDC state is already consumed.');
+      }
+      if (!Number.isSafeInteger(input.leaseExpiresAt) || input.leaseExpiresAt <= at) {
+        throw identityError('identity_invalid', 'Slack OIDC processing lease is invalid.');
+      }
+      const leaseExpiresAt = Math.min(input.leaseExpiresAt, attempt.expiresAt);
+      const changed = this.db.run(
+        `UPDATE identity_slack_oidc_attempts SET status = 'processing',
+          lease_generation = lease_generation + 1, lease_expires_at = ?, updated_at = ?
+         WHERE attempt_id = ? AND status = ? AND lease_generation = ?`,
+        leaseExpiresAt, at, attempt.id, attempt.status, attempt.leaseGeneration,
+      ).changes;
+      if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack OIDC lease changed concurrently.');
+      return this.requiredSlackOidcAttempt(attempt.id);
+    });
+    if (!acquired) throw identityError('auth_operation_expired', 'Slack OIDC state expired.');
+    return acquired;
+  }
+
+  admitSlackOidcAttempt(input: AdmitSlackOidcAttemptInput): AuthOperation {
+    return this.db.transaction(() => {
+      const attempt = this.requiredSlackOidcLease(input.attemptId, input.expectedLeaseGeneration);
+      const teamId = slackId(input.slackTeamId, 'Slack team ID');
+      const userId = slackId(input.slackUserId, 'Slack user ID');
+      if (credentialHash(input.capabilityHash) !== attempt.stateHash ||
+          input.expiresAt !== attempt.expiresAt || attempt.expectedTeamId !== teamId ||
+          (attempt.expectedSlackUserId && attempt.expectedSlackUserId !== userId)) {
+        throw identityError('auth_operation_conflict', 'Slack OIDC actor does not match expected authority.');
+      }
+      let operation: AuthOperation;
+      if (attempt.purpose === 'first_owner') {
+        const setup = this.requiredSlackSetupTransition(
+          attempt.setupId ?? '', attempt.setupRevision ?? 0, ['bot_installed'],
+        );
+        if (setup.slackTeamId !== teamId || setup.installerSlackUserId !== userId ||
+            setup.appId !== attempt.appId || setup.botCredentialRevision !== attempt.credentialRevision) {
+          throw identityError('owner_claim_conflict', 'Slack OIDC proof does not match the installed app.');
+        }
+        if (!attempt.operationId) throw identityError('auth_operation_missing', 'First-Owner operation is missing.');
+        const existingClaim = this.getOwnerClaim();
+        if (existingClaim?.status === 'reserved' && existingClaim.operationId !== attempt.operationId) {
+          const prior = this.requiredAuthOperation(existingClaim.operationId);
+          if (existingClaim.slackTeamId !== teamId || existingClaim.slackUserId !== userId ||
+              prior.expiresAt > this.now() || !['reserved', 'reconciling', 'expired'].includes(prior.status)) {
+            throw identityError('owner_claim_conflict', 'The singleton first-Owner claim is already reserved.');
+          }
+          this.db.run(
+            `UPDATE identity_auth_operations SET status = 'expired', updated_at = ?
+             WHERE operation_id = ? AND status IN ('reserved', 'reconciling')`,
+            this.now(), prior.id,
+          );
+        }
+        operation = this.reservePendingAuthOperation({
+          id: attempt.operationId,
+          kind: 'first_owner_claim',
+          expectedSlackTeamId: teamId,
+          expectedSlackUserId: userId,
+          chickpeaRole: 'owner',
+          capabilityHash: input.capabilityHash,
+          expiresAt: input.expiresAt,
+        }).operation;
+        if (existingClaim?.status === 'reserved' && existingClaim.operationId !== operation.id) {
+          const changed = this.db.run(
+            `UPDATE identity_owner_claims SET operation_id = ?, updated_at = ?
+             WHERE claim_key = 'first_owner' AND status = 'reserved' AND operation_id = ?`,
+            operation.id, this.now(), existingClaim.operationId,
+          ).changes;
+          if (changed !== 1) throw identityError('owner_claim_conflict', 'First-Owner claim changed concurrently.');
+        } else {
+          this.createOwnerClaim({
+            operationId: operation.id,
+            slackTeamId: teamId,
+            slackUserId: userId,
+          });
+        }
+      } else {
+        const resolution = this.resolveSlackIdentity(teamId, userId);
+        if (!resolution || resolution.membership.status !== 'active') {
+          throw identityError('auth_operation_unavailable', 'Slack identity is not admitted.');
+        }
+        const row = this.db.get(
+          `SELECT * FROM identity_auth_operations
+           WHERE chickpea_membership_id = ? AND status = 'active'
+           ORDER BY activated_at DESC LIMIT 1`,
+          resolution.membership.id,
+        );
+        if (!row) throw identityError('auth_operation_unavailable', 'Slack authority is not active.');
+        operation = authOperationFromRow(row);
+      }
+      const changed = this.db.run(
+        `UPDATE identity_slack_oidc_attempts SET status = 'admitted', operation_id = ?,
+          admitted_team_id = ?, admitted_slack_user_id = ?, result_code = 'admitted', updated_at = ?
+         WHERE attempt_id = ? AND status = 'processing' AND lease_generation = ?`,
+        operation.id, teamId, userId, this.now(), attempt.id, attempt.leaseGeneration,
+      ).changes;
+      if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack OIDC admission changed concurrently.');
+      return operation;
+    });
+  }
+
+  settleSlackOidcAttempt(input: SettleSlackOidcAttemptInput): SlackOidcAttempt {
+    const attempt = input.status === 'succeeded'
+      ? this.requiredSlackOidcAttempt(input.attemptId)
+      : this.requiredSlackOidcLease(input.attemptId, input.expectedLeaseGeneration);
+    const allowed = input.status === 'succeeded'
+      ? attempt.status === 'admitted'
+      : attempt.status === 'processing';
+    if (!allowed || attempt.leaseGeneration !== input.expectedLeaseGeneration) {
+      throw identityError('auth_operation_conflict', 'Slack OIDC terminal state changed concurrently.');
+    }
+    const changed = this.db.run(
+      `UPDATE identity_slack_oidc_attempts SET status = ?, result_code = ?,
+        lease_expires_at = NULL, updated_at = ?
+       WHERE attempt_id = ? AND status = ? AND lease_generation = ?`,
+      input.status, strictText(input.resultCode, 'Slack OIDC result code', 128), this.now(),
+      attempt.id, attempt.status, attempt.leaseGeneration,
+    ).changes;
+    if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack OIDC state changed concurrently.');
+    return this.requiredSlackOidcAttempt(attempt.id);
+  }
+
   createAuthOperation(input: CreateAuthOperationInput): AuthOperation {
     validateOperationInput(input);
     const id = input.id ?? newId('authop');
@@ -1296,7 +1536,46 @@ export class IdentityStoreLogic {
   }
 
   claimOwner(input: ClaimOwnerInput): IdentityResolution {
+    return this.db.transaction(() => this.claimOwnerInTransaction(input));
+  }
+
+  activateFirstOwner(input: ActivateFirstOwnerInput): IdentityResolution {
     return this.db.transaction(() => {
+      const attempt = this.requiredSlackOidcAttempt(input.oidcAttemptId);
+      const setup = this.requiredSlackSetupTransition(
+        input.setupId, input.expectedSetupRevision, ['bot_installed'],
+      );
+      if (attempt.status !== 'admitted' ||
+          attempt.leaseGeneration !== input.expectedOidcLeaseGeneration ||
+          attempt.operationId !== input.operationId ||
+          attempt.setupId !== setup.id || attempt.setupRevision !== setup.revision ||
+          attempt.admittedTeamId !== input.slackTeamId ||
+          attempt.admittedSlackUserId !== input.slackUserId ||
+          setup.slackTeamId !== input.slackTeamId ||
+          setup.installerSlackUserId !== input.slackUserId) {
+        throw identityError('owner_claim_conflict', 'First-Owner activation authority changed.');
+      }
+      const resolution = this.claimOwnerInTransaction(input);
+      const at = input.at ?? this.now();
+      const setupChanged = this.db.run(
+        `UPDATE identity_slack_setup_transactions SET state = 'consumed', revision = revision + 1,
+          consumed_at = ?, updated_at = ? WHERE setup_id = ? AND revision = ? AND state = 'bot_installed'`,
+        at, at, setup.id, setup.revision,
+      ).changes;
+      const attemptChanged = this.db.run(
+        `UPDATE identity_slack_oidc_attempts SET status = 'succeeded', result_code = 'owner_active',
+          lease_expires_at = NULL, updated_at = ?
+         WHERE attempt_id = ? AND status = 'admitted' AND lease_generation = ?`,
+        at, attempt.id, attempt.leaseGeneration,
+      ).changes;
+      if (setupChanged !== 1 || attemptChanged !== 1) {
+        throw identityError('auth_operation_conflict', 'First-Owner activation changed concurrently.');
+      }
+      return resolution;
+    });
+  }
+
+  private claimOwnerInTransaction(input: ClaimOwnerInput): IdentityResolution {
       const claim = this.requiredOwnerClaim();
       if (claim.status === 'active') {
         const existing = this.resolveSlackIdentity(input.slackTeamId, input.slackUserId, input.organizationId);
@@ -1351,7 +1630,6 @@ export class IdentityStoreLogic {
         });
       }
       return this.requiredResolution(input.slackTeamId, input.slackUserId, organization.id);
-    });
   }
 
   resolveSlackIdentity(
@@ -1876,6 +2154,11 @@ export class SqliteIdentityStore implements IdentityStore {
   async recordSlackEventsProof(input: RecordSlackEventsProofInput) { return this.logic.recordSlackEventsProof(input); }
   async promoteSlackBotInstallation(input: PromoteSlackBotInstallationInput) { return this.logic.promoteSlackBotInstallation(input); }
   async failSlackBotInstallation(input: FailSlackBotInstallationInput) { return this.logic.failSlackBotInstallation(input); }
+  async createSlackOidcAttempt(input: CreateSlackOidcAttemptInput) { return this.logic.createSlackOidcAttempt(input); }
+  async getSlackOidcAttempt(id: string) { return this.logic.getSlackOidcAttempt(id); }
+  async acquireSlackOidcAttempt(input: AcquireSlackOidcAttemptInput) { return this.logic.acquireSlackOidcAttempt(input); }
+  async admitSlackOidcAttempt(input: AdmitSlackOidcAttemptInput) { return this.logic.admitSlackOidcAttempt(input); }
+  async settleSlackOidcAttempt(input: SettleSlackOidcAttemptInput) { return this.logic.settleSlackOidcAttempt(input); }
   async createAuthOperation(input: CreateAuthOperationInput) { return this.logic.createAuthOperation(input); }
   async reservePendingAuthOperation(input: CreateAuthOperationInput) { return this.logic.reservePendingAuthOperation(input); }
   async getAuthOperation(id: string) { return this.logic.getAuthOperation(id); }
@@ -1891,6 +2174,7 @@ export class SqliteIdentityStore implements IdentityStore {
   async createOwnerClaim(input: CreateOwnerClaimInput) { return this.logic.createOwnerClaim(input); }
   async getOwnerClaim() { return this.logic.getOwnerClaim(); }
   async claimOwner(input: ClaimOwnerInput) { return this.logic.claimOwner(input); }
+  async activateFirstOwner(input: ActivateFirstOwnerInput) { return this.logic.activateFirstOwner(input); }
   async resolveSlackIdentity(teamId: string, userId: string, organizationId?: string) { return this.logic.resolveSlackIdentity(teamId, userId, organizationId); }
   async listExternalIdentities() { return this.logic.listExternalIdentities(); }
   async resolveActorExternalIdentity(provider: 'slack', teamId: string, userId: string) { return this.logic.resolveActorExternalIdentity(provider, teamId, userId); }
@@ -2157,6 +2441,35 @@ function slackOAuthAttemptFromRow(row: Record<string, unknown>): SlackOAuthAttem
     expectedTeamId: nullableString(row.expected_team_id),
     expectedInstallerSlackUserId: nullableString(row.expected_installer_slack_user_id),
     status: String(row.status) as SlackOAuthAttempt['status'],
+    leaseGeneration: Number(row.lease_generation),
+    leaseExpiresAt: nullableNumber(row.lease_expires_at),
+    resultCode: nullableString(row.result_code),
+    expiresAt: Number(row.expires_at),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function slackOidcAttemptFromRow(row: Record<string, unknown>): SlackOidcAttempt {
+  return {
+    id: String(row.attempt_id),
+    purpose: String(row.purpose) as SlackOidcAttempt['purpose'],
+    operationId: nullableString(row.operation_id),
+    setupId: nullableString(row.setup_id),
+    setupRevision: nullableNumber(row.setup_revision),
+    stateHash: String(row.state_hash),
+    nonceHash: String(row.nonce_hash),
+    browserHash: String(row.browser_hash),
+    appId: String(row.app_id),
+    clientId: String(row.client_id),
+    credentialRevision: String(row.credential_revision),
+    redirectUri: String(row.redirect_uri),
+    destination: String(row.destination),
+    expectedTeamId: String(row.expected_team_id),
+    expectedSlackUserId: nullableString(row.expected_slack_user_id),
+    admittedTeamId: nullableString(row.admitted_team_id),
+    admittedSlackUserId: nullableString(row.admitted_slack_user_id),
+    status: String(row.status) as SlackOidcAttempt['status'],
     leaseGeneration: Number(row.lease_generation),
     leaseExpiresAt: nullableNumber(row.lease_expires_at),
     resultCode: nullableString(row.result_code),

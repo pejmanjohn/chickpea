@@ -9,6 +9,7 @@ import type {
   IdentityRpcResponse,
   SlackCredentialRevision,
   SlackOAuthAttempt,
+  SlackOidcAttempt,
 } from '../src/identity/types.ts';
 
 const resolution: IdentityResolution = {
@@ -153,6 +154,24 @@ test('Cloudflare proxy forwards the fresh-only Slack OAuth attempt projection', 
 
   assert.deepEqual(await store.getSlackOAuthAttempt(attempt.id), attempt);
   assert.deepEqual(calls, [{ kind: 'get_slack_oauth_attempt', attemptId: attempt.id }]);
+});
+
+test('Cloudflare proxy forwards hashed Slack OIDC callback authority', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const attempt: SlackOidcAttempt = {
+    id: 'slackoidc_rpc', purpose: 'login', operationId: null, setupId: null, setupRevision: null,
+    stateHash: 'a'.repeat(64), nonceHash: 'b'.repeat(64), browserHash: 'c'.repeat(64),
+    appId: 'AAPP', clientId: '123.456', credentialRevision: 'rev_connected',
+    redirectUri: 'https://chickpea.example/auth/slack/oidc/callback', destination: '/admin',
+    expectedTeamId: 'TACME', expectedSlackUserId: null,
+    admittedTeamId: null, admittedSlackUserId: null,
+    status: 'pending', leaseGeneration: 0, leaseExpiresAt: null, resultCode: null,
+    expiresAt: 20, createdAt: 10, updatedAt: 10,
+  };
+  const stub = rpcStub(calls, { kind: 'slack_oidc_attempt', attempt });
+  const store = new CfIdentityStore(stub);
+  assert.deepEqual(await store.getSlackOidcAttempt(attempt.id), attempt);
+  assert.deepEqual(calls, [{ kind: 'get_slack_oidc_attempt', attemptId: attempt.id }]);
 });
 
 function rpcStub(

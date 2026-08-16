@@ -81,6 +81,24 @@ export const IDENTITY_SCHEMA_V1_STATEMENTS = [
   )`,
   `CREATE INDEX identity_slack_oauth_setup_idx
     ON identity_slack_oauth_attempts (setup_id, status, expires_at)`,
+  `CREATE TABLE identity_slack_oidc_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    purpose TEXT NOT NULL CHECK (purpose IN ('first_owner', 'invitation', 'login')),
+    operation_id TEXT, setup_id TEXT, setup_revision INTEGER,
+    state_hash TEXT NOT NULL UNIQUE, nonce_hash TEXT NOT NULL, browser_hash TEXT NOT NULL,
+    app_id TEXT NOT NULL, client_id TEXT NOT NULL, credential_revision TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL, destination TEXT NOT NULL,
+    expected_team_id TEXT NOT NULL, expected_slack_user_id TEXT,
+    admitted_team_id TEXT, admitted_slack_user_id TEXT,
+    status TEXT NOT NULL CHECK (status IN (
+      'pending', 'processing', 'admitted', 'succeeded', 'denied', 'failed', 'expired'
+    )),
+    lease_generation INTEGER NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+    lease_expires_at INTEGER, result_code TEXT, expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX identity_slack_oidc_state_idx
+    ON identity_slack_oidc_attempts (purpose, status, expires_at)`,
   `CREATE TABLE identity_slack_events_proofs (
     candidate_revision TEXT PRIMARY KEY, identity_id TEXT NOT NULL,
     app_id TEXT NOT NULL, team_id TEXT NOT NULL, base_revision TEXT NOT NULL,

@@ -41,6 +41,8 @@ import type {
 import { IdentityStateError } from '../identity/errors.ts';
 import type {
   AdvanceAuthOperationInput,
+  ActivateFirstOwnerInput,
+  AdmitSlackOidcAttemptInput,
   BeginSlackAppCreationInput,
   BeginSlackCredentialRotationInput,
   AuthOperationKind,
@@ -53,6 +55,7 @@ import type {
   CreateOwnerClaimInput,
   CreatePersonalTokenRecordInput,
   CreateSlackOAuthAttemptInput,
+  CreateSlackOidcAttemptInput,
   AcquireSlackOAuthAttemptInput,
   EnsureOrganizationInput,
   EnsureAuthControlInput,
@@ -76,6 +79,8 @@ import type {
   PromoteSlackBotInstallationInput,
   FailSlackBotInstallationInput,
   SettleSlackOAuthAttemptInput,
+  SettleSlackOidcAttemptInput,
+  AcquireSlackOidcAttemptInput,
   StageSlackCredentialRevisionInput,
   TombstoneSlackCredentialRevisionInput,
   UpdateMembershipInput,
@@ -556,6 +561,31 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
     return response.transaction;
   }
+  async createSlackOidcAttempt(input: CreateSlackOidcAttemptInput) {
+    const response = await this.execute({ kind: 'create_slack_oidc_attempt', input });
+    if (response.kind !== 'slack_oidc_attempt' || !response.attempt) throw unexpectedIdentityResponse();
+    return response.attempt;
+  }
+  async getSlackOidcAttempt(attemptId: string) {
+    const response = await this.execute({ kind: 'get_slack_oidc_attempt', attemptId });
+    if (response.kind !== 'slack_oidc_attempt') throw unexpectedIdentityResponse();
+    return orUndefined(response.attempt);
+  }
+  async acquireSlackOidcAttempt(input: AcquireSlackOidcAttemptInput) {
+    const response = await this.execute({ kind: 'acquire_slack_oidc_attempt', input });
+    if (response.kind !== 'slack_oidc_attempt' || !response.attempt) throw unexpectedIdentityResponse();
+    return response.attempt;
+  }
+  async admitSlackOidcAttempt(input: AdmitSlackOidcAttemptInput) {
+    const response = await this.execute({ kind: 'admit_slack_oidc_attempt', input });
+    if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
+    return response.operation;
+  }
+  async settleSlackOidcAttempt(input: SettleSlackOidcAttemptInput) {
+    const response = await this.execute({ kind: 'settle_slack_oidc_attempt', input });
+    if (response.kind !== 'slack_oidc_attempt' || !response.attempt) throw unexpectedIdentityResponse();
+    return response.attempt;
+  }
   async createAuthOperation(input: CreateAuthOperationInput) {
     const response = await this.execute({ kind: 'create_auth_operation', input });
     if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
@@ -636,6 +666,11 @@ export class CfIdentityStore implements IdentityStore {
   }
   async claimOwner(input: ClaimOwnerInput) {
     const response = await this.execute({ kind: 'claim_owner', input });
+    if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
+    return response.resolution;
+  }
+  async activateFirstOwner(input: ActivateFirstOwnerInput) {
+    const response = await this.execute({ kind: 'activate_first_owner', input });
     if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
     return response.resolution;
   }
