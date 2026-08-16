@@ -7,6 +7,8 @@ import {
 import { createChannelRouter } from '@flue/runtime';
 import { Hono } from 'hono';
 
+import { resolveBetterAuthEnvironment } from '../auth/better-auth-environment.ts';
+import { applySlackUserChange } from '../auth/slack-membership-events.ts';
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
@@ -227,7 +229,7 @@ function channelForIdentity(
     channel: createSlackChannel({
       signingSecret,
       bodyLimit: MAX_SLACK_INGRESS_BYTES,
-      events: handleSlackEventsForIdentity(identityId),
+      events: handleSlackEventsForIdentity(identityId, credentialRevision),
     }),
   };
   verifiedChannels.delete(identityId);
@@ -412,6 +414,7 @@ export const channel: SlackChannel = {
 
 function handleSlackEventsForIdentity(
   identityId: string,
+  credentialRevision: string | null,
 ): NonNullable<SlackChannelOptions['events']> {
   return async ({ c, payload }) => {
     const platformEnv = c.env as PlatformEnv | undefined;
@@ -474,6 +477,21 @@ function handleSlackEventsForIdentity(
       return;
     }
 
+    if (verifiedEventType === 'user_change') {
+      detach(
+        c,
+        processSlackUserChange(
+          payload as unknown as SlackEventFixture,
+          stores,
+          platformEnv,
+          credentialRevision,
+        ).catch((error) => {
+          console.error('[chickpea] Slack membership event failed:', sanitizeError(error));
+        }),
+      );
+      return;
+    }
+
     if (identity.kind === 'dedicated' && identity.lifecycle !== 'connected') {
       return;
     }
@@ -504,6 +522,28 @@ function handleSlackEventsForIdentity(
       }),
     );
   };
+}
+
+async function processSlackUserChange(
+  payload: SlackEventFixture,
+  stores: AppStores,
+  platformEnv: PlatformEnv | undefined,
+  credentialRevision: string | null,
+): Promise<void> {
+  if (payload.event.type !== 'user_change' || !credentialRevision) return;
+  const control = await stores.identity.getAuthControl();
+  const environment = control
+    ? await resolveBetterAuthEnvironment({ control, platformEnv })
+    : undefined;
+  await applySlackUserChange({
+    identity: stores.identity,
+    ...(environment ? { betterAuth: environment.backend } : {}),
+    credentialRevision,
+    payloadTeamId: payload.team_id,
+    apiAppId: payload.api_app_id,
+    eventId: payload.event_id,
+    event: payload.event,
+  });
 }
 
 async function recordSlackIdentityLifecycleEvent(

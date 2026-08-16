@@ -83,6 +83,18 @@ export interface SlackTokensRevokedEvent {
   };
 }
 
+export interface SlackUserChangeEvent {
+  type: 'user_change';
+  event_ts: string;
+  user: {
+    id: string;
+    team_id?: string;
+    deleted?: boolean;
+    is_bot?: boolean;
+    is_app_user?: boolean;
+  };
+}
+
 export type SlackEvent =
   | SlackAppMentionEvent
   | SlackMessageEvent
@@ -91,7 +103,8 @@ export type SlackEvent =
   | SlackMemberJoinedChannelEvent
   | SlackReactionAddedEvent
   | SlackAppUninstalledEvent
-  | SlackTokensRevokedEvent;
+  | SlackTokensRevokedEvent
+  | SlackUserChangeEvent;
 
 export interface SlackEventFixture {
   token: string;

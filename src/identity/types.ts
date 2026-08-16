@@ -592,6 +592,23 @@ export interface UpdateMembershipInput {
   actorMembershipId?: string;
 }
 
+export interface UpdateMembershipAuthorityInput extends UpdateMembershipInput {
+  correlationId: string;
+  authenticationSurface: 'better_auth' | 'slack_event';
+  reasonCode: string;
+  idempotencyKey?: string;
+  slackTeamId?: string;
+  slackUserId?: string;
+  credentialRevision?: string;
+}
+
+export interface MembershipAuthorityMutationResult {
+  membership: Membership;
+  changed: boolean;
+  revokedPersonalTokenCount: number;
+  revokedBrowserSessionCount: number;
+}
+
 export interface CreateInvitationInput {
   organizationId: string;
   slackTeamId: string;
@@ -781,7 +798,7 @@ export interface IdentityStore extends HumanIdentityDirectory {
   getUser(userId: string): Promise<User | undefined>;
   getMembership(membershipId: string): Promise<Membership | undefined>;
   getMembershipForUser(userId: string, organizationId?: string): Promise<Membership | undefined>;
-  updateMembership(input: UpdateMembershipInput): Promise<Membership>;
+  updateMembershipAuthority(input: UpdateMembershipAuthorityInput): Promise<MembershipAuthorityMutationResult>;
   createInvitation(input: CreateInvitationInput): Promise<Invitation>;
   resendInvitation(input: ResendInvitationInput): Promise<Invitation>;
   revokeInvitation(invitationId: string): Promise<Invitation>;
@@ -868,7 +885,7 @@ export type IdentityRpcRequest =
   | { kind: 'get_user'; userId: string }
   | { kind: 'get_membership'; membershipId: string }
   | { kind: 'get_membership_for_user'; userId: string; organizationId?: string }
-  | { kind: 'update_membership'; input: UpdateMembershipInput }
+  | { kind: 'update_membership_authority'; input: UpdateMembershipAuthorityInput }
   | { kind: 'create_invitation'; input: CreateInvitationInput }
   | { kind: 'resend_invitation'; input: ResendInvitationInput }
   | { kind: 'revoke_invitation'; invitationId: string }
@@ -914,6 +931,7 @@ export type IdentityRpcResponse =
   | { kind: 'memberships'; memberships: Membership[] }
   | { kind: 'user'; user: User | null }
   | { kind: 'membership'; membership: Membership | null }
+  | { kind: 'membership_authority_mutation'; result: MembershipAuthorityMutationResult }
   | { kind: 'invitation'; invitation: Invitation }
   | { kind: 'invitations'; invitations: Invitation[] }
   | { kind: 'personal_token'; personalToken: PersonalTokenRecord }

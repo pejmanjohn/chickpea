@@ -201,6 +201,8 @@ export interface BetterAuthDatabaseBackend {
   /** Proves the entire Better Auth authority is exactly one staged owner-setup operation. */
   matchesOwnerSetupAuthority(input: BetterAuthOwnerSetupAuthorityExpectation): Promise<boolean>;
   absoluteExpiryForToken(token: string): Promise<Date | null>;
+  /** Revoke every Better Auth browser session for one canonical user. */
+  deleteSessionsForUser(userId: string): Promise<number>;
   hasPasswordCredential(email: string): Promise<boolean>;
   getUser(userId: string): Promise<BetterAuthUserRecord | null>;
   findUserByEmail(email: string): Promise<BetterAuthUserRecord | null>;

@@ -65,6 +65,11 @@ export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
     return Number.isNaN(date.getTime()) ? null : date;
   }
 
+  async deleteSessionsForUser(userId: string): Promise<number> {
+    const result = await this.database.prepare('DELETE FROM session WHERE userId = ?').bind(userId).run();
+    return Number(result.meta.changes ?? 0);
+  }
+
   async hasPasswordCredential(email: string): Promise<boolean> {
     const row = await this.database.prepare(
       `SELECT 1 AS present

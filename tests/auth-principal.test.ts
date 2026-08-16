@@ -98,8 +98,68 @@ test('active Better Auth session resolves only through canonical Slack authority
       [owner.user.id, owner.membership.id, 'owner', 'better_auth'],
     );
 
+    const adminSlackUserId = 'U87654321';
+    const reconciledAdmin = await auth.chickpea.reconcileSlackIdentity({
+      slackTeamId: TEAM,
+      slackUserId: adminSlackUserId,
+      displayName: 'Admin',
+      organization: {
+        id: reconciled.organizationId,
+        name: 'Chickpea',
+        slug: 'chickpea',
+      },
+    });
+    const invitation = await identity.createInvitation({
+      organizationId: owner.membership.organizationId,
+      slackTeamId: TEAM,
+      slackUserId: adminSlackUserId,
+      role: 'admin',
+      locatorHash: 'd'.repeat(64),
+      inviterMembershipId: owner.membership.id,
+      expiresAt: NOW + 60_000,
+    });
+    const admin = await identity.consumeInvitation({
+      invitationId: invitation.id,
+      locatorHash: 'd'.repeat(64),
+      slackTeamId: TEAM,
+      slackUserId: adminSlackUserId,
+      betterAuthUserId: reconciledAdmin.userId,
+      betterAuthMembershipId: reconciledAdmin.membershipId,
+    });
+    backend.database.prepare('UPDATE member SET role = ? WHERE id = ?')
+      .run('owner', reconciledAdmin.membershipId);
+    admission = {
+      operationId: 'login_admin_tampered',
+      status: 'active',
+      chickpeaRole: 'admin',
+      slackTeamId: TEAM,
+      slackUserId: adminSlackUserId,
+      betterAuthUserId: reconciledAdmin.userId,
+      betterAuthOrganizationId: reconciledAdmin.organizationId,
+      betterAuthMembershipId: reconciledAdmin.membershipId,
+    };
+    const issuedAdmin = await auth.chickpea.issueSession(
+      admission.operationId,
+      new Request(`${ORIGIN}/oauth/finalize`, {
+        method: 'POST', headers: { origin: ORIGIN, 'sec-fetch-site': 'same-origin' },
+      }),
+    );
+    const adminCookie = (issuedAdmin.headers.get('set-cookie') ?? '').split(';', 1)[0] ?? '';
     await assert.rejects(
-      () => identity.updateMembership({ membershipId: owner.membership.id, status: 'suspended' }),
+      () => service.authenticateRequest(new Request(`${ORIGIN}/admin`, {
+        headers: { cookie: adminCookie },
+      })),
+      AuthDeniedError,
+      'Better Auth role tampering cannot grant any Chickpea authority',
+    );
+    assert.equal((await identity.getMembership(admin.membership.id))?.role, 'admin');
+
+    await assert.rejects(
+      () => identity.updateMembershipAuthority({
+        membershipId: owner.membership.id, status: 'suspended',
+        actorMembershipId: owner.membership.id, authenticationSurface: 'better_auth',
+        correlationId: 'request_last_owner', reasonCode: 'owner_suspended_member',
+      }),
       /At least one active Owner/,
     );
     await identity.setMembershipAccessOverlay({
@@ -138,5 +198,28 @@ test('unconfigured and recovery-only controls admit no principal', async () => {
     );
   } finally {
     identity.close();
+  }
+});
+
+test('Better Auth backend revokes every browser session for one user', async () => {
+  const backend = new NodeBetterAuthBackend(':memory:');
+  try {
+    backend.database.prepare(
+      `INSERT INTO "user" (id, name, email, emailVerified, createdAt, updatedAt)
+       VALUES (?, ?, ?, 0, ?, ?)`,
+    ).run('ba_user_revoke', 'Revoke', 'revoke@identity.invalid', NOW, NOW);
+    for (const [id, token] of [
+      ['session_one', 'token_one'],
+      ['session_two', 'token_two'],
+    ] as const) {
+      backend.database.prepare(
+        `INSERT INTO session (id, expiresAt, token, createdAt, updatedAt, ipAddress, userAgent, userId, absoluteExpiresAt)
+         VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
+      ).run(id, NOW + 60_000, token, NOW, NOW, 'ba_user_revoke', NOW + 60_000);
+    }
+    assert.equal(await backend.deleteSessionsForUser('ba_user_revoke'), 2);
+    assert.equal(backend.database.prepare('SELECT count(*) AS count FROM session').get()?.count, 0);
+  } finally {
+    backend.close();
   }
 });

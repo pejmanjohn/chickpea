@@ -62,6 +62,10 @@ export class NodeBetterAuthBackend implements BetterAuthDatabaseBackend {
     return parseStoredDate(row?.absoluteExpiresAt);
   }
 
+  async deleteSessionsForUser(userId: string): Promise<number> {
+    return Number(this.database.prepare('DELETE FROM session WHERE userId = ?').run(userId).changes);
+  }
+
   async hasPasswordCredential(email: string): Promise<boolean> {
     const row = this.database.prepare(
       `SELECT 1 AS present

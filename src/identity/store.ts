@@ -39,6 +39,7 @@ import type {
   IdentityStore,
   Invitation,
   Membership,
+  MembershipAuthorityMutationResult,
   MembershipAccessOverlay,
   Organization,
   OwnerClaim,
@@ -71,7 +72,7 @@ import type {
   StageSlackCredentialRevisionInput,
   SlackIdentityBinding,
   UpdateAuthControlInput,
-  UpdateMembershipInput,
+  UpdateMembershipAuthorityInput,
   UpdateOrganizationAuthInput,
   TombstoneSlackCredentialRevisionInput,
   User,
@@ -162,7 +163,9 @@ export class IdentityStoreLogic {
         const membership = this.getMembershipForUser(request.userId, request.organizationId);
         return { kind: 'memberships', memberships: membership ? [membership] : [] };
       }
-      case 'update_membership': return { kind: 'membership', membership: this.updateMembership(request.input) };
+      case 'update_membership_authority': return {
+        kind: 'membership_authority_mutation', result: this.updateMembershipAuthority(request.input),
+      };
       case 'create_invitation': return { kind: 'invitation', invitation: this.createInvitation(request.input) };
       case 'resend_invitation': return { kind: 'invitation', invitation: this.resendInvitation(request.input) };
       case 'revoke_invitation': return { kind: 'invitation', invitation: this.revokeInvitation(request.invitationId) };
@@ -1689,11 +1692,39 @@ export class IdentityStoreLogic {
     return row ? membershipFromRow(row) : undefined;
   }
 
-  updateMembership(input: UpdateMembershipInput): Membership {
+  updateMembershipAuthority(
+    input: UpdateMembershipAuthorityInput,
+  ): MembershipAuthorityMutationResult {
     return this.db.transaction(() => {
       const current = this.requiredMembership(input.membershipId);
+      const replay = input.idempotencyKey
+        ? this.audit.findByIdempotencyKey(nonEmpty(input.idempotencyKey, 'idempotency key'))
+        : undefined;
+      if (replay) {
+        return {
+          membership: current,
+          changed: false,
+          revokedPersonalTokenCount: 0,
+          revokedBrowserSessionCount: 0,
+        };
+      }
+
+      const actor = input.actorMembershipId
+        ? this.requiredMembership(input.actorMembershipId)
+        : undefined;
+      const systemDeactivation = input.authenticationSurface === 'slack_event' && !actor;
+      if (actor && (actor.organizationId !== current.organizationId ||
+          actor.role !== 'owner' || actor.status !== 'active')) {
+        throw identityError('inviter_not_authorized', 'Only an active Owner can change team authority.');
+      }
+      if (!actor && !systemDeactivation) {
+        throw identityError('inviter_not_authorized', 'Membership authority requires an active Owner.');
+      }
+
       const role = input.role ?? current.role;
       const status = input.status ?? current.status;
+      let changed = role !== current.role || status !== current.status;
+      let preserveSoleOwner = false;
       if (current.role === 'owner' && current.status === 'active' &&
           (role !== 'owner' || status !== 'active')) {
         const owners = Number(this.db.get(
@@ -1701,13 +1732,83 @@ export class IdentityStoreLogic {
            WHERE organization_id = ? AND role = 'owner' AND status = 'active'`,
           current.organizationId,
         )?.count ?? 0);
-        if (owners <= 1) throw identityError('last_owner_required', 'At least one active Owner is required.');
+        if (owners <= 1) {
+          if (!systemDeactivation) {
+            throw identityError('last_owner_required', 'At least one active Owner is required.');
+          }
+          preserveSoleOwner = true;
+        }
       }
-      this.db.run(
-        'UPDATE identity_memberships SET role = ?, status = ?, updated_at = ? WHERE membership_id = ?',
-        role, status, this.now(), current.id,
-      );
-      return this.requiredMembership(current.id);
+
+      const at = this.now();
+      if (changed && !preserveSoleOwner) {
+        this.db.run(
+          'UPDATE identity_memberships SET role = ?, status = ?, updated_at = ? WHERE membership_id = ?',
+          role, status, at, current.id,
+        );
+      }
+      if (systemDeactivation && status === 'suspended') {
+        const overlay = this.getMembershipAccessOverlay(current.id);
+        if (overlay?.accessStatus !== 'suspended') {
+          changed = true;
+          this.db.run(
+            `INSERT INTO identity_membership_access_overlays (
+              membership_id, organization_id, access_status, membership_version, created_at, updated_at
+            ) VALUES (?, ?, 'suspended', 1, ?, ?)
+            ON CONFLICT (membership_id) DO UPDATE SET access_status = 'suspended',
+              membership_version = identity_membership_access_overlays.membership_version + 1,
+              updated_at = excluded.updated_at`,
+            current.id, current.organizationId, at, at,
+          );
+        }
+      } else if (status === 'active') {
+        const overlay = this.getMembershipAccessOverlay(current.id);
+        if (overlay?.accessStatus === 'suspended') {
+          changed = true;
+          this.db.run(
+            `UPDATE identity_membership_access_overlays SET access_status = 'active',
+             membership_version = membership_version + 1, updated_at = ? WHERE membership_id = ?`,
+            at, current.id,
+          );
+        }
+      }
+
+      const revokedPersonalTokenCount = changed ? this.db.run(
+        `UPDATE identity_personal_tokens SET status = 'revoked', updated_at = ?
+         WHERE membership_id = ? AND status = 'active'`,
+        at, current.id,
+      ).changes : 0;
+      const revokedBrowserSessionCount = changed ? this.db.run(
+        `UPDATE identity_browser_sessions SET revoked_at = ?
+         WHERE membership_id = ? AND revoked_at IS NULL`,
+        at, current.id,
+      ).changes : 0;
+      const membership = this.requiredMembership(current.id);
+      const append = input.idempotencyKey
+        ? this.audit.appendIdempotent.bind(this.audit)
+        : this.audit.append.bind(this.audit);
+      append({
+        eventId: newId('audit'), domain: 'identity', eventType: 'identity.membership',
+        outcome: 'success', actorClass: input.authenticationSurface,
+        actorId: actor?.id ?? null, workspaceId: input.slackTeamId ?? null,
+        subjectId: current.id, subjectVersion: membership.updatedAt,
+        createdAt: at, reasonCode: safeAudit(input.reasonCode),
+        metadataJson: JSON.stringify({
+          action: 'membership.update', correlationId: safeAudit(input.correlationId),
+          authenticationSurface: input.authenticationSurface,
+          role: membership.role, status: membership.status,
+          slackUserId: input.slackUserId ? safeAudit(input.slackUserId) : null,
+          credentialRevision: input.credentialRevision ? safeAudit(input.credentialRevision) : null,
+          soleOwnerAccessSuspended: preserveSoleOwner,
+        }),
+        ...(input.idempotencyKey ? { idempotencyKey: safeAudit(input.idempotencyKey) } : {}),
+      });
+      return {
+        membership,
+        changed,
+        revokedPersonalTokenCount,
+        revokedBrowserSessionCount,
+      };
     });
   }
 
@@ -2182,7 +2283,9 @@ export class SqliteIdentityStore implements IdentityStore {
   async getUser(id: string) { return this.logic.getUser(id); }
   async getMembership(id: string) { return this.logic.getMembership(id); }
   async getMembershipForUser(userId: string, organizationId?: string) { return this.logic.getMembershipForUser(userId, organizationId); }
-  async updateMembership(input: UpdateMembershipInput) { return this.logic.updateMembership(input); }
+  async updateMembershipAuthority(input: UpdateMembershipAuthorityInput) {
+    return this.logic.updateMembershipAuthority(input);
+  }
   async createInvitation(input: CreateInvitationInput) { return this.logic.createInvitation(input); }
   async resendInvitation(input: ResendInvitationInput) { return this.logic.resendInvitation(input); }
   async revokeInvitation(id: string) { return this.logic.revokeInvitation(id); }

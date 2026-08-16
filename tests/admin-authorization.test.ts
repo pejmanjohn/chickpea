@@ -14,11 +14,20 @@ function principal(role: AuthPrincipal['role']): AuthPrincipal {
   };
 }
 
-test('only Chickpea Owner and Admin roles exist at the permission boundary', () => {
+test('team authority is split so Admin can inspect but only Owner can mutate membership', () => {
   assert.equal(permissionForRole('owner').has('auth.manage'), true);
   assert.equal(permissionForRole('admin').has('admin.configure'), true);
   assert.equal(permissionForRole('admin').has('auth.manage'), false);
+  assert.equal(permissionForRole('admin').has('team.view'), true);
+  assert.equal(permissionForRole('admin').has('team.invite'), false);
+  assert.equal(permissionForRole('admin').has('team.manage_members'), false);
+  assert.equal(permissionForRole('admin').has('team.manage_owners'), false);
+  assert.equal(permissionForRole('owner').has('team.invite'), true);
+  assert.equal(permissionForRole('owner').has('team.manage_members'), true);
+  assert.equal(permissionForRole('owner').has('team.manage_owners'), true);
   assert.doesNotThrow(() => requirePermission(principal('admin'), 'admin.configure'));
+  assert.doesNotThrow(() => requirePermission(principal('admin'), 'team.view'));
+  assert.throws(() => requirePermission(principal('admin'), 'team.invite'), /forbidden/i);
   assert.throws(() => requirePermission(principal('admin'), 'auth.manage'), /forbidden/i);
 });
 

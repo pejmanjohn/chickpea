@@ -61,6 +61,7 @@ import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
 import { captureSlackIdentityOperationalEvents } from './helpers/slack-identity-observability.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const ADMIN_TOKEN = 'wizard-admin-token';
 
@@ -3224,6 +3225,85 @@ test('scoped ingress verifies the selected identity secret and binds app plus wo
         } finally {
           config.close();
           settings.close();
+        }
+      },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('signed workspace user_change deactivation revokes the canonical Chickpea actor', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-user-change-'));
+  const path = join(directory, 'state.db');
+  try {
+    await withEnv(
+      { ...NO_SLACK_ENV, TAG_DB_PATH: path, SLACK_STATE_DB_PATH: path },
+      async () => {
+        const config = new SqliteConfigStore(path);
+        const identityState = new SqliteIdentityStore(path);
+        try {
+          const configured = await config.getSlackIdentity('slack_identity_default');
+          const slackIdentity = await config.updateSlackIdentity(
+            configured.id,
+            configured.connectionRevision,
+            {
+              lifecycle: 'connected', health: 'healthy', healthDetail: null,
+              teamId: 'TACME', appId: 'A0FINANCE', botUserId: 'UFINANCE',
+              credentialProvenance: 'stored',
+            },
+          );
+          const owner = await createSlackOwner(identityState, {
+            teamId: 'TACME', userId: 'UDEACTIVATED', suffix: 'deactivated',
+          });
+          const revision = await writeSlackIdentityCredentials(
+            getSlackCredentialDependencies(),
+            slackIdentity.id,
+            null,
+            {
+              botToken: 'xoxb-finance', signingSecret: 'finance-secret',
+              botUserId: 'UFINANCE', appId: 'A0FINANCE', teamId: 'TACME',
+            },
+          );
+          const app = await identityIngressApp();
+          const url = `/channels/slack/events/${slackIdentity.ingressKey}`;
+          const payload = {
+            type: 'event_callback', api_app_id: 'A0FINANCE', team_id: 'TACME',
+            event_id: 'Ev_SIGNED_USER_CHANGE',
+            event: {
+              type: 'user_change', event_ts: '1786100000.000100',
+              user: {
+                id: 'UDEACTIVATED', team_id: 'TACME', deleted: true,
+                is_bot: false, is_app_user: false,
+              },
+            },
+          };
+          const forged = signedSlackEvent('wrong-secret', payload);
+          assert.equal((await app.request(url, {
+            method: 'POST', headers: forged.headers, body: forged.body,
+          })).status, 401);
+          assert.equal(await identityState.getMembershipAccessOverlay(owner.membership.id), undefined);
+
+          const signed = signedSlackEvent('finance-secret', payload);
+          const accepted = await app.request(url, {
+            method: 'POST', headers: signed.headers, body: signed.body,
+          });
+          assert.equal(accepted.status, 200, await accepted.clone().text());
+          const deadline = Date.now() + 1_000;
+          while ((await identityState.getMembershipAccessOverlay(owner.membership.id))?.accessStatus !== 'suspended') {
+            if (Date.now() >= deadline) assert.fail(`signed user_change did not apply for ${revision}`);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          assert.equal(
+            (await identityState.listAuditEvents()).filter(
+              (event) => event.eventType === 'identity.membership' &&
+                event.reasonCode === 'slack_user_deactivated',
+            ).length,
+            1,
+          );
+        } finally {
+          config.close();
+          identityState.close();
         }
       },
     );

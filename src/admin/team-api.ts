@@ -75,7 +75,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
   });
 
   app.get('/team', async (c) => {
-    const principal = requiredPrincipal(c, 'team.manage');
+    const principal = requiredPrincipal(c, 'team.view');
     c.header('Cache-Control', 'no-store');
     const lifecycle = await options.passwordLifecycle?.(c);
     return c.json(await teamSnapshot(
@@ -88,7 +88,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
   });
 
   app.post('/team/invitations', async (c) => {
-    const principal = requiredPrincipal(c, 'team.manage');
+    const principal = requiredPrincipal(c, 'team.invite');
     const parsed = v.safeParse(inviteSchema, await readJson(c));
     if (!parsed.success) return invalid(c);
     if (parsed.output.role === 'member') return c.json({ error: 'reload_required' }, 409);
@@ -125,7 +125,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
   });
 
   app.delete('/team/invitations/:invitationId', async (c) => {
-    const principal = requiredPrincipal(c, 'team.manage');
+    const principal = requiredPrincipal(c, 'team.invite');
     const invitationId = parseId(c.req.param('invitationId'));
     if (!invitationId) return invalid(c);
     try {
@@ -149,7 +149,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
   });
 
   app.patch('/team/memberships/:membershipId', async (c) => {
-    const principal = requiredPrincipal(c, 'team.manage');
+    const principal = requiredPrincipal(c, 'team.manage_members');
     const membershipId = parseId(c.req.param('membershipId'));
     const parsed = v.safeParse(membershipPatchSchema, await readJson(c));
     if (!membershipId || !parsed.success) return invalid(c);
@@ -173,20 +173,23 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
       }
       const store = await writableStore(options, c);
       if (!store) return c.json({ error: 'team_lifecycle_unavailable' }, 409);
-      const membership = await store.updateMembership({
+      const result = await store.updateMembershipAuthority({
         membershipId,
         ...(parsed.output.role === undefined ? {} : { role: parsed.output.role }),
         ...(parsed.output.status === undefined ? {} : { status: parsed.output.status }),
         actorMembershipId: principal.membershipId,
+        authenticationSurface: 'better_auth',
+        correlationId: principal.correlationId,
+        reasonCode: 'owner_updated_membership',
       });
-      return c.json({ membership });
+      return c.json({ membership: result.membership });
     } catch (error) {
       return teamError(c, error);
     }
   });
 
   app.post('/team/memberships/:membershipId/reset', async (c) => {
-    const principal = requiredPrincipal(c, 'team.manage');
+    const principal = requiredPrincipal(c, 'team.manage_members');
     const membershipId = parseId(c.req.param('membershipId'));
     if (!membershipId) return invalid(c);
     try {

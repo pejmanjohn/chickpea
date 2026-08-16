@@ -7,6 +7,7 @@ import type {
   IdentityResolution,
   IdentityRpcRequest,
   IdentityRpcResponse,
+  MembershipAuthorityMutationResult,
   SlackCredentialRevision,
   SlackOAuthAttempt,
   SlackOidcAttempt,
@@ -55,6 +56,31 @@ test('actor lookup aliases the same exact Slack tuple and no parallel binding RP
   assert.deepEqual(calls, [{
     kind: 'resolve_slack_identity', slackTeamId: 'T_ACME', slackUserId: 'U_OWNER',
   }]);
+});
+
+test('Cloudflare proxy forwards the atomic membership authority mutation', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const input = {
+    membershipId: resolution.membership.id,
+    status: 'suspended' as const,
+    authenticationSurface: 'slack_event' as const,
+    correlationId: 'Ev_RPC_DEACTIVATE',
+    reasonCode: 'slack_user_deactivated',
+    idempotencyKey: 'slack-user-change:Ev_RPC_DEACTIVATE',
+    slackTeamId: 'T_ACME',
+    slackUserId: 'U_OWNER',
+    credentialRevision: 'revision_connected',
+  };
+  const result: MembershipAuthorityMutationResult = {
+    membership: { ...resolution.membership, status: 'suspended', updatedAt: 11 },
+    changed: true,
+    revokedPersonalTokenCount: 1,
+    revokedBrowserSessionCount: 1,
+  };
+  const stub = rpcStub(calls, { kind: 'membership_authority_mutation', result });
+  const store = new CfIdentityStore(stub);
+  assert.deepEqual(await store.updateMembershipAuthority(input), result);
+  assert.deepEqual(calls, [{ kind: 'update_membership_authority', input }]);
 });
 
 test('Cloudflare proxy forwards Slack-keyed operation reservations', async () => {

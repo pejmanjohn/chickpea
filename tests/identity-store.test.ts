@@ -119,6 +119,90 @@ test('Slack tuple and Better Auth mapping uniqueness are storage-backed', async 
   );
 });
 
+test('membership authority mutation revokes every pinned token and session atomically', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await claimFirstOwner(store);
+  const invitation = await store.createInvitation({
+    organizationId: owner.membership.organizationId,
+    slackTeamId: TEAM,
+    slackUserId: 'U87654321',
+    role: 'admin',
+    locatorHash: 'f'.repeat(64),
+    inviterMembershipId: owner.membership.id,
+    expiresAt: NOW + 60_000,
+  });
+  const admin = await store.consumeInvitation({
+    invitationId: invitation.id,
+    locatorHash: 'f'.repeat(64),
+    slackTeamId: TEAM,
+    slackUserId: 'U87654321',
+    betterAuthUserId: 'ba_user_authority_admin',
+    betterAuthMembershipId: 'ba_member_authority_admin',
+  });
+  const token = await store.createPersonalToken({
+    organizationId: admin.membership.organizationId,
+    userId: admin.user.id,
+    membershipId: admin.membership.id,
+    tokenHash: '1'.repeat(64),
+    prefix: 'authority123',
+    label: 'Admin token',
+  });
+  const session = await store.createBrowserSession({
+    organizationId: admin.membership.organizationId,
+    userId: admin.user.id,
+    membershipId: admin.membership.id,
+    personalTokenId: token.id,
+    sessionHash: '2'.repeat(64),
+    prefix: 'sessionauth1',
+    expiresAt: NOW + 60_000,
+  });
+
+  const result = await store.updateMembershipAuthority({
+    membershipId: admin.membership.id,
+    status: 'suspended',
+    actorMembershipId: owner.membership.id,
+    correlationId: 'request_authority_1',
+    authenticationSurface: 'better_auth',
+    reasonCode: 'owner_suspended_member',
+  });
+  assert.equal(result.membership.status, 'suspended');
+  assert.equal(result.revokedPersonalTokenCount, 1);
+  assert.equal(result.revokedBrowserSessionCount, 1);
+  assert.equal((await store.getPersonalToken(token.id))?.status, 'revoked');
+  assert.notEqual((await store.findBrowserSessions(session.prefix))[0]?.id, session.id);
+  const audit = (await store.listAuditEvents()).find((event) => event.eventType === 'identity.membership');
+  assert.ok(audit);
+  assert.equal(audit.actorId, owner.membership.id);
+  assert.equal(audit.subjectId, admin.membership.id);
+  assert.doesNotMatch(audit.metadataJson, /tokenHash|sessionHash|secret|cookie/i);
+});
+
+test('system deactivation denies a sole Owner without violating the last-owner membership invariant', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await claimFirstOwner(store);
+  const result = await store.updateMembershipAuthority({
+    membershipId: owner.membership.id,
+    status: 'suspended',
+    authenticationSurface: 'slack_event',
+    correlationId: 'Ev_OWNER_DEACTIVATED',
+    reasonCode: 'slack_user_deactivated',
+    idempotencyKey: 'slack-user-change:Ev_OWNER_DEACTIVATED',
+  });
+  assert.equal(result.membership.status, 'active');
+  assert.equal((await store.getMembershipAccessOverlay(owner.membership.id))?.accessStatus, 'suspended');
+  await assert.rejects(
+    () => store.updateMembershipAuthority({
+      membershipId: owner.membership.id,
+      status: 'suspended',
+      actorMembershipId: owner.membership.id,
+      authenticationSurface: 'better_auth',
+      correlationId: 'request_owner_self_suspend',
+      reasonCode: 'owner_suspended_member',
+    }),
+    /At least one active Owner/,
+  );
+});
+
 test('identity export contains Slack authority and no credential locators', async () => {
   const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
   await claimFirstOwner(store);

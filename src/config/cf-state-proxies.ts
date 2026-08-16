@@ -83,7 +83,7 @@ import type {
   AcquireSlackOidcAttemptInput,
   StageSlackCredentialRevisionInput,
   TombstoneSlackCredentialRevisionInput,
-  UpdateMembershipInput,
+  UpdateMembershipAuthorityInput,
   UpdateAuthControlInput,
   UpdateOrganizationAuthInput,
 } from '../identity/types.ts';
@@ -715,10 +715,10 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'memberships') throw unexpectedIdentityResponse();
     return response.memberships[0];
   }
-  async updateMembership(input: UpdateMembershipInput) {
-    const response = await this.execute({ kind: 'update_membership', input });
-    if (response.kind !== 'membership' || !response.membership) throw unexpectedIdentityResponse();
-    return response.membership;
+  async updateMembershipAuthority(input: UpdateMembershipAuthorityInput) {
+    const response = await this.execute({ kind: 'update_membership_authority', input });
+    if (response.kind !== 'membership_authority_mutation') throw unexpectedIdentityResponse();
+    return response.result;
   }
   async createInvitation(input: CreateInvitationInput) {
     const response = await this.execute({ kind: 'create_invitation', input });

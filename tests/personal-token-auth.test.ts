@@ -67,11 +67,23 @@ test('token sessions recheck expiry, source token, and membership on every reque
     slackTeamId: 'T12345678', slackUserId: 'U87654321',
     betterAuthUserId: 'ba_user_backup', betterAuthMembershipId: 'ba_member_backup', at: NOW,
   });
-  await identity.updateMembership({ membershipId: backup.membership.id, role: 'owner' });
-  await identity.updateMembership({ membershipId: owner.membership.id, status: 'suspended' });
+  await identity.updateMembershipAuthority({
+    membershipId: backup.membership.id, role: 'owner', actorMembershipId: owner.membership.id,
+    authenticationSurface: 'better_auth', correlationId: 'promote_backup',
+    reasonCode: 'owner_promoted_member',
+  });
+  await identity.updateMembershipAuthority({
+    membershipId: owner.membership.id, status: 'suspended', actorMembershipId: backup.membership.id,
+    authenticationSurface: 'better_auth', correlationId: 'suspend_owner',
+    reasonCode: 'owner_suspended_member',
+  });
   await assert.rejects(() => sessions.authenticate(nextSession.token), AuthDeniedError);
 
-  await identity.updateMembership({ membershipId: owner.membership.id, status: 'active' });
+  await identity.updateMembershipAuthority({
+    membershipId: owner.membership.id, status: 'active', actorMembershipId: backup.membership.id,
+    authenticationSurface: 'better_auth', correlationId: 'restore_owner',
+    reasonCode: 'owner_restored_member',
+  });
   const expiring = await sessions.create(replacement.record, owner.membership.id, 1_000);
   now += 1_001;
   await assert.rejects(() => sessions.authenticate(expiring.token), AuthDeniedError);

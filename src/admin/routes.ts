@@ -365,12 +365,6 @@ interface RetiredAuthProviderConfig {
   audience: string | null;
   state: 'pending' | 'active' | 'disabled';
 }
-interface RetiredActorHandoff {
-  issuer: string;
-  subject: string;
-  slackIdentityId: string;
-  slackIdentityRevision: number;
-}
 interface RetiredIdentityStore {
   getAuthProviderConfig(kind: string): Promise<RetiredAuthProviderConfig | undefined>;
   resolveExternalIdentity(
@@ -378,19 +372,6 @@ interface RetiredIdentityStore {
     issuer: string,
     subject: string,
   ): Promise<IdentityResolution | undefined>;
-  getActorIdentityBindingHandoff(tokenHash: string): Promise<RetiredActorHandoff | undefined>;
-  consumeActorIdentityBindingHandoff(
-    tokenHash: string,
-    consumedAt: number,
-  ): Promise<RetiredActorHandoff | undefined>;
-  bindActorExternalIdentity(input: {
-    provider: 'slack';
-    issuer: string;
-    subject: string;
-    userId: string;
-    organizationId: string;
-    membershipId: string;
-  }): Promise<void>;
   consumeInvitation(input: Record<string, unknown>): Promise<IdentityResolution>;
   updateOrganizationAuth(input: {
     organizationId: string;
@@ -2845,54 +2826,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c.header('Cache-Control', 'no-store');
     return c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) }));
   };
-
-  app.get('/admin/slack-actor/client.js', (c) => {
-    authResponseHeaders(c);
-    c.header('Content-Type', 'application/javascript; charset=UTF-8');
-    return c.body("const p=new URLSearchParams(location.hash.slice(1));const t=p.get('bind');document.getElementById('binding-token').value=t||'';document.getElementById('connect').disabled=!t;document.getElementById('missing').hidden=!!t;history.replaceState(null,'',location.pathname);");
-  });
-
-  app.get('/admin/slack-actor', (c) => {
-    authResponseHeaders(c);
-    c.header('Cache-Control', 'no-store');
-    c.header('Referrer-Policy', 'no-referrer');
-    return c.html(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Connect Slack · Chickpea</title></head><body style="font-family:system-ui;max-width:36rem;margin:10vh auto;padding:2rem;color:#392f1f"><h1>Connect this Slack account</h1><p>This lets your authenticated Owner or Admin account confirm Agent-memory changes requested from Slack.</p><form method="post" action="/admin/slack-actor/bind"><input id="binding-token" type="hidden" name="token"><button id="connect" type="submit" disabled>Connect Slack account</button></form><p id="missing" hidden>This link is missing or expired. Request a new link from Chickpea in Slack.</p><script src="/admin/slack-actor/client.js" defer></script></body></html>`);
-  });
-
-  app.post('/admin/slack-actor/bind', async (c) => {
-    authResponseHeaders(c);
-    c.header('Cache-Control', 'no-store');
-    const principal = principalByContext.get(c);
-    if (!principal || principal.machine || (principal.role !== 'owner' && principal.role !== 'admin')) {
-      return c.json({ error: 'forbidden' }, 403);
-    }
-    const parsed = v.safeParse(v.object({ token: v.pipe(v.string(), v.minLength(4), v.maxLength(512)) }), await readForm(c));
-    if (!parsed.success) return c.html(renderSlackActorBindingResult(false), 400);
-    const tokenHash = digest(parsed.output.token);
-    const handoff = await retiredIdentity(c).getActorIdentityBindingHandoff(tokenHash);
-    if (!handoff) return c.html(renderSlackActorBindingResult(false), 409);
-    const [slackIdentity, directory, overlay] = await Promise.all([
-      store(c).getSlackIdentity(handoff.slackIdentityId), humanDirectory(c),
-      identity(c).getMembershipAccessOverlay(principal.membershipId),
-    ]);
-    const membership = await directory.getMembership(principal.membershipId);
-    if (!membership || membership.id !== principal.membershipId || membership.userId !== principal.userId ||
-        membership.organizationId !== principal.organizationId || membership.status !== 'active' ||
-        membership.role !== principal.role || (membership.role !== 'owner' && membership.role !== 'admin') ||
-        (overlay && (overlay.organizationId !== principal.organizationId || overlay.accessStatus !== 'active')) ||
-        slackIdentity.connectionRevision !== handoff.slackIdentityRevision ||
-        slackIdentity.teamId !== handoff.issuer) {
-      return c.html(renderSlackActorBindingResult(false), 409);
-    }
-    const consumed = await retiredIdentity(c).consumeActorIdentityBindingHandoff(tokenHash, Date.now());
-    if (!consumed) return c.html(renderSlackActorBindingResult(false), 409);
-    await retiredIdentity(c).bindActorExternalIdentity({
-      provider: 'slack', issuer: consumed.issuer, subject: consumed.subject,
-      userId: principal.userId, organizationId: principal.organizationId,
-      membershipId: principal.membershipId,
-    });
-    return c.html(renderSlackActorBindingResult(true));
-  });
 
   app.get('/admin/assets/onboarding/:name', (c) => {
     const bytes = onboardingAssetBytes(c.req.param('name'));
@@ -7007,7 +6940,10 @@ function permissionForAdminRequest(c: Context, principal: AuthPrincipal): Permis
       c.req.path === '/admin/account/password' || c.req.path === '/admin/logout') {
     return 'account.view';
   }
-  if (c.req.path === '/admin/team' || c.req.path.startsWith('/admin/api/team')) return 'team.manage';
+  if (c.req.path === '/admin/team' ||
+      (c.req.method === 'GET' && c.req.path === '/admin/api/team')) return 'team.view';
+  if (c.req.path.startsWith('/admin/api/team/invitations')) return 'team.invite';
+  if (c.req.path.startsWith('/admin/api/team/memberships')) return 'team.manage_members';
   return 'admin.configure';
 }
 
@@ -7066,12 +7002,7 @@ function isHumanAuthFormMutation(c: Context): boolean {
   return c.req.method === 'POST' && [
     '/admin/account/password',
     '/admin/logout',
-    '/admin/slack-actor/bind',
   ].includes(c.req.path);
-}
-
-function renderSlackActorBindingResult(success: boolean): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Connect Slack · Chickpea</title></head><body style="font-family:system-ui;max-width:36rem;margin:10vh auto;padding:2rem;color:#392f1f"><h1>${success ? 'Slack account connected' : 'This connection link is unavailable'}</h1><p>${success ? 'Return to Slack and send your Agent-memory request again.' : 'Request a new connection link from Chickpea in Slack.'}</p></body></html>`;
 }
 
 function betterAuthJsonRequest(
