@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import {
   copyFileSync,
   existsSync,
@@ -488,6 +489,40 @@ test('an incompatible applied Better Auth 0001 blocks Worker upload', (context) 
   assert.equal(invoked.some((command) => command.includes('"migrations","apply"')), true);
   assert.equal(invoked.some((command) => command.includes('"d1","execute"')), true);
   assert.equal(invoked.some((command) => command.startsWith('wrangler:["deploy"')), false);
+});
+
+test('the exact schema gate ignores only Cloudflare D1 internal KV metadata', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const database = new DatabaseSync(':memory:');
+  database.exec(readFileSync(AUTH_MIGRATION, 'utf8'));
+  const results = database.prepare(
+    "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' " +
+      "AND name <> 'd1_migrations' ORDER BY type,name",
+  ).all();
+  database.close();
+  results.push({
+    type: 'table',
+    name: '_cf_KV',
+    tbl_name: '_cf_KV',
+    sql: 'CREATE TABLE _cf_KV (key TEXT PRIMARY KEY, value BLOB)',
+  });
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_AUTH_SCHEMA: JSON.stringify([{ success: true, results }]),
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const inspection = commands(harness.logPath).find((command) =>
+    command.includes('"d1","execute"')
+  );
+  assert.match(inspection ?? '', /_cf_KV/);
+  assert.equal(
+    commands(harness.logPath).some((command) => command.startsWith('wrangler:["deploy"')),
+    true,
+  );
 });
 
 test('an unreadable remote AUTH_DB schema blocks Worker upload', (context) => {

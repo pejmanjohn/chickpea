@@ -775,11 +775,11 @@ function existingAuthDatabaseId(databaseName) {
 
 const AUTH_SCHEMA_QUERY =
   "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' " +
-  "AND name <> 'd1_migrations' ORDER BY type,name";
+  "AND name NOT IN ('d1_migrations','_cf_KV') ORDER BY type,name";
 
 function normalizeAuthSchemaRows(rows) {
   if (!Array.isArray(rows)) throw new Error('AUTH_DB schema inspection returned no rows.');
-  return rows.map((row) => {
+  return rows.filter((row) => row?.name !== '_cf_KV').map((row) => {
     if (!row || typeof row.type !== 'string' || typeof row.name !== 'string' ||
         typeof row.tbl_name !== 'string' || typeof row.sql !== 'string') {
       throw new Error('AUTH_DB schema inspection returned an unreadable row.');
