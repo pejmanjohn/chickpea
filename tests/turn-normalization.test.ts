@@ -20,19 +20,19 @@ import {
 } from './helpers/slack-fixtures.ts';
 
 test('Slack turn normalization classifies mentions, thread replies, DMs, and ambient top-level messages', () => {
-  const options = { slackIdentityId: 'slack_identity_default', botUserId: 'U_BOT' };
+  const options = { slackIdentityId: 'slack_identity_default', botUserId: 'UBOT' };
   const mention = normalizeSlackTurn(fixture(), options);
   assert.ok(mention.status === 'runnable');
   assert.equal(mention.turn.source, 'app_mention');
   assert.equal(mention.turn.slackIdentityId, 'slack_identity_default');
   assert.equal(mention.turn.contextMode, 'channel_history');
-  assert.equal(slackThreadKey(mention.turn), 'T_DEMO:C_EXEC:1782770400.000100');
+  assert.equal(slackThreadKey(mention.turn), 'TDEMO:C_EXEC:1782770400.000100');
 
   const threadReply = normalizeSlackTurn(channelThreadMessage(), options);
   assert.ok(threadReply.status === 'runnable');
   assert.equal(threadReply.turn.source, 'implicit_thread_reply');
   assert.equal(threadReply.turn.contextMode, 'thread');
-  assert.equal(slackThreadKey(threadReply.turn), 'T_DEMO:C_EXEC:1782770400.000100');
+  assert.equal(slackThreadKey(threadReply.turn), 'TDEMO:C_EXEC:1782770400.000100');
 
   const privateChannelThreadReply = normalizeSlackTurn(privateChannelThreadMessage(), options);
   assert.ok(privateChannelThreadReply.status === 'runnable');
@@ -41,7 +41,7 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and amb
   assert.equal(privateChannelThreadReply.turn.contextMode, 'thread');
   assert.equal(
     slackThreadKey(privateChannelThreadReply.turn),
-    'T_DEMO:G_PRIVATE:1782770400.000100',
+    'TDEMO:G_PRIVATE:1782770400.000100',
   );
 
   const privateChannelTopLevel = privateChannelThreadMessage({
@@ -58,7 +58,7 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and amb
   assert.equal(dm.turn.contextMode, 'dm_history');
   assert.equal(dm.turn.threadTs, '1782770420.000300');
   assert.equal(dm.turn.sessionThreadTs, 'dm');
-  assert.equal(slackThreadKey(dm.turn), 'T_DEMO:D_DEMO_DM:dm');
+  assert.equal(slackThreadKey(dm.turn), 'TDEMO:D_DEMO_DM:dm');
 
   for (const systemUser of ['USLACK', 'USLACKBOT']) {
     assert.deepEqual(
@@ -94,7 +94,7 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and amb
 });
 
 test('Agent View message context is stripped before ordinary DM normalization', () => {
-  const options = { slackIdentityId: 'slack_identity_default', botUserId: 'U_BOT' };
+  const options = { slackIdentityId: 'slack_identity_default', botUserId: 'UBOT' };
   const absent = dmMessage();
   const empty = dmMessage();
   Object.assign(empty.event, { app_context: {} });
@@ -122,7 +122,7 @@ test('a suggested prompt click remains an ordinary user-rooted DM turn', () => {
   });
   const normalized = normalizeSlackTurn(payload, {
     slackIdentityId: 'slack_identity_default',
-    botUserId: 'U_BOT',
+    botUserId: 'UBOT',
   });
 
   assert.ok(normalized.status === 'runnable');
@@ -132,7 +132,7 @@ test('a suggested prompt click remains an ordinary user-rooted DM turn', () => {
 });
 
 test('artifact routing derives the Slack thread timestamp from the durable agent id', () => {
-  const id = 'T_DEMO:C_EXEC:1782770400.000100';
+  const id = 'TDEMO:C_EXEC:1782770400.000100';
   assert.equal(parseSlackThreadKey(id).threadTs, '1782770400.000100');
   assert.equal(slackArtifactThreadTs(id), '1782770400.000100');
 });
@@ -151,15 +151,15 @@ test('human message reactions are candidates and the bot cannot react itself int
   };
   const normalized = normalizeSlackTurn(payload, {
     slackIdentityId: 'slack_identity_finance',
-    botUserId: 'U_BOT',
+    botUserId: 'UBOT',
   });
   assert.ok(normalized.status === 'runnable');
   assert.equal(normalized.turn.source, 'reaction_added');
   assert.equal(normalized.turn.reactionTargetTs, '1782770400.000100');
 
   const self = normalizeSlackTurn(
-    { ...payload, event: { ...payload.event, user: 'U_BOT' } },
-    { slackIdentityId: 'slack_identity_finance', botUserId: 'U_BOT' },
+    { ...payload, event: { ...payload.event, user: 'UBOT' } },
+    { slackIdentityId: 'slack_identity_finance', botUserId: 'UBOT' },
   );
   assert.deepEqual(self, { status: 'ignored', reason: 'self_message' });
 });

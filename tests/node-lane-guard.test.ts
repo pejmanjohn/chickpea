@@ -88,10 +88,9 @@ test('OpenAI subscription verifier rejects remote plaintext HTTP before reading 
     '--base-url', 'http://example.com',
   ], {
     encoding: 'utf8',
-    env: { ...process.env, TAG_ADMIN_TOKEN: '' },
+    env: { ...process.env },
   });
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Node target must use HTTPS unless it is an explicit loopback host/);
-  assert.doesNotMatch(result.stderr, /TAG_ADMIN_TOKEN is required/);
 });

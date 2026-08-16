@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 
-const HKDF_CONTEXT = 'chickpea/better-auth/v1';
 const SLACK_RECOVERY_GRANT_CONTEXT = 'chickpea/slack-recovery-grant/v1';
 const RECOVERY_BYTES = 32;
 
@@ -24,24 +23,6 @@ export function decodeRecoverySecret(value: string): Uint8Array {
     return decodeCanonicalBase64(value, 'base64url');
   }
   throw new RecoverySecretError();
-}
-
-export async function deriveBetterAuthSecret(value: string): Promise<string> {
-  const recovery = decodeRecoverySecret(value);
-  const key = await crypto.subtle.importKey(
-    'raw',
-    Uint8Array.from(recovery).buffer,
-    'HKDF',
-    false,
-    ['deriveBits'],
-  );
-  const bits = await crypto.subtle.deriveBits({
-    name: 'HKDF',
-    hash: 'SHA-256',
-    salt: new Uint8Array(32),
-    info: new TextEncoder().encode(HKDF_CONTEXT),
-  }, key, 256);
-  return Buffer.from(bits).toString('base64url');
 }
 
 /** Canonical decoded bytes prevent alternate encodings from replaying one grant. */

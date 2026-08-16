@@ -7,7 +7,7 @@ import { SqliteIdentityStore } from '../src/identity/store.ts';
 test('unconfigured admin is fail-closed and shared/deployment credentials are inert', async () => {
   const identity = new SqliteIdentityStore(':memory:');
   try {
-    const app = createAdminRoutes({ identity, adminToken: 'deployment-token' });
+    const app = createAdminRoutes({ identity });
     for (const headers of [
       {},
       { authorization: 'Bearer deployment-token' },

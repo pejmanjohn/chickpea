@@ -28,7 +28,7 @@ test('root Cloudflare config is the slim core profile while retaining every migr
   assert.deepEqual(config.containers ?? [], []);
   assert.deepEqual(
     (config.migrations ?? []).map((migration: { tag?: string }) => migration.tag),
-    ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7'],
+    ['v1', 'v2', 'v3', 'v4', 'v5', 'v6'],
   );
   assert.deepEqual(
     config.migrations?.find((migration: { tag?: string }) => migration.tag === 'v3')

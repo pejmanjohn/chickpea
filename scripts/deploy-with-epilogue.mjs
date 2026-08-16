@@ -16,6 +16,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import {
   existsSync,
   mkdtempSync,
@@ -82,7 +83,7 @@ const V2_AGENT_BINDINGS = Object.freeze([
   ['FLUE_CHICKPEA_ROUTINE_INTENT_V2_AGENT', 'FlueChickpeaRoutineIntentV2Agent'],
   ['FLUE_CHICKPEA_ROUTINE_EXECUTION_V2_AGENT', 'FlueChickpeaRoutineExecutionV2Agent'],
 ]);
-const PROTECTED_CLASSES = new Set(['TagStateStore', 'Sandbox', 'ContainerProxy', 'AuthGuard']);
+const PROTECTED_CLASSES = new Set(['TagStateStore', 'Sandbox', 'ContainerProxy']);
 
 function hasCustomConfigFlag(args) {
   return args.some((argument) =>
@@ -314,7 +315,6 @@ function validateFlue2CutoverArtifact(artifact) {
     (binding) => binding.name === name && binding.class_name === className,
   );
   if (!hasBinding('TAG_STATE', 'TagStateStore')) failures.push('TAG_STATE/TagStateStore binding');
-  if (!hasBinding('AUTH_GUARD', 'AuthGuard')) failures.push('AUTH_GUARD/AuthGuard binding');
   for (const [name, className] of V2_AGENT_BINDINGS) {
     if (!hasBinding(name, className)) failures.push(`${name}/${className} binding`);
   }
@@ -325,11 +325,6 @@ function validateFlue2CutoverArtifact(artifact) {
   if (!authDb || !String(authDb.migrations_dir ?? '').endsWith('migrations/better-auth')) {
     failures.push('AUTH_DB with reviewed Better Auth migrations');
   }
-  const authMigration = migrations.find((migration) => migration.tag === 'v7');
-  if (!authMigration || !sameMembers(authMigration.new_sqlite_classes ?? [], ['AuthGuard'])) {
-    failures.push('v7 AuthGuard SQLite class');
-  }
-
   if (config.observability?.traces?.enabled !== true) {
     failures.push('enabled Workers Traces for metadata-only Flue spans');
   }
@@ -466,7 +461,6 @@ if (preflightOnly) {
 }
 
 const AUTH_SECRET = 'CHICKPEA_AUTH_SECRET';
-const LEGACY_AUTH_SECRET = 'CHICKPEA_RECOVERY_TOKEN';
 const CREDENTIAL_CURRENT_KEY = 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID';
 const CREDENTIAL_KEY_PREFIX = 'CHICKPEA_CREDENTIAL_KEY_';
 const INITIAL_CREDENTIAL_KEY_ID = 'key_v1';
@@ -629,7 +623,7 @@ function deployedAuthDatabaseId(artifact) {
 
 async function prepareDeploymentAuthority(artifact, secretNames) {
   const generatedSecrets = {};
-  if (!secretNames.has(AUTH_SECRET) && !secretNames.has(LEGACY_AUTH_SECRET)) {
+  if (!secretNames.has(AUTH_SECRET)) {
     generatedSecrets[AUTH_SECRET] = (await mintSetupCapability()).capability;
   }
   const hasCredentialCurrent = secretNames.has(CREDENTIAL_CURRENT_KEY);
@@ -779,6 +773,100 @@ function existingAuthDatabaseId(databaseName) {
   return typeof id === 'string' && id.trim() ? id.trim() : undefined;
 }
 
+const AUTH_SCHEMA_QUERY =
+  "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' " +
+  "AND name <> 'd1_migrations' ORDER BY type,name";
+
+function normalizeAuthSchemaRows(rows) {
+  if (!Array.isArray(rows)) throw new Error('AUTH_DB schema inspection returned no rows.');
+  return rows.map((row) => {
+    if (!row || typeof row.type !== 'string' || typeof row.name !== 'string' ||
+        typeof row.tbl_name !== 'string' || typeof row.sql !== 'string') {
+      throw new Error('AUTH_DB schema inspection returned an unreadable row.');
+    }
+    return {
+      type: row.type,
+      name: row.name,
+      table: row.tbl_name,
+      sql: row.sql.replace(/\s+/g, ' ').trim().toLowerCase(),
+    };
+  });
+}
+
+function expectedAuthSchema(artifact) {
+  const binding = (artifact.config.d1_databases ?? []).find(
+    (candidate) => candidate.binding === 'AUTH_DB',
+  );
+  const migrationsDirectory = path.resolve(
+    path.dirname(artifact.configPath),
+    binding?.migrations_dir ?? '',
+  );
+  const migrationPath = path.join(migrationsDirectory, '0001_better_auth.sql');
+  let sql;
+  try {
+    sql = readFileSync(migrationPath, 'utf8');
+  } catch (error) {
+    throw new Error(
+      `Unable to read the pinned Better Auth bootstrap migration: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const database = new DatabaseSync(':memory:');
+  try {
+    database.exec(sql);
+    return normalizeAuthSchemaRows(database.prepare(AUTH_SCHEMA_QUERY).all());
+  } finally {
+    database.close();
+  }
+}
+
+function verifyRemoteAuthSchema(artifact) {
+  const expected = expectedAuthSchema(artifact);
+  const inspection = spawnSync(
+    process.execPath,
+    [
+      wranglerBin,
+      'd1',
+      'execute',
+      'AUTH_DB',
+      '--remote',
+      '--json',
+      '--command',
+      AUTH_SCHEMA_QUERY,
+      '--config',
+      artifact.configPath,
+      ...deploymentResourceArgs(),
+    ],
+    { cwd: projectRoot, encoding: 'utf8' },
+  );
+  if (inspection.error || inspection.status !== 0) {
+    throw new Error(
+      'Unable to inspect the migrated AUTH_DB schema. Refusing to upload the Worker.',
+    );
+  }
+  let payload;
+  try {
+    payload = JSON.parse(inspection.stdout);
+  } catch {
+    throw new Error('AUTH_DB schema inspection returned unreadable JSON.');
+  }
+  const statements = Array.isArray(payload) ? payload : [];
+  const resultSets = statements.filter((statement) => Array.isArray(statement?.results));
+  if (resultSets.length !== 1 || resultSets[0]?.success === false) {
+    throw new Error('AUTH_DB schema inspection returned an unexpected result.');
+  }
+  const actual = normalizeAuthSchemaRows(resultSets[0].results);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(
+      'AUTH_DB contains an incompatible Better Auth 0001 schema. ' +
+      'This Slack-only release supports a fresh empty AUTH_DB only; reset the disposable database ' +
+      'or provision a new one with the exact preserved binding before deploying.',
+    );
+  }
+  process.stdout.write('Verified the exact fresh Better Auth schema in AUTH_DB...\n');
+}
+
 let deploymentAuthority;
 let remoteWorker;
 if (!deployArgs.includes('--dry-run')) {
@@ -825,6 +913,12 @@ if (!deployArgs.includes('--dry-run')) {
     process.exit(1);
   }
   if (migration.status !== 0) process.exit(migration.status ?? 1);
+  try {
+    verifyRemoteAuthSchema(builtArtifact);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 }
 
 let preparedSecrets;

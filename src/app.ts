@@ -3,7 +3,6 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from './admin/routes.ts';
 import { getIdentityStore, type PlatformEnv } from './config/state-backend.ts';
-import { createJoinRoutes } from './join/routes.ts';
 import { createBetterAuthRuntimeRoutes } from './auth/better-auth-runtime.ts';
 import { activityStatusForObservation } from './activity/status.ts';
 import {
@@ -101,7 +100,6 @@ app.use('*', async (c, next) => {
 // and ledger-authoritative interactive Runs. Ledger admission stays default-off
 // and exact-channel scoped by SLACK_TAG_LEDGER_CANARY_CHANNELS.
 startNodeTurnRelay();
-app.route('/', createJoinRoutes());
 app.route('/', createBetterAuthRuntimeRoutes());
 app.route('/', createAdminRoutes());
 app.route('/channels/slack', channel.route());

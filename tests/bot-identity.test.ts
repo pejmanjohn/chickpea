@@ -127,7 +127,7 @@ test('checkIdentity compares manifest name and icon state through fake Slack', {
     slack: {
       identity: {
         appId: 'A_FLUE',
-        botUserId: 'U_BOT',
+        botUserId: 'UBOT',
         displayName: 'Chickpea',
         image512Url: CUSTOM_ICON_URL,
       },
@@ -146,14 +146,14 @@ test('checkIdentity compares manifest name and icon state through fake Slack', {
     assert.equal(result.name, 'match');
     assert.equal(result.icon, 'custom');
     assert.equal(result.details.appId, 'A_FLUE');
-    assert.equal(result.details.botUserId, 'U_BOT');
+    assert.equal(result.details.botUserId, 'UBOT');
     assert.equal(result.details.expectedName, 'Chickpea');
     assert.equal(result.details.liveName, 'Chickpea');
     assert.equal(result.details.iconUrl, CUSTOM_ICON_URL);
     assert.equal(result.details.consoleUrl, 'https://api.slack.com/apps/A_FLUE/general');
     assert.deepEqual(
       backend.callsOfMethod('users.info').map((entry) => entry.body),
-      [{ user: 'U_BOT' }],
+      [{ user: 'UBOT' }],
     );
   } finally {
     await server.close();
@@ -165,7 +165,7 @@ test('checkIdentity reports a name mismatch from fake Slack', { skip: loopbackSk
     slack: {
       identity: {
         appId: 'A_FLUE',
-        botUserId: 'U_BOT',
+        botUserId: 'UBOT',
         displayName: 'Drifted Bot Name',
         image512Url: CUSTOM_ICON_URL,
       },
@@ -201,7 +201,7 @@ test('verify-identity-live reports custom, default, and unknown icon states agai
       slack: {
         identity: {
           appId: 'A_FLUE',
-          botUserId: 'U_BOT',
+          botUserId: 'UBOT',
           displayName: 'Chickpea',
           image512Url: iconUrl,
         },
@@ -254,7 +254,7 @@ test('verify-identity-live reports custom, default, and unknown icon states agai
       slack: {
         identity: {
           appId: 'A_FLUE',
-          botUserId: 'U_BOT',
+          botUserId: 'UBOT',
           displayName: 'Drifted Bot Name',
           image512Url: CUSTOM_ICON_URL,
         },

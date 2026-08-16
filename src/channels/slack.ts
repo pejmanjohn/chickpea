@@ -292,6 +292,24 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   const identity = await stores.config.getSlackIdentity(
     WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   );
+  if (
+    identity.lifecycle === 'setup_incomplete' ||
+    identity.lifecycle === 'credentials_pending'
+  ) {
+    const response = await handlePendingSlackIdentityChallenge(
+      c.req.raw,
+      identity,
+      stores.settings,
+    );
+    if (response.ok) {
+      await finalizePendingWorkspaceDefaultSlackConnection(
+        stores,
+        platformEnv,
+        identity,
+      );
+    }
+    return response;
+  }
   const credentials = await resolveSlackIdentityCredentials(
     identity.id,
     platformEnv,
@@ -343,32 +361,11 @@ const scopedIdentityEventsHandler: SlackRouteHandler = async (c, next) => {
       candidate.identity.kind === 'workspace_default' &&
       candidate.identity.lifecycle === 'credentials_pending'
     ) {
-      try {
-        const setup = await stores.identity.getSlackSetupTransaction('setup_default');
-        if (setup?.state === 'bot_install_pending') {
-          await new SlackInstallOAuthService({
-            identity: stores.identity,
-            credentials: getSlackCredentialDependencies(platformEnv),
-            config: stores.config,
-            settings: stores.settings,
-          }).finalizeWaitingInstallation(setup.id);
-        } else {
-          await completeWorkspaceDefaultSlackConnectionIfVerified({
-            config: stores.config,
-            settings: stores.settings,
-            identityId: candidate.identity.id,
-            credentialDependencies: {
-              state: stores.identity,
-              env: platformEnv,
-            },
-          });
-        }
-      } catch (error) {
-        console.error(
-          '[chickpea] Slack Events URL completion failed:',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
+      await finalizePendingWorkspaceDefaultSlackConnection(
+        stores,
+        platformEnv,
+        candidate.identity,
+      );
     }
     return response;
   }
@@ -391,6 +388,39 @@ const scopedIdentityEventsHandler: SlackRouteHandler = async (c, next) => {
   await recordSlackIngressRejection(response, candidate.identity);
   return response;
 };
+
+async function finalizePendingWorkspaceDefaultSlackConnection(
+  stores: AppStores,
+  platformEnv: PlatformEnv | undefined,
+  identity: SlackIdentity,
+): Promise<void> {
+  try {
+    const setup = await stores.identity.getSlackSetupTransaction('setup_default');
+    if (setup?.state === 'bot_install_pending') {
+      await new SlackInstallOAuthService({
+        identity: stores.identity,
+        credentials: getSlackCredentialDependencies(platformEnv),
+        config: stores.config,
+        settings: stores.settings,
+      }).finalizeWaitingInstallation(setup.id);
+    } else {
+      await completeWorkspaceDefaultSlackConnectionIfVerified({
+        config: stores.config,
+        settings: stores.settings,
+        identityId: identity.id,
+        credentialDependencies: {
+          state: stores.identity,
+          env: platformEnv,
+        },
+      });
+    }
+  } catch (error) {
+    console.error(
+      '[chickpea] Slack Events URL completion failed:',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
 
 const routes: SlackChannel['routes'] = [
   { method: 'POST', path: '/events', handler: verifiedEventsHandler },

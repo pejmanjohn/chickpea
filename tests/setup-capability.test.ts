@@ -67,17 +67,16 @@ test('Node helper emits config values and one final fragment link', () => {
   assert.equal(lines.length, 4);
 });
 
-test('stable auth secret wins while legacy recovery remains compatible', async () => {
+test('Better Auth requires its independent stable auth secret', async () => {
   const stable = await resolveBetterAuthBootstrapEnvironment({
     canonicalOrigin: 'http://127.0.0.1:8787',
     authSecret: AUTH_SECRET,
     recoveryToken: LEGACY_RECOVERY,
   });
-  const legacy = await resolveBetterAuthBootstrapEnvironment({
+  const recoveryOnly = await resolveBetterAuthBootstrapEnvironment({
     canonicalOrigin: 'http://127.0.0.1:8787',
     recoveryToken: LEGACY_RECOVERY,
   });
   assert.equal(stable?.secret, AUTH_SECRET);
-  assert.notEqual(legacy?.secret, LEGACY_RECOVERY);
-  assert.match(legacy?.secret ?? '', /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(recoveryOnly, undefined);
 });

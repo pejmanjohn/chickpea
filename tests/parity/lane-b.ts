@@ -72,6 +72,8 @@ export const laneB: Lane = {
     await ensureBuilt(nodeBin);
 
     const slack = slackFixturesFor(config);
+    const canonicalSlackTeamId = slack?.identity?.teamId ?? 'TDEMO';
+    const canonicalSlackAppId = slack?.identity?.appId ?? 'ADEMO';
     const backend = new FakeSlackBackend({
       ...(slack ? { slack } : {}),
       ...(config.provider ? { provider: config.provider } : {}),
@@ -95,17 +97,14 @@ export const laneB: Lane = {
       ? new SqliteConfigStore(configDbPath, config.configSeed)
       : new SqliteConfigStore(configDbPath);
     try {
-      if (config.configSeed) {
-        const identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-        await store.updateSlackIdentity(identity.id, identity.connectionRevision, {
-          lifecycle: 'connected',
-          teamId: config.slack?.identity?.teamId ?? 'T_DEMO',
-          appId: config.slack?.identity?.appId ?? 'A_DEMO',
-          botUserId: config.slack?.identity?.botUserId ?? 'U_BOT',
-          credentialProvenance: 'stored',
-          health: 'healthy',
-        });
-      }
+      const identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+      await store.updateSlackIdentity(identity.id, identity.connectionRevision, {
+        lifecycle: 'connected',
+        teamId: canonicalSlackTeamId,
+        appId: canonicalSlackAppId,
+        credentialProvenance: 'stored',
+        health: 'healthy',
+      });
     } finally {
       store.close();
     }
@@ -121,15 +120,20 @@ export const laneB: Lane = {
         {
           botToken: 'test-bot-token',
           signingSecret: PARITY_SIGNING_SECRET,
-          appId: 'APARITY',
-          teamId: 'TPARITY',
+          appId: canonicalSlackAppId,
+          teamId: canonicalSlackTeamId,
         },
       );
     } finally {
       credentialState.close();
     }
     if (config.configSeed) {
-      adminCookie = await seedParityAdminSession(configDbPath, authDbPath, baseUrl);
+      adminCookie = await seedParityAdminSession(
+        configDbPath,
+        authDbPath,
+        baseUrl,
+        canonicalSlackTeamId,
+      );
       configEnv.LOCAL_STUB_MODELS = config.configSeed.agents
         .flatMap((agent) => agent.model?.startsWith('local-stub/')
           ? [agent.model.slice('local-stub/'.length)]
@@ -228,6 +232,7 @@ async function seedParityAdminSession(
   stateDbPath: string,
   authDbPath: string,
   baseUrl: string,
+  slackTeamId: string,
 ): Promise<string> {
   const identity = new SqliteIdentityStore(stateDbPath);
   const backend = new NodeBetterAuthBackend(authDbPath);
@@ -240,7 +245,7 @@ async function seedParityAdminSession(
       privateSeam: { async resolveAdmissionOperation() { return admission; } },
     });
     const reconciled = await auth.chickpea.reconcileSlackIdentity({
-      slackTeamId: 'TPARITY',
+      slackTeamId,
       slackUserId: 'UPARITYOWNER',
       displayName: 'Parity Owner',
       organization: {
@@ -252,7 +257,7 @@ async function seedParityAdminSession(
     const operation = await identity.createAuthOperation({
       id: 'first_owner_parity',
       kind: 'first_owner_claim',
-      expectedSlackTeamId: 'TPARITY',
+      expectedSlackTeamId: slackTeamId,
       expectedSlackUserId: 'UPARITYOWNER',
       chickpeaRole: 'owner',
       capabilityHash: 'b'.repeat(64),
@@ -260,7 +265,7 @@ async function seedParityAdminSession(
     });
     await identity.createOwnerClaim({
       operationId: operation.id,
-      slackTeamId: 'TPARITY',
+      slackTeamId,
       slackUserId: 'UPARITYOWNER',
     });
     await identity.advanceAuthOperation({
@@ -274,7 +279,7 @@ async function seedParityAdminSession(
     const owner = await identity.claimOwner({
       operationId: operation.id,
       organizationId: 'org_oss',
-      slackTeamId: 'TPARITY',
+      slackTeamId,
       slackUserId: 'UPARITYOWNER',
       displayName: 'Parity Owner',
       betterAuthUserId: reconciled.userId,
@@ -295,7 +300,7 @@ async function seedParityAdminSession(
       operationId: operation.id,
       status: 'active',
       chickpeaRole: 'owner',
-      slackTeamId: 'TPARITY',
+      slackTeamId,
       slackUserId: 'UPARITYOWNER',
       betterAuthUserId: reconciled.userId,
       betterAuthOrganizationId: reconciled.organizationId,
@@ -337,9 +342,9 @@ function slackFixturesFor(config: ScenarioLaneConfig): FakeSlackBehaviorConfig |
   for (const channel of derived) channels.set(channel.id, channel);
   for (const channel of config.slack?.channels ?? []) channels.set(channel.id, channel);
   const identity = {
-    appId: 'A_DEMO',
-    botUserId: 'U_BOT',
-    teamId: 'T_DEMO',
+    appId: 'ADEMO',
+    botUserId: 'UBOT',
+    teamId: 'TDEMO',
     ...config.slack?.identity,
   };
   const channelMembers = config.slack?.channelMembers ?? Object.fromEntries(

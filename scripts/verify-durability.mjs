@@ -45,6 +45,7 @@ import {
   loadTsModule,
   postSignedEvent,
   seedOfflineDemoChannelConfig,
+  seedOfflineSlackAuthority,
   spawnServer,
   stopChild,
   waitForFinals,
@@ -69,8 +70,8 @@ function record(name, passed, detail) {
 function threadReply({ eventId, ts, threadTs }) {
   return {
     token: 'verification-token-not-a-secret',
-    team_id: 'T_DEMO',
-    api_app_id: 'A_DEMO',
+    team_id: 'TDEMO',
+    api_app_id: 'ADEMO',
     event_id: eventId,
     event_time: 1782770400,
     type: 'event_callback',
@@ -91,15 +92,15 @@ function threadReply({ eventId, ts, threadTs }) {
 function mention({ eventId, ts, threadTs }) {
   return {
     token: 'verification-token-not-a-secret',
-    team_id: 'T_DEMO',
-    api_app_id: 'A_DEMO',
+    team_id: 'TDEMO',
+    api_app_id: 'ADEMO',
     event_id: eventId,
     event_time: 1782770400,
     type: 'event_callback',
     event: {
       type: 'app_mention',
       user: 'U_ALICE',
-      text: '<@U_BOT> please use channel context and draft an exec summary',
+      text: '<@UBOT> please use channel context and draft an exec summary',
       ts,
       channel: EXEC_CHANNEL,
       event_ts: ts,
@@ -122,6 +123,8 @@ async function runServerTurn({ serverEntry, fakeUrl, dbPath, netGuardLog, payloa
       // from a live-Slack shell) would otherwise redirect every server here to
       // the operator's live state store and merge the three "isolated" DBs.
       SLACK_STATE_DB_PATH: `${dbPath}.state`,
+      CHICKPEA_CREDENTIAL_KEYRING_PATH: `${dbPath}.credential-keyring.json`,
+      CHICKPEA_AUTH_SECRET: '9d'.repeat(32),
       SLACK_TAG_MODEL: 'local-stub/parity-stub-1',
     },
   });
@@ -146,12 +149,12 @@ const { SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
 const { hashRoutineValue } = await loadTsModule('src/routines/ids.ts');
 const backend = new FakeSlackBackend({
   slack: {
-    identity: { appId: 'A_DEMO', teamId: 'T_DEMO', botUserId: 'U_BOT' },
+    identity: { appId: 'ADEMO', teamId: 'TDEMO', botUserId: 'UBOT' },
     channels: [{ id: EXEC_CHANNEL, name: 'exec', isMember: true }],
-    channelMembers: { [EXEC_CHANNEL]: ['U_ALICE', 'U_BOT'] },
+    channelMembers: { [EXEC_CHANNEL]: ['U_ALICE', 'UBOT'] },
     workspaceUsers: [
-      { id: 'U_ALICE', teamId: 'T_DEMO' },
-      { id: 'U_BOT', teamId: 'T_DEMO', isBot: true, isAppUser: true },
+      { id: 'U_ALICE', teamId: 'TDEMO' },
+      { id: 'UBOT', teamId: 'TDEMO', isBot: true, isAppUser: true },
     ],
   },
   provider: { mode: 'ok', replyText: DURABILITY_MARKER },
@@ -174,6 +177,17 @@ try {
   await seedOfflineDemoChannelConfig(`${dbA}.state`);
   await seedOfflineDemoChannelConfig(`${dbB}.state`);
   await seedOfflineDemoChannelConfig(`${dbC}.state`);
+  for (const dbPath of [dbA, dbB, dbC]) {
+    await seedOfflineSlackAuthority({
+      stateDbPath: `${dbPath}.state`,
+      keyringPath: `${dbPath}.credential-keyring.json`,
+      canonicalOrigin: 'http://127.0.0.1',
+      teamId: 'TDEMO',
+      slackUserId: 'UALICE01',
+      appId: 'ADEMO',
+      botUserId: 'UBOT',
+    });
+  }
 
   // --- Turn 1 on DB_A, then kill the process. ---
   {
@@ -321,9 +335,9 @@ try {
     let memoryStore;
     try {
       memoryStore = new SqliteMemoryStateStore(memoryPath);
-      const publicStore = await memoryStore.ensurePublicStore('T_DEMO');
+      const publicStore = await memoryStore.ensurePublicStore('TDEMO');
       await memoryStore.observeChannelScope({
-        workspaceId: 'T_DEMO',
+        workspaceId: 'TDEMO',
         channelId: EXEC_CHANNEL,
         privacy: 'public',
         displayName: 'exec',
@@ -332,7 +346,7 @@ try {
       await memoryStore.createEntry({
         entryId: 'mem_durability_sentinel',
         storeId: publicStore.storeId,
-        workspaceId: 'T_DEMO',
+        workspaceId: 'TDEMO',
         sourceChannelId: EXEC_CHANNEL,
         slug: 'durability-sentinel',
         description: 'Restart durability proof.',
@@ -422,7 +436,7 @@ try {
         tokenHash,
         actorId: 'U_ALICE',
         actorClass: 'member',
-        workspaceId: 'T_DEMO',
+        workspaceId: 'TDEMO',
         channelId: EXEC_CHANNEL,
         draft,
         previewHash,
@@ -431,7 +445,7 @@ try {
       const routine = await routineStore.confirm({
         tokenHash,
         actorId: 'U_ALICE',
-        workspaceId: 'T_DEMO',
+        workspaceId: 'TDEMO',
         channelId: EXEC_CHANNEL,
         previewHash,
         idempotencyKey: 'routine:durability:confirm',

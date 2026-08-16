@@ -6,11 +6,11 @@ import { parseSlackParticipationControl } from '../src/slack/participation-contr
 
 test('participation controls recognize bounded channel and thread instructions only', () => {
   assert.deepEqual(
-    parseSlackParticipationControl('<@U_BOT> only respond when mentioned in this channel'),
+    parseSlackParticipationControl('<@UBOT> only respond when mentioned in this channel'),
     { mode: 'mention_only', scope: 'channel' },
   );
   assert.deepEqual(
-    parseSlackParticipationControl('<@U_BOT> respond again without a mention in this thread'),
+    parseSlackParticipationControl('<@UBOT> respond again without a mention in this thread'),
     { mode: 'ambient', scope: 'thread' },
   );
   assert.equal(
@@ -26,7 +26,7 @@ test('participation controls recognize bounded channel and thread instructions o
     null,
   );
   assert.deepEqual(
-    parseSlackParticipationControl('<@U_BOT> please stay quiet in this thread.'),
+    parseSlackParticipationControl('<@UBOT> please stay quiet in this thread.'),
     { mode: 'mention_only', scope: 'thread' },
   );
 });

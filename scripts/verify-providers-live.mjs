@@ -95,7 +95,7 @@ async function runLiveProvider(provider, serverEntry, fake, backend) {
   const guardDir = mkdtempSync(join(tmpdir(), `flue-live-${provider.id}-`));
   const netGuardLog = join(guardDir, 'external-hosts.log');
   // Channels are fail-closed and the install seed no longer includes the
-  // T_DEMO demo assignments, so the C_EXEC mention fixture needs an explicitly
+  // TDEMO demo assignments, so the C_EXEC mention fixture needs an explicitly
   // seeded state DB (a ':memory:' transcript DB would derive an unseedable
   // ':memory:' state store).
   const stateDbPath = join(guardDir, 'state.db');
@@ -149,7 +149,7 @@ const backend = new FakeSlackBackend({
         id: 'C_EXEC',
         name: 'exec-briefing',
         isMember: true,
-        teamId: 'T_DEMO',
+        teamId: 'TDEMO',
       },
     ],
   },

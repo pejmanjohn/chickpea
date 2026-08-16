@@ -45,20 +45,6 @@ test('Cloudflare identity proxy forwards the canonical Slack tuple operation', a
   }]);
 });
 
-test('actor lookup aliases the same exact Slack tuple and no parallel binding RPC', async () => {
-  const calls: IdentityRpcRequest[] = [];
-  const stub = rpcStub(calls, { kind: 'identity_resolution', resolution });
-  const store = new CfIdentityStore(stub);
-
-  assert.deepEqual(
-    await store.resolveActorExternalIdentity('slack', 'T_ACME', 'U_OWNER'),
-    resolution.binding,
-  );
-  assert.deepEqual(calls, [{
-    kind: 'resolve_slack_identity', slackTeamId: 'T_ACME', slackUserId: 'U_OWNER',
-  }]);
-});
-
 test('Cloudflare proxy forwards the atomic membership authority mutation', async () => {
   const calls: IdentityRpcRequest[] = [];
   const input = {

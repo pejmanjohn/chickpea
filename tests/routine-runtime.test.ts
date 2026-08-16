@@ -61,9 +61,9 @@ const run = {
 
 function dependencies(overrides: Record<string, unknown> = {}) {
   return {
-    credentials: async () => ({ botToken: 'xoxb-secret', signingSecret: undefined, botUserId: 'U_BOT' }),
+    credentials: async () => ({ botToken: 'xoxb-secret', signingSecret: undefined, botUserId: 'UBOT' }),
     authTest: async () => ({
-      ok: true, error: undefined, teamId: 'T_TEST', teamName: 'Test', botName: 'Chickpea', botUserId: 'U_BOT',
+      ok: true, error: undefined, teamId: 'T_TEST', teamName: 'Test', botName: 'Chickpea', botUserId: 'UBOT',
     }),
     conversation: async () => ({
       ok: true, error: undefined, retryAfterMs: undefined,
@@ -75,7 +75,7 @@ function dependencies(overrides: Record<string, unknown> = {}) {
       },
     }),
     members: async () => ({
-      ok: true, error: undefined, memberIds: ['U_CREATOR', 'U_BOT'],
+      ok: true, error: undefined, memberIds: ['U_CREATOR', 'UBOT'],
       nextCursor: undefined, retryAfterMs: undefined,
     }),
     config: async () => config,
@@ -109,7 +109,7 @@ test('runtime access resolves the live Agent identity and includes it in the acc
       return {
         botToken: 'xoxb-finance',
         signingSecret: undefined,
-        botUserId: 'U_BOT',
+        botUserId: 'UBOT',
         connectionRevision: 'rev-finance',
       };
     },
@@ -117,7 +117,7 @@ test('runtime access resolves the live Agent identity and includes it in the acc
   const changed = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
     config: async () => ({ ...dedicatedConfig, slackIdentityId: 'slack_identity_legal' }),
     identityCredentials: async () => ({
-      botToken: 'xoxb-legal', signingSecret: undefined, botUserId: 'U_BOT',
+      botToken: 'xoxb-legal', signingSecret: undefined, botUserId: 'UBOT',
       connectionRevision: 'rev-legal',
     }),
   }));
@@ -134,7 +134,7 @@ test('production routine access shares the lifecycle-gated identity client', asy
     identityExecution: async (identityId: string) => ({
       identityId,
       botToken: 'xoxb-current-finance',
-      botUserId: 'U_BOT',
+      botUserId: 'UBOT',
       teamId: 'T_TEST',
       client,
     }),
@@ -157,7 +157,7 @@ test('runtime access fails closed for creator removal, bot removal, and assignme
   await assert.rejects(
     () => resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
       members: async () => ({
-        ok: true, error: undefined, memberIds: ['U_BOT'], nextCursor: undefined, retryAfterMs: undefined,
+        ok: true, error: undefined, memberIds: ['UBOT'], nextCursor: undefined, retryAfterMs: undefined,
       }),
     })),
     (error: unknown) => error instanceof RoutineRuntimeError && error.failureClass === 'creator_ineligible',

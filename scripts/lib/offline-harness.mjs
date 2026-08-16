@@ -33,19 +33,119 @@ export function loadFake() {
   return loadTsModule('tests/parity/fake-slack.ts');
 }
 
-export async function seedOfflineDemoChannelConfig(stateDbPath) {
+export async function seedOfflineDemoChannelConfig(stateDbPath, options = {}) {
   const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
   const { seededAgents, seededAssignments, demoChannelAssignments } =
     await loadTsModule('src/config/seed.ts');
 
   const store = new SqliteConfigStore(stateDbPath, {
     agents: seededAgents,
-    // The T_DEMO fixtures are no longer part of the install seed; the offline
+    // The TDEMO fixtures are no longer part of the install seed; the offline
     // harnesses opt back into them here, on top of the real seed (the '*/*'
     // DM wildcard), from the single fixture source in src/config/seed.ts.
-    assignments: [...demoChannelAssignments, ...seededAssignments],
+    assignments: [
+      ...(options.workspaceId && options.channelId
+        ? [{
+            ...demoChannelAssignments.find((assignment) => assignment.channelId === 'C_EXEC'),
+            workspaceId: options.workspaceId,
+            channelId: options.channelId,
+          }]
+        : demoChannelAssignments),
+      ...seededAssignments,
+    ],
   });
   store.close();
+}
+
+/**
+ * Seed one file-backed Slack-native Owner, personal token, and encrypted
+ * workspace-default installation for offline Node verifiers. This mirrors the
+ * post-OAuth authority shape without adding a product bootstrap backdoor.
+ */
+export async function seedOfflineSlackAuthority({
+  stateDbPath,
+  keyringPath,
+  canonicalOrigin,
+  teamId = 'TDEMO123',
+  slackUserId = 'UALICE01',
+  appId = 'ADEMO123',
+  botUserId = 'UBOT1234',
+  botToken = 'test-bot-token',
+  signingSecret = SIGNING_SECRET,
+}) {
+  // tsx's process-wide registration seam is intentionally serialized.
+  const { SqliteIdentityStore } = await loadTsModule('src/identity/store.ts');
+  const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
+  const { PersonalTokenService } = await loadTsModule('src/auth/personal-token.ts');
+  const ownerModule = await loadTsModule('tests/helpers/slack-owner.ts');
+  const keyringModule = await loadTsModule('src/slack/credential-keyring.ts');
+  const credentialsModule = await loadTsModule('src/slack/identity-credentials.ts');
+  const scopesModule = await loadTsModule('src/slack/scopes.ts');
+  const identity = new SqliteIdentityStore(stateDbPath);
+  try {
+    const owner = await ownerModule.createSlackOwner(identity, {
+      teamId,
+      userId: slackUserId,
+      suffix: 'offline_verifier',
+    });
+    const control = await identity.getAuthControl();
+    if (!control) throw new Error('offline Slack authority did not activate auth control');
+    await identity.updateAuthControl({
+      expectedRevision: control.revision,
+      canonicalAdminOrigin: canonicalOrigin,
+    });
+    const keyring = keyringModule.loadOrCreateNodeCredentialKeyring({ path: keyringPath });
+    const dependencies = { state: identity, keyring };
+    const app = await credentialsModule.stageSlackCredentialBundle(dependencies, {
+      identityId: 'slack_identity_default',
+      identityClass: 'workspace_default',
+      purpose: 'app_credentials',
+      expectedActiveRevision: null,
+      appId,
+      secrets: { clientId: 'offline.client', clientSecret: 'offline-client-secret', signingSecret },
+    });
+    await credentialsModule.promoteSlackCredentialBundle(dependencies, {
+      identityId: 'slack_identity_default',
+      candidateRevision: app.revision,
+      expectedActiveRevision: null,
+    });
+    const connected = await credentialsModule.stageSlackCredentialBundle(dependencies, {
+      identityId: 'slack_identity_default',
+      identityClass: 'workspace_default',
+      purpose: 'connected_credentials',
+      expectedActiveRevision: app.revision,
+      appId,
+      teamId,
+      botUserId,
+      grantedScopes: [...scopesModule.REQUIRED_SLACK_BOT_SCOPES],
+      validatedAt: Date.now(),
+      secrets: {
+        clientId: 'offline.client', clientSecret: 'offline-client-secret', signingSecret, botToken,
+      },
+    });
+    await credentialsModule.promoteSlackCredentialBundle(dependencies, {
+      identityId: 'slack_identity_default',
+      candidateRevision: connected.revision,
+      expectedActiveRevision: app.revision,
+    });
+    const config = new SqliteConfigStore(stateDbPath);
+    try {
+      const slackIdentity = await config.getSlackIdentity('slack_identity_default');
+      await config.updateSlackIdentity(slackIdentity.id, slackIdentity.connectionRevision, {
+        lifecycle: 'connected',
+        teamId,
+        appId,
+        botUserId,
+        credentialProvenance: 'stored',
+        health: 'healthy',
+      });
+    } finally {
+      config.close();
+    }
+    return (await new PersonalTokenService(identity).create(owner.user.id, 'Offline verifier')).token;
+  } finally {
+    identity.close();
+  }
 }
 
 export function assertNodeVersion() {
@@ -156,9 +256,6 @@ export function spawnServer({ serverEntry, port, fakeUrl, netGuardLog, env = {} 
     env: {
       ...ambientEnv,
       PORT: String(port),
-      SLACK_SIGNING_SECRET: SIGNING_SECRET,
-      SLACK_BOT_TOKEN: 'test-bot-token',
-      SLACK_BOT_USER_ID: 'U_BOT',
       SLACK_API_URL: `${fakeUrl}/api/`,
       LOCAL_STUB_URL: `${fakeUrl}/v1`,
       SLACK_TAG_MODEL: 'local-stub/parity-stub-1',

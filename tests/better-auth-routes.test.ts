@@ -71,7 +71,7 @@ test('public sign-out mutation boundary rejects origin and content-type ambiguit
 test('runtime keeps every Better Auth endpoint dark while unconfigured', async () => {
   const identity = new SqliteIdentityStore(':memory:');
   await identity.ensureAuthControl();
-  const app = createBetterAuthRuntimeRoutes({ identity, recoveryToken: '0'.repeat(64) });
+  const app = createBetterAuthRuntimeRoutes({ identity, authSecret: '0'.repeat(64) });
   for (const path of [
     '/api/auth/get-session',
     '/api/auth/sign-in/email',

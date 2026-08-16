@@ -34,7 +34,9 @@ export interface SlackAdmissionDependencies {
   environment: BetterAuthEnvironment;
   gateway?: SlackOidcGateway;
   fetch?: typeof fetch;
+  slackApiBaseUrl?: string;
   jwks?: SlackOidcGatewayDependencies['jwks'];
+  onFirstOwnerActivated?: () => Promise<void>;
   now?: () => number;
   randomBytes?: (length: number) => Uint8Array;
 }
@@ -63,6 +65,12 @@ export class SlackAdmissionService {
     this.gateway = dependencies.gateway ?? new SlackOidcGateway({
       credentials: dependencies.credentials,
       ...(dependencies.fetch ? { fetch: dependencies.fetch } : {}),
+      ...(dependencies.slackApiBaseUrl
+        ? {
+            apiBaseUrl: dependencies.slackApiBaseUrl,
+            jwksUrl: `${dependencies.slackApiBaseUrl.replace(/\/+$/, '')}/openid.connect.keys`,
+          }
+        : {}),
       ...(dependencies.jwks ? { jwks: dependencies.jwks } : {}),
       now: this.now,
     });
@@ -337,7 +345,7 @@ export class SlackAdmissionService {
       expectedOidcLeaseGeneration: attempt.leaseGeneration,
     });
     // Chickpea authority is active before the browser receives any session.
-    return this.issueSession(operation.id, attempt.destination, input.request);
+    return this.issueFirstOwnerSession(operation.id, attempt.destination, input.request);
   }
 
   private async createAttempt(input: {
@@ -492,7 +500,9 @@ export class SlackAdmissionService {
     }
     let operation = await this.dependencies.identity.getAuthOperation(attempt.operationId);
     if (!operation) throw new SlackOidcError('invalid_state');
-    if (operation.status === 'active') return this.issueSession(operation.id, attempt.destination, request);
+    if (operation.status === 'active') {
+      return this.issueFirstOwnerSession(operation.id, attempt.destination, request);
+    }
     if (!operation.betterAuthUserId || !operation.betterAuthOrganizationId ||
         !operation.betterAuthMembershipId) {
       // The exchange is already durably admitted. Reconciliation is safe to
@@ -537,7 +547,7 @@ export class SlackAdmissionService {
       oidcAttemptId: attempt.id,
       expectedOidcLeaseGeneration: attempt.leaseGeneration,
     });
-    return this.issueSession(operation.id, attempt.destination, request);
+    return this.issueFirstOwnerSession(operation.id, attempt.destination, request);
   }
 
   private async issueExistingSession(
@@ -545,7 +555,22 @@ export class SlackAdmissionService {
     request: Request,
   ): Promise<SlackAdmissionCallbackResult> {
     if (!attempt.operationId) throw new SlackOidcError('invalid_state');
-    return this.issueSession(attempt.operationId, attempt.destination, request);
+    return attempt.purpose === 'first_owner'
+      ? this.issueFirstOwnerSession(attempt.operationId, attempt.destination, request)
+      : this.issueSession(attempt.operationId, attempt.destination, request);
+  }
+
+  private async issueFirstOwnerSession(
+    operationId: string,
+    destination: string,
+    request: Request,
+  ): Promise<SlackAdmissionCallbackResult> {
+    try {
+      await this.dependencies.onFirstOwnerActivated?.();
+    } catch {
+      throw new SlackOidcError('session_unavailable');
+    }
+    return this.issueSession(operationId, destination, request);
   }
 
   private async issueSession(

@@ -40,6 +40,7 @@ import {
   loadFake,
   postSignedEvent,
   seedOfflineDemoChannelConfig,
+  seedOfflineSlackAuthority,
   spawnServer,
   stopChild,
   waitForFinals,
@@ -55,6 +56,7 @@ const { FakeSlackBackend, STUB_REPLY_MARKER, RAW_PROVIDER_ERROR_MARKER, isMarkdo
 
 const netGuardLog = join(mkdtempSync(join(tmpdir(), 'flue-net-guard-')), 'external-hosts.log');
 const stateDbPath = join(mkdtempSync(join(tmpdir(), 'flue-offline-state-')), 'state.db');
+const keyringPath = `${stateDbPath}.credential-keyring.json`;
 
 const appMention = JSON.parse(
   readFileSync(join(REPO_ROOT, 'fixtures', 'slack', 'app-mention.json'), 'utf8'),
@@ -106,15 +108,15 @@ const backend = new FakeSlackBackend({
         id: EXEC_CHANNEL,
         name: 'exec-briefing',
         isMember: true,
-        teamId: 'T_DEMO',
+        teamId: 'TDEMO',
       },
     ],
     channelMembers: {
-      [EXEC_CHANNEL]: ['U_ALICE', 'U_BOT'],
+      [EXEC_CHANNEL]: ['U_ALICE', 'UBOT'],
     },
     workspaceUsers: [
-      { id: 'U_ALICE', teamId: 'T_DEMO' },
-      { id: 'U_BOT', teamId: 'T_DEMO', isBot: true, isAppUser: true },
+      { id: 'U_ALICE', teamId: 'TDEMO' },
+      { id: 'UBOT', teamId: 'TDEMO', isBot: true, isAppUser: true },
     ],
   },
 });
@@ -129,6 +131,15 @@ try {
   await seedOfflineDemoChannelConfig(stateDbPath);
 
   const port = await getFreePort();
+  await seedOfflineSlackAuthority({
+    stateDbPath,
+    keyringPath,
+    canonicalOrigin: `http://127.0.0.1:${port}`,
+    teamId: 'TDEMO',
+    slackUserId: 'UOWNER01',
+    appId: 'ADEMO',
+    botUserId: 'UBOT',
+  });
   const spawned = spawnServer({
     serverEntry,
     port,
@@ -136,7 +147,12 @@ try {
     netGuardLog,
     // Pin an in-memory DB so this single-process offline gate stays
     // deterministic across runs (no cross-run accumulation in ./tmp/flue.db).
-    env: { TAG_DB_PATH: ':memory:', SLACK_STATE_DB_PATH: stateDbPath },
+    env: {
+      TAG_DB_PATH: ':memory:',
+      SLACK_STATE_DB_PATH: stateDbPath,
+      CHICKPEA_CREDENTIAL_KEYRING_PATH: keyringPath,
+      CHICKPEA_AUTH_SECRET: '9d'.repeat(32),
+    },
   });
   child = spawned.child;
   const { baseUrl, eventsUrl, getOutput } = spawned;

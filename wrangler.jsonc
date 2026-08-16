@@ -37,10 +37,6 @@
 			{
 				"name": "TAG_STATE",
 				"class_name": "TagStateStore"
-			},
-			{
-				"name": "AUTH_GUARD",
-				"class_name": "AuthGuard"
 			}
 		]
 	},
@@ -99,12 +95,6 @@
 				"FlueSlackThreadAgent",
 				"FlueRoutineIntentAgent",
 				"FlueRoutineWorkflow"
-			]
-		},
-		{
-			"tag": "v7",
-			"new_sqlite_classes": [
-				"AuthGuard"
 			]
 		}
 	]

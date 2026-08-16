@@ -7,14 +7,11 @@ import { resolveStateDbPath } from '../state/node-state-db.ts';
 import type {
   BetterAuthDatabaseBackend,
   BetterAuthMembershipRecord,
-  BetterAuthOwnerSetupAuthorityExpectation,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
 } from './better-auth-backend.ts';
 import {
   BETTER_AUTH_IDENTITY_AUTHORITY_SQL,
-  BETTER_AUTH_OWNER_SETUP_AUTHORITY_SQL,
-  betterAuthOwnerSetupAuthorityBindings,
   mapBetterAuthMembership,
   mapBetterAuthOrganization,
   mapBetterAuthUser,
@@ -47,14 +44,6 @@ export class NodeBetterAuthBackend implements BetterAuthDatabaseBackend {
     return Boolean(row?.present);
   }
 
-  async matchesOwnerSetupAuthority(
-    input: BetterAuthOwnerSetupAuthorityExpectation,
-  ): Promise<boolean> {
-    const row = this.database.prepare(BETTER_AUTH_OWNER_SETUP_AUTHORITY_SQL)
-      .get(...betterAuthOwnerSetupAuthorityBindings(input)) as { matches?: number } | undefined;
-    return Boolean(row?.matches);
-  }
-
   async absoluteExpiryForToken(token: string): Promise<Date | null> {
     const row = this.database.prepare(
       'SELECT absoluteExpiresAt FROM session WHERE token = ? LIMIT 1',
@@ -64,19 +53,6 @@ export class NodeBetterAuthBackend implements BetterAuthDatabaseBackend {
 
   async deleteSessionsForUser(userId: string): Promise<number> {
     return Number(this.database.prepare('DELETE FROM session WHERE userId = ?').run(userId).changes);
-  }
-
-  async hasPasswordCredential(email: string): Promise<boolean> {
-    const row = this.database.prepare(
-      `SELECT 1 AS present
-       FROM "user" AS u
-       JOIN account AS a ON a.userId = u.id
-       WHERE lower(u.email) = lower(?)
-         AND a.providerId = 'credential'
-         AND a.password IS NOT NULL
-       LIMIT 1`,
-    ).get(email);
-    return Boolean(row);
   }
 
   async getUser(userId: string): Promise<BetterAuthUserRecord | null> {

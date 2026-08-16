@@ -973,7 +973,6 @@ test('GitHub setup callback validates canonical Slack authority against the huma
     betterAuthEnvironment: {
       backend,
       baseURL: origin,
-      recoveryToken: '9d'.repeat(32),
       secret: 'test-github-better-auth-secret-32-bytes',
     },
   });

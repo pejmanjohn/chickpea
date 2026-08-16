@@ -46,7 +46,6 @@ export interface SlackIdentityBinding {
 }
 
 export type ExternalIdentityBinding = SlackIdentityBinding;
-export type ActorExternalIdentityBinding = SlackIdentityBinding;
 
 export interface Membership {
   id: string;
@@ -368,6 +367,7 @@ export interface ReserveSlackSetupTransactionInput {
   issuedAt: number;
   expiresAt: number;
   destination: string;
+  canonicalAdminOrigin: string;
 }
 
 export interface SlackSetupTransitionInput {
@@ -699,8 +699,6 @@ export interface ActivateInvitationInput {
 }
 
 export type BootstrapTokenOwnerInput = ClaimOwnerInput;
-export type ActivateAccessOwnerInput = ClaimOwnerInput;
-export type ReplaceAccessOwnerBindingInput = never;
 
 export interface UpdateMembershipInput {
   membershipId: string;
@@ -919,7 +917,6 @@ export interface IdentityStore extends HumanIdentityDirectory {
   activateInvitation(input: ActivateInvitationInput): Promise<IdentityResolution>;
   resolveSlackIdentity(slackTeamId: string, slackUserId: string, organizationId?: string): Promise<IdentityResolution | undefined>;
   listExternalIdentities(): Promise<SlackIdentityBinding[]>;
-  resolveActorExternalIdentity(provider: 'slack', slackTeamId: string, slackUserId: string): Promise<SlackIdentityBinding | undefined>;
   listMemberships(): Promise<Membership[]>;
   getUser(userId: string): Promise<User | undefined>;
   getMembership(membershipId: string): Promise<Membership | undefined>;

@@ -1,96 +1,29 @@
-# Slack setup runbook — for an AI agent (or a careful human)
+# Slack setup runbook
 
-This walks the Slack side of a Chickpea install: create the app, install it,
-and hand two values back to `/admin`. It exists because two steps confuse
-everyone: the bot token **does not exist** until the app is installed, and
-Slack's console offers three other token-shaped strings that are wrong for the
-normal HTTP Events API setup.
+Use the private setup link printed by the deployment. Chickpea creates the customer-owned Slack app, installs it, verifies its Events URL, and uses Slack itself for the first Owner identity. There is no password, Cloudflare Access, shared Admin token, or manual bot-token paste in the normal journey.
 
-**What you need before starting:** the private setup link printed by the
-deploy and—critically—the name of the **Slack workspace the bot should live
-in**. The owner creates an email/password account from that link and continues
-directly into the Slack and first-channel journey. Fresh installs do not ask
-for a deployment or recovery token.
+## Before starting
 
-**If you are an AI agent:** confirm the target workspace with your human
-before step 2; it is the one choice that cannot be corrected later without
-reinstalling. Let your human paste secrets if your environment's policy
-prefers that; everything else is clicking.
-
-**GitHub features are configured separately:** finish Slack setup here, then
-use **Settings → GitHub → Create GitHub App** before granting repositories to an
-Agent. The GitHub App is also a prerequisite for the optional coding
-sandbox.
-
-**The default Cloudflare deployment is intentionally slim:** it does not
-build the Ubuntu coding image or provision Container infrastructure. Ordinary
-Slack replies do not need it. To add it later, use **Settings → Coding sandbox
-→ Install coding sandbox**, then follow the exact Cloudflare redeploy steps
-shown there. The Sandbox deployment profile requires Workers Paid; the first image build
-can take several minutes. Node and other non-Cloudflare installs use the
-standard in-memory bash sandbox, without host filesystem or host git/SSH
-credential access. The complete install, enable, rollback, and cleanup flow is
-in the [coding sandbox deployment runbook](docs/runbooks/coding-sandbox-deployment.md).
+- Know the Slack workspace where Chickpea should live. The installed `team_id` becomes the deployment's immutable workspace boundary.
+- Be signed in to Slack as the person who should become Chickpea's first Owner.
+- Slack decides whether that person may create/install apps. Chickpea does not require the installer to hold Slack's Owner or Admin label.
+- Keep the private setup link in the same browser tab. The capability is removed from the URL and kept only in same-tab storage.
 
 ## Steps
 
-1. **Open the manifest link.** Sign in through Cloudflare Access, open
-   `/admin`, and click **Create your Slack app**. It opens Slack's app
-   console with a manifest that pre-fills everything, including this
-   install's events URL. (No `/admin` access? `https://api.slack.com/apps` →
-   **Create New App** → **From a manifest**, and paste the repo's
-   `slack-app-manifest.json` — but then you must edit
-   `settings.event_subscriptions.request_url` to
-   `https://<your-worker>/channels/slack/events` yourself. The `/admin` link
-   does that substitution for you; prefer it.)
+1. Open the private `/admin/setup#setup=…` link.
+2. Choose **Create the Slack app**. Chickpea uses the short-lived Slack configuration token supplied in the form to create exactly one app from the reviewed manifest. The token is not stored.
+3. If Slack creation returns an ambiguous network result, inspect your Slack apps. Adopt the matching app or explicitly restart; do not create another app blindly.
+4. Continue to Slack and choose the intended workspace. Review the requested bot permissions and select **Allow**. If the workspace requires app approval, request it and resume from the same setup page after approval.
+5. Return to setup and use **Verify and continue** after Slack accepts and saves the Events URL. Chickpea promotes the encrypted credential revision only after the exact app/team OAuth result and a revision-bound signed Slack challenge agree.
+6. Select **Become the first Owner with Slack**. The OIDC result must carry the same `team_id` as the installed app; the signed-in Slack `user_id` is bound atomically as the first Chickpea Owner.
+7. Choose the first Channel for the Default Agent. Chickpea can join a public Channel automatically. Invite it to a private Channel first, then refresh the picker.
+8. Mention `@Chickpea` in that Channel. Setup is complete only after a real threaded Slack response succeeds.
 
-2. **Pick the workspace — carefully.** Slack forces a "Pick a workspace"
-   choice during creation. Choose the workspace the bot should answer in.
-   An app created in the wrong workspace will install, validate, and then
-   silently never hear a mention from the right one.
+## Manual adoption
 
-3. **Create the app.** Review the manifest preview → **Next** → **Create**.
-   The app now exists — but it is **not installed** and has **no bot token
-   yet**. Do not hunt for a token on this screen; there isn't one.
+Manual app adoption is a secondary recovery path on the setup page. Use the same reviewed manifest and unchanged deployment callback URLs. Client secret and signing secret inputs are write-only and encrypted before persistence. Do not use an app-level `xapp-` token; Chickpea uses Slack's HTTP Events API and a bot OAuth token issued by the install flow.
 
-4. **Install it.** Left sidebar → **OAuth & Permissions** → **Install to
-   Workspace** → **Allow**. Only now does the **Bot User OAuth Token**
-   appear at the top of that same page. It starts with `xoxb-`. Copy it. The
-   manifest includes `files:write`, `reactions:read`, and `reactions:write`, and
-   subscribes to `reaction_added`. These let Chickpea attach artifacts, use
-   reactions as low-noise replies and work acknowledgments, remove a stale
-   `:eyes:` when work finishes, and treat a teammate's reaction as possible
-   input. For an app created from an older manifest, update the manifest and
-   reinstall the app so Slack grants the new scopes. Missing reaction scope
-   never suppresses a substantive written result.
+## Recovery
 
-5. **Copy the signing secret.** Left sidebar → **Basic Information** →
-   **App Credentials** → **Signing Secret** → **Show** → copy.
-
-6. **The traps — do not copy these:**
-   - **App-Level Token** (`xapp-…`) — wrong for `/admin` and the normal HTTP
-     Events API setup. It is used only by the optional local-development Socket
-     Mode bridge documented in `README.md`.
-   - **Verification Token** — deprecated by Slack. Wrong value.
-   - **Client Secret** — OAuth-flow plumbing. Wrong value.
-   Chickpea wants exactly two values: the `xoxb-…` bot token and the
-   Signing Secret.
-
-7. **Paste both into `/admin`** → Connect Slack → **Validate & save**. The
-   token is validated live against Slack before anything is stored. On
-   success the admin names the connected workspace — **check it matches the
-   workspace from step 2**. If it names the wrong one, delete the app in
-   Slack's console and restart from step 1; do not proceed.
-
-8. **Choose a Channel.** In `/admin`, choose the first Channel where the seeded
-   Default Agent should work (the picker lists Channels by name). Chickpea joins
-   an assigned public Channel automatically. For a private Channel, invite the
-   bot first with `/invite @Chickpea`, then refresh the picker and choose it.
-
-9. **Verify.** Mention `@Chickpea` in the assigned Channel with any question. One
-   streamed reply should arrive in a thread, footed with the Agent and model
-   that answered. Onboarding completes only after this real reply, then opens
-   the Default Agent with the Channel visible under **Where it works**. If
-   nothing arrives within a minute: `/admin` shows
-   the connection state, and `npx wrangler tail <worker-name>` shows each
-   event's outcome live.
+If credential key material or the installed Slack app credentials are lost, use the hidden scoped recovery flow in [docs/runbooks/slack-auth-recovery.md](docs/runbooks/slack-auth-recovery.md). It can repair only the unchanged app and workspace. It cannot create an Owner, grant a role, or sign anyone in.

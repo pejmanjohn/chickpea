@@ -165,7 +165,6 @@ import {
 } from './routines/admission.ts';
 import { RoutineScheduler } from './routines/scheduler.ts';
 import { executeRoutineOccurrence } from './routines/execution.ts';
-import { AuthGuardLogic } from './auth/auth-guard.ts';
 
 // The generated default captures model and tool content. Register the native
 // Cloudflare adapter explicitly for this Cloudflare-only entry so Workers
@@ -180,23 +179,6 @@ instrument(createCloudflareTracing({ content: false }));
 registerCloudflareBindingProvider(env.AI);
 
 export { ContainerProxy } from '@cloudflare/sandbox';
-
-/** Password KDF and unauthenticated throttle shard for the built-in auth path. */
-export class AuthGuard extends DurableObject {
-  readonly #logic = new AuthGuardLogic(this.ctx.storage);
-
-  hashPassword(password: string): Promise<string> {
-    return this.#logic.hashPassword(password);
-  }
-
-  verifyPassword(input: { hash: string; password: string }): Promise<boolean> {
-    return this.#logic.verifyPassword(input);
-  }
-
-  allow(bucket: string, limit: number, windowMs: number): boolean {
-    return this.#logic.allow(bucket, limit, windowMs);
-  }
-}
 
 type SandboxOutboundContext = {
   containerId: string;

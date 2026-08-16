@@ -119,7 +119,7 @@ test('routine provider input includes its current Agent and exact Channel memory
             agent: agentA, model: 'local-stub/routine-memory', provider: 'local-stub',
             instructions: agentA.instructions, instructionLayers: [],
           },
-          accessHash: 'a'.repeat(64), botToken: 'xoxb-routine', botUserId: 'U_BOT',
+          accessHash: 'a'.repeat(64), botToken: 'xoxb-routine', botUserId: 'UBOT',
         };
         const client = {
           conversations: {

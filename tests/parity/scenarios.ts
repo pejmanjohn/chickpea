@@ -97,29 +97,29 @@ function demoChannelConfig(config: ScenarioLaneConfig = {}): ScenarioLaneConfig 
     ...config,
     slack: {
       channels: [
-        { id: 'C_EXEC', name: 'exec-briefing', isMember: true, teamId: 'T_DEMO' },
-        { id: 'C_ENG', name: 'eng-releases', isMember: true, teamId: 'T_DEMO' },
+        { id: 'C_EXEC', name: 'exec-briefing', isMember: true, teamId: 'TDEMO' },
+        { id: 'C_ENG', name: 'eng-releases', isMember: true, teamId: 'TDEMO' },
       ],
       channelMembers: {
-        C_EXEC: ['U_ALICE', 'U_BOB', 'U_BOT'],
-        C_ENG: ['U_ALICE', 'U_BOB', 'U_BOT'],
+        C_EXEC: ['U_ALICE', 'U_BOB', 'UBOT'],
+        C_ENG: ['U_ALICE', 'U_BOB', 'UBOT'],
       },
       workspaceUsers: [
-        { id: 'U_ALICE', teamId: 'T_DEMO' },
-        { id: 'U_BOB', teamId: 'T_DEMO' },
-        { id: 'U_BOT', teamId: 'T_DEMO', isBot: true, isAppUser: true },
+        { id: 'U_ALICE', teamId: 'TDEMO' },
+        { id: 'U_BOB', teamId: 'TDEMO' },
+        { id: 'UBOT', teamId: 'TDEMO', isBot: true, isAppUser: true },
       ],
       ...config.slack,
       identity: {
-        appId: 'A_DEMO',
-        botUserId: 'U_BOT',
-        teamId: 'T_DEMO',
+        appId: 'ADEMO',
+        botUserId: 'UBOT',
+        teamId: 'TDEMO',
         ...config.slack?.identity,
       },
     },
     configSeed: {
       agents: pinAgentsForParity(seededAgents),
-      // The T_DEMO fixtures (single source: src/config/seed.ts) on top of the
+      // The TDEMO fixtures (single source: src/config/seed.ts) on top of the
       // real install seed (the '*/*' DM wildcard).
       assignments: [...demoChannelAssignments, ...seededAssignments],
     },
@@ -252,7 +252,7 @@ export const scenarios: Scenario[] = [
       await instance.postEvent(
         appMention({
           event_id: 'Ev_WINDOW_2D',
-          event: { text: '<@U_BOT> what changed in the last 2 days?' },
+          event: { text: '<@UBOT> what changed in the last 2 days?' },
         }),
       );
       await instance.quiesce();
@@ -366,7 +366,7 @@ export const scenarios: Scenario[] = [
     async run(instance) {
       await instance.postEvent(appMention({
         event_id: 'Ev_REACT_ONLY',
-        event: { text: '<@U_BOT> Sounds good.' },
+        event: { text: '<@UBOT> Sounds good.' },
       }));
       await instance.quiesce();
       const reactions = instance.backend.callsOfMethod('reactions.add');
@@ -384,7 +384,7 @@ export const scenarios: Scenario[] = [
     async run(instance) {
       await instance.postEvent(appMention({
         event_id: 'Ev_WORK_PROGRESS',
-        event: { text: '<@U_BOT> PARITY_WORK_REQUEST' },
+        event: { text: '<@UBOT> PARITY_WORK_REQUEST' },
       }));
       await instance.quiesce();
       const methods = instance.backend.wireLog.map((entry) => entry.method);
@@ -414,7 +414,7 @@ export const scenarios: Scenario[] = [
       await instance.postEvent(appMention({
         event_id: 'Ev_WORK_QUEUE_FIRST',
         event: {
-          text: '<@U_BOT> Observe the first sample and report the result.',
+          text: '<@UBOT> Observe the first sample and report the result.',
           ts: firstTs,
           event_ts: firstTs,
         },
@@ -424,7 +424,7 @@ export const scenarios: Scenario[] = [
       await instance.postEvent(appMention({
         event_id: 'Ev_WORK_QUEUE_SECOND',
         event: {
-          text: '<@U_BOT> Observe the second sample and report the result.',
+          text: '<@UBOT> Observe the second sample and report the result.',
           ts: secondTs,
           event_ts: secondTs,
         },
@@ -460,7 +460,7 @@ export const scenarios: Scenario[] = [
       await instance.postEvent(appMention({
         event_id: 'Ev_EXPLICIT_PRECLASSIFIER_ACK',
         event: {
-          text: '<@U_BOT> Use the available context to explain this result.',
+          text: '<@UBOT> Use the available context to explain this result.',
           ts,
           event_ts: ts,
         },
@@ -530,9 +530,15 @@ export const scenarios: Scenario[] = [
     title: 'the bot reaction event cannot create a loop',
     config: demoChannelConfig(),
     async run(instance) {
-      await instance.postEvent(reactionAdded({ user: 'U_BOT' }));
+      await instance.postEvent(reactionAdded({ user: 'UBOT' }));
       await instance.quiesce();
-      assert.equal(instance.backend.wireLog.length, 0);
+      assert.deepEqual(
+        instance.backend.wireLog.map((entry) => entry.method),
+        ['auth.test'],
+        'missing bot metadata permits one identity probe before the bot reaction is dropped',
+      );
+      assert.equal(instance.backend.providerCalls().length, 0);
+      assert.equal(instance.backend.finals().length, 0);
     },
   },
   {
@@ -542,7 +548,7 @@ export const scenarios: Scenario[] = [
     async run(instance) {
       await instance.postEvent(appMention({
         event_id: 'Ev_REACT_SCOPE_FALLBACK',
-        event: { text: '<@U_BOT> Sounds good.' },
+        event: { text: '<@UBOT> Sounds good.' },
       }));
       await instance.quiesce();
       const posts = instance.backend.callsOfMethod('chat.postMessage');
@@ -563,13 +569,13 @@ export const scenarios: Scenario[] = [
       const cases: SlackEventFixture[] = [
         channelThreadMessage({
           event_id: 'Ev_MSG_BOT',
-          event: { bot_id: 'B_DEMO', user: 'U_BOT' },
+          event: { bot_id: 'B_DEMO', user: 'UBOT' },
         }),
         channelThreadMessage({
           event_id: 'Ev_MSG_APP',
-          event: { app_id: 'A_DEMO', user: 'U_APP_MESSAGE' },
+          event: { app_id: 'ADEMO', user: 'U_APP_MESSAGE' },
         }),
-        channelThreadMessage({ event_id: 'Ev_MSG_SELF', event: { user: 'U_BOT' } }),
+        channelThreadMessage({ event_id: 'Ev_MSG_SELF', event: { user: 'UBOT' } }),
         channelThreadMessage({
           event_id: 'Ev_MSG_SUBTYPE',
           event: { subtype: 'message_changed' },
@@ -619,7 +625,13 @@ export const scenarios: Scenario[] = [
       const response = await instance.postEvent(channelThreadMessage());
       assert.equal(response.status, 200);
       await instance.quiesce();
-      assert.equal(instance.backend.wireLog.length, 0);
+      assert.deepEqual(
+        instance.backend.wireLog.map((entry) => entry.method),
+        ['auth.test'],
+        'missing bot metadata permits one identity probe before the orphan reply is dropped',
+      );
+      assert.equal(instance.backend.providerCalls().length, 0);
+      assert.equal(instance.backend.finals().length, 0);
     },
   },
   {
@@ -752,7 +764,7 @@ export const scenarios: Scenario[] = [
         appMention({
           event_id: 'Ev_DEMO_FOLLOWUP',
           event: {
-            text: '<@U_BOT> please use channel context for a follow-up',
+            text: '<@UBOT> please use channel context for a follow-up',
             ts: '1782770500.000100',
             event_ts: '1782770500.000100',
             thread_ts: ROOT_THREAD_TS,
@@ -781,12 +793,12 @@ export const scenarios: Scenario[] = [
       const fanoutTs = ROOT_THREAD_TS;
       const mention = appMention({
         event_id: 'Ev_FANOUT_MENTION',
-        event: { text: '<@U_BOT> fan-out check', ts: fanoutTs, event_ts: fanoutTs },
+        event: { text: '<@UBOT> fan-out check', ts: fanoutTs, event_ts: fanoutTs },
       });
       const companion = channelThreadMessage({
         event_id: 'Ev_FANOUT_MESSAGE',
         event: {
-          text: '<@U_BOT> fan-out check',
+          text: '<@UBOT> fan-out check',
           ts: fanoutTs,
           event_ts: fanoutTs,
           thread_ts: fanoutTs,
@@ -904,7 +916,7 @@ export const scenarios: Scenario[] = [
         ],
         assignments: [
           {
-            workspaceId: 'T_DEMO',
+            workspaceId: 'TDEMO',
             channelId: EXEC_CHANNEL,
             agentId: 'agent_pinned_model',
             enabled: true,
@@ -949,14 +961,14 @@ export const scenarios: Scenario[] = [
         ],
         assignments: [
           {
-            workspaceId: 'T_DEMO',
+            workspaceId: 'TDEMO',
             channelId: EXEC_CHANNEL,
             agentId: 'agent_addendum',
             enabled: true,
             channelPromptAddendum: 'CHANNEL_ADDENDUM_MARKER: prefer launch-local context.',
           },
           {
-            workspaceId: 'T_DEMO',
+            workspaceId: 'TDEMO',
             channelId: 'C_NOADD',
             agentId: 'agent_addendum',
             enabled: true,
@@ -984,7 +996,7 @@ export const scenarios: Scenario[] = [
             channel: 'C_NOADD',
             ts: '1782771001.000100',
             event_ts: '1782771001.000100',
-            text: '<@U_BOT> summarize without an addendum',
+            text: '<@UBOT> summarize without an addendum',
           },
         }),
       );
@@ -1021,7 +1033,7 @@ export const scenarios: Scenario[] = [
         ],
         assignments: [
           {
-            workspaceId: 'T_DEMO',
+            workspaceId: 'TDEMO',
             channelId: EXEC_CHANNEL,
             agentId: 'agent_unresolvable',
             enabled: true,
@@ -1057,7 +1069,7 @@ export const scenarios: Scenario[] = [
           event_id: 'Ev_DEMO_RELEASE_SCRIBE',
           event: {
             channel: 'C_ENG',
-            text: '<@U_BOT> draft the release note for the latency fix',
+            text: '<@UBOT> draft the release note for the latency fix',
             ts: '1782771200.000100',
             event_ts: '1782771200.000100',
           },
@@ -1078,7 +1090,7 @@ export const scenarios: Scenario[] = [
           event_id: 'Ev_DEMO_EXEC_BRIEF',
           event: {
             channel: EXEC_CHANNEL,
-            text: '<@U_BOT> brief leadership on the launch plan',
+            text: '<@UBOT> brief leadership on the launch plan',
             ts: '1782771201.000100',
             event_ts: '1782771201.000100',
           },
@@ -1103,7 +1115,7 @@ export const scenarios: Scenario[] = [
         appMention({
           event_id: 'Ev_FOOTER_STREAM',
           event: {
-            text: '<@U_BOT> answer with a streamed footer',
+            text: '<@UBOT> answer with a streamed footer',
             ts: '1782771300.000100',
             event_ts: '1782771300.000100',
           },
@@ -1123,7 +1135,7 @@ export const scenarios: Scenario[] = [
         appMention({
           event_id: 'Ev_FOOTER_FALLBACK',
           event: {
-            text: '<@U_BOT> answer through postMessage fallback',
+            text: '<@UBOT> answer through postMessage fallback',
             ts: '1782771301.000100',
             event_ts: '1782771301.000100',
           },
@@ -1147,7 +1159,7 @@ export const scenarios: Scenario[] = [
         appMention({
           event_id: 'Ev_FOOTER_PROVIDER_FAILURE',
           event: {
-            text: '<@U_BOT> trigger provider failure with a footer',
+            text: '<@UBOT> trigger provider failure with a footer',
             ts: '1782771302.000100',
             event_ts: '1782771302.000100',
           },
@@ -1174,7 +1186,7 @@ export const scenarios: Scenario[] = [
       const botJoin = memberJoinedChannel({
         event_id: 'Ev_BOT_JOINED_CHANNEL',
         event: {
-          user: 'U_BOT',
+          user: 'UBOT',
           channel: 'C_ENG',
           event_ts: '1782771400.000100',
         },
@@ -1191,7 +1203,7 @@ export const scenarios: Scenario[] = [
       assert.equal(onboarding.body.channel, 'C_ENG');
       assert.equal(onboarding.body.thread_ts, undefined);
       const text = String(onboarding.body.text ?? '');
-      assert.match(text, /<@U_BOT>/);
+      assert.match(text, /<@UBOT>/);
       assert.match(text, /may also join an unmentioned conversation/i);
       assert.match(text, /does not build a persistent workspace-message index/i);
       assert.match(text, /https:\/\/demo\.example\/admin\?channel=C_ENG/);
@@ -1242,7 +1254,7 @@ export const scenarios: Scenario[] = [
         ],
         assignments: [
           {
-            workspaceId: 'T_DEMO',
+            workspaceId: 'TDEMO',
             channelId: 'C_ASSIGNED',
             agentId: 'agent_scoped',
             enabled: true,
@@ -1255,7 +1267,7 @@ export const scenarios: Scenario[] = [
       await instance.postEvent(
         memberJoinedChannel({
           event_id: 'Ev_JOIN_UNASSIGNED',
-          event: { user: 'U_BOT', channel: 'C_UNASSIGNED', event_ts: '1782771500.000100' },
+          event: { user: 'UBOT', channel: 'C_UNASSIGNED', event_ts: '1782771500.000100' },
         }),
       );
       await instance.quiesce();
@@ -1269,7 +1281,7 @@ export const scenarios: Scenario[] = [
       await instance.postEvent(
         memberJoinedChannel({
           event_id: 'Ev_JOIN_ASSIGNED',
-          event: { user: 'U_BOT', channel: 'C_ASSIGNED', event_ts: '1782771501.000100' },
+          event: { user: 'UBOT', channel: 'C_ASSIGNED', event_ts: '1782771501.000100' },
         }),
       );
       await waitForPostMessageCount(instance, 1);
@@ -1312,7 +1324,7 @@ export const scenarios: Scenario[] = [
         appMention({
           event_id: 'Ev_S34_T1',
           event: {
-            text: '<@U_BOT> start with the original snapshot instructions',
+            text: '<@UBOT> start with the original snapshot instructions',
             ts: '1782771600.000100',
             event_ts: '1782771600.000100',
           },
@@ -1355,7 +1367,7 @@ export const scenarios: Scenario[] = [
         appMention({
           event_id: 'Ev_S35_T1',
           event: {
-            text: '<@U_BOT> start before the admin edit',
+            text: '<@UBOT> start before the admin edit',
             ts: '1782771700.000100',
             event_ts: '1782771700.000100',
           },
@@ -1371,7 +1383,7 @@ export const scenarios: Scenario[] = [
         appMention({
           event_id: 'Ev_S35_T2_NEW_THREAD',
           event: {
-            text: '<@U_BOT> start a separate thread after the admin edit',
+            text: '<@UBOT> start a separate thread after the admin edit',
             ts: '1782771701.000100',
             event_ts: '1782771701.000100',
           },
@@ -1393,7 +1405,7 @@ export const scenarios: Scenario[] = [
         appMention({
           event_id: 'Ev_S36_T1',
           event: {
-            text: '<@U_BOT> start before the Agent disable attempt',
+            text: '<@UBOT> start before the Agent disable attempt',
             ts: '1782771800.000100',
             event_ts: '1782771800.000100',
           },
@@ -1560,7 +1572,7 @@ export const scenarios: Scenario[] = [
         agents: pinAgentsForParity(seededAgents),
         assignments: [
           {
-            workspaceId: 'T_DEMO',
+            workspaceId: 'TDEMO',
             channelId: PRIVATE_CHANNEL,
             agentId: 'agent_default',
             enabled: true,
@@ -1625,17 +1637,19 @@ export const scenarios: Scenario[] = [
       );
       assert.equal(unassigned.status, 200, JSON.stringify(unassigned.body));
       await instance.quiesce();
-      assert.equal(
-        instance.backend.wireLog.length,
-        0,
-        'stored unassignedHint=false must keep an unassigned mention fully silent',
+      assert.deepEqual(
+        instance.backend.wireLog.map((entry) => entry.method),
+        ['auth.test'],
+        'stored unassignedHint=false permits only the cached identity probe',
       );
+      assert.equal(instance.backend.finals().length, 0);
+      assert.equal(instance.backend.callsOfMethod('chat.postEphemeral').length, 0);
 
       const joined = await instance.postEvent(
         memberJoinedChannel({
           event_id: 'Ev_S40_JOIN',
           event: {
-            user: 'U_BOT',
+            user: 'UBOT',
             channel: 'C_EXEC',
             event_ts: '1782772002.000100',
           },
@@ -1643,10 +1657,10 @@ export const scenarios: Scenario[] = [
       );
       assert.equal(joined.status, 200, JSON.stringify(joined.body));
       await instance.quiesce();
-      assert.equal(
-        instance.backend.wireLog.length,
-        0,
-        'stored welcomeOnJoin=false must suppress the assigned-channel welcome',
+      assert.deepEqual(
+        instance.backend.wireLog.map((entry) => entry.method),
+        ['auth.test'],
+        'stored welcomeOnJoin=false must suppress the welcome after the cached identity probe',
       );
 
       const channel = await instance.postEvent(
@@ -1669,7 +1683,7 @@ export const scenarios: Scenario[] = [
         appMention({
           event_id: 'Ev_S41_ROUTINES',
           event: {
-            text: '<@U_BOT> !routines',
+            text: '<@UBOT> !routines',
             ts: '1782772100.000100',
             event_ts: '1782772100.000100',
           },
@@ -1688,14 +1702,14 @@ export const scenarios: Scenario[] = [
     id: 'S42',
     title: 'cross-channel routine listing is requester-only in the invoking channel',
     config: demoChannelConfig({
-      slack: { identity: { teamId: 'T_DEMO', botUserId: 'U_BOT' } },
+      slack: { identity: { teamId: 'TDEMO', botUserId: 'UBOT' } },
     }),
     async run(instance) {
       const response = await instance.postEvent(
         appMention({
           event_id: 'Ev_S42_ROUTINES_OTHER_CHANNEL',
           event: {
-            text: '<@U_BOT> !routines <#C_ENG|eng-releases>',
+            text: '<@UBOT> !routines <#C_ENG|eng-releases>',
             ts: '1782772200.000100',
             event_ts: '1782772200.000100',
           },
@@ -1722,9 +1736,9 @@ function reactionAdded(
 ): SlackEventFixture {
   return {
     token: 'verification-token-not-a-secret',
-    team_id: 'T_DEMO',
-    api_app_id: 'A_DEMO',
-    event_id: event.user === 'U_BOT' ? 'Ev_REACTION_BOT' : 'Ev_REACTION_HUMAN',
+    team_id: 'TDEMO',
+    api_app_id: 'ADEMO',
+    event_id: event.user === 'UBOT' ? 'Ev_REACTION_BOT' : 'Ev_REACTION_HUMAN',
     event_time: 1782770600,
     type: 'event_callback',
     event: {
@@ -1752,8 +1766,8 @@ function twoProfileDifferentiationConfig(): ScenarioLaneConfig {
         { ...EXEC_BRIEF_PROFILE },
       ],
       assignments: [
-        { workspaceId: 'T_DEMO', channelId: 'C_ENG', agentId: 'agent_release_scribe', enabled: true },
-        { workspaceId: 'T_DEMO', channelId: EXEC_CHANNEL, agentId: 'agent_exec_brief', enabled: true },
+        { workspaceId: 'TDEMO', channelId: 'C_ENG', agentId: 'agent_release_scribe', enabled: true },
+        { workspaceId: 'TDEMO', channelId: EXEC_CHANNEL, agentId: 'agent_exec_brief', enabled: true },
       ],
     },
   };
@@ -1782,7 +1796,7 @@ function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
       ],
       assignments: [
         {
-          workspaceId: 'T_DEMO',
+          workspaceId: 'TDEMO',
           channelId: EXEC_CHANNEL,
           agentId,
           enabled: true,

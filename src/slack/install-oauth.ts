@@ -62,6 +62,7 @@ export interface SlackInstallOAuthDependencies {
   config: ConfigStore;
   settings: SettingsStore;
   fetch?: typeof fetch;
+  apiBaseUrl?: string;
   now?: () => number;
   randomBytes?: (length: number) => Uint8Array;
   bootstrap?: SlackIdentityBootstrapDeps;
@@ -192,7 +193,12 @@ export class SlackInstallOAuthService {
 
     let response: Response;
     try {
-      response = await this.fetch(SLACK_BOT_TOKEN_URL, {
+      const fetchImpl = this.fetch;
+      response = await fetchImpl(slackApiMethodUrl(
+        this.dependencies.apiBaseUrl,
+        'oauth.v2.access',
+        SLACK_BOT_TOKEN_URL,
+      ), {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
@@ -604,13 +610,20 @@ function exactHttpsRedirect(value: string): string {
   if (!value || value.length > 2_048) throw new SlackInstallOAuthError('wrong_callback');
   try {
     const url = new URL(value);
-    if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.toString() !== value) {
+    const loopback = url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    if ((url.protocol !== 'https:' && !loopback) || url.username || url.password || url.hash ||
+        url.toString() !== value) {
       throw new Error();
     }
     return value;
   } catch {
     throw new SlackInstallOAuthError('wrong_callback');
   }
+}
+
+function slackApiMethodUrl(baseUrl: string | undefined, method: string, fallback: string): string {
+  const normalized = baseUrl?.trim().replace(/\/+$/, '');
+  return normalized ? `${normalized}/${method}` : fallback;
 }
 
 function requireBrowserBinding(value: string): void {

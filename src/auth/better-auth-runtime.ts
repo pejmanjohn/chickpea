@@ -13,7 +13,7 @@ import {
 
 interface BetterAuthRuntimeOptions {
   identity?: IdentityStore;
-  recoveryToken?: string;
+  authSecret?: string;
 }
 
 export function createBetterAuthRuntimeRoutes(options: BetterAuthRuntimeOptions = {}): Hono {
@@ -43,7 +43,7 @@ async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<
   const environment = await resolveBetterAuthEnvironment({
     control,
     platformEnv,
-    recoveryToken: options.recoveryToken,
+    authSecret: options.authSecret,
   });
   if (!environment) return Response.json({ error: 'auth_unavailable' }, { status: 503 });
 

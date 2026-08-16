@@ -207,33 +207,33 @@ test('a plain_text final with a footer keeps its content literal (not markdown-p
 
 test('Channel onboarding discloses mention guarantee, ambient judgment, bounded retention, and Configure', () => {
   const linked = renderChannelOnboarding({
-    botUserId: 'U_BOT',
+    botUserId: 'UBOT',
     channelId: 'C_ENG',
     publicUrl: 'https://demo.example',
   });
-  assert.match(linked, /Mention <@U_BOT> to guarantee a response\./);
+  assert.match(linked, /Mention <@UBOT> to guarantee a response\./);
   assert.match(linked, /join an unmentioned conversation/);
   assert.match(linked, /does not build a persistent workspace-message index/);
   assert.match(linked, /human replies continue without another mention/);
   assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_ENG\|Configure> this Channel's Agent/);
 
-  const unlinked = renderChannelOnboarding({ botUserId: 'U_BOT', channelId: 'C_ENG', publicUrl: undefined });
+  const unlinked = renderChannelOnboarding({ botUserId: 'UBOT', channelId: 'C_ENG', publicUrl: undefined });
   assert.match(unlinked, /(^|\s)Configure this Channel's Agent/);
   assert.doesNotMatch(unlinked, /\|Configure>/);
 });
 
 test('unassigned-Channel hint names the bot, explains the silence, and links Configure', () => {
   const linked = renderUnassignedChannelHint({
-    botUserId: 'U_BOT',
+    botUserId: 'UBOT',
     channelId: 'C_NEW',
     publicUrl: 'https://demo.example',
   });
   assert.match(linked, /No Agent is assigned to this Channel yet/);
-  assert.match(linked, /<@U_BOT> cannot reply here\./);
+  assert.match(linked, /<@UBOT> cannot reply here\./);
   assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_NEW\|Configure> this Channel's Agent/);
 
   const unlinked = renderUnassignedChannelHint({
-    botUserId: 'U_BOT',
+    botUserId: 'UBOT',
     channelId: 'C_NEW',
     publicUrl: undefined,
   });

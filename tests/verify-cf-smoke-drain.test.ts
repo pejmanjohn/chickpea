@@ -26,7 +26,7 @@ test('drain-only smoke accepts an authenticated all-zero deployment without expo
   }> = [];
   const result = await runDrainCheck({
     baseUrl: 'https://chickpea.example.test/',
-    adminToken: 'operator-secret',
+    personalToken: 'operator-secret',
     fetchImpl: async (input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
       requests.push({
@@ -74,7 +74,7 @@ test('drain-only smoke blocks cutover on nonzero, malformed, or unauthorized sta
   await assert.rejects(
     () => runDrainCheck({
       baseUrl: 'https://chickpea.example.test',
-      adminToken: 'operator-secret',
+      personalToken: 'operator-secret',
       fetchImpl: async () => new Response(JSON.stringify({
         ...ZERO_STATUS,
         drained: false,
@@ -86,7 +86,7 @@ test('drain-only smoke blocks cutover on nonzero, malformed, or unauthorized sta
   await assert.rejects(
     () => runDrainCheck({
       baseUrl: 'https://chickpea.example.test',
-      adminToken: 'operator-secret',
+      personalToken: 'operator-secret',
       fetchImpl: async () => new Response(JSON.stringify({ drained: true }), { status: 200 }),
     }),
     /invalid runtime drain response/,
@@ -94,7 +94,7 @@ test('drain-only smoke blocks cutover on nonzero, malformed, or unauthorized sta
   await assert.rejects(
     () => runDrainCheck({
       baseUrl: 'https://chickpea.example.test',
-      adminToken: 'operator-secret',
+      personalToken: 'operator-secret',
       fetchImpl: async () => new Response(JSON.stringify({
         ...ZERO_STATUS,
         drained: false,
@@ -105,7 +105,7 @@ test('drain-only smoke blocks cutover on nonzero, malformed, or unauthorized sta
   await assert.rejects(
     () => runDrainCheck({
       baseUrl: 'https://chickpea.example.test',
-      adminToken: 'operator-secret',
+      personalToken: 'operator-secret',
       fetchImpl: async () => new Response(JSON.stringify({
         ...ZERO_STATUS,
         categories: { ...ZERO_STATUS.categories, pendingLedgerTurnJobs: -1 },
@@ -116,7 +116,7 @@ test('drain-only smoke blocks cutover on nonzero, malformed, or unauthorized sta
   await assert.rejects(
     () => runDrainCheck({
       baseUrl: 'https://chickpea.example.test',
-      adminToken: 'operator-secret',
+      personalToken: 'operator-secret',
       fetchImpl: async () => new Response('unauthorized', { status: 401 }),
     }),
     /runtime drain request failed \(HTTP 401\)/,
@@ -128,7 +128,7 @@ test('offline recovery credential is not treated as an Admin drain credential', 
   await assert.rejects(
     () => runDrainCheck({
       baseUrl: 'https://chickpea.example.test',
-      adminToken: 'offline-recovery-value',
+      personalToken: 'offline-recovery-value',
       fetchImpl: async (_input: RequestInfo | URL, init?: RequestInit) => {
         authorization = new Headers(init?.headers).get('authorization') ?? '';
         return new Response('unauthorized', { status: 401 });

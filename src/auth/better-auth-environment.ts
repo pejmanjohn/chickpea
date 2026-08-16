@@ -9,12 +9,11 @@ import {
   type CloudflareBetterAuthEnv,
 } from './better-auth-cloudflare.ts';
 import { getNodeBetterAuthBackend } from './better-auth-node.ts';
-import { decodeRecoverySecret, deriveBetterAuthSecret } from './recovery-secret.ts';
+import { decodeRecoverySecret } from './recovery-secret.ts';
 
 export interface BetterAuthEnvironment {
   backend: BetterAuthDatabaseBackend;
   baseURL: string;
-  recoveryToken: string;
   secret: string;
   cloudflareEnv?: CloudflareBetterAuthEnv;
 }
@@ -22,6 +21,7 @@ export interface BetterAuthEnvironment {
 interface ResolveBetterAuthEnvironmentInput {
   control: AuthControl;
   platformEnv?: PlatformEnv | undefined;
+  /** Operational recovery is independent and never signs Better Auth sessions. */
   recoveryToken?: string | undefined;
   authSecret?: string | undefined;
 }
@@ -29,6 +29,7 @@ interface ResolveBetterAuthEnvironmentInput {
 interface ResolveBetterAuthBootstrapEnvironmentInput {
   canonicalOrigin: string;
   platformEnv?: PlatformEnv | undefined;
+  /** Accepted for call-site symmetry; never used as Better Auth key material. */
   recoveryToken?: string | undefined;
   authSecret?: string | undefined;
 }
@@ -43,7 +44,6 @@ export async function resolveBetterAuthEnvironment(
   return resolveBetterAuthBootstrapEnvironment({
     canonicalOrigin: input.control.canonicalAdminOrigin,
     platformEnv: input.platformEnv,
-    recoveryToken: input.recoveryToken,
     authSecret: input.authSecret,
   });
 }
@@ -51,10 +51,8 @@ export async function resolveBetterAuthEnvironment(
 export async function resolveBetterAuthBootstrapEnvironment(
   input: ResolveBetterAuthBootstrapEnvironmentInput,
 ): Promise<BetterAuthEnvironment | undefined> {
-  const recoveryToken = input.recoveryToken ?? recoverySecret(input.platformEnv);
   const stableSecret = input.authSecret ?? authSecret(input.platformEnv);
-  if (!stableSecret && !recoveryToken) return undefined;
-  const secret = stableSecret ?? await deriveBetterAuthSecret(recoveryToken!);
+  if (!stableSecret) return undefined;
 
   if (isCloudflareTarget()) {
     const cloudflareEnv = cloudflareAuthEnv(input.platformEnv);
@@ -62,12 +60,7 @@ export async function resolveBetterAuthBootstrapEnvironment(
     return {
       backend: new D1BetterAuthBackend(cloudflareEnv.AUTH_DB),
       baseURL: input.canonicalOrigin,
-      secret,
-      // Setup/recovery are split from signing in U2. Until then, keep the
-      // internal authority available as the existing non-browser limiter
-      // pepper on fresh installs; public recovery remains disabled unless the
-      // separate CHICKPEA_RECOVERY_TOKEN binding exists.
-      recoveryToken: recoveryToken ?? secret,
+      secret: stableSecret,
       cloudflareEnv,
     };
   }
@@ -75,8 +68,7 @@ export async function resolveBetterAuthBootstrapEnvironment(
   return {
     backend: getNodeBetterAuthBackend(),
     baseURL: input.canonicalOrigin,
-    recoveryToken: recoveryToken ?? secret,
-    secret,
+    secret: stableSecret,
   };
 }
 

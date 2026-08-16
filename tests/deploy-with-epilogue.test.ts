@@ -21,11 +21,13 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const DEPLOY_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'deploy-with-epilogue.mjs');
 const PROFILE_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'cloudflare-deployment-profile.mjs');
 const CAPABILITY_SCRIPT = path.join(PROJECT_ROOT, 'src', 'auth', 'setup-capability.mjs');
+const AUTH_MIGRATION = path.join(PROJECT_ROOT, 'migrations', 'better-auth', '0001_better_auth.sql');
 
 function createHarness() {
   const root = mkdtempSync(path.join(tmpdir(), 'chickpea-deploy-wrapper-'));
   const scriptsDir = path.join(root, 'scripts');
   const authDir = path.join(root, 'src', 'auth');
+  const authMigrationsDir = path.join(root, 'migrations', 'better-auth');
   const wranglerDir = path.join(root, 'node_modules', 'wrangler', 'bin');
   const logPath = path.join(root, 'commands.log');
   const secretCapturePath = path.join(root, 'secret-capture.json');
@@ -34,10 +36,12 @@ function createHarness() {
 
   mkdirSync(scriptsDir, { recursive: true });
   mkdirSync(authDir, { recursive: true });
+  mkdirSync(authMigrationsDir, { recursive: true });
   mkdirSync(wranglerDir, { recursive: true });
   copyFileSync(DEPLOY_SCRIPT, path.join(scriptsDir, 'deploy-with-epilogue.mjs'));
   copyFileSync(PROFILE_SCRIPT, path.join(scriptsDir, 'cloudflare-deployment-profile.mjs'));
   copyFileSync(CAPABILITY_SCRIPT, path.join(authDir, 'setup-capability.mjs'));
+  copyFileSync(AUTH_MIGRATION, path.join(authMigrationsDir, '0001_better_auth.sql'));
 
   const commandLogger = (label: string) => `
     import { appendFileSync } from 'node:fs';
@@ -68,6 +72,8 @@ function createHarness() {
     wranglerStub,
     commandLogger('wrangler') + `
       import { readFileSync, statSync, writeFileSync } from 'node:fs';
+      import { DatabaseSync } from 'node:sqlite';
+      import path from 'node:path';
       const args = process.argv.slice(2);
       if (args[0] === 'secret' && args[1] === 'list') {
         if (process.env.DEPLOY_TEST_SECRET_LIST_NOT_FOUND === '1' ||
@@ -120,6 +126,29 @@ function createHarness() {
         const authDb = config.d1_databases.find((entry) => entry.binding === 'AUTH_DB');
         authDb.database_id = 'provisioned-database-id';
         writeFileSync(configPath, JSON.stringify(config));
+      }
+      if (args[0] === 'd1' && args[1] === 'execute' && args.includes('--json')) {
+        if (process.env.DEPLOY_TEST_AUTH_SCHEMA_INSPECTION_FAIL === '1') {
+          process.stderr.write('schema inspection denied');
+          process.exit(1);
+        }
+        if (process.env.DEPLOY_TEST_AUTH_SCHEMA) {
+          process.stdout.write(process.env.DEPLOY_TEST_AUTH_SCHEMA);
+          process.exit(0);
+        }
+        const configPath = args[args.indexOf('--config') + 1];
+        const config = JSON.parse(readFileSync(configPath, 'utf8'));
+        const authDb = config.d1_databases.find((entry) => entry.binding === 'AUTH_DB');
+        const migrationPath = path.resolve(
+          path.dirname(configPath), authDb.migrations_dir, '0001_better_auth.sql',
+        );
+        const database = new DatabaseSync(':memory:');
+        database.exec(readFileSync(migrationPath, 'utf8'));
+        const query = args[args.indexOf('--command') + 1];
+        const results = database.prepare(query).all();
+        database.close();
+        process.stdout.write(JSON.stringify([{ results, success: true }]));
+        process.exit(0);
       }
       if (args[0] === 'deploy' && args.includes('--secrets-file')) {
         const secretPath = args[args.indexOf('--secrets-file') + 1];
@@ -215,7 +244,8 @@ test('successful deploy generates stable auth and prints the setup link immediat
     invoked[1] ?? '',
     /^wrangler:\["d1","migrations","apply","AUTH_DB","--remote","--config",".*\/dist-cf\/chickpea\/wrangler\.json"\]$/,
   );
-  assert.match(invoked[2] ?? '', /^wrangler:\["deploy","--secrets-file",".*"\]$/);
+  assert.match(invoked[2] ?? '', /^wrangler:\["d1","execute","AUTH_DB","--remote","--json","--command",/);
+  assert.match(invoked[3] ?? '', /^wrangler:\["deploy","--secrets-file",".*"\]$/);
 });
 
 test('successful custom-route deploy preserves the private setup path when Wrangler reports no origin', (context) => {
@@ -246,7 +276,7 @@ test('Worker name overrides fail before secret inspection or resource mutation',
   }
 });
 
-test('existing auth or legacy recovery authority is preserved across deploys', (context) => {
+test('existing auth authority is preserved and recovery never substitutes for it', (context) => {
   const current = createHarness();
   const legacy = createHarness();
   context.after(() => {
@@ -274,9 +304,15 @@ test('existing auth or legacy recovery authority is preserved across deploys', (
   assert.equal(currentResult.status, 0, currentResult.stderr);
   assert.equal(legacyResult.status, 0, legacyResult.stderr);
   assert.equal(existsSync(current.secretCapturePath), false);
-  assert.equal(existsSync(legacy.secretCapturePath), false);
+  assert.equal(existsSync(legacy.secretCapturePath), true);
+  const legacySecrets = JSON.parse(readFileSync(legacy.secretCapturePath, 'utf8')).values;
+  assert.match(legacySecrets.CHICKPEA_AUTH_SECRET, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(Object.hasOwn(legacySecrets, 'CHICKPEA_RECOVERY_TOKEN'), false);
   assert.equal(commands(current.logPath).at(-1), 'wrangler:["deploy"]');
-  assert.equal(commands(legacy.logPath).at(-1), 'wrangler:["deploy"]');
+  assert.match(
+    commands(legacy.logPath).at(-1) ?? '',
+    /^wrangler:\["deploy","--secrets-file","[^"]+\/secrets\.json"\]$/,
+  );
 });
 
 test('ordinary deploy preserves the existing versioned credential root', (context) => {
@@ -392,12 +428,13 @@ test('fresh deploy provisions AUTH_DB before migrations and rebuilds the binding
   const canonicalRoot = realpathSync(harness.root);
   const invoked = commands(harness.logPath);
   assert.match(invoked[0] ?? '', /^wrangler:\["secret","list",/);
-  assert.deepEqual(invoked.slice(1, -1), [
+  assert.deepEqual(invoked.slice(1, -2), [
     'wrangler:["d1","list","--json"]',
     `wrangler:["d1","create","chickpea-auth-db","--binding","AUTH_DB","--update-config","--config","${path.join(canonicalRoot, 'wrangler.jsonc')}"]`,
     'npm:["run","build"]',
     `wrangler:["d1","migrations","apply","AUTH_DB","--remote","--config","${path.join(canonicalRoot, 'dist-cf', 'chickpea', 'wrangler.json')}"]`,
   ]);
+  assert.match(invoked.at(-2) ?? '', /^wrangler:\["d1","execute","AUTH_DB","--remote","--json","--command",/);
   assert.match(invoked.at(-1) ?? '', /^wrangler:\["deploy","--secrets-file",/);
 });
 
@@ -416,10 +453,11 @@ test('fresh source reuses an existing named AUTH_DB without creating another', (
   const canonicalRoot = realpathSync(harness.root);
   const invoked = commands(harness.logPath);
   assert.match(invoked[0] ?? '', /^wrangler:\["secret","list",/);
-  assert.deepEqual(invoked.slice(1, -1), [
+  assert.deepEqual(invoked.slice(1, -2), [
     'wrangler:["d1","list","--json"]',
     `wrangler:["d1","migrations","apply","AUTH_DB","--remote","--config","${path.join(canonicalRoot, 'dist-cf', 'chickpea', 'wrangler.json')}"]`,
   ]);
+  assert.match(invoked.at(-2) ?? '', /^wrangler:\["d1","execute","AUTH_DB","--remote","--json","--command",/);
   assert.match(invoked.at(-1) ?? '', /^wrangler:\["deploy","--secrets-file",/);
   const config = JSON.parse(readFileSync(path.join(
     harness.root,
@@ -428,6 +466,44 @@ test('fresh source reuses an existing named AUTH_DB without creating another', (
     'wrangler.json',
   ), 'utf8'));
   assert.equal(config.d1_databases[0].database_id, 'existing-database-id');
+});
+
+test('an incompatible applied Better Auth 0001 blocks Worker upload', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_AUTH_SCHEMA: JSON.stringify([{
+      success: true,
+      results: [{
+        type: 'table', name: 'legacy_user', tbl_name: 'legacy_user',
+        sql: 'CREATE TABLE legacy_user (id text primary key, password text)',
+      }],
+    }]),
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /incompatible Better Auth 0001 schema/);
+  const invoked = commands(harness.logPath);
+  assert.equal(invoked.some((command) => command.includes('"migrations","apply"')), true);
+  assert.equal(invoked.some((command) => command.includes('"d1","execute"')), true);
+  assert.equal(invoked.some((command) => command.startsWith('wrangler:["deploy"')), false);
+});
+
+test('an unreadable remote AUTH_DB schema blocks Worker upload', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_AUTH_SCHEMA_INSPECTION_FAIL: '1',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Unable to inspect the migrated AUTH_DB schema/);
+  assert.equal(
+    commands(harness.logPath).some((command) => command.startsWith('wrangler:["deploy"')),
+    false,
+  );
 });
 
 test('an existing Worker reuses its deployed AUTH_DB id instead of another same-named database', (context) => {
@@ -651,7 +727,6 @@ function writeCutoverArtifact(
     durable_objects: { bindings: [
       { name: 'TAG_STATE', class_name: 'TagStateStore' },
       ...(profile === 'sandbox' ? [sandboxBinding] : []),
-      { name: 'AUTH_GUARD', class_name: 'AuthGuard' },
       { name: 'FLUE_CHICKPEA_SLACK_V2_AGENT', class_name: 'FlueChickpeaSlackV2Agent' },
       ...(options.routineAgents === false ? [] : [
         {
@@ -688,7 +763,6 @@ function writeCutoverArtifact(
           'FlueRoutineWorkflow',
         ],
       },
-      { tag: 'v7', new_sqlite_classes: ['AuthGuard'] },
     ],
   };
   writeFileSync(path.join(builtDir, 'wrangler.json'), JSON.stringify(config));
@@ -910,7 +984,8 @@ test('Agent View is the permanent manifest contract and deploys without a cutove
     invoked[1] ?? '',
     /^wrangler:\["d1","migrations","apply","AUTH_DB","--remote","--config",".*\/dist-cf\/chickpea\/wrangler\.json"\]$/,
   );
-  assert.match(invoked[2] ?? '', /^wrangler:\["deploy","--secrets-file",/);
+  assert.match(invoked[2] ?? '', /^wrangler:\["d1","execute","AUTH_DB","--remote","--json","--command",/);
+  assert.match(invoked[3] ?? '', /^wrangler:\["deploy","--secrets-file",/);
 });
 
 test('Agent View manifest validation fails closed for unreadable, malformed, dual-view, and legacy manifests', (context) => {

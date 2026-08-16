@@ -453,7 +453,7 @@ function admissionService(
   return new SlackAdmissionService({
     identity: fixture.identity,
     credentials: fixture.credentials,
-    environment: { backend, baseURL: ORIGIN, secret: SECRET, recoveryToken: SECRET },
+    environment: { backend, baseURL: ORIGIN, secret: SECRET },
     gateway,
     now: () => fixture.clock.now,
     randomBytes: (length) => new Uint8Array(length).fill(fixture.randomCounter++),
@@ -469,7 +469,7 @@ async function installedFixture() {
   const credentials = { state: identity, keyring: generateCredentialKeyring('key_v1') };
   const minted = await mintSetupCapability({ now });
   const opened = await openSlackSetupTransaction(identity, {
-    capability: minted.capability, authority: minted, now,
+    capability: minted.capability, authority: minted, canonicalAdminOrigin: ORIGIN, now,
   });
   const app = await new SlackAppCreationService({
     identity, credentials, now,

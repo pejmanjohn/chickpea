@@ -55,15 +55,15 @@ export const seededAssignments: SeedChannelAssignment[] = [
   },
 ];
 
-// T_DEMO channel-assignment FIXTURES for the offline harnesses (parity
+// TDEMO channel-assignment FIXTURES for the offline harnesses (parity
 // scenarios, verify scripts, unit tests). These are intentionally NOT part of
 // seededAssignments: a fresh install must not show demo channels in /admin.
 // Both point at the single seeded profile (agent_default) so the harnesses can
-// seed T_DEMO channels with the same agent list the install ships. A scenario
+// seed TDEMO channels with the same agent list the install ships. A scenario
 // that needs two DISTINCT profiles builds them in its own setup (see S29 in
 // tests/parity/scenarios.ts), not from these fixtures.
 export const demoEngChannelAssignment: SeedChannelAssignment = {
-  workspaceId: 'T_DEMO',
+  workspaceId: 'TDEMO',
   channelId: 'C_ENG',
   agentId: 'agent_default',
   enabled: true,
@@ -71,7 +71,7 @@ export const demoEngChannelAssignment: SeedChannelAssignment = {
 };
 
 export const demoExecChannelAssignment: SeedChannelAssignment = {
-  workspaceId: 'T_DEMO',
+  workspaceId: 'TDEMO',
   channelId: 'C_EXEC',
   agentId: 'agent_default',
   enabled: true,

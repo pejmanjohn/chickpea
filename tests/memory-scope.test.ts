@@ -77,12 +77,12 @@ function slack(overrides: Partial<MemoryScopeSlack> = {}): MemoryScopeSlack {
       return { ok: true, user: fullMember };
     },
     async members() {
-      return { ok: true, ids: ['U_MEMBER', 'U_OTHER', 'U_BOT'] };
+      return { ok: true, ids: ['U_MEMBER', 'U_OTHER', 'UBOT'] };
     },
     async users() {
       return {
         ok: true,
-        users: [fullMember, { ...fullMember, id: 'U_OTHER' }, { ...fullMember, id: 'U_BOT', bot: true }],
+        users: [fullMember, { ...fullMember, id: 'U_OTHER' }, { ...fullMember, id: 'UBOT', bot: true }],
       };
     },
     ...overrides,
@@ -97,7 +97,7 @@ test('eligible public scope expands workspace reads only after a complete audien
         workspaceId: 'T_TEST',
         channelId: 'C_SOURCE',
         actorId: 'U_MEMBER',
-        botUserId: 'U_BOT',
+        botUserId: 'UBOT',
         observedAt: 100,
       },
       { slack: slack(), state },
@@ -126,19 +126,19 @@ test('guest, foreign, missing, and third-party bot audience members degrade to s
           workspaceId: 'T_TEST',
           channelId: 'C_SOURCE',
           actorId: 'U_MEMBER',
-          botUserId: 'U_BOT',
+          botUserId: 'UBOT',
           observedAt: 100,
         },
         {
           state,
           slack: slack({
             async members() {
-              return { ok: true, ids: ['U_MEMBER', 'U_OTHER', 'U_BOT'] };
+              return { ok: true, ids: ['U_MEMBER', 'U_OTHER', 'UBOT'] };
             },
             async users() {
               return {
                 ok: true,
-                users: [fullMember, unsupported, { ...fullMember, id: 'U_BOT', bot: true }],
+                users: [fullMember, unsupported, { ...fullMember, id: 'UBOT', bot: true }],
               };
             },
           }),
@@ -163,7 +163,7 @@ test('private scope writes only to its generation and never returns it as a publ
         workspaceId: 'T_TEST',
         channelId: 'C_PRIVATE',
         actorId: 'U_MEMBER',
-        botUserId: 'U_BOT',
+        botUserId: 'UBOT',
         observedAt: 100,
       },
       {
@@ -212,7 +212,7 @@ test('unsupported sharing and ineligible actors disable memory without blocking 
         workspaceId: 'T_TEST',
         channelId: 'C_SOURCE',
         actorId: 'U_MEMBER',
-        botUserId: 'U_BOT',
+        botUserId: 'UBOT',
         observedAt: 100,
       },
       {
@@ -238,7 +238,7 @@ test('unsupported sharing and ineligible actors disable memory without blocking 
         workspaceId: 'T_TEST',
         channelId: 'C_SOURCE',
         actorId: 'U_MEMBER',
-        botUserId: 'U_BOT',
+        botUserId: 'UBOT',
         observedAt: 100,
       },
       {
@@ -256,13 +256,13 @@ test('unsupported sharing and ineligible actors disable memory without blocking 
     const absentActor = await resolveMemoryScope(
       {
         workspaceId: 'T_TEST', channelId: 'C_SOURCE', actorId: 'U_MEMBER',
-        botUserId: 'U_BOT', observedAt: 100,
+        botUserId: 'UBOT', observedAt: 100,
       },
       {
         state,
         slack: slack({
           async members() {
-            return { ok: true, ids: ['U_OTHER', 'U_BOT'] };
+            return { ok: true, ids: ['U_OTHER', 'UBOT'] };
           },
         }),
       },
@@ -273,7 +273,7 @@ test('unsupported sharing and ineligible actors disable memory without blocking 
     const groupDm = await resolveMemoryScope(
       {
         workspaceId: 'T_TEST', channelId: 'C_SOURCE', actorId: 'U_MEMBER',
-        botUserId: 'U_BOT', observedAt: 100,
+        botUserId: 'UBOT', observedAt: 100,
       },
       {
         state,
@@ -302,20 +302,20 @@ test('delivery lease rechecks current channel and actor membership without rejec
       async members() {
         membershipCalls += 1;
         return membershipCalls === 1
-          ? { ok: true, ids: ['U_MEMBER', 'U_OTHER', 'U_BOT'] }
-          : { ok: true, ids: ['U_MEMBER', 'U_NEW', 'U_BOT'] };
+          ? { ok: true, ids: ['U_MEMBER', 'U_OTHER', 'UBOT'] }
+          : { ok: true, ids: ['U_MEMBER', 'U_NEW', 'UBOT'] };
       },
       async users() {
         directoryCalls += 1;
         return {
           ok: true,
-          users: [fullMember, { ...fullMember, id: 'U_OTHER' }, { ...fullMember, id: 'U_BOT', bot: true }],
+          users: [fullMember, { ...fullMember, id: 'U_OTHER' }, { ...fullMember, id: 'UBOT', bot: true }],
         };
       },
     });
     const input = {
       workspaceId: 'T_TEST', channelId: 'C_SOURCE', actorId: 'U_MEMBER',
-      botUserId: 'U_BOT', observedAt: 100,
+      botUserId: 'UBOT', observedAt: 100,
     };
     const decision = await resolveMemoryScope(input, { slack: liveSlack, state });
     assert.equal(decision.enabled, true);
@@ -353,8 +353,8 @@ test('delivery lease revalidates destination audience only for selected cross-so
         return {
           ok: true,
           ids: guestJoined
-            ? ['U_MEMBER', 'U_GUEST', 'U_BOT']
-            : ['U_MEMBER', 'U_OTHER', 'U_BOT'],
+            ? ['U_MEMBER', 'U_GUEST', 'UBOT']
+            : ['U_MEMBER', 'U_OTHER', 'UBOT'],
         };
       },
       async users() {
@@ -362,14 +362,14 @@ test('delivery lease revalidates destination audience only for selected cross-so
         return {
           ok: true,
           users: guestJoined
-            ? [fullMember, { ...fullMember, id: 'U_GUEST', restricted: true }, { ...fullMember, id: 'U_BOT', bot: true }]
-            : [fullMember, { ...fullMember, id: 'U_OTHER' }, { ...fullMember, id: 'U_BOT', bot: true }],
+            ? [fullMember, { ...fullMember, id: 'U_GUEST', restricted: true }, { ...fullMember, id: 'UBOT', bot: true }]
+            : [fullMember, { ...fullMember, id: 'U_OTHER' }, { ...fullMember, id: 'UBOT', bot: true }],
         };
       },
     });
     const input = {
       workspaceId: 'T_TEST', channelId: 'C_SOURCE', actorId: 'U_MEMBER',
-      botUserId: 'U_BOT', observedAt: 100,
+      botUserId: 'UBOT', observedAt: 100,
     };
     const decision = await resolveMemoryScope(input, { slack: liveSlack, state });
     assert.equal(decision.enabled, true);
@@ -441,7 +441,7 @@ test('one-page and five-page memory turns stay within their Slack API call budge
         if (method === 'conversations.members') {
           return Response.json({
             ok: true,
-            members: ['U_MEMBER', 'U_BOT'],
+            members: ['U_MEMBER', 'UBOT'],
             response_metadata: { next_cursor: nextCursor },
           });
         }
@@ -450,7 +450,7 @@ test('one-page and five-page memory turns stay within their Slack API call budge
           ok: true,
           members: [
             { ...fullMember, team_id: 'T_BUDGET' },
-            { ...fullMember, id: 'U_BOT', team_id: 'T_BUDGET', is_bot: true },
+            { ...fullMember, id: 'UBOT', team_id: 'T_BUDGET', is_bot: true },
           ],
           response_metadata: { next_cursor: nextCursor },
         });
@@ -461,7 +461,7 @@ test('one-page and five-page memory turns stay within their Slack API call budge
         const liveSlack = createMemoryScopeSlack('xoxb-budget', 'T_BUDGET');
         const input = {
           workspaceId: 'T_BUDGET', channelId: 'C_BUDGET', actorId: 'U_MEMBER',
-          botUserId: 'U_BOT', observedAt: 100,
+          botUserId: 'UBOT', observedAt: 100,
         };
         const decision = await resolveMemoryScope(input, { slack: liveSlack, state });
         assert.equal(decision.enabled, true);
@@ -534,7 +534,7 @@ test('archived and deleted Slack truth retain channel state while transient fail
       const decision = await resolveMemoryScope(
         {
           workspaceId: 'T_TEST', channelId: 'C_SOURCE', actorId: 'U_MEMBER',
-          botUserId: 'U_BOT', observedAt: 100,
+          botUserId: 'UBOT', observedAt: 100,
         },
         { slack: slack({ conversation: scenario.conversation }), state },
       );
@@ -561,7 +561,7 @@ test('archived and deleted Slack truth retain channel state while transient fail
     await resolveMemoryScope(
       {
         workspaceId: 'T_TEST', channelId: 'C_SOURCE', actorId: 'U_MEMBER',
-        botUserId: 'U_BOT', observedAt: 100,
+        botUserId: 'UBOT', observedAt: 100,
       },
       { slack: slack({ async conversation() { return { ok: false, error: 'ratelimited' }; } }), state },
     );

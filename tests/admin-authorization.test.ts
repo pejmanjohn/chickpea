@@ -34,7 +34,7 @@ test('team authority is split so Admin can inspect but only Owner can mutate mem
 test('deployment/shared token cannot become a product principal', async () => {
   const identity = new SqliteIdentityStore(':memory:');
   try {
-    const app = createAdminRoutes({ identity, adminToken: 'deployment-token' });
+    const app = createAdminRoutes({ identity });
     assert.equal((await app.request('https://app.example/admin', {
       headers: { authorization: 'Bearer deployment-token' },
     })).status, 503);

@@ -336,17 +336,12 @@ try {
   );
 
   record(
-    'first-run Slack permission completion is accessible and keeps credentials out of markup',
-    pageHtml.includes('slackOnboardingContinuation') &&
-      pageHtml.includes('data-action="slack-permissions-open"') &&
-      pageHtml.includes('data-action="slack-permissions-check"') &&
-      pageHtml.includes('role="status" aria-live="polite"') &&
-      pageHtml.includes('target="_blank" rel="noopener noreferrer" data-action="slack-permissions-open"') &&
-      pageHtml.includes('type="password" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"') &&
-      pageHtml.includes('signingSecretInput.value = state.slackDraft.signingSecret') &&
-      pageHtml.includes('botTokenInput.value = state.slackDraft.botToken') &&
-      !pageHtml.includes('id="onboarding-signing-secret" name="signingSecret" type="password" autocomplete="off" value="') &&
-      !pageHtml.includes('id="onboarding-bot-token" name="botToken" type="password" autocomplete="off" placeholder="xoxb-&hellip;" value="'),
+    'workspace-default Slack setup has no browser credential paste-back surface',
+    pageHtml.includes('Bot tokens are never pasted into Admin') &&
+      !pageHtml.includes('data-action="slack-connect-form"') &&
+      !pageHtml.includes('data-action="slack-update-open"') &&
+      !pageHtml.includes('id="onboarding-signing-secret"') &&
+      !pageHtml.includes('id="onboarding-bot-token"'),
   );
 
   const usageOverview = await adminJson(

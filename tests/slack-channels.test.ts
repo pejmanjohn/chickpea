@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
 import { test } from 'node:test';
 
 import { Hono } from 'hono';
@@ -16,14 +15,11 @@ import {
   invalidateStoredSlackCredentials,
   invalidateStoredSlackPublicUrl,
   readStoredSlackTeamInfo,
-  readSlackConnectionRevision,
-  resolveSlackCredentials,
   resolveSlackPublicUrl,
   SLACK_SETTING_KEYS,
 } from '../src/slack/credentials.ts';
 import { writeSlackIdentityCredentials } from '../src/slack/identity-credentials.ts';
 import { renderSlackConfigureLink } from '../src/slack/message-format.ts';
-import { recordPendingSlackChallenge } from '../src/slack/identity-handshake.ts';
 import { FakeSlackBackend, type FakeSlackBackendConfig } from './parity/fake-slack.ts';
 import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
@@ -31,7 +27,7 @@ import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 const ADMIN_TOKEN = 'channels-admin-token';
 
-// Keep the wizard/channels tests hermetic against the developer's shell — no
+// Keep the channels tests hermetic against the developer's shell — no
 // ambient Slack creds should affect encrypted credential resolution.
 const NO_SLACK_ENV: NodeJS.ProcessEnv = {
   SLACK_BOT_TOKEN: undefined,
@@ -128,142 +124,6 @@ async function withFake(
 }
 
 // --- 1. Team persistence + backfill -----------------------------------------
-
-test('wizard POST persists the connected team id + name, and the connection GET exposes them', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) return t.skip(skip);
-
-  await withFake(
-    {
-      slack: {
-        identity: {
-          appId: 'A0ACME', teamId: 'TACME', teamName: 'Acme Inc', botUserId: 'U0BOT',
-        },
-      },
-    },
-    async () => {
-      const settings = new SqliteSettingsStore(':memory:');
-      const store = new SqliteConfigStore(':memory:');
-      try {
-        const app = appWith(settings, store);
-        const timestamp = String(Math.floor(Date.now() / 1_000));
-        const challengeBody = JSON.stringify({
-          type: 'url_verification',
-          challenge: 'channels-wizard-proof',
-          api_app_id: 'A0ACME',
-          team_id: 'TACME',
-        });
-        const signature = `v0=${createHmac('sha256', 'acme-secret')
-          .update(`v0:${timestamp}:${challengeBody}`)
-          .digest('hex')}`;
-        const identity = await store.getSlackIdentity('slack_identity_default');
-        const challenged = await recordPendingSlackChallenge(settings, identity, {
-          rawBody: challengeBody,
-          timestamp,
-          signature,
-        });
-        assert.equal(challenged.accepted, true);
-        const saved = await app.request('/admin/api/slack-connection', {
-          method: 'POST',
-          headers: { ...auth(), 'content-type': 'application/json' },
-          body: JSON.stringify({ botToken: 'xoxb-acme', signingSecret: 'acme-secret' }),
-        });
-        assert.equal(saved.status, 200, await saved.clone().text());
-        const savedBody = (await saved.json()) as Record<string, unknown>;
-        assert.equal(savedBody.teamId, 'TACME');
-        assert.equal(savedBody.team, 'Acme Inc');
-
-        assert.equal((await readStoredSlackTeamInfo(undefined, settings)).teamId, 'TACME');
-        assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.teamName), 'Acme Inc');
-
-        const conn = await getJson(app, '/admin/api/slack-connection');
-        const connBody = (await conn.json()) as Record<string, unknown>;
-        assert.equal(connBody.teamId, 'TACME');
-        assert.equal(connBody.teamName, 'Acme Inc');
-      } finally {
-        store.close();
-        settings.close();
-      }
-    },
-  );
-});
-
-test('encrypted workspace credentials rotate atomically and disconnect tombstones the live revision', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) return t.skip(skip);
-
-  await withFake(
-    {
-      slack: {
-        identity: {
-          appId: 'A0ACME', teamId: 'TACME', teamName: 'Acme Inc', botUserId: 'U0BOT',
-        },
-      },
-    },
-    async () => {
-      const settings = new SqliteSettingsStore(':memory:');
-      const store = new SqliteConfigStore(':memory:');
-      try {
-        const app = appWith(settings, store);
-        const timestamp = String(Math.floor(Date.now() / 1_000));
-        const challengeBody = JSON.stringify({
-          type: 'url_verification',
-          challenge: 'channels-rotation-proof',
-          api_app_id: 'A0ACME',
-          team_id: 'TACME',
-        });
-        const signature = `v0=${createHmac('sha256', 'acme-secret')
-          .update(`v0:${timestamp}:${challengeBody}`)
-          .digest('hex')}`;
-        const identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-        assert.equal((await recordPendingSlackChallenge(settings, identity, {
-          rawBody: challengeBody, timestamp, signature,
-        })).accepted, true);
-
-        const first = await app.request('/admin/api/slack-connection', {
-          method: 'POST',
-          headers: { ...auth(), 'content-type': 'application/json' },
-          body: JSON.stringify({ botToken: 'xoxb-acme-v1', signingSecret: 'acme-secret' }),
-        });
-        assert.equal(first.status, 200, await first.clone().text());
-        const firstRevision = await readSlackConnectionRevision(settings);
-        assert.ok(firstRevision);
-
-        const rotated = await app.request('/admin/api/slack-connection', {
-          method: 'POST',
-          headers: { ...auth(), 'content-type': 'application/json' },
-          body: JSON.stringify({ botToken: 'xoxb-acme-v2', signingSecret: 'acme-secret' }),
-        });
-        assert.equal(rotated.status, 200, await rotated.clone().text());
-        const active = await resolveSlackCredentials(undefined, settings);
-        assert.equal(active.botToken, 'xoxb-acme-v2');
-        assert.notEqual(await readSlackConnectionRevision(settings), firstRevision);
-
-        await settings.setSetting(SLACK_SETTING_KEYS.publicUrl, 'https://chickpea.example');
-        const disconnected = await app.request('/admin/api/slack-connection', {
-          method: 'DELETE', headers: auth(),
-        });
-        assert.equal(disconnected.status, 200, await disconnected.clone().text());
-        assert.deepEqual(await resolveSlackCredentials(undefined, settings), {
-          botToken: undefined,
-          signingSecret: undefined,
-          botUserId: undefined,
-        });
-        assert.deepEqual(await readStoredSlackTeamInfo(undefined, settings), {
-          teamId: undefined,
-          teamName: undefined,
-        });
-        assert.equal(
-          await settings.getSetting(SLACK_SETTING_KEYS.publicUrl),
-          'https://chickpea.example',
-        );
-      } finally {
-        store.close();
-        settings.close();
-      }
-    },
-  );
-});
 
 test('team info comes from the canonical encrypted revision without an auth.test backfill', async (t) => {
   const skip = await loopbackListenSkipReason();

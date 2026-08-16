@@ -28,6 +28,7 @@ import {
   loadFake,
   postSignedEvent,
   seedOfflineDemoChannelConfig,
+  seedOfflineSlackAuthority,
   spawnServer,
   stopChild,
   waitForFinals,
@@ -51,12 +52,22 @@ async function runProvider({ serverEntry, fake, backend, netGuardLog, model, rep
   backend.reset();
   backend.configure({ provider: { mode: 'ok', replyText } });
   // Channels are fail-closed and the install seed no longer includes the
-  // T_DEMO demo assignments, so the C_EXEC mention fixture needs an explicitly
+  // TDEMO demo assignments, so the C_EXEC mention fixture needs an explicitly
   // seeded state DB (a ':memory:' transcript DB would derive an unseedable
   // ':memory:' state store).
   const stateDbPath = join(mkdtempSync(join(tmpdir(), 'flue-prov-state-')), 'state.db');
+  const keyringPath = `${stateDbPath}.credential-keyring.json`;
   await seedOfflineDemoChannelConfig(stateDbPath);
   const port = await getFreePort();
+  await seedOfflineSlackAuthority({
+    stateDbPath,
+    keyringPath,
+    canonicalOrigin: `http://127.0.0.1:${port}`,
+    teamId: 'TDEMO',
+    slackUserId: 'UOWNER01',
+    appId: 'ADEMO',
+    botUserId: 'UBOT',
+  });
   const spawned = spawnServer({
     serverEntry,
     port,
@@ -65,6 +76,8 @@ async function runProvider({ serverEntry, fake, backend, netGuardLog, model, rep
     env: {
       TAG_DB_PATH: ':memory:',
       SLACK_STATE_DB_PATH: stateDbPath,
+      CHICKPEA_CREDENTIAL_KEYRING_PATH: keyringPath,
+      CHICKPEA_AUTH_SECRET: '9d'.repeat(32),
       SLACK_TAG_MODEL: model,
       ...env,
     },
@@ -97,15 +110,15 @@ const backend = new FakeSlackBackend({
         id: 'C_EXEC',
         name: 'exec-briefing',
         isMember: true,
-        teamId: 'T_DEMO',
+        teamId: 'TDEMO',
       },
     ],
     channelMembers: {
-      C_EXEC: ['U_ALICE', 'U_BOT'],
+      C_EXEC: ['U_ALICE', 'UBOT'],
     },
     workspaceUsers: [
-      { id: 'U_ALICE', teamId: 'T_DEMO' },
-      { id: 'U_BOT', teamId: 'T_DEMO', isBot: true, isAppUser: true },
+      { id: 'U_ALICE', teamId: 'TDEMO' },
+      { id: 'UBOT', teamId: 'TDEMO', isBot: true, isAppUser: true },
     ],
   },
   provider: { mode: 'ok' },

@@ -72,12 +72,12 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'architecture', 'agent-runtime-boundary.md'),
   exportPath('docs', 'authentication.md'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'design-qa.md'),
+  exportPath('docs', 'design', 'agent-first-admin-prototype', 'production-fidelity-qa.md'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'app.jsx'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'assets', 'chickpea-mark.svg'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'styles.css'),
   exportPath('docs', 'plans', '2026-07-28-001-feat-openai-subscription-auth-plan.md'),
-  exportPath('docs', 'runbooks', 'access-recovery.md'),
-  exportPath('docs', 'runbooks', 'auth-db-upgrade.md'),
+  exportPath('docs', 'runbooks', 'auth-db-deployment.md'),
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
   exportPath('docs', 'runbooks', 'slack-auth-recovery.md'),
   exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
@@ -159,6 +159,54 @@ const allowedBinaryFiles = new Map([
   [
     exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-profile-tabs.png'),
     '347a7c4fcca8d82640c0524c4dfc10b550c22f8560e8d294257c0a78f0247f5e',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-production-agent-instructions.png'),
+    '9f742e1a293e6b585a4b811e94c96f17e7e2bdd22fe2639612c096f8d8ba5347',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-production-agent-memory.png'),
+    '10b5d06bdbcf074b24cf71ac4409eed28d813580ca4008876d6149249f82b18c',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-production-channel-advanced-diagnostics.png'),
+    '675d363689f99bb6426ef3aa5219fa03e613e9760fae65929916fcebfc61ec36',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-production-channel-advanced.png'),
+    'bb178b61b20cef765ac7c97cfe1b414bc997bb42a8d6cfe71e3c0f6fe4fa06d1',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-production-channel-detail.png'),
+    'd4a8aa09081c309f5c3157c57097c89f34a882c84f2a8c3925d37fb4102c66a1',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-production-channels-index.png'),
+    'ca22e88250ca6d2d54358dbd241fef2f9c10eb5d38eef7b5bb5275aaff618a68',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-production-responsive-1000-agent.png'),
+    '110344553fd10f862ad3028317170cf720f2dae6f36c879d7449f4a04e734e27',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-production-responsive-1000-channels.png'),
+    '90e60a6924866d58df6c749d0a70ef56f63cd256640d8129e649c45db2ae411d',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-production-responsive-200-percent-channel.png'),
+    '0dec9a89afe8fb1533dca0544d49b390804babefe2a4ceb885229fec149d196b',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-production-responsive-740-agent.png'),
+    'af34d5a59d64b9edf97b9a225f417c0eacc28ece190f65a3f1c7f2580cee515b',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-production-responsive-phone-agent.png'),
+    'b8bc2f6b022e89c834befe1652368c47d07fbf460943ab61416cee374e1507e9',
+  ],
+  [
+    exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-production-responsive-phone-channel.png'),
+    '3ada83213e769030cab6525eb67b6b28e171dd8c9df8ba054d89435bf41d7978',
   ],
 ]);
 
@@ -403,17 +451,14 @@ function verifyNpmPackManifest() {
     'scripts/deploy-with-epilogue.mjs',
     'scripts/recover-auth.mjs',
     'docs/authentication.md',
-    'docs/runbooks/access-recovery.md',
-    'docs/runbooks/auth-db-upgrade.md',
+    'docs/runbooks/auth-db-deployment.md',
     'docs/runbooks/coding-sandbox-deployment.md',
     'docs/runbooks/slack-auth-recovery.md',
     'migrations/better-auth/0001_better_auth.sql',
     'scripts/flue-build-cf.mjs',
-    'scripts/generate-common-passwords.mjs',
     'slack-app-manifest.json',
     'src/app.ts',
     'src/cloudflare.ts',
-    'src/auth/generated-common-passwords.license.txt',
     'vite.config.ts',
     'vite.node.config.ts',
     'wrangler.jsonc',
@@ -449,10 +494,12 @@ function verifyAuthenticationExportContract(packageJson) {
     fail('Slack recovery preflight must remain read-only with no HTTP transport');
   }
   const identityTypes = readFileSync(join(scratch, 'src', 'identity', 'types.ts'), 'utf8');
-  if (!identityTypes.includes("Omit<Invitation, 'tokenHash' | 'normalizedEmail'>") ||
+  if (!identityTypes.includes("Omit<Invitation, 'locatorHash'>") ||
       !identityTypes.includes("Omit<PersonalTokenRecord, 'tokenHash'>") ||
-      !identityTypes.includes("Omit<BrowserSessionRecord, 'sessionHash'>")) {
-    fail('Identity export summary must omit invitation, personal-token, and session hashes');
+      !identityTypes.includes("Omit<BrowserSessionRecord, 'sessionHash'>") ||
+      !identityTypes.includes("Omit<AuthOperation, 'capabilityHash'>") ||
+      !identityTypes.includes("Omit<SlackSetupTransaction, 'locatorHash'>")) {
+    fail('Identity export summary must omit invitation, operation, setup, token, and session locators');
   }
   const example = readFileSync(join(scratch, '.dev.vars.example'), 'utf8');
   const activeExampleKeys = example.split('\n')

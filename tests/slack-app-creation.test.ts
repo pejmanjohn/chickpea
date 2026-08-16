@@ -25,12 +25,14 @@ test('a valid seven-day capability opens one durable resumable setup transaction
     const first = await openSlackSetupTransaction(store, {
       capability: minted.capability,
       authority: minted,
+      canonicalAdminOrigin: ORIGIN,
       destination: '/admin/channels',
       now: () => NOW,
     });
     const resumed = await openSlackSetupTransaction(store, {
       capability: minted.capability,
       authority: minted,
+      canonicalAdminOrigin: ORIGIN,
       destination: 'https://attacker.example/admin',
       now: () => NOW + 60_000,
     });
@@ -38,11 +40,23 @@ test('a valid seven-day capability opens one durable resumable setup transaction
     assert.equal(resumed.expiresAt, NOW + SLACK_SETUP_TTL_MS);
     assert.equal(resumed.destination, '/admin/channels');
     assert.doesNotMatch(JSON.stringify(resumed), new RegExp(minted.capability));
+    assert.equal((await store.getAuthControl())?.canonicalAdminOrigin, ORIGIN);
 
     await assert.rejects(
       () => openSlackSetupTransaction(store, {
         capability: minted.capability,
         authority: minted,
+        canonicalAdminOrigin: 'https://different.example',
+        now: () => NOW + 60_000,
+      }),
+      (error: unknown) => error instanceof SlackAppCreationError && error.code === 'setup_conflict',
+    );
+
+    await assert.rejects(
+      () => openSlackSetupTransaction(store, {
+        capability: minted.capability,
+        authority: minted,
+        canonicalAdminOrigin: ORIGIN,
         now: () => NOW + SLACK_SETUP_TTL_MS + 1,
       }),
       (error: unknown) => error instanceof SlackAppCreationError && error.code === 'setup_expired',
@@ -58,7 +72,7 @@ test('replacement capability invalidates the prior locator while retaining unamb
   try {
     const first = await mintSetupCapability({ now: () => NOW });
     let setup = await openSlackSetupTransaction(store, {
-      capability: first.capability, authority: first, now: () => NOW,
+      capability: first.capability, authority: first, canonicalAdminOrigin: ORIGIN, now: () => NOW,
     });
     const service = new SlackAppCreationService({
       identity: store,
@@ -79,6 +93,7 @@ test('replacement capability invalidates the prior locator while retaining unamb
     const reissued = await openSlackSetupTransaction(store, {
       capability: replacement.capability,
       authority: replacement,
+      canonicalAdminOrigin: ORIGIN,
       now: () => NOW + 1_000,
     });
     assert.equal(reissued.appId, setup.appId);
@@ -87,6 +102,7 @@ test('replacement capability invalidates the prior locator while retaining unamb
       () => openSlackSetupTransaction(store, {
         capability: first.capability,
         authority: replacement,
+        canonicalAdminOrigin: ORIGIN,
         now: () => NOW + 1_000,
       }),
       (error: unknown) => error instanceof SlackAppCreationError && error.code === 'setup_invalid',
@@ -334,6 +350,7 @@ async function setupTransaction(store: SqliteIdentityStore) {
   return openSlackSetupTransaction(store, {
     capability: minted.capability,
     authority: minted,
+    canonicalAdminOrigin: ORIGIN,
     now: () => NOW,
   });
 }

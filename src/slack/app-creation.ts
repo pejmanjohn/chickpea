@@ -47,6 +47,7 @@ export async function openSlackSetupTransaction(
     capability: string;
     authority: SlackSetupAuthority;
     destination?: string | null;
+    canonicalAdminOrigin: string;
     now?: () => number;
   },
 ): Promise<SlackSetupTransaction> {
@@ -69,6 +70,7 @@ export async function openSlackSetupTransaction(
       issuedAt: input.authority.issuedAt,
       expiresAt: input.authority.issuedAt + SLACK_SETUP_TTL_MS,
       destination: safeSetupDestination(input.destination),
+      canonicalAdminOrigin: input.canonicalAdminOrigin,
     });
     if (transaction.expiresAt <= now) {
       throw new SlackAppCreationError('setup_expired', 'This private setup link expired. Create a new deployment setup link.');
@@ -84,6 +86,7 @@ export interface SlackAppCreationServiceDependencies {
   identity: IdentityStore;
   credentials: SlackCredentialDependencies;
   fetch?: typeof fetch;
+  apiBaseUrl?: string;
   now?: () => number;
 }
 
@@ -136,7 +139,12 @@ export class SlackAppCreationService {
 
     let response: Response;
     try {
-      response = await this.fetchImpl(SLACK_MANIFEST_CREATE_URL, {
+      const fetchImpl = this.fetchImpl;
+      response = await fetchImpl(slackApiMethodUrl(
+        this.dependencies.apiBaseUrl,
+        'apps.manifest.create',
+        SLACK_MANIFEST_CREATE_URL,
+      ), {
         method: 'POST',
         headers: {
           authorization: `Bearer ${token}`,
@@ -269,6 +277,11 @@ export class SlackAppCreationService {
   }
 }
 
+function slackApiMethodUrl(baseUrl: string | undefined, method: string, fallback: string): string {
+  const normalized = baseUrl?.trim().replace(/\/+$/, '');
+  return normalized ? `${normalized}/${method}` : fallback;
+}
+
 interface CreatedSlackApp {
   appId: string;
   clientId: string;
@@ -357,7 +370,7 @@ function stateError(error: unknown): SlackAppCreationError {
     if (error.code === 'auth_operation_expired') {
       return new SlackAppCreationError('setup_expired', 'Slack setup expired. Create a new deployment setup link.');
     }
-    if (error.code === 'auth_operation_conflict') {
+    if (error.code === 'auth_operation_conflict' || error.code === 'auth_control_conflict') {
       return new SlackAppCreationError('setup_conflict', 'Slack setup changed concurrently or is already in progress.');
     }
   }

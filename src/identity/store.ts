@@ -848,13 +848,30 @@ export class IdentityStoreLogic {
   reserveSlackSetupTransaction(
     input: ReserveSlackSetupTransactionInput,
   ): SlackSetupTransaction {
+    return this.db.transaction(() => this.reserveSlackSetupTransactionInTransaction(input));
+  }
+
+  private reserveSlackSetupTransactionInTransaction(
+    input: ReserveSlackSetupTransactionInput,
+  ): SlackSetupTransaction {
     const locatorHash = credentialHash(input.locatorHash);
+    const canonicalAdminOrigin = validOrigin(input.canonicalAdminOrigin);
     validateSetupTime(input.issuedAt, 'Slack setup issue time');
     validateSetupTime(input.expiresAt, 'Slack setup expiry');
     if (input.expiresAt <= input.issuedAt) {
       throw identityError('identity_invalid', 'Slack setup expiry is invalid.');
     }
     const destination = safeStoredAdminDestination(input.destination);
+    const control = this.ensureAuthControl();
+    if (control.canonicalAdminOrigin && control.canonicalAdminOrigin !== canonicalAdminOrigin) {
+      throw identityError('auth_control_conflict', 'Slack setup is bound to another Admin origin.');
+    }
+    if (!control.canonicalAdminOrigin) {
+      this.updateAuthControl({
+        expectedRevision: control.revision,
+        canonicalAdminOrigin,
+      });
+    }
     const existing = this.getSlackSetupTransaction('setup_default');
     if (!existing) {
       const at = this.now();
@@ -2059,15 +2076,6 @@ export class IdentityStoreLogic {
       .map(slackBindingFromRow);
   }
 
-  resolveActorExternalIdentity(
-    provider: 'slack',
-    slackTeamIdValue: string,
-    slackUserIdValue: string,
-  ): SlackIdentityBinding | undefined {
-    if (provider !== 'slack') return undefined;
-    return this.resolveSlackIdentity(slackTeamIdValue, slackUserIdValue)?.binding;
-  }
-
   listMemberships(): Membership[] {
     return this.db.all('SELECT * FROM identity_memberships ORDER BY created_at, membership_id')
       .map(membershipFromRow);
@@ -2762,7 +2770,6 @@ export class SqliteIdentityStore implements IdentityStore {
   async activateInvitation(input: ActivateInvitationInput) { return this.logic.activateInvitation(input); }
   async resolveSlackIdentity(teamId: string, userId: string, organizationId?: string) { return this.logic.resolveSlackIdentity(teamId, userId, organizationId); }
   async listExternalIdentities() { return this.logic.listExternalIdentities(); }
-  async resolveActorExternalIdentity(provider: 'slack', teamId: string, userId: string) { return this.logic.resolveActorExternalIdentity(provider, teamId, userId); }
   async listMemberships() { return this.logic.listMemberships(); }
   async getUser(id: string) { return this.logic.getUser(id); }
   async getMembership(id: string) { return this.logic.getMembership(id); }

@@ -17,7 +17,7 @@ test('recovery-only health gate admits no normal session or Slack auth route', a
   try {
     const control = await identity.ensureAuthControl({ healthGate: 'recovery_only' });
     assert.equal(control.healthGate, 'recovery_only');
-    const app = createBetterAuthRuntimeRoutes({ identity, recoveryToken: '0'.repeat(64) });
+    const app = createBetterAuthRuntimeRoutes({ identity, authSecret: '0'.repeat(64) });
     for (const path of ['/api/auth/get-session', '/api/auth/sign-out', '/api/auth/slack/start']) {
       const response = await app.request(`https://app.example${path}`);
       assert.equal(response.status, 404, path);

@@ -8,14 +8,14 @@ const DRAIN_CATEGORY_KEYS = [
   'admittingOrRunningRoutineOccurrences',
 ];
 
-export async function runDrainCheck({ baseUrl, adminToken, sessionCookie, fetchImpl = fetch }) {
+export async function runDrainCheck({ baseUrl, personalToken, sessionCookie, fetchImpl = fetch }) {
   if (typeof baseUrl !== 'string' || baseUrl.length === 0) {
     throw new Error('CF_SMOKE_BASE_URL is required for --check-drain');
   }
-  const hasAdminToken = typeof adminToken === 'string' && adminToken.length > 0;
+  const hasPersonalToken = typeof personalToken === 'string' && personalToken.length > 0;
   const hasSessionCookie = typeof sessionCookie === 'string' && sessionCookie.length > 0;
-  if (!hasAdminToken && !hasSessionCookie) {
-    throw new Error('an Admin token or browser session is required for --check-drain');
+  if (!hasPersonalToken && !hasSessionCookie) {
+    throw new Error('a Chickpea personal token or browser session is required for --check-drain');
   }
   const endpoint = new URL('/admin/api/runtime/drain', baseUrl);
   if (endpoint.protocol !== 'https:' && endpoint.protocol !== 'http:') {
@@ -25,7 +25,7 @@ export async function runDrainCheck({ baseUrl, adminToken, sessionCookie, fetchI
     cache: 'no-store',
     headers: hasSessionCookie
       ? { cookie: sessionCookie }
-      : { authorization: `Bearer ${adminToken}` },
+      : { authorization: `Bearer ${personalToken}` },
     redirect: 'error',
     signal: AbortSignal.timeout(DRAIN_REQUEST_TIMEOUT_MS),
   });

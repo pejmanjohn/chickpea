@@ -740,11 +740,6 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'external_identities') throw unexpectedIdentityResponse();
     return response.externalIdentities;
   }
-  async resolveActorExternalIdentity(provider: 'slack', slackTeamId: string, slackUserId: string) {
-    if (provider !== 'slack') return undefined;
-    const resolution = await this.resolveSlackIdentity(slackTeamId, slackUserId);
-    return resolution?.binding;
-  }
   async listMemberships() {
     const response = await this.execute({ kind: 'list_memberships' });
     if (response.kind !== 'memberships') throw unexpectedIdentityResponse();

@@ -1968,13 +1968,10 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
 
 test('main app owns the fail-closed admin route without a Flue HTTP router', async () => {
   await withEnv(
-    {
-      TAG_ADMIN_TOKEN: 'mounted-admin-token',
-      SLACK_STATE_DB_PATH: ':memory:',
-    },
+    { SLACK_STATE_DB_PATH: ':memory:' },
     async () => {
       const response = await flueApp.request('/admin/api/agents', {
-        headers: auth('mounted-admin-token'),
+        headers: auth('unrecognized-bearer'),
       });
 
       assert.equal(response.status, 503);
@@ -4904,7 +4901,7 @@ test('verified Slack identity reconnect requeues its unavailable delivery recove
   }
 });
 
-test('workspace-default Slack identity reports stored credentials as browser-writable', async () => {
+test('workspace-default Slack identity keeps stored credentials out of browser mutation surfaces', async () => {
   const store = new SqliteConfigStore(':memory:', {
     agents: [agent({ id: 'agent_finance', name: 'Finance' })],
     assignments: [],
@@ -4947,7 +4944,7 @@ test('workspace-default Slack identity reports stored credentials as browser-wri
     const body = (await response.json()) as {
       identities: Array<Record<string, unknown>>;
     };
-    assert.equal(body.identities[0]?.credentialsWritable, true);
+    assert.equal(body.identities[0]?.credentialsWritable, false);
     assert.equal(body.identities[0]?.lifecycle, 'connected');
   } finally {
     credentialState.close();

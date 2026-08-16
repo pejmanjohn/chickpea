@@ -62,6 +62,8 @@ export interface SlackOidcGatewayDependencies {
   credentials: SlackCredentialDependencies;
   fetch?: typeof fetch;
   jwks?: JWTVerifyGetKey;
+  apiBaseUrl?: string;
+  jwksUrl?: string;
   now?: () => number;
 }
 
@@ -72,7 +74,9 @@ export class SlackOidcGateway {
 
   constructor(private readonly dependencies: SlackOidcGatewayDependencies) {
     this.fetch = dependencies.fetch ?? fetch;
-    this.jwks = dependencies.jwks ?? createRemoteJWKSet(new URL(SLACK_OIDC_JWKS_URL));
+    this.jwks = dependencies.jwks ?? createRemoteJWKSet(
+      new URL(dependencies.jwksUrl ?? SLACK_OIDC_JWKS_URL),
+    );
     this.now = dependencies.now ?? Date.now;
   }
 
@@ -122,7 +126,10 @@ export class SlackOidcGateway {
       throw new SlackOidcError('stale_revision');
     }
 
-    const tokenResponse = await this.requestJson(SLACK_OIDC_TOKEN_URL, {
+    const tokenResponse = await this.requestJson(this.apiUrl(
+      'openid.connect.token',
+      SLACK_OIDC_TOKEN_URL,
+    ), {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -152,14 +159,20 @@ export class SlackOidcGateway {
       throw new SlackOidcError('user_mismatch');
     }
 
-    const userInfo = await this.requestJson(SLACK_OIDC_USERINFO_URL, {
+    const userInfo = await this.requestJson(this.apiUrl(
+      'openid.connect.userInfo',
+      SLACK_OIDC_USERINFO_URL,
+    ), {
       headers: { authorization: `Bearer ${accessToken}` },
     });
     if (userInfo.ok === false || userInfo.sub !== userId ||
         userInfo[TEAM_CLAIM] !== teamId || userInfo[USER_CLAIM] !== userId) {
       throw new SlackOidcError('invalid_token');
     }
-    const slackUser = await this.requestJson('https://slack.com/api/users.info', {
+    const slackUser = await this.requestJson(this.apiUrl(
+      'users.info',
+      'https://slack.com/api/users.info',
+    ), {
       method: 'POST',
       headers: {
         authorization: `Bearer ${botCredentials.botToken}`,
@@ -231,12 +244,18 @@ export class SlackOidcGateway {
   private async requestJson(url: string, init: RequestInit): Promise<Record<string, unknown>> {
     let response: Response;
     try {
-      response = await this.fetch(url, { ...init, signal: AbortSignal.timeout(10_000) });
+      const fetchImpl = this.fetch;
+      response = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(10_000) });
     } catch {
       throw new SlackOidcError('slack_unreachable');
     }
     if (!response.ok) throw new SlackOidcError('invalid_response');
     return boundedJson(response);
+  }
+
+  private apiUrl(method: string, fallback: string): string {
+    const normalized = this.dependencies.apiBaseUrl?.trim().replace(/\/+$/, '');
+    return normalized ? `${normalized}/${method}` : fallback;
   }
 }
 

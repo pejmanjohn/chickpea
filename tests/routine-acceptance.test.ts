@@ -47,7 +47,7 @@ function executionDependencies(now: () => number) {
     resolveCredential: async () => null,
     resolveAccess: async (_run: RoutineRun, routine: RoutineDefinition) => ({
       config: { ...config, workspaceId: routine.workspaceId, channelId: routine.channelId },
-      accessHash: 'a'.repeat(64), botToken: 'xoxb-acceptance', botUserId: 'U_BOT',
+      accessHash: 'a'.repeat(64), botToken: 'xoxb-acceptance', botUserId: 'UBOT',
     }),
     resolveModel: async () => ({ model: config.model }),
     useCloudflareSandbox: async () => false,

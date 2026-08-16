@@ -2,12 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 import type { IdentityStore } from '../identity/types.ts';
 import type { PersonalTokenService } from './personal-token.ts';
-import type { TokenSessionService } from './token-session.ts';
 import type {
   AdminAuthenticationService,
   AuthPrincipal,
   PrincipalAuthenticator,
-  TokenLoginResult,
 } from './types.ts';
 
 export class AuthDeniedError extends Error {
@@ -19,7 +17,6 @@ interface AuthServiceOptions {
   identity: IdentityStore;
   personalTokens?: PersonalTokenService;
   sessionAuthenticator?: PrincipalAuthenticator;
-  tokenSessions?: TokenSessionService;
 }
 
 const principalByRequest = new WeakMap<Request, AuthPrincipal>();
@@ -85,27 +82,6 @@ export class AuthService implements AdminAuthenticationService {
     return headers;
   }
 
-  async loginWithPersonalToken(token: string): Promise<TokenLoginResult> {
-    const loginCorrelationId = correlationId();
-    try {
-      void token;
-      throw new AuthDeniedError();
-    } catch (error) {
-      await this.options.identity.recordAuthAudit({
-        event: 'authentication',
-        outcome: 'denied',
-        action: 'admin.token_login',
-        correlationId: loginCorrelationId,
-        authenticatorKind: 'personal_token',
-        reasonCode: 'authentication_denied',
-      });
-      throw error instanceof AuthDeniedError ? error : new AuthDeniedError();
-    }
-  }
-
-  async logoutSession(token: string): Promise<void> {
-    await this.options.tokenSessions?.revoke(token);
-  }
 }
 
 export function setRequestPrincipal(request: Request, principal: AuthPrincipal): void {

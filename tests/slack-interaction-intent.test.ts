@@ -114,7 +114,7 @@ test('classifier failures use quiet ambient and written guaranteed fallbacks', a
   );
   assert.deepEqual(
     await resolveSlackInteractionIntent(
-      { ...baseContext, text: '<@U_BOT> Thanks, agreed.' },
+      { ...baseContext, text: '<@UBOT> Thanks, agreed.' },
       undefined,
       async () => { throw new Error('provider unavailable'); },
     ),
@@ -144,7 +144,7 @@ test('high-confidence acknowledgments stay reaction-only even when a small model
   let promptCalls = 0;
   assert.deepEqual(
     (await classifySlackInteraction(
-      { ...baseContext, text: '<@U_BOT> Thanks, agreed.' },
+      { ...baseContext, text: '<@UBOT> Thanks, agreed.' },
       undefined,
       async () => {
         promptCalls += 1;
@@ -158,7 +158,7 @@ test('high-confidence acknowledgments stay reaction-only even when a small model
   assert.equal(promptCalls, 0);
   assert.deepEqual(
     (await classifySlackInteraction(
-      { ...baseContext, text: '<@U_BOT> got it', activeWork: true },
+      { ...baseContext, text: '<@UBOT> got it', activeWork: true },
       undefined,
       async () => JSON.stringify({ disposition: 'reply', reason: 'other_addressed' }),
     )).intent,
@@ -172,7 +172,7 @@ test('admission recognizes obvious work without invoking the classifier provider
   assert.deepEqual(
     resolveImmediateSlackInteractionIntent({
       ...baseContext,
-      text: '<@U_BOT> Run a 75-second observation and report four samples.',
+      text: '<@UBOT> Run a 75-second observation and report four samples.',
     }),
     {
       disposition: 'work',
@@ -183,7 +183,7 @@ test('admission recognizes obvious work without invoking the classifier provider
   assert.equal(
     resolveImmediateSlackInteractionIntent({
       ...baseContext,
-      text: '<@U_BOT> What does this result mean?',
+      text: '<@UBOT> What does this result mean?',
     }),
     null,
   );
@@ -218,7 +218,7 @@ test('high-confidence explicit work requests cannot collapse into ordinary repli
     (await classifySlackInteraction(
       {
         ...baseContext,
-        text: '<@U_BOT> LIVE-WORK-0731 Investigate the last two results and compare their evidence.',
+        text: '<@UBOT> LIVE-WORK-0731 Investigate the last two results and compare their evidence.',
       },
       undefined,
       async () => {
@@ -252,7 +252,7 @@ test('high-confidence explicit work requests cannot collapse into ordinary repli
     (await classifySlackInteraction(
       {
         ...baseContext,
-        text: '<@U_BOT> ACCEPT-HEARTBEAT Run a 75-second observation and report the timestamps.',
+        text: '<@UBOT> ACCEPT-HEARTBEAT Run a 75-second observation and report the timestamps.',
       },
       undefined,
       async () => JSON.stringify({ disposition: 'reply', reason: 'substantive_request' }),

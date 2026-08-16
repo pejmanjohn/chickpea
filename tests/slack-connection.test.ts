@@ -24,7 +24,6 @@ import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import {
   invalidateStoredSlackCredentials,
   resolveSlackCredentials,
-  resolveSlackTeamInfo,
   type SlackConversationsListPage,
   SLACK_SETTING_KEYS,
 } from '../src/slack/credentials.ts';
@@ -165,27 +164,6 @@ function signedChallenge(
       .update(`v0:${timestamp}:${rawBody}`)
       .digest('hex')}`,
   };
-}
-
-async function recordWorkspaceDefaultChallenge(
-  config: SqliteConfigStore,
-  settings: SettingsStore,
-  signingSecret: string,
-  options: { appId?: string; teamId?: string; now?: number } = {},
-): Promise<void> {
-  const identity = await config.getSlackIdentity('slack_identity_default');
-  const now = options.now ?? Date.now();
-  const recorded = await recordPendingSlackChallenge(
-    settings,
-    identity,
-    signedChallenge(signingSecret, {
-      timestamp: Math.floor(now / 1_000),
-      appId: options.appId ?? 'A0CHICKPEA',
-      teamId: options.teamId ?? 'TACME',
-    }),
-    { now },
-  );
-  assert.equal(recorded.accepted, true);
 }
 
 async function markWorkspaceDefaultConnected(
@@ -336,30 +314,6 @@ async function postCreds(app: Hono, body: unknown): Promise<Response> {
   });
 }
 
-const WIZARD_CONNECTION_SETTING_KEYS = [SLACK_SETTING_KEYS.teamName] as const;
-
-async function workspaceDefaultConnectionSnapshot(
-  settings: SettingsStore,
-  config: SqliteConfigStore,
-) {
-  return {
-    settings: await settings.getSettings(WIZARD_CONNECTION_SETTING_KEYS),
-    credentials: await resolveSlackIdentityCredentials(
-      'slack_identity_default',
-      undefined,
-      settings,
-    ),
-    credentialMetadata: await readActiveSlackCredentialMetadata(
-      'slack_identity_default',
-      undefined,
-      settings,
-    ),
-    identity: await config.getSlackIdentity('slack_identity_default'),
-    challenge: await readPendingSlackChallenge(settings, 'slack_identity_default'),
-    auditTypes: (await config.listSlackIdentityAuditEvents()).map(({ eventType }) => eventType),
-  };
-}
-
 /** Minimal fake Slack Web API answering auth.test and, optionally, users.info. */
 function listenFakeSlack(
   authTestBody: Record<string, unknown>,
@@ -396,56 +350,6 @@ function listenFakeSlack(
     if (req.url?.endsWith('/conversations.list')) {
       authHeaders.push(req.headers.authorization ?? '');
       res.end(JSON.stringify(conversationsListBody));
-      return;
-    }
-    res.statusCode = 404;
-    res.end('{"ok":false,"error":"unknown_method"}');
-  });
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address() as AddressInfo;
-      resolve({ server, baseUrl: `http://127.0.0.1:${port}/api/`, authHeaders });
-    });
-  });
-}
-
-/** Fake Slack whose auth.test scopes can change across retries for one token. */
-function listenSequencedGrantFakeSlack(
-  authTestSteps: ReadonlyArray<{
-    body: Record<string, unknown>;
-    scopes?: readonly string[];
-  }>,
-  usersInfoBody: Record<string, unknown> = {
-    ok: true,
-    user: {
-      id: 'UTAGBOT',
-      profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
-    },
-  },
-): Promise<{
-  server: Server;
-  baseUrl: string;
-  authHeaders: string[];
-}> {
-  assert.ok(authTestSteps.length > 0, 'sequenced Slack requires at least one auth.test step');
-  const authHeaders: string[] = [];
-  let authTestIndex = 0;
-  const server = createServer((req, res) => {
-    res.setHeader('content-type', 'application/json');
-    authHeaders.push(req.headers.authorization ?? '');
-    if (req.url?.endsWith('/auth.test')) {
-      const step = authTestSteps[Math.min(authTestIndex, authTestSteps.length - 1)]!;
-      authTestIndex += 1;
-      if (step.scopes) res.setHeader('x-oauth-scopes', step.scopes.join(','));
-      res.end(JSON.stringify(step.body));
-      return;
-    }
-    if (req.url?.endsWith('/users.info')) {
-      res.end(JSON.stringify(usersInfoBody));
-      return;
-    }
-    if (req.url?.endsWith('/conversations.list')) {
-      res.end('{"ok":true,"channels":[]}');
       return;
     }
     res.statusCode = 404;
@@ -549,53 +453,6 @@ function listenIdentityAdmissionSlack(): Promise<{
   });
 }
 
-/** Fake auth.test whose response can be held open to exercise update races. */
-function listenControlledFakeSlack(authTestBody: Record<string, unknown>): Promise<{
-  server: Server;
-  baseUrl: string;
-  authStarted: Promise<void>;
-  releaseAuth(): void;
-}> {
-  const { promise: authStarted, resolve: markStarted } = Promise.withResolvers<void>();
-  const { promise: released, resolve: releaseAuth } = Promise.withResolvers<void>();
-  const server = createServer((req, res) => {
-    res.setHeader('content-type', 'application/json');
-    if (req.url?.endsWith('/users.info')) {
-      res.end(JSON.stringify({
-        ok: true,
-        user: {
-          id: 'UNEW',
-          profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
-        },
-      }));
-      return;
-    }
-    if (req.url?.endsWith('/conversations.list')) {
-      res.end(JSON.stringify({ ok: true, channels: [] }));
-      return;
-    }
-    if (!req.url?.endsWith('/auth.test')) {
-      res.statusCode = 404;
-      res.end('{"ok":false,"error":"unknown_method"}');
-      return;
-    }
-    res.setHeader('x-oauth-scopes', slackAppManifest.oauth_config.scopes.bot.join(','));
-    markStarted();
-    void released.then(() => res.end(JSON.stringify(authTestBody)));
-  });
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address() as AddressInfo;
-      resolve({
-        server,
-        baseUrl: `http://127.0.0.1:${port}/api/`,
-        authStarted,
-        releaseAuth,
-      });
-    });
-  });
-}
-
 async function withCloudflareUserAgent<T>(run: () => Promise<T>): Promise<T> {
   const prototype = Object.getPrototypeOf(globalThis.navigator) as object;
   const original = Object.getOwnPropertyDescriptor(prototype, 'userAgent');
@@ -621,7 +478,7 @@ test('slack-connection endpoints fail closed without Slack session authority', a
   const settings = new SqliteSettingsStore(':memory:');
   try {
     const app = new Hono();
-    app.route('/', createAdminRoutes({ settings, adminToken: undefined }));
+    app.route('/', createAdminRoutes({ settings }));
     const get = await app.request('/admin/api/slack-connection', { headers: auth() });
     assert.equal(get.status, 503);
     const post = await postCreds(app, { botToken: 'xoxb-x', signingSecret: 's' });
@@ -1784,7 +1641,7 @@ test('Slack behavior PUT rejects empty, unknown, and non-boolean bodies', async 
   }
 });
 
-test('wizard GET reports missing credentials and substitutes the request origin into the manifest link', async () => {
+test('connection status reports missing credentials and substitutes the request origin into the manifest link', async () => {
   await withEnv(NO_SLACK_ENV, async () => {
     const settings = new SqliteSettingsStore(':memory:');
     const config = new SqliteConfigStore(':memory:');
@@ -1840,7 +1697,7 @@ test('wizard GET reports missing credentials and substitutes the request origin 
   });
 });
 
-test('wizard GET honors x-forwarded-proto/host when deriving the events URL', async () => {
+test('connection status honors x-forwarded-proto/host when deriving the events URL', async () => {
   await withEnv(NO_SLACK_ENV, async () => {
     const settings = new SqliteSettingsStore(':memory:');
     const config = new SqliteConfigStore(':memory:');
@@ -1867,7 +1724,7 @@ test('wizard GET honors x-forwarded-proto/host when deriving the events URL', as
   });
 });
 
-test('wizard GET ignores env credentials and withholds connected until encrypted lifecycle proof', async () => {
+test('connection status ignores env credentials and withholds connected until encrypted lifecycle proof', async () => {
   await withEnv(
     {
       ...NO_SLACK_ENV,
@@ -1897,977 +1754,39 @@ test('wizard GET ignores env credentials and withholds connected until encrypted
   );
 });
 
-test('wizard turns a starter-scope token into an app-specific reinstall handoff', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) {
-    t.skip(skip);
-    return;
-  }
-  const { server, baseUrl } = await listenFakeSlack(
-    {
-      ok: true,
-      team_id: 'TACME',
-      team: 'Acme Inc',
-      user: 'chickpea',
-      user_id: 'USTARTERBOT',
-      bot_id: 'BSTARTER',
-    },
-    undefined,
-    { 'x-oauth-scopes': 'channels:history,chat:write' },
-  );
-  const settings = new SqliteSettingsStore(':memory:');
-  const config = new SqliteConfigStore(':memory:');
-  try {
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
-      await recordWorkspaceDefaultChallenge(config, settings, 'starter-secret', {
-        appId: 'A0STARTER',
-      });
-      const response = await postCreds(appWith(settings, config), {
-        botToken: 'xoxb-starter',
-        signingSecret: 'starter-secret',
-      });
-      assert.equal(response.status, 422);
-      const body = (await response.json()) as {
-        error: string;
-        missingScopes: string[];
-        consoleUrl?: string;
-      };
-      assert.equal(body.error, 'slack_missing_scopes');
-      assert.match(body.consoleUrl ?? '', /^https:\/\/api\.slack\.com\/apps\/A0STARTER\/oauth$/);
-      assert.ok(body.missingScopes.includes('assistant:write'));
-      assert.equal(
-        (await resolveSlackIdentityCredentials(
-          'slack_identity_default',
-          undefined,
-          settings,
-        )).connectionRevision,
-        null,
-      );
-      assert.ok(await readPendingSlackChallenge(settings, 'slack_identity_default'));
-    });
-  } finally {
-    invalidateStoredSlackCredentials();
-    config.close();
-    settings.close();
-    await closeServer(server);
-  }
-});
-
-test('wizard completes the same credential pair only after Slack expands its grant', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) {
-    t.skip(skip);
-    return;
-  }
-  const shortScopes = ['channels:history', 'chat:write'];
-  const authBody = {
-    ok: true,
-    app_id: 'A0CHICKPEA',
-    team_id: 'TACME',
-    team: 'Acme Inc',
-    user: 'chickpea',
-    user_id: 'UTAGBOT',
-    bot_id: 'BTAG',
-  };
-  const { server, baseUrl, authHeaders } = await listenSequencedGrantFakeSlack([
-    { body: authBody, scopes: shortScopes },
-    { body: authBody, scopes: slackAppManifest.oauth_config.scopes.bot },
-  ]);
-  const settings = new SqliteSettingsStore(':memory:');
-  const config = new SqliteConfigStore(':memory:');
-  try {
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
-      await recordWorkspaceDefaultChallenge(config, settings, 'same-secret');
-      const before = await workspaceDefaultConnectionSnapshot(settings, config);
-      const app = appWith(settings, config);
-      const credentials = { botToken: 'xoxb-same-token', signingSecret: 'same-secret' };
-
-      const incomplete = await postCreds(app, credentials);
-      assert.equal(incomplete.status, 422);
-      const incompleteBody = (await incomplete.json()) as {
-        error: string;
-        missingScopes: string[];
-        consoleUrl?: string;
-      };
-      assert.equal(incompleteBody.error, 'slack_missing_scopes');
-      assert.deepEqual(
-        incompleteBody.missingScopes,
-        slackAppManifest.oauth_config.scopes.bot.filter(
-          (scope) => !shortScopes.includes(scope),
-        ),
-      );
-      assert.equal(
-        incompleteBody.consoleUrl,
-        'https://api.slack.com/apps/A0CHICKPEA/oauth',
-      );
-      assert.deepEqual(await workspaceDefaultConnectionSnapshot(settings, config), before);
-      const statusBefore = await app.request('/admin/api/slack-connection', { headers: auth() });
-      assert.equal(((await statusBefore.json()) as { connected: boolean }).connected, false);
-
-      const complete = await postCreds(app, credentials);
-      assert.equal(complete.status, 200, await complete.clone().text());
-      assert.equal(((await complete.json()) as { ok: boolean }).ok, true);
-      const stored = await resolveSlackIdentityCredentials(
-        'slack_identity_default',
-        undefined,
-        settings,
-      );
-      const metadata = await readActiveSlackCredentialMetadata(
-        'slack_identity_default',
-        undefined,
-        settings,
-      );
-      assert.ok(stored.connectionRevision);
-      assert.deepEqual(
-        [stored.botToken, stored.signingSecret, stored.botUserId, metadata?.teamId],
-        ['xoxb-same-token', 'same-secret', 'UTAGBOT', 'TACME'],
-      );
-      const connected = await config.getSlackIdentity('slack_identity_default');
-      assert.equal(connected.lifecycle, 'connected');
-      assert.equal(connected.health, 'healthy');
-      assert.equal(await readPendingSlackChallenge(settings, connected.id), undefined);
-      assert.deepEqual(
-        (await config.listSlackIdentityAuditEvents()).map(({ eventType }) => eventType),
-        ['slack_identity.credentials_connected'],
-      );
-      assert.deepEqual(authHeaders, Array(4).fill('Bearer xoxb-same-token'));
-    });
-  } finally {
-    invalidateStoredSlackCredentials();
-    config.close();
-    settings.close();
-    await closeServer(server);
-  }
-});
-
-test('wizard leaves repeated incomplete grants and their signed challenge untouched', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) {
-    t.skip(skip);
-    return;
-  }
-  const shortScopes = ['channels:history', 'chat:write'];
-  const authBody = {
-    ok: true,
-    app_id: 'A0CHICKPEA',
-    team_id: 'TACME',
-    user_id: 'UTAGBOT',
-    bot_id: 'BTAG',
-  };
-  const { server, baseUrl, authHeaders } = await listenSequencedGrantFakeSlack([
-    { body: authBody, scopes: shortScopes },
-    { body: authBody, scopes: shortScopes },
-  ]);
-  const settings = new SqliteSettingsStore(':memory:');
-  const config = new SqliteConfigStore(':memory:');
-  try {
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
-      await recordWorkspaceDefaultChallenge(config, settings, 'same-secret');
-      const before = await workspaceDefaultConnectionSnapshot(settings, config);
-      const app = appWith(settings, config);
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const response = await postCreds(app, {
-          botToken: 'xoxb-short-token',
-          signingSecret: 'same-secret',
-        });
-        assert.equal(response.status, 422);
-        assert.equal(
-          ((await response.json()) as { error: string }).error,
-          'slack_missing_scopes',
-        );
-        assert.deepEqual(await workspaceDefaultConnectionSnapshot(settings, config), before);
-      }
-      assert.deepEqual(authHeaders, Array(2).fill('Bearer xoxb-short-token'));
-    });
-  } finally {
-    invalidateStoredSlackCredentials();
-    config.close();
-    settings.close();
-    await closeServer(server);
-  }
-});
-
-test('wizard verifies the signing secret only after Slack reports a complete grant', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) {
-    t.skip(skip);
-    return;
-  }
-  const authBody = {
-    ok: true,
-    app_id: 'A0CHICKPEA',
-    team_id: 'TACME',
-    user_id: 'UTAGBOT',
-    bot_id: 'BTAG',
-  };
-  const { server, baseUrl } = await listenSequencedGrantFakeSlack([
-    { body: authBody, scopes: ['channels:history', 'chat:write'] },
-    { body: authBody, scopes: slackAppManifest.oauth_config.scopes.bot },
-  ]);
-  const settings = new SqliteSettingsStore(':memory:');
-  const config = new SqliteConfigStore(':memory:');
-  try {
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
-      await recordWorkspaceDefaultChallenge(config, settings, 'right-secret');
-      const before = await workspaceDefaultConnectionSnapshot(settings, config);
-      const app = appWith(settings, config);
-      const credentials = { botToken: 'xoxb-same-token', signingSecret: 'wrong-secret' };
-
-      const incomplete = await postCreds(app, credentials);
-      assert.equal(incomplete.status, 422);
-      assert.equal(
-        ((await incomplete.json()) as { error: string }).error,
-        'slack_missing_scopes',
-      );
-
-      const rejectedSecret = await postCreds(app, credentials);
-      assert.equal(rejectedSecret.status, 422);
-      assert.equal(
-        ((await rejectedSecret.json()) as { error: string }).error,
-        'challenge_invalid_signature',
-      );
-      assert.deepEqual(await workspaceDefaultConnectionSnapshot(settings, config), before);
-    });
-  } finally {
-    invalidateStoredSlackCredentials();
-    config.close();
-    settings.close();
-    await closeServer(server);
-  }
-});
-
-test('wizard POST requires the signed challenge and live Slack readiness before connecting', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) {
-    t.skip(skip);
-    return;
-  }
-  const { server, baseUrl } = await listenFakeSlack(
-    {
-      ok: true,
-      app_id: 'A0CHICKPEA',
-      team_id: 'TACME',
-      team: 'Acme Inc',
-      user: 'tag',
-      user_id: 'UTAGBOT',
-      bot_id: 'BTAG',
-    },
-    [
-      {
-        ok: true,
-        user: {
-          id: 'UTAGBOT',
-          profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
-        },
-      },
-      {
-        ok: true,
-        user: {
-          id: 'UTAGBOT',
-          profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
-        },
-      },
-    ],
-    { 'x-oauth-scopes': slackAppManifest.oauth_config.scopes.bot.join(',') },
-  );
-  const settings = new SqliteSettingsStore(':memory:');
-  const config = new SqliteConfigStore(':memory:');
-  try {
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
-      await recordWorkspaceDefaultChallenge(config, settings, 'pasted-secret');
-      const app = appWith(settings, config);
-      const rejectedSecret = await postCreds(app, {
-        botToken: 'xoxb-pasted',
-        signingSecret: 'wrong-secret',
-      });
-      assert.equal(rejectedSecret.status, 422);
-      assert.equal(
-        ((await rejectedSecret.json()) as { error: string }).error,
-        'challenge_invalid_signature',
-      );
-      assert.ok(await readPendingSlackChallenge(settings, 'slack_identity_default'));
-      assert.equal(
-        (await resolveSlackIdentityCredentials(
-          'slack_identity_default',
-          undefined,
-          settings,
-        )).connectionRevision,
-        null,
-      );
-
-      const response = await postCreds(app, {
-        botToken: 'xoxb-pasted',
-        signingSecret: 'pasted-secret',
-      });
-      assert.equal(response.status, 200, await response.clone().text());
-      const body = (await response.json()) as Record<string, unknown>;
-      assert.equal(body.ok, true);
-      assert.equal(body.team, 'Acme Inc');
-      assert.equal(body.botName, 'tag');
-      assert.equal(body.botUserId, 'UTAGBOT');
-      assert.match(String(body.note), /Request URL verified/i);
-
-      const stored = await resolveSlackIdentityCredentials(
-        'slack_identity_default',
-        undefined,
-        settings,
-      );
-      assert.equal(stored.botToken, 'xoxb-pasted');
-      assert.equal(stored.signingSecret, 'pasted-secret');
-      assert.equal(stored.botUserId, 'UTAGBOT');
-      assert.equal(await readPendingSlackChallenge(settings, 'slack_identity_default'), undefined);
-      const connectedIdentity = await config.getSlackIdentity('slack_identity_default');
-      assert.equal(connectedIdentity.lifecycle, 'connected');
-      assert.equal(connectedIdentity.health, 'healthy');
-      assert.equal(connectedIdentity.appId, 'A0CHICKPEA');
-      assert.equal(connectedIdentity.teamId, 'TACME');
-      assert.equal(connectedIdentity.botUserId, 'UTAGBOT');
-
-      const statuses = await app.request('/admin/api/slack-connection', { headers: auth() });
-      const statusBody = (await statuses.json()) as {
-        connected: boolean;
-        credentials: Record<string, string>;
-      };
-      assert.deepEqual(statusBody.credentials, {
-        botToken: 'stored',
-        signingSecret: 'stored',
-        botUserId: 'stored',
-      });
-      assert.equal(statusBody.connected, true);
-
-      // The resolver (the thing signature verification and the WebClient
-      // consume) now serves the stored triple...
-      const resolved = await resolveSlackCredentials(undefined, settings);
-      assert.equal(resolved.botToken, 'xoxb-pasted');
-      assert.equal(resolved.signingSecret, 'pasted-secret');
-      assert.equal(resolved.botUserId, 'UTAGBOT');
-      assert.deepEqual(
-        (await config.listSlackIdentityAuditEvents()).map(({ eventType }) => eventType),
-        ['slack_identity.credentials_connected'],
-      );
-    });
-
-    // ...and env values cannot override the active encrypted revision.
-    await withEnv(
-      { ...NO_SLACK_ENV, SLACK_BOT_TOKEN: 'xoxb-env-wins', SLACK_SIGNING_SECRET: 'env-secret-wins' },
-      async () => {
-        const resolved = await resolveSlackCredentials(undefined, settings);
-        assert.equal(resolved.botToken, 'xoxb-pasted');
-        assert.equal(resolved.signingSecret, 'pasted-secret');
-        assert.equal(resolved.botUserId, 'UTAGBOT');
-      },
-    );
-  } finally {
-    invalidateStoredSlackCredentials();
-    config.close();
-    settings.close();
-    await closeServer(server);
-  }
-});
-
-test('wizard stages validated credentials until Slack later retries the Events URL', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) {
-    t.skip(skip);
-    return;
-  }
-  const { server, baseUrl } = await listenFakeSlack(
-    {
-      ok: true,
-      app_id: 'A0CHICKPEA',
-      team_id: 'TACME',
-      team: 'Acme Inc',
-      user: 'tag',
-      user_id: 'UTAGBOT',
-      bot_id: 'BTAG',
-    },
-    [{
-      ok: true,
-      user: {
-        id: 'UTAGBOT',
-        profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
-      },
-    }],
-    { 'x-oauth-scopes': slackAppManifest.oauth_config.scopes.bot.join(',') },
-  );
-  const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-late-events-check-'));
-  const path = join(directory, 'state.db');
-  try {
-    await withEnv(
-      {
-        ...NO_SLACK_ENV,
-        SLACK_API_URL: baseUrl,
-        TAG_DB_PATH: path,
-        SLACK_STATE_DB_PATH: path,
-      },
-      async () => {
-        const settings = new SqliteSettingsStore(path);
-        const config = new SqliteConfigStore(path);
-        try {
-          const identity = await config.getSlackIdentity('slack_identity_default');
-          const credentialDependencies = getSlackCredentialDependencies();
-          const admin = appWith(settings, config, credentialDependencies);
-          const staged = await postCreds(admin, {
-            botToken: 'xoxb-late-events',
-            signingSecret: 'late-events-secret',
-          });
-          assert.equal(staged.status, 202, await staged.clone().text());
-          const stagedBody = (await staged.json()) as Record<string, unknown>;
-          assert.equal(stagedBody.ok, true);
-          assert.equal(stagedBody.connected, false);
-          assert.equal(stagedBody.eventsVerificationRequired, true);
-          assert.equal(
-            stagedBody.consoleUrl,
-            'https://api.slack.com/apps/A0CHICKPEA/event-subscriptions',
-          );
-          const stagedCredentials = await resolveSlackIdentityCredentials(
-            'slack_identity_default',
-            undefined,
-            credentialDependencies,
-          );
-          assert.equal(stagedCredentials.botToken, 'xoxb-late-events');
-          assert.equal(stagedCredentials.signingSecret, 'late-events-secret');
-          assert.equal(
-            (await config.getSlackIdentity(identity.id)).lifecycle,
-            'credentials_pending',
-          );
-
-          const challenge = signedSlackEvent('late-events-secret', {
-            type: 'url_verification',
-            challenge: 'late-events-challenge',
-            api_app_id: 'A0CHICKPEA',
-            team_id: 'TACME',
-          });
-          const retry = await (await identityIngressApp()).request(
-            `/channels/slack/events/${identity.ingressKey}`,
-            { method: 'POST', headers: challenge.headers, body: challenge.body },
-          );
-          assert.equal(retry.status, 200, await retry.clone().text());
-          assert.deepEqual(await retry.json(), { challenge: 'late-events-challenge' });
-          assert.equal(
-            (await config.getSlackIdentity(identity.id)).lifecycle,
-            'connected',
-          );
-          assert.equal(await readPendingSlackChallenge(settings, identity.id), undefined);
-
-          const status = await admin.request('/admin/api/slack-connection', { headers: auth() });
-          assert.equal(status.status, 200);
-          assert.equal(((await status.json()) as { connected: boolean }).connected, true);
-        } finally {
-          invalidateStoredSlackCredentials();
-          config.close();
-          settings.close();
-        }
-      },
-    );
-  } finally {
-    await closeServer(server);
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test('wizard rotation replaces the whole connection record with freshly validated metadata', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) {
-    t.skip(skip);
-    return;
-  }
-  const { server, baseUrl } = await listenFakeSlack(
-    {
-      ok: true,
-      app_id: 'A0CHICKPEA',
-      team_id: 'TACME',
-      user_id: 'UNEW',
-      bot_id: 'BNEW',
-    },
-    [
-      {
-        ok: true,
-        user: {
-          id: 'UNEW',
-          profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
-        },
-      },
-      {
-        ok: true,
-        user: {
-          id: 'UNEW',
-          profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
-        },
-      },
-    ],
-    { 'x-oauth-scopes': slackAppManifest.oauth_config.scopes.bot.join(',') },
-  );
-  const settings = new SqliteSettingsStore(':memory:');
-  const config = new SqliteConfigStore(':memory:');
-  try {
-    await markWorkspaceDefaultConnected(config);
-    const oldRevision = await writeWorkspaceCredentialFixture(settings, {
-      botToken: 'xoxb-old',
-      signingSecret: 'secret-old',
-      botUserId: 'UOLD',
-    });
-    await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Old Team');
-
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
-      assert.equal(
-        (await resolveSlackIdentityCredentials(
-          'slack_identity_default',
-          undefined,
-          settings,
-        )).botToken,
-        'xoxb-old',
-      );
-      const rejected = await postCreds(appWith(settings, config), {
-        botToken: 'xoxb-new',
-        signingSecret: 'secret-new',
-      });
-      assert.equal(rejected.status, 422);
-      assert.equal(
-        ((await rejected.json()) as { error: string }).error,
-        'signing_secret_change_requires_reconnect',
-      );
-      const response = await postCreds(appWith(settings, config), {
-        botToken: 'xoxb-new',
-        signingSecret: 'secret-old',
-      });
-      assert.equal(response.status, 200, await response.clone().text());
-      const resolved = await resolveSlackIdentityCredentials(
-        'slack_identity_default',
-        undefined,
-        settings,
-      );
-      assert.equal(resolved.botToken, 'xoxb-new');
-      assert.equal(resolved.signingSecret, 'secret-old');
-      assert.equal(resolved.botUserId, 'UNEW');
-      assert.notEqual(resolved.connectionRevision, oldRevision);
-    });
-
-    const metadata = await readActiveSlackCredentialMetadata(
-      'slack_identity_default',
-      undefined,
-      settings,
-    );
-    assert.equal(metadata?.teamId, 'TACME');
-    assert.equal(metadata?.botUserId, 'UNEW');
-    assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.teamName), undefined);
-  } finally {
-    invalidateStoredSlackCredentials();
-    config.close();
-    settings.close();
-    await closeServer(server);
-  }
-});
-
-test('wizard rotation leaves the prior connection and cache intact when the atomic write fails', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) {
-    t.skip(skip);
-    return;
-  }
-  const { server, baseUrl } = await listenFakeSlack(
-    {
-      ok: true,
-      app_id: 'A0CHICKPEA',
-      team_id: 'TOLD',
-      team: 'Old Team',
-      user_id: 'UNEW',
-      bot_id: 'BNEW',
-    },
-    {
-      ok: true,
-      user: {
-        id: 'UNEW',
-        profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
-      },
-    },
-    { 'x-oauth-scopes': slackAppManifest.oauth_config.scopes.bot.join(',') },
-  );
-  const persisted = new SqliteSettingsStore(':memory:');
-  const config = new SqliteConfigStore(':memory:');
-  const credentials = createSlackCredentialFixture();
-  const failingState = new Proxy(credentials.state, {
-    get(target, property) {
-      if (property === 'promoteSlackCredentialRevision') {
-        return async () => {
-          throw new Error('atomic credential promotion unavailable');
-        };
-      }
-      const value = Reflect.get(target, property, target) as unknown;
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
-  try {
-    await markWorkspaceDefaultConnected(config, { teamId: 'TOLD' });
-    await writeSlackIdentityCredentials(credentials, 'slack_identity_default', null, {
-      botToken: 'xoxb-old',
-      signingSecret: 'secret-old',
-      appId: 'A0CHICKPEA',
-      teamId: 'TOLD',
-    });
-
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
-      const response = await postCreds(appWith(persisted, config, {
-        state: failingState,
-        keyring: credentials.keyring,
-      }), {
-        botToken: 'xoxb-new',
-        signingSecret: 'secret-old',
-      });
-      assert.equal(response.status, 409, await response.clone().text());
-      assert.deepEqual(await response.json(), {
-        error: 'slack_identity_credentials_changed',
-      });
-    });
-    const resolved = await resolveSlackIdentityCredentials(
-      'slack_identity_default',
-      undefined,
-      credentials,
-    );
-    assert.equal(resolved.botToken, 'xoxb-old');
-    assert.equal(resolved.signingSecret, 'secret-old');
-  } finally {
-    invalidateStoredSlackCredentials();
-    config.close();
-    credentials.close();
-    persisted.close();
-    await closeServer(server);
-  }
-});
-
-test('a delayed wizard rotation cannot recreate a connection after disconnect wins', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) {
-    t.skip(skip);
-    return;
-  }
-  const controlled = await listenControlledFakeSlack({
-    ok: true,
-    app_id: 'A0CHICKPEA',
-    team_id: 'TACME',
-    team: 'Acme Inc',
-    user_id: 'UNEW',
-    bot_id: 'BNEW',
-  });
-  const settings = new SqliteSettingsStore(':memory:');
-  const config = new SqliteConfigStore(':memory:');
-  try {
-    await markWorkspaceDefaultConnected(config);
-    await writeWorkspaceCredentialFixture(settings, {
-      botToken: 'xoxb-old',
-      signingSecret: 'secret-old',
-    });
-    const app = appWith(settings, config);
-
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: controlled.baseUrl }, async () => {
-      const pendingRotation = postCreds(app, {
-        botToken: 'xoxb-new',
-        signingSecret: 'secret-old',
-      });
-      await controlled.authStarted;
-
-      const disconnected = await app.request('/admin/api/slack-connection', {
-        method: 'DELETE',
-        headers: auth(),
-      });
-      assert.equal(disconnected.status, 200);
-
-      controlled.releaseAuth();
-      const staleRotation = await pendingRotation;
-      assert.equal(staleRotation.status, 409);
-      assert.equal(
-        ((await staleRotation.json()) as { error: string }).error,
-        'slack_identity_changed',
-      );
-    });
-
-    assert.equal(
-      (await resolveSlackIdentityCredentials(
-        'slack_identity_default',
-        undefined,
-        settings,
-      )).connectionRevision,
-      null,
-    );
-  } finally {
-    controlled.releaseAuth();
-    invalidateStoredSlackCredentials();
-    config.close();
-    settings.close();
-    await closeServer(controlled.server);
-  }
-});
-
-test('team-info reads cannot restore canonical metadata after disconnect', async () => {
+test('workspace-default credential paste-back route is absent', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   try {
-    await writeWorkspaceCredentialFixture(settings, {
-      botToken: 'xoxb-old',
-      signingSecret: 'secret-old',
-      teamId: 'TOLD',
-    });
-    await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Old Team');
     const app = appWith(settings);
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: 'http://127.0.0.1:9/api/' }, async () => {
-      assert.deepEqual(await resolveSlackTeamInfo(undefined, settings), {
-        teamId: 'TOLD',
-        teamName: 'Old Team',
-      });
-      const disconnected = await app.request('/admin/api/slack-connection', {
-        method: 'DELETE',
-        headers: auth(),
-      });
-      assert.equal(disconnected.status, 200);
-      assert.deepEqual(await resolveSlackTeamInfo(undefined, settings), {
-        teamId: undefined,
-        teamName: undefined,
-      });
+    const response = await postCreds(app, {
+      botToken: 'xoxb-must-not-be-accepted',
+      signingSecret: 'must-not-be-accepted',
     });
-  } finally {
-    invalidateStoredSlackCredentials();
-    settings.close();
-  }
-});
-
-test('team-info reads canonical revision metadata without network backfill', async () => {
-  const settings = new SqliteSettingsStore(':memory:');
-  try {
-    await writeWorkspaceCredentialFixture(settings, {
-      botToken: 'xoxb-current',
-      teamId: 'TNEW',
-    });
-    await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Stale Team');
-
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: 'http://127.0.0.1:9/api/' }, async () => {
-      assert.deepEqual(await resolveSlackTeamInfo(undefined, settings), {
-        teamId: 'TNEW',
-        teamName: 'Stale Team',
-      });
+    assert.equal(response.status, 404);
+    assert.deepEqual(await resolveSlackCredentials(undefined, settings), {
+      botToken: undefined,
+      signingSecret: undefined,
+      botUserId: undefined,
     });
   } finally {
     settings.close();
   }
 });
 
-test('wizard POST distinguishes invalid and revoked tokens without consuming the challenge', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) {
-    t.skip(skip);
-    return;
-  }
-  const { server, baseUrl } = await listenSequencedGrantFakeSlack([
-    { body: { ok: false, error: 'invalid_auth' } },
-    { body: { ok: false, error: 'token_revoked' } },
-  ]);
-  const settings = new SqliteSettingsStore(':memory:');
-  const config = new SqliteConfigStore(':memory:');
-  try {
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
-      await recordWorkspaceDefaultChallenge(config, settings, 'secret');
-      const before = await workspaceDefaultConnectionSnapshot(settings, config);
-      const app = appWith(settings, config);
-      for (const detail of ['invalid_auth', 'token_revoked']) {
-        const response = await postCreds(app, {
-          botToken: 'xoxb-rejected',
-          signingSecret: 'secret',
-        });
-        assert.equal(response.status, 422);
-        const body = (await response.json()) as Record<string, unknown>;
-        assert.equal(body.error, 'slack_auth_failed');
-        assert.equal(body.detail, detail);
-        assert.deepEqual(await workspaceDefaultConnectionSnapshot(settings, config), before);
-      }
-    });
-  } finally {
-    invalidateStoredSlackCredentials();
-    config.close();
-    settings.close();
-    await closeServer(server);
-  }
-});
-
-test('wizard POST keeps Slack reachability failure distinct and non-mutating', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) {
-    t.skip(skip);
-    return;
-  }
-  const settings = new SqliteSettingsStore(':memory:');
-  const config = new SqliteConfigStore(':memory:');
-  try {
-    await recordWorkspaceDefaultChallenge(config, settings, 'secret');
-    const before = await workspaceDefaultConnectionSnapshot(settings, config);
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: 'http://127.0.0.1:9/api/' }, async () => {
-      const response = await postCreds(appWith(settings, config), {
-        botToken: 'xoxb-unreachable',
-        signingSecret: 'secret',
-      });
-      assert.equal(response.status, 502);
-      assert.equal(
-        ((await response.json()) as { error: string }).error,
-        'slack_unreachable',
-      );
-    });
-    assert.deepEqual(await workspaceDefaultConnectionSnapshot(settings, config), before);
-  } finally {
-    invalidateStoredSlackCredentials();
-    config.close();
-    settings.close();
-  }
-});
-
-test('wizard POST rejects a valid Slack token whose installation is missing manifest scopes', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) {
-    t.skip(skip);
-    return;
-  }
-  const { server, baseUrl } = await listenFakeSlack(
-    {
-      ok: true,
-      app_id: 'A0STALE',
-      team_id: 'TACME',
-      team: 'Acme Inc',
-      user_id: 'USTALE',
-    },
-    undefined,
-    { 'x-oauth-scopes': 'channels:history,chat:write' },
-  );
-  const settings = new SqliteSettingsStore(':memory:');
-  try {
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
-      const response = await postCreds(appWith(settings), {
-        botToken: 'xoxb-stale-scopes',
-        signingSecret: 'stale-secret',
-      });
-      assert.equal(response.status, 422);
-      const body = (await response.json()) as {
-        error: string;
-        message: string;
-        missingScopes: string[];
-        consoleUrl: string;
-      };
-      assert.equal(body.error, 'slack_missing_scopes');
-      assert.match(body.message, /grant the required permissions/i);
-      assert.equal(body.consoleUrl, 'https://api.slack.com/apps/A0STALE/oauth');
-      assert.deepEqual(
-        body.missingScopes,
-        slackAppManifest.oauth_config.scopes.bot.filter(
-          (scope) => !['channels:history', 'chat:write'].includes(scope),
-        ),
-      );
-      assert.equal(
-        (await resolveSlackIdentityCredentials(
-          'slack_identity_default',
-          undefined,
-          settings,
-        )).connectionRevision,
-        null,
-      );
-    });
-  } finally {
-    invalidateStoredSlackCredentials();
-    settings.close();
-    await closeServer(server);
-  }
-});
-
-test('wizard POST requires conversations.list readiness before connecting', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) {
-    t.skip(skip);
-    return;
-  }
-  const { server, baseUrl } = await listenFakeSlack(
-    {
-      ok: true,
-      app_id: 'A0CHICKPEA',
-      team_id: 'TACME',
-      user_id: 'UTAGBOT',
-      bot_id: 'BTAG',
-    },
-    {
-      ok: true,
-      user: {
-        id: 'UTAGBOT',
-        profile: { display_name: 'Chickpea', api_app_id: 'A0CHICKPEA' },
-      },
-    },
-    { 'x-oauth-scopes': slackAppManifest.oauth_config.scopes.bot.join(',') },
-    { ok: false, error: 'missing_scope' },
-  );
-  const settings = new SqliteSettingsStore(':memory:');
-  const config = new SqliteConfigStore(':memory:');
-  try {
-    await recordWorkspaceDefaultChallenge(config, settings, 'pasted-secret');
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: baseUrl }, async () => {
-      const response = await postCreds(appWith(settings, config), {
-        botToken: 'xoxb-pasted',
-        signingSecret: 'pasted-secret',
-      });
-      assert.equal(response.status, 422);
-      assert.equal(
-        ((await response.json()) as { error: string }).error,
-        'slack_missing_scopes',
-      );
-      assert.equal(
-        (await resolveSlackIdentityCredentials(
-          'slack_identity_default',
-          undefined,
-          settings,
-        )).connectionRevision,
-        null,
-      );
-      assert.ok(await readPendingSlackChallenge(settings, 'slack_identity_default'));
-      assert.equal(
-        (await config.getSlackIdentity('slack_identity_default')).lifecycle,
-        'setup_incomplete',
-      );
-    });
-  } finally {
-    config.close();
-    settings.close();
-    await closeServer(server);
-  }
-});
-
-test('wizard POST rejects a missing/empty credential body without calling Slack', async () => {
-  const settings = new SqliteSettingsStore(':memory:');
-  try {
-    // No SLACK_API_URL fake is running: reaching auth.test would fail loudly,
-    // so a 400 here proves validation short-circuits before any network call.
-    await withEnv({ ...NO_SLACK_ENV, SLACK_API_URL: 'http://127.0.0.1:9' }, async () => {
-      const app = appWith(settings);
-      assert.equal((await postCreds(app, { botToken: 'xoxb-x' })).status, 400);
-      assert.equal((await postCreds(app, { botToken: '', signingSecret: '' })).status, 400);
-      assert.equal((await postCreds(app, undefined)).status, 400);
-      // Whitespace-only clears the schema's min-length but must still 400: it
-      // would otherwise store empty and resolve back as 'missing'.
-      assert.equal((await postCreds(app, { botToken: '   ', signingSecret: '\t' })).status, 400);
-      assert.equal(
-        (await resolveSlackIdentityCredentials(
-          'slack_identity_default',
-          undefined,
-          settings,
-        )).connectionRevision,
-        null,
-      );
-    });
-  } finally {
-    settings.close();
-  }
-});
-
-test('events route fails closed (401) when no signing secret is configured anywhere', async () => {
+test('events route fails closed when no signing secret or valid setup challenge is configured', async () => {
   await withEnv({ ...NO_SLACK_ENV, TAG_DB_PATH: ':memory:', SLACK_STATE_DB_PATH: undefined }, async () => {
     invalidateStoredSlackCredentials();
     const { channel } = await import('../src/channels/slack.ts');
     const route = channel.routes.find((r) => r.path === '/events');
     assert.ok(route, 'channel must expose the /events route');
-    // Minimal structural context: the gate only touches c.env and c.json
-    // before it 401s (never reaching @flue/slack's verifier).
+    const raw = new Request('http://localhost/channels/slack/events', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'event_callback', event: { type: 'app_mention' } }),
+    });
     const fakeContext = {
       env: undefined,
+      req: { raw },
       json: (body: unknown, status?: number) => Response.json(body, { status: status ?? 200 }),
     };
     const response = (await route.handler(
@@ -2875,7 +1794,7 @@ test('events route fails closed (401) when no signing secret is configured anywh
       undefined as never,
     )) as Response;
     assert.equal(response.status, 401);
-    assert.deepEqual(await response.json(), { error: 'slack_not_configured' });
+    assert.deepEqual(await response.json(), { error: 'invalid_slack_request' });
   });
 });
 
@@ -2890,11 +1809,16 @@ test('fixed events route rejects anonymous url_verification before any signing s
       const json = (body: unknown, status?: number) =>
         Response.json(body, { status: status ?? 200 });
 
-      // Fresh installs use their opaque ingress. The compatibility route must
-      // never accept unsigned setup material.
+      // The canonical manifest route retains only a fresh header-bearing setup
+      // challenge. It must never accept anonymous setup material.
+      const challengeRequest = new Request('http://localhost/channels/slack/events', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'url_verification', challenge: 'abc123' }),
+      });
       const challengeCtx = {
         env: undefined,
-        req: { json: async () => ({ type: 'url_verification', challenge: 'abc123' }) },
+        req: { raw: challengeRequest },
         json,
       };
       const deniedChallenge = (await route.handler(
@@ -2902,17 +1826,22 @@ test('fixed events route rejects anonymous url_verification before any signing s
         undefined as never,
       )) as Response;
       assert.equal(deniedChallenge.status, 401);
-      assert.deepEqual(await deniedChallenge.json(), { error: 'slack_not_configured' });
+      assert.deepEqual(await deniedChallenge.json(), { error: 'invalid_slack_request' });
 
       // A NON-challenge event with no secret still fails closed.
+      const eventRequest = new Request('http://localhost/channels/slack/events', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'event_callback', event: { type: 'app_mention' } }),
+      });
       const eventCtx = {
         env: undefined,
-        req: { json: async () => ({ type: 'event_callback', event: { type: 'app_mention' } }) },
+        req: { raw: eventRequest },
         json,
       };
       const denied = (await route.handler(eventCtx as never, undefined as never)) as Response;
       assert.equal(denied.status, 401);
-      assert.deepEqual(await denied.json(), { error: 'slack_not_configured' });
+      assert.deepEqual(await denied.json(), { error: 'invalid_slack_request' });
     },
   );
 });

@@ -130,7 +130,7 @@ test('confidential callback validates the issued bot capabilities and waits for 
   }
 });
 
-test('the exact signed Events ingress automatically promotes its pending encrypted bot revision', async () => {
+test('the canonical signed Events URL automatically promotes its pending encrypted bot revision', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-install-events-'));
   const databasePath = join(directory, 'state.db');
   const keyringPath = join(directory, 'credential-keyring.json');
@@ -158,9 +158,6 @@ test('the exact signed Events ingress automatically promotes its pending encrypt
         });
         assert.equal(waiting.status, 'waiting_events');
 
-        const slackIdentity = await fixture.config.getSlackIdentity(
-          WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-        );
         const body = JSON.stringify({
           type: 'url_verification',
           challenge: 'challenge-install-ingress',
@@ -174,7 +171,7 @@ test('the exact signed Events ingress automatically promotes its pending encrypt
         const app = new Hono();
         app.route('/channels/slack', channel.route());
         const response = await app.request(
-          `/channels/slack/events/${slackIdentity.ingressKey}`,
+          '/channels/slack/events',
           {
             method: 'POST',
             headers: {
@@ -686,6 +683,7 @@ test('a late signed challenge cannot promote a candidate after its app credentia
     const restarted = await openSlackSetupTransaction(fixture.identity, {
       capability: restartedAuthority.capability,
       authority: restartedAuthority,
+      canonicalAdminOrigin: ORIGIN,
       destination: '/admin/channels',
       now: () => NOW + 1,
     });
@@ -741,6 +739,7 @@ async function installFixture(options: FixtureOptions = {}) {
   const initial = await openSlackSetupTransaction(identity, {
     capability: minted.capability,
     authority: minted,
+    canonicalAdminOrigin: ORIGIN,
     destination: '/admin/channels',
     now,
   });

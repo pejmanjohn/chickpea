@@ -48,7 +48,7 @@ test('memory prompt labels hostile content as advisory JSON rather than instruct
     enabled: true, reason: 'eligible', privacy: 'public', workspaceRead: true,
     reads: [{ storeId: 'store_public_T', sourceChannelId: null }],
     writeStoreId: 'store_public_T', sourceChannelId: 'C', displayName: 'product',
-    audienceMemberIds: ['U', 'U_BOT'],
+    audienceMemberIds: ['U', 'UBOT'],
     visibilityBarrierAt: null, transitionVersion: 1,
   };
   const entry: MemoryEntry = {
@@ -84,7 +84,7 @@ test('final serialized prompt stays within 8 KiB and labels each entry by its st
       { storeId: 'store_public_T', sourceChannelId: null },
     ],
     writeStoreId: 'store_private_T_C_1', sourceChannelId: 'C', displayName: 'product',
-    audienceMemberIds: ['U', 'U_BOT'], visibilityBarrierAt: null, transitionVersion: 2,
+    audienceMemberIds: ['U', 'UBOT'], visibilityBarrierAt: null, transitionVersion: 2,
   };
   const entries = Array.from({ length: 8 }, (_, index): MemoryEntry => ({
     entryId: `mem_${index}`,
