@@ -36,11 +36,11 @@ Acceptance requires the exact invited email and creates the membership only at t
 
 A signed-in user changes their own password only after proving the current one. Success revokes every browser session and requires normal login.
 
-An owner or authorized admin may create a 30-minute, show-once administrative reset link for a teammate. The fixed target is visible before the new password is accepted. Reset revokes all target sessions and personal access tokens, consumes the capability, and does not create a logged-in session. An admin cannot reset an owner.
+An Owner invites an exact active Slack member as a Chickpea Admin. The seven-day show-once invitation is bound to the connected `team_id` and selected `user_id`; accepting it requires that exact Slack identity. Roles are Chickpea authority and are not inferred from Slack workspace roles.
 
 ## Owner recovery
 
-Recovery is disabled by default. A Cloudflare account holder creates a temporary `CHICKPEA_RECOVERY_TOKEN`, opens `/admin/recovery`, and provides the durable owner email, replacement password, and temporary value. Recovery is not sign-in: it replaces exactly one owner credential, revokes the owner's sessions and personal access tokens, consumes that configured capability, and requires normal login. Cloudflare secrets are write-only, so operators create or replace the value; they do not retrieve an old one. Follow [Built-in authentication recovery](runbooks/password-recovery.md).
+Recovery is disabled by default and absent from normal navigation. A deployment operator creates a temporary `CHICKPEA_RECOVERY_TOKEN` and opens `/admin/recovery`. The one-use grant mints one 15-minute browser-bound operational session that may repair only the unchanged Slack app/workspace credentials and exact deployment URLs. It cannot bind a person, change a role, or issue a user session. After signed Events proof promotes the replacement credential revision, an existing Owner signs in normally with Slack. Follow [Slack authentication recovery](runbooks/slack-auth-recovery.md).
 
 ## Existing installs and `AUTH_DB`
 

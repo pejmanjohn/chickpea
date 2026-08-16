@@ -15386,6 +15386,67 @@ export function renderPasswordRecoveryPage(options: { error?: boolean; success?:
   });
 }
 
+export function renderSlackRecoveryPage(options: {
+  stage?: 'token' | 'credentials' | 'waiting_events' | 'complete';
+  expectedAppId?: string;
+  expectedTeamId?: string;
+  error?: string;
+} = {}): string {
+  const stage = options.stage ?? 'token';
+  const error = options.error
+    ? `<div class="error" id="auth-error" role="alert" tabindex="-1">${escapeHtmlAttribute(options.error)}</div>`
+    : '';
+  if (stage === 'complete') {
+    return renderPasswordPage({
+      title: 'Slack connection repaired',
+      eyebrow: 'Recovery complete',
+      intro: 'Recovery did not sign anyone in or change team roles. An existing Owner can now use normal Sign in with Slack.',
+      error,
+      body: '<a class="primary" href="/admin/login">Continue to Sign in with Slack</a>',
+    });
+  }
+  if (stage === 'waiting_events') {
+    return renderPasswordPage({
+      title: 'Verify the Events URL',
+      eyebrow: 'Credential repair',
+      intro: 'In Slack app settings, retry and save Event Subscriptions for this unchanged app. Then return here to finish the revision-bound verification.',
+      error,
+      body: `<form method="post" action="/admin/recovery"><input type="hidden" name="action" value="finalize"><button type="submit">Verify and promote repair</button></form>`,
+    });
+  }
+  if (stage === 'credentials') {
+    return renderPasswordPage({
+      title: 'Repair Slack credentials',
+      eyebrow: '15-minute recovery session',
+      intro: `Enter credentials for the unchanged Slack app ${options.expectedAppId ?? ''} in workspace ${options.expectedTeamId ?? ''}. Values are write-only and encrypted before persistence.`,
+      error,
+      body: `<form method="post" action="/admin/recovery">
+        <input type="hidden" name="action" value="stage">
+        <label for="app-id">Slack app ID</label><input id="app-id" name="appId" required maxlength="64" autocomplete="off" value="${escapeHtmlAttribute(options.expectedAppId ?? '')}">
+        <label for="team-id">Slack team ID</label><input id="team-id" name="teamId" required maxlength="64" autocomplete="off" value="${escapeHtmlAttribute(options.expectedTeamId ?? '')}">
+        <label for="client-id">Client ID</label><input id="client-id" name="clientId" required maxlength="256" autocomplete="off">
+        <label for="client-secret">Client secret</label><input id="client-secret" name="clientSecret" type="password" required maxlength="4096" autocomplete="off">
+        <label for="signing-secret">Signing secret</label><input id="signing-secret" name="signingSecret" type="password" required maxlength="4096" autocomplete="off">
+        <label for="configuration-token">Configuration token <span>only if deployment URLs changed</span></label><input id="configuration-token" name="configurationToken" type="password" maxlength="512" autocomplete="off" aria-describedby="configuration-token-help">
+        <p id="configuration-token-help" class="field-help">A short-lived token is used only in this request to update the unchanged app's OAuth and Events URLs. It is never stored.</p>
+        <button type="submit">Encrypt credentials and authorize Slack</button>
+      </form>`,
+    });
+  }
+  return renderPasswordPage({
+    title: 'Repair the Slack connection',
+    eyebrow: 'Deployment recovery',
+    intro: 'This hidden path repairs only the existing Slack app and workspace. It cannot create an Owner, change a role, or issue a Chickpea session.',
+    error,
+    body: `<form method="post" action="/admin/recovery">
+      <input type="hidden" name="action" value="begin">
+      <label for="recovery-token">Deployment recovery token</label>
+      <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required maxlength="512" ${options.error ? 'aria-describedby="auth-error"' : ''}>
+      <button type="submit">Start 15-minute repair</button>
+    </form>`,
+  });
+}
+
 export function passwordFormClientScript(): string {
   return `(function(){
     var input=document.getElementById('new-password');

@@ -57,7 +57,9 @@ import type {
   CreatePersonalTokenRecordInput,
   CreateSlackOAuthAttemptInput,
   CreateSlackOidcAttemptInput,
+  CreateSlackRecoverySessionInput,
   AcquireSlackOAuthAttemptInput,
+  AcquireSlackRecoveryOAuthInput,
   EnsureOrganizationInput,
   EnsureAuthControlInput,
   EnsureSlackCredentialControlInput,
@@ -67,6 +69,7 @@ import type {
   RecordIdentityAuthAuditInput,
   RecordSlackAppCreationSuccessInput,
   PromoteSlackCredentialRevisionInput,
+  PromoteSlackRecoveryCandidateInput,
   RewrapSlackCredentialRevisionInput,
   ResendInvitationInput,
   SetMembershipAccessOverlayInput,
@@ -77,14 +80,18 @@ import type {
   MarkSlackOAuthApprovalPendingInput,
   RecordSlackBotInstallationCandidateInput,
   RecordSlackEventsProofInput,
+  RecordSlackRecoveryCandidateInput,
   PromoteSlackBotInstallationInput,
   FailSlackBotInstallationInput,
   SettleSlackOAuthAttemptInput,
   SettleSlackOidcAttemptInput,
   AcquireSlackOidcAttemptInput,
   StageSlackCredentialRevisionInput,
+  StageSlackRecoveryAppCredentialsInput,
+  StartSlackRecoveryOAuthInput,
   TombstoneSlackCredentialRevisionInput,
   UpdateMembershipAuthorityInput,
+  UpdateSlackRecoveryManifestInput,
   UpdateAuthControlInput,
   UpdateOrganizationAuthInput,
 } from '../identity/types.ts';
@@ -466,6 +473,46 @@ export class CfIdentityStore implements IdentityStore {
     const response = await this.execute({ kind: 'sweep_slack_identity_retention', at, candidateMaxAgeMs });
     if (response.kind !== 'slack_credential_retention') throw unexpectedIdentityResponse();
     return response.result;
+  }
+  async createSlackRecoverySession(input: CreateSlackRecoverySessionInput) {
+    const response = await this.execute({ kind: 'create_slack_recovery_session', input });
+    if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();
+    return response.session;
+  }
+  async getSlackRecoverySession(recoveryId: string) {
+    const response = await this.execute({ kind: 'get_slack_recovery_session', recoveryId });
+    if (response.kind !== 'slack_recovery_session') throw unexpectedIdentityResponse();
+    return orUndefined(response.session);
+  }
+  async stageSlackRecoveryAppCredentials(input: StageSlackRecoveryAppCredentialsInput) {
+    const response = await this.execute({ kind: 'stage_slack_recovery_app_credentials', input });
+    if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();
+    return response.session;
+  }
+  async startSlackRecoveryOAuth(input: StartSlackRecoveryOAuthInput) {
+    const response = await this.execute({ kind: 'start_slack_recovery_oauth', input });
+    if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();
+    return response.session;
+  }
+  async updateSlackRecoveryManifest(input: UpdateSlackRecoveryManifestInput) {
+    const response = await this.execute({ kind: 'update_slack_recovery_manifest', input });
+    if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();
+    return response.session;
+  }
+  async acquireSlackRecoveryOAuth(input: AcquireSlackRecoveryOAuthInput) {
+    const response = await this.execute({ kind: 'acquire_slack_recovery_oauth', input });
+    if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();
+    return response.session;
+  }
+  async recordSlackRecoveryCandidate(input: RecordSlackRecoveryCandidateInput) {
+    const response = await this.execute({ kind: 'record_slack_recovery_candidate', input });
+    if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();
+    return response.session;
+  }
+  async promoteSlackRecoveryCandidate(input: PromoteSlackRecoveryCandidateInput) {
+    const response = await this.execute({ kind: 'promote_slack_recovery_candidate', input });
+    if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();
+    return response.session;
   }
   async reserveSlackSetupTransaction(input: ReserveSlackSetupTransactionInput) {
     const response = await this.execute({ kind: 'reserve_slack_setup_transaction', input });

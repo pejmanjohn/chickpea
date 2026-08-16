@@ -21,7 +21,7 @@
     "docs/runbooks/access-recovery.md",
     "docs/runbooks/auth-db-upgrade.md",
     "docs/runbooks/coding-sandbox-deployment.md",
-    "docs/runbooks/password-recovery.md",
+    "docs/runbooks/slack-auth-recovery.md",
     "fixtures",
     "migrations",
     "scripts",

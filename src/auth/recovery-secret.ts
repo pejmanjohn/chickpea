@@ -1,4 +1,7 @@
+import { createHash } from 'node:crypto';
+
 const HKDF_CONTEXT = 'chickpea/better-auth/v1';
+const SLACK_RECOVERY_GRANT_CONTEXT = 'chickpea/slack-recovery-grant/v1';
 const RECOVERY_BYTES = 32;
 
 export class RecoverySecretError extends Error {
@@ -39,6 +42,15 @@ export async function deriveBetterAuthSecret(value: string): Promise<string> {
     info: new TextEncoder().encode(HKDF_CONTEXT),
   }, key, 256);
   return Buffer.from(bits).toString('base64url');
+}
+
+/** Canonical decoded bytes prevent alternate encodings from replaying one grant. */
+export function digestSlackRecoveryGrant(deploymentId: string, value: string): string {
+  if (!deploymentId || deploymentId.length > 256) throw new RecoverySecretError();
+  return createHash('sha256')
+    .update(SLACK_RECOVERY_GRANT_CONTEXT).update('\0').update(deploymentId).update('\0')
+    .update(decodeRecoverySecret(value))
+    .digest('hex');
 }
 
 function decodeCanonicalBase64(value: string, encoding: 'base64' | 'base64url'): Uint8Array {

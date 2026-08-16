@@ -139,6 +139,8 @@ export interface RecoverMissingSlackCredentialBundleInput {
   };
 }
 
+export type StageMissingSlackCredentialBundleInput = RecoverMissingSlackCredentialBundleInput;
+
 export class SlackIdentityCredentialRevisionError extends Error {
   constructor(readonly identityId: string, message = `Slack identity ${identityId} credentials changed`) {
     super(message);
@@ -507,6 +509,32 @@ export async function recoverMissingSlackCredentialBundle(
   dependencies: SlackCredentialDependencies,
   input: RecoverMissingSlackCredentialBundleInput,
 ): Promise<SlackCredentialRevision> {
+  const candidate = await stageMissingSlackCredentialBundle(dependencies, input);
+  const promoted = await promoteSlackCredentialBundle(dependencies, {
+    identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    candidateRevision: candidate.revision,
+    expectedActiveRevision: null,
+  });
+  await dependencies.state.recordAuthAudit({
+    event: 'authorization',
+    outcome: 'success',
+    action: 'slack_credentials.missing_key_recovered',
+    correlationId: input.correlationId,
+    authenticatorKind: 'deployment_token',
+    reasonCode: 'same_app_team_reauthorized',
+  });
+  await leaveCredentialRecoveryOnly(dependencies.state);
+  return promoted;
+}
+
+/**
+ * Lost-root recovery stages the same-app/team replacement but deliberately
+ * leaves it inactive and keeps recovery_only closed until signed Events proof.
+ */
+export async function stageMissingSlackCredentialBundle(
+  dependencies: SlackCredentialDependencies,
+  input: StageMissingSlackCredentialBundleInput,
+): Promise<SlackCredentialRevision> {
   if (!/^[A-Za-z0-9_-]{8,256}$/.test(input.correlationId)) {
     throw new Error('Slack credential recovery correlation is invalid.');
   }
@@ -569,7 +597,7 @@ export async function recoverMissingSlackCredentialBundle(
   if (control.currentKeyId !== dependencies.keyring.currentKeyId) {
     throw new SlackIdentityCredentialRevisionError(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
   }
-  const candidate = await stageSlackCredentialBundle(dependencies, {
+  return stageSlackCredentialBundle(dependencies, {
     identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     identityClass: 'workspace_default',
     purpose: 'connected_credentials',
@@ -582,21 +610,6 @@ export async function recoverMissingSlackCredentialBundle(
     manifestFingerprint: input.manifestFingerprint ?? prior.manifestFingerprint,
     secrets: input.secrets,
   });
-  const promoted = await promoteSlackCredentialBundle(dependencies, {
-    identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-    candidateRevision: candidate.revision,
-    expectedActiveRevision: null,
-  });
-  await dependencies.state.recordAuthAudit({
-    event: 'authorization',
-    outcome: 'success',
-    action: 'slack_credentials.missing_key_recovered',
-    correlationId: input.correlationId,
-    authenticatorKind: 'deployment_token',
-    reasonCode: 'same_app_team_reauthorized',
-  });
-  await leaveCredentialRecoveryOnly(dependencies.state);
-  return promoted;
 }
 
 export function invalidateSlackIdentityCredentialCache(

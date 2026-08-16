@@ -1,6 +1,6 @@
 # Cloudflare Access recovery (optional mode)
 
-This runbook applies only to an existing installation that explicitly uses optional Cloudflare Access authentication. Fresh Chickpea installations use built-in accounts; see [Built-in authentication recovery](password-recovery.md).
+This runbook applies only to an existing installation that explicitly uses optional Cloudflare Access authentication. Fresh Chickpea installations use Slack-only identity; see [Slack authentication recovery](slack-auth-recovery.md).
 
 ## Before changing Chickpea
 

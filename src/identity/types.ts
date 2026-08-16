@@ -223,11 +223,111 @@ export interface RewrapSlackCredentialRevisionInput {
 
 export interface SlackCredentialRetentionResult {
   expiredAuthOperations: number;
+  expiredRecoverySessions: number;
   expiredInvitations: number;
   expiredBrowserSessions: number;
   deletedSlackOAuthAttempts: number;
   deletedOrphanedSlackEventsProofs: number;
   scrubbedCredentialCandidates: number;
+}
+
+export type SlackRecoveryStatus =
+  | 'active'
+  | 'credentials_staged'
+  | 'oauth_pending'
+  | 'oauth_processing'
+  | 'waiting_events'
+  | 'consumed'
+  | 'failed'
+  | 'expired';
+
+/** Operational credential-repair authority. It carries no person, role, or product session. */
+export interface SlackRecoverySession {
+  id: string;
+  deploymentId: string;
+  grantHash: string;
+  sessionHash: string;
+  browserHash: string;
+  allowedActions: Array<'credential_repair' | 'url_repair'>;
+  status: SlackRecoveryStatus;
+  expectedAppId: string;
+  expectedTeamId: string;
+  baseRevision: string;
+  manifestFingerprint: string;
+  appCredentialRevision: string | null;
+  appCredentialClientId: string | null;
+  appCredentialEnvelope: SlackSecretEnvelope | null;
+  connectedCandidateRevision: string | null;
+  oauthStateHash: string | null;
+  oauthRedirectUri: string | null;
+  leaseGeneration: number;
+  leaseExpiresAt: number | null;
+  resultCode: string | null;
+  expiresAt: number;
+  consumedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CreateSlackRecoverySessionInput {
+  id: string;
+  deploymentId: string;
+  grantHash: string;
+  sessionHash: string;
+  browserHash: string;
+  allowedActions: SlackRecoverySession['allowedActions'];
+  expectedAppId: string;
+  expectedTeamId: string;
+  baseRevision: string;
+  manifestFingerprint: string;
+  expiresAt: number;
+}
+
+export interface StageSlackRecoveryAppCredentialsInput {
+  recoveryId: string;
+  sessionHash: string;
+  browserHash: string;
+  appCredentialRevision: string;
+  appCredentialClientId: string;
+  appCredentialEnvelope: SlackSecretEnvelope;
+}
+
+export interface StartSlackRecoveryOAuthInput {
+  recoveryId: string;
+  sessionHash: string;
+  browserHash: string;
+  stateHash: string;
+  redirectUri: string;
+}
+
+export interface UpdateSlackRecoveryManifestInput {
+  recoveryId: string;
+  sessionHash: string;
+  browserHash: string;
+  manifestFingerprint: string;
+}
+
+export interface AcquireSlackRecoveryOAuthInput {
+  stateHash: string;
+  sessionHash: string;
+  browserHash: string;
+  redirectUri: string;
+  leaseExpiresAt: number;
+}
+
+export interface RecordSlackRecoveryCandidateInput {
+  recoveryId: string;
+  expectedLeaseGeneration: number;
+  candidateRevision: string;
+}
+
+export interface PromoteSlackRecoveryCandidateInput {
+  recoveryId: string;
+  sessionHash: string;
+  browserHash: string;
+  candidateRevision: string;
+  expectedActiveRevision: string | null;
+  expectedRotationEpoch: number;
 }
 
 export type SlackSetupState =
@@ -768,6 +868,14 @@ export interface IdentityStore extends HumanIdentityDirectory {
   rewrapSlackCredentialRevision(input: RewrapSlackCredentialRevisionInput): Promise<SlackCredentialRevision>;
   countLiveSlackCredentialRevisionsByKey(keyId: string, expectedRotationEpoch: number): Promise<number>;
   sweepSlackIdentityRetention(at: number, candidateMaxAgeMs: number): Promise<SlackCredentialRetentionResult>;
+  createSlackRecoverySession(input: CreateSlackRecoverySessionInput): Promise<SlackRecoverySession>;
+  getSlackRecoverySession(recoveryId: string): Promise<SlackRecoverySession | undefined>;
+  stageSlackRecoveryAppCredentials(input: StageSlackRecoveryAppCredentialsInput): Promise<SlackRecoverySession>;
+  startSlackRecoveryOAuth(input: StartSlackRecoveryOAuthInput): Promise<SlackRecoverySession>;
+  updateSlackRecoveryManifest(input: UpdateSlackRecoveryManifestInput): Promise<SlackRecoverySession>;
+  acquireSlackRecoveryOAuth(input: AcquireSlackRecoveryOAuthInput): Promise<SlackRecoverySession>;
+  recordSlackRecoveryCandidate(input: RecordSlackRecoveryCandidateInput): Promise<SlackRecoverySession>;
+  promoteSlackRecoveryCandidate(input: PromoteSlackRecoveryCandidateInput): Promise<SlackRecoverySession>;
   reserveSlackSetupTransaction(input: ReserveSlackSetupTransactionInput): Promise<SlackSetupTransaction>;
   getSlackSetupTransaction(setupId: string): Promise<SlackSetupTransaction | undefined>;
   findSlackSetupTransaction(locatorHash: string): Promise<SlackSetupTransaction | undefined>;
@@ -858,6 +966,14 @@ export type IdentityRpcRequest =
   | { kind: 'rewrap_slack_credential_revision'; input: RewrapSlackCredentialRevisionInput }
   | { kind: 'count_live_slack_credential_revisions_by_key'; keyId: string; expectedRotationEpoch: number }
   | { kind: 'sweep_slack_identity_retention'; at: number; candidateMaxAgeMs: number }
+  | { kind: 'create_slack_recovery_session'; input: CreateSlackRecoverySessionInput }
+  | { kind: 'get_slack_recovery_session'; recoveryId: string }
+  | { kind: 'stage_slack_recovery_app_credentials'; input: StageSlackRecoveryAppCredentialsInput }
+  | { kind: 'start_slack_recovery_oauth'; input: StartSlackRecoveryOAuthInput }
+  | { kind: 'update_slack_recovery_manifest'; input: UpdateSlackRecoveryManifestInput }
+  | { kind: 'acquire_slack_recovery_oauth'; input: AcquireSlackRecoveryOAuthInput }
+  | { kind: 'record_slack_recovery_candidate'; input: RecordSlackRecoveryCandidateInput }
+  | { kind: 'promote_slack_recovery_candidate'; input: PromoteSlackRecoveryCandidateInput }
   | { kind: 'reserve_slack_setup_transaction'; input: ReserveSlackSetupTransactionInput }
   | { kind: 'get_slack_setup_transaction'; setupId: string }
   | { kind: 'find_slack_setup_transaction'; locatorHash: string }
@@ -937,6 +1053,7 @@ export type IdentityRpcResponse =
   | { kind: 'slack_credential_count'; count: number }
   | { kind: 'slack_credential_presence'; present: boolean }
   | { kind: 'slack_credential_retention'; result: SlackCredentialRetentionResult }
+  | { kind: 'slack_recovery_session'; session: SlackRecoverySession | null }
   | { kind: 'slack_setup_transaction'; transaction: SlackSetupTransaction | null }
   | { kind: 'slack_oauth_attempt'; attempt: SlackOAuthAttempt | null }
   | { kind: 'slack_oidc_attempt'; attempt: SlackOidcAttempt | null }

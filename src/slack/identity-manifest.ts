@@ -141,6 +141,23 @@ export function validateSlackAppManifest(
   return { fingerprint: slackManifestFingerprint(expected) };
 }
 
+/** Recovery may change only this deployment's two OAuth URLs and Events URL. */
+export function validateSlackAppManifestUrlRepair(
+  actual: unknown,
+  expected: SlackAppManifest,
+): void {
+  const candidate = structuredClone(actual) as Record<string, unknown>;
+  const oauth = record(candidate.oauth_config);
+  oauth.redirect_urls = [...(expected.oauth_config.redirect_urls ?? [])];
+  candidate.oauth_config = oauth;
+  const settings = record(candidate.settings);
+  const subscriptions = record(settings.event_subscriptions);
+  subscriptions.request_url = expected.settings.event_subscriptions.request_url;
+  settings.event_subscriptions = subscriptions;
+  candidate.settings = settings;
+  validateSlackAppManifest(candidate, expected);
+}
+
 function manifestCore(input: {
   appName: string;
   botDisplayName: string;

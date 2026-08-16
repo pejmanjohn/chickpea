@@ -11,6 +11,7 @@ import type {
   SlackCredentialRevision,
   SlackOAuthAttempt,
   SlackOidcAttempt,
+  SlackRecoverySession,
 } from '../src/identity/types.ts';
 
 const resolution: IdentityResolution = {
@@ -199,6 +200,24 @@ test('Cloudflare proxy forwards hashed Slack OIDC callback authority', async () 
   const store = new CfIdentityStore(stub);
   assert.deepEqual(await store.getSlackOidcAttempt(attempt.id), attempt);
   assert.deepEqual(calls, [{ kind: 'get_slack_oidc_attempt', attemptId: attempt.id }]);
+});
+
+test('Cloudflare proxy forwards recovery authority without projecting raw grants or sessions', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const session: SlackRecoverySession = {
+    id: 'recovery_rpc_authority', deploymentId: 'deployment_rpc',
+    grantHash: 'a'.repeat(64), sessionHash: 'b'.repeat(64), browserHash: 'c'.repeat(64),
+    allowedActions: ['credential_repair', 'url_repair'], status: 'active',
+    expectedAppId: 'AAPP', expectedTeamId: 'TACME', baseRevision: 'revision_connected',
+    manifestFingerprint: 'sha256:manifest', appCredentialRevision: null,
+    appCredentialClientId: null, appCredentialEnvelope: null, connectedCandidateRevision: null,
+    oauthStateHash: null, oauthRedirectUri: null, leaseGeneration: 0, leaseExpiresAt: null,
+    resultCode: null, expiresAt: 20, consumedAt: null, createdAt: 10, updatedAt: 10,
+  };
+  const stub = rpcStub(calls, { kind: 'slack_recovery_session', session });
+  const store = new CfIdentityStore(stub);
+  assert.deepEqual(await store.getSlackRecoverySession(session.id), session);
+  assert.deepEqual(calls, [{ kind: 'get_slack_recovery_session', recoveryId: session.id }]);
 });
 
 test('Cloudflare proxy forwards digest-only invitation lookup', async () => {

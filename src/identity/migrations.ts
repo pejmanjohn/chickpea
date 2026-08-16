@@ -43,6 +43,27 @@ export const IDENTITY_SCHEMA_V1_STATEMENTS = [
     ON identity_slack_credential_revisions (identity_id) WHERE status = 'candidate'`,
   `CREATE INDEX identity_slack_credential_key_idx
     ON identity_slack_credential_revisions (key_id, status, rotation_epoch)`,
+  `CREATE TABLE identity_slack_recovery_sessions (
+    recovery_id TEXT PRIMARY KEY, deployment_id TEXT NOT NULL,
+    grant_hash TEXT NOT NULL UNIQUE, session_hash TEXT NOT NULL UNIQUE, browser_hash TEXT NOT NULL,
+    allowed_actions_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN (
+      'active', 'credentials_staged', 'oauth_pending', 'oauth_processing',
+      'waiting_events', 'consumed', 'failed', 'expired'
+    )),
+    expected_app_id TEXT NOT NULL, expected_team_id TEXT NOT NULL, base_revision TEXT NOT NULL,
+    manifest_fingerprint TEXT NOT NULL,
+    app_credential_revision TEXT, app_credential_client_id TEXT,
+    app_envelope_version INTEGER, app_envelope_algorithm TEXT, app_key_id TEXT,
+    app_nonce TEXT, app_ciphertext TEXT,
+    connected_candidate_revision TEXT, oauth_state_hash TEXT UNIQUE, oauth_redirect_uri TEXT,
+    lease_generation INTEGER NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+    lease_expires_at INTEGER, result_code TEXT, expires_at INTEGER NOT NULL,
+    consumed_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  )`,
+  `CREATE UNIQUE INDEX identity_slack_recovery_active_uidx
+    ON identity_slack_recovery_sessions ((1))
+    WHERE status IN ('active', 'credentials_staged', 'oauth_pending', 'oauth_processing', 'waiting_events')`,
   `CREATE TABLE identity_slack_setup_transactions (
     setup_id TEXT PRIMARY KEY CHECK (setup_id = 'setup_default'),
     locator_hash TEXT NOT NULL UNIQUE,

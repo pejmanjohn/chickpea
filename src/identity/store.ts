@@ -12,6 +12,7 @@ import type {
   ActivateFirstOwnerInput,
   AdmitSlackOidcAttemptInput,
   AcquireSlackOidcAttemptInput,
+  AcquireSlackRecoveryOAuthInput,
   AuthControl,
   AuthOperation,
   AuthOperationKind,
@@ -29,6 +30,7 @@ import type {
   CreatePersonalTokenRecordInput,
   CreateSlackOAuthAttemptInput,
   CreateSlackOidcAttemptInput,
+  CreateSlackRecoverySessionInput,
   AcquireSlackOAuthAttemptInput,
   EnsureAuthControlInput,
   EnsureSlackCredentialControlInput,
@@ -48,6 +50,7 @@ import type {
   RecordIdentityAuthAuditInput,
   RecordSlackAppCreationSuccessInput,
   PromoteSlackCredentialRevisionInput,
+  PromoteSlackRecoveryCandidateInput,
   RewrapSlackCredentialRevisionInput,
   ResendInvitationInput,
   RotatePersonalTokenResult,
@@ -63,6 +66,7 @@ import type {
   MarkSlackOAuthApprovalPendingInput,
   RecordSlackBotInstallationCandidateInput,
   RecordSlackEventsProofInput,
+  RecordSlackRecoveryCandidateInput,
   PromoteSlackBotInstallationInput,
   FailSlackBotInstallationInput,
   SettleSlackOAuthAttemptInput,
@@ -70,10 +74,14 @@ import type {
   SlackOAuthAttempt,
   SlackOidcAttempt,
   SlackEventsProof,
+  SlackRecoverySession,
+  StageSlackRecoveryAppCredentialsInput,
+  StartSlackRecoveryOAuthInput,
   StageSlackCredentialRevisionInput,
   SlackIdentityBinding,
   UpdateAuthControlInput,
   UpdateMembershipAuthorityInput,
+  UpdateSlackRecoveryManifestInput,
   UpdateOrganizationAuthInput,
   TombstoneSlackCredentialRevisionInput,
   User,
@@ -112,6 +120,14 @@ export class IdentityStoreLogic {
       case 'rewrap_slack_credential_revision': return { kind: 'slack_credential_revision', revision: this.rewrapSlackCredentialRevision(request.input) };
       case 'count_live_slack_credential_revisions_by_key': return { kind: 'slack_credential_count', count: this.countLiveSlackCredentialRevisionsByKey(request.keyId, request.expectedRotationEpoch) };
       case 'sweep_slack_identity_retention': return { kind: 'slack_credential_retention', result: this.sweepSlackIdentityRetention(request.at, request.candidateMaxAgeMs) };
+      case 'create_slack_recovery_session': return { kind: 'slack_recovery_session', session: this.createSlackRecoverySession(request.input) };
+      case 'get_slack_recovery_session': return { kind: 'slack_recovery_session', session: this.getSlackRecoverySession(request.recoveryId) ?? null };
+      case 'stage_slack_recovery_app_credentials': return { kind: 'slack_recovery_session', session: this.stageSlackRecoveryAppCredentials(request.input) };
+      case 'start_slack_recovery_oauth': return { kind: 'slack_recovery_session', session: this.startSlackRecoveryOAuth(request.input) };
+      case 'update_slack_recovery_manifest': return { kind: 'slack_recovery_session', session: this.updateSlackRecoveryManifest(request.input) };
+      case 'acquire_slack_recovery_oauth': return { kind: 'slack_recovery_session', session: this.acquireSlackRecoveryOAuth(request.input) };
+      case 'record_slack_recovery_candidate': return { kind: 'slack_recovery_session', session: this.recordSlackRecoveryCandidate(request.input) };
+      case 'promote_slack_recovery_candidate': return { kind: 'slack_recovery_session', session: this.promoteSlackRecoveryCandidate(request.input) };
       case 'reserve_slack_setup_transaction': return { kind: 'slack_setup_transaction', transaction: this.reserveSlackSetupTransaction(request.input) };
       case 'get_slack_setup_transaction': return { kind: 'slack_setup_transaction', transaction: this.getSlackSetupTransaction(request.setupId) ?? null };
       case 'find_slack_setup_transaction': return { kind: 'slack_setup_transaction', transaction: this.findSlackSetupTransaction(request.locatorHash) ?? null };
@@ -523,6 +539,15 @@ export class IdentityStoreLogic {
          WHERE status IN ('reserved', 'reconciling') AND expires_at <= ?`,
         at, at,
       ).changes;
+      const expiredRecoverySessions = this.db.run(
+        `UPDATE identity_slack_recovery_sessions SET status = 'expired',
+          app_envelope_version = NULL, app_envelope_algorithm = NULL, app_key_id = NULL,
+          app_nonce = NULL, app_ciphertext = NULL, oauth_state_hash = NULL,
+          lease_expires_at = NULL, updated_at = ?
+         WHERE status IN ('active', 'credentials_staged', 'oauth_pending', 'oauth_processing', 'waiting_events')
+           AND expires_at <= ?`,
+        at, at,
+      ).changes;
       const expiredInvitations = this.db.run(
         `UPDATE identity_invitations SET status = 'expired', updated_at = ?
          WHERE status = 'pending' AND expires_at <= ?`,
@@ -558,12 +583,265 @@ export class IdentityStoreLogic {
       ).changes;
       return {
         expiredAuthOperations,
+        expiredRecoverySessions,
         expiredInvitations,
         expiredBrowserSessions,
         deletedSlackOAuthAttempts: deletedBotOAuthAttempts + deletedSlackOidcAttempts,
         deletedOrphanedSlackEventsProofs,
         scrubbedCredentialCandidates,
       };
+    });
+  }
+
+  createSlackRecoverySession(input: CreateSlackRecoverySessionInput): SlackRecoverySession {
+    const control = this.requiredSlackCredentialControl(DEFAULT_INSTALLATION_ID);
+    const active = this.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+    const now = this.now();
+    if (control.deploymentId !== strictText(input.deploymentId, 'deployment ID', 256) ||
+        !active || active.purpose !== 'connected_credentials' ||
+        active.revision !== nonEmpty(input.baseRevision, 'Slack base revision') ||
+        active.appId !== slackId(input.expectedAppId, 'Slack app ID') ||
+        active.teamId !== slackId(input.expectedTeamId, 'Slack team ID') ||
+        active.manifestFingerprint !== strictText(input.manifestFingerprint, 'manifest fingerprint', 256)) {
+      throw identityError('auth_operation_conflict', 'Slack recovery authority does not match the active installation.');
+    }
+    const actions = [...new Set(input.allowedActions)].sort();
+    if (JSON.stringify(actions) !== JSON.stringify(['credential_repair', 'url_repair'])) {
+      throw identityError('identity_invalid', 'Slack recovery actions are invalid.');
+    }
+    if (!/^recovery_[A-Za-z0-9_-]{8,192}$/.test(input.id) ||
+        !Number.isSafeInteger(input.expiresAt) || input.expiresAt <= now) {
+      throw identityError('identity_invalid', 'Slack recovery lifetime is invalid.');
+    }
+    const grantHash = credentialHash(input.grantHash);
+    const sessionHash = credentialHash(input.sessionHash);
+    const browserHash = credentialHash(input.browserHash);
+    return this.db.transaction(() => {
+      this.db.run(
+        `UPDATE identity_slack_recovery_sessions SET status = 'expired',
+          app_envelope_version = NULL, app_envelope_algorithm = NULL, app_key_id = NULL,
+          app_nonce = NULL, app_ciphertext = NULL, oauth_state_hash = NULL,
+          lease_expires_at = NULL, updated_at = ?
+         WHERE status IN ('active', 'credentials_staged', 'oauth_pending', 'oauth_processing', 'waiting_events')
+           AND expires_at <= ?`,
+        now, now,
+      );
+      if (this.db.get('SELECT 1 AS present FROM identity_slack_recovery_sessions WHERE grant_hash = ?', grantHash)) {
+        throw identityError('auth_operation_conflict', 'Slack recovery grant was already used.');
+      }
+      if (this.db.get(
+        `SELECT 1 AS present FROM identity_slack_recovery_sessions
+         WHERE status IN ('active', 'credentials_staged', 'oauth_pending', 'oauth_processing', 'waiting_events')`,
+      )) {
+        throw identityError('auth_operation_conflict', 'A Slack recovery session is already active.');
+      }
+      this.db.run(
+        `INSERT INTO identity_slack_recovery_sessions (
+          recovery_id, deployment_id, grant_hash, session_hash, browser_hash,
+          allowed_actions_json, status, expected_app_id, expected_team_id, base_revision,
+          manifest_fingerprint, expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
+        input.id, control.deploymentId, grantHash, sessionHash, browserHash,
+        JSON.stringify(actions), active.appId, active.teamId, active.revision,
+        active.manifestFingerprint, input.expiresAt, now, now,
+      );
+      return this.requiredSlackRecoverySession(input.id);
+    });
+  }
+
+  getSlackRecoverySession(recoveryId: string): SlackRecoverySession | undefined {
+    const row = this.db.get(
+      'SELECT * FROM identity_slack_recovery_sessions WHERE recovery_id = ?',
+      nonEmpty(recoveryId, 'Slack recovery ID'),
+    );
+    return row ? slackRecoverySessionFromRow(row) : undefined;
+  }
+
+  stageSlackRecoveryAppCredentials(
+    input: StageSlackRecoveryAppCredentialsInput,
+  ): SlackRecoverySession {
+    validateRecoveryEnvelope(input.appCredentialEnvelope);
+    return this.db.transaction(() => {
+      const session = this.requiredLiveSlackRecoverySession(
+        input.recoveryId, input.sessionHash, input.browserHash,
+      );
+      if (session.status !== 'active') {
+        throw identityError('auth_operation_conflict', 'Slack recovery credentials were already staged.');
+      }
+      const changed = this.db.run(
+        `UPDATE identity_slack_recovery_sessions SET status = 'credentials_staged',
+          app_credential_revision = ?, app_credential_client_id = ?,
+          app_envelope_version = ?, app_envelope_algorithm = ?, app_key_id = ?,
+          app_nonce = ?, app_ciphertext = ?, updated_at = ?
+         WHERE recovery_id = ? AND status = 'active'`,
+        nonEmpty(input.appCredentialRevision, 'Slack recovery credential revision'),
+        strictText(input.appCredentialClientId, 'Slack client ID', 256),
+        input.appCredentialEnvelope.version, input.appCredentialEnvelope.algorithm,
+        input.appCredentialEnvelope.keyId, input.appCredentialEnvelope.nonce,
+        input.appCredentialEnvelope.ciphertext, this.now(), session.id,
+      ).changes;
+      if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack recovery changed concurrently.');
+      return this.requiredSlackRecoverySession(session.id);
+    });
+  }
+
+  startSlackRecoveryOAuth(input: StartSlackRecoveryOAuthInput): SlackRecoverySession {
+    return this.db.transaction(() => {
+      const session = this.requiredLiveSlackRecoverySession(
+        input.recoveryId, input.sessionHash, input.browserHash,
+      );
+      if (session.status !== 'credentials_staged') {
+        throw identityError('auth_operation_conflict', 'Slack recovery is not ready for OAuth.');
+      }
+      const changed = this.db.run(
+        `UPDATE identity_slack_recovery_sessions SET status = 'oauth_pending',
+          oauth_state_hash = ?, oauth_redirect_uri = ?, updated_at = ?
+         WHERE recovery_id = ? AND status = 'credentials_staged'`,
+        credentialHash(input.stateHash), validHttpsCallback(input.redirectUri), this.now(), session.id,
+      ).changes;
+      if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack recovery changed concurrently.');
+      return this.requiredSlackRecoverySession(session.id);
+    });
+  }
+
+  updateSlackRecoveryManifest(input: UpdateSlackRecoveryManifestInput): SlackRecoverySession {
+    return this.db.transaction(() => {
+      const session = this.requiredLiveSlackRecoverySession(
+        input.recoveryId, input.sessionHash, input.browserHash,
+      );
+      if (session.status !== 'active') {
+        throw identityError('auth_operation_conflict', 'Slack recovery URL repair must precede credential staging.');
+      }
+      const changed = this.db.run(
+        `UPDATE identity_slack_recovery_sessions SET manifest_fingerprint = ?,
+          result_code = 'urls_repaired', updated_at = ?
+         WHERE recovery_id = ? AND status = 'active'`,
+        strictText(input.manifestFingerprint, 'manifest fingerprint', 256), this.now(), session.id,
+      ).changes;
+      if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack recovery changed concurrently.');
+      return this.requiredSlackRecoverySession(session.id);
+    });
+  }
+
+  acquireSlackRecoveryOAuth(input: AcquireSlackRecoveryOAuthInput): SlackRecoverySession {
+    const stateHash = credentialHash(input.stateHash);
+    const row = this.db.get(
+      'SELECT * FROM identity_slack_recovery_sessions WHERE oauth_state_hash = ?', stateHash,
+    );
+    if (!row) throw identityError('auth_operation_missing', 'Slack recovery state was not found.');
+    const current = slackRecoverySessionFromRow(row);
+    this.requireSlackRecoveryBindings(current, input.sessionHash, input.browserHash);
+    if (current.oauthRedirectUri !== validHttpsCallback(input.redirectUri)) {
+      throw identityError('auth_operation_conflict', 'Slack recovery callback changed.');
+    }
+    const now = this.now();
+    if (current.expiresAt <= now) {
+      this.expireSlackRecoverySession(current.id, now);
+      throw identityError('auth_operation_expired', 'Slack recovery expired.');
+    }
+    if (current.status === 'oauth_processing' && current.leaseExpiresAt && current.leaseExpiresAt > now) {
+      throw identityError('auth_operation_conflict', 'Slack recovery processing lease is active.');
+    }
+    if (current.status !== 'oauth_pending' && current.status !== 'oauth_processing') {
+      throw identityError('auth_operation_conflict', 'Slack recovery state is terminal.');
+    }
+    const leaseExpiresAt = Math.min(input.leaseExpiresAt, current.expiresAt);
+    if (!Number.isSafeInteger(leaseExpiresAt) || leaseExpiresAt <= now) {
+      throw identityError('auth_operation_expired', 'Slack recovery expired.');
+    }
+    const changed = this.db.run(
+      `UPDATE identity_slack_recovery_sessions SET status = 'oauth_processing',
+        lease_generation = lease_generation + 1, lease_expires_at = ?, updated_at = ?
+       WHERE recovery_id = ? AND oauth_state_hash = ? AND status = ? AND lease_generation = ?`,
+      leaseExpiresAt, now, current.id, stateHash, current.status, current.leaseGeneration,
+    ).changes;
+    if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack recovery changed concurrently.');
+    return this.requiredSlackRecoverySession(current.id);
+  }
+
+  recordSlackRecoveryCandidate(input: RecordSlackRecoveryCandidateInput): SlackRecoverySession {
+    return this.db.transaction(() => {
+      const session = this.requiredSlackRecoverySession(input.recoveryId);
+      if (session.status !== 'oauth_processing' ||
+          session.leaseGeneration !== input.expectedLeaseGeneration) {
+        throw identityError('auth_operation_conflict', 'Slack recovery callback lease changed.');
+      }
+      const candidate = this.requiredSlackCredentialRevision(
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID, input.candidateRevision,
+      );
+      if (candidate.manifestFingerprint !== session.manifestFingerprint) {
+        if (session.resultCode !== 'urls_repaired') {
+          throw identityError('credential_revision_conflict', 'Slack recovery manifest changed without URL repair proof.');
+        }
+        this.db.run(
+          `UPDATE identity_slack_credential_revisions SET manifest_fingerprint = ?, updated_at = ?
+           WHERE identity_id = ? AND revision = ? AND status = 'candidate'`,
+          session.manifestFingerprint, this.now(), candidate.identityId, candidate.revision,
+        );
+      }
+      const auth = this.getAuthControl();
+      const lostRootCandidate = auth?.healthGate === 'recovery_only' &&
+        candidate.baseRevision === null &&
+        !this.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+      if (candidate.status !== 'candidate' || candidate.purpose !== 'connected_credentials' ||
+          candidate.appId !== session.expectedAppId || candidate.teamId !== session.expectedTeamId ||
+          (candidate.baseRevision !== session.baseRevision && !lostRootCandidate)) {
+        throw identityError('credential_revision_conflict', 'Slack recovery candidate does not match its authority.');
+      }
+      const changed = this.db.run(
+        `UPDATE identity_slack_recovery_sessions SET status = 'waiting_events',
+          connected_candidate_revision = ?, oauth_state_hash = NULL, lease_expires_at = NULL,
+          result_code = 'waiting_events', updated_at = ?
+         WHERE recovery_id = ? AND status = 'oauth_processing' AND lease_generation = ?`,
+        candidate.revision, this.now(), session.id, session.leaseGeneration,
+      ).changes;
+      if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack recovery changed concurrently.');
+      return this.requiredSlackRecoverySession(session.id);
+    });
+  }
+
+  promoteSlackRecoveryCandidate(input: PromoteSlackRecoveryCandidateInput): SlackRecoverySession {
+    return this.db.transaction(() => {
+      const session = this.requiredLiveSlackRecoverySession(
+        input.recoveryId, input.sessionHash, input.browserHash,
+      );
+      if (session.status !== 'waiting_events' ||
+          session.connectedCandidateRevision !== input.candidateRevision) {
+        throw identityError('auth_operation_conflict', 'Slack recovery is not waiting for this candidate.');
+      }
+      const candidate = this.requiredSlackCredentialRevision(
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID, input.candidateRevision,
+      );
+      if (candidate.baseRevision !== input.expectedActiveRevision ||
+          candidate.appId !== session.expectedAppId || candidate.teamId !== session.expectedTeamId) {
+        throw identityError('credential_revision_conflict', 'Slack recovery promotion changed its identity boundary.');
+      }
+      this.promoteSlackCredentialRevisionInTransaction({
+        identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        candidateRevision: input.candidateRevision,
+        expectedActiveRevision: input.expectedActiveRevision,
+        expectedRotationEpoch: input.expectedRotationEpoch,
+      });
+      const at = this.now();
+      const changed = this.db.run(
+        `UPDATE identity_slack_recovery_sessions SET status = 'consumed', consumed_at = ?,
+          app_credential_revision = NULL, app_credential_client_id = NULL,
+          app_envelope_version = NULL, app_envelope_algorithm = NULL, app_key_id = NULL,
+          app_nonce = NULL, app_ciphertext = NULL, oauth_state_hash = NULL,
+          lease_expires_at = NULL, result_code = 'repaired', updated_at = ?
+         WHERE recovery_id = ? AND status = 'waiting_events'`,
+        at, at, session.id,
+      ).changes;
+      if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack recovery changed concurrently.');
+      const auth = this.getAuthControl();
+      if (auth?.healthGate === 'recovery_only') {
+        this.db.run(
+          `UPDATE identity_auth_controls SET health_gate = 'normal', revision = revision + 1, updated_at = ?
+           WHERE installation_id = ? AND revision = ? AND health_gate = 'recovery_only'`,
+          at, auth.installationId, auth.revision,
+        );
+      }
+      return this.requiredSlackRecoverySession(session.id);
     });
   }
 
@@ -2318,6 +2596,49 @@ export class IdentityStoreLogic {
     }
     return value;
   }
+  private requiredSlackRecoverySession(id: string): SlackRecoverySession {
+    const value = this.getSlackRecoverySession(id);
+    if (!value) throw identityError('auth_operation_missing', 'Slack recovery session was not found.');
+    return value;
+  }
+  private requiredLiveSlackRecoverySession(
+    id: string,
+    sessionHash: string,
+    browserHash: string,
+  ): SlackRecoverySession {
+    const session = this.requiredSlackRecoverySession(id);
+    this.requireSlackRecoveryBindings(session, sessionHash, browserHash);
+    const now = this.now();
+    if (session.expiresAt <= now) {
+      this.expireSlackRecoverySession(session.id, now);
+      throw identityError('auth_operation_expired', 'Slack recovery session expired.');
+    }
+    if (['consumed', 'failed', 'expired'].includes(session.status)) {
+      throw identityError('auth_operation_conflict', 'Slack recovery session is terminal.');
+    }
+    return session;
+  }
+  private requireSlackRecoveryBindings(
+    session: SlackRecoverySession,
+    sessionHash: string,
+    browserHash: string,
+  ): void {
+    if (session.sessionHash !== credentialHash(sessionHash)) {
+      throw identityError('auth_operation_conflict', 'Slack recovery session credential changed.');
+    }
+    if (session.browserHash !== credentialHash(browserHash)) {
+      throw identityError('auth_operation_conflict', 'Slack recovery browser binding changed.');
+    }
+  }
+  private expireSlackRecoverySession(id: string, at: number): void {
+    this.db.run(
+      `UPDATE identity_slack_recovery_sessions SET status = 'expired',
+        app_envelope_version = NULL, app_envelope_algorithm = NULL, app_key_id = NULL,
+        app_nonce = NULL, app_ciphertext = NULL, oauth_state_hash = NULL,
+        lease_expires_at = NULL, updated_at = ? WHERE recovery_id = ?`,
+      at, id,
+    );
+  }
   private requiredAuthOperation(id: string): AuthOperation {
     const value = this.getAuthOperation(id);
     if (!value) throw identityError('auth_operation_missing', 'Authentication operation was not found.');
@@ -2390,6 +2711,14 @@ export class SqliteIdentityStore implements IdentityStore {
   async rewrapSlackCredentialRevision(input: RewrapSlackCredentialRevisionInput) { return this.logic.rewrapSlackCredentialRevision(input); }
   async countLiveSlackCredentialRevisionsByKey(keyId: string, epoch: number) { return this.logic.countLiveSlackCredentialRevisionsByKey(keyId, epoch); }
   async sweepSlackIdentityRetention(at: number, candidateMaxAgeMs: number) { return this.logic.sweepSlackIdentityRetention(at, candidateMaxAgeMs); }
+  async createSlackRecoverySession(input: CreateSlackRecoverySessionInput) { return this.logic.createSlackRecoverySession(input); }
+  async getSlackRecoverySession(id: string) { return this.logic.getSlackRecoverySession(id); }
+  async stageSlackRecoveryAppCredentials(input: StageSlackRecoveryAppCredentialsInput) { return this.logic.stageSlackRecoveryAppCredentials(input); }
+  async startSlackRecoveryOAuth(input: StartSlackRecoveryOAuthInput) { return this.logic.startSlackRecoveryOAuth(input); }
+  async updateSlackRecoveryManifest(input: UpdateSlackRecoveryManifestInput) { return this.logic.updateSlackRecoveryManifest(input); }
+  async acquireSlackRecoveryOAuth(input: AcquireSlackRecoveryOAuthInput) { return this.logic.acquireSlackRecoveryOAuth(input); }
+  async recordSlackRecoveryCandidate(input: RecordSlackRecoveryCandidateInput) { return this.logic.recordSlackRecoveryCandidate(input); }
+  async promoteSlackRecoveryCandidate(input: PromoteSlackRecoveryCandidateInput) { return this.logic.promoteSlackRecoveryCandidate(input); }
   async reserveSlackSetupTransaction(input: ReserveSlackSetupTransactionInput) { return this.logic.reserveSlackSetupTransaction(input); }
   async getSlackSetupTransaction(setupId: string) { return this.logic.getSlackSetupTransaction(setupId); }
   async findSlackSetupTransaction(locatorHash: string) { return this.logic.findSlackSetupTransaction(locatorHash); }
@@ -2519,6 +2848,15 @@ function validateCredentialRevisionInput(input: StageSlackCredentialRevisionInpu
     throw identityError('identity_invalid', 'Slack credential envelope is invalid.');
   }
   normalizeScopes(input.grantedScopes ?? []);
+}
+
+function validateRecoveryEnvelope(envelope: StageSlackRecoveryAppCredentialsInput['appCredentialEnvelope']): void {
+  if (envelope.version !== 1 || envelope.algorithm !== 'AES-GCM-256' ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(envelope.keyId) ||
+      !/^[A-Za-z0-9_-]{16}$/.test(envelope.nonce) ||
+      !/^[A-Za-z0-9_-]{22,131072}$/.test(envelope.ciphertext)) {
+    throw identityError('identity_invalid', 'Slack recovery credential envelope is invalid.');
+  }
 }
 
 function validateSlackOAuthAttemptInput(input: CreateSlackOAuthAttemptInput): void {
@@ -2657,6 +2995,43 @@ function slackCredentialRevisionFromRow(row: Record<string, unknown>): SlackCred
     updatedAt: Number(row.updated_at),
     tombstonedAt: row.tombstoned_at === null || row.tombstoned_at === undefined
       ? null : Number(row.tombstoned_at),
+  };
+}
+
+function slackRecoverySessionFromRow(row: Record<string, unknown>): SlackRecoverySession {
+  const hasEnvelope = row.app_ciphertext !== null && row.app_ciphertext !== undefined;
+  const actions = JSON.parse(String(row.allowed_actions_json)) as SlackRecoverySession['allowedActions'];
+  return {
+    id: String(row.recovery_id),
+    deploymentId: String(row.deployment_id),
+    grantHash: String(row.grant_hash),
+    sessionHash: String(row.session_hash),
+    browserHash: String(row.browser_hash),
+    allowedActions: actions,
+    status: String(row.status) as SlackRecoverySession['status'],
+    expectedAppId: String(row.expected_app_id),
+    expectedTeamId: String(row.expected_team_id),
+    baseRevision: String(row.base_revision),
+    manifestFingerprint: String(row.manifest_fingerprint),
+    appCredentialRevision: nullableString(row.app_credential_revision),
+    appCredentialClientId: nullableString(row.app_credential_client_id),
+    appCredentialEnvelope: hasEnvelope ? {
+      version: Number(row.app_envelope_version) as 1,
+      algorithm: String(row.app_envelope_algorithm) as 'AES-GCM-256',
+      keyId: String(row.app_key_id),
+      nonce: String(row.app_nonce),
+      ciphertext: String(row.app_ciphertext),
+    } : null,
+    connectedCandidateRevision: nullableString(row.connected_candidate_revision),
+    oauthStateHash: nullableString(row.oauth_state_hash),
+    oauthRedirectUri: nullableString(row.oauth_redirect_uri),
+    leaseGeneration: Number(row.lease_generation),
+    leaseExpiresAt: nullableNumber(row.lease_expires_at),
+    resultCode: nullableString(row.result_code),
+    expiresAt: Number(row.expires_at),
+    consumedAt: nullableNumber(row.consumed_at),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
   };
 }
 

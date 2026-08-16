@@ -79,7 +79,7 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'runbooks', 'access-recovery.md'),
   exportPath('docs', 'runbooks', 'auth-db-upgrade.md'),
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
-  exportPath('docs', 'runbooks', 'password-recovery.md'),
+  exportPath('docs', 'runbooks', 'slack-auth-recovery.md'),
   exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
   exportPath('docs', 'runbooks', 'openai-subscription.md'),
   exportPath('docs', 'runbooks', 'slack-interaction-operations.md'),
@@ -406,7 +406,7 @@ function verifyNpmPackManifest() {
     'docs/runbooks/access-recovery.md',
     'docs/runbooks/auth-db-upgrade.md',
     'docs/runbooks/coding-sandbox-deployment.md',
-    'docs/runbooks/password-recovery.md',
+    'docs/runbooks/slack-auth-recovery.md',
     'migrations/better-auth/0001_better_auth.sql',
     'scripts/flue-build-cf.mjs',
     'scripts/generate-common-passwords.mjs',
@@ -446,7 +446,7 @@ function verifyAuthenticationExportContract(packageJson) {
   }
   const recovery = readFileSync(join(scratch, 'scripts', 'recover-auth.mjs'), 'utf8');
   if (/\bfetch\s*\(/.test(recovery) || /node:https/.test(recovery)) {
-    fail('Token-mode recovery must remain an operator-side state command with no HTTP transport');
+    fail('Slack recovery preflight must remain read-only with no HTTP transport');
   }
   const identityTypes = readFileSync(join(scratch, 'src', 'identity', 'types.ts'), 'utf8');
   if (!identityTypes.includes("Omit<Invitation, 'tokenHash' | 'normalizedEmail'>") ||

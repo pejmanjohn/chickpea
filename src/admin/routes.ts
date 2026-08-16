@@ -9,10 +9,9 @@ import {
   renderAdminLogin,
   renderPasswordChangePage,
   renderPasswordLogin,
-  renderPasswordRecoveryPage,
   renderAdminPage,
   renderAuthMigrationPage,
-  renderAuthRecoveryPage,
+  renderSlackRecoveryPage,
   renderAuthSetupCompletePage,
   renderAuthSetupPage,
   renderMemberAccountPage,
@@ -345,7 +344,10 @@ import { validateMutationProvenance } from '../auth/request-provenance.ts';
 import { CloudflareAccessAuthenticator, verifyCloudflareAccessRecoveryAssertion } from '../auth/cloudflare-access.ts';
 import { AuthRateLimitError, AuthRateLimiter } from '../auth/rate-limit.ts';
 import { requestAuthSourceKey } from '../auth/source-key.ts';
-import { AuthRecoveryService, PasswordOwnerRecoveryService } from '../auth/recovery.ts';
+import {
+  SlackCredentialRecoveryError,
+  SlackCredentialRecoveryService,
+} from '../auth/recovery.ts';
 import {
   AuthSetupService,
   validRecoveryToken,
@@ -489,6 +491,8 @@ const MAX_SLACK_IDENTITY_ADMIN_BODY_BYTES = 64 * 1_024;
 const MAX_AUTH_SETUP_BODY_BYTES = 8_192;
 const SLACK_INSTALL_BROWSER_COOKIE = '__Secure-chickpea_slack_install';
 const SLACK_OIDC_BROWSER_COOKIE = '__Secure-chickpea_slack_oidc';
+const SLACK_RECOVERY_BROWSER_COOKIE = '__Secure-chickpea_slack_recovery_browser';
+const SLACK_RECOVERY_SESSION_COOKIE = '__Secure-chickpea_slack_recovery';
 const MAX_ADMIN_MUTATION_BODY_BYTES = 1024 * 1024;
 
 const authSetupSchema = v.strictObject({
@@ -500,11 +504,6 @@ const authSetupSchema = v.strictObject({
 const passwordChangeSchema = v.strictObject({
   currentPassword: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
   newPassword: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
-});
-const passwordRecoverySchema = v.strictObject({
-  ownerEmail: v.pipe(v.string(), v.trim(), v.email(), v.maxLength(320)),
-  newPassword: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
-  recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
 });
 const invitationJoinSchema = v.strictObject({
   invitationId: v.pipe(v.string(), v.regex(/^invitation_[A-Za-z0-9_-]{1,180}$/)),
@@ -525,11 +524,6 @@ const passwordResetSchema = v.strictObject({
   token: v.pipe(v.string(), v.minLength(32), v.maxLength(256), v.regex(/^[A-Za-z0-9_-]+$/)),
   inspect: v.optional(v.literal(true)),
   newPassword: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(512))),
-});
-const authRecoverySchema = v.strictObject({
-  operation: v.picklist(['audience', 'owner_binding']),
-  recoveryToken: v.pipe(v.string(), v.minLength(1), v.maxLength(512)),
-  audience: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1_024))),
 });
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
@@ -1116,7 +1110,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.slackState ?? getSlackStateStore(c.env as PlatformEnv | undefined);
   app.use('*', async (c, next) => {
     const retired = [
-      '/admin/migrate', '/admin/recovery', '/admin/join', '/admin/login',
+      '/admin/migrate', '/admin/join', '/admin/login',
       '/admin/reset', '/admin/account', '/admin/slack-actor',
       '/admin/api/account',
     ];
@@ -1124,7 +1118,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.notFound();
     }
     const control = await identity(c).getAuthControl();
-    if (control?.healthGate === 'recovery_only') return c.notFound();
+    if (control?.healthGate === 'recovery_only' &&
+        c.req.path !== '/admin/recovery' &&
+        c.req.path !== '/auth/slack/recovery/callback') return c.notFound();
     return next();
   });
   const runtimeDrain = options.runtimeDrain ?? readRuntimeDrainStatus;
@@ -1161,6 +1157,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       credentials,
       config: store(c),
       settings: settings(c),
+      ...(options.slackInstallFetch ? { fetch: options.slackInstallFetch } : {}),
+      ...(options.slackInstallNow ? { now: options.slackInstallNow } : {}),
+      ...(options.slackInstallRandomBytes ? { randomBytes: options.slackInstallRandomBytes } : {}),
+      ...(options.slackIdentityBootstrap ? { bootstrap: options.slackIdentityBootstrap } : {}),
+    });
+  };
+  const slackRecoveryService = (c: Context): SlackCredentialRecoveryService | undefined => {
+    const credentials = slackCredentialDependencies(c);
+    const token = recoveryToken(c);
+    if (!credentials || !token || !isValidRecoveryConfiguration(token)) return undefined;
+    return new SlackCredentialRecoveryService({
+      identity: identity(c),
+      credentials,
+      config: store(c),
+      settings: settings(c),
+      expectedRecoveryToken: token,
       ...(options.slackInstallFetch ? { fetch: options.slackInstallFetch } : {}),
       ...(options.slackInstallNow ? { now: options.slackInstallNow } : {}),
       ...(options.slackInstallRandomBytes ? { randomBytes: options.slackInstallRandomBytes } : {}),
@@ -2204,93 +2216,177 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  // Recovery is deliberately not a login path. Password mode uses the offline
-  // recovery credential to replace one durable owner password and revokes
-  // authority; optional Access mode additionally requires its signed assertion.
+  // Hidden deployment recovery is credential repair only. Its two cookies are
+  // independent from Better Auth and carry no person, membership, or role.
+  const recoveryBrowserBinding = (c: Context, create: boolean): string | undefined => {
+    const existing = getCookie(c, SLACK_RECOVERY_BROWSER_COOKIE);
+    if (existing && /^[A-Za-z0-9_-]{32,512}$/.test(existing)) return existing;
+    if (!create) return undefined;
+    const value = `${randomUUID().replaceAll('-', '')}${randomUUID().replaceAll('-', '')}`;
+    setCookie(c, SLACK_RECOVERY_BROWSER_COOKIE, value, recoveryCookieOptions());
+    return value;
+  };
+  const recoveryAuthority = (c: Context) => {
+    const browserBinding = recoveryBrowserBinding(c, false);
+    const encoded = getCookie(c, SLACK_RECOVERY_SESSION_COOKIE) ?? '';
+    const separator = encoded.indexOf('.');
+    const recoveryId = separator > 0 ? encoded.slice(0, separator) : '';
+    const sessionSecret = separator > 0 ? encoded.slice(separator + 1) : '';
+    if (!browserBinding || !/^recovery_[A-Za-z0-9_-]{8,192}$/.test(recoveryId) ||
+        !/^[A-Za-z0-9_-]{32,512}$/.test(sessionSecret)) return undefined;
+    return { recoveryId, sessionSecret, browserBinding };
+  };
+
   app.get('/admin/recovery', async (c) => {
     authResponseHeaders(c);
-    const token = recoveryToken(c);
-    if (!token) return c.notFound();
-    if (!isValidRecoveryConfiguration(token)) {
-      return c.json({ error: 'authentication_unavailable' }, 503);
+    if (!slackRecoveryService(c)) return c.notFound();
+    const authority = recoveryAuthority(c);
+    if (!authority) {
+      const active = await identity(c).getActiveSlackCredentialRevision(
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      );
+      if (!active || active.purpose !== 'connected_credentials' || !active.teamId) return c.notFound();
+      return c.html(renderSlackRecoveryPage());
     }
     try {
-      const control = await identity(c).getAuthControl();
-      if ((control?.authMode as string | undefined) === 'password_active') {
-        if (!await passwordAuthContext(c)) throw new AuthDeniedError();
-        return c.html(renderPasswordRecoveryPage());
-      }
-      const config = await retiredIdentity(c).getAuthProviderConfig('cloudflare_access');
-      if (!config || config.state !== 'active') throw new AuthDeniedError();
-      await verifyAccessAssertion(c.req.raw, config, 'recovery');
-      return c.html(renderAuthRecoveryPage());
+      const session = await slackRecoveryService(c)!.inspect(authority);
+      const stage = session.status === 'waiting_events' ? 'waiting_events'
+        : session.status === 'consumed' ? 'complete' : 'credentials';
+      return c.html(renderSlackRecoveryPage({
+        stage, expectedAppId: session.expectedAppId, expectedTeamId: session.expectedTeamId,
+      }));
     } catch {
-      return c.json({ error: 'unauthorized' }, 401);
+      clearSlackRecoveryCookies(c);
+      return c.html(renderSlackRecoveryPage({ error: 'This recovery session expired or is unavailable.' }), 401);
     }
   });
 
   app.post('/admin/recovery', async (c) => {
     authResponseHeaders(c);
+    const service = slackRecoveryService(c);
     const token = recoveryToken(c);
-    if (!token) return c.notFound();
-    if (!isValidRecoveryConfiguration(token)) {
-      return c.json({ error: 'authentication_unavailable' }, 503);
+    if (!service || !token) return c.notFound();
+    if (!recoveryAuthority(c)) {
+      const active = await identity(c).getActiveSlackCredentialRevision(
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      );
+      if (!active || active.purpose !== 'connected_credentials' || !active.teamId) return c.notFound();
     }
     const source = authSourceKey(c);
     const limiter = authRateLimiter(c, token);
-    let passwordRecovery = false;
+    let action = 'invalid';
     try {
-      await limiter.assertAllowed('recovery', source);
-      const control = await identity(c).getAuthControl();
-      passwordRecovery = (control?.authMode as string | undefined) === 'password_active';
-      if (passwordRecovery) {
-        if (!control?.canonicalAdminOrigin ||
-            !validAuthFormPost(c, control.canonicalAdminOrigin)) throw new AuthDeniedError();
-        const form = v.safeParse(passwordRecoverySchema, await readForm(c));
-        const context = await passwordAuthContext(c);
-        if (!form.success || !context) throw new AuthDeniedError();
-        await new PasswordOwnerRecoveryService(identity(c), context.environment).replacePassword({
-          recoveryToken: form.output.recoveryToken,
-          email: form.output.ownerEmail,
-          newPassword: form.output.newPassword,
+      await Promise.all([
+        limiter.assertAllowed('slack_recovery_source', source),
+        limiter.assertAllowed('slack_recovery_deployment', 'deployment'),
+      ]);
+      if (!validAuthFormPost(c, requestOrigin(c))) throw new AuthDeniedError();
+      const form = await readForm(c);
+      action = boundedSetupField(form.action, 32);
+      await limiter.assertAllowed(`slack_recovery_${action}`, source);
+      if (action === 'begin') {
+        const browserBinding = recoveryBrowserBinding(c, true)!;
+        const begun = await service.begin({
+          recoveryToken: boundedSetupField(form.recoveryToken, 512), browserBinding,
         });
-        await limiter.recordSuccess('recovery', source);
-        return c.html(renderPasswordRecoveryPage({ success: true }));
+        setCookie(
+          c,
+          SLACK_RECOVERY_SESSION_COOKIE,
+          `${begun.recoveryId}.${begun.sessionSecret}`,
+          recoveryCookieOptions(),
+        );
+        await recoveryLimiterSuccess(limiter, source, action);
+        return c.html(renderSlackRecoveryPage({
+          stage: 'credentials', expectedAppId: begun.expectedAppId, expectedTeamId: begun.expectedTeamId,
+        }));
       }
-      const organization = await identity(c).getOrganization();
-      if (!organization?.canonicalAdminOrigin ||
-          !validAuthFormPost(c, organization.canonicalAdminOrigin)) {
-        throw new AuthDeniedError();
-      }
-      const form = v.safeParse(authRecoverySchema, await readForm(c));
-      if (!form.success) throw new AuthDeniedError();
-      const config = await retiredIdentity(c).getAuthProviderConfig('cloudflare_access');
-      if (!config || config.state !== 'active') throw new AuthDeniedError();
-      const external = await verifyAccessAssertion(c.req.raw, config, 'recovery');
-      const recovery = new AuthRecoveryService(identity(c), { recoveryToken: token });
-      if (form.output.operation === 'audience') {
-        if (!form.output.audience) throw new AuthDeniedError();
-        await recovery.repairAudience({
-          recoveryToken: form.output.recoveryToken,
-          identity: external,
-          audience: form.output.audience,
+      const authority = recoveryAuthority(c);
+      if (!authority) throw new SlackCredentialRecoveryError('invalid_session');
+      if (action === 'stage') {
+        const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
+        if (typeof form.configurationToken === 'string' && form.configurationToken.trim()) {
+          await service.repairUrls({
+            ...authority,
+            configurationToken: boundedSetupField(form.configurationToken, 512),
+            expectedManifest: manifest,
+          });
+        }
+        await service.stageAppCredentials({
+          ...authority,
+          appId: boundedSetupField(form.appId, 64),
+          teamId: boundedSetupField(form.teamId, 64),
+          clientId: boundedSetupField(form.clientId, 256),
+          clientSecret: boundedSetupField(form.clientSecret, 4_096),
+          signingSecret: boundedSetupField(form.signingSecret, 4_096),
+          manifest,
         });
-      } else {
-        await recovery.replaceOwnerBinding({
-          recoveryToken: form.output.recoveryToken,
-          identity: external,
+        const started = await service.startBotOAuth({
+          ...authority, redirectUri: `${requestOrigin(c)}/auth/slack/recovery/callback`,
         });
+        await recoveryLimiterSuccess(limiter, source, action);
+        return c.redirect(started.authorizationUrl, 303);
       }
-      await limiter.recordSuccess('recovery', source);
-      return c.redirect('/admin', 303);
-    } catch {
-      await limiter.recordFailure('recovery', source);
-      return c.html(
-        passwordRecovery
-          ? renderPasswordRecoveryPage({ error: true })
-          : renderAuthRecoveryPage({ error: true }),
-        401,
-      );
+      if (action === 'finalize') {
+        await service.finalize(authority);
+        clearSlackRecoveryCookies(c);
+        await recoveryLimiterSuccess(limiter, source, action);
+        return c.html(renderSlackRecoveryPage({ stage: 'complete' }));
+      }
+      throw new SlackCredentialRecoveryError('invalid_session');
+    } catch (error) {
+      await Promise.all([
+        limiter.recordFailure('slack_recovery_source', source),
+        limiter.recordFailure('slack_recovery_deployment', 'deployment'),
+        limiter.recordFailure(`slack_recovery_${action}`, source),
+      ]);
+      if (error instanceof AuthRateLimitError) {
+        c.header('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))));
+        return c.html(renderSlackRecoveryPage({ error: 'Too many recovery attempts. Try again later.' }), 429);
+      }
+      const authority = recoveryAuthority(c);
+      const session = authority ? await service.inspect(authority).catch(() => undefined) : undefined;
+      const stage = session?.status === 'waiting_events' ? 'waiting_events'
+        : session ? 'credentials' : 'token';
+      return c.html(renderSlackRecoveryPage({
+        stage,
+        ...(session ? { expectedAppId: session.expectedAppId, expectedTeamId: session.expectedTeamId } : {}),
+        error: slackRecoveryPublicMessage(error),
+      }), slackRecoveryHttpStatus(error));
+    }
+  });
+
+  app.get('/auth/slack/recovery/callback', async (c) => {
+    authResponseHeaders(c);
+    const service = slackRecoveryService(c);
+    const token = recoveryToken(c);
+    const authority = recoveryAuthority(c);
+    if (!service || !token || !authority) return c.notFound();
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, token);
+    try {
+      await Promise.all([
+        limiter.assertAllowed('slack_recovery_callback_source', source),
+        limiter.assertAllowed('slack_recovery_deployment', 'deployment'),
+      ]);
+      await service.callback({
+        ...authority,
+        state: boundedSetupField(c.req.query('state'), 512),
+        code: boundedSetupField(c.req.query('code'), 2_048),
+        redirectUri: `${requestOrigin(c)}/auth/slack/recovery/callback`,
+      });
+      await Promise.all([
+        limiter.recordSuccess('slack_recovery_callback_source', source),
+        limiter.recordSuccess('slack_recovery_deployment', 'deployment'),
+      ]);
+      return c.html(renderSlackRecoveryPage({ stage: 'waiting_events' }));
+    } catch (error) {
+      await Promise.all([
+        limiter.recordFailure('slack_recovery_callback_source', source),
+        limiter.recordFailure('slack_recovery_deployment', 'deployment'),
+      ]);
+      return c.html(renderSlackRecoveryPage({
+        stage: 'credentials', error: slackRecoveryPublicMessage(error),
+      }), slackRecoveryHttpStatus(error));
     }
   });
 
@@ -6866,6 +6962,59 @@ function clearSlackInstallBrowserCookie(c: Context): void {
   deleteCookie(c, SLACK_INSTALL_BROWSER_COOKIE, {
     path: '/auth/slack/install', secure: true, httpOnly: true, sameSite: 'Lax',
   });
+}
+
+function recoveryCookieOptions() {
+  return {
+    path: '/', secure: true, httpOnly: true, sameSite: 'Lax' as const,
+    maxAge: 15 * 60,
+  };
+}
+
+function clearSlackRecoveryCookies(c: Context): void {
+  deleteCookie(c, SLACK_RECOVERY_SESSION_COOKIE, recoveryCookieOptions());
+  deleteCookie(c, SLACK_RECOVERY_BROWSER_COOKIE, recoveryCookieOptions());
+}
+
+async function recoveryLimiterSuccess(
+  limiter: AuthRateLimiter,
+  source: string,
+  action: string,
+): Promise<void> {
+  await Promise.all([
+    limiter.recordSuccess('slack_recovery_source', source),
+    limiter.recordSuccess('slack_recovery_deployment', 'deployment'),
+    limiter.recordSuccess(`slack_recovery_${action}`, source),
+  ]);
+}
+
+function slackRecoveryPublicMessage(error: unknown): string {
+  if (!(error instanceof SlackCredentialRecoveryError)) {
+    return 'Recovery could not continue. No active credential was changed.';
+  }
+  switch (error.code) {
+    case 'app_mismatch': return 'These credentials belong to a different Slack app.';
+    case 'workspace_mismatch': return 'This app grant belongs to a different Slack workspace.';
+    case 'manifest_mismatch': return 'The Slack app contract differs beyond the permitted deployment URLs.';
+    case 'missing_scopes': return 'Slack did not grant every required bot permission.';
+    case 'slack_unreachable': return 'Slack is unavailable. The existing credential remains active; retry later.';
+    case 'events_unverified': return 'The signed Slack Events challenge has not been verified yet.';
+    case 'session_expired': return 'This 15-minute recovery session expired.';
+    case 'session_consumed': return 'This recovery session was already consumed.';
+    case 'grant_reused': return 'This one-time deployment recovery token was already used.';
+    case 'parallel_recovery': return 'Another recovery session is already active.';
+    default: return 'Recovery could not continue. No active credential was changed.';
+  }
+}
+
+function slackRecoveryHttpStatus(error: unknown): 400 | 401 | 409 | 410 | 502 | 503 {
+  if (!(error instanceof SlackCredentialRecoveryError)) return 400;
+  if (['invalid_grant', 'invalid_session', 'wrong_browser'].includes(error.code)) return 401;
+  if (['session_expired', 'session_consumed', 'grant_reused'].includes(error.code)) return 410;
+  if (['parallel_recovery', 'processing', 'stale_revision'].includes(error.code)) return 409;
+  if (error.code === 'slack_unreachable') return 503;
+  if (error.code === 'events_unverified') return 502;
+  return 400;
 }
 
 function encodeSlackOidcCookie(
