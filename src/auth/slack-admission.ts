@@ -7,6 +7,7 @@ import type {
   SlackOidcAttempt,
   SlackOidcPurpose,
 } from '../identity/types.ts';
+import { IdentityStateError } from '../identity/errors.ts';
 import {
   resolveSlackControlPlaneAppCredentials,
   type SlackCredentialDependencies,
@@ -136,6 +137,48 @@ export class SlackAdmissionService {
     });
   }
 
+  async startInvitation(input: {
+    locator: string;
+    browserBinding: string;
+    redirectUri: string;
+    destination?: string;
+  }): Promise<SlackAdmissionStartResult> {
+    requireBrowserBinding(input.browserBinding);
+    if (input.locator.length < 32 || input.locator.length > 512 || /\s/.test(input.locator)) {
+      throw new SlackOidcError('invalid_state');
+    }
+    const locatorHash = hashSecret(input.locator);
+    const [invitation, organization, control, credentials] = await Promise.all([
+      this.dependencies.identity.findInvitation(locatorHash),
+      this.dependencies.identity.getOrganization(),
+      this.dependencies.identity.getAuthControl(),
+      this.requiredCredentials(),
+    ]);
+    const now = this.now();
+    if (!invitation || invitation.status !== 'pending' || invitation.expiresAt <= now ||
+        !organization?.slackTeamId || invitation.organizationId !== organization.id ||
+        invitation.slackTeamId !== organization.slackTeamId ||
+        organization.authMode !== 'slack_active' || control?.authMode !== 'slack_active' ||
+        control.healthGate !== 'normal' || credentials.teamId !== organization.slackTeamId) {
+      throw new SlackOidcError('invalid_state');
+    }
+    return this.createAttempt({
+      purpose: 'invitation',
+      invitationId: invitation.id,
+      invitationLocatorHash: locatorHash,
+      operationId: `authop_${randomSecret(this.randomBytes, 18)}`,
+      browserBinding: input.browserBinding,
+      redirectUri: input.redirectUri,
+      destination: safeSetupDestination(input.destination ?? '/admin/team'),
+      teamId: invitation.slackTeamId,
+      userId: invitation.slackUserId,
+      appId: credentials.appId,
+      clientId: credentials.clientId,
+      credentialRevision: credentials.connectionRevision,
+      expiresAt: Math.min(now + SLACK_OIDC_ATTEMPT_TTL_MS, invitation.expiresAt),
+    });
+  }
+
   async callback(input: {
     purpose: SlackOidcPurpose;
     state: string;
@@ -197,13 +240,63 @@ export class SlackAdmissionService {
       await this.fail(attempt, 'admission_denied').catch(() => {});
       throw new SlackOidcError('user_mismatch');
     }
-    if (attempt.purpose !== 'first_owner') {
+    if (attempt.purpose === 'login') {
       await this.dependencies.identity.settleSlackOidcAttempt({
         attemptId: attempt.id,
         expectedLeaseGeneration: attempt.leaseGeneration,
         status: 'succeeded',
         resultCode: 'identity_active',
       });
+      return this.issueSession(operation.id, attempt.destination, input.request);
+    }
+
+    if (attempt.purpose === 'invitation') {
+      const [organization, control] = await Promise.all([
+        this.dependencies.identity.getOrganization(),
+        this.dependencies.identity.getAuthControl(),
+      ]);
+      if (!organization || !control?.betterAuthOrganizationId || !attempt.invitationId) {
+        throw new SlackOidcError('invalid_state');
+      }
+      const auth = this.createAuth();
+      const reconciled = await auth.chickpea.reconcileSlackIdentity({
+        slackTeamId: proof.slackTeamId,
+        slackUserId: proof.slackUserId,
+        displayName: proof.displayName,
+        organization: {
+          id: control.betterAuthOrganizationId,
+          name: organization.displayName,
+          slug: `chickpea-${proof.slackTeamId.toLowerCase()}`,
+        },
+        ...(operation.betterAuthUserId ? { expectedUserId: operation.betterAuthUserId } : {}),
+      });
+      await this.dependencies.identity.advanceAuthOperation({
+        operationId: operation.id,
+        capabilityHash: hashSecret(input.state),
+        step: Math.max(1, operation.step + 1),
+        betterAuthUserId: reconciled.userId,
+        betterAuthOrganizationId: reconciled.organizationId,
+        betterAuthMembershipId: reconciled.membershipId,
+      });
+      try {
+        await this.dependencies.identity.activateInvitation({
+          operationId: operation.id,
+          invitationId: attempt.invitationId,
+          oidcAttemptId: attempt.id,
+          expectedOidcLeaseGeneration: attempt.leaseGeneration,
+          capabilityHash: hashSecret(input.state),
+          slackTeamId: proof.slackTeamId,
+          slackUserId: proof.slackUserId,
+          displayName: proof.displayName,
+          betterAuthUserId: reconciled.userId,
+          betterAuthMembershipId: reconciled.membershipId,
+        });
+      } catch (error) {
+        if (await this.tombstoneTerminalInvitationFailure(attempt, operation, error)) {
+          throw new SlackOidcError('invitation_unavailable');
+        }
+        throw error;
+      }
       return this.issueSession(operation.id, attempt.destination, input.request);
     }
 
@@ -250,6 +343,8 @@ export class SlackAdmissionService {
   private async createAttempt(input: {
     purpose: SlackOidcPurpose;
     operationId?: string;
+    invitationId?: string;
+    invitationLocatorHash?: string;
     setupId?: string;
     setupRevision?: number;
     browserBinding: string;
@@ -269,6 +364,8 @@ export class SlackAdmissionService {
       id: attemptId,
       purpose: input.purpose,
       ...(input.operationId ? { operationId: input.operationId } : {}),
+      ...(input.invitationId ? { invitationId: input.invitationId } : {}),
+      ...(input.invitationLocatorHash ? { invitationLocatorHash: input.invitationLocatorHash } : {}),
       ...(input.setupId ? { setupId: input.setupId } : {}),
       ...(input.setupRevision ? { setupRevision: input.setupRevision } : {}),
       stateHash: hashSecret(state),
@@ -329,7 +426,7 @@ export class SlackAdmissionService {
     if (!attempt.operationId || !attempt.admittedTeamId || !attempt.admittedSlackUserId) {
       throw new SlackOidcError('invalid_state');
     }
-    if (attempt.purpose !== 'first_owner') {
+    if (attempt.purpose === 'login') {
       await this.dependencies.identity.settleSlackOidcAttempt({
         attemptId: attempt.id,
         expectedLeaseGeneration: attempt.leaseGeneration,
@@ -337,6 +434,61 @@ export class SlackAdmissionService {
         resultCode: 'identity_active',
       });
       return this.issueSession(attempt.operationId, attempt.destination, request);
+    }
+    if (attempt.purpose === 'invitation') {
+      if (!attempt.invitationId) throw new SlackOidcError('invalid_state');
+      let operation = await this.dependencies.identity.getAuthOperation(attempt.operationId);
+      if (!operation) throw new SlackOidcError('invalid_state');
+      if (operation.status === 'active') return this.issueSession(operation.id, attempt.destination, request);
+      const [organization, control] = await Promise.all([
+        this.dependencies.identity.getOrganization(),
+        this.dependencies.identity.getAuthControl(),
+      ]);
+      if (!organization || !control?.betterAuthOrganizationId) {
+        throw new SlackOidcError('invalid_state');
+      }
+      if (!operation.betterAuthUserId || !operation.betterAuthOrganizationId ||
+          !operation.betterAuthMembershipId) {
+        const reconciled = await this.createAuth().chickpea.reconcileSlackIdentity({
+          slackTeamId: attempt.admittedTeamId,
+          slackUserId: attempt.admittedSlackUserId,
+          displayName: 'Slack member',
+          organization: {
+            id: control.betterAuthOrganizationId,
+            name: organization.displayName,
+            slug: `chickpea-${attempt.admittedTeamId.toLowerCase()}`,
+          },
+          ...(operation.betterAuthUserId ? { expectedUserId: operation.betterAuthUserId } : {}),
+        });
+        operation = await this.dependencies.identity.advanceAuthOperation({
+          operationId: operation.id,
+          capabilityHash: hashSecret(capabilitySecret),
+          step: Math.max(1, operation.step + 1),
+          betterAuthUserId: reconciled.userId,
+          betterAuthOrganizationId: reconciled.organizationId,
+          betterAuthMembershipId: reconciled.membershipId,
+        });
+      }
+      try {
+        await this.dependencies.identity.activateInvitation({
+          operationId: operation.id,
+          invitationId: attempt.invitationId,
+          oidcAttemptId: attempt.id,
+          expectedOidcLeaseGeneration: attempt.leaseGeneration,
+          capabilityHash: hashSecret(capabilitySecret),
+          slackTeamId: attempt.admittedTeamId,
+          slackUserId: attempt.admittedSlackUserId,
+          displayName: 'Slack member',
+          betterAuthUserId: operation.betterAuthUserId!,
+          betterAuthMembershipId: operation.betterAuthMembershipId!,
+        });
+      } catch (error) {
+        if (await this.tombstoneTerminalInvitationFailure(attempt, operation, error)) {
+          throw new SlackOidcError('invitation_unavailable');
+        }
+        throw error;
+      }
+      return this.issueSession(operation.id, attempt.destination, request);
     }
     let operation = await this.dependencies.identity.getAuthOperation(attempt.operationId);
     if (!operation) throw new SlackOidcError('invalid_state');
@@ -437,6 +589,24 @@ export class SlackAdmissionService {
     } catch {
       throw new SlackOidcError('stale_revision');
     }
+  }
+
+  private async tombstoneTerminalInvitationFailure(
+    attempt: SlackOidcAttempt,
+    operation: AuthOperation,
+    error: unknown,
+  ): Promise<boolean> {
+    if (!(error instanceof IdentityStateError) || ![
+      'invitation_not_pending', 'invitation_expired', 'external_identity_conflict',
+    ].includes(error.code)) return false;
+    await this.dependencies.identity.revokeAuthOperation(operation.id).catch(() => undefined);
+    await this.dependencies.identity.settleSlackOidcAttempt({
+      attemptId: attempt.id,
+      expectedLeaseGeneration: attempt.leaseGeneration,
+      status: 'failed',
+      resultCode: 'invitation_unavailable',
+    }).catch(() => undefined);
+    return true;
   }
 
   private fail(attempt: SlackOidcAttempt, resultCode: string) {

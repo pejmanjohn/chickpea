@@ -353,6 +353,42 @@ test('retention scrubs inactive ciphertext while preserving active bindings and 
   }
 });
 
+test('pending Slack invitations expire durably and the same tuple then requires a fresh locator', async () => {
+  let now = NOW;
+  const store = new SqliteIdentityStore(':memory:', { now: () => now });
+  try {
+    const owner = await claimFirstOwner(store);
+    const first = await store.createInvitation({
+      organizationId: owner.membership.organizationId,
+      slackTeamId: TEAM,
+      slackUserId: 'UINVITED1',
+      displayName: 'Invited',
+      role: 'admin',
+      locatorHash: 'b'.repeat(64),
+      inviterMembershipId: owner.membership.id,
+      expiresAt: NOW + 60_000,
+    });
+    assert.equal((await store.findInvitation('b'.repeat(64)))?.id, first.id);
+    now = NOW + 60_001;
+    assert.equal(await store.findInvitation('b'.repeat(64)), undefined);
+    assert.equal((await store.listInvitations()).find((row) => row.id === first.id)?.status, 'expired');
+    const replacement = await store.createInvitation({
+      organizationId: owner.membership.organizationId,
+      slackTeamId: TEAM,
+      slackUserId: 'UINVITED1',
+      displayName: 'Invited',
+      role: 'admin',
+      locatorHash: 'c'.repeat(64),
+      inviterMembershipId: owner.membership.id,
+      expiresAt: now + 60_000,
+    });
+    assert.notEqual(replacement.id, first.id);
+    assert.equal((await store.findInvitation('c'.repeat(64)))?.id, replacement.id);
+  } finally {
+    store.close();
+  }
+});
+
 function credentialRevisionInput(overrides: {
   revision: string;
   expectedRotationEpoch: number;

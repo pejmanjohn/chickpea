@@ -185,7 +185,8 @@ test('Cloudflare proxy forwards the fresh-only Slack OAuth attempt projection', 
 test('Cloudflare proxy forwards hashed Slack OIDC callback authority', async () => {
   const calls: IdentityRpcRequest[] = [];
   const attempt: SlackOidcAttempt = {
-    id: 'slackoidc_rpc', purpose: 'login', operationId: null, setupId: null, setupRevision: null,
+    id: 'slackoidc_rpc', purpose: 'login', operationId: null, invitationId: null,
+    setupId: null, setupRevision: null,
     stateHash: 'a'.repeat(64), nonceHash: 'b'.repeat(64), browserHash: 'c'.repeat(64),
     appId: 'AAPP', clientId: '123.456', credentialRevision: 'rev_connected',
     redirectUri: 'https://chickpea.example/auth/slack/oidc/callback', destination: '/admin',
@@ -198,6 +199,36 @@ test('Cloudflare proxy forwards hashed Slack OIDC callback authority', async () 
   const store = new CfIdentityStore(stub);
   assert.deepEqual(await store.getSlackOidcAttempt(attempt.id), attempt);
   assert.deepEqual(calls, [{ kind: 'get_slack_oidc_attempt', attemptId: attempt.id }]);
+});
+
+test('Cloudflare proxy forwards digest-only invitation lookup', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const invitation = {
+    id: 'invite_rpc', organizationId: 'org_oss', slackTeamId: 'T_ACME',
+    slackUserId: 'U_INVITED', displayName: 'Invited', role: 'admin' as const,
+    locatorHash: 'a'.repeat(64), status: 'pending' as const,
+    inviterMembershipId: 'membership_owner', acceptedMembershipId: null,
+    expiresAt: 20, createdAt: 10, updatedAt: 10,
+  };
+  const stub = rpcStub(calls, { kind: 'invitation', invitation });
+  const store = new CfIdentityStore(stub);
+  assert.deepEqual(await store.findInvitation('b'.repeat(64)), invitation);
+  assert.deepEqual(calls, [{ kind: 'find_invitation', locatorHash: 'b'.repeat(64) }]);
+});
+
+test('Cloudflare proxy forwards atomic invitation activation', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const input = {
+    operationId: 'invite_operation_rpc', invitationId: 'invite_rpc',
+    oidcAttemptId: 'slackoidc_invite_rpc', expectedOidcLeaseGeneration: 1,
+    capabilityHash: 'a'.repeat(64), slackTeamId: 'T_ACME', slackUserId: 'U_INVITED',
+    displayName: 'Invited', betterAuthUserId: 'ba_user_invited',
+    betterAuthMembershipId: 'ba_member_invited',
+  };
+  const stub = rpcStub(calls, { kind: 'identity_resolution', resolution });
+  const store = new CfIdentityStore(stub);
+  assert.deepEqual(await store.activateInvitation(input), resolution);
+  assert.deepEqual(calls, [{ kind: 'activate_invitation', input }]);
 });
 
 function rpcStub(

@@ -446,6 +446,28 @@ function toUserFacts(raw: unknown): SlackUserFacts | null {
   };
 }
 
+function toDirectoryMember(raw: unknown): SlackDirectoryMember | null {
+  const facts = toUserFacts(raw);
+  if (!facts || !raw || typeof raw !== 'object') return null;
+  const user = raw as Record<string, unknown>;
+  const profile = user.profile && typeof user.profile === 'object'
+    ? user.profile as Record<string, unknown>
+    : {};
+  const handle = typeof user.name === 'string' ? user.name : facts.id;
+  const realName = typeof profile.real_name === 'string' && profile.real_name
+    ? profile.real_name
+    : typeof user.real_name === 'string' && user.real_name
+      ? user.real_name
+      : handle;
+  const displayName = typeof profile.display_name === 'string' && profile.display_name
+    ? profile.display_name
+    : realName;
+  const avatarUrl = ['image_192', 'image_72', 'image_48']
+    .map((key) => profile[key])
+    .find((value): value is string => typeof value === 'string' && value.length > 0);
+  return { ...facts, displayName, realName, handle, ...(avatarUrl ? { avatarUrl } : {}) };
+}
+
 /** `response_metadata.next_cursor`, treating Slack's empty-string cursor as done. */
 function readNextCursor(body: Record<string, unknown>): string | undefined {
   const meta = body.response_metadata;
@@ -773,6 +795,84 @@ export async function slackUsersList(
     error: typeof body.error === 'string' ? body.error : undefined,
     users: rawUsers.map(toUserFacts).filter((user): user is SlackUserFacts => user !== null),
     nextCursor: readNextCursor(body),
+    retryAfterMs: result.retryAfterMs,
+  };
+}
+
+export interface SlackDirectoryMember extends SlackUserFacts {
+  displayName: string;
+  realName: string;
+  handle: string;
+  avatarUrl?: string;
+}
+
+export interface SlackDirectoryUsersPage {
+  ok: boolean;
+  error: string | undefined;
+  members: SlackDirectoryMember[];
+  nextCursor: string | undefined;
+  retryAfterMs: number | undefined;
+}
+
+export async function slackDirectoryUsersList(
+  botToken: string,
+  options: { cursor?: string; limit?: number; timeoutMs?: number } = {},
+): Promise<SlackDirectoryUsersPage> {
+  const params = new URLSearchParams({ limit: String(Math.min(Math.max(options.limit ?? 200, 1), 200)) });
+  if (options.cursor) params.set('cursor', options.cursor);
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/users.list`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${botToken}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
+  }, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
+  if (!result.ok) {
+    return {
+      ok: false, error: result.error, members: [], nextCursor: undefined,
+      retryAfterMs: result.retryAfterMs,
+    };
+  }
+  const body = result.body;
+  const rawUsers = Array.isArray(body.members) ? body.members : [];
+  return {
+    ok: body.ok === true,
+    error: typeof body.error === 'string' ? body.error : undefined,
+    members: rawUsers.map(toDirectoryMember).filter((member): member is SlackDirectoryMember => member !== null),
+    nextCursor: readNextCursor(body),
+    retryAfterMs: result.retryAfterMs,
+  };
+}
+
+export interface SlackDirectoryUserInfoResult {
+  ok: boolean;
+  error: string | undefined;
+  member: SlackDirectoryMember | undefined;
+  retryAfterMs: number | undefined;
+}
+
+export async function slackDirectoryUserInfo(
+  botToken: string,
+  userId: string,
+  options: SlackTruthFetchOptions = {},
+): Promise<SlackDirectoryUserInfoResult> {
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/users.info`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${botToken}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({ user: userId }).toString(),
+  }, options);
+  if (!result.ok) {
+    return { ok: false, error: result.error, member: undefined, retryAfterMs: result.retryAfterMs };
+  }
+  const body = result.body;
+  return {
+    ok: body.ok === true,
+    error: typeof body.error === 'string' ? body.error : undefined,
+    member: toDirectoryMember(body.user) ?? undefined,
     retryAfterMs: result.retryAfterMs,
   };
 }

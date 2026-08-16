@@ -8,6 +8,7 @@ import { identityError } from './errors.ts';
 import { installIdentityMigrations } from './migrations.ts';
 import type {
   AdvanceAuthOperationInput,
+  ActivateInvitationInput,
   ActivateFirstOwnerInput,
   AdmitSlackOidcAttemptInput,
   AcquireSlackOidcAttemptInput,
@@ -154,6 +155,7 @@ export class IdentityStoreLogic {
       case 'get_owner_claim': return { kind: 'owner_claim', ownerClaim: this.getOwnerClaim() ?? null };
       case 'claim_owner': return { kind: 'identity_resolution', resolution: this.claimOwner(request.input) };
       case 'activate_first_owner': return { kind: 'identity_resolution', resolution: this.activateFirstOwner(request.input) };
+      case 'activate_invitation': return { kind: 'identity_resolution', resolution: this.activateInvitation(request.input) };
       case 'resolve_slack_identity': return { kind: 'identity_resolution', resolution: this.resolveSlackIdentity(request.slackTeamId, request.slackUserId, request.organizationId) ?? null };
       case 'list_external_identities': return { kind: 'external_identities', externalIdentities: this.listExternalIdentities() };
       case 'list_memberships': return { kind: 'memberships', memberships: this.listMemberships() };
@@ -167,6 +169,12 @@ export class IdentityStoreLogic {
         kind: 'membership_authority_mutation', result: this.updateMembershipAuthority(request.input),
       };
       case 'create_invitation': return { kind: 'invitation', invitation: this.createInvitation(request.input) };
+      case 'find_invitation': {
+        const invitation = this.findInvitation(request.locatorHash);
+        return invitation
+          ? { kind: 'invitation', invitation }
+          : { kind: 'invitations', invitations: [] };
+      }
       case 'resend_invitation': return { kind: 'invitation', invitation: this.resendInvitation(request.input) };
       case 'revoke_invitation': return { kind: 'invitation', invitation: this.revokeInvitation(request.invitationId) };
       case 'consume_invitation': return { kind: 'identity_resolution', resolution: this.consumeInvitation(request.input) };
@@ -1170,23 +1178,40 @@ export class IdentityStoreLogic {
     if (input.purpose !== 'login' && !expectedUserId) {
       throw identityError('identity_invalid', 'Slack OIDC admission requires an exact user.');
     }
-    if (input.purpose === 'first_owner' && (!input.setupId || !input.setupRevision || !input.operationId)) {
+    if (input.purpose === 'first_owner' &&
+        (!input.setupId || !input.setupRevision || !input.operationId || input.invitationId)) {
       throw identityError('identity_invalid', 'First-Owner OIDC must bind setup and operation authority.');
     }
-    if (input.purpose === 'login' && (input.setupId || input.setupRevision || input.operationId)) {
+    if (input.purpose === 'invitation') {
+      if (!input.invitationId || !input.invitationLocatorHash || !input.operationId ||
+          input.setupId || input.setupRevision) {
+        throw identityError('identity_invalid', 'Invitation OIDC must bind exact invitation authority.');
+      }
+      this.expirePendingInvitations(at);
+      const invitation = this.requiredInvitation(input.invitationId);
+      if (invitation.status !== 'pending' || invitation.expiresAt <= at ||
+          invitation.locatorHash !== credentialHash(input.invitationLocatorHash) ||
+          invitation.slackTeamId !== teamId || invitation.slackUserId !== expectedUserId ||
+          input.expiresAt > invitation.expiresAt) {
+        throw identityError('invitation_token_invalid', 'Invitation is unavailable.');
+      }
+    }
+    if (input.purpose === 'login' &&
+        (input.setupId || input.setupRevision || input.operationId || input.invitationId)) {
       throw identityError('identity_invalid', 'Normal Slack login cannot select an authority before proof.');
     }
     try {
       this.db.run(
         `INSERT INTO identity_slack_oidc_attempts (
-          attempt_id, purpose, operation_id, setup_id, setup_revision,
+          attempt_id, purpose, operation_id, invitation_id, setup_id, setup_revision,
           state_hash, nonce_hash, browser_hash, app_id, client_id, credential_revision,
           redirect_uri, destination, expected_team_id, expected_slack_user_id,
           admitted_team_id, admitted_slack_user_id, status, lease_generation,
           lease_expires_at, result_code, expires_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
           'pending', 0, NULL, NULL, ?, ?, ?)`,
         nonEmpty(input.id, 'Slack OIDC attempt ID'), input.purpose, input.operationId ?? null,
+        input.invitationId ?? null,
         input.setupId ?? null, input.setupRevision ?? null,
         oauthHash(input.stateHash, 'Slack OIDC state hash'),
         oauthHash(input.nonceHash, 'Slack OIDC nonce hash'),
@@ -1315,6 +1340,26 @@ export class IdentityStoreLogic {
             slackUserId: userId,
           });
         }
+      } else if (attempt.purpose === 'invitation') {
+        if (!attempt.invitationId || !attempt.operationId) {
+          throw identityError('auth_operation_missing', 'Invitation admission authority is missing.');
+        }
+        this.expirePendingInvitations();
+        const invitation = this.requiredInvitation(attempt.invitationId);
+        if (invitation.status !== 'pending' || invitation.expiresAt <= this.now() ||
+            invitation.slackTeamId !== teamId || invitation.slackUserId !== userId) {
+          throw identityError('invitation_not_pending', 'Invitation is unavailable.');
+        }
+        operation = this.createAuthOperation({
+          id: attempt.operationId,
+          kind: 'invitation_admission',
+          organizationId: invitation.organizationId,
+          expectedSlackTeamId: teamId,
+          expectedSlackUserId: userId,
+          chickpeaRole: 'admin',
+          capabilityHash: input.capabilityHash,
+          expiresAt: input.expiresAt,
+        });
       } else {
         const resolution = this.resolveSlackIdentity(teamId, userId);
         if (!resolution || resolution.membership.status !== 'active') {
@@ -1341,12 +1386,14 @@ export class IdentityStoreLogic {
   }
 
   settleSlackOidcAttempt(input: SettleSlackOidcAttemptInput): SlackOidcAttempt {
-    const attempt = input.status === 'succeeded'
+    const persisted = this.requiredSlackOidcAttempt(input.attemptId);
+    const attempt = input.status === 'succeeded' || persisted.status === 'admitted'
       ? this.requiredSlackOidcAttempt(input.attemptId)
       : this.requiredSlackOidcLease(input.attemptId, input.expectedLeaseGeneration);
     const allowed = input.status === 'succeeded'
       ? attempt.status === 'admitted'
-      : attempt.status === 'processing';
+      : attempt.status === 'processing' ||
+        (attempt.status === 'admitted' && input.status === 'failed');
     if (!allowed || attempt.leaseGeneration !== input.expectedLeaseGeneration) {
       throw identityError('auth_operation_conflict', 'Slack OIDC terminal state changed concurrently.');
     }
@@ -1578,6 +1625,81 @@ export class IdentityStoreLogic {
     });
   }
 
+  activateInvitation(input: ActivateInvitationInput): IdentityResolution {
+    return this.db.transaction(() => {
+      const at = input.at ?? this.now();
+      this.expirePendingInvitations(at);
+      const attempt = this.requiredSlackOidcAttempt(input.oidcAttemptId);
+      const invitation = this.requiredInvitation(input.invitationId);
+      const operation = this.requiredAuthOperation(input.operationId);
+      if (attempt.purpose !== 'invitation' || attempt.invitationId !== invitation.id ||
+          attempt.status !== 'admitted' || attempt.leaseGeneration !== input.expectedOidcLeaseGeneration ||
+          attempt.operationId !== operation.id || attempt.admittedTeamId !== input.slackTeamId ||
+          attempt.admittedSlackUserId !== input.slackUserId ||
+          invitation.status !== 'pending' || invitation.expiresAt <= at ||
+          invitation.slackTeamId !== input.slackTeamId || invitation.slackUserId !== input.slackUserId ||
+          operation.kind !== 'invitation_admission' || !['reserved', 'reconciling'].includes(operation.status) ||
+          operation.capabilityHash !== credentialHash(input.capabilityHash) ||
+          operation.betterAuthUserId !== input.betterAuthUserId ||
+          operation.betterAuthMembershipId !== input.betterAuthMembershipId ||
+          operation.organizationId !== invitation.organizationId) {
+        throw identityError('invitation_not_pending', 'Invitation activation authority changed.');
+      }
+
+      let resolution = this.resolveSlackIdentity(input.slackTeamId, input.slackUserId, invitation.organizationId);
+      if (resolution) {
+        if (resolution.membership.status !== 'removed' ||
+            resolution.binding.betterAuthUserId !== input.betterAuthUserId ||
+            resolution.binding.betterAuthMembershipId !== input.betterAuthMembershipId) {
+          throw identityError('external_identity_conflict', 'Slack identity is already bound.');
+        }
+        this.db.run(
+          `UPDATE identity_memberships SET role = 'admin', status = 'active', updated_at = ?
+           WHERE membership_id = ? AND status = 'removed'`,
+          at, resolution.membership.id,
+        );
+        this.db.run(
+          `UPDATE identity_membership_access_overlays SET access_status = 'active',
+           membership_version = membership_version + 1, updated_at = ? WHERE membership_id = ?`,
+          at, resolution.membership.id,
+        );
+        resolution = this.requiredResolution(input.slackTeamId, input.slackUserId, invitation.organizationId);
+      } else {
+        resolution = this.insertCanonicalIdentity({
+          operationId: operation.id,
+          organizationId: invitation.organizationId,
+          slackTeamId: input.slackTeamId,
+          slackUserId: input.slackUserId,
+          displayName: input.displayName ?? invitation.displayName,
+          betterAuthUserId: input.betterAuthUserId,
+          betterAuthMembershipId: input.betterAuthMembershipId,
+          role: 'admin',
+          at,
+        });
+      }
+      const invitationChanged = this.db.run(
+        `UPDATE identity_invitations SET status = 'accepted', accepted_membership_id = ?, updated_at = ?
+         WHERE invitation_id = ? AND status = 'pending'`,
+        resolution.membership.id, at, invitation.id,
+      ).changes;
+      const operationChanged = this.db.run(
+        `UPDATE identity_auth_operations SET status = 'active', chickpea_membership_id = ?,
+         activated_at = ?, updated_at = ? WHERE operation_id = ? AND status IN ('reserved', 'reconciling')`,
+        resolution.membership.id, at, at, operation.id,
+      ).changes;
+      const attemptChanged = this.db.run(
+        `UPDATE identity_slack_oidc_attempts SET status = 'succeeded', result_code = 'invitation_active',
+         lease_expires_at = NULL, updated_at = ?
+         WHERE attempt_id = ? AND status = 'admitted' AND lease_generation = ?`,
+        at, attempt.id, attempt.leaseGeneration,
+      ).changes;
+      if (invitationChanged !== 1 || operationChanged !== 1 || attemptChanged !== 1) {
+        throw identityError('auth_operation_conflict', 'Invitation activation changed concurrently.');
+      }
+      return resolution;
+    });
+  }
+
   private claimOwnerInTransaction(input: ClaimOwnerInput): IdentityResolution {
       const claim = this.requiredOwnerClaim();
       if (claim.status === 'active') {
@@ -1746,6 +1868,13 @@ export class IdentityStoreLogic {
           'UPDATE identity_memberships SET role = ?, status = ?, updated_at = ? WHERE membership_id = ?',
           role, status, at, current.id,
         );
+        if (status === 'removed') {
+          this.db.run(
+            `UPDATE identity_auth_operations SET status = 'tombstoned', tombstoned_at = ?, updated_at = ?
+             WHERE chickpea_membership_id = ? AND status = 'active'`,
+            at, at, current.id,
+          );
+        }
       }
       if (systemDeactivation && status === 'suspended') {
         const overlay = this.getMembershipAccessOverlay(current.id);
@@ -1813,6 +1942,12 @@ export class IdentityStoreLogic {
   }
 
   createInvitation(input: CreateInvitationInput): Invitation {
+    const at = this.now();
+    this.expirePendingInvitations(at);
+    if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= at ||
+        input.expiresAt > at + 7 * 24 * 60 * 60_000) {
+      throw identityError('identity_invalid', 'Invitation expiry is invalid.');
+    }
     const inviter = this.requiredMembership(input.inviterMembershipId);
     if (inviter.organizationId !== input.organizationId || inviter.role !== 'owner' || inviter.status !== 'active') {
       throw identityError('inviter_not_authorized', 'Only an active Owner can invite an Admin.');
@@ -1827,7 +1962,6 @@ export class IdentityStoreLogic {
       input.organizationId, input.slackTeamId, input.slackUserId,
     );
     if (existingRow) return invitationFromRow(existingRow);
-    const at = this.now();
     const id = newId('invite');
     this.db.run(
       `INSERT INTO identity_invitations (
@@ -1843,7 +1977,17 @@ export class IdentityStoreLogic {
     return this.requiredInvitation(id);
   }
 
+  findInvitation(locatorHash: string): Invitation | undefined {
+    this.expirePendingInvitations();
+    const row = this.db.get(
+      `SELECT * FROM identity_invitations WHERE locator_hash = ? AND status = 'pending' LIMIT 1`,
+      credentialHash(locatorHash),
+    );
+    return row ? invitationFromRow(row) : undefined;
+  }
+
   resendInvitation(input: ResendInvitationInput): Invitation {
+    this.expirePendingInvitations();
     const current = this.requiredInvitation(input.invitationId);
     if (current.status !== 'pending') throw identityError('invitation_not_pending', 'Invitation is unavailable.');
     this.db.run(
@@ -1855,6 +1999,7 @@ export class IdentityStoreLogic {
   }
 
   revokeInvitation(invitationId: string): Invitation {
+    this.expirePendingInvitations();
     const current = this.requiredInvitation(invitationId);
     if (current.status !== 'pending') throw identityError('invitation_not_pending', 'Invitation is unavailable.');
     this.db.run(
@@ -1866,8 +2011,9 @@ export class IdentityStoreLogic {
 
   consumeInvitation(input: ConsumeInvitationInput): IdentityResolution {
     return this.db.transaction(() => {
-      const invitation = this.requiredInvitation(input.invitationId);
       const at = input.at ?? this.now();
+      this.expirePendingInvitations(at);
+      const invitation = this.requiredInvitation(input.invitationId);
       if (invitation.status !== 'pending') throw identityError('invitation_not_pending', 'Invitation is unavailable.');
       if (invitation.expiresAt <= at) {
         this.db.run("UPDATE identity_invitations SET status = 'expired', updated_at = ? WHERE invitation_id = ?", at, invitation.id);
@@ -1900,6 +2046,7 @@ export class IdentityStoreLogic {
   }
 
   listInvitations(): Invitation[] {
+    this.expirePendingInvitations();
     return this.db.all('SELECT * FROM identity_invitations ORDER BY created_at, invitation_id')
       .map(invitationFromRow);
   }
@@ -2196,6 +2343,13 @@ export class IdentityStoreLogic {
     if (!row) throw identityError('invitation_missing', 'Invitation was not found.');
     return invitationFromRow(row);
   }
+  private expirePendingInvitations(at = this.now()): void {
+    this.db.run(
+      `UPDATE identity_invitations SET status = 'expired', updated_at = ?
+       WHERE status = 'pending' AND expires_at <= ?`,
+      at, at,
+    );
+  }
   private requiredPersonalToken(id: string): PersonalTokenRecord {
     const value = this.getPersonalToken(id);
     if (!value) throw identityError('personal_token_missing', 'Personal token was not found.');
@@ -2276,6 +2430,7 @@ export class SqliteIdentityStore implements IdentityStore {
   async getOwnerClaim() { return this.logic.getOwnerClaim(); }
   async claimOwner(input: ClaimOwnerInput) { return this.logic.claimOwner(input); }
   async activateFirstOwner(input: ActivateFirstOwnerInput) { return this.logic.activateFirstOwner(input); }
+  async activateInvitation(input: ActivateInvitationInput) { return this.logic.activateInvitation(input); }
   async resolveSlackIdentity(teamId: string, userId: string, organizationId?: string) { return this.logic.resolveSlackIdentity(teamId, userId, organizationId); }
   async listExternalIdentities() { return this.logic.listExternalIdentities(); }
   async resolveActorExternalIdentity(provider: 'slack', teamId: string, userId: string) { return this.logic.resolveActorExternalIdentity(provider, teamId, userId); }
@@ -2287,6 +2442,7 @@ export class SqliteIdentityStore implements IdentityStore {
     return this.logic.updateMembershipAuthority(input);
   }
   async createInvitation(input: CreateInvitationInput) { return this.logic.createInvitation(input); }
+  async findInvitation(locatorHash: string) { return this.logic.findInvitation(locatorHash); }
   async resendInvitation(input: ResendInvitationInput) { return this.logic.resendInvitation(input); }
   async revokeInvitation(id: string) { return this.logic.revokeInvitation(id); }
   async consumeInvitation(input: ConsumeInvitationInput) { return this.logic.consumeInvitation(input); }
@@ -2558,6 +2714,7 @@ function slackOidcAttemptFromRow(row: Record<string, unknown>): SlackOidcAttempt
     id: String(row.attempt_id),
     purpose: String(row.purpose) as SlackOidcAttempt['purpose'],
     operationId: nullableString(row.operation_id),
+    invitationId: nullableString(row.invitation_id),
     setupId: nullableString(row.setup_id),
     setupRevision: nullableNumber(row.setup_revision),
     stateHash: String(row.state_hash),

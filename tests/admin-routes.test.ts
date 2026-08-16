@@ -1044,7 +1044,8 @@ test('legacy shared-token login is absent and cannot create a browser session', 
     // Query parameters are never credentials: GETs cannot create a session,
     // even if they carry the right token.
     const queryAttempt = await app.request(`/admin?token=${ADMIN_TOKEN}`);
-    assert.equal(queryAttempt.status, 401);
+    assert.equal(queryAttempt.status, 303);
+    assert.equal(queryAttempt.headers.get('location'), '/auth/slack/sign-in?destination=%2Fadmin');
     assert.equal(queryAttempt.headers.get('set-cookie'), null);
 
     const unsafeReturn = await app.request('/admin/login', {
@@ -1099,8 +1100,11 @@ test('client-routed admin paths serve the SPA and legacy login stays absent', as
     assert.equal(login.headers.get('set-cookie'), null);
 
     const anon = await app.request('/admin/channels/T_X/C_Y');
-    assert.equal(anon.status, 401);
-    assert.deepEqual(await anon.json(), { error: 'authentication_required' });
+    assert.equal(anon.status, 303);
+    assert.equal(
+      anon.headers.get('location'),
+      '/auth/slack/sign-in?destination=%2Fadmin%2Fchannels%2FT_X%2FC_Y',
+    );
 
     // Unknown API paths stay 404 — never swallowed by the SPA catch-all.
     const api = await app.request('/admin/api/nope', { headers: auth(ADMIN_TOKEN) });
@@ -1116,8 +1120,8 @@ test('unauthenticated page and API requests return Slack-session auth failures',
     const app = appWithAdmin(store);
 
     const page = await app.request('/admin');
-    assert.equal(page.status, 401);
-    assert.deepEqual(await page.json(), { error: 'authentication_required' });
+    assert.equal(page.status, 303);
+    assert.equal(page.headers.get('location'), '/auth/slack/sign-in?destination=%2Fadmin');
 
     const rejected = await app.request('/admin/login', {
       method: 'POST',

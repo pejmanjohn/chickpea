@@ -206,7 +206,11 @@ test('canonical visual states use authenticated production URLs and UI actions o
     const unauthenticated = await fetch(`${fixture.baseUrl}/admin/agents/agent_research`, {
       redirect: 'manual',
     });
-    assert.equal(unauthenticated.status, 401);
+    assert.equal(unauthenticated.status, 303);
+    assert.equal(
+      unauthenticated.headers.get('location'),
+      '/auth/slack/sign-in?destination=%2Fadmin%2Fagents%2Fagent_research',
+    );
     const authorization = `Bearer ${fixture.adminToken}`;
 
     assert.deepEqual(fixture.canonicalStates, {

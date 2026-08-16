@@ -354,7 +354,6 @@ import { assertPasswordPolicy } from '../auth/password-policy.ts';
 import {
   PasswordEnrollmentService,
   PasswordLifecycleError,
-  PasswordTeamLifecycleService,
 } from '../auth/password-team.ts';
 import { digest, PersonalTokenService } from '../auth/personal-token.ts';
 import type { AdminAuthenticationService, AuthPrincipal, ExternalIdentity } from '../auth/types.ts';
@@ -1119,7 +1118,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const retired = [
       '/admin/migrate', '/admin/recovery', '/admin/join', '/admin/login',
       '/admin/reset', '/admin/account', '/admin/slack-actor',
-      '/admin/api/team', '/admin/api/account',
+      '/admin/api/account',
     ];
     if (retired.some((path) => c.req.path === path || c.req.path.startsWith(`${path}/`))) {
       return c.notFound();
@@ -1209,6 +1208,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       limiterSecret: environment.secret,
     };
   };
+  const slackWorkspaceDescriptor = async (c: Context): Promise<{
+    teamId: string;
+    teamName?: string;
+  } | undefined> => {
+    const organization = await identity(c).getOrganization();
+    if (!organization?.slackTeamId) return undefined;
+    if (options.slackAdmissionService && !options.slackCredentials) {
+      return { teamId: organization.slackTeamId };
+    }
+    const credentials = slackCredentialDependencies(c);
+    if (!credentials) return { teamId: organization.slackTeamId };
+    try {
+      const resolved = await resolveSlackIdentityCredentials(
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        c.env as PlatformEnv | undefined,
+        credentials,
+      );
+      if (!resolved.botToken) return { teamId: organization.slackTeamId };
+      const live = await slackAuthTest(resolved.botToken);
+      return live.ok && live.teamId === organization.slackTeamId && live.teamName
+        ? { teamId: organization.slackTeamId, teamName: live.teamName }
+        : { teamId: organization.slackTeamId };
+    } catch {
+      return { teamId: organization.slackTeamId };
+    }
+  };
   const authRateLimiter = (c: Context, token: string): AuthRateLimiter =>
     options.authRateLimiter ?? new AuthRateLimiter(identity(c), { pepper: token });
   const recordSandboxAudit = async (
@@ -1277,16 +1302,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   };
   const humanDirectory = async (c: Context): Promise<HumanIdentityDirectory> =>
     (await passwordAuthContext(c))?.directory ?? identity(c);
-  const passwordTeamLifecycle = async (c: Context): Promise<PasswordTeamLifecycleService | undefined> => {
-    const context = await passwordAuthContext(c);
-    return context
-      ? new PasswordTeamLifecycleService(
-          identity(c),
-          context.environment,
-          context.organizationId,
-        )
-      : undefined;
-  };
   const configuredAuthService = async (c: Context): Promise<AdminAuthenticationService | undefined> => {
     if (options.authService) return options.authService;
     const identityStore = identity(c);
@@ -1865,6 +1880,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // narrower than the bot-install cookie and carries only the raw nonce plus
   // an independent browser binding; TAG_STATE stores their hashes.
   app.use('/auth/slack/oidc/*', authSetupBodyLimit);
+  app.use('/auth/slack/invite', authSetupBodyLimit);
+  app.use('/auth/slack/invite/*', authSetupBodyLimit);
+  app.get('/auth/slack/invite/client.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    return c.body(slackInvitationClientScript());
+  });
+  app.get('/auth/slack/invite', async (c) => {
+    authResponseHeaders(c);
+    const context = await slackAdmissionContext(c).catch(() => undefined);
+    const workspace = context
+      ? await slackWorkspaceDescriptor(c).catch(() => undefined)
+      : undefined;
+    if (!context || !workspace) return c.notFound();
+    return c.html(renderSlackInvitationPage(workspace));
+  });
   app.get('/auth/slack/sign-in', async (c) => {
     authResponseHeaders(c);
     const context = await slackAdmissionContext(c).catch(() => undefined);
@@ -1878,7 +1909,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!validAuthFormPost(c, requestOrigin(c))) return c.json({ error: 'forbidden' }, 403);
     const form = await readForm(c);
     const purpose = form.purpose === 'first_owner' ? 'first_owner' :
-      form.purpose === 'login' ? 'login' : undefined;
+      form.purpose === 'login' ? 'login' :
+      form.purpose === 'invitation' ? 'invitation' : undefined;
     if (!purpose) return c.json({ error: 'invalid_state' }, 400);
     const source = authSourceKey(c);
     const limiter = authRateLimiter(c, context.limiterSecret);
@@ -1907,13 +1939,26 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           redirectUri: `${requestOrigin(c)}/auth/slack/oidc/callback`,
           destination: setup.destination,
         });
-      } else {
+      } else if (purpose === 'login') {
         operationKey = 'login';
         await limiter.assertAllowed('slack_oidc_start_operation', operationKey);
         started = await context.service.startLogin({
           browserBinding,
           redirectUri: `${requestOrigin(c)}/auth/slack/oidc/callback`,
           destination: safeSetupDestination(form.destination),
+        });
+      } else {
+        const locator = form.invitation?.trim() ?? '';
+        if (locator.length < 32 || locator.length > 512 || /\s/.test(locator)) {
+          throw new SlackOidcError('invalid_state');
+        }
+        operationKey = createHash('sha256').update(locator).digest('hex');
+        await limiter.assertAllowed('slack_oidc_start_operation', operationKey);
+        started = await context.service.startInvitation({
+          locator,
+          browserBinding,
+          redirectUri: `${requestOrigin(c)}/auth/slack/oidc/callback`,
+          destination: '/admin/team',
         });
       }
       setCookie(c, SLACK_OIDC_BROWSER_COOKIE,
@@ -1934,6 +1979,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (error instanceof AuthRateLimitError) {
         c.header('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))));
         return c.json({ error: 'rate_limited' }, 429);
+      }
+      if (purpose === 'invitation' && error instanceof SlackOidcError &&
+          ['invalid_state', 'invitation_unavailable'].includes(error.code)) {
+        return c.html(renderSlackInvitationUnavailablePage(), 410);
       }
       return c.json({ error: slackOidcPublicError(error) }, slackOidcHttpStatus(error));
     }
@@ -1976,6 +2025,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         limiter.recordSuccess('slack_oidc_callback_source', source),
         limiter.recordSuccess('slack_oidc_callback_operation', state),
       ]);
+      if (cookie.purpose === 'invitation') {
+        return c.html(renderSlackInvitationCompletePage(result.destination));
+      }
       return c.redirect(result.destination, 303);
     } catch (error) {
       await Promise.all([
@@ -1989,6 +2041,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (error instanceof AuthRateLimitError) {
         c.header('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))));
         return c.json({ error: 'rate_limited' }, 429);
+      }
+      if (cookie.purpose === 'invitation' && error instanceof SlackOidcError &&
+          ['inactive_user', 'user_mismatch', 'workspace_mismatch'].includes(error.code)) {
+        const workspace = await slackWorkspaceDescriptor(c).catch(() => undefined);
+        return c.html(renderSlackInvitationMismatchPage(workspace), 403);
+      }
+      if (cookie.purpose === 'invitation' && error instanceof SlackOidcError &&
+          error.code === 'invitation_unavailable') {
+        return c.html(renderSlackInvitationUnavailablePage(), 410);
       }
       return c.json({ error: slackOidcPublicError(error) }, slackOidcHttpStatus(error));
     }
@@ -2975,8 +3036,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.route('/admin/api', createTeamAdminApi({
     store: identity,
-    directory: humanDirectory,
-    passwordLifecycle: passwordTeamLifecycle,
+    resolveCredentials: (c) => resolveSlackIdentityCredentials(
+      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      c.env as PlatformEnv | undefined,
+      slackCredentialResolutionDependencies(c),
+    ),
+    revokeBetterAuthSessions: async (c, betterAuthUserId) => {
+      const context = await passwordAuthContext(c);
+      return context?.environment.backend.deleteSessionsForUser(betterAuthUserId) ?? 0;
+    },
+    rateLimiter: async (c) => {
+      const context = await passwordAuthContext(c);
+      const secret = context?.environment.secret ?? options.authSecret;
+      return secret ? authRateLimiter(c, secret) : undefined;
+    },
   }));
   app.route('/admin/api', createMemoryAdminApi({
     store: memory,
@@ -6796,7 +6869,7 @@ function clearSlackInstallBrowserCookie(c: Context): void {
 }
 
 function encodeSlackOidcCookie(
-  purpose: 'first_owner' | 'login',
+  purpose: 'first_owner' | 'login' | 'invitation',
   browserBinding: string,
   nonce: string,
 ): string {
@@ -6804,13 +6877,14 @@ function encodeSlackOidcCookie(
 }
 
 function decodeSlackOidcCookie(value: string | undefined): {
-  purpose: 'first_owner' | 'login';
+  purpose: 'first_owner' | 'login' | 'invitation';
   browserBinding: string;
   nonce: string;
 } | undefined {
   if (!value || value.length > 1_100) return undefined;
   const [purpose, browserBinding, nonce, extra] = value.split('.');
-  if (extra !== undefined || (purpose !== 'first_owner' && purpose !== 'login') ||
+  if (extra !== undefined ||
+      (purpose !== 'first_owner' && purpose !== 'login' && purpose !== 'invitation') ||
       !browserBinding || browserBinding.length < 32 || browserBinding.length > 512 ||
       !nonce || nonce.length < 32 || nonce.length > 512 ||
       /\s/.test(browserBinding) || /\s/.test(nonce)) return undefined;
@@ -6830,6 +6904,7 @@ function slackOidcPublicError(error: unknown): string {
 function slackOidcHttpStatus(error: unknown): 400 | 403 | 409 | 410 | 503 {
   if (!(error instanceof SlackOidcError)) return 400;
   if (error.code === 'expired_state') return 410;
+  if (error.code === 'invitation_unavailable') return 410;
   if (['processing', 'stale_revision'].includes(error.code)) return 409;
   if (error.code === 'slack_unreachable') return 503;
   if (error.code === 'session_unavailable') return 503;
@@ -6839,6 +6914,75 @@ function slackOidcHttpStatus(error: unknown): 400 | 403 | 409 | 410 | 503 {
 
 function renderSlackSignInPage(destination: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Sign in · Chickpea</title><style>body{font-family:system-ui;max-width:30rem;margin:12vh auto;padding:1.5rem;color:#392f1f}button{width:100%;padding:.8rem 1rem;font:inherit}</style></head><body><main><h1>Sign in to Chickpea</h1><p>Use your invited identity in the connected Slack workspace.</p><form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="login"><input type="hidden" name="destination" value="${escapeSetupHtml(destination)}"><button type="submit">Continue with Slack</button></form></main></body></html>`;
+}
+
+function renderSlackInvitationPage(workspace: { teamId: string; teamName?: string }): string {
+  const label = workspace.teamName
+    ? `${workspace.teamName} (${workspace.teamId})`
+    : `the connected Slack workspace (${workspace.teamId})`;
+  return `<!doctype html><html data-invitation-state="ready"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Join Chickpea</title><style>body{font-family:system-ui;max-width:30rem;margin:12vh auto;padding:1.5rem;color:#392f1f}button{width:100%;padding:.8rem 1rem;font:inherit}p{line-height:1.5}</style></head><body><main><h1>Join Chickpea</h1><p>Continue with the invited Slack account in ${escapeSetupHtml(label)}.</p><p id="invitation-status" role="status">Checking this invitation…</p><form id="invitation-form" method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="invitation"><input id="invitation-locator" type="hidden" name="invitation"><button id="invitation-submit" type="submit" disabled>Continue with Slack</button></form></main><script src="/auth/slack/invite/client.js" defer></script></body></html>`;
+}
+
+function renderSlackInvitationMismatchPage(
+  workspace: { teamId: string; teamName?: string } | undefined,
+): string {
+  const label = workspace?.teamName
+    ? `${workspace.teamName} (${workspace.teamId})`
+    : workspace?.teamId
+      ? `the connected Slack workspace (${workspace.teamId})`
+      : 'the connected Slack workspace';
+  return `<!doctype html><html data-invitation-state="mismatch"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Try another Slack account</title><style>body{font-family:system-ui;max-width:30rem;margin:12vh auto;padding:1.5rem;color:#392f1f}a{display:block;padding:.8rem 1rem;text-align:center;border:1px solid currentColor;border-radius:.5rem}p{line-height:1.5}</style></head><body><main><h1>That Slack account cannot use this invitation</h1><p>Choose the invited account in ${escapeSetupHtml(label)}. This page does not reveal who was invited.</p><a href="/auth/slack/invite">Try another Slack account</a></main><script src="/auth/slack/invite/client.js" defer></script></body></html>`;
+}
+
+function renderSlackInvitationCompletePage(destination: string): string {
+  return `<!doctype html><html data-invitation-state="complete" data-destination="${escapeSetupHtml(safeSetupDestination(destination))}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Invitation accepted</title><style>body{font-family:system-ui;max-width:30rem;margin:12vh auto;padding:1.5rem;color:#392f1f}p{line-height:1.5}</style></head><body><main><h1>You’re in</h1><p>Opening Chickpea…</p><noscript><a href="${escapeSetupHtml(safeSetupDestination(destination))}">Open Chickpea</a></noscript></main><script src="/auth/slack/invite/client.js" defer></script></body></html>`;
+}
+
+function renderSlackInvitationUnavailablePage(): string {
+  return `<!doctype html><html data-invitation-state="unavailable"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Invitation unavailable</title><style>body{font-family:system-ui;max-width:30rem;margin:12vh auto;padding:1.5rem;color:#392f1f}p{line-height:1.5}</style></head><body><main><h1>This invitation is no longer available</h1><p>Ask a Chickpea Owner to select your Slack member again and create a fresh invitation.</p></main><script src="/auth/slack/invite/client.js" defer></script></body></html>`;
+}
+
+function slackInvitationClientScript(): string {
+  return `(function () {
+  "use strict";
+  var storageKey = "chickpea.slack-invitation.v1";
+  var state = document.documentElement.getAttribute("data-invitation-state") || "";
+  if (state === "complete") {
+    try { sessionStorage.removeItem(storageKey); } catch (_) {}
+    var destination = document.documentElement.getAttribute("data-destination") || "/admin";
+    if (!/^\\/admin(?:\\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/.test(destination)) destination = "/admin";
+    location.replace(destination);
+    return;
+  }
+  if (state === "unavailable") {
+    try { sessionStorage.removeItem(storageKey); } catch (_) {}
+    return;
+  }
+  if (state !== "ready") return;
+  var locator = "";
+  try {
+    var fragment = new URLSearchParams(location.hash.slice(1));
+    locator = fragment.get("invite") || "";
+    if (locator) sessionStorage.setItem(storageKey, locator);
+    if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+  } catch (_) {}
+  if (!locator) {
+    try { locator = sessionStorage.getItem(storageKey) || ""; } catch (_) {}
+  }
+  if (locator.length < 32 || locator.length > 512 || /\\s/.test(locator)) {
+    locator = "";
+    try { sessionStorage.removeItem(storageKey); } catch (_) {}
+  }
+  var input = document.getElementById("invitation-locator");
+  var submit = document.getElementById("invitation-submit");
+  var status = document.getElementById("invitation-status");
+  if (input) input.value = locator;
+  if (submit) submit.disabled = !locator;
+  if (status) status.textContent = locator
+    ? "Invitation ready. Slack will verify the exact invited account."
+    : "This invitation link is missing or no longer available.";
+  locator = "";
+})();`;
 }
 
 function escapeSetupHtml(value: string): string {

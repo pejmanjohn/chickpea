@@ -42,6 +42,7 @@ export type SlackOidcErrorCode =
   | 'workspace_mismatch'
   | 'user_mismatch'
   | 'inactive_user'
+  | 'invitation_unavailable'
   | 'session_unavailable';
 
 export class SlackOidcError extends Error {

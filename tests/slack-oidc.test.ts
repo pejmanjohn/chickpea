@@ -99,7 +99,7 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
     });
     const proof = await gateway.exchangeAndVerify({
       attempt: {
-        id: 'oidc_attempt', purpose: 'first_owner', operationId: 'operation',
+        id: 'oidc_attempt', purpose: 'first_owner', operationId: 'operation', invitationId: null,
         setupId: 'setup_default', setupRevision: 9,
         stateHash: 'a'.repeat(64), nonceHash: sha256(nonce), browserHash: 'b'.repeat(64),
         appId: 'A12345678', clientId: '123.456', credentialRevision: active.revision,
@@ -128,7 +128,8 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
     await assert.rejects(
       () => gateway.exchangeAndVerify({
         attempt: {
-          id: 'oidc_attempt_2', purpose: 'login', operationId: null, setupId: null, setupRevision: null,
+          id: 'oidc_attempt_2', purpose: 'login', operationId: null, invitationId: null,
+          setupId: null, setupRevision: null,
           stateHash: 'c'.repeat(64), nonceHash: sha256(nonce), browserHash: 'd'.repeat(64),
           appId: 'A12345678', clientId: '123.456', credentialRevision: active.revision,
           redirectUri: 'https://chickpea.example/auth/slack/oidc/callback', destination: '/admin',
@@ -145,7 +146,8 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
     await assert.rejects(
       () => gateway.exchangeAndVerify({
         attempt: {
-          id: 'oidc_attempt_3', purpose: 'login', operationId: null, setupId: null, setupRevision: null,
+          id: 'oidc_attempt_3', purpose: 'login', operationId: null, invitationId: null,
+          setupId: null, setupRevision: null,
           stateHash: 'e'.repeat(64), nonceHash: sha256(nonce), browserHash: 'f'.repeat(64),
           appId: 'A12345678', clientId: '123.456', credentialRevision: active.revision,
           redirectUri: 'https://chickpea.example/auth/slack/oidc/callback', destination: '/admin',

@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { SlackAdmissionService } from '../src/auth/slack-admission.ts';
 import { AuthRateLimiter } from '../src/auth/rate-limit.ts';
+import { SlackOidcError } from '../src/auth/slack-oidc.ts';
 import { mintSetupCapability } from '../src/auth/setup-capability.mjs';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
@@ -431,6 +432,150 @@ test('Slack-only sign-in uses a narrow nonce cookie and restores the safe Admin 
     assert.match(callback.headers.get('set-cookie') ?? '', /better-auth\.session_token=session-secret/);
     assert.equal(callbackInput?.nonce, nonce);
     assert.equal(callbackInput?.purpose, 'login');
+  } finally {
+    identity.close();
+  }
+});
+
+test('Slack invitation handoff keeps the locator in the fragment/session tab and binds OIDC to invitation purpose', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const organization = await identity.ensureOrganization({ displayName: 'Chickpea', slackTeamId: 'TACME' });
+  let startInput: Record<string, unknown> | undefined;
+  let callbackInput: Record<string, unknown> | undefined;
+  const state = 'invite-state-0123456789abcdefghijklmnopqrstuvwxyz';
+  const nonce = 'invite-nonce-0123456789abcdefghijklmnopqrstuvwxyz';
+  const locator = 'invite-locator-0123456789abcdefghijklmnopqrstuvwxyz';
+  const service = {
+    async startInvitation(input: Record<string, unknown>) {
+      startInput = input;
+      return {
+        attemptId: 'slackoidc_invite', state, nonce, expiresAt: Date.now() + 900_000,
+        authorizationUrl: `https://slack.com/openid/connect/authorize?state=${state}`,
+      };
+    },
+    async callback(input: Record<string, unknown>) {
+      callbackInput = input;
+      return {
+        destination: '/admin/team',
+        sessionResponse: new Response('{}', {
+          headers: { 'set-cookie': 'better-auth.session_token=invite-session; Path=/; HttpOnly; Secure' },
+        }),
+      };
+    },
+  } as unknown as SlackAdmissionService;
+  try {
+    assert.equal(organization.slackTeamId, 'TACME');
+    const app = createAdminRoutes({
+      identity,
+      slackAdmissionService: service,
+      authSecret: Buffer.alloc(32, 7).toString('base64url'),
+    });
+    const page = await app.request(`${ORIGIN}/auth/slack/invite`);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /connected Slack workspace \(TACME\)/);
+    assert.match(html, /name="invitation"/);
+    assert.doesNotMatch(html, new RegExp(locator));
+    assert.equal(page.headers.get('cache-control'), 'no-store');
+    assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
+    const client = await app.request(`${ORIGIN}/auth/slack/invite/client.js`);
+    const script = await client.text();
+    assert.match(script, /sessionStorage\.setItem/);
+    assert.match(script, /history\.replaceState/);
+    assert.match(script, /sessionStorage\.removeItem/);
+    assert.doesNotMatch(script, new RegExp(locator));
+
+    const start = await app.request(`${ORIGIN}/auth/slack/oidc/start`, {
+      method: 'POST', headers: formHeaders(), body: new URLSearchParams({
+        purpose: 'invitation', invitation: locator,
+      }),
+    });
+    assert.equal(start.status, 302, await start.clone().text());
+    assert.equal(startInput?.locator, locator);
+    assert.equal(startInput?.destination, '/admin/team');
+    const cookie = start.headers.get('set-cookie')!;
+    assert.match(cookie, /__Secure-chickpea_slack_oidc=invitation\./);
+    assert.doesNotMatch(cookie, new RegExp(locator));
+
+    const callback = await app.request(
+      `${ORIGIN}/auth/slack/oidc/callback?state=${state}&code=invite-code`,
+      { headers: { cookie: cookie.split(';', 1)[0]! } },
+    );
+    assert.equal(callback.status, 200, await callback.clone().text());
+    assert.match(await callback.text(), /data-invitation-state="complete"/);
+    assert.match(callback.headers.get('set-cookie') ?? '', /better-auth\.session_token=invite-session/);
+    assert.equal(callbackInput?.purpose, 'invitation');
+    assert.equal(callbackInput?.nonce, nonce);
+  } finally {
+    identity.close();
+  }
+});
+
+test('revoked or expired invitation callback is terminal, non-disclosing, and clears browser authority', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  await identity.ensureOrganization({ displayName: 'Chickpea', slackTeamId: 'TACME' });
+  const state = 'terminal-state-0123456789abcdefghijklmnopqrstuvwxyz';
+  const nonce = 'terminal-nonce-0123456789abcdefghijklmnopqrstuvwxyz';
+  const locator = 'terminal-locator-0123456789abcdefghijklmnopqrstuvwxyz';
+  const service = {
+    async startInvitation() {
+      return {
+        attemptId: 'slackoidc_terminal', state, nonce, expiresAt: Date.now() + 900_000,
+        authorizationUrl: `https://slack.com/openid/connect/authorize?state=${state}`,
+      };
+    },
+    async callback() { throw new SlackOidcError('invitation_unavailable'); },
+  } as unknown as SlackAdmissionService;
+  try {
+    const app = createAdminRoutes({
+      identity, slackAdmissionService: service,
+      authSecret: Buffer.alloc(32, 8).toString('base64url'),
+    });
+    const start = await app.request(`${ORIGIN}/auth/slack/oidc/start`, {
+      method: 'POST', headers: formHeaders(), body: new URLSearchParams({
+        purpose: 'invitation', invitation: locator,
+      }),
+    });
+    const cookie = start.headers.get('set-cookie')!.split(';', 1)[0]!;
+    const callback = await app.request(
+      `${ORIGIN}/auth/slack/oidc/callback?state=${state}&code=terminal-code`,
+      { headers: { cookie } },
+    );
+    assert.equal(callback.status, 410);
+    assert.match(callback.headers.get('set-cookie') ?? '', /Max-Age=0/i);
+    const html = await callback.text();
+    assert.match(html, /data-invitation-state="unavailable"/);
+    assert.match(html, /create a fresh invitation/);
+    assert.doesNotMatch(html, /terminal-locator|UREVOKED|Invited Admin/i);
+    const client = await app.request(`${ORIGIN}/auth/slack/invite/client.js`);
+    assert.match(await client.text(), /state === "unavailable"[\s\S]*sessionStorage\.removeItem/);
+  } finally {
+    identity.close();
+  }
+});
+
+test('revoked or expired invitation is terminal before Slack OIDC starts', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  await identity.ensureOrganization({ displayName: 'Chickpea', slackTeamId: 'TACME' });
+  let callbackCalls = 0;
+  const service = {
+    async startInvitation() { throw new SlackOidcError('invalid_state'); },
+    async callback() { callbackCalls += 1; throw new Error('must not run'); },
+  } as unknown as SlackAdmissionService;
+  try {
+    const app = createAdminRoutes({
+      identity, slackAdmissionService: service,
+      authSecret: Buffer.alloc(32, 9).toString('base64url'),
+    });
+    const response = await app.request(`${ORIGIN}/auth/slack/oidc/start`, {
+      method: 'POST', headers: formHeaders(), body: new URLSearchParams({
+        purpose: 'invitation', invitation: 'expired-locator-0123456789abcdefghijklmnopqrstuvwxyz',
+      }),
+    });
+    assert.equal(response.status, 410);
+    assert.match(await response.text(), /data-invitation-state="unavailable"/);
+    assert.equal(response.headers.get('set-cookie'), null);
+    assert.equal(callbackCalls, 0);
   } finally {
     identity.close();
   }

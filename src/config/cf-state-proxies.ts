@@ -41,6 +41,7 @@ import type {
 import { IdentityStateError } from '../identity/errors.ts';
 import type {
   AdvanceAuthOperationInput,
+  ActivateInvitationInput,
   ActivateFirstOwnerInput,
   AdmitSlackOidcAttemptInput,
   BeginSlackAppCreationInput,
@@ -674,6 +675,11 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
     return response.resolution;
   }
+  async activateInvitation(input: ActivateInvitationInput) {
+    const response = await this.execute({ kind: 'activate_invitation', input });
+    if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
+    return response.resolution;
+  }
   async resolveSlackIdentity(slackTeamId: string, slackUserId: string, organizationId?: string) {
     const response = await this.execute({
       kind: 'resolve_slack_identity', slackTeamId, slackUserId,
@@ -722,6 +728,12 @@ export class CfIdentityStore implements IdentityStore {
   }
   async createInvitation(input: CreateInvitationInput) {
     const response = await this.execute({ kind: 'create_invitation', input });
+    if (response.kind !== 'invitation') throw unexpectedIdentityResponse();
+    return response.invitation;
+  }
+  async findInvitation(locatorHash: string) {
+    const response = await this.execute({ kind: 'find_invitation', locatorHash });
+    if (response.kind === 'invitations') return response.invitations[0];
     if (response.kind !== 'invitation') throw unexpectedIdentityResponse();
     return response.invitation;
   }

@@ -2432,17 +2432,22 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     teamError: "",
     teamBusy: "",
     teamNotice: "",
+    teamDirectory: [],
+    teamDirectoryLoading: false,
+    teamDirectoryError: "",
+    teamDirectoryCursor: "",
+    teamDirectoryQuery: "",
+    teamManualSlackUserId: "",
+    teamSelectedSlackUserId: "",
     teamInviteLink: "",
-    teamInviteEmail: "",
+    teamInviteSlackUserId: "",
     teamInviteCopied: false,
     teamInviteManualCopy: false,
     teamInviteCopyVersion: 0,
-    teamResetLink: "",
     // Removal is a separate destructive action, never a select option. The
     // confirmation keeps an accidental status-picker change from permanently
     // deleting the Better Auth membership and its Chickpea authority.
     teamRemoveConfirm: null,
-    teamInviteDraft: { email: "" },
     channelScreen: "overview",
     profileScreen: "list",
     profileLastAgentId: null,
@@ -3494,57 +3499,88 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var pending = invitations.filter(function (invitation) {
       return invitation.status === "pending" && Number(invitation.expiresAt) > Date.now();
     });
+    var viewer = team.viewer || { role: "admin", membershipId: "" };
     var notice = state.teamError
       ? '<p class="error" role="alert">' + esc(state.teamError) + '</p>'
       : (state.teamNotice ? '<p class="hint" role="status">' + esc(state.teamNotice) + '</p>' : '');
-    var createdFlash = state.teamInviteLink && state.teamInviteEmail
+    var createdFlash = state.teamInviteLink && state.teamInviteSlackUserId
       ? (state.teamInviteManualCopy
         ? '<div class="team-show-once" role="status"><label for="team-invite-link">Copy this teammate join link manually</label><p class="hint">Clipboard access was denied. Select the full link below, then copy and share it privately.</p><div class="team-link-row"><input class="input mono" id="team-invite-link" readonly value="' + esc(state.teamInviteLink) + '"><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">Copy link</button></div></div>'
-        : '<div class="team-created-flash" role="status"><div><strong>Join link ready for</strong><span>' + esc(state.teamInviteEmail) + '</span></div><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">' + (state.teamInviteCopied ? 'Copied' : 'Copy link') + '</button></div>')
+        : '<div class="team-created-flash" role="status"><div><strong>Slack invitation ready</strong><span>' + esc(state.teamInviteSlackUserId) + '</span></div><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">' + (state.teamInviteCopied ? 'Copied' : 'Copy link') + '</button></div>')
       : '';
-    var resetOnce = state.teamResetLink
-      ? '<div class="team-show-once" role="status"><label for="team-reset-link">Copy this password reset link now</label><p class="hint">Send it privately to the named teammate. It expires quickly and cannot be shown again after you leave or refresh.</p><div class="team-link-row"><input class="input mono" id="team-reset-link" readonly value="' + esc(state.teamResetLink) + '"><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-reset">Copy link</button><button type="button" class="btn btn-ghost btn-sm" data-action="team-dismiss-reset">Done</button></div></div>'
+    var inviteCard = viewer.role === "owner" ? teamInvitationPickerHtml(createdFlash) : '';
+    var soleOwner = team.soleOwnerWarning
+      ? '<section class="team-card" role="alert" aria-labelledby="sole-owner-heading"><h2 id="sole-owner-heading">Add a second Owner</h2><p class="hint">This workspace has one active Owner. If that Slack identity is lost, recovery requires a destructive fresh reset. Promote a verified active Admin below.</p></section>'
       : '';
-    return '<div class="team-hero"><div><p class="section-eyebrow">People &amp; access</p><h1 class="page-title">Your team</h1><p class="hint">Everyone you invite can administer this Chickpea workspace. The person who created it remains the owner.</p></div><span class="team-count">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></div>' +
-      notice +
-      '<section class="team-card" aria-labelledby="invite-heading"><h2 id="invite-heading">Create a teammate join link</h2><p class="hint">Chickpea does not send email. Enter the exact email address, then copy and share the private link yourself.</p><form class="team-form" data-action="team-invite-form"><label class="field-label" for="team-invite-email">Email</label><div class="team-form-row"><input class="input" id="team-invite-email" name="email" data-action="team-invite-email" type="email" autocomplete="email" required placeholder="teammate@example.com" value="' + esc(state.teamInviteDraft.email) + '"><button type="submit" class="btn btn-primary"' + (state.teamBusy ? ' disabled' : '') + '>Create link</button></div></form>' + createdFlash + '</section>' +
-      resetOnce + '<section class="team-card" aria-labelledby="members-heading"><h2 id="members-heading">Members</h2><p class="hint">Suspension takes effect on the next Chickpea request, even if the signed-in browser stays open.</p><div class="team-list">' + (members.length ? members.map(teamMemberRowHtml).join("") : '<p class="team-empty">No memberships yet.</p>') + '</div></section>' +
-      '<section class="team-card" aria-labelledby="invitations-heading"><h2 id="invitations-heading">Pending join links</h2><p class="hint">Each teammate has one private link. Copy it whenever needed, or revoke it to stop access.</p><div class="team-list">' + (pending.length ? pending.map(teamInvitationRowHtml).join("") : '<p class="team-empty">No pending join links.</p>') + '</div></section>';
+    return '<div class="team-hero"><div><p class="section-eyebrow">People &amp; access</p><h1 class="page-title">Your team</h1><p class="hint">Everyone here is bound to one exact identity in the connected Slack workspace.</p></div><span class="team-count">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></div>' +
+      notice + soleOwner + inviteCard +
+      '<section class="team-card" aria-labelledby="members-heading"><h2 id="members-heading">Members</h2><p class="hint">Suspending or removing a member revokes their Chickpea access. Removing is terminal and requires a fresh Slack invitation.</p><div class="team-list">' + (members.length ? members.map(teamMemberRowHtml).join("") : '<p class="team-empty">No memberships yet.</p>') + '</div></section>' +
+      (viewer.role === "owner" ? '<section class="team-card" aria-labelledby="invitations-heading"><h2 id="invitations-heading">Pending Slack invitations</h2><p class="hint">Links expire after seven days and only the selected Slack member can accept one.</p><div class="team-list">' + (pending.length ? pending.map(teamInvitationRowHtml).join("") : '<p class="team-empty">No pending invitations.</p>') + '</div></section>' : '');
+  }
+
+  function teamInvitationPickerHtml(createdFlash) {
+    var query = String(state.teamDirectoryQuery || "").trim().toLowerCase();
+    var members = (state.teamDirectory || []).filter(function (member) {
+      if (!query) return true;
+      return [member.displayName, member.realName, member.handle, member.slackUserId].some(function (value) {
+        return String(value || "").toLowerCase().indexOf(query) >= 0;
+      });
+    });
+    var directoryStatus = state.teamDirectoryLoading
+      ? '<p class="hint" role="status">Loading eligible Slack members…</p>'
+      : state.teamDirectoryError
+        ? '<p class="error" role="alert">' + esc(state.teamDirectoryError) + ' <button type="button" class="btn btn-soft btn-sm" data-action="team-directory-retry">Retry</button></p>'
+        : members.length
+          ? '<div class="team-list" role="listbox" aria-label="Eligible Slack members">' + members.map(teamDirectoryMemberHtml).join("") + '</div>'
+          : '<p class="team-empty">' + (query ? 'No Slack members match this search.' : 'No eligible Slack members are available on this page.') + '</p>';
+    var selected = (state.teamDirectory || []).find(function (member) {
+      return member.slackUserId === state.teamSelectedSlackUserId;
+    });
+    var selectedSummary = selected
+      ? '<p class="hint" role="status">Selected ' + esc(selected.displayName || selected.realName || selected.handle) + ' · @' + esc(selected.handle) + ' · ' + esc(selected.slackUserId) + '</p>'
+      : '<p class="hint" role="status">Select one verified Slack member before creating an invitation.</p>';
+    return '<section class="team-card" aria-labelledby="invite-heading"><h2 id="invite-heading">Invite from Slack</h2><p class="hint">Choose the exact Slack member. Names can repeat, so Chickpea also shows the handle and stable member ID.</p>' +
+      '<label class="field-label" for="team-directory-search">Search this page</label><input class="input" id="team-directory-search" data-action="team-directory-search" value="' + esc(state.teamDirectoryQuery) + '" placeholder="Name, handle, or Slack member ID">' + directoryStatus +
+      (state.teamDirectoryCursor ? '<button type="button" class="btn btn-soft btn-sm" data-action="team-directory-more"' + (state.teamDirectoryLoading ? ' disabled' : '') + '>Load more Slack members</button>' : '') +
+      '<div class="team-form"><label class="field-label" for="team-member-id">Or paste a Slack member ID</label><div class="team-form-row"><input class="input mono" id="team-member-id" data-action="team-member-id" value="' + esc(state.teamManualSlackUserId) + '" placeholder="U012ABCDEF" maxlength="64"><button type="button" class="btn btn-soft" data-action="team-member-verify"' + (state.teamBusy ? ' disabled' : '') + '>Verify</button></div></div>' + selectedSummary +
+      '<form data-action="team-invite-form"><button type="submit" class="btn btn-primary"' + (!selected || state.teamBusy ? ' disabled' : '') + '>Create private invitation link</button></form>' + createdFlash + '</section>';
+  }
+
+  function teamDirectoryMemberHtml(member) {
+    var selected = member.slackUserId === state.teamSelectedSlackUserId;
+    var avatar = member.avatarUrl ? '<img src="' + esc(member.avatarUrl) + '" alt="" width="40" height="40" loading="lazy" referrerpolicy="no-referrer" style="border-radius:10px">' : '';
+    return '<button type="button" class="team-row' + (selected ? ' active' : '') + '" role="option" aria-selected="' + (selected ? 'true' : 'false') + '" data-action="team-member-select" data-slack-user="' + esc(member.slackUserId) + '">' + avatar + '<span class="team-row-main"><span class="team-row-title">' + esc(member.displayName || member.realName || member.handle) + '</span><span class="team-row-sub">@' + esc(member.handle) + ' · ' + esc(member.slackUserId) + '</span></span></button>';
   }
 
   function teamMemberRowHtml(member) {
     var viewer = state.team && state.team.viewer ? state.team.viewer : { role: "admin", membershipId: "" };
-    var canManageOwner = viewer.role === "owner";
+    var canManage = viewer.role === "owner" && viewer.membershipId !== member.id;
     var busy = state.teamBusy === "member:" + member.id;
-    var statusSelect = member.role === "owner" ? '' : '<span class="select-wrap team-status-control"><select class="input" name="membership-status-' + esc(member.id) + '" aria-label="Status for ' + esc(member.email || "member") + '" data-action="team-member-status" data-membership="' + esc(member.id) + '"' + (busy ? ' disabled' : '') + '>' + ["active", "suspended"].map(function (status) {
-      return '<option value="' + status + '"' + (member.status === status ? ' selected' : '') + '>' + status.charAt(0).toUpperCase() + status.slice(1) + '</option>';
-    }).join("") + '</select>' + icon("chevron-down", "select-caret") + '</span>';
-    var resetButton = '<button type="button" class="btn btn-soft btn-sm" data-action="team-reset-password" data-membership="' + esc(member.id) + '"' + (busy || (member.role === "owner" && !canManageOwner) ? ' disabled' : '') + '>Reset password</button>';
-    var removeButton = member.role === "owner" ? '' : '<button type="button" class="btn btn-danger btn-sm" data-action="team-remove-open" data-membership="' + esc(member.id) + '"' + (busy ? ' disabled' : '') + '>Remove</button>';
+    var promote = canManage && member.role === "admin" && member.status === "active" ? '<button type="button" class="btn btn-soft btn-sm" data-action="team-promote" data-membership="' + esc(member.id) + '"' + (busy ? ' disabled' : '') + '>Promote to Owner</button>' : '';
+    var statusAction = canManage && member.role === "admin" && member.status === "active"
+      ? '<button type="button" class="btn btn-soft btn-sm" data-action="team-suspend-open" data-membership="' + esc(member.id) + '"' + (busy ? ' disabled' : '') + '>Suspend</button>'
+      : canManage && member.role === "admin" && member.status === "suspended"
+        ? '<button type="button" class="btn btn-soft btn-sm" data-action="team-restore" data-membership="' + esc(member.id) + '"' + (busy ? ' disabled' : '') + '>Restore</button>' : '';
+    var removeButton = canManage && member.role === "admin" && member.status !== "removed" ? '<button type="button" class="btn btn-danger btn-sm" data-action="team-remove-open" data-membership="' + esc(member.id) + '"' + (busy ? ' disabled' : '') + '>Remove</button>' : '';
     var ownerMarker = member.role === "owner" ? '<span class="team-status owner">Owner</span>' : '';
-    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(member.displayName || member.email || "Teammate") + (viewer.membershipId === member.id ? ' <span class="hint">(you)</span>' : '') + '</div><div class="team-row-sub">' + esc(member.email || "No email") + '</div><div class="team-statuses">' + ownerMarker + '<span class="team-status ' + (member.status === "active" ? "active" : member.status === "suspended" ? "suspended" : "") + '">' + esc(member.status) + '</span></div></div><div class="team-row-actions">' + statusSelect + resetButton + removeButton + '</div></article>';
+    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(member.displayName || member.slackUserId || "Slack member") + (viewer.membershipId === member.id ? ' <span class="hint">(you)</span>' : '') + '</div><div class="team-row-sub">' + esc(member.slackUserId || "Slack identity unavailable") + '</div><div class="team-statuses">' + ownerMarker + '<span class="team-status ' + (member.status === "active" ? "active" : member.status === "suspended" ? "suspended" : "") + '">' + esc(member.status) + '</span></div></div><div class="team-row-actions">' + promote + statusAction + removeButton + '</div></article>';
   }
 
   function teamRemoveModalHtml() {
     var confirmation = state.teamRemoveConfirm;
     if (!confirmation) return "";
-    var label = confirmation.displayName || confirmation.email || "this teammate";
-    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Remove teammate">' +
-      '<h2 class="modal-title">Remove ' + esc(label) + '?</h2>' +
-      '<p class="modal-body">They will immediately lose access to this Chickpea workspace. Their membership is deleted and cannot be restored from this screen; invite them again to give access back.</p>' +
-      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="team-remove-cancel">Keep teammate</button><span class="spacer"></span><button type="button" class="btn btn-danger" data-action="team-remove-confirm">Remove teammate</button></div></div></div>';
+    var label = confirmation.displayName || confirmation.slackUserId || "this Slack member";
+    var verb = confirmation.kind === "revoke" ? "Revoke invitation" : confirmation.kind === "suspend" ? "Suspend" : "Remove";
+    var detail = confirmation.kind === "revoke" ? "The private link will stop working immediately." : confirmation.kind === "suspend" ? "They will lose Chickpea access immediately. An Owner can restore this membership later." : "They will lose Chickpea access immediately. Removal is terminal; restoring access requires a fresh exact Slack invitation.";
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="' + esc(verb) + '">' +
+      '<h2 class="modal-title">' + esc(verb) + ' for ' + esc(label) + '?</h2><p class="modal-body">' + esc(detail) + '</p>' +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="team-remove-cancel">Cancel</button><span class="spacer"></span><button type="button" class="btn btn-danger" data-action="team-remove-confirm">' + esc(verb) + '</button></div></div></div>';
   }
 
   function teamInvitationRowHtml(invitation) {
     var busy = state.teamBusy === "invite:" + invitation.id;
-    var copyAction = invitation.inviteLink
-      ? '<button type="button" class="btn btn-soft btn-sm" data-action="team-copy-invitation" data-link="' + esc(invitation.inviteLink) + '"' + (busy ? ' disabled' : '') + '>Copy link</button>'
-      : '';
-    var actions = copyAction + '<button type="button" class="btn btn-danger btn-sm" data-action="team-revoke" data-invitation="' + esc(invitation.id) + '"' + (busy ? ' disabled' : '') + '>Revoke</button>';
-    var guidance = invitation.inviteLink
-      ? ''
-      : '<div class="team-row-sub">This link was created with older deployment credentials and cannot be displayed. Revoke it before creating a replacement.</div>';
-    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(invitation.email) + '</div><div class="team-row-sub">Expires ' + esc(new Date(invitation.expiresAt).toLocaleString()) + '</div><div class="team-statuses"><span class="team-status">Waiting to join</span></div>' + guidance + '</div><div class="team-row-actions">' + actions + '</div></article>';
+    var actions = '<button type="button" class="btn btn-danger btn-sm" data-action="team-revoke-open" data-invitation="' + esc(invitation.id) + '" data-slack-user="' + esc(invitation.slackUserId) + '"' + (busy ? ' disabled' : '') + '>Revoke</button>';
+    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(invitation.displayName || invitation.slackUserId) + '</div><div class="team-row-sub">' + esc(invitation.slackUserId) + ' · Expires ' + esc(new Date(invitation.expiresAt).toLocaleString()) + '</div><div class="team-statuses"><span class="team-status">Waiting for exact Slack account</span></div></div><div class="team-row-actions">' + actions + '</div></article>';
   }
 
   function profilesRailHtml() {
@@ -3726,11 +3762,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.teamNotice = "";
     if (entering) {
       state.teamInviteLink = "";
-      state.teamInviteEmail = "";
+      state.teamInviteSlackUserId = "";
       state.teamInviteCopied = false;
       state.teamInviteManualCopy = false;
       state.teamInviteCopyVersion += 1;
-      state.teamResetLink = "";
+      state.teamSelectedSlackUserId = "";
     }
     render();
     loadTeam();
@@ -3744,6 +3780,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.team = body;
       state.teamLoading = false;
       render();
+      if (body && body.viewer && body.viewer.role === "owner" && !state.teamDirectory.length) {
+        return loadTeamDirectory(true).then(function () { return body; });
+      }
       return body;
     }).catch(function (error) {
       state.teamLoading = false;
@@ -3755,7 +3794,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function finishTeamMutation(message, result) {
     if (result && result.inviteLink) state.teamInviteLink = result.inviteLink;
-    if (result && result.resetLink) state.teamResetLink = result.resetLink;
     state.teamNotice = message;
     return loadTeam().then(function () {
       state.teamBusy = "";
@@ -3784,9 +3822,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function createTeamInvitation() {
     if (state.teamBusy) return;
-    var email = String(state.teamInviteDraft.email || "").trim();
-    if (!email || email.indexOf("@") < 1) {
-      state.teamError = "Enter a valid teammate email.";
+    var slackUserId = String(state.teamSelectedSlackUserId || "").trim();
+    if (!/^[A-Z][A-Z0-9]{1,63}$/.test(slackUserId)) {
+      state.teamError = "Select a verified Slack member.";
       render();
       return;
     }
@@ -3794,15 +3832,15 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.teamError = "";
     state.teamNotice = "";
     state.teamInviteLink = "";
-    state.teamInviteEmail = "";
+    state.teamInviteSlackUserId = "";
     state.teamInviteCopied = false;
     state.teamInviteManualCopy = false;
     state.teamInviteCopyVersion += 1;
     render();
-    postJson("/admin/api/team/invitations", "POST", { email: email }).then(function (result) {
-      state.teamInviteDraft.email = "";
-      state.teamInviteEmail = result && result.invitation && result.invitation.email ? result.invitation.email : email;
-      return finishTeamMutation("", result);
+    postJson("/admin/api/team/invitations", "POST", { slackUserId: slackUserId }).then(function (result) {
+      state.teamInviteSlackUserId = result && result.invitation && result.invitation.slackUserId ? result.invitation.slackUserId : slackUserId;
+      state.teamSelectedSlackUserId = "";
+      return finishTeamMutation(result && result.inviteLink ? "Share this private link with the selected Slack member." : "An invitation is already pending for this Slack member.", result);
     }).catch(failTeamMutation);
   }
 
@@ -3812,14 +3850,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.teamError = "";
     state.teamNotice = "";
     state.teamInviteLink = "";
-    state.teamInviteEmail = "";
+    state.teamInviteSlackUserId = "";
     state.teamInviteCopied = false;
     state.teamInviteManualCopy = false;
     state.teamInviteCopyVersion += 1;
     render();
     var path = "/admin/api/team/invitations/" + encodeURIComponent(invitationId);
     api(path, { method: "DELETE" })
-      .then(function (result) { return finishTeamMutation("Join link revoked.", result); })
+      .then(function (result) { return finishTeamMutation("Slack invitation revoked.", result); })
       .catch(failTeamMutation);
   }
 
@@ -3836,16 +3874,46 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       .catch(failTeamMutation);
   }
 
-  function createTeamPasswordReset(membershipId) {
-    if (state.teamBusy || !membershipId) return;
-    state.teamBusy = "member:" + membershipId;
-    state.teamError = "";
-    state.teamNotice = "";
-    state.teamResetLink = "";
+  function loadTeamDirectory(reset) {
+    if (state.teamDirectoryLoading) return Promise.resolve();
+    state.teamDirectoryLoading = true;
+    state.teamDirectoryError = "";
+    if (reset) { state.teamDirectory = []; state.teamDirectoryCursor = ""; }
     render();
-    postJson("/admin/api/team/memberships/" + encodeURIComponent(membershipId) + "/reset", "POST", {})
-      .then(function (result) { return finishTeamMutation("Password reset created. Copy the private link and send it to the teammate.", result); })
-      .catch(failTeamMutation);
+    var path = "/admin/api/team/directory" + (!reset && state.teamDirectoryCursor ? "?cursor=" + encodeURIComponent(state.teamDirectoryCursor) : "");
+    return api(path).then(function (body) {
+      var byId = {};
+      state.teamDirectory.concat(body.members || []).forEach(function (member) { byId[member.slackUserId] = member; });
+      state.teamDirectory = Object.keys(byId).map(function (id) { return byId[id]; });
+      state.teamDirectoryCursor = body.nextCursor || "";
+      state.teamDirectoryLoading = false;
+      render();
+    }).catch(function (error) {
+      state.teamDirectoryLoading = false;
+      state.teamDirectoryError = teamMutationErrorText(error);
+      render();
+    });
+  }
+
+  function verifyTeamMemberId() {
+    if (state.teamBusy) return;
+    var slackUserId = String(state.teamManualSlackUserId || "").trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9]{1,63}$/.test(slackUserId)) {
+      state.teamError = "Enter a valid Slack member ID, such as U012ABCDEF.";
+      render();
+      return;
+    }
+    state.teamBusy = "directory:verify";
+    state.teamError = "";
+    render();
+    api("/admin/api/team/directory/" + encodeURIComponent(slackUserId)).then(function (body) {
+      var member = body.member;
+      state.teamDirectory = state.teamDirectory.filter(function (row) { return row.slackUserId !== member.slackUserId; }).concat(member);
+      state.teamSelectedSlackUserId = member.slackUserId;
+      state.teamBusy = "";
+      state.teamNotice = "Slack member verified.";
+      render();
+    }).catch(failTeamMutation);
   }
 
   function openUsage() {
@@ -11515,9 +11583,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         state.teamRemoveConfirm = null;
         render();
       } else if (action === "team-remove-confirm") {
-        var confirmedMembershipId = state.teamRemoveConfirm.membershipId;
+        var confirmedTeamAction = state.teamRemoveConfirm;
         state.teamRemoveConfirm = null;
-        updateTeamMembership(confirmedMembershipId, "status", "removed");
+        if (confirmedTeamAction.kind === "revoke") revokeTeamInvitation(confirmedTeamAction.invitationId);
+        else updateTeamMembership(
+          confirmedTeamAction.membershipId,
+          "status",
+          confirmedTeamAction.kind === "suspend" ? "suspended" : "removed"
+        );
       }
       return;
     }
@@ -11706,7 +11779,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }
     if (action === "open-team") { openTeam(); }
     if (action === "team-retry") { loadTeam(); }
-    if (action === "team-dismiss-reset") { state.teamResetLink = ""; state.teamNotice = ""; render(); }
+    if (action === "team-directory-retry") { loadTeamDirectory(true); }
+    if (action === "team-directory-more") { loadTeamDirectory(false); }
+    if (action === "team-member-verify") { verifyTeamMemberId(); }
+    if (action === "team-member-select") {
+      state.teamSelectedSlackUserId = target.getAttribute("data-slack-user") || "";
+      state.teamError = "";
+      render();
+    }
     if (action === "team-copy-link" && state.teamInviteLink) {
       var copiedInviteLink = state.teamInviteLink;
       var copyVersion = state.teamInviteCopyVersion + 1;
@@ -11737,43 +11817,28 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         render();
       }).catch(showManualInviteCopy);
     }
-    if (action === "team-copy-invitation") {
-      var invitationLink = target.getAttribute("data-link") || "";
-      if (invitationLink) {
-        navigator.clipboard.writeText(invitationLink).then(function () {
-          state.teamNotice = "Join link copied.";
-          render();
-        }).catch(function () {
-          state.teamError = "Copy failed. Reload the page and try again.";
-          render();
-        });
-      } else {
-        state.teamError = "This join link is no longer available to copy. Revoke it before creating a replacement.";
-        render();
-      }
-    }
-    if (action === "team-revoke") { revokeTeamInvitation(target.getAttribute("data-invitation") || ""); }
-    if (action === "team-reset-password") { createTeamPasswordReset(target.getAttribute("data-membership") || ""); }
-    if (action === "team-remove-open") {
-      var removeMembershipId = target.getAttribute("data-membership") || "";
-      var removeMember = state.team && (state.team.members || []).find(function (member) { return member.id === removeMembershipId; });
-      if (removeMember && removeMember.role !== "owner" && !state.teamBusy) {
+    if (action === "team-promote") { updateTeamMembership(target.getAttribute("data-membership") || "", "role", "owner"); }
+    if (action === "team-restore") { updateTeamMembership(target.getAttribute("data-membership") || "", "status", "active"); }
+    if (action === "team-remove-open" || action === "team-suspend-open") {
+      var membershipId = target.getAttribute("data-membership") || "";
+      var member = state.team && (state.team.members || []).find(function (row) { return row.id === membershipId; });
+      if (member && member.role !== "owner" && !state.teamBusy) {
         state.teamRemoveConfirm = {
-          membershipId: removeMember.id,
-          email: removeMember.email || "",
-          displayName: removeMember.displayName || ""
+          kind: action === "team-suspend-open" ? "suspend" : "remove",
+          membershipId: member.id,
+          slackUserId: member.slackUserId || "",
+          displayName: member.displayName || ""
         };
         render();
       }
     }
-    if (action === "team-copy-reset" && state.teamResetLink) {
-      navigator.clipboard.writeText(state.teamResetLink).then(function () {
-        state.teamNotice = "Password reset link copied.";
-        render();
-      }).catch(function () {
-        state.teamError = "Copy failed. Select the reset link and copy it manually.";
-        render();
-      });
+    if (action === "team-revoke-open" && !state.teamBusy) {
+      state.teamRemoveConfirm = {
+        kind: "revoke",
+        invitationId: target.getAttribute("data-invitation") || "",
+        slackUserId: target.getAttribute("data-slack-user") || ""
+      };
+      render();
     }
     if (action === "open-usage" && USAGE_ADMIN_UI) { openUsage(); }
     if (action === "open-audit") { openAuditLogs("", "", ""); }
@@ -12481,8 +12546,19 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         try { search.setSelectionRange(channelQueryCaret, channelQueryCaret); } catch (error) { /* ignore */ }
       }
     }
-    if (action === "team-invite-email") {
-      state.teamInviteDraft.email = target.value;
+    if (action === "team-directory-search") {
+      var teamSearchCaret = target.selectionStart;
+      state.teamDirectoryQuery = target.value;
+      state.teamError = "";
+      render();
+      var teamSearch = document.getElementById("team-directory-search");
+      if (teamSearch && teamSearch.focus) teamSearch.focus();
+      if (teamSearch && teamSearchCaret != null && teamSearch.setSelectionRange) {
+        try { teamSearch.setSelectionRange(teamSearchCaret, teamSearchCaret); } catch (error) { /* ignore */ }
+      }
+    }
+    if (action === "team-member-id") {
+      state.teamManualSlackUserId = target.value;
       state.teamError = "";
     }
     if (state.memoryDraft) {
@@ -12630,9 +12706,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "slack-identity-create-dm") state.slackIdentityCreateDraft.initialDmAgentId = target.value;
     if (action === "slack-identity-dm-state") state.slackIdentityDmDraft.dmState = target.value === "on" ? "on" : "off";
     if (action === "slack-identity-dm-agent") state.slackIdentityDmDraft.dmAgentId = target.value;
-    if (action === "team-member-status") {
-      updateTeamMembership(target.getAttribute("data-membership") || "", "status", target.value);
-    }
     if (action === "usage-range") {
       var usagePeriod = String(target.value || "last_30_days");
       var allowedUsagePeriods = ["last_7_days", "last_30_days", "last_90_days", "this_month", "last_month", "this_week", "last_week", "custom"];

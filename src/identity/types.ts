@@ -347,6 +347,7 @@ export interface SlackOidcAttempt {
   id: string;
   purpose: SlackOidcPurpose;
   operationId: string | null;
+  invitationId: string | null;
   setupId: string | null;
   setupRevision: number | null;
   stateHash: string;
@@ -374,6 +375,8 @@ export interface CreateSlackOidcAttemptInput {
   id: string;
   purpose: SlackOidcPurpose;
   operationId?: string | null;
+  invitationId?: string | null;
+  invitationLocatorHash?: string | null;
   setupId?: string | null;
   setupRevision?: number | null;
   stateHash: string;
@@ -579,6 +582,20 @@ export interface ActivateFirstOwnerInput extends ClaimOwnerInput {
   expectedSetupRevision: number;
   oidcAttemptId: string;
   expectedOidcLeaseGeneration: number;
+}
+
+export interface ActivateInvitationInput {
+  operationId: string;
+  invitationId: string;
+  oidcAttemptId: string;
+  expectedOidcLeaseGeneration: number;
+  capabilityHash: string;
+  slackTeamId: string;
+  slackUserId: string;
+  displayName?: string | null;
+  betterAuthUserId: string;
+  betterAuthMembershipId: string;
+  at?: number;
 }
 
 export type BootstrapTokenOwnerInput = ClaimOwnerInput;
@@ -791,6 +808,7 @@ export interface IdentityStore extends HumanIdentityDirectory {
   getOwnerClaim(): Promise<OwnerClaim | undefined>;
   claimOwner(input: ClaimOwnerInput): Promise<IdentityResolution>;
   activateFirstOwner(input: ActivateFirstOwnerInput): Promise<IdentityResolution>;
+  activateInvitation(input: ActivateInvitationInput): Promise<IdentityResolution>;
   resolveSlackIdentity(slackTeamId: string, slackUserId: string, organizationId?: string): Promise<IdentityResolution | undefined>;
   listExternalIdentities(): Promise<SlackIdentityBinding[]>;
   resolveActorExternalIdentity(provider: 'slack', slackTeamId: string, slackUserId: string): Promise<SlackIdentityBinding | undefined>;
@@ -800,6 +818,7 @@ export interface IdentityStore extends HumanIdentityDirectory {
   getMembershipForUser(userId: string, organizationId?: string): Promise<Membership | undefined>;
   updateMembershipAuthority(input: UpdateMembershipAuthorityInput): Promise<MembershipAuthorityMutationResult>;
   createInvitation(input: CreateInvitationInput): Promise<Invitation>;
+  findInvitation(locatorHash: string): Promise<Invitation | undefined>;
   resendInvitation(input: ResendInvitationInput): Promise<Invitation>;
   revokeInvitation(invitationId: string): Promise<Invitation>;
   consumeInvitation(input: ConsumeInvitationInput): Promise<IdentityResolution>;
@@ -879,6 +898,7 @@ export type IdentityRpcRequest =
   | { kind: 'get_owner_claim' }
   | { kind: 'claim_owner'; input: ClaimOwnerInput }
   | { kind: 'activate_first_owner'; input: ActivateFirstOwnerInput }
+  | { kind: 'activate_invitation'; input: ActivateInvitationInput }
   | { kind: 'resolve_slack_identity'; slackTeamId: string; slackUserId: string; organizationId?: string }
   | { kind: 'list_external_identities' }
   | { kind: 'list_memberships' }
@@ -887,6 +907,7 @@ export type IdentityRpcRequest =
   | { kind: 'get_membership_for_user'; userId: string; organizationId?: string }
   | { kind: 'update_membership_authority'; input: UpdateMembershipAuthorityInput }
   | { kind: 'create_invitation'; input: CreateInvitationInput }
+  | { kind: 'find_invitation'; locatorHash: string }
   | { kind: 'resend_invitation'; input: ResendInvitationInput }
   | { kind: 'revoke_invitation'; invitationId: string }
   | { kind: 'consume_invitation'; input: ConsumeInvitationInput }

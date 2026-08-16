@@ -84,7 +84,7 @@ export const IDENTITY_SCHEMA_V1_STATEMENTS = [
   `CREATE TABLE identity_slack_oidc_attempts (
     attempt_id TEXT PRIMARY KEY,
     purpose TEXT NOT NULL CHECK (purpose IN ('first_owner', 'invitation', 'login')),
-    operation_id TEXT, setup_id TEXT, setup_revision INTEGER,
+    operation_id TEXT, invitation_id TEXT, setup_id TEXT, setup_revision INTEGER,
     state_hash TEXT NOT NULL UNIQUE, nonce_hash TEXT NOT NULL, browser_hash TEXT NOT NULL,
     app_id TEXT NOT NULL, client_id TEXT NOT NULL, credential_revision TEXT NOT NULL,
     redirect_uri TEXT NOT NULL, destination TEXT NOT NULL,

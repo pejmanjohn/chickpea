@@ -130,6 +130,266 @@ test('normal login selects no user and admits only the returned active canonical
   }
 });
 
+test('an invitation admits only its exact Slack actor and consumes authority before session issuance', async () => {
+  const fixture = await installedFixture();
+  const backend = new NodeBetterAuthBackend(':memory:');
+  try {
+    const ownerService = admissionService(fixture, backend, () => ({
+      slackTeamId: 'TACME', slackUserId: 'UINSTALLER', displayName: 'Owner',
+    }));
+    const ownerStart = await ownerService.startFirstOwner({
+      setupId: fixture.setup.id, expectedSetupRevision: fixture.setup.revision,
+      browserBinding: BROWSER, redirectUri: REDIRECT,
+    });
+    await ownerService.callback({
+      purpose: 'first_owner', state: ownerStart.state, nonce: ownerStart.nonce,
+      browserBinding: BROWSER, redirectUri: REDIRECT, code: 'owner-code',
+      request: new Request(REDIRECT),
+    });
+    const owner = (await fixture.identity.resolveSlackIdentity('TACME', 'UINSTALLER'))!;
+    const locator = 'invitation-locator-secret-0123456789abcdef';
+    const invitation = await fixture.identity.createInvitation({
+      organizationId: owner.membership.organizationId,
+      slackTeamId: 'TACME', slackUserId: 'UINVITEE', displayName: 'Invitee', role: 'admin',
+      locatorHash: sha256(locator), inviterMembershipId: owner.membership.id,
+      expiresAt: fixture.clock.now + 7 * 24 * 60 * 60_000,
+    });
+    const inviteService = admissionService(fixture, backend, () => ({
+      slackTeamId: 'TACME', slackUserId: 'UINVITEE', displayName: 'Invited Admin',
+    }));
+    const started = await inviteService.startInvitation({
+      locator,
+      browserBinding: `${BROWSER}-invite`,
+      redirectUri: REDIRECT,
+      destination: '/admin/team',
+    });
+    const attempt = await fixture.identity.getSlackOidcAttempt(started.attemptId);
+    assert.equal(attempt?.purpose, 'invitation');
+    assert.equal(attempt?.invitationId, invitation.id);
+    assert.equal(attempt?.expectedSlackUserId, 'UINVITEE');
+    const completed = await inviteService.callback({
+      purpose: 'invitation', state: started.state, nonce: started.nonce,
+      browserBinding: `${BROWSER}-invite`, redirectUri: REDIRECT, code: 'invite-code',
+      request: new Request(REDIRECT),
+    });
+    assert.equal(completed.destination, '/admin/team');
+    assert.match(completed.sessionResponse.headers.get('set-cookie') ?? '', /better-auth\.session_token=/);
+    assert.equal((await fixture.identity.listInvitations()).find((row) => row.id === invitation.id)?.status, 'accepted');
+    const admin = await fixture.identity.resolveSlackIdentity('TACME', 'UINVITEE');
+    assert.equal(admin?.membership.role, 'admin');
+    assert.equal(admin?.membership.status, 'active');
+    assert.equal(
+      backend.database.prepare('SELECT role FROM member WHERE id = ?').get(admin?.binding.betterAuthMembershipId)?.role,
+      'member',
+    );
+  } finally {
+    backend.close();
+    fixture.close();
+  }
+});
+
+test('a removed Admin needs a fresh invitation and exact OIDC reactivates the same binding', async () => {
+  const fixture = await installedFixture();
+  const backend = new NodeBetterAuthBackend(':memory:');
+  try {
+    const ownerService = admissionService(fixture, backend, () => ({
+      slackTeamId: 'TACME', slackUserId: 'UINSTALLER', displayName: 'Owner',
+    }));
+    const ownerStart = await ownerService.startFirstOwner({
+      setupId: fixture.setup.id, expectedSetupRevision: fixture.setup.revision,
+      browserBinding: BROWSER, redirectUri: REDIRECT,
+    });
+    await ownerService.callback({
+      purpose: 'first_owner', state: ownerStart.state, nonce: ownerStart.nonce,
+      browserBinding: BROWSER, redirectUri: REDIRECT, code: 'owner-code',
+      request: new Request(REDIRECT),
+    });
+    const owner = (await fixture.identity.resolveSlackIdentity('TACME', 'UINSTALLER'))!;
+    const firstLocator = 'removed-admin-first-locator-0123456789abcdef';
+    await fixture.identity.createInvitation({
+      organizationId: owner.membership.organizationId,
+      slackTeamId: 'TACME', slackUserId: 'UREMOVED', displayName: 'Removed Admin', role: 'admin',
+      locatorHash: sha256(firstLocator), inviterMembershipId: owner.membership.id,
+      expiresAt: fixture.clock.now + 7 * 24 * 60 * 60_000,
+    });
+    const adminService = admissionService(fixture, backend, () => ({
+      slackTeamId: 'TACME', slackUserId: 'UREMOVED', displayName: 'Removed Admin',
+    }));
+    const firstStart = await adminService.startInvitation({
+      locator: firstLocator, browserBinding: `${BROWSER}-removed-first`, redirectUri: REDIRECT,
+    });
+    await adminService.callback({
+      purpose: 'invitation', state: firstStart.state, nonce: firstStart.nonce,
+      browserBinding: `${BROWSER}-removed-first`, redirectUri: REDIRECT, code: 'first-admin-code',
+      request: new Request(REDIRECT),
+    });
+    const firstResolution = (await fixture.identity.resolveSlackIdentity('TACME', 'UREMOVED'))!;
+    await fixture.identity.updateMembershipAuthority({
+      membershipId: firstResolution.membership.id, status: 'removed',
+      actorMembershipId: owner.membership.id, authenticationSurface: 'better_auth',
+      correlationId: 'remove_admin_test', reasonCode: 'owner_removed_member',
+      slackTeamId: 'TACME', slackUserId: 'UREMOVED',
+    });
+    assert.equal((await fixture.identity.resolveSlackIdentity('TACME', 'UREMOVED'))?.membership.status, 'removed');
+
+    const freshLocator = 'removed-admin-fresh-locator-0123456789abcdef';
+    await fixture.identity.createInvitation({
+      organizationId: owner.membership.organizationId,
+      slackTeamId: 'TACME', slackUserId: 'UREMOVED', displayName: 'Removed Admin', role: 'admin',
+      locatorHash: sha256(freshLocator), inviterMembershipId: owner.membership.id,
+      expiresAt: fixture.clock.now + 7 * 24 * 60 * 60_000,
+    });
+    const freshStart = await adminService.startInvitation({
+      locator: freshLocator, browserBinding: `${BROWSER}-removed-fresh`, redirectUri: REDIRECT,
+    });
+    const completed = await adminService.callback({
+      purpose: 'invitation', state: freshStart.state, nonce: freshStart.nonce,
+      browserBinding: `${BROWSER}-removed-fresh`, redirectUri: REDIRECT, code: 'fresh-admin-code',
+      request: new Request(REDIRECT),
+    });
+    const reactivated = (await fixture.identity.resolveSlackIdentity('TACME', 'UREMOVED'))!;
+    assert.ok(completed.sessionResponse.ok);
+    assert.equal(reactivated.membership.id, firstResolution.membership.id);
+    assert.equal(reactivated.binding.id, firstResolution.binding.id);
+    assert.equal(reactivated.membership.role, 'admin');
+    assert.equal(reactivated.membership.status, 'active');
+  } finally {
+    backend.close();
+    fixture.close();
+  }
+});
+
+test('revocation after Better Auth reconciliation tombstones authority and a fresh same-tuple invitation recovers', async () => {
+  const fixture = await installedFixture();
+  const backend = new NodeBetterAuthBackend(':memory:');
+  try {
+    const ownerService = admissionService(fixture, backend, () => ({
+      slackTeamId: 'TACME', slackUserId: 'UINSTALLER', displayName: 'Owner',
+    }));
+    const ownerStart = await ownerService.startFirstOwner({
+      setupId: fixture.setup.id, expectedSetupRevision: fixture.setup.revision,
+      browserBinding: BROWSER, redirectUri: REDIRECT,
+    });
+    await ownerService.callback({
+      purpose: 'first_owner', state: ownerStart.state, nonce: ownerStart.nonce,
+      browserBinding: BROWSER, redirectUri: REDIRECT, code: 'owner-code',
+      request: new Request(REDIRECT),
+    });
+    const sessionCountBeforeInvite = backend.database.prepare('SELECT COUNT(*) AS count FROM session')
+      .get()?.count;
+    const owner = (await fixture.identity.resolveSlackIdentity('TACME', 'UINSTALLER'))!;
+    const firstLocator = 'first-invitation-locator-0123456789abcdef';
+    const firstInvite = await fixture.identity.createInvitation({
+      organizationId: owner.membership.organizationId,
+      slackTeamId: 'TACME', slackUserId: 'URECOVER', displayName: 'Recovering Admin', role: 'admin',
+      locatorHash: sha256(firstLocator), inviterMembershipId: owner.membership.id,
+      expiresAt: fixture.clock.now + 7 * 24 * 60 * 60_000,
+    });
+    const service = admissionService(fixture, backend, () => ({
+      slackTeamId: 'TACME', slackUserId: 'URECOVER', displayName: 'Recovering Admin',
+    }));
+    const started = await service.startInvitation({
+      locator: firstLocator, browserBinding: `${BROWSER}-revoked`, redirectUri: REDIRECT,
+    });
+    const activate = fixture.identity.activateInvitation.bind(fixture.identity);
+    let revokedAfterReconcile = false;
+    fixture.identity.activateInvitation = async (input) => {
+      if (!revokedAfterReconcile) {
+        revokedAfterReconcile = true;
+        await fixture.identity.revokeInvitation(firstInvite.id);
+      }
+      return activate(input);
+    };
+    await assert.rejects(
+      () => service.callback({
+        purpose: 'invitation', state: started.state, nonce: started.nonce,
+        browserBinding: `${BROWSER}-revoked`, redirectUri: REDIRECT, code: 'revoked-code',
+        request: new Request(REDIRECT),
+      }),
+      (error: unknown) => error instanceof Error && 'code' in error &&
+        error.code === 'invitation_unavailable',
+    );
+    const failedAttempt = await fixture.identity.getSlackOidcAttempt(started.attemptId);
+    assert.equal(failedAttempt?.status, 'failed');
+    assert.equal((await fixture.identity.getAuthOperation(failedAttempt!.operationId!))?.status, 'tombstoned');
+    assert.equal(await fixture.identity.resolveSlackIdentity('TACME', 'URECOVER'), undefined);
+    assert.equal(
+      backend.database.prepare('SELECT COUNT(*) AS count FROM session').get()?.count,
+      sessionCountBeforeInvite,
+      'failed invitation admission cannot issue an additional browser session',
+    );
+    assert.equal(backend.database.prepare('SELECT COUNT(*) AS count FROM account WHERE providerId = ?')
+      .get('slack')?.count, 2, 'the inert composite identity remains reusable without email linking');
+
+    fixture.identity.activateInvitation = activate;
+    const freshLocator = 'fresh-invitation-locator-0123456789abcdef';
+    await fixture.identity.createInvitation({
+      organizationId: owner.membership.organizationId,
+      slackTeamId: 'TACME', slackUserId: 'URECOVER', displayName: 'Recovering Admin', role: 'admin',
+      locatorHash: sha256(freshLocator), inviterMembershipId: owner.membership.id,
+      expiresAt: fixture.clock.now + 7 * 24 * 60 * 60_000,
+    });
+    const fresh = await service.startInvitation({
+      locator: freshLocator, browserBinding: `${BROWSER}-fresh`, redirectUri: REDIRECT,
+    });
+    const completed = await service.callback({
+      purpose: 'invitation', state: fresh.state, nonce: fresh.nonce,
+      browserBinding: `${BROWSER}-fresh`, redirectUri: REDIRECT, code: 'fresh-code',
+      request: new Request(REDIRECT),
+    });
+    assert.ok(completed.sessionResponse.ok);
+    assert.equal((await fixture.identity.resolveSlackIdentity('TACME', 'URECOVER'))?.membership.status, 'active');
+  } finally {
+    backend.close();
+    fixture.close();
+  }
+});
+
+test('a copied invitation cannot admit a different Slack actor', async () => {
+  const fixture = await installedFixture();
+  const backend = new NodeBetterAuthBackend(':memory:');
+  try {
+    const ownerService = admissionService(fixture, backend, () => ({
+      slackTeamId: 'TACME', slackUserId: 'UINSTALLER', displayName: 'Owner',
+    }));
+    const ownerStart = await ownerService.startFirstOwner({
+      setupId: fixture.setup.id, expectedSetupRevision: fixture.setup.revision,
+      browserBinding: BROWSER, redirectUri: REDIRECT,
+    });
+    await ownerService.callback({
+      purpose: 'first_owner', state: ownerStart.state, nonce: ownerStart.nonce,
+      browserBinding: BROWSER, redirectUri: REDIRECT, code: 'owner-code', request: new Request(REDIRECT),
+    });
+    const owner = (await fixture.identity.resolveSlackIdentity('TACME', 'UINSTALLER'))!;
+    const locator = 'copied-invitation-locator-0123456789abcdef';
+    await fixture.identity.createInvitation({
+      organizationId: owner.membership.organizationId,
+      slackTeamId: 'TACME', slackUserId: 'UINVITED', displayName: 'Invitee', role: 'admin',
+      locatorHash: sha256(locator), inviterMembershipId: owner.membership.id,
+      expiresAt: fixture.clock.now + 7 * 24 * 60 * 60_000,
+    });
+    const attacker = admissionService(fixture, backend, () => ({
+      slackTeamId: 'TACME', slackUserId: 'UATTACKER', displayName: 'Attacker',
+    }));
+    const started = await attacker.startInvitation({
+      locator, browserBinding: `${BROWSER}-attacker`, redirectUri: REDIRECT,
+    });
+    await assert.rejects(
+      () => attacker.callback({
+        purpose: 'invitation', state: started.state, nonce: started.nonce,
+        browserBinding: `${BROWSER}-attacker`, redirectUri: REDIRECT, code: 'attacker-code',
+        request: new Request(REDIRECT),
+      }),
+      (error: unknown) => error instanceof Error && 'code' in error && error.code === 'user_mismatch',
+    );
+    assert.equal(await fixture.identity.resolveSlackIdentity('TACME', 'UATTACKER'), undefined);
+    assert.equal(backend.database.prepare('SELECT COUNT(*) AS count FROM account').get()?.count, 1);
+  } finally {
+    backend.close();
+    fixture.close();
+  }
+});
+
 test('an expired abandoned reservation can be replaced only by a fresh proof for the same installer tuple', async () => {
   const fixture = await installedFixture();
   const backend = new NodeBetterAuthBackend(':memory:');
