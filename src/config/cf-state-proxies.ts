@@ -52,6 +52,8 @@ import type {
   CreateInvitationInput,
   CreateOwnerClaimInput,
   CreatePersonalTokenRecordInput,
+  CreateSlackOAuthAttemptInput,
+  AcquireSlackOAuthAttemptInput,
   EnsureOrganizationInput,
   EnsureAuthControlInput,
   EnsureSlackCredentialControlInput,
@@ -68,6 +70,12 @@ import type {
   ReserveSlackSetupTransactionInput,
   FailSlackAppCreationInput,
   MarkSlackSetupApprovalPendingInput,
+  MarkSlackOAuthApprovalPendingInput,
+  RecordSlackBotInstallationCandidateInput,
+  RecordSlackEventsProofInput,
+  PromoteSlackBotInstallationInput,
+  FailSlackBotInstallationInput,
+  SettleSlackOAuthAttemptInput,
   StageSlackCredentialRevisionInput,
   TombstoneSlackCredentialRevisionInput,
   UpdateMembershipInput,
@@ -495,6 +503,56 @@ export class CfIdentityStore implements IdentityStore {
   }
   async resumeSlackSetupAfterApproval(input: SlackSetupTransitionInput) {
     const response = await this.execute({ kind: 'resume_slack_setup_after_approval', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async createSlackOAuthAttempt(input: CreateSlackOAuthAttemptInput) {
+    const response = await this.execute({ kind: 'create_slack_oauth_attempt', input });
+    if (response.kind !== 'slack_oauth_attempt' || !response.attempt) throw unexpectedIdentityResponse();
+    return response.attempt;
+  }
+  async getSlackOAuthAttempt(attemptId: string) {
+    const response = await this.execute({ kind: 'get_slack_oauth_attempt', attemptId });
+    if (response.kind !== 'slack_oauth_attempt') throw unexpectedIdentityResponse();
+    return orUndefined(response.attempt);
+  }
+  async acquireSlackOAuthAttempt(input: AcquireSlackOAuthAttemptInput) {
+    const response = await this.execute({ kind: 'acquire_slack_oauth_attempt', input });
+    if (response.kind !== 'slack_oauth_attempt' || !response.attempt) throw unexpectedIdentityResponse();
+    return response.attempt;
+  }
+  async settleSlackOAuthAttempt(input: SettleSlackOAuthAttemptInput) {
+    const response = await this.execute({ kind: 'settle_slack_oauth_attempt', input });
+    if (response.kind !== 'slack_oauth_attempt' || !response.attempt) throw unexpectedIdentityResponse();
+    return response.attempt;
+  }
+  async markSlackOAuthApprovalPending(input: MarkSlackOAuthApprovalPendingInput) {
+    const response = await this.execute({ kind: 'mark_slack_oauth_approval_pending', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async recordSlackBotInstallationCandidate(input: RecordSlackBotInstallationCandidateInput) {
+    const response = await this.execute({ kind: 'record_slack_bot_installation_candidate', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async getSlackEventsProof(candidateRevision: string) {
+    const response = await this.execute({ kind: 'get_slack_events_proof', candidateRevision });
+    if (response.kind !== 'slack_events_proof') throw unexpectedIdentityResponse();
+    return orUndefined(response.proof);
+  }
+  async recordSlackEventsProof(input: RecordSlackEventsProofInput) {
+    const response = await this.execute({ kind: 'record_slack_events_proof', input });
+    if (response.kind !== 'slack_events_proof' || !response.proof) throw unexpectedIdentityResponse();
+    return response.proof;
+  }
+  async promoteSlackBotInstallation(input: PromoteSlackBotInstallationInput) {
+    const response = await this.execute({ kind: 'promote_slack_bot_installation', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async failSlackBotInstallation(input: FailSlackBotInstallationInput) {
+    const response = await this.execute({ kind: 'fail_slack_bot_installation', input });
     if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
     return response.transaction;
   }

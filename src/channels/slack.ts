@@ -18,7 +18,12 @@ import {
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveAssignment, type AssignmentSurface } from '../config/resolver.ts';
 import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
-import { resolveStores, type AppStores, type PlatformEnv } from '../config/state-backend.ts';
+import {
+  getSlackCredentialDependencies,
+  resolveStores,
+  type AppStores,
+  type PlatformEnv,
+} from '../config/state-backend.ts';
 import {
   tagStateStub,
   type SlackInteractionProgress,
@@ -56,6 +61,7 @@ import {
 import {
   completeWorkspaceDefaultSlackConnectionIfVerified,
 } from '../slack/identity-bootstrap.ts';
+import { SlackInstallOAuthService } from '../slack/install-oauth.ts';
 import {
   assignmentUsesSlackIdentity,
   resolveSlackIdentityDmAssignment,
@@ -336,15 +342,25 @@ const scopedIdentityEventsHandler: SlackRouteHandler = async (c, next) => {
       candidate.identity.lifecycle === 'credentials_pending'
     ) {
       try {
-        await completeWorkspaceDefaultSlackConnectionIfVerified({
-          config: stores.config,
-          settings: stores.settings,
-          identityId: candidate.identity.id,
-          credentialDependencies: {
-            state: stores.identity,
-            env: platformEnv,
-          },
-        });
+        const setup = await stores.identity.getSlackSetupTransaction('setup_default');
+        if (setup?.state === 'bot_install_pending') {
+          await new SlackInstallOAuthService({
+            identity: stores.identity,
+            credentials: getSlackCredentialDependencies(platformEnv),
+            config: stores.config,
+            settings: stores.settings,
+          }).finalizeWaitingInstallation(setup.id);
+        } else {
+          await completeWorkspaceDefaultSlackConnectionIfVerified({
+            config: stores.config,
+            settings: stores.settings,
+            identityId: candidate.identity.id,
+            credentialDependencies: {
+              state: stores.identity,
+              env: platformEnv,
+            },
+          });
+        }
       } catch (error) {
         console.error(
           '[chickpea] Slack Events URL completion failed:',

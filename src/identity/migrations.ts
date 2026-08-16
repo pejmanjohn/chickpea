@@ -48,16 +48,44 @@ export const IDENTITY_SCHEMA_V1_STATEMENTS = [
     locator_hash TEXT NOT NULL UNIQUE,
     state TEXT NOT NULL CHECK (state IN (
       'awaiting_app_creation', 'app_creation_pending', 'ambiguous_external_effect',
-      'app_created', 'approval_pending', 'expired', 'consumed'
+      'app_created', 'approval_pending', 'bot_install_pending', 'bot_installed',
+      'install_failed', 'expired', 'consumed'
     )),
     revision INTEGER NOT NULL CHECK (revision > 0),
     destination TEXT NOT NULL,
     manifest_fingerprint TEXT, app_id TEXT, credential_revision TEXT,
+    bot_credential_revision TEXT, slack_team_id TEXT,
+    installer_slack_user_id TEXT, bot_user_id TEXT,
     last_error_code TEXT, expires_at INTEGER NOT NULL, consumed_at INTEGER,
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
   )`,
   `CREATE INDEX identity_slack_setup_state_idx
     ON identity_slack_setup_transactions (state, expires_at)`,
+  `CREATE TABLE identity_slack_oauth_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind = 'slack_bot_install'),
+    purpose TEXT NOT NULL CHECK (purpose = 'setup_bot_install'),
+    setup_id TEXT NOT NULL, setup_revision INTEGER NOT NULL CHECK (setup_revision > 0),
+    state_hash TEXT NOT NULL UNIQUE, browser_hash TEXT NOT NULL,
+    app_id TEXT NOT NULL, client_id TEXT NOT NULL,
+    credential_revision TEXT NOT NULL, base_revision TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL, destination TEXT NOT NULL,
+    expected_team_id TEXT, expected_installer_slack_user_id TEXT,
+    status TEXT NOT NULL CHECK (status IN (
+      'pending', 'processing', 'validated', 'approval_pending', 'denied',
+      'failed', 'succeeded', 'expired'
+    )),
+    lease_generation INTEGER NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+    lease_expires_at INTEGER, result_code TEXT, expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX identity_slack_oauth_setup_idx
+    ON identity_slack_oauth_attempts (setup_id, status, expires_at)`,
+  `CREATE TABLE identity_slack_events_proofs (
+    candidate_revision TEXT PRIMARY KEY, identity_id TEXT NOT NULL,
+    app_id TEXT NOT NULL, team_id TEXT NOT NULL, base_revision TEXT NOT NULL,
+    verified_at INTEGER NOT NULL
+  )`,
   `CREATE TABLE identity_organizations (
     organization_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, slack_team_id TEXT UNIQUE,
     auth_mode TEXT NOT NULL CHECK (auth_mode IN ('unconfigured', 'slack_active')),

@@ -225,6 +225,8 @@ export interface SlackCredentialRetentionResult {
   expiredAuthOperations: number;
   expiredInvitations: number;
   expiredBrowserSessions: number;
+  deletedSlackOAuthAttempts: number;
+  deletedOrphanedSlackEventsProofs: number;
   scrubbedCredentialCandidates: number;
 }
 
@@ -234,6 +236,9 @@ export type SlackSetupState =
   | 'ambiguous_external_effect'
   | 'app_created'
   | 'approval_pending'
+  | 'bot_install_pending'
+  | 'bot_installed'
+  | 'install_failed'
   | 'expired'
   | 'consumed';
 
@@ -247,6 +252,10 @@ export interface SlackSetupTransaction {
   manifestFingerprint: string | null;
   appId: string | null;
   credentialRevision: string | null;
+  botCredentialRevision: string | null;
+  slackTeamId: string | null;
+  installerSlackUserId: string | null;
+  botUserId: string | null;
   lastErrorCode: string | null;
   expiresAt: number;
   consumedAt: number | null;
@@ -283,6 +292,123 @@ export interface RecordSlackAppCreationSuccessInput extends SlackSetupTransition
 
 export interface MarkSlackSetupApprovalPendingInput extends SlackSetupTransitionInput {
   appId: string;
+}
+
+export type SlackOAuthAttemptKind = 'slack_bot_install';
+export type SlackOAuthAttemptPurpose = 'setup_bot_install';
+export type SlackOAuthAttemptStatus =
+  | 'pending'
+  | 'processing'
+  | 'validated'
+  | 'approval_pending'
+  | 'denied'
+  | 'failed'
+  | 'succeeded'
+  | 'expired';
+
+/** Internal callback authority. Raw state and browser cookie values are never stored. */
+export interface SlackOAuthAttempt {
+  id: string;
+  kind: SlackOAuthAttemptKind;
+  purpose: SlackOAuthAttemptPurpose;
+  setupId: string;
+  setupRevision: number;
+  stateHash: string;
+  browserHash: string;
+  appId: string;
+  clientId: string;
+  credentialRevision: string;
+  baseRevision: string;
+  redirectUri: string;
+  destination: string;
+  expectedTeamId: string | null;
+  expectedInstallerSlackUserId: string | null;
+  status: SlackOAuthAttemptStatus;
+  leaseGeneration: number;
+  leaseExpiresAt: number | null;
+  resultCode: string | null;
+  expiresAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CreateSlackOAuthAttemptInput {
+  id: string;
+  kind: SlackOAuthAttemptKind;
+  purpose: SlackOAuthAttemptPurpose;
+  setupId: string;
+  setupRevision: number;
+  stateHash: string;
+  browserHash: string;
+  appId: string;
+  clientId: string;
+  credentialRevision: string;
+  baseRevision: string;
+  redirectUri: string;
+  destination: string;
+  expectedTeamId?: string | null;
+  expectedInstallerSlackUserId?: string | null;
+  expiresAt: number;
+}
+
+export interface AcquireSlackOAuthAttemptInput {
+  stateHash: string;
+  browserHash: string;
+  kind: SlackOAuthAttemptKind;
+  purpose: SlackOAuthAttemptPurpose;
+  redirectUri: string;
+  leaseExpiresAt: number;
+}
+
+export interface SettleSlackOAuthAttemptInput {
+  attemptId: string;
+  expectedLeaseGeneration: number;
+  status: 'denied' | 'failed';
+  resultCode: string;
+}
+
+export interface MarkSlackOAuthApprovalPendingInput {
+  attemptId: string;
+  expectedLeaseGeneration: number;
+}
+
+export interface RecordSlackBotInstallationCandidateInput {
+  attemptId: string;
+  expectedLeaseGeneration: number;
+  teamId: string;
+  installerSlackUserId: string;
+  botUserId: string;
+  credential: StageSlackCredentialRevisionInput;
+}
+
+export interface SlackEventsProof {
+  candidateRevision: string;
+  identityId: string;
+  appId: string;
+  teamId: string;
+  baseRevision: string;
+  verifiedAt: number;
+}
+
+export interface RecordSlackEventsProofInput {
+  setupId: string;
+  candidateRevision: string;
+  identityId: string;
+  appId: string;
+  teamId: string;
+  baseRevision: string;
+  verifiedAt: number;
+}
+
+export interface PromoteSlackBotInstallationInput extends RecordSlackEventsProofInput {
+  expectedRotationEpoch: number;
+}
+
+export interface FailSlackBotInstallationInput {
+  setupId: string;
+  candidateRevision: string;
+  expectedRotationEpoch: number;
+  errorCode: string;
 }
 
 export interface AuthOperation {
@@ -529,6 +655,16 @@ export interface IdentityStore extends HumanIdentityDirectory {
   restartSlackAppCreation(input: SlackSetupTransitionInput): Promise<SlackSetupTransaction>;
   markSlackSetupApprovalPending(input: MarkSlackSetupApprovalPendingInput): Promise<SlackSetupTransaction>;
   resumeSlackSetupAfterApproval(input: SlackSetupTransitionInput): Promise<SlackSetupTransaction>;
+  createSlackOAuthAttempt(input: CreateSlackOAuthAttemptInput): Promise<SlackOAuthAttempt>;
+  getSlackOAuthAttempt(attemptId: string): Promise<SlackOAuthAttempt | undefined>;
+  acquireSlackOAuthAttempt(input: AcquireSlackOAuthAttemptInput): Promise<SlackOAuthAttempt>;
+  settleSlackOAuthAttempt(input: SettleSlackOAuthAttemptInput): Promise<SlackOAuthAttempt>;
+  markSlackOAuthApprovalPending(input: MarkSlackOAuthApprovalPendingInput): Promise<SlackSetupTransaction>;
+  recordSlackBotInstallationCandidate(input: RecordSlackBotInstallationCandidateInput): Promise<SlackSetupTransaction>;
+  getSlackEventsProof(candidateRevision: string): Promise<SlackEventsProof | undefined>;
+  recordSlackEventsProof(input: RecordSlackEventsProofInput): Promise<SlackEventsProof>;
+  promoteSlackBotInstallation(input: PromoteSlackBotInstallationInput): Promise<SlackSetupTransaction>;
+  failSlackBotInstallation(input: FailSlackBotInstallationInput): Promise<SlackSetupTransaction>;
   createAuthOperation(input: CreateAuthOperationInput): Promise<AuthOperation>;
   reservePendingAuthOperation(input: CreateAuthOperationInput): Promise<{ operation: AuthOperation; created: boolean }>;
   getAuthOperation(operationId: string): Promise<AuthOperation | undefined>;
@@ -601,6 +737,16 @@ export type IdentityRpcRequest =
   | { kind: 'restart_slack_app_creation'; input: SlackSetupTransitionInput }
   | { kind: 'mark_slack_setup_approval_pending'; input: MarkSlackSetupApprovalPendingInput }
   | { kind: 'resume_slack_setup_after_approval'; input: SlackSetupTransitionInput }
+  | { kind: 'create_slack_oauth_attempt'; input: CreateSlackOAuthAttemptInput }
+  | { kind: 'get_slack_oauth_attempt'; attemptId: string }
+  | { kind: 'acquire_slack_oauth_attempt'; input: AcquireSlackOAuthAttemptInput }
+  | { kind: 'settle_slack_oauth_attempt'; input: SettleSlackOAuthAttemptInput }
+  | { kind: 'mark_slack_oauth_approval_pending'; input: MarkSlackOAuthApprovalPendingInput }
+  | { kind: 'record_slack_bot_installation_candidate'; input: RecordSlackBotInstallationCandidateInput }
+  | { kind: 'get_slack_events_proof'; candidateRevision: string }
+  | { kind: 'record_slack_events_proof'; input: RecordSlackEventsProofInput }
+  | { kind: 'promote_slack_bot_installation'; input: PromoteSlackBotInstallationInput }
+  | { kind: 'fail_slack_bot_installation'; input: FailSlackBotInstallationInput }
   | { kind: 'create_auth_operation'; input: CreateAuthOperationInput }
   | { kind: 'reserve_pending_auth_operation'; input: CreateAuthOperationInput }
   | { kind: 'get_auth_operation'; operationId: string }
@@ -654,6 +800,8 @@ export type IdentityRpcResponse =
   | { kind: 'slack_credential_presence'; present: boolean }
   | { kind: 'slack_credential_retention'; result: SlackCredentialRetentionResult }
   | { kind: 'slack_setup_transaction'; transaction: SlackSetupTransaction | null }
+  | { kind: 'slack_oauth_attempt'; attempt: SlackOAuthAttempt | null }
+  | { kind: 'slack_events_proof'; proof: SlackEventsProof | null }
   | { kind: 'auth_operation'; operation: AuthOperation | null }
   | { kind: 'auth_operation_reservation'; operation: AuthOperation; created: boolean }
   | { kind: 'auth_operations'; operations: AuthOperation[] }

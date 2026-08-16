@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { AuditStoreLogic } from '../audit/store.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { NodeStateDb, openStateDb } from '../state/node-state-db.ts';
 import { identityError } from './errors.ts';
@@ -22,6 +23,8 @@ import type {
   CreateInvitationInput,
   CreateOwnerClaimInput,
   CreatePersonalTokenRecordInput,
+  CreateSlackOAuthAttemptInput,
+  AcquireSlackOAuthAttemptInput,
   EnsureAuthControlInput,
   EnsureSlackCredentialControlInput,
   EnsureOrganizationInput,
@@ -51,6 +54,14 @@ import type {
   ReserveSlackSetupTransactionInput,
   FailSlackAppCreationInput,
   MarkSlackSetupApprovalPendingInput,
+  MarkSlackOAuthApprovalPendingInput,
+  RecordSlackBotInstallationCandidateInput,
+  RecordSlackEventsProofInput,
+  PromoteSlackBotInstallationInput,
+  FailSlackBotInstallationInput,
+  SettleSlackOAuthAttemptInput,
+  SlackOAuthAttempt,
+  SlackEventsProof,
   StageSlackCredentialRevisionInput,
   SlackIdentityBinding,
   UpdateAuthControlInput,
@@ -102,6 +113,16 @@ export class IdentityStoreLogic {
       case 'restart_slack_app_creation': return { kind: 'slack_setup_transaction', transaction: this.restartSlackAppCreation(request.input) };
       case 'mark_slack_setup_approval_pending': return { kind: 'slack_setup_transaction', transaction: this.markSlackSetupApprovalPending(request.input) };
       case 'resume_slack_setup_after_approval': return { kind: 'slack_setup_transaction', transaction: this.resumeSlackSetupAfterApproval(request.input) };
+      case 'create_slack_oauth_attempt': return { kind: 'slack_oauth_attempt', attempt: this.createSlackOAuthAttempt(request.input) };
+      case 'get_slack_oauth_attempt': return { kind: 'slack_oauth_attempt', attempt: this.getSlackOAuthAttempt(request.attemptId) ?? null };
+      case 'acquire_slack_oauth_attempt': return { kind: 'slack_oauth_attempt', attempt: this.acquireSlackOAuthAttempt(request.input) };
+      case 'settle_slack_oauth_attempt': return { kind: 'slack_oauth_attempt', attempt: this.settleSlackOAuthAttempt(request.input) };
+      case 'mark_slack_oauth_approval_pending': return { kind: 'slack_setup_transaction', transaction: this.markSlackOAuthApprovalPending(request.input) };
+      case 'record_slack_bot_installation_candidate': return { kind: 'slack_setup_transaction', transaction: this.recordSlackBotInstallationCandidate(request.input) };
+      case 'get_slack_events_proof': return { kind: 'slack_events_proof', proof: this.getSlackEventsProof(request.candidateRevision) ?? null };
+      case 'record_slack_events_proof': return { kind: 'slack_events_proof', proof: this.recordSlackEventsProof(request.input) };
+      case 'promote_slack_bot_installation': return { kind: 'slack_setup_transaction', transaction: this.promoteSlackBotInstallation(request.input) };
+      case 'fail_slack_bot_installation': return { kind: 'slack_setup_transaction', transaction: this.failSlackBotInstallation(request.input) };
       case 'create_auth_operation': return { kind: 'auth_operation', operation: this.createAuthOperation(request.input) };
       case 'reserve_pending_auth_operation': {
         const result = this.reservePendingAuthOperation(request.input);
@@ -488,6 +509,10 @@ export class IdentityStoreLogic {
         'DELETE FROM identity_browser_sessions WHERE expires_at <= ?',
         at,
       ).changes;
+      const deletedSlackOAuthAttempts = this.db.run(
+        'DELETE FROM identity_slack_oauth_attempts WHERE expires_at <= ?',
+        at,
+      ).changes;
       const scrubbedCredentialCandidates = this.db.run(
         `UPDATE identity_slack_credential_revisions
          SET status = 'tombstoned', envelope_version = NULL, envelope_algorithm = NULL,
@@ -495,10 +520,21 @@ export class IdentityStoreLogic {
          WHERE status = 'candidate' AND created_at <= ?`,
         at, at, at - candidateMaxAgeMs,
       ).changes;
+      const deletedOrphanedSlackEventsProofs = this.db.run(
+        `DELETE FROM identity_slack_events_proofs
+         WHERE NOT EXISTS (
+           SELECT 1 FROM identity_slack_credential_revisions revisions
+           WHERE revisions.identity_id = identity_slack_events_proofs.identity_id
+             AND revisions.revision = identity_slack_events_proofs.candidate_revision
+             AND revisions.status IN ('active', 'candidate')
+         )`,
+      ).changes;
       return {
         expiredAuthOperations,
         expiredInvitations,
         expiredBrowserSessions,
+        deletedSlackOAuthAttempts,
+        deletedOrphanedSlackEventsProofs,
         scrubbedCredentialCandidates,
       };
     });
@@ -535,12 +571,24 @@ export class IdentityStoreLogic {
       ? 'ambiguous_external_effect'
       : existing.state === 'expired'
       ? existing.appId ? 'app_created' : 'awaiting_app_creation'
+      : existing.state === 'install_failed'
+      ? 'app_created'
       : existing.state;
+    const resetFailedInstall = existing.state === 'install_failed';
     const changed = this.db.run(
       `UPDATE identity_slack_setup_transactions
-       SET locator_hash = ?, state = ?, revision = revision + 1, expires_at = ?, updated_at = ?
+       SET locator_hash = ?, state = ?, revision = revision + 1,
+         bot_credential_revision = CASE WHEN ? THEN NULL ELSE bot_credential_revision END,
+         slack_team_id = CASE WHEN ? THEN NULL ELSE slack_team_id END,
+         installer_slack_user_id = CASE WHEN ? THEN NULL ELSE installer_slack_user_id END,
+         bot_user_id = CASE WHEN ? THEN NULL ELSE bot_user_id END,
+         last_error_code = CASE WHEN ? THEN NULL ELSE last_error_code END,
+         expires_at = ?, updated_at = ?
        WHERE setup_id = 'setup_default' AND revision = ?`,
-      locatorHash, nextState, input.expiresAt, this.now(), existing.revision,
+      locatorHash, nextState,
+      resetFailedInstall ? 1 : 0, resetFailedInstall ? 1 : 0,
+      resetFailedInstall ? 1 : 0, resetFailedInstall ? 1 : 0,
+      resetFailedInstall ? 1 : 0, input.expiresAt, this.now(), existing.revision,
     ).changes;
     if (changed !== 1) {
       throw identityError('auth_operation_conflict', 'Slack setup changed concurrently.');
@@ -647,7 +695,353 @@ export class IdentityStoreLogic {
   }
 
   resumeSlackSetupAfterApproval(input: SlackSetupTransitionInput): SlackSetupTransaction {
-    return this.transitionSlackSetup(input, ['approval_pending'], 'app_created');
+    return this.transitionSlackSetup(
+      input,
+      ['approval_pending'],
+      'app_created',
+      { lastErrorCode: null },
+    );
+  }
+
+  createSlackOAuthAttempt(input: CreateSlackOAuthAttemptInput): SlackOAuthAttempt {
+    validateSlackOAuthAttemptInput(input);
+    return this.db.transaction(() => {
+      const setup = this.requiredSlackSetupTransition(
+        input.setupId,
+        input.setupRevision,
+        ['app_created'],
+      );
+      const active = this.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+      if (!active || active.revision !== input.credentialRevision ||
+          active.revision !== input.baseRevision || active.purpose !== 'app_credentials' ||
+          active.appId !== input.appId || setup.appId !== input.appId ||
+          setup.credentialRevision !== input.credentialRevision) {
+        throw identityError('credential_revision_conflict', 'Slack app credentials changed before OAuth start.');
+      }
+      const at = this.now();
+      if (input.expiresAt <= at) {
+        throw identityError('auth_operation_expired', 'Slack OAuth attempt expiry is invalid.');
+      }
+      this.db.run(
+        `UPDATE identity_slack_oauth_attempts
+         SET status = 'failed', result_code = 'superseded', lease_expires_at = NULL, updated_at = ?
+         WHERE setup_id = ? AND status IN ('pending', 'processing')`,
+        at, setup.id,
+      );
+      try {
+        this.db.run(
+          `INSERT INTO identity_slack_oauth_attempts (
+            attempt_id, kind, purpose, setup_id, setup_revision, state_hash, browser_hash,
+            app_id, client_id, credential_revision, base_revision, redirect_uri, destination,
+            expected_team_id, expected_installer_slack_user_id, status, lease_generation,
+            lease_expires_at, result_code, expires_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, ?, ?, ?)`,
+          nonEmpty(input.id, 'Slack OAuth attempt ID'), input.kind, input.purpose,
+          setup.id, setup.revision, oauthHash(input.stateHash, 'Slack OAuth state hash'),
+          oauthHash(input.browserHash, 'Slack OAuth browser hash'), input.appId,
+          strictText(input.clientId, 'Slack client ID', 256), input.credentialRevision,
+          input.baseRevision, validHttpsCallback(input.redirectUri), safeStoredAdminDestination(input.destination),
+          input.expectedTeamId ?? null, input.expectedInstallerSlackUserId ?? null,
+          input.expiresAt, at, at,
+        );
+      } catch {
+        throw identityError('auth_operation_conflict', 'Slack OAuth attempt changed concurrently.');
+      }
+      return this.requiredSlackOAuthAttempt(input.id);
+    });
+  }
+
+  getSlackOAuthAttempt(attemptId: string): SlackOAuthAttempt | undefined {
+    const row = this.db.get(
+      'SELECT * FROM identity_slack_oauth_attempts WHERE attempt_id = ?',
+      nonEmpty(attemptId, 'Slack OAuth attempt ID'),
+    );
+    return row ? slackOAuthAttemptFromRow(row) : undefined;
+  }
+
+  acquireSlackOAuthAttempt(input: AcquireSlackOAuthAttemptInput): SlackOAuthAttempt {
+    const stateHash = oauthHash(input.stateHash, 'Slack OAuth state hash');
+    const browserHash = oauthHash(input.browserHash, 'Slack OAuth browser hash');
+    if (input.kind !== 'slack_bot_install' || input.purpose !== 'setup_bot_install') {
+      throw identityError('identity_invalid', 'Slack OAuth callback purpose is invalid.');
+    }
+    const redirectUri = validHttpsCallback(input.redirectUri);
+    const acquired = this.db.transaction((): SlackOAuthAttempt | undefined => {
+      const row = this.db.get(
+        'SELECT * FROM identity_slack_oauth_attempts WHERE state_hash = ?',
+        stateHash,
+      );
+      if (!row) throw identityError('auth_operation_missing', 'Slack OAuth state is invalid.');
+      const attempt = slackOAuthAttemptFromRow(row);
+      const at = this.now();
+      if (attempt.browserHash !== browserHash) {
+        throw identityError('auth_operation_conflict', 'Slack OAuth browser binding does not match.');
+      }
+      if (attempt.kind !== input.kind || attempt.purpose !== input.purpose ||
+          attempt.redirectUri !== redirectUri) {
+        throw identityError('auth_operation_conflict', 'Slack OAuth callback binding does not match.');
+      }
+      if (attempt.expiresAt <= at) {
+        this.db.run(
+          `UPDATE identity_slack_oauth_attempts SET status = 'expired', result_code = 'expired',
+           lease_expires_at = NULL, updated_at = ? WHERE attempt_id = ?`,
+          at, attempt.id,
+        );
+        return undefined;
+      }
+      const reclaim = attempt.status === 'processing' &&
+        attempt.leaseExpiresAt !== null && attempt.leaseExpiresAt <= at;
+      if (attempt.status !== 'pending' && !reclaim) {
+        throw identityError(
+          'auth_operation_conflict',
+          attempt.status === 'processing'
+            ? 'Slack OAuth processing lease is already held.'
+            : 'Slack OAuth state is already consumed.',
+        );
+      }
+      if (!Number.isSafeInteger(input.leaseExpiresAt) || input.leaseExpiresAt <= at) {
+        throw identityError('identity_invalid', 'Slack OAuth processing lease is invalid.');
+      }
+      const leaseExpiresAt = Math.min(input.leaseExpiresAt, attempt.expiresAt);
+      const changed = this.db.run(
+        `UPDATE identity_slack_oauth_attempts SET status = 'processing',
+          lease_generation = lease_generation + 1, lease_expires_at = ?, updated_at = ?
+         WHERE attempt_id = ? AND status = ? AND lease_generation = ?`,
+        leaseExpiresAt, at, attempt.id, attempt.status, attempt.leaseGeneration,
+      ).changes;
+      if (changed !== 1) {
+        throw identityError('auth_operation_conflict', 'Slack OAuth processing lease changed concurrently.');
+      }
+      return this.requiredSlackOAuthAttempt(attempt.id);
+    });
+    if (!acquired) throw identityError('auth_operation_expired', 'Slack OAuth state expired.');
+    return acquired;
+  }
+
+  settleSlackOAuthAttempt(input: SettleSlackOAuthAttemptInput): SlackOAuthAttempt {
+    if (!['denied', 'failed'].includes(input.status)) {
+      throw identityError('identity_invalid', 'Slack OAuth terminal state is invalid.');
+    }
+    const resultCode = strictText(input.resultCode, 'Slack OAuth result code', 128);
+    const current = this.requiredSlackOAuthLease(input.attemptId, input.expectedLeaseGeneration);
+    const changed = this.db.run(
+      `UPDATE identity_slack_oauth_attempts SET status = ?, result_code = ?,
+       lease_expires_at = NULL, updated_at = ?
+       WHERE attempt_id = ? AND status = 'processing' AND lease_generation = ?`,
+      input.status, resultCode, this.now(), current.id, current.leaseGeneration,
+    ).changes;
+    if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack OAuth state changed concurrently.');
+    return this.requiredSlackOAuthAttempt(current.id);
+  }
+
+  markSlackOAuthApprovalPending(
+    input: MarkSlackOAuthApprovalPendingInput,
+  ): SlackSetupTransaction {
+    return this.db.transaction(() => {
+      const attempt = this.requiredSlackOAuthLease(input.attemptId, input.expectedLeaseGeneration);
+      const setup = this.requiredSlackSetupTransition(
+        attempt.setupId,
+        attempt.setupRevision,
+        ['app_created'],
+      );
+      if (setup.appId !== attempt.appId || setup.credentialRevision !== attempt.credentialRevision) {
+        throw identityError('auth_operation_conflict', 'Slack setup changed before approval.');
+      }
+      const at = this.now();
+      const attemptChanged = this.db.run(
+        `UPDATE identity_slack_oauth_attempts SET status = 'approval_pending',
+          result_code = 'approval_pending', lease_expires_at = NULL, updated_at = ?
+         WHERE attempt_id = ? AND status = 'processing' AND lease_generation = ?`,
+        at, attempt.id, attempt.leaseGeneration,
+      ).changes;
+      if (attemptChanged !== 1) {
+        throw identityError('auth_operation_conflict', 'Slack OAuth state changed concurrently.');
+      }
+      const changed = this.db.run(
+        `UPDATE identity_slack_setup_transactions SET state = 'approval_pending',
+          revision = revision + 1, last_error_code = 'approval_pending', updated_at = ?
+         WHERE setup_id = ? AND revision = ? AND state = 'app_created'`,
+        at, setup.id, setup.revision,
+      ).changes;
+      if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack setup changed concurrently.');
+      return this.requiredSlackSetupTransaction(setup.id);
+    });
+  }
+
+  recordSlackBotInstallationCandidate(
+    input: RecordSlackBotInstallationCandidateInput,
+  ): SlackSetupTransaction {
+    validateCredentialRevisionInput(input.credential);
+    return this.db.transaction(() => {
+      const attempt = this.requiredSlackOAuthLease(input.attemptId, input.expectedLeaseGeneration);
+      const setup = this.requiredSlackSetupTransition(
+        attempt.setupId,
+        attempt.setupRevision,
+        ['app_created'],
+      );
+      const teamId = slackId(input.teamId, 'Slack team ID');
+      const installerId = slackId(input.installerSlackUserId, 'Slack installer user ID');
+      const botUserId = slackId(input.botUserId, 'Slack bot user ID');
+      if (attempt.expectedTeamId && attempt.expectedTeamId !== teamId) {
+        throw identityError('auth_operation_conflict', 'Slack OAuth workspace does not match.');
+      }
+      if (attempt.expectedInstallerSlackUserId && attempt.expectedInstallerSlackUserId !== installerId) {
+        throw identityError('auth_operation_conflict', 'Slack OAuth installer does not match the requester.');
+      }
+      if (setup.appId !== attempt.appId || setup.credentialRevision !== attempt.credentialRevision ||
+          input.credential.identityId !== WORKSPACE_DEFAULT_SLACK_IDENTITY_ID ||
+          input.credential.identityClass !== 'workspace_default' ||
+          input.credential.purpose !== 'connected_credentials' ||
+          input.credential.expectedActiveRevision !== attempt.baseRevision ||
+          input.credential.appId !== attempt.appId || input.credential.teamId !== teamId ||
+          input.credential.botUserId !== botUserId) {
+        throw identityError('auth_operation_conflict', 'Slack bot grant does not match its OAuth attempt.');
+      }
+      const candidate = this.stageSlackCredentialRevisionInTransaction(input.credential);
+      const at = this.now();
+      const changed = this.db.run(
+        `UPDATE identity_slack_setup_transactions SET state = 'bot_install_pending',
+          revision = revision + 1, bot_credential_revision = ?, slack_team_id = ?,
+          installer_slack_user_id = ?, bot_user_id = ?, last_error_code = NULL, updated_at = ?
+         WHERE setup_id = ? AND revision = ? AND state = 'app_created'`,
+        candidate.revision, teamId, installerId, botUserId, at, setup.id, setup.revision,
+      ).changes;
+      if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack setup changed concurrently.');
+      const attemptChanged = this.db.run(
+        `UPDATE identity_slack_oauth_attempts SET status = 'validated', result_code = 'waiting_events',
+          lease_expires_at = NULL, updated_at = ?
+         WHERE attempt_id = ? AND status = 'processing' AND lease_generation = ?`,
+        at, attempt.id, attempt.leaseGeneration,
+      ).changes;
+      if (attemptChanged !== 1) {
+        throw identityError('auth_operation_conflict', 'Slack OAuth state changed concurrently.');
+      }
+      return this.requiredSlackSetupTransaction(setup.id);
+    });
+  }
+
+  getSlackEventsProof(candidateRevision: string): SlackEventsProof | undefined {
+    const row = this.db.get(
+      'SELECT * FROM identity_slack_events_proofs WHERE candidate_revision = ?',
+      nonEmpty(candidateRevision, 'Slack credential revision'),
+    );
+    return row ? slackEventsProofFromRow(row) : undefined;
+  }
+
+  recordSlackEventsProof(input: RecordSlackEventsProofInput): SlackEventsProof {
+    return this.db.transaction(() => {
+      const setup = this.requiredSlackSetupTransaction(input.setupId);
+      const candidate = this.requiredSlackCredentialRevision(input.identityId, input.candidateRevision);
+      const active = this.getActiveSlackCredentialRevision(input.identityId);
+      if (setup.state !== 'bot_install_pending' ||
+          setup.botCredentialRevision !== input.candidateRevision ||
+          setup.appId !== input.appId || setup.slackTeamId !== input.teamId ||
+          candidate.status !== 'candidate' || candidate.baseRevision !== input.baseRevision ||
+          candidate.appId !== input.appId || candidate.teamId !== input.teamId ||
+          active?.revision !== input.baseRevision) {
+        throw identityError('credential_revision_conflict', 'Slack Events proof does not match the pending credential revision.');
+      }
+      if (!Number.isSafeInteger(input.verifiedAt) || input.verifiedAt < 0) {
+        throw identityError('identity_invalid', 'Slack Events verification time is invalid.');
+      }
+      const existing = this.getSlackEventsProof(input.candidateRevision);
+      if (existing) {
+        if (existing.identityId === input.identityId && existing.appId === input.appId &&
+            existing.teamId === input.teamId && existing.baseRevision === input.baseRevision) {
+          return existing;
+        }
+        throw identityError('credential_revision_conflict', 'Slack Events proof conflicts with existing state.');
+      }
+      this.db.run(
+        `INSERT INTO identity_slack_events_proofs (
+          candidate_revision, identity_id, app_id, team_id, base_revision, verified_at
+        ) VALUES (?, ?, ?, ?, ?, ?)`,
+        input.candidateRevision, input.identityId, input.appId, input.teamId,
+        input.baseRevision, input.verifiedAt,
+      );
+      return this.getSlackEventsProof(input.candidateRevision)!;
+    });
+  }
+
+  promoteSlackBotInstallation(input: PromoteSlackBotInstallationInput): SlackSetupTransaction {
+    return this.db.transaction(() => {
+      const setup = this.requiredSlackSetupTransaction(input.setupId);
+      const proof = this.getSlackEventsProof(input.candidateRevision);
+      if (setup.state !== 'bot_install_pending' ||
+          setup.botCredentialRevision !== input.candidateRevision || !proof ||
+          proof.identityId !== input.identityId || proof.appId !== input.appId ||
+          proof.teamId !== input.teamId || proof.baseRevision !== input.baseRevision ||
+          proof.verifiedAt !== input.verifiedAt) {
+        throw identityError('credential_revision_conflict', 'Slack installation proof changed concurrently.');
+      }
+      this.promoteSlackCredentialRevisionInTransaction({
+        identityId: input.identityId,
+        candidateRevision: input.candidateRevision,
+        expectedActiveRevision: input.baseRevision,
+        expectedRotationEpoch: input.expectedRotationEpoch,
+      });
+      const at = this.now();
+      const changed = this.db.run(
+        `UPDATE identity_slack_setup_transactions SET state = 'bot_installed',
+          revision = revision + 1, last_error_code = NULL, updated_at = ?
+         WHERE setup_id = ? AND revision = ? AND state = 'bot_install_pending'
+           AND bot_credential_revision = ?`,
+        at, setup.id, setup.revision, input.candidateRevision,
+      ).changes;
+      if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack setup changed concurrently.');
+      this.db.run(
+        `UPDATE identity_slack_oauth_attempts SET status = 'succeeded', result_code = 'bot_installed',
+          updated_at = ? WHERE setup_id = ? AND status = 'validated'`,
+        at, setup.id,
+      );
+      return this.requiredSlackSetupTransaction(setup.id);
+    });
+  }
+
+  failSlackBotInstallation(input: FailSlackBotInstallationInput): SlackSetupTransaction {
+    const resultCode = strictText(input.errorCode, 'Slack installation error code', 128);
+    return this.db.transaction(() => {
+      const setup = this.requiredSlackSetupTransaction(input.setupId);
+      const control = this.requiredSlackCredentialControl(DEFAULT_INSTALLATION_ID);
+      requireCredentialEpoch(control, input.expectedRotationEpoch);
+      if (setup.state !== 'bot_install_pending' || setup.botCredentialRevision !== input.candidateRevision) {
+        throw identityError('auth_operation_conflict', 'Slack installation is not waiting for verification.');
+      }
+      const candidate = this.requiredSlackCredentialRevision(
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        input.candidateRevision,
+      );
+      if (candidate.status === 'candidate') {
+        const at = this.now();
+        const tombstoned = this.db.run(
+          `UPDATE identity_slack_credential_revisions SET status = 'tombstoned',
+            envelope_version = NULL, envelope_algorithm = NULL, key_id = NULL,
+            nonce = NULL, ciphertext = NULL, tombstoned_at = ?, updated_at = ?
+           WHERE identity_id = ? AND revision = ? AND status = 'candidate'`,
+          at, at, candidate.identityId, candidate.revision,
+        ).changes;
+        if (tombstoned !== 1) {
+          throw identityError('credential_revision_conflict', 'Slack credential changed concurrently.');
+        }
+      }
+      const at = this.now();
+      const setupChanged = this.db.run(
+        `UPDATE identity_slack_setup_transactions SET state = 'install_failed',
+          revision = revision + 1, last_error_code = ?, updated_at = ?
+         WHERE setup_id = ? AND revision = ? AND state = 'bot_install_pending'
+           AND bot_credential_revision = ?`,
+        resultCode, at, setup.id, setup.revision, input.candidateRevision,
+      ).changes;
+      if (setupChanged !== 1) {
+        throw identityError('auth_operation_conflict', 'Slack setup changed concurrently.');
+      }
+      this.db.run(
+        `UPDATE identity_slack_oauth_attempts SET status = 'failed', result_code = ?, updated_at = ?
+         WHERE setup_id = ? AND status = 'validated'`,
+        resultCode, at, setup.id,
+      );
+      return this.requiredSlackSetupTransaction(setup.id);
+    });
   }
 
   private transitionSlackSetup(
@@ -704,6 +1098,24 @@ export class IdentityStoreLogic {
     const transaction = this.getSlackSetupTransaction(setupId);
     if (!transaction) throw identityError('auth_operation_missing', 'Slack setup was not found.');
     return transaction;
+  }
+
+  private requiredSlackOAuthAttempt(attemptId: string): SlackOAuthAttempt {
+    const attempt = this.getSlackOAuthAttempt(attemptId);
+    if (!attempt) throw identityError('auth_operation_missing', 'Slack OAuth attempt was not found.');
+    return attempt;
+  }
+
+  private requiredSlackOAuthLease(attemptId: string, leaseGeneration: number): SlackOAuthAttempt {
+    if (!Number.isSafeInteger(leaseGeneration) || leaseGeneration < 1) {
+      throw identityError('identity_invalid', 'Slack OAuth processing lease is invalid.');
+    }
+    const attempt = this.requiredSlackOAuthAttempt(attemptId);
+    if (attempt.status !== 'processing' || attempt.leaseGeneration !== leaseGeneration ||
+        attempt.leaseExpiresAt === null || attempt.leaseExpiresAt <= this.now()) {
+      throw identityError('auth_operation_conflict', 'Slack OAuth processing lease is unavailable.');
+    }
+    return attempt;
   }
 
   createAuthOperation(input: CreateAuthOperationInput): AuthOperation {
@@ -1454,6 +1866,16 @@ export class SqliteIdentityStore implements IdentityStore {
   async restartSlackAppCreation(input: SlackSetupTransitionInput) { return this.logic.restartSlackAppCreation(input); }
   async markSlackSetupApprovalPending(input: MarkSlackSetupApprovalPendingInput) { return this.logic.markSlackSetupApprovalPending(input); }
   async resumeSlackSetupAfterApproval(input: SlackSetupTransitionInput) { return this.logic.resumeSlackSetupAfterApproval(input); }
+  async createSlackOAuthAttempt(input: CreateSlackOAuthAttemptInput) { return this.logic.createSlackOAuthAttempt(input); }
+  async getSlackOAuthAttempt(id: string) { return this.logic.getSlackOAuthAttempt(id); }
+  async acquireSlackOAuthAttempt(input: AcquireSlackOAuthAttemptInput) { return this.logic.acquireSlackOAuthAttempt(input); }
+  async settleSlackOAuthAttempt(input: SettleSlackOAuthAttemptInput) { return this.logic.settleSlackOAuthAttempt(input); }
+  async markSlackOAuthApprovalPending(input: MarkSlackOAuthApprovalPendingInput) { return this.logic.markSlackOAuthApprovalPending(input); }
+  async recordSlackBotInstallationCandidate(input: RecordSlackBotInstallationCandidateInput) { return this.logic.recordSlackBotInstallationCandidate(input); }
+  async getSlackEventsProof(revision: string) { return this.logic.getSlackEventsProof(revision); }
+  async recordSlackEventsProof(input: RecordSlackEventsProofInput) { return this.logic.recordSlackEventsProof(input); }
+  async promoteSlackBotInstallation(input: PromoteSlackBotInstallationInput) { return this.logic.promoteSlackBotInstallation(input); }
+  async failSlackBotInstallation(input: FailSlackBotInstallationInput) { return this.logic.failSlackBotInstallation(input); }
   async createAuthOperation(input: CreateAuthOperationInput) { return this.logic.createAuthOperation(input); }
   async reservePendingAuthOperation(input: CreateAuthOperationInput) { return this.logic.reservePendingAuthOperation(input); }
   async getAuthOperation(id: string) { return this.logic.getAuthOperation(id); }
@@ -1554,6 +1976,50 @@ function validateCredentialRevisionInput(input: StageSlackCredentialRevisionInpu
     throw identityError('identity_invalid', 'Slack credential envelope is invalid.');
   }
   normalizeScopes(input.grantedScopes ?? []);
+}
+
+function validateSlackOAuthAttemptInput(input: CreateSlackOAuthAttemptInput): void {
+  if (input.kind !== 'slack_bot_install' || input.purpose !== 'setup_bot_install') {
+    throw identityError('identity_invalid', 'Slack OAuth attempt kind is invalid.');
+  }
+  if (!Number.isSafeInteger(input.setupRevision) || input.setupRevision < 1 ||
+      !Number.isSafeInteger(input.expiresAt) || input.expiresAt < 1) {
+    throw identityError('identity_invalid', 'Slack OAuth attempt timing is invalid.');
+  }
+  oauthHash(input.stateHash, 'Slack OAuth state hash');
+  oauthHash(input.browserHash, 'Slack OAuth browser hash');
+  slackId(input.appId, 'Slack app ID');
+  if (input.expectedTeamId) slackId(input.expectedTeamId, 'Slack team ID');
+  if (input.expectedInstallerSlackUserId) {
+    slackId(input.expectedInstallerSlackUserId, 'Slack installer user ID');
+  }
+  validHttpsCallback(input.redirectUri);
+  safeStoredAdminDestination(input.destination);
+  nonEmpty(input.credentialRevision, 'Slack credential revision');
+  nonEmpty(input.baseRevision, 'Slack base revision');
+  if (input.credentialRevision !== input.baseRevision) {
+    throw identityError('identity_invalid', 'Slack OAuth base revision is invalid.');
+  }
+}
+
+function oauthHash(value: string, field: string): string {
+  if (!/^[a-f0-9]{64}$/.test(value)) throw identityError('identity_invalid', `${field} is invalid.`);
+  return value;
+}
+
+function validHttpsCallback(value: string): string {
+  const candidate = strictText(value, 'Slack OAuth redirect URI', 2_048);
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw identityError('identity_invalid', 'Slack OAuth redirect URI is invalid.');
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.hash ||
+      parsed.toString() !== candidate) {
+    throw identityError('identity_invalid', 'Slack OAuth redirect URI is invalid.');
+  }
+  return candidate;
 }
 
 function requireCredentialTransition(
@@ -1661,11 +2127,53 @@ function slackSetupTransactionFromRow(row: Record<string, unknown>): SlackSetupT
     manifestFingerprint: nullableString(row.manifest_fingerprint),
     appId: nullableString(row.app_id),
     credentialRevision: nullableString(row.credential_revision),
+    botCredentialRevision: nullableString(row.bot_credential_revision),
+    slackTeamId: nullableString(row.slack_team_id),
+    installerSlackUserId: nullableString(row.installer_slack_user_id),
+    botUserId: nullableString(row.bot_user_id),
     lastErrorCode: nullableString(row.last_error_code),
     expiresAt: Number(row.expires_at),
     consumedAt: nullableNumber(row.consumed_at),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
+  };
+}
+
+function slackOAuthAttemptFromRow(row: Record<string, unknown>): SlackOAuthAttempt {
+  return {
+    id: String(row.attempt_id),
+    kind: String(row.kind) as SlackOAuthAttempt['kind'],
+    purpose: String(row.purpose) as SlackOAuthAttempt['purpose'],
+    setupId: String(row.setup_id),
+    setupRevision: Number(row.setup_revision),
+    stateHash: String(row.state_hash),
+    browserHash: String(row.browser_hash),
+    appId: String(row.app_id),
+    clientId: String(row.client_id),
+    credentialRevision: String(row.credential_revision),
+    baseRevision: String(row.base_revision),
+    redirectUri: String(row.redirect_uri),
+    destination: String(row.destination),
+    expectedTeamId: nullableString(row.expected_team_id),
+    expectedInstallerSlackUserId: nullableString(row.expected_installer_slack_user_id),
+    status: String(row.status) as SlackOAuthAttempt['status'],
+    leaseGeneration: Number(row.lease_generation),
+    leaseExpiresAt: nullableNumber(row.lease_expires_at),
+    resultCode: nullableString(row.result_code),
+    expiresAt: Number(row.expires_at),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function slackEventsProofFromRow(row: Record<string, unknown>): SlackEventsProof {
+  return {
+    candidateRevision: String(row.candidate_revision),
+    identityId: String(row.identity_id),
+    appId: String(row.app_id),
+    teamId: String(row.team_id),
+    baseRevision: String(row.base_revision),
+    verifiedAt: Number(row.verified_at),
   };
 }
 

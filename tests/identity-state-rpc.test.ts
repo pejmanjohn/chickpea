@@ -8,6 +8,7 @@ import type {
   IdentityRpcRequest,
   IdentityRpcResponse,
   SlackCredentialRevision,
+  SlackOAuthAttempt,
 } from '../src/identity/types.ts';
 
 const resolution: IdentityResolution = {
@@ -125,6 +126,7 @@ test('Cloudflare proxy forwards durable Slack setup transaction reads', async ()
     id: 'setup_default', locatorHash: 'a'.repeat(64),
     state: 'awaiting_app_creation' as const, revision: 1, destination: '/admin',
     manifestFingerprint: null, appId: null, credentialRevision: null,
+    botCredentialRevision: null, slackTeamId: null, installerSlackUserId: null, botUserId: null,
     lastErrorCode: null, expiresAt: 20, consumedAt: null, createdAt: 10, updatedAt: 10,
   };
   const stub = rpcStub(calls, { kind: 'slack_setup_transaction', transaction });
@@ -132,6 +134,25 @@ test('Cloudflare proxy forwards durable Slack setup transaction reads', async ()
 
   assert.deepEqual(await store.getSlackSetupTransaction(transaction.id), transaction);
   assert.deepEqual(calls, [{ kind: 'get_slack_setup_transaction', setupId: transaction.id }]);
+});
+
+test('Cloudflare proxy forwards the fresh-only Slack OAuth attempt projection', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const attempt: SlackOAuthAttempt = {
+    id: 'slackoauth_rpc', kind: 'slack_bot_install', purpose: 'setup_bot_install',
+    setupId: 'setup_default', setupRevision: 2,
+    stateHash: 'a'.repeat(64), browserHash: 'b'.repeat(64),
+    appId: 'AAPP', clientId: '123.456', credentialRevision: 'rev_app', baseRevision: 'rev_app',
+    redirectUri: 'https://chickpea.example/auth/slack/install/callback',
+    destination: '/admin/channels', expectedTeamId: null,
+    expectedInstallerSlackUserId: null, status: 'pending', leaseGeneration: 0,
+    leaseExpiresAt: null, resultCode: null, expiresAt: 20, createdAt: 10, updatedAt: 10,
+  };
+  const stub = rpcStub(calls, { kind: 'slack_oauth_attempt', attempt });
+  const store = new CfIdentityStore(stub);
+
+  assert.deepEqual(await store.getSlackOAuthAttempt(attempt.id), attempt);
+  assert.deepEqual(calls, [{ kind: 'get_slack_oauth_attempt', attemptId: attempt.id }]);
 });
 
 function rpcStub(

@@ -318,6 +318,11 @@ import {
   slackIdentityPendingEnvelopeSettingKey,
   verifyPendingSlackChallenge,
 } from '../slack/identity-handshake.ts';
+import {
+  SlackInstallOAuthError,
+  SlackInstallOAuthService,
+  type SlackInstallOAuthResult,
+} from '../slack/install-oauth.ts';
 import type { SlackIdentityAuditEventType } from '../audit/types.ts';
 import { constantTimeEquals } from './constant-time.ts';
 import { setCookieValues } from '../auth/cookies.ts';
@@ -488,6 +493,9 @@ interface AdminRoutesOptions {
   slackConversationsInfo?: typeof slackConversationsInfo | undefined;
   slackAppCreationFetch?: typeof fetch | undefined;
   slackAppCreationNow?: (() => number) | undefined;
+  slackInstallFetch?: typeof fetch | undefined;
+  slackInstallNow?: (() => number) | undefined;
+  slackInstallRandomBytes?: ((length: number) => Uint8Array) | undefined;
 }
 
 const ADMIN_COOKIE = 'flue_admin';
@@ -495,6 +503,7 @@ const AUTH_SESSION_COOKIE = 'chickpea_session';
 const MAX_ADMIN_LOGIN_BODY_BYTES = 4_096;
 const MAX_SLACK_IDENTITY_ADMIN_BODY_BYTES = 64 * 1_024;
 const MAX_AUTH_SETUP_BODY_BYTES = 8_192;
+const SLACK_INSTALL_BROWSER_COOKIE = '__Secure-chickpea_slack_install';
 const MAX_ADMIN_MUTATION_BODY_BYTES = 1024 * 1024;
 
 const authSetupSchema = v.strictObject({
@@ -1159,6 +1168,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       : Number.NaN;
     return digest && Number.isSafeInteger(issuedAt) ? { digest, issuedAt } : undefined;
   };
+  const slackInstallService = (c: Context): SlackInstallOAuthService | undefined => {
+    const credentials = slackCredentialDependencies(c);
+    if (!credentials) return undefined;
+    return new SlackInstallOAuthService({
+      identity: identity(c),
+      credentials,
+      config: store(c),
+      settings: settings(c),
+      ...(options.slackInstallFetch ? { fetch: options.slackInstallFetch } : {}),
+      ...(options.slackInstallNow ? { now: options.slackInstallNow } : {}),
+      ...(options.slackInstallRandomBytes ? { randomBytes: options.slackInstallRandomBytes } : {}),
+      ...(options.slackIdentityBootstrap ? { bootstrap: options.slackIdentityBootstrap } : {}),
+    });
+  };
   const authRateLimiter = (c: Context, token: string): AuthRateLimiter =>
     options.authRateLimiter ?? new AuthRateLimiter(identity(c), { pepper: token });
   const recordSandboxAudit = async (
@@ -1653,6 +1676,163 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   };
 
+  const beginSlackInstall = async (c: Context, resume: boolean): Promise<Response> => {
+    authResponseHeaders(c);
+    const authority = setupCapability(c);
+    const service = slackInstallService(c);
+    if (!authority || !service) return c.notFound();
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, authority.digest);
+    let setup: SlackSetupTransaction | undefined;
+    try {
+      await Promise.all([
+        limiter.assertAllowed('slack_install_start_source', source),
+        limiter.assertAllowed('slack_install_start_deployment', 'deployment'),
+      ]);
+      if (!validAuthFormPost(c, requestOrigin(c))) throw new AuthDeniedError();
+      const form = await readForm(c);
+      setup = await openSlackSetupTransaction(identity(c), {
+        capability: boundedSetupField(form.capability, 512),
+        authority,
+        ...(form.destination === undefined ? {} : { destination: form.destination }),
+        ...(options.slackInstallNow ? { now: options.slackInstallNow } : {}),
+      });
+      await limiter.assertAllowed('slack_install_start_operation', setup.id);
+      const browserBinding = `${randomUUID().replaceAll('-', '')}${randomUUID().replaceAll('-', '')}`;
+      const startInput = {
+        setupId: setup.id,
+        expectedSetupRevision: setup.revision,
+        browserBinding,
+        redirectUri: `${requestOrigin(c)}/auth/slack/install/callback`,
+        destination: setup.destination,
+      };
+      const started = resume
+        ? await service.resume(startInput)
+        : await service.start(startInput);
+      setCookie(c, SLACK_INSTALL_BROWSER_COOKIE, browserBinding, {
+        path: '/auth/slack/install',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+        maxAge: Math.max(
+          1,
+          Math.floor((started.expiresAt - (options.slackInstallNow?.() ?? Date.now())) / 1_000),
+        ),
+      });
+      await Promise.all([
+        limiter.recordSuccess('slack_install_start_source', source),
+        limiter.recordSuccess('slack_install_start_operation', setup.id),
+      ]);
+      return c.redirect(started.authorizationUrl, 302);
+    } catch (error) {
+      await limiter.recordFailure('slack_install_start_source', source);
+      if (setup) await limiter.recordFailure('slack_install_start_operation', setup.id);
+      if (error instanceof AuthRateLimitError) {
+        c.header('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))));
+        return c.json({ error: 'rate_limited' }, 429);
+      }
+      return c.json({ error: slackInstallPublicError(error) }, slackInstallHttpStatus(error));
+    }
+  };
+
+  // Slack redirects here without a Chickpea session. The callback's only
+  // browser authority is the independent narrow cookie plus hashed OAuth
+  // state; neither endpoint is routed through Better Auth or the Admin gate.
+  app.use('/auth/slack/install/*', authSetupBodyLimit);
+  app.post('/auth/slack/install/start', (c) => beginSlackInstall(c, false));
+  app.post('/auth/slack/install/resume', (c) => beginSlackInstall(c, true));
+  app.post('/auth/slack/install/finalize', async (c) => {
+    authResponseHeaders(c);
+    const authority = setupCapability(c);
+    const service = slackInstallService(c);
+    if (!authority || !service) return c.notFound();
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, authority.digest);
+    let setup: SlackSetupTransaction | undefined;
+    try {
+      await Promise.all([
+        limiter.assertAllowed('slack_install_finalize_source', source),
+        limiter.assertAllowed('slack_install_finalize_deployment', 'deployment'),
+      ]);
+      if (!validAuthFormPost(c, requestOrigin(c))) throw new AuthDeniedError();
+      const form = await readForm(c);
+      setup = await openSlackSetupTransaction(identity(c), {
+        capability: boundedSetupField(form.capability, 512),
+        authority,
+        ...(form.destination === undefined ? {} : { destination: form.destination }),
+        ...(options.slackInstallNow ? { now: options.slackInstallNow } : {}),
+      });
+      await limiter.assertAllowed('slack_install_finalize_operation', setup.id);
+      const result = await service.finalizeWaitingInstallation(setup.id);
+      await Promise.all([
+        limiter.recordSuccess('slack_install_finalize_source', source),
+        limiter.recordSuccess('slack_install_finalize_operation', setup.id),
+      ]);
+      return c.redirect(slackInstallResultRedirect(result), 303);
+    } catch (error) {
+      await limiter.recordFailure('slack_install_finalize_source', source);
+      if (setup) await limiter.recordFailure('slack_install_finalize_operation', setup.id);
+      if (error instanceof AuthRateLimitError) {
+        c.header('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))));
+        return c.json({ error: 'rate_limited' }, 429);
+      }
+      return c.json({ error: slackInstallPublicError(error) }, slackInstallHttpStatus(error));
+    }
+  });
+  app.get('/auth/slack/install/callback', async (c) => {
+    authResponseHeaders(c);
+    const authority = setupCapability(c);
+    const service = slackInstallService(c);
+    if (!authority || !service) return c.notFound();
+    const state = c.req.query('state')?.trim() ?? '';
+    const code = c.req.query('code')?.trim();
+    const providerError = c.req.query('error')?.trim();
+    const browserBinding = getCookie(c, SLACK_INSTALL_BROWSER_COOKIE) ?? '';
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, authority.digest);
+    if (state.length < 32 || state.length > 512 ||
+        (code !== undefined && code.length > 2_048) ||
+        (providerError !== undefined && providerError.length > 128) ||
+        browserBinding.length > 512) {
+      clearSlackInstallBrowserCookie(c);
+      return c.json({ error: 'invalid_state' }, 400);
+    }
+    try {
+      await Promise.all([
+        limiter.assertAllowed('slack_install_callback_source', source),
+        limiter.assertAllowed('slack_install_callback_operation', state),
+        limiter.assertAllowed('slack_install_callback_deployment', 'deployment'),
+      ]);
+      const result = await service.callback({
+        state,
+        browserBinding,
+        redirectUri: `${requestOrigin(c)}/auth/slack/install/callback`,
+        ...(code === undefined ? {} : { code }),
+        ...(providerError === undefined ? {} : { error: providerError }),
+      });
+      clearSlackInstallBrowserCookie(c);
+      await Promise.all([
+        limiter.recordSuccess('slack_install_callback_source', source),
+        limiter.recordSuccess('slack_install_callback_operation', state),
+      ]);
+      return c.redirect(slackInstallResultRedirect(result), 303);
+    } catch (error) {
+      await Promise.all([
+        limiter.recordFailure('slack_install_callback_source', source),
+        limiter.recordFailure('slack_install_callback_operation', state),
+      ]);
+      if (error instanceof AuthRateLimitError) {
+        c.header('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))));
+        return c.json({ error: 'rate_limited' }, 429);
+      }
+      if (!(error instanceof SlackInstallOAuthError) ||
+          !['slack_unreachable', 'processing'].includes(error.code)) {
+        clearSlackInstallBrowserCookie(c);
+      }
+      return c.json({ error: slackInstallPublicError(error) }, slackInstallHttpStatus(error));
+    }
+  });
+
   // The deploy-time capability authorizes only the bounded Slack app bootstrap.
   // It is never a browser login, and the resumable transaction remains private
   // until Slack OIDC establishes the first Owner in the later setup step.
@@ -1673,9 +1853,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!capability) return c.notFound();
     c.header('Cache-Control', 'no-store');
     c.header('Referrer-Policy', 'no-referrer');
+    const installStatus = safeSlackInstallStatus(c.req.query('slack_install'));
     return c.html(renderSlackSetupPage({
       destination: safeSetupDestination(c.req.query('destination')),
       manifest: buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) }),
+      ...(installStatus ? { error: installStatus } : {}),
     }));
   });
 
@@ -6424,10 +6606,22 @@ function renderSlackSetupPage(input: {
   const interrupted = input.setup?.state === 'app_creation_pending'
     ? `<section><h2>Creation was interrupted</h2><p>Inspect the persisted attempt. After the interruption grace period it will become an explicit ambiguity decision.</p><form method="post" action="/admin/setup"><input type="hidden" name="action" value="inspect">${hidden}<button type="submit">Inspect interrupted attempt</button></form></section>`
     : '';
-  const created = input.setup && ['app_created', 'approval_pending'].includes(input.setup.state)
-    ? `<section><h2>App created</h2><p>Bot installation and Owner sign-in are separate journeys. Continue with bot installation first; an approval pause keeps this seven-day setup transaction while resume starts a fresh OAuth attempt.</p><p><a href="${escapeSetupHtml(input.destination)}">Continue to Admin</a></p></section>`
+  const install = input.setup?.state === 'app_created'
+    ? `<section><h2>Install Chickpea in Slack</h2><p>This requests the bot permissions in the workspace you choose. Slack may send the request to an administrator for approval.</p><form method="post" action="/auth/slack/install/start">${hidden}<button type="submit">Continue to Slack</button></form></section>`
     : '';
-  return `<!doctype html><html data-slack-setup-state="${escapeSetupHtml(state)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Set up Slack · Chickpea</title><style>body{font-family:system-ui;max-width:46rem;margin:6vh auto;padding:1.5rem;color:#392f1f}section{margin:2rem 0;padding:1.25rem;border:1px solid #d8d0c2;border-radius:.75rem}label{display:block;margin:1rem 0}input,textarea{box-sizing:border-box;width:100%;padding:.7rem}textarea{min-height:16rem}button{padding:.7rem 1rem}</style></head><body><main><h1>Create your Slack app</h1>${stateNotice}${open}${create}${manual}${interrupted}${ambiguous}${created}</main><script src="/admin/setup/client.js" defer></script></body></html>`;
+  const resume = input.setup?.state === 'approval_pending'
+    ? `<section><h2>Slack approval is pending</h2><p>The seven-day setup remains open. After approval, resume with a fresh short-lived Slack authorization.</p><form method="post" action="/auth/slack/install/resume">${hidden}<button type="submit">Resume Slack installation</button></form></section>`
+    : '';
+  const finalize = input.setup?.state === 'bot_install_pending'
+    ? `<section><h2>Verify Slack Events</h2><p>Chickpea is waiting for Slack's signed Events API challenge for this exact app and workspace.</p><form method="post" action="/auth/slack/install/finalize">${hidden}<button type="submit">Check verification</button></form></section>`
+    : '';
+  const installed = input.setup?.state === 'bot_installed'
+    ? `<section><h2>Slack bot installed</h2><p>The exact signed Events challenge was verified and the encrypted bot credential is active. Owner sign-in is the next setup step.</p></section>`
+    : '';
+  const failed = input.setup?.state === 'install_failed'
+    ? `<section><h2>Installation could not be verified</h2><p>The inactive bot credential was discarded. Restart deployment setup to try with a fresh Slack app installation.</p></section>`
+    : '';
+  return `<!doctype html><html data-slack-setup-state="${escapeSetupHtml(state)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Set up Slack · Chickpea</title><style>body{font-family:system-ui;max-width:46rem;margin:6vh auto;padding:1.5rem;color:#392f1f}section{margin:2rem 0;padding:1.25rem;border:1px solid #d8d0c2;border-radius:.75rem}label{display:block;margin:1rem 0}input,textarea{box-sizing:border-box;width:100%;padding:.7rem}textarea{min-height:16rem}button{padding:.7rem 1rem}</style></head><body><main><h1>Create your Slack app</h1>${stateNotice}${open}${create}${manual}${interrupted}${ambiguous}${install}${resume}${finalize}${installed}${failed}</main><script src="/admin/setup/client.js" defer></script></body></html>`;
 }
 
 function slackSetupMessage(code: string): string {
@@ -6438,6 +6632,13 @@ function slackSetupMessage(code: string): string {
     case 'ambiguous_external_effect': return 'Inspect your Slack apps, then adopt the matching app or explicitly restart.';
     case 'app_created': return 'Slack app credentials were encrypted and the setup can continue.';
     case 'approval_pending': return 'Slack approval is pending; this setup remains resumable for seven days.';
+    case 'bot_install_pending': return 'The bot grant is validated and encrypted; signed Slack Events proof is still required.';
+    case 'bot_installed': return 'Slack installation is verified. Owner sign-in is the next setup step.';
+    case 'install_failed': return 'Slack installation verification failed and its inactive credential was discarded.';
+    case 'waiting_events': return 'Chickpea is waiting for Slack to deliver its signed Events API challenge.';
+    case 'denied': return 'Slack did not approve this installation. You can start a fresh request from this setup.';
+    case 'cancelled': return 'Slack installation was cancelled. You can start a fresh request from this setup.';
+    case 'expired': return 'The Slack approval request expired. Resume with a fresh authorization.';
     case 'setup_expired': return 'This private setup link expired. Create a new deployment setup link.';
     case 'setup_conflict': return 'Setup changed in another tab. Reload and inspect the current state.';
     case 'invalid_configuration_token': return 'Slack rejected the configuration token. Paste a fresh token and retry.';
@@ -6445,6 +6646,40 @@ function slackSetupMessage(code: string): string {
     case 'rate_limited': return 'Too many setup attempts. Wait for the retry window before continuing.';
     default: return 'Slack setup could not continue. Check the private link and submitted fields.';
   }
+}
+
+function slackInstallResultRedirect(result: SlackInstallOAuthResult): string {
+  const query = new URLSearchParams({
+    slack_install: result.status,
+    destination: result.destination,
+  });
+  return `/admin/setup?${query.toString()}`;
+}
+
+function safeSlackInstallStatus(value: string | undefined): string | undefined {
+  return value && [
+    'approval_pending', 'denied', 'cancelled', 'expired', 'waiting_events', 'bot_installed',
+  ].includes(value) ? value : undefined;
+}
+
+function slackInstallPublicError(error: unknown): string {
+  return error instanceof SlackInstallOAuthError ? error.code : 'install_unavailable';
+}
+
+function slackInstallHttpStatus(error: unknown): 400 | 409 | 410 | 502 | 503 {
+  if (!(error instanceof SlackInstallOAuthError)) return 400;
+  if (error.code === 'expired_state') return 410;
+  if (error.code === 'stale_revision') return 409;
+  if (error.code === 'processing') return 409;
+  if (error.code === 'slack_unreachable') return 503;
+  if (['directory_unavailable', 'channel_unavailable'].includes(error.code)) return 502;
+  return 400;
+}
+
+function clearSlackInstallBrowserCookie(c: Context): void {
+  deleteCookie(c, SLACK_INSTALL_BROWSER_COOKIE, {
+    path: '/auth/slack/install', secure: true, httpOnly: true, sameSite: 'Lax',
+  });
 }
 
 function escapeSetupHtml(value: string): string {
