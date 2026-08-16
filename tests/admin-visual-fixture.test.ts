@@ -11,6 +11,7 @@ import { renderAdminPage } from '../src/admin/page.ts';
 interface VisualFixture {
   address: string;
   adminToken: string;
+  authStates: Record<string, { path: string }>;
   baseUrl: string;
   canonicalStates: Record<string, { path: string; actions: readonly string[] }>;
   stateDbPath: string;
@@ -234,6 +235,30 @@ test('canonical visual states use authenticated production URLs and UI actions o
       assert.match(html, /<title>Chickpea · \/admin<\/title>/);
       assert.match(html, /api\("\/admin\/api\/agents"\)/);
       assert.doesNotMatch(html, /data-action="fixture-|visualFixture|fixtureState/);
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('Slack auth visual states render the production Slack-only journey without secrets', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+  const fixture = await startAdminVisualFixture();
+  try {
+    assert.deepEqual(Object.keys(fixture.authStates), [
+      'signIn', 'setupCreate', 'setupApproval', 'setupOwner',
+      'accessDenied', 'ownerComplete', 'recovery',
+    ]);
+    for (const [name, state] of Object.entries(fixture.authStates)) {
+      const response = await fetch(`${fixture.baseUrl}${state.path}`);
+      assert.equal(response.status, 200, name);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      const html = await response.text();
+      assert.match(html, /data-slack-auth-surface=/, name);
+      assert.match(html, /<main[^>]*aria-labelledby="auth-title"/, name);
+      assert.match(html, /role="status" aria-live="polite"/, name);
+      assert.doesNotMatch(html, /xox[bep]-|route-client-secret|route-signing-secret|visual-setup-capability/, name);
+      assert.doesNotMatch(html, /fonts\.googleapis|Forgot Password|Sign up|Cloudflare Access/i, name);
     }
   } finally {
     await fixture.close();

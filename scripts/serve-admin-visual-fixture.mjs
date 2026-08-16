@@ -37,6 +37,16 @@ export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
   }),
 });
 
+export const CANONICAL_SLACK_AUTH_VISUAL_STATES = Object.freeze({
+  signIn: Object.freeze({ path: '/__admin_visual_fixture/auth/sign-in' }),
+  setupCreate: Object.freeze({ path: '/__admin_visual_fixture/auth/setup-create' }),
+  setupApproval: Object.freeze({ path: '/__admin_visual_fixture/auth/setup-approval' }),
+  setupOwner: Object.freeze({ path: '/__admin_visual_fixture/auth/setup-owner' }),
+  accessDenied: Object.freeze({ path: '/__admin_visual_fixture/auth/access-denied' }),
+  ownerComplete: Object.freeze({ path: '/__admin_visual_fixture/auth/owner-complete' }),
+  recovery: Object.freeze({ path: '/__admin_visual_fixture/auth/recovery' }),
+});
+
 const VISUAL_CHANNELS = Object.freeze([
   { id: 'C_RELEASES', name: 'release-room', is_private: false, is_member: true },
   { id: 'C_SUPPORT', name: 'customer-support', is_private: false, is_member: false },
@@ -426,6 +436,17 @@ export async function startAdminVisualFixture(options = {}) {
     assertNodeVersion();
     const { Hono } = await import('hono');
     const { createAdminRoutes } = await loadTsModule('src/admin/routes.ts');
+    const {
+      renderSlackAccessDeniedPage,
+      renderSlackOwnerCompletePage,
+      renderSlackRecoveryPage,
+      renderSlackSetupPage,
+      renderSlackSignInPage,
+    } = await loadTsModule('src/admin/page.ts');
+    const {
+      buildSlackAppManifest,
+      slackManifestPrefillUrl,
+    } = await loadTsModule('src/slack/identity-manifest.ts');
     const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
     const { SqliteSettingsStore } = await loadTsModule('src/config/settings-store.ts');
     const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
@@ -484,6 +505,44 @@ export async function startAdminVisualFixture(options = {}) {
 
     const adminToken = `visual-${randomBytes(18).toString('base64url')}`;
     const app = new Hono();
+    const authManifest = buildSlackAppManifest({
+      kind: 'control_plane', origin: 'https://chickpea.example',
+    });
+    const authSetup = (state) => ({
+      id: 'setup_visual', state, revision: 4, destination: '/admin/channels',
+      createdAt: 1, updatedAt: 2, expiresAt: Date.now() + 86_400_000,
+      appId: 'AVISUAL', manifestFingerprint: 'f'.repeat(64),
+      credentialRevision: 'slackrev_visual',
+    });
+    const authPages = {
+      'sign-in': renderSlackSignInPage('/admin/channels'),
+      'setup-create': renderSlackSetupPage({
+        setup: authSetup('awaiting_app_creation'), destination: '/admin/channels',
+        manifest: authManifest, manifestPrefillUrl: slackManifestPrefillUrl(authManifest),
+      }),
+      'setup-approval': renderSlackSetupPage({
+        setup: authSetup('approval_pending'), destination: '/admin/channels',
+        manifest: authManifest, manifestPrefillUrl: slackManifestPrefillUrl(authManifest),
+      }),
+      'setup-owner': renderSlackSetupPage({
+        setup: authSetup('bot_installed'), destination: '/admin/channels',
+        manifest: authManifest, manifestPrefillUrl: slackManifestPrefillUrl(authManifest),
+      }),
+      'access-denied': renderSlackAccessDeniedPage({
+        purpose: 'login', destination: '/admin/channels', reason: 'user_mismatch',
+        workspace: { teamId: WORKSPACE_ID, teamName: 'Acme' },
+      }),
+      'owner-complete': renderSlackOwnerCompletePage('/admin/channels'),
+      recovery: renderSlackRecoveryPage({
+        stage: 'credentials', expectedAppId: 'AVISUAL', expectedTeamId: WORKSPACE_ID,
+      }),
+    };
+    app.get('/__admin_visual_fixture/auth/:state', (c) => {
+      const html = authPages[c.req.param('state')];
+      if (!html) return c.notFound();
+      c.header('Cache-Control', 'no-store');
+      return c.html(html);
+    });
     app.post('/__admin_visual_fixture/slack/:method', async (c) => {
       if (c.req.header('authorization') !== `Bearer ${LOCAL_SLACK_TOKEN}`) {
         return c.json({ ok: false, error: 'invalid_auth' });
@@ -561,6 +620,7 @@ export async function startAdminVisualFixture(options = {}) {
       address: bound.address,
       adminToken,
       baseUrl,
+      authStates: CANONICAL_SLACK_AUTH_VISUAL_STATES,
       canonicalStates: CANONICAL_ADMIN_VISUAL_STATES,
       stateDbPath,
       stateDirectory,

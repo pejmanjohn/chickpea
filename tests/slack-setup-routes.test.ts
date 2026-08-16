@@ -55,7 +55,7 @@ test('capability-gated Admin setup creates an app without reflecting or retainin
       action: 'open', capability: authority.capability, destination: '/admin/channels',
     });
     assert.equal(opened.status, 200);
-    assert.match(await opened.text(), /Create programmatically/);
+    assert.match(await opened.text(), /Create the Slack app/);
 
     const created = await postSetup(app, env, {
       action: 'create', capability: authority.capability,
@@ -96,7 +96,7 @@ test('ambiguous Admin setup never retries Slack until an explicit restart', asyn
     });
     assert.equal(ambiguous.status, 409);
     const firstHtml = await ambiguous.text();
-    assert.match(firstHtml, /Inspect your Slack apps/);
+    assert.match(firstHtml, /Inspect Slack/);
     assert.doesNotMatch(firstHtml, /route-configuration-token/);
 
     const noRetry = await postSetup(app, env, {
@@ -432,6 +432,63 @@ test('Slack-only sign-in uses a narrow nonce cookie and restores the safe Admin 
     assert.match(callback.headers.get('set-cookie') ?? '', /better-auth\.session_token=session-secret/);
     assert.equal(callbackInput?.nonce, nonce);
     assert.equal(callbackInput?.purpose, 'login');
+  } finally {
+    identity.close();
+  }
+});
+
+test('wrong-account login clears callback authority and returns a non-disclosing Slack retry page', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  await identity.ensureOrganization({ displayName: 'Acme', slackTeamId: 'TACME' });
+  const state = 'wrong-account-state-0123456789abcdefghijklmnop';
+  const nonce = 'wrong-account-nonce-0123456789abcdefghijklmnop';
+  let startInput: Record<string, unknown> | undefined;
+  const service = {
+    async startLogin(input: Record<string, unknown>) {
+      startInput = input;
+      return {
+        attemptId: 'slackoidc_wrong_account', state, nonce, expiresAt: Date.now() + 900_000,
+        authorizationUrl: `https://slack.com/openid/connect/authorize?state=${state}`,
+      };
+    },
+    async callback() { throw new SlackOidcError('user_mismatch'); },
+  } as unknown as SlackAdmissionService;
+  try {
+    const app = createAdminRoutes({
+      identity, slackAdmissionService: service,
+      authSecret: Buffer.alloc(32, 9).toString('base64url'),
+    });
+    const signIn = await app.request(
+      `${ORIGIN}/auth/slack/sign-in?destination=https%3A%2F%2Fattacker.example%2Fadmin`,
+    );
+    assert.equal(signIn.status, 401);
+    assert.equal(signIn.headers.get('cache-control'), 'no-store');
+    assert.equal(signIn.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(signIn.headers.get('x-frame-options'), 'DENY');
+    assert.match(signIn.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/);
+    assert.doesNotMatch(await signIn.text(), /fonts\.googleapis|password|sign up/i);
+
+    const start = await app.request(`${ORIGIN}/auth/slack/oidc/start`, {
+      method: 'POST', headers: formHeaders(), body: new URLSearchParams({
+        purpose: 'login', destination: 'https://attacker.example/admin',
+      }),
+    });
+    assert.equal(start.status, 302);
+    assert.equal(startInput?.destination, '/admin');
+    const cookie = start.headers.get('set-cookie')!;
+    assert.doesNotMatch(cookie, /attacker/i);
+    const callback = await app.request(
+      `${ORIGIN}/auth/slack/oidc/callback?state=${state}&code=wrong-account-code`,
+      { headers: { cookie: cookie.split(';', 1)[0]! } },
+    );
+    assert.equal(callback.status, 403, await callback.clone().text());
+    assert.match(callback.headers.get('set-cookie') ?? '', /Max-Age=0/i);
+    const html = await callback.text();
+    assert.match(html, /Try another Slack account/);
+    assert.match(html, /connected Slack workspace \(TACME\)/);
+    assert.match(html, /name="destination" value="\/admin"/);
+    assert.match(html, /assigned Slack channels/);
+    assert.doesNotMatch(html, /expected user|invited user|email|password|attacker/i);
   } finally {
     identity.close();
   }

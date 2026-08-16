@@ -47,8 +47,18 @@ export function slackSetupClientScript(): string {
   if (!capability && status) status.textContent = "This private setup link is missing or expired. Retry your deployment to create a new link.";
   var setupState = document.documentElement && document.documentElement.getAttribute
     ? document.documentElement.getAttribute("data-slack-setup-state") : "";
+  var autoResume = document.documentElement && document.documentElement.getAttribute
+    ? document.documentElement.getAttribute("data-slack-setup-auto-resume") === "true" : false;
   if (setupState === "ambiguous_external_effect" && status) {
     status.textContent = "Inspect your Slack apps, then adopt the matching app or explicitly restart.";
+  }
+  var openForm = document.getElementById("slack-setup-open-form");
+  if (capability && setupState === "capability_required" && autoResume && openForm) {
+    if (status) status.textContent = "Resuming your saved Slack setup…";
+    capability = "";
+    if (openForm.requestSubmit) openForm.requestSubmit();
+    else if (openForm.submit) openForm.submit();
+    return;
   }
   capability = "";
 })();`;

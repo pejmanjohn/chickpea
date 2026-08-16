@@ -11,7 +11,15 @@ import {
   renderPasswordLogin,
   renderAdminPage,
   renderAuthMigrationPage,
+  renderSlackAccessDeniedPage,
+  renderSlackInvitationCompletePage,
+  renderSlackInvitationMismatchPage,
+  renderSlackInvitationPage,
+  renderSlackInvitationUnavailablePage,
+  renderSlackOwnerCompletePage,
   renderSlackRecoveryPage,
+  renderSlackSetupPage,
+  renderSlackSignInPage,
   renderAuthSetupCompletePage,
   renderAuthSetupPage,
   renderMemberAccountPage,
@@ -1928,6 +1936,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const limiter = authRateLimiter(c, context.limiterSecret);
     const browserBinding = `${randomUUID().replaceAll('-', '')}${randomUUID().replaceAll('-', '')}`;
     let operationKey = purpose;
+    let retryDestination = '/admin';
     try {
       await Promise.all([
         limiter.assertAllowed('slack_oidc_start_source', source),
@@ -1943,6 +1952,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ...(form.destination === undefined ? {} : { destination: form.destination }),
         });
         operationKey = setup.id;
+        retryDestination = setup.destination;
         await limiter.assertAllowed('slack_oidc_start_operation', operationKey);
         started = await context.service.startFirstOwner({
           setupId: setup.id,
@@ -1953,6 +1963,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         });
       } else if (purpose === 'login') {
         operationKey = 'login';
+        retryDestination = safeSetupDestination(form.destination);
         await limiter.assertAllowed('slack_oidc_start_operation', operationKey);
         started = await context.service.startLogin({
           browserBinding,
@@ -1965,6 +1976,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           throw new SlackOidcError('invalid_state');
         }
         operationKey = createHash('sha256').update(locator).digest('hex');
+        retryDestination = '/admin/team';
         await limiter.assertAllowed('slack_oidc_start_operation', operationKey);
         started = await context.service.startInvitation({
           locator,
@@ -1974,7 +1986,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         });
       }
       setCookie(c, SLACK_OIDC_BROWSER_COOKIE,
-        encodeSlackOidcCookie(purpose, browserBinding, started.nonce), {
+        encodeSlackOidcCookie(purpose, browserBinding, started.nonce, retryDestination), {
           path: '/auth/slack/oidc', httpOnly: true, secure: true, sameSite: 'Lax',
           maxAge: Math.max(1, Math.floor((started.expiresAt - Date.now()) / 1_000)),
         });
@@ -2040,6 +2052,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (cookie.purpose === 'invitation') {
         return c.html(renderSlackInvitationCompletePage(result.destination));
       }
+      if (cookie.purpose === 'first_owner') {
+        return c.html(renderSlackOwnerCompletePage(result.destination));
+      }
       return c.redirect(result.destination, 303);
     } catch (error) {
       await Promise.all([
@@ -2062,6 +2077,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (cookie.purpose === 'invitation' && error instanceof SlackOidcError &&
           error.code === 'invitation_unavailable') {
         return c.html(renderSlackInvitationUnavailablePage(), 410);
+      }
+      if (cookie.purpose !== 'invitation' && error instanceof SlackOidcError &&
+          !['slack_unreachable', 'processing', 'session_unavailable'].includes(error.code)) {
+        const workspace = await slackWorkspaceDescriptor(c).catch(() => undefined);
+        return c.html(renderSlackAccessDeniedPage({
+          purpose: cookie.purpose,
+          destination: cookie.destination,
+          reason: error.code,
+          ...(workspace ? { workspace } : {}),
+        }), slackOidcHttpStatus(error));
       }
       return c.json({ error: slackOidcPublicError(error) }, slackOidcHttpStatus(error));
     }
@@ -2088,10 +2113,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c.header('Cache-Control', 'no-store');
     c.header('Referrer-Policy', 'no-referrer');
     const installStatus = safeSlackInstallStatus(c.req.query('slack_install'));
+    const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
     return c.html(renderSlackSetupPage({
       destination: safeSetupDestination(c.req.query('destination')),
-      manifest: buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) }),
-      ...(installStatus ? { error: installStatus } : {}),
+      manifest,
+      manifestPrefillUrl: slackManifestPrefillUrl(manifest),
+      autoResume: true,
+      ...(installStatus ? { notice: installStatus } : {}),
     }));
   });
 
@@ -2105,11 +2133,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const limiter = authRateLimiter(c, capability.digest);
     let setup: SlackSetupTransaction | undefined;
     let action = 'open';
+    let notice: string | undefined;
     try {
       await limiter.assertAllowed('slack_setup_source', source);
       if (!validAuthFormPost(c, requestOrigin(c))) throw new AuthDeniedError();
       const rawForm = await readForm(c);
       action = boundedSetupField(rawForm.action ?? 'open', 32);
+      notice = safeSlackInstallStatus(rawForm.notice);
       setup = await openSlackSetupTransaction(identity(c), {
         capability: boundedSetupField(rawForm.capability, 512),
         authority: capability,
@@ -2155,14 +2185,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         limiter.recordSuccess(`slack_setup_operation_${action}`, setup.id),
         limiter.recordSuccess('slack_setup_deployment', 'deployment'),
       ]);
-      return c.html(renderSlackSetupPage({ setup, destination: setup.destination, manifest }));
+      return c.html(renderSlackSetupPage({
+        setup, destination: setup.destination, manifest,
+        manifestPrefillUrl: slackManifestPrefillUrl(manifest),
+        ...(notice ? { notice } : {}),
+      }));
     } catch (error) {
       if (error instanceof AuthRateLimitError) {
         c.header('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))));
+        const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
         return c.html(renderSlackSetupPage({
           ...(setup ? { setup } : {}),
           destination: setup?.destination ?? '/admin',
-          manifest: buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) }),
+          manifest,
+          manifestPrefillUrl: slackManifestPrefillUrl(manifest),
           error: 'rate_limited',
         }), 429);
       }
@@ -2176,10 +2212,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         : code === 'setup_expired' ? 410
         : code === 'setup_conflict' ? 409
         : 400;
+      const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
       return c.html(renderSlackSetupPage({
         ...(setup ? { setup } : {}),
         destination: setup?.destination ?? '/admin',
-        manifest: buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) }),
+        manifest,
+        manifestPrefillUrl: slackManifestPrefillUrl(manifest),
         error: code,
       }), status);
     }
@@ -6860,76 +6898,6 @@ function boundedSetupField(value: string | undefined, maximum: number): string {
   return normalized;
 }
 
-function renderSlackSetupPage(input: {
-  setup?: SlackSetupTransaction;
-  destination: string;
-  manifest: ReturnType<typeof buildSlackAppManifest>;
-  error?: string;
-}): string {
-  const state = input.setup?.state ?? 'capability_required';
-  const manifestJson = JSON.stringify(input.manifest, null, 2);
-  const prefill = slackManifestPrefillUrl(input.manifest);
-  const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeSetupHtml(input.destination)}">`;
-  const stateNotice = input.error
-    ? `<p role="alert">${escapeSetupHtml(slackSetupMessage(input.error))}</p>`
-    : `<p id="slack-setup-status">${escapeSetupHtml(slackSetupMessage(state))}</p>`;
-  const open = !input.setup
-    ? `<form method="post" action="/admin/setup"><input type="hidden" name="action" value="open">${hidden}<button type="submit">Continue private setup</button></form>`
-    : '';
-  const create = input.setup?.state === 'awaiting_app_creation'
-    ? `<section><h2>Create programmatically</h2><p>The short-lived configuration token is sent once to Slack and is never stored.</p><form method="post" action="/admin/setup"><input type="hidden" name="action" value="create">${hidden}<label>Slack configuration token <input type="password" name="configurationToken" autocomplete="off" maxlength="512" required></label><button type="submit">Create Slack app</button></form></section>`
-    : '';
-  const manual = input.setup && ['awaiting_app_creation', 'ambiguous_external_effect'].includes(input.setup.state)
-    ? `<section><h2>Adopt a manually created app</h2><p><a href="${escapeSetupHtml(prefill)}" rel="noreferrer">Create from the exact manifest in Slack</a>, then export that app's manifest and supply its write-only credentials.</p><details><summary>Expected manifest</summary><pre>${escapeSetupHtml(manifestJson)}</pre></details><form method="post" action="/admin/setup"><input type="hidden" name="action" value="adopt">${hidden}<label>App ID <input type="password" name="appId" autocomplete="off" maxlength="64" required></label><label>Client ID <input type="password" name="clientId" autocomplete="off" maxlength="256" required></label><label>Client secret <input type="password" name="clientSecret" autocomplete="off" maxlength="4096" required></label><label>Signing secret <input type="password" name="signingSecret" autocomplete="off" maxlength="4096" required></label><label>Exported app manifest <textarea name="observedManifest" maxlength="7500" required></textarea></label><button type="submit">Validate and adopt</button></form></section>`
-    : '';
-  const ambiguous = input.setup?.state === 'ambiguous_external_effect'
-    ? `<section><h2>Slack result needs inspection</h2><p>Inspect your Slack apps before choosing. Creating again automatically could create a duplicate.</p><form method="post" action="/admin/setup"><input type="hidden" name="action" value="inspect">${hidden}<button type="submit">Inspect stored state</button></form><form method="post" action="/admin/setup"><input type="hidden" name="action" value="restart">${hidden}<button type="submit">I inspected Slack; restart creation</button></form></section>`
-    : '';
-  const interrupted = input.setup?.state === 'app_creation_pending'
-    ? `<section><h2>Creation was interrupted</h2><p>Inspect the persisted attempt. After the interruption grace period it will become an explicit ambiguity decision.</p><form method="post" action="/admin/setup"><input type="hidden" name="action" value="inspect">${hidden}<button type="submit">Inspect interrupted attempt</button></form></section>`
-    : '';
-  const install = input.setup?.state === 'app_created'
-    ? `<section><h2>Install Chickpea in Slack</h2><p>This requests the bot permissions in the workspace you choose. Slack may send the request to an administrator for approval.</p><form method="post" action="/auth/slack/install/start">${hidden}<button type="submit">Continue to Slack</button></form></section>`
-    : '';
-  const resume = input.setup?.state === 'approval_pending'
-    ? `<section><h2>Slack approval is pending</h2><p>The seven-day setup remains open. After approval, resume with a fresh short-lived Slack authorization.</p><form method="post" action="/auth/slack/install/resume">${hidden}<button type="submit">Resume Slack installation</button></form></section>`
-    : '';
-  const finalize = input.setup?.state === 'bot_install_pending'
-    ? `<section><h2>Verify Slack Events</h2><p>Chickpea is waiting for Slack's signed Events API challenge for this exact app and workspace.</p><form method="post" action="/auth/slack/install/finalize">${hidden}<button type="submit">Check verification</button></form></section>`
-    : '';
-  const installed = input.setup?.state === 'bot_installed'
-    ? `<section><h2>Slack bot installed</h2><p>The exact signed Events challenge was verified. Sign in as the same Slack member who installed the app to become the first Chickpea Owner.</p><form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="first_owner">${hidden}<button type="submit">Continue with Slack</button></form></section>`
-    : '';
-  const failed = input.setup?.state === 'install_failed'
-    ? `<section><h2>Installation could not be verified</h2><p>The inactive bot credential was discarded. Restart deployment setup to try with a fresh Slack app installation.</p></section>`
-    : '';
-  return `<!doctype html><html data-slack-setup-state="${escapeSetupHtml(state)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Set up Slack · Chickpea</title><style>body{font-family:system-ui;max-width:46rem;margin:6vh auto;padding:1.5rem;color:#392f1f}section{margin:2rem 0;padding:1.25rem;border:1px solid #d8d0c2;border-radius:.75rem}label{display:block;margin:1rem 0}input,textarea{box-sizing:border-box;width:100%;padding:.7rem}textarea{min-height:16rem}button{padding:.7rem 1rem}</style></head><body><main><h1>Create your Slack app</h1>${stateNotice}${open}${create}${manual}${interrupted}${ambiguous}${install}${resume}${finalize}${installed}${failed}</main><script src="/admin/setup/client.js" defer></script></body></html>`;
-}
-
-function slackSetupMessage(code: string): string {
-  switch (code) {
-    case 'capability_required': return 'Open this page from the private deployment setup link.';
-    case 'awaiting_app_creation': return 'Choose programmatic creation or the convergent manual manifest path.';
-    case 'app_creation_pending': return 'Slack app creation was interrupted. Inspect the durable state before continuing.';
-    case 'ambiguous_external_effect': return 'Inspect your Slack apps, then adopt the matching app or explicitly restart.';
-    case 'app_created': return 'Slack app credentials were encrypted and the setup can continue.';
-    case 'approval_pending': return 'Slack approval is pending; this setup remains resumable for seven days.';
-    case 'bot_install_pending': return 'The bot grant is validated and encrypted; signed Slack Events proof is still required.';
-    case 'bot_installed': return 'Slack installation is verified. Owner sign-in is the next setup step.';
-    case 'install_failed': return 'Slack installation verification failed and its inactive credential was discarded.';
-    case 'waiting_events': return 'Chickpea is waiting for Slack to deliver its signed Events API challenge.';
-    case 'denied': return 'Slack did not approve this installation. You can start a fresh request from this setup.';
-    case 'cancelled': return 'Slack installation was cancelled. You can start a fresh request from this setup.';
-    case 'expired': return 'The Slack approval request expired. Resume with a fresh authorization.';
-    case 'setup_expired': return 'This private setup link expired. Create a new deployment setup link.';
-    case 'setup_conflict': return 'Setup changed in another tab. Reload and inspect the current state.';
-    case 'invalid_configuration_token': return 'Slack rejected the configuration token. Paste a fresh token and retry.';
-    case 'invalid_manifest': return 'The Slack app callbacks, scopes, or events do not match this deployment.';
-    case 'rate_limited': return 'Too many setup attempts. Wait for the retry window before continuing.';
-    default: return 'Slack setup could not continue. Check the private link and submitted fields.';
-  }
-}
-
 function slackInstallResultRedirect(result: SlackInstallOAuthResult): string {
   const query = new URLSearchParams({
     slack_install: result.status,
@@ -7021,23 +6989,28 @@ function encodeSlackOidcCookie(
   purpose: 'first_owner' | 'login' | 'invitation',
   browserBinding: string,
   nonce: string,
+  destination: string,
 ): string {
-  return `${purpose}.${browserBinding}.${nonce}`;
+  return `${purpose}.${browserBinding}.${nonce}.${encodeURIComponent(safeSetupDestination(destination))}`;
 }
 
 function decodeSlackOidcCookie(value: string | undefined): {
   purpose: 'first_owner' | 'login' | 'invitation';
   browserBinding: string;
   nonce: string;
+  destination: string;
 } | undefined {
-  if (!value || value.length > 1_100) return undefined;
-  const [purpose, browserBinding, nonce, extra] = value.split('.');
-  if (extra !== undefined ||
+  if (!value || value.length > 1_500) return undefined;
+  const [purpose, browserBinding, nonce, ...destinationParts] = value.split('.');
+  if (destinationParts.length === 0 ||
       (purpose !== 'first_owner' && purpose !== 'login' && purpose !== 'invitation') ||
       !browserBinding || browserBinding.length < 32 || browserBinding.length > 512 ||
       !nonce || nonce.length < 32 || nonce.length > 512 ||
       /\s/.test(browserBinding) || /\s/.test(nonce)) return undefined;
-  return { purpose, browserBinding, nonce };
+  let destination: string;
+  try { destination = safeSetupDestination(decodeURIComponent(destinationParts.join('.'))); }
+  catch { return undefined; }
+  return { purpose, browserBinding, nonce, destination };
 }
 
 function clearSlackOidcBrowserCookie(c: Context): void {
@@ -7059,36 +7032,6 @@ function slackOidcHttpStatus(error: unknown): 400 | 403 | 409 | 410 | 503 {
   if (error.code === 'session_unavailable') return 503;
   if (['inactive_user', 'user_mismatch', 'workspace_mismatch'].includes(error.code)) return 403;
   return 400;
-}
-
-function renderSlackSignInPage(destination: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Sign in · Chickpea</title><style>body{font-family:system-ui;max-width:30rem;margin:12vh auto;padding:1.5rem;color:#392f1f}button{width:100%;padding:.8rem 1rem;font:inherit}</style></head><body><main><h1>Sign in to Chickpea</h1><p>Use your invited identity in the connected Slack workspace.</p><form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="login"><input type="hidden" name="destination" value="${escapeSetupHtml(destination)}"><button type="submit">Continue with Slack</button></form></main></body></html>`;
-}
-
-function renderSlackInvitationPage(workspace: { teamId: string; teamName?: string }): string {
-  const label = workspace.teamName
-    ? `${workspace.teamName} (${workspace.teamId})`
-    : `the connected Slack workspace (${workspace.teamId})`;
-  return `<!doctype html><html data-invitation-state="ready"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Join Chickpea</title><style>body{font-family:system-ui;max-width:30rem;margin:12vh auto;padding:1.5rem;color:#392f1f}button{width:100%;padding:.8rem 1rem;font:inherit}p{line-height:1.5}</style></head><body><main><h1>Join Chickpea</h1><p>Continue with the invited Slack account in ${escapeSetupHtml(label)}.</p><p id="invitation-status" role="status">Checking this invitation…</p><form id="invitation-form" method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="invitation"><input id="invitation-locator" type="hidden" name="invitation"><button id="invitation-submit" type="submit" disabled>Continue with Slack</button></form></main><script src="/auth/slack/invite/client.js" defer></script></body></html>`;
-}
-
-function renderSlackInvitationMismatchPage(
-  workspace: { teamId: string; teamName?: string } | undefined,
-): string {
-  const label = workspace?.teamName
-    ? `${workspace.teamName} (${workspace.teamId})`
-    : workspace?.teamId
-      ? `the connected Slack workspace (${workspace.teamId})`
-      : 'the connected Slack workspace';
-  return `<!doctype html><html data-invitation-state="mismatch"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Try another Slack account</title><style>body{font-family:system-ui;max-width:30rem;margin:12vh auto;padding:1.5rem;color:#392f1f}a{display:block;padding:.8rem 1rem;text-align:center;border:1px solid currentColor;border-radius:.5rem}p{line-height:1.5}</style></head><body><main><h1>That Slack account cannot use this invitation</h1><p>Choose the invited account in ${escapeSetupHtml(label)}. This page does not reveal who was invited.</p><a href="/auth/slack/invite">Try another Slack account</a></main><script src="/auth/slack/invite/client.js" defer></script></body></html>`;
-}
-
-function renderSlackInvitationCompletePage(destination: string): string {
-  return `<!doctype html><html data-invitation-state="complete" data-destination="${escapeSetupHtml(safeSetupDestination(destination))}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Invitation accepted</title><style>body{font-family:system-ui;max-width:30rem;margin:12vh auto;padding:1.5rem;color:#392f1f}p{line-height:1.5}</style></head><body><main><h1>You’re in</h1><p>Opening Chickpea…</p><noscript><a href="${escapeSetupHtml(safeSetupDestination(destination))}">Open Chickpea</a></noscript></main><script src="/auth/slack/invite/client.js" defer></script></body></html>`;
-}
-
-function renderSlackInvitationUnavailablePage(): string {
-  return `<!doctype html><html data-invitation-state="unavailable"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><title>Invitation unavailable</title><style>body{font-family:system-ui;max-width:30rem;margin:12vh auto;padding:1.5rem;color:#392f1f}p{line-height:1.5}</style></head><body><main><h1>This invitation is no longer available</h1><p>Ask a Chickpea Owner to select your Slack member again and create a fresh invitation.</p></main><script src="/auth/slack/invite/client.js" defer></script></body></html>`;
 }
 
 function slackInvitationClientScript(): string {
@@ -7132,11 +7075,6 @@ function slackInvitationClientScript(): string {
     : "This invitation link is missing or no longer available.";
   locator = "";
 })();`;
-}
-
-function escapeSetupHtml(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
 
 function authSourceKey(c: Context): string {

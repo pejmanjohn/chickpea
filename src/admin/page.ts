@@ -7,6 +7,8 @@ import {
   type PasswordPolicyErrorCode,
 } from '../auth/password-policy.ts';
 import { AUTH_BRAND_HTML } from '../auth/brand.ts';
+import type { SlackSetupTransaction } from '../identity/types.ts';
+import type { SlackAppManifest } from '../slack/identity-manifest.ts';
 
 const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">`;
 const SLACK_LOGO_DATA_URL =
@@ -15386,6 +15388,250 @@ export function renderPasswordRecoveryPage(options: { error?: boolean; success?:
   });
 }
 
+type SlackAuthPurpose = 'first_owner' | 'login' | 'invitation';
+
+interface SlackAuthWorkspace {
+  teamId: string;
+  teamName?: string;
+}
+
+/** Shared, self-contained shell for every visible Slack identity journey. */
+function renderSlackJourneyPage(input: {
+  surface: string;
+  eyebrow: string;
+  title: string;
+  intro: string;
+  status: string;
+  statusId?: string;
+  body: string;
+  alert?: string | undefined;
+  rootAttributes?: string;
+}): string {
+  const alert = input.alert
+    ? `<div class="auth-alert" id="auth-error" role="alert" tabindex="-1">${escapeHtmlAttribute(input.alert)}</div>`
+    : '';
+  return `<!doctype html><html lang="en" data-slack-auth-surface="${escapeHtmlAttribute(input.surface)}"${input.rootAttributes ? ` ${input.rootAttributes}` : ''}><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">
+<title>Chickpea · ${escapeHtmlAttribute(input.title)}</title>${ADMIN_FAVICON}
+<style>
+:root{--canvas:#f4ebd8;--card:#fffdf6;--well:#f8f1df;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--gold-press:#b27e1f;--line:rgba(59,50,32,.16);--danger:#a83f34;--focus:#b05415}*{box-sizing:border-box}html{color-scheme:light}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:clamp(12px,4vw,32px);overflow-wrap:anywhere}.auth-card{width:min(600px,100%);background:var(--card);border:1px solid var(--line);border-radius:22px;padding:clamp(22px,6vw,46px);box-shadow:0 14px 38px rgba(59,50,32,.1)}.auth-brand{display:flex;align-items:center;gap:10px;margin-bottom:30px}.auth-brand-mark{width:42px;height:42px;display:block}.auth-brand-name{font-weight:850;font-size:1.15rem}.auth-eyebrow{margin:0;color:var(--muted);font-size:.76rem;font-weight:850;letter-spacing:.09em;text-transform:uppercase}.auth-title{margin:8px 0 10px;font-size:clamp(1.75rem,7vw,2.7rem);line-height:1.05;letter-spacing:-.035em}.auth-intro,.auth-status,.auth-help{color:var(--muted);line-height:1.55}.auth-status{min-height:1.5em;margin:14px 0}.auth-alert{margin:18px 0;border-left:4px solid var(--danger);border-radius:8px;background:#fff3ee;color:var(--danger);padding:12px 14px;font-weight:750;line-height:1.45}.auth-section{margin-top:24px;padding:20px;border:1px solid var(--line);border-radius:15px;background:var(--well)}.auth-section h2{margin:0 0 8px;font-size:1.08rem}.auth-progress{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin:24px 0 6px;padding:0;list-style:none}.auth-progress li{border-top:4px solid var(--line);padding-top:7px;color:var(--muted);font-size:.73rem;font-weight:750}.auth-progress li[data-current="true"]{border-color:var(--gold-press);color:var(--ink)}label{display:block;margin:17px 0 6px;font-weight:750}label span{display:block;margin-top:2px;color:var(--muted);font-size:.78rem;font-weight:500}input,textarea{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;color:var(--ink);padding:11px 12px;font:inherit}textarea{min-height:220px;resize:vertical}details{margin-top:20px;border-top:1px solid var(--line);padding-top:17px}summary{cursor:pointer;font-weight:800}.auth-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}.auth-button,.auth-link{display:inline-flex;align-items:center;justify-content:center;min-height:48px;border:0;border-radius:12px;padding:11px 17px;background:var(--gold);box-shadow:0 3px 0 var(--gold-press);color:var(--ink);font:inherit;font-weight:850;text-decoration:none;cursor:pointer}.auth-button{width:100%}.auth-button.secondary,.auth-link.secondary{background:transparent;border:1px solid var(--line);box-shadow:none}.auth-button:active,.auth-link:active{transform:translateY(2px);box-shadow:none}.auth-button:focus-visible,.auth-link:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible,.auth-alert:focus-visible{outline:3px solid color-mix(in srgb,var(--focus) 48%,transparent);outline-offset:3px}.auth-warning{margin-top:22px;border:1px solid rgba(168,63,52,.25);border-radius:13px;background:#fff3ee;padding:15px}.auth-warning strong{display:block;margin-bottom:5px}.auth-meta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.83rem}.auth-manifest{max-height:280px;overflow:auto;white-space:pre-wrap;font-size:.75rem}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:440px){body{padding:8px}.auth-card{border-radius:14px;padding:21px 16px}.auth-progress{gap:4px}.auth-progress li{font-size:.66rem}.auth-actions{display:grid}.auth-link,.auth-button{width:100%}.auth-section{padding:16px 13px}}
+</style></head><body><main class="auth-card" aria-labelledby="auth-title">${AUTH_BRAND_HTML}<p class="auth-eyebrow">${escapeHtmlAttribute(input.eyebrow)}</p><h1 class="auth-title" id="auth-title">${escapeHtmlAttribute(input.title)}</h1><p class="auth-intro">${escapeHtmlAttribute(input.intro)}</p>${alert}<p class="auth-status"${input.statusId ? ` id="${escapeHtmlAttribute(input.statusId)}"` : ''} role="status" aria-live="polite">${escapeHtmlAttribute(input.status)}</p>${input.body}</main></body></html>`;
+}
+
+export function renderSlackSignInPage(destination: string): string {
+  const safeDestination = safeSlackPageDestination(destination);
+  return renderSlackJourneyPage({
+    surface: 'sign-in',
+    eyebrow: 'Chickpea control plane',
+    title: 'Sign in with Slack',
+    intro: 'Use the Slack identity invited to manage this Chickpea workspace.',
+    status: 'Control-plane access is invitation-only. Teammates can use Chickpea in assigned channels without signing in here.',
+    body: `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="login"><input type="hidden" name="destination" value="${escapeHtmlAttribute(safeDestination)}"><button class="auth-button" type="submit" autofocus>Continue with Slack</button></form>`,
+  });
+}
+
+export function renderSlackAccessDeniedPage(input: {
+  purpose: Exclude<SlackAuthPurpose, 'invitation'>;
+  destination: string;
+  reason: string;
+  workspace?: SlackAuthWorkspace;
+}): string {
+  const safeDestination = safeSlackPageDestination(input.destination);
+  const workspace = slackWorkspaceLabel(input.workspace);
+  const firstOwner = input.purpose === 'first_owner';
+  const cancelled = input.reason === 'provider_denied';
+  const expired = input.reason === 'expired_state';
+  const title = cancelled ? 'Slack sign-in was cancelled'
+    : expired ? 'Slack sign-in expired'
+      : 'That Slack account cannot access Chickpea';
+  const intro = firstOwner
+    ? `Use the same active Slack member who installed Chickpea in ${workspace}.`
+    : `Use an invited active member of ${workspace}.`;
+  const capability = firstOwner
+    ? '<input data-slack-setup-capability type="hidden" name="capability">'
+    : '';
+  const setupScript = firstOwner ? '<script src="/admin/setup/client.js" defer></script>' : '';
+  return renderSlackJourneyPage({
+    surface: 'access-denied',
+    eyebrow: firstOwner ? 'First Owner setup' : 'Access not granted',
+    title,
+    intro,
+    status: 'No Chickpea account or role was created. You can still use Chickpea agents in assigned Slack channels.',
+    alert: cancelled || expired ? undefined : 'This Slack identity does not match the required Chickpea access.',
+    body: `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="${input.purpose}">${capability}<input type="hidden" name="destination" value="${escapeHtmlAttribute(safeDestination)}"><button class="auth-button" type="submit" autofocus>Try another Slack account</button></form>${setupScript}`,
+  });
+}
+
+export function renderSlackOwnerCompletePage(destination: string): string {
+  const safeDestination = safeSlackPageDestination(destination);
+  return renderSlackJourneyPage({
+    surface: 'owner-complete',
+    eyebrow: 'Setup complete',
+    title: 'You’re the first Owner',
+    intro: 'Slack installation and your exact identity are verified. Chickpea is ready to configure.',
+    status: 'Your requested control-plane view is ready.',
+    body: `<div class="auth-warning" role="note"><strong>Add a second Owner</strong>If this sole Slack identity is lost, recovery requires a destructive fresh reset. After opening Chickpea, invite an Admin and promote that verified person to Owner.</div><div class="auth-actions"><a class="auth-link" href="${escapeHtmlAttribute(safeDestination)}" autofocus>Open Chickpea</a></div>`,
+  });
+}
+
+export function renderSlackInvitationPage(workspace: SlackAuthWorkspace): string {
+  const label = slackWorkspaceLabel(workspace);
+  return renderSlackJourneyPage({
+    surface: 'invitation', eyebrow: 'Chickpea invitation', title: 'Join Chickpea',
+    intro: `Continue with the invited Slack account in ${label}.`,
+    status: 'Checking this invitation…',
+    statusId: 'invitation-status',
+    rootAttributes: 'data-invitation-state="ready"',
+    body: '<form id="invitation-form" method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="invitation"><input id="invitation-locator" type="hidden" name="invitation"><button class="auth-button" id="invitation-submit" type="submit" disabled autofocus>Continue with Slack</button></form><script src="/auth/slack/invite/client.js" defer></script>',
+  });
+}
+
+export function renderSlackInvitationMismatchPage(workspace?: SlackAuthWorkspace): string {
+  return renderSlackJourneyPage({
+    surface: 'invitation-mismatch', eyebrow: 'Invitation identity mismatch',
+    title: 'That Slack account cannot use this invitation',
+    intro: `Choose the invited account in ${slackWorkspaceLabel(workspace)}. This page does not reveal who was invited.`,
+    status: 'No Chickpea access was granted.',
+    rootAttributes: 'data-invitation-state="mismatch"',
+    body: '<div class="auth-actions"><a class="auth-link" href="/auth/slack/invite" autofocus>Try another Slack account</a></div><script src="/auth/slack/invite/client.js" defer></script>',
+  });
+}
+
+export function renderSlackInvitationCompletePage(destination: string): string {
+  const safeDestination = safeSlackPageDestination(destination);
+  return renderSlackJourneyPage({
+    surface: 'invitation-complete', eyebrow: 'Invitation accepted', title: 'You’re in',
+    intro: 'Your exact Slack identity is now linked to this Chickpea workspace.',
+    status: 'Opening the Team page…',
+    rootAttributes: `data-invitation-state="complete" data-destination="${escapeHtmlAttribute(safeDestination)}"`,
+    body: `<noscript><a class="auth-link" href="${escapeHtmlAttribute(safeDestination)}">Open Chickpea</a></noscript><script src="/auth/slack/invite/client.js" defer></script>`,
+  });
+}
+
+export function renderSlackInvitationUnavailablePage(): string {
+  return renderSlackJourneyPage({
+    surface: 'invitation-unavailable', eyebrow: 'Invitation unavailable',
+    title: 'This invitation is no longer available',
+    intro: 'Ask a Chickpea Owner to select your Slack member again and create a fresh invitation.',
+    status: 'No access was granted.', rootAttributes: 'data-invitation-state="unavailable"',
+    body: '<script src="/auth/slack/invite/client.js" defer></script>',
+  });
+}
+
+export function renderSlackSetupPage(input: {
+  setup?: SlackSetupTransaction;
+  destination: string;
+  manifest: SlackAppManifest;
+  manifestPrefillUrl: string;
+  notice?: string;
+  error?: string;
+  autoResume?: boolean;
+}): string {
+  const state = input.setup?.state ?? 'capability_required';
+  const destination = safeSlackPageDestination(input.destination);
+  const notice = input.notice ? slackSetupPageMessage(input.notice) : undefined;
+  const error = input.error ? slackSetupPageMessage(input.error) : undefined;
+  const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeHtmlAttribute(destination)}">`;
+  const manifestJson = escapeHtmlAttribute(JSON.stringify(input.manifest, null, 2));
+  let title = 'Resume private setup';
+  let intro = 'Chickpea keeps this seven-day setup checkpoint without turning the setup link into a user session.';
+  let body = '';
+  if (state === 'capability_required') {
+    body = `<form id="slack-setup-open-form" method="post" action="/admin/setup"><input type="hidden" name="action" value="open">${hidden}${input.notice ? `<input type="hidden" name="notice" value="${escapeHtmlAttribute(input.notice)}">` : ''}<button class="auth-button" data-primary-action="resume-private" type="submit" autofocus>Continue private setup</button></form>`;
+  } else if (state === 'awaiting_app_creation') {
+    title = 'Create the Slack app';
+    intro = 'Use a short-lived Slack configuration token. Chickpea sends it once to Slack and never stores it.';
+    body = `<form method="post" action="/admin/setup"><input type="hidden" name="action" value="create">${hidden}<label for="configuration-token">Slack configuration token<span>Generated in Slack and valid only briefly.</span></label><input id="configuration-token" type="password" name="configurationToken" autocomplete="off" maxlength="512" required><button class="auth-button" data-primary-action="create-app" type="submit" autofocus>Create Slack app</button></form><details data-secondary-action="manual-adoption"><summary>Programmatic creation unavailable?</summary><p class="auth-help">Create the exact manifest in Slack, export it, then enter the existing app’s write-only credentials.</p><a class="auth-link secondary" href="${escapeHtmlAttribute(input.manifestPrefillUrl)}" rel="noreferrer">Open exact manifest in Slack</a><pre class="auth-manifest">${manifestJson}</pre><form method="post" action="/admin/setup"><input type="hidden" name="action" value="adopt">${hidden}<label for="manual-app-id">App ID</label><input id="manual-app-id" type="password" name="appId" autocomplete="off" maxlength="64" required><label for="manual-client-id">Client ID</label><input id="manual-client-id" type="password" name="clientId" autocomplete="off" maxlength="256" required><label for="manual-client-secret">Client secret</label><input id="manual-client-secret" type="password" name="clientSecret" autocomplete="off" maxlength="4096" required><label for="manual-signing-secret">Signing secret</label><input id="manual-signing-secret" type="password" name="signingSecret" autocomplete="off" maxlength="4096" required><label for="manual-manifest">Exported app manifest</label><textarea id="manual-manifest" name="observedManifest" maxlength="7500" required></textarea><button class="auth-button secondary" type="submit">Validate and adopt app</button></form></details>`;
+  } else if (state === 'app_creation_pending') {
+    title = 'Check the interrupted creation';
+    intro = 'Slack may have created the app even though Chickpea did not receive a final response.';
+    body = `<form method="post" action="/admin/setup"><input type="hidden" name="action" value="inspect">${hidden}<button class="auth-button" data-primary-action="inspect-creation" type="submit" autofocus>Inspect saved attempt</button></form>`;
+  } else if (state === 'ambiguous_external_effect') {
+    title = 'Choose the existing Slack app';
+    intro = 'Inspect Slack before restarting. Automatically creating again could produce a duplicate app.';
+    body = `<form method="post" action="/admin/setup"><input type="hidden" name="action" value="inspect">${hidden}<button class="auth-button" data-primary-action="inspect-ambiguity" type="submit" autofocus>Inspect saved attempt</button></form><details data-secondary-action="manual-adoption"><summary>Adopt the matching app or restart</summary><p class="auth-help">Use the manual adoption fields from the exact manifest, or restart only after confirming Slack did not create the app.</p><pre class="auth-manifest">${manifestJson}</pre><form method="post" action="/admin/setup"><input type="hidden" name="action" value="restart">${hidden}<button class="auth-button secondary" type="submit">I inspected Slack; restart creation</button></form></details>`;
+  } else if (state === 'app_created') {
+    title = 'Install Chickpea in Slack';
+    intro = 'Slack decides whether this member may install directly or must request workspace approval.';
+    body = `<form method="post" action="/auth/slack/install/start">${hidden}<button class="auth-button" data-primary-action="install-app" type="submit" autofocus>Continue to Slack</button></form>`;
+  } else if (state === 'approval_pending') {
+    title = 'Slack approval is pending';
+    intro = 'This private setup remains open for seven days. After approval, use a fresh short-lived authorization.';
+    body = `<form method="post" action="/auth/slack/install/resume">${hidden}<button class="auth-button" data-primary-action="resume-approval" type="submit" autofocus>Resume Slack installation</button></form>`;
+  } else if (state === 'bot_install_pending') {
+    title = 'Verify Slack Events';
+    intro = 'Chickpea has the bot grant and is waiting for Slack’s signed Events challenge for this exact app and workspace.';
+    body = `<form method="post" action="/auth/slack/install/finalize">${hidden}<button class="auth-button" data-primary-action="verify-events" type="submit" autofocus>Check signed Events verification</button></form>`;
+  } else if (state === 'bot_installed') {
+    title = 'Become the first Owner';
+    intro = 'Sign in as the same Slack member who installed the app. Installation alone does not grant Chickpea access.';
+    body = `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="first_owner">${hidden}<button class="auth-button" data-primary-action="claim-owner" type="submit" autofocus>Sign in with Slack</button></form>`;
+  } else if (state === 'install_failed') {
+    title = 'Installation could not be verified';
+    intro = 'The inactive bot credential was discarded. The private setup state is preserved for inspection.';
+    body = '<p class="auth-help">Create a fresh deployment setup link before attempting another installation.</p>';
+  } else {
+    title = 'Slack setup is complete';
+    intro = 'The setup capability no longer grants any action.';
+    body = `<div class="auth-actions"><a class="auth-link" href="${escapeHtmlAttribute(destination)}" autofocus>Open Chickpea</a></div>`;
+  }
+  const progress = slackSetupProgress(state);
+  const progressHtml = `<ol class="auth-progress" aria-label="Setup progress"><li data-current="${String(progress === 1)}">Create app</li><li data-current="${String(progress === 2)}">Install</li><li data-current="${String(progress === 3)}">Verify Owner</li></ol>`;
+  return renderSlackJourneyPage({
+    surface: 'setup', eyebrow: 'Private Slack setup', title, intro,
+    status: slackSetupPageMessage(state), alert: error ?? notice,
+    rootAttributes: `data-slack-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}"`,
+    body: `${progressHtml}${body}<script src="/admin/setup/client.js" defer></script>`,
+  });
+}
+
+function slackSetupProgress(state: string): 1 | 2 | 3 {
+  if (['app_created', 'approval_pending', 'bot_install_pending', 'install_failed'].includes(state)) return 2;
+  if (['bot_installed', 'consumed'].includes(state)) return 3;
+  return 1;
+}
+
+function slackSetupPageMessage(code: string): string {
+  switch (code) {
+    case 'capability_required': return 'Reading the private setup capability from this browser tab.';
+    case 'awaiting_app_creation': return 'Slack app creation is the only required action now.';
+    case 'app_creation_pending': return 'The external result is unknown; no automatic retry will run.';
+    case 'ambiguous_external_effect': return 'Inspect Slack, then adopt the matching app or explicitly restart.';
+    case 'app_created': return 'App credentials are encrypted. Bot installation is next.';
+    case 'approval_pending': return 'No Chickpea role was granted to the requester or approver.';
+    case 'bot_install_pending': return 'The candidate remains inactive until signed Events proof succeeds.';
+    case 'bot_installed': return 'The installer must now prove the same Slack identity.';
+    case 'install_failed': return 'No inactive credential was promoted.';
+    case 'consumed': return 'The setup capability has been consumed.';
+    case 'waiting_events': return 'Chickpea is waiting for Slack to deliver its signed Events challenge.';
+    case 'denied': return 'Slack did not approve this installation. Start a fresh request when ready.';
+    case 'cancelled': return 'Slack installation was cancelled. The durable setup can be resumed.';
+    case 'expired': return 'The Slack request expired. Resume with a fresh authorization.';
+    case 'setup_expired': return 'This private setup link expired. Create a new deployment setup link.';
+    case 'setup_conflict': return 'Setup changed in another tab. Reload to inspect the current stage.';
+    case 'invalid_configuration_token': return 'Slack rejected the configuration token. Generate a fresh token and retry.';
+    case 'invalid_manifest': return 'The Slack app contract does not match this deployment.';
+    case 'rate_limited': return 'Too many setup attempts. Wait for the retry window before continuing.';
+    default: return 'Slack setup could not continue. No secret or role was changed.';
+  }
+}
+
+function slackWorkspaceLabel(workspace?: SlackAuthWorkspace): string {
+  if (!workspace) return 'the connected Slack workspace';
+  return workspace.teamName ? `${workspace.teamName} (${workspace.teamId})`
+    : `the connected Slack workspace (${workspace.teamId})`;
+}
+
+function safeSlackPageDestination(value: string): string {
+  if (!/^\/admin(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/.test(value)) return '/admin';
+  try {
+    const parsed = new URL(value, 'https://chickpea.invalid');
+    if (parsed.origin !== 'https://chickpea.invalid' || parsed.pathname !== value ||
+        parsed.pathname === '/admin/api' || parsed.pathname.startsWith('/admin/api/')) return '/admin';
+    return parsed.pathname;
+  } catch { return '/admin'; }
+}
+
 export function renderSlackRecoveryPage(options: {
   stage?: 'token' | 'credentials' | 'waiting_events' | 'complete';
   expectedAppId?: string;
@@ -15393,33 +15639,29 @@ export function renderSlackRecoveryPage(options: {
   error?: string;
 } = {}): string {
   const stage = options.stage ?? 'token';
-  const error = options.error
-    ? `<div class="error" id="auth-error" role="alert" tabindex="-1">${escapeHtmlAttribute(options.error)}</div>`
-    : '';
   if (stage === 'complete') {
-    return renderPasswordPage({
-      title: 'Slack connection repaired',
-      eyebrow: 'Recovery complete',
-      intro: 'Recovery did not sign anyone in or change team roles. An existing Owner can now use normal Sign in with Slack.',
-      error,
-      body: '<a class="primary" href="/admin/login">Continue to Sign in with Slack</a>',
+    return renderSlackJourneyPage({
+      surface: 'recovery', title: 'Slack connection repaired', eyebrow: 'Recovery complete',
+      intro: 'Recovery did not sign anyone in, bind an identity, or change a Chickpea role.',
+      status: 'An existing Owner can now use normal Sign in with Slack.', alert: options.error,
+      body: '<div class="auth-actions"><a class="auth-link" href="/auth/slack/sign-in?destination=%2Fadmin" autofocus>Continue to Sign in with Slack</a></div>',
     });
   }
   if (stage === 'waiting_events') {
-    return renderPasswordPage({
-      title: 'Verify the Events URL',
-      eyebrow: 'Credential repair',
+    return renderSlackJourneyPage({
+      surface: 'recovery', title: 'Verify the Events URL', eyebrow: 'Credential repair',
       intro: 'In Slack app settings, retry and save Event Subscriptions for this unchanged app. Then return here to finish the revision-bound verification.',
-      error,
-      body: `<form method="post" action="/admin/recovery"><input type="hidden" name="action" value="finalize"><button type="submit">Verify and promote repair</button></form>`,
+      status: 'The replacement credential remains inactive until signed Events proof succeeds.',
+      alert: options.error,
+      body: '<form method="post" action="/admin/recovery"><input type="hidden" name="action" value="finalize"><button class="auth-button" type="submit" autofocus>Verify and promote repair</button></form>',
     });
   }
   if (stage === 'credentials') {
-    return renderPasswordPage({
-      title: 'Repair Slack credentials',
-      eyebrow: '15-minute recovery session',
+    return renderSlackJourneyPage({
+      surface: 'recovery', title: 'Repair Slack credentials', eyebrow: '15-minute recovery session',
       intro: `Enter credentials for the unchanged Slack app ${options.expectedAppId ?? ''} in workspace ${options.expectedTeamId ?? ''}. Values are write-only and encrypted before persistence.`,
-      error,
+      status: 'The current credential stays active unless this replacement passes OAuth and signed Events verification.',
+      alert: options.error,
       body: `<form method="post" action="/admin/recovery">
         <input type="hidden" name="action" value="stage">
         <label for="app-id">Slack app ID</label><input id="app-id" name="appId" required maxlength="64" autocomplete="off" value="${escapeHtmlAttribute(options.expectedAppId ?? '')}">
@@ -15428,21 +15670,20 @@ export function renderSlackRecoveryPage(options: {
         <label for="client-secret">Client secret</label><input id="client-secret" name="clientSecret" type="password" required maxlength="4096" autocomplete="off">
         <label for="signing-secret">Signing secret</label><input id="signing-secret" name="signingSecret" type="password" required maxlength="4096" autocomplete="off">
         <label for="configuration-token">Configuration token <span>only if deployment URLs changed</span></label><input id="configuration-token" name="configurationToken" type="password" maxlength="512" autocomplete="off" aria-describedby="configuration-token-help">
-        <p id="configuration-token-help" class="field-help">A short-lived token is used only in this request to update the unchanged app's OAuth and Events URLs. It is never stored.</p>
-        <button type="submit">Encrypt credentials and authorize Slack</button>
+        <p id="configuration-token-help" class="auth-help">A short-lived token is used only in this request to update the unchanged app's OAuth and Events URLs. It is never stored.</p>
+        <button class="auth-button" type="submit" autofocus>Encrypt credentials and authorize Slack</button>
       </form>`,
     });
   }
-  return renderPasswordPage({
-    title: 'Repair the Slack connection',
-    eyebrow: 'Deployment recovery',
+  return renderSlackJourneyPage({
+    surface: 'recovery', title: 'Repair the Slack connection', eyebrow: 'Deployment recovery',
     intro: 'This hidden path repairs only the existing Slack app and workspace. It cannot create an Owner, change a role, or issue a Chickpea session.',
-    error,
+    status: 'A valid token opens one browser-bound 15-minute repair session.', alert: options.error,
     body: `<form method="post" action="/admin/recovery">
       <input type="hidden" name="action" value="begin">
       <label for="recovery-token">Deployment recovery token</label>
       <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required maxlength="512" ${options.error ? 'aria-describedby="auth-error"' : ''}>
-      <button type="submit">Start 15-minute repair</button>
+      <button class="auth-button" type="submit" autofocus>Start 15-minute repair</button>
     </form>`,
   });
 }
