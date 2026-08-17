@@ -6170,7 +6170,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '<div class="select-wrap"><select class="input" id="conn-auth" data-action="conn-auth">' +
       '<option value="none"' + (editor.authMode === "none" ? " selected" : "") + '>None</option>' +
       '<option value="bearer"' + (editor.authMode === "bearer" ? " selected" : "") + '>Bearer token</option>' +
-      (editor.authMode === "oauth" ? '<option value="oauth" selected disabled>OAuth (configured separately)</option>' : "") +
+      '<option value="oauth"' + (editor.authMode === "oauth" ? " selected" : "") + '>OAuth</option>' +
       '</select></div>';
     if (editor.authMode === "bearer") {
       authHtml += '<input class="input mono" type="password" autocomplete="off" style="margin-top:8px;" value="' + esc(editor.bearerToken || "") + '" placeholder="' + bearerPlaceholder + '" aria-label="Bearer token" data-action="conn-field-bearer">';
@@ -6182,8 +6182,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (editor.preset && editor.view === "recommended") {
       return '<div class="skill-form">' + viewToggle + connectionRecommendedBodyHtml(editor) + '</div>';
     }
+    var oauthScopeHtml = editor.authMode === "oauth" && !editor.preset
+      ? '<details class="advanced conn-oauth-advanced"><summary>Advanced</summary><div class="adv-rows">' +
+        '<div class="field"><label class="field-label" for="conn-oauth-scope">Scope (optional)</label>' +
+        '<input class="input mono" id="conn-oauth-scope" type="text" autocomplete="off" value="' + esc(editor.oauthScope || "") + '" placeholder="e.g. read write" data-action="conn-field-oauth-scope">' +
+        '<p class="hint">Leave blank to use the default access requested by the provider.</p></div></div></details>'
+      : "";
     var advancedOAuthHtml = editor.authMode === "oauth"
-      ? oauthConnectionHtml(editor, editor.preset || presetById(editor.presetId) || null)
+      ? oauthScopeHtml + oauthConnectionHtml(editor, editor.preset || presetById(editor.presetId) || null)
       : "";
     return '<div class="skill-form">' + viewToggle +
       '<div class="field"><label class="field-label" for="conn-name">Name</label>' +
@@ -12426,6 +12432,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
           var connTestButton = document.querySelector('[data-action="conn-test"]');
           if (connTestButton) connTestButton.disabled = !String(connEditor.url || "").trim();
         }
+        if (action === "conn-field-oauth-scope") { connEditor.oauthScope = target.value; markProfileDirty(); }
         if (action === "conn-field-bearer") { connEditor.bearerToken = target.value; markProfileDirty(); }
         if (action === "conn-header-name") { connEditor.headerNames[Number(target.getAttribute("data-index"))] = target.value; markProfileDirty(); }
         if (action === "conn-header-value") { connEditor.headerValues[Number(target.getAttribute("data-index"))] = target.value; markProfileDirty(); }
@@ -12623,11 +12630,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       var connToggleServers = state.profileDraft.mcpServers || [];
       if (connToggleServers[connToggleIndex]) { connToggleServers[connToggleIndex].enabled = target.checked; state.profileDraft.mcpServers = connToggleServers; markProfileDirty(); render(); }
     }
-    // Connection auth mode select. Advanced mode keeps an existing OAuth row
-    // visible as a read-only compatibility option; choosing another mode
-    // explicitly stages the OAuth credential cleanup on save.
+    // Connection auth mode select. Choosing another mode from an existing
+    // OAuth connection explicitly stages OAuth credential cleanup on save.
     if (action === "conn-auth" && state.connectionEditor) {
-      state.connectionEditor.authMode = target.value === "bearer" ? "bearer" : "none";
+      state.connectionEditor.authMode = target.value === "oauth"
+        ? "oauth"
+        : (target.value === "bearer" ? "bearer" : "none");
       markProfileDirty();
       render();
     }
@@ -13625,6 +13633,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var connectionId = editor.id || connectionSlug(editor.displayName);
     var oauthScope = String(editor.oauthScope || "").trim();
     var oauthStartBody = oauthScope ? { scope: oauthScope } : {};
+    var oauthWindow = null;
+    if (typeof window !== "undefined" && typeof window.open === "function") {
+      oauthWindow = window.open("", "chickpea-mcp-oauth-" + Date.now());
+      if (oauthWindow) oauthWindow.opener = null;
+    }
     editor.oauthStarting = true;
     editor.oauthError = "";
     editor.error = "";
@@ -13645,11 +13658,21 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         if (authorizationUrl.protocol !== "https:") {
           throw new Error("The OAuth provider returned an unsafe authorization URL.");
         }
-        location.assign(authorizationUrl.href);
+        if (oauthWindow && !oauthWindow.closed) {
+          oauthWindow.location.assign(authorizationUrl.href);
+        } else {
+          location.assign(authorizationUrl.href);
+        }
       }).catch(function (error) {
+        if (oauthWindow && !oauthWindow.closed && typeof oauthWindow.close === "function") {
+          oauthWindow.close();
+        }
         showOAuthStartError(connectionId, error);
       });
     }, function () {
+      if (oauthWindow && !oauthWindow.closed && typeof oauthWindow.close === "function") {
+        oauthWindow.close();
+      }
       var current = state.connectionEditor;
       if (current && (current.id || connectionSlug(current.displayName)) === connectionId) {
         current.oauthStarting = false;

@@ -247,6 +247,48 @@ test('guarded fetch allows public Node DNS answers', async () => {
   assert.equal(fetchedUrl, 'https://mcp.example.com/mcp');
 });
 
+test('guarded fetch allows standard NAT64 answers only when they embed public IPv4', async () => {
+  let fetched = false;
+  const publicAnswers = [
+    { address: '216.24.57.7', family: 4 },
+    { address: '64:ff9b::d818:3907', family: 6 },
+  ];
+  const guarded = createMcpGuardedFetch({
+    cloudflare: false,
+    resolveAddresses: async () => publicAnswers,
+    pinnedFetch: async (_request, addresses) => {
+      fetched = true;
+      assert.deepEqual(addresses, publicAnswers);
+      return new Response('ok');
+    },
+  });
+
+  assert.equal((await guarded('https://mcp.example.com/mcp')).status, 200);
+  assert.equal(fetched, true);
+
+  for (const address of [
+    '64:ff9b::7f00:1', // 127.0.0.1
+    '64:ff9b::a00:1', // 10.0.0.1
+    '64:ff9b::a9fe:a9fe', // 169.254.169.254
+  ]) {
+    let privateFetched = false;
+    const privateGuarded = createMcpGuardedFetch({
+      cloudflare: false,
+      resolveAddresses: async () => resolved(address),
+      pinnedFetch: async () => {
+        privateFetched = true;
+        return new Response('unexpected');
+      },
+    });
+    await assert.rejects(
+      privateGuarded('https://mcp.example.com/mcp'),
+      /blocked url/i,
+      address,
+    );
+    assert.equal(privateFetched, false, address + ' must inherit the embedded IPv4 policy');
+  }
+});
+
 test('guarded fetch skips Node DNS APIs on Cloudflare while keeping URL guards', async () => {
   let resolverCalled = false;
   const guarded = createMcpGuardedFetch({
