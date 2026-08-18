@@ -1018,9 +1018,11 @@ async function recordExplicitInteractionClassifierUsage(input: {
     reported.inputTokens !== null &&
     reported.outputTokens !== null &&
     reported.totalTokens !== null
-    ? {
+      ? {
         inputTokens: reported.inputTokens,
         outputTokens: reported.outputTokens,
+        cacheReadTokens: reported.cacheReadTokens ?? 0,
+        cacheWriteTokens: reported.cacheWriteTokens ?? 0,
         totalTokens: reported.totalTokens,
       }
     : null;

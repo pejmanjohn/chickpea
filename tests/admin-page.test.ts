@@ -1103,7 +1103,9 @@ function runAdminPageHarness(
     unknownPriceOperationCount: 2,
     inputTokens: 1200,
     outputTokens: 300,
-    totalTokens: 1500,
+    cacheReadTokens: 400,
+    cacheWriteTokens: 100,
+    totalTokens: 2000,
     estimateAmountMicros: 12500,
   };
   const usageOperation = {
@@ -1119,7 +1121,7 @@ function runAdminPageHarness(
       executionId: 'exec_usage_fixture', operationId: 'op_usage_fixture', operationStatus: 'completed', observedAt: usageNow - 55_000,
       providerRoute: 'openai', requestedProvider: 'openai', requestedModel: 'gpt-4.1-mini', returnedProvider: 'openai', returnedModel: 'gpt-4.1-mini',
       credentialRefId: 'cred_openai_environment', credentialVersion: 1, usageCompleteness: 'complete', inputTokens: 1000, outputTokens: 250,
-      totalTokens: 1250, usageUnknownReason: null, estimateCompleteness: 'complete', estimateAmountMicros: 12500, estimateCurrency: 'USD',
+      cacheReadTokens: 500, cacheWriteTokens: 0, totalTokens: 1750, usageUnknownReason: null, estimateCompleteness: 'complete', estimateAmountMicros: 12500, estimateCurrency: 'USD',
       priceVersionId: 'openai_2026-07-28', priceUnknownReason: null, recordedAt: usageNow - 55_000,
     }],
   };
@@ -11467,9 +11469,9 @@ test('Usage shows concise spend, expanded token columns, and non-interactive act
   assert.doesNotMatch(html, />#null<\/button>/);
   assert.match(html, /Recent <span class="usage-term-help"[^>]*>activity<\/span>/);
   assert.match(html, /data-tooltip="Activity includes each Slack message Chickpea responds to and each scheduled routine run\."/);
-  assert.match(html, />Input tokens<\/th><th class="number">Output tokens<\/th><th class="number">Total tokens<\/th>/);
-  assert.match(html, /<td class="number">1,200<\/td><td class="number">300<\/td><td class="number">1,500<\/td>/);
-  assert.match(html, /class="usage-token-total" tabindex="0" data-tooltip="1,000 input · 250 output"[^>]*>1,250<\/span>/);
+  assert.match(html, />Input tokens<\/th><th class="number">Cached input<\/th><th class="number">Output tokens<\/th><th class="number">Total tokens<\/th>/);
+  assert.match(html, /<td class="number">1,200<\/td><td class="number">500<\/td><td class="number">300<\/td><td class="number">2,000<\/td>/);
+  assert.match(html, /class="usage-token-total" tabindex="0" data-tooltip="1,000 input · 500 cached input · 250 output"[^>]*>1,750<\/span>/);
   assert.match(html, /Direct message/);
   assert.doesNotMatch(html, /Interaction classification|op_classification_fixture/);
   assert.doesNotMatch(html, /data-action="usage-select-operation"|Activity details|data-operation="op_usage_fixture"/);

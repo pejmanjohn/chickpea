@@ -128,6 +128,8 @@ test('routine reply metadata yields one bounded aggregate with returned-model ev
     returnedModel: { provider: 'anthropic', id: 'claude-haiku-4-5-20251001' },
     inputTokens: 200,
     outputTokens: 50,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     totalTokens: 250,
     completeness: 'complete',
   });

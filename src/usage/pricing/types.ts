@@ -7,6 +7,8 @@ export interface UsagePriceRate {
   unitScale: 1_000_000;
   inputMicrosPerUnit: number;
   outputMicrosPerUnit: number;
+  cacheReadMicrosPerUnit?: number;
+  cacheWriteMicrosPerUnit?: number;
   basis: 'standard_input_output';
 }
 

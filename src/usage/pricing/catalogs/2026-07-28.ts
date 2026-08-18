@@ -7,6 +7,8 @@ const STALE_AFTER = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 const CLOUDFLARE_BINDING_REVIEWED_AT = Date.UTC(2026, 6, 30);
 const CLOUDFLARE_BINDING_STALE_AFTER =
   CLOUDFLARE_BINDING_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const CACHE_PRICING_REVIEWED_AT = Date.UTC(2026, 7, 17);
+const CACHE_PRICING_STALE_AFTER = CACHE_PRICING_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 
 function version(
   input: Omit<UsagePriceVersion, 'contentHash' | 'rates'> & {
@@ -20,8 +22,9 @@ function version(
 
 /**
  * Release-pinned list-price snapshots for only the U0 fixture-proven routes.
- * Cache discounts, batch/priority tiers, negotiated pricing, credits, taxes,
- * and OpenRouter routing-specific adjustments are deliberately not modeled.
+ * Workers AI cached input is modeled from the published model rate. Other
+ * cache discounts, batch/priority tiers, negotiated pricing, credits, taxes,
+ * and routing-specific adjustments are deliberately not modeled.
  */
 export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
   version({
@@ -116,6 +119,48 @@ export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
       unitScale: 1_000_000,
       inputMicrosPerUnit: 1_400_000,
       outputMicrosPerUnit: 4_400_000,
+      basis: 'standard_input_output',
+    }],
+  }),
+  version({
+    id: 'cloudflare-binding-cache_2026-08-17',
+    providerId: 'cloudflare',
+    sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-5.2/',
+    effectiveFrom: CACHE_PRICING_REVIEWED_AT,
+    reviewedAt: CACHE_PRICING_REVIEWED_AT,
+    staleAfter: CACHE_PRICING_STALE_AFTER,
+    currency: 'USD',
+    rates: [{
+      providerId: 'cloudflare',
+      modelId: '@cf/zai-org/glm-5.2',
+      modelAliases: ['@cf/zai-org/glm-5.2'],
+      currency: 'USD',
+      unitScale: 1_000_000,
+      inputMicrosPerUnit: 1_400_000,
+      outputMicrosPerUnit: 4_400_000,
+      cacheReadMicrosPerUnit: 260_000,
+      cacheWriteMicrosPerUnit: 1_400_000,
+      basis: 'standard_input_output',
+    }],
+  }),
+  version({
+    id: 'cloudflare-workers-ai-cache_2026-08-17',
+    providerId: 'cloudflare-workers-ai',
+    sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-5.2/',
+    effectiveFrom: CACHE_PRICING_REVIEWED_AT,
+    reviewedAt: CACHE_PRICING_REVIEWED_AT,
+    staleAfter: CACHE_PRICING_STALE_AFTER,
+    currency: 'USD',
+    rates: [{
+      providerId: 'cloudflare-workers-ai',
+      modelId: '@cf/zai-org/glm-5.2',
+      modelAliases: ['@cf/zai-org/glm-5.2'],
+      currency: 'USD',
+      unitScale: 1_000_000,
+      inputMicrosPerUnit: 1_400_000,
+      outputMicrosPerUnit: 4_400_000,
+      cacheReadMicrosPerUnit: 260_000,
+      cacheWriteMicrosPerUnit: 1_400_000,
       basis: 'standard_input_output',
     }],
   }),

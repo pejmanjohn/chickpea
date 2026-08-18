@@ -41,6 +41,8 @@ export type FlueSettlementCheckpointV1 =
         reportedUsage: {
           inputTokens: number | null;
           outputTokens: number | null;
+          cacheReadTokens?: number | null;
+          cacheWriteTokens?: number | null;
           totalTokens: number | null;
         } | null;
         usageCompleteness: 'complete' | 'partial' | 'not_reported';

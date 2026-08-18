@@ -56,7 +56,13 @@ function success(overrides: Partial<AgentDispatchResult> = {}): AgentDispatchRes
     text: 'private output',
     requestedModel: 'openai/gpt-4.1-mini',
     returnedModel: { provider: 'openai', id: 'gpt-4.1-mini-2025-04-14' },
-    reportedUsage: { inputTokens: 120, outputTokens: 30, totalTokens: 150 },
+    reportedUsage: {
+      inputTokens: 120,
+      outputTokens: 30,
+      cacheReadTokens: 20,
+      cacheWriteTokens: 10,
+      totalTokens: 180,
+    },
     usageCompleteness: 'complete',
     ...overrides,
   };
@@ -86,7 +92,9 @@ test('interactive capture persists only bounded attribution and aggregate respon
     assert.equal(detail?.operation.credentialVersion, 7);
     assert.equal(detail?.operation.runId, 'run_usage_interactive');
     assert.equal(detail?.measurements[0]?.runExecutionId, 'execution_usage_interactive_1');
-    assert.equal(detail?.measurements[0]?.totalTokens, 150);
+    assert.equal(detail?.measurements[0]?.cacheReadTokens, 20);
+    assert.equal(detail?.measurements[0]?.cacheWriteTokens, 10);
+    assert.equal(detail?.measurements[0]?.totalTokens, 180);
     assert.doesNotMatch(
       JSON.stringify(detail),
       /content is deliberately|private output|private instructions|Production project/,

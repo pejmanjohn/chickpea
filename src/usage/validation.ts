@@ -104,6 +104,8 @@ export function normalizeRecordUsageTerminal(
     usageCompleteness,
     inputTokens: optionalTokenCount(input.inputTokens, 'input tokens'),
     outputTokens: optionalTokenCount(input.outputTokens, 'output tokens'),
+    cacheReadTokens: optionalTokenCount(input.cacheReadTokens ?? null, 'cache read tokens'),
+    cacheWriteTokens: optionalTokenCount(input.cacheWriteTokens ?? null, 'cache write tokens'),
     totalTokens: optionalTokenCount(input.totalTokens, 'total tokens'),
     usageUnknownReason: optionalEnum(
       input.usageUnknownReason,

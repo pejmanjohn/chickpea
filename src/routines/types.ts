@@ -323,6 +323,8 @@ export interface RoutineAgentUsageV1 {
   returnedModel: { provider: string; id: string } | null;
   inputTokens: number | null;
   outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
   totalTokens: number | null;
   completeness: 'complete' | 'partial' | 'not_reported';
 }

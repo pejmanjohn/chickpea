@@ -107,6 +107,8 @@ export class InteractiveUsageRecorder {
       usageCompleteness: result.usageCompleteness,
       inputTokens: usage?.inputTokens ?? null,
       outputTokens: usage?.outputTokens ?? null,
+      cacheReadTokens: usage?.cacheReadTokens ?? null,
+      cacheWriteTokens: usage?.cacheWriteTokens ?? null,
       totalTokens: usage?.totalTokens ?? null,
       usageUnknownReason: unknownReason,
     });
@@ -123,6 +125,8 @@ export class InteractiveUsageRecorder {
       usageCompleteness: 'not_reported',
       inputTokens: null,
       outputTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
       totalTokens: null,
       usageUnknownReason: reason,
     });
@@ -170,6 +174,8 @@ export class InteractiveUsageRecorder {
       | 'usageCompleteness'
       | 'inputTokens'
       | 'outputTokens'
+      | 'cacheReadTokens'
+      | 'cacheWriteTokens'
       | 'totalTokens'
       | 'usageUnknownReason'
     >,
@@ -223,6 +229,8 @@ export interface RoutineUsageRecorderOptions {
 export interface RoutineReportedUsage {
   input: number;
   output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
   totalTokens: number;
 }
 
@@ -252,6 +260,8 @@ export interface InteractionUsageRecorderOptions {
 export interface InteractionReportedUsage {
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
   totalTokens: number;
 }
 
@@ -330,6 +340,8 @@ export class InteractionUsageRecorder {
       usageCompleteness: usage ? 'complete' as const : 'not_reported' as const,
       inputTokens: usage?.inputTokens ?? null,
       outputTokens: usage?.outputTokens ?? null,
+      cacheReadTokens: usage?.cacheReadTokens ?? 0,
+      cacheWriteTokens: usage?.cacheWriteTokens ?? 0,
       totalTokens: usage?.totalTokens ?? null,
       usageUnknownReason: usage ? null : (input.unknownReason ?? 'usage_not_reported'),
     };
@@ -447,6 +459,8 @@ export class RoutineUsageRecorder {
       usageCompleteness,
       inputTokens: usage?.input ?? null,
       outputTokens: usage?.output ?? null,
+      cacheReadTokens: usage ? (usage.cacheRead ?? 0) : null,
+      cacheWriteTokens: usage ? (usage.cacheWrite ?? 0) : null,
       totalTokens: usage?.totalTokens ?? null,
       usageUnknownReason: usage ? null : (input.unknownReason ?? 'usage_not_reported'),
     };
@@ -553,9 +567,11 @@ async function persistUsage(
 
 function normalizeRoutineUsage(usage: RoutineReportedUsage | null): RoutineReportedUsage | null {
   if (!usage) return null;
-  const values = [usage.input, usage.output, usage.totalTokens];
+  const values = [usage.input, usage.output, usage.cacheRead ?? 0, usage.cacheWrite ?? 0, usage.totalTokens];
   if (!values.every((value) => Number.isSafeInteger(value) && value >= 0)) return null;
-  return values.every((value) => value === 0) ? null : usage;
+  return values.every((value) => value === 0)
+    ? null
+    : { ...usage, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0 };
 }
 
 function normalizeInteractionUsage(
@@ -579,6 +595,9 @@ function estimateForRuntime(
     | 'usageCompleteness'
     | 'inputTokens'
     | 'outputTokens'
+    | 'cacheReadTokens'
+    | 'cacheWriteTokens'
+    | 'totalTokens'
   >,
   platformEnv: PlatformEnv | undefined,
   processEnv: NodeJS.ProcessEnv | undefined,

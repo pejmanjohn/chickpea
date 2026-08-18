@@ -17,7 +17,7 @@ const usage: PromptUsage = {
   cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 },
 };
 
-test('response metadata carries aggregate measured usage and bounded model identity only', () => {
+test('response metadata carries cache-aware measured usage and bounded model identity only', () => {
   const metadata = responseUsageMetadata(
     'openai/gpt-5.4',
     usage,
@@ -27,8 +27,14 @@ test('response metadata carries aggregate measured usage and bounded model ident
     schemaVersion: 1,
     requestedModel: 'openai/gpt-5.4',
     returnedModel: { provider: 'openai', id: 'gpt-5.4-2026-05-01' },
-    usage: { input: 120, output: 30, totalTokens: 180 },
+    usage: {
+      input: 120,
+      output: 30,
+      cacheRead: 20,
+      cacheWrite: 10,
+      totalTokens: 180,
+    },
   });
   assert.equal(CHICKPEA_RESPONSE_METADATA_KEY, 'chickpea');
-  assert.doesNotMatch(JSON.stringify(metadata), /cacheRead|cacheWrite|cost|prompt|completion/);
+  assert.doesNotMatch(JSON.stringify(metadata), /cost|prompt|completion/);
 });

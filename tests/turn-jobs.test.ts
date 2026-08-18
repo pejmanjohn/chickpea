@@ -296,7 +296,13 @@ test('dispatch envelope, receipt, and settlement checkpoints survive retry and r
     text: 'done',
     requestedModel: runtimePlan.model,
     returnedModel: { provider: 'local-stub', id: 'x' },
-    reportedUsage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+    reportedUsage: {
+      inputTokens: 3,
+      outputTokens: 2,
+      cacheReadTokens: 4,
+      cacheWriteTokens: 1,
+      totalTokens: 10,
+    },
     usageCompleteness: 'complete' as const,
     flueSubmissionRef: 'fluesubmission_opaque',
   };
