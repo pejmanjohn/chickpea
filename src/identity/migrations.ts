@@ -1,7 +1,5 @@
 import type { StateDb } from '../state/state-db.ts';
 
-export const IDENTITY_SCHEMA_VERSION = 4;
-
 interface IdentityMigration {
   version: number;
   apply(db: StateDb): void;

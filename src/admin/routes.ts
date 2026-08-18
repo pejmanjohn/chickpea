@@ -3305,17 +3305,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     ));
   });
 
-  app.get('/admin/api/memory/settings', async (c) => {
-    return c.json({ enabled: true, alwaysOn: true });
-  });
-
-  app.put('/admin/api/memory/settings', async (c) => {
-    return c.json(
-      { error: 'memory_always_enabled', enabled: true, alwaysOn: true },
-      409,
-    );
-  });
-
   app.get('/admin/api/github/status', async (c) => {
     try {
       const connection = await getGithubConnection(settings(c));

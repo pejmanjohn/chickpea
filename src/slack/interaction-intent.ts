@@ -13,7 +13,6 @@ import { hasCredentialLikeContent, hasDisallowedControlCharacter } from '../secu
 import type { AgentDispatchResult } from './flue-dispatch.ts';
 
 export const SLACK_INTERACTION_DISPOSITIONS = ['ignore', 'react_only', 'reply', 'work'] as const;
-export type SlackInteractionDisposition = (typeof SLACK_INTERACTION_DISPOSITIONS)[number];
 
 export const SLACK_INTERACTION_REASONS = [
   'pure_ack',

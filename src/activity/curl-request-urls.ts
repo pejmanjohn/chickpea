@@ -156,10 +156,6 @@ export function extractCurlRequests(command: string): CurlRequest[] | undefined 
   return requests;
 }
 
-export function extractCurlRequestUrls(command: string): string[] {
-  return extractCurlRequests(command)?.map((request) => request.url) ?? [];
-}
-
 function curlRequestsFromArgs(args: readonly string[]): CurlRequest[] | undefined {
   const requests: CurlRequest[] = [];
   let transfer = emptyCurlTransfer();

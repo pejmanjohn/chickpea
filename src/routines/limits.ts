@@ -31,8 +31,6 @@ export const ROUTINE_LIMITS = {
   maxPublicErrorBytes: 512,
 } as const;
 
-export type RoutineLimits = typeof ROUTINE_LIMITS;
-
 /** Body-free operator contract shared by Admin and documentation. */
 export function routineOperatorLimits(): Record<string, number> {
   return {
