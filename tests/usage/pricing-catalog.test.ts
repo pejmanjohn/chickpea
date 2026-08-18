@@ -11,7 +11,15 @@ import {
 test('release catalog contains only fixture-proven priced routes with immutable provenance', () => {
   assert.deepEqual(
     RELEASE_PRICE_CATALOGS.map((version) => version.providerId),
-    ['anthropic', 'openai', 'openrouter', 'cloudflare-workers-ai', 'cloudflare'],
+    [
+      'anthropic',
+      'openai',
+      'openrouter',
+      'cloudflare-workers-ai',
+      'cloudflare',
+      'cloudflare',
+      'cloudflare-workers-ai',
+    ],
   );
   for (const version of RELEASE_PRICE_CATALOGS) {
     assert.match(version.contentHash, /^[a-f0-9]{64}$/);
@@ -24,12 +32,19 @@ test('release catalog contains only fixture-proven priced routes with immutable 
   const workersPrices = RELEASE_PRICE_CATALOGS
     .filter((version) => ['cloudflare-workers-ai', 'cloudflare'].includes(version.providerId))
     .map((version) => version.rates[0]);
-  assert.equal(workersPrices.length, 2);
+  assert.equal(workersPrices.length, 4);
   assert.deepEqual(
-    workersPrices.map((rate) => [rate?.modelId, rate?.inputMicrosPerUnit, rate?.outputMicrosPerUnit]),
+    workersPrices.map((rate) => [
+      rate?.modelId,
+      rate?.inputMicrosPerUnit,
+      rate?.outputMicrosPerUnit,
+      rate?.cacheReadMicrosPerUnit ?? null,
+    ]),
     [
-      ['@cf/zai-org/glm-5.2', 1_400_000, 4_400_000],
-      ['@cf/zai-org/glm-5.2', 1_400_000, 4_400_000],
+      ['@cf/zai-org/glm-5.2', 1_400_000, 4_400_000, null],
+      ['@cf/zai-org/glm-5.2', 1_400_000, 4_400_000, null],
+      ['@cf/zai-org/glm-5.2', 1_400_000, 4_400_000, 260_000],
+      ['@cf/zai-org/glm-5.2', 1_400_000, 4_400_000, 260_000],
     ],
   );
 });
@@ -49,6 +64,42 @@ test('catalog tables install transactionally and repeated install cannot duplica
     );
     assert.equal(source?.source_url, 'https://developers.openai.com/api/docs/models/gpt-4.1-mini');
     assert.match(String(source?.content_hash), /^[a-f0-9]{64}$/);
+  } finally {
+    db.close();
+  }
+});
+
+test('catalog install upgrades a legacy rate table before adding cache-aware prices', () => {
+  const db = openStateDb(':memory:');
+  try {
+    db.exec(
+      `CREATE TABLE usage_price_rates (
+        price_version_id TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        model_aliases_json TEXT NOT NULL,
+        currency TEXT NOT NULL,
+        unit_scale INTEGER NOT NULL,
+        input_micros_per_unit INTEGER NOT NULL,
+        output_micros_per_unit INTEGER NOT NULL,
+        basis TEXT NOT NULL,
+        PRIMARY KEY (price_version_id, provider_id, model_id)
+      )`,
+    );
+
+    installReleasePriceCatalogs(db);
+    installReleasePriceCatalogs(db);
+
+    const columns = db.all('PRAGMA table_info(usage_price_rates)');
+    assert.equal(columns.some((row) => row.name === 'cache_read_micros_per_unit'), true);
+    assert.equal(columns.some((row) => row.name === 'cache_write_micros_per_unit'), true);
+    const cached = db.get(
+      `SELECT cache_read_micros_per_unit, cache_write_micros_per_unit
+       FROM usage_price_rates
+       WHERE price_version_id = 'cloudflare-binding-cache_2026-08-17'`,
+    );
+    assert.equal(cached?.cache_read_micros_per_unit, 260_000);
+    assert.equal(cached?.cache_write_micros_per_unit, 1_400_000);
   } finally {
     db.close();
   }

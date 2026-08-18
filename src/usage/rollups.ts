@@ -97,6 +97,8 @@ export function aggregateSelect(currency: string | null): { sql: string; params:
       COUNT(DISTINCT o.operation_id) - COUNT(DISTINCT CASE WHEN m.estimate_completeness = 'complete' THEN o.operation_id END) AS unknown_price_operation_count,
       SUM(m.input_tokens) AS input_tokens,
       SUM(m.output_tokens) AS output_tokens,
+      SUM(m.cache_read_tokens) AS cache_read_tokens,
+      SUM(m.cache_write_tokens) AS cache_write_tokens,
       SUM(m.total_tokens) AS total_tokens,
       SUM(${compatibleEstimate}) AS estimate_amount_micros`,
     params: currency ? [currency] : [],
@@ -116,6 +118,8 @@ export function mapRollupRow(row: Record<string, unknown>): UsageRollupValues {
     unknownPriceOperationCount: integer(row.unknown_price_operation_count),
     inputTokens: nullableInteger(row.input_tokens),
     outputTokens: nullableInteger(row.output_tokens),
+    cacheReadTokens: nullableInteger(row.cache_read_tokens),
+    cacheWriteTokens: nullableInteger(row.cache_write_tokens),
     totalTokens: nullableInteger(row.total_tokens),
     estimateAmountMicros: nullableInteger(row.estimate_amount_micros),
   };

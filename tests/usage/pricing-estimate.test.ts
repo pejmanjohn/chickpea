@@ -47,6 +47,46 @@ test('golden standard-rate estimates match every U0-priceable provider fixture',
   }
 });
 
+test('Workers AI estimates include cached input at the provider-specific rate', () => {
+  const estimate = estimateUsage(measurement(
+    'cloudflare',
+    '@cf/zai-org/glm-5.2',
+    1_921,
+    1_471,
+    {
+      observedAt: Date.UTC(2026, 7, 17, 12),
+      cacheReadTokens: 138_432,
+      cacheWriteTokens: 0,
+      totalTokens: 141_824,
+    },
+  ));
+
+  assert.deepEqual(estimate, {
+    estimateCompleteness: 'complete',
+    estimateAmountMicros: 45_154,
+    estimateCurrency: 'USD',
+    priceVersionId: 'cloudflare-binding-cache_2026-08-17',
+    priceUnknownReason: null,
+  });
+});
+
+test('non-zero cache usage without a matching price dimension stays partial', () => {
+  assert.deepEqual(
+    estimateUsage(measurement('openai', 'gpt-4.1-mini', 10, 5, {
+      cacheReadTokens: 20,
+      cacheWriteTokens: 0,
+      totalTokens: 35,
+    })),
+    {
+      estimateCompleteness: 'partial',
+      estimateAmountMicros: null,
+      estimateCurrency: null,
+      priceVersionId: null,
+      priceUnknownReason: 'pricing_dimension_unknown',
+    },
+  );
+});
+
 test('snapshot aliases price identically while unknown models remain unknown', () => {
   assert.equal(
     estimateUsage(measurement('openai', 'gpt-4.1-mini-2025-04-14', 13, 7)).estimateAmountMicros,

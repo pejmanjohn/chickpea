@@ -90,6 +90,8 @@ interface MeasurementRow {
   usage_completeness: UsageMeasurement['usageCompleteness'];
   input_tokens: number | null;
   output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
   total_tokens: number | null;
   usage_unknown_reason: UsageMeasurement['usageUnknownReason'];
   estimate_completeness: UsageMeasurement['estimateCompleteness'];
@@ -123,7 +125,8 @@ const MEASUREMENT_COLUMNS = `
   execution_id, operation_id, run_execution_id, operation_status, observed_at, provider_route,
   requested_provider, requested_model, returned_provider, returned_model,
   credential_ref_id, credential_version, usage_completeness, input_tokens,
-  output_tokens, total_tokens, usage_unknown_reason, estimate_completeness,
+  output_tokens, cache_read_tokens, cache_write_tokens, total_tokens,
+  usage_unknown_reason, estimate_completeness,
   estimate_amount_micros, estimate_currency, price_version_id,
   price_unknown_reason, recorded_at`;
 
@@ -217,7 +220,7 @@ export class UsageStoreLogic {
       const recordedAt = this.now();
       this.db.run(
         `INSERT INTO usage_measurements (${MEASUREMENT_COLUMNS}) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )`,
         input.executionId,
         input.operationId,
@@ -234,6 +237,8 @@ export class UsageStoreLogic {
         input.usageCompleteness,
         input.inputTokens,
         input.outputTokens,
+        input.cacheReadTokens ?? null,
+        input.cacheWriteTokens ?? null,
         input.totalTokens,
         input.usageUnknownReason,
         input.estimateCompleteness,
@@ -469,7 +474,7 @@ export class UsageStoreLogic {
             failed_operation_count, incomplete_operation_count,
             metered_operation_count, priced_operation_count, completed_priced_operation_count,
             unknown_usage_operation_count, unknown_price_operation_count,
-            input_tokens, output_tokens, total_tokens,
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens,
             estimate_amount_micros_usd, updated_at
           )
           SELECT CAST(o.started_at / 86400000 AS INTEGER) * 86400000,
@@ -483,6 +488,7 @@ export class UsageStoreLogic {
             COUNT(DISTINCT o.operation_id) - COUNT(DISTINCT CASE WHEN m.usage_completeness IN ('complete', 'partial') THEN o.operation_id END),
             COUNT(DISTINCT o.operation_id) - COUNT(DISTINCT CASE WHEN m.estimate_completeness = 'complete' AND m.estimate_currency = 'USD' THEN o.operation_id END),
             COALESCE(SUM(m.input_tokens), 0), COALESCE(SUM(m.output_tokens), 0),
+            COALESCE(SUM(m.cache_read_tokens), 0), COALESCE(SUM(m.cache_write_tokens), 0),
             COALESCE(SUM(m.total_tokens), 0),
             COALESCE(SUM(CASE WHEN m.estimate_completeness = 'complete' AND m.estimate_currency = 'USD' THEN m.estimate_amount_micros END), 0),
             ?
@@ -502,6 +508,8 @@ export class UsageStoreLogic {
             unknown_price_operation_count = unknown_price_operation_count + excluded.unknown_price_operation_count,
             input_tokens = input_tokens + excluded.input_tokens,
             output_tokens = output_tokens + excluded.output_tokens,
+            cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+            cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
             total_tokens = total_tokens + excluded.total_tokens,
             estimate_amount_micros_usd = estimate_amount_micros_usd + excluded.estimate_amount_micros_usd,
             updated_at = excluded.updated_at`,
@@ -749,6 +757,8 @@ export class UsageStoreLogic {
         usage_completeness TEXT NOT NULL,
         input_tokens INTEGER,
         output_tokens INTEGER,
+        cache_read_tokens INTEGER,
+        cache_write_tokens INTEGER,
         total_tokens INTEGER,
         usage_unknown_reason TEXT,
         estimate_completeness TEXT NOT NULL,
@@ -787,6 +797,8 @@ export class UsageStoreLogic {
         unknown_price_operation_count INTEGER NOT NULL,
         input_tokens INTEGER NOT NULL,
         output_tokens INTEGER NOT NULL,
+        cache_read_tokens INTEGER NOT NULL,
+        cache_write_tokens INTEGER NOT NULL,
         total_tokens INTEGER NOT NULL,
         estimate_amount_micros_usd INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -821,6 +833,19 @@ export class UsageStoreLogic {
     const measurementColumns = this.db.all('PRAGMA table_info(usage_measurements)');
     if (!measurementColumns.some((row) => row.name === 'run_execution_id')) {
       this.db.exec('ALTER TABLE usage_measurements ADD COLUMN run_execution_id TEXT');
+    }
+    if (!measurementColumns.some((row) => row.name === 'cache_read_tokens')) {
+      this.db.exec('ALTER TABLE usage_measurements ADD COLUMN cache_read_tokens INTEGER');
+    }
+    if (!measurementColumns.some((row) => row.name === 'cache_write_tokens')) {
+      this.db.exec('ALTER TABLE usage_measurements ADD COLUMN cache_write_tokens INTEGER');
+    }
+    const rollupColumns = this.db.all('PRAGMA table_info(usage_daily_rollups)');
+    if (!rollupColumns.some((row) => row.name === 'cache_read_tokens')) {
+      this.db.exec('ALTER TABLE usage_daily_rollups ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!rollupColumns.some((row) => row.name === 'cache_write_tokens')) {
+      this.db.exec('ALTER TABLE usage_daily_rollups ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0');
     }
     this.db.exec(
       'CREATE INDEX IF NOT EXISTS usage_operations_run_idx ON usage_operations (run_id) WHERE run_id IS NOT NULL',
@@ -874,6 +899,9 @@ export class UsageStoreLogic {
           usageCompleteness: row.usage_completeness,
           inputTokens: row.input_tokens,
           outputTokens: row.output_tokens,
+          cacheReadTokens: row.cache_read_tokens,
+          cacheWriteTokens: row.cache_write_tokens,
+          totalTokens: row.total_tokens,
         });
         if (estimate.estimateCompleteness !== 'complete') continue;
         const updated = this.db.run(
@@ -1023,6 +1051,8 @@ function mapMeasurement(row: MeasurementRow): UsageMeasurement {
     usageCompleteness: row.usage_completeness,
     inputTokens: nullableNumber(row.input_tokens),
     outputTokens: nullableNumber(row.output_tokens),
+    cacheReadTokens: nullableNumber(row.cache_read_tokens),
+    cacheWriteTokens: nullableNumber(row.cache_write_tokens),
     totalTokens: nullableNumber(row.total_tokens),
     usageUnknownReason: row.usage_unknown_reason,
     estimateCompleteness: row.estimate_completeness,
@@ -1086,6 +1116,8 @@ function sameTerminal(measurement: UsageMeasurement, input: RecordUsageTerminalI
     measurement.usageCompleteness === input.usageCompleteness &&
     measurement.inputTokens === input.inputTokens &&
     measurement.outputTokens === input.outputTokens &&
+    measurement.cacheReadTokens === (input.cacheReadTokens ?? null) &&
+    measurement.cacheWriteTokens === (input.cacheWriteTokens ?? null) &&
     measurement.totalTokens === input.totalTokens &&
     measurement.usageUnknownReason === input.usageUnknownReason &&
     sameEstimate(measurement, input);

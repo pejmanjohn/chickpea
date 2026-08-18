@@ -92,7 +92,13 @@ test('Flue result envelopes reduce to the bounded Chickpea telemetry contract', 
     );
     assert.equal(result.requestedModel, fixture.requestedModel, fixture.id);
     assert.equal(result.returnedModel?.provider, fixture.provider, fixture.id);
-    assert.deepEqual(result.reportedUsage, fixture.expectedUsage, fixture.id);
+    assert.deepEqual(
+      result.reportedUsage,
+      fixture.expectedUsage
+        ? { ...fixture.expectedUsage, cacheReadTokens: 0, cacheWriteTokens: 0 }
+        : null,
+      fixture.id,
+    );
     assert.equal(
       result.usageCompleteness,
       fixture.classification === 'metered' ? 'complete' : 'not_reported',
@@ -100,7 +106,7 @@ test('Flue result envelopes reduce to the bounded Chickpea telemetry contract', 
     );
 
     const serialized = JSON.stringify(result);
-    assert.doesNotMatch(serialized, /submissionId|streamUrl|providerReportedCost|cacheRead|cost/);
+    assert.doesNotMatch(serialized, /submissionId|streamUrl|providerReportedCost|cost/);
   }
 });
 
@@ -119,6 +125,8 @@ test('partial usage stays partial and never synthesizes a total', () => {
   assert.deepEqual(result.reportedUsage, {
     inputTokens: 21,
     outputTokens: 8,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
     totalTokens: null,
   });
   assert.equal(result.usageCompleteness, 'partial');

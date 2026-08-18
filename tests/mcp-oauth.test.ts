@@ -206,10 +206,15 @@ test('DCR is registered once, pending state is single-use, and callback stores t
   const settings = new SqliteSettingsStore(':memory:');
   const oauth = fakeOAuthServer();
   let nonce = 0;
+  let validationChecks = 0;
   const dependencies = {
     settings,
     fetchFn: oauth.fetchFn,
     randomId: () => `nonce-${++nonce}`,
+    validateConnection: () => {
+      validationChecks += 1;
+      return true;
+    },
   };
 
   try {
@@ -272,6 +277,7 @@ test('DCR is registered once, pending state is single-use, and callback stores t
         error instanceof McpOAuthError && error.code === 'invalid_state',
     );
 
+    validationChecks = 0;
     assert.equal(
       await resolveMcpOAuthAccessToken(
         { ref: REF, serverUrl: SERVER_URL },
@@ -279,6 +285,7 @@ test('DCR is registered once, pending state is single-use, and callback stores t
       ),
       'access-initial',
     );
+    assert.equal(validationChecks, 1);
     const rawSettings = await settings.getSettings(mcpOAuthSettingKeys(REF));
     assert.equal(rawSettings.some((value) => value?.includes('access-initial')), true);
     assert.equal(rawSettings.some((value) => value?.includes('refresh-initial')), true);

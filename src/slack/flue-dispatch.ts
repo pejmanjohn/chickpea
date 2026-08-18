@@ -50,6 +50,8 @@ export type AgentUsageCompleteness = 'complete' | 'partial' | 'not_reported';
 export interface AgentReportedUsage {
   inputTokens: number | null;
   outputTokens: number | null;
+  cacheReadTokens?: number | null;
+  cacheWriteTokens?: number | null;
   totalTokens: number | null;
 }
 
@@ -369,6 +371,8 @@ function parseResponseMetadata(value: unknown): ChickpeaResponseMetadata | undef
     usage: {
       input: Number(usage.input),
       output: Number(usage.output),
+      cacheRead: isTokenCount(usage.cacheRead) ? Number(usage.cacheRead) : 0,
+      cacheWrite: isTokenCount(usage.cacheWrite) ? Number(usage.cacheWrite) : 0,
       totalTokens: Number(usage.totalTokens),
     },
     ...(provider && id ? { returnedModel: { provider, id } } : {}),
@@ -499,6 +503,8 @@ function parseReportedUsage(value: unknown): {
   const reportedUsage: AgentReportedUsage = {
     inputTokens: isTokenCount(record.input) ? record.input : null,
     outputTokens: isTokenCount(record.output) ? record.output : null,
+    cacheReadTokens: isTokenCount(record.cacheRead) ? record.cacheRead : null,
+    cacheWriteTokens: isTokenCount(record.cacheWrite) ? record.cacheWrite : null,
     totalTokens: isTokenCount(record.totalTokens) ? record.totalTokens : null,
   };
   const values = [

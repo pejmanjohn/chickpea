@@ -26,13 +26,21 @@ test('interaction classifier usage is assignment-scoped and content-free', async
     await recorder.recordTerminal({
       status: 'completed',
       returnedModel: { provider: 'openai', id: 'gpt-5.2' },
-      usage: { inputTokens: 20, outputTokens: 4, totalTokens: 24 },
+      usage: {
+        inputTokens: 20,
+        outputTokens: 4,
+        cacheReadTokens: 8,
+        cacheWriteTokens: 2,
+        totalTokens: 34,
+      },
     });
     const detail = await store.getOperation('classification_T_TEST_C_TEST_Ev1');
     assert.equal(detail?.operation.operationKind, 'interaction_classification');
     assert.equal(detail?.operation.runId, undefined);
     assert.equal(detail?.operation.channelId, 'C_TEST');
-    assert.equal(detail?.measurements[0]?.totalTokens, 24);
+    assert.equal(detail?.measurements[0]?.cacheReadTokens, 8);
+    assert.equal(detail?.measurements[0]?.cacheWriteTokens, 2);
+    assert.equal(detail?.measurements[0]?.totalTokens, 34);
     assert.equal(JSON.stringify(detail).includes('message body'), false);
   } finally {
     store.close();

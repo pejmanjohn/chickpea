@@ -16,6 +16,8 @@ export interface ChickpeaResponseMetadata {
   usage: {
     input: number;
     output: number;
+    cacheRead: number;
+    cacheWrite: number;
     totalTokens: number;
   };
   returnedModel?: {
@@ -80,6 +82,8 @@ export function responseUsageMetadata(
     usage: {
       input: boundedTokenCount(usage.input),
       output: boundedTokenCount(usage.output),
+      cacheRead: boundedTokenCount(usage.cacheRead),
+      cacheWrite: boundedTokenCount(usage.cacheWrite),
       totalTokens: boundedTokenCount(usage.totalTokens),
     },
     ...(returnedModel ? { returnedModel } : {}),

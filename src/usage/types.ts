@@ -122,6 +122,10 @@ export interface RecordUsageTerminalInput {
   usageCompleteness: UsageCompleteness;
   inputTokens: number | null;
   outputTokens: number | null;
+  /** Absent on legacy schema-v1 observations recorded before cache accounting. */
+  cacheReadTokens?: number | null;
+  /** Absent on legacy schema-v1 observations recorded before cache accounting. */
+  cacheWriteTokens?: number | null;
   totalTokens: number | null;
   usageUnknownReason: UsageUnknownReason | null;
   estimateCompleteness: EstimateCompleteness;
@@ -202,6 +206,8 @@ export interface UsageRollupValues {
   unknownPriceOperationCount: number;
   inputTokens: number | null;
   outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
   totalTokens: number | null;
   estimateAmountMicros: number | null;
 }

@@ -4,12 +4,17 @@ import type {
 } from '@flue/runtime';
 
 import { mcpDebugText } from './mcp-errors.ts';
+import { withMcpHttpTelemetry } from './mcp-telemetry.ts';
 import {
   isCurrentMcpOAuthConnection,
   resolveMcpOAuthAccessToken,
   type ResolveMcpOAuthAccessInput,
 } from './mcp-oauth.ts';
-import { buildMcpRequestHeaders, resolveMcpSecrets } from './mcp-secrets.ts';
+import {
+  buildMcpRequestHeaders,
+  resolveMcpHeaders,
+  resolveMcpSecrets,
+} from './mcp-secrets.ts';
 import { connectMcp, type McpConnector } from './mcp-test.ts';
 import { createMcpGuardedFetch, validateMcpUrl } from './mcp-url.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
@@ -107,23 +112,22 @@ export function resolveProfileMcpConnections(
       const guardedFetch = (opts.createGuardedFetch ?? createMcpGuardedFetch)({
         allowedOrigin: new URL(validated.url).origin,
       });
-      const fetchWithLiveCustomHeaders: typeof fetch = async (input, init) => {
+      const fetchWithLiveCustomHeaders = withMcpHttpTelemetry(async (input, init) => {
         const request = new Request(input, init);
-        const secrets = await resolveMcpSecrets(
+        const customHeaders = await resolveMcpHeaders(
           { agentId: opts.agentId, connectionId: server.id },
           server.headerNames,
           opts.env,
         );
         const headers = new Headers(request.headers);
-        for (const [name, value] of Object.entries(secrets.headers)) {
-          if (
-            (server.authMode === 'bearer' || server.authMode === 'oauth') &&
-            name.toLowerCase() === 'authorization'
-          ) continue;
+        for (const [name, value] of Object.entries(buildMcpRequestHeaders(
+          server.authMode,
+          { headers: customHeaders },
+        ))) {
           headers.set(name, value);
         }
         return guardedFetch(new Request(request, { headers }));
-      };
+      }, { connectionId: server.id, authMode: server.authMode });
       return [{
         name: server.id,
         url: validated.url,
@@ -173,24 +177,23 @@ export function resolveRuntimePlanMcpConnections(
       }
       return { server, env };
     };
-    const fetchWithLiveHeaders: typeof fetch = async (input, init) => {
+    const fetchWithLiveHeaders = withMcpHttpTelemetry(async (input, init) => {
       const { server, env } = await liveServer();
-      const secrets = await resolveMcpSecrets(
+      const customHeaders = await resolveMcpHeaders(
         { agentId: profileId, connectionId: server.id },
         declaration.headerNames,
         env,
       );
       const request = new Request(input, init);
       const headers = new Headers(request.headers);
-      for (const [name, value] of Object.entries(secrets.headers)) {
-        if (
-          declaration.authMode !== 'none' &&
-          name.toLowerCase() === 'authorization'
-        ) continue;
+      for (const [name, value] of Object.entries(buildMcpRequestHeaders(
+        declaration.authMode,
+        { headers: customHeaders },
+      ))) {
         headers.set(name, value);
       }
       return guardedFetch(new Request(request, { headers }));
-    };
+    }, { connectionId: declaration.id, authMode: declaration.authMode });
     return {
       name: declaration.id,
       url: validated.url,
@@ -207,7 +210,7 @@ export function resolveRuntimePlanMcpConnections(
               return resolveLiveMcpBearer(server, {
                 agentId: profileId,
                 env,
-              });
+              }, true);
             },
           }),
     };
@@ -269,16 +272,28 @@ export async function resolveProfileMcpTools(
 async function resolveLiveMcpBearer(
   server: McpConnectionConfig,
   opts: ResolveProfileMcpConnectionsOptions,
+  connectionAlreadyValidated = false,
 ): Promise<string> {
   if (server.authMode === 'oauth') {
+    const configStore = getConfigStore(opts.env);
+    let useValidatedConnection = connectionAlreadyValidated;
     return (
       opts.resolveOAuthAccessToken ??
       ((input) => {
-        const configStore = getConfigStore(opts.env);
         return resolveMcpOAuthAccessToken(input, {
           settings: getSettingsStore(opts.env),
-          validateConnection: (ref, serverUrl) =>
-            isCurrentMcpOAuthConnection(configStore, ref, serverUrl),
+          validateConnection: (ref, serverUrl) => {
+            if (useValidatedConnection) {
+              useValidatedConnection = false;
+              const validated = validateMcpUrl(server.url);
+              return ref.agentId === opts.agentId &&
+                ref.connectionId === server.id &&
+                server.authMode === 'oauth' &&
+                validated.ok &&
+                validated.url === serverUrl;
+            }
+            return isCurrentMcpOAuthConnection(configStore, ref, serverUrl);
+          },
           onReauthorizationRequired: async (ref, serverUrl) => {
             await configStore.markOAuthReauthorizationRequired({
               lane: 'mcp',

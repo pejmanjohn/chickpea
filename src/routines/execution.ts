@@ -680,7 +680,13 @@ async function recordUsage(
   await prepared.usageRecorder?.recordTerminal({
     status: settlement.outcome === 'completed' ? 'completed' : 'failed',
     ...(usage && usage.inputTokens !== null && usage.outputTokens !== null && usage.totalTokens !== null
-      ? { usage: { input: usage.inputTokens, output: usage.outputTokens, totalTokens: usage.totalTokens } }
+      ? { usage: {
+          input: usage.inputTokens,
+          output: usage.outputTokens,
+          cacheRead: usage.cacheReadTokens ?? 0,
+          cacheWrite: usage.cacheWriteTokens ?? 0,
+          totalTokens: usage.totalTokens,
+        } }
       : {}),
     ...(usage?.returnedModel ? { returnedModel: usage.returnedModel } : {}),
     ...(usage ? {} : { unknownReason: 'provider_request_unknown' }),
@@ -710,6 +716,8 @@ export function routineUsageFromAgentReply(
       returnedModel: null,
       inputTokens: null,
       outputTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
       totalTokens: null,
       completeness: 'not_reported',
     };
@@ -723,6 +731,8 @@ export function routineUsageFromAgentReply(
     returnedModel: metadata.returnedModel ?? null,
     inputTokens: completeness === 'complete' ? reported.input : null,
     outputTokens: completeness === 'complete' ? reported.output : null,
+    cacheReadTokens: completeness === 'complete' ? reported.cacheRead : null,
+    cacheWriteTokens: completeness === 'complete' ? reported.cacheWrite : null,
     totalTokens: completeness === 'complete' ? reported.totalTokens : null,
     completeness,
   };
@@ -755,6 +765,8 @@ function responseMetadata(reply: AgentReply): ChickpeaResponseMetadata | undefin
     usage: {
       input: counts.input as number,
       output: counts.output as number,
+      cacheRead: isTokenCount(counts.cacheRead) ? counts.cacheRead : 0,
+      cacheWrite: isTokenCount(counts.cacheWrite) ? counts.cacheWrite : 0,
       totalTokens: counts.totalTokens as number,
     },
     ...(returnedModel ? { returnedModel } : {}),

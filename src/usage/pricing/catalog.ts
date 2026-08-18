@@ -28,10 +28,19 @@ export function installReleasePriceCatalogs(db: StateDb): UsagePriceVersion[] {
       unit_scale INTEGER NOT NULL,
       input_micros_per_unit INTEGER NOT NULL,
       output_micros_per_unit INTEGER NOT NULL,
+      cache_read_micros_per_unit INTEGER,
+      cache_write_micros_per_unit INTEGER,
       basis TEXT NOT NULL,
       PRIMARY KEY (price_version_id, provider_id, model_id)
     )`,
   );
+  const rateColumns = db.all('PRAGMA table_info(usage_price_rates)');
+  if (!rateColumns.some((row) => row.name === 'cache_read_micros_per_unit')) {
+    db.exec('ALTER TABLE usage_price_rates ADD COLUMN cache_read_micros_per_unit INTEGER');
+  }
+  if (!rateColumns.some((row) => row.name === 'cache_write_micros_per_unit')) {
+    db.exec('ALTER TABLE usage_price_rates ADD COLUMN cache_write_micros_per_unit INTEGER');
+  }
   const installed: UsagePriceVersion[] = [];
   for (const catalog of RELEASE_PRICE_CATALOGS) {
     if (installVersion(db, catalog)) installed.push(catalog);
@@ -86,7 +95,8 @@ function installVersion(db: StateDb, version: UsagePriceVersion): boolean {
       `INSERT OR IGNORE INTO usage_price_rates (
         price_version_id, provider_id, model_id, model_aliases_json, currency,
         unit_scale, input_micros_per_unit, output_micros_per_unit, basis
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        , cache_read_micros_per_unit, cache_write_micros_per_unit
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       rate.priceVersionId,
       rate.providerId,
       rate.modelId,
@@ -96,6 +106,8 @@ function installVersion(db: StateDb, version: UsagePriceVersion): boolean {
       rate.inputMicrosPerUnit,
       rate.outputMicrosPerUnit,
       rate.basis,
+      rate.cacheReadMicrosPerUnit ?? null,
+      rate.cacheWriteMicrosPerUnit ?? null,
     );
   }
   return true;

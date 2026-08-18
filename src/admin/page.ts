@@ -4027,11 +4027,24 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return '<p class="usage-data-note"><strong>Some activity is missing usage data.</strong> Cost estimates include ' + usageInt(pricedCount) + ' of ' + usageInt(activityCount) + ' ' + usageActivityNoun(activityCount) + '; token totals include ' + usageInt(meteredCount) + ' of ' + usageInt(activityCount) + '.</p>';
   }
 
-  function usageTokenTotalHtml(input, output, total) {
+  function usageTokenTotalHtml(input, cached, output, total) {
     var totalLabel = usageInt(total);
-    if (input == null && output == null) return totalLabel;
-    var split = usageInt(input) + " input · " + usageInt(output) + " output";
+    if (input == null && cached == null && output == null) return totalLabel;
+    var split = usageInt(input) + " input · " + usageInt(cached) + " cached input · " + usageInt(output) + " output";
     return '<span class="usage-token-total" tabindex="0" data-tooltip="' + esc(split) + '" aria-label="' + esc(totalLabel + " total tokens; " + split) + '">' + totalLabel + '</span>';
+  }
+
+  function usageCachedTokens(source) {
+    var read = source && source.cacheReadTokens;
+    var write = source && source.cacheWriteTokens;
+    return read == null && write == null ? null : Number(read || 0) + Number(write || 0);
+  }
+
+  function usageOperationCachedTokens(detail) {
+    return usageCachedTokens({
+      cacheReadTokens: usageOperationTokens(detail, "cacheReadTokens"),
+      cacheWriteTokens: usageOperationTokens(detail, "cacheWriteTokens")
+    });
   }
 
   function usageGroupsHtml(summary) {
@@ -4043,10 +4056,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       label = state.usageGroupBy === "channel" && label !== "Direct message" && !String(label).startsWith("#") ? "#" + label : label;
       return '<tr><td><button type="button" class="usage-row-action" data-action="usage-group-filter" data-value="' + esc(group.key) + '" data-label="' + esc(label) + '">' + esc(label) + '</button></td>' +
         '<td class="number">' + usageInt(group.operationCount) + '</td><td class="number">' + usageInt(group.inputTokens) + '</td>' +
-        '<td class="number">' + usageInt(group.outputTokens) + '</td><td class="number">' + usageInt(group.totalTokens) + '</td>' +
+        '<td class="number">' + usageInt(usageCachedTokens(group)) + '</td><td class="number">' + usageInt(group.outputTokens) + '</td><td class="number">' + usageInt(group.totalTokens) + '</td>' +
         '<td class="number">' + usageMoney(group.estimateAmountMicros, summary.currency) + '</td></tr>';
     }).join("");
-    return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>' + esc(state.usageGroupBy.replace(/_/g, " ")) + '</th><th class="number">' + usageActivityLabelHtml("Activity") + '</th><th class="number">Input tokens</th><th class="number">Output tokens</th><th class="number">Total tokens</th><th class="number">Spend</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>' + esc(state.usageGroupBy.replace(/_/g, " ")) + '</th><th class="number">' + usageActivityLabelHtml("Activity") + '</th><th class="number">Input tokens</th><th class="number">Cached input</th><th class="number">Output tokens</th><th class="number">Total tokens</th><th class="number">Spend</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
   }
 
   function usageOperationsHtml() {
@@ -4059,11 +4072,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var rows = visibleOperations.map(function (detail) {
       var operation = detail.operation;
       var input = usageOperationTokens(detail, "inputTokens");
+      var cached = usageOperationCachedTokens(detail);
       var output = usageOperationTokens(detail, "outputTokens");
       var total = usageOperationTokens(detail, "totalTokens");
       return '<tr><td><strong class="usage-work-label">' + esc(usageWorkLabel(operation)) + '</strong><div class="hint">' + esc(new Date(operation.startedAt).toLocaleString()) + '</div></td>' +
         '<td>' + esc(operation.agentLabel || operation.agentId || "Unknown") + '</td><td>' + esc(usageOperationProvider(detail)) + '</td><td>' + esc(usageOperationModel(detail)) + '</td>' +
-        '<td>' + usageStatusBadge(operation.status) + '</td><td class="number">' + usageTokenTotalHtml(input, output, total) + '</td><td class="number">' + usageMoney(usageOperationAmount(detail), "USD") + '</td></tr>';
+        '<td>' + usageStatusBadge(operation.status) + '</td><td class="number">' + usageTokenTotalHtml(input, cached, output, total) + '</td><td class="number">' + usageMoney(usageOperationAmount(detail), "USD") + '</td></tr>';
     }).join("");
     return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Channel or routine</th><th>Agent</th><th>Provider</th><th>Model</th><th>Status</th><th class="number">Tokens</th><th class="number">Spend</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
       loadMore;
@@ -4096,7 +4110,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var perPriced = denominator > 0 && totals.estimateAmountMicros != null ? usageMoney(Math.round(Number(totals.estimateAmountMicros) / denominator), current.currency || "USD") : "Unknown";
     var summary = '<div class="usage-grid"><div class="usage-card usage-card-primary"><span class="usage-card-label">Estimated spend</span><span class="usage-card-value">' + esc(estimate) + '</span><span class="hint">' + esc(usageDelta(totals.estimateAmountMicros, prior.estimateAmountMicros)) + '</span></div>' +
       '<div class="usage-card"><span class="usage-card-label">' + usageActivityLabelHtml("Activity") + '</span><span class="usage-card-value">' + usageInt(totals.operationCount) + '</span><span class="hint">' + esc(usageDelta(totals.operationCount, prior.operationCount)) + '</span></div>' +
-      '<div class="usage-card"><span class="usage-card-label">Tokens</span><span class="usage-card-value">' + usageInt(totals.totalTokens) + '</span><span class="hint">' + usageInt(totals.inputTokens) + ' input · ' + usageInt(totals.outputTokens) + ' output</span></div>' +
+      '<div class="usage-card"><span class="usage-card-label">Tokens</span><span class="usage-card-value">' + usageInt(totals.totalTokens) + '</span><span class="hint">' + usageInt(totals.inputTokens) + ' input · ' + usageInt(usageCachedTokens(totals)) + ' cached input · ' + usageInt(totals.outputTokens) + ' output</span></div>' +
       '<div class="usage-card"><span class="usage-card-label">Average spend</span><span class="usage-card-value">' + esc(perPriced) + '</span><span class="hint">Across ' + usageInt(denominator) + ' priced ' + usageActivityNoun(denominator) + '</span></div></div>';
     var coverage = usageCoverageHtml(totals);
     var staleCatalogs = (state.usageMetadata.catalogs || []).filter(function (catalog) { return Date.now() >= catalog.staleAfter; });
@@ -4105,7 +4119,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var groupLabel = state.usageGroupBy === "channel" ? "channel" : state.usageGroupBy;
     return head + summary + coverage + freshness +
       '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Spend by ' + esc(groupLabel) + '</h2><p class="hint">Compare where token usage and spend are concentrated.</p></div></div>' + usageGroupsHtml(current) + '</section>' +
-      '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent ' + usageActivityLabelHtml("activity") + '</h2><p class="hint">Hover over total tokens to see the input and output split.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>';
+      '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent ' + usageActivityLabelHtml("activity") + '</h2><p class="hint">Hover over total tokens to see the input, cached input, and output split.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>';
   }
 
   function isOnboardingSlackConnection() {

@@ -1153,11 +1153,17 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
     ? null
     : (() => {
         const usage = exactObject(record.reportedUsage, 'reported usage', [
-          'inputTokens', 'outputTokens', 'totalTokens',
+          'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'totalTokens',
         ]);
         return {
           inputTokens: nullableTokenCount(usage.inputTokens),
           outputTokens: nullableTokenCount(usage.outputTokens),
+          ...(usage.cacheReadTokens === undefined
+            ? {}
+            : { cacheReadTokens: nullableTokenCount(usage.cacheReadTokens) }),
+          ...(usage.cacheWriteTokens === undefined
+            ? {}
+            : { cacheWriteTokens: nullableTokenCount(usage.cacheWriteTokens) }),
           totalTokens: nullableTokenCount(usage.totalTokens),
         };
       })();

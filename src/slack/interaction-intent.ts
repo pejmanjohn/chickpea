@@ -368,6 +368,8 @@ async function promptSlackInteractionIntentAgent(
     reportedUsage: {
       inputTokens: usage.input,
       outputTokens: usage.output,
+      cacheReadTokens: usage.cacheRead,
+      cacheWriteTokens: usage.cacheWrite,
       totalTokens: usage.totalTokens,
     },
     usageCompleteness: 'complete',
