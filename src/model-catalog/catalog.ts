@@ -12,6 +12,7 @@ import {
   isPiNativeModel,
   materializeCatalogModel,
 } from './bundled.ts';
+import { revisionedAlias } from './provider-alias.ts';
 import {
   externalEntryToInternal,
   type ModelCatalogDocumentV1,
@@ -151,7 +152,11 @@ export function resolveActiveCatalogRoute(
   let modelSpecifier: string;
   if (lane === 'openai_subscription') {
     const providerId = activeSnapshot.source === 'hosted'
-      ? `chickpea-openai-subscription-r${activeSnapshot.revision}-${activeSnapshot.sha256.slice(0, 12)}`
+      ? revisionedAlias(
+        'openaiSubscription',
+        activeSnapshot.revision,
+        activeSnapshot.sha256,
+      ).providerId
       : 'openai-subscription';
     modelSpecifier = `${providerId}/${model.id}`;
   } else {
