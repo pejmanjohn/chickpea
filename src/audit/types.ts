@@ -19,13 +19,6 @@ export type SlackIdentityAuditEventType =
   | 'slack_identity.setup_canceled'
   | 'slack_identity.retired';
 
-export interface SlackIdentityAuditMetadata {
-  operation: string;
-  priorLifecycle: string;
-  newLifecycle: string;
-  requestId: string;
-}
-
 export type WorkAuditEventType =
   | 'work.run_admitted'
   | 'work.run_claimed'
@@ -49,16 +42,6 @@ export type WorkAuditEventType =
   | 'work.action_succeeded'
   | 'work.action_failed'
   | 'work.action_unknown';
-
-export interface WorkActionAuditMetadata {
-  actionAttemptId: string;
-  runId: string;
-  runExecutionId: string;
-  actionClass: string;
-  targetKind: string;
-  flueCorrelation: string;
-  status: 'denied' | 'started' | 'succeeded' | 'failed' | 'unknown';
-}
 
 export interface AuditEvent {
   eventId: string;

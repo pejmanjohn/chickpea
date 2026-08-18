@@ -26,15 +26,6 @@ export interface SandboxSettings {
   monthlySessionCapConfigured: boolean;
 }
 
-export const DEFAULT_SANDBOX_SETTINGS: Readonly<SandboxSettings> = {
-  installRequested: false,
-  enabled: false,
-  instanceType: SANDBOX_INSTANCE_TYPE,
-  allowedHosts: [...SANDBOX_PACKAGE_REGISTRY_HOSTS],
-  monthlySessionCap: 0,
-  monthlySessionCapConfigured: false,
-};
-
 const SUPPORTED_PACKAGE_REGISTRY_HOSTS = new Set<string>(SANDBOX_PACKAGE_REGISTRY_HOSTS);
 
 export async function resolveSandboxSettings(store: SettingsStore): Promise<SandboxSettings> {

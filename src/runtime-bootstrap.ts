@@ -69,7 +69,3 @@ export function bootstrapRuntimeProviders(): void {
     recordRegisteredProvider('local-stub');
   }
 }
-
-export function resetRuntimeBootstrapForTests(): void {
-  bootstrapped = false;
-}

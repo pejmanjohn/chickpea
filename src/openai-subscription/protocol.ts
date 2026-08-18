@@ -10,7 +10,6 @@ import type {
 // implementation pinned in the feature plan. Keeping every unstable value in
 // this module makes the private surface removable without touching API-key code.
 export const OPENAI_SUBSCRIPTION_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
-export const OPENAI_SUBSCRIPTION_SCOPES = 'openid profile email offline_access';
 export const OPENAI_SUBSCRIPTION_ORIGINATOR = 'chickpea';
 
 const OPENAI_AUTH_ORIGIN = 'https://auth.openai.com';

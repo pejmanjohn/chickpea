@@ -1,7 +1,5 @@
 import type { StateDb } from '../state/state-db.ts';
 
-export const WORK_SCHEMA_VERSION = 2;
-
 interface WorkMigration {
   version: number;
   statements: readonly string[];

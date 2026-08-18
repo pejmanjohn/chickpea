@@ -69,20 +69,15 @@ const forbiddenSourcePathRoots = [
 ];
 
 const allowedPublicDocs = new Set([
-  exportPath('docs', 'architecture', 'agent-runtime-boundary.md'),
   exportPath('docs', 'authentication.md'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'design-qa.md'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'app.jsx'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'assets', 'chickpea-mark.svg'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'styles.css'),
-  exportPath('docs', 'plans', '2026-07-28-001-feat-openai-subscription-auth-plan.md'),
   exportPath('docs', 'runbooks', 'access-recovery.md'),
   exportPath('docs', 'runbooks', 'auth-db-upgrade.md'),
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
   exportPath('docs', 'runbooks', 'password-recovery.md'),
-  exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
-  exportPath('docs', 'runbooks', 'openai-subscription.md'),
-  exportPath('docs', 'runbooks', 'slack-interaction-operations.md'),
 ]);
 
 const forbiddenSourcePaths = new Set([

@@ -2712,7 +2712,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     scheduledNotice: "",
     scheduledCapability: null,
     scheduledLimits: null,
-    scheduledFilters: { workspaceId: "", channelId: "", state: "current", status: "" },
+    scheduledFilters: { workspaceId: "", channelId: "", state: "current" },
     scheduledDeleteConfirm: false,
     usageOverview: null,
     usageMetadata: null,
@@ -7974,8 +7974,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.scheduledFilters = {
       workspaceId: workspaceId || "",
       channelId: channelId || "",
-      state: "current",
-      status: ""
+      state: "current"
     };
     state.scheduledRoutines = null;
     openScheduledWork("");
@@ -8008,7 +8007,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (filters.workspaceId) query.set("workspaceId", filters.workspaceId.trim());
     if (filters.channelId) query.set("channelId", filters.channelId.trim());
     if (filters.state) query.set("state", filters.state);
-    if (filters.status) query.set("status", filters.status);
     var encoded = query.toString();
     return "/admin/api/audit/scheduled_work/routines" + (encoded ? "?" + encoded : "");
   }
@@ -11630,7 +11628,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.slackError = "";
       render();
     }
-    if (action === "back-to-slack-create") { resetOnboardingSlackContinuation(true); state.slackStep = 1; render(); }
     if (action === "slack-permissions-open" && state.slackOnboardingContinuation && !state.slackConnectionBusy) {
       state.slackOnboardingContinuation = {
         kind: state.slackOnboardingContinuation.kind || "permissions",
@@ -11668,7 +11665,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "toggle-add-channel") { openAddChannel(); }
     if (action === "cancel-add-channel") { state.addChannelOpen = false; state.addChannelManual = false; state.addChannelError = ""; state.addChannelAgentId = ""; render(); }
     if (action === "refresh-channels") { loadSlackChannels(true); }
-    if (action === "slack-identity-refresh") { loadSlackIdentity(true, true); }
     if (action === "slack-identity-create-open") {
       resetSlackIdentityManagement("create");
       render();
@@ -11749,7 +11745,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "toggle-manual-channel") { state.addChannelManual = !state.addChannelManual; state.addChannelError = ""; render(); }
     if (action === "toggle-swap") { state.swapOpen = !state.swapOpen; render(); }
     if (action === "attach-selected-profile") { attachSelectedProfile(); }
-    if (action === "detach-profile") { detachProfile(); }
     if (action === "discard-channel") { var a = activeAssignment(); if (a) selectActive(a.workspaceId, a.channelId); render(); }
     if (action === "save-channel") { saveChannel(); }
     // Profiles master-detail navigation + form actions.
@@ -11813,13 +11808,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "audit-tab-scheduled" && state.auditDomain !== "scheduled-work") { openScheduledWork(""); }
     if (action === "audit-tab-memory" && state.auditDomain !== "memory") { openAuditLogs("", "", ""); }
     if (action === "scheduled-retry") { loadScheduledRoutines(); }
-    if (action === "scheduled-apply-filters") {
-      state.scheduledSelection = "";
-      state.scheduledDetail = null;
-      state.scheduledDetailTab = "overview";
-      state.scheduledRoutines = null;
-      loadScheduledRoutines();
-    }
     if (action === "scheduled-back-list") {
       state.scheduledSelection = "";
       state.scheduledDetail = null;
@@ -11997,7 +11985,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "reload-profile") { reloadProfile(); }
     if (action === "discard-profile") { discardProfile(); }
     if (action === "delete-profile") { deleteProfile(); }
-    if (action === "detach-channel") { detachProfileChannel(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); }
     if (action === "open-channel-from-profile") { state.view = "channels"; state.channelScreen = "detail"; state.profileScreen = "list"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
     if (action === "disable-keep") { state.disableConfirm = false; render(); focusAction("agent-overflow-toggle"); }
     if (action === "disable-confirm") { if (state.profileDraft) state.profileDraft.enabled = false; state.disableConfirm = false; state.profileDirty = true; render(); focusAction("agent-overflow-toggle"); }
@@ -12335,8 +12322,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       if (action === "owner-memory-create-description") { state.ownerMemory.createDraft.description = target.value; state.ownerMemory.error = ""; }
       if (action === "owner-memory-create-body") { state.ownerMemory.createDraft.body = target.value; state.ownerMemory.error = ""; }
     }
-    if (action === "scheduled-filter-workspace") state.scheduledFilters.workspaceId = target.value;
-    if (action === "scheduled-filter-channel") state.scheduledFilters.channelId = target.value;
     if (action === "channel-addendum") {
       state.channelDraft.channelPromptAddendum = target.value;
       state.dirty = true;
@@ -12524,7 +12509,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       var scopeParts = String(target.value || "").split("|");
       state.scheduledFilters.workspaceId = scopeParts[0] === "workspace" || scopeParts[0] === "channel" ? scopeParts[1] || "" : "";
       state.scheduledFilters.channelId = scopeParts[0] === "channel" ? scopeParts[2] || "" : "";
-      state.scheduledFilters.status = "";
       state.scheduledSelection = "";
       state.scheduledDetail = null;
       state.scheduledInspector = false;
@@ -12534,14 +12518,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "scheduled-filter-state") {
       var scheduledState = String(target.value || "current");
       state.scheduledFilters.state = ["current", "active", "paused", "completed", "disabled", "all"].includes(scheduledState) ? scheduledState : "current";
-      state.scheduledFilters.status = "";
       state.scheduledSelection = "";
       state.scheduledDetail = null;
       state.scheduledInspector = false;
       state.scheduledRoutines = null;
       loadScheduledRoutines();
     }
-    if (action === "scheduled-filter-status") state.scheduledFilters.status = target.value;
     if (action === "sandbox-ready-attestation" && !state.sandboxSaving) {
       state.sandboxReadyAttested = !!target.checked;
       state.sandboxError = "";
@@ -12590,13 +12572,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.profileError = "";
       markProfileDirty();
       render();
-    }
-    // Profile enable toggle: enabling is harmless, but turning OFF an assigned
-    // profile stops it answering everywhere — confirm before staging that.
-    if (action === "profile-enable-toggle" && state.profileDraft) {
-      if (target.checked) { state.profileDraft.enabled = true; state.disableConfirm = false; state.profileDirty = true; render(); }
-      else if (allAssignmentsForAgent(state.profileDraft.id).length > 0) { state.disableConfirm = true; render(); }
-      else { state.profileDraft.enabled = false; state.profileDirty = true; render(); }
     }
     // Custom-skill enable toggle: flip enabled on the row at data-index. Re-render
     // so the checked attribute in the HTML stays in sync with the draft (the
@@ -13281,15 +13256,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // so an unsaved textarea edit is not committed as a side effect.
     putAssignment(assignment.workspaceId, assignment.channelId, select.value, assignment.enabled, assignment.channelPromptAddendum, assignment.channelLabel, assignment.participationMode || state.channelDraft.participationMode, assignment.agentId || null).then(function () {
       state.swapOpen = false;
-      return refreshData();
-    }).catch(function (error) { state.saveError = addChannelErrorText(error); render(); });
-  }
-
-  function detachProfile() {
-    var assignment = activeAssignment();
-    if (!assignment) return;
-    api("/admin/api/assignments?workspaceId=" + encodeURIComponent(assignment.workspaceId) + "&channelId=" + encodeURIComponent(assignment.channelId), { method: "DELETE" }).then(function () {
-      state.active = null;
       return refreshData();
     }).catch(function (error) { state.saveError = addChannelErrorText(error); render(); });
   }
@@ -14894,12 +14860,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.attachNotice = needsInvite ? channelInviteWarning(savedLabel) : "";
       return refreshData();
     }).catch(function (error) { state.attachError = addChannelErrorText(error); render(); });
-  }
-
-  function detachProfileChannel(workspaceId, channelId) {
-    api("/admin/api/assignments?workspaceId=" + encodeURIComponent(workspaceId) + "&channelId=" + encodeURIComponent(channelId), { method: "DELETE" })
-      .then(refreshData)
-      .catch(function (error) { state.profileError = error.message; render(); });
   }
 
   // Boot: capture the deep link BEFORE the first data render (which would
