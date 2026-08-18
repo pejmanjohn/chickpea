@@ -3,7 +3,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { AuditStoreLogic } from '../audit/store.ts';
 import type { AuditEvent, WorkAuditEventType } from '../audit/types.ts';
 import { isCompiledModelProfileId } from '../model-catalog/profiles.ts';
-import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
+import { promisify } from '../state/async-facade.ts';
+import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import { inspectStateDbIntegrity, type StateDb } from '../state/state-db.ts';
 import { installWorkMigrations } from './migrations.ts';
 import { runBodyExpiry } from './retention.ts';
@@ -1728,117 +1729,20 @@ export class WorkStoreLogic {
   }
 }
 
-export class SqliteWorkStore implements WorkStore {
-  private readonly db: NodeStateDb;
-  private readonly logic: WorkStoreLogic;
+export interface SqliteWorkStore extends WorkStore {
+  close(): void;
+}
 
-  constructor(
-    path: string = resolveStateDbPath(),
-    options: WorkStoreOptions = {},
-  ) {
-    this.db = openStateDb(path);
-    this.logic = new WorkStoreLogic(this.db, options);
-  }
-
-  close(): void {
-    this.db.close();
-  }
-
-  async putConfigRevision(input: SafeEffectiveConfigInput, createdAt?: number) {
-    return this.logic.putConfigRevision(input, createdAt);
-  }
-  async getConfigRevision(id: EffectiveConfigRevisionId) {
-    return this.logic.getConfigRevision(id);
-  }
-  async putContent(input: PutLedgerContentInput) {
-    return this.logic.putContent(input);
-  }
-  async getContent(ref: LedgerContentRef, at?: number) {
-    return this.logic.getContent(ref, at);
-  }
-  async purgeContent(at?: number, limit?: number) {
-    return this.logic.purgeContent(at, limit);
-  }
-  async createGraph(input: CreateWorkGraphInput) {
-    return this.logic.createGraph(input);
-  }
-  async admitShadowRun(input: AdmitShadowRunInput) {
-    return this.logic.admitShadowRun(input);
-  }
-  async getWork(id: WorkId) {
-    return this.logic.getWork(id);
-  }
-  async getBinding(id: BindingId) {
-    return this.logic.getBinding(id);
-  }
-  async getRun(id: RunId) {
-    return this.logic.getRun(id);
-  }
-  async getRunVisibilities(ids: RunId[]) {
-    return this.logic.getRunVisibilities(ids);
-  }
-  async claimNextInteractiveRun(input: ClaimNextInteractiveRunInput) {
-    return this.logic.claimNextInteractiveRun(input);
-  }
-  async renewRunLease(input: RenewRunLeaseInput) {
-    return this.logic.renewRunLease(input);
-  }
-  async releaseRunLease(input: ReleaseRunLeaseInput) {
-    return this.logic.releaseRunLease(input);
-  }
-  async listRuns(input: ListWorkRunsInput) {
-    return this.logic.listRuns(input);
-  }
-  async countExecutingRuns() {
-    return this.logic.countExecutingRuns();
-  }
-  async listRunExecutions(runId: RunId, limit?: number) {
-    return this.logic.listRunExecutions(runId, limit);
-  }
-  async createRunExecution(input: CreateRunExecutionInput) {
-    return this.logic.createRunExecution(input);
-  }
-  async recordRunExecutionRoute(input: RunExecutionRouteInput) {
-    return this.logic.recordRunExecutionRoute(input);
-  }
-  async prepareRunInput(input: PrepareRunInput) {
-    return this.logic.prepareRunInput(input);
-  }
-  async markRunExecutionInvoked(input: MarkRunExecutionInvokedInput) {
-    return this.logic.markRunExecutionInvoked(input);
-  }
-  async settleRunExecution(input: SettleRunExecutionInput) {
-    return this.logic.settleRunExecution(input);
-  }
-  async recordRunResponse(input: RecordRunResponseInput) {
-    return this.logic.recordRunResponse(input);
-  }
-  async startRunDelivery(input: StartRunDeliveryInput) {
-    return this.logic.startRunDelivery(input);
-  }
-  async finalizeRunDelivery(input: FinalizeRunDeliveryInput) {
-    return this.logic.finalizeRunDelivery(input);
-  }
-  async settleRunWithoutDelivery(input: SettleRunWithoutDeliveryInput) {
-    return this.logic.settleRunWithoutDelivery(input);
-  }
-  async recordWorkAction(input: RecordWorkActionInput) {
-    return this.logic.recordWorkAction(input);
-  }
-  async getRunExecution(id: RunExecutionId) {
-    return this.logic.getRunExecution(id);
-  }
-  async requireRecovery(input: RequireRunRecoveryInput) {
-    return this.logic.requireRecovery(input);
-  }
-  async quarantineRun(input: QuarantineRunInput) {
-    return this.logic.quarantineRun(input);
-  }
-  async listAuditEvents(runId: RunId, limit?: number) {
-    return this.logic.listAuditEvents(runId, limit);
-  }
-  async verifyIntegrity() {
-    return this.logic.verifyIntegrity();
+export class SqliteWorkStore {
+  constructor(path: string = resolveStateDbPath(), options: WorkStoreOptions = {}) {
+    const db = openStateDb(path);
+    // The Proxy facade drops the `implements` compile check, so this typed
+    // binding is the conformance assertion that keeps it: a logic method that
+    // stops matching WorkStore fails typecheck here.
+    const _conforms: WorkStore = promisify(new WorkStoreLogic(db, options), {
+      close: () => db.close(),
+    });
+    return _conforms as unknown as SqliteWorkStore;
   }
 }
 
