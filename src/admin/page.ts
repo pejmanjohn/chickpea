@@ -2786,8 +2786,95 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     allowedHosts: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"],
     monthlySessionCap: 200
   };
-  var repositorySearchTimer = null;
-  var skillImportSearchTimer = null;
+  // The Repositories picker and the Skills import browser search the same
+  // installation-repos endpoint. One controller owns the request-identity
+  // guard, the loading/error state, and the 250ms debounce for both lanes;
+  // they differ only in where their slot lives and how they repaint.
+  function createRepoSearchController(config) {
+    var timer = null;
+    function clearTimer() {
+      if (timer && typeof clearTimeout === "function") clearTimeout(timer);
+      timer = null;
+    }
+    function paint() {
+      config.rerender();
+      config.focus();
+    }
+    function load() {
+      var slot = config.slotOf();
+      if (!slot) return Promise.resolve();
+      var requestId = (slot.requestId || 0) + 1;
+      slot.requestId = requestId;
+      slot.loading = true;
+      slot.error = "";
+      paint();
+      var path = "/admin/api/github/installations/" + encodeURIComponent(String(slot.installationId)) +
+        "/repos?q=" + encodeURIComponent(slot.query || "") + "&page=1";
+      return api(path).then(function (body) {
+        if (config.slotOf() !== slot || slot.requestId !== requestId) return;
+        slot.repos = (body && body.repos) || [];
+        slot.totalCount = Number((body && body.totalCount) || 0);
+        slot.truncated = !!(body && body.truncated);
+        if (config.onLoaded) config.onLoaded(slot);
+        slot.loading = false;
+        slot.error = "";
+        paint();
+      }).catch(function (error) {
+        if (config.slotOf() !== slot || slot.requestId !== requestId) return;
+        slot.loading = false;
+        slot.error = (error && (error.serverMessage || error.message)) || "Could not load repositories.";
+        paint();
+      });
+    }
+    function search(query) {
+      var slot = config.slotOf();
+      if (!slot) return;
+      slot.query = query;
+      // Invalidate the currently running query immediately. Otherwise its
+      // response can land during this query's debounce window and briefly show
+      // results for the previous text beneath the new input value.
+      slot.requestId = (slot.requestId || 0) + 1;
+      clearTimer();
+      var run = function () {
+        timer = null;
+        if (config.slotOf() === slot) load();
+      };
+      if (typeof setTimeout === "function") timer = setTimeout(run, 250);
+      else run();
+    }
+    // Drop the pending debounce and invalidate the in-flight request before the
+    // lane clears its slot, so a late response can never repaint a closed
+    // browser.
+    function reset() {
+      clearTimer();
+      var slot = config.slotOf();
+      if (slot) slot.requestId = (slot.requestId || 0) + 1;
+    }
+    return { load: load, search: search, reset: reset };
+  }
+
+  var repoPickerSearch = createRepoSearchController({
+    slotOf: function () { return state.repositoryPicker; },
+    rerender: function () { render(); },
+    focus: function () { focusRepositorySearch(); },
+    onLoaded: function (picker) {
+      // Accumulate every name this picker session has confirmed the current
+      // App installation can reach before adopting an older unbound grant.
+      picker.seenFullNames = picker.seenFullNames || {};
+      picker.repos.forEach(function (repo) {
+        if (repo && repo.fullName) picker.seenFullNames[repo.fullName] = true;
+      });
+    }
+  });
+
+  var skillImportRepoSearch = createRepoSearchController({
+    slotOf: function () {
+      var browse = state.skillImport && state.skillImport.browse;
+      return browse && !browse.chooseAccount && browse.installationId ? browse : null;
+    },
+    rerender: function () { rerenderSkillImportBrowse(); },
+    focus: function () { focusSkillImportBrowseSearch(); }
+  });
 
   // Inline Heroicons (micro, 16px) — solid unless noted. Colour inherits from
   // the parent via currentColor; never override fill in CSS.
@@ -2956,19 +3043,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function resetRepositoryTransientState() {
-    if (repositorySearchTimer && typeof clearTimeout === "function") clearTimeout(repositorySearchTimer);
-    repositorySearchTimer = null;
+    repoPickerSearch.reset();
     state.repositoryPicker = null;
     state.repositoryAddOpen = false;
   }
 
   function resetSkillImportBrowseTransientState() {
-    if (skillImportSearchTimer && typeof clearTimeout === "function") clearTimeout(skillImportSearchTimer);
-    skillImportSearchTimer = null;
-    if (state.skillImport && state.skillImport.browse) {
-      state.skillImport.browse.requestId = (state.skillImport.browse.requestId || 0) + 1;
-      state.skillImport.browse = null;
-    }
+    skillImportRepoSearch.reset();
+    if (state.skillImport) state.skillImport.browse = null;
   }
 
   function resetProfileTransientState() {
@@ -5501,17 +5583,40 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '<button type="button" class="link-btn" data-action="open-settings" data-section="github-settings">GitHub settings &nearr;</button></div>';
   }
 
-  function skillImportBrowseAccountsHtml(browse) {
-    var installations = (state.githubStatus && state.githubStatus.installations) || [];
-    var choices = installations.map(function (installation) {
+  // Both repo browsers offer the same account chooser; only the actions and the
+  // cancel/empty copy differ.
+  function repoAccountChoicesHtml(config) {
+    var choices = (config.installations || []).map(function (installation) {
       var count = installation.repoCount == null ? "Repository count unavailable" : installation.repoCount + " repositories";
-      return '<button type="button" class="btn btn-ghost repo-account-choice" data-action="import-browse-account" data-installation="' + esc(installation.id) + '" data-account="' + esc(installation.accountLogin) + '">' +
+      return '<button type="button" class="btn btn-ghost repo-account-choice" data-action="' + config.action + '" data-installation="' + esc(installation.id) + '" data-account="' + esc(installation.accountLogin) + '">' +
         '<span class="repo-avatar">' + esc(String(installation.accountLogin || "?").slice(0, 1)) + '</span>' +
         '<span style="display:flex; flex-direction:column; align-items:flex-start;"><span class="field-label">' + esc(installation.accountLogin) + '</span><span class="hint">' + esc(count) + '</span></span></button>';
     }).join("");
-    if (!choices) choices = '<p class="hint">No GitHub App installations are available.</p>';
+    if (!choices) choices = '<p class="hint">' + config.emptyCopy + '</p>';
     return '<div class="repo-account-choices"><span class="tiny-label">Choose an account or organization</span>' + choices +
-      '<div><button type="button" class="btn btn-ghost btn-sm" data-action="import-browse-cancel">Cancel browsing</button></div></div>';
+      '<div><button type="button" class="btn btn-ghost btn-sm" data-action="' + config.cancelAction + '">' + config.cancelLabel + '</button></div></div>';
+  }
+
+  // The four-way loading/error/empty/list branch both repo browsers render.
+  function repoBrowserListHtml(slot, rowsHtml, retryAction, emptyCopy) {
+    if (slot.loading) {
+      return '<div class="empty"><p class="hint"><span class="spinner"></span> Loading repositories&hellip;</p></div>';
+    }
+    if (slot.error) {
+      return '<div class="empty"><p class="field-error" role="alert">' + esc(slot.error) + '</p><button type="button" class="btn btn-soft btn-sm" data-action="' + retryAction + '">Retry</button></div>';
+    }
+    if (!rowsHtml) return '<div class="empty"><p class="hint">' + emptyCopy + '</p></div>';
+    return '<div class="repo-picker-list">' + rowsHtml + '</div>';
+  }
+
+  function skillImportBrowseAccountsHtml() {
+    return repoAccountChoicesHtml({
+      installations: (state.githubStatus && state.githubStatus.installations) || [],
+      action: "import-browse-account",
+      cancelAction: "import-browse-cancel",
+      cancelLabel: "Cancel browsing",
+      emptyCopy: "No GitHub App installations are available."
+    });
   }
 
   function skillImportBrowseRepositoriesHtml(browse) {
@@ -5523,16 +5628,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         icon("repository") + '<span class="repo-name mono">' + esc(repo.fullName) + '</span>' +
         (repo.private ? '<span class="badge badge-off">Private</span>' : "") + '</button>';
     }).join("");
-    var list;
-    if (browse.loading) {
-      list = '<div class="empty"><p class="hint"><span class="spinner"></span> Loading repositories&hellip;</p></div>';
-    } else if (browse.error) {
-      list = '<div class="empty"><p class="field-error" role="alert">' + esc(browse.error) + '</p><button type="button" class="btn btn-soft btn-sm" data-action="import-browse-retry">Retry</button></div>';
-    } else if (!rows) {
-      list = '<div class="empty"><p class="hint">No repositories match this search. You can still paste exact owner/repo above.</p></div>';
-    } else {
-      list = '<div class="repo-picker-list">' + rows + '</div>';
-    }
+    var list = repoBrowserListHtml(
+      browse,
+      rows,
+      "import-browse-retry",
+      "No repositories match this search. You can still paste exact owner/repo above."
+    );
     return '<div class="repo-picker import-browse-picker" role="dialog" aria-label="Browse repositories for ' + esc(browse.accountLogin) + '">' +
       '<div><p class="repo-picker-title">Browse ' + esc(browse.accountLogin) + '</p><p class="hint">' + esc(sourceHint) + '</p></div>' +
       '<input class="input mono" id="skill-import-browse-search" type="search" value="' + esc(browse.query) + '" placeholder="Search repositories" data-action="import-browse-search" autocomplete="off">' +
@@ -5544,7 +5645,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var browse = imp.browse;
     if (!browse) return "";
     return '<div class="import-browse-host">' + (browse.chooseAccount
-      ? skillImportBrowseAccountsHtml(browse)
+      ? skillImportBrowseAccountsHtml()
       : skillImportBrowseRepositoriesHtml(browse)) + '</div>';
   }
 
@@ -5559,7 +5660,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var listBefore = host.querySelector(".repo-picker-list");
     var scrollTop = listBefore ? listBefore.scrollTop : 0;
     host.innerHTML = browse.chooseAccount
-      ? skillImportBrowseAccountsHtml(browse)
+      ? skillImportBrowseAccountsHtml()
       : skillImportBrowseRepositoriesHtml(browse);
     var listAfter = host.querySelector(".repo-picker-list");
     if (listAfter) listAfter.scrollTop = scrollTop;
@@ -6395,18 +6496,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function repositoryAccountChoicesHtml(status) {
     if (!state.repositoryAddOpen || !status || status.mode !== "app") return "";
-    var installations = status.installations || [];
-    var choices = installations.map(function (installation) {
-      var count = installation.repoCount == null ? "Repository count unavailable" : installation.repoCount + " repositories";
-      return '<button type="button" class="btn btn-ghost repo-account-choice" data-action="repo-manage" data-installation="' + esc(installation.id) + '" data-account="' + esc(installation.accountLogin) + '">' +
-        '<span class="repo-avatar">' + esc(String(installation.accountLogin || "?").slice(0, 1)) + '</span>' +
-        '<span style="display:flex; flex-direction:column; align-items:flex-start;"><span class="field-label">' + esc(installation.accountLogin) + '</span><span class="hint">' + esc(count) + '</span></span></button>';
-    }).join("");
-    if (!choices) {
-      choices = '<p class="hint">No GitHub App installations are available yet. Install the app on an account or organization, then refresh.</p>';
-    }
-    return '<div class="repo-account-choices"><span class="tiny-label">Choose an account or organization</span>' + choices +
-      '<div><button type="button" class="btn btn-ghost btn-sm" data-action="repo-add-cancel">Cancel</button></div></div>';
+    return repoAccountChoicesHtml({
+      installations: status.installations || [],
+      action: "repo-manage",
+      cancelAction: "repo-add-cancel",
+      cancelLabel: "Cancel",
+      emptyCopy: "No GitHub App installations are available yet. Install the app on an account or organization, then refresh."
+    });
   }
 
   // Redraw the open picker in place, preserving the repo list's scroll
@@ -6437,16 +6533,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         icon("repository") + '<span class="repo-name mono">' + esc(repo.fullName) + '</span>' +
         (repo.private ? '<span class="badge badge-off">Private</span>' : "") + '</label>';
     }).join("");
-    var list;
-    if (picker.loading) {
-      list = '<div class="empty"><p class="hint"><span class="spinner"></span> Loading repositories&hellip;</p></div>';
-    } else if (picker.error) {
-      list = '<div class="empty"><p class="field-error" role="alert">' + esc(picker.error) + '</p><button type="button" class="btn btn-soft btn-sm" data-action="repo-picker-retry">Retry</button></div>';
-    } else if (!rows) {
-      list = '<div class="empty"><p class="hint">No repositories match this search.</p></div>';
-    } else {
-      list = '<div class="repo-picker-list">' + rows + '</div>';
-    }
+    var list = repoBrowserListHtml(picker, rows, "repo-picker-retry", "No repositories match this search.");
     var selectedCount = (picker.selectedFullNames || []).length;
     var retainedCount = state.profileDraft ? (state.profileDraft.repositories || []).filter(function (grant) {
       return !repositoryGrantMatchesPicker(grant, picker);
@@ -9914,41 +10001,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     focusInputAtEnd("repo-picker-search");
   }
 
-  function loadRepositoryPickerRepos() {
-    var picker = state.repositoryPicker;
-    if (!picker) return Promise.resolve();
-    var requestId = (picker.requestId || 0) + 1;
-    picker.requestId = requestId;
-    picker.loading = true;
-    picker.error = "";
-    render();
-    focusRepositorySearch();
-    var source = String(picker.installationId);
-    var path = "/admin/api/github/installations/" + encodeURIComponent(source) + "/repos?q=" + encodeURIComponent(picker.query || "") + "&page=1";
-    return api(path).then(function (body) {
-      if (state.repositoryPicker !== picker || picker.requestId !== requestId) return;
-      picker.repos = (body && body.repos) || [];
-      picker.totalCount = Number((body && body.totalCount) || 0);
-      picker.truncated = !!(body && body.truncated);
-      // Accumulate every name this picker session has confirmed the current
-      // App installation can reach before adopting an older unbound grant.
-      picker.seenFullNames = picker.seenFullNames || {};
-      picker.repos.forEach(function (repo) {
-        if (repo && repo.fullName) picker.seenFullNames[repo.fullName] = true;
-      });
-      picker.loading = false;
-      picker.error = "";
-      render();
-      focusRepositorySearch();
-    }).catch(function (error) {
-      if (state.repositoryPicker !== picker || picker.requestId !== requestId) return;
-      picker.loading = false;
-      picker.error = (error && (error.serverMessage || error.message)) || "Could not load repositories.";
-      render();
-      focusRepositorySearch();
-    });
-  }
-
   function openRepositoryPicker(installationId, accountLogin) {
     if (!state.profileDraft) return;
     var selected = Array.from(new Set((state.profileDraft.repositories || []).filter(function (grant) {
@@ -9964,12 +10016,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       query: "",
       repos: [],
       totalCount: 0,
+      truncated: false,
       selectedFullNames: selected,
       loading: true,
       error: "",
       requestId: 0
     };
-    loadRepositoryPickerRepos();
+    repoPickerSearch.load();
   }
 
   function openRepositoryAdd() {
@@ -9989,24 +10042,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function closeRepositoryPicker() {
     resetRepositoryTransientState();
     render();
-  }
-
-  function scheduleRepositorySearch(query) {
-    var picker = state.repositoryPicker;
-    if (!picker) return;
-    picker.query = query;
-    // Invalidate the currently running query immediately. Otherwise its
-    // response can land during this query's debounce window and briefly show
-    // results for the previous text beneath the new input value.
-    picker.requestId = (picker.requestId || 0) + 1;
-    if (repositorySearchTimer && typeof clearTimeout === "function") clearTimeout(repositorySearchTimer);
-    repositorySearchTimer = null;
-    var run = function () {
-      repositorySearchTimer = null;
-      if (state.repositoryPicker === picker) loadRepositoryPickerRepos();
-    };
-    if (typeof setTimeout === "function") repositorySearchTimer = setTimeout(run, 250);
-    else run();
   }
 
   function applyRepositoryPicker() {
@@ -11788,7 +11823,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }
     if (action === "repo-remove") { removeRepositoryGrant(target.getAttribute("data-repository-id") || ""); }
     if (action === "repo-picker-cancel") { closeRepositoryPicker(); }
-    if (action === "repo-picker-retry") { loadRepositoryPickerRepos(); }
+    if (action === "repo-picker-retry") { repoPickerSearch.load(); }
     if (action === "repo-picker-apply") { applyRepositoryPicker(); }
     // Inline title rename: open the input seeded with the current name, focused
     // and selected. Commit is Enter/blur; Escape reverts to prev.
@@ -12050,7 +12085,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "import-find") { findSkillsFromSource(); }
     if (action === "import-browse-open") { openSkillImportBrowse(); }
     if (action === "import-browse-cancel") { closeSkillImportBrowse(); }
-    if (action === "import-browse-retry") { loadSkillImportRepositories(); }
+    if (action === "import-browse-retry") { skillImportRepoSearch.load(); }
     if (action === "import-browse-account") {
       var importInstallationId = Number(target.getAttribute("data-installation"));
       var importAccount = target.getAttribute("data-account") || "GitHub";
@@ -12368,8 +12403,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // results container to keep the input focused.
     if (action === "prov-key-input") { provUiFor(target.getAttribute("data-provider")).key = target.value; }
     if (action === "github-org-input") { state.githubOrg = target.value; }
-    if (action === "repo-search") { scheduleRepositorySearch(target.value); }
-    if (action === "import-browse-search") { scheduleSkillImportRepositorySearch(target.value); }
+    if (action === "repo-search") { repoPickerSearch.search(target.value); }
+    if (action === "import-browse-search") { skillImportRepoSearch.search(target.value); }
     if (action === "egress-domain-input") {
       var egressInputIndex = Number(target.getAttribute("data-index"));
       if (!state.egressSaving && egressInputIndex >= 0 && egressInputIndex < egressDraft.domains.length) egressDraft.domains[egressInputIndex] = target.value;
@@ -14300,35 +14335,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     focusInputAtEnd("skill-import-browse-search");
   }
 
-  function loadSkillImportRepositories() {
-    var imp = state.skillImport;
-    var browse = imp && imp.browse;
-    if (!imp || !browse || browse.chooseAccount || !browse.installationId) return Promise.resolve();
-    var requestId = (browse.requestId || 0) + 1;
-    browse.requestId = requestId;
-    browse.loading = true;
-    browse.error = "";
-    rerenderSkillImportBrowse();
-    focusSkillImportBrowseSearch();
-    var path = "/admin/api/github/installations/" + encodeURIComponent(String(browse.installationId)) + "/repos?q=" + encodeURIComponent(browse.query || "") + "&page=1";
-    return api(path).then(function (body) {
-      if (state.skillImport !== imp || imp.browse !== browse || browse.requestId !== requestId) return;
-      browse.repos = (body && body.repos) || [];
-      browse.totalCount = Number((body && body.totalCount) || 0);
-      browse.truncated = !!(body && body.truncated);
-      browse.loading = false;
-      browse.error = "";
-      rerenderSkillImportBrowse();
-      focusSkillImportBrowseSearch();
-    }).catch(function (error) {
-      if (state.skillImport !== imp || imp.browse !== browse || browse.requestId !== requestId) return;
-      browse.loading = false;
-      browse.error = (error && (error.serverMessage || error.message)) || "Could not load repositories.";
-      rerenderSkillImportBrowse();
-      focusSkillImportBrowseSearch();
-    });
-  }
-
   function openSkillImportRepositoryBrowser(installationId, accountLogin) {
     var imp = state.skillImport;
     if (!imp || !Number.isInteger(installationId) || installationId < 1) return;
@@ -14345,7 +14351,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       error: "",
       requestId: 0
     };
-    loadSkillImportRepositories();
+    skillImportRepoSearch.load();
   }
 
   function openSkillImportBrowse() {
@@ -14368,24 +14374,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     resetSkillImportBrowseTransientState();
     render();
     focusSkillImportSource();
-  }
-
-  function scheduleSkillImportRepositorySearch(query) {
-    var imp = state.skillImport;
-    var browse = imp && imp.browse;
-    if (!imp || !browse || browse.chooseAccount) return;
-    browse.query = query;
-    // Invalidate an in-flight query immediately so it cannot repaint stale
-    // results during this query's debounce window.
-    browse.requestId = (browse.requestId || 0) + 1;
-    if (skillImportSearchTimer && typeof clearTimeout === "function") clearTimeout(skillImportSearchTimer);
-    skillImportSearchTimer = null;
-    var run = function () {
-      skillImportSearchTimer = null;
-      if (state.skillImport === imp && imp.browse === browse) loadSkillImportRepositories();
-    };
-    if (typeof setTimeout === "function") skillImportSearchTimer = setTimeout(run, 250);
-    else run();
   }
 
   function selectSkillImportRepository(fullName) {

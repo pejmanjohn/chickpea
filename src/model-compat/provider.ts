@@ -25,6 +25,7 @@ import {
   catalogModelForLane,
   listBundledCatalogModels,
 } from '../model-catalog/bundled.ts';
+import { isRevisionedAlias, revisionedAlias } from '../model-catalog/provider-alias.ts';
 import type { CatalogProviderId, ModelAuthLane } from '../model-catalog/types.ts';
 import { createChickpeaPiProvider } from '../config/pi-provider.ts';
 
@@ -117,19 +118,11 @@ export function revisionedCompatibilityAliases(
   revision: number,
   sha256: string,
 ): { providerId: string; api: string } {
-  if (!Number.isSafeInteger(revision) || revision <= 0 || !/^[a-f0-9]{64}$/.test(sha256)) {
-    throw new Error('Invalid model catalog alias identity.');
-  }
-  const suffix = `r${revision}-${sha256.slice(0, 12)}`;
-  return provider === 'openai'
-    ? {
-      providerId: `chickpea-openai-platform-${suffix}`,
-      api: `chickpea-openai-platform-responses-${suffix}`,
-    }
-    : {
-      providerId: `chickpea-anthropic-api-${suffix}`,
-      api: `chickpea-anthropic-messages-${suffix}`,
-    };
+  return revisionedAlias(aliasFamilyFor(provider), revision, sha256);
+}
+
+function aliasFamilyFor(provider: ApiKeyCompatibilityProvider): 'openaiPlatform' | 'anthropic' {
+  return provider === 'openai' ? 'openaiPlatform' : 'anthropic';
 }
 
 /** Register one immutable hosted alias whose stream closure owns its models. */
@@ -317,12 +310,12 @@ function compatibilityStreams(
 
 function isOpenAiCompatibilityProvider(provider: string): boolean {
   return provider === OPENAI_PLATFORM_COMPAT_PROVIDER_ID ||
-    /^chickpea-openai-platform-r[1-9][0-9]*-[a-f0-9]{12}$/.test(provider);
+    isRevisionedAlias('openaiPlatform', provider);
 }
 
 function isAnthropicCompatibilityProvider(provider: string): boolean {
   return provider === ANTHROPIC_COMPAT_PROVIDER_ID ||
-    /^chickpea-anthropic-api-r[1-9][0-9]*-[a-f0-9]{12}$/.test(provider);
+    isRevisionedAlias('anthropic', provider);
 }
 
 function mapHistory(

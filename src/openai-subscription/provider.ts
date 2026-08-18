@@ -35,6 +35,11 @@ import {
   type ActiveModelCatalogRoute,
 } from '../model-catalog/index.ts';
 import {
+  isRevisionedAlias,
+  revisionedAlias,
+  MAX_HOSTED_ALIAS_REGISTRATIONS,
+} from '../model-catalog/provider-alias.ts';
+import {
   isSafeOpenAiSubscriptionModelId,
   OPENAI_SUBSCRIPTION_API_BASE,
 } from './protocol.ts';
@@ -85,7 +90,6 @@ const BUNDLED_SUBSCRIPTION_REGISTRATION: CapturedSubscriptionRegistration = Obje
 const hostedSubscriptionRegistrations = new Map<string, CapturedSubscriptionRegistration>();
 const subscriptionTransportMarkers = new Map<string, string>();
 const boundSubscriptionProviders = new Map<string, ReturnType<typeof createChickpeaPiProvider>>();
-const MAX_HOSTED_SUBSCRIPTION_REGISTRATIONS = 16;
 
 export interface BindOpenAiSubscriptionProviderOptions {
   settings: SettingsStore;
@@ -176,7 +180,7 @@ export function openAiSubscriptionModelSpecifier(
 
 export function isOpenAiSubscriptionProviderId(providerId: string): boolean {
   return providerId === OPENAI_SUBSCRIPTION_PROVIDER_ID ||
-    /^chickpea-openai-subscription-r[1-9][0-9]*-[a-f0-9]{12}$/.test(providerId);
+    isRevisionedAlias('openaiSubscription', providerId);
 }
 
 /** Test seam for the provider-owned stream Flue 2 installs by id. */
@@ -190,10 +194,14 @@ function subscriptionRegistration(
   if (!route || route.snapshot.source === 'bundled') {
     return BUNDLED_SUBSCRIPTION_REGISTRATION;
   }
-  const suffix = `r${route.snapshot.revision}-${route.snapshot.sha256.slice(0, 12)}`;
-  const cached = hostedSubscriptionRegistrations.get(suffix);
+  const alias = revisionedAlias(
+    'openaiSubscription',
+    route.snapshot.revision,
+    route.snapshot.sha256,
+  );
+  const cached = hostedSubscriptionRegistrations.get(alias.providerId);
   if (cached) return cached;
-  if (hostedSubscriptionRegistrations.size >= MAX_HOSTED_SUBSCRIPTION_REGISTRATIONS) {
+  if (hostedSubscriptionRegistrations.size >= MAX_HOSTED_ALIAS_REGISTRATIONS) {
     throw new Error('OpenAI subscription catalog activation requires a restart.');
   }
   const models = route.snapshot.entries.flatMap((entry) =>
@@ -202,11 +210,11 @@ function subscriptionRegistration(
       : []
   );
   const registration: CapturedSubscriptionRegistration = Object.freeze({
-    providerId: `chickpea-openai-subscription-${suffix}`,
-    api: `chickpea-openai-subscription-responses-${suffix}`,
+    providerId: alias.providerId,
+    api: alias.api,
     models: freezeModels(models),
   });
-  hostedSubscriptionRegistrations.set(suffix, registration);
+  hostedSubscriptionRegistrations.set(alias.providerId, registration);
   return registration;
 }
 
