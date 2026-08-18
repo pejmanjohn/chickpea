@@ -1230,6 +1230,21 @@ function interactionClassifierReply(body: Record<string, unknown> | undefined): 
       checklist: ['Ambient result artifact'],
     });
   }
+  // A substantive @-mention that is NOT obvious-work by the admission regex, so
+  // it reaches this LATE model classifier (unlike ambient work, which is
+  // classified before admission). Work + checklist here exercises the
+  // late-plan-attachment path that renders a native task card for mentions.
+  if (serialized.includes('PARITY_MENTION_WORK')) {
+    return JSON.stringify({
+      disposition: 'work', reason: 'substantive_request',
+      checklist: ['Mention result artifact'],
+    });
+  }
+  // A substantive @-mention the LATE classifier judges an ordinary reply: it
+  // must never open a task card, proving the plan attachment is work-gated.
+  if (serialized.includes('PARITY_MENTION_REPLY')) {
+    return JSON.stringify({ disposition: 'reply', reason: 'substantive_request' });
+  }
   if (serialized.includes('Reacted :bulb:')) {
     return JSON.stringify({ disposition: 'reply', reason: 'useful_ambient' });
   }

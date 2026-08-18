@@ -341,6 +341,30 @@ export class SlackAgentViewPresentation {
     await this.transition(presentation, { kind: 'mark_finalized' });
   }
 
+  /**
+   * Attach a native plan to a presentation that Work admission froze WITHOUT
+   * one. A substantive @-mention is classified late (after admission), so —
+   * unlike ambient/obvious-work turns — its work checklist never reached
+   * buildPlan at create time and no task card would ever open. Attaching it
+   * here lets the already-wired presenter open the card during the same turn
+   * and supersede the interim legacy checklist through onNativeStarted,
+   * mirroring the ambient outcome exactly.
+   *
+   * A no-op (and never throws for these expected cases) when native tasks are
+   * off (legacy checklist path is preserved), a plan already exists
+   * (ambient/obvious-work — never double-attach or reorder), the checklist is
+   * outside the 1..4 native range, or any Slack effect has already begun
+   * (delivery-only replay, a streaming or finalized presentation).
+   */
+  async adoptLatePlan(taskLabels: readonly string[]): Promise<void> {
+    if (taskLabels.length < 1 || taskLabels.length > 4) return;
+    const presentation = await this.requirePresentation();
+    if (!presentation.features.nativeTasks) return;
+    if (presentation.plan) return;
+    if (presentation.stream.state !== 'absent') return;
+    await this.transition(presentation, { kind: 'adopt_plan', taskLabels });
+  }
+
   private async appendProgressiveText(
     instanceId: string,
     submissionId: string,

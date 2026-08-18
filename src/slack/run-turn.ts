@@ -628,6 +628,19 @@ export async function runTurn(
       });
       await usageRecorder.admit();
     }
+    // A substantive @-mention is classified late (above), AFTER Work admission
+    // froze the presentation without a plan — whereas ambient and obvious-work
+    // turns carry their plan from admission. Attach the late-classified work
+    // plan now so the presenter opens a native task card and supersedes the
+    // interim checklist below through onNativeStarted, exactly as the ambient
+    // path does. adoptLatePlan no-ops when native tasks are off, a plan is
+    // already frozen (ambient/obvious-work), or any Slack effect has begun;
+    // delivery-only replay skips it so recovery never opens a fresh card.
+    if (workChecklist && options.replayText === undefined) {
+      await agentViewPresentation?.adoptLatePlan(workChecklist).catch(() => {
+        console.warn('[chickpea] Slack late native plan attachment failed');
+      });
+    }
     if (workChecklist) {
       if (!interactionProgress.acknowledgment) {
         try {

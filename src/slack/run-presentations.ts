@@ -172,6 +172,7 @@ export type SlackPresentationMutation =
   | { kind: 'mark_finalized' }
   | { kind: 'mark_non_stream_finalized' }
   | { kind: 'mark_unknown'; degradationReason: SlackPresentationDegradationReason }
+  | { kind: 'adopt_plan'; taskLabels: readonly string[] }
   | { kind: 'set_task_status'; status: 'in_progress' | 'complete' | 'error' }
   | { kind: 'record_title_intent'; valueHash: string }
   | { kind: 'record_title_outcome'; outcome: 'set' | 'failed' };
@@ -847,6 +848,23 @@ function applyMutation(
       next.stream.degradationReason = mutation.degradationReason;
       next.repairRequired = true;
       return next;
+    case 'adopt_plan': {
+      // A substantive @-mention is classified AFTER Work admission froze this
+      // presentation, so — unlike ambient/obvious-work turns — its work
+      // checklist never reached buildPlan at create time. Attach the plan now,
+      // but only before any Slack effect, only when native tasks are on, and
+      // only when no plan is already frozen: ambient/obvious-work turns carry
+      // their plan from admission and must never be re-attached or reordered.
+      if (current.plan) {
+        throw stateError('terminal_rewrite', 'A native plan is already frozen.');
+      }
+      if (!current.features.nativeTasks) {
+        throw stateError('invalid_transition', 'Native tasks are disabled for this presentation.');
+      }
+      requireState(current, 'absent');
+      next.plan = buildPlan(current.runId, mutation.taskLabels);
+      return next;
+    }
     case 'set_task_status': {
       if (!current.plan) {
         throw stateError('invalid_transition', 'Ordinary replies have no native tasks.');

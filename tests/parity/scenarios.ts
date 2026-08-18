@@ -392,7 +392,7 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S10B',
-    title: 'work acknowledgment precedes one checklist, main work, finalization, and cleanup',
+    title: 'mention work acknowledges, posts one checklist, then a native task card supersedes it',
     config: demoChannelConfig(),
     async run(instance) {
       await instance.postEvent(appMention({
@@ -405,14 +405,39 @@ export const scenarios: Scenario[] = [
       const checklistPost = methods.indexOf('chat.postMessage');
       const providerCalls = instance.backend.providerCalls();
       const mainProviderIndex = instance.backend.wireLog.indexOf(providerCalls[1]!);
-      const checklistUpdate = methods.indexOf('chat.update');
       const reactionRemove = methods.indexOf('reactions.remove');
+      // The work acknowledgment and interim checklist still precede the main run.
       assert.ok(reactionAdd >= 0 && reactionAdd < checklistPost);
-      assert.ok(checklistPost < mainProviderIndex);
-      assert.ok(checklistUpdate > mainProviderIndex);
-      assert.ok(reactionRemove > checklistUpdate);
-      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 1);
-      assert.equal(instance.backend.callsOfMethod('chat.update').length, 1);
+      assert.ok(checklistPost >= 0 && checklistPost < mainProviderIndex);
+      // This mention is classified LATE (after admission froze the presentation
+      // without a plan), so its checklist is attached as a late plan and the
+      // presenter opens a native task card. The interim checklist is therefore
+      // superseded — DELETED once the native stream is proven started, never
+      // finalized with chat.update — exactly like ambient work (S10C).
+      const checklistPosts = instance.backend.callsOfMethod('chat.postMessage');
+      assert.equal(checklistPosts.length, 1);
+      const checklistTs = checklistPosts[0]?.responseTs;
+      assert.ok(checklistTs);
+      const deletes = instance.backend.callsOfMethod('chat.delete');
+      assert.equal(deletes.length, 1);
+      assert.equal(deletes[0]?.body.ts, checklistTs);
+      assert.equal(instance.backend.callsOfMethod('chat.update').length, 0);
+      // The checklist labels become the native task card, opened in_progress
+      // with the stream and closed complete with it.
+      const [start] = instance.backend.callsOfMethod('chat.startStream');
+      assert.ok(start);
+      assert.deepEqual(
+        chunkFields(start.body.chunks, 'task_update').map((fields) => fields[2]),
+        ['in_progress', 'in_progress'],
+      );
+      const [stop] = instance.backend.callsOfMethod('chat.stopStream');
+      assert.ok(stop);
+      assert.deepEqual(
+        chunkFields(stop.body.chunks, 'task_update').map((fields) => fields[2]),
+        ['complete', 'complete'],
+      );
+      // Cleanup still removes the work acknowledgment after the checklist post.
+      assert.ok(reactionRemove > checklistPost);
       assert.equal(instance.backend.finals().length, 1);
       assert.equal(providerCalls.length, 2);
     },
@@ -502,6 +527,105 @@ export const scenarios: Scenario[] = [
           instance.backend.wireLog.indexOf(providerCalls[0]!),
       );
       assert.equal(instance.backend.callsOfMethod('reactions.remove').length, 1);
+    },
+  },
+  {
+    id: 'S10B4',
+    title: 'a late-classified mention renders its work as a native task card',
+    config: demoChannelConfig(),
+    async run(instance) {
+      await instance.postEvent(appMention({
+        event_id: 'Ev_MENTION_WORK_CARD',
+        event: { text: '<@U_BOT> PARITY_MENTION_WORK' },
+      }));
+      await instance.quiesce();
+
+      // A mention is classified AFTER admission, so — unlike ambient work — its
+      // checklist reaches the presentation as a LATE-attached plan rather than
+      // admission task labels. Native task plans are on by default, so the
+      // interim checklist post is superseded once the native stream is proven
+      // started: it is DELETED, never finalized with chat.update.
+      const checklistPosts = instance.backend.callsOfMethod('chat.postMessage');
+      assert.equal(checklistPosts.length, 1);
+      const checklistTs = checklistPosts[0]?.responseTs;
+      assert.ok(checklistTs);
+      const deletes = instance.backend.callsOfMethod('chat.delete');
+      assert.equal(deletes.length, 1);
+      assert.equal(deletes[0]?.body.ts, checklistTs);
+      assert.equal(instance.backend.callsOfMethod('chat.update').length, 0);
+
+      // The classifier's checklist becomes the native task card, opened
+      // in_progress with the stream and closed complete with it.
+      const [start] = instance.backend.callsOfMethod('chat.startStream');
+      assert.ok(start);
+      assert.equal(start.body.task_display_mode, 'timeline');
+      assert.deepEqual(
+        chunkFields(start.body.chunks, 'task_update'),
+        [['task_update', 'Mention result artifact', 'in_progress']],
+      );
+      const [stop] = instance.backend.callsOfMethod('chat.stopStream');
+      assert.ok(stop);
+      assert.deepEqual(
+        chunkFields(stop.body.chunks, 'task_update'),
+        [['task_update', 'Mention result artifact', 'complete']],
+      );
+
+      // Two provider calls (the late classifier and the main run); the single
+      // final lands once, in the mention's own thread.
+      assert.equal(instance.backend.providerCalls().length, 2);
+      assert.equal(instance.backend.finals().length, 1);
+      assert.equal(instance.backend.finals()[0]?.threadTs, ROOT_THREAD_TS);
+    },
+  },
+  {
+    id: 'S10B5',
+    title: 'a mention the late classifier judges a reply opens no native task card',
+    config: demoChannelConfig(),
+    async run(instance) {
+      await instance.postEvent(appMention({
+        event_id: 'Ev_MENTION_REPLY_NO_CARD',
+        event: { text: '<@U_BOT> PARITY_MENTION_REPLY' },
+      }));
+      await instance.quiesce();
+
+      // A reply disposition carries no checklist, so no plan is attached and no
+      // native task card opens: no interim checklist to post/delete, and no
+      // task_update chunks on any stream.
+      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 0);
+      assert.equal(instance.backend.callsOfMethod('chat.delete').length, 0);
+      for (const start of instance.backend.callsOfMethod('chat.startStream')) {
+        assert.deepEqual(chunkFields(start.body.chunks, 'task_update'), []);
+      }
+      for (const stop of instance.backend.callsOfMethod('chat.stopStream')) {
+        assert.deepEqual(chunkFields(stop.body.chunks, 'task_update'), []);
+      }
+      // The reply is delivered once as an ordinary answer in the thread.
+      assert.equal(instance.backend.finals().length, 1);
+      assert.equal(instance.backend.finals()[0]?.threadTs, ROOT_THREAD_TS);
+    },
+  },
+  {
+    id: 'S10B6',
+    title: 'mention work with native task cards disabled keeps the legacy checklist',
+    config: demoChannelConfig({ env: { SLACK_TAG_NATIVE_TASKS: 'false' } }),
+    async run(instance) {
+      await instance.postEvent(appMention({
+        event_id: 'Ev_MENTION_WORK_LEGACY',
+        event: { text: '<@U_BOT> PARITY_MENTION_WORK' },
+      }));
+      await instance.quiesce();
+
+      // With native task cards disabled, the late plan is suppressed: the
+      // interim checklist is finalized in place with chat.update and never
+      // deleted, and no task card stream is opened.
+      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 1);
+      assert.equal(instance.backend.callsOfMethod('chat.update').length, 1);
+      assert.equal(instance.backend.callsOfMethod('chat.delete').length, 0);
+      for (const start of instance.backend.callsOfMethod('chat.startStream')) {
+        assert.deepEqual(chunkFields(start.body.chunks, 'task_update'), []);
+      }
+      assert.equal(instance.backend.finals().length, 1);
+      assert.equal(instance.backend.providerCalls().length, 2);
     },
   },
   {
