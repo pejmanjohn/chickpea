@@ -74,9 +74,24 @@ silently turn a canceled Sandbox on.
    it. The checkbox is deliberate: a binding can exist while its first image
    rollout is still unavailable.
 6. In a Slack Channel where an Agent with a repository grant is placed, start a
-   new thread and ask Chickpea to clone the granted repository, make a small
-   change, run its tests, and report the result. Also request an ungranted
-   repository once and verify that access is refused.
+   new thread and ask Chickpea to clone the granted repository, **install its
+   dependencies**, make a small change, run its tests, and report the result.
+   Also request an ungranted repository once and verify that access is refused.
+7. Treat the clone and the dependency install in step 6 as the load-bearing
+   check, not a formality. Container egress is mediated by the Worker: the
+   `Sandbox` class pairs `interceptHttps = true` with `enableInternet = false`
+   (`src/cloudflare.ts`) so that HTTP and HTTPS are decided by the egress policy
+   and no raw, unmediated network path is left beside it. That pairing is what
+   Cloudflare's own outbound-interception guidance prescribes, but the allowed
+   lanes depend on your account and image version resolving through the
+   mediated path.
+
+   If a clone or an install fails with a DNS or connection error **while
+   ordinary Slack replies still work**, suspect that pairing before anything
+   else: remove `enableInternet = false`, redeploy the sandbox profile, and
+   retest. A passing install is the evidence that mediated egress covers the
+   allowed lanes; record it, because it is the check that distinguishes a
+   genuinely closed raw-egress path from a broken sandbox.
 
 ## What each status means
 
