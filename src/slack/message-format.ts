@@ -1,3 +1,5 @@
+import { credentialMarkers, redactCredentialLikeContent } from '../security/content-validation.ts';
+
 export const slackMarkdownBlockTextLimit = 12_000;
 export const slackFallbackTextLimit = 4_000;
 
@@ -84,7 +86,7 @@ export function renderSlackMessage(text: string, format: SlackReplyFormat): Rend
 export function canonicalSlackMarkdownText(text: string): string {
   const normalized = normalizeMessageText(text);
   return truncateText(
-    redactSlackCredentialLikeContent(sanitizeSlackMarkdownLinks(normalized)),
+    redactCredentialLikeContent(sanitizeSlackMarkdownLinks(normalized)),
     slackMarkdownBlockTextLimit,
   );
 }
@@ -118,53 +120,13 @@ export function sanitizeSlackMarkdownLinks(markdown: string): string {
     .join('');
 }
 
-const CREDENTIAL_REDACTIONS = [
-  /\bxox[a-z]-[a-z0-9-]{20,}\b/gi,
-  /\bsk-ant-[a-z0-9_-]{20,}\b/gi,
-  /\bsk-proj-[a-z0-9_-]{20,}(?![a-z0-9_-])/gi,
-  /\b(?:ghp|github_pat)_[a-z0-9_]{20,}\b/gi,
-  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
-  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/gi,
-  /\b(?:CHICKPEA_(?:AUTH_SECRET|RECOVERY_TOKEN)|TAG_ADMIN_TOKEN|ADMIN_TOKEN|SLACK_(?:BOT|APP)_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|GITHUB_TOKEN)\s*=\s*[^\s]{8,}/gi,
-  /\bAWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY)\b["']?\s*(?:=|:)\s*["']?[a-z0-9/+=]{8,}/gi,
-] as const;
-
-function redactSlackCredentialLikeContent(text: string): string {
-  return CREDENTIAL_REDACTIONS.reduce(
-    (value, pattern) => value.replace(pattern, '[credential redacted]'),
-    text,
-  );
-}
-
-const CREDENTIAL_MARKERS = [
-  'xox',
-  'sk-ant-',
-  'sk-proj-',
-  'ghp_',
-  'github_pat_',
-  'AKIA',
-  'ASIA',
-  '-----BEGIN ',
-  'CHICKPEA_AUTH_SECRET',
-  'CHICKPEA_RECOVERY_TOKEN',
-  'TAG_ADMIN_TOKEN',
-  'ADMIN_TOKEN',
-  'SLACK_BOT_TOKEN',
-  'SLACK_APP_TOKEN',
-  'ANTHROPIC_API_KEY',
-  'OPENAI_API_KEY',
-  'GITHUB_TOKEN',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-] as const;
-
 function earliestUnsafeTail(value: string): number {
   let unsafeFrom = value.length;
   const lower = value.toLowerCase();
 
   // Hold a full credential marker and its non-whitespace tail until a token
   // boundary proves that terminal redaction can no longer rewrite it.
-  for (const marker of CREDENTIAL_MARKERS) {
+  for (const marker of credentialMarkers()) {
     const markerLower = marker.toLowerCase();
     const full = lower.lastIndexOf(markerLower);
     if (full >= 0 && !value.slice(full).includes('\n')) {
