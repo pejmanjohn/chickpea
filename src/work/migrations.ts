@@ -1,3 +1,4 @@
+import { installLedgerLinks } from '../state/schema-links.ts';
 import type { StateDb } from '../state/state-db.ts';
 
 interface WorkMigration {
@@ -197,7 +198,7 @@ const MIGRATIONS: readonly WorkMigration[] = [
   {
     version: 2,
     statements: [],
-    after: installCompatibilityLinks,
+    after: installLedgerLinks,
   },
 ];
 
@@ -228,51 +229,4 @@ export function installWorkMigrations(db: StateDb): void {
       );
     });
   }
-}
-
-export function installCompatibilityLinks(db: StateDb): void {
-  if (tableExists(db, 'routines')) {
-    addColumnIfMissing(db, 'routines', 'work_id', 'TEXT');
-    addColumnIfMissing(db, 'routines', 'binding_id', 'TEXT');
-    db.exec(
-      'CREATE UNIQUE INDEX IF NOT EXISTS routines_work_link_unique ON routines (work_id) WHERE work_id IS NOT NULL',
-    );
-    db.exec(
-      'CREATE UNIQUE INDEX IF NOT EXISTS routines_binding_link_unique ON routines (binding_id) WHERE binding_id IS NOT NULL',
-    );
-  }
-  if (tableExists(db, 'routine_runs')) {
-    addColumnIfMissing(db, 'routine_runs', 'canonical_run_id', 'TEXT');
-    db.exec(
-      'CREATE UNIQUE INDEX IF NOT EXISTS routine_runs_canonical_link_unique ON routine_runs (canonical_run_id) WHERE canonical_run_id IS NOT NULL',
-    );
-  }
-  if (tableExists(db, 'usage_operations')) {
-    addColumnIfMissing(db, 'usage_operations', 'run_id', 'TEXT');
-    db.exec(
-      'CREATE INDEX IF NOT EXISTS usage_operations_run_idx ON usage_operations (run_id) WHERE run_id IS NOT NULL',
-    );
-  }
-  if (tableExists(db, 'usage_measurements')) {
-    addColumnIfMissing(db, 'usage_measurements', 'run_execution_id', 'TEXT');
-    db.exec(
-      'CREATE INDEX IF NOT EXISTS usage_measurements_run_execution_idx ON usage_measurements (run_execution_id) WHERE run_execution_id IS NOT NULL',
-    );
-  }
-}
-
-function tableExists(db: StateDb, table: string): boolean {
-  return Boolean(
-    db.get("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?", table),
-  );
-}
-
-function addColumnIfMissing(
-  db: StateDb,
-  table: string,
-  column: string,
-  definition: string,
-): void {
-  const present = db.all(`PRAGMA table_info(${table})`).some((row) => row.name === column);
-  if (!present) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }

@@ -4,6 +4,7 @@ import { ConfigStoreLogic } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
+import { installLedgerLinks } from '../state/schema-links.ts';
 import type { SqlParam, StateDb } from '../state/state-db.ts';
 import {
   hashRoutineValue,
@@ -1914,30 +1915,16 @@ export class RoutineStoreLogic {
     if (!runColumns.some((row) => row.name === 'provider_auth_route')) {
       this.db.exec('ALTER TABLE routine_runs ADD COLUMN provider_auth_route TEXT');
     }
-    if (!runColumns.some((row) => row.name === 'canonical_run_id')) {
-      this.db.exec('ALTER TABLE routine_runs ADD COLUMN canonical_run_id TEXT');
-    }
     const routineColumns = this.db.all('PRAGMA table_info(routines)');
-    if (!routineColumns.some((row) => row.name === 'work_id')) {
-      this.db.exec('ALTER TABLE routines ADD COLUMN work_id TEXT');
-    }
-    if (!routineColumns.some((row) => row.name === 'binding_id')) {
-      this.db.exec('ALTER TABLE routines ADD COLUMN binding_id TEXT');
-    }
     if (!routineColumns.some((row) => row.name === 'source_visibility')) {
       this.db.exec(
         "ALTER TABLE routines ADD COLUMN source_visibility TEXT NOT NULL DEFAULT 'unknown'",
       );
     }
-    this.db.exec(
-      'CREATE UNIQUE INDEX IF NOT EXISTS routines_work_link_unique ON routines (work_id) WHERE work_id IS NOT NULL',
-    );
-    this.db.exec(
-      'CREATE UNIQUE INDEX IF NOT EXISTS routines_binding_link_unique ON routines (binding_id) WHERE binding_id IS NOT NULL',
-    );
-    this.db.exec(
-      'CREATE UNIQUE INDEX IF NOT EXISTS routine_runs_canonical_link_unique ON routine_runs (canonical_run_id) WHERE canonical_run_id IS NOT NULL',
-    );
+    // The pointers into the Work ledger (routines.work_id/binding_id,
+    // routine_runs.canonical_run_id) are installed by whichever store gets here
+    // first — see installLedgerLinks. The tables above must already exist.
+    installLedgerLinks(this.db);
     this.db.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS routine_runs_schedule_slot_unique
        ON routine_runs (routine_id, scheduled_for) WHERE trigger_source = 'schedule'`,

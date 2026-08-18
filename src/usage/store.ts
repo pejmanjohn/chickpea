@@ -1,4 +1,5 @@
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
+import { installLedgerLinks } from '../state/schema-links.ts';
 import { promisify } from '../state/async-facade.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { AuditStoreLogic } from '../audit/store.ts';
@@ -815,20 +816,11 @@ export class UsageStoreLogic {
       "CREATE INDEX IF NOT EXISTS usage_measurements_unknown_price_idx ON usage_measurements (observed_at, execution_id) WHERE estimate_completeness = 'unknown'",
       'CREATE INDEX IF NOT EXISTS usage_credentials_provider_idx ON usage_credentials (provider_id, retired_at, credential_ref_id, version)',
     ]) this.db.exec(sql);
-    const operationColumns = this.db.all('PRAGMA table_info(usage_operations)');
-    if (!operationColumns.some((row) => row.name === 'run_id')) {
-      this.db.exec('ALTER TABLE usage_operations ADD COLUMN run_id TEXT');
-    }
-    const measurementColumns = this.db.all('PRAGMA table_info(usage_measurements)');
-    if (!measurementColumns.some((row) => row.name === 'run_execution_id')) {
-      this.db.exec('ALTER TABLE usage_measurements ADD COLUMN run_execution_id TEXT');
-    }
-    this.db.exec(
-      'CREATE INDEX IF NOT EXISTS usage_operations_run_idx ON usage_operations (run_id) WHERE run_id IS NOT NULL',
-    );
-    this.db.exec(
-      'CREATE INDEX IF NOT EXISTS usage_measurements_run_execution_idx ON usage_measurements (run_execution_id) WHERE run_execution_id IS NOT NULL',
-    );
+    // The pointers into the Work ledger (usage_operations.run_id,
+    // usage_measurements.run_execution_id) are installed by whichever store
+    // gets here first — see installLedgerLinks. The tables above must already
+    // exist.
+    installLedgerLinks(this.db);
     const installedCatalogs = installReleasePriceCatalogs(this.db);
     for (const catalog of installedCatalogs) {
       this.appendUsageAudit({

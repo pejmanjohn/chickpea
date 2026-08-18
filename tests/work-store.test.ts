@@ -7,6 +7,7 @@ import { test } from 'node:test';
 
 import { AuditStoreLogic } from '../src/audit/store.ts';
 import { RoutineStoreLogic } from '../src/routines/store.ts';
+import { UsageStoreLogic } from '../src/usage/store.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import type { SqlParam, StateDb } from '../src/state/state-db.ts';
 import { installWorkMigrations } from '../src/work/migrations.ts';
@@ -131,6 +132,49 @@ test('Work migrations install the six product tables without a Session table or 
         .map((row) => Number(row.version)),
       [1, 2],
     );
+  } finally {
+    db.close();
+  }
+});
+
+test('a fresh database gets every ledger link column whichever store opens it first', () => {
+  const db = openStateDb(':memory:');
+  try {
+    // The Work migration that owns the cross-domain link columns runs first
+    // and finds nothing to link — the Routine and Usage tables do not exist
+    // yet — but is still recorded as applied and never runs again. Each later
+    // store therefore has to install the links it needs itself.
+    new WorkStoreLogic(db, { now: () => NOW });
+    assert.deepEqual(
+      db
+        .all("SELECT version FROM app_migrations WHERE domain = 'work' ORDER BY version")
+        .map((row) => Number(row.version)),
+      [1, 2],
+    );
+    new RoutineStoreLogic(db, () => NOW);
+    new UsageStoreLogic(db, () => NOW);
+    for (const [table, column] of [
+      ['routines', 'work_id'],
+      ['routines', 'binding_id'],
+      ['routine_runs', 'canonical_run_id'],
+      ['usage_operations', 'run_id'],
+      ['usage_measurements', 'run_execution_id'],
+    ] as const) {
+      const columns = db.all(`PRAGMA table_info(${table})`).map((row) => String(row.name));
+      assert.ok(columns.includes(column), `${table}.${column}`);
+    }
+    // Fresh tables declare the link columns inline, so only the indexes prove
+    // the shared install actually ran for each domain.
+    const indexes = db
+      .all("SELECT name FROM sqlite_master WHERE type = 'index'")
+      .map((row) => String(row.name));
+    for (const index of [
+      'routines_work_link_unique',
+      'routines_binding_link_unique',
+      'routine_runs_canonical_link_unique',
+      'usage_operations_run_idx',
+      'usage_measurements_run_execution_idx',
+    ]) assert.ok(indexes.includes(index), index);
   } finally {
     db.close();
   }

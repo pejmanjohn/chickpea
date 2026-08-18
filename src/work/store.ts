@@ -4,6 +4,7 @@ import { AuditStoreLogic } from '../audit/store.ts';
 import type { AuditEvent, WorkAuditEventType } from '../audit/types.ts';
 import { isCompiledModelProfileId } from '../model-catalog/profiles.ts';
 import { promisify } from '../state/async-facade.ts';
+import { tableExists } from '../state/schema-links.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import { inspectStateDbIntegrity, type StateDb } from '../state/state-db.ts';
 import { installWorkMigrations } from './migrations.ts';
@@ -2591,12 +2592,6 @@ function parseObject(value: string): Record<string, unknown> {
   return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
     ? parsed as Record<string, unknown>
     : {};
-}
-
-function tableExists(db: StateDb, table: string): boolean {
-  return Boolean(
-    db.get("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?", table),
-  );
 }
 
 function sameWork(record: WorkRecord, input: CreateWorkInput): boolean {
