@@ -539,6 +539,7 @@ function runAdminPageHarness(
   apiOAuthStartPosts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
   apiOAuthClientPuts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
   assignedUrls: string[];
+  openedUrls: string[];
   mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
@@ -687,6 +688,7 @@ function runAdminPageHarness(
     body: Record<string, unknown>;
   }> = [];
   const assignedUrls: string[] = [];
+  const openedUrls: string[] = [];
   const mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
@@ -895,6 +897,19 @@ function runAdminPageHarness(
   const window = {
     addEventListener(type: string, listener: (event: Record<string, unknown>) => void) {
       windowListeners[type] = listener;
+    },
+    open() {
+      return {
+        opener: null,
+        closed: false,
+        location: {
+          assign(url: string) {
+            openedUrls.push(String(url));
+            assignedUrls.push(String(url));
+          },
+        },
+        close() {},
+      };
     },
   };
 
@@ -2536,6 +2551,7 @@ function runAdminPageHarness(
     apiOAuthStartPosts,
     apiOAuthClientPuts,
     assignedUrls,
+    openedUrls,
     mcpSecretPuts,
     mcpSecretDeletes,
     apiConnectionSecretPuts,
@@ -6326,7 +6342,8 @@ test('a saved read-only Linear OAuth connection stays Advanced after the catalog
     editor,
     /value="https:\/\/mcp\.linear\.app\/mcp\/readonly"[^>]*data-action="conn-field-url"/,
   );
-  assert.match(editor, /<option value="oauth" selected disabled>OAuth \(configured separately\)<\/option>/);
+  assert.match(editor, /<option value="oauth" selected>OAuth<\/option>/);
+  assert.match(editor, /data-action="conn-field-oauth-scope"/);
   assert.match(editor, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Linear<\/span>/);
   assert.doesNotMatch(editor, /data-action="conn-view"/);
   assert.doesNotMatch(editor, /read and write access/);
@@ -8098,14 +8115,141 @@ test('an OAuth verification failure is explicit and offers verification retry wi
   assert.doesNotMatch(harness.app.innerHTML, />Reconnect Notion<\/button>/);
 });
 
-test('an existing OAuth connection renders honestly and stages token cleanup when disabled', async () => {
+test('custom MCP OAuth saves an explicit scope before starting generic authorization', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://sql-dash.onrender.com/authorize?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
+
+  assert.match(harness.app.innerHTML, /<option value="oauth">OAuth<\/option>/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-field-oauth-scope"/);
+  input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'SQL Dash') });
+  input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://sql-dash.onrender.com/mcp') });
+  change({
+    target: {
+      value: 'oauth',
+      closest: () => null,
+      getAttribute: (name: string) => (name === 'data-action' ? 'conn-auth' : null),
+    } as unknown as FakeTarget,
+  });
+
+  const oauthEditor = harness.app.innerHTML;
+  assert.match(oauthEditor, /<option value="oauth" selected>OAuth<\/option>/);
+  assert.match(oauthEditor, /<details class="advanced conn-oauth-advanced"><summary>Advanced<\/summary>/);
+  assert.match(oauthEditor, /<label class="field-label" for="conn-oauth-scope">Scope \(optional\)<\/label>/);
+  assert.match(oauthEditor, /data-action="conn-field-oauth-scope"/);
+  assert.match(oauthEditor, /Leave blank to use the default access requested by the provider\./);
+  assert.match(oauthEditor, /data-action="conn-oauth-start"/);
+
+  input({ target: inputTarget({ 'data-action': 'conn-field-oauth-scope' }, 'sqldash') });
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.oauthStartPosts, []);
+  assert.deepEqual(harness.assignedUrls, []);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers, [
+    {
+      id: 'sql-dash',
+      displayName: 'SQL Dash',
+      url: 'https://sql-dash.onrender.com/mcp',
+      transport: 'streamable-http',
+      authMode: 'oauth',
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'pending',
+      statusText: '',
+      discoveredTools: [],
+      allowedTools: [],
+      oauthScope: 'sqldash',
+    },
+  ]);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'sql-dash', body: { scope: 'sqldash' } },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://sql-dash.onrender.com/authorize?state=opaque-state',
+  ]);
+  assert.deepEqual(harness.openedUrls, [
+    'https://sql-dash.onrender.com/authorize?state=opaque-state',
+  ]);
+});
+
+test('custom MCP OAuth leaves provider scope selection implicit when scope is blank', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    deferAgentPatch: true,
+    oauthStartResult: {
+      authorizationUrl: 'https://accounts.example.com/authorize?state=opaque-state',
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
+  input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Provider Default') });
+  input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.example.com/mcp') });
+  change({
+    target: {
+      value: 'oauth',
+      closest: () => null,
+      getAttribute: (name: string) => (name === 'data-action' ? 'conn-auth' : null),
+    } as unknown as FakeTarget,
+  });
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.oauthStartPosts, []);
+  harness.resolveAgentPatch();
+  await flushAsync();
+
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.equal(Object.hasOwn(servers[0] ?? {}, 'oauthScope'), false);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'provider-default', body: {} },
+  ]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://accounts.example.com/authorize?state=opaque-state',
+  ]);
+  assert.deepEqual(harness.openedUrls, [
+    'https://accounts.example.com/authorize?state=opaque-state',
+  ]);
+});
+
+test('an existing OAuth connection remains editable and stages token cleanup when disabled', async () => {
   const harness = runAdminPageHarness({
     agents: [
       connectionsAgent({
         mcpServers: [
           mcpConnectionFixture({
+            id: 'private-mcp',
+            displayName: 'Private MCP',
+            url: 'https://mcp.example.com/mcp',
             authMode: 'oauth',
-            presetId: 'linear',
+            oauthScope: 'read',
+            presetId: undefined,
           }),
         ],
       }),
@@ -8118,12 +8262,12 @@ test('an existing OAuth connection renders honestly and stages token cleanup whe
   assert.ok(click && change);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
-  click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
 
   assert.match(
     harness.app.innerHTML,
-    /<option value="oauth" selected disabled>OAuth \(configured separately\)<\/option>/,
+    /<option value="oauth" selected>OAuth<\/option>/,
   );
+  assert.match(harness.app.innerHTML, /value="read"[^>]*data-action="conn-field-oauth-scope"/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-field-bearer"/);
 
   change({

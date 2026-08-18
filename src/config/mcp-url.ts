@@ -381,6 +381,26 @@ function isPublicIpv6(host: string): boolean {
   const words = ipv6Words(host);
   if (words === undefined) return false;
 
+  // RFC 6052's well-known NAT64 prefix (64:ff9b::/96) is commonly returned
+  // alongside A records on DNS64-enabled hosts, including macOS networks. It
+  // is safe only to the same extent as the IPv4 destination encoded in its
+  // final 32 bits, so apply the existing IPv4 policy rather than treating the
+  // entire transition prefix as either globally public or categorically
+  // reserved.
+  if (
+    words[0] === 0x0064 &&
+    words[1] === 0xff9b &&
+    words.slice(2, 6).every((word) => word === 0) &&
+    words[6] !== undefined &&
+    words[7] !== undefined
+  ) {
+    const hi = words[6];
+    const lo = words[7];
+    return isPublicIpv4(
+      [(hi >> 8) & 255, hi & 255, (lo >> 8) & 255, lo & 255].join('.'),
+    );
+  }
+
   // IPv4-mapped IPv6 (::ffff:0:0/96) inherits the embedded IPv4 policy.
   if (
     words.slice(0, 5).every((word) => word === 0) &&
