@@ -1,4 +1,5 @@
-import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
+import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
+import { promisify } from '../state/async-facade.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { AuditStoreLogic } from '../audit/store.ts';
 import type { AuditEvent } from '../audit/types.ts';
@@ -910,69 +911,20 @@ export class UsageStoreLogic {
   }
 }
 
-export class SqliteUsageStore implements UsageStore {
-  private readonly db: NodeStateDb;
-  private readonly logic: UsageStoreLogic;
+export interface SqliteUsageStore extends UsageStore {
+  close(): void;
+}
 
+export class SqliteUsageStore {
   constructor(path: string = resolveStateDbPath(), now: () => number = Date.now) {
-    this.db = openStateDb(path);
-    this.logic = new UsageStoreLogic(this.db, now);
-  }
-
-  close(): void {
-    this.db.close();
-  }
-
-  async admitOperation(input: AdmitUsageOperationInput): Promise<UsageOperation> {
-    return this.logic.admitOperation(input);
-  }
-
-  async recordTerminal(input: RecordUsageTerminalInput): Promise<UsageOperationDetail> {
-    return this.logic.recordTerminal(input);
-  }
-
-  async getOperation(operationId: string): Promise<UsageOperationDetail | undefined> {
-    return this.logic.getOperation(operationId);
-  }
-
-  async getOperationByRunId(runId: string): Promise<UsageOperationDetail | undefined> {
-    return this.logic.getOperationByRunId(runId);
-  }
-
-  async listOperations(query: UsageQuery): Promise<UsageOperationPage> {
-    return this.logic.listOperations(query);
-  }
-
-  async summarize(query: UsageQuery): Promise<UsageSummary> {
-    return this.logic.summarize(query);
-  }
-
-  async putCredential(input: PutModelCredentialInput): Promise<ModelCredentialRecord> {
-    return this.logic.putCredential(input);
-  }
-
-  async retireCredential(
-    credentialRefId: string,
-    version: number,
-    retiredAt: number,
-  ): Promise<ModelCredentialRecord> {
-    return this.logic.retireCredential(credentialRefId, version, retiredAt);
-  }
-
-  async listCredentials(providerId?: string): Promise<ModelCredentialRecord[]> {
-    return this.logic.listCredentials(providerId);
-  }
-
-  async cleanupRetention(at?: number): Promise<UsageRetentionResult> {
-    return this.logic.cleanupRetention(at);
-  }
-
-  async getRetentionStatus(): Promise<UsageRetentionStatus> {
-    return this.logic.getRetentionStatus();
-  }
-
-  async listUsageAuditEvents(limit?: number): Promise<AuditEvent[]> {
-    return this.logic.listUsageAuditEvents(limit);
+    const db = openStateDb(path);
+    // The Proxy facade drops the `implements` compile check, so this typed
+    // binding is the conformance assertion that keeps it: a logic method that
+    // stops matching UsageStore fails typecheck here.
+    const _conforms: UsageStore = promisify(new UsageStoreLogic(db, now), {
+      close: () => db.close(),
+    });
+    return _conforms as unknown as SqliteUsageStore;
   }
 }
 
