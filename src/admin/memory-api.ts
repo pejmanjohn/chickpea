@@ -4,6 +4,14 @@ import { Hono, type Context } from 'hono';
 import * as v from 'valibot';
 
 import type { AuditEvent } from '../audit/types.ts';
+import {
+  adminActor,
+  invalidRequest as invalid,
+  readIdempotencyKey,
+  readJson,
+  safeMutationRequest,
+  sessionFingerprint,
+} from './api-support.ts';
 import { decodeMemoryArchive, encodeMemoryArchive } from '../memory/archive.ts';
 import {
   createImportPreview,
@@ -100,7 +108,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
   });
 
   app.post('/audit/memory/owners/:ownerKind/:workspaceId/:ownerId/entries', async (c) => {
-    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    if (!safeMutationRequest(c, { principalAware: false })) return c.json({ error: 'cross_origin_denied' }, 403);
     const idempotencyKey = readIdempotencyKey(c);
     if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
     const parsed = v.safeParse(createOwnerEntrySchema, await readJson(c));
@@ -160,7 +168,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
   });
 
   app.put('/audit/memory/owners/:ownerKind/:workspaceId/:ownerId/entries/:entryId', async (c) => {
-    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    if (!safeMutationRequest(c, { principalAware: false })) return c.json({ error: 'cross_origin_denied' }, 403);
     const idempotencyKey = readIdempotencyKey(c);
     if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
     const parsed = v.safeParse(updateSchema, await readJson(c));
@@ -179,7 +187,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
   });
 
   app.delete('/audit/memory/owners/:ownerKind/:workspaceId/:ownerId/entries/:entryId', async (c) => {
-    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    if (!safeMutationRequest(c, { principalAware: false })) return c.json({ error: 'cross_origin_denied' }, 403);
     const idempotencyKey = readIdempotencyKey(c);
     if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
     const parsed = v.safeParse(deleteSchema, await readJson(c));
@@ -303,7 +311,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
   });
 
   app.put('/audit/memory/entries/:entryId', async (c) => {
-    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    if (!safeMutationRequest(c, { principalAware: false })) return c.json({ error: 'cross_origin_denied' }, 403);
     const idempotencyKey = readIdempotencyKey(c);
     if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
     const parsed = v.safeParse(updateSchema, await readJson(c));
@@ -337,7 +345,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
   });
 
   app.delete('/audit/memory/entries/:entryId', async (c) => {
-    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    if (!safeMutationRequest(c, { principalAware: false })) return c.json({ error: 'cross_origin_denied' }, 403);
     const idempotencyKey = readIdempotencyKey(c);
     if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
     const parsed = v.safeParse(deleteSchema, await readJson(c));
@@ -384,7 +392,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
   });
 
   app.post('/audit/memory/entries/:entryId/reviews/:eventId/resolve', async (c) => {
-    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    if (!safeMutationRequest(c, { principalAware: false })) return c.json({ error: 'cross_origin_denied' }, 403);
     const idempotencyKey = readIdempotencyKey(c);
     if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
     const parsed = v.safeParse(reviewSchema, await readJson(c));
@@ -460,7 +468,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
   });
 
   app.post('/audit/memory/import/preview', async (c) => {
-    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    if (!safeMutationRequest(c, { principalAware: false })) return c.json({ error: 'cross_origin_denied' }, 403);
     const parsed = v.safeParse(importPreviewSchema, await readJson(c));
     if (!parsed.success) return invalid(c);
     try {
@@ -493,7 +501,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
   });
 
   app.post('/audit/memory/import/apply', async (c) => {
-    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    if (!safeMutationRequest(c, { principalAware: false })) return c.json({ error: 'cross_origin_denied' }, 403);
     const idempotencyKey = readIdempotencyKey(c);
     if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
     const parsed = v.safeParse(importApplySchema, await readJson(c));
@@ -852,26 +860,6 @@ function isOpaqueId(value: string): boolean {
   return v.safeParse(opaqueId, value).success;
 }
 
-function readIdempotencyKey(c: Context): string | undefined {
-  const key = c.req.header('idempotency-key')?.trim();
-  return key && key.length <= 200 && /^[A-Za-z0-9_.:-]+$/.test(key) ? key : undefined;
-}
-
-function safeMutationRequest(c: Context): boolean {
-  if (c.req.header('authorization')) return true;
-  const origin = c.req.header('origin');
-  return Boolean(origin && origin === new URL(c.req.url).origin);
-}
-
-function sessionFingerprint(c: Context): string {
-  const credential = c.req.header('authorization') ?? c.req.header('cookie') ?? '';
-  return createHash('sha256').update(`admin-session\0${credential}`).digest('hex');
-}
-
-function adminActor(c: Context): string {
-  return `admin_${sessionFingerprint(c).slice(0, 20)}`;
-}
-
 async function recordPrivateView(
   state: MemoryStateStore,
   c: Context,
@@ -883,10 +871,6 @@ async function recordPrivateView(
     actorId: adminActor(c),
     idempotencyKey: `admin-private-view:${adminActor(c)}:${entryId}:${Math.floor(at / 3_600_000)}`,
   });
-}
-
-async function readJson(c: Context): Promise<unknown> {
-  try { return await c.req.json(); } catch { return undefined; }
 }
 
 function decodeImportArchive(raw: string): Uint8Array {
@@ -926,10 +910,6 @@ function verifyValidatedImportPreview(
     if (error instanceof MemoryStateError) throw error;
     throw new MemoryImportValidationError();
   }
-}
-
-function invalid(c: Context): Response {
-  return c.json({ error: 'invalid_request' }, 400);
 }
 
 function memoryError(c: Context, error: unknown): Response {

@@ -1,10 +1,14 @@
-import { createHash } from 'node:crypto';
-
 import { Hono, type Context } from 'hono';
 import * as v from 'valibot';
 
 import type { AuditEvent } from '../audit/types.ts';
-import { requestPrincipal } from '../auth/service.ts';
+import {
+  adminCredential,
+  readIdempotencyKey,
+  readJson,
+  safeMutationRequest,
+  sha256,
+} from './api-support.ts';
 import type { UsageOperationDetail, UsageStore } from '../usage/types.ts';
 import {
   WorkStateError,
@@ -100,7 +104,7 @@ export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
   });
 
   app.post('/sessions/:runId/quarantine', async (c) => {
-    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    if (!safeMutationRequest(c, { principalAware: true })) return c.json({ error: 'cross_origin_denied' }, 403);
     const idempotencyKey = readIdempotencyKey(c);
     if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
     const parsed = v.safeParse(quarantineSchema, await readJson(c));
@@ -132,7 +136,7 @@ export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
   });
 
   app.post('/sessions/:runId/retire-stale', async (c) => {
-    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    if (!safeMutationRequest(c, { principalAware: true })) return c.json({ error: 'cross_origin_denied' }, 403);
     const idempotencyKey = readIdempotencyKey(c);
     if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
     const parsed = v.safeParse(quarantineSchema, await readJson(c));
@@ -515,49 +519,6 @@ function parseMetadata(raw: string): Record<string, unknown> {
   } catch {
     return {};
   }
-}
-
-function readIdempotencyKey(c: Context): string | undefined {
-  const value = c.req.header('idempotency-key')?.trim();
-  return value && value.length <= 200 && /^[A-Za-z0-9_.:-]+$/.test(value)
-    ? value
-    : undefined;
-}
-
-function safeMutationRequest(c: Context): boolean {
-  const principal = requestPrincipal(c.req.raw);
-  if (principal?.machine) return principal.authenticatorKind === 'personal_token';
-  const origin = c.req.header('origin');
-  if (origin && origin !== new URL(c.req.url).origin) return false;
-  if (c.req.header('authorization')) return true;
-  return Boolean(origin);
-}
-
-function adminCredential(c: Context): {
-  id: string;
-  origin: string;
-} {
-  const principal = requestPrincipal(c.req.raw);
-  if (principal) {
-    return {
-      id: principal.credentialId,
-      origin: principal.authenticatorKind,
-    };
-  }
-  const credential = c.req.header('authorization') ?? c.req.header('cookie') ?? '';
-  const host = new URL(c.req.url).hostname;
-  return {
-    id: `admin_${sha256(`admin-session\0${credential}`).slice(0, 20)}`,
-    origin: host === 'localhost' || host === '127.0.0.1' ? 'local_admin' : 'admin_session',
-  };
-}
-
-async function readJson(c: Context): Promise<unknown> {
-  try { return await c.req.json(); } catch { return undefined; }
-}
-
-function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
 }
 
 function workError(c: Context, error: unknown): Response {

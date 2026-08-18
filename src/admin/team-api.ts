@@ -4,6 +4,7 @@ import { Hono, type Context } from 'hono';
 import * as v from 'valibot';
 
 import { AuthorizationError, requirePermission } from '../auth/permissions.ts';
+import { invalidRequest as invalid, readJson } from './api-support.ts';
 import { digest } from '../auth/personal-token.ts';
 import {
   PasswordLifecycleError,
@@ -323,18 +324,6 @@ async function writableStore(
 function parseId(value: string): string | undefined {
   const parsed = v.safeParse(opaqueId, value);
   return parsed.success ? parsed.output : undefined;
-}
-
-async function readJson(c: Context): Promise<unknown> {
-  try {
-    return await c.req.json();
-  } catch {
-    return undefined;
-  }
-}
-
-function invalid(c: Context) {
-  return c.json({ error: 'invalid_request' }, 400);
 }
 
 function teamError(c: Context, error: unknown) {

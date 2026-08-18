@@ -1,9 +1,16 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 import { Hono, type Context } from 'hono';
 import * as v from 'valibot';
 
 import { isCloudflareTarget } from '../config/state-backend.ts';
+import {
+  adminActor,
+  invalidRequest as invalid,
+  readIdempotencyKey,
+  readJson,
+  safeMutationRequest,
+} from './api-support.ts';
 import { RoutineService } from '../routines/service.ts';
 import { routineOperatorLimits } from '../routines/limits.ts';
 import {
@@ -145,7 +152,7 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
   });
 
   app.post('/audit/scheduled_work/routines/:routineId/control', async (c) => {
-    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    if (!safeMutationRequest(c, { principalAware: false })) return c.json({ error: 'cross_origin_denied' }, 403);
     const idempotencyKey = readIdempotencyKey(c);
     if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
     const parsed = v.safeParse(controlSchema, await readJson(c));
@@ -530,30 +537,6 @@ function parseCursor(value: string | undefined): number {
     throw new RoutineStateError('routine_invalid_filter', 'Routine filter is invalid.');
   }
   return parsed;
-}
-
-function readIdempotencyKey(c: Context): string | undefined {
-  const key = c.req.header('idempotency-key')?.trim();
-  return key && key.length <= 200 && /^[A-Za-z0-9_.:-]+$/.test(key) ? key : undefined;
-}
-
-function safeMutationRequest(c: Context): boolean {
-  if (c.req.header('authorization')) return true;
-  const origin = c.req.header('origin');
-  return Boolean(origin && origin === new URL(c.req.url).origin);
-}
-
-function adminActor(c: Context): string {
-  const credential = c.req.header('authorization') ?? c.req.header('cookie') ?? '';
-  return `admin_${createHash('sha256').update(`admin-session\0${credential}`).digest('hex').slice(0, 20)}`;
-}
-
-async function readJson(c: Context): Promise<unknown> {
-  try { return await c.req.json(); } catch { return undefined; }
-}
-
-function invalid(c: Context): Response {
-  return c.json({ error: 'invalid_request' }, 400);
 }
 
 function routineError(c: Context, error: unknown): Response {
