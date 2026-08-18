@@ -29,7 +29,8 @@ import {
   type SlackIdentityDmState,
   type SlackIdentityReferenceSummary,
 } from './types.ts';
-import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
+import { promisify } from '../state/async-facade.ts';
+import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 
@@ -1438,224 +1439,20 @@ export class ConfigStoreLogic {
  * migrations, and seeding run synchronously in the constructor — a constructed
  * store is fully initialized, exactly as before the async refactor.
  */
-export class SqliteConfigStore implements ConfigStore {
-  private readonly db: NodeStateDb;
-  private readonly logic: ConfigStoreLogic;
+export interface SqliteConfigStore extends ConfigStore {
+  close(): void;
+}
 
+export class SqliteConfigStore {
   constructor(path: string = resolveStateDbPath(), seed: ConfigSeed = DEFAULT_SEED) {
-    this.db = openStateDb(path);
-    this.logic = new ConfigStoreLogic(this.db, seed);
-  }
-
-  close(): void {
-    this.db.close();
-  }
-
-  async listAgents(): Promise<CustomAgentConfig[]> {
-    return this.logic.listAgents();
-  }
-
-  async getAgent(agentId: string): Promise<CustomAgentConfig> {
-    return this.logic.getAgent(agentId);
-  }
-
-  async createAgent(agent: AgentCreateInput): Promise<CustomAgentConfig> {
-    return this.logic.createAgent(agent);
-  }
-
-  async updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): Promise<CustomAgentConfig> {
-    return this.logic.updateAgent(agentId, patch, expectedRevision);
-  }
-
-  async markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean> {
-    return this.logic.markOAuthReauthorizationRequired(target);
-  }
-
-  async deleteAgent(agentId: string): Promise<boolean> {
-    return this.logic.deleteAgent(agentId);
-  }
-
-  async deleteAgentWithMemory(
-    agentId: string,
-    idempotencyKey: string,
-  ): Promise<boolean> {
-    return this.logic.deleteAgentWithMemory(agentId, idempotencyKey);
-  }
-
-  async listChannels(): Promise<ChannelConfig[]> {
-    return this.logic.listChannels();
-  }
-
-  async getChannel(workspaceId: string, channelId: string): Promise<ChannelConfig | undefined> {
-    return this.logic.getChannel(workspaceId, channelId);
-  }
-
-  async putChannel(channel: ChannelConfig): Promise<ChannelConfig> {
-    return this.logic.putChannel(channel);
-  }
-
-  async putChannelPlacement(input: ChannelPlacementMutation): Promise<ChannelPlacementResult> {
-    return this.logic.putChannelPlacement(input);
-  }
-
-  async listAssignments(): Promise<ChannelAssignment[]> {
-    return this.logic.listAssignments();
-  }
-
-  async getAssignment(
-    workspaceId: string,
-    channelId: string,
-  ): Promise<ChannelAssignment | undefined> {
-    return this.logic.getAssignment(workspaceId, channelId);
-  }
-
-  async listAssignmentsForAgent(agentId: string): Promise<ChannelAssignment[]> {
-    return this.logic.listAssignmentsForAgent(agentId);
-  }
-
-  async putAssignment(assignment: ChannelAssignment): Promise<ChannelAssignment> {
-    return this.logic.putAssignment(assignment);
-  }
-
-  async deleteAssignment(workspaceId: string, channelId: string): Promise<boolean> {
-    return this.logic.deleteAssignment(workspaceId, channelId);
-  }
-
-  async find(
-    workspaceId: string,
-    channelId: string,
-    options: AssignmentLookupOptions = {},
-  ): Promise<ChannelAssignment | undefined> {
-    return this.logic.find(workspaceId, channelId, options);
-  }
-
-  async getAgentReferences(agentId: string): Promise<AgentReferenceSummary> {
-    return this.logic.getAgentReferences(agentId);
-  }
-
-  async listSlackIdentities(): Promise<SlackIdentity[]> {
-    return this.logic.listSlackIdentities();
-  }
-
-  async getSlackIdentity(identityId: string): Promise<SlackIdentity> {
-    return this.logic.getSlackIdentity(identityId);
-  }
-
-  async getSlackIdentityByIngressKey(ingressKey: string): Promise<SlackIdentity | undefined> {
-    return this.logic.getSlackIdentityByIngressKey(ingressKey);
-  }
-
-  async createSlackIdentity(identity: SlackIdentity): Promise<SlackIdentity> {
-    return this.logic.createSlackIdentity(identity);
-  }
-
-  async updateSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-    patch: SlackIdentityPatch,
-  ): Promise<SlackIdentity> {
-    return this.logic.updateSlackIdentity(identityId, expectedRevision, patch);
-  }
-
-  async listSlackIdentitiesForAgent(agentId: string): Promise<SlackIdentity[]> {
-    return this.logic.listSlackIdentitiesForAgent(agentId);
-  }
-
-  async listAgentsForSlackIdentity(identityId: string): Promise<CustomAgentConfig[]> {
-    return this.logic.listAgentsForSlackIdentity(identityId);
-  }
-
-  async resolveSlackIdentityForAgent(agentId: string): Promise<SlackIdentity> {
-    return this.logic.resolveSlackIdentityForAgent(agentId);
-  }
-
-  async getSlackIdentityReferences(
-    identityId: string,
-  ): Promise<SlackIdentityReferenceSummary> {
-    return this.logic.getSlackIdentityReferences(identityId);
-  }
-
-  async setSlackIdentityDmBinding(
-    identityId: string,
-    expectedRevision: number,
-    dmState: SlackIdentityDmState,
-    dmAgentId?: string,
-  ): Promise<SlackIdentity> {
-    return this.logic.setSlackIdentityDmBinding(
-      identityId,
-      expectedRevision,
-      dmState,
-      dmAgentId,
-    );
-  }
-
-  async completeSlackIdentitySetup(
-    identityId: string,
-    expectedRevision: number,
-    agentId?: string,
-    expectedAgentIdentityId?: string | null,
-  ): Promise<SlackIdentity> {
-    return this.logic.completeSlackIdentitySetup(
-      identityId,
-      expectedRevision,
-      agentId,
-      expectedAgentIdentityId,
-    );
-  }
-
-  async attachAgentToSlackIdentity(
-    agentId: string,
-    identityId: string,
-    expectedIdentityRevision: number,
-    expectedAgentIdentityId: string | null,
-  ): Promise<CustomAgentConfig> {
-    return this.logic.attachAgentToSlackIdentity(
-      agentId,
-      identityId,
-      expectedIdentityRevision,
-      expectedAgentIdentityId,
-    );
-  }
-
-  async retireSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-  ): Promise<SlackIdentity> {
-    return this.logic.retireSlackIdentity(identityId, expectedRevision);
-  }
-
-  async deleteIncompleteSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-    credentialsErased: boolean,
-  ): Promise<boolean> {
-    return this.logic.deleteIncompleteSlackIdentity(
-      identityId,
-      expectedRevision,
-      credentialsErased,
-    );
-  }
-
-  async purgeRetiredSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-    credentialsErased: boolean,
-  ): Promise<boolean> {
-    return this.logic.purgeRetiredSlackIdentity(
-      identityId,
-      expectedRevision,
-      credentialsErased,
-    );
-  }
-
-  async appendSlackIdentityAudit(input: AppendAuditEvent): Promise<AuditEvent> {
-    return this.logic.appendSlackIdentityAudit(input);
-  }
-
-  async listSlackIdentityAuditEvents(
-    filter: AuditEventFilter = {},
-  ): Promise<AuditEvent[]> {
-    return this.logic.listSlackIdentityAuditEvents(filter);
+    const db = openStateDb(path);
+    // The Proxy facade drops the `implements` compile check, so this typed
+    // binding is the conformance assertion that keeps it: a logic method that
+    // stops matching ConfigStore fails typecheck here.
+    const _conforms: ConfigStore = promisify(new ConfigStoreLogic(db, seed), {
+      close: () => db.close(),
+    });
+    return _conforms as unknown as SqliteConfigStore;
   }
 }
 
