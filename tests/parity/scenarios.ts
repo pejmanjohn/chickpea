@@ -255,9 +255,22 @@ export const scenarios: Scenario[] = [
           event: { text: '<@U_BOT> what changed in the last 2 days?' },
         }),
       );
+      // The events endpoint ACKS BEFORE the turn runs (the work is detached
+      // past the ack), so `quiesce()` starts its idle countdown while the wire
+      // log is still empty: one scheduling gap wider than the idle window and
+      // this scenario would assert against a truncated log instead of the
+      // widened read. Wait for the observable it is about, THEN quiesce to
+      // prove no second read follows. Order- and load-independent either way.
+      await waitForWireCondition(
+        () => instance.backend.callsOfMethod('conversations.history').length >= 1,
+        'context hydration never issued conversations.history',
+        20_000,
+      );
       await instance.quiesce();
 
-      const [history] = instance.backend.callsOfMethod('conversations.history');
+      const historyCalls = instance.backend.callsOfMethod('conversations.history');
+      assert.equal(historyCalls.length, 1);
+      const [history] = historyCalls;
       assert.ok(history);
       assert.equal(
         Math.round(Number(history.body.latest) - Number(history.body.oldest)),
@@ -503,7 +516,37 @@ export const scenarios: Scenario[] = [
       await instance.quiesce();
       assert.equal(instance.backend.providerCalls().length, 2);
       assert.equal(instance.backend.callsOfMethod('reactions.add').length, 1);
-      assert.equal(instance.backend.callsOfMethod('chat.update').length, 1);
+
+      // Ambient promotion is the one shape classified BEFORE Work admission, so
+      // its checklist is the only one that reaches the presentation as native
+      // task labels. Native task plans are on by default, so the interim
+      // checklist post is superseded once the native stream is proven started:
+      // it is DELETED, never finalized with chat.update.
+      const checklistPosts = instance.backend.callsOfMethod('chat.postMessage');
+      assert.equal(checklistPosts.length, 1);
+      const checklistTs = checklistPosts[0]?.responseTs;
+      assert.ok(checklistTs);
+      const deletes = instance.backend.callsOfMethod('chat.delete');
+      assert.equal(deletes.length, 1);
+      assert.equal(deletes[0]?.body.ts, checklistTs);
+      assert.equal(instance.backend.callsOfMethod('chat.update').length, 0);
+
+      // The classifier's checklist becomes the native task card, opened
+      // in_progress with the stream and closed complete with it.
+      const [start] = instance.backend.callsOfMethod('chat.startStream');
+      assert.ok(start);
+      assert.equal(start.body.task_display_mode, 'timeline');
+      assert.deepEqual(
+        chunkFields(start.body.chunks, 'task_update'),
+        [['task_update', 'Ambient result artifact', 'in_progress']],
+      );
+      const [stop] = instance.backend.callsOfMethod('chat.stopStream');
+      assert.ok(stop);
+      assert.deepEqual(
+        chunkFields(stop.body.chunks, 'task_update'),
+        [['task_update', 'Ambient result artifact', 'complete']],
+      );
+
       assert.equal(instance.backend.finals().length, 1);
       assert.equal(instance.backend.finals()[0]?.threadTs, '1782770500.000100');
     },
@@ -1890,6 +1933,16 @@ function assertFooterBlock(
   assert.match(footerText, new RegExp(escapeRegExp(expected.agentName)));
   assert.match(footerText, new RegExp(escapeRegExp(expected.modelLabel)));
   assert.match(footerText, new RegExp(`<${escapeRegExp(expected.configureUrl)}\\|Configure>`));
+}
+
+/**
+ * `[type, title, status]` for every stream chunk of `type`, so a scenario can
+ * assert the native task card on the wire without hand-casting `body.chunks`.
+ */
+function chunkFields(chunks: unknown, type: string): unknown[][] {
+  return (Array.isArray(chunks) ? (chunks as Record<string, unknown>[]) : [])
+    .filter((chunk) => chunk?.type === type)
+    .map((chunk) => [chunk.type, chunk.title, chunk.status]);
 }
 
 function escapeRegExp(value: string): string {
