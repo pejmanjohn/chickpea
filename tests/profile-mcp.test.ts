@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import type { ToolDefinition } from '@flue/runtime';
@@ -10,8 +13,11 @@ import type {
 import {
   resolveProfileMcpConnections,
   resolveProfileMcpTools,
+  resolveRuntimePlanMcpConnections,
 } from '../src/config/profile-mcp.ts';
+import { mcpOAuthSettingKeys } from '../src/config/mcp-oauth.ts';
 import { mcpBearerEnvVar, mcpHeaderEnvVar } from '../src/config/mcp-secrets.ts';
+import { getConfigStore, getSettingsStore } from '../src/config/state-backend.ts';
 import type { McpConnectionConfig } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -452,4 +458,81 @@ test('Flue 2 MCP guarded fetch resolves rotating custom headers per request', as
   });
   assert.equal(captured[0]?.headers.get('x-api-key'), 'header-one');
   assert.equal(captured[1]?.headers.get('x-api-key'), 'header-two');
+});
+
+test('runtime-plan OAuth auth reuses its live policy read for a fresh token', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-runtime-mcp-oauth-'));
+  const statePath = join(directory, 'state.db');
+  const agentId = 'agent_runtime_oauth';
+  const connection = server({
+    id: 'oauth-server',
+    authMode: 'oauth',
+    allowedTools: ['search'],
+  });
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: statePath }, async () => {
+      const config = getConfigStore();
+      await config.createAgent({
+        id: agentId,
+        name: 'Runtime OAuth',
+        instructions: 'Test runtime OAuth policy reads.',
+        enabled: true,
+        model: 'local-stub/runtime-oauth',
+        skills: [],
+        mcpServers: [connection],
+        apiConnections: [],
+        repositories: [],
+      });
+      const settings = getSettingsStore();
+      await settings.setSetting(
+        mcpOAuthSettingKeys({ agentId, connectionId: connection.id })[2],
+        JSON.stringify({
+          serverUrl: connection.url,
+          authorizationServerUrl: 'https://auth.example.com',
+          metadata: {
+            issuer: 'https://auth.example.com',
+            authorization_endpoint: 'https://auth.example.com/authorize',
+            token_endpoint: 'https://auth.example.com/token',
+            response_types_supported: ['code'],
+          },
+          resource: connection.url,
+          clientInformation: { client_id: 'runtime-client' },
+          tokens: {
+            access_token: 'runtime-access-token',
+            token_type: 'Bearer',
+            expires_in: 3_600,
+          },
+          obtainedAt: Date.now(),
+        }),
+      );
+
+      const originalGetAgent = config.getAgent.bind(config);
+      let policyReads = 0;
+      config.getAgent = async (id) => {
+        policyReads += 1;
+        return originalGetAgent(id);
+      };
+      try {
+        const [definition] = resolveRuntimePlanMcpConnections(agentId, [{
+          id: connection.id,
+          url: connection.url,
+          transport: connection.transport,
+          authMode: connection.authMode,
+          headerNames: [],
+          allowedTools: ['search'],
+          optional: true,
+        }]);
+        const auth = definition?.auth as (() => Promise<string>) | undefined;
+        assert.equal(await auth?.(), 'runtime-access-token');
+        assert.equal(await auth?.(), 'runtime-access-token');
+        assert.equal(policyReads, 2, 'each auth call performs one current-policy read');
+      } finally {
+        config.getAgent = originalGetAgent;
+      }
+    });
+  } finally {
+    getConfigStore();
+    getSettingsStore();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

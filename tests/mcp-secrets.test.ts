@@ -11,6 +11,7 @@ import {
   mcpHeaderEnvVar,
   mcpHeaderSettingKey,
   mcpSecretCleanupMarkerKey,
+  resolveMcpHeaders,
   resolveMcpSecrets,
   saveMcpSecrets,
   stageMcpSecretCleanup,
@@ -130,6 +131,26 @@ test('resolveMcpSecrets reads stored bearer and header values', async () => {
   } finally {
     store.close();
   }
+});
+
+test('header-only resolution does not read an unused bearer setting', async () => {
+  const reads: string[] = [];
+  const values = new Map([
+    [mcpBearerSettingKey(TEST_REF), 'unused-bearer'],
+    [mcpHeaderSettingKey(TEST_REF, 'X-Api-Key'), 'header-value'],
+  ]);
+  const store = {
+    async getSetting(key: string) {
+      reads.push(key);
+      return values.get(key);
+    },
+  } as SettingsStore;
+
+  assert.deepEqual(
+    await resolveMcpHeaders(TEST_REF, ['X-Api-Key'], undefined, store),
+    { 'X-Api-Key': 'header-value' },
+  );
+  assert.deepEqual(reads, [mcpHeaderSettingKey(TEST_REF, 'X-Api-Key')]);
 });
 
 test('env bearer wins over stored bearer', async () => {

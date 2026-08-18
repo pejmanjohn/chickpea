@@ -114,12 +114,23 @@ export async function resolveMcpSecrets(
   store?: SettingsStore,
 ): Promise<ResolvedMcpSecrets> {
   const settings = store ?? getSettingsStore(env);
-  const [bearer, ...headerValues] = await Promise.all([
+  const [bearer, headers] = await Promise.all([
     resolveOne(mcpBearerEnvVar(ref), mcpBearerSettingKey(ref), settings),
-    ...headerNames.map((name) =>
-      resolveOne(mcpHeaderEnvVar(ref, name), mcpHeaderSettingKey(ref, name), settings),
-    ),
+    resolveMcpHeaders(ref, headerNames, env, settings),
   ]);
+  return { ...(bearer !== undefined ? { bearer } : {}), headers };
+}
+
+export async function resolveMcpHeaders(
+  ref: McpSecretRef,
+  headerNames: string[],
+  env?: PlatformEnv,
+  store?: SettingsStore,
+): Promise<Record<string, string>> {
+  const settings = store ?? getSettingsStore(env);
+  const headerValues = await Promise.all(headerNames.map((name) =>
+    resolveOne(mcpHeaderEnvVar(ref, name), mcpHeaderSettingKey(ref, name), settings)
+  ));
   const headers: Record<string, string> = {};
   for (const [index, name] of headerNames.entries()) {
     const value = headerValues[index];
@@ -127,7 +138,7 @@ export async function resolveMcpSecrets(
       headers[name] = value;
     }
   }
-  return { ...(bearer !== undefined ? { bearer } : {}), headers };
+  return headers;
 }
 
 export async function describeMcpSecretSources(
