@@ -219,6 +219,67 @@ test('effect-capable Work starts honest native tasks but emits no progressive an
   }
 });
 
+test('a late-attached plan opens a native task card and supersedes the interim checklist', async () => {
+  const cleanups: string[] = [];
+  // A late-classified mention is frozen WITHOUT tasks but WITH native tasks on.
+  const h = harness({
+    native: true,
+    onNativeStarted: async () => { cleanups.push('deleted'); },
+  });
+  try {
+    // No plan yet: nothing to open.
+    assert.equal(h.store.get(h.runId)?.plan, undefined);
+
+    await h.presentation.adoptLatePlan(['Mention result artifact']);
+    const withPlan = h.store.get(h.runId);
+    assert.equal(withPlan?.plan?.displayMode, 'timeline');
+    assert.deepEqual(
+      withPlan?.plan?.tasks.map((task) => task.status),
+      ['pending'],
+    );
+
+    await h.presentation.prepareReceipt({
+      instanceId: 'instance_late_plan',
+      receipt: { submissionId: 'submission_late_plan', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    });
+    const start = h.calls.find((call) => call.method === 'chat.startStream');
+    assert.deepEqual(
+      (start?.input.chunks as Array<{ type: string; status: string }>).map((chunk) => [
+        chunk.type,
+        chunk.status,
+      ]),
+      [['task_update', 'in_progress']],
+    );
+    // The native stream is proven started, so the interim checklist cleanup ran.
+    assert.deepEqual(cleanups, ['deleted']);
+    assert.equal(h.store.get(h.runId)?.stream.state, 'streaming');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('adoptLatePlan is a no-op without native tasks and never overwrites an existing plan', async () => {
+  const off = harness({ native: false });
+  try {
+    await off.presentation.adoptLatePlan(['Mention result artifact']);
+    assert.equal(off.store.get(off.runId)?.plan, undefined);
+  } finally {
+    off.db.close();
+  }
+  const withPlan = harness({ tasks: ['Ambient artifact'], native: true });
+  try {
+    await withPlan.presentation.adoptLatePlan(['Mention result artifact']);
+    // The admission plan is preserved byte-for-byte; the late label is ignored.
+    assert.deepEqual(
+      withPlan.store.get(withPlan.runId)?.plan?.tasks.map((task) => task.title),
+      ['Ambient artifact'],
+    );
+  } finally {
+    withPlan.db.close();
+  }
+});
+
 test('legacy checklist cleanup cannot make a proven native stream ambiguous', async () => {
   const h = harness({
     tasks: ['Inspect the customer'],

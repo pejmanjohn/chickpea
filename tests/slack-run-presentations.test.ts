@@ -299,6 +299,88 @@ test('native task truth advances all frozen items together and never rewrites la
   }
 });
 
+test('adopt_plan attaches a late plan only when absent, native, and plan-free', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db);
+    // A late-classified mention is frozen WITHOUT task labels but WITH native
+    // tasks on, so it has no plan at create time.
+    const created = store.create({
+      runId: 'run_late_plan',
+      turnJobId: 'turn_run_late_plan',
+      bindingId: 'binding_presentation',
+      workBindingGeneration: 7,
+      runFencingToken: 0,
+      root: ROOT,
+      features: { progressiveStreaming: false, nativeTasks: true },
+    });
+    assert.equal(created.plan, undefined);
+
+    const adopted = store.transition({
+      runId: created.runId,
+      workBindingGeneration: created.workBindingGeneration,
+      runFencingToken: created.runFencingToken,
+      expectedProjectionVersion: created.projectionVersion,
+      expectedStreamState: 'absent',
+      mutation: { kind: 'adopt_plan', taskLabels: ['Mention result artifact'] },
+    });
+    assert.equal(adopted.outcome, 'applied');
+    if (adopted.outcome !== 'applied') return;
+    assert.equal(adopted.presentation.plan?.displayMode, 'timeline');
+    assert.deepEqual(
+      adopted.presentation.plan?.tasks.map(({ title, status }) => ({ title, status })),
+      [{ title: 'Mention result artifact', status: 'pending' }],
+    );
+
+    // A second attach is refused: ambient/obvious-work turns already carry a
+    // plan and must never be re-attached or reordered.
+    assert.throws(
+      () => store.transition({
+        runId: created.runId,
+        workBindingGeneration: created.workBindingGeneration,
+        runFencingToken: created.runFencingToken,
+        expectedProjectionVersion: adopted.presentation.projectionVersion,
+        expectedStreamState: 'absent',
+        mutation: { kind: 'adopt_plan', taskLabels: ['Second artifact'] },
+      }),
+      (error: unknown) =>
+        error instanceof SlackPresentationStateError && error.code === 'terminal_rewrite',
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('adopt_plan is refused when native tasks are disabled', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db);
+    const created = store.create({
+      runId: 'run_no_native',
+      turnJobId: 'turn_run_no_native',
+      bindingId: 'binding_presentation',
+      workBindingGeneration: 7,
+      runFencingToken: 0,
+      root: ROOT,
+      features: { progressiveStreaming: false, nativeTasks: false },
+    });
+    assert.throws(
+      () => store.transition({
+        runId: created.runId,
+        workBindingGeneration: created.workBindingGeneration,
+        runFencingToken: created.runFencingToken,
+        expectedProjectionVersion: created.projectionVersion,
+        expectedStreamState: 'absent',
+        mutation: { kind: 'adopt_plan', taskLabels: ['Mention result artifact'] },
+      }),
+      (error: unknown) =>
+        error instanceof SlackPresentationStateError && error.code === 'invalid_transition',
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test('workspace append reservations use one server-clock budget and shared cooldown', () => {
   let clock = 1_800_000_000_000;
   const db = openStateDb(':memory:');
