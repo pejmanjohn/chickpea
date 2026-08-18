@@ -47,6 +47,12 @@ interface TeamAdminApiOptions {
 
 export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
   const app = new Hono();
+  // requiredPrincipal() runs before each handler's own try/catch, so in legacy
+  // token mode (no request principal) its AuthorizationError would otherwise
+  // escape to Hono as an uncaught 500. Route every uncaught handler error
+  // through the same teamError mapper the handlers use, so a missing principal
+  // is a sanitized 403 and genuine faults stay 500.
+  app.onError((error, c) => teamError(c, error));
   const now = options.now ?? Date.now;
   const randomBytes = options.randomBytes ?? ((length: number) => nodeRandomBytes(length));
 

@@ -800,6 +800,35 @@ test('admin API returns 404 for every admin route when TAG_ADMIN_TOKEN is unset'
   }
 });
 
+test('admin team/account APIs return 403, not 500, in legacy token mode', async () => {
+  // Legacy TAG_ADMIN_TOKEN mode authenticates the sole owner but establishes no
+  // request principal, so the team/account handlers' requiredPrincipal() throws
+  // AuthorizationError. That must be caught at the gate and sanitized to 403 —
+  // the same contract the authService branch already gives — never escape as an
+  // uncaught 500. (Regression: a crash fuzzer found all six routes 500ing here.)
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const identity = new SqliteIdentityStore(':memory:');
+  try {
+    const app = appWithAdminOptions(store, { adminToken: ADMIN_TOKEN, identity });
+    const routes: Array<[string, string]> = [
+      ['GET', '/admin/api/account'],
+      ['GET', '/admin/api/team'],
+      ['POST', '/admin/api/team/invitations'],
+      ['DELETE', '/admin/api/team/invitations/abc123'],
+      ['PATCH', '/admin/api/team/memberships/abc123'],
+      ['POST', '/admin/api/team/memberships/abc123/reset'],
+    ];
+    for (const [method, path] of routes) {
+      const response = await app.request(path, { method, headers: auth(ADMIN_TOKEN) });
+      assert.equal(response.status, 403, `${method} ${path} should be a sanitized 403`);
+      assert.deepEqual(await response.json(), { error: 'forbidden' });
+    }
+  } finally {
+    store.close();
+    identity.close();
+  }
+});
+
 test('admin API rejects a wrong bearer token and accepts the configured admin token', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
