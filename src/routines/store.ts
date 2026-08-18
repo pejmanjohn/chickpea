@@ -2,7 +2,8 @@ import { AuditStoreLogic } from '../audit/store.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import { ConfigStoreLogic } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
-import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
+import { promisify } from '../state/async-facade.ts';
+import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import type { SqlParam, StateDb } from '../state/state-db.ts';
 import {
   hashRoutineValue,
@@ -2841,115 +2842,21 @@ export class RoutineStoreLogic {
 }
 
 /** Node backend: target-neutral routine logic over node:sqlite. */
-export class SqliteRoutineStore implements RoutineStore {
-  private readonly db: NodeStateDb;
-  private readonly logic: RoutineStoreLogic;
+export interface SqliteRoutineStore extends RoutineStore {
+  close(): void;
+}
 
+export class SqliteRoutineStore {
   constructor(path: string = resolveStateDbPath(), now: () => number = Date.now) {
-    this.db = openStateDb(path);
-    this.db.exec('PRAGMA secure_delete = ON');
-    this.logic = new RoutineStoreLogic(this.db, now);
-  }
-
-  close(): void {
-    this.db.close();
-  }
-
-  async putConfirmation(input: PutRoutineConfirmationInput): Promise<RoutineConfirmation> {
-    return this.logic.putConfirmation(input);
-  }
-  async getConfirmation(tokenHash: string): Promise<RoutineConfirmation | undefined> {
-    return this.logic.getConfirmation(tokenHash);
-  }
-  async cancelConfirmation(input: CancelRoutineConfirmationInput): Promise<boolean> {
-    return this.logic.cancelConfirmation(input);
-  }
-  async confirm(input: ConfirmRoutineInput): Promise<RoutineDefinition> {
-    return this.logic.confirm(input);
-  }
-  async save(input: SaveRoutineInput): Promise<RoutineDefinition> {
-    return this.logic.save(input);
-  }
-  async purgeConfirmations(): Promise<number> {
-    return this.logic.purgeConfirmations();
-  }
-  async cleanupRetention(): Promise<RoutineMaintenanceResult> {
-    return this.logic.cleanupRetention();
-  }
-  async getRoutine(routineId: string): Promise<RoutineDefinition | undefined> {
-    return this.logic.getRoutine(routineId);
-  }
-  async listRoutines(workspaceId?: string, channelId?: string): Promise<RoutineDefinition[]> {
-    return this.logic.listRoutines(workspaceId, channelId);
-  }
-  async listAdminRoutinePage(input: RoutineAdminPageInput): Promise<RoutineAdminPage> {
-    return this.logic.listAdminRoutinePage(input);
-  }
-  async listRevisions(routineId: string): Promise<RoutineRevision[]> {
-    return this.logic.listRevisions(routineId);
-  }
-  async control(input: ControlRoutineInput): Promise<RoutineDefinition> {
-    return this.logic.control(input);
-  }
-  async createOccurrence(input: CreateRoutineOccurrenceInput): Promise<RoutineRun> {
-    return this.logic.createOccurrence(input);
-  }
-  async getRun(occurrenceId: string): Promise<RoutineRun | undefined> {
-    return this.logic.getRun(occurrenceId);
-  }
-  async listRuns(filter: RoutineRunFilter = {}): Promise<RoutineRun[]> {
-    return this.logic.listRuns(filter);
-  }
-  async countAdmittingOrRunningOccurrences(): Promise<number> {
-    return this.logic.countAdmittingOrRunningOccurrences();
-  }
-  async claimDueSchedules(input: ClaimDueRoutinesInput): Promise<RoutineDueClaimBatch> {
-    return this.logic.claimDueSchedules(input);
-  }
-  async startAdmissionAttempt(input: StartRoutineAdmissionInput): Promise<RoutineAdmissionAttempt> {
-    return this.logic.startAdmissionAttempt(input);
-  }
-  async recordAdmissionReceipt(
-    occurrenceId: string,
-    attempt: number,
-    flueRunId: string,
-    receiptAt: number,
-  ): Promise<RoutineAdmissionAttempt> {
-    return this.logic.recordAdmissionReceipt(occurrenceId, attempt, flueRunId, receiptAt);
-  }
-  async resolveAdmission(input: ResolveRoutineAdmissionInput): Promise<RoutineRun> {
-    return this.logic.resolveAdmission(input);
-  }
-  async beginOccurrence(input: BeginRoutineOccurrenceInput): Promise<'started' | 'superseded'> {
-    return this.logic.beginOccurrence(input);
-  }
-  async prepareAgentDispatch(
-    input: PrepareRoutineAgentDispatchInput,
-  ): Promise<'started' | 'superseded'> {
-    return this.logic.prepareAgentDispatch(input);
-  }
-  async recordAgentReceipt(
-    input: RecordRoutineAgentReceiptInput,
-  ): Promise<RoutineAdmissionAttempt> {
-    return this.logic.recordAgentReceipt(input);
-  }
-  async recordAgentSettlement(input: RecordRoutineAgentSettlementInput): Promise<RoutineRun> {
-    return this.logic.recordAgentSettlement(input);
-  }
-  async transitionRun(input: TransitionRoutineRunInput): Promise<RoutineRun> {
-    return this.logic.transitionRun(input);
-  }
-  async claimDelivery(input: ClaimRoutineDeliveryInput): Promise<'claimed' | 'superseded'> {
-    return this.logic.claimDelivery(input);
-  }
-  async recordDelivery(input: RecordRoutineDeliveryInput): Promise<RoutineRun> {
-    return this.logic.recordDelivery(input);
-  }
-  async listAdmissions(occurrenceId: string): Promise<RoutineAdmissionAttempt[]> {
-    return this.logic.listAdmissions(occurrenceId);
-  }
-  async listAuditEvents(filter: AuditEventFilter = {}): Promise<AuditEvent[]> {
-    return this.logic.listAuditEvents(filter);
+    const db = openStateDb(path);
+    db.exec('PRAGMA secure_delete = ON');
+    // The Proxy facade drops the `implements` compile check, so this typed
+    // binding is the conformance assertion that keeps it: a logic method that
+    // stops matching RoutineStore fails typecheck here.
+    const _conforms: RoutineStore = promisify(new RoutineStoreLogic(db, now), {
+      close: () => db.close(),
+    });
+    return _conforms as unknown as SqliteRoutineStore;
   }
 }
 
