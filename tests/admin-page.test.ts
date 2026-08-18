@@ -12311,3 +12311,118 @@ test('node-target Sprout seed is unpinned and its profile editor renders the pic
   assert.match(html, /SLACK_TAG_MODEL/);
   assert.match(html, /as an offline\/dev fallback so an unpinned Agent still replies/);
 });
+
+// The Repositories picker and the Skills import browser share one repo-search
+// controller. The import lane is covered above; these two pin the picker lane's
+// half of that contract -- request identity across a debounced search, a
+// failure that stays inside the picker, and Apply writing the grants.
+test('the Repositories picker discards a stale search response and applies the current one', async () => {
+  const pending: Array<(response: FakeResponse) => void> = [];
+  const harness = runAdminPageHarness({
+    githubStatus: {
+      mode: 'app',
+      installations: [
+        { id: 77, accountLogin: 'acme', accountType: 'Organization', repoCount: 4 },
+      ],
+      referencingProfiles: [],
+    },
+    githubRepoFetch: () =>
+      new Promise<FakeResponse>((resolve) => {
+        pending.push(resolve);
+      }),
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'repositories' }) });
+  await flushAsync();
+
+  click({ target: actionTarget({ 'data-action': 'repo-add' }) });
+  assert.deepEqual(harness.githubRepoCalls, [
+    '/admin/api/github/installations/77/repos?q=&page=1',
+  ]);
+  assert.match(harness.app.innerHTML, /Loading repositories/);
+  pending[0]?.(jsonResponse({
+    repos: [{ fullName: 'acme/first', private: false, defaultBranch: 'main' }],
+    totalCount: 4,
+    truncated: false,
+  }));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /acme\/first/);
+
+  input({ target: inputTarget({ 'data-action': 'repo-search' }, 'old') });
+  input({ target: inputTarget({ 'data-action': 'repo-search' }, 'new') });
+  assert.deepEqual(harness.githubRepoCalls.slice(1), [
+    '/admin/api/github/installations/77/repos?q=old&page=1',
+    '/admin/api/github/installations/77/repos?q=new&page=1',
+  ]);
+  pending[2]?.(jsonResponse({
+    repos: [{ fullName: 'acme/new-result', private: true, defaultBranch: 'main' }],
+    totalCount: 4,
+    truncated: false,
+  }));
+  await flushAsync();
+  pending[1]?.(jsonResponse({
+    repos: [{ fullName: 'acme/old-result', private: true, defaultBranch: 'main' }],
+    totalCount: 4,
+    truncated: false,
+  }));
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /acme\/new-result/);
+  assert.doesNotMatch(harness.app.innerHTML, /acme\/old-result/);
+
+  change({
+    target: valueTarget({ 'data-action': 'repo-select', 'data-repo': 'acme/new-result' }, '', true),
+  });
+  assert.match(harness.app.innerHTML, /1 repo selected/);
+  click({ target: actionTarget({ 'data-action': 'repo-picker-apply' }) });
+
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="repo-picker-apply"/);
+  assert.match(harness.app.innerHTML, /<span class="repo-name mono">acme\/new-result<\/span>/);
+});
+
+test('a Repositories picker failure stays inside the picker and offers a local retry', async () => {
+  const harness = runAdminPageHarness({
+    githubStatus: {
+      mode: 'app',
+      installations: [
+        { id: 78, accountLogin: 'acme', accountType: 'Organization', repoCount: null },
+      ],
+      referencingProfiles: [],
+    },
+    githubRepoError: {
+      status: 502,
+      error: 'github_unavailable',
+      message: 'Repository catalog unavailable. Paste an exact source or retry.',
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'repositories' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'repo-add' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Repository catalog unavailable\. Paste an exact source or retry\./);
+  assert.match(harness.app.innerHTML, /data-action="repo-picker-retry"/);
+  assert.equal(harness.githubRepoCalls.length, 1);
+
+  click({ target: actionTarget({ 'data-action': 'repo-picker-retry' }) });
+  await flushAsync();
+  assert.deepEqual(harness.githubRepoCalls, [
+    '/admin/api/github/installations/78/repos?q=&page=1',
+    '/admin/api/github/installations/78/repos?q=&page=1',
+  ]);
+
+  click({ target: actionTarget({ 'data-action': 'repo-picker-cancel' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="repo-picker-retry"/);
+  assert.match(harness.app.innerHTML, /data-action="repo-add"/);
+});
