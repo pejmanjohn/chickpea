@@ -43,6 +43,22 @@ let started = false;
 let draining: Promise<void> | undefined;
 let wakeRequested = false;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
+let autoWakeSuspended = false;
+
+/**
+ * Test seam: suspend the admission-triggered auto-wake so a test can admit a
+ * turn through the real ingress and then drive `drainNodeTurnRelayOnce` itself,
+ * making execution timing deterministic instead of racing the background drain.
+ * Node-only — the Cloudflare alarm relay is unaffected (`wakeNodeTurnRelay`
+ * already returns early there). Returns a restore function; call it in a
+ * `finally` so the suspension never leaks to sibling tests.
+ */
+export function suspendNodeTurnRelayAutoWake(): () => void {
+  autoWakeSuspended = true;
+  return () => {
+    autoWakeSuspended = false;
+  };
+}
 
 function scheduleNodeTurnRelayRetry(
   env: PlatformEnv | undefined,
@@ -77,6 +93,9 @@ export async function wakeNodeTurnRelay(
   overrides: Omit<NodeTurnRelayDrainOptions, 'env'> = {},
 ): Promise<void> {
   if (isCloudflareTarget()) return;
+  // A test may suspend the admission-triggered wake to drive execution itself.
+  // The durable turn is already admitted; it stays pending until the next drain.
+  if (autoWakeSuspended) return;
   if (draining) {
     wakeRequested = true;
     return draining;

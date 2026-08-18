@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
-import { Hono } from 'hono';
+import { Hono, type ExecutionContext } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import {
@@ -54,6 +54,10 @@ import {
   slackManifestPrefillUrl,
 } from '../src/slack/identity-manifest.ts';
 import slackAppManifest from '../slack-app-manifest.json' with { type: 'json' };
+import {
+  drainNodeTurnRelayOnce,
+  suspendNodeTurnRelayAutoWake,
+} from '../src/slack/node-turn-relay.ts';
 import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
 import { captureSlackIdentityOperationalEvents } from './helpers/slack-identity-observability.ts';
@@ -3232,99 +3236,140 @@ test('a connected selected dedicated identity is admitted only while it is in th
             },
           });
 
-          const selected = event('Ev_MULTI_SELECTED', '1782770400.000300');
-          const selectedResponse = await app.request(url, {
-            method: 'POST',
-            headers: selected.headers,
-            body: selected.body,
-          });
-          assert.equal(selectedResponse.status, 200, await selectedResponse.clone().text());
-
-          let admitted:
-            | { status: string; recovery_reason: string | null; turn_json: string }
-            | undefined;
-          for (let attempt = 0; attempt < 50 && !admitted; attempt += 1) {
-            await new Promise<void>((resolve) => setTimeout(resolve, 10));
-            const db = new DatabaseSync(path);
-            try {
-              const row = db.prepare(
-                `SELECT status, recovery_reason, turn_json
-                 FROM turn_jobs WHERE id = 'msg:C_FINANCE:1782770400.000300'`,
-              ).get() as
-                | { status: string; recovery_reason: string | null; turn_json: string }
-                | undefined;
-              if (row) admitted = row;
-            } finally {
-              db.close();
-            }
-          }
-          assert.notEqual(admitted?.status, 'recovery_required');
-          assert.equal(admitted?.recovery_reason, null);
-          assert.equal(JSON.parse(admitted?.turn_json ?? '{}').slackIdentityId, identity.id);
-
-          fake.setMember(false);
-          const nonMember = event('Ev_MULTI_NOT_MEMBER', '1782770400.000400');
-          let rejectedForMembership = false;
-          const previousInfo = console.info;
-          console.info = (...args: unknown[]) => {
-            previousInfo(...args);
-            if (args[0] !== '[chickpea] slack_identity_operational') return;
-            try {
-              const event = JSON.parse(String(args[1])) as { failureClass?: string };
-              if (event.failureClass === 'not_in_channel') rejectedForMembership = true;
-            } catch {
-              // Ignore unrelated non-JSON console output.
+          // On Node the ingress lets each event's `processSlackEvent` float
+          // past the Slack ack, so the test cannot tell when admission has
+          // finished. Provide an ExecutionContext whose `waitUntil` captures
+          // that detached work and drain it with `settle()`, replacing the old
+          // wall-clock waits with a deterministic join. `detach()` is the only
+          // consumer of `c.executionCtx`, so this changes nothing else.
+          const pendingIngressWork: Promise<unknown>[] = [];
+          const executionCtx = {
+            waitUntil(work: Promise<unknown>) {
+              pendingIngressWork.push(Promise.resolve(work));
+            },
+            passThroughOnException() {},
+          } as unknown as ExecutionContext;
+          const settle = async () => {
+            while (pendingIngressWork.length > 0) {
+              await Promise.all(pendingIngressWork.splice(0));
             }
           };
+
+          // Suspend the admission-triggered auto-wake so the first turn is
+          // admitted but NOT executed by the background relay. Warm/idle
+          // processes used to run the durable execution re-check within
+          // milliseconds of admission — before this test could flip membership
+          // to false — so the turn was delivered and no `not_in_channel`
+          // rejection was ever emitted (the 30s poll then timed out). Driving
+          // the relay ourselves, after the flip, makes the re-check observe the
+          // member=false state deterministically instead of racing the wake.
+          const restoreAutoWake = suspendNodeTurnRelayAutoWake();
           try {
+            const selected = event('Ev_MULTI_SELECTED', '1782770400.000300');
+            const selectedResponse = await app.request(url, {
+              method: 'POST',
+              headers: selected.headers,
+              body: selected.body,
+            }, undefined, executionCtx);
+            assert.equal(selectedResponse.status, 200, await selectedResponse.clone().text());
+            // Admission (member=true) runs to completion; with the auto-wake
+            // suspended the durable execution re-check is deferred to us.
+            await settle();
+
+            const admitted = (() => {
+              const db = new DatabaseSync(path);
+              try {
+                return db.prepare(
+                  `SELECT status, recovery_reason, turn_json
+                   FROM turn_jobs WHERE id = 'msg:C_FINANCE:1782770400.000300'`,
+                ).get() as
+                  | { status: string; recovery_reason: string | null; turn_json: string }
+                  | undefined;
+              } finally {
+                db.close();
+              }
+            })();
+            assert.notEqual(admitted?.status, 'recovery_required');
+            assert.equal(admitted?.recovery_reason, null);
+            assert.equal(JSON.parse(admitted?.turn_json ?? '{}').slackIdentityId, identity.id);
+
+            // The identity leaves the channel after admission but before the
+            // durable execution re-check runs.
+            fake.setMember(false);
+            let rejectedForMembership = false;
+            const previousInfo = console.info;
+            console.info = (...args: unknown[]) => {
+              previousInfo(...args);
+              if (args[0] !== '[chickpea] slack_identity_operational') return;
+              try {
+                const event = JSON.parse(String(args[1])) as { failureClass?: string };
+                if (event.failureClass === 'not_in_channel') rejectedForMembership = true;
+              } catch {
+                // Ignore unrelated non-JSON console output.
+              }
+            };
+            try {
+              // Drive the relay once, now that membership is false. The pending
+              // first turn's execution re-check (verifySlackIdentityTurnAccess)
+              // hits the live conversations.info, sees member=false, and rejects
+              // the admitted turn with a `not_in_channel` operational event.
+              await drainNodeTurnRelayOnce();
+            } finally {
+              console.info = previousInfo;
+            }
+            assert.equal(rejectedForMembership, true);
+
+            // A fresh mention while not a member is denied at admission itself
+            // (conversations.info reports member=false → ineligible), so it
+            // never creates a durable turn. Settle its detached admission before
+            // taking the call baseline so its Slack reads are never miscounted
+            // as post-degradation traffic.
+            const nonMember = event('Ev_MULTI_NOT_MEMBER', '1782770400.000400');
             const nonMemberResponse = await app.request(url, {
               method: 'POST',
               headers: nonMember.headers,
               body: nonMember.body,
-            });
+            }, undefined, executionCtx);
             assert.equal(nonMemberResponse.status, 200, await nonMemberResponse.clone().text());
-            // Event execution continues after Slack's acknowledgement. Wait
-            // for the semantic rejection before taking the baseline used to
-            // prove a degraded identity makes no further Slack calls.
-            for (let attempt = 0; attempt < 3_000 && !rejectedForMembership; attempt += 1) {
-              await new Promise<void>((resolve) => setTimeout(resolve, 10));
+            await settle();
+
+            fake.setMember(true);
+            const beforeDisconnectCalls = fake.authHeaders.length;
+            const current = await config.getSlackIdentity(identity.id);
+            await config.updateSlackIdentity(identity.id, current.connectionRevision, {
+              lifecycle: 'degraded',
+              health: 'unauthorized',
+              healthDetail: 'tokens_revoked',
+            });
+            // A degraded identity is rejected in the ingress handler before any
+            // Slack call or detached work, so the request fully resolves here
+            // and `settle()` has nothing to drain.
+            const disconnected = event('Ev_MULTI_DISCONNECTED', '1782770400.000500');
+            const disconnectedResponse = await app.request(url, {
+              method: 'POST',
+              headers: disconnected.headers,
+              body: disconnected.body,
+            }, undefined, executionCtx);
+            assert.equal(
+              disconnectedResponse.status,
+              200,
+              await disconnectedResponse.clone().text(),
+            );
+            await settle();
+
+            const db = new DatabaseSync(path);
+            try {
+              assert.equal(db.prepare('SELECT COUNT(*) AS count FROM turn_jobs').get()?.count, 1);
+              assert.equal(db.prepare('SELECT COUNT(*) AS count FROM runs').get()?.count, 1);
+            } finally {
+              db.close();
             }
+            assert.ok(fake.authHeaders.length >= 2);
+            assert.deepEqual(new Set(fake.authHeaders), new Set(['Bearer xoxb-finance']));
+            assert.equal(fake.authHeaders.length, beforeDisconnectCalls);
           } finally {
-            console.info = previousInfo;
+            restoreAutoWake();
           }
-          assert.equal(rejectedForMembership, true);
-
-          fake.setMember(true);
-          const beforeDisconnectCalls = fake.authHeaders.length;
-          const current = await config.getSlackIdentity(identity.id);
-          await config.updateSlackIdentity(identity.id, current.connectionRevision, {
-            lifecycle: 'degraded',
-            health: 'unauthorized',
-            healthDetail: 'tokens_revoked',
-          });
-          const disconnected = event('Ev_MULTI_DISCONNECTED', '1782770400.000500');
-          const disconnectedResponse = await app.request(url, {
-            method: 'POST',
-            headers: disconnected.headers,
-            body: disconnected.body,
-          });
-          assert.equal(
-            disconnectedResponse.status,
-            200,
-            await disconnectedResponse.clone().text(),
-          );
-          await new Promise<void>((resolve) => setTimeout(resolve, 25));
-
-          const db = new DatabaseSync(path);
-          try {
-            assert.equal(db.prepare('SELECT COUNT(*) AS count FROM turn_jobs').get()?.count, 1);
-            assert.equal(db.prepare('SELECT COUNT(*) AS count FROM runs').get()?.count, 1);
-          } finally {
-            db.close();
-          }
-          assert.ok(fake.authHeaders.length >= 2);
-          assert.deepEqual(new Set(fake.authHeaders), new Set(['Bearer xoxb-finance']));
-          assert.equal(fake.authHeaders.length, beforeDisconnectCalls);
         } finally {
           config.close();
           settings.close();
