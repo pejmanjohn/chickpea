@@ -8,7 +8,8 @@ import {
   type AgentSnapshotRootReference,
 } from './types.ts';
 import { THREAD_TTL_MS } from '../slack/claim-store.ts';
-import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
+import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
+import { promisify } from '../state/async-facade.ts';
 import type { StateDb } from '../state/state-db.ts';
 
 interface SnapshotRow {
@@ -182,29 +183,20 @@ export class SnapshotStoreLogic {
 }
 
 /** Node backend: the target-neutral logic over `node:sqlite`, async-wrapped. */
-export class SqliteAgentSnapshotStore implements AgentSnapshotStore {
-  private readonly db: NodeStateDb;
-  private readonly logic: SnapshotStoreLogic;
+export interface SqliteAgentSnapshotStore extends AgentSnapshotStore {
+  close(): void;
+}
 
+export class SqliteAgentSnapshotStore {
   constructor(path: string = resolveStateDbPath(), now: () => number = Date.now) {
-    this.db = openStateDb(path);
-    this.logic = new SnapshotStoreLogic(this.db, now);
-  }
-
-  close(): void {
-    this.db.close();
-  }
-
-  async get(threadKey: string): Promise<AgentSnapshot | undefined> {
-    return this.logic.get(threadKey);
-  }
-
-  async putIfAbsent(threadKey: string, snapshot: AgentSnapshot): Promise<AgentSnapshot> {
-    return this.logic.putIfAbsent(threadKey, snapshot);
-  }
-
-  async listLiveRootsByAgent(agentId: string): Promise<AgentSnapshotRootReference[]> {
-    return this.logic.listLiveRootsByAgent(agentId);
+    const db = openStateDb(path);
+    // The Proxy facade drops the `implements` compile check, so this typed
+    // binding is the conformance assertion that keeps it: a logic method that
+    // stops matching AgentSnapshotStore fails typecheck here.
+    const _conforms: AgentSnapshotStore = promisify(new SnapshotStoreLogic(db, now), {
+      close: () => db.close(),
+    });
+    return _conforms as unknown as SqliteAgentSnapshotStore;
   }
 }
 

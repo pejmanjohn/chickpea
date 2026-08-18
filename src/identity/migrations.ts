@@ -1,3 +1,4 @@
+import { tableColumns } from '../state/schema-links.ts';
 import type { StateDb } from '../state/state-db.ts';
 
 interface IdentityMigration {
@@ -353,8 +354,4 @@ function rebuildLegacyBrowserSessions(db: StateDb): void {
     `CREATE INDEX identity_browser_sessions_prefix_idx
      ON identity_browser_sessions (prefix, expires_at)`,
   );
-}
-
-function tableColumns(db: StateDb, table: string): Set<string> {
-  return new Set(db.all(`PRAGMA table_info(${table})`).map((row) => String(row.name)));
 }

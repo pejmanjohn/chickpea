@@ -1,4 +1,6 @@
-import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
+import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
+import { installLedgerLinks } from '../state/schema-links.ts';
+import { promisify } from '../state/async-facade.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { AuditStoreLogic } from '../audit/store.ts';
 import type { AuditEvent } from '../audit/types.ts';
@@ -826,14 +828,7 @@ export class UsageStoreLogic {
       "CREATE INDEX IF NOT EXISTS usage_measurements_unknown_price_idx ON usage_measurements (observed_at, execution_id) WHERE estimate_completeness = 'unknown'",
       'CREATE INDEX IF NOT EXISTS usage_credentials_provider_idx ON usage_credentials (provider_id, retired_at, credential_ref_id, version)',
     ]) this.db.exec(sql);
-    const operationColumns = this.db.all('PRAGMA table_info(usage_operations)');
-    if (!operationColumns.some((row) => row.name === 'run_id')) {
-      this.db.exec('ALTER TABLE usage_operations ADD COLUMN run_id TEXT');
-    }
     const measurementColumns = this.db.all('PRAGMA table_info(usage_measurements)');
-    if (!measurementColumns.some((row) => row.name === 'run_execution_id')) {
-      this.db.exec('ALTER TABLE usage_measurements ADD COLUMN run_execution_id TEXT');
-    }
     if (!measurementColumns.some((row) => row.name === 'cache_read_tokens')) {
       this.db.exec('ALTER TABLE usage_measurements ADD COLUMN cache_read_tokens INTEGER');
     }
@@ -847,12 +842,11 @@ export class UsageStoreLogic {
     if (!rollupColumns.some((row) => row.name === 'cache_write_tokens')) {
       this.db.exec('ALTER TABLE usage_daily_rollups ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0');
     }
-    this.db.exec(
-      'CREATE INDEX IF NOT EXISTS usage_operations_run_idx ON usage_operations (run_id) WHERE run_id IS NOT NULL',
-    );
-    this.db.exec(
-      'CREATE INDEX IF NOT EXISTS usage_measurements_run_execution_idx ON usage_measurements (run_execution_id) WHERE run_execution_id IS NOT NULL',
-    );
+    // The pointers into the Work ledger (usage_operations.run_id,
+    // usage_measurements.run_execution_id) and their partial indexes are
+    // installed by whichever store gets here first — see installLedgerLinks.
+    // The tables above must already exist.
+    installLedgerLinks(this.db);
     const installedCatalogs = installReleasePriceCatalogs(this.db);
     for (const catalog of installedCatalogs) {
       this.appendUsageAudit({
@@ -938,69 +932,20 @@ export class UsageStoreLogic {
   }
 }
 
-export class SqliteUsageStore implements UsageStore {
-  private readonly db: NodeStateDb;
-  private readonly logic: UsageStoreLogic;
+export interface SqliteUsageStore extends UsageStore {
+  close(): void;
+}
 
+export class SqliteUsageStore {
   constructor(path: string = resolveStateDbPath(), now: () => number = Date.now) {
-    this.db = openStateDb(path);
-    this.logic = new UsageStoreLogic(this.db, now);
-  }
-
-  close(): void {
-    this.db.close();
-  }
-
-  async admitOperation(input: AdmitUsageOperationInput): Promise<UsageOperation> {
-    return this.logic.admitOperation(input);
-  }
-
-  async recordTerminal(input: RecordUsageTerminalInput): Promise<UsageOperationDetail> {
-    return this.logic.recordTerminal(input);
-  }
-
-  async getOperation(operationId: string): Promise<UsageOperationDetail | undefined> {
-    return this.logic.getOperation(operationId);
-  }
-
-  async getOperationByRunId(runId: string): Promise<UsageOperationDetail | undefined> {
-    return this.logic.getOperationByRunId(runId);
-  }
-
-  async listOperations(query: UsageQuery): Promise<UsageOperationPage> {
-    return this.logic.listOperations(query);
-  }
-
-  async summarize(query: UsageQuery): Promise<UsageSummary> {
-    return this.logic.summarize(query);
-  }
-
-  async putCredential(input: PutModelCredentialInput): Promise<ModelCredentialRecord> {
-    return this.logic.putCredential(input);
-  }
-
-  async retireCredential(
-    credentialRefId: string,
-    version: number,
-    retiredAt: number,
-  ): Promise<ModelCredentialRecord> {
-    return this.logic.retireCredential(credentialRefId, version, retiredAt);
-  }
-
-  async listCredentials(providerId?: string): Promise<ModelCredentialRecord[]> {
-    return this.logic.listCredentials(providerId);
-  }
-
-  async cleanupRetention(at?: number): Promise<UsageRetentionResult> {
-    return this.logic.cleanupRetention(at);
-  }
-
-  async getRetentionStatus(): Promise<UsageRetentionStatus> {
-    return this.logic.getRetentionStatus();
-  }
-
-  async listUsageAuditEvents(limit?: number): Promise<AuditEvent[]> {
-    return this.logic.listUsageAuditEvents(limit);
+    const db = openStateDb(path);
+    // The Proxy facade drops the `implements` compile check, so this typed
+    // binding is the conformance assertion that keeps it: a logic method that
+    // stops matching UsageStore fails typecheck here.
+    const _conforms: UsageStore = promisify(new UsageStoreLogic(db, now), {
+      close: () => db.close(),
+    });
+    return _conforms as unknown as SqliteUsageStore;
   }
 }
 

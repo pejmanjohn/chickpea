@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 
 import { AuditStoreLogic } from '../audit/store.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
-import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
+import { promisify } from '../state/async-facade.ts';
+import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import type { SqlParam, StateDb } from '../state/state-db.ts';
 import { isOpaqueMemoryId, ownerMemoryStoreId } from './ids.ts';
 import {
@@ -2799,255 +2800,25 @@ export class MemoryStoreLogic {
 }
 
 /** Node backend: the target-neutral logic over node:sqlite, async-wrapped. */
-export class SqliteMemoryStateStore implements MemoryStateStore {
-  private readonly db: NodeStateDb;
-  private readonly logic: MemoryStoreLogic;
+export interface SqliteMemoryStateStore extends MemoryStateStore {
+  close(): void;
+}
 
+export class SqliteMemoryStateStore {
   constructor(path: string = resolveStateDbPath(), now: () => number = Date.now) {
-    this.db = openStateDb(path);
+    const db = openStateDb(path);
     // SQLite otherwise may retain overwritten memory text on freelist pages.
     // Keep this Node-only: Durable Object SQL deliberately exposes a smaller
     // portable statement surface and must not depend on PRAGMA support.
-    this.db.exec('PRAGMA secure_delete = ON');
-    this.logic = new MemoryStoreLogic(this.db, now);
+    db.exec('PRAGMA secure_delete = ON');
+    // The Proxy facade drops the `implements` compile check, so this typed
+    // binding is the conformance assertion that keeps it: a logic method that
+    // stops matching MemoryStateStore fails typecheck here.
+    const _conforms: MemoryStateStore = promisify(new MemoryStoreLogic(db, now), {
+      close: () => db.close(),
+    });
+    return _conforms as unknown as SqliteMemoryStateStore;
   }
-
-  close(): void {
-    this.db.close();
-  }
-
-  async ensureOwner(owner: MemoryOwnerRef): Promise<MemoryOwnerDescriptor> {
-    return this.logic.ensureOwner(owner);
-  }
-
-  async getOwner(storeId: string): Promise<MemoryOwnerDescriptor | undefined> {
-    return this.logic.getOwner(storeId);
-  }
-
-  async listOwners(workspaceId?: string): Promise<MemoryOwnerDescriptor[]> {
-    return this.logic.listOwners(workspaceId);
-  }
-
-  async createOwnerEntry(input: CreateOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
-    return this.logic.createOwnerEntry(input);
-  }
-
-  async getOwnerEntry(entryId: string): Promise<OwnerMemoryEntry | undefined> {
-    return this.logic.getOwnerEntry(entryId);
-  }
-
-  async updateOwnerEntry(input: UpdateOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
-    return this.logic.updateOwnerEntry(input);
-  }
-
-  async forgetOwnerEntry(input: ForgetOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
-    return this.logic.forgetOwnerEntry(input);
-  }
-
-  async transitionOwnerEntry(input: TransitionOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
-    return this.logic.transitionOwnerEntry(input);
-  }
-
-  async mergeOwnerEntries(input: MergeOwnerMemoryEntriesInput): Promise<OwnerMemoryEntry> {
-    return this.logic.mergeOwnerEntries(input);
-  }
-
-  async recordOwnerReview(input: RecordOwnerMemoryReviewInput): Promise<void> {
-    this.logic.recordOwnerReview(input);
-  }
-
-  async createOwnerForgetChallenge(input: CreateForgetChallengeInput): Promise<void> {
-    this.logic.createOwnerForgetChallenge(input);
-  }
-
-  async createOwnerWriteChallenge(input: CreateOwnerMemoryWriteChallengeInput): Promise<void> {
-    this.logic.createOwnerWriteChallenge(input);
-  }
-
-  async getOwnerWriteChallenge(tokenHash: string, slackUserId: string): Promise<OwnerMemoryWriteChallenge | undefined> {
-    return this.logic.getOwnerWriteChallenge(tokenHash, slackUserId);
-  }
-
-  async consumeOwnerWriteChallenge(tokenHash: string, slackUserId: string, consumedAt: number): Promise<OwnerMemoryWriteChallenge | undefined> {
-    return this.logic.consumeOwnerWriteChallenge(tokenHash, slackUserId, consumedAt);
-  }
-
-  async replayOwnerImport(input: ReplayOwnerMemoryImportInput): Promise<OwnerMemoryEntry[] | undefined> {
-    return this.logic.replayOwnerImport(input);
-  }
-
-  async applyOwnerImport(input: ApplyOwnerMemoryImportInput): Promise<OwnerMemoryEntry[]> {
-    return this.logic.applyOwnerImport(input);
-  }
-
-  async listOwnerEntries(
-    owner: MemoryOwnerRef,
-    filter?: { readableAt?: number },
-  ): Promise<OwnerMemoryEntry[]> {
-    return this.logic.listOwnerEntries(owner, filter);
-  }
-
-  async listOwnerRevisions(entryId: string): Promise<MemoryRevision[]> {
-    return this.logic.listOwnerRevisions(entryId);
-  }
-
-  async resetOwner(
-    owner: MemoryOwnerRef,
-    input: OwnerMemoryLifecycleInput,
-  ): Promise<MemoryOwnerDescriptor> {
-    return this.logic.resetOwner(owner, input);
-  }
-
-  async sealOwner(
-    owner: MemoryOwnerRef,
-    input: SealMemoryOwnerInput,
-  ): Promise<MemoryOwnerDescriptor> {
-    return this.logic.sealOwner(owner, input);
-  }
-
-  async ensurePublicStore(workspaceId: string): Promise<MemoryStoreDescriptor> {
-    return this.logic.ensurePublicStore(workspaceId);
-  }
-
-  async ensurePrivateStore(
-    workspaceId: string,
-    channelId: string,
-    generation: number,
-  ): Promise<MemoryStoreDescriptor> {
-    return this.logic.ensurePrivateStore(workspaceId, channelId, generation);
-  }
-
-  async getStore(storeId: string): Promise<MemoryStoreDescriptor | undefined> {
-    return this.logic.getStore(storeId);
-  }
-
-  async listStores(workspaceId?: string): Promise<MemoryStoreDescriptor[]> {
-    return this.logic.listStores(workspaceId);
-  }
-
-  async createEntry(input: CreateMemoryEntryInput): Promise<MemoryEntry> {
-    return this.logic.createEntry(input);
-  }
-
-  async getEntry(entryId: string): Promise<MemoryEntry | undefined> {
-    return this.logic.getEntry(entryId);
-  }
-
-  async listEntries(filter: MemoryEntryFilter = {}): Promise<MemoryEntry[]> {
-    return this.logic.listEntries(filter);
-  }
-
-  async listEntryScopeSummaries(workspaceId?: string): Promise<MemoryEntryScopeSummary[]> {
-    return this.logic.listEntryScopeSummaries(workspaceId);
-  }
-
-  async replayImport(input: ReplayMemoryImportInput): Promise<MemoryEntry[] | undefined> {
-    return this.logic.replayImport(input);
-  }
-
-  async applyImport(input: ApplyMemoryImportInput): Promise<MemoryEntry[]> {
-    return this.logic.applyImport(input);
-  }
-
-  async recordAdminView(input: RecordMemoryAdminViewInput): Promise<void> {
-    this.logic.recordAdminView(input);
-  }
-
-  async recordAdminEvent(input: RecordMemoryAdminEventInput): Promise<void> {
-    this.logic.recordAdminEvent(input);
-  }
-
-  async updateEntry(input: UpdateMemoryEntryInput): Promise<MemoryEntry> {
-    return this.logic.updateEntry(input);
-  }
-
-  async forgetEntry(input: ForgetMemoryEntryInput): Promise<MemoryEntry> {
-    return this.logic.forgetEntry(input);
-  }
-
-  async transitionEntry(input: TransitionMemoryEntryInput): Promise<MemoryEntry> {
-    return this.logic.transitionEntry(input);
-  }
-
-  async mergeEntries(input: MergeMemoryEntriesInput): Promise<MemoryEntry> {
-    return this.logic.mergeEntries(input);
-  }
-
-  async recordReview(input: RecordMemoryReviewInput): Promise<void> {
-    this.logic.recordReview(input);
-  }
-
-  async createForgetChallenge(input: CreateForgetChallengeInput): Promise<void> {
-    this.logic.createForgetChallenge(input);
-  }
-
-  async getForgetChallenge(
-    tokenHash: string,
-    actorId: string,
-  ): Promise<MemoryForgetChallenge | undefined> {
-    return this.logic.getForgetChallenge(tokenHash, actorId);
-  }
-
-  async listRevisions(entryId: string): Promise<MemoryRevision[]> {
-    return this.logic.listRevisions(entryId);
-  }
-
-  async listAuditEvents(filter: AuditEventFilter = {}): Promise<AuditEvent[]> {
-    return this.logic.listAuditEvents(filter);
-  }
-
-  async getMutationCounts(
-    workspaceId: string,
-    channelId: string,
-    actorId: string,
-  ): Promise<MemoryMutationCounts> {
-    return this.logic.getMutationCounts(workspaceId, channelId, actorId);
-  }
-
-  async resolveConversationContext(
-    input: ResolveMemoryConversationContextInput,
-  ): Promise<MemoryConversationContext> {
-    return this.logic.resolveConversationContext(input);
-  }
-
-  async confirmConversationContext(
-    input: ConfirmMemoryConversationContextInput,
-  ): Promise<boolean> {
-    return this.logic.confirmConversationContext(input);
-  }
-
-  async observeChannelScope(
-    input: ObserveMemoryChannelScopeInput,
-  ): Promise<MemoryChannelScopeState> {
-    return this.logic.observeChannelScope(input);
-  }
-
-  async retainChannelScope(
-    input: RetainMemoryChannelScopeInput,
-  ): Promise<MemoryChannelScopeState> {
-    return this.logic.retainChannelScope(input);
-  }
-
-  async getChannelScope(
-    workspaceId: string,
-    channelId: string,
-  ): Promise<MemoryChannelScopeState | undefined> {
-    return this.logic.getChannelScope(workspaceId, channelId);
-  }
-
-  async listChannelScopes(workspaceId?: string): Promise<MemoryChannelScopeState[]> {
-    return this.logic.listChannelScopes(workspaceId);
-  }
-
-  async cleanupRetention(): Promise<{
-    actorIdsCleared: number;
-    rateWindowsDeleted: number;
-    contextsDeleted: number;
-    forgetChallengesDeleted: number;
-  }> {
-    return this.logic.cleanupRetention();
-  }
-
 }
 
 export function publicStoreId(workspaceId: string): string {

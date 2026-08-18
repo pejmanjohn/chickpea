@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import { AuditStoreLogic } from '../audit/store.ts';
 import type { AuditEvent } from '../audit/types.ts';
-import { openStateDb, type NodeStateDb } from '../state/node-state-db.ts';
+import { promisify } from '../state/async-facade.ts';
+import { openStateDb } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { identityError } from './errors.ts';
 import { installIdentityMigrations } from './migrations.ts';
@@ -2046,117 +2047,21 @@ export class IdentityStoreLogic {
   }
 }
 
-export class SqliteIdentityStore implements IdentityStore {
-  private readonly db: NodeStateDb;
-  private readonly logic: IdentityStoreLogic;
+export interface SqliteIdentityStore extends IdentityStore {
+  close(): void;
+}
 
+export class SqliteIdentityStore {
   constructor(path: string, options: IdentityStoreOptions = {}) {
-    this.db = openStateDb(path);
-    this.logic = new IdentityStoreLogic(this.db, options);
+    const db = openStateDb(path);
+    // The Proxy facade drops the `implements` compile check, so this typed
+    // binding is the conformance assertion that keeps it: a logic method that
+    // stops matching IdentityStore fails typecheck here.
+    const _conforms: IdentityStore = promisify(new IdentityStoreLogic(db, options), {
+      close: () => db.close(),
+    });
+    return _conforms as unknown as SqliteIdentityStore;
   }
-
-  async ensureAuthControl(input: EnsureAuthControlInput = {}) { return this.logic.ensureAuthControl(input); }
-  async getAuthControl(installationId?: string) { return this.logic.getAuthControl(installationId); }
-  async updateAuthControl(input: UpdateAuthControlInput) { return this.logic.updateAuthControl(input); }
-  async createAuthOperation(input: CreateAuthOperationInput) { return this.logic.createAuthOperation(input); }
-  async reservePendingAuthOperation(input: CreateAuthOperationInput) {
-    return this.logic.reservePendingAuthOperation(input);
-  }
-  async getAuthOperation(operationId: string) { return this.logic.getAuthOperation(operationId); }
-  async findAuthOperation(kind: AuthOperationKind, capabilityHash: string) {
-    return this.logic.findAuthOperation(kind, capabilityHash);
-  }
-  async listAuthOperations(kind?: AuthOperationKind, organizationId?: string) {
-    return this.logic.listAuthOperations(kind, organizationId);
-  }
-  async advanceAuthOperation(input: AdvanceAuthOperationInput) {
-    return this.logic.advanceAuthOperation(input);
-  }
-  async consumeAuthOperation(input: ConsumeAuthOperationInput) {
-    return this.logic.consumeAuthOperation(input);
-  }
-  async completePasswordSetup(input: CompletePasswordSetupInput) {
-    return this.logic.completePasswordSetup(input);
-  }
-  async revokeAuthOperation(operationId: string) { return this.logic.revokeAuthOperation(operationId); }
-  async getMembershipAccessOverlay(membershipId: string) {
-    return this.logic.getMembershipAccessOverlay(membershipId);
-  }
-  async setMembershipAccessOverlay(input: SetMembershipAccessOverlayInput) {
-    return this.logic.setMembershipAccessOverlay(input);
-  }
-  async ensureOrganization(input: EnsureOrganizationInput) { return this.logic.ensureOrganization(input); }
-  async getOrganization() { return this.logic.getOrganization(); }
-  async createOwnerClaim(input: CreateOwnerClaimInput) { return this.logic.createOwnerClaim(input); }
-  async getOwnerClaim() { return this.logic.getOwnerClaim(); }
-  async claimOwner(input: ClaimOwnerInput) { return this.logic.claimOwner(input); }
-  async bootstrapTokenOwner(input: BootstrapTokenOwnerInput) {
-    return this.logic.bootstrapTokenOwner(input);
-  }
-  async activateAccessOwner(input: ActivateAccessOwnerInput) { return this.logic.activateAccessOwner(input); }
-  async replaceAccessOwnerBinding(input: ReplaceAccessOwnerBindingInput) {
-    return this.logic.replaceAccessOwnerBinding(input);
-  }
-  async resolveExternalIdentity(provider: string, issuer: string, subject: string, organizationId?: string) {
-    return this.logic.resolveExternalIdentity(provider, issuer, subject, organizationId);
-  }
-  async listExternalIdentities() { return this.logic.listExternalIdentities(); }
-  async resolveActorExternalIdentity(provider: 'slack', issuer: string, subject: string) {
-    return this.logic.resolveActorExternalIdentity(provider, issuer, subject);
-  }
-  async bindActorExternalIdentity(input: BindActorExternalIdentityInput) {
-    return this.logic.bindActorExternalIdentity(input);
-  }
-  async createActorIdentityBindingHandoff(input: ActorIdentityBindingHandoff) { this.logic.createActorIdentityBindingHandoff(input); }
-  async getActorIdentityBindingHandoff(tokenHash: string) { return this.logic.getActorIdentityBindingHandoff(tokenHash); }
-  async consumeActorIdentityBindingHandoff(tokenHash: string, consumedAt: number) { return this.logic.consumeActorIdentityBindingHandoff(tokenHash, consumedAt); }
-  async listMemberships() { return this.logic.listMemberships(); }
-  async getUser(userId: string) { return this.logic.getUser(userId); }
-  async findUserByEmail(email: string) { return this.logic.findUserByEmail(email); }
-  async getMembership(membershipId: string) { return this.logic.getMembership(membershipId); }
-  async getMembershipForUser(userId: string, organizationId?: string) {
-    return this.logic.getMembershipForUser(userId, organizationId);
-  }
-  async updateMembership(input: UpdateMembershipInput) { return this.logic.updateMembership(input); }
-  async createInvitation(input: CreateInvitationInput) { return this.logic.createInvitation(input); }
-  async resendInvitation(input: ResendInvitationInput) { return this.logic.resendInvitation(input); }
-  async revokeInvitation(invitationId: string) { return this.logic.revokeInvitation(invitationId); }
-  async consumeInvitation(input: ConsumeInvitationInput) { return this.logic.consumeInvitation(input); }
-  async listInvitations() { return this.logic.listInvitations(); }
-  async createPersonalToken(input: CreatePersonalTokenRecordInput) { return this.logic.createPersonalToken(input); }
-  async rotatePersonalToken(input: CreatePersonalTokenRecordInput) {
-    return this.logic.rotatePersonalToken(input);
-  }
-  async findPersonalTokens(prefix: string) { return this.logic.findPersonalTokens(prefix); }
-  async getPersonalToken(tokenId: string) { return this.logic.getPersonalToken(tokenId); }
-  async revokePersonalToken(tokenId: string) { return this.logic.revokePersonalToken(tokenId); }
-  async touchPersonalToken(tokenId: string) { return this.logic.touchPersonalToken(tokenId); }
-  async createBrowserSession(input: CreateBrowserSessionRecordInput) { return this.logic.createBrowserSession(input); }
-  async findBrowserSessions(prefix: string) { return this.logic.findBrowserSessions(prefix); }
-  async revokeBrowserSession(sessionId: string) { return this.logic.revokeBrowserSession(sessionId); }
-  async configureAuthProvider(input: ConfigureAuthProviderInput) { return this.logic.configureAuthProvider(input); }
-  async getAuthProviderConfig(kind: string) { return this.logic.getAuthProviderConfig(kind); }
-  async updateAuthProviderAudience(kind: string, audience: string, actorMembershipId?: string) {
-    return this.logic.updateAuthProviderAudience(kind, audience, actorMembershipId);
-  }
-  async updateOrganizationAuth(input: UpdateOrganizationAuthInput) {
-    return this.logic.updateOrganizationAuth(input);
-  }
-  async getAuthRateLimit(bucket: string, keyHash: string) {
-    return this.logic.getAuthRateLimit(bucket, keyHash);
-  }
-  async recordAuthRateFailure(bucket: string, keyHash: string, windowStart: number) {
-    return this.logic.recordAuthRateFailure(bucket, keyHash, windowStart);
-  }
-  async clearAuthRateLimit(bucket: string, keyHash: string) {
-    this.logic.clearAuthRateLimit(bucket, keyHash);
-  }
-  async recordAuthAudit(input: RecordIdentityAuthAuditInput) {
-    this.logic.recordAuthAudit(input);
-  }
-  async exportSummary() { return this.logic.exportSummary(); }
-  async listAuditEvents(limit?: number) { return this.logic.listAuditEvents(limit); }
-  close(): void { this.db.close(); }
 }
 
 function normalizeEmail(value: string): string {

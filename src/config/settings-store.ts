@@ -1,4 +1,5 @@
-import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
+import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
+import { promisify } from '../state/async-facade.ts';
 import type { StateDb } from '../state/state-db.ts';
 
 /**
@@ -140,41 +141,20 @@ export class SettingsStoreLogic {
 }
 
 /** Node backend: the target-neutral logic over `node:sqlite`, async-wrapped. */
-export class SqliteSettingsStore implements SettingsStore {
-  private readonly db: NodeStateDb;
-  private readonly logic: SettingsStoreLogic;
+export interface SqliteSettingsStore extends SettingsStore {
+  close(): void;
+}
 
+export class SqliteSettingsStore {
   constructor(path: string = resolveStateDbPath(), now: () => number = Date.now) {
-    this.db = openStateDb(path);
-    this.logic = new SettingsStoreLogic(this.db, now);
-  }
-
-  close(): void {
-    this.db.close();
-  }
-
-  async getSetting(key: string): Promise<string | undefined> {
-    return this.logic.getSetting(key);
-  }
-
-  async getSettings(keys: readonly string[]): Promise<(string | undefined)[]> {
-    return this.logic.getSettings(keys);
-  }
-
-  async setSetting(key: string, value: string): Promise<void> {
-    this.logic.setSetting(key, value);
-  }
-
-  async deleteSetting(key: string): Promise<void> {
-    this.logic.deleteSetting(key);
-  }
-
-  async applySettingsPatch(patch: SettingsPatch): Promise<boolean> {
-    return this.logic.applySettingsPatch(patch);
-  }
-
-  async mergeSettingStringSet(key: string, values: readonly string[]): Promise<string[]> {
-    return this.logic.mergeSettingStringSet(key, values);
+    const db = openStateDb(path);
+    // The Proxy facade drops the `implements` compile check, so this typed
+    // binding is the conformance assertion that keeps it: a logic method that
+    // stops matching SettingsStore fails typecheck here.
+    const _conforms: SettingsStore = promisify(new SettingsStoreLogic(db, now), {
+      close: () => db.close(),
+    });
+    return _conforms as unknown as SqliteSettingsStore;
   }
 }
 
