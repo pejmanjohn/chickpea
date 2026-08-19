@@ -5,6 +5,7 @@ import {
   type AgentProps,
   type AgentRuntimeConfig,
   type SandboxFactory,
+  useDataWriter,
   useDelivery,
   useInitialData,
   useInstruction,
@@ -119,6 +120,8 @@ import { createWorkspaceArtifactTool } from '../sandbox/artifact-tool.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import {
+  AUTONOMOUS_MEMORY_RESULT_DATA_NAME,
+  AutonomousMemoryResultSchema,
   autonomousMemoryInstruction,
   createAutonomousAgentMemoryTool,
   saveAutonomousMemory,
@@ -918,12 +921,16 @@ export function useRuntimePlanAgent(
   }
   if (options.autonomousMemoryRequest) {
     const memoryTarget = plan.conversation.surface === 'direct_message' ? 'agent' : 'channel';
+    const finishDeniedMemory = useDataWriter(AUTONOMOUS_MEMORY_RESULT_DATA_NAME, {
+      schema: AutonomousMemoryResultSchema,
+    });
     useInstruction(autonomousMemoryInstruction(memoryTarget));
-    useTool(createAutonomousAgentMemoryTool(memoryTarget, (input) =>
-      saveRuntimePlanAutonomousMemory(plan, options.autonomousMemoryRequest!, input).then(({ entry }) => ({
-        slug: entry.slug,
-        version: entry.version,
-      }))
+    useTool(createAutonomousAgentMemoryTool(
+      memoryTarget,
+      (input) =>
+        saveRuntimePlanAutonomousMemory(plan, options.autonomousMemoryRequest!, input)
+          .then(({ entry }) => ({ slug: entry.slug, version: entry.version })),
+      { finishDenied: finishDeniedMemory },
     ));
   }
   useInstruction('Never invent facts or claim access to context and tools you do not have.');
