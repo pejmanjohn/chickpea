@@ -525,6 +525,36 @@ test('the exact schema gate ignores only Cloudflare D1 internal KV metadata', (c
   );
 });
 
+test('the exact schema gate accepts Cloudflare D1 parenthesis formatting', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const database = new DatabaseSync(':memory:');
+  database.exec(readFileSync(AUTH_MIGRATION, 'utf8'));
+  const results = database.prepare(
+    "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' " +
+      "AND name NOT IN ('d1_migrations','_cf_KV') ORDER BY type,name",
+  ).all().map((row) => {
+    if (row.type !== 'table' || typeof row.sql !== 'string') return row;
+    return {
+      ...row,
+      sql: row.sql.replace(/\((?=\")/, '( ').replace(/\)$/, ' )'),
+    };
+  });
+  database.close();
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_AUTH_SCHEMA: JSON.stringify([{ success: true, results }]),
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    commands(harness.logPath).some((command) => command.startsWith('wrangler:["deploy"')),
+    true,
+  );
+});
+
 test('an unreadable remote AUTH_DB schema blocks Worker upload', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));

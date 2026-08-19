@@ -788,7 +788,16 @@ function normalizeAuthSchemaRows(rows) {
       type: row.type,
       name: row.name,
       table: row.tbl_name,
-      sql: row.sql.replace(/\s+/g, ' ').trim().toLowerCase(),
+      // Cloudflare D1 may serialize a table's outer parentheses as `( ... )`
+      // while Node SQLite preserves the authored `(...)`. Both forms describe
+      // the same schema, so normalize only that insignificant whitespace while
+      // retaining every identifier, column, constraint, and index definition.
+      sql: row.sql
+        .replace(/\s+/g, ' ')
+        .replace(/\(\s+/g, '(')
+        .replace(/\s+\)/g, ')')
+        .trim()
+        .toLowerCase(),
     };
   });
 }
