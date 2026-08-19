@@ -2,6 +2,10 @@ import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
 import { CONNECTOR_PRESETS, GOOGLE_WORKSPACE_SERVICE_PRESETS } from '../config/presets.ts';
 import { GOOGLE_WORKSPACE_SCOPE_OPTIONS } from '../config/api-oauth-policy.ts';
+import {
+  SUGGESTED_SKILL_CATEGORIES,
+  SUGGESTED_SKILLS,
+} from '../config/suggested-skills.ts';
 import { AUTH_BRAND_HTML } from '../auth/brand.ts';
 import type { SlackSetupTransaction } from '../identity/types.ts';
 import type { SlackAppManifest } from '../slack/identity-manifest.ts';
@@ -989,8 +993,83 @@ details[open].advanced summary::before {
 .skill-form .input, .skill-form .textarea { background: var(--bg); }
 .skill-form-actions { align-items: center; display: flex; gap: 8px; justify-content: flex-end; }
 .skill-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.skill-build {
+  align-items: center;
+  background: var(--well);
+  border-radius: 15px;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 14px 16px;
+}
+.skill-build-copy { color: var(--text-2); font-size: .75rem; line-height: 1.45; }
+.skill-build-copy strong { color: var(--text); display: block; font-size: .8125rem; margin-bottom: 2px; }
+.configured-skills { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.configured-skills > h3 { color: var(--text); font-size: .8125rem; margin: 0 3px; }
+.suggested-skills { display: flex; flex-direction: column; margin-top: 10px; }
+.suggested-skills-head { align-items: flex-end; display: flex; gap: 14px; justify-content: space-between; margin-bottom: 12px; }
+.suggested-skills-head h3 { color: var(--text); font-size: 1rem; letter-spacing: -.02em; margin: 0; }
+.suggested-skills-head p { color: var(--text-3); font-size: .75rem; line-height: 1.45; margin: 3px 0 0; }
+.suggested-on-count { color: var(--ok); font-size: .6875rem; font-weight: 700; white-space: nowrap; }
+.suggested-category-nav {
+  border-bottom: 1px solid var(--line-strong);
+  display: flex;
+  gap: 3px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.suggested-category-nav::-webkit-scrollbar { display: none; }
+.suggested-category {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  flex: none;
+  font: inherit;
+  font-size: .6875rem;
+  font-weight: 700;
+  padding: 8px 10px 9px;
+  white-space: nowrap;
+}
+.suggested-category:hover { color: var(--text); }
+.suggested-category[aria-selected="true"] { border-bottom-color: var(--ember); color: var(--text); }
+.suggested-category:focus-visible { border-radius: 7px 7px 0 0; outline: 2px solid var(--ember-press); outline-offset: -2px; }
+.suggested-category-count { color: var(--text-3); font-family: var(--mono); font-size: .5625rem; margin-left: 4px; }
+.suggested-catalog-head { align-items: baseline; display: flex; gap: 8px; margin: 10px 3px 6px; }
+.suggested-catalog-head strong { color: var(--text); font-size: .8125rem; }
+.suggested-catalog-summary { color: var(--text-3); font-size: .625rem; }
+.suggested-skill-list { border-top: 1px solid var(--line-strong); display: flex; flex-direction: column; }
+.suggested-skill-row {
+  align-items: center;
+  border-bottom: 1px solid var(--line-strong);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 9px 4px;
+}
+.suggested-skill-row.is-on { background: var(--ok-tint); border-radius: 12px; margin: 2px 0; padding: 8px 10px; }
+.suggested-skill-copy { min-width: 0; }
+.suggested-skill-title { align-items: baseline; display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 3px; }
+.suggested-skill-title strong { color: var(--text); font-size: .8125rem; }
+.suggested-skill-slug { color: var(--text-3); font-family: var(--mono); font-size: .625rem; }
+.suggested-skill-byline { color: var(--text-3); font-size: .625rem; }
+.suggested-skill-byline:hover { color: var(--text); }
+.suggested-skill-byline:focus-visible { border-radius: 3px; outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.suggested-skill-state { color: var(--ok); font-size: .625rem; font-weight: 700; margin-left: auto; }
+.suggested-skill-state.is-blocked { color: var(--text-3); }
+.suggested-skill-description { color: var(--text-2); font-size: .6875rem; line-height: 1.45; }
+.suggested-disclosure { align-items: flex-start; color: var(--text-3); display: flex; font-size: .625rem; gap: 7px; line-height: 1.45; margin: 14px 2px 0; }
+.suggested-disclosure .ic { flex: none; margin-top: 1px; }
 @media (max-width: 720px) {
   .skill-row { align-items: stretch; flex-direction: column; }
+  .configured-skills .skill-row {
+    align-items: center;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+  }
+  .skill-build { align-items: stretch; flex-direction: column; }
+  .suggested-skills-head { align-items: flex-start; flex-direction: column; gap: 4px; }
 }
 
 /* ---- import skills from a URL ---- */
@@ -2433,6 +2512,15 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   var CONNECTOR_PRESETS = ${JSON.stringify(CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = ${JSON.stringify(GOOGLE_WORKSPACE_SERVICE_PRESETS).replace(/</g, '\\u003c')};
   var CONNECTOR_LOGOS = ${JSON.stringify(CONNECTOR_LOGOS).replace(/</g, '\\u003c')};
+  var SUGGESTED_SKILL_CATEGORIES = ${JSON.stringify(SUGGESTED_SKILL_CATEGORIES).replace(/</g, '\\u003c')};
+  var SUGGESTED_SKILLS = ${JSON.stringify(SUGGESTED_SKILLS).replace(/</g, '\\u003c')};
+  var SUGGESTED_SKILL_CATEGORY_COUNTS = {};
+  SUGGESTED_SKILLS.forEach(function (skill) {
+    if (skill.featured) SUGGESTED_SKILL_CATEGORY_COUNTS.featured = (SUGGESTED_SKILL_CATEGORY_COUNTS.featured || 0) + 1;
+    skill.categories.forEach(function (category) {
+      SUGGESTED_SKILL_CATEGORY_COUNTS[category] = (SUGGESTED_SKILL_CATEGORY_COUNTS[category] || 0) + 1;
+    });
+  });
   var API_CONNECTION_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
   var GOOGLE_WORKSPACE_SCOPES = ${JSON.stringify(GOOGLE_WORKSPACE_SCOPE_OPTIONS)};
   var WORKSPACE_DEFAULT_SLACK_IDENTITY_ID = "slack_identity_default";
@@ -2530,6 +2618,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // ([hidden]) across switches, so no draft state lives here — just which
     // panel is visible.
     profileTab: "instructions",
+    suggestedSkillCategory: "featured",
     // Inline title rename on the profile edit screen. null when closed; when
     // open it carries { prev } so Escape (or an emptied field) can revert.
     profileRenaming: null,
@@ -2878,6 +2967,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       check: "M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 1 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z",
       "x-mark": "M2.22 2.22a.75.75 0 0 1 1.06 0L8 6.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L9.06 8l4.72 4.72a.75.75 0 1 1-1.06 1.06L8 9.06l-4.72 4.72a.75.75 0 0 1-1.06-1.06L6.94 8 2.22 3.28a.75.75 0 0 1 0-1.06Z",
       plus: "M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z",
+      copy: "M5.25 1.5A2.25 2.25 0 0 0 3 3.75v6.5a.75.75 0 0 0 1.5 0v-6.5c0-.414.336-.75.75-.75h4.5a.75.75 0 0 0 0-1.5h-4.5Zm1 3A2.25 2.25 0 0 0 4 6.75v5.5a2.25 2.25 0 0 0 2.25 2.25h4.5A2.25 2.25 0 0 0 13 12.25v-5.5a2.25 2.25 0 0 0-2.25-2.25h-4.5Zm-.75 2.25c0-.414.336-.75.75-.75h4.5c.414 0 .75.336.75.75v5.5a.75.75 0 0 1-.75.75h-4.5a.75.75 0 0 1-.75-.75v-5.5Z",
       pencil: "M13.488 2.513a1.75 1.75 0 0 0-2.475 0L6.75 6.774a2.75 2.75 0 0 0-.596.892l-.848 2.047a.75.75 0 0 0 .98.98l2.047-.848a2.75 2.75 0 0 0 .892-.596l4.263-4.262a1.75 1.75 0 0 0 0-2.474Z",
       "lock-closed": "M8 1a3.5 3.5 0 0 0-3.5 3.5V7A1.5 1.5 0 0 0 3 8.5v5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 11.5 7V4.5A3.5 3.5 0 0 0 8 1Zm2 6V4.5a2 2 0 1 0-4 0V7h4Z",
       repository: "M3 1.5A1.5 1.5 0 0 0 1.5 3v9.25A2.25 2.25 0 0 0 3.75 14.5H14a.75.75 0 0 0 .75-.75V3A1.5 1.5 0 0 0 13.25 1.5H3Zm0 1.5h10.25v8.5H3.75c-.263 0-.516.045-.75.128V3Zm.75 2.25A.75.75 0 0 1 6.5 4.5h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1-.75-.75Z",
@@ -2925,6 +3015,18 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         }
         return body;
       });
+    });
+  }
+
+  function suggestedSkillIndex(skills, suggestion) {
+    return skills.findIndex(function (skill) {
+      return skill.suggestedSkillId === suggestion.id && skill.name === suggestion.name;
+    });
+  }
+
+  function isSuggestedSkillSnapshot(skill) {
+    return SUGGESTED_SKILLS.some(function (suggestion) {
+      return skill.suggestedSkillId === suggestion.id && skill.name === suggestion.name;
     });
   }
 
@@ -3053,6 +3155,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.disableConfirm = false;
     state.profileOverflowOpen = false;
     state.profileTab = "instructions";
+    state.suggestedSkillCategory = "featured";
     state.profileRenaming = null;
     state.attachPicker = false;
     state.attachChannelSelected = "";
@@ -5513,7 +5616,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var repositoryCount = enabledRepositoryGrants(draft).length;
     var tabs = [
       { id: "instructions", label: "Instructions", count: 0, icon: "pencil", tone: "instructions", description: "The role, priorities, and boundaries this Agent follows everywhere it works." },
-      { id: "skills", label: "Skills", count: (draft.skills || []).length, icon: "sparkle", tone: "skill", description: "Repeatable ways this Agent knows how to help." },
+      { id: "skills", label: "Skills", count: (draft.skills || []).filter(function (skill) { return skill.enabled; }).length, icon: "sparkle", tone: "skill", description: "Repeatable ways this Agent knows how to help." },
       { id: "connections", label: "Connectors", count: (draft.mcpServers || []).length + (draft.apiConnections || []).length, icon: "check", tone: "connector", description: "Apps and services this Agent can read from or act in." },
       { id: "repositories", label: "Repositories", count: repositoryCount, icon: "repository", tone: "repository", description: "Code and documentation this Agent can work with." },
       { id: "memory", label: "Memory", count: ownerMemoryFileCount(), icon: "robot", tone: "memory", description: "Durable context this Agent can use wherever it works." }
@@ -5550,6 +5653,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var editor = state.skillEditor;
     var imp = state.skillImport;
     var rows = skills.map(function (skill, index) {
+      if (isSuggestedSkillSnapshot(skill)) return "";
       // The row's editor opens in place; hide the row that is being edited so the
       // form takes its slot (a new-skill editor renders below the whole list).
       if (editor && editor.index === index) return skillEditorFormHtml(editor);
@@ -5560,7 +5664,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         '<button type="button" class="btn btn-ghost btn-sm" data-action="skill-edit" data-index="' + index + '">Edit</button>' +
         '<button type="button" class="x-btn" data-action="skill-remove" data-index="' + index + '" aria-label="Remove skill">&times;</button></div>';
     }).join("");
-    var list = rows ? '<div class="skill-list">' + rows + '</div>' : "";
+    var list = rows ? '<section class="configured-skills"><h3>Your skills</h3><div class="skill-list">' + rows + '</div></section>' : "";
     // A new-skill editor (index === null) renders below the list, not in a row.
     var newForm = (editor && (editor.index === null || editor.index === undefined)) ? '<div class="skill-list">' + skillEditorFormHtml(editor) + '</div>' : "";
     // The import panel takes the place of the action buttons while it is open,
@@ -5571,11 +5675,48 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       : '<div class="skill-actions"><button type="button" class="btn btn-soft btn-sm i-lead" data-action="skill-new">' +
         '<svg class="ic" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"/></svg>New skill</button>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="import-skills">Import from URL</button></div>';
-    var body = list + newForm + importPanel + addButtons;
-    if (!list && !newForm && !importPanel) {
-      body = '<div class="empty"><p class="field-label">No custom skills yet</p><p class="hint">Add one to extend what this Agent can do.</p></div>' + addButtons;
+    var build = '<div class="skill-build"><div class="skill-build-copy"><strong>Build your own</strong>Write a skill from scratch or import any public GitHub source.</div>' + addButtons + '</div>';
+
+    var activeCategory = SUGGESTED_SKILL_CATEGORIES.some(function (category) { return category.id === state.suggestedSkillCategory; })
+      ? state.suggestedSkillCategory
+      : "featured";
+    var category = SUGGESTED_SKILL_CATEGORIES.find(function (item) { return item.id === activeCategory; }) || SUGGESTED_SKILL_CATEGORIES[0];
+    function configuredSuggestion(suggestion) {
+      var index = suggestedSkillIndex(skills, suggestion);
+      return index >= 0 ? skills[index] : null;
     }
-    return body;
+    function visibleSuggestion(suggestion) {
+      return activeCategory === "featured" ? suggestion.featured : suggestion.categories.indexOf(activeCategory) >= 0;
+    }
+    var categoryNav = SUGGESTED_SKILL_CATEGORIES.map(function (item) {
+      var count = SUGGESTED_SKILL_CATEGORY_COUNTS[item.id] || 0;
+      return '<button type="button" class="suggested-category" role="tab" data-action="suggested-skill-category" data-category="' + item.id + '" aria-selected="' + (item.id === activeCategory ? "true" : "false") + '">' +
+        esc(item.label) + '<span class="suggested-category-count">' + count + '</span></button>';
+    }).join("");
+    var suggestedRows = SUGGESTED_SKILLS.filter(visibleSuggestion).map(function (suggestion) {
+      var configured = configuredSuggestion(suggestion);
+      var enabled = !!(configured && configured.enabled);
+      var nameInUse = !configured && skills.some(function (skill) { return skill.name === suggestion.name; });
+      return '<div class="suggested-skill-row' + (enabled ? ' is-on' : '') + '">' +
+        '<div class="suggested-skill-copy"><div class="suggested-skill-title"><strong>' + esc(suggestion.title) + '</strong>' +
+        '<span class="suggested-skill-slug">' + esc(suggestion.displaySlug) + '</span>' +
+        '<a class="suggested-skill-byline" href="' + esc(suggestion.sourceUrl) + '" target="_blank" rel="noopener noreferrer">by ' + esc(suggestion.source) + '</a>' +
+        (enabled ? '<span class="suggested-skill-state">On</span>' : (nameInUse ? '<span class="suggested-skill-state is-blocked">Name in use</span>' : '')) + '</div>' +
+        '<div class="suggested-skill-description">' + esc(suggestion.description) + '</div></div>' +
+        '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="suggested-skill-toggle" data-skill-id="' + suggestion.id + '" ' + (enabled ? "checked" : "") + (nameInUse ? " disabled" : "") + ' aria-label="' + (nameInUse ? esc(suggestion.title) + ' unavailable because the name is in use' : 'Enable ' + esc(suggestion.title)) + '"></span></div>';
+    }).join("");
+    var enabledSuggestions = SUGGESTED_SKILLS.filter(function (suggestion) {
+      var configured = configuredSuggestion(suggestion);
+      return !!(configured && configured.enabled);
+    }).length;
+    var suggested = '<section class="suggested-skills"><div class="suggested-skills-head"><div><h3>Suggested skills</h3>' +
+      '<p>Start with a focused set, or browse by the kind of work this Agent should help with.</p></div>' +
+      '<span class="suggested-on-count" aria-live="polite">' + enabledSuggestions + (enabledSuggestions === 1 ? ' skill on' : ' skills on') + '</span></div>' +
+      '<div class="suggested-category-nav" role="tablist" aria-label="Skill categories">' + categoryNav + '</div>' +
+      '<div class="suggested-catalog-head"><strong>' + esc(category.label) + '</strong><span class="suggested-catalog-summary">' + esc(category.id === "featured" ? (SUGGESTED_SKILL_CATEGORY_COUNTS.featured || 0) + " starting points from " + SUGGESTED_SKILLS.length + " available skills" : category.summary) + '</span></div>' +
+      '<div class="suggested-skill-list" role="tabpanel">' + suggestedRows + '</div>' +
+      '<p class="suggested-disclosure">' + icon("copy") + '<span>Turning a suggestion on copies its current instructions into this Agent as a snapshot. Turning it off removes that copied snapshot. No scripts, references, plugin behavior, or future updates come with it.</span></p></section>';
+    return build + newForm + importPanel + list + suggested;
   }
 
   /* ---- Connections (remote MCP servers) ---------------------------------- */
@@ -10460,7 +10601,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       // Deep-copy each skill so the inline editor never mutates the shared
       // state.agents entry — a discard/reopen must show the persisted values.
       skills: (agent.skills || []).map(function (skill) {
-        return { name: skill.name, description: skill.description, instructions: skill.instructions, enabled: skill.enabled };
+        var copy = { name: skill.name, description: skill.description, instructions: skill.instructions, enabled: skill.enabled };
+        if (skill.suggestedSkillId !== undefined) copy.suggestedSkillId = skill.suggestedSkillId;
+        return copy;
       }),
       // Deep-copy each connection (policy only — never a secret) so the inline
       // editor never mutates the shared state.agents entry.
@@ -11648,6 +11791,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // Custom-skills editor: open blank / open seeded / remove / save / cancel.
     // Each editor open captures the current field text off state.skillEditor so
     // the inline error survives a re-render (input handlers mirror keystrokes).
+    if (action === "suggested-skill-category") {
+      var suggestedCategory = target.getAttribute("data-category") || "featured";
+      if (suggestedCategory !== state.suggestedSkillCategory && SUGGESTED_SKILL_CATEGORIES.some(function (category) { return category.id === suggestedCategory; })) {
+        state.suggestedSkillCategory = suggestedCategory;
+        render();
+      }
+    }
     if (action === "skill-new") { collectProfileDraft(); state.skillEditor = { index: null, name: "", description: "", instructions: "", error: "" }; render(); }
     if (action === "skill-edit") {
       collectProfileDraft();
@@ -11671,7 +11821,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         else {
           var saved = { name: String(editor.name).trim(), description: String(editor.description).trim(), instructions: String(editor.instructions).trim(), enabled: true };
           if (editor.index === null || editor.index === undefined) { saved.enabled = true; skills.push(saved); }
-          else { saved.enabled = skills[editor.index] ? skills[editor.index].enabled : true; skills[editor.index] = saved; }
+          else {
+            var replaced = skills[editor.index];
+            saved.enabled = replaced ? replaced.enabled : true;
+            if (replaced && replaced.suggestedSkillId !== undefined) saved.suggestedSkillId = replaced.suggestedSkillId;
+            skills[editor.index] = saved;
+          }
           state.profileDraft.skills = skills;
           state.skillEditor = null;
           markProfileDirty();
@@ -12246,6 +12401,44 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       var toggleIndex = Number(target.getAttribute("data-index"));
       var toggleSkills = state.profileDraft.skills || [];
       if (toggleSkills[toggleIndex]) { toggleSkills[toggleIndex].enabled = target.checked; state.profileDraft.skills = toggleSkills; markProfileDirty(); render(); }
+    }
+    if (action === "suggested-skill-toggle" && state.profileDraft) {
+      collectProfileDraft();
+      var suggestedId = target.getAttribute("data-skill-id") || "";
+      var suggestion = SUGGESTED_SKILLS.find(function (skill) { return skill.id === suggestedId; });
+      if (suggestion) {
+        var suggestedSkills = state.profileDraft.skills || [];
+        var suggestedIndex = suggestedSkillIndex(suggestedSkills, suggestion);
+        var suggestedChanged = false;
+        if (suggestedIndex >= 0) {
+          if (target.checked) {
+            if (!suggestedSkills[suggestedIndex].enabled) {
+              suggestedSkills[suggestedIndex].enabled = true;
+              suggestedChanged = true;
+            }
+          } else {
+            suggestedSkills.splice(suggestedIndex, 1);
+            suggestedChanged = true;
+          }
+        } else if (target.checked) {
+          var suggestedNameInUse = suggestedSkills.some(function (skill) { return skill.name === suggestion.name; });
+          if (!suggestedNameInUse) {
+            suggestedSkills.push({
+              name: suggestion.name,
+              description: suggestion.runtimeDescription,
+              instructions: suggestion.instructions,
+              enabled: true,
+              suggestedSkillId: suggestion.id
+            });
+            suggestedChanged = true;
+          }
+        }
+        if (suggestedChanged) {
+          state.profileDraft.skills = suggestedSkills;
+          markProfileDirty();
+        }
+        render();
+      }
     }
     // Import picker per-row checkbox: flip the parallel selected[] flag and
     // re-render so the row highlight + Select all/Clear all label stay in sync.
@@ -12949,7 +13142,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (validationError) { editor.error = validationError; render(); return false; }
     var saved = { name: name, description: description, instructions: instructions, enabled: true };
     if (editor.index === null || editor.index === undefined) { skills.push(saved); }
-    else { saved.enabled = skills[editor.index] ? skills[editor.index].enabled : true; skills[editor.index] = saved; }
+    else {
+      var replaced = skills[editor.index];
+      saved.enabled = replaced ? replaced.enabled : true;
+      if (replaced && replaced.suggestedSkillId !== undefined) saved.suggestedSkillId = replaced.suggestedSkillId;
+      skills[editor.index] = saved;
+    }
     state.profileDraft.skills = skills;
     state.skillEditor = null;
     return true;

@@ -482,6 +482,7 @@ const skillSchema = v.object({
   description: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1024)),
   instructions: v.pipe(v.string(), v.trim(), v.minLength(1)),
   enabled: v.boolean(),
+  suggestedSkillId: v.optional(skillName),
 });
 // Reject duplicate names at the write boundary — duplicates are a turn-killer
 // downstream, so they must never reach the store.
@@ -6469,11 +6470,23 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): AgentCreateInp
     instructions: input.instructions,
     enabled: input.enabled,
     ...(input.model !== undefined ? { model: input.model } : {}),
-    skills: input.skills,
+    skills: toSkills(input.skills),
     mcpServers: toMcpServers(input.mcpServers),
     apiConnections: toApiConnections(input.apiConnections),
     repositories: toRepositories(input.repositories),
   };
+}
+
+function toSkills(
+  skills: v.InferOutput<typeof skillsSchema>,
+): CustomAgentConfig['skills'] {
+  return skills.map((skill) => ({
+    name: skill.name,
+    description: skill.description,
+    instructions: skill.instructions,
+    enabled: skill.enabled,
+    ...(skill.suggestedSkillId !== undefined ? { suggestedSkillId: skill.suggestedSkillId } : {}),
+  }));
 }
 
 // Valibot's `v.optional(...)` infers `key?: T | undefined`, which is not
@@ -6615,7 +6628,7 @@ function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch
   if (input.instructions !== undefined) patch.instructions = input.instructions;
   if (input.enabled !== undefined) patch.enabled = input.enabled;
   if (input.model !== undefined) patch.model = input.model;
-  if (input.skills !== undefined) patch.skills = input.skills;
+  if (input.skills !== undefined) patch.skills = toSkills(input.skills);
   if (input.mcpServers !== undefined) patch.mcpServers = toMcpServers(input.mcpServers);
   if (input.apiConnections !== undefined) {
     patch.apiConnections = toApiConnections(input.apiConnections);
