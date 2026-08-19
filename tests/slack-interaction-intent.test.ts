@@ -76,6 +76,49 @@ test('validated interaction dispositions enforce guaranteed and substantive-turn
   );
 });
 
+test('the classifier semantically preserves possible memory requests for the main Agent', () => {
+  assert.deepEqual(
+    parseSlackInteractionIntent(
+      JSON.stringify({
+        disposition: 'react_only',
+        reason: 'state_change',
+        memoryIntent: 'possible',
+        reaction: 'seen',
+        target: 'trigger',
+      }),
+      { guaranteed: true },
+    ),
+    { disposition: 'reply', reason: 'substantive_request' },
+  );
+  assert.deepEqual(
+    parseSlackInteractionIntent(
+      JSON.stringify({
+        disposition: 'ignore',
+        reason: 'social_chatter',
+        memoryIntent: 'possible',
+      }),
+      { guaranteed: false },
+    ),
+    { disposition: 'reply', reason: 'substantive_request' },
+  );
+  assert.deepEqual(
+    parseSlackInteractionIntent(
+      JSON.stringify({
+        disposition: 'work',
+        reason: 'substantive_request',
+        memoryIntent: 'possible',
+        checklist: ['Requested answer'],
+      }),
+      { guaranteed: true },
+    ),
+    {
+      disposition: 'work',
+      reason: 'substantive_request',
+      checklist: ['Requested answer'],
+    },
+  );
+});
+
 test('invalid classifier output falls back by source without retaining model prose', () => {
   assert.deepEqual(
     parseSlackInteractionIntent('not json', { guaranteed: true }),
@@ -275,6 +318,9 @@ test('semantic reactions have deterministic standard fallbacks', () => {
 test('the stateless classifier has no tools and treats Slack context as data', () => {
   assert.match(SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS, /You have no tools/);
   assert.match(SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS, /untrusted classification data/);
+  assert.match(SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS, /could semantically be asking/i);
+  assert.match(SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS, /Do not rely on keywords/i);
+  assert.match(SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS, /possible memory intent.*reply or work/i);
 });
 
 test('every Agent receives shared Slack teammate defaults before voice overrides and guardrail', async () => {
