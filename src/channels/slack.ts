@@ -7,6 +7,8 @@ import {
 import { createChannelRouter } from '@flue/runtime';
 import { Hono } from 'hono';
 
+import { resolveBetterAuthEnvironment } from '../auth/better-auth-environment.ts';
+import { applySlackUserChange } from '../auth/slack-membership-events.ts';
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
@@ -18,7 +20,12 @@ import {
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveAssignment, type AssignmentSurface } from '../config/resolver.ts';
 import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
-import { resolveStores, type AppStores, type PlatformEnv } from '../config/state-backend.ts';
+import {
+  getSlackCredentialDependencies,
+  resolveStores,
+  type AppStores,
+  type PlatformEnv,
+} from '../config/state-backend.ts';
 import {
   tagStateStub,
   type SlackInteractionProgress,
@@ -56,6 +63,7 @@ import {
 import {
   completeWorkspaceDefaultSlackConnectionIfVerified,
 } from '../slack/identity-bootstrap.ts';
+import { SlackInstallOAuthService } from '../slack/install-oauth.ts';
 import {
   assignmentUsesSlackIdentity,
   resolveSlackIdentityDmAssignment,
@@ -124,11 +132,11 @@ function detach(
   }
 }
 
-// Bot user id resolution: prefer the configured value (env, then the
-// wizard-stored setting — resolveSlackCredentials preserves the env
-// "explicitly empty = no bot user id, do not probe" knob, S14); otherwise
-// resolve once via auth.test() and cache. On auth.test failure leave it
-// undefined so message-family events fail closed in normalization.
+// Bot user id resolution: prefer the value from the one active encrypted
+// credential revision; otherwise resolve once via auth.test() and cache it by
+// that revision's bot token. Environment values are not credential sources.
+// On auth.test failure leave it undefined so message-family events fail closed
+// in normalization.
 let probedBotIdentity:
   | { botToken: string | undefined; botUserId: string | undefined }
   | undefined;
@@ -221,7 +229,7 @@ function channelForIdentity(
     channel: createSlackChannel({
       signingSecret,
       bodyLimit: MAX_SLACK_INGRESS_BYTES,
-      events: handleSlackEventsForIdentity(identityId),
+      events: handleSlackEventsForIdentity(identityId, credentialRevision),
     }),
   };
   verifiedChannels.delete(identityId);
@@ -284,10 +292,27 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   const identity = await stores.config.getSlackIdentity(
     WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   );
+  if (
+    identity.lifecycle === 'setup_incomplete' ||
+    identity.lifecycle === 'credentials_pending'
+  ) {
+    const response = await handlePendingSlackIdentityChallenge(
+      c.req.raw,
+      identity,
+      stores.settings,
+    );
+    if (response.ok) {
+      await finalizePendingWorkspaceDefaultSlackConnection(
+        stores,
+        platformEnv,
+        identity,
+      );
+    }
+    return response;
+  }
   const credentials = await resolveSlackIdentityCredentials(
     identity.id,
     platformEnv,
-    stores.settings,
   );
   const { signingSecret } = credentials;
   if (!signingSecret) {
@@ -336,18 +361,11 @@ const scopedIdentityEventsHandler: SlackRouteHandler = async (c, next) => {
       candidate.identity.kind === 'workspace_default' &&
       candidate.identity.lifecycle === 'credentials_pending'
     ) {
-      try {
-        await completeWorkspaceDefaultSlackConnectionIfVerified({
-          config: stores.config,
-          settings: stores.settings,
-          identityId: candidate.identity.id,
-        });
-      } catch (error) {
-        console.error(
-          '[chickpea] Slack Events URL completion failed:',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
+      await finalizePendingWorkspaceDefaultSlackConnection(
+        stores,
+        platformEnv,
+        candidate.identity,
+      );
     }
     return response;
   }
@@ -355,7 +373,6 @@ const scopedIdentityEventsHandler: SlackRouteHandler = async (c, next) => {
   const credentials = await resolveSlackIdentityCredentials(
     candidate.identity.id,
     platformEnv,
-    stores.settings,
   );
   if (!credentials.signingSecret) {
     return c.json({ error: 'slack_not_configured' }, 401);
@@ -371,6 +388,39 @@ const scopedIdentityEventsHandler: SlackRouteHandler = async (c, next) => {
   await recordSlackIngressRejection(response, candidate.identity);
   return response;
 };
+
+async function finalizePendingWorkspaceDefaultSlackConnection(
+  stores: AppStores,
+  platformEnv: PlatformEnv | undefined,
+  identity: SlackIdentity,
+): Promise<void> {
+  try {
+    const setup = await stores.identity.getSlackSetupTransaction('setup_default');
+    if (setup?.state === 'bot_install_pending') {
+      await new SlackInstallOAuthService({
+        identity: stores.identity,
+        credentials: getSlackCredentialDependencies(platformEnv),
+        config: stores.config,
+        settings: stores.settings,
+      }).finalizeWaitingInstallation(setup.id);
+    } else {
+      await completeWorkspaceDefaultSlackConnectionIfVerified({
+        config: stores.config,
+        settings: stores.settings,
+        identityId: identity.id,
+        credentialDependencies: {
+          state: stores.identity,
+          env: platformEnv,
+        },
+      });
+    }
+  } catch (error) {
+    console.error(
+      '[chickpea] Slack Events URL completion failed:',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
 
 const routes: SlackChannel['routes'] = [
   { method: 'POST', path: '/events', handler: verifiedEventsHandler },
@@ -394,6 +444,7 @@ export const channel: SlackChannel = {
 
 function handleSlackEventsForIdentity(
   identityId: string,
+  credentialRevision: string | null,
 ): NonNullable<SlackChannelOptions['events']> {
   return async ({ c, payload }) => {
     const platformEnv = c.env as PlatformEnv | undefined;
@@ -456,6 +507,21 @@ function handleSlackEventsForIdentity(
       return;
     }
 
+    if (verifiedEventType === 'user_change') {
+      detach(
+        c,
+        processSlackUserChange(
+          payload as unknown as SlackEventFixture,
+          stores,
+          platformEnv,
+          credentialRevision,
+        ).catch((error) => {
+          console.error('[chickpea] Slack membership event failed:', sanitizeError(error));
+        }),
+      );
+      return;
+    }
+
     if (identity.kind === 'dedicated' && identity.lifecycle !== 'connected') {
       return;
     }
@@ -486,6 +552,28 @@ function handleSlackEventsForIdentity(
       }),
     );
   };
+}
+
+async function processSlackUserChange(
+  payload: SlackEventFixture,
+  stores: AppStores,
+  platformEnv: PlatformEnv | undefined,
+  credentialRevision: string | null,
+): Promise<void> {
+  if (payload.event.type !== 'user_change' || !credentialRevision) return;
+  const control = await stores.identity.getAuthControl();
+  const environment = control
+    ? await resolveBetterAuthEnvironment({ control, platformEnv })
+    : undefined;
+  await applySlackUserChange({
+    identity: stores.identity,
+    ...(environment ? { betterAuth: environment.backend } : {}),
+    credentialRevision,
+    payloadTeamId: payload.team_id,
+    apiAppId: payload.api_app_id,
+    eventId: payload.event_id,
+    event: payload.event,
+  });
 }
 
 async function recordSlackIdentityLifecycleEvent(
@@ -600,15 +688,14 @@ async function processSlackEvent(
   // threads stay continuable); on Cloudflare they proxy the state Durable
   // Object, which is why the handler threads `c.env` through.
   const stores = resolveStores(platformEnv);
-  // Runtime behavior follows the same env > stored > default contract the
-  // admin exposes. Resolve against THIS request's settings store so Node and
-  // Cloudflare (Durable Object-backed) observe the same saved switches.
+  // Behavior switches (not credentials) follow the admin's env > stored >
+  // default contract. Resolve against THIS request's settings store so Node
+  // and Cloudflare (Durable Object-backed) observe the same saved switches.
   const behavior = await resolveSlackBehaviorSettings(platformEnv, stores.settings);
   const identity = await stores.config.getSlackIdentity(slackIdentityId);
   const credentials = await resolveSlackIdentityCredentials(
     slackIdentityId,
     platformEnv,
-    stores.settings,
   );
 
   if (payload.event.type === 'member_joined_channel') {

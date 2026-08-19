@@ -1,216 +1,225 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { AuthDeniedError, AuthService } from '../src/auth/service.ts';
-import type { Authenticator } from '../src/auth/types.ts';
 import { BetterAuthDirectory, BetterAuthSessionAuthenticator } from '../src/auth/better-auth-principal.ts';
-import { createBetterAuth } from '../src/auth/better-auth.ts';
+import { createBetterAuth, type BetterAuthAdmissionOperation } from '../src/auth/better-auth.ts';
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
-import { nativePasswordPrimitive } from '../src/auth/password.ts';
+import { AuthDeniedError, AuthService } from '../src/auth/service.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 
 const NOW = 1_786_100_000_000;
 const ORIGIN = 'https://app.example';
-const PASSWORD = 'several unrelated words 5729';
+const TEAM = 'T12345678';
+const USER = 'U12345678';
 const SECRET = Buffer.from(Uint8Array.from({ length: 32 }, (_, index) => (index * 41 + 7) % 256))
   .toString('base64url');
 
-test('external authenticators normalize into active internal principals', async () => {
-  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const organization = await identity.ensureOrganization({ displayName: 'Chickpea' });
-  await identity.createOwnerClaim({ organizationId: organization.id, email: 'owner@example.com' });
-  const owner = await identity.claimOwner({
-    organizationId: organization.id,
-    provider: 'test_oidc',
-    issuer: 'https://issuer.example',
-    subject: 'subject-owner',
-    verifiedEmail: 'owner@example.com',
-    at: NOW,
-  });
-  await identity.updateOrganizationAuth({
-    organizationId: organization.id,
-    authMode: 'access_active',
-    canonicalAdminOrigin: 'https://app.example',
-  });
-  const backupInvite = await identity.createInvitation({
-    organizationId: organization.id, email: 'backup@example.com', role: 'owner',
-    tokenHash: 'backup-owner-hash', inviterMembershipId: owner.membership.id,
-    expiresAt: NOW + 10_000,
-  });
-  await identity.consumeInvitation({
-    invitationId: backupInvite.id, tokenHash: 'backup-owner-hash', provider: 'test_oidc',
-    issuer: 'https://issuer.example', subject: 'backup-owner',
-    verifiedEmail: 'backup@example.com', at: NOW,
-  });
-  const authenticator: Authenticator = {
-    kind: 'test_oidc',
-    async authenticate() {
-      return {
-        kind: 'external_identity',
-        provider: 'test_oidc',
-        issuer: 'https://issuer.example',
-        subject: 'subject-owner',
-        verifiedEmail: 'owner@example.com',
-        credentialId: 'assertion_test',
-      };
-    },
-  };
-  const service = new AuthService({ identity, authenticators: [authenticator] });
-  const principal = await service.authenticateRequest(new Request('https://app.example/admin'));
-  assert.equal(principal.userId, owner.user.id);
-  assert.equal(principal.membershipId, owner.membership.id);
-  assert.equal(principal.role, 'owner');
-  assert.equal(principal.authenticatorKind, 'test_oidc');
-
-  const successAudit = (await identity.listAuditEvents()).find(
-    (event) => event.eventType === 'identity.authentication' && event.outcome === 'success',
-  );
-  assert.equal(successAudit?.actorId, owner.membership.id);
-  assert.equal(successAudit?.subjectId, owner.user.id);
-  assert.deepEqual(JSON.parse(successAudit?.metadataJson ?? '{}'), {
-    action: 'admin.authenticate',
-    correlationId: principal.correlationId,
-    authenticatorKind: 'test_oidc',
-  });
-
-  await identity.updateMembership({ membershipId: owner.membership.id, status: 'suspended' });
-  await assert.rejects(
-    () => service.authenticateRequest(new Request('https://app.example/admin')),
-    (error: unknown) => error instanceof AuthDeniedError,
-  );
-  const deniedAudit = (await identity.listAuditEvents()).find(
-    (event) => event.eventType === 'identity.authentication' && event.outcome === 'denied',
-  );
-  assert.equal(deniedAudit?.actorId, null);
-  assert.equal(deniedAudit?.subjectId, null);
-  assert.equal(deniedAudit?.reasonCode, 'authentication_denied');
-  identity.close();
-});
-
-test('unknown external identities receive a uniform denial without persistence', async () => {
-  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  await identity.ensureOrganization({ displayName: 'Chickpea' });
-  const service = new AuthService({
-    identity,
-    authenticators: [{
-      kind: 'test_oidc',
-      async authenticate() {
-        return {
-          kind: 'external_identity', provider: 'test_oidc', issuer: 'https://issuer.example',
-          subject: 'unknown', verifiedEmail: 'unknown@example.com', credentialId: 'assertion_unknown',
-        };
-      },
-    }],
-  });
-  await assert.rejects(
-    () => service.authenticateRequest(new Request('https://app.example/admin')),
-    (error: unknown) => error instanceof AuthDeniedError && error.message === 'Authentication unavailable.',
-  );
-  assert.equal((await identity.listMemberships()).length, 0);
-  assert.equal((await identity.listExternalIdentities()).length, 0);
-  const auditJson = JSON.stringify(await identity.listAuditEvents());
-  assert.equal(auditJson.includes('unknown@example.com'), false);
-  assert.equal(auditJson.includes('assertion_unknown'), false);
-  identity.close();
-});
-
-test('Better Auth sessions resolve through the stable principal boundary and recheck membership', async () => {
+test('active Better Auth session resolves only through canonical Slack authority', async () => {
   const backend = new NodeBetterAuthBackend(':memory:');
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const auth = createBetterAuth({
-    backend,
-    baseURL: ORIGIN,
-    secret: SECRET,
-    password: nativePasswordPrimitive(),
-    allowSignUp: true,
-  });
-  const signup = await auth.handler(jsonRequest('/api/auth/sign-up/email', {
-    email: 'owner@example.com', name: 'Owner', password: PASSWORD,
-  }));
-  assert.equal(signup.status, 200, await signup.clone().text());
-  const signupBody = await signup.json() as { user: { id: string } };
-  const organizationId = 'better-org';
-  const membershipId = 'better-member';
-  backend.database.prepare(
-    'INSERT INTO organization (id, name, slug, createdAt) VALUES (?, ?, ?, ?)',
-  ).run(organizationId, 'Chickpea', 'chickpea', NOW);
-  backend.database.prepare(
-    'INSERT INTO member (id, organizationId, userId, role, createdAt) VALUES (?, ?, ?, ?, ?)',
-  ).run(membershipId, organizationId, signupBody.user.id, 'owner', NOW);
-  const control = await identity.ensureAuthControl();
-  await identity.updateAuthControl({
-    expectedRevision: control.revision,
-    authMode: 'password_active',
-    canonicalAdminOrigin: ORIGIN,
-    betterAuthOrganizationId: organizationId,
-  });
-  let suspended = false;
-  const directory = new BetterAuthDirectory({
-    backend,
-    organizationId,
-    canonicalAdminOrigin: ORIGIN,
-    access: {
-      async getMembershipAccessOverlay(id) {
-        return suspended && id === membershipId ? {
-          membershipId,
-          organizationId,
-          accessStatus: 'suspended',
-          membershipVersion: 2,
-          createdAt: NOW,
-          updatedAt: NOW,
-        } : undefined;
-      },
-    },
-  });
-  const service = new AuthService({
-    identity,
-    passwordAuthenticator: new BetterAuthSessionAuthenticator({
+  try {
+    let admission: BetterAuthAdmissionOperation | null = null;
+    const auth = createBetterAuth({
       backend,
-      directory,
-      organizationId,
       baseURL: ORIGIN,
       secret: SECRET,
-      password: nativePasswordPrimitive(),
-    }),
-  });
-  const cookie = (signup.headers.get('set-cookie') ?? '').split(';', 1)[0] ?? '';
-  const request = new Request(`${ORIGIN}/admin`, { headers: { cookie } });
-  const principal = await service.authenticateRequest(request);
-  assert.deepEqual({
-    userId: principal.userId,
-    membershipId: principal.membershipId,
-    organizationId: principal.organizationId,
-    role: principal.role,
-    authenticatorKind: principal.authenticatorKind,
-    machine: principal.machine,
-  }, {
-    userId: signupBody.user.id,
-    membershipId,
-    organizationId,
-    role: 'owner',
-    authenticatorKind: 'better_auth',
-    machine: false,
-  });
+      privateSeam: { async resolveAdmissionOperation() { return admission; } },
+    });
+    const reconciled = await auth.chickpea.reconcileSlackIdentity({
+      slackTeamId: TEAM,
+      slackUserId: USER,
+      displayName: 'Owner',
+      organization: {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'Chickpea',
+        slug: 'chickpea',
+      },
+    });
+    assert.equal(
+      backend.database.prepare('SELECT role FROM member WHERE id = ?').get(reconciled.membershipId)?.role,
+      'member',
+      'Better Auth organization role is permanently member',
+    );
 
-  suspended = true;
-  await assert.rejects(
-    () => service.authenticateRequest(new Request(`${ORIGIN}/admin`, { headers: { cookie } })),
-    AuthDeniedError,
-  );
-  backend.close();
-  identity.close();
+    const capabilityHash = 'a'.repeat(64);
+    const operation = await identity.createAuthOperation({
+      id: 'first_owner', kind: 'first_owner_claim', expectedSlackTeamId: TEAM,
+      expectedSlackUserId: USER, chickpeaRole: 'owner', capabilityHash,
+      expiresAt: NOW + 60_000,
+    });
+    await identity.createOwnerClaim({ operationId: operation.id, slackTeamId: TEAM, slackUserId: USER });
+    await identity.advanceAuthOperation({
+      operationId: operation.id, capabilityHash, step: 1,
+      betterAuthUserId: reconciled.userId,
+      betterAuthOrganizationId: reconciled.organizationId,
+      betterAuthMembershipId: reconciled.membershipId,
+    });
+    const owner = await identity.claimOwner({
+      operationId: operation.id, organizationId: 'org_oss', slackTeamId: TEAM, slackUserId: USER,
+      displayName: 'Owner', betterAuthUserId: reconciled.userId,
+      betterAuthMembershipId: reconciled.membershipId,
+    });
+    const control = await identity.getAuthControl();
+    assert.ok(control);
+    await identity.updateAuthControl({
+      expectedRevision: control.revision,
+      canonicalAdminOrigin: ORIGIN,
+    });
+    admission = {
+      operationId: operation.id,
+      status: 'active',
+      chickpeaRole: 'owner',
+      slackTeamId: TEAM,
+      slackUserId: USER,
+      betterAuthUserId: reconciled.userId,
+      betterAuthOrganizationId: reconciled.organizationId,
+      betterAuthMembershipId: reconciled.membershipId,
+    };
+    const issued = await auth.chickpea.issueSession(operation.id, new Request(`${ORIGIN}/oauth/finalize`, {
+      method: 'POST', headers: { origin: ORIGIN, 'sec-fetch-site': 'same-origin' },
+    }));
+    const cookie = (issued.headers.get('set-cookie') ?? '').split(';', 1)[0] ?? '';
+    assert.ok(cookie);
+
+    const directory = new BetterAuthDirectory({
+      backend, access: identity, organizationId: reconciled.organizationId, canonicalAdminOrigin: ORIGIN,
+    });
+    const service = new AuthService({
+      identity,
+      sessionAuthenticator: new BetterAuthSessionAuthenticator({
+        backend, directory, organizationId: reconciled.organizationId, baseURL: ORIGIN, secret: SECRET,
+      }),
+    });
+    const principal = await service.authenticateRequest(new Request(`${ORIGIN}/admin`, {
+      headers: { cookie },
+    }));
+    assert.deepEqual(
+      [principal.userId, principal.membershipId, principal.role, principal.authenticatorKind],
+      [owner.user.id, owner.membership.id, 'owner', 'better_auth'],
+    );
+
+    const adminSlackUserId = 'U87654321';
+    const reconciledAdmin = await auth.chickpea.reconcileSlackIdentity({
+      slackTeamId: TEAM,
+      slackUserId: adminSlackUserId,
+      displayName: 'Admin',
+      organization: {
+        id: reconciled.organizationId,
+        name: 'Chickpea',
+        slug: 'chickpea',
+      },
+    });
+    const invitation = await identity.createInvitation({
+      organizationId: owner.membership.organizationId,
+      slackTeamId: TEAM,
+      slackUserId: adminSlackUserId,
+      role: 'admin',
+      locatorHash: 'd'.repeat(64),
+      inviterMembershipId: owner.membership.id,
+      expiresAt: NOW + 60_000,
+    });
+    const admin = await identity.consumeInvitation({
+      invitationId: invitation.id,
+      locatorHash: 'd'.repeat(64),
+      slackTeamId: TEAM,
+      slackUserId: adminSlackUserId,
+      betterAuthUserId: reconciledAdmin.userId,
+      betterAuthMembershipId: reconciledAdmin.membershipId,
+    });
+    backend.database.prepare('UPDATE member SET role = ? WHERE id = ?')
+      .run('owner', reconciledAdmin.membershipId);
+    admission = {
+      operationId: 'login_admin_tampered',
+      status: 'active',
+      chickpeaRole: 'admin',
+      slackTeamId: TEAM,
+      slackUserId: adminSlackUserId,
+      betterAuthUserId: reconciledAdmin.userId,
+      betterAuthOrganizationId: reconciledAdmin.organizationId,
+      betterAuthMembershipId: reconciledAdmin.membershipId,
+    };
+    const issuedAdmin = await auth.chickpea.issueSession(
+      admission.operationId,
+      new Request(`${ORIGIN}/oauth/finalize`, {
+        method: 'POST', headers: { origin: ORIGIN, 'sec-fetch-site': 'same-origin' },
+      }),
+    );
+    const adminCookie = (issuedAdmin.headers.get('set-cookie') ?? '').split(';', 1)[0] ?? '';
+    await assert.rejects(
+      () => service.authenticateRequest(new Request(`${ORIGIN}/admin`, {
+        headers: { cookie: adminCookie },
+      })),
+      AuthDeniedError,
+      'Better Auth role tampering cannot grant any Chickpea authority',
+    );
+    assert.equal((await identity.getMembership(admin.membership.id))?.role, 'admin');
+
+    await assert.rejects(
+      () => identity.updateMembershipAuthority({
+        membershipId: owner.membership.id, status: 'suspended',
+        actorMembershipId: owner.membership.id, authenticationSurface: 'better_auth',
+        correlationId: 'request_last_owner', reasonCode: 'owner_suspended_member',
+      }),
+      /At least one active Owner/,
+    );
+    await identity.setMembershipAccessOverlay({
+      membershipId: owner.membership.id,
+      organizationId: owner.membership.organizationId,
+      accessStatus: 'suspended',
+    });
+    await assert.rejects(
+      () => service.authenticateRequest(new Request(`${ORIGIN}/admin`, { headers: { cookie } })),
+      AuthDeniedError,
+    );
+  } finally {
+    backend.close();
+    identity.close();
+  }
 });
 
-function jsonRequest(path: string, body: Record<string, unknown>): Request {
-  const encoded = JSON.stringify(body);
-  return new Request(`${ORIGIN}${path}`, {
-    method: 'POST',
-    headers: {
-      origin: ORIGIN,
-      'content-type': 'application/json',
-      'content-length': String(Buffer.byteLength(encoded)),
-      'sec-fetch-site': 'same-origin',
-    },
-    body: encoded,
-  });
-}
+test('unconfigured and recovery-only controls admit no principal', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  try {
+    const service = new AuthService({ identity });
+    await assert.rejects(
+      () => service.authenticateRequest(new Request(`${ORIGIN}/admin`, {
+        headers: { authorization: 'Bearer deployment-token' },
+      })),
+      AuthDeniedError,
+    );
+    const control = await identity.ensureAuthControl();
+    await identity.updateAuthControl({
+      expectedRevision: control.revision,
+      healthGate: 'recovery_only',
+    });
+    await assert.rejects(
+      () => service.authenticateRequest(new Request(`${ORIGIN}/admin`)),
+      AuthDeniedError,
+    );
+  } finally {
+    identity.close();
+  }
+});
+
+test('Better Auth backend revokes every browser session for one user', async () => {
+  const backend = new NodeBetterAuthBackend(':memory:');
+  try {
+    backend.database.prepare(
+      `INSERT INTO "user" (id, name, email, emailVerified, createdAt, updatedAt)
+       VALUES (?, ?, ?, 0, ?, ?)`,
+    ).run('ba_user_revoke', 'Revoke', 'revoke@identity.invalid', NOW, NOW);
+    for (const [id, token] of [
+      ['session_one', 'token_one'],
+      ['session_two', 'token_two'],
+    ] as const) {
+      backend.database.prepare(
+        `INSERT INTO session (id, expiresAt, token, createdAt, updatedAt, ipAddress, userAgent, userId, absoluteExpiresAt)
+         VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
+      ).run(id, NOW + 60_000, token, NOW, NOW, 'ba_user_revoke', NOW + 60_000);
+    }
+    assert.equal(await backend.deleteSessionsForUser('ba_user_revoke'), 2);
+    assert.equal(backend.database.prepare('SELECT count(*) AS count FROM session').get()?.count, 0);
+  } finally {
+    backend.close();
+  }
+});

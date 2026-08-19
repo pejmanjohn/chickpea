@@ -74,10 +74,10 @@ test('fake Slack serves bounded membership and user-directory fixtures for memor
   const backend = new FakeSlackBackend({
     slack: {
       channels: [{ id: 'C_MEMORY', name: 'memory', isMember: true }],
-      channelMembers: { C_MEMORY: ['U_MEMBER', 'U_BOT'] },
+      channelMembers: { C_MEMORY: ['U_MEMBER', 'UBOT'] },
       workspaceUsers: [
         { id: 'U_MEMBER', teamId: 'T_MEMORY', timezone: 'America/Los_Angeles' },
-        { id: 'U_BOT', teamId: 'T_MEMORY', isBot: true, isAppUser: true },
+        { id: 'UBOT', teamId: 'T_MEMORY', isBot: true, isAppUser: true },
       ],
     },
   });
@@ -98,7 +98,7 @@ test('fake Slack serves bounded membership and user-directory fixtures for memor
 
   assert.deepEqual(await members.json(), {
     ok: true,
-    members: ['U_MEMBER', 'U_BOT'],
+    members: ['U_MEMBER', 'UBOT'],
     response_metadata: { next_cursor: '' },
   });
   const usersBody = await users.json() as { members: Array<Record<string, unknown>> };
@@ -178,7 +178,7 @@ test('raw Slack Connect context-team evidence fails closed before memory scope i
     globalThis.fetch = backend.asFetch();
     const decision = await resolveMemoryScope({
       workspaceId: 'T_HOME', channelId: 'C_CONNECT', actorId: 'U_MEMBER',
-      botUserId: 'U_BOT', observedAt: Date.now(),
+      botUserId: 'UBOT', observedAt: Date.now(),
     }, { slack: createMemoryScopeSlack('xoxb-test'), state });
     assert.deepEqual(decision, {
       enabled: false, reason: 'workspace_mismatch', workspaceRead: false, reads: [],

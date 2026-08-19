@@ -7,13 +7,17 @@ import {
   slackBotIdentityInfo,
   slackConversationsList,
   slackIdentityAuthTest,
+  slackUsersList,
   type SlackAuthTestResult,
   type SlackBotIdentityResult,
   type SlackConversationsListPage,
+  type SlackUsersListPage,
 } from './credentials.ts';
 import {
   resolveSlackIdentityCredentials,
   writeSlackIdentityCredentials,
+  type SlackCredentialDependencies,
+  type SlackCredentialResolutionDependencies,
 } from './identity-credentials.ts';
 import {
   cancelPendingSlackIdentitySecrets,
@@ -31,6 +35,7 @@ export type SlackIdentityBootstrapErrorCode =
   | 'slack_missing_scopes'
   | 'slack_scope_unverified'
   | 'slack_channel_list_failed'
+  | 'slack_directory_list_failed'
   | 'slack_unreachable'
   | 'bot_token_required'
   | 'workspace_unverified'
@@ -64,6 +69,7 @@ export interface ValidatedSlackIdentityInstallation {
   teamName?: string;
   appId: string;
   botUserId: string;
+  grantedScopes: string[];
   botName?: string;
   displayName?: string;
   avatarUrl?: string;
@@ -86,6 +92,10 @@ export interface SlackIdentityBootstrapDeps {
     botToken: string,
     options?: { cursor?: string; limit?: number; timeoutMs?: number },
   ) => Promise<SlackConversationsListPage>;
+  usersList?: (
+    botToken: string,
+    options?: { cursor?: string; limit?: number; timeoutMs?: number },
+  ) => Promise<SlackUsersListPage>;
   now?: () => number;
 }
 
@@ -94,15 +104,19 @@ export async function validateSlackIdentityBotInstallation(
     config: ConfigStore;
     identityId: string;
     expectedTeamId?: string;
+    expectedAppId?: string;
+    expectedBotUserId?: string;
     botToken: string;
     requireScopeEvidence?: boolean;
     requireChannelList?: boolean;
+    requireDirectoryList?: boolean;
   },
   deps: SlackIdentityBootstrapDeps = {},
 ): Promise<ValidatedSlackIdentityInstallation> {
   const authTest = deps.authTest ?? slackIdentityAuthTest;
   const botIdentityInfo = deps.botIdentityInfo ?? slackBotIdentityInfo;
   const conversationsList = deps.conversationsList ?? slackConversationsList;
+  const usersList = deps.usersList ?? slackUsersList;
   let auth: SlackAuthTestResult;
   try {
     auth = await authTest(input.botToken);
@@ -166,6 +180,12 @@ export async function validateSlackIdentityBotInstallation(
       'Slack did not identify the bot user',
     );
   }
+  if (input.expectedBotUserId && auth.botUserId !== input.expectedBotUserId) {
+    throw new SlackIdentityBootstrapError(
+      'bot_identity_missing',
+      'Slack auth.test returned a different bot identity',
+    );
+  }
 
   let profile: SlackBotIdentityResult;
   try {
@@ -194,6 +214,12 @@ export async function validateSlackIdentityBotInstallation(
     throw new SlackIdentityBootstrapError(
       'app_identity_missing',
       'Slack did not identify the app behind this bot',
+    );
+  }
+  if (input.expectedAppId && appId !== input.expectedAppId) {
+    throw new SlackIdentityBootstrapError(
+      'app_mismatch',
+      'Slack auth.test returned a different app identity',
     );
   }
   const duplicate = (await input.config.listSlackIdentities()).find(
@@ -247,12 +273,54 @@ export async function validateSlackIdentityBotInstallation(
     }
   }
 
+  if (input.requireDirectoryList) {
+    let page: SlackUsersListPage;
+    try {
+      page = await usersList(input.botToken, { limit: 1 });
+    } catch {
+      throw new SlackIdentityBootstrapError(
+        'slack_unreachable',
+        'Slack could not be reached while checking directory access',
+      );
+    }
+    if (!page.ok) {
+      if (isTransientSlackApiError(page.error)) {
+        throw new SlackIdentityBootstrapError(
+          'slack_unreachable',
+          'Slack could not be reached while checking directory access',
+        );
+      }
+      if (page.error === 'missing_scope') {
+        throw new SlackIdentityBootstrapError(
+          'slack_missing_scopes',
+          'Reinstall this Slack app to grant directory access',
+          undefined,
+          undefined,
+          slackIdentityOAuthUrl(appId),
+        );
+      }
+      if (page.error === 'invalid_auth' || page.error === 'token_revoked') {
+        throw new SlackIdentityBootstrapError(
+          'slack_auth_failed',
+          'Slack rejected this bot token while checking directory access',
+          undefined,
+          page.error,
+        );
+      }
+      throw new SlackIdentityBootstrapError(
+        'slack_directory_list_failed',
+        'Slack could not list members for this installation',
+      );
+    }
+  }
+
   const avatarUrl = sanitizeHttpsUrl(profile.avatarUrl);
   return {
     teamId: auth.teamId,
     ...(auth.teamName ? { teamName: auth.teamName } : {}),
     appId,
     botUserId: auth.botUserId,
+    grantedScopes: auth.grantedScopes ?? [],
     ...(auth.botName ? { botName: auth.botName } : {}),
     ...(profile.displayName ? { displayName: profile.displayName } : {}),
     ...(avatarUrl ? { avatarUrl } : {}),
@@ -270,6 +338,7 @@ export async function beginSlackIdentityConnection(
     expectedTeamId: string;
     botToken: string;
     signingSecret: string;
+    credentialDependencies?: SlackCredentialDependencies | undefined;
   },
   deps: SlackIdentityBootstrapDeps = {},
 ): Promise<SlackIdentity> {
@@ -284,7 +353,7 @@ export async function beginSlackIdentityConnection(
   const previousCredentials = await resolveSlackIdentityCredentials(
     input.identityId,
     undefined,
-    input.settings,
+    input.credentialDependencies ?? input.settings,
   );
   const validated = await validateSlackIdentityBotInstallation(
     {
@@ -328,13 +397,17 @@ export async function beginSlackIdentityConnection(
     },
   );
   await writeSlackIdentityCredentials(
-    input.settings,
+    input.credentialDependencies ?? input.settings,
     input.identityId,
     previousCredentials.connectionRevision,
     {
       botToken: input.botToken,
       signingSecret: input.signingSecret,
       botUserId: validated.botUserId,
+      appId: validated.appId,
+      teamId: validated.teamId,
+      grantedScopes: validated.grantedScopes,
+      validatedAt: validated.observedAt,
     },
   );
   return pending;
@@ -347,6 +420,7 @@ export async function completeSlackIdentityConnection(input: {
   expectedRevision: number;
   attachAgentId?: string;
   expectedAgentIdentityId?: string | null;
+  credentialDependencies?: SlackCredentialResolutionDependencies | undefined;
 }): Promise<SlackIdentity> {
   const identity = await input.config.getSlackIdentity(input.identityId);
   requireRevision(identity, input.expectedRevision);
@@ -359,7 +433,7 @@ export async function completeSlackIdentityConnection(input: {
   const credentials = await resolveSlackIdentityCredentials(
     input.identityId,
     undefined,
-    input.settings,
+    input.credentialDependencies ?? input.settings,
   );
   if (!credentials.signingSecret || !credentials.botToken) {
     throw new SlackIdentityBootstrapError(
@@ -406,6 +480,7 @@ export async function completeWorkspaceDefaultSlackConnectionIfVerified(input: {
   config: ConfigStore;
   settings: SettingsStore;
   identityId: string;
+  credentialDependencies?: SlackCredentialResolutionDependencies | undefined;
 }): Promise<SlackIdentity | undefined> {
   const identity = await input.config.getSlackIdentity(input.identityId);
   if (identity.kind !== 'workspace_default' || identity.lifecycle !== 'credentials_pending') {
@@ -417,7 +492,7 @@ export async function completeWorkspaceDefaultSlackConnectionIfVerified(input: {
   const credentials = await resolveSlackIdentityCredentials(
     identity.id,
     undefined,
-    input.settings,
+    input.credentialDependencies ?? input.settings,
   );
   if (!credentials.botToken || !credentials.signingSecret) return undefined;
   const verification = await verifyPendingSlackChallenge(
@@ -456,6 +531,7 @@ export async function cancelSlackIdentityConnection(input: {
   settings: SettingsStore;
   identityId: string;
   expectedRevision: number;
+  credentialDependencies?: SlackCredentialDependencies | undefined;
 }): Promise<SlackIdentity> {
   const identity = await input.config.getSlackIdentity(input.identityId);
   requireRevision(identity, input.expectedRevision);
@@ -472,12 +548,13 @@ export async function cancelSlackIdentityConnection(input: {
   const credentials = await resolveSlackIdentityCredentials(
     input.identityId,
     undefined,
-    input.settings,
+    input.credentialDependencies ?? input.settings,
   );
   await cancelPendingSlackIdentitySecrets(
     input.settings,
     input.identityId,
     credentials.connectionRevision,
+    input.credentialDependencies,
   );
   return input.config.updateSlackIdentity(input.identityId, input.expectedRevision, {
     lifecycle: 'setup_incomplete',
@@ -500,6 +577,7 @@ export async function refreshSlackIdentityHealth(
     settings: SettingsStore;
     identityId: string;
     expectedRevision: number;
+    credentialDependencies?: SlackCredentialResolutionDependencies | undefined;
   },
   deps: SlackIdentityBootstrapDeps = {},
 ): Promise<SlackIdentityHealthResult> {
@@ -519,7 +597,7 @@ export async function refreshSlackIdentityHealth(
   const credentials = await resolveSlackIdentityCredentials(
     input.identityId,
     undefined,
-    input.settings,
+    input.credentialDependencies ?? input.settings,
   );
   if (!credentials.botToken) {
     const degraded = await input.config.updateSlackIdentity(

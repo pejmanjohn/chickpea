@@ -1,7 +1,7 @@
 {
   "token": "verification-token-not-a-secret",
-  "team_id": "T_DEMO",
-  "api_app_id": "A_DEMO",
+  "team_id": "TDEMO",
+  "api_app_id": "ADEMO",
   "event_id": "Ev_APP_HOME_OPENED_001",
   "event_time": 1782770450,
   "type": "event_callback",
@@ -16,7 +16,7 @@
         {
           "type": "slack#/types/channel_id",
           "value": "C_CONTEXT",
-          "team_id": "T_DEMO"
+          "team_id": "TDEMO"
         }
       ]
     }

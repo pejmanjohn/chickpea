@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
 import { test } from 'node:test';
 
 import { Hono } from 'hono';
@@ -7,25 +6,29 @@ import { Hono } from 'hono';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import type { CustomAgentConfig } from '../src/config/types.ts';
+import {
+  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type CustomAgentConfig,
+} from '../src/config/types.ts';
 import { invalidateSlackChannelsCache } from '../src/slack/channels.ts';
 import {
   invalidateStoredSlackCredentials,
   invalidateStoredSlackPublicUrl,
+  readStoredSlackTeamInfo,
   resolveSlackPublicUrl,
-  slackTokenFingerprint,
   SLACK_SETTING_KEYS,
 } from '../src/slack/credentials.ts';
+import { writeSlackIdentityCredentials } from '../src/slack/identity-credentials.ts';
 import { renderSlackConfigureLink } from '../src/slack/message-format.ts';
-import { recordPendingSlackChallenge } from '../src/slack/identity-handshake.ts';
 import { FakeSlackBackend, type FakeSlackBackendConfig } from './parity/fake-slack.ts';
 import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 const ADMIN_TOKEN = 'channels-admin-token';
 
-// Keep the wizard/channels tests hermetic against the developer's shell — no
-// ambient Slack creds should bleed into env-first credential resolution.
+// Keep the channels tests hermetic against the developer's shell — no
+// ambient Slack creds should affect encrypted credential resolution.
 const NO_SLACK_ENV: NodeJS.ProcessEnv = {
   SLACK_BOT_TOKEN: undefined,
   SLACK_SIGNING_SECRET: undefined,
@@ -35,7 +38,7 @@ const NO_SLACK_ENV: NodeJS.ProcessEnv = {
 };
 
 function auth(): Record<string, string> {
-  return { authorization: `Bearer ${ADMIN_TOKEN}` };
+  return testAdminHeaders(ADMIN_TOKEN);
 }
 
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
@@ -56,8 +59,36 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
 
 function appWith(settings: SqliteSettingsStore, store?: SqliteConfigStore): Hono {
   const app = new Hono();
-  app.route('/', createAdminRoutes({ settings, store, adminToken: ADMIN_TOKEN }));
+  app.route('/', createAdminRoutes({ settings, store, ...testAdminAuthority(ADMIN_TOKEN) }));
   return app;
+}
+
+async function connectSlack(
+  settings: SqliteSettingsStore,
+  input: {
+    botToken?: string;
+    signingSecret?: string;
+    botUserId?: string;
+    appId?: string;
+    teamId?: string;
+    teamName?: string;
+  } = {},
+): Promise<void> {
+  await writeSlackIdentityCredentials(
+    settings,
+    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    null,
+    {
+      botToken: input.botToken ?? 'xoxb-acme',
+      signingSecret: input.signingSecret ?? 'acme-signing-secret',
+      botUserId: input.botUserId ?? 'UACME',
+      appId: input.appId ?? 'A0ACME',
+      teamId: input.teamId ?? 'TACME',
+    },
+  );
+  if (input.teamName) {
+    await settings.setSetting(SLACK_SETTING_KEYS.teamName, input.teamName);
+  }
 }
 
 function getJson(app: Hono, path: string): Promise<Response> {
@@ -94,86 +125,30 @@ async function withFake(
 
 // --- 1. Team persistence + backfill -----------------------------------------
 
-test('wizard POST persists the connected team id + name, and the connection GET exposes them', async (t) => {
+test('team info comes from the canonical encrypted revision without an auth.test backfill', async (t) => {
   const skip = await loopbackListenSkipReason();
   if (skip) return t.skip(skip);
 
   await withFake(
-    {
-      slack: {
-        identity: { appId: 'A0ACME', teamId: 'TACME', teamName: 'Acme Inc' },
-      },
-    },
-    async () => {
-      const settings = new SqliteSettingsStore(':memory:');
-      const store = new SqliteConfigStore(':memory:');
-      try {
-        const app = appWith(settings, store);
-        const timestamp = String(Math.floor(Date.now() / 1_000));
-        const challengeBody = JSON.stringify({
-          type: 'url_verification',
-          challenge: 'channels-wizard-proof',
-          api_app_id: 'A0ACME',
-          team_id: 'TACME',
-        });
-        const signature = `v0=${createHmac('sha256', 'acme-secret')
-          .update(`v0:${timestamp}:${challengeBody}`)
-          .digest('hex')}`;
-        const identity = await store.getSlackIdentity('slack_identity_default');
-        const challenged = await recordPendingSlackChallenge(settings, identity, {
-          rawBody: challengeBody,
-          timestamp,
-          signature,
-        });
-        assert.equal(challenged.accepted, true);
-        const saved = await app.request('/admin/api/slack-connection', {
-          method: 'POST',
-          headers: { ...auth(), 'content-type': 'application/json' },
-          body: JSON.stringify({ botToken: 'xoxb-acme', signingSecret: 'acme-secret' }),
-        });
-        assert.equal(saved.status, 200);
-        const savedBody = (await saved.json()) as Record<string, unknown>;
-        assert.equal(savedBody.teamId, 'TACME');
-        assert.equal(savedBody.team, 'Acme Inc');
-
-        assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.teamId), 'TACME');
-        assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.teamName), 'Acme Inc');
-
-        const conn = await getJson(app, '/admin/api/slack-connection');
-        const connBody = (await conn.json()) as Record<string, unknown>;
-        assert.equal(connBody.teamId, 'TACME');
-        assert.equal(connBody.teamName, 'Acme Inc');
-      } finally {
-        store.close();
-        settings.close();
-      }
-    },
-  );
-});
-
-test('team info is lazily backfilled via auth.test for installs that predate persistence', async (t) => {
-  const skip = await loopbackListenSkipReason();
-  if (skip) return t.skip(skip);
-
-  await withFake(
-    { slack: { identity: { teamId: 'T_OLD', teamName: 'Legacy Co' } } },
+    { slack: { identity: { teamId: 'TOLD', teamName: 'Legacy Co' } } },
     async (backend) => {
       const settings = new SqliteSettingsStore(':memory:');
       try {
-        // A pre-existing install: token + secret stored, but NO team identity.
-        await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-old');
-        await settings.setSetting(SLACK_SETTING_KEYS.signingSecret, 'old-secret');
+        await connectSlack(settings, {
+          botToken: 'xoxb-old', signingSecret: 'old-secret',
+          teamId: 'TOLD', teamName: 'Legacy Co',
+        });
         const app = appWith(settings);
 
         const channels = await getJson(app, '/admin/api/slack-channels');
         const body = (await channels.json()) as Record<string, unknown>;
         // The proxy resolved (and returned) the workspace identity...
-        assert.equal(body.teamId, 'T_OLD');
+        assert.equal(body.teamId, 'TOLD');
         assert.equal(body.teamName, 'Legacy Co');
-        // ...and persisted it, so the one-time auth.test does not repeat.
-        assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.teamId), 'T_OLD');
+        // The team ID is public metadata on the same revision as the bot grant.
+        assert.equal((await readStoredSlackTeamInfo(undefined, settings)).teamId, 'TOLD');
         assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.teamName), 'Legacy Co');
-        assert.equal(backend.callsOfMethod('auth.test').length, 1);
+        assert.equal(backend.callsOfMethod('auth.test').length, 0);
       } finally {
         settings.close();
       }
@@ -190,7 +165,7 @@ test('channels proxy cursor-paginates, merges, and name-sorts the workspace chan
   await withFake(
     {
       slack: {
-        identity: { teamId: 'T_ACME', teamName: 'Acme Inc' },
+        identity: { teamId: 'TACME', teamName: 'Acme Inc' },
         conversationsListPageSize: 2,
         channels: [
           { id: 'C3', name: 'zeta', isPrivate: false, isMember: true },
@@ -204,14 +179,7 @@ test('channels proxy cursor-paginates, merges, and name-sorts the workspace chan
     async (backend) => {
       const settings = new SqliteSettingsStore(':memory:');
       try {
-        await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
-        await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
-      // A wizard-connected install also records which token earned the team id.
-      await settings.setSetting(
-        SLACK_SETTING_KEYS.teamTokenFingerprint,
-        slackTokenFingerprint('xoxb-acme'),
-      );
-        await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme Inc');
+        await connectSlack(settings, { teamName: 'Acme Inc' });
         const app = appWith(settings);
 
         const response = await getJson(app, '/admin/api/slack-channels');
@@ -230,7 +198,7 @@ test('channels proxy cursor-paginates, merges, and name-sorts the workspace chan
         const alpha = body.channels.find((channel) => channel.id === 'C1');
         assert.deepEqual(alpha, { id: 'C1', name: 'alpha', isPrivate: true, isMember: false });
         assert.equal(body.truncated, false);
-        assert.equal(body.teamId, 'T_ACME');
+        assert.equal(body.teamId, 'TACME');
         // 5 channels at pageSize 2 → three conversations.list pages.
         assert.equal(backend.callsOfMethod('conversations.list').length, 3);
       } finally {
@@ -247,7 +215,7 @@ test('channels proxy caches within the TTL and ?refresh=1 bypasses the cache', a
   await withFake(
     {
       slack: {
-        identity: { teamId: 'T_ACME', teamName: 'Acme Inc' },
+        identity: { teamId: 'TACME', teamName: 'Acme Inc' },
         channels: [{ id: 'C1', name: 'first', isMember: true }],
       },
     },
@@ -255,13 +223,7 @@ test('channels proxy caches within the TTL and ?refresh=1 bypasses the cache', a
       invalidateSlackChannelsCache();
       const settings = new SqliteSettingsStore(':memory:');
       try {
-        await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-cache');
-        await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
-      // A wizard-connected install also records which token earned the team id.
-      await settings.setSetting(
-        SLACK_SETTING_KEYS.teamTokenFingerprint,
-        slackTokenFingerprint('xoxb-acme'),
-      );
+        await connectSlack(settings, { botToken: 'xoxb-cache' });
         const app = appWith(settings);
 
         const first = (await (await getJson(app, '/admin/api/slack-channels')).json()) as {
@@ -316,20 +278,12 @@ test('assignment PUT rejects a channel from a different workspace with a naming 
     const settings = new SqliteSettingsStore(':memory:');
     const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
     try {
-      // Connected to Acme Inc — a stored token makes validation apply; the team
-      // is stored so no network is needed for the mismatch short-circuit.
-      await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
-      await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
-      // A wizard-connected install also records which token earned the team id.
-      await settings.setSetting(
-        SLACK_SETTING_KEYS.teamTokenFingerprint,
-        slackTokenFingerprint('xoxb-acme'),
-      );
-      await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme Inc');
+      // Canonical encrypted revision metadata makes the mismatch check local.
+      await connectSlack(settings, { teamName: 'Acme Inc' });
       const app = appWith(settings, store);
 
       const response = await putAssignment(app, {
-        workspaceId: 'T_OTHER',
+        workspaceId: 'TOTHER',
         channelId: 'C_ELSEWHERE',
         agentId: 'agent_channels',
         enabled: true,
@@ -337,11 +291,11 @@ test('assignment PUT rejects a channel from a different workspace with a naming 
       assert.equal(response.status, 400);
       const body = (await response.json()) as Record<string, unknown>;
       assert.equal(body.error, 'workspace_mismatch');
-      assert.equal(body.connectedTeamId, 'T_ACME');
+      assert.equal(body.connectedTeamId, 'TACME');
       assert.equal(body.connectedTeamName, 'Acme Inc');
       assert.match(String(body.message), /Acme Inc/);
-      assert.match(String(body.message), /T_ACME/);
-      assert.match(String(body.message), /T_OTHER/);
+      assert.match(String(body.message), /TACME/);
+      assert.match(String(body.message), /TOTHER/);
       // Nothing was written.
       assert.equal((await store.listAssignments()).length, 0);
     } finally {
@@ -358,7 +312,7 @@ test('assignment PUT rejects a channel Slack cannot find with a channel_not_foun
   await withFake(
     {
       slack: {
-        identity: { teamId: 'T_ACME', teamName: 'Acme Inc' },
+        identity: { teamId: 'TACME', teamName: 'Acme Inc' },
         channels: [{ id: 'C_REAL', name: 'real-channel', isMember: true }],
       },
     },
@@ -366,18 +320,11 @@ test('assignment PUT rejects a channel Slack cannot find with a channel_not_foun
       const settings = new SqliteSettingsStore(':memory:');
       const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
       try {
-        await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
-        await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
-      // A wizard-connected install also records which token earned the team id.
-      await settings.setSetting(
-        SLACK_SETTING_KEYS.teamTokenFingerprint,
-        slackTokenFingerprint('xoxb-acme'),
-      );
-        await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme Inc');
+        await connectSlack(settings, { teamName: 'Acme Inc' });
         const app = appWith(settings, store);
 
         const response = await putAssignment(app, {
-          workspaceId: 'T_ACME',
+          workspaceId: 'TACME',
           channelId: 'C_TYPO',
           agentId: 'agent_channels',
           enabled: true,
@@ -402,7 +349,7 @@ test('assignment PUT adopts Slack authoritative name and passes membership throu
   await withFake(
     {
       slack: {
-        identity: { teamId: 'T_ACME', teamName: 'Acme Inc' },
+        identity: { teamId: 'TACME', teamName: 'Acme Inc' },
         // Private + not-member: Slack forbids self-join, so this isolates the
         // name-adoption + membership-passthrough contract with no join in the
         // way (the public auto-join path is proven by the F2 tests below).
@@ -413,17 +360,11 @@ test('assignment PUT adopts Slack authoritative name and passes membership throu
       const settings = new SqliteSettingsStore(':memory:');
       const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
       try {
-        await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
-        await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
-      // A wizard-connected install also records which token earned the team id.
-      await settings.setSetting(
-        SLACK_SETTING_KEYS.teamTokenFingerprint,
-        slackTokenFingerprint('xoxb-acme'),
-      );
+        await connectSlack(settings);
         const app = appWith(settings, store);
 
         const response = await putAssignment(app, {
-          workspaceId: 'T_ACME',
+          workspaceId: 'TACME',
           channelId: 'C_REAL',
           agentId: 'agent_channels',
           enabled: true,
@@ -457,7 +398,7 @@ test('assignment PUT auto-joins a public not-member channel and reports joined:t
   await withFake(
     {
       slack: {
-        identity: { teamId: 'T_ACME', teamName: 'Acme Inc' },
+        identity: { teamId: 'TACME', teamName: 'Acme Inc' },
         channels: [{ id: 'C_PUB', name: 'public-room', isPrivate: false, isMember: false }],
       },
     },
@@ -465,16 +406,11 @@ test('assignment PUT auto-joins a public not-member channel and reports joined:t
       const settings = new SqliteSettingsStore(':memory:');
       const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
       try {
-        await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
-        await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
-        await settings.setSetting(
-          SLACK_SETTING_KEYS.teamTokenFingerprint,
-          slackTokenFingerprint('xoxb-acme'),
-        );
+        await connectSlack(settings);
         const app = appWith(settings, store);
 
         const response = await putAssignment(app, {
-          workspaceId: 'T_ACME',
+          workspaceId: 'TACME',
           channelId: 'C_PUB',
           agentId: 'agent_channels',
           enabled: true,
@@ -501,7 +437,7 @@ test('assignment PUT never self-joins a private channel and keeps the invite rem
   await withFake(
     {
       slack: {
-        identity: { teamId: 'T_ACME', teamName: 'Acme Inc' },
+        identity: { teamId: 'TACME', teamName: 'Acme Inc' },
         channels: [{ id: 'C_PRIV', name: 'secret-room', isPrivate: true, isMember: false }],
       },
     },
@@ -509,16 +445,11 @@ test('assignment PUT never self-joins a private channel and keeps the invite rem
       const settings = new SqliteSettingsStore(':memory:');
       const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
       try {
-        await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
-        await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
-        await settings.setSetting(
-          SLACK_SETTING_KEYS.teamTokenFingerprint,
-          slackTokenFingerprint('xoxb-acme'),
-        );
+        await connectSlack(settings);
         const app = appWith(settings, store);
 
         const response = await putAssignment(app, {
-          workspaceId: 'T_ACME',
+          workspaceId: 'TACME',
           channelId: 'C_PRIV',
           agentId: 'agent_channels',
           enabled: true,
@@ -546,7 +477,7 @@ test('assignment PUT saves gracefully when conversations.join hits missing_scope
   await withFake(
     {
       slack: {
-        identity: { teamId: 'T_ACME', teamName: 'Acme Inc' },
+        identity: { teamId: 'TACME', teamName: 'Acme Inc' },
         channels: [{ id: 'C_PUB', name: 'public-room', isPrivate: false, isMember: false }],
         // An install that predates the channels:join scope: the join call is
         // rejected, but the save must still succeed and the reminder still show.
@@ -557,16 +488,11 @@ test('assignment PUT saves gracefully when conversations.join hits missing_scope
       const settings = new SqliteSettingsStore(':memory:');
       const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
       try {
-        await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
-        await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
-        await settings.setSetting(
-          SLACK_SETTING_KEYS.teamTokenFingerprint,
-          slackTokenFingerprint('xoxb-acme'),
-        );
+        await connectSlack(settings);
         const app = appWith(settings, store);
 
         const response = await putAssignment(app, {
-          workspaceId: 'T_ACME',
+          workspaceId: 'TACME',
           channelId: 'C_PUB',
           agentId: 'agent_channels',
           enabled: true,
@@ -592,18 +518,12 @@ test('assignment PUT skips Slack validation for wildcard ids even when connected
   if (skip) return t.skip(skip);
 
   await withFake(
-    { slack: { identity: { teamId: 'T_ACME', teamName: 'Acme Inc' }, channels: [] } },
+    { slack: { identity: { teamId: 'TACME', teamName: 'Acme Inc' }, channels: [] } },
     async (backend) => {
       const settings = new SqliteSettingsStore(':memory:');
       const store = new SqliteConfigStore(':memory:', { agents: [agent()], assignments: [] });
       try {
-        await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
-        await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
-      // A wizard-connected install also records which token earned the team id.
-      await settings.setSetting(
-        SLACK_SETTING_KEYS.teamTokenFingerprint,
-        slackTokenFingerprint('xoxb-acme'),
-      );
+        await connectSlack(settings);
         const app = appWith(settings, store);
 
         const response = await putAssignment(app, {
@@ -654,49 +574,39 @@ test('assignment PUT keeps offline behavior when no Slack connection exists', as
   });
 });
 
-// --- 4. Team identity is bound to the token that earned it -------------------
+// --- 4. Team identity is bound to the active encrypted revision -------------
 
-test('an env bot token pointing at another workspace overrides the stale wizard-stored team', async (t) => {
+test('conflicting env credentials cannot override the active revision workspace', async (t) => {
   const skip = await loopbackListenSkipReason();
   if (skip) return t.skip(skip);
 
-  // The fake now answers auth.test for the ENV token's workspace.
   await withFake(
-    { slack: { identity: { teamId: 'T_ENV', teamName: 'Env Co' } } },
+    { slack: { identity: { teamId: 'TENV', teamName: 'Env Co' } } },
     async () => {
-      // Env token beats the stored one (env-first resolution)…
-      await withEnv({ SLACK_BOT_TOKEN: 'xoxb-env' }, async () => {
+      await withEnv({
+        SLACK_BOT_TOKEN: 'xoxb-env',
+        SLACK_SIGNING_SECRET: 'env-signing-secret',
+        SLACK_BOT_USER_ID: 'UENV',
+      }, async () => {
         const settings = new SqliteSettingsStore(':memory:');
         const store = new SqliteConfigStore(':memory:', {
           agents: [agent()],
           assignments: [],
         });
         try {
-          // …while the settings still carry a wizard-era identity for T_ACME,
-          // fingerprinted to the OLD token. Trusting it would validate against
-          // the wrong workspace and mis-key every assignment (the reviewer's
-          // reproduced failure).
-          await settings.setSetting(SLACK_SETTING_KEYS.botToken, 'xoxb-acme');
-          await settings.setSetting(SLACK_SETTING_KEYS.teamId, 'T_ACME');
-          await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme Inc');
-          await settings.setSetting(
-            SLACK_SETTING_KEYS.teamTokenFingerprint,
-            slackTokenFingerprint('xoxb-acme'),
-          );
+          await connectSlack(settings, { teamName: 'Acme Inc' });
           const app = appWith(settings, store);
 
-          // The channels proxy reports the ENV token's workspace, not the stale one.
+          // Public team metadata and the bot grant come from one revision.
           const channels = await getJson(app, '/admin/api/slack-channels');
           const body = (await channels.json()) as Record<string, unknown>;
-          assert.equal(body.teamId, 'T_ENV');
-          assert.equal(body.teamName, 'Env Co');
-          // The re-resolved identity was persisted (self-healing migration).
-          assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.teamId), 'T_ENV');
+          assert.equal(body.teamId, 'TACME');
+          assert.equal(body.teamName, 'Acme Inc');
+          assert.equal((await readStoredSlackTeamInfo(undefined, settings)).teamId, 'TACME');
 
-          // And the guard now enforces the REAL workspace: the stale wizard-era
-          // workspace id is rejected like any other mismatch.
+          // The guard continues to enforce the revision-bound workspace.
           const response = await putAssignment(app, {
-            workspaceId: 'T_ACME',
+            workspaceId: 'TENV',
             channelId: 'C_ELSEWHERE',
             agentId: 'agent_channels',
             enabled: true,
@@ -704,7 +614,7 @@ test('an env bot token pointing at another workspace overrides the stale wizard-
           assert.equal(response.status, 400);
           const rejected = (await response.json()) as Record<string, unknown>;
           assert.equal(rejected.error, 'workspace_mismatch');
-          assert.equal(rejected.connectedTeamId, 'T_ENV');
+          assert.equal(rejected.connectedTeamId, 'TACME');
         } finally {
           settings.close();
           store.close();
@@ -755,22 +665,17 @@ test('resolveSlackPublicUrl prefers env, falls back to the stored origin, else u
   });
 });
 
-test('an admin API request opportunistically persists the resolved origin to slack.publicUrl', async () => {
+test('an authenticated admin request cannot rewrite slack.publicUrl from its Host header', async () => {
   await withEnv({ ...NO_SLACK_ENV }, async () => {
     const settings = new SqliteSettingsStore(':memory:');
     invalidateStoredSlackPublicUrl();
     try {
       const app = appWith(settings);
-      // A plain admin API GET (no env pin) must pin the request origin so the
-      // Slack "Configure" link later resolves it.
       const response = await app.request('http://tag.example.test/admin/api/agents', {
         headers: auth(),
       });
       assert.equal(response.status, 200);
-      assert.equal(
-        await settings.getSetting(SLACK_SETTING_KEYS.publicUrl),
-        'http://tag.example.test',
-      );
+      assert.equal(await settings.getSetting(SLACK_SETTING_KEYS.publicUrl), undefined);
     } finally {
       settings.close();
       invalidateStoredSlackPublicUrl();

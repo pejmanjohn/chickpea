@@ -2,11 +2,9 @@ import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
 import { CONNECTOR_PRESETS, GOOGLE_WORKSPACE_SERVICE_PRESETS } from '../config/presets.ts';
 import { GOOGLE_WORKSPACE_SCOPE_OPTIONS } from '../config/api-oauth-policy.ts';
-import {
-  PASSWORD_MIN_CODE_POINTS,
-  type PasswordPolicyErrorCode,
-} from '../auth/password-policy.ts';
 import { AUTH_BRAND_HTML } from '../auth/brand.ts';
+import type { SlackSetupTransaction } from '../identity/types.ts';
+import type { SlackAppManifest } from '../slack/identity-manifest.ts';
 
 const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">`;
 const SLACK_LOGO_DATA_URL =
@@ -2483,17 +2481,22 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     teamError: "",
     teamBusy: "",
     teamNotice: "",
+    teamDirectory: [],
+    teamDirectoryLoading: false,
+    teamDirectoryError: "",
+    teamDirectoryCursor: "",
+    teamDirectoryQuery: "",
+    teamManualSlackUserId: "",
+    teamSelectedSlackUserId: "",
     teamInviteLink: "",
-    teamInviteEmail: "",
+    teamInviteSlackUserId: "",
     teamInviteCopied: false,
     teamInviteManualCopy: false,
     teamInviteCopyVersion: 0,
-    teamResetLink: "",
     // Removal is a separate destructive action, never a select option. The
     // confirmation keeps an accidental status-picker change from permanently
     // deleting the Better Auth membership and its Chickpea authority.
     teamRemoveConfirm: null,
-    teamInviteDraft: { email: "" },
     channelScreen: "overview",
     profileScreen: "list",
     profileLastAgentId: null,
@@ -2593,20 +2596,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // channel selection. This is intentionally page-local: a reload resumes at
     // the durable onboarding stage instead of replaying a celebration.
     onboardingSlackConnected: false,
-    slackDraft: { botToken: "", signingSecret: "" },
-    slackError: "",
-    slackRepair: null,
-    slackBusy: false,
-    // First-run permission completion is a forward onboarding state, not the
-    // shared Slack recovery surface. The credential pair remains only in this
-    // live page state and is discarded on refresh or when onboarding is left.
-    slackOnboardingContinuation: null,
-    slackOnboardingRequestId: 0,
     slackOnboardingFocus: "",
-    // First-run Slack handoff: 1 opens the manifest, 2 is the explicit return
-    // checkpoint, and 3 reveals install credentials. Client-side only — Slack
-    // owns app creation, so there is no server signal for the transition.
-    slackStep: 1,
+    // Set from a just-completed connect (POST result carries team + botName);
+    // drives the dismissable success toast in the connected funnel.
+    slackToast: null,
+    slackToastDismissed: false,
     // Post-onboarding Slack management state. The behavior payload comes from
     // /admin/api/slack-behavior as { value, source } entries so env-managed
     // toggles stay visibly read-only instead of pretending a stored write won.
@@ -2626,7 +2620,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     slackConnectionBusy: "",
     slackTestBusy: false,
     slackTestStatus: null,
-    slackUpdateOpen: false,
     slackDisconnectConfirm: false,
     slackDisconnectBusy: false,
     slackDisconnectError: "",
@@ -3170,7 +3163,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       render();
       return;
     }
-    if (state.view === "onboarding") resetOnboardingSlackContinuation(true);
     if (parts[1] === "usage" && USAGE_ADMIN_UI) { applyUsageQuery(location.search || ""); openUsage(); return; }
     if (parts[1] === "team") { openTeam(); return; }
     if (parts[1] === "settings") {
@@ -3236,14 +3228,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       }
       app.className = "frame" + (isPrimaryAdminSurface() ? " primary-admin-shell" : "") + adminSurfaceClass;
       app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + overlays;
-    }
-    if (isOnboardingSlackConnection()) {
-      var signingSecretInput = document.getElementById("onboarding-signing-secret");
-      var botTokenInput = document.getElementById("onboarding-bot-token");
-      // Set credential values only as live DOM properties. They must never be
-      // serialized into innerHTML, history, storage, diagnostics, or URLs.
-      if (signingSecretInput) signingSecretInput.value = state.slackDraft.signingSecret;
-      if (botTokenInput) botTokenInput.value = state.slackDraft.botToken;
     }
     if (state.view === "onboarding" && state.slackOnboardingFocus) {
       var pendingOnboardingFocus = state.slackOnboardingFocus;
@@ -3612,57 +3596,88 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var pending = invitations.filter(function (invitation) {
       return invitation.status === "pending" && Number(invitation.expiresAt) > Date.now();
     });
+    var viewer = team.viewer || { role: "admin", membershipId: "" };
     var notice = state.teamError
       ? '<p class="error" role="alert">' + esc(state.teamError) + '</p>'
       : (state.teamNotice ? '<p class="hint" role="status">' + esc(state.teamNotice) + '</p>' : '');
-    var createdFlash = state.teamInviteLink && state.teamInviteEmail
+    var createdFlash = state.teamInviteLink && state.teamInviteSlackUserId
       ? (state.teamInviteManualCopy
         ? '<div class="team-show-once" role="status"><label for="team-invite-link">Copy this teammate join link manually</label><p class="hint">Clipboard access was denied. Select the full link below, then copy and share it privately.</p><div class="team-link-row"><input class="input mono" id="team-invite-link" readonly value="' + esc(state.teamInviteLink) + '"><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">Copy link</button></div></div>'
-        : '<div class="team-created-flash" role="status"><div><strong>Join link ready for</strong><span>' + esc(state.teamInviteEmail) + '</span></div><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">' + (state.teamInviteCopied ? 'Copied' : 'Copy link') + '</button></div>')
+        : '<div class="team-created-flash" role="status"><div><strong>Slack invitation ready</strong><span>' + esc(state.teamInviteSlackUserId) + '</span></div><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-link">' + (state.teamInviteCopied ? 'Copied' : 'Copy link') + '</button></div>')
       : '';
-    var resetOnce = state.teamResetLink
-      ? '<div class="team-show-once" role="status"><label for="team-reset-link">Copy this password reset link now</label><p class="hint">Send it privately to the named teammate. It expires quickly and cannot be shown again after you leave or refresh.</p><div class="team-link-row"><input class="input mono" id="team-reset-link" readonly value="' + esc(state.teamResetLink) + '"><button type="button" class="btn btn-primary btn-sm" data-action="team-copy-reset">Copy link</button><button type="button" class="btn btn-ghost btn-sm" data-action="team-dismiss-reset">Done</button></div></div>'
+    var inviteCard = viewer.role === "owner" ? teamInvitationPickerHtml(createdFlash) : '';
+    var soleOwner = team.soleOwnerWarning
+      ? '<section class="team-card" role="alert" aria-labelledby="sole-owner-heading"><h2 id="sole-owner-heading">Add a second Owner</h2><p class="hint">This workspace has one active Owner. If that Slack identity is lost, recovery requires a destructive fresh reset. Promote a verified active Admin below.</p></section>'
       : '';
-    return '<div class="team-hero"><div><p class="section-eyebrow">People &amp; access</p><h1 class="page-title">Your team</h1><p class="hint">Everyone you invite can administer this Chickpea workspace. The person who created it remains the owner.</p></div><span class="team-count">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></div>' +
-      notice +
-      '<section class="team-card" aria-labelledby="invite-heading"><h2 id="invite-heading">Create a teammate join link</h2><p class="hint">Chickpea does not send email. Enter the exact email address, then copy and share the private link yourself.</p><form class="team-form" data-action="team-invite-form"><label class="field-label" for="team-invite-email">Email</label><div class="team-form-row"><input class="input" id="team-invite-email" name="email" data-action="team-invite-email" type="email" autocomplete="email" required placeholder="teammate@example.com" value="' + esc(state.teamInviteDraft.email) + '"><button type="submit" class="btn btn-primary"' + (state.teamBusy ? ' disabled' : '') + '>Create link</button></div></form>' + createdFlash + '</section>' +
-      resetOnce + '<section class="team-card" aria-labelledby="members-heading"><h2 id="members-heading">Members</h2><p class="hint">Suspension takes effect on the next Chickpea request, even if the signed-in browser stays open.</p><div class="team-list">' + (members.length ? members.map(teamMemberRowHtml).join("") : '<p class="team-empty">No memberships yet.</p>') + '</div></section>' +
-      '<section class="team-card" aria-labelledby="invitations-heading"><h2 id="invitations-heading">Pending join links</h2><p class="hint">Each teammate has one private link. Copy it whenever needed, or revoke it to stop access.</p><div class="team-list">' + (pending.length ? pending.map(teamInvitationRowHtml).join("") : '<p class="team-empty">No pending join links.</p>') + '</div></section>';
+    return '<div class="team-hero"><div><p class="section-eyebrow">People &amp; access</p><h1 class="page-title">Your team</h1><p class="hint">Everyone here is bound to one exact identity in the connected Slack workspace.</p></div><span class="team-count">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></div>' +
+      notice + soleOwner + inviteCard +
+      '<section class="team-card" aria-labelledby="members-heading"><h2 id="members-heading">Members</h2><p class="hint">Suspending or removing a member revokes their Chickpea access. Removing is terminal and requires a fresh Slack invitation.</p><div class="team-list">' + (members.length ? members.map(teamMemberRowHtml).join("") : '<p class="team-empty">No memberships yet.</p>') + '</div></section>' +
+      (viewer.role === "owner" ? '<section class="team-card" aria-labelledby="invitations-heading"><h2 id="invitations-heading">Pending Slack invitations</h2><p class="hint">Links expire after seven days and only the selected Slack member can accept one.</p><div class="team-list">' + (pending.length ? pending.map(teamInvitationRowHtml).join("") : '<p class="team-empty">No pending invitations.</p>') + '</div></section>' : '');
+  }
+
+  function teamInvitationPickerHtml(createdFlash) {
+    var query = String(state.teamDirectoryQuery || "").trim().toLowerCase();
+    var members = (state.teamDirectory || []).filter(function (member) {
+      if (!query) return true;
+      return [member.displayName, member.realName, member.handle, member.slackUserId].some(function (value) {
+        return String(value || "").toLowerCase().indexOf(query) >= 0;
+      });
+    });
+    var directoryStatus = state.teamDirectoryLoading
+      ? '<p class="hint" role="status">Loading eligible Slack members…</p>'
+      : state.teamDirectoryError
+        ? '<p class="error" role="alert">' + esc(state.teamDirectoryError) + ' <button type="button" class="btn btn-soft btn-sm" data-action="team-directory-retry">Retry</button></p>'
+        : members.length
+          ? '<div class="team-list" role="listbox" aria-label="Eligible Slack members">' + members.map(teamDirectoryMemberHtml).join("") + '</div>'
+          : '<p class="team-empty">' + (query ? 'No Slack members match this search.' : 'No eligible Slack members are available on this page.') + '</p>';
+    var selected = (state.teamDirectory || []).find(function (member) {
+      return member.slackUserId === state.teamSelectedSlackUserId;
+    });
+    var selectedSummary = selected
+      ? '<p class="hint" role="status">Selected ' + esc(selected.displayName || selected.realName || selected.handle) + ' · @' + esc(selected.handle) + ' · ' + esc(selected.slackUserId) + '</p>'
+      : '<p class="hint" role="status">Select one verified Slack member before creating an invitation.</p>';
+    return '<section class="team-card" aria-labelledby="invite-heading"><h2 id="invite-heading">Invite from Slack</h2><p class="hint">Choose the exact Slack member. Names can repeat, so Chickpea also shows the handle and stable member ID.</p>' +
+      '<label class="field-label" for="team-directory-search">Search this page</label><input class="input" id="team-directory-search" data-action="team-directory-search" value="' + esc(state.teamDirectoryQuery) + '" placeholder="Name, handle, or Slack member ID">' + directoryStatus +
+      (state.teamDirectoryCursor ? '<button type="button" class="btn btn-soft btn-sm" data-action="team-directory-more"' + (state.teamDirectoryLoading ? ' disabled' : '') + '>Load more Slack members</button>' : '') +
+      '<div class="team-form"><label class="field-label" for="team-member-id">Or paste a Slack member ID</label><div class="team-form-row"><input class="input mono" id="team-member-id" data-action="team-member-id" value="' + esc(state.teamManualSlackUserId) + '" placeholder="U012ABCDEF" maxlength="64"><button type="button" class="btn btn-soft" data-action="team-member-verify"' + (state.teamBusy ? ' disabled' : '') + '>Verify</button></div></div>' + selectedSummary +
+      '<form data-action="team-invite-form"><button type="submit" class="btn btn-primary"' + (!selected || state.teamBusy ? ' disabled' : '') + '>Create private invitation link</button></form>' + createdFlash + '</section>';
+  }
+
+  function teamDirectoryMemberHtml(member) {
+    var selected = member.slackUserId === state.teamSelectedSlackUserId;
+    var avatar = member.avatarUrl ? '<img src="' + esc(member.avatarUrl) + '" alt="" width="40" height="40" loading="lazy" referrerpolicy="no-referrer" style="border-radius:10px">' : '';
+    return '<button type="button" class="team-row' + (selected ? ' active' : '') + '" role="option" aria-selected="' + (selected ? 'true' : 'false') + '" data-action="team-member-select" data-slack-user="' + esc(member.slackUserId) + '">' + avatar + '<span class="team-row-main"><span class="team-row-title">' + esc(member.displayName || member.realName || member.handle) + '</span><span class="team-row-sub">@' + esc(member.handle) + ' · ' + esc(member.slackUserId) + '</span></span></button>';
   }
 
   function teamMemberRowHtml(member) {
     var viewer = state.team && state.team.viewer ? state.team.viewer : { role: "admin", membershipId: "" };
-    var canManageOwner = viewer.role === "owner";
+    var canManage = viewer.role === "owner" && viewer.membershipId !== member.id;
     var busy = state.teamBusy === "member:" + member.id;
-    var statusSelect = member.role === "owner" ? '' : '<span class="select-wrap team-status-control"><select class="input" name="membership-status-' + esc(member.id) + '" aria-label="Status for ' + esc(member.email || "member") + '" data-action="team-member-status" data-membership="' + esc(member.id) + '"' + (busy ? ' disabled' : '') + '>' + ["active", "suspended"].map(function (status) {
-      return '<option value="' + status + '"' + (member.status === status ? ' selected' : '') + '>' + status.charAt(0).toUpperCase() + status.slice(1) + '</option>';
-    }).join("") + '</select>' + icon("chevron-down", "select-caret") + '</span>';
-    var resetButton = '<button type="button" class="btn btn-soft btn-sm" data-action="team-reset-password" data-membership="' + esc(member.id) + '"' + (busy || (member.role === "owner" && !canManageOwner) ? ' disabled' : '') + '>Reset password</button>';
-    var removeButton = member.role === "owner" ? '' : '<button type="button" class="btn btn-danger btn-sm" data-action="team-remove-open" data-membership="' + esc(member.id) + '"' + (busy ? ' disabled' : '') + '>Remove</button>';
+    var promote = canManage && member.role === "admin" && member.status === "active" ? '<button type="button" class="btn btn-soft btn-sm" data-action="team-promote" data-membership="' + esc(member.id) + '"' + (busy ? ' disabled' : '') + '>Promote to Owner</button>' : '';
+    var statusAction = canManage && member.role === "admin" && member.status === "active"
+      ? '<button type="button" class="btn btn-soft btn-sm" data-action="team-suspend-open" data-membership="' + esc(member.id) + '"' + (busy ? ' disabled' : '') + '>Suspend</button>'
+      : canManage && member.role === "admin" && member.status === "suspended"
+        ? '<button type="button" class="btn btn-soft btn-sm" data-action="team-restore" data-membership="' + esc(member.id) + '"' + (busy ? ' disabled' : '') + '>Restore</button>' : '';
+    var removeButton = canManage && member.role === "admin" && member.status !== "removed" ? '<button type="button" class="btn btn-danger btn-sm" data-action="team-remove-open" data-membership="' + esc(member.id) + '"' + (busy ? ' disabled' : '') + '>Remove</button>' : '';
     var ownerMarker = member.role === "owner" ? '<span class="team-status owner">Owner</span>' : '';
-    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(member.displayName || member.email || "Teammate") + (viewer.membershipId === member.id ? ' <span class="hint">(you)</span>' : '') + '</div><div class="team-row-sub">' + esc(member.email || "No email") + '</div><div class="team-statuses">' + ownerMarker + '<span class="team-status ' + (member.status === "active" ? "active" : member.status === "suspended" ? "suspended" : "") + '">' + esc(member.status) + '</span></div></div><div class="team-row-actions">' + statusSelect + resetButton + removeButton + '</div></article>';
+    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(member.displayName || member.slackUserId || "Slack member") + (viewer.membershipId === member.id ? ' <span class="hint">(you)</span>' : '') + '</div><div class="team-row-sub">' + esc(member.slackUserId || "Slack identity unavailable") + '</div><div class="team-statuses">' + ownerMarker + '<span class="team-status ' + (member.status === "active" ? "active" : member.status === "suspended" ? "suspended" : "") + '">' + esc(member.status) + '</span></div></div><div class="team-row-actions">' + promote + statusAction + removeButton + '</div></article>';
   }
 
   function teamRemoveModalHtml() {
     var confirmation = state.teamRemoveConfirm;
     if (!confirmation) return "";
-    var label = confirmation.displayName || confirmation.email || "this teammate";
-    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Remove teammate">' +
-      '<h2 class="modal-title">Remove ' + esc(label) + '?</h2>' +
-      '<p class="modal-body">They will immediately lose access to this Chickpea workspace. Their membership is deleted and cannot be restored from this screen; invite them again to give access back.</p>' +
-      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="team-remove-cancel">Keep teammate</button><span class="spacer"></span><button type="button" class="btn btn-danger" data-action="team-remove-confirm">Remove teammate</button></div></div></div>';
+    var label = confirmation.displayName || confirmation.slackUserId || "this Slack member";
+    var verb = confirmation.kind === "revoke" ? "Revoke invitation" : confirmation.kind === "suspend" ? "Suspend" : "Remove";
+    var detail = confirmation.kind === "revoke" ? "The private link will stop working immediately." : confirmation.kind === "suspend" ? "They will lose Chickpea access immediately. An Owner can restore this membership later." : "They will lose Chickpea access immediately. Removal is terminal; restoring access requires a fresh exact Slack invitation.";
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="' + esc(verb) + '">' +
+      '<h2 class="modal-title">' + esc(verb) + ' for ' + esc(label) + '?</h2><p class="modal-body">' + esc(detail) + '</p>' +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="team-remove-cancel">Cancel</button><span class="spacer"></span><button type="button" class="btn btn-danger" data-action="team-remove-confirm">' + esc(verb) + '</button></div></div></div>';
   }
 
   function teamInvitationRowHtml(invitation) {
     var busy = state.teamBusy === "invite:" + invitation.id;
-    var copyAction = invitation.inviteLink
-      ? '<button type="button" class="btn btn-soft btn-sm" data-action="team-copy-invitation" data-link="' + esc(invitation.inviteLink) + '"' + (busy ? ' disabled' : '') + '>Copy link</button>'
-      : '';
-    var actions = copyAction + '<button type="button" class="btn btn-danger btn-sm" data-action="team-revoke" data-invitation="' + esc(invitation.id) + '"' + (busy ? ' disabled' : '') + '>Revoke</button>';
-    var guidance = invitation.inviteLink
-      ? ''
-      : '<div class="team-row-sub">This link was created with older deployment credentials and cannot be displayed. Revoke it before creating a replacement.</div>';
-    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(invitation.email) + '</div><div class="team-row-sub">Expires ' + esc(new Date(invitation.expiresAt).toLocaleString()) + '</div><div class="team-statuses"><span class="team-status">Waiting to join</span></div>' + guidance + '</div><div class="team-row-actions">' + actions + '</div></article>';
+    var actions = '<button type="button" class="btn btn-danger btn-sm" data-action="team-revoke-open" data-invitation="' + esc(invitation.id) + '" data-slack-user="' + esc(invitation.slackUserId) + '"' + (busy ? ' disabled' : '') + '>Revoke</button>';
+    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(invitation.displayName || invitation.slackUserId) + '</div><div class="team-row-sub">' + esc(invitation.slackUserId) + ' · Expires ' + esc(new Date(invitation.expiresAt).toLocaleString()) + '</div><div class="team-statuses"><span class="team-status">Waiting for exact Slack account</span></div></div><div class="team-row-actions">' + actions + '</div></article>';
   }
 
   function profilesRailHtml() {
@@ -3844,11 +3859,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.teamNotice = "";
     if (entering) {
       state.teamInviteLink = "";
-      state.teamInviteEmail = "";
+      state.teamInviteSlackUserId = "";
       state.teamInviteCopied = false;
       state.teamInviteManualCopy = false;
       state.teamInviteCopyVersion += 1;
-      state.teamResetLink = "";
+      state.teamSelectedSlackUserId = "";
     }
     render();
     loadTeam();
@@ -3862,6 +3877,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.team = body;
       state.teamLoading = false;
       render();
+      if (body && body.viewer && body.viewer.role === "owner" && !state.teamDirectory.length) {
+        return loadTeamDirectory(true).then(function () { return body; });
+      }
       return body;
     }).catch(function (error) {
       state.teamLoading = false;
@@ -3873,7 +3891,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function finishTeamMutation(message, result) {
     if (result && result.inviteLink) state.teamInviteLink = result.inviteLink;
-    if (result && result.resetLink) state.teamResetLink = result.resetLink;
     state.teamNotice = message;
     return loadTeam().then(function () {
       state.teamBusy = "";
@@ -3902,9 +3919,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function createTeamInvitation() {
     if (state.teamBusy) return;
-    var email = String(state.teamInviteDraft.email || "").trim();
-    if (!email || email.indexOf("@") < 1) {
-      state.teamError = "Enter a valid teammate email.";
+    var slackUserId = String(state.teamSelectedSlackUserId || "").trim();
+    if (!/^[A-Z][A-Z0-9]{1,63}$/.test(slackUserId)) {
+      state.teamError = "Select a verified Slack member.";
       render();
       return;
     }
@@ -3912,15 +3929,15 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.teamError = "";
     state.teamNotice = "";
     state.teamInviteLink = "";
-    state.teamInviteEmail = "";
+    state.teamInviteSlackUserId = "";
     state.teamInviteCopied = false;
     state.teamInviteManualCopy = false;
     state.teamInviteCopyVersion += 1;
     render();
-    postJson("/admin/api/team/invitations", "POST", { email: email }).then(function (result) {
-      state.teamInviteDraft.email = "";
-      state.teamInviteEmail = result && result.invitation && result.invitation.email ? result.invitation.email : email;
-      return finishTeamMutation("", result);
+    postJson("/admin/api/team/invitations", "POST", { slackUserId: slackUserId }).then(function (result) {
+      state.teamInviteSlackUserId = result && result.invitation && result.invitation.slackUserId ? result.invitation.slackUserId : slackUserId;
+      state.teamSelectedSlackUserId = "";
+      return finishTeamMutation(result && result.inviteLink ? "Share this private link with the selected Slack member." : "An invitation is already pending for this Slack member.", result);
     }).catch(failTeamMutation);
   }
 
@@ -3930,14 +3947,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.teamError = "";
     state.teamNotice = "";
     state.teamInviteLink = "";
-    state.teamInviteEmail = "";
+    state.teamInviteSlackUserId = "";
     state.teamInviteCopied = false;
     state.teamInviteManualCopy = false;
     state.teamInviteCopyVersion += 1;
     render();
     var path = "/admin/api/team/invitations/" + encodeURIComponent(invitationId);
     api(path, { method: "DELETE" })
-      .then(function (result) { return finishTeamMutation("Join link revoked.", result); })
+      .then(function (result) { return finishTeamMutation("Slack invitation revoked.", result); })
       .catch(failTeamMutation);
   }
 
@@ -3954,16 +3971,46 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       .catch(failTeamMutation);
   }
 
-  function createTeamPasswordReset(membershipId) {
-    if (state.teamBusy || !membershipId) return;
-    state.teamBusy = "member:" + membershipId;
-    state.teamError = "";
-    state.teamNotice = "";
-    state.teamResetLink = "";
+  function loadTeamDirectory(reset) {
+    if (state.teamDirectoryLoading) return Promise.resolve();
+    state.teamDirectoryLoading = true;
+    state.teamDirectoryError = "";
+    if (reset) { state.teamDirectory = []; state.teamDirectoryCursor = ""; }
     render();
-    postJson("/admin/api/team/memberships/" + encodeURIComponent(membershipId) + "/reset", "POST", {})
-      .then(function (result) { return finishTeamMutation("Password reset created. Copy the private link and send it to the teammate.", result); })
-      .catch(failTeamMutation);
+    var path = "/admin/api/team/directory" + (!reset && state.teamDirectoryCursor ? "?cursor=" + encodeURIComponent(state.teamDirectoryCursor) : "");
+    return api(path).then(function (body) {
+      var byId = {};
+      state.teamDirectory.concat(body.members || []).forEach(function (member) { byId[member.slackUserId] = member; });
+      state.teamDirectory = Object.keys(byId).map(function (id) { return byId[id]; });
+      state.teamDirectoryCursor = body.nextCursor || "";
+      state.teamDirectoryLoading = false;
+      render();
+    }).catch(function (error) {
+      state.teamDirectoryLoading = false;
+      state.teamDirectoryError = teamMutationErrorText(error);
+      render();
+    });
+  }
+
+  function verifyTeamMemberId() {
+    if (state.teamBusy) return;
+    var slackUserId = String(state.teamManualSlackUserId || "").trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9]{1,63}$/.test(slackUserId)) {
+      state.teamError = "Enter a valid Slack member ID, such as U012ABCDEF.";
+      render();
+      return;
+    }
+    state.teamBusy = "directory:verify";
+    state.teamError = "";
+    render();
+    api("/admin/api/team/directory/" + encodeURIComponent(slackUserId)).then(function (body) {
+      var member = body.member;
+      state.teamDirectory = state.teamDirectory.filter(function (row) { return row.slackUserId !== member.slackUserId; }).concat(member);
+      state.teamSelectedSlackUserId = member.slackUserId;
+      state.teamBusy = "";
+      state.teamNotice = "Slack member verified.";
+      render();
+    }).catch(failTeamMutation);
   }
 
   function openUsage() {
@@ -4208,129 +4255,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return state.view === "onboarding" && state.onboarding && state.onboarding.stage === "connect_slack";
   }
 
-  function onboardingSlackPermissionUrl(value) {
-    try {
-      var url = new URL(String(value || ""));
-      var pathParts = url.pathname.split("/").filter(Boolean);
-      var appSpecific = pathParts.length === 3 && pathParts[0] === "apps" && /^[A-Z0-9]+$/.test(pathParts[1]) &&
-        (pathParts[2] === "oauth" || pathParts[2] === "event-subscriptions");
-      var appList = pathParts.length === 1 && pathParts[0] === "apps";
-      if (url.protocol !== "https:" || url.hostname !== "api.slack.com" || url.username || url.password || (!appSpecific && !appList)) return "";
-      var safePath = url.pathname.endsWith("/") ? url.pathname.slice(0, -1) : url.pathname;
-      return "https://api.slack.com" + safePath;
-    } catch (_) {
-      return "";
-    }
-  }
-
-  function onboardingSlackAsset(name) {
-    return "/admin/assets/onboarding/" + name + ".webp";
-  }
-
-  function onboardingSlackInstruction(number, title, note, imageName, imageClass, alt) {
-    return '<section class="onboarding-instruction"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">' + number + '</span><span>' + title + '</span></h2>' +
-      (note ? '<p class="onboarding-instruction-note">' + note + '</p>' : '') +
-      '<div class="onboarding-shot ' + imageClass + '"><img src="' + onboardingSlackAsset(imageName) + '" alt="' + alt + '" loading="lazy" decoding="async"></div></section>';
-  }
-
-  function onboardingSlackContinuationHtml() {
-    var continuation = state.slackOnboardingContinuation;
-    var phase = continuation.phase || "finish";
-    var permissionUrl = onboardingSlackPermissionUrl(continuation.consoleUrl) || "https://api.slack.com/apps";
-    var appListFallback = permissionUrl === "https://api.slack.com/apps";
-    var eventsContinuation = continuation.kind === "events";
-    var status = continuation.note
-      ? '<p class="onboarding-status" role="status" aria-live="polite">' + esc(continuation.note) + '</p>'
-      : '<p class="onboarding-status" role="status" aria-live="polite">Your details are ready for the next check.</p>';
-    var action = phase === "finish"
-      ? '<a class="btn btn-primary" href="' + esc(permissionUrl) + '" target="_blank" rel="noopener noreferrer" data-action="slack-permissions-open">' +
-        (eventsContinuation ? 'Finish in Slack' : 'Continue in Slack') + ' <span class="sr-only">(opens in a new tab)</span></a>'
-      : '<button type="button" class="btn btn-primary" data-action="slack-permissions-check"' + (phase === "checking" ? " disabled" : "") + '>' +
-        (phase === "checking" ? '<span class="spinner"></span>Checking&hellip;' : (eventsContinuation ? 'Check now' : 'Check again')) + '</button>';
-    if (eventsContinuation) {
-      var eventsFallback = appListFallback
-        ? '<p class="hint">In Slack, open Chickpea, then open Event Subscriptions.</p>'
-        : '<p class="hint">Slack will open Chickpea&rsquo;s Event Subscriptions page.</p>';
-      return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Event URL check</p>' +
-        '<h1 class="onboarding-title" id="slack-permission-heading" tabindex="-1">' + (phase === "finish" ? 'One more Slack check' : 'Return here when it says Verified') + '</h1>' +
-        '<p class="onboarding-lede">Open Event Subscriptions, click Retry beside Request URL, then click Save Changes. You do not need to paste the values again.</p>' + status + eventsFallback +
-        '<div class="onboarding-actions">' + action +
-        '<button type="button" class="btn btn-ghost" data-action="slack-permissions-start-over"' + (phase === "checking" ? " disabled" : "") + '>Start over</button></div></section>';
-    }
-    var openHelp = appListFallback
-      ? '<p class="hint">Open the Chickpea app, then choose OAuth &amp; Permissions.</p>'
-      : '<p class="hint">Slack will open Chickpea&rsquo;s OAuth &amp; Permissions page.</p>';
-    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Permissions check</p>' +
-      '<h1 class="onboarding-title" id="slack-permission-heading" tabindex="-1">One more Slack approval</h1>' +
-      '<p class="onboarding-lede">Slack created Chickpea without every permission it needs. Approve the complete set once, then check again.</p>' +
-      '<div class="onboarding-recovery-note"><strong>Your values are still here.</strong>You do not need to copy the token or Signing Secret again.</div>' +
-      '<div class="onboarding-instructions">' +
-      onboardingSlackInstruction(1, 'In OAuth &amp; Permissions, click the yellow reinstall your app link.', '', 'reinstall', 'onboarding-shot-banner', 'Slack yellow banner with the reinstall your app link') +
-      onboardingSlackInstruction(2, 'Review the permissions, then click Allow.', '', 'allow', 'onboarding-shot-focused', 'Slack permission approval screen with the Allow button') +
-      '</div>' + status + openHelp +
-      '<div class="onboarding-guide-actions"><button type="button" class="btn btn-ghost" data-action="slack-permissions-start-over"' + (phase === "checking" ? " disabled" : "") + '>Start over</button>' + action + '</div></section>';
-  }
-
   function onboardingConnectHtml() {
-    var conn = state.slack;
-    if (!conn) return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Step 1 of 3</p><h1 class="onboarding-title">Loading Slack setup&hellip;</h1></section>';
-    if (state.slackOnboardingContinuation) return onboardingSlackContinuationHtml();
-    if (state.slackBusy && state.slackConnectionBusy === "update") {
-      return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Connecting</p>' +
-        '<h1 class="onboarding-title">Checking your Slack setup&hellip;</h1>' +
-        '<div class="onboarding-check-list" role="status" aria-live="polite">' +
-        '<div class="onboarding-check-row"><span class="onboarding-check-icon">&check;</span><span class="onboarding-check-copy"><strong>Event URL</strong><span>Verified</span></span></div>' +
-        '<div class="onboarding-check-row"><span class="onboarding-check-pending">&middot;&middot;&middot;</span><span class="onboarding-check-copy"><strong>Workspace and permissions</strong><span>Checking</span></span></div>' +
-        '</div></section>';
-    }
-    if (state.slackStep <= 2) {
-      if (state.slackStep === 1) {
-        return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Connect Slack</p>' +
-          '<h1 class="onboarding-title">Create Chickpea</h1>' +
-          '<p class="onboarding-lede">Slack opens in a new tab. Come back here after Chickpea is created.</p>' +
-          '<div class="onboarding-instructions">' +
-          onboardingSlackInstruction(1, 'Choose your workspace, then click Next.', '', 'create-workspace', 'onboarding-shot-viewport', 'Slack Create from manifest screen with the workspace picker and Next button') +
-          onboardingSlackInstruction(2, 'Review Chickpea, then click Create and Install.', '', 'create-review', 'onboarding-shot-viewport', 'Slack app review screen showing Chickpea permissions and Create and Install') +
-          '</div><div class="onboarding-guide-actions"><span></span><a class="btn btn-primary" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer" data-action="advance-slack-step"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Create Chickpea in Slack <span aria-hidden="true">&nearr;</span></a></div></section>';
-      }
-      return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Connect Slack</p>' +
-        '<h1 class="onboarding-title">Finish creating Chickpea</h1>' +
-        '<p class="onboarding-lede">Two quick actions in the Slack tab you just opened.</p>' +
-        '<div class="onboarding-instructions">' +
-        onboardingSlackInstruction(1, 'Review the permissions, then click Allow.', '', 'allow', 'onboarding-shot-focused', 'Slack permission approval screen with the Allow button') +
-        onboardingSlackInstruction(2, 'When Slack says Chickpea is ready, click Go to App Settings.', '', 'ready', 'onboarding-shot-ready', 'Slack Chickpea is ready dialog with the Go to App Settings button') +
-        '</div><div class="onboarding-guide-actions"><a class="btn btn-ghost" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noopener noreferrer"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Open Slack setup again <span aria-hidden="true">&nearr;</span></a><button type="button" class="btn btn-primary" data-action="onboarding-slack-events">Next: Verify Event URL</button></div></section>';
-    }
-    if (state.slackStep === 3) {
-      return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Connect Slack</p>' +
-        '<h1 class="onboarding-title">Verify the Event URL</h1>' +
-        '<p class="onboarding-lede">Slack needs one manual check before it can send messages to Chickpea.</p>' +
-        '<a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">Lost the Slack tab? Open your apps <span aria-hidden="true">&nearr;</span></a>' +
-        '<div class="onboarding-instructions">' +
-        '<section class="onboarding-instruction"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">1</span><span>In the left sidebar, open Event Subscriptions.</span></h2></section>' +
-        onboardingSlackInstruction(2, 'Beside Request URL, click Retry.', '', 'events-retry', 'onboarding-shot-wide', 'Slack Event Subscriptions showing Your URL did not respond and the Retry button') +
-        onboardingSlackInstruction(3, 'When Request URL says Verified, click Save Changes.', 'If it still says your URL did not respond, wait a few seconds and click Retry again.', 'events', 'onboarding-shot-focused onboarding-shot-events', 'Slack Event Subscriptions showing Request URL Verified') +
-        '</div><div class="onboarding-guide-actions"><button type="button" class="btn btn-ghost" data-action="onboarding-slack-back" data-step="create">Back</button>' +
-        '<button type="button" class="btn btn-primary" data-action="onboarding-slack-keys">I saved changes</button></div></section>';
-    }
-    var submit = state.slackBusy
-      ? '<button type="submit" class="btn btn-primary" disabled><span class="spinner"></span>Checking&hellip;</button>'
-      : '<button type="submit" class="btn btn-primary">Check and connect</button>';
-    var errorHtml = state.slackError
-      ? '<div class="onboarding-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error"><p class="field-error">' + esc(state.slackError) + '</p></div>'
-      : '';
-    return '<section class="onboarding-panel">' +
-      '<p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title">Add 2 values</h1>' +
-      '<p class="onboarding-lede">Paste them once. Chickpea checks everything before saving.</p>' +
-      '<a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer">Lost the Slack tab? Open your apps <span aria-hidden="true">&nearr;</span></a>' +
-      '<form class="onboarding-credential-form" data-action="slack-connect-form">' +
-      '<section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">1</span><span>In OAuth &amp; Permissions, copy Bot User OAuth Token.</span></h2>' +
-      '<div class="onboarding-credential-grid"><div class="onboarding-shot onboarding-shot-token"><img src="' + onboardingSlackAsset('bot-token') + '" alt="Slack OAuth Tokens showing the Bot User OAuth Token field and Copy button" loading="lazy" decoding="async"></div>' +
-      '<div class="onboarding-credential-help"><label class="field" for="onboarding-bot-token"><span class="field-label">Bot User OAuth Token</span><span class="onboarding-credential-subtext">Starts with xoxb-</span><input class="input mono" id="onboarding-bot-token" name="botToken" type="password" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-action="slack-bot-token"></label></div></div></section>' +
-      '<section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">2</span><span>In Basic Information, reveal and copy Signing Secret.</span></h2>' +
-      '<div class="onboarding-credential-grid"><div class="onboarding-shot onboarding-shot-secret"><img src="' + onboardingSlackAsset('signing-secret') + '" alt="Slack Basic Information showing the Signing Secret" loading="lazy" decoding="async"></div>' +
-      '<div class="onboarding-credential-help"><label class="field" for="onboarding-signing-secret"><span class="field-label">Signing Secret</span><span class="onboarding-credential-subtext">Use Signing Secret — not Client Secret.</span><input class="input mono" id="onboarding-signing-secret" name="signingSecret" type="password" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-action="slack-signing-secret"></label></div></div></section>' +
-      errorHtml + '<div class="onboarding-guide-actions"><button type="button" class="btn btn-ghost" data-action="onboarding-slack-back" data-step="events">Back</button>' + submit + '</div></form></section>';
+    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Slack setup</p>' +
+      '<h1 class="onboarding-title">Finish connecting Slack</h1>' +
+      '<p class="onboarding-lede">This deployment has not completed its verified Slack installation. Resume the private setup link created by your deploy, or use the recovery runbook if that link expired.</p>' +
+      '<p class="hint">Chickpea never asks you to paste a bot token into the Admin control plane.</p></section>';
   }
 
   function onboardingSlackConnectedHtml() {
@@ -4595,24 +4524,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return '<p class="inline-status ' + (status.ok ? "ok" : "error") + '" role="status" aria-live="polite">' + esc(status.message) + '</p>';
   }
 
-  function slackUpdateCredentialsHtml() {
-    if (!state.slackUpdateOpen) return "";
-    var saveButton = state.slackBusy
-      ? '<button type="submit" class="btn btn-primary" disabled><span class="spinner"></span>Validating&hellip;</button>'
-      : '<button type="submit" class="btn btn-primary">Validate &amp; update</button>';
-    return '<div class="empty" style="gap:14px;">' +
-      '<div class="section-head"><div><p class="field-label">Update Slack credentials</p>' +
-      '<p class="hint">Rotate this workspace&rsquo;s credentials, or switch to another workspace. Existing Agents and Channel mappings stay saved.</p></div>' +
-      '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-update-close"' + (state.slackConnectionBusy ? " disabled" : "") + '>Cancel</button></div>' +
-      '<form data-action="slack-connect-form" style="display:flex; flex-direction:column; gap:12px;">' +
-      '<div class="form-grid"><div class="field"><label class="field-label" for="slack-update-bot-token">Bot User OAuth Token</label>' +
-      '<input id="slack-update-bot-token" class="input mono" name="botToken" type="password" autocomplete="off" placeholder="xoxb-&hellip;" value="' + esc(state.slackDraft.botToken) + '" data-action="slack-bot-token"' + (state.slackConnectionBusy ? " disabled" : "") + '></div>' +
-      '<div class="field"><label class="field-label" for="slack-update-signing-secret">Signing Secret</label>' +
-      '<input id="slack-update-signing-secret" class="input mono" name="signingSecret" type="password" autocomplete="off" placeholder="Signing secret" value="' + esc(state.slackDraft.signingSecret) + '" data-action="slack-signing-secret"' + (state.slackConnectionBusy ? " disabled" : "") + '></div></div>' +
-      '<div class="save-bar" style="justify-content:flex-start;">' + saveButton +
-      (state.slackError ? '<span class="field-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error">' + esc(state.slackError) + '</span>' : "") + '</div></form></div>';
-  }
-
   function slackIdentityHtml() {
     var identities = state.slackIdentities.identities || [];
     var base = identities.find(function (identity) { return identity.kind === "workspace_default"; });
@@ -4783,12 +4694,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var testButton = state.slackTestBusy
       ? '<button type="button" class="btn btn-soft i-lead" disabled><span class="spinner"></span>Testing&hellip;</button>'
       : '<button type="button" class="btn btn-soft i-lead" data-action="slack-test"' + (connectionBusy ? " disabled" : "") + '>' + icon("arrow-path") + 'Test connection</button>';
-    var updateButton = '<button type="button" class="btn btn-soft i-lead" data-action="slack-update-open"' +
-      (mutable && !connectionBusy ? "" : ' disabled' + (!mutable ? ' title="Credentials managed by the environment"' : "")) + '>' + icon("pencil") + 'Update credentials</button>';
     var connection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Connection</h2>' +
       '<p class="hint">Manage this Slack workspace connection.</p></div></div>' +
-      '<div class="action-well">' + testButton + updateButton +
-      slackConnectionStatusHtml() + '</div>' + slackUpdateCredentialsHtml() +
+      '<div class="action-well">' + testButton +
+      slackConnectionStatusHtml() + '</div>' +
       '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect this workspace</span>' +
       '<span class="hint">Stops Chickpea from answering. Agents and Channel configuration stay saved so you can reconnect later. This does not uninstall the Slack app.</span>' +
       (!mutable ? '<span class="hint">This connection is managed by the environment and is read-only here.</span>' : "") +
@@ -4985,7 +4894,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (!isSlackConnected()) {
       return '<section class="section">' + head +
         '<div class="empty"><p class="field-label">Connect @Chickpea first</p>' +
-        '<p class="hint">Add the bot token and signing secret above, then come back to pick a channel.</p></div></section>';
+        '<p class="hint">Resume the private deployment setup link, or use scoped recovery to repair the Slack installation.</p></div></section>';
     }
     // Workspace — locked to the install (card 05). Never an editable field once
     // teamId is known; the "locked" chip makes the constraint plain.
@@ -5005,7 +4914,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         (staleAuthorization
           ? '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
             slackScopeReinstallLinkHtml() +
-            slackScopeCredentialRepairHtml('<button type="button" class="btn btn-primary btn-sm" data-action="slack-update-open">Update credentials</button>') + '</div>'
+            slackScopeCredentialRepairHtml() + '</div>'
           : '<div>' + refreshBtn + '</div>') + '</div>';
     } else if (state.addChannelManual) {
       selector = '<div class="field"><label class="field-label" for="add-channel-manual">Channel ID</label>' +
@@ -5050,260 +4959,17 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '</dl></div>';
   }
 
-  // First-run Connect stepper (cards 01-03). Two real steps: create the app,
-  // then install + paste. The active step is emphasized, the finished step
-  // shows a green check, and the future step is dimmed (and clickable to jump
-  // ahead). The paste form is the whole submit surface — validated live.
-  function slackStepBoldHint(text) {
-    return '<b style="font-weight:700; color:var(--text);">' + text + '</b>';
-  }
-
-  function slackStep1Html(conn) {
-    if (state.slackStep >= 2) {
-      return '<div class="step-block">' +
-        '<span class="step-num done">' + icon("check") + '</span>' +
-        '<div class="step-body"><div class="step-done-line"><span class="step-title">Create @Chickpea in Slack</span>' +
-        '<span class="hint" style="color:var(--ok);">' + (state.slackStep >= 3 ? 'App created' : 'Setup opened') + '</span></div></div></div>';
-    }
-    return '<div class="step-block">' +
-      '<span class="step-num active">1</span>' +
-      '<div class="step-body">' +
-      '<div class="step-title">Create @Chickpea in Slack</div>' +
-      '<p class="hint">Opens Slack with a manifest that pre-fills everything, including this install&rsquo;s events URL.</p>' +
-      '<div class="field" style="gap:4px;"><span class="tiny-label">Events URL (already in the manifest)</span>' +
-      '<span class="chip">' + esc(conn.requestUrl) + '</span></div>' +
-      '<div><a class="btn btn-primary" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noreferrer" data-action="advance-slack-step">Create @Chickpea in Slack &nearr;</a></div>' +
-      // The one unrecoverable choice: Slack forces a workspace pick during
-      // creation and the manifest cannot pre-select it. Choosing a different
-      // workspace here creates an install the configured bot cannot serve.
-      '<p class="hint warn-accent">Slack will ask you to ' + slackStepBoldHint("pick a workspace") + ' &mdash; choose the one you want Chickpea in. It can&rsquo;t be changed later without reinstalling.</p>' +
-      '</div></div>';
-  }
-
-  function slackStep2Html() {
-    if (state.slackStep < 2) {
-      // Dimmed and clickable — a returning operator can jump straight to it.
-      // Spans (not divs) keep the <button> valid: button holds phrasing content.
-      return '<div class="step-block dimmed">' +
-        '<button type="button" class="advance-step" data-action="advance-slack-step" aria-label="Install, copy and paste">' +
-        '<span class="step-num idle">2</span>' +
-        '<span class="step-body"><span class="step-title">Install, copy &amp; paste</span></span></button></div>';
-    }
-    if (state.slackStep === 2) {
-      return '<div class="step-block"><span class="step-num active">2</span><div class="step-body">' +
-        '<div class="step-title">Confirm Slack created Chickpea</div>' +
-        '<p class="hint">Slack should show an app named Chickpea created from the manifest. If signing in dropped you on AI Agent, Blank app, or the app list, reopen the setup link.</p>' +
-        '<div style="display:flex; gap:10px; flex-wrap:wrap;"><button type="button" class="btn btn-primary" data-action="slack-app-created">I created the Chickpea app</button>' +
-        '<a class="btn btn-soft" href="' + esc(state.slack.manifestUrl) + '" target="_blank" rel="noopener noreferrer">Open Chickpea setup in Slack</a></div>' +
-        '</div></div>';
-    }
-    var validateBtn = state.slackBusy
-      ? '<button type="submit" class="btn btn-primary" disabled><span class="spinner"></span>Validating&hellip;</button>'
-      : '<button type="submit" class="btn btn-primary">Validate &amp; save</button>';
-    var validateTail = state.slackRepair
-      ? '<div role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error"><p class="field-error">Apply Chickpea&rsquo;s Slack permissions before continuing.</p><a class="btn btn-primary btn-sm" href="' + esc(state.slackRepair.consoleUrl || "https://api.slack.com/apps") + '" target="_blank" rel="noopener noreferrer">Reinstall @Chickpea in Slack</a></div>'
-      : state.slackError
-      ? '<span class="field-error" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-connection-error">' + esc(state.slackError) + '</span>'
-      : (state.slackBusy ? "" : '<span class="hint">The token is checked live against Slack before anything is saved. The signing secret is verified on the first real Slack event.</span>');
-    return '<div class="step-block">' +
-      '<span class="step-num active">2</span>' +
-      '<div class="step-body">' +
-      '<div class="step-title">Install, copy &amp; paste</div>' +
-      '<p class="hint">The app exists now, but it has no token until you install it. Copy one value in Slack, come back and paste it here, then go get the next.</p>' +
-      '<form data-action="slack-connect-form" style="display:flex; flex-direction:column; gap:14px;">' +
-      '<div class="paste-pair"><div class="pair-head"><span class="n">a</span><span>' +
-      slackStepBoldHint("Signing Secret") + ' &mdash; Slack lands on ' + slackStepBoldHint("Basic Information") + ' after creating the app. Under <span class="chip">App Credentials</span> &rarr; ' + slackStepBoldHint("Signing Secret") + ' &rarr; Show &rarr; copy.</span></div>' +
-      '<input class="input mono" name="signingSecret" type="password" autocomplete="off" aria-label="Signing secret" placeholder="Paste the Signing Secret here" value="' + esc(state.slackDraft.signingSecret) + '" data-action="slack-signing-secret"></div>' +
-      '<div class="paste-pair"><div class="pair-head"><span class="n">b</span><span>' +
-      slackStepBoldHint("Bot User OAuth Token") + ' &mdash; in the left sidebar, click the <span class="chip">OAuth &amp; Permissions</span> tab. Under the <span class="chip">OAuth Tokens</span> heading, click the green ' + slackStepBoldHint("Install to (your workspace)") + ' button &rarr; Allow. If Slack says the permission scopes changed, click ' + slackStepBoldHint("Reinstall to Workspace") + ' and Allow before copying the token. The token (<span class="chip">xoxb-&hellip;</span>) appears there after installing.</span></div>' +
-      '<input class="input mono" name="botToken" type="password" autocomplete="off" aria-label="Bot token" placeholder="Paste the xoxb-&hellip; token here" value="' + esc(state.slackDraft.botToken) + '" data-action="slack-bot-token"></div>' +
-      '<div class="full" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' + validateBtn + validateTail + '</div>' +
-      '</form></div></div>';
-  }
-
   function slackStepperHtml() {
-    var conn = state.slack;
-    if (!conn) return "";
-    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Connect @Chickpea</h2>' +
-      '<p class="hint">This is the workspace-default identity. Create its Slack app, then install it and paste two values back as you copy them.</p></div>' +
-      '<span class="badge badge-off"><span class="dot"></span>Not connected</span></div>' +
-      '<div class="stepper">' + slackStep1Html(conn) + slackStep2Html() + '</div></section>' +
-      '<details class="advanced"><summary>Request URL shows as unverified?</summary>' +
-      '<div class="adv-rows" style="padding-bottom:14px;"><p class="hint">Open ' + slackStepBoldHint("Event Subscriptions") + ' in Slack and click ' + slackStepBoldHint("Retry") + ' &mdash; the worker echoes the verification challenge even before these credentials are saved.</p></div></details>' +
-      '<details class="advanced"><summary>Where credentials come from</summary>' +
-      '<div class="adv-rows" style="padding-bottom:14px;">' + slackCredentialsWellHtml(conn) + '</div></details>';
+    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Slack setup incomplete</h2>' +
+      '<p class="hint">Resume the private deployment setup link, or use the scoped recovery flow to repair this installation. Bot tokens are never pasted into Admin.</p></div>' +
+      '<span class="badge badge-off"><span class="dot"></span>Not connected</span></div></section>';
   }
 
-  function slackErrorText(message, detail, serverMessage, payload) {
-    if (message === "challenge_invalid_signature") return "Slack could not verify this app. Retry the Event Subscriptions request URL check in Slack, then try connecting again.";
-    if (message === "challenge_expired") return "Slack's verification check expired. Retry the Event Subscriptions request URL check in Slack, then try connecting again.";
-    if (message === "challenge_missing") return "Chickpea is still waiting for Slack to verify the Events URL. Open Event Subscriptions in Slack, click Retry, click Save Changes, then try connecting again.";
-    if (message === "signing_secret_change_requires_reconnect") return "To change the Signing Secret, disconnect this Slack app and connect it again.";
-    if (message === "workspace_mismatch") return "This token belongs to a different Slack workspace. Use the app you created for this Chickpea install and workspace.";
-    if (message === "app_mismatch") return "The token and signing secret came from different Slack apps. Copy both values from the same app and try again.";
-    if (message === "slack_scope_unverified") return "Slack has not confirmed the required permissions. Reinstall the app to the workspace, allow the requested permissions, then try again.";
-    if (message === "slack_channel_list_failed") return "Chickpea could not confirm channel access. Reinstall the app to refresh its Slack permissions, then try again.";
-    if (message === "slack_auth_failed") return "Slack rejected the bot token (auth.test failed" + (detail ? ": " + detail : "") + "). Re-copy the xoxb- token and try again.";
-    if (message === "slack_unreachable") return "Could not reach the Slack API to validate the token. Check connectivity and try again.";
-    if (message === "slack_missing_scopes") {
-      return "Slack has not applied all required permissions to this token yet. Reinstall the app, then copy the refreshed Bot User OAuth Token.";
-    }
-    if (message === "internal_error") return "Chickpea could not store the credentials (an internal error). Check the worker logs and try again.";
+  function slackErrorText(message, detail, serverMessage) {
+    if (message === "slack_unreachable") return "Could not reach the Slack API. Check connectivity and try again.";
+    if (message === "slack_auth_failed") return "Slack rejected the installed bot credential.";
+    if (message === "slack_missing_scopes") return "The Slack installation is missing required permissions. Use the scoped recovery flow to repair it.";
     return serverMessage || (detail ? message + ": " + detail : message);
-  }
-
-  function resetOnboardingSlackContinuation(clearDraft) {
-    state.slackOnboardingRequestId += 1;
-    state.slackOnboardingContinuation = null;
-    state.slackOnboardingFocus = "";
-    if (clearDraft) state.slackDraft = { botToken: "", signingSecret: "" };
-    state.slackError = "";
-    state.slackRepair = null;
-    if (state.slackConnectionBusy === "update") state.slackConnectionBusy = "";
-    state.slackBusy = false;
-  }
-
-  function isSlackCredentialMismatch(message) {
-    return message === "workspace_mismatch" || message === "app_mismatch" ||
-      message === "challenge_invalid_signature" || message === "signing_secret_change_requires_reconnect";
-  }
-
-  function isRetryableSlackContinuationFailure(message) {
-    return message === "slack_unreachable" ||
-      message === "identity_profile_unavailable" ||
-      message === "slack_channel_list_failed";
-  }
-
-  function submitSlackConnection(formData) {
-    submitSlackCredentialPair(
-      String(formData.get("botToken") || "").trim(),
-      String(formData.get("signingSecret") || "").trim()
-    );
-  }
-
-  function submitSlackCredentialPair(botToken, signingSecret) {
-    if (state.slackConnectionBusy) return;
-    var onboardingAttempt = isOnboardingSlackConnection();
-    // Submitting the paste form means the credential surface is active — pin it so a
-    // validation error renders against the fields (not a collapsed step).
-    state.slackStep = onboardingAttempt ? 4 : 3;
-    state.slackDraft = { botToken: botToken, signingSecret: signingSecret };
-    if (!botToken) { state.slackError = "Bot token is required."; if (onboardingAttempt) state.slackOnboardingFocus = "onboarding-bot-token"; render(); return; }
-    if (!signingSecret) { state.slackError = "Signing secret is required."; if (onboardingAttempt) state.slackOnboardingFocus = "onboarding-signing-secret"; render(); return; }
-    var continuationAttempt = onboardingAttempt && !!state.slackOnboardingContinuation;
-    var requestId = onboardingAttempt ? ++state.slackOnboardingRequestId : 0;
-    state.slackError = "";
-    state.slackRepair = null;
-    state.slackBusy = true;
-    state.slackConnectionBusy = "update";
-    if (continuationAttempt) {
-      state.slackOnboardingContinuation = {
-        phase: "checking",
-        consoleUrl: state.slackOnboardingContinuation.consoleUrl || "",
-        note: "Checking Slack."
-      };
-    }
-    render();
-    postJson("/admin/api/slack-connection", "POST", { botToken: botToken, signingSecret: signingSecret }).then(function (result) {
-      if (onboardingAttempt && requestId !== state.slackOnboardingRequestId) return null;
-      state.slackBusy = false;
-      state.slackConnectionBusy = "";
-      if (onboardingAttempt && result && result.eventsVerificationRequired) {
-        state.slackRepair = null;
-        state.slackError = "";
-        state.slackOnboardingContinuation = {
-          kind: "events",
-          phase: "finish",
-          consoleUrl: onboardingSlackPermissionUrl(result.consoleUrl),
-          note: "Your Slack app is ready. One final Slack confirmation remains."
-        };
-        state.slackOnboardingFocus = "slack-permission-heading";
-        render();
-        return null;
-      }
-      state.slackDraft = { botToken: "", signingSecret: "" };
-      // Reset the stepper for any later reconnect. Connection success is
-      // reflected by the durable connected workspace state after refresh.
-      state.slackStep = 1;
-      state.slackRepair = null;
-      state.slackUpdateOpen = false;
-      state.slackIdentity = null;
-      state.slackIdentityError = "";
-      state.slackIdentityLoading = false;
-      state.slackIdentityRequestId += 1;
-      if (onboardingAttempt) {
-        state.slackOnboardingContinuation = null;
-        state.onboardingSlackConnected = true;
-        state.slackOnboardingFocus = "onboarding-connected-heading";
-      }
-      return refreshData();
-    }).catch(function (error) {
-      if (onboardingAttempt && requestId !== state.slackOnboardingRequestId) return;
-      state.slackBusy = false;
-      state.slackConnectionBusy = "";
-      if (onboardingAttempt && error && error.message === "slack_missing_scopes") {
-        state.slackRepair = null;
-        state.slackError = "";
-        state.slackOnboardingContinuation = {
-          kind: "permissions",
-          phase: "finish",
-          consoleUrl: onboardingSlackPermissionUrl(error.payload && error.payload.consoleUrl),
-          note: continuationAttempt ? "Slack needs one more confirmation before Chickpea can continue." : ""
-        };
-        state.slackOnboardingFocus = continuationAttempt ? "slack-permissions-open" : "slack-permission-heading";
-        render();
-        return;
-      }
-      if (onboardingAttempt && continuationAttempt && error && isRetryableSlackContinuationFailure(error.message)) {
-        state.slackRepair = null;
-        state.slackError = "";
-        state.slackOnboardingContinuation = {
-          kind: state.slackOnboardingContinuation && state.slackOnboardingContinuation.kind || "permissions",
-          phase: "awaiting",
-          consoleUrl: (state.slackOnboardingContinuation && state.slackOnboardingContinuation.consoleUrl) || "",
-          note: "Slack could not be checked just now. Your details are still here; check again when you are ready."
-        };
-        state.slackOnboardingFocus = "slack-permissions-check";
-        render();
-        return;
-      }
-      if (onboardingAttempt && error && error.message === "slack_auth_failed") {
-        state.slackRepair = null;
-        state.slackOnboardingContinuation = null;
-        state.slackDraft = continuationAttempt
-          ? { botToken: "", signingSecret: signingSecret }
-          : { botToken: "", signingSecret: "" };
-        state.slackError = continuationAttempt
-          ? "Paste the current Bot User OAuth Token from Slack, then check again."
-          : "Slack rejected these credentials. Copy both values from the same Chickpea app and try again.";
-        state.slackOnboardingFocus = continuationAttempt ? "onboarding-bot-token" : "onboarding-signing-secret";
-        render();
-        return;
-      }
-      if (onboardingAttempt && error && isSlackCredentialMismatch(error.message)) {
-        state.slackRepair = null;
-        state.slackOnboardingContinuation = null;
-        state.slackDraft = { botToken: "", signingSecret: "" };
-      }
-      if (onboardingAttempt && continuationAttempt) {
-        // Every continuation response must leave the checking screen. Known
-        // retryable failures return above; all other errors re-open the normal
-        // credential form so its actionable error is visible.
-        state.slackOnboardingContinuation = null;
-      }
-      state.slackRepair = error && error.message === "slack_missing_scopes"
-        ? {
-            missingScopes: (error.payload && error.payload.missingScopes) || [],
-            consoleUrl: (error.payload && error.payload.consoleUrl) || ""
-          }
-        : null;
-      if (state.slackRepair) {
-        state.slackDraft = { botToken: "", signingSecret: signingSecret };
-      }
-      state.slackError = slackErrorText(error.message, error.detail, error.serverMessage, error.payload);
-      render();
-      focusSlackLiveRegion("slack-connection-error");
-    });
   }
 
   function channelDetailStatus(agent) {
@@ -7334,7 +7000,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         '<span class="spacer"></span>' +
         (state.slackChannelsError.code === "missing_scope"
           ? slackScopeReinstallLinkHtml() +
-            slackScopeCredentialRepairHtml('<button type="button" class="btn btn-primary btn-sm" data-action="open-channels">Open Slack connection</button>')
+            slackScopeCredentialRepairHtml()
           : '<button type="button" class="btn btn-soft btn-sm" data-action="refresh-channels">Retry</button>') +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Close</button></div>';
     }
@@ -11071,12 +10737,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (choose && !state.onboardingSlackConnected && isSlackConnected() && !state.slackChannels && !state.slackChannelsLoading) {
       loadSlackChannels(false);
     }
-    var waitingForSlackEvents = state.view === "onboarding" && state.onboarding &&
-      state.onboarding.stage === "connect_slack" && state.slackOnboardingContinuation &&
-      state.slackOnboardingContinuation.kind === "events" &&
-      state.slackOnboardingContinuation.phase !== "finish";
     var shouldPoll = state.view === "onboarding" && state.onboarding &&
-      (state.onboarding.stage === "try" || waitingForSlackEvents) && !state.onboardingError;
+      state.onboarding.stage === "try" && !state.onboardingError;
     if (!shouldPoll) {
       if (onboardingPollTimer && typeof clearTimeout === "function") clearTimeout(onboardingPollTimer);
       onboardingPollTimer = null;
@@ -11086,19 +10748,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     onboardingPollTimer = setTimeout(function () {
       onboardingPollTimer = null;
       onboardingPollRequest = true;
-      var refresh = waitingForSlackEvents
-        ? loadOnboarding(false).then(function (body) {
-          if (body && body.stage !== "connect_slack") {
-            resetOnboardingSlackContinuation(true);
-            state.onboardingSlackConnected = true;
-            state.slackOnboardingFocus = "onboarding-connected-heading";
-            return refreshData();
-          }
-            render();
-            return body;
-          })
-        : loadOnboarding(true);
-      refresh.finally(function () {
+      loadOnboarding(true).finally(function () {
         onboardingPollRequest = false;
         syncOnboardingActivity();
       });
@@ -11403,9 +11053,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         state.teamRemoveConfirm = null;
         render();
       } else if (action === "team-remove-confirm") {
-        var confirmedMembershipId = state.teamRemoveConfirm.membershipId;
+        var confirmedTeamAction = state.teamRemoveConfirm;
         state.teamRemoveConfirm = null;
-        updateTeamMembership(confirmedMembershipId, "status", "removed");
+        if (confirmedTeamAction.kind === "revoke") revokeTeamInvitation(confirmedTeamAction.invitationId);
+        else updateTeamMembership(
+          confirmedTeamAction.membershipId,
+          "status",
+          confirmedTeamAction.kind === "suspend" ? "suspended" : "removed"
+        );
       }
       return;
     }
@@ -11508,15 +11163,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // action make the operation appear canceled while its request is live.
     if (state.githubBusy === "disconnect") return;
 
-    // A credential replacement is a short, atomic transition. Do not let a
-    // navigation or second connection action make it look canceled while the
-    // POST is still live. Read-only connection tests may finish in the
-    // background, but they cannot overlap another connection operation.
-    if (state.slackConnectionBusy === "update") return;
     if (state.slackConnectionBusy && (
       action === "slack-test" ||
-      action === "slack-update-open" ||
-      action === "slack-update-close" ||
       action === "slack-disconnect-open"
     )) return;
 
@@ -11594,7 +11242,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }
     if (action === "open-team") { openTeam(); }
     if (action === "team-retry") { loadTeam(); }
-    if (action === "team-dismiss-reset") { state.teamResetLink = ""; state.teamNotice = ""; render(); }
+    if (action === "team-directory-retry") { loadTeamDirectory(true); }
+    if (action === "team-directory-more") { loadTeamDirectory(false); }
+    if (action === "team-member-verify") { verifyTeamMemberId(); }
+    if (action === "team-member-select") {
+      state.teamSelectedSlackUserId = target.getAttribute("data-slack-user") || "";
+      state.teamError = "";
+      render();
+    }
     if (action === "team-copy-link" && state.teamInviteLink) {
       var copiedInviteLink = state.teamInviteLink;
       var copyVersion = state.teamInviteCopyVersion + 1;
@@ -11625,80 +11280,36 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         render();
       }).catch(showManualInviteCopy);
     }
-    if (action === "team-copy-invitation") {
-      var invitationLink = target.getAttribute("data-link") || "";
-      if (invitationLink) {
-        navigator.clipboard.writeText(invitationLink).then(function () {
-          state.teamNotice = "Join link copied.";
-          render();
-        }).catch(function () {
-          state.teamError = "Copy failed. Reload the page and try again.";
-          render();
-        });
-      } else {
-        state.teamError = "This join link is no longer available to copy. Revoke it before creating a replacement.";
-        render();
-      }
-    }
-    if (action === "team-revoke") { revokeTeamInvitation(target.getAttribute("data-invitation") || ""); }
-    if (action === "team-reset-password") { createTeamPasswordReset(target.getAttribute("data-membership") || ""); }
-    if (action === "team-remove-open") {
-      var removeMembershipId = target.getAttribute("data-membership") || "";
-      var removeMember = state.team && (state.team.members || []).find(function (member) { return member.id === removeMembershipId; });
-      if (removeMember && removeMember.role !== "owner" && !state.teamBusy) {
+    if (action === "team-promote") { updateTeamMembership(target.getAttribute("data-membership") || "", "role", "owner"); }
+    if (action === "team-restore") { updateTeamMembership(target.getAttribute("data-membership") || "", "status", "active"); }
+    if (action === "team-remove-open" || action === "team-suspend-open") {
+      var membershipId = target.getAttribute("data-membership") || "";
+      var member = state.team && (state.team.members || []).find(function (row) { return row.id === membershipId; });
+      if (member && member.role !== "owner" && !state.teamBusy) {
         state.teamRemoveConfirm = {
-          membershipId: removeMember.id,
-          email: removeMember.email || "",
-          displayName: removeMember.displayName || ""
+          kind: action === "team-suspend-open" ? "suspend" : "remove",
+          membershipId: member.id,
+          slackUserId: member.slackUserId || "",
+          displayName: member.displayName || ""
         };
         render();
       }
     }
-    if (action === "team-copy-reset" && state.teamResetLink) {
-      navigator.clipboard.writeText(state.teamResetLink).then(function () {
-        state.teamNotice = "Password reset link copied.";
-        render();
-      }).catch(function () {
-        state.teamError = "Copy failed. Select the reset link and copy it manually.";
-        render();
-      });
+    if (action === "team-revoke-open" && !state.teamBusy) {
+      state.teamRemoveConfirm = {
+        kind: "revoke",
+        invitationId: target.getAttribute("data-invitation") || "",
+        slackUserId: target.getAttribute("data-slack-user") || ""
+      };
+      render();
     }
     if (action === "open-usage" && USAGE_ADMIN_UI) { openUsage(); }
     if (action === "open-audit") { openAuditLogs("", "", ""); }
     // Brand-as-home: the reliable exit to the canonical Agent.
     if (action === "go-home") { openHome(); }
-    // Stepper: mark step 1 done and reveal step 2. Not preventing default lets
-    // the Create anchor still open Slack in a new tab.
-    if (action === "advance-slack-step") { state.slackStep = 2; state.slackError = ""; state.slackRepair = null; render(); }
-    if (action === "slack-app-created") { state.slackStep = isOnboardingSlackConnection() ? 4 : 3; state.slackError = ""; state.slackRepair = null; render(); }
-    if (action === "onboarding-slack-events" && isOnboardingSlackConnection()) { state.slackStep = 3; render(); }
-    if (action === "onboarding-slack-keys" && isOnboardingSlackConnection()) { state.slackStep = 4; state.slackOnboardingFocus = "onboarding-bot-token"; render(); }
     if (action === "onboarding-continue-to-channel" && state.view === "onboarding") {
       state.onboardingSlackConnected = false;
       state.slackOnboardingFocus = "onboarding-channel-heading";
-      render();
-    }
-    if (action === "onboarding-slack-back" && isOnboardingSlackConnection()) {
-      state.slackStep = target.getAttribute("data-step") === "create" ? 2 : 3;
-      state.slackError = "";
-      render();
-    }
-    if (action === "slack-permissions-open" && state.slackOnboardingContinuation && !state.slackConnectionBusy) {
-      state.slackOnboardingContinuation = {
-        kind: state.slackOnboardingContinuation.kind || "permissions",
-        phase: "awaiting",
-        consoleUrl: state.slackOnboardingContinuation.consoleUrl || "",
-        note: "Finish in Slack, then return to this tab and check again."
-      };
-      render();
-    }
-    if (action === "slack-permissions-check" && state.slackOnboardingContinuation && !state.slackConnectionBusy) {
-      submitSlackCredentialPair(state.slackDraft.botToken, state.slackDraft.signingSecret);
-    }
-    if (action === "slack-permissions-start-over" && state.slackOnboardingContinuation && !state.slackConnectionBusy) {
-      resetOnboardingSlackContinuation(true);
-      state.slackStep = 4;
-      state.slackOnboardingFocus = "onboarding-signing-secret";
       render();
     }
     if (action === "refresh-onboarding-channels") { loadSlackChannels(true); }
@@ -11783,15 +11394,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "slack-identity-confirm-apply") { applySlackIdentityConfirmation(); }
     if (action === "slack-behavior-retry") { loadSlackBehavior(); }
     if (action === "slack-test") { testSlackConnection(); }
-    if (action === "slack-update-open" && slackConnectionMutable()) {
-      state.addChannelOpen = false;
-      state.slackUpdateOpen = true;
-      state.slackError = "";
-      state.slackRepair = null;
-      if (state.view !== "settings" || state.settingsSection !== "slack") openSettings("slack");
-      else render();
-    }
-    if (action === "slack-update-close" && !state.slackConnectionBusy) { state.slackUpdateOpen = false; state.slackDraft = { botToken: "", signingSecret: "" }; state.slackError = ""; state.slackRepair = null; render(); }
     if (action === "slack-disconnect-open" && slackConnectionMutable()) {
       state.slackDisconnectConfirm = true;
       state.slackDisconnectError = "";
@@ -12360,8 +11962,19 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         try { search.setSelectionRange(channelQueryCaret, channelQueryCaret); } catch (error) { /* ignore */ }
       }
     }
-    if (action === "team-invite-email") {
-      state.teamInviteDraft.email = target.value;
+    if (action === "team-directory-search") {
+      var teamSearchCaret = target.selectionStart;
+      state.teamDirectoryQuery = target.value;
+      state.teamError = "";
+      render();
+      var teamSearch = document.getElementById("team-directory-search");
+      if (teamSearch && teamSearch.focus) teamSearch.focus();
+      if (teamSearch && teamSearchCaret != null && teamSearch.setSelectionRange) {
+        try { teamSearch.setSelectionRange(teamSearchCaret, teamSearchCaret); } catch (error) { /* ignore */ }
+      }
+    }
+    if (action === "team-member-id") {
+      state.teamManualSlackUserId = target.value;
       state.teamError = "";
     }
     if (state.memoryDraft) {
@@ -12383,10 +11996,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.saveError = "";
       syncSaveBar();
     }
-    // Mirror the wizard inputs into state so unrelated re-renders (e.g. the
-    // channel toggle) do not wipe a half-pasted credential.
-    if (action === "slack-bot-token") { state.slackDraft.botToken = target.value; }
-    if (action === "slack-signing-secret") { state.slackDraft.signingSecret = target.value; }
     if (action === "slack-identity-create-app-name") { state.slackIdentityCreateDraft.appName = target.value; }
     if (action === "slack-identity-create-display-name") { state.slackIdentityCreateDraft.displayName = target.value; }
     if (action === "slack-identity-setup-app-name") { state.slackIdentitySetupDraft.appName = target.value; }
@@ -12727,7 +12336,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "team-invite-form") createTeamInvitation();
     if (action === "add-channel-form") addChannel(new FormData(form));
     if (action === "onboarding-channel-form") startOnboardingTry(new FormData(form));
-    if (action === "slack-connect-form") submitSlackConnection(new FormData(form));
     if (action === "slack-identity-create-form") createManagedSlackIdentity(new FormData(form));
     if (action === "slack-identity-setup-names-form") saveSlackIdentitySetupNames(new FormData(form));
     if (action === "slack-identity-credentials-form") connectManagedSlackIdentity(new FormData(form), false);
@@ -12911,7 +12519,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         (state.view === "channels" && state.channelScreen === "detail" && state.dirty) ||
         state.memoryDirty ||
         state.ownerMemory.dirty ||
-        state.slackConnectionBusy === "update" ||
         state.slackConnectionBusy === "disconnect" ||
         state.githubBusy === "disconnect"
       ) {
@@ -12925,7 +12532,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     window.addEventListener("popstate", function () {
       if (!canNavigate || !routeReady) return;
       var targetPath = location.pathname;
-      if (state.slackConnectionBusy === "update" || state.slackConnectionBusy === "disconnect") {
+      if (state.slackConnectionBusy === "disconnect") {
         history.pushState(null, "", canonicalPath());
         if (state.slackConnectionBusy === "disconnect") focusSlackDisconnectDialog();
         return;
@@ -13007,13 +12614,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function openChannels() {
-    if (state.view === "onboarding") resetOnboardingSlackContinuation(true);
     state.view = "channels";
     state.channelScreen = "overview";
     state.profileScreen = "list";
     state.disableConfirm = false;
     state.addChannelOpen = false;
-    state.slackUpdateOpen = false;
     state.slackDisconnectConfirm = false;
     if (isSlackConnected()) {
       if (!state.slackBehavior) loadSlackBehavior();
@@ -13225,7 +12830,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function slackChannelsErrorText(error) {
     if (error && error.message === "slack_not_configured") return "Connect @Chickpea first to list channels.";
     if (error && error.message === "slack_list_failed" && error.detail === "missing_scope") {
-      return "Slack permissions are out of date. Reinstall Chickpea in Slack, then paste the refreshed bot token.";
+      return "Slack permissions are out of date. Use scoped recovery to refresh the installation.";
     }
     if (error && error.message === "slack_list_failed" && error.detail) {
       return "Slack could not list channels (" + error.detail + ").";
@@ -13244,9 +12849,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return '<a class="btn btn-soft btn-sm" href="' + esc(slackOAuthSettingsUrl()) + '" target="_blank" rel="noopener noreferrer">Reinstall in Slack &nearr;</a>';
   }
 
-  function slackScopeCredentialRepairHtml(storedActionHtml) {
-    if (slackConnectionMutable()) return storedActionHtml;
-    return '<p class="hint">After reinstalling, replace <span class="mono">SLACK_BOT_TOKEN</span> in your deployment and redeploy Chickpea.</p>';
+  function slackScopeCredentialRepairHtml() {
+    return '<p class="hint">After reinstalling, use the scoped recovery flow so Chickpea can verify and atomically replace the encrypted installation.</p>';
   }
 
   function addChannelErrorText(error) {
@@ -14954,513 +14558,304 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 </html>`;
 }
 
-/**
- * Minimal token-entry form for browser GETs of /admin that arrive without a
- * valid session. The credential is submitted in a POST body and exchanged for
- * a hashed session cookie, so it never enters browser history, referrers, or
- * request URLs. This renders only when TAG_ADMIN_TOKEN is set — the gate 404s
- * the whole route otherwise — so it never signals more than "admin exists
- * here". Self-contained LIGHT-mode markup, no external assets, matching the
- * admin page's palette.
- */
-export function renderAdminLogin(
-  options: { invalidToken?: boolean; returnTo?: string } = {},
-): string {
-  // The one conditional fragment: a static, non-reflecting error notice (the
-  // rejected token is never echoed back into the page).
-  const error = options.invalidToken
-    ? '<p class="err">That token was not accepted. Check TAG_ADMIN_TOKEN and try again.</p>'
-    : '';
-  const returnTo = escapeHtmlAttribute(options.returnTo ?? '/admin');
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chickpea · Sign in</title>
-${ADMIN_FAVICON}
-<style>
-@import url("https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Quicksand:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
-:root { --bg:#f4ebd8; --well:#fffdf6; --line:rgba(59,50,32,0.12); --text:#3b3220; --text-2:#6b5c42; --ember:#dda033; --ember-bright:#e5ac44; --danger:#b5473a; --font:Quicksand,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; --radius:13px; }
-* { box-sizing:border-box; margin:0; padding:0; }
-html { color-scheme:light; }
-body { background:var(--bg); color:var(--text-2); font-family:var(--font); min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:24px; -webkit-font-smoothing:antialiased; }
-.card { background:var(--well); box-shadow:inset 0 0 0 1px var(--line); border-radius:14px; padding:28px; width:100%; max-width:380px; display:flex; flex-direction:column; gap:14px; }
-h1 { color:var(--text); font-size:1.0625rem; font-weight:600; }
-.pea-login { display:block; height:44px; width:44px; }
-p { font-size:0.8125rem; line-height:1.5; }
-.err { color:var(--danger); }
-label { color:var(--text); display:block; font-size:0.8125rem; font-weight:500; margin-bottom:6px; }
-.mono { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
-input { background:#fff; border:0; border-radius:var(--radius); box-shadow:inset 0 0 0 1px rgba(28,25,23,0.15); color:var(--text); font:inherit; font-size:0.875rem; padding:9px 11px; width:100%; }
-input:focus-visible { outline:2px solid #b05415; outline-offset:-1px; }
-button { align-items:center; background:var(--ember); border:0; border-radius:var(--radius); box-shadow:0 2.5px 0 #b27e1f; color:#3a2a08; cursor:pointer; display:inline-flex; font:inherit; font-size:0.8125rem; font-weight:700; justify-content:center; min-height:36px; padding:8px 14px; }
-button:hover { background:var(--ember-bright); }
-button[aria-busy="true"]::before { content:""; width:14px; height:14px; margin-right:8px; border:2px solid rgba(59,50,32,.28); border-top-color:var(--text); border-radius:50%; animation:auth-spin .7s linear infinite; }
-button:disabled { cursor:not-allowed; opacity:.65; }
-@keyframes auth-spin { to { transform:rotate(360deg); } }
-</style>
-</head>
-<body>
-<form class="card" method="post" action="/admin/login">
-  <svg class="pea-login" viewBox="8 9 32 32" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><circle cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle><path d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><circle cx="15.5" cy="28.5" r="2" fill="#DC8A4F" opacity="0.4"></circle><circle cx="32.5" cy="28.5" r="2" fill="#DC8A4F" opacity="0.4"></circle></svg>
-  <h1>Sign in to Chickpea</h1>
-  <p>Enter your <span class="mono">TAG_ADMIN_TOKEN</span> to open the admin.</p>
-  ${error}
-  <div>
-    <label for="token">Admin token</label>
-    <input id="token" name="token" type="password" autocomplete="off" autofocus placeholder="TAG_ADMIN_TOKEN">
-  </div>
-  <input name="returnTo" type="hidden" value="${returnTo}">
-  <button type="submit" data-submitting-label="Signing in&hellip;">Sign in</button>
-</form>
-<script>${authFormSubmitClientScript()}</script>
-</body>
-</html>`;
+type SlackAuthPurpose = 'first_owner' | 'login' | 'invitation';
+
+interface SlackAuthWorkspace {
+  teamId: string;
+  teamName?: string;
 }
 
-export function renderPasswordLogin(
-  options: { invalid?: boolean; returnTo?: string; email?: string } = {},
-): string {
-  const error = options.invalid
-    ? '<div class="error" id="auth-error" role="alert" tabindex="-1">Email or password was not accepted.</div>'
-    : '';
-  return renderPasswordPage({
-    title: 'Sign in to Chickpea',
-    eyebrow: 'Welcome back',
-    error,
-    body: `<form method="post" action="/admin/login">
-      <label for="email">Email</label>
-      <input id="email" name="email" type="email" autocomplete="username" required autofocus value="${escapeHtmlAttribute(options.email ?? '')}">
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" required ${options.invalid ? 'aria-describedby="auth-error"' : ''}>
-      <input name="returnTo" type="hidden" value="${escapeHtmlAttribute(options.returnTo ?? '/admin')}">
-      <button type="submit" data-submitting-label="Signing in&hellip;">Sign in</button>
-    </form>`,
-  });
-}
-
-export function renderPasswordOwnerSetupPage(
-  options: {
-    error?: boolean | PasswordPolicyErrorCode;
-    ownerEmail?: string;
-  } = {},
-): string {
-  const errorMessage = options.error === 'too_short'
-    ? `Use a password with at least ${PASSWORD_MIN_CODE_POINTS} characters.`
-    : options.error === 'too_long'
-      ? 'Use a password with no more than 128 characters.'
-      : options.error === 'common'
-        ? 'That password is too common. Choose a less predictable password.'
-        : options.error === 'context'
-          ? 'Do not include Chickpea, your organization name, or the name from your email address in the password.'
-          : options.error
-            ? 'Setup could not be completed. Check the account details and try again.'
-            : '';
-  const error = errorMessage
-    ? `<div class="error" id="auth-error" role="alert" tabindex="-1">${escapeHtmlAttribute(errorMessage)}</div>`
-    : '';
-  return renderPasswordPage({
-    title: 'Create your Chickpea workspace',
-    eyebrow: 'Your deployment is ready',
-    error,
-    intro: 'Create the first owner account. No email service is required.',
-    body: `<p id="owner-setup-status" role="status" aria-live="polite">Opening your private setup link&hellip;</p>
-    <form id="owner-setup-form" method="post" action="/admin/setup" hidden>
-      <label for="owner-email">Email</label>
-      <input id="owner-email" name="ownerEmail" type="email" autocomplete="username" required maxlength="320" value="${escapeHtmlAttribute(options.ownerEmail ?? '')}">
-      <label for="password">Password <span>${PASSWORD_MIN_CODE_POINTS} or more characters</span></label>
-      <input id="password" name="password" type="password" autocomplete="new-password" required minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="256" aria-describedby="password-help password-error">
-      <p id="password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
-      <p id="password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
-      <label for="password-confirmation">Confirm password</label>
-      <input id="password-confirmation" name="passwordConfirmation" type="password" autocomplete="new-password" required minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="256" aria-describedby="password-confirmation-error">
-      <p id="password-confirmation-error" class="field-error" role="alert" aria-live="polite" hidden></p>
-      <input id="owner-setup-capability" name="recoveryToken" type="hidden">
-      <button id="owner-setup-submit" type="submit" data-submitting-label="Creating account&hellip;" disabled>Create owner account</button>
-    </form><script src="/admin/setup/client.js" defer></script>`,
-  });
-}
-
-export function renderPasswordChangePage(options: { error?: boolean } = {}): string {
-  const error = options.error
-    ? '<div class="error" id="auth-error" role="alert" tabindex="-1">Password could not be changed.</div>'
-    : '';
-  return renderPasswordPage({
-    title: 'Change your password',
-    eyebrow: 'Account security',
-    error,
-    intro: 'After this change, Chickpea signs out every browser session and asks you to sign in again.',
-    body: `<form method="post" action="/admin/account/password">
-      <label for="current-password">Current password</label>
-      <input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required>
-      <label for="new-password">New password <span>${PASSWORD_MIN_CODE_POINTS} or more characters</span></label>
-      <input id="new-password" name="newPassword" type="password" autocomplete="new-password" required minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="256" aria-describedby="${options.error ? 'auth-error ' : ''}password-help password-error">
-      <p id="password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
-      <p id="password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
-      <button type="submit" data-submitting-label="Changing password&hellip;">Change password and sign out</button>
-    </form><script src="/admin/password/client.js" defer></script>`,
-  });
-}
-
-export function renderPasswordRecoveryPage(options: { error?: boolean; success?: boolean } = {}): string {
-  const error = options.error
-    ? '<div class="error" id="auth-error" role="alert" tabindex="-1">Recovery could not be completed.</div>'
-    : '';
-  if (options.success) {
-    return renderPasswordPage({
-      title: 'Password recovered',
-      eyebrow: 'Recovery complete',
-      intro: 'All prior browser sessions were revoked. Sign in normally with the new password.',
-      body: '<a class="primary" href="/admin/login">Continue to sign in</a>',
-    });
-  }
-  return renderPasswordPage({
-    title: 'Recover the owner account',
-    eyebrow: 'Offline recovery',
-    error,
-    intro: 'This does not sign you in. It replaces one owner password using the deployment recovery secret.',
-    body: `<form method="post" action="/admin/recovery">
-      <label for="owner-email">Owner email</label>
-      <input id="owner-email" name="ownerEmail" type="email" autocomplete="username" required maxlength="320">
-      <label for="new-password">New password <span>${PASSWORD_MIN_CODE_POINTS} or more characters</span></label>
-      <input id="new-password" name="newPassword" type="password" autocomplete="new-password" required minlength="${PASSWORD_MIN_CODE_POINTS}" maxlength="256" aria-describedby="password-help password-error">
-      <p id="password-help" class="field-help">Use at least ${PASSWORD_MIN_CODE_POINTS} characters. Spaces are allowed.</p>
-      <p id="password-error" class="field-error" role="alert" aria-live="polite" hidden></p>
-      <label for="recovery-token">Deployment recovery secret</label>
-      <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required ${options.error ? 'aria-describedby="auth-error"' : ''}>
-      <button type="submit" data-submitting-label="Replacing password&hellip;">Replace owner password</button>
-    </form><script src="/admin/password/client.js" defer></script>`,
-  });
-}
-
-export function passwordFormClientScript(): string {
-  return `(function(){
-    var input=document.getElementById('new-password');
-    var error=document.getElementById('password-error');
-    if(!input||!error)return;
-    function validate(){
-      var remaining=Math.max(0,${PASSWORD_MIN_CODE_POINTS}-Array.from(input.value).length);
-      error.textContent=remaining?remaining+' more character'+(remaining===1?'':'s')+' needed.':'';
-      error.hidden=!remaining||!input.value;
-      if(error.hidden)input.removeAttribute('aria-invalid');else input.setAttribute('aria-invalid','true');
-      return remaining===0;
-    }
-    input.addEventListener('input',validate);
-    input.form&&input.form.addEventListener('submit',function(event){if(!validate()){event.preventDefault();input.focus();}});
-  })();`;
-}
-
-export function authFormSubmitClientScript(): string {
-  return `(function(){
-    document.querySelectorAll('form').forEach(function(form){
-      form.addEventListener('submit',function(event){
-        Promise.resolve().then(function(){
-          if(event.defaultPrevented)return;
-          var button=form.querySelector('button[type="submit"]');
-          if(!button||button.disabled)return;
-          button.disabled=true;
-          button.setAttribute('aria-busy','true');
-          button.textContent=button.getAttribute('data-submitting-label')||'Working…';
-        });
-      });
-    });
-  })();`;
-}
-
-function renderPasswordPage(input: {
-  title: string;
+/** Shared, self-contained shell for every visible Slack identity journey. */
+function renderSlackJourneyPage(input: {
+  surface: string;
   eyebrow: string;
+  title: string;
+  intro: string;
+  status: string;
+  statusId?: string;
   body: string;
-  intro?: string;
-  error?: string;
+  alert?: string | undefined;
+  rootAttributes?: string;
 }): string {
-  return `<!doctype html><html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  const alert = input.alert
+    ? `<div class="auth-alert" id="auth-error" role="alert" tabindex="-1">${escapeHtmlAttribute(input.alert)}</div>`
+    : '';
+  return `<!doctype html><html lang="en" data-slack-auth-surface="${escapeHtmlAttribute(input.surface)}"${input.rootAttributes ? ` ${input.rootAttributes}` : ''}><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">
 <title>Chickpea · ${escapeHtmlAttribute(input.title)}</title>${ADMIN_FAVICON}
 <style>
-:root{--canvas:#f4ebd8;--card:#fffdf6;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--line:rgba(59,50,32,.16);--danger:#a83f34}*{box-sizing:border-box}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,sans-serif;padding:16px}main{width:min(520px,100%);background:var(--card);border:1px solid var(--line);border-radius:20px;padding:clamp(22px,6vw,42px);box-shadow:0 12px 34px rgba(59,50,32,.09)}.auth-brand{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;margin:-6px 0 28px;text-align:center}.auth-brand-mark{width:54px;height:54px;display:block}.auth-brand-name{font-size:1.3rem;font-weight:800;letter-spacing:-.01em}.eyebrow{margin:0;color:var(--muted);font-size:.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}h1{margin:7px 0 9px;font-size:clamp(1.7rem,7vw,2.45rem);line-height:1.08}p{color:var(--muted);line-height:1.55}label{display:flex;justify-content:space-between;gap:12px;margin:17px 0 6px;font-weight:750}label span{color:var(--muted);font-size:.76rem;font-weight:500}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;padding:11px 12px;font:inherit}input[aria-invalid="true"]{border-color:var(--danger)}.field-help,.field-error{margin:6px 0 0;font-size:.82rem;line-height:1.4}.field-error{color:var(--danger);font-weight:700}button,.primary{display:flex;align-items:center;justify-content:center;width:100%;min-height:46px;margin-top:22px;border:0;border-radius:12px;background:var(--gold);color:var(--ink);font:inherit;font-weight:800;text-decoration:none;cursor:pointer;box-shadow:0 2.5px 0 #b27e1f;transition:transform .08s ease,box-shadow .08s ease}button:active:not(:disabled){transform:translateY(2px);box-shadow:0 .5px 0 #b27e1f}button[aria-busy="true"]::before{content:"";width:16px;height:16px;margin-right:9px;border:2px solid rgba(59,50,32,.28);border-top-color:var(--ink);border-radius:50%;animation:spin .7s linear infinite}button:disabled{cursor:not-allowed;opacity:.62;box-shadow:none}input:focus-visible,button:focus-visible,.primary:focus-visible{outline:3px solid rgba(176,84,21,.42);outline-offset:2px}.error{margin:16px 0;border-left:4px solid var(--danger);background:#fff3ee;color:var(--danger);padding:12px;font-weight:700;line-height:1.45}[hidden]{display:none!important}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:360px){body{padding:8px}main{border-radius:14px;padding:20px 16px}label{display:block}label span{display:block;margin-top:2px}}
-</style></head><body><main aria-labelledby="auth-title">${AUTH_BRAND_HTML}<p class="eyebrow">${escapeHtmlAttribute(input.eyebrow)}</p><h1 id="auth-title">${escapeHtmlAttribute(input.title)}</h1>${input.intro ? `<p>${escapeHtmlAttribute(input.intro)}</p>` : ''}${input.error ?? ''}${input.body}</main><script>${authFormSubmitClientScript()}</script></body></html>`;
+:root{--canvas:#f4ebd8;--card:#fffdf6;--well:#f8f1df;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--gold-press:#b27e1f;--line:rgba(59,50,32,.16);--danger:#a83f34;--focus:#b05415}*{box-sizing:border-box}html{color-scheme:light}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:clamp(12px,4vw,32px);overflow-wrap:anywhere}.auth-card{width:min(600px,100%);background:var(--card);border:1px solid var(--line);border-radius:22px;padding:clamp(22px,6vw,46px);box-shadow:0 14px 38px rgba(59,50,32,.1)}.auth-brand{display:flex;align-items:center;gap:10px;margin-bottom:30px}.auth-brand-mark{width:42px;height:42px;display:block}.auth-brand-name{font-weight:850;font-size:1.15rem}.auth-eyebrow{margin:0;color:var(--muted);font-size:.76rem;font-weight:850;letter-spacing:.09em;text-transform:uppercase}.auth-title{margin:8px 0 10px;font-size:clamp(1.75rem,7vw,2.7rem);line-height:1.05;letter-spacing:-.035em}.auth-intro,.auth-status,.auth-help{color:var(--muted);line-height:1.55}.auth-status{min-height:1.5em;margin:14px 0}.auth-alert{margin:18px 0;border-left:4px solid var(--danger);border-radius:8px;background:#fff3ee;color:var(--danger);padding:12px 14px;font-weight:750;line-height:1.45}.auth-section{margin-top:24px;padding:20px;border:1px solid var(--line);border-radius:15px;background:var(--well)}.auth-section h2{margin:0 0 8px;font-size:1.08rem}.auth-progress{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin:24px 0 6px;padding:0;list-style:none}.auth-progress li{border-top:4px solid var(--line);padding-top:7px;color:var(--muted);font-size:.73rem;font-weight:750}.auth-progress li[data-current="true"]{border-color:var(--gold-press);color:var(--ink)}label{display:block;margin:17px 0 6px;font-weight:750}label span{display:block;margin-top:2px;color:var(--muted);font-size:.78rem;font-weight:500}input,textarea{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;color:var(--ink);padding:11px 12px;font:inherit}textarea{min-height:220px;resize:vertical}details{margin-top:20px;border-top:1px solid var(--line);padding-top:17px}summary{cursor:pointer;font-weight:800}.auth-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}.auth-button,.auth-link{display:inline-flex;align-items:center;justify-content:center;min-height:48px;border:0;border-radius:12px;padding:11px 17px;background:var(--gold);box-shadow:0 3px 0 var(--gold-press);color:var(--ink);font:inherit;font-weight:850;text-decoration:none;cursor:pointer}.auth-button{width:100%}.auth-button.secondary,.auth-link.secondary{background:transparent;border:1px solid var(--line);box-shadow:none}.auth-button:active,.auth-link:active{transform:translateY(2px);box-shadow:none}.auth-button:focus-visible,.auth-link:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible,.auth-alert:focus-visible{outline:3px solid color-mix(in srgb,var(--focus) 48%,transparent);outline-offset:3px}.auth-warning{margin-top:22px;border:1px solid rgba(168,63,52,.25);border-radius:13px;background:#fff3ee;padding:15px}.auth-warning strong{display:block;margin-bottom:5px}.auth-meta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.83rem}.auth-manifest{max-height:280px;overflow:auto;white-space:pre-wrap;font-size:.75rem}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:440px){body{padding:8px}.auth-card{border-radius:14px;padding:21px 16px}.auth-progress{gap:4px}.auth-progress li{font-size:.66rem}.auth-actions{display:grid}.auth-link,.auth-button{width:100%}.auth-section{padding:16px 13px}}
+</style></head><body><main class="auth-card" aria-labelledby="auth-title">${AUTH_BRAND_HTML}<p class="auth-eyebrow">${escapeHtmlAttribute(input.eyebrow)}</p><h1 class="auth-title" id="auth-title">${escapeHtmlAttribute(input.title)}</h1><p class="auth-intro">${escapeHtmlAttribute(input.intro)}</p>${alert}<p class="auth-status"${input.statusId ? ` id="${escapeHtmlAttribute(input.statusId)}"` : ''} role="status" aria-live="polite">${escapeHtmlAttribute(input.status)}</p>${input.body}</main></body></html>`;
 }
 
-export function renderAuthSetupPage(
-  options: {
-    state: 'fresh' | 'access_pending';
-    error?: boolean;
-    origin?: string;
-    issuer?: string | null;
-    audience?: string | null;
-  } = { state: 'fresh' },
-): string {
-  const heading = options.state === 'fresh'
-    ? 'Set up your Chickpea workspace'
-    : 'Verify Cloudflare Access';
-  const error = options.error
-    ? '<p class="error" role="alert">Setup could not be verified. Check the values and try again.</p>'
-    : '';
-  const origin = escapeHtmlAttribute(options.origin ?? 'https://your-worker.workers.dev');
-  const issuer = escapeHtmlAttribute(options.issuer ?? '');
-  const audience = escapeHtmlAttribute(options.audience ?? '');
-  const verify = options.state === 'access_pending'
-    ? `<section class="verify" aria-labelledby="verify-heading">
-        <span class="status">Configuration saved</span>
-        <h2 id="verify-heading">Continue through Access</h2>
-        <p>Open the verification URL in this browser. Cloudflare should ask you to sign in, then Chickpea will match the signed email to the owner claim.</p>
-        <a class="primary" href="/admin/setup/verify">Verify identity through Access</a>
-        <p class="small">If you return here after an interruption, this step resumes from the saved configuration. It never skips the Access assertion.</p>
-      </section>`
-    : '';
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chickpea · Secure setup</title>
-${ADMIN_FAVICON}
-<style>
-:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --danger:#b5473a; }
-* { box-sizing:border-box; }
-body { margin:0; min-height:100dvh; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:32px 20px; }
-.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
-main { width:min(820px,100%); margin:0 auto; }
-.progress { display:flex; gap:7px; margin:0 0 16px; padding:0; list-style:none; }
-.progress li { flex:1; height:6px; border-radius:999px; background:rgba(59,50,32,.12); }
-.progress li.done,.progress li.current { background:var(--gold); }
-.card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:clamp(22px,5vw,40px); box-shadow:0 8px 30px rgba(59,50,32,.08); }
-h1 { margin:0 0 8px; font-size:clamp(1.7rem,5vw,2.5rem); }
-h2 { margin:28px 0 8px; font-size:1.1rem; }
-p,li { color:var(--muted); line-height:1.55; }
-ol { padding-left:22px; }
-.paths { display:grid; gap:10px; grid-template-columns:1fr 1fr; }
-.path { border:1px solid var(--line); border-radius:12px; padding:14px; background:#fff; color:var(--ink); text-align:left; cursor:pointer; }
-.path[aria-pressed="true"] { border-color:var(--gold); box-shadow:0 0 0 2px rgba(221,160,51,.2); }
-.path h2 { margin:0 0 5px; } .path p { margin:0; }
-.guide { display:none; margin-top:14px; border:1px solid var(--line); border-radius:12px; padding:16px; }
-.guide.active { display:block; }
-.copy-grid { display:grid; gap:9px; margin:14px 0; }
-.copy-row { align-items:center; display:grid; gap:8px; grid-template-columns:minmax(0,1fr) auto; }
-.copy-value { background:#f8f1df; border:1px solid var(--line); border-radius:10px; font-family:ui-monospace,"SF Mono",Menlo,monospace; overflow-wrap:anywhere; padding:10px 12px; }
-label { display:block; font-weight:700; margin:16px 0 6px; }
-input,select { width:100%; border:1px solid var(--line); border-radius:10px; padding:11px 12px; font:inherit; background:#fff; }
-input:focus-visible,select:focus-visible,button:focus-visible,a:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:2px; }
-button,.primary { border:0; border-radius:12px; background:var(--gold); color:var(--ink); padding:12px 18px; font:inherit; font-weight:800; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
-form > button { margin-top:22px; }
-.secondary { background:#fff; border:1px solid var(--line); padding:8px 11px; }
-.external { display:inline-flex; margin-top:8px; color:var(--ink); font-weight:800; }
-.verify { background:#f8f1df; border:1px solid rgba(221,160,51,.4); border-radius:14px; margin:22px 0; padding:18px; }
-.verify h2 { margin:8px 0; }.status { display:inline-block; background:rgba(111,162,91,.16); color:#4e7a3e; border-radius:999px; padding:4px 9px; font-size:.75rem; font-weight:800; }
-.small { font-size:.8rem; }
-code { background:#f8f1df; border-radius:6px; padding:2px 5px; }
-.error { color:var(--danger); font-weight:700; }
-@media (max-width:620px) { body { padding:16px 10px; } .paths { grid-template-columns:1fr; } .card { border-radius:14px; } .copy-row { grid-template-columns:1fr; } .copy-row button { width:100%; } }
-</style>
-</head>
-<body>
-<main>
-  <ol class="progress" aria-label="Setup progress"><li class="done"><span class="sr-only">Deploy complete</span></li><li class="${options.state === 'fresh' ? 'current' : 'done'}"><span class="sr-only">Access configuration</span></li><li class="${options.state === 'access_pending' ? 'current' : ''}"><span class="sr-only">Identity verification</span></li><li><span class="sr-only">Slack setup</span></li></ol>
-  <section class="card" aria-labelledby="setup-heading">
-    <p class="small"><strong>Advanced manual setup</strong></p>
-    <h1 id="setup-heading">${heading}</h1>
-    <p>Cloudflare Access signs people in. Chickpea keeps its own members and roles, so changing a role or suspending a person takes effect on their next Chickpea request.</p>
-    ${error}
-    ${verify}
-    <h2>Choose your Cloudflare path</h2>
-    <div class="paths">
-      <button class="path" type="button" data-path="new" aria-pressed="true"><h2>Create Zero Trust organization</h2><p>Start here if this account has never used Access.</p></button>
-      <button class="path" type="button" data-path="existing" aria-pressed="false"><h2>Use an existing Zero Trust organization</h2><p>Reuse your established team name and identity providers.</p></button>
-    </div>
-    <section class="guide active" data-guide="new"><strong>New to Zero Trust</strong><ol><li>Open the Zero Trust dashboard and activate the Free plan if Cloudflare asks.</li><li>Enable a dedicated verified-email login method, such as email one-time PIN.</li><li>Create one Self-hosted application for the two Admin destinations and one authentication-only policy for that login method.</li></ol></section>
-    <section class="guide" data-guide="existing"><strong>Existing Zero Trust team</strong><ol><li>Create a separately named Chickpea verified-email login method and Self-hosted application.</li><li>Attach one authentication-only policy for that login method; do not enumerate Chickpea members.</li><li>Use the two Admin destinations below and leave unrelated applications, policies, and providers unchanged.</li></ol></section>
-    <a class="external" href="https://one.dash.cloudflare.com/" target="_blank" rel="noopener noreferrer">Open Cloudflare Zero Trust ↗</a>
-    <h2>Protect only Admin</h2>
-    <p>Configure both destinations in one Access application. Slack events and OAuth callbacks must remain public.</p>
-    <div class="copy-grid">
-      <div class="copy-row"><span class="copy-value" data-copy-value>${origin}/admin</span><button class="secondary" type="button" data-copy="${origin}/admin">Copy</button></div>
-      <div class="copy-row"><span class="copy-value" data-copy-value>${origin}/admin/*</span><button class="secondary" type="button" data-copy="${origin}/admin/*">Copy</button></div>
-    </div>
-    <p class="small">Configure this perimeter once. Anyone who verifies an email may reach Chickpea's uniform sign-in denial, but only an existing membership or exact-email invitation grants access. Later teammate changes happen only in Chickpea.</p>
-    <h2>Save the Access values</h2>
-    <p>Copy the team issuer and application audience from Cloudflare. Saving does not activate the owner; the next step still requires a signed Access assertion.</p>
-    <form method="post" action="/admin/setup">
-      <label for="owner-email">Owner email</label>
-      <input id="owner-email" name="ownerEmail" type="email" autocomplete="email" required>
-      <label for="recovery-token">Recovery token</label>
-      <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required>
-      <label for="access-issuer">Cloudflare team issuer</label>
-      <input id="access-issuer" name="issuer" type="url" placeholder="https://team.cloudflareaccess.com" value="${issuer}" required>
-      <label for="access-audience">Access application audience</label>
-      <input id="access-audience" name="audience" autocomplete="off" value="${audience}" required>
-      <button type="submit">Save and continue</button>
-    </form>
-  </section>
-</main>
-<script>
-(function () {
-  var pathButtons = document.querySelectorAll('[data-path]');
-  pathButtons.forEach(function (button) {
-    button.addEventListener('click', function () {
-      var selected = button.getAttribute('data-path');
-      pathButtons.forEach(function (candidate) {
-        candidate.setAttribute('aria-pressed', candidate === button ? 'true' : 'false');
-      });
-      document.querySelectorAll('[data-guide]').forEach(function (guide) {
-        guide.classList.toggle('active', guide.getAttribute('data-guide') === selected);
-      });
-    });
+export function renderSlackSignInPage(destination: string): string {
+  const safeDestination = safeSlackPageDestination(destination);
+  return renderSlackJourneyPage({
+    surface: 'sign-in',
+    eyebrow: 'Chickpea control plane',
+    title: 'Sign in with Slack',
+    intro: 'Use the Slack identity invited to manage this Chickpea workspace.',
+    status: 'Control-plane access is invitation-only. Teammates can use Chickpea in assigned channels without signing in here.',
+    body: `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="login"><input type="hidden" name="destination" value="${escapeHtmlAttribute(safeDestination)}"><button class="auth-button" type="submit" autofocus>Continue with Slack</button></form>`,
   });
-  document.querySelectorAll('[data-copy]').forEach(function (button) {
-    button.addEventListener('click', function () {
-      var value = button.getAttribute('data-copy') || '';
-      if (!navigator.clipboard || !navigator.clipboard.writeText) return;
-      navigator.clipboard.writeText(value).then(function () {
-        button.textContent = 'Copied';
-      });
-    });
-  });
-})();
-</script>
-</body>
-</html>`;
 }
 
-export function renderAuthSetupCompletePage(): string {
-  return `<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chickpea · Workspace ready</title>${ADMIN_FAVICON}
-<style>
-:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --green:#4e7a3e; }
-* { box-sizing:border-box; } body { margin:0; min-height:100dvh; display:grid; place-items:center; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:20px; }
-main { width:min(580px,100%); background:var(--card); border:1px solid var(--line); border-radius:20px; padding:clamp(26px,6vw,44px); box-shadow:0 10px 30px rgba(59,50,32,.09); text-align:center; }
-.mark { width:54px; height:54px; display:grid; place-items:center; margin:0 auto 18px; border-radius:50%; background:rgba(111,162,91,.16); color:var(--green); font-size:1.6rem; font-weight:900; }
-h1 { margin:0 0 8px; font-size:clamp(1.8rem,6vw,2.5rem); } p { color:var(--muted); line-height:1.55; }
-a { display:inline-flex; align-items:center; justify-content:center; margin-top:18px; min-height:44px; border-radius:12px; padding:11px 20px; background:var(--gold); color:var(--ink); text-decoration:none; font-weight:800; box-shadow:0 2.5px 0 #b27e1f; }
-a:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:3px; }
-</style></head><body><main>
-  <div class="mark" aria-hidden="true">✓</div>
-  <h1>Your Chickpea is ready</h1>
-  <p>Your owner account and workspace are ready. Next, connect the Slack app to this workspace.</p>
-  <a href="/admin">Continue to Slack setup</a>
-</main><script src="/admin/setup/client.js" defer></script></body></html>`;
-}
-
-export function renderAuthRecoveryPage(options: { error?: boolean } = {}): string {
-  const error = options.error
-    ? '<p class="error" role="alert">Recovery could not be verified.</p>'
-    : '';
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chickpea · Access recovery</title>
-${ADMIN_FAVICON}
-<style>
-:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --danger:#b5473a; }
-* { box-sizing:border-box; }
-body { margin:0; min-height:100dvh; display:grid; place-items:center; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:24px; }
-main { width:min(520px,100%); background:var(--card); border:1px solid var(--line); border-radius:18px; padding:clamp(22px,5vw,36px); box-shadow:0 8px 30px rgba(59,50,32,.08); }
-h1 { margin:0 0 8px; font-size:clamp(1.5rem,5vw,2rem); }
-p { color:var(--muted); line-height:1.55; }
-label { display:block; font-weight:700; margin:16px 0 6px; }
-input { width:100%; border:1px solid var(--line); border-radius:10px; padding:11px 12px; font:inherit; }
-input:focus-visible,button:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:2px; }
-button { margin-top:22px; border:0; border-radius:12px; background:var(--gold); color:var(--ink); padding:12px 18px; font:inherit; font-weight:800; cursor:pointer; }
-.error { color:var(--danger); font-weight:700; }
-@media (max-width:520px) { body { padding:12px; } main { border-radius:14px; } }
-</style>
-</head>
-<body>
-<main aria-labelledby="recovery-heading">
-  <h1 id="recovery-heading">Repair Cloudflare Access</h1>
-  <p>This does not sign you in. It updates only Chickpea's expected Access application audience after you have repaired the edge policy in Cloudflare.</p>
-  ${error}
-  <form method="post" action="/admin/recovery">
-    <label for="operation">Repair operation</label>
-    <select id="operation" name="operation" required>
-      <option value="audience">Update Access application audience</option>
-      <option value="owner_binding">Replace my owner identity binding</option>
-    </select>
-    <label for="recovery-token">Offline recovery token</label>
-    <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required>
-    <label for="access-audience">New Access application audience</label>
-    <input id="access-audience" name="audience" autocomplete="off">
-    <button type="submit">Verify and repair</button>
-  </form>
-</main>
-</body>
-</html>`;
-}
-
-export function renderAuthMigrationPage(options: { error?: boolean } = {}): string {
-  const error = options.error
-    ? '<p class="error" role="alert">Migration could not be saved. Your existing Admin login is still active.</p>'
-    : '';
-  return `<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chickpea · Upgrade authentication</title>${ADMIN_FAVICON}
-<style>
-:root { --canvas:#f4ebd8; --card:#fffdf6; --ink:#3b3220; --muted:#6b5c42; --gold:#dda033; --line:rgba(59,50,32,.14); --danger:#b5473a; }
-* { box-sizing:border-box; } body { margin:0; min-height:100dvh; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,sans-serif; padding:24px; }
-main { width:min(680px,100%); margin:0 auto; background:var(--card); border:1px solid var(--line); border-radius:18px; padding:clamp(22px,5vw,38px); box-shadow:0 8px 30px rgba(59,50,32,.08); }
-h1 { margin:0 0 8px; font-size:clamp(1.6rem,5vw,2.3rem); } p,li { color:var(--muted); line-height:1.55; } .notice { border:1px solid var(--line); border-radius:12px; padding:14px; }
-label { display:block; font-weight:700; margin:16px 0 6px; } input { width:100%; border:1px solid var(--line); border-radius:10px; padding:11px 12px; font:inherit; }
-input:focus-visible,button:focus-visible { outline:3px solid rgba(221,160,51,.45); outline-offset:2px; } button { margin-top:22px; border:0; border-radius:12px; background:var(--gold); color:var(--ink); padding:12px 18px; font:inherit; font-weight:800; cursor:pointer; }
-.error { color:var(--danger); font-weight:700; } @media (max-width:560px) { body { padding:12px; } main { border-radius:14px; } }
-</style></head><body><main>
-  <p>Authentication upgrade</p>
-  <h1>Give every person their own identity</h1>
-  <p class="notice">Your existing shared Admin token remains usable until a matching Cloudflare Access identity activates the owner account. After activation, it stops authenticating immediately.</p>
-  ${error}
-  <ol><li>Create or reuse a Cloudflare Zero Trust team.</li><li>Protect both <code>/admin</code> and <code>/admin/*</code> in one Access application.</li><li>Save the issuer and audience here, then verify through Access.</li></ol>
-  <form method="post" action="/admin/migrate">
-    <label for="owner-email">First owner email</label><input id="owner-email" name="ownerEmail" type="email" autocomplete="email" required>
-    <label for="recovery-token">Offline recovery token</label><input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required>
-    <label for="access-issuer">Cloudflare team issuer</label><input id="access-issuer" name="issuer" type="url" placeholder="https://team.cloudflareaccess.com" required>
-    <label for="access-audience">Access application audience</label><input id="access-audience" name="audience" autocomplete="off" required>
-    <button type="submit">Save and verify through Access</button>
-  </form>
-</main></body></html>`;
-}
-
-export function renderMemberAccountPage(input: {
-  organizationName: string;
-  displayName: string | null;
-  email: string;
-  role: 'owner' | 'admin' | 'member';
-  status: 'active' | 'suspended' | 'removed';
+export function renderSlackAccessDeniedPage(input: {
+  purpose: Exclude<SlackAuthPurpose, 'invitation'>;
+  destination: string;
+  reason: string;
+  workspace?: SlackAuthWorkspace;
 }): string {
-  const name = escapeHtmlAttribute(input.displayName || input.email);
-  const managementNavigation = input.role === 'member'
-    ? ''
-    : `<a href="/admin">Agents</a><a href="/admin/channels">Channels</a><a href="/admin/team">Team</a><a href="/admin/usage">Usage</a><a href="/admin/settings">Settings</a>`;
-  return `<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chickpea · Your account</title>${ADMIN_FAVICON}
-<style>
-:root { --canvas:#f4ead2; --paper:#fffdf7; --rail:rgba(255,253,247,.74); --ink:#3b3220; --muted:#74664d; --gold:#dda033; --line:#e8deca; --green:#4e7a3e; }
-* { box-sizing:border-box; } body { margin:0; min-height:100dvh; background:var(--canvas); color:var(--ink); font-family:Quicksand,system-ui,-apple-system,sans-serif; }
-.shell { display:flex; min-height:100dvh; gap:24px; padding-right:24px; }
-.rail { background:var(--rail); border-right:1px solid rgba(130,105,58,.12); display:flex; flex:0 0 292px; flex-direction:column; padding:27px 22px 22px; }
-.brand { align-items:center; display:flex; gap:10px; padding:0 3px 25px; font-size:1.25rem; font-weight:800; }.brand .auth-brand-mark{height:30px;width:30px}.brand .auth-brand-name{font-size:inherit}.brand .auth-brand{align-items:center;display:flex;flex-direction:row;gap:10px;margin:0;text-align:left}
-.rail-label { color:var(--muted); font-size:.68rem; font-weight:800; letter-spacing:.11em; margin:12px 6px; text-transform:uppercase; }.nav { display:flex; flex-direction:column; gap:5px; margin-top:auto; padding-top:20px; border-top:1px solid var(--line); }.nav a { border-radius:10px; color:var(--muted); font-size:.78rem; padding:9px 10px; text-decoration:none; }.nav a:hover,.nav a:focus-visible { background:#f4e8cc; color:var(--ink); }.nav a.active { background:#f4e8cc; color:var(--ink); font-weight:700; }
-main { align-self:center; background:var(--paper); border:1px solid rgba(118,94,51,.08); border-radius:18px; height:calc(100dvh - 44px); margin:22px auto; max-width:1180px; overflow:auto; padding:clamp(34px,5vw,72px); width:100%; }.content { max-width:720px; }
-.eyebrow { color:var(--muted); font-size:.72rem; font-weight:800; letter-spacing:.1em; margin:0 0 7px; text-transform:uppercase; } h1 { font-size:clamp(2rem,4vw,2.75rem); letter-spacing:-.04em; margin:0 0 8px; } p { color:var(--muted); line-height:1.55; }.lede{margin:0 0 26px}
-.account { border:1px solid var(--line); border-radius:16px; display:grid; gap:18px; padding:22px; }.account-head{align-items:flex-start;display:flex;gap:16px;justify-content:space-between}.identity{display:grid;gap:4px;min-width:0}.identity strong{font-size:1rem}.email{color:var(--muted);overflow-wrap:anywhere}.badges{display:flex;flex-wrap:wrap;gap:7px}.badge{background:rgba(111,162,91,.15);border-radius:999px;color:var(--green);font-size:.72rem;font-weight:800;padding:5px 9px}.badge.role{background:#f8edd3;color:#8b6518}.actions{align-items:center;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:10px;padding-top:18px}
-.button,button { align-items:center; background:var(--gold); border:0; border-radius:11px; box-shadow:0 2px 0 #b27e1f; color:var(--ink); cursor:pointer; display:inline-flex; font:inherit; font-size:.8rem; font-weight:800; justify-content:center; min-height:40px; padding:9px 15px; text-decoration:none; }.button.secondary{background:#fff;box-shadow:inset 0 0 0 1px var(--line)}form{margin:0}.note{font-size:.78rem;margin:20px 2px 0}.button:focus-visible,button:focus-visible,.nav a:focus-visible{outline:3px solid rgba(221,160,51,.4);outline-offset:2px}
-@media(max-width:740px){.shell{display:block;padding:0}.rail{display:none}main{border-radius:14px;height:auto;margin:10px;min-height:calc(100dvh - 20px);padding:28px 20px;width:calc(100% - 20px)}.account-head{flex-direction:column}}
-</style></head><body><div class="shell primary-admin-shell"><aside class="rail primary-shell-sidebar"><div class="brand">${AUTH_BRAND_HTML}</div><p class="rail-label">Account</p><nav class="nav" aria-label="Admin navigation">${managementNavigation}<a class="active" href="/admin/account" aria-current="page">Account</a></nav></aside><main><div class="content">
-  <p class="eyebrow">${escapeHtmlAttribute(input.organizationName)}</p>
-  <h1>Your account</h1>
-  <p class="lede">Manage your Chickpea sign-in and workspace access.</p>
-  <section class="account" aria-label="Account details"><div class="account-head"><div class="identity"><strong>${name}</strong><span class="email">${escapeHtmlAttribute(input.email)}</span></div><div class="badges">${input.role === 'owner' ? '<span class="badge role">Owner</span>' : ''}<span class="badge">${escapeHtmlAttribute(input.status)}</span></div></div><div class="actions">
-    <a class="button" href="slack://open">Open Slack</a><a class="button secondary" href="/admin/account/password">Change password</a>
-    <form method="post" action="/admin/logout"><button class="button secondary" type="submit">Sign out</button></form>
-  </div></section>
-  <p class="note">Need help signing in? Ask the Chickpea owner.</p>
-</div></main></div></body></html>`;
+  const safeDestination = safeSlackPageDestination(input.destination);
+  const workspace = slackWorkspaceLabel(input.workspace);
+  const firstOwner = input.purpose === 'first_owner';
+  const cancelled = input.reason === 'provider_denied';
+  const expired = input.reason === 'expired_state';
+  const title = cancelled ? 'Slack sign-in was cancelled'
+    : expired ? 'Slack sign-in expired'
+      : 'That Slack account cannot access Chickpea';
+  const intro = firstOwner
+    ? `Use the same active Slack member who installed Chickpea in ${workspace}.`
+    : `Use an invited active member of ${workspace}.`;
+  const capability = firstOwner
+    ? '<input data-slack-setup-capability type="hidden" name="capability">'
+    : '';
+  const setupScript = firstOwner ? '<script src="/admin/setup/client.js" defer></script>' : '';
+  return renderSlackJourneyPage({
+    surface: 'access-denied',
+    eyebrow: firstOwner ? 'First Owner setup' : 'Access not granted',
+    title,
+    intro,
+    status: 'No Chickpea account or role was created. You can still use Chickpea agents in assigned Slack channels.',
+    alert: cancelled || expired ? undefined : 'This Slack identity does not match the required Chickpea access.',
+    body: `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="${input.purpose}">${capability}<input type="hidden" name="destination" value="${escapeHtmlAttribute(safeDestination)}"><button class="auth-button" type="submit" autofocus>Try another Slack account</button></form>${setupScript}`,
+  });
+}
+
+export function renderSlackOwnerCompletePage(destination: string): string {
+  const safeDestination = safeSlackPageDestination(destination);
+  return renderSlackJourneyPage({
+    surface: 'owner-complete',
+    eyebrow: 'Setup complete',
+    title: 'You’re the first Owner',
+    intro: 'Slack installation and your exact identity are verified. Chickpea is ready to configure.',
+    status: 'Your requested control-plane view is ready.',
+    body: `<div class="auth-warning" role="note"><strong>Add a second Owner</strong>If this sole Slack identity is lost, recovery requires a destructive fresh reset. After opening Chickpea, invite an Admin and promote that verified person to Owner.</div><div class="auth-actions"><a class="auth-link" href="${escapeHtmlAttribute(safeDestination)}" autofocus>Open Chickpea</a></div>`,
+  });
+}
+
+export function renderSlackInvitationPage(workspace: SlackAuthWorkspace): string {
+  const label = slackWorkspaceLabel(workspace);
+  return renderSlackJourneyPage({
+    surface: 'invitation', eyebrow: 'Chickpea invitation', title: 'Join Chickpea',
+    intro: `Continue with the invited Slack account in ${label}.`,
+    status: 'Checking this invitation…',
+    statusId: 'invitation-status',
+    rootAttributes: 'data-invitation-state="ready"',
+    body: '<form id="invitation-form" method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="invitation"><input id="invitation-locator" type="hidden" name="invitation"><button class="auth-button" id="invitation-submit" type="submit" disabled autofocus>Continue with Slack</button></form><script src="/auth/slack/invite/client.js" defer></script>',
+  });
+}
+
+export function renderSlackInvitationMismatchPage(workspace?: SlackAuthWorkspace): string {
+  return renderSlackJourneyPage({
+    surface: 'invitation-mismatch', eyebrow: 'Invitation identity mismatch',
+    title: 'That Slack account cannot use this invitation',
+    intro: `Choose the invited account in ${slackWorkspaceLabel(workspace)}. This page does not reveal who was invited.`,
+    status: 'No Chickpea access was granted.',
+    rootAttributes: 'data-invitation-state="mismatch"',
+    body: '<div class="auth-actions"><a class="auth-link" href="/auth/slack/invite" autofocus>Try another Slack account</a></div><script src="/auth/slack/invite/client.js" defer></script>',
+  });
+}
+
+export function renderSlackInvitationCompletePage(destination: string): string {
+  const safeDestination = safeSlackPageDestination(destination);
+  return renderSlackJourneyPage({
+    surface: 'invitation-complete', eyebrow: 'Invitation accepted', title: 'You’re in',
+    intro: 'Your exact Slack identity is now linked to this Chickpea workspace.',
+    status: 'Opening the Team page…',
+    rootAttributes: `data-invitation-state="complete" data-destination="${escapeHtmlAttribute(safeDestination)}"`,
+    body: `<noscript><a class="auth-link" href="${escapeHtmlAttribute(safeDestination)}">Open Chickpea</a></noscript><script src="/auth/slack/invite/client.js" defer></script>`,
+  });
+}
+
+export function renderSlackInvitationUnavailablePage(): string {
+  return renderSlackJourneyPage({
+    surface: 'invitation-unavailable', eyebrow: 'Invitation unavailable',
+    title: 'This invitation is no longer available',
+    intro: 'Ask a Chickpea Owner to select your Slack member again and create a fresh invitation.',
+    status: 'No access was granted.', rootAttributes: 'data-invitation-state="unavailable"',
+    body: '<script src="/auth/slack/invite/client.js" defer></script>',
+  });
+}
+
+export function renderSlackSetupPage(input: {
+  setup?: SlackSetupTransaction;
+  destination: string;
+  manifest: SlackAppManifest;
+  manifestPrefillUrl: string;
+  notice?: string;
+  error?: string;
+  autoResume?: boolean;
+}): string {
+  const state = input.setup?.state ?? 'capability_required';
+  const destination = safeSlackPageDestination(input.destination);
+  const notice = input.notice ? slackSetupPageMessage(input.notice) : undefined;
+  const error = input.error ? slackSetupPageMessage(input.error) : undefined;
+  const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeHtmlAttribute(destination)}">`;
+  const manifestJson = escapeHtmlAttribute(JSON.stringify(input.manifest, null, 2));
+  let title = 'Resume private setup';
+  let intro = 'Chickpea keeps this seven-day setup checkpoint without turning the setup link into a user session.';
+  let body = '';
+  if (state === 'capability_required') {
+    body = `<form id="slack-setup-open-form" method="post" action="/admin/setup"><input type="hidden" name="action" value="open">${hidden}${input.notice ? `<input type="hidden" name="notice" value="${escapeHtmlAttribute(input.notice)}">` : ''}<button class="auth-button" data-primary-action="resume-private" type="submit" autofocus>Continue private setup</button></form>`;
+  } else if (state === 'awaiting_app_creation') {
+    title = 'Create the Slack app';
+    intro = 'Use a short-lived Slack configuration token. Chickpea sends it once to Slack and never stores it.';
+    body = `<form method="post" action="/admin/setup"><input type="hidden" name="action" value="create">${hidden}<label for="configuration-token">Slack configuration token<span>Generated in Slack and valid only briefly.</span></label><input id="configuration-token" type="password" name="configurationToken" autocomplete="off" maxlength="512" required><button class="auth-button" data-primary-action="create-app" type="submit" autofocus>Create Slack app</button></form><details data-secondary-action="manual-adoption"><summary>Programmatic creation unavailable?</summary><p class="auth-help">Create the exact manifest in Slack, export it, then enter the existing app’s write-only credentials.</p><a class="auth-link secondary" href="${escapeHtmlAttribute(input.manifestPrefillUrl)}" rel="noreferrer">Open exact manifest in Slack</a><pre class="auth-manifest">${manifestJson}</pre><form method="post" action="/admin/setup"><input type="hidden" name="action" value="adopt">${hidden}<label for="manual-app-id">App ID</label><input id="manual-app-id" type="password" name="appId" autocomplete="off" maxlength="64" required><label for="manual-client-id">Client ID</label><input id="manual-client-id" type="password" name="clientId" autocomplete="off" maxlength="256" required><label for="manual-client-secret">Client secret</label><input id="manual-client-secret" type="password" name="clientSecret" autocomplete="off" maxlength="4096" required><label for="manual-signing-secret">Signing secret</label><input id="manual-signing-secret" type="password" name="signingSecret" autocomplete="off" maxlength="4096" required><label for="manual-manifest">Exported app manifest</label><textarea id="manual-manifest" name="observedManifest" maxlength="7500" required></textarea><button class="auth-button secondary" type="submit">Validate and adopt app</button></form></details>`;
+  } else if (state === 'app_creation_pending') {
+    title = 'Check the interrupted creation';
+    intro = 'Slack may have created the app even though Chickpea did not receive a final response.';
+    body = `<form method="post" action="/admin/setup"><input type="hidden" name="action" value="inspect">${hidden}<button class="auth-button" data-primary-action="inspect-creation" type="submit" autofocus>Inspect saved attempt</button></form>`;
+  } else if (state === 'ambiguous_external_effect') {
+    title = 'Choose the existing Slack app';
+    intro = 'Inspect Slack before restarting. Automatically creating again could produce a duplicate app.';
+    body = `<form method="post" action="/admin/setup"><input type="hidden" name="action" value="inspect">${hidden}<button class="auth-button" data-primary-action="inspect-ambiguity" type="submit" autofocus>Inspect saved attempt</button></form><details data-secondary-action="manual-adoption"><summary>Adopt the matching app or restart</summary><p class="auth-help">Use the manual adoption fields from the exact manifest, or restart only after confirming Slack did not create the app.</p><pre class="auth-manifest">${manifestJson}</pre><form method="post" action="/admin/setup"><input type="hidden" name="action" value="restart">${hidden}<button class="auth-button secondary" type="submit">I inspected Slack; restart creation</button></form></details>`;
+  } else if (state === 'app_created') {
+    title = 'Install Chickpea in Slack';
+    intro = 'Slack decides whether this member may install directly or must request workspace approval.';
+    body = `<form method="post" action="/auth/slack/install/start">${hidden}<button class="auth-button" data-primary-action="install-app" type="submit" autofocus>Continue to Slack</button></form>`;
+  } else if (state === 'approval_pending') {
+    title = 'Slack approval is pending';
+    intro = 'This private setup remains open for seven days. After approval, use a fresh short-lived authorization.';
+    body = `<form method="post" action="/auth/slack/install/resume">${hidden}<button class="auth-button" data-primary-action="resume-approval" type="submit" autofocus>Resume Slack installation</button></form>`;
+  } else if (state === 'bot_install_pending') {
+    title = 'Verify Slack Events';
+    intro = 'Chickpea has the bot grant and is waiting for Slack’s signed Events challenge for this exact app and workspace.';
+    body = `<form method="post" action="/auth/slack/install/finalize">${hidden}<button class="auth-button" data-primary-action="verify-events" type="submit" autofocus>Check signed Events verification</button></form>`;
+  } else if (state === 'bot_installed') {
+    title = 'Become the first Owner';
+    intro = 'Sign in as the same Slack member who installed the app. Installation alone does not grant Chickpea access.';
+    body = `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="first_owner">${hidden}<button class="auth-button" data-primary-action="claim-owner" type="submit" autofocus>Sign in with Slack</button></form>`;
+  } else if (state === 'install_failed') {
+    title = 'Installation could not be verified';
+    intro = 'The inactive bot credential was discarded. The private setup state is preserved for inspection.';
+    body = '<p class="auth-help">Create a fresh deployment setup link before attempting another installation.</p>';
+  } else {
+    title = 'Slack setup is complete';
+    intro = 'The setup capability no longer grants any action.';
+    body = `<div class="auth-actions"><a class="auth-link" href="${escapeHtmlAttribute(destination)}" autofocus>Open Chickpea</a></div>`;
+  }
+  const progress = slackSetupProgress(state);
+  const progressHtml = `<ol class="auth-progress" aria-label="Setup progress"><li data-current="${String(progress === 1)}">Create app</li><li data-current="${String(progress === 2)}">Install</li><li data-current="${String(progress === 3)}">Verify Owner</li></ol>`;
+  return renderSlackJourneyPage({
+    surface: 'setup', eyebrow: 'Private Slack setup', title, intro,
+    status: slackSetupPageMessage(state), alert: error ?? notice,
+    rootAttributes: `data-slack-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}"`,
+    body: `${progressHtml}${body}<script src="/admin/setup/client.js" defer></script>`,
+  });
+}
+
+function slackSetupProgress(state: string): 1 | 2 | 3 {
+  if (['app_created', 'approval_pending', 'bot_install_pending', 'install_failed'].includes(state)) return 2;
+  if (['bot_installed', 'consumed'].includes(state)) return 3;
+  return 1;
+}
+
+function slackSetupPageMessage(code: string): string {
+  switch (code) {
+    case 'capability_required': return 'Reading the private setup capability from this browser tab.';
+    case 'awaiting_app_creation': return 'Slack app creation is the only required action now.';
+    case 'app_creation_pending': return 'The external result is unknown; no automatic retry will run.';
+    case 'ambiguous_external_effect': return 'Inspect Slack, then adopt the matching app or explicitly restart.';
+    case 'app_created': return 'App credentials are encrypted. Bot installation is next.';
+    case 'approval_pending': return 'No Chickpea role was granted to the requester or approver.';
+    case 'bot_install_pending': return 'The candidate remains inactive until signed Events proof succeeds.';
+    case 'bot_installed': return 'The installer must now prove the same Slack identity.';
+    case 'install_failed': return 'No inactive credential was promoted.';
+    case 'consumed': return 'The setup capability has been consumed.';
+    case 'waiting_events': return 'Chickpea is waiting for Slack to deliver its signed Events challenge.';
+    case 'denied': return 'Slack did not approve this installation. Start a fresh request when ready.';
+    case 'cancelled': return 'Slack installation was cancelled. The durable setup can be resumed.';
+    case 'expired': return 'The Slack request expired. Resume with a fresh authorization.';
+    case 'setup_expired': return 'This private setup link expired. Create a new deployment setup link.';
+    case 'setup_conflict': return 'Setup changed in another tab. Reload to inspect the current stage.';
+    case 'invalid_configuration_token': return 'Slack rejected the configuration token. Generate a fresh token and retry.';
+    case 'invalid_manifest': return 'The Slack app contract does not match this deployment.';
+    case 'rate_limited': return 'Too many setup attempts. Wait for the retry window before continuing.';
+    default: return 'Slack setup could not continue. No secret or role was changed.';
+  }
+}
+
+function slackWorkspaceLabel(workspace?: SlackAuthWorkspace): string {
+  if (!workspace) return 'the connected Slack workspace';
+  return workspace.teamName ? `${workspace.teamName} (${workspace.teamId})`
+    : `the connected Slack workspace (${workspace.teamId})`;
+}
+
+function safeSlackPageDestination(value: string): string {
+  if (!/^\/admin(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/.test(value)) return '/admin';
+  try {
+    const parsed = new URL(value, 'https://chickpea.invalid');
+    if (parsed.origin !== 'https://chickpea.invalid' || parsed.pathname !== value ||
+        parsed.pathname === '/admin/api' || parsed.pathname.startsWith('/admin/api/')) return '/admin';
+    return parsed.pathname;
+  } catch { return '/admin'; }
+}
+
+export function renderSlackRecoveryPage(options: {
+  stage?: 'token' | 'credentials' | 'waiting_events' | 'complete';
+  expectedAppId?: string;
+  expectedTeamId?: string;
+  error?: string;
+} = {}): string {
+  const stage = options.stage ?? 'token';
+  if (stage === 'complete') {
+    return renderSlackJourneyPage({
+      surface: 'recovery', title: 'Slack connection repaired', eyebrow: 'Recovery complete',
+      intro: 'Recovery did not sign anyone in, bind an identity, or change a Chickpea role.',
+      status: 'An existing Owner can now use normal Sign in with Slack.', alert: options.error,
+      body: '<div class="auth-actions"><a class="auth-link" href="/auth/slack/sign-in?destination=%2Fadmin" autofocus>Continue to Sign in with Slack</a></div>',
+    });
+  }
+  if (stage === 'waiting_events') {
+    return renderSlackJourneyPage({
+      surface: 'recovery', title: 'Verify the Events URL', eyebrow: 'Credential repair',
+      intro: 'In Slack app settings, retry and save Event Subscriptions for this unchanged app. Then return here to finish the revision-bound verification.',
+      status: 'The replacement credential remains inactive until signed Events proof succeeds.',
+      alert: options.error,
+      body: '<form method="post" action="/admin/recovery"><input type="hidden" name="action" value="finalize"><button class="auth-button" type="submit" autofocus>Verify and promote repair</button></form>',
+    });
+  }
+  if (stage === 'credentials') {
+    return renderSlackJourneyPage({
+      surface: 'recovery', title: 'Repair Slack credentials', eyebrow: '15-minute recovery session',
+      intro: `Enter credentials for the unchanged Slack app ${options.expectedAppId ?? ''} in workspace ${options.expectedTeamId ?? ''}. Values are write-only and encrypted before persistence.`,
+      status: 'The current credential stays active unless this replacement passes OAuth and signed Events verification.',
+      alert: options.error,
+      body: `<form method="post" action="/admin/recovery">
+        <input type="hidden" name="action" value="stage">
+        <label for="app-id">Slack app ID</label><input id="app-id" name="appId" required maxlength="64" autocomplete="off" value="${escapeHtmlAttribute(options.expectedAppId ?? '')}">
+        <label for="team-id">Slack team ID</label><input id="team-id" name="teamId" required maxlength="64" autocomplete="off" value="${escapeHtmlAttribute(options.expectedTeamId ?? '')}">
+        <label for="client-id">Client ID</label><input id="client-id" name="clientId" required maxlength="256" autocomplete="off">
+        <label for="client-secret">Client secret</label><input id="client-secret" name="clientSecret" type="password" required maxlength="4096" autocomplete="off">
+        <label for="signing-secret">Signing secret</label><input id="signing-secret" name="signingSecret" type="password" required maxlength="4096" autocomplete="off">
+        <label for="configuration-token">Configuration token <span>only if deployment URLs changed</span></label><input id="configuration-token" name="configurationToken" type="password" maxlength="512" autocomplete="off" aria-describedby="configuration-token-help">
+        <p id="configuration-token-help" class="auth-help">A short-lived token is used only in this request to update the unchanged app's OAuth and Events URLs. It is never stored.</p>
+        <button class="auth-button" type="submit" autofocus>Encrypt credentials and authorize Slack</button>
+      </form>`,
+    });
+  }
+  return renderSlackJourneyPage({
+    surface: 'recovery', title: 'Repair the Slack connection', eyebrow: 'Deployment recovery',
+    intro: 'This hidden path repairs only the existing Slack app and workspace. It cannot create an Owner, change a role, or issue a Chickpea session.',
+    status: 'A valid token opens one browser-bound 15-minute repair session.', alert: options.error,
+    body: `<form method="post" action="/admin/recovery">
+      <input type="hidden" name="action" value="begin">
+      <label for="recovery-token">Deployment recovery token</label>
+      <input id="recovery-token" name="recoveryToken" type="password" autocomplete="off" required maxlength="512" ${options.error ? 'aria-describedby="auth-error"' : ''}>
+      <button class="auth-button" type="submit" autofocus>Start 15-minute repair</button>
+    </form>`,
+  });
 }
 
 function escapeHtmlAttribute(value: string): string {

@@ -36,7 +36,7 @@ function assertSavedReceipt(text: string | undefined): void {
 
 test('exact routine commands parse without model interpretation', () => {
   assert.deepEqual(parseRoutineCommand('!routines'), { kind: 'list' });
-  assert.deepEqual(parseRoutineCommand('<@U_BOT> !routines <#C_OTHER|ops>'), {
+  assert.deepEqual(parseRoutineCommand('<@UBOT> !routines <#C_OTHER|ops>'), {
     kind: 'list', channelMention: '<#C_OTHER|ops>',
   });
   assert.deepEqual(parseRoutineCommand('!routines pause routine_one'), {

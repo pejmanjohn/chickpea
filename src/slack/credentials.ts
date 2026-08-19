@@ -3,56 +3,54 @@ import { createHash } from 'node:crypto';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   getSettingsStore,
-  isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import { readSlackIdentityProfile } from './identity-profile.ts';
+import {
+  invalidateSlackIdentityCredentialCache,
+  readActiveSlackCredentialMetadata,
+  resolveSlackIdentityCredentials,
+  type SlackCredentialResolutionDependencies,
+} from './identity-credentials.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import { parseSlackGrantedScopes } from './scopes.ts';
 
 /**
- * Slack credential resolution: environment first, then the operator settings
- * store (written by the /admin Slack-connection wizard), so a `wrangler secret
- * put` / .env value always beats a browser-configured one. This is what lets
- * the app boot and serve /admin with NO Slack credentials anywhere — the
- * events route resolves per request and fails closed (401) until the wizard
- * (or the environment) provides a signing secret, instead of crashing at
- * channel construction like a module-scope `process.env.SLACK_SIGNING_SECRET!`
- * read would.
- *
- * The stored triple is cached for ~60s per isolate. Node can reuse it directly;
- * Cloudflare first compares a revision in the strongly-consistent state
- * Durable Object, so a disconnect/rotation committed by another Worker isolate
- * fences the stale entry immediately while keeping cache hits to one small RPC.
+ * Slack credential resolution is backed by one complete encrypted TAG_STATE
+ * revision. Environment Slack credentials are never an execution source.
  */
 
 /** Settings-store keys the wizard writes. One place, both sides agree. */
-export const SLACK_SETTING_KEYS = {
-  // Generation for optimistic connection updates and cross-isolate cache
-  // fencing. Disconnect keeps a fresh tombstone value instead of deleting it,
-  // so an auth.test that started earlier cannot recreate the connection.
-  connectionRevision: 'slack.connectionRevision',
-  botToken: 'slack.botToken',
-  signingSecret: 'slack.signingSecret',
-  botUserId: 'slack.botUserId',
-  // The connected workspace identity, persisted from auth.test so the admin can
-  // (a) show which workspace this install is bound to and (b) reject a channel
-  // assignment whose workspace id does not match the connected one.
-  teamId: 'slack.teamId',
+type RemovedSlackSettingKeys = {
+  /** @deprecated Team identity is canonical public revision metadata. */
+  readonly teamId: never;
+  /** @deprecated Token fingerprints were an env-fallback consistency shim. */
+  readonly teamTokenFingerprint: never;
+  /** @deprecated Removed in U2; no runtime setting exists. */
+  readonly connectionRevision: never;
+  /** @deprecated Removed in U2; no runtime setting exists. */
+  readonly botToken: never;
+  /** @deprecated Removed in U2; no runtime setting exists. */
+  readonly signingSecret: never;
+  /** @deprecated Removed in U2; no runtime setting exists. */
+  readonly botUserId: never;
+};
+
+export const SLACK_SETTING_KEYS = ({
+  // Human-friendly presentation metadata only. The authoritative team ID is
+  // public metadata on the active encrypted credential revision.
   teamName: 'slack.teamName',
-  // Fingerprint of the bot token that produced the stored team identity.
-  // Credential resolution is env-first, so an operator can repoint the install
-  // at a DIFFERENT workspace just by setting SLACK_BOT_TOKEN — the stored team
-  // id must not outlive the token that earned it, or the workspace-mismatch
-  // guard validates against the wrong workspace.
-  teamTokenFingerprint: 'slack.teamTokenFingerprint',
   // The public origin (scheme+host, no trailing slash) the admin resolves for
   // this install — persisted so reply footers / onboarding can build the
   // "Configure" deep link on a button deploy where SLACK_TAG_PUBLIC_URL is
   // unset. Environment (SLACK_TAG_PUBLIC_URL) still wins at resolution time.
   publicUrl: 'slack.publicUrl',
-} as const;
+} as const) as {
+  readonly teamName: 'slack.teamName';
+  readonly publicUrl: 'slack.publicUrl';
+} & RemovedSlackSettingKeys;
 
-/** Non-reversible identifier for "which bot token produced this team info". */
+/** @deprecated U2 removed token-fingerprint persistence with env fallback. */
 export function slackTokenFingerprint(botToken: string): string {
   return createHash('sha256').update(botToken).digest('hex').slice(0, 16);
 }
@@ -61,15 +59,13 @@ export interface ResolvedSlackCredentials {
   botToken: string | undefined;
   signingSecret: string | undefined;
   /**
-   * Configured bot user id. `''` is meaningful: an env `SLACK_BOT_USER_ID=`
-   * explicitly set to empty means "no bot user id, do not probe auth.test"
-   * (the fail-closed knob, S14). `undefined` means unconfigured everywhere —
-   * the channel may then resolve one via auth.test.
+   * Configured bot user id. `undefined` means the active encrypted revision did
+   * not record one, so the channel may resolve it through `auth.test`.
    */
   botUserId: string | undefined;
 }
 
-export type SlackCredentialSource = 'env' | 'stored' | 'missing';
+export type SlackCredentialSource = 'stored' | 'missing';
 
 /** Per-credential provenance for the /admin connection card. */
 export interface SlackCredentialSources {
@@ -88,106 +84,25 @@ interface StoredSlackCredentials {
 
 type SlackConnectionRevision = string | null;
 
-let storedCache:
-  | {
-      expiresAt: number;
-      revision: SlackConnectionRevision;
-      values: StoredSlackCredentials;
-    }
-  | undefined;
-
-const STORED_CREDENTIAL_SNAPSHOT_KEYS = [
-  SLACK_SETTING_KEYS.connectionRevision,
-  SLACK_SETTING_KEYS.botToken,
-  SLACK_SETTING_KEYS.signingSecret,
-  SLACK_SETTING_KEYS.botUserId,
-] as const;
-
-// An empty-string token/secret is never a usable credential — treat it as
-// unset so a blank .env line does not shadow a wizard-stored value.
+// An empty-string token/secret is never a usable credential.
 function nonEmpty(value: string | undefined): string | undefined {
   return value ? value : undefined;
 }
 
-function envCredentials(): ResolvedSlackCredentials {
-  return {
-    botToken: nonEmpty(process.env.SLACK_BOT_TOKEN),
-    signingSecret: nonEmpty(process.env.SLACK_SIGNING_SECRET),
-    // Deliberately NOT nonEmpty: defined-but-empty is the explicit
-    // "no bot user id" operator choice (see ResolvedSlackCredentials).
-    botUserId: process.env.SLACK_BOT_USER_ID,
-  };
-}
-
-function fullyEnvConfigured(env: ResolvedSlackCredentials): boolean {
-  return Boolean(env.botToken) && Boolean(env.signingSecret) && env.botUserId !== undefined;
-}
-
-/**
- * Read the wizard-stored triple. An explicit `store` bypasses the cache (the
- * admin card wants fresh provenance and tests want injection); the default
- * path caches for the TTL.
- */
-async function readStoredCredentials(
-  env: PlatformEnv | undefined,
-  store?: SettingsStore,
-): Promise<StoredSlackCredentials> {
-  const now = Date.now();
-  const cloudflareCache = !store && isCloudflareTarget();
-  if (!store && !cloudflareCache && storedCache && storedCache.expiresAt > now) {
-    return storedCache.values;
-  }
-  const settings = store ?? getSettingsStore(env);
-  if (cloudflareCache && storedCache && storedCache.expiresAt > now) {
-    const revision = (await settings.getSetting(SLACK_SETTING_KEYS.connectionRevision)) ?? null;
-    if (storedCache.revision === revision) {
-      return storedCache.values;
-    }
-  }
-  const [revision, botToken, signingSecret, botUserId] = await settings.getSettings(
-    STORED_CREDENTIAL_SNAPSHOT_KEYS,
-  );
-  const values: StoredSlackCredentials = {
-    botToken: nonEmpty(botToken),
-    signingSecret: nonEmpty(signingSecret),
-    botUserId: nonEmpty(botUserId),
-  };
-  if (!store) {
-    storedCache = {
-      expiresAt: now + STORED_CACHE_TTL_MS,
-      revision: revision ?? null,
-      values,
-    };
-  }
-  return values;
-}
-
-/**
- * Resolve the effective Slack credentials (env > stored, per key). When the
- * environment provides everything, the settings store is never touched — the
- * fully-env-configured node lane keeps its exact pre-wizard behavior and pays
- * no store read per event.
- */
 export async function resolveSlackCredentials(
   env?: PlatformEnv,
   store?: SettingsStore,
+  credentialDependencies?: SlackCredentialResolutionDependencies,
 ): Promise<ResolvedSlackCredentials> {
-  const fromEnv = envCredentials();
-  if (fullyEnvConfigured(fromEnv)) {
-    return fromEnv;
-  }
-  const stored = await readStoredCredentials(env, store);
-  // The bot user id belongs to whichever bot TOKEN won. Honor a STORED bot
-  // user id only when the token ALSO resolved from the store (the wizard saved
-  // the pair together from one auth.test). An env token with no env
-  // SLACK_BOT_USER_ID must fall through to the auth.test probe (undefined) —
-  // never adopt a stored id that may belong to a different bot (main's
-  // behavior). The env empty-string ('explicit none') is preserved by `??`.
-  const tokenFromStore = !fromEnv.botToken && Boolean(stored.botToken);
+  const resolved = await resolveSlackIdentityCredentials(
+    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    env,
+    credentialDependencies ?? store,
+  );
   return {
-    botToken: fromEnv.botToken ?? stored.botToken,
-    signingSecret: fromEnv.signingSecret ?? stored.signingSecret,
-    botUserId: fromEnv.botUserId ?? (tokenFromStore ? stored.botUserId : undefined),
+    botToken: resolved.botToken,
+    signingSecret: resolved.signingSecret,
+    botUserId: resolved.botUserId,
   };
 }
 
@@ -195,16 +110,20 @@ export async function resolveSlackCredentials(
 export async function describeSlackCredentialSources(
   env?: PlatformEnv,
   store?: SettingsStore,
+  credentialDependencies?: SlackCredentialResolutionDependencies,
 ): Promise<SlackCredentialSources> {
-  const fromEnv = envCredentials();
-  const stored = fullyEnvConfigured(fromEnv)
-    ? { botToken: undefined, signingSecret: undefined, botUserId: undefined }
-    : await readStoredCredentials(env, store);
+  const resolved = await resolveSlackIdentityCredentials(
+    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    env,
+    credentialDependencies ?? store,
+  );
+  const source: SlackCredentialSource = resolved.connectionRevision
+    ? 'stored'
+    : 'missing';
   return {
-    botToken: fromEnv.botToken ? 'env' : stored.botToken ? 'stored' : 'missing',
-    signingSecret: fromEnv.signingSecret ? 'env' : stored.signingSecret ? 'stored' : 'missing',
-    botUserId:
-      fromEnv.botUserId !== undefined ? 'env' : stored.botUserId ? 'stored' : 'missing',
+    botToken: resolved.botToken ? source : 'missing',
+    signingSecret: resolved.signingSecret ? source : 'missing',
+    botUserId: resolved.botUserId !== undefined ? source : 'missing',
   };
 }
 
@@ -217,19 +136,27 @@ export function primeStoredSlackCredentials(
   values: StoredSlackCredentials,
   revision: SlackConnectionRevision = null,
 ): void {
-  storedCache = { expiresAt: Date.now() + STORED_CACHE_TTL_MS, revision, values };
+  // Retained only as a source-compatible no-op for pre-U2 test harnesses.
+  // Promotion primes the encrypted revision cache inside identity-credentials.
+  void values;
+  void revision;
 }
 
 /** Drop the cached stored triple (tests; never needed in production flow). */
 export function invalidateStoredSlackCredentials(): void {
-  storedCache = undefined;
+  invalidateSlackIdentityCredentialCache();
 }
 
 /** Clone-safe revision value used by connection compare-and-swap writes. */
 export async function readSlackConnectionRevision(
   store: SettingsStore,
+  credentialDependencies?: SlackCredentialResolutionDependencies,
 ): Promise<SlackConnectionRevision> {
-  return (await store.getSetting(SLACK_SETTING_KEYS.connectionRevision)) ?? null;
+  return (await resolveSlackIdentityCredentials(
+    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    undefined,
+    credentialDependencies ?? store,
+  )).connectionRevision;
 }
 
 // --- Public URL resolution (env > stored) -----------------------------------
@@ -517,6 +444,28 @@ function toUserFacts(raw: unknown): SlackUserFacts | null {
     ultraRestricted: user.is_ultra_restricted === true,
     stranger: user.is_stranger === true,
   };
+}
+
+function toDirectoryMember(raw: unknown): SlackDirectoryMember | null {
+  const facts = toUserFacts(raw);
+  if (!facts || !raw || typeof raw !== 'object') return null;
+  const user = raw as Record<string, unknown>;
+  const profile = user.profile && typeof user.profile === 'object'
+    ? user.profile as Record<string, unknown>
+    : {};
+  const handle = typeof user.name === 'string' ? user.name : facts.id;
+  const realName = typeof profile.real_name === 'string' && profile.real_name
+    ? profile.real_name
+    : typeof user.real_name === 'string' && user.real_name
+      ? user.real_name
+      : handle;
+  const displayName = typeof profile.display_name === 'string' && profile.display_name
+    ? profile.display_name
+    : realName;
+  const avatarUrl = ['image_192', 'image_72', 'image_48']
+    .map((key) => profile[key])
+    .find((value): value is string => typeof value === 'string' && value.length > 0);
+  return { ...facts, displayName, realName, handle, ...(avatarUrl ? { avatarUrl } : {}) };
 }
 
 /** `response_metadata.next_cursor`, treating Slack's empty-string cursor as done. */
@@ -850,6 +799,84 @@ export async function slackUsersList(
   };
 }
 
+export interface SlackDirectoryMember extends SlackUserFacts {
+  displayName: string;
+  realName: string;
+  handle: string;
+  avatarUrl?: string;
+}
+
+export interface SlackDirectoryUsersPage {
+  ok: boolean;
+  error: string | undefined;
+  members: SlackDirectoryMember[];
+  nextCursor: string | undefined;
+  retryAfterMs: number | undefined;
+}
+
+export async function slackDirectoryUsersList(
+  botToken: string,
+  options: { cursor?: string; limit?: number; timeoutMs?: number } = {},
+): Promise<SlackDirectoryUsersPage> {
+  const params = new URLSearchParams({ limit: String(Math.min(Math.max(options.limit ?? 200, 1), 200)) });
+  if (options.cursor) params.set('cursor', options.cursor);
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/users.list`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${botToken}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
+  }, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
+  if (!result.ok) {
+    return {
+      ok: false, error: result.error, members: [], nextCursor: undefined,
+      retryAfterMs: result.retryAfterMs,
+    };
+  }
+  const body = result.body;
+  const rawUsers = Array.isArray(body.members) ? body.members : [];
+  return {
+    ok: body.ok === true,
+    error: typeof body.error === 'string' ? body.error : undefined,
+    members: rawUsers.map(toDirectoryMember).filter((member): member is SlackDirectoryMember => member !== null),
+    nextCursor: readNextCursor(body),
+    retryAfterMs: result.retryAfterMs,
+  };
+}
+
+export interface SlackDirectoryUserInfoResult {
+  ok: boolean;
+  error: string | undefined;
+  member: SlackDirectoryMember | undefined;
+  retryAfterMs: number | undefined;
+}
+
+export async function slackDirectoryUserInfo(
+  botToken: string,
+  userId: string,
+  options: SlackTruthFetchOptions = {},
+): Promise<SlackDirectoryUserInfoResult> {
+  const result = await fetchSlackTruthJson(`${slackApiBase()}/users.info`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${botToken}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({ user: userId }).toString(),
+  }, options);
+  if (!result.ok) {
+    return { ok: false, error: result.error, member: undefined, retryAfterMs: result.retryAfterMs };
+  }
+  const body = result.body;
+  return {
+    ok: body.ok === true,
+    error: typeof body.error === 'string' ? body.error : undefined,
+    member: toDirectoryMember(body.user) ?? undefined,
+    retryAfterMs: result.retryAfterMs,
+  };
+}
+
 export interface SlackConversationsMembersPage {
   ok: boolean;
   error: string | undefined;
@@ -950,80 +977,34 @@ export interface SlackTeamInfo {
 export async function readStoredSlackTeamInfo(
   env?: PlatformEnv,
   store?: SettingsStore,
+  credentialDependencies?: SlackCredentialResolutionDependencies,
 ): Promise<SlackTeamInfo> {
   const settings = store ?? getSettingsStore(env);
-  const [teamId, teamName] = await settings.getSettings([
-    SLACK_SETTING_KEYS.teamId,
-    SLACK_SETTING_KEYS.teamName,
+  const [active, teamName] = await Promise.all([
+    readActiveSlackCredentialMetadata(
+      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      env,
+      credentialDependencies ?? store,
+    ),
+    settings.getSetting(SLACK_SETTING_KEYS.teamName),
   ]);
-  return { teamId: nonEmpty(teamId), teamName: nonEmpty(teamName) };
+  return {
+    teamId: active?.purpose === 'connected_credentials'
+      ? active.teamId ?? undefined
+      : undefined,
+    teamName: nonEmpty(teamName),
+  };
 }
 
 /**
- * The connected workspace identity, verified against the bot token actually in
- * effect. The stored team id is trusted only while its recorded token
- * fingerprint matches the RESOLVED token: credential resolution is env-first,
- * so a later `SLACK_BOT_TOKEN` pointing at a different workspace must
- * invalidate the wizard-era team id (or the workspace-mismatch guard would
- * enforce the stale workspace and mis-key assignments). On a fingerprint miss
- * or a pre-fingerprint install, `auth.test` runs once and the result —
- * id, name, and fingerprint — is re-persisted (the self-healing migration).
- * Returns empty fields when no token resolves a team; a fingerprint MISS with
- * Slack unreachable also returns empty rather than the possibly-wrong stored
- * value, so callers skip the check instead of enforcing a stale workspace.
+ * The connected workspace identity from canonical public revision metadata.
+ * No token fingerprint or network backfill is needed because the team ID and
+ * encrypted bot grant are promoted in the same compare-and-set revision.
  */
 export async function resolveSlackTeamInfo(
   env?: PlatformEnv,
   store?: SettingsStore,
+  credentialDependencies?: SlackCredentialResolutionDependencies,
 ): Promise<SlackTeamInfo> {
-  const settings = store ?? getSettingsStore(env);
-  const [revision, storedTeamId, storedTeamName, storedFingerprint, storedBotToken] =
-    await settings.getSettings([
-      SLACK_SETTING_KEYS.connectionRevision,
-      SLACK_SETTING_KEYS.teamId,
-      SLACK_SETTING_KEYS.teamName,
-      SLACK_SETTING_KEYS.teamTokenFingerprint,
-      SLACK_SETTING_KEYS.botToken,
-    ]);
-  const expectedRevision = revision ?? null;
-  const stored = {
-    teamId: nonEmpty(storedTeamId),
-    teamName: nonEmpty(storedTeamName),
-  };
-  const botToken = envCredentials().botToken ?? nonEmpty(storedBotToken);
-  if (!botToken) {
-    // Display-only contexts (no token resolvable): the stored identity is the
-    // best available answer, and no validation path runs without a token.
-    return stored;
-  }
-  const fingerprint = slackTokenFingerprint(botToken);
-  if (stored.teamId && nonEmpty(storedFingerprint) === fingerprint) {
-    return stored;
-  }
-  let auth: SlackAuthTestResult;
-  try {
-    auth = await slackAuthTest(botToken);
-  } catch {
-    return { teamId: undefined, teamName: undefined };
-  }
-  if (!auth.ok || !auth.teamId) {
-    return { teamId: undefined, teamName: undefined };
-  }
-  const applied = await settings.applySettingsPatch({
-    expected: {
-      key: SLACK_SETTING_KEYS.connectionRevision,
-      value: expectedRevision,
-    },
-    set: [
-      { key: SLACK_SETTING_KEYS.teamId, value: auth.teamId },
-      { key: SLACK_SETTING_KEYS.teamTokenFingerprint, value: fingerprint },
-      ...(auth.teamName
-        ? [{ key: SLACK_SETTING_KEYS.teamName, value: auth.teamName }]
-        : []),
-    ],
-    delete: auth.teamName ? [] : [SLACK_SETTING_KEYS.teamName],
-  });
-  return applied
-    ? { teamId: auth.teamId, teamName: auth.teamName }
-    : { teamId: undefined, teamName: undefined };
+  return readStoredSlackTeamInfo(env, store, credentialDependencies);
 }

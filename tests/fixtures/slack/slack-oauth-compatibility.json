@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 1,
+  "evidenceTest": "tests/better-auth-private-seam-contract.test.ts",
+  "betterAuth": {
+    "package": "better-auth",
+    "version": "1.6.26",
+    "localContract": {
+      "reconciliation": "verified-local",
+      "sessionIssuance": "verified-local",
+      "publicBoundary": "verified-local"
+    },
+    "sourcePins": [
+      {
+        "path": "package.json",
+        "sha256": "151f04c86f9830715cb0d7f931e6fe1cdd7daaf88b511df1ab50c1e6ba6bca5f"
+      },
+      {
+        "path": "dist/api/index.mjs",
+        "sha256": "ed9ff22e34787cf2402c2f986517f4e861d4263cea7da49e6c5edc858e997dbf"
+      },
+      {
+        "path": "dist/context/create-context.mjs",
+        "sha256": "f0b2703838a4f5a190932936ecea080abdd76d393a669d851bb75ea48e9e4b41"
+      },
+      {
+        "path": "dist/cookies/index.mjs",
+        "sha256": "c9fae72096771f4136183278073d1e97c327c599d553d6171af1b6f72a50a18f"
+      },
+      {
+        "path": "dist/db/internal-adapter.mjs",
+        "sha256": "4d36b9ce26412ae79b98aaf389be7ecc80ea84023959d4640a2e7cc3e18fc53a"
+      },
+      {
+        "path": "dist/plugins/organization/adapter.mjs",
+        "sha256": "c12b81a4d2cb5489269a14a746b3eba34522e92002b691773c3c6af8e9c9b482"
+      }
+    ],
+    "localSourcePins": [
+      {
+        "path": "src/auth/better-auth.ts",
+        "sha256": "e19d9aeb892ea8505b784edb40b7db6dd59f6994aafbb0ae170129747ce5df48"
+      },
+      {
+        "path": "src/auth/better-auth-routes.ts",
+        "sha256": "c7432248ced396aeda6636d726d0549a53065d6b481d4b237591c9d724672910"
+      },
+      {
+        "path": "scripts/generate-better-auth-bootstrap.ts",
+        "sha256": "3dce562391e2d5de6f7e43d5da19aab3c9f9f86f462ce31559b1d75acba66ef9"
+      }
+    ]
+  },
+  "slack": {
+    "expectedGrantModel": {
+      "botAndOidcGrants": "separate",
+      "oidcScopes": [
+        "openid",
+        "profile"
+      ],
+      "oidcEmailScopeAllowed": false,
+      "defaultClientMode": "confidential",
+      "installerUserMustEqualOidcSubject": true,
+      "workspaceMustEqualBotInstall": true,
+      "slackAuthGrantsProductRole": false
+    },
+    "configurationToken": {
+      "status": "verified-real-slack",
+      "receipt": {
+        "observedAt": "2026-08-15",
+        "lifetimeHours": 12,
+        "createdProgrammatically": true,
+        "accessTokenPersisted": false,
+        "refreshTokenPersisted": false,
+        "acceptedManifestFixture": "tests/fixtures/slack/slack-oauth-accepted-manifest.json",
+        "appHash": "sha256:301d549546166f4d",
+        "creatorSlackRole": {
+          "isAdmin": true,
+          "isOwner": true
+        },
+        "ordinaryMemberRoleRequirementProven": false
+      }
+    },
+    "confidentialBotAndOidc": {
+      "status": "verified-real-slack",
+      "receipt": {
+        "bot": {
+          "endpoint": "oauth.v2.access",
+          "tokenAuthMethod": "client_secret_post",
+          "tokenType": "bot",
+          "grantedScopes": [
+            "app_mentions:read",
+            "assistant:write",
+            "channels:history",
+            "channels:join",
+            "channels:read",
+            "chat:write",
+            "files:write",
+            "groups:history",
+            "groups:read",
+            "im:history",
+            "mpim:read",
+            "reactions:read",
+            "reactions:write",
+            "users:read"
+          ],
+          "appHash": "sha256:301d549546166f4d",
+          "teamHash": "sha256:368bfd413933c2c4",
+          "installerHash": "sha256:716d77d653583290",
+          "botUserHash": "sha256:79b6b15d885714cc",
+          "authTestAgreement": true,
+          "directoryListOk": true,
+          "channelListOk": true
+        },
+        "oidc": {
+          "endpoint": "openid.connect.token",
+          "tokenAuthMethod": "client_secret_post",
+          "issuer": "https://slack.com",
+          "claimNames": [
+            "at_hash",
+            "aud",
+            "auth_time",
+            "exp",
+            "family_name",
+            "given_name",
+            "https://slack.com/team_domain",
+            "https://slack.com/team_id",
+            "https://slack.com/team_image_230",
+            "https://slack.com/team_image_default",
+            "https://slack.com/team_name",
+            "https://slack.com/user_id",
+            "iat",
+            "iss",
+            "locale",
+            "name",
+            "nonce",
+            "picture",
+            "sub"
+          ],
+          "audienceHash": "sha256:b803dc33172f4e40",
+          "azpPresent": false,
+          "nonceAgreement": true,
+          "emailClaimPresent": false,
+          "subjectHash": "sha256:716d77d653583290",
+          "teamHash": "sha256:368bfd413933c2c4",
+          "userHash": "sha256:716d77d653583290",
+          "userInfoAgreement": true
+        },
+        "sameApp": true,
+        "sameWorkspace": true,
+        "exactInstaller": true
+      }
+    },
+    "pkcePublicClient": {
+      "status": "tested-incompatibility",
+      "receipt": {
+        "settingOneWay": true,
+        "canonicalClientMode": "confidential",
+        "bot": {
+          "tokenAuthMethod": "none+S256",
+          "success": true,
+          "distinctVerifier": true
+        },
+        "oidc": {
+          "tokenAuthMethod": "none+S256",
+          "success": false,
+          "distinctVerifier": true,
+          "attempts": 2,
+          "slackError": "internal_error"
+        }
+      }
+    },
+    "capabilities": {
+      "status": "partial-real-slack-proof",
+      "receipt": {
+        "usersListOk": true,
+        "usersInfoOk": true,
+        "selectableHumanCount": 2,
+        "selectableNonInstallerHash": "sha256:034cca8ea29a63f5",
+        "channelListOk": true,
+        "signedUrlVerification": true,
+        "signedUserChangeDeactivation": false,
+        "approvalRequiredResume": false,
+        "visibleSlackOidcConsent": true
+      },
+      "externalLimitations": [
+        "no proven disposable second Acme user was available for a deactivation event",
+        "no separate approval-required requester and approver session was available"
+      ]
+    }
+  },
+  "redaction": {
+    "containsSecrets": false,
+    "containsSlackIdentifiers": false,
+    "identifierEncoding": "sha256-truncated-16-hex"
+  }
+}

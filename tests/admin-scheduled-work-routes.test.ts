@@ -15,6 +15,7 @@ import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineDefinitionContent } from '../src/routines/types.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import type { SourceVisibility } from '../src/work/types.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 const NOW = Date.UTC(2026, 6, 27, 12);
 const TOKEN = 'admin-scheduled-work-token';
@@ -128,12 +129,13 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
     });
     const app = new Hono();
     app.route('/', createAdminRoutes({
-      store: config, settings, routines, work, adminToken: TOKEN, knownProviders: new Set(['local-stub']),
+      store: config, settings, routines, work, ...testAdminAuthority(TOKEN),
+      knownProviders: new Set(['local-stub']),
     }));
 
     const unauthorized = await app.request('/admin/api/audit/scheduled_work/routines');
     assert.equal(unauthorized.status, 401);
-    const headers = { authorization: `Bearer ${TOKEN}` };
+    const headers = testAdminHeaders(TOKEN, { 'content-type': 'application/json' });
     const list = await app.request(
       '/admin/api/audit/scheduled_work/routines?workspaceId=T_TEST&state=active&limit=10',
       { headers },

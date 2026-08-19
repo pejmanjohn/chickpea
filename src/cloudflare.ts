@@ -147,6 +147,7 @@ import type { UsageRpcRequest, UsageRpcResponse, UsageStore } from './usage/type
 import { WorkStoreLogic } from './work/store.ts';
 import { IdentityStateError } from './identity/errors.ts';
 import { IdentityStoreLogic } from './identity/store.ts';
+import type { IdentityStore } from './identity/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from './identity/types.ts';
 import {
   DurableRunDriver,
@@ -164,7 +165,6 @@ import {
 } from './routines/admission.ts';
 import { RoutineScheduler } from './routines/scheduler.ts';
 import { executeRoutineOccurrence } from './routines/execution.ts';
-import { AuthGuardLogic } from './auth/auth-guard.ts';
 
 // The generated default captures model and tool content. Register the native
 // Cloudflare adapter explicitly for this Cloudflare-only entry so Workers
@@ -179,23 +179,6 @@ instrument(createCloudflareTracing({ content: false }));
 registerCloudflareBindingProvider(env.AI);
 
 export { ContainerProxy } from '@cloudflare/sandbox';
-
-/** Password KDF and unauthenticated throttle shard for the built-in auth path. */
-export class AuthGuard extends DurableObject {
-  readonly #logic = new AuthGuardLogic(this.ctx.storage);
-
-  hashPassword(password: string): Promise<string> {
-    return this.#logic.hashPassword(password);
-  }
-
-  verifyPassword(input: { hash: string; password: string }): Promise<boolean> {
-    return this.#logic.verifyPassword(input);
-  }
-
-  allow(bucket: string, limit: number, windowMs: number): boolean {
-    return this.#logic.allow(bucket, limit, windowMs);
-  }
-}
 
 type SandboxOutboundContext = {
   containerId: string;
@@ -1545,7 +1528,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 
   private createAlarmIdentityResolver(stores: TagStateStores): SlackIdentityExecutionResolver {
-    const localSettings = localSettingsStore(stores);
     return cacheSlackIdentityExecutionContexts(
       (identityId) => resolveSlackIdentityExecutionContext(
           identityId,
@@ -1556,7 +1538,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
               updateSlackIdentity: async (id, expectedRevision, patch) =>
                 stores.config.updateSlackIdentity(id, expectedRevision, patch),
             },
-            settings: localSettings,
+            credentialDependencies: {
+              // The alarm is already executing inside TAG_STATE; using the
+              // local logic avoids a self-RPC while retaining durable state.
+              state: stores.identity as unknown as IdentityStore,
+              env: this.env as PlatformEnv,
+            },
           },
         ),
     );

@@ -4,8 +4,8 @@ import { test } from 'node:test';
 import { parseMemoryCommand } from '../src/memory/commands.ts';
 
 test('canonical memory commands parse after a Slack mention', () => {
-  assert.deepEqual(parseMemoryCommand('<@U_BOT> !memory', 'U_BOT'), { kind: 'list' });
-  assert.deepEqual(parseMemoryCommand('<@U_BOT> !memory'), { kind: 'candidate' });
+  assert.deepEqual(parseMemoryCommand('<@UBOT> !memory', 'UBOT'), { kind: 'list' });
+  assert.deepEqual(parseMemoryCommand('<@UBOT> !memory'), { kind: 'candidate' });
   assert.deepEqual(parseMemoryCommand('!memory show release-checklist'), {
     kind: 'show', target: 'release-checklist',
   });
@@ -69,8 +69,8 @@ test('explicit conversational memory intent parses without rigid command syntax'
   );
   assert.deepEqual(
     parseMemoryCommand(
-      '<@U_BOT> Update the memory tone so future answers use two bullets.',
-      'U_BOT',
+      '<@UBOT> Update the memory tone so future answers use two bullets.',
+      'UBOT',
     ),
     {
       kind: 'update',
@@ -85,11 +85,11 @@ test('ordinary or ambiguous prose never mutates memory', () => {
   assert.equal(parseMemoryCommand('I remember that the release was delayed.'), undefined);
   assert.equal(parseMemoryCommand('Remember that the release was delayed?'), undefined);
   assert.equal(
-    parseMemoryCommand('<@U_TEAMMATE> Remember that the release was delayed?', 'U_BOT'),
+    parseMemoryCommand('<@U_TEAMMATE> Remember that the release was delayed?', 'UBOT'),
     undefined,
   );
   assert.deepEqual(
-    parseMemoryCommand('<@U_BOT> !remember Open question — Is the release delayed?', 'U_BOT'),
+    parseMemoryCommand('<@UBOT> !remember Open question — Is the release delayed?', 'UBOT'),
     {
       kind: 'remember',
       name: 'Open question',

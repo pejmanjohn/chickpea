@@ -1,4 +1,5 @@
 import { createServer, type IncomingHttpHeaders, type Server, type ServerResponse } from 'node:http';
+import { createHash, sign as signBytes } from 'node:crypto';
 import { AddressInfo } from 'node:net';
 
 import { REQUIRED_SLACK_BOT_SCOPES } from '../../src/slack/scopes.ts';
@@ -109,6 +110,20 @@ export interface FakeSlackBehaviorConfig {
   /** Force semantic reaction APIs to return a Slack platform error. */
   reactionsAddError?: string;
   reactionsRemoveError?: string;
+  /** Deterministic confidential bot/OIDC fixture used by the workerd smoke. */
+  oauth?: FakeSlackOAuthConfig;
+}
+
+export interface FakeSlackOAuthConfig {
+  appId: string;
+  clientId: string;
+  clientSecret: string;
+  configurationToken: string;
+  signingSecret: string;
+  botToken: string;
+  installerUserId: string;
+  privateKeyPem: string;
+  publicJwk: JsonWebKey & { kid: string; alg: 'RS256'; use: 'sig' };
 }
 
 export interface FakeSlackIdentityConfig {
@@ -179,7 +194,7 @@ export const DEFAULT_REPLIES_PAGES: RepliesPage[] = [
       // Carries `user` so it passes the `!message.user` guard in
       // toContextMessages and is excluded ONLY by its `bot_id` filter — the
       // row S07 asserts must never reach the provider.
-      { user: 'U_BOTUSER', bot_id: 'B_OTHER', text: 'bot prior reply', ts: '1782770405.000100' },
+      { user: 'UBOTUSER', bot_id: 'B_OTHER', text: 'bot prior reply', ts: '1782770405.000100' },
       // Human `user` but a non-message subtype: excluded by the `subtype` half
       // of the same filter. S07 asserts this text is likewise absent.
       { user: 'U_JOINER', subtype: 'channel_join', text: 'subtype prior row', ts: '1782770405.000200' },
@@ -222,6 +237,7 @@ export class FakeSlackBackend {
   private reactionsRemoveError: string | undefined;
   private channelMembers: Record<string, string[]>;
   private workspaceUsers: FakeSlackUser[];
+  private oauth: FakeSlackOAuthConfig | undefined;
   private readonly repliesPages: RepliesPage[];
   private readonly historyMessages: unknown[];
   private readonly cursorToIndex = new Map<string, number>();
@@ -242,9 +258,9 @@ export class FakeSlackBackend {
     this.failConversationReads = slack.failConversationReads ?? false;
     this.failFinalDeliveryOnce = slack.failFinalDeliveryOnce ?? false;
     this.identity = {
-      appId: slack.identity?.appId ?? 'A_DEMO',
-      botUserId: slack.identity?.botUserId ?? 'U_BOT',
-      teamId: slack.identity?.teamId ?? 'T_DEMO',
+      appId: slack.identity?.appId ?? 'ADEMO',
+      botUserId: slack.identity?.botUserId ?? 'UBOT',
+      teamId: slack.identity?.teamId ?? 'TDEMO',
       teamName: slack.identity?.teamName ?? 'Fake Workspace',
       displayName: slack.identity?.displayName ?? 'Chickpea',
       realName: slack.identity?.realName ?? 'Chickpea',
@@ -260,6 +276,7 @@ export class FakeSlackBackend {
     this.reactionsRemoveError = slack.reactionsRemoveError;
     this.channelMembers = slack.channelMembers ?? {};
     this.workspaceUsers = slack.workspaceUsers ?? [];
+    this.oauth = slack.oauth;
     this.providerMode = config.provider?.mode ?? 'ok';
     this.replyText = config.provider?.replyText ?? STUB_REPLY_MARKER;
     this.providerDelayMs = config.provider?.delayMs ?? 0;
@@ -498,6 +515,9 @@ export class FakeSlackBackend {
       if (config.slack.workspaceUsers !== undefined) {
         this.workspaceUsers = config.slack.workspaceUsers;
       }
+      if (config.slack.oauth !== undefined) {
+        this.oauth = config.slack.oauth;
+      }
     }
     if (config.provider) {
       if (config.provider.mode !== undefined) {
@@ -587,7 +607,7 @@ export class FakeSlackBackend {
       }
       return this.providerResponse();
     }
-    const slackBody = this.slackResponse(method, body);
+    const slackBody = this.slackResponse(method, body, headers);
     // Record the outcome so `finals()` can tell a delivered final from one the
     // fake rejected (a rejected `{ ok:false }` makes the real WebClient throw).
     entry.ok = slackBody.ok !== false;
@@ -724,8 +744,52 @@ export class FakeSlackBackend {
     };
   }
 
-  private slackResponse(method: string, body: Record<string, unknown>): Record<string, unknown> {
+  private slackResponse(
+    method: string,
+    body: Record<string, unknown>,
+    headers: Record<string, string> = {},
+  ): Record<string, unknown> {
     switch (method) {
+      case 'apps.manifest.create':
+        return this.oauth && bearer(headers) === this.oauth.configurationToken
+          ? {
+              ok: true,
+              app_id: this.oauth.appId,
+              credentials: {
+                client_id: this.oauth.clientId,
+                client_secret: this.oauth.clientSecret,
+                signing_secret: this.oauth.signingSecret,
+              },
+            }
+          : { ok: false, error: 'invalid_auth' };
+      case 'oauth.v2.access':
+        return this.oauth && body.client_id === this.oauth.clientId &&
+            body.client_secret === this.oauth.clientSecret
+          ? {
+              ok: true,
+              access_token: this.oauth.botToken,
+              token_type: 'bot',
+              scope: REQUIRED_SLACK_BOT_SCOPES.join(','),
+              bot_user_id: this.identity.botUserId,
+              app_id: this.oauth.appId,
+              team: { id: this.identity.teamId, name: this.identity.teamName },
+              authed_user: { id: this.oauth.installerUserId },
+            }
+          : { ok: false, error: 'invalid_client_id' };
+      case 'openid.connect.keys':
+        return this.oauth ? { keys: [this.oauth.publicJwk] } : { keys: [] };
+      case 'openid.connect.token':
+        return this.fakeOidcToken(body);
+      case 'openid.connect.userInfo':
+        return this.oauth && bearer(headers) === 'xoxp-fake-oidc-access'
+          ? {
+              ok: true,
+              sub: this.oauth.installerUserId,
+              name: 'Smoke Owner',
+              'https://slack.com/team_id': this.identity.teamId,
+              'https://slack.com/user_id': this.oauth.installerUserId,
+            }
+          : { ok: false, error: 'invalid_auth' };
       case 'assistant.threads.setStatus': {
         if (this.rejectSetStatus) {
           return { ok: false, error: 'missing_scope' };
@@ -875,6 +939,39 @@ export class FakeSlackBackend {
       default:
         return { ok: true };
     }
+  }
+
+  private fakeOidcToken(body: Record<string, unknown>): Record<string, unknown> {
+    if (!this.oauth || body.client_id !== this.oauth.clientId ||
+        body.client_secret !== this.oauth.clientSecret || typeof body.code !== 'string' ||
+        !body.code.startsWith('oidc.')) {
+      return { ok: false, error: 'invalid_code' };
+    }
+    const nonce = body.code.slice('oidc.'.length);
+    if (!/^[A-Za-z0-9_-]{32,512}$/.test(nonce)) return { ok: false, error: 'invalid_code' };
+    const accessToken = 'xoxp-fake-oidc-access';
+    const now = Math.floor(Date.now() / 1_000);
+    const header = base64urlJson({ alg: 'RS256', kid: this.oauth.publicJwk.kid, typ: 'JWT' });
+    const payload = base64urlJson({
+      iss: 'https://slack.com',
+      aud: this.oauth.clientId,
+      sub: this.oauth.installerUserId,
+      iat: now,
+      exp: now + 600,
+      nonce,
+      at_hash: createHash('sha256').update(accessToken).digest().subarray(0, 16).toString('base64url'),
+      'https://slack.com/team_id': this.identity.teamId,
+      'https://slack.com/user_id': this.oauth.installerUserId,
+    });
+    const signingInput = `${header}.${payload}`;
+    const signature = signBytes('RSA-SHA256', Buffer.from(signingInput), this.oauth.privateKeyPem)
+      .toString('base64url');
+    return {
+      ok: true,
+      access_token: accessToken,
+      token_type: 'Bearer',
+      id_token: `${signingInput}.${signature}`,
+    };
   }
 
   private reactionTargetResponse(body: Record<string, unknown>): Record<string, unknown> {
@@ -1308,6 +1405,10 @@ function normalizeNodeHeaders(headers: IncomingHttpHeaders): Record<string, stri
 function bearer(headers: Record<string, string>): string | undefined {
   const match = headers.authorization?.match(/^Bearer (.+)$/);
   return match?.[1];
+}
+
+function base64urlJson(value: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(value)).toString('base64url');
 }
 
 function delay(ms: number): Promise<void> {

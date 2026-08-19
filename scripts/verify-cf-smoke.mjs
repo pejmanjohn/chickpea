@@ -1,19 +1,17 @@
 /**
  * Cloudflare-target smoke gate: builds the CF bundle, boots it under a real
  * workerd (`wrangler dev`) against the in-memory fake Slack + fake provider
- * backend, and drives the FULL first-run story — no Slack credentials in the
- * environment, everything through the /admin Slack-connection wizard — then
- * SIGNED Slack events end-to-end. Asserts the parts of the port that only
+ * backend, and drives the full Slack-native first-run story — programmatic app
+ * creation, confidential bot OAuth, signed Events proof, first-Owner OIDC —
+ * then signed Slack events end-to-end. Asserts the parts that only
  * workerd can prove:
  *
- *   1. a deploy-minted setup capability creates the first owner and a Better
- *      Auth browser session without Cloudflare Access or a recovery secret,
+ *   1. a deploy-minted setup capability creates no person or browser session,
+ *      while exact installer OIDC creates the first Owner and session last,
  *   2. the DO-backed config store seeds and serves /admin/api/agents,
- *   3. the app boots healthy with NO Slack creds: events fail closed (401)
- *      and the wizard GET reports missing credentials + a manifest deep-link
- *      carrying this install's substituted request_url,
- *   4. the wizard POST validates the pasted token against (fake) Slack
- *      auth.test and persists token/secret/bot-user-id in the DO settings,
+ *   3. the app boots healthy with no Slack installation and Events fail closed,
+ *   4. app creation, bot install, issued scopes, directory/channel probes,
+ *      separately signed Events proof, and OIDC all use the exact fake realm,
  *   4. a signed synthetic app_mention verifies against the STORED signing
  *      secret, is admitted, and the turn delivers a final to (fake) Slack
  *      through the in-process dispatch + waitUntil path,
@@ -30,6 +28,7 @@
  * reuses an existing dist-cf artifact for iteration speed.
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { generateKeyPairSync } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
@@ -62,8 +61,15 @@ const CF_SMOKE_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.smoke
 const CF_AI_SMOKE_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.ai-smoke.json');
 const PERSIST_DIR = join(REPO_ROOT, '.wrangler-state');
 const AUTH_SECRET = '9d'.repeat(32);
-const OWNER_PASSWORD = 'several unrelated amber words 5729';
+const PUBLIC_ORIGIN = 'https://chickpea-smoke.invalid';
 const WORKSPACE = 'T0SMOKE';
+const APP_ID = 'A0SMOKE';
+const BOT_USER_ID = 'UBOTSMOKE';
+const OWNER_USER_ID = 'UOWNERSMOKE';
+const OAUTH_CLIENT_ID = '123456.789012';
+const OAUTH_CLIENT_SECRET = 'fake-confidential-client-secret';
+const OAUTH_CONFIGURATION_TOKEN = 'xoxe.fake-workerd-configuration-token';
+const OAUTH_BOT_TOKEN = 'xoxb-fake-workerd-bot-token';
 const CHANNEL = 'C0SMOKE';
 const AI_CHANNEL = 'C0SMOKEAI';
 const MENTION_TS = '1782770400.000100';
@@ -168,10 +174,6 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
     );
     check((config.containers ?? []).length === 0, 'core build declares no Container application');
   }
-  check(
-    doBindings.some((b) => b.name === 'AUTH_GUARD' && b.class_name === 'AuthGuard'),
-    'built wrangler.json carries the auth guard DO binding',
-  );
   const authDb = (config.d1_databases ?? []).find((binding) => binding.binding === 'AUTH_DB');
   check(
     Boolean(authDb) && String(authDb.migrations_dir ?? '').endsWith('migrations/better-auth'),
@@ -180,8 +182,8 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
   const migrations = config.migrations ?? [];
   const tags = migrations.map((migration) => migration.tag);
   check(
-    ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7'].every((tag) => tags.includes(tag)),
-    'built wrangler.json migrations include the append-only v1 through v7 chain',
+    ['v1', 'v2', 'v3', 'v4', 'v5', 'v6'].every((tag) => tags.includes(tag)) && !tags.includes('v7'),
+    'built wrangler.json migrations use the fresh append-only v1 through v6 chain',
     tags.join(','),
   );
   const sandboxMigration = migrations.find((migration) => migration.tag === 'v3');
@@ -304,13 +306,16 @@ function writeDevVars(fakeUrl) {
   // given. dist-cf is disposable build output, so writing here never touches a
   // developer's real .dev.vars in the repo root.
   //
-  // Deliberately NO Slack credentials here: this smoke runs the real deploy
-  // story — the app boots credential-less and the /admin wizard stores the
-  // bot token, signing secret, and bot user id into the DO settings store.
+  // Deliberately no Slack app/bot credentials here: the smoke runs the real
+  // app-creation and OAuth journey. Only the independent deployment keyring
+  // and local provider/API endpoints are target configuration.
   writeFileSync(
     join(CF_OUTPUT_DIR, 'chickpea', '.dev.vars'),
     [
       `CHICKPEA_AUTH_SECRET=${AUTH_SECRET}`,
+      'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID=key_v1',
+      `CHICKPEA_CREDENTIAL_KEY_KEY_V1=${Buffer.alloc(32, 7).toString('base64url')}`,
+      `SLACK_TAG_PUBLIC_URL=${PUBLIC_ORIGIN}`,
       `SLACK_API_URL=${fakeUrl}/api/`,
       `LOCAL_STUB_URL=${fakeUrl}/v1`,
       'SLACK_TAG_MODEL=local-stub/smoke-model',
@@ -398,7 +403,7 @@ async function adminFetch(baseUrl, path, init = {}) {
     headers: {
       ...(adminCookie ? { cookie: adminCookie } : {}),
       'content-type': 'application/json',
-      ...(mutation ? { origin: baseUrl, 'sec-fetch-site': 'same-origin' } : {}),
+      ...(mutation ? { origin: PUBLIC_ORIGIN, 'sec-fetch-site': 'same-origin' } : {}),
       ...(init.headers ?? {}),
     },
   });
@@ -419,66 +424,189 @@ async function adminPageHtml(baseUrl, path = '/admin') {
   return response.text();
 }
 
-async function completePasswordSetup(baseUrl, setup) {
+function formHeaders() {
+  return {
+    origin: PUBLIC_ORIGIN,
+    'sec-fetch-site': 'same-origin',
+    'content-type': 'application/x-www-form-urlencoded',
+  };
+}
+
+async function postForm(baseUrl, path, fields, cookie = '') {
+  return fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { ...formHeaders(), ...(cookie ? { cookie } : {}) },
+    body: new URLSearchParams(fields),
+  });
+}
+
+function responseCookie(response, prefix) {
+  const values = typeof response.headers.getSetCookie === 'function'
+    ? response.headers.getSetCookie()
+    : [response.headers.get('set-cookie') ?? ''];
+  for (const value of values) {
+    for (const candidate of value.split(/,(?=\s*[^;,]+=)/)) {
+      const cookie = candidate.trim().split(';', 1)[0] ?? '';
+      if (cookie.startsWith(prefix)) return cookie;
+    }
+  }
+  return '';
+}
+
+async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
   const setupPage = await fetch(`${baseUrl}/admin/setup`);
   const setupHtml = await setupPage.text();
   check(
     setupPage.status === 200 &&
-      setupHtml.includes('Create your Chickpea workspace') &&
-      setupHtml.includes('name="ownerEmail"') &&
+      setupHtml.includes('Resume private setup') &&
       setupHtml.includes('/admin/setup/client.js') &&
-      !setupHtml.includes('Your name') &&
-      !setupHtml.includes('Deployment recovery secret') &&
-      !setupHtml.includes('Zero Trust') &&
+      !/password|ownerEmail|sign up/i.test(setupHtml) &&
       !setupHtml.includes(setup.capability),
-    'fresh setup renders built-in owner creation without Access or setup-capability echo',
+    'fresh setup renders only the private Slack journey without password or capability echo',
     `HTTP ${setupPage.status}`,
   );
-  const body = new URLSearchParams({
-    ownerEmail: 'owner@example.com',
-    password: OWNER_PASSWORD,
-    passwordConfirmation: OWNER_PASSWORD,
-    recoveryToken: setup.capability,
-  }).toString();
-  const configured = await fetch(`${baseUrl}/admin/setup`, {
-    method: 'POST',
-    redirect: 'manual',
-    headers: {
-      origin: baseUrl,
-      'sec-fetch-site': 'same-origin',
-      'content-type': 'application/x-www-form-urlencoded',
-      'content-length': String(Buffer.byteLength(body)),
-    },
-    body,
+  const opened = await postForm(baseUrl, '/admin/setup', {
+    action: 'open', capability: setup.capability, destination: '/admin/channels',
   });
-  adminCookie = (configured.headers.get('set-cookie') ?? '').split(';', 1)[0] ?? '';
   check(
-    configured.status === 303 && configured.headers.get('location') === '/admin/onboarding' &&
-      /better-auth\.session_token=/.test(adminCookie),
-    'deploy capability creates the owner and returns a Better Auth browser session',
-    `HTTP ${configured.status} location=${configured.headers.get('location')}`,
+    opened.status === 200 && (await opened.text()).includes('Create Slack app'),
+    'deploy capability opens one durable Slack app-creation transaction',
+    `HTTP ${opened.status}`,
   );
-  const resumed = await fetch(`${baseUrl}/admin/setup`, { headers: { cookie: adminCookie } });
+
+  const created = await postForm(baseUrl, '/admin/setup', {
+    action: 'create', capability: setup.capability, destination: '/admin/channels',
+    configurationToken: OAUTH_CONFIGURATION_TOKEN,
+  });
+  const createdHtml = await created.text();
   check(
-    resumed.status === 200 || resumed.status === 303,
-    'completed setup is resumable without creating another owner',
-    `HTTP ${resumed.status}`,
+    created.status === 200 && createdHtml.includes('Continue to Slack') &&
+      !createdHtml.includes(OAUTH_CONFIGURATION_TOKEN) &&
+      !createdHtml.includes(OAUTH_CLIENT_SECRET),
+    'programmatic app creation records write-only app credentials and advances setup',
+    `HTTP ${created.status}`,
   );
+
+  const providerCallsBeforeInstall = backend.providerCalls().length;
+  const preInstall = await postSignedEvent(eventsUrl, mentionEvent('Ev_SMOKE_PRE_INSTALL'));
+  await backend.quiesce();
+  check(
+    preInstall.status === 401 && backend.providerCalls().length === providerCallsBeforeInstall &&
+      backend.finals().length === 0,
+    'app-stage signing rejects agent work before bot OAuth',
+    `HTTP ${preInstall.status}`,
+  );
+
+  const installStart = await postForm(baseUrl, '/auth/slack/install/start', {
+    capability: setup.capability, destination: '/admin/channels',
+  });
+  const installAuthorization = new URL(installStart.headers.get('location') ?? 'about:blank');
+  const installCookie = responseCookie(installStart, '__Secure-chickpea_slack_install=');
+  check(
+    installStart.status === 302 && installAuthorization.origin === 'https://slack.com' &&
+      Boolean(installAuthorization.searchParams.get('state')) && Boolean(installCookie),
+    'bot OAuth start uses a narrow browser cookie and Slack authorization state',
+    `HTTP ${installStart.status}`,
+  );
+  const installState = installAuthorization.searchParams.get('state') ?? '';
+  const installCallback = await fetch(
+    `${baseUrl}/auth/slack/install/callback?state=${encodeURIComponent(installState)}&code=bot-smoke-code`,
+    { redirect: 'manual', headers: { cookie: installCookie } },
+  );
+  check(
+    installCallback.status === 303 &&
+      installCallback.headers.get('location')?.includes('slack_install=waiting_events'),
+    'confidential bot exchange validates app/team/bot/scopes/directory/channel before waiting on Events',
+    `HTTP ${installCallback.status} location=${installCallback.headers.get('location')}`,
+  );
+
+  const challenge = await postSignedEvent(eventsUrl, {
+    type: 'url_verification', challenge: 'cf-smoke-oauth-proof',
+    api_app_id: APP_ID, team_id: WORKSPACE,
+  });
+  check(
+    challenge.status === 200 && challenge.body?.challenge === 'cf-smoke-oauth-proof',
+    'a separately signed URL verification promotes only the exact OAuth candidate',
+    `HTTP ${challenge.status}`,
+  );
+  let finalized;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await delay(500);
+    finalized = await postForm(baseUrl, '/auth/slack/install/finalize', {
+      capability: setup.capability, destination: '/admin/channels',
+    });
+    if (finalized.headers.get('location')?.includes('slack_install=bot_installed')) break;
+  }
+  check(
+    finalized?.status === 303 && finalized.headers.get('location')?.includes('slack_install=bot_installed'),
+    'exact signed Events proof finalizes the encrypted bot credential revision',
+    `HTTP ${String(finalized?.status)} location=${String(finalized?.headers.get('location'))}`,
+  );
+
+  const ownerStart = await postForm(baseUrl, '/auth/slack/oidc/start', {
+    purpose: 'first_owner', capability: setup.capability, destination: '/admin/channels',
+  });
+  const ownerAuthorization = new URL(ownerStart.headers.get('location') ?? 'about:blank');
+  const ownerCookie = responseCookie(ownerStart, '__Secure-chickpea_slack_oidc=');
+  const state = ownerAuthorization.searchParams.get('state') ?? '';
+  const nonce = ownerAuthorization.searchParams.get('nonce') ?? '';
+  check(
+    ownerStart.status === 302 && ownerAuthorization.origin === 'https://slack.com' &&
+      ownerAuthorization.searchParams.get('team') === WORKSPACE && Boolean(ownerCookie) &&
+      state.length >= 32 && nonce.length >= 32,
+    'first-Owner OIDC is exact-team and independently state/nonce/browser bound',
+    `HTTP ${ownerStart.status}`,
+  );
+  const ownerCallback = await fetch(
+    `${baseUrl}/auth/slack/oidc/callback?state=${encodeURIComponent(state)}&code=${encodeURIComponent(`oidc.${nonce}`)}`,
+    { headers: { cookie: ownerCookie } },
+  );
+  const ownerCallbackBody = await ownerCallback.text();
+  adminCookie = responseCookie(ownerCallback, 'better-auth.session_token=') ||
+    responseCookie(ownerCallback, '__Secure-better-auth.session_token=');
+  const callbackCookieNames = (typeof ownerCallback.headers.getSetCookie === 'function'
+    ? ownerCallback.headers.getSetCookie()
+    : [ownerCallback.headers.get('set-cookie') ?? ''])
+    .map((value) => value.trim().split('=', 1)[0])
+    .filter(Boolean)
+    .join(',');
+  check(
+    ownerCallback.status === 200 && Boolean(adminCookie) &&
+      ownerCallbackBody.includes('You’re the first Owner'),
+    'exact installer OIDC creates the first Owner and only then issues a Better Auth session',
+    `HTTP ${ownerCallback.status} cookies=${callbackCookieNames || 'none'} session=${Boolean(adminCookie)} ownerPage=${ownerCallbackBody.includes('You’re the first Owner')}`,
+  );
+
   const unauthenticated = await fetch(`${baseUrl}/admin/api/agents`);
   check(
     unauthenticated.status === 401,
-    'password-active Admin APIs fail closed without the browser session',
+    'Admin APIs still fail closed without the Slack-established browser session',
     `HTTP ${unauthenticated.status}`,
   );
-  const publicGithubCallback = await fetch(
-    `${baseUrl}/oauth/github/setup/callback?code=invalid&state=invalid`,
-    { redirect: 'manual' },
+}
+
+async function completeSlackLogin(baseUrl) {
+  const start = await postForm(baseUrl, '/auth/slack/oidc/start', {
+    purpose: 'login', destination: '/admin',
+  });
+  const authorization = new URL(start.headers.get('location') ?? 'about:blank');
+  const oidcCookie = responseCookie(start, '__Secure-chickpea_slack_oidc=');
+  const state = authorization.searchParams.get('state') ?? '';
+  const nonce = authorization.searchParams.get('nonce') ?? '';
+  if (start.status !== 302 || !oidcCookie || state.length < 32 || nonce.length < 32) {
+    throw new Error(`fresh Slack login did not start (HTTP ${start.status})`);
+  }
+  const callback = await fetch(
+    `${baseUrl}/auth/slack/oidc/callback?state=${encodeURIComponent(state)}&code=${encodeURIComponent(`oidc.${nonce}`)}`,
+    { redirect: 'manual', headers: { cookie: oidcCookie } },
   );
-  check(
-    publicGithubCallback.status === 403,
-    'public GitHub setup callback reaches its single-use state guard outside Admin auth',
-    `HTTP ${publicGithubCallback.status}`,
-  );
+  const session = responseCookie(callback, 'better-auth.session_token=') ||
+    responseCookie(callback, '__Secure-better-auth.session_token=');
+  if (callback.status !== 303 || callback.headers.get('location') !== '/admin' || !session) {
+    throw new Error(`fresh Slack login did not issue a session (HTTP ${callback.status})`);
+  }
+  return session;
 }
 
 async function renderAdminWithWorkerdState(baseUrl, path = '/admin') {
@@ -629,14 +757,14 @@ function mentionEvent(eventId = 'Ev_SMOKE_MENTION_1') {
   return {
     token: 'verification-token-not-a-secret',
     team_id: WORKSPACE,
-    api_app_id: 'A0SMOKE',
+    api_app_id: APP_ID,
     event_id: eventId,
     event_time: 1782770400,
     type: 'event_callback',
     event: {
       type: 'app_mention',
-      user: 'U_ALICE',
-      text: '<@U_BOT> smoke: please draft a short reply',
+      user: OWNER_USER_ID,
+      text: `<@${BOT_USER_ID}> smoke: please draft a short reply`,
       ts: MENTION_TS,
       channel: CHANNEL,
       event_ts: MENTION_TS,
@@ -649,7 +777,7 @@ function memoryRememberEvent() {
     ...mentionEvent('Ev_SMOKE_MEMORY_1'),
     event: {
       ...mentionEvent('Ev_SMOKE_MEMORY_1').event,
-      text: '<@U_BOT> !remember release-guidance — Use the release checklist.\nRun focused tests before release.',
+      text: `<@${BOT_USER_ID}> !remember release-guidance — Use the release checklist.\nRun focused tests before release.`,
       ts: MEMORY_TS,
       event_ts: MEMORY_TS,
     },
@@ -662,7 +790,7 @@ function aiMentionEvent() {
     ...payload,
     event: {
       ...payload.event,
-      text: '<@U_BOT> privacy smoke: answer through the Workers AI binding',
+      text: `<@${BOT_USER_ID}> privacy smoke: answer through the Workers AI binding`,
       ts: AI_MENTION_TS,
       channel: AI_CHANNEL,
       event_ts: AI_MENTION_TS,
@@ -674,14 +802,14 @@ function slowMentionEvent(eventId = 'Ev_SMOKE_SLOW_1') {
   return {
     token: 'verification-token-not-a-secret',
     team_id: WORKSPACE,
-    api_app_id: 'A0SMOKE',
+    api_app_id: APP_ID,
     event_id: eventId,
     event_time: 1782771000,
     type: 'event_callback',
     event: {
       type: 'app_mention',
-      user: 'U_ALICE',
-      text: '<@U_BOT> slow: take as long as you need',
+      user: OWNER_USER_ID,
+      text: `<@${BOT_USER_ID}> slow: take as long as you need`,
       ts: SLOW_MENTION_TS,
       channel: SLOW_CHANNEL,
       event_ts: SLOW_MENTION_TS,
@@ -693,14 +821,14 @@ function threadReplyEvent() {
   return {
     token: 'verification-token-not-a-secret',
     team_id: WORKSPACE,
-    api_app_id: 'A0SMOKE',
+    api_app_id: APP_ID,
     event_id: 'Ev_SMOKE_REPLY_1',
     event_time: 1782770460,
     type: 'event_callback',
     event: {
       type: 'message',
       channel: CHANNEL,
-      user: 'U_ALICE',
+      user: OWNER_USER_ID,
       text: 'smoke: continue from the prior answer',
       ts: '1782770460.000200',
       event_ts: '1782770460.000200',
@@ -729,7 +857,7 @@ async function main() {
     }
     await runDrainCheck({
       baseUrl: process.env.CF_SMOKE_BASE_URL,
-      adminToken: process.env.TAG_ADMIN_TOKEN,
+      personalToken: process.env.CHICKPEA_PERSONAL_TOKEN,
     });
     console.log('PASS cf-smoke drain — every runtime work category is zero');
     return;
@@ -764,16 +892,31 @@ async function main() {
   applyLocalAuthMigrations();
 
   const { FakeSlackBackend, FAKE_PROVIDER_KEYS, STUB_REPLY_MARKER } = await loadFake();
-  // The fake reports this workspace identity from auth.test (so the wizard
-  // persists it) and serves these channels from conversations.list/info (so the
-  // Add-channel proxy and the assignment-PUT validation have real fixtures).
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const publicJwk = {
+    ...publicKey.export({ format: 'jwk' }),
+    kid: 'cf-smoke-rs256', alg: 'RS256', use: 'sig',
+  };
+  // The fake provides the exact confidential bot/OIDC exchanges plus the
+  // directory/channel truth checks consumed by the built Worker.
   const backend = new FakeSlackBackend({
     slack: {
       identity: {
-    appId: 'A0SMOKE',
-        botUserId: 'U_BOT',
+        appId: APP_ID,
+        botUserId: BOT_USER_ID,
         teamId: WORKSPACE,
         teamName: 'Smoke Workspace',
+      },
+      oauth: {
+        appId: APP_ID,
+        clientId: OAUTH_CLIENT_ID,
+        clientSecret: OAUTH_CLIENT_SECRET,
+        configurationToken: OAUTH_CONFIGURATION_TOKEN,
+        signingSecret: SIGNING_SECRET,
+        botToken: OAUTH_BOT_TOKEN,
+        installerUserId: OWNER_USER_ID,
+        privateKeyPem: privateKey.export({ format: 'pem', type: 'pkcs8' }),
+        publicJwk,
       },
       channels: [
         { id: CHANNEL, name: 'smoke-mentions', isMember: true, teamId: WORKSPACE },
@@ -782,13 +925,13 @@ async function main() {
         { id: 'C0SMOKEEXTRA', name: 'general', isMember: false, teamId: WORKSPACE },
       ],
       channelMembers: {
-        [CHANNEL]: ['U_ALICE', 'U_BOT'],
-        [AI_CHANNEL]: ['U_ALICE', 'U_BOT'],
-        [SLOW_CHANNEL]: ['U_ALICE', 'U_BOT'],
+        [CHANNEL]: [OWNER_USER_ID, BOT_USER_ID],
+        [AI_CHANNEL]: [OWNER_USER_ID, BOT_USER_ID],
+        [SLOW_CHANNEL]: [OWNER_USER_ID, BOT_USER_ID],
       },
       workspaceUsers: [
-        { id: 'U_ALICE', teamId: WORKSPACE },
-        { id: 'U_BOT', teamId: WORKSPACE, isBot: true, isAppUser: true },
+        { id: OWNER_USER_ID, teamId: WORKSPACE },
+        { id: BOT_USER_ID, teamId: WORKSPACE, isBot: true, isAppUser: true },
       ],
     },
   });
@@ -804,7 +947,7 @@ async function main() {
   try {
     console.log('• waiting for wrangler dev (round 1)…');
     await waitForSetupReady(wrangler, baseUrl);
-    await completePasswordSetup(baseUrl, setup);
+    await completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend);
     const agentsResult = await adminFetch(baseUrl, '/admin/api/agents');
     if (agentsResult.status !== 200 || !Array.isArray(agentsResult.body?.agents)) {
       throw new Error(`authenticated Admin API did not become ready (HTTP ${agentsResult.status})`);
@@ -864,109 +1007,25 @@ async function main() {
       `HTTP ${scheduledWork.status} reason=${String(scheduledWork.body?.capability?.reason)}`,
     );
 
-    // --- First-run wizard flow (no Slack creds anywhere yet) ---------------
+    // --- Slack-native first Owner state ------------------------------------
 
-    // The app is up and serving /admin, but events must fail closed until
-    // the wizard stores a signing secret.
-    const preWizard = await postSignedEvent(eventsUrl, mentionEvent('Ev_SMOKE_PRE_WIZARD'));
+    const team = await adminFetch(baseUrl, '/admin/api/team');
     check(
-      preWizard.status === 401,
-      'events fail closed (401) before the wizard stores creds',
-      `HTTP ${preWizard.status}`,
-    );
-
-    const wizard = await adminFetch(baseUrl, '/admin/api/slack-connection');
-    check(wizard.status === 200, 'wizard GET served', `HTTP ${wizard.status}`);
-    const wizardCreds = wizard.body?.credentials ?? {};
-    check(
-      wizardCreds.botToken === 'missing' &&
-        wizardCreds.signingSecret === 'missing' &&
-        wizardCreds.botUserId === 'missing',
-      'wizard reports all credentials missing on first run',
-      JSON.stringify(wizardCreds),
-    );
-    const expectedRequestUrl = wizard.body?.requestUrl;
-    check(
-      typeof expectedRequestUrl === 'string' &&
-        new RegExp(`^${baseUrl.replaceAll('.', '\\.')}/channels/slack/events/[a-f0-9]{48}$`)
-          .test(expectedRequestUrl),
-      'wizard derived one opaque events request URL from the admin request',
-      String(wizard.body?.requestUrl),
-    );
-    check(
-      typeof wizard.body?.manifestUrl === 'string' &&
-        wizard.body.manifestUrl.startsWith('https://api.slack.com/apps?new_app=1&manifest_json=') &&
-        wizard.body.manifestUrl.includes(encodeURIComponent(expectedRequestUrl)),
-      'manifest deep-link carries the substituted request_url',
-    );
-    const firstRunAdmin = await renderAdminWithWorkerdState(baseUrl, '/admin/onboarding');
-    check(
-      firstRunAdmin.html.includes('Create Chickpea') &&
-        firstRunAdmin.html.includes('Create Chickpea in Slack') &&
-        firstRunAdmin.html.includes('data-action="advance-slack-step"'),
-      'first-run onboarding shows one Slack creation action',
-    );
-    check(
-      firstRunAdmin.html.length > 0 &&
-        !firstRunAdmin.html.includes('Signing secret') &&
-        !firstRunAdmin.html.includes('Connected workspace'),
-      'first-run onboarding keeps credentials and later stages hidden',
-    );
-
-    const challenge = await postSignedEvent(expectedRequestUrl, {
-      type: 'url_verification',
-      challenge: 'cf-smoke-setup',
-      api_app_id: 'A0SMOKE',
-      team_id: WORKSPACE,
-    });
-    check(
-      challenge.status === 200 && challenge.body?.challenge === 'cf-smoke-setup',
-      'opaque workspace ingress retains Slack setup proof before credentials exist',
-      `HTTP ${challenge.status}`,
-    );
-
-    // Paste-back: validated live against the fake Slack's auth.test, then
-    // persisted in the DO settings store (bot user id comes from auth.test).
-    const saved = await adminFetch(baseUrl, '/admin/api/slack-connection', {
-      method: 'POST',
-      body: JSON.stringify({ botToken: 'xoxb-test', signingSecret: SIGNING_SECRET }),
-    });
-    check(
-      saved.status === 200 && saved.body?.ok === true,
-      'wizard POST validated the token via fake Slack auth.test',
-      `HTTP ${saved.status} ${JSON.stringify(saved.body)}`,
-    );
-    check(
-      saved.body?.botUserId === 'U_BOT',
-      'wizard stored the auth.test bot user id',
-      String(saved.body?.botUserId),
-    );
-    const postWizard = await adminFetch(baseUrl, '/admin/api/slack-connection');
-    const postWizardCreds = postWizard.body?.credentials ?? {};
-    check(
-      postWizardCreds.botToken === 'stored' &&
-        postWizardCreds.signingSecret === 'stored' &&
-        postWizardCreds.botUserId === 'stored',
-      'wizard reports stored credentials after the save',
-      JSON.stringify(postWizardCreds),
-    );
-    // The wizard persisted the connected workspace identity from auth.test.
-    check(
-      postWizard.body?.teamId === WORKSPACE,
-      'wizard persisted the connected team id',
-      String(postWizard.body?.teamId),
+      team.status === 200 && team.body?.soleOwnerWarning === true &&
+        team.body?.members?.length === 1 && team.body?.members?.[0]?.slackUserId === OWNER_USER_ID,
+      'first OIDC admission creates one exact sole Owner and keeps the redundancy warning visible',
+      `HTTP ${team.status} members=${String(team.body?.members?.length)}`,
     );
     const connectedAdmin = await renderAdminWithWorkerdState(baseUrl, '/admin/onboarding');
     check(
       connectedAdmin.html.includes('Choose where Chickpea should start') &&
         connectedAdmin.html.includes('data-action="onboarding-channel-form"'),
-      'fresh post-wizard onboarding resumes at the first-channel picker',
+      'fresh Slack-native onboarding resumes at the first-channel picker',
     );
     check(
       connectedAdmin.html.length > 0 &&
-        !connectedAdmin.html.includes('Connect @Chickpea') &&
-        !connectedAdmin.html.includes('class="stepper"'),
-      'post-wizard onboarding removes the Connect step',
+        !/password|sign up|forgot/i.test(connectedAdmin.html),
+      'authenticated onboarding exposes no password-era affordance',
     );
 
     // --- Settings/model-provider screen APIs --------------------------------
@@ -1400,14 +1459,18 @@ async function main() {
     wrangler = spawnWranglerDev();
     await waitForAdminReady(wrangler, baseUrl);
 
-    // The wizard-stored credentials live in the DO's SQLite: a fresh isolate
-    // (empty resolver cache) must still see them.
-    const restartWizard = await adminFetch(baseUrl, '/admin/api/slack-connection');
-    const restartCreds = restartWizard.body?.credentials ?? {};
+    const persistedSession = await adminFetch(baseUrl, '/admin/api/team');
     check(
-      restartCreds.botToken === 'stored' && restartCreds.signingSecret === 'stored',
-      'stored Slack credentials survived the restart',
-      JSON.stringify(restartCreds),
+      persistedSession.status === 200 && persistedSession.body?.members?.[0]?.slackUserId === OWNER_USER_ID,
+      'the original Slack-established session and exact Owner survived the workerd restart',
+      `HTTP ${persistedSession.status}`,
+    );
+    adminCookie = await completeSlackLogin(baseUrl);
+    const freshSession = await adminFetch(baseUrl, '/admin/api/team');
+    check(
+      freshSession.status === 200 && freshSession.body?.viewer?.role === 'owner',
+      'a fresh post-restart Slack OIDC session resolves the same live Owner authority',
+      `HTTP ${freshSession.status} role=${String(freshSession.body?.viewer?.role)}`,
     );
     const restartMemory = await adminFetch(
       baseUrl,

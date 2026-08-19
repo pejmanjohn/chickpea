@@ -2,15 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import vm from 'node:vm';
 
-import {
-  renderAdminPage,
-  renderMemberAccountPage,
-} from '../src/admin/page.ts';
-import {
-  invitationJoinClientScript,
-  JOIN_STORAGE_KEY,
-  renderInvitationJoinPage,
-} from '../src/join/page.ts';
+import { renderAdminPage } from '../src/admin/page.ts';
 
 interface FakeResponse {
   ok: boolean;
@@ -20,11 +12,7 @@ interface FakeResponse {
 }
 
 type Listener = (event: {
-  target: {
-    closest?(selector: string): unknown;
-    getAttribute(name: string): string | null;
-    value?: string;
-  };
+  target: ReturnType<typeof actionTarget>;
   preventDefault?(): void;
 }) => void;
 
@@ -39,70 +27,58 @@ function response(body: unknown, status = 200): FakeResponse {
 
 function actionTarget(attributes: Record<string, string>, value?: string) {
   return {
-    ...(value === undefined ? {} : { value }),
+    value,
+    selectionStart: value?.length ?? 0,
     closest(selector: string) { return selector === '[data-action]' ? this : null; },
     getAttribute(name: string) { return attributes[name] ?? null; },
   };
 }
 
 async function flush(): Promise<void> {
-  for (let index = 0; index < 8; index += 1) {
+  for (let index = 0; index < 10; index += 1) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
 
 function teamFixture(viewerRole: 'owner' | 'admin' = 'owner') {
-  const invitation = {
-    id: 'invitation_pending',
-    email: 'joiner@example.com',
-    role: 'member',
-    status: 'pending',
-    inviteLink: 'https://chickpea.example.com/join#invite=invitation_pending.stable-secret',
-    expiresAt: 4_102_444_800_000,
-    createdAt: 1_786_100_000_000,
-    updatedAt: 1_786_100_000_000,
-  };
-  const team = {
-    organization: { id: 'organization_1', displayName: 'Chickpea' },
+  return {
+    organization: { id: 'organization_1', displayName: 'Chickpea', slackTeamId: 'TACME' },
     viewer: { userId: 'user_owner', membershipId: 'membership_owner', role: viewerRole },
+    soleOwnerWarning: true,
     members: [
       {
-        id: 'membership_owner', userId: 'user_owner', email: 'owner@example.com',
-        displayName: 'Owner', role: 'owner', status: 'active',
-        externalIdentity: { provider: 'cloudflare_access', bound: true },
+        id: 'membership_owner', userId: 'user_owner', displayName: 'Owner',
+        slackTeamId: 'TACME', slackUserId: 'UOWNER', role: 'owner', status: 'active',
       },
       {
-        id: 'membership_member', userId: 'user_member', email: 'member@example.com',
-        displayName: 'Member', role: 'member', status: 'active',
-        externalIdentity: { provider: 'cloudflare_access', bound: true },
+        id: 'membership_admin', userId: 'user_admin', displayName: 'Alex Admin',
+        slackTeamId: 'TACME', slackUserId: 'UADMIN', role: 'admin', status: 'active',
       },
     ],
-    invitations: [
-      invitation,
-      {
-        ...invitation,
-        id: 'invitation_unavailable',
-        email: 'unavailable@example.com',
-        inviteLink: undefined,
-      },
-      { ...invitation, id: 'invitation_accepted', email: 'accepted@example.com', status: 'accepted' },
-      { ...invitation, id: 'invitation_revoked', email: 'revoked@example.com', status: 'revoked' },
-      { ...invitation, id: 'invitation_expired', email: 'expired@example.com', status: 'expired' },
-    ],
+    invitations: [{
+      id: 'invitation_pending', slackTeamId: 'TACME', slackUserId: 'UPENDING',
+      displayName: 'Pending Person', role: 'admin', status: 'pending',
+      expiresAt: 4_102_444_800_000, createdAt: 1_786_100_000_000, updatedAt: 1_786_100_000_000,
+    }],
   };
-  return { team, invitation };
 }
+
+const directoryMembers = [
+  {
+    slackUserId: 'UALEX1', displayName: 'Alex', realName: 'Alex One', handle: 'alex.one',
+    avatarUrl: 'https://avatars.slack-edge.com/alex-one.png',
+  },
+  {
+    slackUserId: 'UALEX2', displayName: 'Alex', realName: 'Alex Two', handle: 'alex.two',
+    avatarUrl: null,
+  },
+];
 
 async function createHarness(
   viewerRole: 'owner' | 'admin' = 'owner',
-  harnessOptions: {
-    failInviteRequest?: boolean;
-    clipboardFailures?: number;
-    clipboardAbsent?: boolean;
-    deferClipboard?: boolean;
-  } = {},
+  options: { directoryFailure?: boolean; clipboardFailure?: boolean } = {},
 ) {
-  const fixture = teamFixture(viewerRole);
+  const team = teamFixture(viewerRole);
   let html = '';
   const app = {
     className: '',
@@ -112,21 +88,11 @@ async function createHarness(
   const listeners: Record<string, Listener> = {};
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
   const clipboard: string[] = [];
-  const pendingClipboardWrites: Array<{
-    value: string;
-    resolve(): void;
-    reject(error: Error): void;
-  }> = [];
-  let clipboardFailures = harnessOptions.clipboardFailures ?? 0;
   const location = { pathname: '/admin/team', search: '' };
   const applyPath = (path: string) => {
-    const url = new URL(path, 'https://chickpea.example.com');
+    const url = new URL(path, 'https://chickpea.example');
     location.pathname = url.pathname;
     location.search = url.search;
-  };
-  const history = {
-    pushState(_state: unknown, _title: string, path: string) { applyPath(path); },
-    replaceState(_state: unknown, _title: string, path: string) { applyPath(path); },
   };
   const document = {
     getElementById(id: string) { return id === 'app' ? app : null; },
@@ -134,9 +100,9 @@ async function createHarness(
     querySelectorAll() { return []; },
     addEventListener(type: string, listener: Listener) { listeners[type] = listener; },
   };
-  const fetch = async (path: string, options?: { method?: string; body?: string }): Promise<FakeResponse> => {
-    const method = options?.method ?? 'GET';
-    const body = options?.body ? JSON.parse(options.body) : undefined;
+  const fetch = async (path: string, init?: { method?: string; body?: string }): Promise<FakeResponse> => {
+    const method = init?.method ?? 'GET';
+    const body = init?.body ? JSON.parse(init.body) : undefined;
     requests.push({ path, method, body });
     if (path === '/admin/api/agents') return response({ agents: [] });
     if (path === '/admin/api/assignments') return response({ assignments: [] });
@@ -144,325 +110,161 @@ async function createHarness(
     if (path === '/admin/api/slack-connection') return response(null);
     if (path === '/admin/api/slack-behavior') return response({});
     if (path === '/admin/api/audit/memory/scopes') return response({ scopes: [] });
-    if (path === '/admin/api/team' && method === 'GET') return response(fixture.team);
+    if (path === '/admin/api/team' && method === 'GET') return response(team);
+    if (path === '/admin/api/team/directory' && method === 'GET') {
+      if (options.directoryFailure) throw new TypeError('Failed to fetch');
+      return response({ members: directoryMembers, nextCursor: 'cursor-next' });
+    }
+    if (path === '/admin/api/team/directory?cursor=cursor-next' && method === 'GET') {
+      return response({ members: [], nextCursor: null });
+    }
+    if (path === '/admin/api/team/directory/UMANUAL' && method === 'GET') {
+      return response({ member: {
+        slackUserId: 'UMANUAL', displayName: 'Manual Member', realName: 'Manual Member',
+        handle: 'manual.member', avatarUrl: null,
+      } });
+    }
     if (path === '/admin/api/team/invitations' && method === 'POST') {
-      if (harnessOptions.failInviteRequest) throw new TypeError('Failed to fetch');
-      const created = {
-        ...fixture.invitation,
-        id: 'invitation_created',
-        email: String((body as { email: string }).email).toLowerCase(),
-        role: 'admin',
-        inviteLink: 'https://chickpea.example.com/join#invite=invitation_created.stable-secret',
+      const slackUserId = String((body as { slackUserId: string }).slackUserId);
+      const invitation = {
+        id: 'invitation_created', slackTeamId: 'TACME', slackUserId,
+        displayName: 'Alex', role: 'admin', status: 'pending',
+        expiresAt: 4_102_444_800_000, createdAt: Date.now(), updatedAt: Date.now(),
       };
-      fixture.team.invitations.unshift(created);
+      team.invitations.unshift(invitation);
       return response({
-        invitation: created,
-        inviteLink: created.inviteLink,
+        invitation,
+        inviteLink: 'https://chickpea.example/auth/slack/invite#invite=private-slack-locator',
       }, 201);
     }
     if (path.startsWith('/admin/api/team/invitations/') && method === 'DELETE') {
-      const invitationId = path.split('/').at(-1);
-      const index = fixture.team.invitations.findIndex((invitation) => invitation.id === invitationId);
-      const [revoked] = index >= 0 ? fixture.team.invitations.splice(index, 1) : [];
-      return revoked
-        ? response({ invitation: { ...revoked, status: 'revoked' } })
-        : response({ error: 'not_found' }, 404);
+      team.invitations = team.invitations.filter((row) => !path.endsWith(row.id));
+      return response({ invitation: { id: path.split('/').at(-1), status: 'revoked' } });
     }
-    if (path === '/admin/api/team/memberships/membership_member' && method === 'PATCH') {
-      Object.assign(fixture.team.members[1]!, body);
-      return response({ membership: fixture.team.members[1] });
+    if (path.startsWith('/admin/api/team/memberships/') && method === 'PATCH') {
+      const id = path.split('/').at(-1);
+      const member = team.members.find((row) => row.id === id);
+      if (member) Object.assign(member, body);
+      if ((body as { role?: string }).role === 'owner') team.soleOwnerWarning = false;
+      return response({ membership: member });
     }
     return response({ error: 'not_found' }, 404);
   };
   const script = renderAdminPage().match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script);
-  const navigator = harnessOptions.clipboardAbsent ? {} : {
-    clipboard: {
-      writeText(value: string) {
-        if (clipboardFailures > 0) {
-          clipboardFailures -= 1;
-          return Promise.reject(new Error('Clipboard permission denied'));
-        }
-        if (harnessOptions.deferClipboard) {
-          return new Promise<void>((resolve, reject) => {
-            pendingClipboardWrites.push({ value, resolve, reject });
-          });
-        }
-        clipboard.push(value);
-        return Promise.resolve();
+  vm.runInNewContext(script, {
+    console, Date, document, fetch,
+    history: {
+      pushState(_state: unknown, _title: string, path: string) { applyPath(path); },
+      replaceState(_state: unknown, _title: string, path: string) { applyPath(path); },
+    },
+    location, URL, URLSearchParams,
+    navigator: {
+      clipboard: {
+        async writeText(value: string) {
+          if (options.clipboardFailure) throw new Error('clipboard denied');
+          clipboard.push(value);
+        },
       },
     },
-  };
-  vm.runInNewContext(script, {
-    console,
-    Date,
-    document,
-    fetch,
-    history,
-    location,
-    URL,
-    URLSearchParams,
-    navigator,
     window: { addEventListener() {} },
   }, { filename: 'admin-team-page-inline.js' });
   await flush();
-  return { app, clipboard, fixture, listeners, location, pendingClipboardWrites, requests };
+  return { app, clipboard, listeners, requests, team };
 }
 
-test('Team page keeps invitations and membership status inside Chickpea', async () => {
+test('Team page is Slack-native, disambiguates duplicate names, and warns the sole Owner', async () => {
   const harness = await createHarness();
-  assert.equal(harness.location.pathname, '/admin/team');
-  assert.equal(harness.app.className, 'frame primary-admin-shell');
-  assert.match(harness.app.innerHTML, /<nav class="rail primary-shell-sidebar" aria-label="Team">/);
-  assert.match(harness.app.innerHTML, /class="primary-shell-brand[^"]*"[\s\S]*?data-action="go-home"[\s\S]*?Chickpea/);
-  assert.equal((harness.app.innerHTML.match(/aria-label="Admin navigation"/g) ?? []).length, 1);
-  assert.doesNotMatch(harness.app.innerHTML, /cloudflare · workers|local · node/);
-  assert.match(harness.app.innerHTML, /data-action="open-team"[^>]*aria-current="page"/);
-  assert.match(harness.app.innerHTML, /Waiting to join/);
-  assert.match(harness.app.innerHTML, /joiner@example\.com/);
-  assert.match(harness.app.innerHTML, /unavailable@example\.com/);
-  assert.match(harness.app.innerHTML, /older deployment credentials/);
-  assert.doesNotMatch(harness.app.innerHTML, /data-link="undefined"/);
-  assert.doesNotMatch(harness.app.innerHTML, /accepted@example\.com|revoked@example\.com|expired@example\.com/);
-  assert.doesNotMatch(harness.app.innerHTML, /What happens next|team-grid/);
-  assert.match(harness.app.innerHTML, /name="email"/);
-  assert.match(harness.app.innerHTML, /team-status-control/);
-  assert.match(harness.app.innerHTML, />Owner</);
-  assert.match(harness.app.innerHTML, /data-action="team-remove-open"/);
-  assert.doesNotMatch(harness.app.innerHTML, /<option value="removed"/);
-  assert.match(harness.app.innerHTML, /<span class="chan-name">Members<\/span><span class="chan-meta">2 members<\/span>/);
-  assert.doesNotMatch(harness.app.innerHTML, /active records|Identity bound|Identity not bound|This same link works until/);
-  assert.doesNotMatch(harness.app.innerHTML, /team-invite-role|team-member-role/);
-  assert.doesNotMatch(harness.app.innerHTML, /Cloudflare|Zero Trust|policy|Open Access|Access action/i);
+  assert.match(harness.app.innerHTML, /Invite from Slack/);
+  assert.match(harness.app.innerHTML, /Add a second Owner/);
+  assert.match(harness.app.innerHTML, /alex\.one · UALEX1/);
+  assert.match(harness.app.innerHTML, /alex\.two · UALEX2/);
+  assert.match(harness.app.innerHTML, /paste a Slack member ID/i);
+  assert.match(harness.app.innerHTML, /UPENDING · Expires/);
+  assert.match(harness.app.innerHTML, /Promote to Owner/);
+  assert.match(harness.app.innerHTML, /data-action="team-suspend-open"/);
+  assert.doesNotMatch(harness.app.innerHTML, /email|password|Cloudflare Access/i);
 });
 
-test('Team join links stay stable, copyable, and membership status stays manageable', async () => {
+test('Owner selects one exact Slack tuple and receives a fragment-only invitation link', async () => {
   const harness = await createHarness();
-  const input = harness.listeners.input;
-  const change = harness.listeners.change;
-  const submit = harness.listeners.submit;
-  const click = harness.listeners.click;
-  assert.ok(input && change && submit && click);
-
-  input({ target: actionTarget({ 'data-action': 'team-invite-email' }, 'New@Example.com') });
-  submit({
-    target: actionTarget({ 'data-action': 'team-invite-form' }),
-    preventDefault() {},
-  });
+  const click = harness.listeners.click!;
+  const submit = harness.listeners.submit!;
+  click({ target: actionTarget({ 'data-action': 'team-member-select', 'data-slack-user': 'UALEX2' }) });
+  submit({ target: actionTarget({ 'data-action': 'team-invite-form' }), preventDefault() {} });
   await flush();
   const create = harness.requests.find((request) =>
     request.path === '/admin/api/team/invitations' && request.method === 'POST');
-  assert.deepEqual(create?.body, { email: 'New@Example.com' });
-  assert.match(harness.app.innerHTML, /Join link ready for/);
-  assert.match(harness.app.innerHTML, /new@example\.com/);
-  assert.doesNotMatch(harness.app.innerHTML, /id="team-invite-link"|>Done<|show this secret again|Resend link|rotates the private link/);
-
+  assert.deepEqual(create?.body, { slackUserId: 'UALEX2' });
+  assert.match(harness.app.innerHTML, /Slack invitation ready/);
   click({ target: actionTarget({ 'data-action': 'team-copy-link' }) });
   await flush();
   assert.deepEqual(harness.clipboard, [
-    'https://chickpea.example.com/join#invite=invitation_created.stable-secret',
+    'https://chickpea.example/auth/slack/invite#invite=private-slack-locator',
   ]);
-  assert.match(harness.app.innerHTML, />Copied<\/button>/);
+});
 
-  const copyControl = harness.app.innerHTML.match(
-    /<button[^>]*data-action="team-copy-invitation"[^>]*data-link="[^"]+"[^>]*>/,
-  )?.[0];
-  assert.ok(copyControl);
-  const renderedLink = copyControl.match(/data-link="([^"]+)"/)?.[1];
-  assert.ok(renderedLink);
-  click({ target: actionTarget({ 'data-action': 'team-copy-invitation', 'data-link': renderedLink }) });
+test('member-ID fallback verifies before selection and directory failures stay retryable', async () => {
+  const failed = await createHarness('owner', { directoryFailure: true });
+  assert.match(failed.app.innerHTML, /could not be reached/i);
+  assert.match(failed.app.innerHTML, /data-action="team-directory-retry"/);
+
+  const harness = await createHarness();
+  harness.listeners.input!({ target: actionTarget({ 'data-action': 'team-member-id' }, 'umanual') });
+  harness.listeners.click!({ target: actionTarget({ 'data-action': 'team-member-verify' }) });
   await flush();
-  assert.deepEqual(harness.clipboard, [
-    'https://chickpea.example.com/join#invite=invitation_created.stable-secret',
-    renderedLink,
-  ]);
+  assert.ok(harness.requests.some((request) => request.path === '/admin/api/team/directory/UMANUAL'));
+  assert.match(harness.app.innerHTML, /Manual Member/);
+  assert.match(harness.app.innerHTML, /Selected Manual Member · @manual\.member · UMANUAL/);
+});
 
-  const revokeControl = harness.app.innerHTML.match(
-    /<button[^>]*data-action="team-revoke"[^>]*data-invitation="invitation_created"[^>]*>/,
-  )?.[0];
-  assert.ok(revokeControl);
-  click({ target: actionTarget({
-    'data-action': 'team-revoke',
-    'data-invitation': revokeControl.match(/data-invitation="([^"]+)"/)?.[1] ?? '',
-  }) });
-  await flush();
-  assert.doesNotMatch(harness.app.innerHTML, /Join link ready/);
-  assert.ok(harness.requests.some((request) =>
-    request.path === '/admin/api/team/invitations/invitation_created' && request.method === 'DELETE'));
-
-  change({
-    target: actionTarget({ 'data-action': 'team-member-status', 'data-membership': 'membership_member' }, 'suspended'),
-  });
-  await flush();
-  const patch = harness.requests.find((request) =>
-    request.path === '/admin/api/team/memberships/membership_member' && request.method === 'PATCH');
-  assert.deepEqual(patch?.body, { status: 'suspended' });
-
-  click({ target: actionTarget({
-    'data-action': 'team-remove-open',
-    'data-membership': 'membership_member',
-  }) });
-  assert.match(harness.app.innerHTML, /aria-label="Remove teammate"/);
-  assert.match(harness.app.innerHTML, /Remove Member\?/);
-  assert.match(harness.app.innerHTML, /cannot be restored from this screen/);
-  assert.equal(harness.requests.filter((request) => request.body &&
-    (request.body as { status?: string }).status === 'removed').length, 0);
-
+test('suspend, revoke, restore, and promotion use explicit Slack-member lifecycle actions', async () => {
+  const harness = await createHarness();
+  const click = harness.listeners.click!;
+  click({ target: actionTarget({ 'data-action': 'team-suspend-open', 'data-membership': 'membership_admin' }) });
+  assert.match(harness.app.innerHTML, /An Owner can restore this membership later/);
   click({ target: actionTarget({ 'data-action': 'team-remove-confirm' }) });
   await flush();
-  const removePatch = harness.requests.find((request) =>
-    request.path === '/admin/api/team/memberships/membership_member' &&
-    request.method === 'PATCH' &&
-    (request.body as { status?: string }).status === 'removed');
-  assert.deepEqual(removePatch?.body, { status: 'removed' });
-});
+  assert.ok(harness.requests.some((request) =>
+    request.path.endsWith('/membership_admin') && (request.body as { status?: string }).status === 'suspended'));
+  assert.match(harness.app.innerHTML, /data-action="team-restore"/);
 
-test('Team join links become selectable when clipboard access is denied', async () => {
-  const harness = await createHarness('owner', { clipboardFailures: 1 });
-  const input = harness.listeners.input;
-  const submit = harness.listeners.submit;
-  const click = harness.listeners.click;
-  assert.ok(input && submit && click);
-
-  input({ target: actionTarget({ 'data-action': 'team-invite-email' }, 'manual-copy@example.com') });
-  submit({
-    target: actionTarget({ 'data-action': 'team-invite-form' }),
-    preventDefault() {},
-  });
+  click({ target: actionTarget({ 'data-action': 'team-restore', 'data-membership': 'membership_admin' }) });
   await flush();
-  click({ target: actionTarget({ 'data-action': 'team-copy-link' }) });
+  click({ target: actionTarget({ 'data-action': 'team-promote', 'data-membership': 'membership_admin' }) });
   await flush();
-
-  assert.match(harness.app.innerHTML, /Copy failed\. Select the join link below and copy it manually\./);
-  assert.match(harness.app.innerHTML, /id="team-invite-link"[^>]*readonly/);
-  assert.match(
-    harness.app.innerHTML,
-    /value="https:\/\/chickpea\.example\.com\/join#invite=invitation_created\.stable-secret"/,
-  );
-
-  click({ target: actionTarget({ 'data-action': 'team-copy-link' }) });
-  await flush();
-  assert.deepEqual(harness.clipboard, [
-    'https://chickpea.example.com/join#invite=invitation_created.stable-secret',
-  ]);
-  assert.doesNotMatch(harness.app.innerHTML, /Copy failed|id="team-invite-link"/);
-  assert.match(harness.app.innerHTML, />Copied<\/button>/);
-});
-
-test('Team join links stay selectable when the Clipboard API is unavailable', async () => {
-  const harness = await createHarness('owner', { clipboardAbsent: true });
-  const input = harness.listeners.input;
-  const submit = harness.listeners.submit;
-  const click = harness.listeners.click;
-  assert.ok(input && submit && click);
-
-  input({ target: actionTarget({ 'data-action': 'team-invite-email' }, 'manual-copy@example.com') });
-  submit({
-    target: actionTarget({ 'data-action': 'team-invite-form' }),
-    preventDefault() {},
-  });
-  await flush();
-  click({ target: actionTarget({ 'data-action': 'team-copy-link' }) });
-
-  assert.match(harness.app.innerHTML, /Copy failed\. Select the join link below and copy it manually\./);
-  assert.match(harness.app.innerHTML, /id="team-invite-link"[^>]*readonly/);
-});
-
-test('Team ignores a stale clipboard failure after its invitation is revoked', async () => {
-  const harness = await createHarness('owner', { deferClipboard: true });
-  const input = harness.listeners.input;
-  const submit = harness.listeners.submit;
-  const click = harness.listeners.click;
-  assert.ok(input && submit && click);
-
-  input({ target: actionTarget({ 'data-action': 'team-invite-email' }, 'stale-copy@example.com') });
-  submit({
-    target: actionTarget({ 'data-action': 'team-invite-form' }),
-    preventDefault() {},
-  });
-  await flush();
-  click({ target: actionTarget({ 'data-action': 'team-copy-link' }) });
-  assert.equal(harness.pendingClipboardWrites.length, 1);
+  assert.equal(harness.team.soleOwnerWarning, false);
+  assert.doesNotMatch(harness.app.innerHTML, /Add a second Owner/);
 
   click({ target: actionTarget({
-    'data-action': 'team-revoke',
-    'data-invitation': 'invitation_created',
+    'data-action': 'team-revoke-open', 'data-invitation': 'invitation_pending',
+    'data-slack-user': 'UPENDING',
   }) });
+  assert.match(harness.app.innerHTML, /private link will stop working immediately/);
+  click({ target: actionTarget({ 'data-action': 'team-remove-confirm' }) });
   await flush();
-  harness.pendingClipboardWrites[0]!.reject(new Error('Clipboard permission denied'));
-  await flush();
-
-  assert.doesNotMatch(harness.app.innerHTML, /Copy failed|id="team-invite-link"/);
-  assert.doesNotMatch(harness.app.innerHTML, /Join link ready for/);
+  assert.ok(harness.requests.some((request) =>
+    request.path.endsWith('/invitation_pending') && request.method === 'DELETE'));
 });
 
-test('Team invitation replaces raw network failures with safe recovery guidance', async () => {
-  const harness = await createHarness('owner', { failInviteRequest: true });
-  const input = harness.listeners.input;
-  const submit = harness.listeners.submit;
-  assert.ok(input && submit);
-
-  input({ target: actionTarget({ 'data-action': 'team-invite-email' }, 'teammate@example.com') });
-  submit({
-    target: actionTarget({ 'data-action': 'team-invite-form' }),
-    preventDefault() {},
-  });
-  await flush();
-
-  assert.doesNotMatch(harness.app.innerHTML, /Failed to fetch/);
-  assert.match(harness.app.innerHTML, /Reload this page to check whether the change succeeded/);
-});
-
-test('Admin Team UI marks the owner without exposing role controls', async () => {
+test('Admin can view exact members but receives no Owner controls', async () => {
   const harness = await createHarness('admin');
-  const ownerRow = harness.app.innerHTML.match(/<article class="team-row">[\s\S]*?owner@example\.com[\s\S]*?<\/article>/)?.[0] ?? '';
-  assert.match(ownerRow, />Owner</);
-  assert.doesNotMatch(ownerRow, /team-member-status|team-remove-open/);
-  assert.doesNotMatch(harness.app.innerHTML, /team-member-role|team-invite-role/);
+  assert.match(harness.app.innerHTML, /UOWNER/);
+  assert.doesNotMatch(harness.app.innerHTML, /Invite from Slack|Promote to Owner|team-suspend-open|team-remove-open/);
+  assert.equal(harness.requests.some((request) => request.path.includes('/team/directory')), false);
 });
 
-test('protected join and member pages keep provider details out of the normal flow', async () => {
-  const join = renderInvitationJoinPage({ email: 'joiner@example.com' });
-  assert.match(join, /<script src="\/admin\/join\/client\.js" defer><\/script>/);
-  assert.doesNotMatch(join, /sessionStorage|location\.hash|show-once-secret/);
-  assert.match(join, /<meta name="referrer" content="no-referrer">/);
-
-  const credential = 'invitation_join.secret-value';
-  const stored = new Map([[JOIN_STORAGE_KEY, credential]]);
-  const requests: Array<{ path: string; body: string }> = [];
-  let destination = '';
-  const status = { textContent: '', className: '' };
-  vm.runInNewContext(invitationJoinClientScript(), {
-    document: { getElementById() { return status; } },
-    fetch(path: string, options: { body: string }) {
-      requests.push({ path, body: options.body });
-      assert.equal(stored.has(JOIN_STORAGE_KEY), false);
-      return Promise.resolve(response({ redirect: '/admin/channels' }));
-    },
-    location: { replace(path: string) { destination = path; } },
-    sessionStorage: {
-      getItem(key: string) { return stored.get(key) ?? null; },
-      removeItem(key: string) { stored.delete(key); },
-    },
+test('clipboard failure exposes the invitation link for manual selection', async () => {
+  const harness = await createHarness('owner', { clipboardFailure: true });
+  harness.listeners.click!({ target: actionTarget({
+    'data-action': 'team-member-select', 'data-slack-user': 'UALEX1',
+  }) });
+  harness.listeners.submit!({
+    target: actionTarget({ 'data-action': 'team-invite-form' }), preventDefault() {},
   });
   await flush();
-  assert.deepEqual(requests, [{
-    path: '/admin/join',
-    body: JSON.stringify({ invitationId: 'invitation_join', token: 'secret-value' }),
-  }]);
-  assert.equal(destination, '/admin/channels');
-  assert.equal(stored.size, 0);
-
-  const account = renderMemberAccountPage({
-    organizationName: 'Chickpea', displayName: 'Joiner', email: 'joiner@example.com',
-    role: 'member', status: 'active',
-  });
-  assert.match(account, /Open Slack/);
-  assert.match(account, /class="shell primary-admin-shell"/);
-  assert.match(account, /class="rail primary-shell-sidebar"/);
-  assert.match(account, /class="active" href="\/admin\/account" aria-current="page">Account/);
-  assert.match(account, /<h1>Your account<\/h1>/);
-  assert.doesNotMatch(account, />member</i);
-  assert.doesNotMatch(account, /Cloudflare Access|Zero Trust/i);
-  assert.doesNotMatch(account, /Settings|Profiles|Team/);
+  harness.listeners.click!({ target: actionTarget({ 'data-action': 'team-copy-link' }) });
+  await flush();
+  assert.match(harness.app.innerHTML, /Copy this teammate join link manually/);
+  assert.match(harness.app.innerHTML, /id="team-invite-link"/);
 });

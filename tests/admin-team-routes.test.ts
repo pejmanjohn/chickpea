@@ -1,347 +1,280 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { createAdminRoutes } from '../src/admin/routes.ts';
-import { digest } from '../src/auth/personal-token.ts';
-import type { AdminAuthenticationService, AuthPrincipal, ExternalIdentity } from '../src/auth/types.ts';
-import { SqliteSettingsStore } from '../src/config/settings-store.ts';
-import { SqliteConfigStore } from '../src/config/store.ts';
+import { Hono } from 'hono';
+
+import { createTeamAdminApi } from '../src/admin/team-api.ts';
+import { AuthRateLimiter } from '../src/auth/rate-limit.ts';
+import { setRequestPrincipal } from '../src/auth/service.ts';
+import type { AuthPrincipal } from '../src/auth/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
-import type { IdentityResolution, OrganizationRole } from '../src/identity/types.ts';
+import type {
+  SlackDirectoryMember,
+  SlackDirectoryUserInfoResult,
+  SlackDirectoryUsersPage,
+} from '../src/slack/credentials.ts';
+import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const NOW = 1_786_100_000_000;
-const ORIGIN = 'https://chickpea.example.com';
-const ISSUER = 'https://team.cloudflareaccess.com';
 
-async function fixture() {
-  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const organization = await identity.ensureOrganization({ displayName: 'Chickpea' });
-  await identity.createOwnerClaim({ organizationId: organization.id, email: 'owner@example.com' });
-  const owner = await identity.claimOwner({
-    organizationId: organization.id,
-    provider: 'cloudflare_access',
-    issuer: ISSUER,
-    subject: 'owner-subject',
-    verifiedEmail: 'owner@example.com',
-    at: NOW,
-  });
-  await identity.configureAuthProvider({
-    organizationId: organization.id,
-    kind: 'cloudflare_access',
-    state: 'active',
-    issuer: ISSUER,
-    audience: 'audience-test',
-    admissionState: 'action_required',
-  });
-  await identity.updateOrganizationAuth({
-    organizationId: organization.id,
-    authMode: 'access_active',
-    canonicalAdminOrigin: ORIGIN,
-  });
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  const settings = new SqliteSettingsStore(':memory:');
-  return { identity, organization, owner, config, settings };
-}
-
-function principal(resolution: IdentityResolution): AuthPrincipal {
+function principal(owner: Awaited<ReturnType<typeof createSlackOwner>>, role: 'owner' | 'admin' = 'owner'): AuthPrincipal {
   return {
-    userId: resolution.user.id,
-    membershipId: resolution.membership.id,
-    organizationId: resolution.membership.organizationId,
-    role: resolution.membership.role,
-    authenticatorKind: 'test_access',
-    credentialId: `credential_${resolution.membership.id}`,
-    correlationId: `request_${resolution.membership.id}`,
+    userId: owner.user.id,
+    membershipId: owner.membership.id,
+    organizationId: owner.membership.organizationId,
+    role,
+    authenticatorKind: 'better_auth',
+    credentialId: 'session_team_test',
+    correlationId: `request_team_${role}`,
     machine: false,
   };
 }
 
-function authService(value: AuthPrincipal): AdminAuthenticationService {
-  return { async authenticateRequest() { return value; } };
-}
-
-function mutation(method: string, body?: unknown) {
+function member(input: Partial<SlackDirectoryMember> & Pick<SlackDirectoryMember, 'id'>): SlackDirectoryMember {
   return {
-    method,
-    headers: {
-      origin: ORIGIN,
-      'sec-fetch-site': 'same-origin',
-      'content-type': 'application/json',
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    id: input.id,
+    teamId: input.teamId ?? 'T12345678',
+    deleted: input.deleted ?? false,
+    bot: input.bot ?? false,
+    appUser: input.appUser ?? false,
+    restricted: input.restricted ?? false,
+    ultraRestricted: input.ultraRestricted ?? false,
+    stranger: input.stranger ?? false,
+    displayName: input.displayName ?? input.id,
+    realName: input.realName ?? input.displayName ?? input.id,
+    handle: input.handle ?? input.id.toLowerCase(),
+    ...(input.avatarUrl ? { avatarUrl: input.avatarUrl } : {}),
   };
 }
 
-async function addMember(
-  identity: SqliteIdentityStore,
-  owner: IdentityResolution,
-  email: string,
-  role: OrganizationRole,
-): Promise<IdentityResolution> {
-  const invitation = await identity.createInvitation({
-    organizationId: owner.membership.organizationId,
-    email,
-    role,
-    tokenHash: digest(`secret-${email}`),
-    inviterMembershipId: owner.membership.id,
-    expiresAt: NOW + 10_000,
+async function harness(
+  role: 'owner' | 'admin' = 'owner',
+  overrides: {
+    usersList?: () => Promise<SlackDirectoryUsersPage>;
+    usersInfo?: (botToken: string, userId: string) => Promise<SlackDirectoryUserInfoResult>;
+    rateLimiter?: (identity: SqliteIdentityStore) => AuthRateLimiter;
+    revokeBetterAuthSessions?: (betterAuthUserId: string) => Promise<number>;
+  } = {},
+) {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await createSlackOwner(identity, { now: NOW });
+  const people = [
+    member({ id: 'UINVITEE1', displayName: 'Ada', handle: 'ada' }),
+    member({ id: 'UBOT00001', displayName: 'Bot', bot: true }),
+    member({ id: 'UDELETED1', displayName: 'Deleted', deleted: true }),
+    member({ id: 'UGUEST001', displayName: 'Guest', restricted: true }),
+    member({ id: 'UFOREIGN1', displayName: 'Foreign', teamId: 'TOTHER' }),
+  ];
+  const app = new Hono();
+  app.use('/admin/api/*', async (c, next) => {
+    setRequestPrincipal(c.req.raw, principal(owner, role));
+    await next();
   });
-  return identity.consumeInvitation({
-    invitationId: invitation.id,
-    tokenHash: digest(`secret-${email}`),
-    provider: 'cloudflare_access',
-    issuer: ISSUER,
-    subject: `subject-${email}`,
-    verifiedEmail: email,
-    at: NOW,
-  });
+  app.route('/admin/api', createTeamAdminApi({
+    store: () => identity,
+    now: () => NOW,
+    randomBytes: (length) => new Uint8Array(length).fill(7),
+    resolveCredentials: async () => ({
+      botToken: 'xoxb-team', botUserId: 'UBOTOWNER',
+      signingSecret: 'signing-secret', connectionRevision: 'revision_connected',
+    }),
+    usersList: overrides.usersList ?? (async () => ({
+      ok: true, error: undefined, members: people,
+      nextCursor: undefined, retryAfterMs: undefined,
+    })),
+    usersInfo: overrides.usersInfo ?? (async (_token, userId) => ({
+      ok: true, error: undefined,
+      member: people.find((candidate) => candidate.id === userId),
+      retryAfterMs: undefined,
+    })),
+    ...(overrides.rateLimiter ? { rateLimiter: async () => overrides.rateLimiter!(identity) } : {}),
+    ...(overrides.revokeBetterAuthSessions
+      ? { revokeBetterAuthSessions: async (_c, userId) => overrides.revokeBetterAuthSessions!(userId) }
+      : {}),
+  }));
+  return { app, identity, owner, people };
 }
 
-test('Team API creates show-once Chickpea invites without Cloudflare policy work', async () => {
-  const f = await fixture();
-  const app = createAdminRoutes({
-    identity: f.identity,
-    store: f.config,
-    settings: f.settings,
-    authService: authService(principal(f.owner)),
-  });
+test('Team directory exposes only exact active humans and preserves Slack disambiguators', async () => {
+  const { app, identity } = await harness();
   try {
-    const response = await app.request(`${ORIGIN}/admin/api/team/invitations`, mutation('POST', {
-      email: 'Teammate@Example.com',
-    }));
-    assert.equal(response.status, 201);
-    const created = await response.json() as {
-      invitation: { id: string; email: string; status: string };
+    const response = await app.request('https://app.example/admin/api/team/directory');
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.json() as {
+      members: Array<{ slackUserId: string; displayName: string; handle: string }>;
+      nextCursor: string | null;
+    };
+    assert.deepEqual(body.members, [{
+      slackUserId: 'UINVITEE1', displayName: 'Ada', handle: 'ada',
+      realName: 'Ada', avatarUrl: null,
+    }]);
+    assert.equal(body.nextCursor, null);
+  } finally {
+    identity.close();
+  }
+});
+
+test('Owner creates one exact Slack invitation while Admin cannot invite', async () => {
+  const ownerHarness = await harness('owner');
+  try {
+    const created = await ownerHarness.app.request('https://app.example/admin/api/team/invitations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slackUserId: 'UINVITEE1' }),
+    });
+    assert.equal(created.status, 201, await created.clone().text());
+    const body = await created.json() as {
+      invitation: Record<string, unknown> & { slackTeamId: string; slackUserId: string };
       inviteLink: string;
     };
-    assert.equal(created.invitation.email, 'teammate@example.com');
-    assert.equal(created.invitation.status, 'pending');
-    assert.equal('admission' in created.invitation, false);
-    assert.match(created.inviteLink, /^https:\/\/chickpea\.example\.com\/join#invite=invitation_/);
-    assert.equal(created.inviteLink.includes('?'), false);
-    assert.equal(created.inviteLink.includes(digest('')), false);
-
-    const stored = (await f.identity.listInvitations())[0]!;
-    assert.equal(stored.role, 'admin');
-    assert.equal(stored.tokenHash.length, 64);
-    assert.equal(created.inviteLink.includes(stored.tokenHash), false);
-
-    const snapshot = await app.request(`${ORIGIN}/admin/api/team`);
-    const body = await snapshot.json() as { invitations: Array<Record<string, unknown>> };
-    assert.equal(snapshot.status, 200);
-    assert.equal(JSON.stringify(body).includes('tokenHash'), false);
-    assert.equal(JSON.stringify(body).includes(stored.tokenHash), false);
+    assert.equal(body.invitation.slackTeamId, 'T12345678');
+    assert.equal(body.invitation.slackUserId, 'UINVITEE1');
+    assert.equal(body.invitation.displayName, 'Ada');
+    assert.equal(body.invitation.role, 'admin');
+    assert.equal(body.invitation.status, 'pending');
+    assert.equal(body.invitation.expiresAt, NOW + 7 * 24 * 60 * 60_000);
+    assert.match(body.inviteLink, /^https:\/\/app\.example\/auth\/slack\/invite#invite=/);
+    assert.doesNotMatch(JSON.stringify(await ownerHarness.identity.exportSummary()), /BwcHBwcH/);
   } finally {
-    f.config.close(); f.settings.close(); f.identity.close();
+    ownerHarness.identity.close();
+  }
+
+  const adminHarness = await harness('admin');
+  try {
+    const denied = await adminHarness.app.request('https://app.example/admin/api/team/invitations', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slackUserId: 'UINVITEE1' }),
+    });
+    assert.equal(denied.status, 403);
+  } finally {
+    adminHarness.identity.close();
   }
 });
 
-test('Team API rejects a stale page that still requests the removed member role', async () => {
-  const f = await fixture();
-  const app = createAdminRoutes({
-    identity: f.identity,
-    store: f.config,
-    settings: f.settings,
-    authService: authService(principal(f.owner)),
+test('duplicate invitation reuses the frozen tuple without minting another locator', async () => {
+  const { app, identity } = await harness();
+  try {
+    const request = () => app.request('https://app.example/admin/api/team/invitations', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slackUserId: 'UINVITEE1' }),
+    });
+    const created = await request();
+    assert.equal(created.status, 201);
+    const first = await created.json() as { invitation: { id: string }; inviteLink: string };
+    assert.match(first.inviteLink, /#invite=/);
+
+    const duplicate = await request();
+    assert.equal(duplicate.status, 200);
+    const second = await duplicate.json() as { invitation: { id: string }; inviteLink: null };
+    assert.equal(second.invitation.id, first.invitation.id);
+    assert.equal(second.inviteLink, null);
+    assert.equal((await identity.listInvitations()).filter((row) => row.status === 'pending').length, 1);
+  } finally {
+    identity.close();
+  }
+});
+
+test('Slack directory failures remain retryable and honor Slack retry timing', async () => {
+  const outage = await harness('owner', {
+    usersList: async () => { throw new Error('synthetic Slack outage'); },
   });
   try {
-    const response = await app.request(`${ORIGIN}/admin/api/team/invitations`, mutation('POST', {
-      email: 'teammate@example.com',
-      role: 'member',
-    }));
-    assert.equal(response.status, 409);
-    assert.deepEqual(await response.json(), { error: 'reload_required' });
-    assert.equal((await f.identity.listInvitations()).length, 0);
+    const response = await outage.app.request('https://app.example/admin/api/team/directory');
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { error: 'slack_directory_unavailable' });
   } finally {
-    f.config.close(); f.settings.close(); f.identity.close();
+    outage.identity.close();
   }
-});
 
-test('Admin can manage ordinary roles while only an owner can grant or control owners', async () => {
-  const f = await fixture();
-  const admin = await addMember(f.identity, f.owner, 'admin@example.com', 'admin');
-  const member = await addMember(f.identity, f.owner, 'member@example.com', 'member');
-  const adminApp = createAdminRoutes({
-    identity: f.identity, store: f.config, settings: f.settings,
-    authService: authService(principal(admin)),
-  });
-  const ownerApp = createAdminRoutes({
-    identity: f.identity, store: f.config, settings: f.settings,
-    authService: authService(principal(f.owner)),
-  });
-  try {
-    const elevateByAdmin = await adminApp.request(
-      `${ORIGIN}/admin/api/team/memberships/${member.membership.id}`,
-      mutation('PATCH', { role: 'owner' }),
-    );
-    assert.equal(elevateByAdmin.status, 403);
-
-    const makeAdmin = await adminApp.request(
-      `${ORIGIN}/admin/api/team/memberships/${member.membership.id}`,
-      mutation('PATCH', { role: 'admin' }),
-    );
-    assert.equal(makeAdmin.status, 200);
-
-    const promote = await ownerApp.request(
-      `${ORIGIN}/admin/api/team/memberships/${member.membership.id}`,
-      mutation('PATCH', { role: 'owner' }),
-    );
-    assert.equal(promote.status, 200);
-    assert.equal((await f.identity.getMembershipForUser(member.user.id))?.role, 'owner');
-
-    const selfDemote = await ownerApp.request(
-      `${ORIGIN}/admin/api/team/memberships/${f.owner.membership.id}`,
-      mutation('PATCH', { role: 'admin' }),
-    );
-    assert.equal(selfDemote.status, 200);
-    assert.equal((await f.identity.getMembershipForUser(f.owner.user.id))?.role, 'admin');
-  } finally {
-    f.config.close(); f.settings.close(); f.identity.close();
-  }
-});
-
-test('Access-authenticated invite acceptance removes the fragment secret from server-visible URLs', async () => {
-  const f = await fixture();
-  const rawSecret = 'z'.repeat(48);
-  const invitation = await f.identity.createInvitation({
-    organizationId: f.organization.id,
-    email: 'joiner@example.com',
-    role: 'member',
-    tokenHash: digest(rawSecret),
-    inviterMembershipId: f.owner.membership.id,
-    expiresAt: NOW + 10_000,
-  });
-  const external: ExternalIdentity = {
-    kind: 'external_identity',
-    provider: 'cloudflare_access',
-    issuer: ISSUER,
-    subject: 'joiner-subject',
-    verifiedEmail: 'joiner@example.com',
-    credentialId: 'access-joiner',
-  };
-  const app = createAdminRoutes({
-    identity: f.identity,
-    store: f.config,
-    settings: f.settings,
-    recoveryToken: 'r'.repeat(48),
-    verifyAccessAssertion: async () => external,
-  });
-  try {
-    const landing = await app.request(`${ORIGIN}/admin/join`, {
-      headers: { 'Cf-Access-Jwt-Assertion': 'signed' },
-    });
-    assert.equal(landing.status, 200);
-    const html = await landing.text();
-    assert.match(html, /<script src="\/admin\/join\/client\.js" defer><\/script>/);
-    assert.match(landing.headers.get('content-security-policy') ?? '', /script-src 'self'/);
-    assert.equal(html.includes(rawSecret), false);
-
-    const accepted = await app.request(`${ORIGIN}/admin/join`, {
-      ...mutation('POST', { invitationId: invitation.id, token: rawSecret }),
-      headers: {
-        ...mutation('POST').headers,
-        'Cf-Access-Jwt-Assertion': 'signed',
-      },
-    });
-    assert.equal(accepted.status, 200);
-    assert.deepEqual(await accepted.json(), { redirect: '/admin/channels' });
-    const stored = (await f.identity.listInvitations()).find((row) => row.id === invitation.id)!;
-    assert.equal(stored.status, 'accepted');
-    assert.equal('admissionState' in stored, false);
-
-    const replay = await app.request(`${ORIGIN}/admin/join`, {
-      ...mutation('POST', { invitationId: invitation.id, token: rawSecret }),
-      headers: {
-        ...mutation('POST').headers,
-        'Cf-Access-Jwt-Assertion': 'signed',
-      },
-    });
-    assert.equal(replay.status, 401);
-    assert.deepEqual(await replay.json(), { error: 'join_unavailable' });
-  } finally {
-    f.config.close(); f.settings.close(); f.identity.close();
-  }
-});
-
-test('Invite join denies mismatched, rotated, and revoked credentials uniformly without creating identity state', async () => {
-  const f = await fixture();
-  const rawSecret = 'a'.repeat(48);
-  const invitation = await f.identity.createInvitation({
-    organizationId: f.organization.id,
-    email: 'expected@example.com',
-    role: 'member',
-    tokenHash: digest(rawSecret),
-    inviterMembershipId: f.owner.membership.id,
-    expiresAt: NOW + 10_000,
-  });
-  let externalEmail = 'different@example.com';
-  const app = createAdminRoutes({
-    identity: f.identity,
-    store: f.config,
-    settings: f.settings,
-    recoveryToken: 'r'.repeat(48),
-    verifyAccessAssertion: async () => ({
-      kind: 'external_identity',
-      provider: 'cloudflare_access',
-      issuer: ISSUER,
-      subject: `subject-${externalEmail}`,
-      verifiedEmail: externalEmail,
-      credentialId: `credential-${externalEmail}`,
+  const throttled = await harness('owner', {
+    usersList: async () => ({
+      ok: false, error: 'ratelimited', members: [], nextCursor: undefined, retryAfterMs: 5_000,
     }),
   });
-  const attempt = (token: string) => app.request(`${ORIGIN}/admin/join`, {
-    ...mutation('POST', { invitationId: invitation.id, token }),
-    headers: {
-      ...mutation('POST').headers,
-      'Cf-Access-Jwt-Assertion': 'signed',
-    },
-  });
   try {
-    const before = await f.identity.listMemberships();
-    const mismatch = await attempt(rawSecret);
-    assert.equal(mismatch.status, 401);
-    assert.deepEqual(await mismatch.json(), { error: 'join_unavailable' });
-    assert.equal((await f.identity.listMemberships()).length, before.length);
-
-    externalEmail = 'expected@example.com';
-    await f.identity.resendInvitation({
-      invitationId: invitation.id,
-      tokenHash: digest('b'.repeat(48)),
-      expiresAt: NOW + 20_000,
-    });
-    const rotated = await attempt(rawSecret);
-    assert.equal(rotated.status, 401);
-    assert.deepEqual(await rotated.json(), { error: 'join_unavailable' });
-
-    await f.identity.revokeInvitation(invitation.id);
-    const revoked = await attempt('b'.repeat(48));
-    assert.equal(revoked.status, 401);
-    assert.deepEqual(await revoked.json(), { error: 'join_unavailable' });
+    const response = await throttled.app.request('https://app.example/admin/api/team/directory');
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get('retry-after'), '5');
+    assert.deepEqual(await response.json(), { error: 'slack_rate_limited' });
   } finally {
-    f.config.close(); f.settings.close(); f.identity.close();
+    throttled.identity.close();
   }
 });
 
-test('Member reaches a minimal account surface and cannot open privileged Admin APIs', async () => {
-  const f = await fixture();
-  const member = await addMember(f.identity, f.owner, 'member@example.com', 'member');
-  const app = createAdminRoutes({
-    identity: f.identity, store: f.config, settings: f.settings,
-    authService: authService(principal(member)),
+test('Team API rate limits repeated failures and rejects oversized invite bodies before Slack lookup', async () => {
+  let infoCalls = 0;
+  const team = await harness('owner', {
+    usersInfo: async () => {
+      infoCalls += 1;
+      return { ok: true, error: undefined, member: undefined, retryAfterMs: undefined };
+    },
+    rateLimiter: (identity) => new AuthRateLimiter(identity, {
+      pepper: 'team-rate-limit-pepper-at-least-thirty-two-characters',
+      now: () => NOW, perKeyLimit: 1, globalLimit: 100,
+    }),
   });
   try {
-    const admin = await app.request(`${ORIGIN}/admin`);
-    assert.equal(admin.status, 303);
-    assert.equal(admin.headers.get('location'), '/admin/account');
+    const request = (body: string) => team.app.request('https://app.example/admin/api/team/invitations', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body,
+    });
+    const first = await request(JSON.stringify({ slackUserId: 'UMISSING1' }));
+    assert.equal(first.status, 404);
+    const limited = await request(JSON.stringify({ slackUserId: 'UMISSING1' }));
+    assert.equal(limited.status, 429);
+    assert.match(limited.headers.get('retry-after') ?? '', /^\d+$/);
+    assert.equal(infoCalls, 1);
 
-    const account = await app.request(`${ORIGIN}/admin/account`);
-    assert.equal(account.status, 200);
-    assert.match(await account.text(), /Open Slack/);
-
-    assert.equal((await app.request(`${ORIGIN}/admin/api/account`)).status, 200);
-    assert.equal((await app.request(`${ORIGIN}/admin/api/team`)).status, 403);
-    assert.equal((await app.request(`${ORIGIN}/admin/api/agents`)).status, 403);
+    const oversizedTeam = await harness('owner');
+    try {
+      const oversized = await oversizedTeam.app.request('https://app.example/admin/api/team/invitations', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slackUserId: `U${'A'.repeat(2_100)}` }),
+      });
+      assert.equal(oversized.status, 400);
+      assert.equal((await oversizedTeam.identity.listInvitations()).length, 0);
+    } finally {
+      oversizedTeam.identity.close();
+    }
   } finally {
-    f.config.close(); f.settings.close(); f.identity.close();
+    team.identity.close();
+  }
+});
+
+test('removed Admin is eligible for an exact fresh invitation and existing sessions are revoked', async () => {
+  const revokedUsers: string[] = [];
+  const team = await harness('owner', {
+    revokeBetterAuthSessions: async (userId) => { revokedUsers.push(userId); return 2; },
+  });
+  try {
+    const firstInvite = await team.identity.createInvitation({
+      organizationId: team.owner.membership.organizationId,
+      slackTeamId: 'T12345678', slackUserId: 'UINVITEE1', displayName: 'Ada', role: 'admin',
+      locatorHash: 'd'.repeat(64), inviterMembershipId: team.owner.membership.id,
+      expiresAt: NOW + 60_000,
+    });
+    const admin = await team.identity.consumeInvitation({
+      invitationId: firstInvite.id, locatorHash: 'd'.repeat(64),
+      slackTeamId: 'T12345678', slackUserId: 'UINVITEE1', displayName: 'Ada',
+      betterAuthUserId: 'ba_user_removed_admin', betterAuthMembershipId: 'ba_member_removed_admin',
+    });
+    const removed = await team.app.request(
+      `https://app.example/admin/api/team/memberships/${admin.membership.id}`,
+      { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'removed' }) },
+    );
+    assert.equal(removed.status, 200, await removed.clone().text());
+    assert.deepEqual(revokedUsers, ['ba_user_removed_admin']);
+    assert.equal((await team.identity.getMembership(admin.membership.id))?.status, 'removed');
+
+    const directory = await team.app.request('https://app.example/admin/api/team/directory');
+    assert.equal(directory.status, 200);
+    assert.deepEqual((await directory.json() as { members: Array<{ slackUserId: string }> }).members
+      .map((row) => row.slackUserId), ['UINVITEE1']);
+    const reinvite = await team.app.request('https://app.example/admin/api/team/invitations', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slackUserId: 'UINVITEE1' }),
+    });
+    assert.equal(reinvite.status, 201, await reinvite.clone().text());
+  } finally {
+    team.identity.close();
   }
 });

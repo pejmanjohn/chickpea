@@ -1,447 +1,459 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { digest } from '../src/auth/personal-token.ts';
 import { IdentityStateError } from '../src/identity/errors.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
 
 const NOW = 1_786_000_000_000;
+const TEAM = 'T12345678';
+const OWNER = 'U12345678';
+const CAPABILITY = 'a'.repeat(64);
 
-function ownerInput() {
+test('first-owner claim activates exactly one canonical Slack tuple', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const resolution = await claimFirstOwner(store);
+
+  assert.equal(resolution.user.slackTeamId, TEAM);
+  assert.equal(resolution.user.slackUserId, OWNER);
+  assert.equal(resolution.membership.role, 'owner');
+  assert.equal(resolution.binding.betterAuthUserId, 'ba_user_owner');
+  assert.deepEqual(await store.resolveSlackIdentity(TEAM, OWNER), resolution);
+  assert.equal((await store.getAuthControl())?.authMode, 'slack_active');
+  assert.equal((await store.getAuthControl())?.healthGate, 'normal');
+
+  await assert.rejects(
+    () => store.createAuthOperation({
+      id: 'another_first_owner', kind: 'first_owner_claim',
+      expectedSlackTeamId: TEAM, expectedSlackUserId: 'U22222222',
+      capabilityHash: 'b'.repeat(64), expiresAt: NOW + 60_000,
+    }),
+    (error: unknown) => error instanceof IdentityStateError && error.code === 'auth_operation_conflict',
+  );
+});
+
+test('first-owner activation requires the exact completed Better Auth reconciliation', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const operation = await store.createAuthOperation({
+    id: 'incomplete_first_owner',
+    kind: 'first_owner_claim',
+    expectedSlackTeamId: TEAM,
+    expectedSlackUserId: OWNER,
+    chickpeaRole: 'owner',
+    capabilityHash: CAPABILITY,
+    expiresAt: NOW + 60_000,
+  });
+  await store.createOwnerClaim({
+    operationId: operation.id,
+    slackTeamId: TEAM,
+    slackUserId: OWNER,
+  });
+  await store.advanceAuthOperation({
+    operationId: operation.id,
+    capabilityHash: CAPABILITY,
+    step: 1,
+    betterAuthUserId: 'ba_user_owner',
+    betterAuthMembershipId: 'ba_member_owner',
+  });
+
+  await assert.rejects(
+    () => store.claimOwner({
+      operationId: operation.id,
+      organizationId: 'org_oss',
+      slackTeamId: TEAM,
+      slackUserId: OWNER,
+      betterAuthUserId: 'ba_user_owner',
+      betterAuthMembershipId: 'ba_member_owner',
+    }),
+    (error: unknown) => error instanceof IdentityStateError && error.code === 'owner_claim_conflict',
+  );
+  assert.equal((await store.getOwnerClaim())?.status, 'reserved');
+  assert.equal((await store.getAuthControl())?.authMode, undefined);
+  assert.equal((await store.listMemberships()).length, 0);
+});
+
+test('Slack tuple and Better Auth mapping uniqueness are storage-backed', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await claimFirstOwner(store);
+  const invitation = await store.createInvitation({
+    organizationId: owner.membership.organizationId,
+    slackTeamId: TEAM,
+    slackUserId: 'U87654321',
+    displayName: 'Same display name',
+    role: 'admin',
+    locatorHash: 'c'.repeat(64),
+    inviterMembershipId: owner.membership.id,
+    expiresAt: NOW + 60_000,
+  });
+  const admin = await store.consumeInvitation({
+    invitationId: invitation.id,
+    locatorHash: 'c'.repeat(64),
+    slackTeamId: TEAM,
+    slackUserId: 'U87654321',
+    displayName: 'Same display name',
+    betterAuthUserId: 'ba_user_admin',
+    betterAuthMembershipId: 'ba_member_admin',
+  });
+  assert.equal(admin.membership.role, 'admin');
+  assert.equal((await store.listExternalIdentities()).length, 2);
+
+  const duplicate = await store.createInvitation({
+    organizationId: owner.membership.organizationId,
+    slackTeamId: TEAM,
+    slackUserId: 'U11111111',
+    role: 'admin',
+    locatorHash: 'd'.repeat(64),
+    inviterMembershipId: owner.membership.id,
+    expiresAt: NOW + 60_000,
+  });
+  await assert.rejects(
+    () => store.consumeInvitation({
+      invitationId: duplicate.id,
+      locatorHash: 'd'.repeat(64),
+      slackTeamId: TEAM,
+      slackUserId: 'U11111111',
+      betterAuthUserId: 'ba_user_admin',
+      betterAuthMembershipId: 'ba_member_admin_2',
+    }),
+    /Slack identity is already bound|UNIQUE constraint failed/,
+  );
+});
+
+test('membership authority mutation revokes every pinned token and session atomically', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await claimFirstOwner(store);
+  const invitation = await store.createInvitation({
+    organizationId: owner.membership.organizationId,
+    slackTeamId: TEAM,
+    slackUserId: 'U87654321',
+    role: 'admin',
+    locatorHash: 'f'.repeat(64),
+    inviterMembershipId: owner.membership.id,
+    expiresAt: NOW + 60_000,
+  });
+  const admin = await store.consumeInvitation({
+    invitationId: invitation.id,
+    locatorHash: 'f'.repeat(64),
+    slackTeamId: TEAM,
+    slackUserId: 'U87654321',
+    betterAuthUserId: 'ba_user_authority_admin',
+    betterAuthMembershipId: 'ba_member_authority_admin',
+  });
+  const token = await store.createPersonalToken({
+    organizationId: admin.membership.organizationId,
+    userId: admin.user.id,
+    membershipId: admin.membership.id,
+    tokenHash: '1'.repeat(64),
+    prefix: 'authority123',
+    label: 'Admin token',
+  });
+  const session = await store.createBrowserSession({
+    organizationId: admin.membership.organizationId,
+    userId: admin.user.id,
+    membershipId: admin.membership.id,
+    personalTokenId: token.id,
+    sessionHash: '2'.repeat(64),
+    prefix: 'sessionauth1',
+    expiresAt: NOW + 60_000,
+  });
+
+  const result = await store.updateMembershipAuthority({
+    membershipId: admin.membership.id,
+    status: 'suspended',
+    actorMembershipId: owner.membership.id,
+    correlationId: 'request_authority_1',
+    authenticationSurface: 'better_auth',
+    reasonCode: 'owner_suspended_member',
+  });
+  assert.equal(result.membership.status, 'suspended');
+  assert.equal(result.revokedPersonalTokenCount, 1);
+  assert.equal(result.revokedBrowserSessionCount, 1);
+  assert.equal((await store.getPersonalToken(token.id))?.status, 'revoked');
+  assert.notEqual((await store.findBrowserSessions(session.prefix))[0]?.id, session.id);
+  const audit = (await store.listAuditEvents()).find((event) => event.eventType === 'identity.membership');
+  assert.ok(audit);
+  assert.equal(audit.actorId, owner.membership.id);
+  assert.equal(audit.subjectId, admin.membership.id);
+  assert.doesNotMatch(audit.metadataJson, /tokenHash|sessionHash|secret|cookie/i);
+});
+
+test('system deactivation denies a sole Owner without violating the last-owner membership invariant', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await claimFirstOwner(store);
+  const result = await store.updateMembershipAuthority({
+    membershipId: owner.membership.id,
+    status: 'suspended',
+    authenticationSurface: 'slack_event',
+    correlationId: 'Ev_OWNER_DEACTIVATED',
+    reasonCode: 'slack_user_deactivated',
+    idempotencyKey: 'slack-user-change:Ev_OWNER_DEACTIVATED',
+  });
+  assert.equal(result.membership.status, 'active');
+  assert.equal((await store.getMembershipAccessOverlay(owner.membership.id))?.accessStatus, 'suspended');
+  await assert.rejects(
+    () => store.updateMembershipAuthority({
+      membershipId: owner.membership.id,
+      status: 'suspended',
+      actorMembershipId: owner.membership.id,
+      authenticationSurface: 'better_auth',
+      correlationId: 'request_owner_self_suspend',
+      reasonCode: 'owner_suspended_member',
+    }),
+    /At least one active Owner/,
+  );
+});
+
+test('identity export contains Slack authority and no credential locators', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  await claimFirstOwner(store);
+  const exported = await store.exportSummary();
+  const serialized = JSON.stringify(exported);
+  assert.match(serialized, /T12345678/);
+  assert.match(serialized, /U12345678/);
+  assert.doesNotMatch(serialized, /@/);
+  assert.doesNotMatch(serialized, new RegExp(CAPABILITY));
+  assert.equal(exported.authOperations[0]?.chickpeaRole, 'owner');
+});
+
+test('credential realm metadata stays immutable across promotion and tombstone recovery', async () => {
+  let now = NOW;
+  const store = new SqliteIdentityStore(':memory:', { now: () => now });
+  try {
+    const control = await store.ensureSlackCredentialControl({ currentKeyId: 'key_v1' });
+    const app = await store.stageSlackCredentialRevision(credentialRevisionInput({
+      revision: 'revision_app',
+      expectedRotationEpoch: control.rotationEpoch,
+      expectedActiveRevision: null,
+      purpose: 'app_credentials',
+      teamId: null,
+    }));
+    await store.promoteSlackCredentialRevision({
+      identityId: app.identityId,
+      candidateRevision: app.revision,
+      expectedActiveRevision: null,
+      expectedRotationEpoch: control.rotationEpoch,
+    });
+    now += 1;
+    const connected = await store.stageSlackCredentialRevision(credentialRevisionInput({
+      revision: 'revision_connected',
+      expectedRotationEpoch: control.rotationEpoch,
+      expectedActiveRevision: app.revision,
+      purpose: 'connected_credentials',
+      teamId: 'TACME',
+      botUserId: 'UBOT',
+    }));
+    await store.promoteSlackCredentialRevision({
+      identityId: connected.identityId,
+      candidateRevision: connected.revision,
+      expectedActiveRevision: app.revision,
+      expectedRotationEpoch: control.rotationEpoch,
+    });
+    await assert.rejects(
+      () => store.stageSlackCredentialRevision(credentialRevisionInput({
+        revision: 'revision_wrong_app',
+        expectedRotationEpoch: control.rotationEpoch,
+        expectedActiveRevision: connected.revision,
+        purpose: 'connected_credentials',
+        appId: 'AOTHER',
+        teamId: 'TACME',
+      })),
+      /app identity is immutable/,
+    );
+    await assert.rejects(
+      () => store.stageSlackCredentialRevision(credentialRevisionInput({
+        revision: 'revision_wrong_manifest',
+        expectedRotationEpoch: control.rotationEpoch,
+        expectedActiveRevision: connected.revision,
+        purpose: 'connected_credentials',
+        teamId: 'TACME',
+        manifestFingerprint: 'manifest-v2',
+      })),
+      /manifest is immutable/,
+    );
+    const lateCandidate = await store.stageSlackCredentialRevision(credentialRevisionInput({
+      revision: 'revision_late_callback',
+      expectedRotationEpoch: control.rotationEpoch,
+      expectedActiveRevision: connected.revision,
+      purpose: 'connected_credentials',
+      teamId: 'TACME',
+    }));
+    await store.tombstoneSlackCredentialRevision({
+      identityId: connected.identityId,
+      revision: connected.revision,
+      expectedRotationEpoch: control.rotationEpoch,
+    });
+    await assert.rejects(
+      () => store.promoteSlackCredentialRevision({
+        identityId: lateCandidate.identityId,
+        candidateRevision: lateCandidate.revision,
+        expectedActiveRevision: null,
+        expectedRotationEpoch: control.rotationEpoch,
+      }),
+      /candidate is not promotable/,
+    );
+    await store.tombstoneSlackCredentialRevision({
+      identityId: lateCandidate.identityId,
+      revision: lateCandidate.revision,
+      expectedRotationEpoch: control.rotationEpoch,
+    });
+    await assert.rejects(
+      () => store.stageSlackCredentialRevision(credentialRevisionInput({
+        revision: 'revision_wrong_team_after_tombstone',
+        expectedRotationEpoch: control.rotationEpoch,
+        expectedActiveRevision: null,
+        purpose: 'connected_credentials',
+        teamId: 'TOTHER',
+      })),
+      /workspace identity is immutable/,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('retention scrubs inactive ciphertext while preserving active bindings and body-free audit facts', async () => {
+  let now = NOW;
+  const store = new SqliteIdentityStore(':memory:', { now: () => now });
+  try {
+    const control = await store.ensureSlackCredentialControl({ currentKeyId: 'key_v1' });
+    const active = await store.stageSlackCredentialRevision(credentialRevisionInput({
+      revision: 'revision_active',
+      expectedRotationEpoch: control.rotationEpoch,
+      expectedActiveRevision: null,
+      purpose: 'connected_credentials',
+      teamId: 'TACME',
+    }));
+    await store.promoteSlackCredentialRevision({
+      identityId: active.identityId,
+      candidateRevision: active.revision,
+      expectedActiveRevision: null,
+      expectedRotationEpoch: control.rotationEpoch,
+    });
+    const candidate = await store.stageSlackCredentialRevision(credentialRevisionInput({
+      revision: 'revision_inactive',
+      expectedRotationEpoch: control.rotationEpoch,
+      expectedActiveRevision: active.revision,
+      purpose: 'connected_credentials',
+      teamId: 'TACME',
+    }));
+    await store.recordAuthAudit({
+      event: 'authorization', outcome: 'success', action: 'credential.candidate_staged',
+      correlationId: 'retention_fact_1', authenticatorKind: 'deployment_token',
+    });
+    now += 60_000;
+    const swept = await store.sweepSlackIdentityRetention(now, 30_000);
+    assert.equal(swept.scrubbedCredentialCandidates, 1);
+    assert.equal((await store.getActiveSlackCredentialRevision(active.identityId))?.revision, active.revision);
+    const scrubbed = await store.getSlackCredentialRevision(candidate.identityId, candidate.revision);
+    assert.equal(scrubbed?.status, 'tombstoned');
+    assert.equal(scrubbed?.envelope, null);
+    assert.equal((await store.listAuditEvents()).length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test('pending Slack invitations expire durably and the same tuple then requires a fresh locator', async () => {
+  let now = NOW;
+  const store = new SqliteIdentityStore(':memory:', { now: () => now });
+  try {
+    const owner = await claimFirstOwner(store);
+    const first = await store.createInvitation({
+      organizationId: owner.membership.organizationId,
+      slackTeamId: TEAM,
+      slackUserId: 'UINVITED1',
+      displayName: 'Invited',
+      role: 'admin',
+      locatorHash: 'b'.repeat(64),
+      inviterMembershipId: owner.membership.id,
+      expiresAt: NOW + 60_000,
+    });
+    assert.equal((await store.findInvitation('b'.repeat(64)))?.id, first.id);
+    now = NOW + 60_001;
+    assert.equal(await store.findInvitation('b'.repeat(64)), undefined);
+    assert.equal((await store.listInvitations()).find((row) => row.id === first.id)?.status, 'expired');
+    const replacement = await store.createInvitation({
+      organizationId: owner.membership.organizationId,
+      slackTeamId: TEAM,
+      slackUserId: 'UINVITED1',
+      displayName: 'Invited',
+      role: 'admin',
+      locatorHash: 'c'.repeat(64),
+      inviterMembershipId: owner.membership.id,
+      expiresAt: now + 60_000,
+    });
+    assert.notEqual(replacement.id, first.id);
+    assert.equal((await store.findInvitation('c'.repeat(64)))?.id, replacement.id);
+  } finally {
+    store.close();
+  }
+});
+
+function credentialRevisionInput(overrides: {
+  revision: string;
+  expectedRotationEpoch: number;
+  expectedActiveRevision: string | null;
+  purpose: 'app_credentials' | 'connected_credentials';
+  appId?: string;
+  teamId: string | null;
+  botUserId?: string;
+  manifestFingerprint?: string;
+}) {
   return {
-    organizationId: 'org_oss',
-    provider: 'cloudflare_access',
-    issuer: 'https://example.cloudflareaccess.com',
-    subject: 'owner-subject',
-    verifiedEmail: 'Owner@Example.com',
-    displayName: 'Owner',
-    at: NOW,
-  } as const;
+    identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    identityClass: 'workspace_default' as const,
+    purpose: overrides.purpose,
+    revision: overrides.revision,
+    expectedRotationEpoch: overrides.expectedRotationEpoch,
+    expectedActiveRevision: overrides.expectedActiveRevision,
+    appId: overrides.appId ?? 'AAPP',
+    teamId: overrides.teamId,
+    botUserId: overrides.purpose === 'connected_credentials'
+      ? overrides.botUserId ?? 'UBOT'
+      : null,
+    grantedScopes: overrides.purpose === 'connected_credentials' ? ['chat:write'] : [],
+    validatedAt: overrides.purpose === 'connected_credentials' ? NOW : null,
+    manifestFingerprint: overrides.manifestFingerprint ?? 'manifest-v1',
+    envelope: {
+      version: 1 as const,
+      algorithm: 'AES-GCM-256' as const,
+      keyId: 'key_v1',
+      nonce: 'AAAAAAAAAAAAAAAA',
+      ciphertext: 'A'.repeat(22),
+    },
+  };
 }
 
-test('identity initialization is explicit and idempotent without creating an owner', async () => {
-  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  assert.equal(await store.getOrganization(), undefined);
-
-  const first = await store.ensureOrganization({ displayName: 'Chickpea' });
-  const second = await store.ensureOrganization({ displayName: 'Ignored later name' });
-  assert.deepEqual(second, first);
-  assert.equal((await store.listMemberships()).length, 0);
-  assert.equal(await store.getOwnerClaim(), undefined);
-  store.close();
-});
-
-test('Slack actor bindings are explicit opaque triples and revisions invalidate rebinds', async () => {
-  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const first = await store.bindActorExternalIdentity({
-    provider: 'slack', issuer: 'T_ACME', subject: 'U_OWNER',
-    userId: 'better_auth_user_1', organizationId: 'better_auth_org_1',
-    membershipId: 'better_auth_membership_1',
+async function claimFirstOwner(store: SqliteIdentityStore) {
+  const operation = await store.createAuthOperation({
+    id: 'first_owner',
+    kind: 'first_owner_claim',
+    expectedSlackTeamId: TEAM,
+    expectedSlackUserId: OWNER,
+    chickpeaRole: 'owner',
+    capabilityHash: CAPABILITY,
+    expiresAt: NOW + 60_000,
   });
-  assert.equal(first.revision, 1);
-  assert.equal((await store.resolveActorExternalIdentity('slack', 'T_ACME', 'U_OWNER'))?.userId, 'better_auth_user_1');
-  assert.equal(await store.resolveActorExternalIdentity('slack', 'T_OTHER', 'U_OWNER'), undefined);
-  const replay = await store.bindActorExternalIdentity({
-    provider: 'slack', issuer: 'T_ACME', subject: 'U_OWNER',
-    userId: 'better_auth_user_1', organizationId: 'better_auth_org_1',
-    membershipId: 'better_auth_membership_1',
-  });
-  assert.equal(replay.revision, 1);
-  const rebound = await store.bindActorExternalIdentity({
-    provider: 'slack', issuer: 'T_ACME', subject: 'U_OWNER',
-    userId: 'better_auth_user_2', organizationId: 'better_auth_org_1',
-    membershipId: 'better_auth_membership_2',
-  });
-  assert.equal(rebound.revision, 2);
-  assert.equal(rebound.userId, 'better_auth_user_2');
-  store.close();
-});
-
-test('Slack actor binding handoffs are one-shot and expire', async () => {
-  let now = NOW;
-  const store = new SqliteIdentityStore(':memory:', { now: () => now });
-  await store.createActorIdentityBindingHandoff({
-    handoffId: 'handoff_1', tokenHash: 'handoff_hash', issuer: 'T_ACME', subject: 'U_OWNER',
-    slackIdentityId: 'slack_identity_default', slackIdentityRevision: 4,
-    expiresAt: NOW + 1_000, consumedAt: null,
-  });
-  assert.equal((await store.getActorIdentityBindingHandoff('handoff_hash'))?.subject, 'U_OWNER');
-  assert.equal((await store.consumeActorIdentityBindingHandoff('handoff_hash', now))?.consumedAt, now);
-  assert.equal(await store.consumeActorIdentityBindingHandoff('handoff_hash', now), undefined);
-  now += 2_000;
-  assert.equal(await store.getActorIdentityBindingHandoff('handoff_hash'), undefined);
-  store.close();
-});
-
-test('matching owner claim creates one immutable binding and owner membership', async () => {
-  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const organization = await store.ensureOrganization({ displayName: 'Chickpea' });
   await store.createOwnerClaim({
-    organizationId: organization.id,
-    email: 'owner@example.com',
+    operationId: operation.id,
+    slackTeamId: TEAM,
+    slackUserId: OWNER,
   });
-
-  const first = await store.claimOwner({ ...ownerInput(), organizationId: organization.id });
-  const replay = await store.claimOwner({ ...ownerInput(), organizationId: organization.id });
-
-  assert.deepEqual(replay, first);
-  assert.equal(first.user.primaryEmail, 'owner@example.com');
-  assert.equal(first.membership.role, 'owner');
-  assert.equal(first.membership.status, 'active');
-  assert.equal((await store.listMemberships()).length, 1);
-  assert.equal((await store.listExternalIdentities()).length, 1);
-
-  await assert.rejects(
-    () => store.claimOwner({ ...ownerInput(), organizationId: organization.id, subject: 'other' }),
-    (error: unknown) =>
-      error instanceof IdentityStateError && error.code === 'owner_already_claimed',
-  );
-  store.close();
-});
-
-test('last active owner cannot be demoted, suspended, or removed', async () => {
-  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const organization = await store.ensureOrganization({ displayName: 'Chickpea' });
-  await store.createOwnerClaim({ organizationId: organization.id, email: 'owner@example.com' });
-  const claimed = await store.claimOwner({ ...ownerInput(), organizationId: organization.id });
-
-  for (const change of [
-    { role: 'admin' as const },
-    { status: 'suspended' as const },
-    { status: 'removed' as const },
-  ]) {
-    await assert.rejects(
-      () => store.updateMembership({ membershipId: claimed.membership.id, ...change }),
-      (error: unknown) =>
-        error instanceof IdentityStateError && error.code === 'last_owner_required',
-    );
-  }
-  store.close();
-});
-
-test('invitation consumption is exact-email, single-use, revocable, and secret-safe', async () => {
-  let now = NOW;
-  const store = new SqliteIdentityStore(':memory:', { now: () => now });
-  const organization = await store.ensureOrganization({ displayName: 'Chickpea' });
-  await store.createOwnerClaim({ organizationId: organization.id, email: 'owner@example.com' });
-  const owner = await store.claimOwner({ ...ownerInput(), organizationId: organization.id });
-  const invitation = await store.createInvitation({
-    organizationId: organization.id,
-    email: 'member@example.com',
-    role: 'member',
-    tokenHash: 'hash-one',
-    inviterMembershipId: owner.membership.id,
-    expiresAt: NOW + 1_000,
-  });
-
-  await assert.rejects(
-    () => store.consumeInvitation({
-      invitationId: invitation.id,
-      tokenHash: 'hash-one',
-      provider: 'cloudflare_access',
-      issuer: 'https://example.cloudflareaccess.com',
-      subject: 'member-subject',
-      verifiedEmail: 'wrong@example.com',
-      at: now,
-    }),
-    (error: unknown) =>
-      error instanceof IdentityStateError && error.code === 'invitation_email_mismatch',
-  );
-
-  const accepted = await store.consumeInvitation({
-    invitationId: invitation.id,
-    tokenHash: 'hash-one',
-    provider: 'cloudflare_access',
-    issuer: 'https://example.cloudflareaccess.com',
-    subject: 'member-subject',
-    verifiedEmail: 'member@example.com',
-    at: now,
-  });
-  assert.equal(accepted.membership.role, 'member');
-  await assert.rejects(
-    () => store.consumeInvitation({
-      invitationId: invitation.id,
-      tokenHash: 'hash-one',
-      provider: 'cloudflare_access',
-      issuer: 'https://example.cloudflareaccess.com',
-      subject: 'second-subject',
-      verifiedEmail: 'member@example.com',
-      at: now,
-    }),
-    (error: unknown) =>
-      error instanceof IdentityStateError && error.code === 'invitation_not_pending',
-  );
-
-  const expiring = await store.createInvitation({
-    organizationId: organization.id,
-    email: 'late@example.com',
-    role: 'admin',
-    tokenHash: 'hash-old',
-    inviterMembershipId: owner.membership.id,
-    expiresAt: NOW + 2_000,
-  });
-  const rotated = await store.resendInvitation({
-    invitationId: expiring.id,
-    tokenHash: 'hash-new',
-    expiresAt: NOW + 4_000,
-  });
-  assert.equal(rotated.tokenHash, 'hash-new');
-  now = NOW + 5_000;
-  await assert.rejects(
-    () => store.consumeInvitation({
-      invitationId: expiring.id,
-      tokenHash: 'hash-new',
-      provider: 'cloudflare_access',
-      issuer: 'https://example.cloudflareaccess.com',
-      subject: 'late-subject',
-      verifiedEmail: 'late@example.com',
-      at: now,
-    }),
-    (error: unknown) =>
-      error instanceof IdentityStateError && error.code === 'invitation_expired',
-  );
-
-  const revoked = await store.createInvitation({
-    organizationId: organization.id,
-    email: 'revoked@example.com',
-    role: 'member',
-    tokenHash: 'hash-revoked',
-    inviterMembershipId: owner.membership.id,
-    expiresAt: NOW + 10_000,
-  });
-  await store.revokeInvitation(revoked.id);
-  const exported = await store.exportSummary();
-  assert.equal(JSON.stringify(exported).includes('hash-'), false);
-  assert.equal(JSON.stringify(exported).includes('tokenHash'), false);
-  store.close();
-});
-
-test('the same external binding cannot be reassigned through another invitation', async () => {
-  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const organization = await store.ensureOrganization({ displayName: 'Chickpea' });
-  await store.createOwnerClaim({ organizationId: organization.id, email: 'owner@example.com' });
-  const owner = await store.claimOwner({ ...ownerInput(), organizationId: organization.id });
-  const invite = await store.createInvitation({
-    organizationId: organization.id,
-    email: 'alias@example.com',
-    role: 'member',
-    tokenHash: 'alias-hash',
-    inviterMembershipId: owner.membership.id,
-    expiresAt: NOW + 10_000,
-  });
-  await assert.rejects(
-    () => store.consumeInvitation({
-      invitationId: invite.id,
-      tokenHash: 'alias-hash',
-      provider: owner.binding.provider,
-      issuer: owner.binding.issuer,
-      subject: owner.binding.subject,
-      verifiedEmail: 'alias@example.com',
-      at: NOW,
-    }),
-    (error: unknown) =>
-      error instanceof IdentityStateError && error.code === 'external_identity_conflict',
-  );
-  store.close();
-});
-
-test('Chickpea auth control uses optimistic revisions without creating legacy identity', async () => {
-  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const initial = await store.ensureAuthControl();
-  assert.equal(initial.authMode, 'unconfigured');
-  assert.equal(initial.revision, 1);
-  assert.equal(await store.getOrganization(), undefined);
-
-  const pinned = await store.updateAuthControl({
-    expectedRevision: 1,
-    authMode: 'password_active',
-    canonicalAdminOrigin: 'https://chickpea.example.com',
-    betterAuthOrganizationId: 'ba-org/opaque',
-  });
-  assert.equal(pinned.revision, 2);
-  assert.equal(pinned.betterAuthOrganizationId, 'ba-org/opaque');
-
-  await assert.rejects(
-    () => store.updateAuthControl({ expectedRevision: 1, authMode: 'invalid' }),
-    (error: unknown) =>
-      error instanceof IdentityStateError && error.code === 'auth_control_conflict',
-  );
-  store.close();
-});
-
-test('resumable auth operations advance monotonically and keep opaque Better Auth IDs immutable', async () => {
-  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const capabilityHash = 'a'.repeat(64);
-  const created = await store.createAuthOperation({
-    id: 'operation_setup_1',
-    kind: 'owner_setup',
-    expectedEmail: 'Owner@Example.com',
-    capabilityHash,
-    expiresAt: NOW + 60_000,
-  });
-  assert.equal(created.expectedNormalizedEmail, 'owner@example.com');
-  assert.equal(created.step, 0);
-
-  const userCreated = await store.advanceAuthOperation({
-    operationId: created.id,
-    capabilityHash,
+  await store.advanceAuthOperation({
+    operationId: operation.id,
+    capabilityHash: CAPABILITY,
     step: 1,
-    betterAuthUserId: 'ba-user/opaque',
+    betterAuthUserId: 'ba_user_owner',
+    betterAuthOrganizationId: 'ba_org_acme',
+    betterAuthMembershipId: 'ba_member_owner',
   });
-  assert.equal(userCreated.step, 1);
-  assert.equal(userCreated.betterAuthUserId, 'ba-user/opaque');
-  assert.equal(
-    (await store.advanceAuthOperation({
-      operationId: created.id,
-      capabilityHash,
-      step: 1,
-      betterAuthUserId: 'ba-user/opaque',
-    })).step,
-    1,
-  );
-  await assert.rejects(
-    () => store.advanceAuthOperation({
-      operationId: created.id,
-      capabilityHash,
-      step: 3,
-    }),
-    (error: unknown) =>
-      error instanceof IdentityStateError && error.code === 'auth_operation_step_invalid',
-  );
-  await assert.rejects(
-    () => store.advanceAuthOperation({
-      operationId: created.id,
-      capabilityHash,
-      step: 2,
-      betterAuthUserId: 'different-user',
-    }),
-    (error: unknown) =>
-      error instanceof IdentityStateError && error.code === 'auth_operation_conflict',
-  );
-
-  const membershipCreated = await store.advanceAuthOperation({
-    operationId: created.id,
-    capabilityHash,
-    step: 2,
-    betterAuthOrganizationId: 'ba-org/opaque',
-    betterAuthMembershipId: 'ba-member/opaque',
+  return store.claimOwner({
+    operationId: operation.id,
+    organizationId: 'org_oss',
+    slackTeamId: TEAM,
+    slackUserId: OWNER,
+    displayName: 'Same display name',
+    betterAuthUserId: 'ba_user_owner',
+    betterAuthMembershipId: 'ba_member_owner',
   });
-  assert.equal(membershipCreated.step, 2);
-  assert.equal(
-    (await store.consumeAuthOperation({
-      operationId: created.id,
-      capabilityHash,
-      expectedStep: 2,
-    })).status,
-    'consumed',
-  );
-  await assert.rejects(
-    () => store.consumeAuthOperation({
-      operationId: created.id,
-      capabilityHash,
-      expectedStep: 2,
-    }),
-    (error: unknown) =>
-      error instanceof IdentityStateError && error.code === 'auth_operation_unavailable',
-  );
-
-  const exported = JSON.stringify(await store.exportSummary());
-  assert.equal(exported.includes(capabilityHash), false);
-  assert.equal(exported.includes('owner@example.com'), false);
-  store.close();
-});
-
-test('auth operation listings and membership access overlays stay in Chickpea control state', async () => {
-  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  try {
-    const first = await store.createAuthOperation({
-      kind: 'invitation_enrollment',
-      organizationId: 'better-auth-org',
-      expectedEmail: 'invitee@example.com',
-      capabilityHash: digest('operation-capability-one'),
-      expiresAt: NOW + 10_000,
-    });
-    await store.createAuthOperation({
-      kind: 'administrative_reset',
-      organizationId: 'better-auth-org',
-      expectedEmail: 'invitee@example.com',
-      capabilityHash: digest('operation-capability-two'),
-      expiresAt: NOW + 10_000,
-    });
-    assert.deepEqual(
-      (await store.listAuthOperations('invitation_enrollment', 'better-auth-org')).map((row) => row.id),
-      [first.id],
-    );
-    const suspended = await store.setMembershipAccessOverlay({
-      membershipId: 'better-auth-member',
-      organizationId: 'better-auth-org',
-      accessStatus: 'suspended',
-      expectedVersion: 0,
-    });
-    assert.equal(suspended.membershipVersion, 1);
-    assert.equal((await store.getMembershipAccessOverlay('better-auth-member'))?.accessStatus, 'suspended');
-    await assert.rejects(() => store.setMembershipAccessOverlay({
-      membershipId: 'better-auth-member',
-      organizationId: 'better-auth-org',
-      accessStatus: 'active',
-      expectedVersion: 0,
-    }));
-  } finally {
-    store.close();
-  }
-});
-
-test('pending auth-operation reservations reuse one operation per organization, kind, and email', async () => {
-  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  try {
-    const input = {
-      id: 'operation_invite_one',
-      kind: 'invitation_enrollment' as const,
-      organizationId: 'better-auth-org',
-      expectedEmail: 'Invitee@Example.com',
-      capabilityHash: digest('stable-invitation-capability-one'),
-      expiresAt: NOW + 10_000,
-    };
-    const first = await store.reservePendingAuthOperation(input);
-    const replay = await store.reservePendingAuthOperation({
-      ...input,
-      id: 'operation_invite_two',
-      expectedEmail: 'invitee@example.com',
-      capabilityHash: digest('stable-invitation-capability-two'),
-    });
-
-    assert.equal(first.created, true);
-    assert.equal(replay.created, false);
-    assert.equal(replay.operation.id, first.operation.id);
-    assert.equal((await store.listAuthOperations('invitation_enrollment', 'better-auth-org')).length, 1);
-  } finally {
-    store.close();
-  }
-});
-
-test('personal tokens accept explicit opaque directory IDs without cross-store rows', async () => {
-  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const token = await store.createPersonalToken({
-    organizationId: 'ba-org/opaque',
-    userId: 'ba-user/opaque',
-    membershipId: 'ba-member/opaque',
-    tokenHash: 'b'.repeat(64),
-    prefix: 'opaque12',
-    label: 'Automation',
-  });
-  assert.equal(token.organizationId, 'ba-org/opaque');
-  assert.equal(token.membershipId, 'ba-member/opaque');
-
-  const session = await store.createBrowserSession({
-    organizationId: token.organizationId,
-    userId: token.userId,
-    membershipId: token.membershipId,
-    personalTokenId: token.id,
-    sessionHash: 'c'.repeat(64),
-    prefix: 'session12',
-    expiresAt: NOW + 60_000,
-  });
-  assert.equal(session.organizationId, 'ba-org/opaque');
-  assert.equal(session.membershipId, 'ba-member/opaque');
-  store.close();
-});
+}

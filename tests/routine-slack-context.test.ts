@@ -31,11 +31,11 @@ test('mentioned-channel controls require current bot and actor membership', asyn
   const priorFetch = globalThis.fetch;
   process.env.SLACK_BOT_TOKEN = 'xoxb-test';
   process.env.SLACK_API_URL = 'https://slack.invalid/api/';
-  let members = ['U_MEMBER', 'U_BOT'];
+  let members = ['U_MEMBER', 'UBOT'];
   globalThis.fetch = async (request) => {
     const path = new URL(String(request)).pathname;
     const body = path.endsWith('/auth.test')
-      ? { ok: true, team_id: 'T_TEST', user_id: 'U_BOT' }
+      ? { ok: true, team_id: 'T_TEST', user_id: 'UBOT' }
       : path.endsWith('/conversations.info')
         ? {
             ok: true,
@@ -55,12 +55,12 @@ test('mentioned-channel controls require current bot and actor membership', asyn
   };
   try {
     assert.equal(
-      await canManageRoutineChannel('T_TEST', 'C_OTHER', 'U_MEMBER', undefined),
+      await canManageRoutineChannel('T_TEST', 'C_OTHER', 'U_MEMBER', undefined, 'xoxb-test'),
       true,
     );
-    members = ['U_BOT'];
+    members = ['UBOT'];
     assert.equal(
-      await canManageRoutineChannel('T_TEST', 'C_OTHER', 'U_MEMBER', undefined),
+      await canManageRoutineChannel('T_TEST', 'C_OTHER', 'U_MEMBER', undefined, 'xoxb-test'),
       false,
     );
   } finally {
@@ -83,7 +83,7 @@ test('routine channel authorization uses an explicitly admitted identity token',
     authorizations.push(String(new Headers(init?.headers).get('authorization')));
     const path = new URL(String(request)).pathname;
     const body = path.endsWith('/auth.test')
-      ? { ok: true, team_id: 'T_TEST', user_id: 'U_BOT' }
+      ? { ok: true, team_id: 'T_TEST', user_id: 'UBOT' }
       : path.endsWith('/conversations.info')
         ? {
             ok: true,
@@ -92,7 +92,7 @@ test('routine channel authorization uses an explicitly admitted identity token',
               is_private: false, is_archived: false, is_frozen: false,
             },
           }
-        : { ok: true, members: ['U_MEMBER', 'U_BOT'], response_metadata: { next_cursor: '' } };
+        : { ok: true, members: ['U_MEMBER', 'UBOT'], response_metadata: { next_cursor: '' } };
     return new Response(JSON.stringify(body));
   };
   try {

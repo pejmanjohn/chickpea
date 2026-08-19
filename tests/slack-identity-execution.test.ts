@@ -23,9 +23,9 @@ function identity(overrides: Partial<SlackIdentity> = {}): SlackIdentity {
     ingressKey: 'finance_ingress_0123456789abcdef',
     kind: 'dedicated',
     lifecycle: 'connected',
-    teamId: 'T_ACME',
-    appId: 'A_FINANCE',
-    botUserId: 'U_FINANCE',
+    teamId: 'TACME',
+    appId: 'AFINANCE',
+    botUserId: 'UFINANCE',
     dmState: 'on',
     dmAgentId: 'agent_finance',
     credentialProvenance: 'stored',
@@ -41,7 +41,7 @@ function identity(overrides: Partial<SlackIdentity> = {}): SlackIdentity {
 
 function turn(): NormalizedSlackTurn {
   return {
-    workspaceId: 'T_ACME',
+    workspaceId: 'TACME',
     channelId: 'C_FINANCE',
     eventId: 'E_FINANCE',
     slackIdentityId: IDENTITY_ID,
@@ -58,12 +58,12 @@ test('real identity preflight binds the app and classifies Slack authorization f
   let authStatus = 200;
   let authBody: Record<string, unknown> = {
     ok: true,
-    app_id: 'A_FINANCE',
-    team_id: 'T_ACME',
+    app_id: 'AFINANCE',
+    team_id: 'TACME',
     team: 'Acme Inc',
     user: 'Finance',
-    user_id: 'U_FINANCE',
-    bot_id: 'B_FINANCE',
+    user_id: 'UFINANCE',
+    bot_id: 'BFINANCE',
   };
   let conversationBody: Record<string, unknown> = {
     ok: true,
@@ -77,7 +77,7 @@ test('real identity preflight binds the app and classifies Slack authorization f
       is_im: false,
       is_mpim: false,
       is_shared: false,
-      context_team_id: 'T_ACME',
+      context_team_id: 'TACME',
     },
   };
   const server = createServer((request, response) => {
@@ -102,7 +102,7 @@ test('real identity preflight binds the app and classifies Slack authorization f
   await writeSlackIdentityCredentials(settings, IDENTITY_ID, null, {
     botToken: 'xoxb-finance',
     signingSecret: 'finance-signing-secret',
-    botUserId: 'U_FINANCE',
+    botUserId: 'UFINANCE',
   });
   const config = { getSlackIdentity: async () => identity() };
 
@@ -111,7 +111,7 @@ test('real identity preflight binds the app and classifies Slack authorization f
       config,
       settings,
     });
-    assert.equal(context.botUserId, 'U_FINANCE');
+    assert.equal(context.botUserId, 'UFINANCE');
     await verifySlackIdentityTurnAccess(context, turn());
 
     // Slack's documented auth.test response omits app_id. The bootstrap-owned
@@ -119,18 +119,18 @@ test('real identity preflight binds the app and classifies Slack authorization f
     // still match; only an explicit conflicting app_id is a repair condition.
     authBody = {
       ok: true,
-      team_id: 'T_ACME',
+      team_id: 'TACME',
       team: 'Acme Inc',
       user: 'Finance',
-      user_id: 'U_FINANCE',
-      bot_id: 'B_FINANCE',
+      user_id: 'UFINANCE',
+      bot_id: 'BFINANCE',
     };
     const documentedAuthContext = await resolveSlackIdentityExecutionContext(
       IDENTITY_ID,
       undefined,
       { config, settings },
     );
-    assert.equal(documentedAuthContext.botUserId, 'U_FINANCE');
+    assert.equal(documentedAuthContext.botUserId, 'UFINANCE');
 
     conversationBody = { ok: false, error: 'not_in_channel' };
     await assert.rejects(
@@ -142,8 +142,8 @@ test('real identity preflight binds the app and classifies Slack authorization f
     authBody = {
       ok: true,
       app_id: 'A_OTHER',
-      team_id: 'T_ACME',
-      user_id: 'U_FINANCE',
+      team_id: 'TACME',
+      user_id: 'UFINANCE',
       bot_id: 'B_OTHER',
     };
     await assert.rejects(
@@ -184,11 +184,11 @@ test('identity presentation refreshes once after its TTL and then stays cached',
     if (request.url === '/auth.test') {
       json(response, 200, {
         ok: true,
-        app_id: 'A_FINANCE',
-        team_id: 'T_ACME',
+        app_id: 'AFINANCE',
+        team_id: 'TACME',
         user: 'finance',
-        user_id: 'U_FINANCE',
-        bot_id: 'B_FINANCE',
+        user_id: 'UFINANCE',
+        bot_id: 'BFINANCE',
       });
       return;
     }
@@ -197,11 +197,11 @@ test('identity presentation refreshes once after its TTL and then stays cached',
       json(response, 200, {
         ok: true,
         user: {
-          id: 'U_FINANCE',
+          id: 'UFINANCE',
           profile: {
             display_name: 'Finance Renamed',
             image_72: 'https://avatars.slack-edge.com/finance-renamed.png',
-            api_app_id: 'A_FINANCE',
+            api_app_id: 'AFINANCE',
           },
         },
       });
@@ -219,7 +219,7 @@ test('identity presentation refreshes once after its TTL and then stays cached',
   await writeSlackIdentityCredentials(settings, IDENTITY_ID, null, {
     botToken: 'xoxb-finance',
     signingSecret: 'finance-signing-secret',
-    botUserId: 'U_FINANCE',
+    botUserId: 'UFINANCE',
   });
 
   const now = 1_800_000_000_000;
@@ -254,7 +254,7 @@ test('identity presentation refreshes once after its TTL and then stays cached',
       now: () => now,
     });
     assert.equal(refreshed.displayName, 'Finance Renamed');
-    assert.equal(refreshed.botUserId, 'U_FINANCE');
+    assert.equal(refreshed.botUserId, 'UFINANCE');
     assert.equal(userInfoCalls, 1);
     assert.equal(updates, 1);
     assert.equal(current.observedDisplayName, 'Finance Renamed');

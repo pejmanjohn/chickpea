@@ -27,6 +27,11 @@ import { SqliteWorkStore } from '../work/store.ts';
 import type { WorkStore } from '../work/types.ts';
 import { SqliteIdentityStore } from '../identity/store.ts';
 import type { IdentityStore } from '../identity/types.ts';
+import { loadCredentialKeyring } from '../slack/credential-keyring.ts';
+import type {
+  SlackCredentialDependencies,
+  SlackCredentialResolutionDependencies,
+} from '../slack/identity-credentials.ts';
 
 export { isCloudflareTarget } from './runtime-target.ts';
 
@@ -114,6 +119,26 @@ export function getIdentityStore(env?: PlatformEnv): IdentityStore {
     (path) => new SqliteIdentityStore(path),
   );
   return cachedIdentityStore.store;
+}
+
+/** Durable encrypted-credential write dependencies for the current target. */
+export function getSlackCredentialDependencies(
+  env?: PlatformEnv,
+): SlackCredentialDependencies {
+  return {
+    state: getIdentityStore(env),
+    keyring: loadCredentialKeyring(env),
+  };
+}
+
+/** Lazy read dependencies so a missing live Worker slot can enter recovery_only. */
+export function getSlackCredentialResolutionDependencies(
+  env?: PlatformEnv,
+): SlackCredentialResolutionDependencies {
+  return {
+    state: getIdentityStore(env),
+    ...(env ? { env } : {}),
+  };
 }
 
 export function getAgentSnapshotStore(env?: PlatformEnv): AgentSnapshotStore {

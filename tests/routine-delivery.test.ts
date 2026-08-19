@@ -30,7 +30,7 @@ const access = {
   } as never,
   accessHash: 'a'.repeat(64),
   botToken: 'xoxb-test',
-  botUserId: 'U_BOT',
+  botUserId: 'UBOT',
   publicUrl: 'https://chickpea.example',
 };
 

@@ -1,7 +1,7 @@
 {
   "token": "verification-token-not-a-secret",
-  "team_id": "T_DEMO",
-  "api_app_id": "A_DEMO",
+  "team_id": "TDEMO",
+  "api_app_id": "ADEMO",
   "event_id": "Ev_APP_CONTEXT_CHANGED_001",
   "event_time": 1782770460,
   "type": "event_callback",
@@ -14,7 +14,7 @@
         {
           "type": "slack#/types/thread_ts",
           "value": "1782770400.000100",
-          "team_id": "T_DEMO"
+          "team_id": "TDEMO"
         }
       ]
     }

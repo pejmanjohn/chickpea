@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Prove the /admin configuration loop without Slack credentials:
+ * Prove the /admin configuration loop without Slack network access:
  *   1. mount the real Hono admin routes against an in-memory SQLite store,
- *   2. exchange the POSTed admin token for a browser session cookie,
+ *   2. establish an exact Slack-bound Owner and authenticate as that principal,
  *   3. create an Agent and addendum-bearing Channel placement through /admin/api,
  *   4. read the server-side effective-config panel data,
  *   5. edit the addendum and prove the panel data changes in the same process,
@@ -17,7 +17,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const ADMIN_TOKEN = 'admin-ui-admin-token';
+const ADMIN_ORIGIN = 'https://admin-ui.example';
 const WORKSPACE_ID = 'T_ADMIN_UI';
 const CHANNEL_ID = 'C_ADMIN_UI';
 const CHANNEL_LABEL = 'eng-releases';
@@ -37,10 +37,11 @@ function record(name, passed, detail) {
 }
 
 async function adminJson(app, path, options = {}) {
-  const response = await app.request(path, {
+  const response = await app.request(path.startsWith('http') ? path : `${ADMIN_ORIGIN}${path}`, {
     ...options,
     headers: {
-      authorization: `Bearer ${ADMIN_TOKEN}`,
+      origin: ADMIN_ORIGIN,
+      'sec-fetch-site': 'same-origin',
       ...(options.headers ?? {}),
     },
   });
@@ -76,6 +77,7 @@ let memory;
 let routines;
 let usage;
 let work;
+let identity;
 try {
   console.log(`node ${assertNodeVersion()}`);
   const { Hono } = await import('hono');
@@ -87,6 +89,7 @@ try {
   const { RoutineService } = await loadTsModule('src/routines/service.ts');
   const { SqliteUsageStore } = await loadTsModule('src/usage/store.ts');
   const { SqliteWorkStore } = await loadTsModule('src/work/store.ts');
+  const { SqliteIdentityStore } = await loadTsModule('src/identity/store.ts');
   const statePath = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-ui-')), 'state.db');
   store = new SqliteConfigStore(statePath, { agents: [], assignments: [] });
   settings = new SqliteSettingsStore(statePath);
@@ -94,6 +97,37 @@ try {
   routines = new SqliteRoutineStore(statePath);
   usage = new SqliteUsageStore(statePath);
   work = new SqliteWorkStore(statePath);
+  identity = new SqliteIdentityStore(statePath);
+  const ownerOperation = await identity.createAuthOperation({
+    id: 'first_owner_admin_ui', kind: 'first_owner_claim',
+    expectedSlackTeamId: 'TADMINUI1', expectedSlackUserId: 'UADMINUI1',
+    chickpeaRole: 'owner', capabilityHash: 'a'.repeat(64),
+    expiresAt: Date.now() + 60_000,
+  });
+  await identity.createOwnerClaim({
+    operationId: ownerOperation.id,
+    slackTeamId: 'TADMINUI1', slackUserId: 'UADMINUI1',
+  });
+  await identity.advanceAuthOperation({
+    operationId: ownerOperation.id, capabilityHash: 'a'.repeat(64), step: 1,
+    betterAuthUserId: 'ba_user_admin_ui',
+    betterAuthOrganizationId: '11111111-1111-4111-8111-111111111111',
+    betterAuthMembershipId: 'ba_member_admin_ui',
+  });
+  const owner = await identity.claimOwner({
+    operationId: ownerOperation.id, organizationId: 'org_oss',
+    slackTeamId: 'TADMINUI1', slackUserId: 'UADMINUI1', displayName: 'Admin UI Owner',
+    betterAuthUserId: 'ba_user_admin_ui', betterAuthMembershipId: 'ba_member_admin_ui',
+  });
+  await identity.updateOrganizationAuth({
+    organizationId: owner.membership.organizationId,
+    authMode: 'slack_active', canonicalAdminOrigin: ADMIN_ORIGIN,
+  });
+  const authControl = await identity.getAuthControl();
+  await identity.updateAuthControl({
+    expectedRevision: authControl.revision,
+    canonicalAdminOrigin: ADMIN_ORIGIN,
+  });
   const usageNow = Date.now();
   await work.admitShadowRun({
     work: {
@@ -256,35 +290,38 @@ try {
       routines,
       usage,
       work,
+      identity,
       usageAdminUi: true,
-      adminToken: ADMIN_TOKEN,
+      authService: {
+        async authenticateRequest() {
+          return {
+            userId: owner.user.id,
+            membershipId: owner.membership.id,
+            organizationId: owner.membership.organizationId,
+            role: 'owner',
+            authenticatorKind: 'better_auth',
+            credentialId: 'better_auth_session_admin_ui',
+            correlationId: 'request_admin_ui_verifier',
+            machine: false,
+          };
+        },
+      },
       knownProviders: new Set(['local-stub']),
     }),
   );
 
-  const loginForm = await app.request('/admin');
-  const loginHtml = await loginForm.text();
-  const login = await app.request('/admin/login', {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ token: ADMIN_TOKEN, returnTo: '/admin' }).toString(),
-  });
-  const sessionCookie = (login.headers.get('set-cookie') ?? '').split(';')[0];
-  const pageResponse = await app.request('/admin', { headers: { cookie: sessionCookie } });
+  const retiredLogin = await app.request(`${ADMIN_ORIGIN}/admin/login`, { method: 'POST' });
+  const pageResponse = await app.request(`${ADMIN_ORIGIN}/admin`);
   const pageHtml = await pageResponse.text();
   record(
-    'POST /admin/login exchanges the body token for the UI session',
-    loginForm.status === 401 &&
-      loginHtml.includes('method="post" action="/admin/login"') &&
-      login.status === 303 &&
-      login.headers.get('location') === '/admin' &&
-      sessionCookie.startsWith('flue_admin=') &&
+    'Slack-bound Owner opens Admin while the retired token login stays absent',
+    retiredLogin.status === 404 &&
       pageResponse.status === 200 &&
       pageResponse.headers.get('cache-control') === 'no-store' &&
       pageHtml.includes('Inherited capabilities') &&
       !pageHtml.includes('Resolved configuration') &&
       pageHtml.includes('data-action="copy-channel-prompt"'),
-    `login=${login.status} page=${pageResponse.status}`,
+    `retiredLogin=${retiredLogin.status} page=${pageResponse.status}`,
   );
 
   record(
@@ -300,17 +337,12 @@ try {
   );
 
   record(
-    'first-run Slack permission completion is accessible and keeps credentials out of markup',
-    pageHtml.includes('slackOnboardingContinuation') &&
-      pageHtml.includes('data-action="slack-permissions-open"') &&
-      pageHtml.includes('data-action="slack-permissions-check"') &&
-      pageHtml.includes('role="status" aria-live="polite"') &&
-      pageHtml.includes('target="_blank" rel="noopener noreferrer" data-action="slack-permissions-open"') &&
-      pageHtml.includes('type="password" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"') &&
-      pageHtml.includes('signingSecretInput.value = state.slackDraft.signingSecret') &&
-      pageHtml.includes('botTokenInput.value = state.slackDraft.botToken') &&
-      !pageHtml.includes('id="onboarding-signing-secret" name="signingSecret" type="password" autocomplete="off" value="') &&
-      !pageHtml.includes('id="onboarding-bot-token" name="botToken" type="password" autocomplete="off" placeholder="xoxb-&hellip;" value="'),
+    'workspace-default Slack setup has no browser credential paste-back surface',
+    pageHtml.includes('Bot tokens are never pasted into Admin') &&
+      !pageHtml.includes('data-action="slack-connect-form"') &&
+      !pageHtml.includes('data-action="slack-update-open"') &&
+      !pageHtml.includes('id="onboarding-signing-secret"') &&
+      !pageHtml.includes('id="onboarding-bot-token"'),
   );
 
   const usageOverview = await adminJson(
@@ -537,6 +569,7 @@ try {
   routines?.close();
   usage?.close();
   work?.close();
+  identity?.close();
 }
 
 const failed = results.filter((result) => !result.passed);

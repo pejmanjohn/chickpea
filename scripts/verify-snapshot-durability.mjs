@@ -12,7 +12,7 @@
  *   6. Follow up in the same thread. The provider request must still carry A,
  *      while the admin effective config reports B for future threads.
  */
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -24,19 +24,24 @@ import {
   loadFake,
   postSignedEvent,
   seedOfflineDemoChannelConfig,
+  seedOfflineSlackAuthority,
   spawnServer,
   stopChild,
   waitForFinals,
   waitForReady,
 } from './lib/offline-harness.mjs';
 
-const ADMIN_TOKEN = 'snapshot-admin-token';
-const EXEC_CHANNEL = 'C_EXEC';
+const WORKSPACE = 'TDEMO123';
+const APP_ID = 'ADEMO123';
+const BOT_USER_ID = 'UBOT1234';
+const ACTOR_USER_ID = 'UALICE01';
+const EXEC_CHANNEL = 'CEXEC123';
 const ROOT_TS = '1782772000.000100';
 const ALPHA = 'SNAPSHOT_SCRIPT_ALPHA: original instructions for this thread.';
 const BETA = 'SNAPSHOT_SCRIPT_BETA: edited instructions for future threads.';
 
 const results = [];
+let personalToken = '';
 
 function log(line) {
   console.log(line);
@@ -50,14 +55,14 @@ function record(name, passed, detail) {
 function mention({ eventId, ts, threadTs, text }) {
   return {
     token: 'verification-token-not-a-secret',
-    team_id: 'T_DEMO',
-    api_app_id: 'A_DEMO',
+    team_id: WORKSPACE,
+    api_app_id: APP_ID,
     event_id: eventId,
     event_time: 1782772000,
     type: 'event_callback',
     event: {
       type: 'app_mention',
-      user: 'U_ALICE',
+      user: ACTOR_USER_ID,
       text,
       ts,
       channel: EXEC_CHANNEL,
@@ -67,17 +72,18 @@ function mention({ eventId, ts, threadTs, text }) {
   };
 }
 
-async function startServer({ serverEntry, fakeUrl, dbPath, stateDbPath, netGuardLog }) {
-  const port = await getFreePort();
+async function startServer({ serverEntry, fakeUrl, dbPath, stateDbPath, keyringPath, netGuardLog, port = undefined }) {
+  const resolvedPort = port ?? await getFreePort();
   const server = spawnServer({
     serverEntry,
-    port,
+    port: resolvedPort,
     fakeUrl,
     netGuardLog,
     env: {
       TAG_DB_PATH: dbPath,
       SLACK_STATE_DB_PATH: stateDbPath,
-      TAG_ADMIN_TOKEN: ADMIN_TOKEN,
+      CHICKPEA_CREDENTIAL_KEYRING_PATH: keyringPath,
+      CHICKPEA_AUTH_SECRET: '9d'.repeat(32),
       SLACK_TAG_MODEL: 'local-stub/snapshot-durability',
     },
   });
@@ -92,7 +98,7 @@ async function startServer({ serverEntry, fakeUrl, dbPath, stateDbPath, netGuard
 
 async function adminRequest(baseUrl, path, init = {}) {
   const headers = new Headers(init.headers);
-  headers.set('authorization', `Bearer ${ADMIN_TOKEN}`);
+  headers.set('authorization', `Bearer ${personalToken}`);
   if (init.body !== undefined && !headers.has('content-type')) {
     headers.set('content-type', 'application/json');
   }
@@ -124,7 +130,7 @@ async function patchInstructions(baseUrl, instructions) {
 async function effectiveConfig(baseUrl) {
   return adminRequest(
     baseUrl,
-    `/admin/api/effective-config?workspaceId=T_DEMO&channelId=${EXEC_CHANNEL}`,
+    `/admin/api/effective-config?workspaceId=${WORKSPACE}&channelId=${EXEC_CHANNEL}`,
   );
 }
 
@@ -146,12 +152,12 @@ function providerBodyText(call) {
 const { FakeSlackBackend } = await loadFake();
 const backend = new FakeSlackBackend({
   slack: {
-    identity: { appId: 'A_DEMO', teamId: 'T_DEMO', botUserId: 'U_BOT' },
-    channels: [{ id: EXEC_CHANNEL, name: 'exec', isMember: true }],
-    channelMembers: { [EXEC_CHANNEL]: ['U_ALICE', 'U_BOT'] },
+    identity: { appId: APP_ID, teamId: WORKSPACE, botUserId: BOT_USER_ID },
+    channels: [{ id: EXEC_CHANNEL, name: 'exec', isMember: true, teamId: WORKSPACE }],
+    channelMembers: { [EXEC_CHANNEL]: [ACTOR_USER_ID, BOT_USER_ID] },
     workspaceUsers: [
-      { id: 'U_ALICE', teamId: 'T_DEMO' },
-      { id: 'U_BOT', teamId: 'T_DEMO', isBot: true, isAppUser: true },
+      { id: ACTOR_USER_ID, teamId: WORKSPACE },
+      { id: BOT_USER_ID, teamId: WORKSPACE, isBot: true, isAppUser: true },
     ],
   },
   provider: { mode: 'ok', replyText: 'snapshot durability ok' },
@@ -160,6 +166,7 @@ const backend = new FakeSlackBackend({
 const dbDir = mkdtempSync(join(tmpdir(), 'flue-snapshot-db-'));
 const dbPath = join(dbDir, 'flue.db');
 const stateDbPath = join(dbDir, 'state.db');
+const keyringPath = join(dbDir, 'credential-keyring.json');
 const netGuardLog = join(mkdtempSync(join(tmpdir(), 'flue-snapshot-guard-')), 'external-hosts.log');
 let firstProviderBody = '';
 let secondProviderBody = '';
@@ -172,9 +179,21 @@ try {
   log(`built node server: ${serverEntry}`);
   log(`node ${assertNodeVersion()}  DB=${dbPath}  STATE=${stateDbPath}`);
   log(`fake backend listening at ${fake.url}`);
-  await seedOfflineDemoChannelConfig(stateDbPath);
+  await seedOfflineDemoChannelConfig(stateDbPath, { workspaceId: WORKSPACE, channelId: EXEC_CHANNEL });
+  const initialPort = await getFreePort();
+  personalToken = await seedOfflineSlackAuthority({
+    stateDbPath,
+    keyringPath,
+    canonicalOrigin: `http://127.0.0.1:${initialPort}`,
+    teamId: WORKSPACE,
+    slackUserId: ACTOR_USER_ID,
+    appId: APP_ID,
+    botUserId: BOT_USER_ID,
+  });
 
-  let server = await startServer({ serverEntry, fakeUrl: fake.url, dbPath, stateDbPath, netGuardLog });
+  let server = await startServer({
+    serverEntry, fakeUrl: fake.url, dbPath, stateDbPath, keyringPath, netGuardLog, port: initialPort,
+  });
   const patchA = await patchInstructions(server.baseUrl, ALPHA);
   record('admin patch writes initial instructions', patchA.status === 200, `status=${patchA.status}`);
 
@@ -183,7 +202,7 @@ try {
     mention({
       eventId: 'Ev_SNAPSHOT_DUR_T1',
       ts: ROOT_TS,
-      text: '<@U_BOT> start this snapshot durability thread',
+      text: `<@${BOT_USER_ID}> start this snapshot durability thread`,
     }),
   );
   await waitForFinals(backend, 1, 15_000);
@@ -210,7 +229,7 @@ try {
   log('server SIGKILLed after writing the snapshot and editing config');
 
   backend.reset();
-  server = await startServer({ serverEntry, fakeUrl: fake.url, dbPath, stateDbPath, netGuardLog });
+  server = await startServer({ serverEntry, fakeUrl: fake.url, dbPath, stateDbPath, keyringPath, netGuardLog });
   effectiveAfterRestart = await effectiveConfig(server.baseUrl);
   await postSignedEvent(
     server.eventsUrl,
@@ -218,7 +237,7 @@ try {
       eventId: 'Ev_SNAPSHOT_DUR_T2',
       ts: '1782772001.000100',
       threadTs: ROOT_TS,
-      text: '<@U_BOT> continue after restart',
+      text: `<@${BOT_USER_ID}> continue after restart`,
     }),
   );
   await waitForFinals(backend, 1, 15_000);
@@ -247,6 +266,7 @@ try {
   record('snapshot durability harness', false, error instanceof Error ? error.stack : String(error));
 } finally {
   await backend.close();
+  rmSync(dbDir, { recursive: true, force: true });
 }
 
 const failed = results.filter((result) => !result.passed);

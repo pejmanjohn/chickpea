@@ -25,7 +25,7 @@ for (let index = 2; index < process.argv.length; index += 1) {
 
 if (args.has('--help')) {
   console.log('Usage: npm run verify:openai-subscription:live -- --live --target <node|cloudflare> --base-url <url>');
-  console.log('Requires TAG_ADMIN_TOKEN. This validates authorization only; it does not send model traffic or disconnect the account.');
+  console.log('Requires CHICKPEA_PERSONAL_TOKEN. This validates authorization only; it does not send model traffic or disconnect the account.');
   process.exit(0);
 }
 
@@ -44,11 +44,11 @@ else assert.ok(
     (baseUrl.protocol === 'http:' && isLoopbackHostname(baseUrl.hostname)),
   'Node target must use HTTPS unless it is an explicit loopback host',
 );
-const adminToken = process.env.TAG_ADMIN_TOKEN;
-assert.ok(adminToken, 'TAG_ADMIN_TOKEN is required and is never printed');
+const personalToken = process.env.CHICKPEA_PERSONAL_TOKEN;
+assert.ok(personalToken, 'CHICKPEA_PERSONAL_TOKEN is required and is never printed');
 
 const headers = {
-  authorization: `Bearer ${adminToken}`,
+  authorization: `Bearer ${personalToken}`,
   'content-type': 'application/json',
 };
 const endpoint = (path) => new URL(path, baseUrl).href;

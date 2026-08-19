@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "evidence": "redacted-real-slack-export",
+  "observedAt": "2026-08-15",
+  "redactions": {
+    "callbackOrigin": "https://u11.example",
+    "containsSecrets": false,
+    "containsSlackIdentifiers": false
+  },
+  "manifest": {
+    "display_information": {
+      "name": "Chickpea U11 Compatibility",
+      "description": "Disposable Slack OAuth and OIDC compatibility proof",
+      "background_color": "#fffdf6"
+    },
+    "features": {
+      "app_home": {
+        "home_tab_enabled": false,
+        "messages_tab_enabled": true,
+        "messages_tab_read_only_enabled": false
+      },
+      "bot_user": {
+        "display_name": "Chickpea U11 Compatibility",
+        "always_online": false
+      },
+      "agent_view": {
+        "agent_description": "Disposable Slack OAuth and OIDC compatibility proof",
+        "suggested_prompts": [
+          {
+            "title": "Verify the installation",
+            "message": "Confirm this disposable Slack compatibility app is reachable."
+          }
+        ]
+      }
+    },
+    "oauth_config": {
+      "redirect_urls": [
+        "https://u11.example/callback/bot",
+        "https://u11.example/callback/oidc"
+      ],
+      "scopes": {
+        "user": [
+          "openid",
+          "profile"
+        ],
+        "bot": [
+          "app_mentions:read",
+          "assistant:write",
+          "channels:history",
+          "channels:join",
+          "channels:read",
+          "chat:write",
+          "files:write",
+          "groups:history",
+          "groups:read",
+          "im:history",
+          "mpim:read",
+          "reactions:read",
+          "reactions:write",
+          "users:read"
+        ]
+      }
+    },
+    "settings": {
+      "event_subscriptions": {
+        "request_url": "https://u11.example/events",
+        "bot_events": [
+          "app_context_changed",
+          "app_home_opened",
+          "app_mention",
+          "member_joined_channel",
+          "message.channels",
+          "message.groups",
+          "message.im",
+          "reaction_added",
+          "user_change"
+        ]
+      },
+      "org_deploy_enabled": false,
+      "socket_mode_enabled": false,
+      "token_rotation_enabled": false,
+      "is_mcp_enabled": false
+    }
+  },
+  "slackNormalization": {
+    "autoAddedBotScopes": [
+      "mpim:read"
+    ],
+    "disposablePkceExportValue": true,
+    "pkceExcludedFromCanonicalManifest": true
+  }
+}

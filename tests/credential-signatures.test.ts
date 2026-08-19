@@ -38,6 +38,10 @@ const SAMPLES: readonly { input: string; redacted: string }[] = [
     redacted: '[credential redacted]',
   },
   {
+    input: 'CHICKPEA_CREDENTIAL_KEY_2026_08=supersecretvalue',
+    redacted: '[credential redacted]',
+  },
+  {
     input: 'AWS_ACCESS_KEY_ID="abcdefgh12345"',
     redacted: '[credential redacted]"',
   },
@@ -55,6 +59,7 @@ test('credential markers stay the exact projection the streaming path relies on'
     '-----BEGIN ',
     'CHICKPEA_AUTH_SECRET',
     'CHICKPEA_RECOVERY_TOKEN',
+    'CHICKPEA_CREDENTIAL_KEY_',
     'TAG_ADMIN_TOKEN',
     'ADMIN_TOKEN',
     'SLACK_BOT_TOKEN',

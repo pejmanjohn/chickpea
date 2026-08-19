@@ -2,7 +2,6 @@ export type IdentityErrorCode =
   | 'organization_missing'
   | 'owner_claim_conflict'
   | 'owner_claim_missing'
-  | 'owner_email_mismatch'
   | 'owner_already_claimed'
   | 'external_identity_conflict'
   | 'membership_missing'
@@ -12,7 +11,7 @@ export type IdentityErrorCode =
   | 'invitation_missing'
   | 'invitation_not_pending'
   | 'invitation_expired'
-  | 'invitation_email_mismatch'
+  | 'invitation_identity_mismatch'
   | 'invitation_token_invalid'
   | 'personal_token_missing'
   | 'browser_session_missing'
@@ -23,6 +22,10 @@ export type IdentityErrorCode =
   | 'auth_operation_unavailable'
   | 'auth_operation_expired'
   | 'auth_operation_step_invalid'
+  | 'credential_control_missing'
+  | 'credential_rotation_conflict'
+  | 'credential_revision_missing'
+  | 'credential_revision_conflict'
   | 'identity_invalid';
 
 export class IdentityStateError extends Error {

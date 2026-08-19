@@ -41,7 +41,7 @@ import { validateMemoryContent } from '../memory/validation.ts';
 
 interface MemoryAdminApiOptions {
   store: (c: Context) => MemoryStateStore;
-  adminSecret: () => string;
+  adminSecret: (c: Context) => Promise<string> | string;
   now?: () => number;
   id?: () => string;
 }
@@ -493,7 +493,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
         storeId: store.storeId,
         archiveSha256: preview.archiveSha256,
         schemaVersion: 1,
-      }, options.adminSecret(), now());
+      }, await options.adminSecret(c), now());
       return c.json({ preview, previewToken });
     } catch (error) {
       return memoryImportError(c, error);
@@ -514,7 +514,7 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
       const actorId = adminActor(c);
       const namespacedKey = `admin:import:${idempotencyKey}`;
       const archiveSha256 = sha256Hex(archive);
-      verifyValidatedImportPreview(parsed.output.previewToken, options.adminSecret(), {
+      verifyValidatedImportPreview(parsed.output.previewToken, await options.adminSecret(c), {
         sessionFingerprint: sessionFingerprint(c),
         storeId: store.storeId,
         archiveSha256,

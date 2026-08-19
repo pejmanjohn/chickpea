@@ -6,7 +6,7 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import { getConfigStore, getIdentityStore, getMemoryStateStore } from '../config/state-backend.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { currentHumanIdentityDirectory } from '../identity/current-directory.ts';
-import type { ActorExternalIdentityBinding, Membership, MembershipAccessOverlay } from '../identity/types.ts';
+import type { Membership, MembershipAccessOverlay, SlackIdentityBinding } from '../identity/types.ts';
 import { resolveSlackCredentials } from '../slack/credentials.ts';
 import { effectiveSlackIdentityId } from '../slack/identity-admission.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
@@ -41,7 +41,6 @@ const MEMORY_CONTEXT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const MEMORY_RETENTION_CLEANUP_INTERVAL_MS = 60 * 60 * 1_000;
 const NODE_RECEIPT_RETRY_DELAYS_MS = [100, 500] as const;
 const DM_OWNER_WRITE_CONFIRMATION_TTL_MS = 5 * 60 * 1_000;
-const SLACK_ACTOR_BINDING_TTL_MS = 15 * 60 * 1_000;
 
 let lastMemoryRetentionCleanupAt = Number.NEGATIVE_INFINITY;
 
@@ -78,7 +77,7 @@ interface OwnerMemoryRuntime {
 }
 
 interface DmAuthorizedActor {
-  binding: ActorExternalIdentityBinding;
+  binding: SlackIdentityBinding;
   membership: Membership & { role: 'owner' | 'admin' };
   overlay: MembershipAccessOverlay | undefined;
 }
@@ -762,7 +761,7 @@ async function requestDmOwnerMemoryWrite(
   runtime: OwnerMemoryRuntime,
 ): Promise<string> {
   const actor = await resolveDmAuthorizedActor(turn, runtime.platformEnv);
-  if (!actor) return createSlackActorBindingHandoff(turn, runtime);
+  if (!actor) return 'This Slack account is not an active Chickpea Owner or Admin.';
   const identityId = effectiveSlackIdentityId(runtime.assignment);
   const config = getConfigStore(runtime.platformEnv);
   const slackIdentity = await config.getSlackIdentity(identityId);
@@ -866,7 +865,8 @@ async function resolveDmAuthorizedActor(
   platformEnv: PlatformEnv | undefined,
 ): Promise<DmAuthorizedActor | undefined> {
   const identity = getIdentityStore(platformEnv);
-  const binding = await identity.resolveActorExternalIdentity('slack', turn.workspaceId, turn.userId);
+  const resolution = await identity.resolveSlackIdentity(turn.workspaceId, turn.userId);
+  const binding = resolution?.binding;
   if (!binding) return undefined;
   const directory = await currentHumanIdentityDirectory(identity, platformEnv);
   if (!directory) throw new MemoryStateError('memory_actor_unavailable', 'Admin identity is unavailable.');
@@ -881,29 +881,6 @@ async function resolveDmAuthorizedActor(
     throw new MemoryStateError('memory_actor_forbidden', 'Only an active Owner or Admin can change Agent memory from Slack.');
   }
   return { binding, membership: membership as Membership & { role: 'owner' | 'admin' }, overlay };
-}
-
-async function createSlackActorBindingHandoff(
-  turn: NormalizedSlackTurn,
-  runtime: OwnerMemoryRuntime,
-): Promise<string> {
-  const identity = getIdentityStore(runtime.platformEnv);
-  const config = getConfigStore(runtime.platformEnv);
-  const slackIdentityId = effectiveSlackIdentityId(runtime.assignment);
-  const [control, organization, slackIdentity] = await Promise.all([
-    identity.getAuthControl(), identity.getOrganization(), config.getSlackIdentity(slackIdentityId),
-  ]);
-  const origin = control?.canonicalAdminOrigin ?? organization?.canonicalAdminOrigin;
-  if (!origin) return 'Connect your Slack account from authenticated Chickpea Admin, then send this request again.';
-  const token = randomBytes(24).toString('base64url');
-  const now = Date.now();
-  await identity.createActorIdentityBindingHandoff({
-    handoffId: `actor_handoff_${randomUUID()}`, tokenHash: sha256(token),
-    issuer: turn.workspaceId, subject: turn.userId, slackIdentityId,
-    slackIdentityRevision: slackIdentity.connectionRevision,
-    expiresAt: now + SLACK_ACTOR_BINDING_TTL_MS, consumedAt: null,
-  });
-  return `Before changing shared Agent memory, connect this Slack account as an Owner or Admin: <${origin.replace(/\/$/, '')}/admin/slack-actor#bind=${encodeURIComponent(token)}|Connect in Chickpea Admin>. Then send the request again.`;
 }
 
 async function executeConfirmedDmOwnerMutation(

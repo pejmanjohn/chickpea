@@ -36,15 +36,7 @@ export interface PrincipalAuthenticator {
   authenticate(request: Request): Promise<PrincipalAuthenticationResult | undefined>;
 }
 
-export interface TokenLoginResult {
-  principal: AuthPrincipal;
-  sessionToken: string;
-  expiresAt: number;
-}
-
 export interface AdminAuthenticationService {
   authenticateRequest(request: Request): Promise<AuthPrincipal>;
   takeResponseHeaders?(request: Request): Headers | undefined;
-  loginWithPersonalToken?(token: string): Promise<TokenLoginResult>;
-  logoutSession?(token: string): Promise<void>;
 }

@@ -11,6 +11,7 @@ import {
   verifySetupCapability,
 } from '../src/auth/setup-capability.mjs';
 import { resolveBetterAuthBootstrapEnvironment } from '../src/auth/better-auth-environment.ts';
+import { withEnv } from './helpers/env.ts';
 
 const AUTH_SECRET = 'A'.repeat(43);
 const LEGACY_RECOVERY = '6a'.repeat(32);
@@ -67,17 +68,18 @@ test('Node helper emits config values and one final fragment link', () => {
   assert.equal(lines.length, 4);
 });
 
-test('stable auth secret wins while legacy recovery remains compatible', async () => {
-  const stable = await resolveBetterAuthBootstrapEnvironment({
-    canonicalOrigin: 'http://127.0.0.1:8787',
-    authSecret: AUTH_SECRET,
-    recoveryToken: LEGACY_RECOVERY,
+test('Better Auth requires its independent stable auth secret', async () => {
+  await withEnv({ CHICKPEA_AUTH_DB_PATH: ':memory:' }, async () => {
+    const stable = await resolveBetterAuthBootstrapEnvironment({
+      canonicalOrigin: 'http://127.0.0.1:8787',
+      authSecret: AUTH_SECRET,
+      recoveryToken: LEGACY_RECOVERY,
+    });
+    const recoveryOnly = await resolveBetterAuthBootstrapEnvironment({
+      canonicalOrigin: 'http://127.0.0.1:8787',
+      recoveryToken: LEGACY_RECOVERY,
+    });
+    assert.equal(stable?.secret, AUTH_SECRET);
+    assert.equal(recoveryOnly, undefined);
   });
-  const legacy = await resolveBetterAuthBootstrapEnvironment({
-    canonicalOrigin: 'http://127.0.0.1:8787',
-    recoveryToken: LEGACY_RECOVERY,
-  });
-  assert.equal(stable?.secret, AUTH_SECRET);
-  assert.notEqual(legacy?.secret, LEGACY_RECOVERY);
-  assert.match(legacy?.secret ?? '', /^[A-Za-z0-9_-]{43}$/);
 });

@@ -40,32 +40,58 @@ import type {
 } from './types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import type {
-  ActivateAccessOwnerInput,
   AdvanceAuthOperationInput,
+  ActivateInvitationInput,
+  ActivateFirstOwnerInput,
+  AdmitSlackOidcAttemptInput,
+  BeginSlackAppCreationInput,
+  BeginSlackCredentialRotationInput,
   AuthOperationKind,
-  ActorIdentityBindingHandoff,
-  BindActorExternalIdentityInput,
-  BootstrapTokenOwnerInput,
   ClaimOwnerInput,
   ConsumeAuthOperationInput,
-  CompletePasswordSetupInput,
   ConsumeInvitationInput,
-  ConfigureAuthProviderInput,
   CreateBrowserSessionRecordInput,
   CreateAuthOperationInput,
   CreateInvitationInput,
   CreateOwnerClaimInput,
   CreatePersonalTokenRecordInput,
+  CreateSlackOAuthAttemptInput,
+  CreateSlackOidcAttemptInput,
+  CreateSlackRecoverySessionInput,
+  AcquireSlackOAuthAttemptInput,
+  AcquireSlackRecoveryOAuthInput,
   EnsureOrganizationInput,
   EnsureAuthControlInput,
+  EnsureSlackCredentialControlInput,
   IdentityRpcRequest,
   IdentityRpcResponse,
   IdentityStore,
   RecordIdentityAuthAuditInput,
+  RecordSlackAppCreationSuccessInput,
+  PromoteSlackCredentialRevisionInput,
+  PromoteSlackRecoveryCandidateInput,
+  RewrapSlackCredentialRevisionInput,
   ResendInvitationInput,
-  ReplaceAccessOwnerBindingInput,
   SetMembershipAccessOverlayInput,
-  UpdateMembershipInput,
+  SlackSetupTransitionInput,
+  ReserveSlackSetupTransactionInput,
+  FailSlackAppCreationInput,
+  MarkSlackSetupApprovalPendingInput,
+  MarkSlackOAuthApprovalPendingInput,
+  RecordSlackBotInstallationCandidateInput,
+  RecordSlackEventsProofInput,
+  RecordSlackRecoveryCandidateInput,
+  PromoteSlackBotInstallationInput,
+  FailSlackBotInstallationInput,
+  SettleSlackOAuthAttemptInput,
+  SettleSlackOidcAttemptInput,
+  AcquireSlackOidcAttemptInput,
+  StageSlackCredentialRevisionInput,
+  StageSlackRecoveryAppCredentialsInput,
+  StartSlackRecoveryOAuthInput,
+  TombstoneSlackCredentialRevisionInput,
+  UpdateMembershipAuthorityInput,
+  UpdateSlackRecoveryManifestInput,
   UpdateAuthControlInput,
   UpdateOrganizationAuthInput,
 } from '../identity/types.ts';
@@ -366,6 +392,248 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'auth_control' || !response.control) throw unexpectedIdentityResponse();
     return response.control;
   }
+  async ensureSlackCredentialControl(input: EnsureSlackCredentialControlInput) {
+    const response = await this.execute({ kind: 'ensure_slack_credential_control', input });
+    if (response.kind !== 'slack_credential_control' || !response.control) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.control;
+  }
+  async getSlackCredentialControl(installationId?: string) {
+    const response = await this.execute({
+      kind: 'get_slack_credential_control',
+      ...(installationId === undefined ? {} : { installationId }),
+    });
+    if (response.kind !== 'slack_credential_control') throw unexpectedIdentityResponse();
+    return orUndefined(response.control);
+  }
+  async beginSlackCredentialRotation(input: BeginSlackCredentialRotationInput) {
+    const response = await this.execute({ kind: 'begin_slack_credential_rotation', input });
+    if (response.kind !== 'slack_credential_control' || !response.control) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.control;
+  }
+  async stageSlackCredentialRevision(input: StageSlackCredentialRevisionInput) {
+    const response = await this.execute({ kind: 'stage_slack_credential_revision', input });
+    if (response.kind !== 'slack_credential_revision' || !response.revision) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.revision;
+  }
+  async getActiveSlackCredentialRevision(identityId: string) {
+    const response = await this.execute({ kind: 'get_active_slack_credential_revision', identityId });
+    if (response.kind !== 'slack_credential_revision') throw unexpectedIdentityResponse();
+    return orUndefined(response.revision);
+  }
+  async getSlackCredentialRevision(identityId: string, revision: string) {
+    const response = await this.execute({ kind: 'get_slack_credential_revision', identityId, revision });
+    if (response.kind !== 'slack_credential_revision') throw unexpectedIdentityResponse();
+    return orUndefined(response.revision);
+  }
+  async hasSlackCredentialHistory(identityId: string) {
+    const response = await this.execute({ kind: 'has_slack_credential_history', identityId });
+    if (response.kind !== 'slack_credential_presence') throw unexpectedIdentityResponse();
+    return response.present;
+  }
+  async listLiveSlackCredentialRevisions() {
+    const response = await this.execute({ kind: 'list_live_slack_credential_revisions' });
+    if (response.kind !== 'slack_credential_revisions') throw unexpectedIdentityResponse();
+    return response.revisions;
+  }
+  async promoteSlackCredentialRevision(input: PromoteSlackCredentialRevisionInput) {
+    const response = await this.execute({ kind: 'promote_slack_credential_revision', input });
+    if (response.kind !== 'slack_credential_revision' || !response.revision) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.revision;
+  }
+  async tombstoneSlackCredentialRevision(input: TombstoneSlackCredentialRevisionInput) {
+    const response = await this.execute({ kind: 'tombstone_slack_credential_revision', input });
+    if (response.kind !== 'slack_credential_revision' || !response.revision) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.revision;
+  }
+  async rewrapSlackCredentialRevision(input: RewrapSlackCredentialRevisionInput) {
+    const response = await this.execute({ kind: 'rewrap_slack_credential_revision', input });
+    if (response.kind !== 'slack_credential_revision' || !response.revision) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.revision;
+  }
+  async countLiveSlackCredentialRevisionsByKey(keyId: string, expectedRotationEpoch: number) {
+    const response = await this.execute({
+      kind: 'count_live_slack_credential_revisions_by_key', keyId, expectedRotationEpoch,
+    });
+    if (response.kind !== 'slack_credential_count') throw unexpectedIdentityResponse();
+    return response.count;
+  }
+  async sweepSlackIdentityRetention(at: number, candidateMaxAgeMs: number) {
+    const response = await this.execute({ kind: 'sweep_slack_identity_retention', at, candidateMaxAgeMs });
+    if (response.kind !== 'slack_credential_retention') throw unexpectedIdentityResponse();
+    return response.result;
+  }
+  async createSlackRecoverySession(input: CreateSlackRecoverySessionInput) {
+    const response = await this.execute({ kind: 'create_slack_recovery_session', input });
+    if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();
+    return response.session;
+  }
+  async getSlackRecoverySession(recoveryId: string) {
+    const response = await this.execute({ kind: 'get_slack_recovery_session', recoveryId });
+    if (response.kind !== 'slack_recovery_session') throw unexpectedIdentityResponse();
+    return orUndefined(response.session);
+  }
+  async stageSlackRecoveryAppCredentials(input: StageSlackRecoveryAppCredentialsInput) {
+    const response = await this.execute({ kind: 'stage_slack_recovery_app_credentials', input });
+    if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();
+    return response.session;
+  }
+  async startSlackRecoveryOAuth(input: StartSlackRecoveryOAuthInput) {
+    const response = await this.execute({ kind: 'start_slack_recovery_oauth', input });
+    if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();
+    return response.session;
+  }
+  async updateSlackRecoveryManifest(input: UpdateSlackRecoveryManifestInput) {
+    const response = await this.execute({ kind: 'update_slack_recovery_manifest', input });
+    if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();
+    return response.session;
+  }
+  async acquireSlackRecoveryOAuth(input: AcquireSlackRecoveryOAuthInput) {
+    const response = await this.execute({ kind: 'acquire_slack_recovery_oauth', input });
+    if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();
+    return response.session;
+  }
+  async recordSlackRecoveryCandidate(input: RecordSlackRecoveryCandidateInput) {
+    const response = await this.execute({ kind: 'record_slack_recovery_candidate', input });
+    if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();
+    return response.session;
+  }
+  async promoteSlackRecoveryCandidate(input: PromoteSlackRecoveryCandidateInput) {
+    const response = await this.execute({ kind: 'promote_slack_recovery_candidate', input });
+    if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();
+    return response.session;
+  }
+  async reserveSlackSetupTransaction(input: ReserveSlackSetupTransactionInput) {
+    const response = await this.execute({ kind: 'reserve_slack_setup_transaction', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async getSlackSetupTransaction(setupId: string) {
+    const response = await this.execute({ kind: 'get_slack_setup_transaction', setupId });
+    if (response.kind !== 'slack_setup_transaction') throw unexpectedIdentityResponse();
+    return orUndefined(response.transaction);
+  }
+  async findSlackSetupTransaction(locatorHash: string) {
+    const response = await this.execute({ kind: 'find_slack_setup_transaction', locatorHash });
+    if (response.kind !== 'slack_setup_transaction') throw unexpectedIdentityResponse();
+    return orUndefined(response.transaction);
+  }
+  async beginSlackAppCreation(input: BeginSlackAppCreationInput) {
+    const response = await this.execute({ kind: 'begin_slack_app_creation', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async failSlackAppCreation(input: FailSlackAppCreationInput) {
+    const response = await this.execute({ kind: 'fail_slack_app_creation', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async recordSlackAppCreationSuccess(input: RecordSlackAppCreationSuccessInput) {
+    const response = await this.execute({ kind: 'record_slack_app_creation_success', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async restartSlackAppCreation(input: SlackSetupTransitionInput) {
+    const response = await this.execute({ kind: 'restart_slack_app_creation', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async markSlackSetupApprovalPending(input: MarkSlackSetupApprovalPendingInput) {
+    const response = await this.execute({ kind: 'mark_slack_setup_approval_pending', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async resumeSlackSetupAfterApproval(input: SlackSetupTransitionInput) {
+    const response = await this.execute({ kind: 'resume_slack_setup_after_approval', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async createSlackOAuthAttempt(input: CreateSlackOAuthAttemptInput) {
+    const response = await this.execute({ kind: 'create_slack_oauth_attempt', input });
+    if (response.kind !== 'slack_oauth_attempt' || !response.attempt) throw unexpectedIdentityResponse();
+    return response.attempt;
+  }
+  async getSlackOAuthAttempt(attemptId: string) {
+    const response = await this.execute({ kind: 'get_slack_oauth_attempt', attemptId });
+    if (response.kind !== 'slack_oauth_attempt') throw unexpectedIdentityResponse();
+    return orUndefined(response.attempt);
+  }
+  async acquireSlackOAuthAttempt(input: AcquireSlackOAuthAttemptInput) {
+    const response = await this.execute({ kind: 'acquire_slack_oauth_attempt', input });
+    if (response.kind !== 'slack_oauth_attempt' || !response.attempt) throw unexpectedIdentityResponse();
+    return response.attempt;
+  }
+  async settleSlackOAuthAttempt(input: SettleSlackOAuthAttemptInput) {
+    const response = await this.execute({ kind: 'settle_slack_oauth_attempt', input });
+    if (response.kind !== 'slack_oauth_attempt' || !response.attempt) throw unexpectedIdentityResponse();
+    return response.attempt;
+  }
+  async markSlackOAuthApprovalPending(input: MarkSlackOAuthApprovalPendingInput) {
+    const response = await this.execute({ kind: 'mark_slack_oauth_approval_pending', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async recordSlackBotInstallationCandidate(input: RecordSlackBotInstallationCandidateInput) {
+    const response = await this.execute({ kind: 'record_slack_bot_installation_candidate', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async getSlackEventsProof(candidateRevision: string) {
+    const response = await this.execute({ kind: 'get_slack_events_proof', candidateRevision });
+    if (response.kind !== 'slack_events_proof') throw unexpectedIdentityResponse();
+    return orUndefined(response.proof);
+  }
+  async recordSlackEventsProof(input: RecordSlackEventsProofInput) {
+    const response = await this.execute({ kind: 'record_slack_events_proof', input });
+    if (response.kind !== 'slack_events_proof' || !response.proof) throw unexpectedIdentityResponse();
+    return response.proof;
+  }
+  async promoteSlackBotInstallation(input: PromoteSlackBotInstallationInput) {
+    const response = await this.execute({ kind: 'promote_slack_bot_installation', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async failSlackBotInstallation(input: FailSlackBotInstallationInput) {
+    const response = await this.execute({ kind: 'fail_slack_bot_installation', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async createSlackOidcAttempt(input: CreateSlackOidcAttemptInput) {
+    const response = await this.execute({ kind: 'create_slack_oidc_attempt', input });
+    if (response.kind !== 'slack_oidc_attempt' || !response.attempt) throw unexpectedIdentityResponse();
+    return response.attempt;
+  }
+  async getSlackOidcAttempt(attemptId: string) {
+    const response = await this.execute({ kind: 'get_slack_oidc_attempt', attemptId });
+    if (response.kind !== 'slack_oidc_attempt') throw unexpectedIdentityResponse();
+    return orUndefined(response.attempt);
+  }
+  async acquireSlackOidcAttempt(input: AcquireSlackOidcAttemptInput) {
+    const response = await this.execute({ kind: 'acquire_slack_oidc_attempt', input });
+    if (response.kind !== 'slack_oidc_attempt' || !response.attempt) throw unexpectedIdentityResponse();
+    return response.attempt;
+  }
+  async admitSlackOidcAttempt(input: AdmitSlackOidcAttemptInput) {
+    const response = await this.execute({ kind: 'admit_slack_oidc_attempt', input });
+    if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
+    return response.operation;
+  }
+  async settleSlackOidcAttempt(input: SettleSlackOidcAttemptInput) {
+    const response = await this.execute({ kind: 'settle_slack_oidc_attempt', input });
+    if (response.kind !== 'slack_oidc_attempt' || !response.attempt) throw unexpectedIdentityResponse();
+    return response.attempt;
+  }
   async createAuthOperation(input: CreateAuthOperationInput) {
     const response = await this.execute({ kind: 'create_auth_operation', input });
     if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
@@ -406,11 +674,6 @@ export class CfIdentityStore implements IdentityStore {
     const response = await this.execute({ kind: 'consume_auth_operation', input });
     if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
     return response.operation;
-  }
-  async completePasswordSetup(input: CompletePasswordSetupInput) {
-    const response = await this.execute({ kind: 'complete_password_setup', input });
-    if (response.kind !== 'auth_control' || !response.control) throw unexpectedIdentityResponse();
-    return response.control;
   }
   async revokeAuthOperation(operationId: string) {
     const response = await this.execute({ kind: 'revoke_auth_operation', operationId });
@@ -454,24 +717,19 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
     return response.resolution;
   }
-  async bootstrapTokenOwner(input: BootstrapTokenOwnerInput) {
-    const response = await this.execute({ kind: 'bootstrap_token_owner', input });
+  async activateFirstOwner(input: ActivateFirstOwnerInput) {
+    const response = await this.execute({ kind: 'activate_first_owner', input });
     if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
     return response.resolution;
   }
-  async activateAccessOwner(input: ActivateAccessOwnerInput) {
-    const response = await this.execute({ kind: 'activate_access_owner', input });
+  async activateInvitation(input: ActivateInvitationInput) {
+    const response = await this.execute({ kind: 'activate_invitation', input });
     if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
     return response.resolution;
   }
-  async replaceAccessOwnerBinding(input: ReplaceAccessOwnerBindingInput) {
-    const response = await this.execute({ kind: 'replace_access_owner_binding', input });
-    if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
-    return response.resolution;
-  }
-  async resolveExternalIdentity(provider: string, issuer: string, subject: string, organizationId?: string) {
+  async resolveSlackIdentity(slackTeamId: string, slackUserId: string, organizationId?: string) {
     const response = await this.execute({
-      kind: 'resolve_external_identity', provider, issuer, subject,
+      kind: 'resolve_slack_identity', slackTeamId, slackUserId,
       ...(organizationId === undefined ? {} : { organizationId }),
     });
     if (response.kind !== 'identity_resolution') throw unexpectedIdentityResponse();
@@ -482,30 +740,6 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'external_identities') throw unexpectedIdentityResponse();
     return response.externalIdentities;
   }
-  async resolveActorExternalIdentity(provider: 'slack', issuer: string, subject: string) {
-    const response = await this.execute({ kind: 'resolve_actor_external_identity', provider, issuer, subject });
-    if (response.kind !== 'actor_external_identity') throw unexpectedIdentityResponse();
-    return orUndefined(response.binding);
-  }
-  async bindActorExternalIdentity(input: BindActorExternalIdentityInput) {
-    const response = await this.execute({ kind: 'bind_actor_external_identity', input });
-    if (response.kind !== 'actor_external_identity' || !response.binding) throw unexpectedIdentityResponse();
-    return response.binding;
-  }
-  async createActorIdentityBindingHandoff(input: ActorIdentityBindingHandoff) {
-    const response = await this.execute({ kind: 'create_actor_identity_binding_handoff', input });
-    if (response.kind !== 'ok') throw unexpectedIdentityResponse();
-  }
-  async getActorIdentityBindingHandoff(tokenHash: string) {
-    const response = await this.execute({ kind: 'get_actor_identity_binding_handoff', tokenHash });
-    if (response.kind !== 'actor_identity_binding_handoff') throw unexpectedIdentityResponse();
-    return orUndefined(response.handoff);
-  }
-  async consumeActorIdentityBindingHandoff(tokenHash: string, consumedAt: number) {
-    const response = await this.execute({ kind: 'consume_actor_identity_binding_handoff', tokenHash, consumedAt });
-    if (response.kind !== 'actor_identity_binding_handoff') throw unexpectedIdentityResponse();
-    return orUndefined(response.handoff);
-  }
   async listMemberships() {
     const response = await this.execute({ kind: 'list_memberships' });
     if (response.kind !== 'memberships') throw unexpectedIdentityResponse();
@@ -513,11 +747,6 @@ export class CfIdentityStore implements IdentityStore {
   }
   async getUser(userId: string) {
     const response = await this.execute({ kind: 'get_user', userId });
-    if (response.kind !== 'user') throw unexpectedIdentityResponse();
-    return orUndefined(response.user);
-  }
-  async findUserByEmail(email: string) {
-    const response = await this.execute({ kind: 'find_user_by_email', email });
     if (response.kind !== 'user') throw unexpectedIdentityResponse();
     return orUndefined(response.user);
   }
@@ -534,13 +763,19 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'memberships') throw unexpectedIdentityResponse();
     return response.memberships[0];
   }
-  async updateMembership(input: UpdateMembershipInput) {
-    const response = await this.execute({ kind: 'update_membership', input });
-    if (response.kind !== 'membership' || !response.membership) throw unexpectedIdentityResponse();
-    return response.membership;
+  async updateMembershipAuthority(input: UpdateMembershipAuthorityInput) {
+    const response = await this.execute({ kind: 'update_membership_authority', input });
+    if (response.kind !== 'membership_authority_mutation') throw unexpectedIdentityResponse();
+    return response.result;
   }
   async createInvitation(input: CreateInvitationInput) {
     const response = await this.execute({ kind: 'create_invitation', input });
+    if (response.kind !== 'invitation') throw unexpectedIdentityResponse();
+    return response.invitation;
+  }
+  async findInvitation(locatorHash: string) {
+    const response = await this.execute({ kind: 'find_invitation', locatorHash });
+    if (response.kind === 'invitations') return response.invitations[0];
     if (response.kind !== 'invitation') throw unexpectedIdentityResponse();
     return response.invitation;
   }
@@ -609,24 +844,6 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'browser_session') throw unexpectedIdentityResponse();
     return response.browserSession;
   }
-  async configureAuthProvider(input: ConfigureAuthProviderInput) {
-    const response = await this.execute({ kind: 'configure_auth_provider', input });
-    if (response.kind !== 'auth_provider_config' || !response.config) throw unexpectedIdentityResponse();
-    return response.config;
-  }
-  async getAuthProviderConfig(providerKind: string) {
-    const response = await this.execute({ kind: 'get_auth_provider_config', providerKind });
-    if (response.kind !== 'auth_provider_config') throw unexpectedIdentityResponse();
-    return orUndefined(response.config);
-  }
-  async updateAuthProviderAudience(providerKind: string, audience: string, actorMembershipId?: string) {
-    const response = await this.execute({
-      kind: 'update_auth_provider_audience', providerKind, audience,
-      ...(actorMembershipId === undefined ? {} : { actorMembershipId }),
-    });
-    if (response.kind !== 'auth_provider_config' || !response.config) throw unexpectedIdentityResponse();
-    return response.config;
-  }
   async updateOrganizationAuth(input: UpdateOrganizationAuthInput) {
     const response = await this.execute({ kind: 'update_organization_auth', input });
     if (response.kind !== 'organization' || !response.organization) throw unexpectedIdentityResponse();
@@ -652,7 +869,7 @@ export class CfIdentityStore implements IdentityStore {
   }
   async exportSummary() {
     const response = await this.execute({ kind: 'export_summary' });
-    if (response.kind !== 'export_summary') throw unexpectedIdentityResponse();
+    if (response.kind !== 'identity_export') throw unexpectedIdentityResponse();
     return response.summary;
   }
   async listAuditEvents(limit?: number) {

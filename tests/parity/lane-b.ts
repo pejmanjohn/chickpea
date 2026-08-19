@@ -7,6 +7,11 @@ import { fileURLToPath } from 'node:url';
 
 import { SqliteConfigStore } from '../../src/config/store.ts';
 import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../../src/config/types.ts';
+import { createBetterAuth, type BetterAuthAdmissionOperation } from '../../src/auth/better-auth.ts';
+import { NodeBetterAuthBackend } from '../../src/auth/better-auth-node.ts';
+import { SqliteIdentityStore } from '../../src/identity/store.ts';
+import { loadOrCreateNodeCredentialKeyring } from '../../src/slack/credential-keyring.ts';
+import { writeSlackIdentityCredentials } from '../../src/slack/identity-credentials.ts';
 import {
   FakeSlackBackend,
   type FakeSlackBehaviorConfig,
@@ -40,7 +45,9 @@ const VITE_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'vite');
 const DIST_NODE_DIR = join(REPO_ROOT, 'dist-node');
 const SERVER_ENTRY = join(DIST_NODE_DIR, 'server.mjs');
 const EVENTS_PATH = '/channels/slack/events';
-const ADMIN_TOKEN = 'parity-admin-token';
+const PARITY_AUTH_SECRET = Buffer.from(
+  Uint8Array.from({ length: 32 }, (_, index) => (index * 53 + 11) % 256),
+).toString('base64url');
 
 const MIN_NODE: readonly number[] = [22, 19, 0];
 
@@ -65,44 +72,74 @@ export const laneB: Lane = {
     await ensureBuilt(nodeBin);
 
     const slack = slackFixturesFor(config);
+    const canonicalSlackTeamId = slack?.identity?.teamId ?? 'TDEMO';
+    const canonicalSlackAppId = slack?.identity?.appId ?? 'ADEMO';
     const backend = new FakeSlackBackend({
       ...(slack ? { slack } : {}),
       ...(config.provider ? { provider: config.provider } : {}),
     });
     const fake = await backend.listen();
-    let configDir: string | undefined;
-    const configEnv: Record<string, string> = {};
-    if (config.configSeed) {
-      configDir = mkdtempSync(join(tmpdir(), 'chickpea-parity-config-'));
-      const configDbPath = join(configDir, 'state.db');
-      const store = new SqliteConfigStore(configDbPath, config.configSeed);
+    const port = await getFreePort();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const eventsUrl = `${baseUrl}${EVENTS_PATH}`;
+    const configDir = mkdtempSync(join(tmpdir(), 'chickpea-parity-config-'));
+    const configDbPath = join(configDir, 'state.db');
+    const authDbPath = join(configDir, 'auth.db');
+    const credentialKeyringPath = join(configDir, 'credential-keyring.json');
+    let adminCookie: string | undefined;
+    const configEnv: Record<string, string> = {
+      SLACK_STATE_DB_PATH: configDbPath,
+      CHICKPEA_AUTH_DB_PATH: authDbPath,
+      CHICKPEA_AUTH_SECRET: PARITY_AUTH_SECRET,
+      CHICKPEA_CREDENTIAL_KEYRING_PATH: credentialKeyringPath,
+    };
+    const store = config.configSeed
+      ? new SqliteConfigStore(configDbPath, config.configSeed)
+      : new SqliteConfigStore(configDbPath);
+    try {
       const identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
       await store.updateSlackIdentity(identity.id, identity.connectionRevision, {
         lifecycle: 'connected',
-        teamId: config.slack?.identity?.teamId ?? 'T_DEMO',
-        appId: config.slack?.identity?.appId ?? 'A_DEMO',
-        botUserId: config.slack?.identity?.botUserId ?? 'U_BOT',
+        teamId: canonicalSlackTeamId,
+        appId: canonicalSlackAppId,
         credentialProvenance: 'stored',
         health: 'healthy',
       });
+    } finally {
       store.close();
-      configEnv.SLACK_STATE_DB_PATH = configDbPath;
+    }
+    const credentialState = new SqliteIdentityStore(configDbPath);
+    try {
+      await writeSlackIdentityCredentials(
+        {
+          state: credentialState,
+          keyring: loadOrCreateNodeCredentialKeyring({ path: credentialKeyringPath }),
+        },
+        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        null,
+        {
+          botToken: 'test-bot-token',
+          signingSecret: PARITY_SIGNING_SECRET,
+          appId: canonicalSlackAppId,
+          teamId: canonicalSlackTeamId,
+        },
+      );
+    } finally {
+      credentialState.close();
+    }
+    if (config.configSeed) {
+      adminCookie = await seedParityAdminSession(
+        configDbPath,
+        authDbPath,
+        baseUrl,
+        canonicalSlackTeamId,
+      );
       configEnv.LOCAL_STUB_MODELS = config.configSeed.agents
         .flatMap((agent) => agent.model?.startsWith('local-stub/')
           ? [agent.model.slice('local-stub/'.length)]
           : [])
         .join(',');
     }
-
-    const port = await getFreePort();
-    const baseUrl = `http://127.0.0.1:${port}`;
-    const eventsUrl = `${baseUrl}${EVENTS_PATH}`;
-
-    // `undefined` (omitted) → default bot id; `null` → boot WITHOUT a bot id.
-    // An explicitly-empty SLACK_BOT_USER_ID is the Flue channel's fail-closed
-    // knob (skips the auth.test fallback that would otherwise resolve U_BOT).
-    const slackBotUserId =
-      config.botUserId === undefined ? 'U_BOT' : (config.botUserId ?? '');
 
     // Scrub ambient provider credentials so provider-key availability never
     // leaks from a developer/CI shell into scenarios. Scenario model routing is
@@ -124,13 +161,9 @@ export const laneB: Lane = {
       env: {
         ...ambientEnv,
         PORT: String(port),
-        SLACK_SIGNING_SECRET: PARITY_SIGNING_SECRET,
-        SLACK_BOT_TOKEN: 'test-bot-token',
         SLACK_API_URL: `${fake.url}/api/`,
         LOCAL_STUB_URL: `${fake.url}/v1`,
         SLACK_TAG_MODEL: 'local-stub/parity-stub-1',
-        SLACK_BOT_USER_ID: slackBotUserId,
-        TAG_ADMIN_TOKEN: ADMIN_TOKEN,
         // `src/db.node.ts` uses file-backed persistence by default. Every Lane B
         // scenario spawns a fresh process, so pin
         // an in-memory DB to keep each scenario's conversation state isolated
@@ -155,7 +188,7 @@ export const laneB: Lane = {
     } catch (error) {
       await stopChild(child);
       await backend.close();
-      if (configDir) rmSync(configDir, { recursive: true, force: true });
+      rmSync(configDir, { recursive: true, force: true });
       throw error;
     }
 
@@ -166,7 +199,7 @@ export const laneB: Lane = {
     return {
       backend,
       debugOutput: () => serverOutput.slice(-20_000),
-      ...(configDir ? { configDbPath: join(configDir, 'state.db') } : {}),
+      configDbPath,
       async postEvent(payload, opts) {
         const { headers, body } = await signedInit(payload, opts?.tamper === true);
         const response = await fetch(eventsUrl, { method: 'POST', headers, body });
@@ -174,7 +207,9 @@ export const laneB: Lane = {
       },
       async adminRequest(path, init = {}) {
         const headers = new Headers(init.headers);
-        headers.set('authorization', `Bearer ${ADMIN_TOKEN}`);
+        if (adminCookie) headers.set('cookie', adminCookie);
+        headers.set('origin', baseUrl);
+        headers.set('sec-fetch-site', 'same-origin');
         if (init.body !== undefined && !headers.has('content-type')) {
           headers.set('content-type', 'application/json');
         }
@@ -185,13 +220,104 @@ export const laneB: Lane = {
       async stop() {
         await stopChild(child);
         await backend.close();
-        if (configDir && process.env.KEEP_PARITY_CONFIG !== '1') {
+        if (process.env.KEEP_PARITY_CONFIG !== '1') {
           rmSync(configDir, { recursive: true, force: true });
         }
       },
     };
   },
 };
+
+async function seedParityAdminSession(
+  stateDbPath: string,
+  authDbPath: string,
+  baseUrl: string,
+  slackTeamId: string,
+): Promise<string> {
+  const identity = new SqliteIdentityStore(stateDbPath);
+  const backend = new NodeBetterAuthBackend(authDbPath);
+  try {
+    let admission: BetterAuthAdmissionOperation | null = null;
+    const auth = createBetterAuth({
+      backend,
+      baseURL: baseUrl,
+      secret: PARITY_AUTH_SECRET,
+      privateSeam: { async resolveAdmissionOperation() { return admission; } },
+    });
+    const reconciled = await auth.chickpea.reconcileSlackIdentity({
+      slackTeamId,
+      slackUserId: 'UPARITYOWNER',
+      displayName: 'Parity Owner',
+      organization: {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'Chickpea',
+        slug: 'chickpea',
+      },
+    });
+    const operation = await identity.createAuthOperation({
+      id: 'first_owner_parity',
+      kind: 'first_owner_claim',
+      expectedSlackTeamId: slackTeamId,
+      expectedSlackUserId: 'UPARITYOWNER',
+      chickpeaRole: 'owner',
+      capabilityHash: 'b'.repeat(64),
+      expiresAt: Date.now() + 60_000,
+    });
+    await identity.createOwnerClaim({
+      operationId: operation.id,
+      slackTeamId,
+      slackUserId: 'UPARITYOWNER',
+    });
+    await identity.advanceAuthOperation({
+      operationId: operation.id,
+      capabilityHash: 'b'.repeat(64),
+      step: 1,
+      betterAuthUserId: reconciled.userId,
+      betterAuthOrganizationId: reconciled.organizationId,
+      betterAuthMembershipId: reconciled.membershipId,
+    });
+    const owner = await identity.claimOwner({
+      operationId: operation.id,
+      organizationId: 'org_oss',
+      slackTeamId,
+      slackUserId: 'UPARITYOWNER',
+      displayName: 'Parity Owner',
+      betterAuthUserId: reconciled.userId,
+      betterAuthMembershipId: reconciled.membershipId,
+    });
+    const control = await identity.getAuthControl();
+    if (!control) throw new Error('Parity owner did not activate auth control.');
+    await identity.updateAuthControl({
+      expectedRevision: control.revision,
+      canonicalAdminOrigin: baseUrl,
+    });
+    await identity.updateOrganizationAuth({
+      organizationId: owner.membership.organizationId,
+      authMode: 'slack_active',
+      canonicalAdminOrigin: baseUrl,
+    });
+    admission = {
+      operationId: operation.id,
+      status: 'active',
+      chickpeaRole: 'owner',
+      slackTeamId,
+      slackUserId: 'UPARITYOWNER',
+      betterAuthUserId: reconciled.userId,
+      betterAuthOrganizationId: reconciled.organizationId,
+      betterAuthMembershipId: reconciled.membershipId,
+    };
+    const issued = await auth.chickpea.issueSession(operation.id, new Request(`${baseUrl}/oauth/finalize`, {
+      method: 'POST',
+      headers: { origin: baseUrl, 'sec-fetch-site': 'same-origin' },
+    }));
+    const cookie = (issued.headers.get('set-cookie') ?? '').split(';', 1)[0] ?? '';
+    if (!cookie) throw new Error('Parity Better Auth session was not issued.');
+    return cookie;
+  } finally {
+    backend.close();
+    identity.close();
+  }
+}
 
 /** Durable execution rechecks real app membership. Custom config seeds used by
  * parity therefore need matching conversations.info rows just like the demo
@@ -216,9 +342,9 @@ function slackFixturesFor(config: ScenarioLaneConfig): FakeSlackBehaviorConfig |
   for (const channel of derived) channels.set(channel.id, channel);
   for (const channel of config.slack?.channels ?? []) channels.set(channel.id, channel);
   const identity = {
-    appId: 'A_DEMO',
-    botUserId: 'U_BOT',
-    teamId: 'T_DEMO',
+    appId: 'ADEMO',
+    botUserId: 'UBOT',
+    teamId: 'TDEMO',
     ...config.slack?.identity,
   };
   const channelMembers = config.slack?.channelMembers ?? Object.fromEntries(

@@ -1,5 +1,4 @@
 {
-  "$schema": "https://raw.githubusercontent.com/slackapi/manifest-schema/main/manifest.schema.json",
   "display_information": {
     "name": "Chickpea",
     "description": "A self-hosted, model-agnostic AI agent for Slack.",
@@ -34,7 +33,15 @@
     }
   },
   "oauth_config": {
+    "redirect_urls": [
+      "https://chickpea.example/auth/slack/install/callback",
+      "https://chickpea.example/auth/slack/oidc/callback"
+    ],
     "scopes": {
+      "user": [
+        "openid",
+        "profile"
+      ],
       "bot": [
         "app_mentions:read",
         "assistant:write",
@@ -46,6 +53,7 @@
         "groups:history",
         "groups:read",
         "im:history",
+        "mpim:read",
         "reactions:read",
         "reactions:write",
         "users:read"
@@ -54,16 +62,19 @@
   },
   "settings": {
     "event_subscriptions": {
-      "request_url": "https://<YOUR_PUBLIC_HOST>/channels/slack/events",
+      "request_url": "https://chickpea.example/channels/slack/events",
       "bot_events": [
-        "app_mention",
         "app_context_changed",
         "app_home_opened",
+        "app_mention",
         "member_joined_channel",
         "message.channels",
         "message.groups",
         "message.im",
-        "reaction_added"
+        "reaction_added",
+        "app_uninstalled",
+        "tokens_revoked",
+        "user_change"
       ]
     },
     "interactivity": {
@@ -71,6 +82,7 @@
     },
     "org_deploy_enabled": false,
     "socket_mode_enabled": false,
-    "token_rotation_enabled": false
+    "token_rotation_enabled": false,
+    "is_mcp_enabled": false
   }
 }

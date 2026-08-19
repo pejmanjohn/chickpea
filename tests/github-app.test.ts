@@ -11,7 +11,7 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
-import { nativePasswordPrimitive } from '../src/auth/password.ts';
+import { AuthDeniedError } from '../src/auth/service.ts';
 import type { AdminAuthenticationService } from '../src/auth/types.ts';
 import {
   createInstallationToken,
@@ -31,6 +31,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { withEnv } from './helpers/env.ts';
+import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const ADMIN_TOKEN = 'github-admin-token';
 
@@ -59,21 +60,51 @@ function decodeJwtPart<T>(part: string): T {
 }
 
 function auth(): HeadersInit {
-  return { authorization: `Bearer ${ADMIN_TOKEN}` };
+  return {
+    authorization: `Bearer ${ADMIN_TOKEN}`,
+    origin: 'http://localhost',
+    'sec-fetch-site': 'same-origin',
+  };
 }
 
 function jsonHeaders(): HeadersInit {
   return { ...auth(), 'content-type': 'application/json' };
 }
 
-function adminApp(store: SqliteConfigStore, settings: SqliteSettingsStore): Hono {
+async function adminApp(store: SqliteConfigStore, settings: SqliteSettingsStore): Promise<Hono> {
+  const identity = new SqliteIdentityStore(':memory:');
+  const owner = await createSlackOwner(identity, { suffix: `github_${Math.random().toString(16).slice(2)}` });
+  const control = (await identity.getAuthControl())!;
+  await identity.updateAuthControl({
+    expectedRevision: control.revision,
+    canonicalAdminOrigin: 'http://localhost',
+  });
+  await identity.updateOrganizationAuth({
+    organizationId: owner.membership.organizationId,
+    authMode: 'slack_active',
+    canonicalAdminOrigin: 'http://localhost',
+  });
   const app = new Hono();
   app.route(
     '/',
     createAdminRoutes({
       store,
       settings,
-      adminToken: ADMIN_TOKEN,
+      identity,
+      authService: {
+        async authenticateRequest(request) {
+          if (request.headers.get('authorization') !== `Bearer ${ADMIN_TOKEN}`) {
+            throw new AuthDeniedError();
+          }
+          return {
+            userId: owner.user.id,
+            membershipId: owner.membership.id,
+            organizationId: owner.membership.organizationId,
+            role: 'owner', authenticatorKind: 'test_session', credentialId: 'session_github',
+            correlationId: 'request_github', machine: false,
+          };
+        },
+      },
       knownProviders: new Set(['local-stub']),
     }),
   );
@@ -332,7 +363,7 @@ test('skill resolve route retries a private source with exact App access', async
 
   try {
     const response = await withFetch(fetchImpl, async () =>
-      await adminApp(store, settings).request('/admin/api/skills/resolve', {
+      await (await adminApp(store, settings)).request('/admin/api/skills/resolve', {
         method: 'POST',
         headers: jsonHeaders(),
         body: JSON.stringify({ source: 'acme/private-skills' }),
@@ -377,7 +408,7 @@ test('skill resolve route keeps private lookup errors deliberately ambiguous', a
 
   try {
     const response = await withFetch(fetchImpl, async () =>
-      await adminApp(store, settings).request('/admin/api/skills/resolve', {
+      await (await adminApp(store, settings)).request('/admin/api/skills/resolve', {
         method: 'POST',
         headers: jsonHeaders(),
         body: JSON.stringify({ source: 'acme/unknown' }),
@@ -408,7 +439,7 @@ test('skill resolve route does not mint a token for anonymous rate limits', asyn
 
   try {
     const response = await withFetch(fetchImpl, async () =>
-      await adminApp(store, settings).request('/admin/api/skills/resolve', {
+      await (await adminApp(store, settings)).request('/admin/api/skills/resolve', {
         method: 'POST',
         headers: jsonHeaders(),
         body: JSON.stringify({ source: 'acme/public-skills' }),
@@ -458,7 +489,7 @@ test('skill resolve route classifies App lookup and token-mint primary rate limi
 
     try {
       const response = await withFetch(fetchImpl, async () =>
-        await adminApp(store, settings).request('/admin/api/skills/resolve', {
+        await (await adminApp(store, settings)).request('/admin/api/skills/resolve', {
           method: 'POST',
           headers: jsonHeaders(),
           body: JSON.stringify({ source: 'acme/private-skills' }),
@@ -486,7 +517,7 @@ test('skill resolve route rejects unauthenticated requests before GitHub access'
 
   try {
     const response = await withFetch(fetchImpl, async () =>
-      await adminApp(store, settings).request('/admin/api/skills/resolve', {
+      await (await adminApp(store, settings)).request('/admin/api/skills/resolve', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ source: 'acme/private-skills' }),
@@ -667,7 +698,7 @@ test('GitHub manifest route uses the resolved request origin and requested organ
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await withEnv({ SLACK_TAG_PUBLIC_URL: undefined }, async () => {
-      const response = await adminApp(store, settings).request(
+      const response = await (await adminApp(store, settings)).request(
         'http://internal.test/admin/api/github/manifest',
         {
           method: 'POST',
@@ -702,7 +733,7 @@ test('GitHub manifest route uses the resolved request origin and requested organ
       assert.equal(storedSetupState.version, 2);
       assert.equal(storedSetupState.state, setupState);
       assert.equal(typeof storedSetupState.mintedAt, 'number');
-      assert.equal(storedSetupState.membershipId, null);
+      assert.match(storedSetupState.membershipId ?? '', /^membership_/);
       assert.match(body.manifest.name, /^chickpea-[a-z0-9]{6}$/);
       assert.equal(body.manifest.url, 'https://chickpea.example.com');
       assert.equal(
@@ -738,7 +769,7 @@ test('GitHub manifest omits the hook on non-public origins (localhost dev)', asy
       // not advertise one, or Create GitHub App fails with "Hook url is not
       // supported". redirect_url may stay localhost (GitHub allows that).
       for (const host of ['localhost:3583', '127.0.0.1:8787', 'chickpea.local']) {
-        const response = await adminApp(store, settings).request(
+        const response = await (await adminApp(store, settings)).request(
           'http://internal.test/admin/api/github/manifest',
           {
             method: 'POST',
@@ -797,7 +828,7 @@ test('GitHub manifest callback stores a normalized private key and redirects to 
   try {
     await settings.setSetting('github.setup_state', `valid-state:${Date.now()}`);
     await withFetch(fetchImpl, async () => {
-      const response = await adminApp(store, settings).request(
+      const response = await (await adminApp(store, settings)).request(
         '/oauth/github/setup/callback?code=setup-code&state=valid-state',
         { redirect: 'manual' },
       );
@@ -826,15 +857,16 @@ test('GitHub setup state is membership-bound, public at callback time, and consu
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const identity = new SqliteIdentityStore(':memory:');
-  const organization = await identity.ensureOrganization({ displayName: 'Chickpea' });
-  await identity.createOwnerClaim({ organizationId: organization.id, email: 'owner@example.com' });
-  const owner = await identity.claimOwner({
-    organizationId: organization.id, provider: 'test', issuer: 'https://issuer.example',
-    subject: 'owner', verifiedEmail: 'owner@example.com',
+  const owner = await createSlackOwner(identity);
+  const organization = (await identity.getOrganization())!;
+  const control = (await identity.getAuthControl())!;
+  await identity.updateAuthControl({
+    expectedRevision: control.revision,
+    canonicalAdminOrigin: 'https://chickpea.example.com',
   });
   await identity.updateOrganizationAuth({
     organizationId: organization.id,
-    authMode: 'access_active',
+    authMode: 'slack_active',
     canonicalAdminOrigin: 'https://chickpea.example.com',
   });
   const authService: AdminAuthenticationService = {
@@ -897,7 +929,7 @@ test('GitHub setup state is membership-bound, public at callback time, and consu
   }
 });
 
-test('GitHub setup callback validates Better Auth memberships against the human directory', async () => {
+test('GitHub setup callback validates canonical Slack authority against the human directory', async () => {
   const { pkcs1 } = rsaKeys();
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -916,18 +948,22 @@ test('GitHub setup callback validates Better Auth memberships against the human 
   ).run(organizationId, 'Acme', 'acme', now);
   backend.database.prepare(
     'INSERT INTO member (id, organizationId, userId, role, createdAt) VALUES (?, ?, ?, ?, ?)',
-  ).run(membershipId, organizationId, userId, 'owner', now);
-  const control = await identity.ensureAuthControl();
+  ).run(membershipId, organizationId, userId, 'member', now);
+  const canonicalOwner = await createSlackOwner(identity, {
+    betterAuthUserId: userId,
+    betterAuthOrganizationId: organizationId,
+    betterAuthMembershipId: membershipId,
+  });
+  const activeControl = (await identity.getAuthControl())!;
   await identity.updateAuthControl({
-    expectedRevision: control.revision,
-    authMode: 'password_active',
+    expectedRevision: activeControl.revision,
     canonicalAdminOrigin: origin,
     betterAuthOrganizationId: organizationId,
   });
   await saveGithubSetupState(settings, {
     state: 'b'.repeat(32),
     mintedAt: now,
-    membershipId,
+    membershipId: canonicalOwner.membership.id,
   });
   const app = createAdminRoutes({
     store,
@@ -937,8 +973,6 @@ test('GitHub setup callback validates Better Auth memberships against the human 
     betterAuthEnvironment: {
       backend,
       baseURL: origin,
-      password: nativePasswordPrimitive(),
-      recoveryToken: '9d'.repeat(32),
       secret: 'test-github-better-auth-secret-32-bytes',
     },
   });
@@ -986,7 +1020,7 @@ test('GitHub manifest callback succeeds when the App has no webhook secret', asy
     await settings.setSetting('github.app.webhook_secret', 'stale-secret');
     await settings.setSetting('github.setup_state', `valid-state:${Date.now()}`);
     await withFetch(fetchImpl, async () => {
-      const response = await adminApp(store, settings).request(
+      const response = await (await adminApp(store, settings)).request(
         '/admin/api/github/setup/callback?code=setup-code&state=valid-state',
         { headers: auth(), redirect: 'manual' },
       );
@@ -1041,7 +1075,7 @@ test('GitHub status isolates one failing installation instead of failing the end
       { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined },
       () =>
         withFetch(fetchImpl, async () => {
-          const response = await adminApp(store, settings).request('/admin/api/github/status', {
+          const response = await (await adminApp(store, settings)).request('/admin/api/github/status', {
             headers: auth(),
           });
           assert.equal(response.status, 200);
@@ -1075,7 +1109,7 @@ test('GitHub status stays recoverable when the stored App key is malformed', asy
       { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined },
       () =>
         withFetch(fetchImpl, async () => {
-          const response = await adminApp(store, settings).request('/admin/api/github/status', {
+          const response = await (await adminApp(store, settings)).request('/admin/api/github/status', {
             headers: auth(),
           });
           // A garbage key must not 500 the status route: the operator needs
@@ -1105,7 +1139,7 @@ test('GitHub status stays recoverable when the App key is rejected outright', as
       { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined },
       () =>
         withFetch(fetchImpl, async () => {
-          const response = await adminApp(store, settings).request('/admin/api/github/status', {
+          const response = await (await adminApp(store, settings)).request('/admin/api/github/status', {
             headers: auth(),
           });
           assert.equal(response.status, 200);
@@ -1135,8 +1169,8 @@ test('GitHub manifest callback refuses missing, mismatched, stale, and replayed 
       { status: 201 },
     );
   };
-  const request = (query: string) =>
-    adminApp(store, settings).request(`/admin/api/github/setup/callback?${query}`, {
+  const request = async (query: string) =>
+    (await adminApp(store, settings)).request(`/admin/api/github/setup/callback?${query}`, {
       headers: auth(),
       redirect: 'manual',
     });
@@ -1202,7 +1236,7 @@ test('GitHub status enumerates App installations and live repository counts', as
       { GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined },
       () =>
         withFetch(fetchImpl, async () => {
-          const response = await adminApp(store, settings).request('/admin/api/github/status', {
+          const response = await (await adminApp(store, settings)).request('/admin/api/github/status', {
             headers: auth(),
           });
           assert.equal(response.status, 200);
@@ -1226,7 +1260,7 @@ test('GitHub App repo proxy maps fields and filters by q', async () => {
   const { pkcs8 } = rsaKeys();
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
-  const app = adminApp(store, settings);
+  const app = await adminApp(store, settings);
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = String(input);
     if (url === `${GITHUB_API_BASE}/app/installations/42/access_tokens`) {
@@ -1277,7 +1311,7 @@ test('GitHub App repo proxy maps fields and filters by q', async () => {
 test('GitHub status and disconnect routes are admin-auth gated and the legacy write route is absent', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
-  const app = adminApp(store, settings);
+  const app = await adminApp(store, settings);
   try {
     const responses = await Promise.all([
       app.request('/admin/api/github/status'),
@@ -1318,7 +1352,7 @@ test('GitHub disconnect clears credentials and reports Agents with repository gr
     }),
   );
   try {
-    const response = await adminApp(store, settings).request('/admin/api/github', {
+    const response = await (await adminApp(store, settings)).request('/admin/api/github', {
       method: 'DELETE',
       headers: auth(),
     });
@@ -1338,7 +1372,7 @@ test('agent PATCH validates and persists repository grants', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   await store.createAgent(agent());
-  const app = adminApp(store, settings);
+  const app = await adminApp(store, settings);
   const repositories = [
     {
       id: 'repo-alpha',

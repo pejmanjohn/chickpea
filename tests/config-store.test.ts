@@ -795,8 +795,8 @@ test('default seed ships a single Sprout Agent plus the direct-message wildcard 
   assert.match(defaultAgent.instructions, /general-purpose Slack assistant/i);
   assert.match(defaultAgent.instructions, /never invent facts/i);
 
-  assert.equal(await store.getAssignment('T_DEMO', 'C_ENG'), undefined);
-  assert.equal(await store.getAssignment('T_DEMO', 'C_EXEC'), undefined);
+  assert.equal(await store.getAssignment('TDEMO', 'C_ENG'), undefined);
+  assert.equal(await store.getAssignment('TDEMO', 'C_EXEC'), undefined);
   assert.deepEqual(await store.listAssignments(), [
     {
       workspaceId: '*',

@@ -3,21 +3,24 @@ import type { AuthPrincipal } from './types.ts';
 
 export type Permission =
   | 'account.view'
-  | 'slack.handoff'
   | 'admin.configure'
-  | 'team.manage'
+  | 'team.view'
+  | 'team.invite'
+  | 'team.manage_members'
   | 'team.manage_owners'
   | 'auth.manage'
   | 'auth.recover';
 
-const MEMBER = new Set<Permission>(['account.view', 'slack.handoff']);
+const MEMBER = new Set<Permission>(['account.view']);
 const ADMIN = new Set<Permission>([
   ...MEMBER,
   'admin.configure',
-  'team.manage',
+  'team.view',
 ]);
 const OWNER = new Set<Permission>([
   ...ADMIN,
+  'team.invite',
+  'team.manage_members',
   'team.manage_owners',
   'auth.manage',
   'auth.recover',

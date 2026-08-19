@@ -1,36 +1,20 @@
-import { createHash } from 'node:crypto';
 import type { D1Database } from '@cloudflare/workers-types';
 
 import type {
   BetterAuthDatabaseBackend,
   BetterAuthMembershipRecord,
-  BetterAuthOwnerSetupAuthorityExpectation,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
 } from './better-auth-backend.ts';
 import {
   BETTER_AUTH_IDENTITY_AUTHORITY_SQL,
-  BETTER_AUTH_OWNER_SETUP_AUTHORITY_SQL,
-  betterAuthOwnerSetupAuthorityBindings,
   mapBetterAuthMembership,
   mapBetterAuthOrganization,
   mapBetterAuthUser,
 } from './better-auth-backend.ts';
-import { DUMMY_PASSWORD_RECORD, verifierShard, type PasswordPrimitive } from './password.ts';
-
-export interface AuthGuardRpc {
-  hashPassword(password: string): Promise<string>;
-  verifyPassword(input: { hash: string; password: string }): Promise<boolean>;
-  allow(bucket: string, limit: number, windowMs: number): Promise<boolean>;
-}
-
-interface AuthGuardNamespace {
-  getByName(name: string): AuthGuardRpc;
-}
 
 export interface CloudflareBetterAuthEnv {
   AUTH_DB: D1Database;
-  AUTH_GUARD: AuthGuardNamespace;
   CHICKPEA_AUTH_SECRET?: string;
   CHICKPEA_RECOVERY_TOKEN?: string;
 }
@@ -42,15 +26,6 @@ export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
     const row = await this.database.prepare(BETTER_AUTH_IDENTITY_AUTHORITY_SQL)
       .first<{ present: number }>();
     return Boolean(row?.present);
-  }
-
-  async matchesOwnerSetupAuthority(
-    input: BetterAuthOwnerSetupAuthorityExpectation,
-  ): Promise<boolean> {
-    const row = await this.database.prepare(BETTER_AUTH_OWNER_SETUP_AUTHORITY_SQL)
-      .bind(...betterAuthOwnerSetupAuthorityBindings(input))
-      .first<{ matches: number }>();
-    return Boolean(row?.matches);
   }
 
   async absoluteExpiryForToken(token: string): Promise<Date | null> {
@@ -65,17 +40,9 @@ export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
     return Number.isNaN(date.getTime()) ? null : date;
   }
 
-  async hasPasswordCredential(email: string): Promise<boolean> {
-    const row = await this.database.prepare(
-      `SELECT 1 AS present
-       FROM "user" AS u
-       JOIN account AS a ON a.userId = u.id
-       WHERE lower(u.email) = lower(?)
-         AND a.providerId = 'credential'
-         AND a.password IS NOT NULL
-       LIMIT 1`,
-    ).bind(email).first<{ present: number }>();
-    return Boolean(row?.present);
+  async deleteSessionsForUser(userId: string): Promise<number> {
+    const result = await this.database.prepare('DELETE FROM session WHERE userId = ?').bind(userId).run();
+    return Number(result.meta.changes ?? 0);
   }
 
   async getUser(userId: string): Promise<BetterAuthUserRecord | null> {
@@ -130,48 +97,6 @@ export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
        WHERE userId = ? AND organizationId = ? LIMIT 1`,
     ).bind(userId, organizationId).first());
   }
-}
-
-export function cloudflarePasswordPrimitive(
-  env: CloudflareBetterAuthEnv,
-  shardKey: string,
-): PasswordPrimitive {
-  return {
-    hash: (password) => authGuard(env, 'kdf-hash', shardKey).hashPassword(password),
-    verify: (input) => authGuard(
-      env,
-      'kdf-verify',
-      input.hash === DUMMY_PASSWORD_RECORD
-        ? shardKey
-        : verifierShard(input.hash) ?? shardKey,
-    ).verifyPassword(input),
-  };
-}
-
-export async function cloudflareLoginSourceAllowed(
-  env: CloudflareBetterAuthEnv,
-  source: string,
-): Promise<boolean> {
-  return authGuard(env, 'source-rate', source).allow('sign-in', 50, 10_000);
-}
-
-export async function cloudflareLoginIdentityAllowed(
-  env: CloudflareBetterAuthEnv,
-  email: string,
-): Promise<boolean> {
-  return authGuard(env, 'identity-rate', email).allow('sign-in', 5, 10_000);
-}
-
-function authGuard(
-  env: CloudflareBetterAuthEnv,
-  purpose: string,
-  shardKey: string,
-) {
-  return env.AUTH_GUARD.getByName(`${purpose}:${stableDigest(shardKey)}`);
-}
-
-function stableDigest(value: string): string {
-  return createHash('sha256').update(value).digest('base64url');
 }
 
 function isPresent<T>(value: T | null): value is T {

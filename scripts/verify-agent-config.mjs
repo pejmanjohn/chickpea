@@ -11,7 +11,7 @@
  *   5. assert the provider request carries the new model, instructions, and
  *      channel addendum, and that Slack receives the final reply.
  */
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -22,14 +22,18 @@ import {
   getFreePort,
   loadFake,
   postSignedEvent,
+  seedOfflineSlackAuthority,
   spawnServer,
   stopChild,
   waitForFinals,
   waitForReady,
 } from './lib/offline-harness.mjs';
 
-const ADMIN_TOKEN = 'agent-config-admin-token';
-const NEW_CHANNEL = 'C_NEW';
+const NEW_CHANNEL = 'CNEW1234';
+const WORKSPACE = 'TDEMO123';
+const APP_ID = 'ADEMO123';
+const BOT_USER_ID = 'UBOT1234';
+const ACTOR_USER_ID = 'UALICE01';
 const NEW_THREAD_TS = '1782771200.000100';
 const AGENT_ID = 'agent_runtime_config';
 const MODEL_SPECIFIER = 'local-stub/agent-config-model';
@@ -44,6 +48,7 @@ const appMention = JSON.parse(
 
 const netGuardLog = join(mkdtempSync(join(tmpdir(), 'flue-agent-config-net-')), 'external.log');
 const results = [];
+let personalToken = '';
 
 function record(name, passed, detail) {
   results.push({ name, passed, detail });
@@ -54,7 +59,7 @@ async function postAdminJson(baseUrl, method, path, body) {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
-      authorization: `Bearer ${ADMIN_TOKEN}`,
+      authorization: `Bearer ${personalToken}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
@@ -72,13 +77,16 @@ async function postAdminJson(baseUrl, method, path, body) {
 function mentionForNewChannel() {
   return {
     ...appMention,
+    team_id: WORKSPACE,
+    api_app_id: APP_ID,
     event_id: 'Ev_AGENT_CONFIG_NEW',
     event: {
       ...appMention.event,
+      user: ACTOR_USER_ID,
       channel: NEW_CHANNEL,
       ts: NEW_THREAD_TS,
       event_ts: NEW_THREAD_TS,
-      text: '<@U_BOT> prove runtime agent config',
+      text: `<@${BOT_USER_ID}> prove runtime agent config`,
     },
   };
 }
@@ -89,7 +97,21 @@ function finish() {
   process.exit(failed.length === 0 ? 0 : 1);
 }
 
-const backend = new FakeSlackBackend();
+const backend = new FakeSlackBackend({
+  slack: {
+    identity: { appId: APP_ID, botUserId: BOT_USER_ID, teamId: WORKSPACE },
+    channels: [{ id: NEW_CHANNEL, name: 'runtime-config', isMember: true, teamId: WORKSPACE }],
+    channelMembers: { [NEW_CHANNEL]: [ACTOR_USER_ID, BOT_USER_ID] },
+    workspaceUsers: [
+      { id: ACTOR_USER_ID, teamId: WORKSPACE },
+      { id: BOT_USER_ID, teamId: WORKSPACE, isBot: true, isAppUser: true },
+    ],
+  },
+});
+const harnessDir = mkdtempSync(join(tmpdir(), 'flue-agent-config-state-'));
+const dbPath = join(harnessDir, 'flue.db');
+const stateDbPath = join(harnessDir, 'state.db');
+const keyringPath = join(harnessDir, 'credential-keyring.json');
 let fake;
 try {
   fake = await backend.listen();
@@ -111,23 +133,38 @@ try {
 }
 
 let child;
+let getServerOutput = () => '';
 try {
   const serverEntry = await buildNodeServer();
   console.log(`built node server; node ${assertNodeVersion()}`);
 
   const port = await getFreePort();
+  const canonicalOrigin = `http://127.0.0.1:${port}`;
+  personalToken = await seedOfflineSlackAuthority({
+    stateDbPath,
+    keyringPath,
+    canonicalOrigin,
+    teamId: WORKSPACE,
+    slackUserId: ACTOR_USER_ID,
+    appId: APP_ID,
+    botUserId: BOT_USER_ID,
+  });
   const spawned = spawnServer({
     serverEntry,
     port,
     fakeUrl: fake.url,
     netGuardLog,
     env: {
-      TAG_DB_PATH: ':memory:',
-      TAG_ADMIN_TOKEN: ADMIN_TOKEN,
+      TAG_DB_PATH: dbPath,
+      SLACK_STATE_DB_PATH: stateDbPath,
+      CHICKPEA_CREDENTIAL_KEYRING_PATH: keyringPath,
+      CHICKPEA_AUTH_SECRET: '9d'.repeat(32),
+      LOCAL_STUB_MODELS: PROVIDER_MODEL,
     },
   });
   child = spawned.child;
   const { baseUrl, eventsUrl, getOutput } = spawned;
+  getServerOutput = getOutput;
   await waitForReady(child, eventsUrl, getOutput);
   console.log(`flue node server ready at ${baseUrl}`);
 
@@ -145,7 +182,7 @@ try {
   );
 
   const putAssignment = await postAdminJson(baseUrl, 'PUT', '/admin/api/assignments', {
-    workspaceId: 'T_DEMO',
+    workspaceId: WORKSPACE,
     channelId: NEW_CHANNEL,
     agentId: AGENT_ID,
     enabled: true,
@@ -188,7 +225,8 @@ try {
       final?.channel === NEW_CHANNEL &&
       final?.threadTs === NEW_THREAD_TS &&
       final?.text.includes(STUB_REPLY_MARKER),
-    `finals=${finals.length} channel=${String(final?.channel)} thread=${String(final?.threadTs)}`,
+    `finals=${finals.length} channel=${String(final?.channel)} thread=${String(final?.threadTs)} ` +
+      `text=${JSON.stringify(final?.text)} methods=${backend.wireLog.map((entry) => entry.method).join(',')}`,
   );
 
   const attempted = existsSync(netGuardLog) ? readFileSync(netGuardLog, 'utf8').trim() : '';
@@ -200,10 +238,14 @@ try {
 } catch (error) {
   record('verification harness', false, error instanceof Error ? error.message : String(error));
 } finally {
+  if (results.some((result) => !result.passed)) {
+    console.error(`server output:\n${getServerOutput()}`);
+  }
   if (child) {
     await stopChild(child);
   }
   await backend.close();
+  rmSync(harnessDir, { recursive: true, force: true });
 }
 
 finish();

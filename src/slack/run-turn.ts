@@ -121,11 +121,11 @@ export { createSlackWebClient } from './web-client.ts';
  */
 
 /**
- * Lazily-constructed outbound Slack client, keyed by the RESOLVED bot token
- * (env > wizard-stored; see credentials.ts). Resolving at first use keeps the
- * cloudflare build from binding a token at import time and — because the cache
- * is token-keyed — makes a wizard save take effect on the next event instead of
- * pinning the first-seen token for the isolate's lifetime.
+ * Lazily-constructed outbound Slack client, keyed by the bot token from the
+ * one active encrypted credential revision. Resolving at first use keeps the
+ * Cloudflare build from binding a token at import time and — because the cache
+ * is token-keyed — makes a promoted revision take effect on the next event
+ * instead of pinning the first-seen token for the isolate's lifetime.
  */
 let cachedClient: { botToken: string | undefined; client: WebClient } | undefined;
 export async function getClient(env: PlatformEnv | undefined): Promise<WebClient> {

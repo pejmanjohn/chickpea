@@ -128,7 +128,7 @@ try {
 
   await waitForReady(spawned.child, spawned.eventsUrl, spawned.getOutput);
   const event = structuredClone(APP_MENTION_FIXTURE);
-  event.event.text = `<@U_BOT> Return exactly ${EXPECTED_MARKER} and nothing else.`;
+  event.event.text = `<@UBOT> Return exactly ${EXPECTED_MARKER} and nothing else.`;
   const accepted = await postSignedEvent(spawned.eventsUrl, event);
   assert.equal(accepted.status, 200, 'signed Slack event was not accepted');
 

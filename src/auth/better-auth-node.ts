@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -6,14 +7,11 @@ import { resolveStateDbPath } from '../state/node-state-db.ts';
 import type {
   BetterAuthDatabaseBackend,
   BetterAuthMembershipRecord,
-  BetterAuthOwnerSetupAuthorityExpectation,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
 } from './better-auth-backend.ts';
 import {
   BETTER_AUTH_IDENTITY_AUTHORITY_SQL,
-  BETTER_AUTH_OWNER_SETUP_AUTHORITY_SQL,
-  betterAuthOwnerSetupAuthorityBindings,
   mapBetterAuthMembership,
   mapBetterAuthOrganization,
   mapBetterAuthUser,
@@ -46,14 +44,6 @@ export class NodeBetterAuthBackend implements BetterAuthDatabaseBackend {
     return Boolean(row?.present);
   }
 
-  async matchesOwnerSetupAuthority(
-    input: BetterAuthOwnerSetupAuthorityExpectation,
-  ): Promise<boolean> {
-    const row = this.database.prepare(BETTER_AUTH_OWNER_SETUP_AUTHORITY_SQL)
-      .get(...betterAuthOwnerSetupAuthorityBindings(input)) as { matches?: number } | undefined;
-    return Boolean(row?.matches);
-  }
-
   async absoluteExpiryForToken(token: string): Promise<Date | null> {
     const row = this.database.prepare(
       'SELECT absoluteExpiresAt FROM session WHERE token = ? LIMIT 1',
@@ -61,17 +51,8 @@ export class NodeBetterAuthBackend implements BetterAuthDatabaseBackend {
     return parseStoredDate(row?.absoluteExpiresAt);
   }
 
-  async hasPasswordCredential(email: string): Promise<boolean> {
-    const row = this.database.prepare(
-      `SELECT 1 AS present
-       FROM "user" AS u
-       JOIN account AS a ON a.userId = u.id
-       WHERE lower(u.email) = lower(?)
-         AND a.providerId = 'credential'
-         AND a.password IS NOT NULL
-       LIMIT 1`,
-    ).get(email);
-    return Boolean(row);
+  async deleteSessionsForUser(userId: string): Promise<number> {
+    return Number(this.database.prepare('DELETE FROM session WHERE userId = ?').run(userId).changes);
   }
 
   async getUser(userId: string): Promise<BetterAuthUserRecord | null> {
@@ -150,32 +131,68 @@ export function applyBetterAuthMigrations(
   database: DatabaseSync,
   migrationsDirectory = pathDefaultMigrations(),
 ): void {
-  database.exec(
-    `CREATE TABLE IF NOT EXISTS chickpea_better_auth_migrations (
-      name TEXT PRIMARY KEY,
-      applied_at INTEGER NOT NULL
-    )`,
-  );
   const migrations = readdirSync(migrationsDirectory)
     .filter((name) => /^\d+.*\.sql$/.test(name))
-    .sort();
-  for (const name of migrations) {
+    .sort()
+    .map((name) => {
+      const sql = readFileSync(path.join(migrationsDirectory, name), 'utf8');
+      return { name, sql, digest: createHash('sha256').update(sql).digest('hex') };
+    });
+  const ledgerExists = Boolean(database.prepare(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'chickpea_better_auth_migrations'",
+  ).get());
+  if (ledgerExists) {
+    const columns = database.prepare('PRAGMA table_info(chickpea_better_auth_migrations)').all()
+      .map((row) => String((row as { name?: unknown }).name));
+    if (!columns.includes('digest')) throw incompatibleBetterAuthSchema();
     const applied = database.prepare(
-      'SELECT 1 AS applied FROM chickpea_better_auth_migrations WHERE name = ?',
-    ).get(name);
-    if (applied) continue;
+      'SELECT name, digest FROM chickpea_better_auth_migrations ORDER BY name',
+    ).all() as Array<{ name: string; digest: string }>;
+    if (applied.some((entry) =>
+      migrations.find((migration) => migration.name === entry.name)?.digest !== entry.digest)) {
+      throw incompatibleBetterAuthSchema();
+    }
+  } else {
+    const existingAuthorityTable = database.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table'
+       AND name IN ('user','account','verification','session','organization','member','invitation')
+       LIMIT 1`,
+    ).get();
+    if (existingAuthorityTable) throw incompatibleBetterAuthSchema();
+    database.exec(
+      `CREATE TABLE chickpea_better_auth_migrations (
+        name TEXT PRIMARY KEY,
+        digest TEXT NOT NULL,
+        applied_at INTEGER NOT NULL
+      )`,
+    );
+  }
+  for (const migration of migrations) {
+    const applied = database.prepare(
+      'SELECT digest FROM chickpea_better_auth_migrations WHERE name = ?',
+    ).get(migration.name) as { digest?: string } | undefined;
+    if (applied) {
+      if (applied.digest !== migration.digest) throw incompatibleBetterAuthSchema();
+      continue;
+    }
     database.exec('BEGIN IMMEDIATE;');
     try {
-      database.exec(readFileSync(path.join(migrationsDirectory, name), 'utf8'));
+      database.exec(migration.sql);
       database.prepare(
-        'INSERT INTO chickpea_better_auth_migrations (name, applied_at) VALUES (?, ?)',
-      ).run(name, Date.now());
+        'INSERT INTO chickpea_better_auth_migrations (name, digest, applied_at) VALUES (?, ?, ?)',
+      ).run(migration.name, migration.digest, Date.now());
       database.exec('COMMIT;');
     } catch (error) {
       database.exec('ROLLBACK;');
       throw error;
     }
   }
+}
+
+function incompatibleBetterAuthSchema(): Error {
+  return new Error(
+    'AUTH_DB contains an incompatible Better Auth 0001; use a fresh empty database.',
+  );
 }
 
 function pathDefaultMigrations(): string {

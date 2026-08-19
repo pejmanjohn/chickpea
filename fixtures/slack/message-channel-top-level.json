@@ -1,7 +1,7 @@
 {
   "token": "verification-token-not-a-secret",
-  "team_id": "T_DEMO",
-  "api_app_id": "A_DEMO",
+  "team_id": "TDEMO",
+  "api_app_id": "ADEMO",
   "event_id": "Ev_MSG_TOP_001",
   "event_time": 1782770410,
   "type": "event_callback",

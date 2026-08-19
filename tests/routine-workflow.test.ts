@@ -81,7 +81,7 @@ function dependencies(events: string[] = []) {
         config: { ...config, workspaceId: routine.workspaceId, channelId: routine.channelId },
         accessHash: 'a'.repeat(64),
         botToken: 'xoxb-test',
-        botUserId: 'U_BOT',
+        botUserId: 'UBOT',
       };
     },
     resolveModel: async () => {
@@ -279,7 +279,7 @@ test('reattachment never combines a frozen Agent A envelope with current Agent B
           },
           accessHash: 'b'.repeat(64),
           botToken: 'xoxb-test',
-          botUserId: 'U_BOT',
+          botUserId: 'UBOT',
         };
       },
       resolveModel: async () => {

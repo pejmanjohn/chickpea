@@ -1,14 +1,13 @@
 import type {
-  ChickpeaIdentityControlStore,
   HumanIdentityDirectory,
+  IdentityResolution,
+  IdentityStore,
   Membership,
   Organization,
-  OrganizationRole,
   User,
 } from '../identity/types.ts';
-import type { BetterAuthDatabaseBackend, BetterAuthMembershipRecord } from './better-auth-backend.ts';
+import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
 import { createBetterAuth } from './better-auth.ts';
-import type { PasswordPrimitive } from './password.ts';
 import type {
   AuthPrincipal,
   PrincipalAuthenticationResult,
@@ -17,95 +16,66 @@ import type {
 
 interface BetterAuthDirectoryInput {
   backend: BetterAuthDatabaseBackend;
-  access: Pick<ChickpeaIdentityControlStore, 'getMembershipAccessOverlay'>;
+  access: IdentityStore;
   organizationId: string;
   canonicalAdminOrigin: string;
 }
 
-/**
- * Maps Better Auth's storage records into Chickpea-owned identity shapes.
- * Better Auth types deliberately stop at this file.
- */
+/** Chickpea's Slack-keyed TAG_STATE directory remains authoritative. */
 export class BetterAuthDirectory implements HumanIdentityDirectory {
-  private readonly users = new Map<string, User>();
   constructor(private readonly input: BetterAuthDirectoryInput) {}
 
-  async getOrganization(): Promise<Organization | undefined> {
-    const organization = await this.input.backend.getOrganization(this.input.organizationId);
-    if (!organization) return undefined;
-    return {
-      id: organization.id,
-      displayName: organization.name,
-      authMode: 'password_active',
-      canonicalAdminOrigin: this.input.canonicalAdminOrigin,
-      createdAt: organization.createdAt,
-      updatedAt: organization.createdAt,
-    };
+  getOrganization(): Promise<Organization | undefined> {
+    return this.input.access.getOrganization();
   }
 
-  async listMemberships(): Promise<Membership[]> {
-    const records = await this.input.backend.listMemberships(this.input.organizationId);
-    for (const record of records) {
-      if (record.user) this.users.set(record.user.id, userRecord(record.user));
+  listMemberships(): Promise<Membership[]> {
+    return this.input.access.listMemberships();
+  }
+
+  getUser(userId: string): Promise<User | undefined> {
+    return this.input.access.getUser(userId);
+  }
+
+  getMembership(membershipId: string): Promise<Membership | undefined> {
+    return this.input.access.getMembership(membershipId);
+  }
+
+  getMembershipForUser(userId: string, organizationId?: string): Promise<Membership | undefined> {
+    return this.input.access.getMembershipForUser(userId, organizationId);
+  }
+
+  async resolveBetterAuthUser(betterAuthUserId: string): Promise<IdentityResolution | undefined> {
+    const binding = (await this.input.access.listExternalIdentities()).find((candidate) =>
+      candidate.betterAuthUserId === betterAuthUserId);
+    if (!binding) return undefined;
+    const [betterAuthMembership, organization, user, membership, overlay] = await Promise.all([
+      this.input.backend.getMembership(binding.betterAuthMembershipId),
+      this.input.access.getOrganization(),
+      this.input.access.getUser(binding.userId),
+      this.input.access.getMembership(binding.membershipId),
+      this.input.access.getMembershipAccessOverlay(binding.membershipId),
+    ]);
+    if (!betterAuthMembership || betterAuthMembership.role !== 'member' ||
+        betterAuthMembership.userId !== betterAuthUserId ||
+        betterAuthMembership.organizationId !== this.input.organizationId ||
+        !organization || !user || !membership ||
+        membership.organizationId !== organization.id ||
+        binding.organizationId !== organization.id) {
+      return undefined;
     }
-    const mapped = await Promise.all(records.map((record) => this.mapMembership(record)));
-    return mapped.filter(isPresent);
-  }
-
-  async getUser(userId: string): Promise<User | undefined> {
-    const cached = this.users.get(userId);
-    if (cached) return cached;
-    const user = await this.input.backend.getUser(userId);
-    if (!user) return undefined;
-    const mapped = userRecord(user);
-    this.users.set(mapped.id, mapped);
-    return mapped;
-  }
-
-  async findUserByEmail(email: string): Promise<User | undefined> {
-    const user = await this.input.backend.findUserByEmail(email);
-    return user ? userRecord(user) : undefined;
-  }
-
-  async getMembership(membershipId: string): Promise<Membership | undefined> {
-    const membership = await this.input.backend.getMembership(membershipId);
-    if (!membership || membership.organizationId !== this.input.organizationId) return undefined;
-    return (await this.mapMembership(membership)) ?? undefined;
-  }
-
-  async getMembershipForUser(
-    userId: string,
-    organizationId = this.input.organizationId,
-  ): Promise<Membership | undefined> {
-    if (organizationId !== this.input.organizationId) return undefined;
-    const membership = await this.input.backend.getMembershipForUser(userId, organizationId);
-    return membership ? (await this.mapMembership(membership)) ?? undefined : undefined;
-  }
-
-  private async mapMembership(record: BetterAuthMembershipRecord): Promise<Membership | null> {
-    const role = organizationRole(record.role);
-    if (!role || record.organizationId !== this.input.organizationId) return null;
-    const overlay = await this.input.access.getMembershipAccessOverlay(record.id);
-    const overlayIsValid = !overlay || overlay.organizationId === record.organizationId;
-    return {
-      id: record.id,
-      organizationId: record.organizationId,
-      userId: record.userId,
-      role,
-      status: overlayIsValid && overlay?.accessStatus !== 'suspended' ? 'active' : 'suspended',
-      createdAt: record.createdAt,
-      updatedAt: overlay?.updatedAt ?? record.createdAt,
-    };
+    if (overlay && (overlay.organizationId !== membership.organizationId ||
+        overlay.accessStatus !== 'active')) return undefined;
+    return { user, binding, membership };
   }
 }
 
 interface BetterAuthSessionAuthenticatorInput {
   backend: BetterAuthDatabaseBackend;
-  directory: HumanIdentityDirectory;
+  directory: BetterAuthDirectory;
   organizationId: string;
   baseURL: string;
   secret: string;
-  password: PasswordPrimitive;
 }
 
 export class BetterAuthSessionAuthenticator implements PrincipalAuthenticator {
@@ -117,8 +87,6 @@ export class BetterAuthSessionAuthenticator implements PrincipalAuthenticator {
       backend: input.backend,
       baseURL: input.baseURL,
       secret: input.secret,
-      password: input.password,
-      allowSignUp: false,
     });
   }
 
@@ -128,21 +96,16 @@ export class BetterAuthSessionAuthenticator implements PrincipalAuthenticator {
       returnHeaders: true,
     }) as unknown as {
       headers?: Headers;
-      response?: {
-        session?: { id?: unknown };
-        user?: { id?: unknown };
-      } | null;
+      response?: { session?: { id?: unknown }; user?: { id?: unknown } } | null;
     };
-    const userId = result.response?.user?.id;
+    const betterAuthUserId = result.response?.user?.id;
     const sessionId = result.response?.session?.id;
-    if (typeof userId !== 'string' || typeof sessionId !== 'string') return undefined;
-    const membership = await this.input.directory.getMembershipForUser(
-      userId,
-      this.input.organizationId,
-    );
-    if (!membership || membership.status !== 'active') return undefined;
+    if (typeof betterAuthUserId !== 'string' || typeof sessionId !== 'string') return undefined;
+    const resolution = await this.input.directory.resolveBetterAuthUser(betterAuthUserId);
+    if (!resolution || resolution.membership.status !== 'active') return undefined;
+    const { user, membership } = resolution;
     const principal: AuthPrincipal = {
-      userId,
+      userId: user.id,
       membershipId: membership.id,
       organizationId: membership.organizationId,
       role: membership.role,
@@ -153,28 +116,4 @@ export class BetterAuthSessionAuthenticator implements PrincipalAuthenticator {
     };
     return { principal, ...(result.headers ? { responseHeaders: result.headers } : {}) };
   }
-}
-
-function organizationRole(value: string): OrganizationRole | undefined {
-  return value === 'owner' || value === 'admin' || value === 'member' ? value : undefined;
-}
-
-function userRecord(value: {
-  id: string;
-  email: string;
-  name: string;
-  createdAt: number;
-  updatedAt: number;
-}): User {
-  return {
-    id: value.id,
-    primaryEmail: value.email,
-    displayName: value.name || null,
-    createdAt: value.createdAt,
-    updatedAt: value.updatedAt,
-  };
-}
-
-function isPresent<T>(value: T | null): value is T {
-  return value !== null;
 }

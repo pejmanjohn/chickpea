@@ -75,10 +75,13 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'app.jsx'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'assets', 'chickpea-mark.svg'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'styles.css'),
-  exportPath('docs', 'runbooks', 'access-recovery.md'),
-  exportPath('docs', 'runbooks', 'auth-db-upgrade.md'),
+  exportPath('docs', 'plans', '2026-07-28-001-feat-openai-subscription-auth-plan.md'),
+  exportPath('docs', 'runbooks', 'auth-db-deployment.md'),
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
-  exportPath('docs', 'runbooks', 'password-recovery.md'),
+  exportPath('docs', 'runbooks', 'slack-auth-recovery.md'),
+  exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
+  exportPath('docs', 'runbooks', 'openai-subscription.md'),
+  exportPath('docs', 'runbooks', 'slack-interaction-operations.md'),
 ]);
 
 const forbiddenSourcePaths = new Set([
@@ -447,17 +450,14 @@ function verifyNpmPackManifest() {
     'scripts/deploy-with-epilogue.mjs',
     'scripts/recover-auth.mjs',
     'docs/authentication.md',
-    'docs/runbooks/access-recovery.md',
-    'docs/runbooks/auth-db-upgrade.md',
+    'docs/runbooks/auth-db-deployment.md',
     'docs/runbooks/coding-sandbox-deployment.md',
-    'docs/runbooks/password-recovery.md',
+    'docs/runbooks/slack-auth-recovery.md',
     'migrations/better-auth/0001_better_auth.sql',
     'scripts/flue-build-cf.mjs',
-    'scripts/generate-common-passwords.mjs',
     'slack-app-manifest.json',
     'src/app.ts',
     'src/cloudflare.ts',
-    'src/auth/generated-common-passwords.license.txt',
     'vite.config.ts',
     'vite.node.config.ts',
     'wrangler.jsonc',
@@ -490,13 +490,15 @@ function verifyAuthenticationExportContract(packageJson) {
   }
   const recovery = readFileSync(join(scratch, 'scripts', 'recover-auth.mjs'), 'utf8');
   if (/\bfetch\s*\(/.test(recovery) || /node:https/.test(recovery)) {
-    fail('Token-mode recovery must remain an operator-side state command with no HTTP transport');
+    fail('Slack recovery preflight must remain read-only with no HTTP transport');
   }
   const identityTypes = readFileSync(join(scratch, 'src', 'identity', 'types.ts'), 'utf8');
-  if (!identityTypes.includes("Omit<Invitation, 'tokenHash' | 'normalizedEmail'>") ||
+  if (!identityTypes.includes("Omit<Invitation, 'locatorHash'>") ||
       !identityTypes.includes("Omit<PersonalTokenRecord, 'tokenHash'>") ||
-      !identityTypes.includes("Omit<BrowserSessionRecord, 'sessionHash'>")) {
-    fail('Identity export summary must omit invitation, personal-token, and session hashes');
+      !identityTypes.includes("Omit<BrowserSessionRecord, 'sessionHash'>") ||
+      !identityTypes.includes("Omit<AuthOperation, 'capabilityHash'>") ||
+      !identityTypes.includes("Omit<SlackSetupTransaction, 'locatorHash'>")) {
+    fail('Identity export summary must omit invitation, operation, setup, token, and session locators');
   }
   const example = readFileSync(join(scratch, '.dev.vars.example'), 'utf8');
   const activeExampleKeys = example.split('\n')

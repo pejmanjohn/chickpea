@@ -10,8 +10,19 @@ import { requestPrincipal } from '../auth/service.ts';
  * guard, and admin identity derivation.
  */
 
-export async function readJson(c: Context): Promise<unknown> {
-  try { return await c.req.json(); } catch { return undefined; }
+export async function readJson(c: Context, maxBytes?: number): Promise<unknown> {
+  const declared = Number(c.req.header('content-length') ?? 0);
+  if (maxBytes !== undefined && Number.isFinite(declared) && declared > maxBytes) {
+    return undefined;
+  }
+  try {
+    if (maxBytes === undefined) return await c.req.json();
+    const raw = await c.req.text();
+    if (new TextEncoder().encode(raw).byteLength > maxBytes) return undefined;
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
 }
 
 export function invalidRequest(c: Context): Response {

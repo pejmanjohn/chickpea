@@ -27,7 +27,7 @@ import { demoExecChannelAssignment, seededAgents } from '../src/config/seed.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
 
-const THREAD_KEY = 'T_DEMO:C_EXEC:1782770400.000100';
+const THREAD_KEY = 'TDEMO:C_EXEC:1782770400.000100';
 
 function modelAgent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {

@@ -15,10 +15,10 @@ import { fileURLToPath } from 'node:url';
 import { assertNodeVersion, loadTsModule } from './lib/offline-harness.mjs';
 
 const DEFAULT_HOST = '127.0.0.1';
-const WORKSPACE_ID = 'T_VISUAL';
+const WORKSPACE_ID = 'TVISUAL';
 const LOCAL_SLACK_TOKEN = 'xoxb-local-admin-visual-fixture';
 const LOCAL_SLACK_SECRET = 'local-admin-visual-signing-secret';
-const LOCAL_SLACK_BOT_ID = 'U_VISUAL_BOT';
+const LOCAL_SLACK_BOT_ID = 'UVISUALBOT';
 const ENV_KEYS = [
   'SLACK_API_URL',
   'SLACK_BOT_TOKEN',
@@ -30,11 +30,21 @@ export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
   agentInstructions: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze([]) }),
   agentMemory: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze(['Memory']) }),
   channelsIndex: Object.freeze({ path: '/admin/channels', actions: Object.freeze([]) }),
-  channelDetail: Object.freeze({ path: '/admin/channels/T_VISUAL/C_RELEASES', actions: Object.freeze([]) }),
+  channelDetail: Object.freeze({ path: '/admin/channels/TVISUAL/C_RELEASES', actions: Object.freeze([]) }),
   channelAdvanced: Object.freeze({
-    path: '/admin/channels/T_VISUAL/C_RELEASES',
+    path: '/admin/channels/TVISUAL/C_RELEASES',
     actions: Object.freeze(['Advanced']),
   }),
+});
+
+export const CANONICAL_SLACK_AUTH_VISUAL_STATES = Object.freeze({
+  signIn: Object.freeze({ path: '/__admin_visual_fixture/auth/sign-in' }),
+  setupCreate: Object.freeze({ path: '/__admin_visual_fixture/auth/setup-create' }),
+  setupApproval: Object.freeze({ path: '/__admin_visual_fixture/auth/setup-approval' }),
+  setupOwner: Object.freeze({ path: '/__admin_visual_fixture/auth/setup-owner' }),
+  accessDenied: Object.freeze({ path: '/__admin_visual_fixture/auth/access-denied' }),
+  ownerComplete: Object.freeze({ path: '/__admin_visual_fixture/auth/owner-complete' }),
+  recovery: Object.freeze({ path: '/__admin_visual_fixture/auth/recovery' }),
 });
 
 const VISUAL_CHANNELS = Object.freeze([
@@ -47,6 +57,40 @@ const VISUAL_CHANNELS = Object.freeze([
 ]);
 
 let activeFixture = false;
+
+async function seedVisualSlackOwner(identity) {
+  const operation = await identity.createAuthOperation({
+    id: 'first_owner_visual',
+    kind: 'first_owner_claim',
+    expectedSlackTeamId: WORKSPACE_ID,
+    expectedSlackUserId: 'UVISUALOWNER',
+    chickpeaRole: 'owner',
+    capabilityHash: 'a'.repeat(64),
+    expiresAt: Date.now() + 60_000,
+  });
+  await identity.createOwnerClaim({
+    operationId: operation.id,
+    slackTeamId: WORKSPACE_ID,
+    slackUserId: 'UVISUALOWNER',
+  });
+  await identity.advanceAuthOperation({
+    operationId: operation.id,
+    capabilityHash: 'a'.repeat(64),
+    step: 1,
+    betterAuthUserId: 'ba_user_visual',
+    betterAuthOrganizationId: '11111111-1111-4111-8111-111111111111',
+    betterAuthMembershipId: 'ba_member_visual',
+  });
+  return identity.claimOwner({
+    operationId: operation.id,
+    organizationId: 'org_oss',
+    slackTeamId: WORKSPACE_ID,
+    slackUserId: 'UVISUALOWNER',
+    displayName: 'Visual Owner',
+    betterAuthUserId: 'ba_user_visual',
+    betterAuthMembershipId: 'ba_member_visual',
+  });
+}
 
 function assertLoopbackHost(host) {
   if (host !== '127.0.0.1' && host !== '::1') {
@@ -193,7 +237,7 @@ async function seedConfig(store) {
   await store.updateSlackIdentity(defaultIdentity.id, defaultIdentity.connectionRevision, {
     lifecycle: 'connected',
     teamId: WORKSPACE_ID,
-    appId: 'A_VISUAL',
+    appId: 'AVISUAL',
     botUserId: LOCAL_SLACK_BOT_ID,
     credentialProvenance: 'workspace_default',
     observedDisplayName: 'Chickpea',
@@ -202,17 +246,8 @@ async function seedConfig(store) {
   });
 }
 
-async function seedSettings(settings, slackTokenFingerprint) {
-  const values = {
-    'slack.connectionRevision': 'visual-fixture-1',
-    'slack.botToken': LOCAL_SLACK_TOKEN,
-    'slack.signingSecret': LOCAL_SLACK_SECRET,
-    'slack.botUserId': LOCAL_SLACK_BOT_ID,
-    'slack.teamId': WORKSPACE_ID,
-    'slack.teamName': 'Acme Design',
-    'slack.teamTokenFingerprint': slackTokenFingerprint(LOCAL_SLACK_TOKEN),
-  };
-  for (const [key, value] of Object.entries(values)) await settings.setSetting(key, value);
+async function seedSettings(settings) {
+  await settings.setSetting('slack.teamName', 'Acme Design');
 }
 
 async function seedMemory(memory) {
@@ -284,7 +319,7 @@ function fakeSlackResponse(pathname, body) {
   if (pathname.endsWith('/auth.test')) {
     return {
       ok: true,
-      app_id: 'A_VISUAL',
+      app_id: 'AVISUAL',
       team: 'Acme Design',
       team_id: WORKSPACE_ID,
       user_id: LOCAL_SLACK_BOT_ID,
@@ -401,6 +436,17 @@ export async function startAdminVisualFixture(options = {}) {
     assertNodeVersion();
     const { Hono } = await import('hono');
     const { createAdminRoutes } = await loadTsModule('src/admin/routes.ts');
+    const {
+      renderSlackAccessDeniedPage,
+      renderSlackOwnerCompletePage,
+      renderSlackRecoveryPage,
+      renderSlackSetupPage,
+      renderSlackSignInPage,
+    } = await loadTsModule('src/admin/page.ts');
+    const {
+      buildSlackAppManifest,
+      slackManifestPrefillUrl,
+    } = await loadTsModule('src/slack/identity-manifest.ts');
     const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
     const { SqliteSettingsStore } = await loadTsModule('src/config/settings-store.ts');
     const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
@@ -410,12 +456,13 @@ export async function startAdminVisualFixture(options = {}) {
     const { SqliteSlackStateStore } = await loadTsModule('src/slack/claim-store.ts');
     const { SqliteAgentSnapshotStore } = await loadTsModule('src/config/snapshot-store.ts');
     const { SqliteIdentityStore } = await loadTsModule('src/identity/store.ts');
+    const { generateCredentialKeyring } = await loadTsModule('src/slack/credential-keyring.ts');
+    const { writeSlackIdentityCredentials } = await loadTsModule('src/slack/identity-credentials.ts');
     const {
       invalidateSlackChannelsCache,
     } = await loadTsModule('src/slack/channels.ts');
     const {
       invalidateStoredSlackCredentials,
-      slackTokenFingerprint,
     } = await loadTsModule('src/slack/credentials.ts');
 
     invalidateSlackChannelsCache();
@@ -436,11 +483,66 @@ export async function startAdminVisualFixture(options = {}) {
     stores.push(store, settings, memory, routines, usage, work, slackState, snapshots, identity);
 
     await seedConfig(store);
-    await seedSettings(settings, slackTokenFingerprint);
+    await seedSettings(settings);
+    const slackCredentials = {
+      state: identity,
+      keyring: generateCredentialKeyring(),
+    };
+    await writeSlackIdentityCredentials(
+      slackCredentials,
+      'slack_identity_default',
+      null,
+      {
+        botToken: LOCAL_SLACK_TOKEN,
+        signingSecret: LOCAL_SLACK_SECRET,
+        botUserId: LOCAL_SLACK_BOT_ID,
+        appId: 'AVISUAL',
+        teamId: WORKSPACE_ID,
+      },
+    );
     await seedMemory(memory);
+    const owner = await seedVisualSlackOwner(identity);
 
     const adminToken = `visual-${randomBytes(18).toString('base64url')}`;
     const app = new Hono();
+    const authManifest = buildSlackAppManifest({
+      kind: 'control_plane', origin: 'https://chickpea.example',
+    });
+    const authSetup = (state) => ({
+      id: 'setup_visual', state, revision: 4, destination: '/admin/channels',
+      createdAt: 1, updatedAt: 2, expiresAt: Date.now() + 86_400_000,
+      appId: 'AVISUAL', manifestFingerprint: 'f'.repeat(64),
+      credentialRevision: 'slackrev_visual',
+    });
+    const authPages = {
+      'sign-in': renderSlackSignInPage('/admin/channels'),
+      'setup-create': renderSlackSetupPage({
+        setup: authSetup('awaiting_app_creation'), destination: '/admin/channels',
+        manifest: authManifest, manifestPrefillUrl: slackManifestPrefillUrl(authManifest),
+      }),
+      'setup-approval': renderSlackSetupPage({
+        setup: authSetup('approval_pending'), destination: '/admin/channels',
+        manifest: authManifest, manifestPrefillUrl: slackManifestPrefillUrl(authManifest),
+      }),
+      'setup-owner': renderSlackSetupPage({
+        setup: authSetup('bot_installed'), destination: '/admin/channels',
+        manifest: authManifest, manifestPrefillUrl: slackManifestPrefillUrl(authManifest),
+      }),
+      'access-denied': renderSlackAccessDeniedPage({
+        purpose: 'login', destination: '/admin/channels', reason: 'user_mismatch',
+        workspace: { teamId: WORKSPACE_ID, teamName: 'Acme' },
+      }),
+      'owner-complete': renderSlackOwnerCompletePage('/admin/channels'),
+      recovery: renderSlackRecoveryPage({
+        stage: 'credentials', expectedAppId: 'AVISUAL', expectedTeamId: WORKSPACE_ID,
+      }),
+    };
+    app.get('/__admin_visual_fixture/auth/:state', (c) => {
+      const html = authPages[c.req.param('state')];
+      if (!html) return c.notFound();
+      c.header('Cache-Control', 'no-store');
+      return c.html(html);
+    });
     app.post('/__admin_visual_fixture/slack/:method', async (c) => {
       if (c.req.header('authorization') !== `Bearer ${LOCAL_SLACK_TOKEN}`) {
         return c.json({ ok: false, error: 'invalid_auth' });
@@ -459,8 +561,25 @@ export async function startAdminVisualFixture(options = {}) {
       slackState,
       snapshots,
       identity,
+      slackCredentials,
       usageAdminUi: true,
-      adminToken,
+      authService: {
+        async authenticateRequest(request) {
+          if (request.headers.get('authorization') !== `Bearer ${adminToken}`) {
+            throw new Error('Authentication unavailable.');
+          }
+          return {
+            userId: owner.user.id,
+            membershipId: owner.membership.id,
+            organizationId: owner.membership.organizationId,
+            role: 'owner',
+            authenticatorKind: 'visual_slack_session',
+            credentialId: 'visual_session',
+            correlationId: 'visual_request',
+            machine: false,
+          };
+        },
+      },
       knownProviders: new Set(['local-stub']),
       runtimeDrain: async () => ({
         drained: true,
@@ -482,19 +601,26 @@ export async function startAdminVisualFixture(options = {}) {
       throw new Error(`Admin visual fixture did not bind to loopback: ${String(bound)}.`);
     }
     baseUrl = `http://${urlHost(bound.address)}:${bound.port}`;
+    const control = await identity.getAuthControl();
+    await identity.updateAuthControl({
+      expectedRevision: control.revision,
+      canonicalAdminOrigin: baseUrl,
+    });
+    await identity.updateOrganizationAuth({
+      organizationId: owner.membership.organizationId,
+      authMode: 'slack_active',
+      canonicalAdminOrigin: baseUrl,
+    });
 
-    // These values are visibly fake and useful only while this loopback server
-    // exists. Setting the complete triple prevents ambient real Slack
-    // credentials from winning the production resolver's env-first policy.
-    process.env.SLACK_BOT_TOKEN = LOCAL_SLACK_TOKEN;
-    process.env.SLACK_SIGNING_SECRET = LOCAL_SLACK_SECRET;
-    process.env.SLACK_BOT_USER_ID = LOCAL_SLACK_BOT_ID;
+    // The API endpoint is process-local. Slack secrets stay exclusively in the
+    // encrypted fixture revision and never become runtime environment inputs.
     process.env.SLACK_API_URL = `${baseUrl}/__admin_visual_fixture/slack`;
 
     return {
       address: bound.address,
       adminToken,
       baseUrl,
+      authStates: CANONICAL_SLACK_AUTH_VISUAL_STATES,
       canonicalStates: CANONICAL_ADMIN_VISUAL_STATES,
       stateDbPath,
       stateDirectory,

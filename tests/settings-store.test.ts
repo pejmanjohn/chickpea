@@ -152,11 +152,11 @@ test('SqliteSettingsStore persists across restart on a file database', async () 
   const path = join(dir, 'state.db');
   try {
     const first = new SqliteSettingsStore(path);
-    await first.setSetting('slack.botUserId', 'U_BOT');
+    await first.setSetting('slack.botUserId', 'UBOT');
     first.close();
 
     const second = new SqliteSettingsStore(path);
-    assert.equal(await second.getSetting('slack.botUserId'), 'U_BOT');
+    assert.equal(await second.getSetting('slack.botUserId'), 'UBOT');
     second.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -11,8 +11,6 @@ import type { ConfigSeed } from '../../src/config/store.ts';
 export const PARITY_SIGNING_SECRET = 'test-signing-secret';
 
 export interface ScenarioLaneConfig {
-  /** `null` boots the lane WITHOUT a bot user id; omit to default to `U_BOT`. */
-  botUserId?: string | null;
   slack?: FakeSlackBehaviorConfig;
   provider?: FakeProviderConfig;
   configSeed?: ConfigSeed;

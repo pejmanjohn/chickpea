@@ -10,6 +10,7 @@ import { usageRuntimeRecordingEnabled } from '../src/usage/runtime-recorder.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import type { BindingId, RunId, WorkId, WorkStore } from '../src/work/types.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 test('committed deployment internalizes Usage defaults and keeps independent kill switches', async () => {
   const config = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
@@ -21,8 +22,11 @@ test('committed deployment internalizes Usage defaults and keeps independent kil
 
   const usage = new SqliteUsageStore(':memory:');
   try {
-    const app = createAdminRoutes({ adminToken: 'usage-default-test-token', usage });
-    const headers = { authorization: 'Bearer usage-default-test-token' };
+    const app = createAdminRoutes({
+      usage,
+      ...testAdminAuthority('usage-default-test-token'),
+    });
+    const headers = testAdminHeaders('usage-default-test-token');
     const enabled = await app.request('/admin', { headers }, deploymentEnv);
     assert.match(await enabled.text(), /var USAGE_ADMIN_UI = true/);
     const disabled = await app.request('/admin', { headers }, {
@@ -125,17 +129,17 @@ test('usage Admin APIs are authenticated, bounded, and expose no content fields'
     });
     assert.equal((await usage.summarize({ from: 1, to: 3_000 })).totals.operationCount, 2);
 
-    const app = createAdminRoutes({ adminToken: 'usage-test-token', usage });
+    const app = createAdminRoutes({ usage, ...testAdminAuthority('usage-test-token') });
     const unauthorized = await app.request('/admin/api/usage/summary?from=1&to=3000');
     assert.equal(unauthorized.status, 401);
 
-    const headers = { authorization: 'Bearer usage-test-token' };
+    const headers = testAdminHeaders('usage-test-token');
     const enabledPage = await app.request('/admin', { headers });
     assert.match(await enabledPage.text(), /var USAGE_ADMIN_UI = true/);
     const disabledPage = await createAdminRoutes({
-      adminToken: 'usage-test-token',
       usage,
       usageAdminUi: false,
+      ...testAdminAuthority('usage-test-token'),
     }).request('/admin/usage', { headers });
     assert.match(await disabledPage.text(), /var USAGE_ADMIN_UI = false/);
     const summary = await app.request(
@@ -248,11 +252,11 @@ test('Usage public and redacted serializers expose canonical Run IDs without ret
       },
     });
     const app = createAdminRoutes({
-      adminToken: 'usage-redaction-token',
       usage,
       work: batchedWork,
+      ...testAdminAuthority('usage-redaction-token'),
     });
-    const headers = { authorization: 'Bearer usage-redaction-token' };
+    const headers = testAdminHeaders('usage-redaction-token');
 
     const pageText = await (await app.request(
       '/admin/api/usage/operations?from=1&to=3000&limit=20',
