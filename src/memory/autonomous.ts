@@ -18,7 +18,15 @@ const AutonomousMemoryInputSchema = v.strictObject({
   body: v.pipe(v.string(), v.minLength(1), v.maxLength(8 * 1_024)),
 });
 
+export const AUTONOMOUS_MEMORY_RESULT_DATA_NAME = 'autonomousMemoryResult';
+
+export const AutonomousMemoryResultSchema = v.strictObject({
+  outcome: v.literal('not_saved'),
+  text: v.pipe(v.string(), v.minLength(1), v.maxLength(1_024)),
+});
+
 export type AutonomousMemoryInput = v.InferOutput<typeof AutonomousMemoryInputSchema>;
+export type AutonomousMemoryResult = v.InferOutput<typeof AutonomousMemoryResultSchema>;
 export type AutonomousMemoryTarget = 'agent' | 'channel';
 
 export interface AutonomousMemoryCoordinates {
@@ -57,6 +65,9 @@ export function autonomousMemoryInstruction(target: AutonomousMemoryTarget): str
 export function createAutonomousAgentMemoryTool(
   target: AutonomousMemoryTarget,
   save: (input: AutonomousMemoryInput) => Promise<{ slug: string; version: number }>,
+  options: {
+    finishDenied?: (result: AutonomousMemoryResult) => void;
+  } = {},
 ) {
   const label = target === 'agent' ? 'Agent' : 'Channel';
   return {
@@ -71,12 +82,26 @@ export function createAutonomousAgentMemoryTool(
       } catch (error) {
         const failure = autonomousMemoryFailureText(target, error);
         if (failure) {
-          return { output: `Memory was not saved: ${failure}` };
+          const result: AutonomousMemoryResult = {
+            outcome: 'not_saved',
+            text: `Memory was not saved: ${failure}`,
+          };
+          options.finishDenied?.(result);
+          return {
+            output: result.text,
+            ...(options.finishDenied ? { terminate: true } : {}),
+          };
         }
         throw error;
       }
     },
   };
+}
+
+/** Extract the last validated terminal memory result from Flue named data. */
+export function autonomousMemoryResultText(value: unknown): string | undefined {
+  const parsed = v.safeParse(v.array(AutonomousMemoryResultSchema), value);
+  return parsed.success ? parsed.output.at(-1)?.text : undefined;
 }
 
 function autonomousMemoryFailureText(

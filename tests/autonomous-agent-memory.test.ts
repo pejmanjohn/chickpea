@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  AUTONOMOUS_MEMORY_RESULT_DATA_NAME,
+  AutonomousMemoryResultSchema,
   autonomousMemoryInstruction,
+  autonomousMemoryResultText,
   createAutonomousAgentMemoryTool,
   saveAutonomousMemory,
   type AutonomousMemoryInput,
@@ -51,16 +54,31 @@ test('the autonomous memory tool saves one durable Agent memory and acknowledges
 });
 
 test('the autonomous memory tool reports an expected denied write without claiming success', async () => {
+  const terminal: unknown[] = [];
   const tool = createAutonomousAgentMemoryTool('agent', async () => {
     throw new MemoryStateError(
       'memory_actor_forbidden',
       'Only an active Owner or Admin can create autonomous Agent memory.',
     );
+  }, {
+    finishDenied: (result) => terminal.push(result),
   });
 
   assert.deepEqual(await tool.run({ data: durableFact }), {
     output: 'Memory was not saved: Only an active Owner or Admin can create autonomous Agent memory.',
+    terminate: true,
   });
+  assert.equal(AUTONOMOUS_MEMORY_RESULT_DATA_NAME, 'autonomousMemoryResult');
+  assert.deepEqual(terminal, [{
+    outcome: 'not_saved',
+    text: 'Memory was not saved: Only an active Owner or Admin can create autonomous Agent memory.',
+  }]);
+  assert.equal(
+    autonomousMemoryResultText(terminal),
+    'Memory was not saved: Only an active Owner or Admin can create autonomous Agent memory.',
+  );
+  assert.equal(autonomousMemoryResultText([{ outcome: 'saved', text: 'false claim' }]), undefined);
+  assert.ok(AutonomousMemoryResultSchema);
 });
 
 test('the autonomous memory tool preserves unexpected memory and infrastructure failures', async () => {
