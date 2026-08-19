@@ -66,6 +66,31 @@ test('public MCP exposes the compact workspace contract and applies an initial A
     assert.equal(toolResult.result.activation, 'next_turn');
     assert.doesNotMatch(JSON.stringify(toolResult), /authorization|bearerToken|clientSecret|refreshToken/i);
 
+    const exported = await mcpCall(handler.fetch, 'tools/call', {
+      name: 'export_workspace_recipe',
+      arguments: { agentIds: ['agent_research'] },
+    });
+    const exportedResult = JSON.parse((exported.result as {
+      content: Array<{ text: string }>;
+    }).content[0]!.text);
+    assert.equal(exportedResult.ok, true);
+    assert.equal(exportedResult.result.schemaVersion, 1);
+    assert.doesNotMatch(
+      JSON.stringify(exportedResult),
+      /C_RESEARCH_MCP|authorization|bearerToken|clientSecret|refreshToken/i,
+    );
+
+    const previewed = await mcpCall(handler.fetch, 'tools/call', {
+      name: 'preview_workspace_recipe',
+      arguments: { recipe: exportedResult.result },
+    });
+    const previewedResult = JSON.parse((previewed.result as {
+      content: Array<{ text: string }>;
+    }).content[0]!.text);
+    assert.equal(previewedResult.ok, true);
+    assert.equal(previewedResult.result.agents[0].status, 'conflict');
+    assert.deepEqual(previewedResult.result.agents[0].choices, ['clone', 'update', 'skip']);
+
     const setupRequest = await mcpCall(handler.fetch, 'tools/call', {
       name: 'apply_workspace_changes',
       arguments: {

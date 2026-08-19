@@ -24,6 +24,8 @@ import {
   inspectWorkspaceZodSchema,
   inspectMemoryZodSchema,
   inspectRoutinesZodSchema,
+  exportRecipeZodSchema,
+  previewRecipeZodSchema,
   MANAGEMENT_OPERATION_KINDS,
   revokeSetupLinkZodSchema,
   undoWorkspaceChangeZodSchema,
@@ -114,6 +116,28 @@ export function createWorkspaceManagementMcpServer(
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'inspect_routines',
+    args,
+  )));
+
+  server.registerTool('export_workspace_recipe', {
+    title: 'Export Chickpea workspace recipe',
+    description: workspaceManagementToolDescription('export_workspace_recipe'),
+    inputSchema: exportRecipeZodSchema,
+    annotations: { readOnlyHint: true },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'export_workspace_recipe',
+    args,
+  )));
+
+  server.registerTool('preview_workspace_recipe', {
+    title: 'Preview Chickpea workspace recipe',
+    description: workspaceManagementToolDescription('preview_workspace_recipe'),
+    inputSchema: previewRecipeZodSchema,
+    annotations: { readOnlyHint: true },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'preview_workspace_recipe',
     args,
   )));
 

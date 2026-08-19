@@ -61,6 +61,8 @@ export type ManagementOperation =
       kind: 'update_agent';
       agentId: string;
       expectedRevision: number;
+      /** Forces confirmation when a portable recipe replaces the Agent definition. */
+      confirmationReason?: 'recipe_overwrite';
       patch: ConfigAgentPatch;
     })
   | (ManagementOperationBase & {

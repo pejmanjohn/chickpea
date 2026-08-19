@@ -6,11 +6,14 @@ import {
   type ManagementRoutineInspectionInput,
 } from './types.ts';
 import type { MemoryOwnerRef } from '../memory/types.ts';
+import type { PreviewWorkspaceRecipeInput } from './recipes.ts';
 
 export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'inspect_workspace',
   'inspect_memory',
   'inspect_routines',
+  'export_workspace_recipe',
+  'preview_workspace_recipe',
   'apply_workspace_changes',
   'confirm_workspace_change',
   'undo_workspace_change',
@@ -24,6 +27,8 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority.',
   inspect_memory: 'Inspect one Agent or Channel memory owner and its versioned entries.',
   inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, or routine.',
+  export_workspace_recipe: 'Export selected Agents and their Channel intent as a versioned, secret-free portable recipe.',
+  preview_workspace_recipe: 'Preview a portable recipe against live workspace state and compile chosen outcomes into ordinary typed changes.',
   apply_workspace_changes: 'Apply one or more typed Chickpea workspace changes with durable idempotency and per-item outcomes.',
   confirm_workspace_change: 'Confirm one requester- and client-bound destructive or capability-expanding change proposal.',
   undo_workspace_change: 'Undo one eligible operation at the exact resulting revision.',
@@ -39,6 +44,8 @@ export type WorkspaceManagementToolArguments = {
   inspect_workspace: Record<never, never>;
   inspect_memory: MemoryOwnerRef;
   inspect_routines: ManagementRoutineInspectionInput;
+  export_workspace_recipe: { agentIds?: string[] | undefined };
+  preview_workspace_recipe: PreviewWorkspaceRecipeInput;
   apply_workspace_changes: { idempotencyKey: string; operations: ManagementOperation[] };
   confirm_workspace_change: { proposalId: string };
   undo_workspace_change: { operationId: string; idempotencyKey: string };
@@ -73,6 +80,14 @@ export async function invokeWorkspaceManagementTool<TName extends WorkspaceManag
       case 'inspect_routines': {
         const value = args as WorkspaceManagementToolArguments['inspect_routines'];
         return success(await input.service.inspectRoutines(context, value));
+      }
+      case 'export_workspace_recipe': {
+        const value = args as WorkspaceManagementToolArguments['export_workspace_recipe'];
+        return success(await input.service.exportRecipe(context, value));
+      }
+      case 'preview_workspace_recipe': {
+        const value = args as WorkspaceManagementToolArguments['preview_workspace_recipe'];
+        return success(await input.service.previewRecipe(context, value));
       }
       case 'apply_workspace_changes': {
         const value = args as WorkspaceManagementToolArguments['apply_workspace_changes'];

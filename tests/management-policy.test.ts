@@ -48,6 +48,21 @@ test('management policy keeps creation clean and confirms risky changes', () => 
     posture: 'confirmation',
     reason: 'remove_channel_placement',
   });
+  assert.deepEqual(classifyManagementOperation({
+    actor: admin,
+    operation: {
+      itemId: 'recipe-update',
+      kind: 'update_agent',
+      agentId: 'agent_research',
+      expectedRevision: 1,
+      confirmationReason: 'recipe_overwrite',
+      patch: { instructions: 'Replace this Agent definition.' },
+    },
+  }), {
+    allowed: true,
+    posture: 'confirmation',
+    reason: 'recipe_overwrite',
+  });
 });
 
 test('only an Owner may propose member authority changes', () => {

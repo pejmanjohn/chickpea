@@ -53,6 +53,9 @@ export function classifyManagementOperation(
     return { allowed: true, posture: 'confirmation', reason: 'credential_replacement' };
   }
   if (operation.kind === 'update_agent') {
+    if (operation.confirmationReason === 'recipe_overwrite') {
+      return { allowed: true, posture: 'confirmation', reason: 'recipe_overwrite' };
+    }
     const disablingActive = facts.currentAgent?.enabled === true &&
       operation.patch.enabled === false &&
       Boolean(facts.agentReferences?.channelAssignments.length ||

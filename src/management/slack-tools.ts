@@ -29,6 +29,8 @@ import {
   inspectWorkspaceValibotSchema,
   inspectMemoryValibotSchema,
   inspectRoutinesValibotSchema,
+  exportRecipeValibotSchema,
+  previewRecipeValibotSchema,
   revokeSetupLinkValibotSchema,
   undoWorkspaceChangeValibotSchema,
 } from './schemas.ts';
@@ -105,6 +107,26 @@ export function useWorkspaceManagementSlackTools(
     async run({ data }) {
       return slackToolOutput(await invokeLiveSlackTool(
         signal, resolvePlatformEnv, 'inspect_routines', data,
+      ));
+    },
+  });
+  useTool({
+    name: 'export_workspace_recipe',
+    description: workspaceManagementToolDescription('export_workspace_recipe'),
+    input: exportRecipeValibotSchema,
+    async run({ data }) {
+      return slackToolOutput(await invokeLiveSlackTool(
+        signal, resolvePlatformEnv, 'export_workspace_recipe', data,
+      ));
+    },
+  });
+  useTool({
+    name: 'preview_workspace_recipe',
+    description: workspaceManagementToolDescription('preview_workspace_recipe'),
+    input: previewRecipeValibotSchema,
+    async run({ data }) {
+      return slackToolOutput(await invokeLiveSlackTool(
+        signal, resolvePlatformEnv, 'preview_workspace_recipe', data,
       ));
     },
   });

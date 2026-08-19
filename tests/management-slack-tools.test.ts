@@ -136,6 +136,44 @@ test('Slack and MCP adapters produce the same policy and revision outcomes for o
     assert.deepEqual(summarize(slackResult.result), summarize(mcpResult.result));
     assert.equal((await slack.config.getChannel(slackWorkspace, 'C_RESEARCH'))?.revision, 2);
     assert.equal((await mcp.config.getChannel(mcpWorkspace, 'C_RESEARCH'))?.revision, 2);
+
+    const slackExport = await invokeSlackWorkspaceManagementTool({
+      signal: signal(slackWorkspace, slack.admin.user.slackUserId),
+      identity: slack.identity,
+      service: slack.service,
+      name: 'export_workspace_recipe',
+      args: { agentIds: ['agent_research'] },
+    });
+    const mcpAdapter = {
+      service: mcp.service,
+      resolveContext: async () => ({
+        userId: mcp.admin.user.id,
+        membershipId: mcp.admin.membership.id,
+        organizationId: mcp.admin.membership.organizationId,
+        origin: { kind: 'mcp' as const, clientId: 'client_codex' },
+      }),
+    };
+    const mcpExport = await invokeWorkspaceManagementTool(
+      mcpAdapter,
+      'export_workspace_recipe',
+      { agentIds: ['agent_research'] },
+    );
+    assert.deepEqual(slackExport, mcpExport);
+    if (!slackExport.ok || !mcpExport.ok) return;
+
+    const slackPreview = await invokeSlackWorkspaceManagementTool({
+      signal: signal(slackWorkspace, slack.admin.user.slackUserId),
+      identity: slack.identity,
+      service: slack.service,
+      name: 'preview_workspace_recipe',
+      args: { recipe: slackExport.result, agentStrategy: 'update' },
+    });
+    const mcpPreview = await invokeWorkspaceManagementTool(
+      mcpAdapter,
+      'preview_workspace_recipe',
+      { recipe: mcpExport.result, agentStrategy: 'update' },
+    );
+    assert.deepEqual(slackPreview, mcpPreview);
   } finally {
     slack.close();
     mcp.close();

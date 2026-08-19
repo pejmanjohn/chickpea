@@ -157,7 +157,14 @@ const zSetupTarget = z.discriminatedUnion('kind', [
 
 export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   z.strictObject({ ...zOperationBase, kind: z.literal('create_agent'), clientRef: zId.optional(), agent: zAgent }),
-  z.strictObject({ ...zOperationBase, kind: z.literal('update_agent'), agentId: zId, expectedRevision: zRevision, patch: zAgentPatch }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('update_agent'),
+    agentId: zId,
+    expectedRevision: zRevision,
+    confirmationReason: z.literal('recipe_overwrite').optional(),
+    patch: zAgentPatch,
+  }),
   z.strictObject({ ...zOperationBase, kind: z.literal('delete_agent'), agentId: zId, expectedRevision: zRevision }),
   z.strictObject({ ...zOperationBase, kind: z.literal('put_channel'), channel: zChannel, expectedRevision: zRevision }),
   z.strictObject({
@@ -279,6 +286,20 @@ export const inspectRoutinesZodSchema = z.strictObject({
   workspaceId: zId,
   channelId: zId.optional(),
   routineId: zId.optional(),
+});
+export const exportRecipeZodSchema = z.strictObject({
+  agentIds: z.array(zId).max(100).optional(),
+});
+export const previewRecipeZodSchema = z.strictObject({
+  recipe: z.unknown(),
+  agentStrategy: z.enum(['clone', 'update', 'skip']).optional(),
+  channelTargets: z.array(z.strictObject({
+    symbol: zId,
+    workspaceId: zId,
+    channelId: zId,
+    expectedRevision: zRevision,
+    expectedAgentId: zId.nullable(),
+  })).max(100).optional(),
 });
 
 const vt = (max: number) => v.pipe(v.string(), v.minLength(1), v.maxLength(max));
@@ -413,7 +434,14 @@ const vSetupTarget = v.variant('kind', [
 
 export const managementOperationValibotSchema = v.variant('kind', [
   v.strictObject({ ...vOperationBase, kind: v.literal('create_agent'), clientRef: v.optional(vid), agent: vAgent }),
-  v.strictObject({ ...vOperationBase, kind: v.literal('update_agent'), agentId: vid, expectedRevision: vr, patch: vAgentPatch }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('update_agent'),
+    agentId: vid,
+    expectedRevision: vr,
+    confirmationReason: v.optional(v.literal('recipe_overwrite')),
+    patch: vAgentPatch,
+  }),
   v.strictObject({ ...vOperationBase, kind: v.literal('delete_agent'), agentId: vid, expectedRevision: vr }),
   v.strictObject({ ...vOperationBase, kind: v.literal('put_channel'), channel: vChannel, expectedRevision: vr }),
   v.strictObject({
@@ -535,4 +563,18 @@ export const inspectRoutinesValibotSchema = v.strictObject({
   workspaceId: vid,
   channelId: v.optional(vid),
   routineId: v.optional(vid),
+});
+export const exportRecipeValibotSchema = v.strictObject({
+  agentIds: v.optional(va(vid, 100)),
+});
+export const previewRecipeValibotSchema = v.strictObject({
+  recipe: v.unknown(),
+  agentStrategy: v.optional(v.picklist(['clone', 'update', 'skip'])),
+  channelTargets: v.optional(va(v.strictObject({
+    symbol: vid,
+    workspaceId: vid,
+    channelId: vid,
+    expectedRevision: vr,
+    expectedAgentId: v.nullable(vid),
+  }), 100)),
 });

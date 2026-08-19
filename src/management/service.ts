@@ -33,6 +33,13 @@ import {
   validateManagementOperations,
 } from './contracts.ts';
 import { classifyManagementOperation } from './policy.ts';
+import {
+  exportWorkspaceRecipe,
+  previewWorkspaceRecipe,
+  type PreviewWorkspaceRecipeInput,
+  type WorkspaceRecipe,
+  type WorkspaceRecipePreview,
+} from './recipes.ts';
 import type { ManagementStore } from './store.ts';
 import {
   ManagementError,
@@ -212,6 +219,26 @@ export class WorkspaceManagementService {
         };
       })),
     };
+  }
+
+  async exportRecipe(
+    context: ApplyWorkspaceChangesInput['context'],
+    input: { agentIds?: string[] | undefined },
+  ): Promise<WorkspaceRecipe> {
+    await this.requireLiveActor(context);
+    return exportWorkspaceRecipe(this.stores.config, input);
+  }
+
+  async previewRecipe(
+    context: ApplyWorkspaceChangesInput['context'],
+    input: PreviewWorkspaceRecipeInput,
+  ): Promise<WorkspaceRecipePreview> {
+    await this.requireLiveActor(context);
+    return previewWorkspaceRecipe(
+      this.stores.config,
+      async (providerId) => this.stores.providerCredentialSource?.(providerId) ?? 'missing',
+      input,
+    );
   }
 
   async applyWorkspaceChanges(input: ApplyWorkspaceChangesInput): Promise<ManagementApplyResult> {
@@ -1039,6 +1066,10 @@ export class WorkspaceManagementService {
     reason: string,
   ): Promise<ManagementProposalRecord> {
     const at = this.now();
+    const targetRevisions = await this.targetRevisions(operation);
+    // Never mint a confirmation for an already-stale preview. The requester
+    // must inspect again instead of confirming a proposal for superseded state.
+    await this.assertRevisionMap(targetRevisions);
     const summary = operation.kind === 'remove_provider_credential'
       ? await this.providerRemovalSummary(operation.providerId, reason)
       : proposalSummary(operation, reason);
@@ -1050,7 +1081,7 @@ export class WorkspaceManagementService {
       originKey: managementOriginKey(actor.origin),
       operation,
       summary,
-      targetRevisions: await this.targetRevisions(operation),
+      targetRevisions,
       expiresAt: at + PROPOSAL_TTL_MS,
       at,
     });
