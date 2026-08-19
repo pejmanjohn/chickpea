@@ -11,6 +11,10 @@ import {
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import {
+  AUTONOMOUS_MEMORY_RESULT_DATA_NAME,
+  autonomousMemoryResultText,
+} from '../memory/autonomous.ts';
 import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
 import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import { prepareSandboxTurn, type SandboxTurnContext } from '../sandbox/turn-context.ts';
@@ -350,14 +354,18 @@ export function resultFromAgentReply(
   reply: AgentReply,
   requestedModel: string | null,
 ): AgentDispatchResult {
-  if (!reply.text) throw new Error('agent prompt returned no result text');
+  const memoryResult = autonomousMemoryResultText(
+    reply.data?.[AUTONOMOUS_MEMORY_RESULT_DATA_NAME],
+  );
+  const text = memoryResult ?? reply.text;
+  if (!text) throw new Error('agent prompt returned no result text');
   const metadata = parseResponseMetadata(reply.metadata?.[CHICKPEA_RESPONSE_METADATA_KEY]);
   const usage = metadata ? parseReportedUsage(metadata.usage) : {
     reportedUsage: null,
     completeness: 'not_reported' as const,
   };
   return {
-    text: reply.text,
+    text,
     requestedModel: metadata?.requestedModel ?? nonEmptyString(requestedModel),
     returnedModel: metadata?.returnedModel ?? null,
     reportedUsage: usage.reportedUsage,

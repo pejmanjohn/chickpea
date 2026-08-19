@@ -230,7 +230,12 @@ export function assembleSlackPrompt(
   );
   parts.push(
     '',
-    serializeCurrentRequestEnvelope(turn.text, options.memorySelected === true),
+    serializeCurrentRequestEnvelope(
+      turn.text,
+      options.memorySelected === true,
+      turn.userId,
+      turn.messageTs,
+    ),
   );
   return parts.join('\n');
 }

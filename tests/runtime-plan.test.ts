@@ -218,6 +218,19 @@ test('Slack identity rotates new plans while legacy plans remain readable', () =
   assert.equal(parsed.harnessRevision, legacy.harnessRevision);
 });
 
+test('semantic-memory runtime policy rotates new plans while v2 plans remain readable', () => {
+  const semanticMemoryPlan = compile();
+  const legacy = compile({ continuityPolicy: 'slack-runtime-v2' });
+
+  assert.equal(semanticMemoryPlan.continuityPolicy, 'slack-runtime-v3');
+  assert.equal(parseRuntimePlanV2(structuredClone(legacy)).continuityPolicy, 'slack-runtime-v2');
+  assert.notEqual(semanticMemoryPlan.harnessRevision, legacy.harnessRevision);
+  assert.notEqual(
+    deriveRuntimePlanInstanceId(semanticMemoryPlan),
+    deriveRuntimePlanInstanceId(legacy),
+  );
+});
+
 function legacyHarnessRevision(plan: RuntimePlanV2): string {
   return createHash('sha256')
     .update(canonicalJson({
@@ -290,7 +303,7 @@ test('harness policy changes rotate while credential attribution does not', () =
     }),
     compile({ sandboxMode: 'bash' }),
     compile({ memoryEpoch: 4 }),
-    compile({ continuityPolicy: 'slack-runtime-v3' }),
+    compile({ continuityPolicy: 'slack-runtime-v4' }),
     compile({
       assignment: assignment({
         agent: { ...structuredClone(AGENT), revision: AGENT.revision + 1 },

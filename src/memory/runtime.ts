@@ -76,7 +76,7 @@ interface OwnerMemoryRuntime {
   platformEnv: PlatformEnv | undefined;
 }
 
-interface DmAuthorizedActor {
+export interface DmAuthorizedActor {
   binding: SlackIdentityBinding;
   membership: Membership & { role: 'owner' | 'admin' };
   overlay: MembershipAccessOverlay | undefined;
@@ -760,7 +760,7 @@ async function requestDmOwnerMemoryWrite(
   turn: NormalizedSlackTurn,
   runtime: OwnerMemoryRuntime,
 ): Promise<string> {
-  const actor = await resolveDmAuthorizedActor(turn, runtime.platformEnv);
+  const actor = await resolveAuthorizedAgentMemoryActor(turn, runtime.platformEnv);
   if (!actor) return 'This Slack account is not an active Chickpea Owner or Admin.';
   const identityId = effectiveSlackIdentityId(runtime.assignment);
   const config = getConfigStore(runtime.platformEnv);
@@ -850,7 +850,7 @@ async function validateDmOwnerWriteChallenge(
       slackIdentity.teamId !== turn.workspaceId || slackIdentity.dmState !== 'on' ||
       slackIdentity.dmAgentId !== challenge.agentId ||
       (slackIdentity.lifecycle !== 'connected' && slackIdentity.lifecycle !== 'degraded')) return false;
-  const actor = await resolveDmAuthorizedActor(turn, runtime.platformEnv);
+  const actor = await resolveAuthorizedAgentMemoryActor(turn, runtime.platformEnv);
   return !!actor && actor.binding.id === challenge.actorBindingId &&
     actor.binding.revision === challenge.actorBindingRevision &&
     actor.binding.userId === challenge.userId && actor.membership.organizationId === challenge.organizationId &&
@@ -860,8 +860,8 @@ async function validateDmOwnerWriteChallenge(
     sha256(challenge.commandJson) === challenge.mutationDigest;
 }
 
-async function resolveDmAuthorizedActor(
-  turn: NormalizedSlackTurn,
+export async function resolveAuthorizedAgentMemoryActor(
+  turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'userId'>,
   platformEnv: PlatformEnv | undefined,
 ): Promise<DmAuthorizedActor | undefined> {
   const identity = getIdentityStore(platformEnv);

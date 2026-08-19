@@ -533,6 +533,7 @@ function runAdminPageHarness(
   memoryCreates: Array<{ body: Record<string, unknown>; idempotencyKey: string }>;
   memoryDeletes: Array<Record<string, unknown>>;
   memoryReviewPosts: Array<Record<string, unknown>>;
+  ownerMemoryGetCaches: Array<string | undefined>;
   scheduledControlPosts: Array<{ routineId: string; body: Record<string, unknown>; idempotencyKey: string }>;
   clipboardWrites: string[];
   resolveClipboardWrite(): void;
@@ -674,6 +675,7 @@ function runAdminPageHarness(
   const memoryCreates: Array<{ body: Record<string, unknown>; idempotencyKey: string }> = [];
   const memoryDeletes: Array<Record<string, unknown>> = [];
   const memoryReviewPosts: Array<Record<string, unknown>> = [];
+  const ownerMemoryGetCaches: Array<string | undefined> = [];
   const scheduledControlPosts: Array<{ routineId: string; body: Record<string, unknown>; idempotencyKey: string }> = [];
   const clipboardWrites: string[] = [];
   let clipboardWriteResolver: (() => void) | null = null;
@@ -1107,7 +1109,7 @@ function runAdminPageHarness(
     }
     return jsonResponse(result);
   };
-  const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<FakeResponse> => {
+  const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string>; cache?: string }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
     if (
       method === 'GET' &&
@@ -1228,6 +1230,7 @@ function runAdminPageHarness(
     }
     const ownerFilesMatch = path.match(/^\/admin\/api\/audit\/memory\/owners\/(agent|channel)\/([^/]+)\/([^/]+)\/files$/);
     if (ownerFilesMatch && method === 'GET') {
+      ownerMemoryGetCaches.push(options?.cache);
       return Promise.resolve(jsonResponse({
         owner: { ownerKind: ownerFilesMatch[1], workspaceId: ownerFilesMatch[2], ownerId: ownerFilesMatch[3] },
         files: defaultMemoryFiles,
@@ -1259,6 +1262,7 @@ function runAdminPageHarness(
     }
     const ownerEntryMatch = path.match(/^\/admin\/api\/audit\/memory\/owners\/(agent|channel)\/([^/]+)\/([^/]+)\/entries\/([^/]+)$/);
     if (ownerEntryMatch && method === 'GET') {
+      ownerMemoryGetCaches.push(options?.cache);
       return Promise.resolve(jsonResponse({
         owner: { ownerKind: ownerEntryMatch[1], workspaceId: ownerEntryMatch[2], ownerId: ownerEntryMatch[3] },
         entry: memoryEntry,
@@ -1287,6 +1291,7 @@ function runAdminPageHarness(
       return Promise.resolve(jsonResponse({ entry: { ...memoryEntry, status: 'forgotten' }, irreversible: true }));
     }
     if (path.match(/^\/admin\/api\/audit\/memory\/owners\/(agent|channel)\/[^/]+\/[^/]+\/entries\/[^/]+\/history$/) && method === 'GET') {
+      ownerMemoryGetCaches.push(options?.cache);
       return Promise.resolve(jsonResponse({ revisions: memoryHistory }));
     }
     if (path.startsWith('/admin/api/audit/memory/stores/') && path.includes('/files?sourceChannelId=') && method === 'GET') {
@@ -2468,6 +2473,7 @@ function runAdminPageHarness(
     memoryCreates,
     memoryDeletes,
     memoryReviewPosts,
+    ownerMemoryGetCaches,
     scheduledControlPosts,
     clipboardWrites,
     resolveClipboardWrite() {
@@ -4764,6 +4770,7 @@ test('Agent owner memory exposes generated index, editable files, history, revie
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-file', 'data-file': 'mem_release' }) });
   await flushAsync();
+  assert.deepEqual(harness.ownerMemoryGetCaches, ['no-store', 'no-store', 'no-store']);
   assert.match(harness.app.innerHTML, /Markdown body/);
   assert.match(harness.app.innerHTML, /<label class="field-label" for="owner-memory-name">Filename<\/label><input class="input mono" id="owner-memory-name" value="release-guidance\.md" readonly aria-readonly="true">/);
   assert.match(harness.app.innerHTML, /Version history \(1\)/);
@@ -4906,6 +4913,149 @@ function checkboxTarget(attributes: Record<string, string>, checked: boolean): F
   };
 }
 
+test('the Skills tab browses the compact suggested catalog by category', async () => {
+  const harness = runAdminPageHarness({
+    agents: [{
+      id: 'agent_suggestions',
+      name: 'Suggestions Profile',
+      description: 'Suggested skill profile',
+      instructions: 'Help the team.',
+      enabled: true,
+      model: 'local-stub/suggestions',
+      skills: [],
+    }],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_suggestions' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+
+  const featured = harness.app.innerHTML;
+  assert.match(featured, /Build your own/);
+  assert.match(featured, /Suggested skills/);
+  assert.match(featured, /data-action="suggested-skill-category" data-category="featured"[^>]*aria-selected="true"[^>]*>Featured<span[^>]*>8<\/span>/);
+  assert.match(featured, /data-action="suggested-skill-category" data-category="marketing"[^>]*>Marketing<span[^>]*>7<\/span>/);
+  assert.match(featured, /Paid ads/);
+  assert.match(featured, /Unslop/);
+  assert.doesNotMatch(featured, /Page CRO/);
+  assert.doesNotMatch(featured, /No custom skills yet/);
+
+  click({ target: actionTarget({ 'data-action': 'suggested-skill-category', 'data-category': 'research' }) });
+  const research = harness.app.innerHTML;
+  assert.match(research, /data-category="research"[^>]*aria-selected="true"/);
+  assert.match(research, /Customer research/);
+  assert.match(research, /Grill me/);
+  assert.match(research, /\/grill-me/);
+  assert.match(research, /Questionnaire/);
+  assert.doesNotMatch(research, /Paid ads/);
+});
+
+test('a suggested skill toggle copies a normal snapshot, persists it, and removes it when turned off', async () => {
+  const harness = runAdminPageHarness({
+    agents: [{
+      id: 'agent_suggestions',
+      name: 'Suggestions Profile',
+      description: 'Suggested skill profile',
+      instructions: 'Help the team.',
+      enabled: true,
+      model: 'local-stub/suggestions',
+      skills: [],
+    }],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_suggestions' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+  change({
+    target: checkboxTarget({ 'data-action': 'suggested-skill-toggle', 'data-skill-id': 'paid-ads' }, true),
+  });
+
+  assert.match(harness.app.innerHTML, /data-skill-id="paid-ads" checked/);
+  assert.match(harness.app.innerHTML, /1 skill on/);
+  assert.doesNotMatch(harness.app.innerHTML, /class="badge-src">custom[\s\S]*paid-ads/);
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  const firstSkill = (harness.agentPatchBodies[0]?.body.skills as Array<Record<string, unknown>>)[0];
+  assert.equal(firstSkill?.name, 'paid-ads');
+  assert.equal(firstSkill?.enabled, true);
+  assert.equal(firstSkill?.suggestedSkillId, 'paid-ads');
+  assert.match(String(firstSkill?.instructions), /campaign/i);
+
+  change({
+    target: checkboxTarget({ 'data-action': 'suggested-skill-toggle', 'data-skill-id': 'paid-ads' }, false),
+  });
+  assert.doesNotMatch(harness.app.innerHTML, /data-skill-id="paid-ads" checked/);
+  assert.doesNotMatch(harness.app.innerHTML, /Name in use/);
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  const removed = harness.agentPatchBodies[1]?.body.skills as Array<Record<string, unknown>>;
+  assert.deepEqual(removed, []);
+
+  // Removing the snapshot releases its runtime name, so the suggestion can be
+  // copied again without leaving a duplicate or disabled record behind.
+  change({
+    target: checkboxTarget({ 'data-action': 'suggested-skill-toggle', 'data-skill-id': 'paid-ads' }, true),
+  });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  const restored = harness.agentPatchBodies[2]?.body.skills as Array<Record<string, unknown>>;
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0]?.name, 'paid-ads');
+  assert.equal(restored[0]?.suggestedSkillId, 'paid-ads');
+});
+
+test('a custom skill keeps ownership of a suggested runtime name', async () => {
+  const customSkill = {
+    name: 'paid-ads',
+    description: 'Our internal paid acquisition playbook.',
+    instructions: 'Use the internal campaign review process and preserve its approval gates.',
+    enabled: true,
+  };
+  const harness = runAdminPageHarness({
+    agents: [{
+      id: 'agent_custom_collision',
+      name: 'Custom Collision Profile',
+      description: 'Custom skill profile',
+      instructions: 'Help the team.',
+      enabled: true,
+      model: 'local-stub/custom-collision',
+      skills: [customSkill],
+    }],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_custom_collision' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+
+  assert.match(harness.app.innerHTML, /class="sk-name">paid-ads<span class="badge-src">custom/);
+  assert.match(harness.app.innerHTML, /Our internal paid acquisition playbook/);
+  assert.match(harness.app.innerHTML, /Name in use/);
+  assert.match(harness.app.innerHTML, /data-skill-id="paid-ads"[^>]* disabled/);
+
+  // Defensively reject the collision even if a synthetic change event reaches
+  // the disabled control.
+  change({
+    target: checkboxTarget({ 'data-action': 'suggested-skill-toggle', 'data-skill-id': 'paid-ads' }, true),
+  });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  const saved = harness.agentPatchBodies[0]?.body.skills as Array<Record<string, unknown>>;
+  assert.equal(saved.length, 1);
+  assert.deepEqual(saved[0], customSkill);
+  assert.match(harness.app.innerHTML, /class="sk-name">paid-ads<span class="badge-src">custom/);
+  assert.match(harness.app.innerHTML, /Name in use/);
+});
+
 test('the profile editor manages custom skills end to end and carries them in the save body', async () => {
   const harness = runAdminPageHarness({
     agents: [
@@ -4929,9 +5079,10 @@ test('the profile editor manages custom skills end to end and carries them in th
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
 
-  // The Skills capability tab renders, its panel empty at first.
+  // The Skills capability tab renders the creation card and suggestions first.
   assert.match(harness.app.innerHTML, /data-action="profile-tab" data-tab="skills"/);
-  assert.match(harness.app.innerHTML, /No custom skills yet/);
+  assert.match(harness.app.innerHTML, /Build your own/);
+  assert.match(harness.app.innerHTML, /Suggested skills/);
 
   // Open a blank editor; the inline form appears with the three fields.
   click({ target: actionTarget({ 'data-action': 'skill-new' }) });
@@ -4991,7 +5142,8 @@ test('the profile editor manages custom skills end to end and carries them in th
 
   // Remove the skill and save again; the array is now empty in the PATCH body.
   click({ target: actionTarget({ 'data-action': 'skill-remove', 'data-index': '0' }) });
-  assert.match(harness.app.innerHTML, /No custom skills yet/);
+  assert.doesNotMatch(harness.app.innerHTML, /release-notes/);
+  assert.match(harness.app.innerHTML, /Build your own/);
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
   assert.equal(harness.agentPatchBodies.length, 2);

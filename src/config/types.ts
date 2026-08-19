@@ -10,6 +10,8 @@ export interface SkillConfig {
   description: string;
   instructions: string;
   enabled: boolean;
+  /** Stable provenance for a copied built-in suggestion; absent for custom/imported skills. */
+  suggestedSkillId?: string;
 }
 
 /**

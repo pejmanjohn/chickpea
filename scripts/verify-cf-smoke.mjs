@@ -91,6 +91,7 @@ const BETA_FLUE_CLASSES = [
   'FlueRoutineIntentAgent',
   'FlueRoutineWorkflow',
 ];
+const RETIRED_AUTH_CLASSES = ['AuthGuard'];
 
 // Slow-turn case: a distinct channel + thread whose provider is held open past
 // the old ~30s waitUntil horizon, proving the DO alarm relay delivers anyway.
@@ -182,8 +183,8 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
   const migrations = config.migrations ?? [];
   const tags = migrations.map((migration) => migration.tag);
   check(
-    ['v1', 'v2', 'v3', 'v4', 'v5', 'v6'].every((tag) => tags.includes(tag)) && !tags.includes('v7'),
-    'built wrangler.json migrations use the fresh append-only v1 through v6 chain',
+    sameArray(tags, ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8']),
+    'built wrangler.json migrations use the exact append-only v1 through v8 chain',
     tags.join(','),
   );
   const sandboxMigration = migrations.find((migration) => migration.tag === 'v3');
@@ -198,6 +199,16 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
       [...BETA_FLUE_CLASSES].sort(),
     ),
     'v6 deletes exactly the four beta Flue classes',
+  );
+  const authGuardMigration = migrations.find((migration) => migration.tag === 'v7');
+  check(
+    sameArray(authGuardMigration?.new_sqlite_classes ?? [], RETIRED_AUTH_CLASSES),
+    'v7 preserves the AuthGuard SQLite class history',
+  );
+  const authGuardRetirement = migrations.find((migration) => migration.tag === 'v8');
+  check(
+    sameArray(authGuardRetirement?.deleted_classes ?? [], RETIRED_AUTH_CLASSES),
+    'v8 retires exactly the AuthGuard class',
   );
   if (expectedProfile === 'sandbox') {
     const sandboxContainer = (config.containers ?? []).find(

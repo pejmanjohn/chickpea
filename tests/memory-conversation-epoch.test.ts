@@ -127,6 +127,8 @@ test('prompt assembly omits the trigger from history and places advisory memory 
     memoryInfluenced: true,
     explicitExternalSideEffectIntent: false,
     explicitArtifactDeliveryIntent: false,
+    slackActorId: 'U',
+    slackMessageTs: '2.0',
   });
 });
 

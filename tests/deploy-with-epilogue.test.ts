@@ -557,6 +557,38 @@ test('the exact schema gate ignores only Cloudflare D1 internal KV metadata', (c
   );
 });
 
+test('the exact schema gate accepts Cloudflare D1 parenthesis formatting', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const database = new DatabaseSync(':memory:');
+  for (const migrationPath of AUTH_MIGRATIONS) {
+    database.exec(readFileSync(migrationPath, 'utf8'));
+  }
+  const results = database.prepare(
+    "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' " +
+      "AND name NOT IN ('d1_migrations','_cf_KV') ORDER BY type,name",
+  ).all().map((row) => {
+    if (row.type !== 'table' || typeof row.sql !== 'string') return row;
+    return {
+      ...row,
+      sql: row.sql.replace(/\((?=\")/, '( ').replace(/\)$/, ' )'),
+    };
+  });
+  database.close();
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_AUTH_SCHEMA: JSON.stringify([{ success: true, results }]),
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    commands(harness.logPath).some((command) => command.startsWith('wrangler:["deploy"')),
+    true,
+  );
+});
+
 test('an unreadable remote AUTH_DB schema blocks Worker upload', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
@@ -830,6 +862,8 @@ function writeCutoverArtifact(
           'FlueRoutineWorkflow',
         ],
       },
+      { tag: 'v7', new_sqlite_classes: ['AuthGuard'] },
+      { tag: 'v8', deleted_classes: ['AuthGuard'] },
     ],
   };
   writeFileSync(path.join(builtDir, 'wrangler.json'), JSON.stringify(config));
@@ -1013,6 +1047,37 @@ test('preflight preserves the v3 Sandbox class migration in both profiles', (con
     assert.equal(result.status, 1);
     assert.match(result.stderr, /v3 Sandbox SQLite class/);
   }
+});
+
+test('preflight preserves the applied AuthGuard creation and exact retirement', (context) => {
+  const missingHistory = createHarness();
+  const unsafeRetirement = createHarness();
+  context.after(() => {
+    rmSync(missingHistory.root, { recursive: true, force: true });
+    rmSync(unsafeRetirement.root, { recursive: true, force: true });
+  });
+
+  const missingPath = path.join(missingHistory.root, 'dist-cf', 'chickpea', 'wrangler.json');
+  const missingConfig = JSON.parse(readFileSync(missingPath, 'utf8'));
+  missingConfig.migrations = missingConfig.migrations.filter(
+    (migration: { tag: string }) => migration.tag !== 'v7',
+  );
+  writeFileSync(missingPath, JSON.stringify(missingConfig));
+
+  const unsafePath = path.join(unsafeRetirement.root, 'dist-cf', 'chickpea', 'wrangler.json');
+  const unsafeConfig = JSON.parse(readFileSync(unsafePath, 'utf8'));
+  unsafeConfig.migrations.find(
+    (migration: { tag: string }) => migration.tag === 'v8',
+  ).deleted_classes.push('TagStateStore');
+  writeFileSync(unsafePath, JSON.stringify(unsafeConfig));
+
+  const missingResult = runHarness(missingHistory, ['--skip-build', '--preflight-only']);
+  const unsafeResult = runHarness(unsafeRetirement, ['--skip-build', '--preflight-only']);
+
+  assert.equal(missingResult.status, 1);
+  assert.match(missingResult.stderr, /v7 AuthGuard SQLite class history/);
+  assert.equal(unsafeResult.status, 1);
+  assert.match(unsafeResult.stderr, /protected classes.*TagStateStore/);
 });
 
 test('deploy skip-build flag stays private while dry-run still reaches Wrangler', (context) => {

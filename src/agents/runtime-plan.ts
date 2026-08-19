@@ -14,7 +14,7 @@ import { slackThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 
 export const RUNTIME_PLAN_SCHEMA_VERSION = 2 as const;
-export const DEFAULT_CONTINUITY_POLICY = 'slack-runtime-v2' as const;
+export const DEFAULT_CONTINUITY_POLICY = 'slack-runtime-v3' as const;
 
 export type RuntimePlanSurface = 'channel_thread' | 'direct_message';
 export type RuntimePlanSandboxMode = 'bash' | 'cloudflare';

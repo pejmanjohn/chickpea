@@ -96,6 +96,21 @@
 				"FlueRoutineIntentAgent",
 				"FlueRoutineWorkflow"
 			]
+		},
+		{
+			// Immutable history for Workers that ran the retired password guard.
+			"tag": "v7",
+			"new_sqlite_classes": [
+				"AuthGuard"
+			]
+		},
+		{
+			// Slack-only Better Auth moved its authority to AUTH_DB; retire only
+			// the obsolete password/throttle Durable Object state.
+			"tag": "v8",
+			"deleted_classes": [
+				"AuthGuard"
+			]
 		}
 	]
 }
