@@ -158,6 +158,7 @@ test('owner memory routes authenticate and derive exact owner from the route', a
     })).status, 401);
     const files = await h.app.request(`${base}/files`, { headers: auth });
     assert.equal(files.status, 200);
+    assert.equal(files.headers.get('cache-control'), 'no-store');
     assert.deepEqual(((await files.json()) as { files: Array<{ name: string }> }).files.map(({ name }) => name),
       ['MEMORY.md', 'channel-guidance.md']);
 

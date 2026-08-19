@@ -41,7 +41,7 @@ const baseTurn: NormalizedSlackTurn = {
   workspaceId: 'T_RUNTIME',
   channelId: 'C_RUNTIME',
   eventId: 'E1',
-  text: '<@UBOT> Please remember that answers should use short bullets.',
+  text: '<@UBOT> !remember answers should use short bullets — answers should use short bullets',
   userId: 'U_MEMBER',
   messageTs: '1782770400.000100',
   threadTs: '1782770400.000100',
@@ -160,7 +160,7 @@ test('owner-native runtime reads frozen Agent memory plus exact Channel memory o
 
     const delivered: string[] = [];
     assert.equal(await handleMemoryCommand({
-      turn: { ...baseTurn, eventId: 'E_OWNER_WRITE', text: '<@UBOT> Please remember that launches need approval.' },
+      turn: { ...baseTurn, eventId: 'E_OWNER_WRITE', text: '<@UBOT> !remember launches need approval — launches need approval' },
       assignment: runtimeAssignment,
       platformEnv: undefined,
       client: {} as WebClient,
@@ -545,6 +545,21 @@ test('Slack commands persist memory even when a legacy disable override remains'
         delivered.push(text);
       },
     } as unknown as WebClientPresenter;
+
+    assert.equal(
+      await handleMemoryCommand({
+        turn: {
+          ...baseTurn,
+          eventId: 'E_SEMANTIC_HANDOFF',
+          text: '<@UBOT> Keep my short-bullet preference around for later.',
+        },
+        platformEnv: undefined,
+        client,
+        presenter,
+      }),
+      false,
+    );
+    assert.deepEqual(await getMemoryStateStore().listEntries(), []);
 
     assert.equal(
       await handleMemoryCommand({ turn: baseTurn, platformEnv: undefined, client, presenter }),

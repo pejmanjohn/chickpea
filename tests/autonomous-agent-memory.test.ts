@@ -1,0 +1,154 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import {
+  autonomousMemoryInstruction,
+  createAutonomousAgentMemoryTool,
+  saveAutonomousMemory,
+  type AutonomousMemoryInput,
+} from '../src/memory/autonomous.ts';
+import { SqliteMemoryStateStore } from '../src/memory/store.ts';
+
+const coordinates = {
+  surface: 'direct_message' as const,
+  workspaceId: 'T_AUTO',
+  channelId: 'D_AUTO',
+  threadTs: '1783000000.000100',
+  messageTs: '1783000000.000200',
+  agentId: 'agent_default',
+  slackUserId: 'U_OWNER',
+};
+
+const durableFact = {
+  name: 'Release approval convention',
+  description: 'Pejman approves production releases.',
+  type: 'preference' as const,
+  body: 'Wait for Pejman to explicitly approve every production release.',
+};
+
+test('the autonomous memory tool saves one durable Agent memory and acknowledges it', async () => {
+  const saved: AutonomousMemoryInput[] = [];
+  const tool = createAutonomousAgentMemoryTool('agent', async (input) => {
+    saved.push(input);
+    return { slug: 'release-approval-convention', version: 1 };
+  });
+
+  const result = await tool.run({ data: durableFact });
+  assert.equal(tool.name, 'remember_memory');
+  assert.deepEqual(saved, [durableFact]);
+  assert.deepEqual(result, {
+    output: 'Saved Agent memory `release-approval-convention` (v1).',
+  });
+  const instruction = autonomousMemoryInstruction('agent');
+  assert.match(instruction, /durable, reusable context/i);
+  assert.match(instruction, /explicitly asks[^.]*any wording/i);
+  assert.match(instruction, /infer the intent semantically/i);
+  assert.match(instruction, /never save secrets/i);
+  assert.match(instruction, /do not claim.*remembered.*tool succeeds/i);
+  assert.match(instruction, /at most once for the current request/i);
+});
+
+test('semantic retry identity is request-bound rather than model-wording-bound', async () => {
+  const memory = new SqliteMemoryStateStore(':memory:', () => 1_783_000_000_000);
+  let nextId = 0;
+  try {
+    const dependencies = {
+      state: memory,
+      authorize: async () => true,
+      id: () => `mem_request_${++nextId}`,
+    };
+    await saveAutonomousMemory(coordinates, durableFact, dependencies);
+    await assert.rejects(
+      saveAutonomousMemory(coordinates, {
+        ...durableFact,
+        description: 'A retry paraphrased the same request.',
+      }, dependencies),
+      /idempotency key was already used for different memory content/i,
+    );
+    const later = await saveAutonomousMemory({
+      ...coordinates,
+      messageTs: '1783000001.000100',
+    }, durableFact, dependencies);
+
+    assert.equal(later.entry.entryId, 'mem_request_3');
+  } finally {
+    memory.close();
+  }
+});
+
+test('autonomous Agent memory is owner-authorized, durable, and idempotent', async () => {
+  const memory = new SqliteMemoryStateStore(':memory:', () => 1_783_000_000_000);
+  try {
+    const dependencies = {
+      state: memory,
+      authorize: async () => true,
+      id: () => 'mem_autonomous',
+    };
+    const first = await saveAutonomousMemory(coordinates, durableFact, dependencies);
+    const replay = await saveAutonomousMemory(coordinates, durableFact, dependencies);
+    const owner = await memory.ensureOwner({
+      workspaceId: coordinates.workspaceId,
+      ownerKind: 'agent',
+      ownerId: coordinates.agentId,
+    });
+    const entries = await memory.listOwnerEntries(owner);
+
+    assert.equal(first.entry.entryId, 'mem_autonomous');
+    assert.equal(replay.entry.entryId, first.entry.entryId);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.actorClass, 'system');
+    assert.deepEqual(entries[0]?.writeOrigin, { kind: 'slack_dm', channelId: 'dm' });
+  } finally {
+    memory.close();
+  }
+});
+
+test('semantic channel memory writes only to the exact Channel owner', async () => {
+  const memory = new SqliteMemoryStateStore(':memory:', () => 1_783_000_000_000);
+  const channelCoordinates = {
+    ...coordinates,
+    surface: 'channel_thread' as const,
+    channelId: 'C_AUTO',
+  };
+  try {
+    const saved = await saveAutonomousMemory(channelCoordinates, durableFact, {
+      state: memory,
+      authorize: async () => true,
+      id: () => 'mem_channel_autonomous',
+    });
+    const channelOwner = await memory.ensureOwner({
+      workspaceId: coordinates.workspaceId,
+      ownerKind: 'channel',
+      ownerId: channelCoordinates.channelId,
+    });
+    const agentOwner = await memory.ensureOwner({
+      workspaceId: coordinates.workspaceId,
+      ownerKind: 'agent',
+      ownerId: coordinates.agentId,
+    });
+
+    assert.equal(saved.entry.ownerKind, 'channel');
+    assert.equal((await memory.listOwnerEntries(channelOwner)).length, 1);
+    assert.equal((await memory.listOwnerEntries(agentOwner)).length, 0);
+    assert.deepEqual(saved.entry.writeOrigin, { kind: 'slack_channel', channelId: 'C_AUTO' });
+    assert.match(autonomousMemoryInstruction('channel'), /exact Channel memory/i);
+  } finally {
+    memory.close();
+  }
+});
+
+test('autonomous Agent memory rejects a DM actor who is not an active Owner or Admin', async () => {
+  const memory = new SqliteMemoryStateStore(':memory:');
+  try {
+    await assert.rejects(
+      saveAutonomousMemory(coordinates, durableFact, {
+        state: memory,
+        authorize: async () => false,
+      }),
+      /Only an active Owner or Admin can create autonomous Agent memory/,
+    );
+    assert.deepEqual(await memory.listOwners(coordinates.workspaceId), []);
+  } finally {
+    memory.close();
+  }
+});

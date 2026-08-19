@@ -54,22 +54,8 @@ export function parseMemoryCommand(
   if (match) return { kind: 'show', target: match[1]!.toLowerCase() };
 
   match = text.match(new RegExp(`^!remember\\s+(.+?)${DASH}([^\\n]+)(?:\\n([\\s\\S]+))?$`, 'i'));
-  if (!match) {
-    match = text.match(/^remember for this channel:\s*(.+?)\s+(?:—|-)\s+([^\n]+)(?:\n([\s\S]+))?$/i);
-  }
   if (match) {
     return contentCommand('remember', match[1]!, match[2]!, match[3]);
-  }
-
-  match = text.match(/^can you remember(?:\s+that|:)\s+([\s\S]+)$/i);
-  if (match) return conversationalRememberCommand(match[1]!);
-  match = text.match(/^(?:please\s+)?remember(?:\s+that|:)\s+([\s\S]+)$/i);
-  if (match) {
-    // "Remember that ...?" is commonly a recall question, not mutation
-    // intent. The explicit !remember grammar remains available when the
-    // content itself genuinely needs to end in a question mark.
-    if (/\?\s*$/u.test(match[1]!)) return undefined;
-    return conversationalRememberCommand(match[1]!);
   }
 
   match = text.match(
@@ -141,7 +127,7 @@ export function parseMemoryCommand(
     };
   }
 
-  if (/^!(?:memory|remember|forget)\b/i.test(text) || /^(?:remember for this channel|update memory|forget memory)\b/i.test(text)) {
+  if (/^!(?:memory|remember|forget)\b/i.test(text) || /^(?:update memory|forget memory)\b/i.test(text)) {
     return invalid('Use `!memory help` to see the exact memory commands.');
   }
   return undefined;
@@ -169,23 +155,6 @@ function contentCommand(
     description,
     body: bodyInput?.trim() || description,
   };
-}
-
-function conversationalRememberCommand(rawContent: string): MemoryCommand {
-  const body = conversationalContent(rawContent);
-  if (!body) return invalid('Say what Chickpea should remember.');
-  const description = body.split('\n', 1)[0]!.trim();
-  const name = description
-    .replace(/[`*_~]/g, '')
-    .replace(/\s+/g, ' ')
-    .replace(/[.,:;!?]+$/u, '')
-    .split(' ')
-    .slice(0, 8)
-    .join(' ')
-    .slice(0, 80)
-    .trim();
-  if (!name) return invalid('Say what Chickpea should remember.');
-  return { kind: 'remember', name, description, body };
 }
 
 function conversationalContent(rawContent: string): string {
