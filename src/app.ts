@@ -6,6 +6,7 @@ import { CHICKPEA_SLACK_AGENT_NAME } from './agents/names.ts';
 import { getIdentityStore, type PlatformEnv } from './config/state-backend.ts';
 import { createBetterAuthRuntimeRoutes } from './auth/better-auth-runtime.ts';
 import { createMcpOAuthRuntimeRoutes } from './auth/mcp-oauth-routes.ts';
+import { createManagementSetupRoutes } from './management/setup-routes.ts';
 import { activityStatusForObservation } from './activity/status.ts';
 import {
   observeProviderAuthRoute,
@@ -104,6 +105,7 @@ app.use('*', async (c, next) => {
 startNodeTurnRelay();
 app.route('/', createBetterAuthRuntimeRoutes());
 app.route('/', createMcpOAuthRuntimeRoutes());
+app.route('/', createManagementSetupRoutes());
 app.route('/', createAdminRoutes());
 app.route('/channels/slack', channel.route());
 

@@ -2,10 +2,16 @@ import type { WebClient } from '@slack/web-api';
 
 import {
   getSlackStateStore,
+  getIdentityStore,
+  getManagementStore,
   getWorkStore,
   isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
+import {
+  deliverManagementReceiptToSlack,
+  drainManagementReceiptOutbox,
+} from '../management/receipts.ts';
 import type { SlackStateStore } from './claim-store.ts';
 import type { WorkStore } from '../work/types.ts';
 import { DurableRunDriver } from '../work/driver.ts';
@@ -331,6 +337,13 @@ export async function drainNodeTurnRelayOnce(
     verifyIdentityAccess,
   );
   await state.maintainRunPresentations?.(100);
+  if (!options.state) {
+    const identity = getIdentityStore(env);
+    await drainManagementReceiptOutbox({
+      management: getManagementStore(env),
+      deliver: (record) => deliverManagementReceiptToSlack(record, { identity, ...(env ? { env } : {}) }),
+    }).catch(() => undefined);
+  }
 }
 
 async function drainSlackInteractionCleanups(

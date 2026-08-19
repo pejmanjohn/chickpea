@@ -11,6 +11,7 @@ export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'confirm_workspace_change',
   'undo_workspace_change',
   'get_operation',
+  'revoke_setup_link',
 ] as const;
 
 export type WorkspaceManagementToolName = typeof WORKSPACE_MANAGEMENT_TOOL_NAMES[number];
@@ -21,6 +22,7 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   confirm_workspace_change: 'Confirm one requester- and client-bound destructive or capability-expanding change proposal.',
   undo_workspace_change: 'Undo one eligible operation at the exact resulting revision.',
   get_operation: 'Read the durable result of one operation or confirmation proposal owned by the requester.',
+  revoke_setup_link: 'Revoke one unused requester-owned setup link and optionally issue a fresh 24-hour link.',
 };
 
 export function workspaceManagementToolDescription(name: WorkspaceManagementToolName): string {
@@ -33,6 +35,7 @@ export type WorkspaceManagementToolArguments = {
   confirm_workspace_change: { proposalId: string };
   undo_workspace_change: { operationId: string; idempotencyKey: string };
   get_operation: { operationId: string };
+  revoke_setup_link: { setupOperationId: string; reissue?: boolean | undefined };
 };
 
 export type WorkspaceManagementToolResult =
@@ -71,6 +74,14 @@ export async function invokeWorkspaceManagementTool<TName extends WorkspaceManag
         const value = args as WorkspaceManagementToolArguments['get_operation'];
         const operation = await input.service.getOperation(context, value.operationId);
         return success({ operation: operation ?? null });
+      }
+      case 'revoke_setup_link': {
+        const value = args as WorkspaceManagementToolArguments['revoke_setup_link'];
+        return success(await input.service.revokeSetupLink(
+          context,
+          value.setupOperationId,
+          value.reissue ?? false,
+        ));
       }
     }
   } catch (error) {

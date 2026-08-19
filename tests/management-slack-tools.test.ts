@@ -150,6 +150,7 @@ test('MCP Zod and Flue Valibot schemas accept the same canonical operation inven
     initialManagementBundle('T1', 'C1')[1] as ManagementOperation,
     { itemId: 'place', kind: 'place_agent', workspaceId: 'T1', channelId: 'C1', expectedRevision: 1, expectedAgentId: null, agentId: 'agent_1' },
     { itemId: 'member', kind: 'update_member', membershipId: 'membership_1', role: 'admin', status: 'active' },
+    { itemId: 'setup', kind: 'request_setup', target: { kind: 'provider_credential', providerId: 'openai' } },
   ];
   for (const operation of fixtures) {
     assert.equal(managementOperationZodSchema.safeParse(operation).success, true, operation.kind);

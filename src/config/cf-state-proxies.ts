@@ -1010,6 +1010,77 @@ export class CfManagementStore implements ManagementStore {
     if (response.kind !== 'undo' || !response.undo) throw unexpectedManagementResponse();
     return response.undo;
   }
+
+  async putSetup(input: Parameters<ManagementStore['putSetup']>[0]) {
+    const response = await this.execute({ kind: 'put_setup', input });
+    if (response.kind !== 'setup' || !response.setup) throw unexpectedManagementResponse();
+    return response.setup;
+  }
+
+  async getSetup(setupOperationId: string, at?: number) {
+    const response = await this.execute({
+      kind: 'get_setup',
+      setupOperationId,
+      ...(at === undefined ? {} : { at }),
+    });
+    if (response.kind !== 'setup') throw unexpectedManagementResponse();
+    return orUndefined(response.setup);
+  }
+
+  async exchangeSetup(input: Parameters<ManagementStore['exchangeSetup']>[0]) {
+    const response = await this.execute({ kind: 'exchange_setup', input });
+    if (response.kind !== 'setup' || !response.setup) throw unexpectedManagementResponse();
+    return response.setup;
+  }
+
+  async authorizeSetup(input: Parameters<ManagementStore['authorizeSetup']>[0]) {
+    const response = await this.execute({ kind: 'authorize_setup', input });
+    if (response.kind !== 'setup' || !response.setup) throw unexpectedManagementResponse();
+    return response.setup;
+  }
+
+  async failSetup(
+    setupOperationId: string,
+    browserSessionDigest: string,
+    failureCode: string,
+    at: number,
+  ) {
+    const response = await this.execute({
+      kind: 'fail_setup', setupOperationId, browserSessionDigest, failureCode, at,
+    });
+    if (response.kind !== 'setup' || !response.setup) throw unexpectedManagementResponse();
+    return response.setup;
+  }
+
+  async completeSetup(input: Parameters<ManagementStore['completeSetup']>[0]) {
+    const response = await this.execute({ kind: 'complete_setup', input });
+    if (response.kind !== 'setup' || !response.setup) throw unexpectedManagementResponse();
+    return response.setup;
+  }
+
+  async revokeSetup(input: Parameters<ManagementStore['revokeSetup']>[0]) {
+    const response = await this.execute({ kind: 'revoke_setup', input });
+    if (response.kind !== 'setup' || !response.setup) throw unexpectedManagementResponse();
+    return response.setup;
+  }
+
+  async getOutboxForOperation(operationId: string) {
+    const response = await this.execute({ kind: 'get_outbox_for_operation', operationId });
+    if (response.kind !== 'outbox') throw unexpectedManagementResponse();
+    return orUndefined(response.outbox);
+  }
+
+  async claimDueOutbox(at: number, limit: number, leaseUntil: number) {
+    const response = await this.execute({ kind: 'claim_due_outbox', at, limit, leaseUntil });
+    if (response.kind !== 'outbox_batch') throw unexpectedManagementResponse();
+    return response.outbox;
+  }
+
+  async settleOutbox(input: Parameters<ManagementStore['settleOutbox']>[0]) {
+    const response = await this.execute({ kind: 'settle_outbox', ...input });
+    if (response.kind !== 'outbox' || !response.outbox) throw unexpectedManagementResponse();
+    return response.outbox;
+  }
 }
 
 export class CfConfigStore implements ConfigStore {

@@ -66,6 +66,43 @@ test('public MCP exposes the compact workspace contract and applies an initial A
     assert.equal(toolResult.result.activation, 'next_turn');
     assert.doesNotMatch(JSON.stringify(toolResult), /authorization|bearerToken|clientSecret|refreshToken/i);
 
+    const setupRequest = await mcpCall(handler.fetch, 'tools/call', {
+      name: 'apply_workspace_changes',
+      arguments: {
+        idempotencyKey: 'mcp-provider-setup',
+        operations: [{
+          itemId: 'openai',
+          kind: 'request_setup',
+          target: { kind: 'provider_credential', providerId: 'openai' },
+        }],
+      },
+    });
+    const setupResult = JSON.parse((setupRequest.result as {
+      content: Array<{ text: string }>;
+    }).content[0]!.text);
+    const setupOutcome = setupResult.result.outcomes[0];
+    assert.equal(setupOutcome.disposition, 'setup_required');
+    assert.match(setupOutcome.setupUrl, /^http:\/\/localhost\/setup\/setup_.*#setup=/);
+
+    const operation = await mcpCall(handler.fetch, 'tools/call', {
+      name: 'get_operation',
+      arguments: { operationId: setupOutcome.setupOperationId },
+    });
+    const operationResult = JSON.parse((operation.result as {
+      content: Array<{ text: string }>;
+    }).content[0]!.text);
+    assert.equal(operationResult.result.operation.status, 'pending');
+    assert.equal(operationResult.result.operation.setupUrl, undefined);
+
+    const revoked = await mcpCall(handler.fetch, 'tools/call', {
+      name: 'revoke_setup_link',
+      arguments: { setupOperationId: setupOutcome.setupOperationId },
+    });
+    const revokedResult = JSON.parse((revoked.result as {
+      content: Array<{ text: string }>;
+    }).content[0]!.text);
+    assert.equal(revokedResult.result.revoked.status, 'revoked');
+
     const forgedActor = await mcpCall(handler.fetch, 'tools/call', {
       name: 'inspect_workspace',
       arguments: { userId: f.owner.user.id },

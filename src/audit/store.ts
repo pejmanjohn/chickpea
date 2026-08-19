@@ -334,12 +334,15 @@ function validateManagementMetadata(
     ? ['operationId', 'outcomeCount', 'status']
     : eventType === 'management.proposal.completed'
       ? ['operationKind', 'proposalId', 'status']
+      : eventType === 'management.setup.completed'
+        ? ['action', 'scopeCount', 'setupOperationId']
       : undefined;
   if (!expectedKeys) throw new Error('Management audit event type is not allowlisted');
   if (JSON.stringify(Object.keys(metadata).sort()) !== JSON.stringify(expectedKeys)) {
     throw new Error('Management audit metadata shape is invalid');
   }
-  if (!['completed', 'partial', 'confirmation_required'].includes(String(metadata.status))) {
+  if (eventType !== 'management.setup.completed' &&
+      !['completed', 'partial', 'confirmation_required'].includes(String(metadata.status))) {
     throw new Error('Management audit status is invalid');
   }
   for (const [key, value] of Object.entries(metadata)) {

@@ -151,11 +151,13 @@ import { IdentityStoreLogic } from './identity/store.ts';
 import type { IdentityStore } from './identity/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from './identity/types.ts';
 import { ManagementStoreLogic } from './management/store.ts';
+import { formatManagementSetupReceipt } from './management/receipts.ts';
 import {
   ManagementError,
   type ManagementRpcRequest,
   type ManagementRpcResponse,
 } from './management/types.ts';
+import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from './config/types.ts';
 import {
   DurableRunDriver,
   runDriverRetryDelayMs,
@@ -594,7 +596,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   async managementExecute(
     request: ManagementRpcRequest,
   ): Promise<StateRpcResult<ManagementRpcResponse>> {
-    return this.call((stores) => stores.management.execute(request));
+    const result = this.call((stores) => stores.management.execute(request));
+    if (result.ok && request.kind === 'complete_setup') {
+      const due = this.call((stores) => stores.management.nextOutboxDueAt() ?? null);
+      if (due.ok && due.value !== null) {
+        await this.armAlarmNoLaterThan(Math.max(Date.now(), due.value));
+      }
+    }
+    return result;
   }
 
   async configListAgents(): Promise<StateRpcResult<CustomAgentConfig[]>> {
@@ -1237,14 +1246,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (cleanupPending) {
         await drainSlackInteractionCleanups(stores, resolveIdentity);
       }
-      if (
-        stores.turnJobs.hasPending('ledger') ||
+      await drainCloudflareManagementReceipts(stores, resolveIdentity);
+      const turnRetry = stores.turnJobs.hasPending('ledger') ||
         stores.turnJobs.hasPendingSlackInteractionCleanup()
-      ) {
-        await this.ctx.storage.setAlarm(
-          Date.now() + runDriverRetryDelayMs(ledgerDrain, RELAY_RETRY_BACKOFF_MS),
-        );
-      }
+        ? Date.now() + runDriverRetryDelayMs(ledgerDrain, RELAY_RETRY_BACKOFF_MS)
+        : undefined;
+      const outboxRetry = stores.management.nextOutboxDueAt();
+      const nextWake = earliestDefined(turnRetry, outboxRetry);
+      if (nextWake !== undefined) await this.ctx.storage.setAlarm(nextWake);
       return;
     }
     // Resolve current credentials once per identity referenced by this bounded
@@ -1537,15 +1546,24 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     );
     identityRetryDelayMs = runDriverRetryDelayMs(ledgerDrain, identityRetryDelayMs);
     await drainSlackInteractionCleanups(stores, resolveIdentity);
+    await drainCloudflareManagementReceipts(stores, resolveIdentity);
     needsRetry ||= stores.turnJobs.hasPending('legacy') ||
       stores.turnJobs.hasPending('ledger') ||
       stores.turnJobs.hasPendingSlackInteractionCleanup();
-    if (needsRetry) {
+    const turnRetry = needsRetry ? Date.now() + identityRetryDelayMs : undefined;
+    const outboxRetry = stores.management.nextOutboxDueAt();
+    const nextWake = earliestDefined(turnRetry, outboxRetry);
+    if (nextWake !== undefined) {
       // Re-arm (do NOT throw) so this invocation returns normally and its
       // attempt-count writes commit; the next firing re-drives the leftover
       // pending jobs.
-      await this.ctx.storage.setAlarm(Date.now() + identityRetryDelayMs);
+      await this.ctx.storage.setAlarm(nextWake);
     }
+  }
+
+  private async armAlarmNoLaterThan(at: number): Promise<void> {
+    const existing = await this.ctx.storage.getAlarm();
+    if (existing === null || at < existing) await this.ctx.storage.setAlarm(at);
   }
 
   private createAlarmIdentityResolver(stores: TagStateStores): SlackIdentityExecutionResolver {
@@ -1756,6 +1774,63 @@ async function drainSlackInteractionCleanups(
   }
 }
 
+async function drainCloudflareManagementReceipts(
+  stores: TagStateStores,
+  resolveIdentity: SlackIdentityExecutionResolver,
+): Promise<void> {
+  const at = Date.now();
+  const claimed = stores.management.claimDueOutbox(at, 10, at + 30_000);
+  if (claimed.length === 0) return;
+  const execution = await resolveIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+  for (const record of claimed) {
+    try {
+      let channel: string;
+      let threadTs: string | undefined;
+      if (record.destination.kind === 'thread') {
+        if (record.destination.workspaceId !== execution.teamId) {
+          throw new Error('Receipt workspace mismatch.');
+        }
+        channel = record.destination.channelId;
+        threadTs = record.destination.threadTs;
+      } else {
+        const destination = record.destination;
+        const binding = stores.identity.listExternalIdentities().find((candidate) =>
+          candidate.organizationId === destination.organizationId &&
+          candidate.userId === destination.userId &&
+          candidate.slackTeamId === execution.teamId);
+        if (!binding) throw new Error('Receipt identity unavailable.');
+        channel = binding.slackUserId;
+      }
+      const response = await execution.client.chat.postMessage({
+        channel,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+        text: formatManagementSetupReceipt(record.receipt),
+        client_msg_id: record.outboxId,
+      } as Parameters<typeof execution.client.chat.postMessage>[0]);
+      if (!response.ok || !response.ts) throw new Error('Receipt delivery failed.');
+      stores.management.settleOutbox({
+        outboxId: record.outboxId,
+        outcome: 'delivered',
+        at: Date.now(),
+        deliveryRef: `slack:${channel}:${response.ts}`,
+      });
+    } catch {
+      const terminal = record.attempts >= 8;
+      stores.management.settleOutbox({
+        outboxId: record.outboxId,
+        outcome: terminal ? 'failed' : 'retry',
+        at: Date.now(),
+        ...(terminal
+          ? { failureCode: 'slack_delivery_failed' }
+          : {
+              nextAttemptAt: Date.now() +
+                Math.min(15 * 60_000, 5_000 * 2 ** Math.max(0, record.attempts - 1)),
+            }),
+      });
+    }
+  }
+}
+
 async function drainLedgerRuns(
   stores: TagStateStores,
   platformEnv: PlatformEnv,
@@ -1825,6 +1900,11 @@ function localUsageStore(stores: TagStateStores): UsageStore {
     getRetentionStatus: async () => stores.usage.getRetentionStatus(),
     listUsageAuditEvents: async (limit) => stores.usage.listUsageAuditEvents(limit),
   };
+}
+
+function earliestDefined(...values: Array<number | undefined>): number | undefined {
+  const defined = values.filter((value): value is number => value !== undefined);
+  return defined.length ? Math.min(...defined) : undefined;
 }
 
 function rpcError(

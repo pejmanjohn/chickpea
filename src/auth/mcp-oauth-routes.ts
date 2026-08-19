@@ -215,7 +215,11 @@ async function dispatchMcp(c: Context, options: McpOAuthRuntimeOptions): Promise
     identity: runtime.identity,
     betterAuthOrganizationId: runtime.betterAuthOrganizationId,
     createServer: options.createServer ?? ((principal) =>
-      createWorkspaceManagementMcpHandler(principal, c.env as PlatformEnv | undefined)),
+      createWorkspaceManagementMcpHandler(
+        principal,
+        c.env as PlatformEnv | undefined,
+        runtime.environment.baseURL,
+      )),
   });
   return handler(c.req.raw);
 }

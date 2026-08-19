@@ -57,6 +57,8 @@ async function fixture() {
     identity,
     config,
     management,
+    setupBaseUrl: 'http://localhost',
+    randomCapability: () => 'c'.repeat(43),
     now: () => now,
     randomId: () => `id_${++sequence}`,
   });
@@ -180,6 +182,79 @@ test('one progressive request creates an Agent, Channel, and initial placement w
     ]);
     assert.equal((await f.config.getAssignment('T1', 'C_RESEARCH'))?.agentId, 'agent_research');
     assert.equal((await f.config.getChannel('T1', 'C_RESEARCH'))?.revision, 2);
+  } finally {
+    f.close();
+  }
+});
+
+test('one progressive request keeps the Agent live while returning setup for an unavailable connector', async () => {
+  const f = await fixture();
+  try {
+    const research = agent({
+      id: 'agent_customer_research',
+      name: 'Customer Research',
+      skills: [
+        { name: 'interview-analysis', description: 'Analyze interviews', instructions: 'Find themes.', enabled: true },
+        { name: 'research-brief', description: 'Write briefs', instructions: 'Synthesize evidence.', enabled: true },
+      ],
+      apiConnections: [{
+        id: 'gmail',
+        displayName: 'Gmail',
+        allowedHosts: ['gmail.googleapis.com'],
+        pathPrefixes: ['/gmail/v1'],
+        headerName: 'Authorization',
+        allowedMethods: ['GET'],
+        enabled: true,
+        authMode: 'oauth',
+        oauthProvider: 'google',
+        oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+        oauthAppType: 'external',
+        lifecycleStatus: 'pending',
+        statusText: 'Not connected',
+        presetId: 'gmail',
+      }],
+      repositories: [{
+        id: 'repo_research',
+        installationId: 42,
+        accountLogin: 'magoosh',
+        fullName: 'magoosh/research',
+        enabled: true,
+      }],
+    });
+    const result = await f.service.applyWorkspaceChanges({
+      context: context(f.admin),
+      idempotencyKey: 'progressive_with_setup',
+      operations: [
+        { itemId: 'agent', kind: 'create_agent', clientRef: 'research', agent: research },
+        {
+          itemId: 'channel',
+          kind: 'put_channel',
+          channel: {
+            workspaceId: 'T1', channelId: 'C_RESEARCH',
+            participationMode: 'mention_only', lifecycle: 'active',
+          },
+          expectedRevision: 0,
+        },
+        {
+          itemId: 'placement', dependsOn: ['agent', 'channel'], kind: 'place_agent',
+          workspaceId: 'T1', channelId: 'C_RESEARCH', expectedRevision: 1,
+          expectedAgentId: null, agentClientRef: 'research',
+        },
+        {
+          itemId: 'gmail', dependsOn: ['agent'], kind: 'request_setup',
+          target: { kind: 'api_connection', agentClientRef: 'research', connectionId: 'gmail' },
+        },
+      ],
+    });
+    assert.deepEqual(result.outcomes.map(({ disposition }) => disposition), [
+      'applied', 'applied', 'applied', 'setup_required',
+    ]);
+    assert.match(result.outcomes[3]!.setupUrl!, /\/setup\/setup_.*#setup=/);
+    assert.equal((await f.config.getAgent('agent_customer_research')).enabled, true);
+    assert.equal(
+      (await f.config.getAssignment('T1', 'C_RESEARCH'))?.agentId,
+      'agent_customer_research',
+    );
   } finally {
     f.close();
   }

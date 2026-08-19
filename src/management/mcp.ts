@@ -5,14 +5,17 @@ import {
   getConfigStore,
   getIdentityStore,
   getManagementStore,
+  getSettingsStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
+import { describeProviderKeySources } from '../config/provider-keys.ts';
 import {
   applyWorkspaceChangesZodSchema,
   confirmWorkspaceChangeZodSchema,
   getOperationZodSchema,
   inspectWorkspaceZodSchema,
   MANAGEMENT_OPERATION_KINDS,
+  revokeSetupLinkZodSchema,
   undoWorkspaceChangeZodSchema,
 } from './schemas.ts';
 import { WorkspaceManagementService } from './service.ts';
@@ -34,11 +37,16 @@ export interface WorkspaceManagementMcpServerInput {
 export function createWorkspaceManagementMcpHandler(
   principal: McpAuthenticatedPrincipal,
   env?: PlatformEnv,
+  setupBaseUrl?: string,
 ): McpRequestHandler {
+  const settings = getSettingsStore(env);
   const service = new WorkspaceManagementService({
     identity: getIdentityStore(env),
     config: getConfigStore(env),
     management: getManagementStore(env),
+    ...(setupBaseUrl ? { setupBaseUrl } : {}),
+    providerCredentialSource: async (providerId) =>
+      (await describeProviderKeySources(env, settings))[providerId],
   });
   const handler = createMcpHandler(
     () => createWorkspaceManagementMcpServer({ principal, service }),
@@ -111,6 +119,17 @@ export function createWorkspaceManagementMcpServer(
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'get_operation',
+    args,
+  )));
+
+  server.registerTool('revoke_setup_link', {
+    title: 'Revoke Chickpea setup link',
+    description: workspaceManagementToolDescription('revoke_setup_link'),
+    inputSchema: revokeSetupLinkZodSchema,
+    annotations: { destructiveHint: true, idempotentHint: true },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'revoke_setup_link',
     args,
   )));
 

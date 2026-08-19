@@ -9,14 +9,17 @@ import {
   getConfigStore,
   getIdentityStore,
   getManagementStore,
+  getSettingsStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
+import { describeProviderKeySources } from '../config/provider-keys.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import {
   applyWorkspaceChangesValibotSchema,
   confirmWorkspaceChangeValibotSchema,
   getOperationValibotSchema,
   inspectWorkspaceValibotSchema,
+  revokeSetupLinkValibotSchema,
   undoWorkspaceChangeValibotSchema,
 } from './schemas.ts';
 import { WorkspaceManagementService } from './service.ts';
@@ -32,6 +35,7 @@ import {
   type ManagementActorContext,
   type ManagementOperation,
 } from './types.ts';
+import { resolveSlackPublicUrl } from '../slack/credentials.ts';
 
 const SIGNAL_ATTRIBUTE_KEYS = [
   'workspaceId',
@@ -70,6 +74,16 @@ export function useWorkspaceManagementSlackTools(
     async run({ data }) {
       return slackToolOutput(await invokeLiveSlackTool(
         signal, resolvePlatformEnv, 'inspect_workspace', data,
+      ));
+    },
+  });
+  useTool({
+    name: 'revoke_setup_link',
+    description: workspaceManagementToolDescription('revoke_setup_link'),
+    input: revokeSetupLinkValibotSchema,
+    async run({ data }) {
+      return slackToolOutput(await invokeLiveSlackTool(
+        signal, resolvePlatformEnv, 'revoke_setup_link', data,
       ));
     },
   });
@@ -188,10 +202,14 @@ async function invokeLiveSlackTool<TName extends WorkspaceManagementToolName>(
 ): Promise<WorkspaceManagementToolResult> {
   const env = await resolvePlatformEnv();
   const identity = getIdentityStore(env);
+  const settings = getSettingsStore(env);
   const service = new WorkspaceManagementService({
     identity,
     config: getConfigStore(env),
     management: getManagementStore(env),
+    setupBaseUrl: () => resolveSlackPublicUrl(env, settings),
+    providerCredentialSource: async (providerId) =>
+      (await describeProviderKeySources(env, settings))[providerId],
   });
   return invokeSlackWorkspaceManagementTool({ signal, identity, service, name, args });
 }

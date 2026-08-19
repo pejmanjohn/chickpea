@@ -35,6 +35,8 @@ export async function createManagementAdapterFixture(suffix: string) {
     identity,
     config,
     management,
+    setupBaseUrl: 'http://localhost',
+    randomCapability: () => 'c'.repeat(43),
     now: () => now,
     randomId: () => `${suffix}_${++sequence}`,
   });

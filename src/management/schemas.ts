@@ -8,6 +8,7 @@ export const MANAGEMENT_OPERATION_KINDS = [
   'put_channel',
   'place_agent',
   'update_member',
+  'request_setup',
 ] as const;
 
 const zText = (max: number) => z.string().min(1).max(max);
@@ -109,6 +110,31 @@ const zOperationBase = {
   itemId: zId,
   dependsOn: z.array(zId).max(25).optional(),
 };
+const zSetupAgentTargetBase = {
+  agentId: zId.optional(),
+  agentClientRef: zId.optional(),
+};
+const zSetupTarget = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('api_connection'),
+    ...zSetupAgentTargetBase,
+    connectionId: zId,
+  }),
+  z.strictObject({
+    kind: z.literal('mcp_connection'),
+    ...zSetupAgentTargetBase,
+    connectionId: zId,
+  }),
+  z.strictObject({
+    kind: z.literal('repository_access'),
+    ...zSetupAgentTargetBase,
+    repositoryId: zId,
+  }),
+  z.strictObject({
+    kind: z.literal('provider_credential'),
+    providerId: z.enum(['anthropic', 'openai', 'openrouter']),
+  }),
+]);
 
 export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   z.strictObject({ ...zOperationBase, kind: z.literal('create_agent'), clientRef: zId.optional(), agent: zAgent }),
@@ -132,6 +158,11 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
     role: z.enum(['owner', 'admin']).optional(),
     status: z.enum(['active', 'suspended', 'removed']).optional(),
   }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('request_setup'),
+    target: zSetupTarget,
+  }),
 ]);
 
 export const applyWorkspaceChangesZodSchema = z.strictObject({
@@ -144,6 +175,10 @@ export const undoWorkspaceChangeZodSchema = z.strictObject({
   idempotencyKey: zText(256),
 });
 export const getOperationZodSchema = z.strictObject({ operationId: zId });
+export const revokeSetupLinkZodSchema = z.strictObject({
+  setupOperationId: zId,
+  reissue: z.boolean().optional(),
+});
 export const inspectWorkspaceZodSchema = z.strictObject({});
 
 const vt = (max: number) => v.pipe(v.string(), v.minLength(1), v.maxLength(max));
@@ -240,6 +275,31 @@ const vChannel = v.strictObject({
   lifecycle: v.picklist(['active', 'archived']),
 });
 const vOperationBase = { itemId: vid, dependsOn: v.optional(va(vid, 25)) };
+const vSetupAgentTargetBase = {
+  agentId: v.optional(vid),
+  agentClientRef: v.optional(vid),
+};
+const vSetupTarget = v.variant('kind', [
+  v.strictObject({
+    kind: v.literal('api_connection'),
+    ...vSetupAgentTargetBase,
+    connectionId: vid,
+  }),
+  v.strictObject({
+    kind: v.literal('mcp_connection'),
+    ...vSetupAgentTargetBase,
+    connectionId: vid,
+  }),
+  v.strictObject({
+    kind: v.literal('repository_access'),
+    ...vSetupAgentTargetBase,
+    repositoryId: vid,
+  }),
+  v.strictObject({
+    kind: v.literal('provider_credential'),
+    providerId: v.picklist(['anthropic', 'openai', 'openrouter']),
+  }),
+]);
 
 export const managementOperationValibotSchema = v.variant('kind', [
   v.strictObject({ ...vOperationBase, kind: v.literal('create_agent'), clientRef: v.optional(vid), agent: vAgent }),
@@ -263,6 +323,11 @@ export const managementOperationValibotSchema = v.variant('kind', [
     role: v.optional(v.picklist(['owner', 'admin'])),
     status: v.optional(v.picklist(['active', 'suspended', 'removed'])),
   }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('request_setup'),
+    target: vSetupTarget,
+  }),
 ]);
 
 export const applyWorkspaceChangesValibotSchema = v.strictObject({
@@ -275,4 +340,8 @@ export const undoWorkspaceChangeValibotSchema = v.strictObject({
   idempotencyKey: vt(256),
 });
 export const getOperationValibotSchema = v.strictObject({ operationId: vid });
+export const revokeSetupLinkValibotSchema = v.strictObject({
+  setupOperationId: vid,
+  reissue: v.optional(v.boolean()),
+});
 export const inspectWorkspaceValibotSchema = v.strictObject({});

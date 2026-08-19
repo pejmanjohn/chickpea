@@ -1,3 +1,5 @@
+import { timingSafeEqual } from 'node:crypto';
+
 import { AuditStoreLogic } from '../audit/store.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
@@ -5,14 +7,21 @@ import type { StateDb } from '../state/state-db.ts';
 import {
   ManagementError,
   type ClaimManagementProposalInput,
+  type AuthorizeManagementSetupInput,
+  type CompleteManagementSetupInput,
+  type ExchangeManagementSetupInput,
   type ManagementApplyResult,
   type ManagementProposalRecord,
+  type ManagementReceiptOutboxRecord,
   type ManagementRequestProgress,
   type ManagementRequestRecord,
   type ManagementRpcRequest,
   type ManagementRpcResponse,
+  type ManagementSetupRecord,
   type ManagementUndoRecord,
+  type PutManagementSetupInput,
   type PutManagementProposalInput,
+  type RevokeManagementSetupInput,
   type ReserveManagementRequestInput,
 } from './types.ts';
 
@@ -59,6 +68,42 @@ interface ManagementUndoRow {
   updated_at: number;
 }
 
+interface ManagementSetupRow {
+  setup_operation_id: string;
+  organization_id: string;
+  actor_user_id: string;
+  actor_membership_id: string;
+  origin_json: string;
+  action: ManagementSetupRecord['action'];
+  target_json: string;
+  scopes_json: string;
+  token_digest: string | null;
+  browser_session_digest: string | null;
+  status: ManagementSetupRecord['status'];
+  failure_code: string | null;
+  receipt_json: string | null;
+  supersedes_setup_operation_id: string | null;
+  expires_at: number;
+  claimed_at: number | null;
+  completed_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface ManagementOutboxRow {
+  outbox_id: string;
+  operation_id: string;
+  destination_json: string;
+  receipt_json: string;
+  status: ManagementReceiptOutboxRecord['status'];
+  attempts: number;
+  next_attempt_at: number;
+  delivery_ref: string | null;
+  failure_code: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface ManagementStore {
   execute(request: ManagementRpcRequest): Promise<ManagementRpcResponse>;
   reserveRequest(
@@ -88,6 +133,32 @@ export interface ManagementStore {
   putUndo(record: ManagementUndoRecord): Promise<ManagementUndoRecord>;
   getUndo(operationId: string): Promise<ManagementUndoRecord | undefined>;
   consumeUndo(operationId: string, at: number): Promise<ManagementUndoRecord>;
+  putSetup(input: PutManagementSetupInput): Promise<ManagementSetupRecord>;
+  getSetup(setupOperationId: string, at?: number): Promise<ManagementSetupRecord | undefined>;
+  exchangeSetup(input: ExchangeManagementSetupInput): Promise<ManagementSetupRecord>;
+  authorizeSetup(input: AuthorizeManagementSetupInput): Promise<ManagementSetupRecord>;
+  failSetup(
+    setupOperationId: string,
+    browserSessionDigest: string,
+    failureCode: string,
+    at: number,
+  ): Promise<ManagementSetupRecord>;
+  completeSetup(input: CompleteManagementSetupInput): Promise<ManagementSetupRecord>;
+  revokeSetup(input: RevokeManagementSetupInput): Promise<ManagementSetupRecord>;
+  getOutboxForOperation(operationId: string): Promise<ManagementReceiptOutboxRecord | undefined>;
+  claimDueOutbox(
+    at: number,
+    limit: number,
+    leaseUntil: number,
+  ): Promise<ManagementReceiptOutboxRecord[]>;
+  settleOutbox(input: {
+    outboxId: string;
+    outcome: 'delivered' | 'retry' | 'failed';
+    at: number;
+    nextAttemptAt?: number;
+    deliveryRef?: string;
+    failureCode?: string;
+  }): Promise<ManagementReceiptOutboxRecord>;
   close?(): void;
 }
 
@@ -144,6 +215,46 @@ export class ManagementStoreLogic {
         return { kind: 'undo', undo: this.getUndo(request.operationId) ?? null };
       case 'consume_undo':
         return { kind: 'undo', undo: this.consumeUndo(request.operationId, request.at) };
+      case 'put_setup':
+        return { kind: 'setup', setup: this.putSetup(request.input) };
+      case 'get_setup':
+        return {
+          kind: 'setup',
+          setup: this.getSetup(request.setupOperationId, request.at) ?? null,
+        };
+      case 'exchange_setup':
+        return { kind: 'setup', setup: this.exchangeSetup(request.input) };
+      case 'authorize_setup':
+        return { kind: 'setup', setup: this.authorizeSetup(request.input) };
+      case 'fail_setup':
+        return {
+          kind: 'setup',
+          setup: this.failSetup(
+            request.setupOperationId,
+            request.browserSessionDigest,
+            request.failureCode,
+            request.at,
+          ),
+        };
+      case 'complete_setup':
+        return { kind: 'setup', setup: this.completeSetup(request.input) };
+      case 'revoke_setup':
+        return { kind: 'setup', setup: this.revokeSetup(request.input) };
+      case 'get_outbox_for_operation':
+        return {
+          kind: 'outbox',
+          outbox: this.getOutboxForOperation(request.operationId) ?? null,
+        };
+      case 'claim_due_outbox':
+        return {
+          kind: 'outbox_batch',
+          outbox: this.claimDueOutbox(request.at, request.limit, request.leaseUntil),
+        };
+      case 'settle_outbox':
+        return {
+          kind: 'outbox',
+          outbox: this.settleOutbox(request),
+        };
     }
   }
 
@@ -423,6 +534,291 @@ export class ManagementStoreLogic {
     return this.requireUndo(operationId);
   }
 
+  putSetup(input: PutManagementSetupInput): ManagementSetupRecord {
+    const { record } = input;
+    const existing = this.getSetup(record.setupOperationId);
+    if (existing) return existing;
+    this.db.run(
+      `INSERT INTO management_setup_operations (
+        setup_operation_id, organization_id, actor_user_id, actor_membership_id,
+        origin_json, action, target_json, scopes_json, token_digest,
+        browser_session_digest, status, failure_code, receipt_json,
+        supersedes_setup_operation_id, expires_at, claimed_at, completed_at,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      record.setupOperationId,
+      record.organizationId,
+      record.actorUserId,
+      record.actorMembershipId,
+      JSON.stringify(record.origin),
+      record.action,
+      JSON.stringify(record.target),
+      JSON.stringify(record.scopes),
+      record.tokenDigest ?? null,
+      record.browserSessionDigest ?? null,
+      record.status,
+      record.failureCode ?? null,
+      record.receipt ? JSON.stringify(record.receipt) : null,
+      record.supersedesSetupOperationId ?? null,
+      record.expiresAt,
+      record.claimedAt ?? null,
+      record.completedAt ?? null,
+      record.createdAt,
+      record.updatedAt,
+    );
+    return this.requireSetup(record.setupOperationId);
+  }
+
+  getSetup(setupOperationId: string, at?: number): ManagementSetupRecord | undefined {
+    let row = this.db.get(
+      'SELECT * FROM management_setup_operations WHERE setup_operation_id = ?',
+      setupOperationId,
+    ) as unknown as ManagementSetupRow | undefined;
+    if (!row) return undefined;
+    if (at !== undefined && row.expires_at <= at &&
+        ['pending', 'claimed', 'authorizing', 'failed'].includes(row.status)) {
+      this.db.run(
+        `UPDATE management_setup_operations
+         SET status = 'expired', token_digest = NULL, browser_session_digest = NULL,
+             updated_at = ?
+         WHERE setup_operation_id = ?
+           AND status IN ('pending', 'claimed', 'authorizing', 'failed')`,
+        at,
+        setupOperationId,
+      );
+      row = this.db.get(
+        'SELECT * FROM management_setup_operations WHERE setup_operation_id = ?',
+        setupOperationId,
+      ) as unknown as ManagementSetupRow;
+    }
+    return setupFromRow(row);
+  }
+
+  exchangeSetup(input: ExchangeManagementSetupInput): ManagementSetupRecord {
+    return this.db.transaction(() => {
+      const setup = this.requireSetup(input.setupOperationId, input.at);
+      if (setup.status === 'expired') throw setupError('setup_expired');
+      if (setup.status !== 'pending' || !setup.tokenDigest ||
+          !constantDigestEquals(setup.tokenDigest, input.tokenDigest)) {
+        throw setupError('setup_unavailable');
+      }
+      const updated = this.db.run(
+        `UPDATE management_setup_operations
+         SET status = 'claimed', token_digest = NULL, browser_session_digest = ?,
+             claimed_at = ?, updated_at = ?
+         WHERE setup_operation_id = ? AND status = 'pending' AND token_digest = ?`,
+        input.browserSessionDigest,
+        input.at,
+        input.at,
+        input.setupOperationId,
+        setup.tokenDigest,
+      );
+      if (updated.changes !== 1) throw setupError('setup_unavailable');
+      return this.requireSetup(input.setupOperationId);
+    });
+  }
+
+  authorizeSetup(input: AuthorizeManagementSetupInput): ManagementSetupRecord {
+    return this.db.transaction(() => {
+      const setup = this.requireBrowserSetup(
+        input.setupOperationId,
+        input.browserSessionDigest,
+        input.at,
+      );
+      if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
+        throw setupError('setup_unavailable');
+      }
+      if (setup.status !== 'authorizing') {
+        this.db.run(
+          `UPDATE management_setup_operations
+           SET status = 'authorizing', failure_code = NULL, updated_at = ?
+           WHERE setup_operation_id = ? AND status IN ('claimed', 'failed')`,
+          input.at,
+          input.setupOperationId,
+        );
+      }
+      return this.requireSetup(input.setupOperationId);
+    });
+  }
+
+  failSetup(
+    setupOperationId: string,
+    browserSessionDigest: string,
+    failureCode: string,
+    at: number,
+  ): ManagementSetupRecord {
+    return this.db.transaction(() => {
+      const setup = this.requireBrowserSetup(setupOperationId, browserSessionDigest, at);
+      if (setup.status === 'completed') return setup;
+      if (setup.status !== 'authorizing') throw setupError('setup_unavailable');
+      this.db.run(
+        `UPDATE management_setup_operations
+         SET status = 'failed', failure_code = ?, updated_at = ?
+         WHERE setup_operation_id = ? AND status = 'authorizing'`,
+        boundedFailureCode(failureCode),
+        at,
+        setupOperationId,
+      );
+      return this.requireSetup(setupOperationId);
+    });
+  }
+
+  completeSetup(input: CompleteManagementSetupInput): ManagementSetupRecord {
+    return this.db.transaction(() => {
+      const existing = this.requireSetup(input.setupOperationId, input.at);
+      if (existing.status === 'completed') return existing;
+      const setup = this.requireBrowserSetup(
+        input.setupOperationId,
+        input.browserSessionDigest,
+        input.at,
+      );
+      if (setup.status !== 'authorizing') throw setupError('setup_unavailable');
+      const updated = this.db.run(
+        `UPDATE management_setup_operations
+         SET status = 'completed', receipt_json = ?, failure_code = NULL,
+             token_digest = NULL, browser_session_digest = NULL,
+             completed_at = ?, updated_at = ?
+         WHERE setup_operation_id = ? AND status = 'authorizing'`,
+        JSON.stringify(input.receipt),
+        input.at,
+        input.at,
+        input.setupOperationId,
+      );
+      if (updated.changes !== 1) throw setupError('setup_unavailable');
+      this.db.run(
+        `INSERT OR IGNORE INTO management_receipt_outbox (
+          outbox_id, operation_id, destination_json, receipt_json, status,
+          attempts, next_attempt_at, delivery_ref, failure_code, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        input.outbox.outboxId,
+        input.outbox.operationId,
+        JSON.stringify(input.outbox.destination),
+        JSON.stringify(input.outbox.receipt),
+        input.outbox.status,
+        input.outbox.attempts,
+        input.outbox.nextAttemptAt,
+        input.outbox.deliveryRef ?? null,
+        input.outbox.failureCode ?? null,
+        input.outbox.createdAt,
+        input.outbox.updatedAt,
+      );
+      this.audit.appendIdempotent({
+        eventId: `management-setup:${input.setupOperationId}`,
+        domain: 'management',
+        eventType: 'management.setup.completed',
+        outcome: 'success',
+        actorClass: 'chickpea_user',
+        actorId: setup.actorUserId,
+        workspaceId: setup.organizationId,
+        subjectId: input.setupOperationId,
+        createdAt: input.at,
+        metadataJson: JSON.stringify({
+          action: setup.action,
+          setupOperationId: input.setupOperationId,
+          scopeCount: String(setup.scopes.length),
+        }),
+        idempotencyKey: `management-setup:${input.setupOperationId}`,
+      });
+      return this.requireSetup(input.setupOperationId);
+    });
+  }
+
+  revokeSetup(input: RevokeManagementSetupInput): ManagementSetupRecord {
+    return this.db.transaction(() => {
+      const setup = this.requireSetup(input.setupOperationId, input.at);
+      if (setup.organizationId !== input.organizationId || setup.actorUserId !== input.actorUserId) {
+        throw setupError('setup_not_found');
+      }
+      if (!['pending', 'claimed', 'authorizing', 'failed'].includes(setup.status)) {
+        throw setupError(setup.status === 'expired' ? 'setup_expired' : 'setup_unavailable');
+      }
+      this.db.run(
+        `UPDATE management_setup_operations
+         SET status = 'revoked', token_digest = NULL, browser_session_digest = NULL,
+             updated_at = ?
+         WHERE setup_operation_id = ?
+           AND status IN ('pending', 'claimed', 'authorizing', 'failed')`,
+        input.at,
+        input.setupOperationId,
+      );
+      return this.requireSetup(input.setupOperationId);
+    });
+  }
+
+  getOutboxForOperation(operationId: string): ManagementReceiptOutboxRecord | undefined {
+    const row = this.db.get(
+      `SELECT * FROM management_receipt_outbox
+       WHERE operation_id = ? ORDER BY created_at DESC LIMIT 1`,
+      operationId,
+    ) as unknown as ManagementOutboxRow | undefined;
+    return row ? outboxFromRow(row) : undefined;
+  }
+
+  claimDueOutbox(at: number, limit: number, leaseUntil: number): ManagementReceiptOutboxRecord[] {
+    const boundedLimit = Math.max(1, Math.min(25, Math.trunc(limit)));
+    return this.db.transaction(() => {
+      const rows = this.db.all(
+        `SELECT * FROM management_receipt_outbox
+         WHERE status IN ('pending', 'delivering') AND next_attempt_at <= ?
+         ORDER BY next_attempt_at ASC, created_at ASC LIMIT ?`,
+        at,
+        boundedLimit,
+      ) as unknown as ManagementOutboxRow[];
+      const claimed: ManagementReceiptOutboxRecord[] = [];
+      for (const row of rows) {
+        const updated = this.db.run(
+          `UPDATE management_receipt_outbox
+           SET status = 'delivering', attempts = attempts + 1,
+               next_attempt_at = ?, updated_at = ?
+           WHERE outbox_id = ? AND status IN ('pending', 'delivering') AND next_attempt_at <= ?`,
+          leaseUntil,
+          at,
+          row.outbox_id,
+          at,
+        );
+        if (updated.changes === 1) claimed.push(this.requireOutbox(row.outbox_id));
+      }
+      return claimed;
+    });
+  }
+
+  settleOutbox(input: {
+    outboxId: string;
+    outcome: 'delivered' | 'retry' | 'failed';
+    at: number;
+    nextAttemptAt?: number;
+    deliveryRef?: string;
+    failureCode?: string;
+  }): ManagementReceiptOutboxRecord {
+    const current = this.requireOutbox(input.outboxId);
+    if (current.status === 'delivered' || current.status === 'failed') return current;
+    if (current.status !== 'delivering') throw setupError('setup_unavailable');
+    const status = input.outcome === 'retry' ? 'pending' : input.outcome;
+    const nextAttemptAt = input.outcome === 'retry'
+      ? input.nextAttemptAt ?? input.at
+      : current.nextAttemptAt;
+    this.db.run(
+      `UPDATE management_receipt_outbox
+       SET status = ?, next_attempt_at = ?, delivery_ref = ?, failure_code = ?, updated_at = ?
+       WHERE outbox_id = ? AND status = 'delivering'`,
+      status,
+      nextAttemptAt,
+      input.deliveryRef ?? null,
+      input.failureCode ? boundedFailureCode(input.failureCode) : null,
+      input.at,
+      input.outboxId,
+    );
+    return this.requireOutbox(input.outboxId);
+  }
+
+  nextOutboxDueAt(): number | undefined {
+    const row = this.db.get(
+      `SELECT MIN(next_attempt_at) AS due_at FROM management_receipt_outbox
+       WHERE status IN ('pending', 'delivering')`,
+    ) as unknown as { due_at: number | null } | undefined;
+    return row?.due_at === null || row?.due_at === undefined ? undefined : Number(row.due_at);
+  }
+
   private installSchema(): void {
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS management_requests (
@@ -484,15 +880,28 @@ export class ManagementStoreLogic {
         setup_operation_id TEXT PRIMARY KEY,
         organization_id TEXT NOT NULL,
         actor_user_id TEXT NOT NULL,
+        actor_membership_id TEXT NOT NULL,
+        origin_json TEXT NOT NULL,
         action TEXT NOT NULL,
         target_json TEXT NOT NULL,
         scopes_json TEXT NOT NULL,
         token_digest TEXT,
+        browser_session_digest TEXT,
         status TEXT NOT NULL,
+        failure_code TEXT,
+        receipt_json TEXT,
+        supersedes_setup_operation_id TEXT,
         expires_at INTEGER NOT NULL,
+        claimed_at INTEGER,
+        completed_at INTEGER,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )`,
+    );
+    this.ensureSetupColumns();
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS management_setup_state_idx
+       ON management_setup_operations (status, expires_at)`,
     );
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS management_receipt_outbox (
@@ -503,10 +912,50 @@ export class ManagementStoreLogic {
         status TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt_at INTEGER NOT NULL,
+        delivery_ref TEXT,
+        failure_code TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )`,
     );
+    this.ensureOutboxColumns();
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS management_receipt_outbox_due_idx
+       ON management_receipt_outbox (status, next_attempt_at)`,
+    );
+  }
+
+  private ensureSetupColumns(): void {
+    const columns = new Set((this.db.all('PRAGMA table_info(management_setup_operations)') as Array<{ name: string }>).map(
+      ({ name }) => name,
+    ));
+    const additions: Array<[string, string]> = [
+      ['actor_membership_id', "TEXT NOT NULL DEFAULT ''"],
+      ['origin_json', "TEXT NOT NULL DEFAULT '{\"kind\":\"mcp\",\"clientId\":\"legacy\"}'"],
+      ['browser_session_digest', 'TEXT'],
+      ['failure_code', 'TEXT'],
+      ['receipt_json', 'TEXT'],
+      ['supersedes_setup_operation_id', 'TEXT'],
+      ['claimed_at', 'INTEGER'],
+      ['completed_at', 'INTEGER'],
+    ];
+    for (const [name, definition] of additions) {
+      if (!columns.has(name)) {
+        this.db.exec(`ALTER TABLE management_setup_operations ADD COLUMN ${name} ${definition}`);
+      }
+    }
+  }
+
+  private ensureOutboxColumns(): void {
+    const columns = new Set((this.db.all('PRAGMA table_info(management_receipt_outbox)') as Array<{ name: string }>).map(
+      ({ name }) => name,
+    ));
+    if (!columns.has('delivery_ref')) {
+      this.db.exec('ALTER TABLE management_receipt_outbox ADD COLUMN delivery_ref TEXT');
+    }
+    if (!columns.has('failure_code')) {
+      this.db.exec('ALTER TABLE management_receipt_outbox ADD COLUMN failure_code TEXT');
+    }
   }
 
   private requireRequest(operationId: string): ManagementRequestRecord {
@@ -527,6 +976,35 @@ export class ManagementStoreLogic {
     const undo = this.getUndo(operationId);
     if (!undo) throw new ManagementError('undo_unavailable', 'No undo action is available.');
     return undo;
+  }
+
+  private requireSetup(setupOperationId: string, at?: number): ManagementSetupRecord {
+    const setup = this.getSetup(setupOperationId, at);
+    if (!setup) throw setupError('setup_not_found');
+    return setup;
+  }
+
+  private requireBrowserSetup(
+    setupOperationId: string,
+    browserSessionDigest: string,
+    at: number,
+  ): ManagementSetupRecord {
+    const setup = this.requireSetup(setupOperationId, at);
+    if (setup.status === 'expired') throw setupError('setup_expired');
+    if (!setup.browserSessionDigest ||
+        !constantDigestEquals(setup.browserSessionDigest, browserSessionDigest)) {
+      throw setupError('setup_session_mismatch');
+    }
+    return setup;
+  }
+
+  private requireOutbox(outboxId: string): ManagementReceiptOutboxRecord {
+    const row = this.db.get(
+      'SELECT * FROM management_receipt_outbox WHERE outbox_id = ?',
+      outboxId,
+    ) as unknown as ManagementOutboxRow | undefined;
+    if (!row) throw this.missingOperation(outboxId);
+    return outboxFromRow(row);
   }
 
   private missingOperation(_operationId: string): ManagementError {
@@ -603,4 +1081,71 @@ function undoFromRow(row: ManagementUndoRow): ManagementUndoRecord {
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
+}
+
+function setupFromRow(row: ManagementSetupRow): ManagementSetupRecord {
+  return {
+    setupOperationId: row.setup_operation_id,
+    organizationId: row.organization_id,
+    actorUserId: row.actor_user_id,
+    actorMembershipId: row.actor_membership_id,
+    origin: JSON.parse(row.origin_json) as ManagementSetupRecord['origin'],
+    action: row.action,
+    target: JSON.parse(row.target_json) as ManagementSetupRecord['target'],
+    scopes: JSON.parse(row.scopes_json) as string[],
+    ...(row.token_digest ? { tokenDigest: row.token_digest } : {}),
+    ...(row.browser_session_digest ? { browserSessionDigest: row.browser_session_digest } : {}),
+    status: row.status,
+    ...(row.failure_code ? { failureCode: row.failure_code } : {}),
+    ...(row.receipt_json
+      ? { receipt: JSON.parse(row.receipt_json) as NonNullable<ManagementSetupRecord['receipt']> }
+      : {}),
+    ...(row.supersedes_setup_operation_id
+      ? { supersedesSetupOperationId: row.supersedes_setup_operation_id }
+      : {}),
+    expiresAt: Number(row.expires_at),
+    ...(row.claimed_at === null ? {} : { claimedAt: Number(row.claimed_at) }),
+    ...(row.completed_at === null ? {} : { completedAt: Number(row.completed_at) }),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function outboxFromRow(row: ManagementOutboxRow): ManagementReceiptOutboxRecord {
+  return {
+    outboxId: row.outbox_id,
+    operationId: row.operation_id,
+    destination: JSON.parse(row.destination_json) as ManagementReceiptOutboxRecord['destination'],
+    receipt: JSON.parse(row.receipt_json) as ManagementReceiptOutboxRecord['receipt'],
+    status: row.status,
+    attempts: Number(row.attempts),
+    nextAttemptAt: Number(row.next_attempt_at),
+    ...(row.delivery_ref ? { deliveryRef: row.delivery_ref } : {}),
+    ...(row.failure_code ? { failureCode: row.failure_code } : {}),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function constantDigestEquals(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+function boundedFailureCode(value: string): string {
+  return /^[a-z0-9_:-]{1,80}$/.test(value) ? value : 'validation_failed';
+}
+
+function setupError(
+  code: 'setup_not_found' | 'setup_unavailable' | 'setup_expired' | 'setup_session_mismatch',
+): ManagementError {
+  const message = code === 'setup_expired'
+    ? 'This setup link has expired.'
+    : code === 'setup_session_mismatch'
+      ? 'This browser cannot continue the setup.'
+      : code === 'setup_not_found'
+        ? 'The setup operation was not found.'
+        : 'This setup link is no longer available.';
+  return new ManagementError(code, message);
 }

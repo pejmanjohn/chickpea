@@ -9,6 +9,7 @@ export interface ManagementPolicyFacts {
   currentChannelLifecycle?: 'active' | 'archived';
   initialAgentBundle?: boolean;
   capabilityScopeExpanded?: boolean;
+  credentialReplacement?: boolean;
 }
 
 export type ManagementPolicyDecision =
@@ -29,6 +30,9 @@ export function classifyManagementOperation(
   }
   if (operation.kind === 'delete_agent') {
     return { allowed: true, posture: 'confirmation', reason: 'agent_deletion' };
+  }
+  if (operation.kind === 'request_setup' && facts.credentialReplacement) {
+    return { allowed: true, posture: 'confirmation', reason: 'credential_replacement' };
   }
   if (operation.kind === 'update_agent') {
     const disablingActive = facts.currentAgent?.enabled === true &&

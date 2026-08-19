@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import {
   AgentExistsError,
@@ -29,14 +29,19 @@ import {
   type ManagementItemOutcome,
   type ManagementObjectRef,
   type ManagementOperation,
+  type ManagementOperationResult,
   type ManagementPreparedItem,
   type ManagementProposalRecord,
   type ManagementRequestProgress,
+  type ManagementSetupPublicStatus,
+  type ManagementSetupRecord,
+  type ManagementSetupTarget,
   type ManagementWorkspaceSnapshot,
   type UndoWorkspaceChangeInput,
 } from './types.ts';
 
 const PROPOSAL_TTL_MS = 15 * 60_000;
+const SETUP_TTL_MS = 24 * 60 * 60_000;
 
 export interface WorkspaceManagementServiceInput {
   identity: Pick<
@@ -60,8 +65,13 @@ export interface WorkspaceManagementServiceInput {
     | 'getAgentReferences'
   >;
   management: ManagementStore;
+  setupBaseUrl?: string | (() => string | undefined | Promise<string | undefined>);
+  providerCredentialSource?: (
+    providerId: 'anthropic' | 'openai' | 'openrouter',
+  ) => Promise<'env' | 'stored' | 'missing'>;
   now?: () => number;
   randomId?: () => string;
+  randomCapability?: () => string;
 }
 
 interface ImmediateMutation {
@@ -78,10 +88,12 @@ interface ImmediateMutation {
 export class WorkspaceManagementService {
   private readonly now: () => number;
   private readonly randomId: () => string;
+  private readonly randomCapability: () => string;
 
   constructor(private readonly stores: WorkspaceManagementServiceInput) {
     this.now = stores.now ?? Date.now;
     this.randomId = stores.randomId ?? randomUUID;
+    this.randomCapability = stores.randomCapability ?? (() => randomBytes(32).toString('base64url'));
   }
 
   async inspectWorkspace(
@@ -134,7 +146,7 @@ export class WorkspaceManagementService {
         });
         request = await this.stores.management.saveRequestProgress(
           request.operationId,
-          progress,
+          withoutSetupCapabilitiesFromProgress(progress),
           this.now(),
         );
         continue;
@@ -157,6 +169,15 @@ export class WorkspaceManagementService {
             operationKind: operation.kind,
             disposition: 'confirmation_required',
             proposalId: proposal.proposalId,
+          });
+        } else if (operation.kind === 'request_setup') {
+          const setup = await this.issueSetup(actor, operation);
+          progress = appendOutcome(progress, index, {
+            itemId: operation.itemId,
+            operationKind: operation.kind,
+            disposition: 'setup_required',
+            setupOperationId: setup.record.setupOperationId,
+            setupUrl: setup.url,
           });
         } else {
           const mutation = await this.executeProgressiveItem(request.operationId, operation, progress);
@@ -182,7 +203,7 @@ export class WorkspaceManagementService {
         }
         request = await this.stores.management.saveRequestProgress(
           request.operationId,
-          progress,
+          withoutSetupCapabilitiesFromProgress(progress),
           this.now(),
         );
       } catch (error) {
@@ -195,19 +216,19 @@ export class WorkspaceManagementService {
         });
         request = await this.stores.management.saveRequestProgress(
           request.operationId,
-          progress,
+          withoutSetupCapabilitiesFromProgress(progress),
           this.now(),
         );
       }
     }
 
     const result = await this.resultFor(request.operationId, input.idempotencyKey, progress.outcomes);
-    const completed = await this.stores.management.completeRequest(
+    await this.stores.management.completeRequest(
       request.operationId,
-      result,
+      withoutSetupCapabilities(result),
       this.now(),
     );
-    return completed.result ?? result;
+    return result;
   }
 
   async confirmWorkspaceChange(input: ConfirmWorkspaceChangeInput): Promise<ManagementApplyResult> {
@@ -239,6 +260,27 @@ export class WorkspaceManagementService {
     } catch (error) {
       await this.stores.management.markProposalStale(proposal.proposalId, this.now());
       throw error;
+    }
+
+    if (proposal.operation.kind === 'request_setup') {
+      const setup = await this.issueSetup(actor, proposal.operation);
+      const result = await this.resultFor(
+        proposal.proposalId,
+        `confirmation:${proposal.proposalId}`,
+        [{
+          itemId: proposal.operation.itemId,
+          operationKind: proposal.operation.kind,
+          disposition: 'setup_required',
+          setupOperationId: setup.record.setupOperationId,
+          setupUrl: setup.url,
+        }],
+      );
+      await this.stores.management.completeProposal(
+        proposal.proposalId,
+        withoutSetupCapabilities(result),
+        this.now(),
+      );
+      return result;
     }
 
     const mutation = await this.executeConfirmed(actor, proposal.operation, proposal.proposalId);
@@ -280,7 +322,7 @@ export class WorkspaceManagementService {
   async getOperation(
     context: ApplyWorkspaceChangesInput['context'],
     operationId: string,
-  ): Promise<ManagementApplyResult | undefined> {
+  ): Promise<ManagementOperationResult | undefined> {
     const actor = await this.requireLiveActor(context);
     const request = await this.stores.management.getRequest(operationId);
     if (request) {
@@ -290,11 +332,229 @@ export class WorkspaceManagementService {
       return request.result;
     }
     const proposal = await this.stores.management.getProposal(operationId);
-    if (!proposal || proposal.organizationId !== actor.organizationId ||
-        proposal.actorUserId !== actor.userId) {
+    if (proposal) {
+      if (proposal.organizationId !== actor.organizationId || proposal.actorUserId !== actor.userId) {
+        throw new ManagementError('operation_not_found', 'The management operation was not found.');
+      }
+      return proposal.result;
+    }
+    const setup = await this.stores.management.getSetup(operationId, this.now());
+    if (!setup || setup.organizationId !== actor.organizationId || setup.actorUserId !== actor.userId) {
       throw new ManagementError('operation_not_found', 'The management operation was not found.');
     }
-    return proposal.result;
+    return this.setupPublicStatus(setup);
+  }
+
+  async revokeSetupLink(
+    context: ApplyWorkspaceChangesInput['context'],
+    setupOperationId: string,
+    reissue = false,
+  ): Promise<{ revoked: ManagementSetupPublicStatus; replacement?: { setupOperationId: string; setupUrl: string } }> {
+    const actor = await this.requireLiveActor(context);
+    const existing = await this.stores.management.getSetup(setupOperationId, this.now());
+    if (!existing || existing.organizationId !== actor.organizationId ||
+        existing.actorUserId !== actor.userId) {
+      throw new ManagementError('setup_not_found', 'The setup operation was not found.');
+    }
+    const revoked = await this.stores.management.revokeSetup({
+      setupOperationId,
+      organizationId: actor.organizationId,
+      actorUserId: actor.userId,
+      at: this.now(),
+    });
+    if (!reissue) return { revoked: await this.setupPublicStatus(revoked) };
+    const replacement = await this.issueSetupRecord(actor, {
+      action: existing.action,
+      target: existing.target,
+      scopes: existing.scopes,
+      supersedesSetupOperationId: existing.setupOperationId,
+    });
+    return {
+      revoked: await this.setupPublicStatus(revoked),
+      replacement: {
+        setupOperationId: replacement.record.setupOperationId,
+        setupUrl: replacement.url,
+      },
+    };
+  }
+
+  private async setupPublicStatus(
+    setup: ManagementSetupRecord,
+  ): Promise<ManagementSetupPublicStatus> {
+    const outbox = await this.stores.management.getOutboxForOperation(setup.setupOperationId);
+    return {
+      setupOperationId: setup.setupOperationId,
+      action: setup.action,
+      target: setup.target,
+      scopes: setup.scopes,
+      status: setup.status,
+      expiresAt: setup.expiresAt,
+      ...(setup.receipt ? { receipt: setup.receipt } : {}),
+      ...(outbox ? { delivery: { status: outbox.status, attempts: outbox.attempts } } : {}),
+    };
+  }
+
+  private async issueSetup(
+    actor: LiveManagementActor,
+    operation: Extract<ManagementOperation, { kind: 'request_setup' }>,
+  ): Promise<{ record: ManagementSetupRecord; url: string }> {
+    const frozen = await this.resolveSetupTarget(operation.target);
+    return this.issueSetupRecord(actor, frozen);
+  }
+
+  private async issueSetupRecord(
+    actor: LiveManagementActor,
+    input: {
+      action: ManagementSetupRecord['action'];
+      target: ManagementSetupTarget;
+      scopes: string[];
+      supersedesSetupOperationId?: string;
+    },
+  ): Promise<{ record: ManagementSetupRecord; url: string }> {
+    const baseUrl = await this.resolveSetupBaseUrl();
+    const rawCapability = this.randomCapability();
+    if (!/^[A-Za-z0-9_-]{43}$/.test(rawCapability)) {
+      throw new ManagementError('invalid_request', 'Setup capability generation failed.');
+    }
+    const at = this.now();
+    const record = await this.stores.management.putSetup({
+      record: {
+        setupOperationId: `setup_${this.randomId()}`,
+        organizationId: actor.organizationId,
+        actorUserId: actor.userId,
+        actorMembershipId: actor.membershipId,
+        origin: actor.origin,
+        action: input.action,
+        target: input.target,
+        scopes: [...input.scopes],
+        tokenDigest: capabilityDigest(rawCapability),
+        status: 'pending',
+        ...(input.supersedesSetupOperationId
+          ? { supersedesSetupOperationId: input.supersedesSetupOperationId }
+          : {}),
+        expiresAt: at + SETUP_TTL_MS,
+        createdAt: at,
+        updatedAt: at,
+      },
+    });
+    const url = new URL(`/setup/${encodeURIComponent(record.setupOperationId)}`, baseUrl);
+    url.hash = `setup=${rawCapability}`;
+    return { record, url: url.href };
+  }
+
+  private async resolveSetupBaseUrl(): Promise<string> {
+    const configured = typeof this.stores.setupBaseUrl === 'function'
+      ? await this.stores.setupBaseUrl()
+      : this.stores.setupBaseUrl;
+    if (!configured) {
+      throw new ManagementError('invalid_request', 'The public setup URL is unavailable.');
+    }
+    const url = new URL(configured);
+    const local = url.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
+    if (url.protocol !== 'https:' && !local) {
+      throw new ManagementError('invalid_request', 'The public setup URL must use HTTPS.');
+    }
+    url.pathname = '/';
+    url.search = '';
+    url.hash = '';
+    return url.href;
+  }
+
+  private async resolveSetupTarget(
+    request: Extract<ManagementOperation, { kind: 'request_setup' }>['target'],
+  ): Promise<{
+    action: ManagementSetupRecord['action'];
+    target: ManagementSetupTarget;
+    scopes: string[];
+  }> {
+    if (request.kind === 'provider_credential') {
+      const source = await this.stores.providerCredentialSource?.(request.providerId) ?? 'missing';
+      if (source === 'env') {
+        throw new ManagementError('invalid_request', 'Deployment-provided credentials are read-only.');
+      }
+      return {
+        action: 'provider_credential',
+        target: {
+          kind: request.kind,
+          provider: request.providerId,
+          targetId: `provider:${request.providerId}`,
+          targetLabel: `Workspace ${providerLabel(request.providerId)} model provider`,
+          expectedRevision: source === 'stored' ? 1 : 0,
+          replacement: source === 'stored',
+          formFields: ['apiKey'],
+        },
+        scopes: [`models:${request.providerId}`],
+      };
+    }
+
+    if (!request.agentId) {
+      throw new ManagementError('invalid_request', 'The setup Agent could not be resolved.');
+    }
+    const agent = await this.stores.config.getAgent(request.agentId);
+    if (request.kind === 'api_connection') {
+      const connection = agent.apiConnections.find(({ id }) => id === request.connectionId);
+      if (!connection) throw new ManagementError('invalid_request', 'The API connection was not found.');
+      const oauth = connection.authMode === 'oauth';
+      return {
+        action: oauth ? 'api_oauth' : 'api_credential',
+        target: {
+          kind: request.kind,
+          provider: connection.oauthProvider ?? connection.presetId ?? connection.displayName,
+          targetId: `agent:${agent.id}:api:${connection.id}`,
+          targetLabel: connection.displayName,
+          expectedRevision: agent.revision,
+          agentId: agent.id,
+          agentName: agent.name,
+          connectionId: connection.id,
+          replacement: connection.lifecycleStatus === 'ready',
+          formFields: oauth ? ['clientId', 'clientSecret'] : ['credential'],
+        },
+        scopes: oauth ? [...connection.oauthScopes ?? []] : [`header:${connection.headerName}`],
+      };
+    }
+    if (request.kind === 'mcp_connection') {
+      const connection = agent.mcpServers.find(({ id }) => id === request.connectionId);
+      if (!connection) throw new ManagementError('invalid_request', 'The MCP connection was not found.');
+      const oauth = connection.authMode === 'oauth';
+      if (connection.authMode === 'none') {
+        throw new ManagementError('invalid_request', 'This MCP connection does not require setup.');
+      }
+      return {
+        action: oauth ? 'mcp_oauth' : 'mcp_credentials',
+        target: {
+          kind: request.kind,
+          provider: connection.presetId ?? connection.displayName,
+          targetId: `agent:${agent.id}:mcp:${connection.id}`,
+          targetLabel: connection.displayName,
+          expectedRevision: agent.revision,
+          agentId: agent.id,
+          agentName: agent.name,
+          connectionId: connection.id,
+          replacement: connection.lifecycleStatus === 'ready',
+          formFields: oauth
+            ? []
+            : ['bearerToken', ...connection.headerNames.map((name) => `header:${name}`)],
+        },
+        scopes: oauth ? scopeTokens(connection.oauthScope) : [...connection.allowedTools],
+      };
+    }
+    const repository = agent.repositories.find(({ id }) => id === request.repositoryId);
+    if (!repository) throw new ManagementError('invalid_request', 'The repository grant was not found.');
+    return {
+      action: 'repository_access',
+      target: {
+        kind: request.kind,
+        provider: 'github',
+        targetId: `agent:${agent.id}:repository:${repository.id}`,
+        targetLabel: repository.fullName,
+        expectedRevision: agent.revision,
+        agentId: agent.id,
+        agentName: agent.name,
+        repositoryId: repository.id,
+        replacement: false,
+      },
+      scopes: [`repository:${repository.fullName}`],
+    };
   }
 
   private async requireLiveActor(
@@ -377,6 +637,14 @@ export class WorkspaceManagementService {
     clientRefs: Map<string, string>,
   ) {
     if (operation.kind === 'update_member') return { actor, operation };
+    if (operation.kind === 'request_setup') {
+      const setup = await this.resolveSetupTarget(operation.target);
+      return {
+        actor,
+        operation,
+        credentialReplacement: setup.target.replacement,
+      };
+    }
     if (operation.kind === 'update_agent') {
       const currentAgent = await this.stores.config.getAgent(operation.agentId);
       const agentReferences = await this.stores.config.getAgentReferences(operation.agentId);
@@ -446,7 +714,11 @@ export class WorkspaceManagementService {
       ? progress.prepared
       : await this.prepareItem(operation);
     if (!progress.prepared) {
-      await this.stores.management.saveRequestProgress(requestId, { ...progress, prepared }, this.now());
+      await this.stores.management.saveRequestProgress(
+        requestId,
+        withoutSetupCapabilitiesFromProgress({ ...progress, prepared }),
+        this.now(),
+      );
     }
     const reconciled = await this.reconcilePrepared(prepared);
     return reconciled ?? this.executeImmediate(operation, prepared);
@@ -727,6 +999,12 @@ export class WorkspaceManagementService {
 
   private async targetRevisions(operation: ManagementOperation): Promise<Record<string, number>> {
     if (operation.kind === 'create_agent') return {};
+    if (operation.kind === 'request_setup') {
+      const setup = await this.resolveSetupTarget(operation.target);
+      return setup.target.kind === 'provider_credential'
+        ? { [setup.target.targetId]: setup.target.expectedRevision }
+        : { [`agent:${setup.target.agentId}`]: setup.target.expectedRevision };
+    }
     if (operation.kind === 'update_agent' || operation.kind === 'delete_agent') {
       const target: Record<string, number> = { [`agent:${operation.agentId}`]: operation.expectedRevision };
       if (operation.kind === 'delete_agent' || operation.patch.enabled === false) {
@@ -786,6 +1064,16 @@ export class WorkspaceManagementService {
     if (key.startsWith('membership:')) {
       const membership = await this.stores.identity.getMembership(key.slice('membership:'.length));
       return membership ? membershipRevision(membership) : 0;
+    }
+    if (key.startsWith('provider:')) {
+      const providerId = key.slice('provider:'.length);
+      if (!['anthropic', 'openai', 'openrouter'].includes(providerId)) {
+        throw new ManagementError('invalid_request', 'Unknown provider revision target.');
+      }
+      const source = await this.stores.providerCredentialSource?.(
+        providerId as 'anthropic' | 'openai' | 'openrouter',
+      ) ?? 'missing';
+      return source === 'stored' ? 1 : 0;
     }
     throw new ManagementError('invalid_request', 'Unknown revision target.');
   }
@@ -848,10 +1136,19 @@ function resolveClientReferences(
   operation: ManagementOperation,
   clientRefs: Map<string, string>,
 ): ManagementOperation {
-  if (operation.kind !== 'place_agent' || !operation.agentClientRef) return operation;
-  const agentId = clientRefs.get(operation.agentClientRef);
-  if (!agentId) throw new ManagementError('invalid_request', 'The Agent clientRef was not found.');
-  return { ...operation, agentId };
+  if (operation.kind === 'place_agent' && operation.agentClientRef) {
+    const agentId = clientRefs.get(operation.agentClientRef);
+    if (!agentId) throw new ManagementError('invalid_request', 'The Agent clientRef was not found.');
+    return { ...operation, agentId };
+  }
+  if (operation.kind === 'request_setup' && operation.target.kind !== 'provider_credential' &&
+      operation.target.agentClientRef) {
+    const agentId = clientRefs.get(operation.target.agentClientRef);
+    if (!agentId) throw new ManagementError('invalid_request', 'The Agent clientRef was not found.');
+    const { agentClientRef: _agentClientRef, ...target } = operation.target;
+    return { ...operation, target: { ...target, agentId } };
+  }
+  return operation;
 }
 
 function requireExpectedRevision(expected: number, actual: number): void {
@@ -992,8 +1289,38 @@ function proposalSummary(operation: ManagementOperation, reason: string): string
         ? channelKey(operation.workspaceId, operation.channelId)
         : operation.kind === 'create_agent'
           ? operation.agent.id
-          : operation.agentId;
+          : operation.kind === 'request_setup'
+            ? operation.target.kind === 'provider_credential'
+              ? `provider:${operation.target.providerId}`
+              : operation.target.agentId ?? operation.target.agentClientRef ?? 'agent'
+            : operation.agentId;
   return `${reason}:${operation.kind}:${target}`;
+}
+
+function capabilityDigest(capability: string): string {
+  return createHash('sha256').update(capability).digest('base64url');
+}
+
+function providerLabel(providerId: 'anthropic' | 'openai' | 'openrouter'): string {
+  if (providerId === 'openai') return 'OpenAI';
+  if (providerId === 'openrouter') return 'OpenRouter';
+  return 'Anthropic';
+}
+
+function withoutSetupCapabilities(result: ManagementApplyResult): ManagementApplyResult {
+  return {
+    ...result,
+    outcomes: result.outcomes.map(({ setupUrl: _setupUrl, ...outcome }) => outcome),
+  };
+}
+
+function withoutSetupCapabilitiesFromProgress(
+  progress: ManagementRequestProgress,
+): ManagementRequestProgress {
+  return {
+    ...progress,
+    outcomes: progress.outcomes.map(({ setupUrl: _setupUrl, ...outcome }) => outcome),
+  };
 }
 
 function channelKey(workspaceId: string, channelId: string): string {

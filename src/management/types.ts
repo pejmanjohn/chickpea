@@ -77,7 +77,35 @@ export type ManagementOperation =
       membershipId: string;
       role?: OrganizationRole;
       status?: MembershipStatus;
+    })
+  | (ManagementOperationBase & {
+      kind: 'request_setup';
+      target: ManagementSetupRequestTarget;
     });
+
+export type ManagementSetupRequestTarget =
+  | {
+      kind: 'api_connection';
+      agentId?: string;
+      agentClientRef?: string;
+      connectionId: string;
+    }
+  | {
+      kind: 'mcp_connection';
+      agentId?: string;
+      agentClientRef?: string;
+      connectionId: string;
+    }
+  | {
+      kind: 'repository_access';
+      agentId?: string;
+      agentClientRef?: string;
+      repositoryId: string;
+    }
+  | {
+      kind: 'provider_credential';
+      providerId: 'anthropic' | 'openai' | 'openrouter';
+    };
 
 export type ManagementDisposition =
   | 'applied'
@@ -99,10 +127,125 @@ export interface ManagementItemOutcome {
   changed?: ManagementObjectRef[];
   proposalId?: string;
   setupOperationId?: string;
+  setupUrl?: string;
   undoAvailable?: boolean;
   code?: string;
   warning?: string;
 }
+
+export type ManagementSetupAction =
+  | 'api_oauth'
+  | 'api_credential'
+  | 'mcp_oauth'
+  | 'mcp_credentials'
+  | 'repository_access'
+  | 'provider_credential';
+
+export type ManagementSetupStatus =
+  | 'pending'
+  | 'claimed'
+  | 'authorizing'
+  | 'failed'
+  | 'completed'
+  | 'revoked'
+  | 'expired';
+
+/** Exact non-secret capability scope frozen when a setup link is issued. */
+export interface ManagementSetupTarget {
+  kind: ManagementSetupRequestTarget['kind'];
+  provider: string;
+  targetId: string;
+  targetLabel: string;
+  expectedRevision: number;
+  agentId?: string;
+  agentName?: string;
+  connectionId?: string;
+  repositoryId?: string;
+  replacement: boolean;
+  formFields?: string[];
+}
+
+export interface ManagementSetupReceipt {
+  setupOperationId: string;
+  connector: string;
+  target: string;
+  scopes: string[];
+  initiator: string;
+  accountLabel?: string;
+  completedAt: number;
+}
+
+/** Internal durable record. Digest members must never cross a public adapter. */
+export interface ManagementSetupRecord {
+  setupOperationId: string;
+  organizationId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  origin: ManagementOrigin;
+  action: ManagementSetupAction;
+  target: ManagementSetupTarget;
+  scopes: string[];
+  tokenDigest?: string;
+  browserSessionDigest?: string;
+  status: ManagementSetupStatus;
+  failureCode?: string;
+  receipt?: ManagementSetupReceipt;
+  supersedesSetupOperationId?: string;
+  expiresAt: number;
+  claimedAt?: number;
+  completedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ManagementSetupPublicStatus {
+  setupOperationId: string;
+  action: ManagementSetupAction;
+  target: ManagementSetupTarget;
+  scopes: string[];
+  status: ManagementSetupStatus;
+  expiresAt: number;
+  receipt?: ManagementSetupReceipt;
+  delivery?: {
+    status: ManagementReceiptOutboxStatus;
+    attempts: number;
+  };
+}
+
+export type ManagementReceiptDestination =
+  | {
+      kind: 'thread';
+      workspaceId: string;
+      channelId: string;
+      threadTs: string;
+    }
+  | {
+      kind: 'initiator_dm';
+      organizationId: string;
+      userId: string;
+    };
+
+export type ManagementReceiptOutboxStatus =
+  | 'pending'
+  | 'delivering'
+  | 'delivered'
+  | 'failed';
+
+export interface ManagementReceiptOutboxRecord {
+  outboxId: string;
+  operationId: string;
+  destination: ManagementReceiptDestination;
+  receipt: ManagementSetupReceipt;
+  status: ManagementReceiptOutboxStatus;
+  attempts: number;
+  nextAttemptAt: number;
+  deliveryRef?: string;
+  failureCode?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type ManagementOperationResult = ManagementApplyResult | ManagementSetupPublicStatus;
 
 export interface ManagementApplyResult {
   operationId: string;
@@ -222,7 +365,11 @@ export class ManagementError extends Error {
       | 'proposal_stale'
       | 'undo_unavailable'
       | 'operation_in_progress'
-      | 'revision_conflict',
+      | 'revision_conflict'
+      | 'setup_not_found'
+      | 'setup_unavailable'
+      | 'setup_expired'
+      | 'setup_session_mismatch',
     message: string,
   ) {
     super(message);
@@ -251,6 +398,38 @@ export interface PutManagementProposalInput {
   summary: string;
   targetRevisions: Record<string, number>;
   expiresAt: number;
+  at: number;
+}
+
+export interface PutManagementSetupInput {
+  record: ManagementSetupRecord;
+}
+
+export interface ExchangeManagementSetupInput {
+  setupOperationId: string;
+  tokenDigest: string;
+  browserSessionDigest: string;
+  at: number;
+}
+
+export interface AuthorizeManagementSetupInput {
+  setupOperationId: string;
+  browserSessionDigest: string;
+  at: number;
+}
+
+export interface CompleteManagementSetupInput {
+  setupOperationId: string;
+  browserSessionDigest: string;
+  receipt: ManagementSetupReceipt;
+  outbox: ManagementReceiptOutboxRecord;
+  at: number;
+}
+
+export interface RevokeManagementSetupInput {
+  setupOperationId: string;
+  organizationId: string;
+  actorUserId: string;
   at: number;
 }
 
@@ -291,10 +470,37 @@ export type ManagementRpcRequest =
   | { kind: 'mark_proposal_stale'; proposalId: string; at: number }
   | { kind: 'put_undo'; record: ManagementUndoRecord }
   | { kind: 'get_undo'; operationId: string }
-  | { kind: 'consume_undo'; operationId: string; at: number };
+  | { kind: 'consume_undo'; operationId: string; at: number }
+  | { kind: 'put_setup'; input: PutManagementSetupInput }
+  | { kind: 'get_setup'; setupOperationId: string; at?: number }
+  | { kind: 'exchange_setup'; input: ExchangeManagementSetupInput }
+  | { kind: 'authorize_setup'; input: AuthorizeManagementSetupInput }
+  | {
+      kind: 'fail_setup';
+      setupOperationId: string;
+      browserSessionDigest: string;
+      failureCode: string;
+      at: number;
+    }
+  | { kind: 'complete_setup'; input: CompleteManagementSetupInput }
+  | { kind: 'revoke_setup'; input: RevokeManagementSetupInput }
+  | { kind: 'get_outbox_for_operation'; operationId: string }
+  | { kind: 'claim_due_outbox'; at: number; limit: number; leaseUntil: number }
+  | {
+      kind: 'settle_outbox';
+      outboxId: string;
+      outcome: 'delivered' | 'retry' | 'failed';
+      at: number;
+      nextAttemptAt?: number;
+      deliveryRef?: string;
+      failureCode?: string;
+    };
 
 export type ManagementRpcResponse =
   | { kind: 'request_reservation'; request: ManagementRequestRecord; created: boolean }
   | { kind: 'request'; request: ManagementRequestRecord | null }
   | { kind: 'proposal'; proposal: ManagementProposalRecord | null }
-  | { kind: 'undo'; undo: ManagementUndoRecord | null };
+  | { kind: 'undo'; undo: ManagementUndoRecord | null }
+  | { kind: 'setup'; setup: ManagementSetupRecord | null }
+  | { kind: 'outbox'; outbox: ManagementReceiptOutboxRecord | null }
+  | { kind: 'outbox_batch'; outbox: ManagementReceiptOutboxRecord[] };
