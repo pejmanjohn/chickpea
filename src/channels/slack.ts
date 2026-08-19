@@ -12,6 +12,7 @@ import { applySlackUserChange } from '../auth/slack-membership-events.ts';
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
+import { liveChannelConfigurationEnabled } from '../config/live-channel-config.ts';
 import {
   ModelResolutionError,
   NoAssignmentError,
@@ -19,6 +20,7 @@ import {
 } from '../config/errors.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveAssignment, type AssignmentSurface } from '../config/resolver.ts';
+import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
 import {
   getSlackCredentialDependencies,
   resolveStores,
@@ -105,6 +107,7 @@ import {
   type NormalizedSlackTurn,
   type SlackEventFixture,
 } from '../slack/types.ts';
+import { emitManagementMetric } from '../management/telemetry.ts';
 
 /**
  * Run `task` past the events ack. On Cloudflare the response completing would
@@ -641,6 +644,7 @@ async function resolveIdentityGateAssignment(
   surface: AssignmentSurface,
   identity: SlackIdentity,
   stores: AppStores,
+  liveChannelConfig: boolean,
 ): Promise<ResolvedAssignment | undefined> {
   if (surface === 'direct') {
     return resolveSlackIdentityDmAssignment(
@@ -649,6 +653,10 @@ async function resolveIdentityGateAssignment(
       turn.channelId,
       stores.config,
     );
+  }
+  if (!liveChannelConfig) {
+    const frozen = await stores.snapshots.get(slackThreadKey(turn));
+    if (frozen) return frozen;
   }
   return resolveAssignment(
     turn.workspaceId,
@@ -715,6 +723,7 @@ async function processSlackEvent(
   const preliminaryTurn = preliminary.turn;
   const state = stores.slackState;
   const preliminarySurface = turnSurface(preliminaryTurn);
+  const liveChannelConfig = liveChannelConfigurationEnabled(platformEnv);
   if (preliminarySurface === 'direct' && !behavior.allowDms.value) return;
 
   try {
@@ -723,6 +732,7 @@ async function processSlackEvent(
       preliminarySurface,
       identity,
       stores,
+      liveChannelConfig,
     );
     if (!gateAssignment || !assignmentUsesSlackIdentity(gateAssignment, slackIdentityId)) {
       recordSlackIdentityFanoutIgnored(identity);
@@ -793,7 +803,23 @@ async function processSlackEvent(
     const configStores = { agents: store, assignments: store };
     assignment = surface === 'direct'
       ? await requireSlackIdentityDmAssignment(identity, turn, stores)
-      : await resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores);
+      : !liveChannelConfig && !candidateTurn
+        ? await getOrCreateSnapshot(stores.snapshots, threadKey, () =>
+            resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores).then(
+              async (config) => {
+                const modelCredential = await resolveModelCredentialAttribution(
+                  config.model,
+                  platformEnv,
+                  stores.settings,
+                  stores.usage,
+                );
+                return {
+                  ...config,
+                  ...(modelCredential ? { modelCredential } : {}),
+                };
+              },
+            ))
+        : await resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores);
   } catch (err) {
     // A model that cannot resolve is NOT fail-closed: admit with a best-effort
     // assignment so the turn still delivers the sanitized provider-failure
@@ -1013,10 +1039,16 @@ async function processSlackEvent(
       // Candidate classification may take long enough for configuration to
       // change. Re-resolve at promotion; the ensuing TurnJob is the freeze.
       if (surface === 'channel') {
-        assignment = await resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, {
-          agents: stores.config,
-          assignments: stores.config,
-        });
+        assignment = liveChannelConfig
+          ? await resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, {
+              agents: stores.config,
+              assignments: stores.config,
+            })
+          : await getOrCreateSnapshot(stores.snapshots, threadKey, () =>
+              resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, {
+                agents: stores.config,
+                assignments: stores.config,
+              }));
       }
     } finally {
       releaseClassifier();
@@ -1042,6 +1074,11 @@ async function processSlackEvent(
   }
 
   if (admissionTruth.eligible && modelReadyForCanonicalAdmission) {
+    emitManagementMetric('live_revision.admission', {
+      surface,
+      action: surface === 'channel' && !liveChannelConfig ? 'snapshot' : 'live',
+      outcome: 'admitted',
+    });
     let egressPolicy;
     try {
       egressPolicy = parseEgressPolicy(
@@ -1247,6 +1284,7 @@ async function processSlackEvent(
     console.error('[chickpea] node turn wake failed:', sanitizeError(err));
   });
 }
+
 
 async function handleMemberJoinedChannel(
   payload: SlackEventFixture,

@@ -41,6 +41,7 @@ import {
   type WorkspaceRecipePreview,
 } from './recipes.ts';
 import type { ManagementStore } from './store.ts';
+import { emitManagementMetric } from './telemetry.ts';
 import {
   ManagementError,
   type ApplyWorkspaceChangesInput,
@@ -234,11 +235,25 @@ export class WorkspaceManagementService {
     input: PreviewWorkspaceRecipeInput,
   ): Promise<WorkspaceRecipePreview> {
     await this.requireLiveActor(context);
-    return previewWorkspaceRecipe(
+    const preview = await previewWorkspaceRecipe(
       this.stores.config,
       async (providerId) => this.stores.providerCredentialSource?.(providerId) ?? 'missing',
       input,
     );
+    emitManagementMetric('recipe.preview', {
+      surface: context.origin.kind,
+      outcome: 'success',
+      agentCount: preview.agents.length,
+      channelCount: preview.channels.length,
+      operationCount: preview.operations.length,
+      conflictCount: preview.agents.filter(({ status }) =>
+        status === 'conflict' || status === 'ambiguous').length,
+      setupRequiredCount: preview.agents.reduce(
+        (total, agent) => total + agent.setupRequired.length,
+        0,
+      ),
+    });
+    return preview;
   }
 
   async applyWorkspaceChanges(input: ApplyWorkspaceChangesInput): Promise<ManagementApplyResult> {
@@ -257,7 +272,7 @@ export class WorkspaceManagementService {
       at,
     });
     if (reservation.request.status === 'completed' && reservation.request.result) {
-      return reservation.request.result;
+      return emitOperationOutcomes(actor.origin.kind, reservation.request.result);
     }
     if (reservation.request.status === 'failed') {
       throw new ManagementError('operation_in_progress', 'The prior operation did not complete.');
@@ -373,13 +388,15 @@ export class WorkspaceManagementService {
       withoutSetupCapabilities(result),
       this.now(),
     );
-    return result;
+    return emitOperationOutcomes(actor.origin.kind, result);
   }
 
   async confirmWorkspaceChange(input: ConfirmWorkspaceChangeInput): Promise<ManagementApplyResult> {
     const actor = await this.requireLiveActor(input.context);
     const existing = await this.stores.management.getProposal(input.proposalId);
-    if (existing?.status === 'completed' && existing.result) return existing.result;
+    if (existing?.status === 'completed' && existing.result) {
+      return emitOperationOutcomes(actor.origin.kind, existing.result);
+    }
     if (existing?.status === 'applying') {
       const reconciled = await this.reconcileConfirmed(existing);
       if (reconciled) {
@@ -388,7 +405,7 @@ export class WorkspaceManagementService {
           reconciled,
           this.now(),
         );
-        return completed.result ?? reconciled;
+        return emitOperationOutcomes(actor.origin.kind, completed.result ?? reconciled);
       }
       throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
     }
@@ -425,7 +442,7 @@ export class WorkspaceManagementService {
         withoutSetupCapabilities(result),
         this.now(),
       );
-      return result;
+      return emitOperationOutcomes(actor.origin.kind, result);
     }
 
     const mutation = await this.executeConfirmed(actor, proposal.operation, proposal.proposalId);
@@ -444,7 +461,7 @@ export class WorkspaceManagementService {
       result,
       this.now(),
     );
-    return completed.result ?? result;
+    return emitOperationOutcomes(actor.origin.kind, completed.result ?? result);
   }
 
   async undoWorkspaceChange(input: UndoWorkspaceChangeInput): Promise<ManagementApplyResult> {
@@ -1848,6 +1865,21 @@ function appendOutcome(
   outcome: ManagementItemOutcome,
 ): ManagementRequestProgress {
   return { nextIndex: index + 1, outcomes: [...progress.outcomes, outcome] };
+}
+
+function emitOperationOutcomes(
+  surface: LiveManagementActor['origin']['kind'],
+  result: ManagementApplyResult,
+): ManagementApplyResult {
+  for (const outcome of result.outcomes) {
+    emitManagementMetric('operation.outcome', {
+      surface,
+      operation: outcome.operationKind,
+      outcome: outcome.disposition,
+      ...(outcome.code ? { reason: outcome.code } : {}),
+    });
+  }
+  return result;
 }
 
 function agentClientRefs(operations: readonly ManagementOperation[]): Map<string, string> {

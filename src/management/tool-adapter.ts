@@ -7,6 +7,7 @@ import {
 } from './types.ts';
 import type { MemoryOwnerRef } from '../memory/types.ts';
 import type { PreviewWorkspaceRecipeInput } from './recipes.ts';
+import { emitManagementMetric } from './telemetry.ts';
 
 export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'inspect_workspace',
@@ -68,55 +69,82 @@ export async function invokeWorkspaceManagementTool<TName extends WorkspaceManag
   name: TName,
   args: WorkspaceManagementToolArguments[TName],
 ): Promise<WorkspaceManagementToolResult> {
+  const startedAt = Date.now();
+  let surface = 'unknown';
   try {
     const context = await input.resolveContext();
-    switch (name) {
+    surface = context.origin.kind;
+    const result = await executeWorkspaceManagementTool(input.service, context, name, args);
+    emitManagementMetric('tool.call', {
+      surface,
+      tool: name,
+      outcome: 'success',
+      durationMs: Date.now() - startedAt,
+    });
+    return success(result);
+  } catch (error) {
+    const result = failure(error);
+    emitManagementMetric('tool.call', {
+      surface,
+      tool: name,
+      outcome: 'error',
+      reason: error instanceof ManagementError ? error.code : 'management_error',
+      durationMs: Date.now() - startedAt,
+    });
+    return result;
+  }
+}
+
+async function executeWorkspaceManagementTool<TName extends WorkspaceManagementToolName>(
+  service: WorkspaceManagementService,
+  context: ManagementActorContext,
+  name: TName,
+  args: WorkspaceManagementToolArguments[TName],
+): Promise<unknown> {
+  switch (name) {
       case 'inspect_workspace':
-        return success(await input.service.inspectWorkspace(context));
+        return service.inspectWorkspace(context);
       case 'inspect_memory': {
         const value = args as WorkspaceManagementToolArguments['inspect_memory'];
-        return success(await input.service.inspectMemory(context, value));
+        return service.inspectMemory(context, value);
       }
       case 'inspect_routines': {
         const value = args as WorkspaceManagementToolArguments['inspect_routines'];
-        return success(await input.service.inspectRoutines(context, value));
+        return service.inspectRoutines(context, value);
       }
       case 'export_workspace_recipe': {
         const value = args as WorkspaceManagementToolArguments['export_workspace_recipe'];
-        return success(await input.service.exportRecipe(context, value));
+        return service.exportRecipe(context, value);
       }
       case 'preview_workspace_recipe': {
         const value = args as WorkspaceManagementToolArguments['preview_workspace_recipe'];
-        return success(await input.service.previewRecipe(context, value));
+        return service.previewRecipe(context, value);
       }
       case 'apply_workspace_changes': {
         const value = args as WorkspaceManagementToolArguments['apply_workspace_changes'];
-        return success(await input.service.applyWorkspaceChanges({ context, ...value }));
+        return service.applyWorkspaceChanges({ context, ...value });
       }
       case 'confirm_workspace_change': {
         const value = args as WorkspaceManagementToolArguments['confirm_workspace_change'];
-        return success(await input.service.confirmWorkspaceChange({ context, ...value }));
+        return service.confirmWorkspaceChange({ context, ...value });
       }
       case 'undo_workspace_change': {
         const value = args as WorkspaceManagementToolArguments['undo_workspace_change'];
-        return success(await input.service.undoWorkspaceChange({ context, ...value }));
+        return service.undoWorkspaceChange({ context, ...value });
       }
       case 'get_operation': {
         const value = args as WorkspaceManagementToolArguments['get_operation'];
-        const operation = await input.service.getOperation(context, value.operationId);
-        return success({ operation: operation ?? null });
+        const operation = await service.getOperation(context, value.operationId);
+        return { operation: operation ?? null };
       }
       case 'revoke_setup_link': {
         const value = args as WorkspaceManagementToolArguments['revoke_setup_link'];
-        return success(await input.service.revokeSetupLink(
+        return service.revokeSetupLink(
           context,
           value.setupOperationId,
           value.reissue ?? false,
-        ));
+        );
       }
-    }
-  } catch (error) {
-    return failure(error);
   }
 }
 

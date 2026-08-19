@@ -9,6 +9,7 @@ import type {
   ManagementSetupReceipt,
   ManagementSetupRecord,
 } from './types.ts';
+import { emitManagementMetric } from './telemetry.ts';
 
 const OUTBOX_LEASE_MS = 30_000;
 const OUTBOX_MAX_ATTEMPTS = 8;
@@ -110,6 +111,12 @@ export async function drainManagementReceiptOutbox(input: {
       if (terminal) failed += 1;
       else retried += 1;
     }
+  }
+  if (claimed.length > 0) {
+    emitManagementMetric('receipt.delivery', {
+      outcome: failed > 0 ? 'failed' : retried > 0 ? 'retry' : 'delivered',
+      operationCount: claimed.length,
+    });
   }
   return { delivered, retried, failed };
 }

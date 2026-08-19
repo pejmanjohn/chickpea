@@ -22,6 +22,7 @@ import {
 import { BetterAuthMcpOAuthContinuationStore } from './mcp-oauth-continuation.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
 import { createWorkspaceManagementMcpHandler } from '../management/mcp.ts';
+import { emitManagementMetric } from '../management/telemetry.ts';
 
 const MCP_BROWSER_BODY_LIMIT_BYTES = 16 * 1024;
 
@@ -64,7 +65,12 @@ export function createMcpAuthenticatedRequestHandler(
 
   return async (request) => {
     const token = bearerToken(request.headers.get('authorization'));
-    if (!token) return oauthChallenge(401, metadata);
+    if (!token) {
+      emitManagementMetric('oauth.request', {
+        stage: 'bearer', outcome: 'denied', reason: 'missing_token',
+      });
+      return oauthChallenge(401, metadata);
+    }
 
     let claims: JWTPayload;
     try {
@@ -78,11 +84,17 @@ export function createMcpAuthenticatedRequestHandler(
       });
       claims = verified.payload;
     } catch {
+      emitManagementMetric('oauth.request', {
+        stage: 'bearer', outcome: 'denied', reason: 'invalid_token',
+      });
       return oauthChallenge(401, metadata, 'invalid_token');
     }
 
     const scopes = grantedScopes(claims.scope);
     if (!scopes.has(MCP_WORKSPACE_SCOPE)) {
+      emitManagementMetric('oauth.request', {
+        stage: 'scope', outcome: 'denied', reason: 'insufficient_scope',
+      });
       return oauthChallenge(403, metadata, 'insufficient_scope');
     }
     if (typeof claims.sub !== 'string' || !claims.sub) {
@@ -92,8 +104,16 @@ export function createMcpAuthenticatedRequestHandler(
     if (!clientId) return oauthChallenge(401, metadata, 'invalid_token');
 
     const resolved = await input.resolvePrincipal(claims.sub).catch(() => undefined);
-    if (!resolved) return forbidden();
+    if (!resolved) {
+      emitManagementMetric('oauth.request', {
+        stage: 'membership', outcome: 'denied', reason: 'live_access_denied',
+      });
+      return forbidden();
+    }
     const server = await input.createServer({ ...resolved, clientId });
+    emitManagementMetric('oauth.request', {
+      stage: 'membership', outcome: 'success',
+    });
     return server(request);
   };
 }

@@ -1542,6 +1542,59 @@ export const scenarios: Scenario[] = [
     },
   },
   {
+    id: 'S34R',
+    title: 'the live-config rollback restores write-once Channel snapshots',
+    config: {
+      ...snapshotScenarioConfig('agent_snapshot_rollback'),
+      env: { CHICKPEA_LIVE_CHANNEL_CONFIG: 'false' },
+    },
+    async run(instance) {
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_S34R_T1',
+          event: {
+            text: '<@UBOT> start the rollback snapshot',
+            ts: '1782771650.000100',
+            event_ts: '1782771650.000100',
+          },
+        }),
+      );
+      await waitForProviderCallCount(instance, 2);
+      assertProviderPrompt(instance, -1, {
+        includes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
+        excludes: 'SNAPSHOT_BETA_INSTRUCTIONS',
+      });
+
+      await patchAgent(instance, 'agent_snapshot_rollback', {
+        instructions: 'SNAPSHOT_BETA_INSTRUCTIONS: edited after rollback snapshot.',
+      });
+      await instance.postEvent(
+        channelThreadMessage({
+          event_id: 'Ev_S34R_T2',
+          event: {
+            text: 'continue under the rollback snapshot',
+            ts: '1782771651.000100',
+            event_ts: '1782771651.000100',
+            thread_ts: '1782771650.000100',
+          },
+        }),
+      );
+      await waitForProviderCallCount(instance, 4);
+      assertProviderPrompt(instance, -1, {
+        includes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
+        excludes: 'SNAPSHOT_BETA_INSTRUCTIONS',
+      });
+
+      assert.ok(instance.configDbPath);
+      const snapshots = new SqliteAgentSnapshotStore(instance.configDbPath);
+      try {
+        assert.ok(await snapshots.get('TDEMO:C_EXEC:1782771650.000100'));
+      } finally {
+        snapshots.close();
+      }
+    },
+  },
+  {
     id: 'S35',
     title: 'the next event in a started thread adopts a reassigned Agent',
     config: liveReassignmentScenarioConfig(),

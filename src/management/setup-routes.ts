@@ -62,6 +62,7 @@ import {
 } from './receipts.ts';
 import type { ManagementStore } from './store.ts';
 import { ManagementError, type ManagementSetupRecord } from './types.ts';
+import { emitManagementMetric } from './telemetry.ts';
 
 const CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const SETUP_ID_PATTERN = /^setup_[A-Za-z0-9_-]{1,128}$/;
@@ -126,7 +127,15 @@ export function createManagementSetupRoutes(
         browserSessionDigest: digest(rawSession),
         at: now(),
       });
+      emitManagementMetric('setup.lifecycle', {
+        action: 'exchange',
+        outcome: 'success',
+      });
     } catch {
+      emitManagementMetric('setup.lifecycle', {
+        action: 'exchange',
+        outcome: 'denied',
+      });
       return genericDenied(c);
     }
     c.header('Set-Cookie', setupCookie(setupId, rawSession, 24 * 60 * 60));
@@ -507,6 +516,10 @@ async function finishSetup(
     initiator: user?.displayName ?? setup.actorUserId,
     at,
   });
+  emitManagementMetric('setup.lifecycle', {
+    action: setup.action,
+    outcome: 'completed',
+  });
   await drainManagementReceiptOutbox({
     management: dependencies.management,
     deliver: (record) => (options.deliverReceipt ?? deliverManagementReceiptToSlack)(record, {
@@ -734,6 +747,11 @@ async function markSetupFailure(
     code,
     at,
   ).catch(() => undefined);
+  emitManagementMetric('setup.lifecycle', {
+    action: setup.action,
+    outcome: 'failed',
+    reason: code,
+  });
 }
 
 function renderClaimPage(setupId: string): string {

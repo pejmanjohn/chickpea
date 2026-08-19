@@ -7,6 +7,7 @@ import {
 import { validatePublicMcpClientRegistration } from './mcp-oauth.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
 import { requestAuthSourceKey } from './source-key.ts';
+import { emitManagementMetric } from '../management/telemetry.ts';
 
 const MAX_AUTH_BODY_BYTES = 32 * 1024;
 type PublicRoute = 'read' | 'browser-mutation' | 'protocol-mutation' | 'registration';
@@ -77,15 +78,49 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
 
     if (route === 'registration') {
       const validation = await validateRegistrationRequest(request);
-      if (validation instanceof Response) return validation;
+      if (validation instanceof Response) {
+        emitManagementMetric('oauth.dcr', {
+          stage: 'validation',
+          outcome: 'denied',
+          reason: `http_${validation.status}`,
+        });
+        return validation;
+      }
       request = validation;
       const registrationDenied = await registrationGate.check(request, input.backend);
-      if (registrationDenied) return registrationDenied;
+      if (registrationDenied) {
+        emitManagementMetric('oauth.dcr', {
+          stage: 'quota',
+          outcome: 'denied',
+          reason: `http_${registrationDenied.status}`,
+        });
+        return registrationDenied;
+      }
     }
 
     auth ??= createBetterAuth({ ...input, baseURL });
     await auth.$context;
-    return auth.handler(request);
+    const response = await auth.handler(request);
+    if (route === 'registration') {
+      emitManagementMetric('oauth.dcr', {
+        stage: 'registration',
+        outcome: response.ok ? 'success' : 'failed',
+        reason: `http_${response.status}`,
+      });
+    } else if (route === 'read' && url.pathname.includes('.well-known')) {
+      emitManagementMetric('oauth.discovery', {
+        stage: url.pathname.includes('protected-resource') ? 'resource' : 'authorization_server',
+        outcome: response.ok ? 'success' : 'failed',
+        reason: `http_${response.status}`,
+      });
+    } else if (url.pathname.endsWith('/oauth2/token')) {
+      emitManagementMetric('oauth.token', {
+        stage: 'exchange',
+        outcome: response.ok ? 'success' : 'failed',
+        reason: `http_${response.status}`,
+      });
+    }
+    return response;
   };
 }
 
