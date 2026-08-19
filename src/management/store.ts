@@ -1,6 +1,5 @@
-import { timingSafeEqual } from 'node:crypto';
-
 import { AuditStoreLogic } from '../audit/store.ts';
+import { constantTimeEquals } from '../admin/constant-time.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
@@ -1128,9 +1127,7 @@ function outboxFromRow(row: ManagementOutboxRow): ManagementReceiptOutboxRecord 
 }
 
 function constantDigestEquals(left: string, right: string): boolean {
-  const leftBytes = Buffer.from(left);
-  const rightBytes = Buffer.from(right);
-  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+  return constantTimeEquals(left, right);
 }
 
 function boundedFailureCode(value: string): string {

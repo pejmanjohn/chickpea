@@ -131,6 +131,9 @@ class McpRegistrationGate {
 
   async check(request: Request, backend: BetterAuthDatabaseBackend): Promise<Response | null> {
     const now = this.policy.now();
+    for (const [key, candidate] of this.windows) {
+      if (candidate.startedAt + this.policy.windowMs <= now) this.windows.delete(key);
+    }
     const source = requestAuthSourceKey(request);
     const current = this.windows.get(source);
     const window = !current || current.startedAt + this.policy.windowMs <= now

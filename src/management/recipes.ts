@@ -523,11 +523,7 @@ function parseWorkspaceRecipe(value: unknown): WorkspaceRecipe {
   const recipe = parsed.data as WorkspaceRecipe;
   const agentSymbols = new Set<string>();
   for (const agent of recipe.agents) {
-    if (!isRecord(agent) || !safeSymbol(agent.symbol) || agentSymbols.has(agent.symbol) ||
-        typeof agent.name !== 'string' || typeof agent.instructions !== 'string' ||
-        typeof agent.enabled !== 'boolean' || !Array.isArray(agent.skills) ||
-        !Array.isArray(agent.mcpRequirements) || !Array.isArray(agent.apiRequirements) ||
-        !Array.isArray(agent.repositoryRequirements)) {
+    if (agentSymbols.has(agent.symbol)) {
       throw new ManagementError('invalid_request', 'The workspace recipe Agent is invalid.');
     }
     if (agent.model && !/^(?:anthropic|openai|openrouter|cloudflare|cloudflare-workers-ai)\/.+/.test(agent.model)) {
@@ -537,9 +533,7 @@ function parseWorkspaceRecipe(value: unknown): WorkspaceRecipe {
   }
   const channelSymbols = new Set<string>();
   for (const channel of recipe.channels) {
-    if (!isRecord(channel) || !safeSymbol(channel.symbol) || channelSymbols.has(channel.symbol) ||
-        !safeSymbol(channel.agentSymbol) || !agentSymbols.has(channel.agentSymbol) ||
-        !['ambient', 'mention_only'].includes(String(channel.participationMode))) {
+    if (channelSymbols.has(channel.symbol) || !agentSymbols.has(channel.agentSymbol)) {
       throw new ManagementError('invalid_request', 'The workspace recipe Channel is invalid.');
     }
     channelSymbols.add(channel.symbol);
@@ -601,10 +595,6 @@ function allocatePortableAgentId(
   }
   allocated.add(candidate);
   return candidate;
-}
-
-function safeSymbol(value: unknown): value is string {
-  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

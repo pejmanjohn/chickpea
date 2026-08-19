@@ -2,21 +2,8 @@ import { McpServer, createMcpHandler } from '@modelcontextprotocol/server';
 
 import type { McpAuthenticatedPrincipal, McpRequestHandler } from '../auth/mcp-oauth-routes.ts';
 import {
-  getConfigStore,
-  getIdentityStore,
-  getManagementStore,
-  getMemoryStateStore,
-  getRoutineStore,
-  getSettingsStore,
-  getUsageStore,
-  getWorkStore,
-  isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import {
-  deleteProviderApiKey,
-  describeProviderKeySources,
-} from '../config/provider-keys.ts';
 import {
   applyWorkspaceChangesZodSchema,
   confirmWorkspaceChangeZodSchema,
@@ -31,12 +18,7 @@ import {
   undoWorkspaceChangeZodSchema,
 } from './schemas.ts';
 import { WorkspaceManagementService } from './service.ts';
-import {
-  cancelManagedSlackIdentitySetup,
-  clearManagedSlackIdentityCredentials,
-  countManagedSlackIdentityDeliveries,
-} from './slack-identity-lifecycle.ts';
-import { resolveEligibleSlackInvitee } from './slack-directory.ts';
+import { createLiveWorkspaceManagementService } from './live-service.ts';
 import {
   invokeWorkspaceManagementTool,
   workspaceManagementToolDescription,
@@ -57,29 +39,8 @@ export function createWorkspaceManagementMcpHandler(
   env?: PlatformEnv,
   setupBaseUrl?: string,
 ): McpRequestHandler {
-  const settings = getSettingsStore(env);
-  const identity = getIdentityStore(env);
-  const service = new WorkspaceManagementService({
-    identity,
-    config: getConfigStore(env),
-    management: getManagementStore(env),
-    memory: getMemoryStateStore(env),
-    routines: getRoutineStore(env),
-    work: getWorkStore(env),
-    routineSchedulingAvailable: isCloudflareTarget(),
-    ...(setupBaseUrl ? { setupBaseUrl } : {}),
-    providerCredentialSource: async (providerId) =>
-      (await describeProviderKeySources(env, settings))[providerId],
-    removeProviderCredential: async (providerId) =>
-      (await deleteProviderApiKey(providerId, env, settings, getUsageStore(env))).source,
-    resolveSlackInvitee: (slackUserId) =>
-      resolveEligibleSlackInvitee(slackUserId, env, identity),
-    countPendingSlackIdentityDeliveries: (identityId) =>
-      countManagedSlackIdentityDeliveries(identityId, env),
-    clearSlackIdentityCredentials: (identityId) =>
-      clearManagedSlackIdentityCredentials(identityId, env),
-    cancelSlackIdentitySetup: (identityId, expectedRevision) =>
-      cancelManagedSlackIdentitySetup(identityId, expectedRevision, env),
+  const service = createLiveWorkspaceManagementService(env, {
+    ...(setupBaseUrl ? { overrides: { setupBaseUrl } } : {}),
   });
   const handler = createMcpHandler(
     () => createWorkspaceManagementMcpServer({ principal, service }),

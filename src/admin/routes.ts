@@ -343,8 +343,7 @@ import { PersonalTokenService } from '../auth/personal-token.ts';
 import type { AdminAuthenticationService, AuthPrincipal } from '../auth/types.ts';
 import { decodeRecoverySecret } from '../auth/recovery-secret.ts';
 import type { ManagementStore } from '../management/store.ts';
-import { WorkspaceManagementService } from '../management/service.ts';
-import { resolveEligibleSlackInvitee } from '../management/slack-directory.ts';
+import { createLiveWorkspaceManagementService } from '../management/live-service.ts';
 
 interface BetterAuthContext {
   environment: BetterAuthEnvironment;
@@ -1036,45 +1035,42 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const env = c.env as PlatformEnv | undefined;
     const identityStore = identity(c);
     const settingsStore = settings(c);
-    return new WorkspaceManagementService({
+    return createLiveWorkspaceManagementService(env, {
       identity: identityStore,
-      config: store(c),
-      management: management(c),
-      memory: memory(c),
-      routines: routines(c),
-      work: work(c),
-      routineSchedulingAvailable: isCloudflareTarget(),
-      setupBaseUrl: requestOrigin(c),
-      providerCredentialSource: async (providerId) =>
-        (await describeProviderKeySources(env, settingsStore))[providerId],
-      removeProviderCredential: async (providerId) =>
-        (await deleteProviderApiKey(providerId, env, settingsStore, usage(c))).source,
-      resolveSlackInvitee: (slackUserId) =>
-        resolveEligibleSlackInvitee(slackUserId, env, identityStore),
-      countPendingSlackIdentityDeliveries: (identityId) =>
-        slackState(c).countPendingDeliveriesForSlackIdentity(identityId),
-      clearSlackIdentityCredentials: async (identityId) => {
-        const current = await resolveSlackIdentityCredentials(
-          identityId,
-          env,
-          slackCredentialResolutionDependencies(c) ?? settingsStore,
-        );
-        await clearSlackIdentityCredentials(
-          slackCredentialWriteTarget(c),
-          identityId,
-          current.connectionRevision,
-        );
+      settings: settingsStore,
+      usage: usage(c),
+      overrides: {
+        config: store(c),
+        management: management(c),
+        memory: memory(c),
+        routines: routines(c),
+        work: work(c),
+        setupBaseUrl: requestOrigin(c),
+        countPendingSlackIdentityDeliveries: (identityId) =>
+          slackState(c).countPendingDeliveriesForSlackIdentity(identityId),
+        clearSlackIdentityCredentials: async (identityId) => {
+          const current = await resolveSlackIdentityCredentials(
+            identityId,
+            env,
+            slackCredentialResolutionDependencies(c) ?? settingsStore,
+          );
+          await clearSlackIdentityCredentials(
+            slackCredentialWriteTarget(c),
+            identityId,
+            current.connectionRevision,
+          );
+        },
+        cancelSlackIdentitySetup: (identityId, expectedRevision) =>
+          cancelSlackIdentityConnection({
+            config: store(c),
+            settings: settingsStore,
+            identityId,
+            expectedRevision,
+            ...(slackCredentialDependencies(c)
+              ? { credentialDependencies: slackCredentialDependencies(c) }
+              : {}),
+          }),
       },
-      cancelSlackIdentitySetup: (identityId, expectedRevision) =>
-        cancelSlackIdentityConnection({
-          config: store(c),
-          settings: settingsStore,
-          identityId,
-          expectedRevision,
-          ...(slackCredentialDependencies(c)
-            ? { credentialDependencies: slackCredentialDependencies(c) }
-            : {}),
-        }),
     });
   };
   const sharedManagementEnabled = (!options.store && !options.identity) || Boolean(options.management);

@@ -529,6 +529,7 @@ async function completeFormAction(
   }
   if (setup.action === 'slack_identity') {
     if (!setup.target.identityId) throw new Error('target_changed');
+    const credentialDependencies = slackCredentialDependencies(dependencies);
     let identity = await dependencies.config.getSlackIdentity(setup.target.identityId);
     if (identity.lifecycle !== 'credentials_pending') {
       const before = identity;
@@ -546,8 +547,8 @@ async function completeFormAction(
         expectedTeamId: base.teamId,
         botToken,
         signingSecret,
-        ...(slackCredentialDependencies(dependencies)
-          ? { credentialDependencies: slackCredentialDependencies(dependencies) }
+        ...(credentialDependencies
+          ? { credentialDependencies }
           : {}),
       }, options.slackIdentityBootstrap);
       await appendSetupSlackIdentityAudit(
@@ -578,8 +579,8 @@ async function completeFormAction(
       settings: dependencies.settings,
       identityId: identity.id,
       expectedRevision: identity.connectionRevision,
-      ...(slackCredentialDependencies(dependencies)
-        ? { credentialDependencies: slackCredentialDependencies(dependencies) }
+      ...(credentialDependencies
+        ? { credentialDependencies }
         : {}),
     });
     await appendSetupSlackIdentityAudit(

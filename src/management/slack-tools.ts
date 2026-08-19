@@ -6,21 +6,10 @@ import {
 
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import {
-  getConfigStore,
   getIdentityStore,
-  getManagementStore,
-  getMemoryStateStore,
-  getRoutineStore,
   getSettingsStore,
-  getUsageStore,
-  getWorkStore,
-  isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import {
-  deleteProviderApiKey,
-  describeProviderKeySources,
-} from '../config/provider-keys.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import {
   applyWorkspaceChangesValibotSchema,
@@ -35,12 +24,7 @@ import {
   undoWorkspaceChangeValibotSchema,
 } from './schemas.ts';
 import { WorkspaceManagementService } from './service.ts';
-import {
-  cancelManagedSlackIdentitySetup,
-  clearManagedSlackIdentityCredentials,
-  countManagedSlackIdentityDeliveries,
-} from './slack-identity-lifecycle.ts';
-import { resolveEligibleSlackInvitee } from './slack-directory.ts';
+import { createLiveWorkspaceManagementService } from './live-service.ts';
 import {
   invokeWorkspaceManagementTool,
   workspaceManagementToolDescription,
@@ -261,27 +245,10 @@ async function invokeLiveSlackTool<TName extends WorkspaceManagementToolName>(
   const env = await resolvePlatformEnv();
   const identity = getIdentityStore(env);
   const settings = getSettingsStore(env);
-  const service = new WorkspaceManagementService({
+  const service = createLiveWorkspaceManagementService(env, {
     identity,
-    config: getConfigStore(env),
-    management: getManagementStore(env),
-    memory: getMemoryStateStore(env),
-    routines: getRoutineStore(env),
-    work: getWorkStore(env),
-    routineSchedulingAvailable: isCloudflareTarget(),
-    setupBaseUrl: () => resolveSlackPublicUrl(env, settings),
-    providerCredentialSource: async (providerId) =>
-      (await describeProviderKeySources(env, settings))[providerId],
-    removeProviderCredential: async (providerId) =>
-      (await deleteProviderApiKey(providerId, env, settings, getUsageStore(env))).source,
-    resolveSlackInvitee: (slackUserId) =>
-      resolveEligibleSlackInvitee(slackUserId, env, identity),
-    countPendingSlackIdentityDeliveries: (identityId) =>
-      countManagedSlackIdentityDeliveries(identityId, env),
-    clearSlackIdentityCredentials: (identityId) =>
-      clearManagedSlackIdentityCredentials(identityId, env),
-    cancelSlackIdentitySetup: (identityId, expectedRevision) =>
-      cancelManagedSlackIdentitySetup(identityId, expectedRevision, env),
+    settings,
+    overrides: { setupBaseUrl: () => resolveSlackPublicUrl(env, settings) },
   });
   return invokeSlackWorkspaceManagementTool({ signal, identity, service, name, args });
 }

@@ -1089,7 +1089,7 @@ function parseFlueDispatchEnvelope(value: unknown): FlueDispatchEnvelopeV1 {
       ...(previousBinding ? { previousBinding } : {}),
     };
   }
-  const message = parseSlackSignalMessage(record.message, idempotencyKey, initialData);
+  const message = parseSlackSignalMessage(record.message, body, idempotencyKey, initialData);
   return {
     schemaVersion: 2,
     agentName: 'chickpea-slack-v2',
@@ -1118,6 +1118,7 @@ function parseDispatchMessageBody(value: unknown, schemaVersion: 1 | 2): string 
 
 function parseSlackSignalMessage(
   value: unknown,
+  body: string,
   idempotencyKey: string,
   initialData?: RuntimePlanV2,
 ): Extract<FlueDispatchEnvelopeV1, { schemaVersion: 2 }>['message'] {
@@ -1153,7 +1154,7 @@ function parseSlackSignalMessage(
   return {
     kind: 'signal',
     type: 'slack.message',
-    body: validateBoundedString(message.body, 'dispatch message body', 1_000_000),
+    body,
     tagName: 'slack_message',
     attributes: parsed,
   };

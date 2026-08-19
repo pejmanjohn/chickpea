@@ -1046,7 +1046,7 @@ export class WorkspaceManagementService {
     idempotencyKey: string,
     outcomes: ManagementItemOutcome[],
   ): Promise<ManagementApplyResult> {
-    const snapshot = await this.snapshot();
+    const effectiveRevision = await this.effectiveRevision();
     const hasConfirmation = outcomes.some(({ disposition }) => disposition === 'confirmation_required');
     const hasFailure = outcomes.some(({ disposition }) =>
       disposition === 'failed' || disposition === 'skipped');
@@ -1055,9 +1055,30 @@ export class WorkspaceManagementService {
       idempotencyKey,
       status: hasFailure ? 'partial' : hasConfirmation ? 'confirmation_required' : 'completed',
       outcomes,
-      effectiveRevision: snapshot.effectiveRevision,
+      effectiveRevision,
       activation: 'next_turn',
     };
+  }
+
+  private async effectiveRevision(): Promise<string> {
+    const [agents, channels, slackIdentities] = await Promise.all([
+      this.stores.config.listAgents(),
+      this.stores.config.listChannels(),
+      this.stores.config.listSlackIdentities(),
+    ]);
+    return effectiveConfigurationRevision([
+      ...agents.map(({ id, revision }) => ({ kind: 'agent' as const, id, revision })),
+      ...channels.map(({ workspaceId, channelId, revision }) => ({
+        kind: 'channel' as const,
+        id: channelKey(workspaceId, channelId),
+        revision: revision ?? 1,
+      })),
+      ...slackIdentities.map(({ id, connectionRevision }) => ({
+        kind: 'slack_identity' as const,
+        id,
+        revision: connectionRevision,
+      })),
+    ]);
   }
 
   private async policyFacts(

@@ -178,6 +178,7 @@ test('browser handoff accepts only Better Auth signed, unexpired OAuth queries',
 
 test('public MCP registration enforces rate, quota, and unused-client retention', async () => {
   const origin = 'https://chickpea.example';
+  let now = Date.parse('2026-08-19T00:00:00.000Z');
   const registration = {
     application_type: 'native',
     client_name: 'Codex',
@@ -194,7 +195,7 @@ test('public MCP registration enforces rate, quota, and unused-client retention'
       backend: rateBackend,
       baseURL: origin,
       secret: Buffer.alloc(32, 41).toString('base64url'),
-      mcpRegistrationPolicy: { maxRegistrationsPerWindow: 1 },
+      mcpRegistrationPolicy: { maxRegistrationsPerWindow: 1, now: () => now },
     });
     assert.equal((await rateHandler(jsonProtocolRequest(
       `${origin}/api/auth/oauth2/register`, registration,
@@ -205,6 +206,11 @@ test('public MCP registration enforces rate, quota, and unused-client retention'
     assert.equal(limited.status, 429);
     assert.deepEqual(await limited.json(), { error: 'registration_rate_limited' });
     assert.equal(limited.headers.get('retry-after'), '600');
+    now += 10 * 60_000;
+    const nextWindow = await rateHandler(jsonProtocolRequest(
+      `${origin}/api/auth/oauth2/register`, { ...registration, client_name: 'Cursor' },
+    ));
+    assert.equal(nextWindow.status, 201, await nextWindow.clone().text());
   } finally {
     rateBackend.close();
   }
