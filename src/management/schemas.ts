@@ -9,6 +9,10 @@ export const MANAGEMENT_OPERATION_KINDS = [
   'place_agent',
   'update_member',
   'remove_provider_credential',
+  'create_slack_identity',
+  'set_slack_identity_dms',
+  'retire_slack_identity',
+  'cancel_slack_identity_setup',
   'invite_member',
   'revoke_invitation',
   'create_memory_entry',
@@ -24,6 +28,7 @@ const zText = (max: number) => z.string().min(1).max(max);
 const zOptionalText = (max: number) => z.string().max(max);
 const zId = zText(128);
 const zRevision = z.number().int().nonnegative();
+const zSlackIdentityId = z.string().regex(/^slack_identity_[a-z0-9_-]{1,96}$/);
 
 const zSkill = z.strictObject({
   name: zText(64),
@@ -153,6 +158,10 @@ const zSetupTarget = z.discriminatedUnion('kind', [
     kind: z.literal('provider_credential'),
     providerId: z.enum(['anthropic', 'openai', 'openrouter']),
   }),
+  z.strictObject({
+    kind: z.literal('slack_identity'),
+    identityId: zSlackIdentityId,
+  }),
 ]);
 
 export const managementOperationZodSchema = z.discriminatedUnion('kind', [
@@ -188,6 +197,34 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
     ...zOperationBase,
     kind: z.literal('remove_provider_credential'),
     providerId: z.enum(['anthropic', 'openai', 'openrouter']),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('create_slack_identity'),
+    identityId: zSlackIdentityId,
+    initialDmAgentId: zId,
+    appName: zText(35),
+    displayName: zText(80),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('set_slack_identity_dms'),
+    identityId: zSlackIdentityId,
+    expectedRevision: zRevision,
+    dmState: z.enum(['on', 'off']),
+    dmAgentId: zId.optional(),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('retire_slack_identity'),
+    identityId: zSlackIdentityId,
+    expectedRevision: zRevision,
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('cancel_slack_identity_setup'),
+    identityId: zSlackIdentityId,
+    expectedRevision: zRevision,
   }),
   z.strictObject({
     ...zOperationBase,
@@ -306,6 +343,7 @@ const vt = (max: number) => v.pipe(v.string(), v.minLength(1), v.maxLength(max))
 const vot = (max: number) => v.pipe(v.string(), v.maxLength(max));
 const vid = vt(128);
 const vr = v.pipe(v.number(), v.integer(), v.minValue(0));
+const vSlackIdentityId = v.pipe(v.string(), v.regex(/^slack_identity_[a-z0-9_-]{1,96}$/));
 const va = <TItem extends v.BaseSchema<unknown, unknown, v.BaseIssue<unknown>>>(
   item: TItem,
   max: number,
@@ -430,6 +468,10 @@ const vSetupTarget = v.variant('kind', [
     kind: v.literal('provider_credential'),
     providerId: v.picklist(['anthropic', 'openai', 'openrouter']),
   }),
+  v.strictObject({
+    kind: v.literal('slack_identity'),
+    identityId: vSlackIdentityId,
+  }),
 ]);
 
 export const managementOperationValibotSchema = v.variant('kind', [
@@ -465,6 +507,34 @@ export const managementOperationValibotSchema = v.variant('kind', [
     ...vOperationBase,
     kind: v.literal('remove_provider_credential'),
     providerId: v.picklist(['anthropic', 'openai', 'openrouter']),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('create_slack_identity'),
+    identityId: vSlackIdentityId,
+    initialDmAgentId: vid,
+    appName: vt(35),
+    displayName: vt(80),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('set_slack_identity_dms'),
+    identityId: vSlackIdentityId,
+    expectedRevision: vr,
+    dmState: v.picklist(['on', 'off']),
+    dmAgentId: v.optional(vid),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('retire_slack_identity'),
+    identityId: vSlackIdentityId,
+    expectedRevision: vr,
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('cancel_slack_identity_setup'),
+    identityId: vSlackIdentityId,
+    expectedRevision: vr,
   }),
   v.strictObject({
     ...vOperationBase,

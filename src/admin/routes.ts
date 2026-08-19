@@ -1051,6 +1051,30 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         (await deleteProviderApiKey(providerId, env, settingsStore, usage(c))).source,
       resolveSlackInvitee: (slackUserId) =>
         resolveEligibleSlackInvitee(slackUserId, env, identityStore),
+      countPendingSlackIdentityDeliveries: (identityId) =>
+        slackState(c).countPendingDeliveriesForSlackIdentity(identityId),
+      clearSlackIdentityCredentials: async (identityId) => {
+        const current = await resolveSlackIdentityCredentials(
+          identityId,
+          env,
+          slackCredentialResolutionDependencies(c) ?? settingsStore,
+        );
+        await clearSlackIdentityCredentials(
+          slackCredentialWriteTarget(c),
+          identityId,
+          current.connectionRevision,
+        );
+      },
+      cancelSlackIdentitySetup: (identityId, expectedRevision) =>
+        cancelSlackIdentityConnection({
+          config: store(c),
+          settings: settingsStore,
+          identityId,
+          expectedRevision,
+          ...(slackCredentialDependencies(c)
+            ? { credentialDependencies: slackCredentialDependencies(c) }
+            : {}),
+        }),
     });
   };
   const sharedManagementEnabled = (!options.store && !options.identity) || Boolean(options.management);

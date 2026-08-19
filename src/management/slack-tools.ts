@@ -35,6 +35,11 @@ import {
   undoWorkspaceChangeValibotSchema,
 } from './schemas.ts';
 import { WorkspaceManagementService } from './service.ts';
+import {
+  cancelManagedSlackIdentitySetup,
+  clearManagedSlackIdentityCredentials,
+  countManagedSlackIdentityDeliveries,
+} from './slack-identity-lifecycle.ts';
 import { resolveEligibleSlackInvitee } from './slack-directory.ts';
 import {
   invokeWorkspaceManagementTool,
@@ -271,6 +276,12 @@ async function invokeLiveSlackTool<TName extends WorkspaceManagementToolName>(
       (await deleteProviderApiKey(providerId, env, settings, getUsageStore(env))).source,
     resolveSlackInvitee: (slackUserId) =>
       resolveEligibleSlackInvitee(slackUserId, env, identity),
+    countPendingSlackIdentityDeliveries: (identityId) =>
+      countManagedSlackIdentityDeliveries(identityId, env),
+    clearSlackIdentityCredentials: (identityId) =>
+      clearManagedSlackIdentityCredentials(identityId, env),
+    cancelSlackIdentitySetup: (identityId, expectedRevision) =>
+      cancelManagedSlackIdentitySetup(identityId, expectedRevision, env),
   });
   return invokeSlackWorkspaceManagementTool({ signal, identity, service, name, args });
 }

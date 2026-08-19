@@ -32,11 +32,13 @@ const MANAGEMENT_METRIC_EVENTS = new Set([
 const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
   action: new Set([
     'api_oauth', 'api_credential', 'exchange', 'live', 'mcp_oauth',
-    'mcp_credentials', 'provider_credential', 'repository_access', 'snapshot',
+    'mcp_credentials', 'provider_credential', 'repository_access', 'slack_identity', 'snapshot',
   ]),
   operation: new Set([
     'create_agent', 'update_agent', 'delete_agent', 'put_channel', 'place_agent',
     'update_member', 'remove_provider_credential', 'invite_member',
+    'create_slack_identity', 'set_slack_identity_dms', 'retire_slack_identity',
+    'cancel_slack_identity_setup',
     'revoke_invitation', 'create_memory_entry', 'update_memory_entry',
     'forget_memory_entry', 'save_routine', 'control_routine', 'delete_routine',
     'request_setup',

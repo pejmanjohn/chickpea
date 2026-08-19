@@ -6,10 +6,17 @@ import {
   AgentStillReferencedError,
   ChannelAssignmentConflictError,
   ChannelRevisionConflictError,
+  SlackIdentityExistsError,
+  SlackIdentityLifecycleError,
+  SlackIdentityRevisionConflictError,
+  SlackIdentityStillReferencedError,
   UnknownAgentError,
+  UnknownSlackIdentityError,
+  WorkspaceDefaultSlackIdentityProtectedError,
 } from '../config/errors.ts';
-import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
-import type { ChannelConfig, CustomAgentConfig } from '../config/types.ts';
+import { generateSlackIdentityIngressKey, type ConfigAgentPatch, type ConfigStore } from '../config/store.ts';
+import type { ChannelConfig, CustomAgentConfig, SlackIdentity } from '../config/types.ts';
+import type { SlackIdentityAuditEventType } from '../audit/types.ts';
 import type { IdentityStore, Invitation, Membership } from '../identity/types.ts';
 import { ownerMemoryStoreId } from '../memory/ids.ts';
 import type {
@@ -24,6 +31,7 @@ import {
 } from '../routines/schedule.ts';
 import { RoutineService } from '../routines/service.ts';
 import type { RoutineDefinition, RoutineStore } from '../routines/types.ts';
+import { REQUIRED_SLACK_BOT_SCOPES } from '../slack/scopes.ts';
 import type { WorkStore } from '../work/types.ts';
 import {
   canonicalJson,
@@ -101,7 +109,13 @@ export interface WorkspaceManagementServiceInput {
     | 'getAssignment'
     | 'getAgentReferences'
     | 'listSlackIdentities'
+    | 'getSlackIdentity'
     | 'getSlackIdentityReferences'
+    | 'createSlackIdentity'
+    | 'updateSlackIdentity'
+    | 'setSlackIdentityDmBinding'
+    | 'retireSlackIdentity'
+    | 'appendSlackIdentityAudit'
   >;
   management: ManagementStore;
   memory?: Pick<
@@ -127,6 +141,12 @@ export interface WorkspaceManagementServiceInput {
     slackTeamId: string;
     displayName: string | null;
   }>;
+  countPendingSlackIdentityDeliveries?: (identityId: string) => Promise<number>;
+  clearSlackIdentityCredentials?: (identityId: string) => Promise<void>;
+  cancelSlackIdentitySetup?: (
+    identityId: string,
+    expectedRevision: number,
+  ) => Promise<SlackIdentity>;
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
@@ -400,6 +420,7 @@ export class WorkspaceManagementService {
     if (existing?.status === 'applying') {
       const reconciled = await this.reconcileConfirmed(existing);
       if (reconciled) {
+        await this.auditConfirmedSlackIdentityMutation(actor, existing, undefined);
         const completed = await this.stores.management.completeProposal(
           existing.proposalId,
           reconciled,
@@ -445,7 +466,12 @@ export class WorkspaceManagementService {
       return emitOperationOutcomes(actor.origin.kind, result);
     }
 
+    const identityBefore = proposal.operation.kind === 'retire_slack_identity' ||
+        proposal.operation.kind === 'cancel_slack_identity_setup'
+      ? await this.stores.config.getSlackIdentity(proposal.operation.identityId)
+      : undefined;
     const mutation = await this.executeConfirmed(actor, proposal.operation, proposal.proposalId);
+    await this.auditConfirmedSlackIdentityMutation(actor, proposal, identityBefore);
     const result = await this.resultFor(
       proposal.proposalId,
       `confirmation:${proposal.proposalId}`,
@@ -462,6 +488,25 @@ export class WorkspaceManagementService {
       this.now(),
     );
     return emitOperationOutcomes(actor.origin.kind, completed.result ?? result);
+  }
+
+  private async auditConfirmedSlackIdentityMutation(
+    actor: LiveManagementActor,
+    proposal: ManagementProposalRecord,
+    before: SlackIdentity | undefined,
+  ): Promise<void> {
+    if (proposal.operation.kind !== 'retire_slack_identity' &&
+        proposal.operation.kind !== 'cancel_slack_identity_setup') return;
+    const after = await this.stores.config.getSlackIdentity(proposal.operation.identityId);
+    await this.appendSlackIdentityAudit(
+      actor,
+      proposal.proposalId,
+      proposal.operation.kind === 'retire_slack_identity'
+        ? 'slack_identity.retired'
+        : 'slack_identity.setup_canceled',
+      before ?? after,
+      after,
+    );
   }
 
   async undoWorkspaceChange(input: UndoWorkspaceChangeInput): Promise<ManagementApplyResult> {
@@ -649,6 +694,31 @@ export class WorkspaceManagementService {
       };
     }
 
+    if (request.kind === 'slack_identity') {
+      const identity = await this.stores.config.getSlackIdentity(request.identityId);
+      if (identity.kind !== 'dedicated' || identity.lifecycle === 'retired') {
+        throw new ManagementError('invalid_request', 'This Slack identity cannot be connected.');
+      }
+      const replacement = identity.lifecycle === 'connected' || identity.lifecycle === 'degraded';
+      return {
+        action: 'slack_identity',
+        target: {
+          kind: request.kind,
+          provider: 'slack',
+          targetId: `slack_identity:${identity.id}`,
+          targetLabel: identity.observedDisplayName ??
+            identity.setupIntent?.displayName ??
+            identity.setupIntent?.appName ??
+            'Slack identity',
+          expectedRevision: identity.connectionRevision,
+          identityId: identity.id,
+          replacement,
+          formFields: ['botToken', 'signingSecret'],
+        },
+        scopes: [...REQUIRED_SLACK_BOT_SCOPES],
+      };
+    }
+
     if (!request.agentId) {
       throw new ManagementError('invalid_request', 'The setup Agent could not be resolved.');
     }
@@ -758,6 +828,11 @@ export class WorkspaceManagementService {
         kind: 'channel' as const,
         id: channelKey(channel.workspaceId, channel.channelId),
         revision: channel.revision ?? 1,
+      })),
+      ...slackIdentities.map((identity) => ({
+        kind: 'slack_identity' as const,
+        id: identity.id,
+        revision: identity.connectionRevision,
       })),
     ];
     const team = includeTeam ? await this.teamSnapshot(organizationId) : undefined;
@@ -1026,6 +1101,22 @@ export class WorkspaceManagementService {
       }
       if (source !== 'stored') {
         throw new ManagementError('invalid_request', 'No stored provider credential is available to remove.');
+      }
+      return { actor, operation };
+    }
+    if (operation.kind === 'create_slack_identity') {
+      const dmAgent = await this.stores.config.getAgent(operation.initialDmAgentId);
+      if (!dmAgent.enabled) {
+        throw new ManagementError('invalid_request', 'Choose an enabled Agent to handle DMs.');
+      }
+      return { actor, operation };
+    }
+    if (operation.kind === 'set_slack_identity_dms' ||
+        operation.kind === 'retire_slack_identity' ||
+        operation.kind === 'cancel_slack_identity_setup') {
+      const identity = await this.stores.config.getSlackIdentity(operation.identityId);
+      if (identity.connectionRevision !== operation.expectedRevision) {
+        throw new ManagementError('revision_conflict', 'The Slack identity changed.');
       }
       return { actor, operation };
     }
@@ -1314,7 +1405,70 @@ export class WorkspaceManagementService {
       );
     }
     const reconciled = await this.reconcilePrepared(prepared);
-    return reconciled ?? this.executeImmediate(actor, requestId, operation, prepared);
+    const mutation = reconciled ?? await this.executeImmediate(actor, requestId, operation, prepared);
+    await this.auditProgressiveSlackIdentityMutation(
+      actor,
+      requestId,
+      operation,
+      prepared,
+    );
+    return mutation;
+  }
+
+  private async auditProgressiveSlackIdentityMutation(
+    actor: LiveManagementActor,
+    requestId: string,
+    operation: ManagementOperation,
+    prepared: ManagementPreparedItem,
+  ): Promise<void> {
+    if (operation.kind !== 'create_slack_identity' &&
+        operation.kind !== 'set_slack_identity_dms') return;
+    const after = await this.stores.config.getSlackIdentity(operation.identityId);
+    const before = operation.kind === 'set_slack_identity_dms' && prepared.before
+      ? prepared.before as SlackIdentity
+      : after;
+    await this.appendSlackIdentityAudit(
+      actor,
+      requestId,
+      operation.kind === 'create_slack_identity'
+        ? 'slack_identity.setup_started'
+        : 'slack_identity.dm_binding_changed',
+      before,
+      after,
+    );
+  }
+
+  private async appendSlackIdentityAudit(
+    actor: LiveManagementActor,
+    requestId: string,
+    eventType: SlackIdentityAuditEventType,
+    before: SlackIdentity,
+    after: SlackIdentity,
+  ): Promise<void> {
+    const operation = eventType.slice('slack_identity.'.length);
+    await this.stores.config.appendSlackIdentityAudit({
+      eventId: `audit_${createHash('sha256')
+        .update(`${requestId}:${after.id}:${operation}:${after.connectionRevision}`)
+        .digest('hex')
+        .slice(0, 32)}`,
+      domain: 'slack_identity',
+      eventType,
+      outcome: 'success',
+      actorClass: 'chickpea_user',
+      actorId: actor.userId,
+      workspaceId: after.teamId ?? before.teamId ?? null,
+      subjectId: after.id,
+      subjectVersion: after.connectionRevision,
+      createdAt: this.now(),
+      metadataJson: JSON.stringify({
+        operation,
+        priorLifecycle: before.lifecycle,
+        newLifecycle: after.lifecycle,
+        requestId,
+      }),
+      idempotencyKey:
+        `slack_identity:${after.id}:${operation}:${after.connectionRevision}:${requestId}:success`,
+    });
   }
 
   private async prepareItem(operation: ManagementOperation): Promise<ManagementPreparedItem> {
@@ -1331,6 +1485,36 @@ export class WorkspaceManagementService {
             agentId: operation.agent.id,
             expectedRevision: 1,
           },
+        };
+      }
+      case 'create_slack_identity': {
+        const dmAgent = await this.stores.config.getAgent(operation.initialDmAgentId);
+        if (!dmAgent.enabled) {
+          throw new ManagementError('invalid_request', 'Choose an enabled Agent to handle DMs.');
+        }
+        const at = this.now();
+        return {
+          itemId: operation.itemId,
+          operation,
+          intendedAfter: {
+            id: operation.identityId,
+            ingressKey: generateSlackIdentityIngressKey(),
+            kind: 'dedicated',
+            lifecycle: 'setup_incomplete',
+            dmState: 'on',
+            dmAgentId: dmAgent.id,
+            credentialProvenance: 'none',
+            connectionRevision: 0,
+            health: 'unknown',
+            createdAt: at,
+            updatedAt: at,
+            setupIntent: {
+              appName: operation.appName,
+              displayName: operation.displayName,
+              sourceAgentId: dmAgent.id,
+              sourceAgentSlackIdentityId: dmAgent.slackIdentityId ?? null,
+            },
+          } satisfies SlackIdentity,
         };
       }
       case 'update_agent': {
@@ -1412,6 +1596,32 @@ export class WorkspaceManagementService {
           },
         };
       }
+      case 'set_slack_identity_dms': {
+        const before = await this.stores.config.getSlackIdentity(operation.identityId);
+        requireExpectedRevision(operation.expectedRevision, before.connectionRevision);
+        return {
+          itemId: operation.itemId,
+          operation,
+          before,
+          intendedAfter: {
+            ...before,
+            dmState: operation.dmState,
+            ...(operation.dmAgentId ? { dmAgentId: operation.dmAgentId } : {}),
+            ...(!operation.dmAgentId ? { dmAgentId: undefined } : {}),
+            connectionRevision: before.connectionRevision + 1,
+          },
+          ...(before.dmState !== 'needs_setup' ? {
+            inverse: {
+              itemId: `undo_${operation.itemId}`,
+              kind: 'set_slack_identity_dms',
+              identityId: before.id,
+              expectedRevision: before.connectionRevision + 1,
+              dmState: before.dmState,
+              ...(before.dmAgentId ? { dmAgentId: before.dmAgentId } : {}),
+            } satisfies ManagementOperation,
+          } : {}),
+        };
+      }
       default:
         return { itemId: operation.itemId, operation };
     }
@@ -1454,6 +1664,21 @@ export class WorkspaceManagementService {
         });
         return mutationForChannel(placed.channel, prepared.inverse);
       }
+      case 'create_slack_identity': {
+        const identity = await this.stores.config.createSlackIdentity(
+          prepared.intendedAfter as SlackIdentity,
+        );
+        return mutationForSlackIdentity(identity);
+      }
+      case 'set_slack_identity_dms': {
+        const identity = await this.stores.config.setSlackIdentityDmBinding(
+          operation.identityId,
+          operation.expectedRevision,
+          operation.dmState,
+          operation.dmAgentId,
+        );
+        return mutationForSlackIdentity(identity, prepared.inverse);
+      }
       case 'invite_member':
         return this.issueMemberInvitation(actor, operation.slackUserId);
       case 'create_memory_entry':
@@ -1478,6 +1703,13 @@ export class WorkspaceManagementService {
       }
       return undefined;
     }
+    if (operation.kind === 'create_slack_identity') {
+      const identity = await optionalSlackIdentity(this.stores.config, operation.identityId);
+      if (identity && canonicalJson(identity) === canonicalJson(prepared.intendedAfter)) {
+        return mutationForSlackIdentity(identity);
+      }
+      return undefined;
+    }
     if (operation.kind === 'put_channel') {
       const current = await this.stores.config.getChannel(
         operation.channel.workspaceId,
@@ -1497,6 +1729,14 @@ export class WorkspaceManagementService {
       if (channel && canonicalJson(channel) === canonicalJson(intended.channel) &&
           (assignment?.agentId ?? null) === intended.agentId) {
         return mutationForChannel(channel, prepared.inverse);
+      }
+    }
+    if (operation.kind === 'set_slack_identity_dms') {
+      const identity = await optionalSlackIdentity(this.stores.config, operation.identityId);
+      if (identity && identity.connectionRevision === operation.expectedRevision + 1 &&
+          identity.dmState === operation.dmState &&
+          (identity.dmAgentId ?? undefined) === operation.dmAgentId) {
+        return mutationForSlackIdentity(identity, prepared.inverse);
       }
     }
     return undefined;
@@ -1573,6 +1813,40 @@ export class WorkspaceManagementService {
         changed,
         resultingRevisions: { [`provider:${operation.providerId}`]: providerRevision(source) },
       };
+    }
+    if (operation.kind === 'retire_slack_identity') {
+      const before = await this.stores.config.getSlackIdentity(operation.identityId);
+      const pendingDeliveries = await this.stores.countPendingSlackIdentityDeliveries?.(
+        operation.identityId,
+      ) ?? 0;
+      if (pendingDeliveries > 0) {
+        throw new ManagementError('proposal_stale', 'The Slack identity has pending deliveries.');
+      }
+      if (before.credentialProvenance === 'stored' && !this.stores.clearSlackIdentityCredentials) {
+        throw new ManagementError('invalid_request', 'Slack credential retirement is unavailable.');
+      }
+      let retired = await this.stores.config.retireSlackIdentity(
+        operation.identityId,
+        operation.expectedRevision,
+      );
+      if (before.credentialProvenance === 'stored') {
+        await this.stores.clearSlackIdentityCredentials!(operation.identityId);
+        retired = await this.stores.config.updateSlackIdentity(
+          operation.identityId,
+          retired.connectionRevision,
+          { credentialProvenance: 'none' },
+        );
+      }
+      return mutationForSlackIdentity(retired);
+    }
+    if (operation.kind === 'cancel_slack_identity_setup') {
+      if (!this.stores.cancelSlackIdentitySetup) {
+        throw new ManagementError('invalid_request', 'Slack identity setup cancellation is unavailable.');
+      }
+      return mutationForSlackIdentity(await this.stores.cancelSlackIdentitySetup(
+        operation.identityId,
+        operation.expectedRevision,
+      ));
     }
     if (operation.kind === 'revoke_invitation') {
       const current = (await this.stores.identity.listInvitations())
@@ -1677,7 +1951,7 @@ export class WorkspaceManagementService {
   }
 
   private async targetRevisions(operation: ManagementOperation): Promise<Record<string, number>> {
-    if (operation.kind === 'create_agent') return {};
+    if (operation.kind === 'create_agent' || operation.kind === 'create_slack_identity') return {};
     if (operation.kind === 'invite_member') return {};
     if (operation.kind === 'create_memory_entry') return {};
     if (operation.kind === 'update_memory_entry' || operation.kind === 'forget_memory_entry') {
@@ -1708,7 +1982,14 @@ export class WorkspaceManagementService {
       const setup = await this.resolveSetupTarget(operation.target);
       return setup.target.kind === 'provider_credential'
         ? { [setup.target.targetId]: setup.target.expectedRevision }
-        : { [`agent:${setup.target.agentId}`]: setup.target.expectedRevision };
+        : setup.target.kind === 'slack_identity'
+          ? { [`slack_identity:${setup.target.identityId}`]: setup.target.expectedRevision }
+          : { [`agent:${setup.target.agentId}`]: setup.target.expectedRevision };
+    }
+    if (operation.kind === 'set_slack_identity_dms' ||
+        operation.kind === 'retire_slack_identity' ||
+        operation.kind === 'cancel_slack_identity_setup') {
+      return { [`slack_identity:${operation.identityId}`]: operation.expectedRevision };
     }
     if (operation.kind === 'update_agent' || operation.kind === 'delete_agent') {
       const target: Record<string, number> = { [`agent:${operation.agentId}`]: operation.expectedRevision };
@@ -1780,6 +2061,12 @@ export class WorkspaceManagementService {
       ) ?? 'missing';
       return providerRevision(source);
     }
+    if (key.startsWith('slack_identity:')) {
+      return (await optionalSlackIdentity(
+        this.stores.config,
+        key.slice('slack_identity:'.length),
+      ))?.connectionRevision ?? 0;
+    }
     if (key.startsWith('invitation:')) {
       const invitationId = key.slice('invitation:'.length);
       const invitation = (await this.stores.identity.listInvitations())
@@ -1817,6 +2104,26 @@ export class WorkspaceManagementService {
       const source = await this.stores.providerCredentialSource?.(operation.providerId) ?? 'missing';
       if (source === 'missing') {
         changed = [{ kind: 'provider', id: operation.providerId, revision: providerRevision(source) }];
+      }
+    } else if (operation.kind === 'retire_slack_identity') {
+      const identity = await optionalSlackIdentity(this.stores.config, operation.identityId);
+      if (identity?.lifecycle === 'retired' && identity.credentialProvenance !== 'stored') {
+        changed = [{
+          kind: 'slack_identity',
+          id: identity.id,
+          revision: identity.connectionRevision,
+        }];
+      }
+    } else if (operation.kind === 'cancel_slack_identity_setup') {
+      const identity = await optionalSlackIdentity(this.stores.config, operation.identityId);
+      if (identity?.lifecycle === 'setup_incomplete' &&
+          identity.credentialProvenance === 'none' &&
+          identity.connectionRevision > operation.expectedRevision) {
+        changed = [{
+          kind: 'slack_identity',
+          id: identity.id,
+          revision: identity.connectionRevision,
+        }];
       }
     } else if (operation.kind === 'revoke_invitation') {
       const invitation = (await this.stores.identity.listInvitations())
@@ -1898,8 +2205,9 @@ function resolveClientReferences(
     if (!agentId) throw new ManagementError('invalid_request', 'The Agent clientRef was not found.');
     return { ...operation, agentId };
   }
-  if (operation.kind === 'request_setup' && operation.target.kind !== 'provider_credential' &&
-      operation.target.agentClientRef) {
+  if (operation.kind === 'request_setup' &&
+      ['api_connection', 'mcp_connection', 'repository_access'].includes(operation.target.kind) &&
+      'agentClientRef' in operation.target && operation.target.agentClientRef) {
     const agentId = clientRefs.get(operation.target.agentClientRef);
     if (!agentId) throw new ManagementError('invalid_request', 'The Agent clientRef was not found.');
     const { agentClientRef: _agentClientRef, ...target } = operation.target;
@@ -1951,6 +2259,23 @@ function mutationForAgent(
   };
 }
 
+function mutationForSlackIdentity(
+  identity: SlackIdentity,
+  inverse?: ManagementOperation,
+): ImmediateMutation {
+  return {
+    changed: [{
+      kind: 'slack_identity',
+      id: identity.id,
+      revision: identity.connectionRevision,
+    }],
+    resultingRevisions: {
+      [`slack_identity:${identity.id}`]: identity.connectionRevision,
+    },
+    ...(inverse ? { inverse } : {}),
+  };
+}
+
 function mutationForChannel(
   channel: ChannelConfig,
   inverse?: ManagementOperation,
@@ -1973,6 +2298,18 @@ async function optionalAgent(
     return await config.getAgent(agentId);
   } catch (error) {
     if (error instanceof UnknownAgentError) return undefined;
+    throw error;
+  }
+}
+
+async function optionalSlackIdentity(
+  config: Pick<ConfigStore, 'getSlackIdentity'>,
+  identityId: string,
+): Promise<SlackIdentity | undefined> {
+  try {
+    return await config.getSlackIdentity(identityId);
+  } catch (error) {
+    if (error instanceof UnknownSlackIdentityError) return undefined;
     throw error;
   }
 }
@@ -2042,6 +2379,11 @@ function proposalSummary(operation: ManagementOperation, reason: string): string
     ? operation.membershipId
     : operation.kind === 'remove_provider_credential'
       ? `provider:${operation.providerId}`
+    : operation.kind === 'create_slack_identity' ||
+        operation.kind === 'set_slack_identity_dms' ||
+        operation.kind === 'retire_slack_identity' ||
+        operation.kind === 'cancel_slack_identity_setup'
+      ? operation.identityId
     : operation.kind === 'invite_member'
       ? `slack:${operation.slackUserId}`
     : operation.kind === 'revoke_invitation'
@@ -2062,7 +2404,9 @@ function proposalSummary(operation: ManagementOperation, reason: string): string
           : operation.kind === 'request_setup'
             ? operation.target.kind === 'provider_credential'
               ? `provider:${operation.target.providerId}`
-              : operation.target.agentId ?? operation.target.agentClientRef ?? 'agent'
+              : operation.target.kind === 'slack_identity'
+                ? operation.target.identityId
+                : operation.target.agentId ?? operation.target.agentClientRef ?? 'agent'
             : operation.agentId;
   return `${reason}:${operation.kind}:${target}`;
 }
@@ -2193,7 +2537,13 @@ function isExpectedMutationError(error: unknown): boolean {
     error instanceof AgentRevisionConflictError ||
     error instanceof ChannelRevisionConflictError ||
     error instanceof ChannelAssignmentConflictError ||
-    error instanceof AgentStillReferencedError;
+    error instanceof AgentStillReferencedError ||
+    error instanceof UnknownSlackIdentityError ||
+    error instanceof SlackIdentityExistsError ||
+    error instanceof SlackIdentityRevisionConflictError ||
+    error instanceof SlackIdentityStillReferencedError ||
+    error instanceof SlackIdentityLifecycleError ||
+    error instanceof WorkspaceDefaultSlackIdentityProtectedError;
 }
 
 function mutationErrorCode(error: unknown): string {
@@ -2203,5 +2553,11 @@ function mutationErrorCode(error: unknown): string {
   if (error instanceof UnknownAgentError) return 'not_found';
   if (error instanceof AgentExistsError) return 'already_exists';
   if (error instanceof AgentStillReferencedError) return 'still_referenced';
+  if (error instanceof SlackIdentityRevisionConflictError) return 'revision_conflict';
+  if (error instanceof UnknownSlackIdentityError) return 'not_found';
+  if (error instanceof SlackIdentityExistsError) return 'already_exists';
+  if (error instanceof SlackIdentityStillReferencedError) return 'still_referenced';
+  if (error instanceof SlackIdentityLifecycleError ||
+      error instanceof WorkspaceDefaultSlackIdentityProtectedError) return 'invalid_state';
   return 'mutation_failed';
 }

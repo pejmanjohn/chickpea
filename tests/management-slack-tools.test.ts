@@ -189,6 +189,28 @@ test('MCP Zod and Flue Valibot schemas accept the same canonical operation inven
     { itemId: 'place', kind: 'place_agent', workspaceId: 'T1', channelId: 'C1', expectedRevision: 1, expectedAgentId: null, agentId: 'agent_1' },
     { itemId: 'member', kind: 'update_member', membershipId: 'membership_1', role: 'admin', status: 'active' },
     { itemId: 'setup', kind: 'request_setup', target: { kind: 'provider_credential', providerId: 'openai' } },
+    {
+      itemId: 'identity-create', kind: 'create_slack_identity',
+      identityId: 'slack_identity_support', initialDmAgentId: 'agent_1',
+      appName: 'Chickpea Support', displayName: 'Support',
+    },
+    {
+      itemId: 'identity-dms', kind: 'set_slack_identity_dms',
+      identityId: 'slack_identity_support', expectedRevision: 1,
+      dmState: 'on', dmAgentId: 'agent_1',
+    },
+    {
+      itemId: 'identity-retire', kind: 'retire_slack_identity',
+      identityId: 'slack_identity_support', expectedRevision: 2,
+    },
+    {
+      itemId: 'identity-cancel', kind: 'cancel_slack_identity_setup',
+      identityId: 'slack_identity_support', expectedRevision: 1,
+    },
+    {
+      itemId: 'identity-setup', kind: 'request_setup',
+      target: { kind: 'slack_identity', identityId: 'slack_identity_support' },
+    },
   ];
   for (const operation of fixtures) {
     assert.equal(managementOperationZodSchema.safeParse(operation).success, true, operation.kind);

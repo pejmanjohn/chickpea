@@ -31,6 +31,11 @@ import {
   undoWorkspaceChangeZodSchema,
 } from './schemas.ts';
 import { WorkspaceManagementService } from './service.ts';
+import {
+  cancelManagedSlackIdentitySetup,
+  clearManagedSlackIdentityCredentials,
+  countManagedSlackIdentityDeliveries,
+} from './slack-identity-lifecycle.ts';
 import { resolveEligibleSlackInvitee } from './slack-directory.ts';
 import {
   invokeWorkspaceManagementTool,
@@ -69,6 +74,12 @@ export function createWorkspaceManagementMcpHandler(
       (await deleteProviderApiKey(providerId, env, settings, getUsageStore(env))).source,
     resolveSlackInvitee: (slackUserId) =>
       resolveEligibleSlackInvitee(slackUserId, env, identity),
+    countPendingSlackIdentityDeliveries: (identityId) =>
+      countManagedSlackIdentityDeliveries(identityId, env),
+    clearSlackIdentityCredentials: (identityId) =>
+      clearManagedSlackIdentityCredentials(identityId, env),
+    cancelSlackIdentitySetup: (identityId, expectedRevision) =>
+      cancelManagedSlackIdentitySetup(identityId, expectedRevision, env),
   });
   const handler = createMcpHandler(
     () => createWorkspaceManagementMcpServer({ principal, service }),

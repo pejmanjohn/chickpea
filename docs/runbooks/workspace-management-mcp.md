@@ -41,6 +41,7 @@ Safe creation and ordinary reversible edits apply immediately. Chickpea returns 
 - removing or replacing a Channel placement;
 - changing member authority or revoking an invitation;
 - removing or replacing credentials;
+- canceling credentialed Slack identity setup or retiring a Slack identity;
 - expanding capability scope;
 - disabling an Agent that is actively referenced;
 - archiving a Channel; or
@@ -105,7 +106,7 @@ Successful configuration is active on the next newly admitted Slack event, inclu
 
 Declare non-secret policy in the Agent operation: display name, approved MCP tools, allowed API hosts/paths/methods, OAuth scopes, or exact repository name. Never place an API key, OAuth code, bearer value, private key, authorization header value, repository installation credential, or secret-bearing URL in a tool argument.
 
-When access is missing, add `request_setup` for the exact Agent connection, repository grant, or model provider. Chickpea returns a URL whose fragment contains a one-use capability. It expires after 24 hours and may be revoked or reissued with `revoke_setup_link`; reissue invalidates the prior link.
+When access is missing, add `request_setup` for the exact Agent connection, repository grant, model provider, or dedicated Slack identity. Chickpea returns a URL whose fragment contains a one-use capability. It expires after 24 hours and may be revoked or reissued with `revoke_setup_link`; reissue invalidates the prior link.
 
 Anyone who can see the link can complete its exact frozen action without signing into Chickpea. Share it as a credential-bearing capability. The page shows the connector, target, requested scopes, and replacement warning. It cannot change those values. OAuth connections redirect to the provider; multi-field credentials use a Chickpea form. Validation clears submitted fields, activates the connection once, and creates a non-secret receipt such as:
 
@@ -121,7 +122,9 @@ Agent and Channel memory use their existing owner scope and expected version. In
 
 Only Owners can inspect team authority, invite an exact Slack member, revoke an invitation, or change membership role/status. Member invitation handoffs expire after 24 hours and rotate when reissued. Provider inspection returns availability and affected Agents, never a key or environment-secret value. Deployment-provided credentials are visibly read-only.
 
-The workspace snapshot exposes non-secret Slack identity references and health. Agent binding can select an existing identity. Credential-bearing Slack app creation/reconnection remains a delegated setup journey; never accept Slack app credentials in an MCP operation.
+The workspace snapshot exposes non-secret Slack identity references and health. `create_slack_identity` creates a dedicated identity draft with one enabled DM Agent; a following `request_setup` for that exact identity can be in the same progressive batch because its ID is caller-selected. The browser holder opens a prefilled Slack app manifest and submits the bot token and signing secret through write-only fields. Chickpea validates the installation, exact workspace and bot grants, then requires the identity-scoped signed Events challenge before activation. Neither secret enters an MCP operation or result.
+
+Use `set_slack_identity_dms` to switch its DM Agent or turn DMs off. Binding an Agent's `slackIdentityId` is capability expansion and requires confirmation; the target identity must already be connected. `cancel_slack_identity_setup` clears a failed or abandoned pending credential bundle so setup can restart, and `retire_slack_identity` removes local credentials only after every Agent reference is moved, DMs are off, and queued deliveries are clear. Both operations require confirmation. Retirement does not uninstall or revoke the Slack app in Slack.
 
 ## Portable recipes
 

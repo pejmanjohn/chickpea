@@ -40,6 +40,16 @@ export function classifyManagementOperation(
   if (operation.kind === 'remove_provider_credential') {
     return { allowed: true, posture: 'confirmation', reason: 'provider_credential_removal' };
   }
+  if (operation.kind === 'retire_slack_identity' ||
+      operation.kind === 'cancel_slack_identity_setup') {
+    return {
+      allowed: true,
+      posture: 'confirmation',
+      reason: operation.kind === 'retire_slack_identity'
+        ? 'slack_identity_retirement'
+        : 'slack_identity_setup_cancellation',
+    };
+  }
   if (operation.kind === 'forget_memory_entry') {
     return { allowed: true, posture: 'confirmation', reason: 'irreversible_memory_forget' };
   }

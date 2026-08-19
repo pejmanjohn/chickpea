@@ -95,6 +95,30 @@ export type ManagementOperation =
       providerId: 'anthropic' | 'openai' | 'openrouter';
     })
   | (ManagementOperationBase & {
+      kind: 'create_slack_identity';
+      identityId: string;
+      initialDmAgentId: string;
+      appName: string;
+      displayName: string;
+    })
+  | (ManagementOperationBase & {
+      kind: 'set_slack_identity_dms';
+      identityId: string;
+      expectedRevision: number;
+      dmState: 'on' | 'off';
+      dmAgentId?: string;
+    })
+  | (ManagementOperationBase & {
+      kind: 'retire_slack_identity';
+      identityId: string;
+      expectedRevision: number;
+    })
+  | (ManagementOperationBase & {
+      kind: 'cancel_slack_identity_setup';
+      identityId: string;
+      expectedRevision: number;
+    })
+  | (ManagementOperationBase & {
       kind: 'invite_member';
       slackUserId: string;
     })
@@ -185,6 +209,10 @@ export type ManagementSetupRequestTarget =
   | {
       kind: 'provider_credential';
       providerId: 'anthropic' | 'openai' | 'openrouter';
+    }
+  | {
+      kind: 'slack_identity';
+      identityId: string;
     };
 
 export type ManagementDisposition =
@@ -195,7 +223,7 @@ export type ManagementDisposition =
   | 'skipped';
 
 export interface ManagementObjectRef {
-  kind: 'agent' | 'channel' | 'membership' | 'provider' | 'invitation' | 'memory' | 'routine';
+  kind: 'agent' | 'channel' | 'membership' | 'provider' | 'invitation' | 'memory' | 'routine' | 'slack_identity';
   id: string;
   revision?: number;
 }
@@ -220,7 +248,8 @@ export type ManagementSetupAction =
   | 'mcp_oauth'
   | 'mcp_credentials'
   | 'repository_access'
-  | 'provider_credential';
+  | 'provider_credential'
+  | 'slack_identity';
 
 export type ManagementSetupStatus =
   | 'pending'
@@ -242,6 +271,7 @@ export interface ManagementSetupTarget {
   agentName?: string;
   connectionId?: string;
   repositoryId?: string;
+  identityId?: string;
   replacement: boolean;
   formFields?: string[];
 }
