@@ -808,6 +808,9 @@ export async function runTurn(
           conversationKey: agentConversationKey,
           useCloudflareSandbox: usedCloudflareSandbox,
           requestedModel: resolvedModel ?? null,
+          ...(runtimePlanDecision
+            ? { runtimePlan: runtimePlanDecision.runtimePlan }
+            : {}),
           ...(platformEnv ? { env: platformEnv } : {}),
           ...(workLifecycle && options.runId
             ? {

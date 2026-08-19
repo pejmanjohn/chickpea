@@ -283,12 +283,10 @@ export class TurnJobStoreLogic {
       const current = this.getFrozenRuntimePlan(id);
       if (current) return current;
       const instanceId = deriveRuntimePlanInstanceId(plan);
-      const binding = this.getAgentBinding(plan.conversation.continuityKey);
-      const continuityNoticeRequired = Boolean(
-        binding &&
-        binding.instanceId !== instanceId &&
-        plan.conversation.surface !== 'channel_thread',
-      );
+      // Every new Slack event rehydrates bounded Slack context into its prompt.
+      // A harness rotation therefore preserves the visible conversation and
+      // must not post the old, misleading "fresh conversation" notice.
+      const continuityNoticeRequired = false;
       const updated = this.db.run(
         `UPDATE turn_jobs
          SET runtime_plan_json = ?, agent_instance_id = ?, continuity_notice_required = ?
@@ -1280,21 +1278,58 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
 }
 
 function parseFlueObservation(value: unknown): FlueTurnObservationV1 {
-  const record = exactObject(value, 'Flue observation target', ['generation', 'workCorrelation']);
-  const generation = validateBoundedString(record.generation, 'observation generation', 256);
-  if (record.workCorrelation === undefined) return { generation };
-  const correlation = exactObject(record.workCorrelation, 'work correlation', [
-    'runId', 'runExecutionId', 'mode',
+  const record = exactObject(value, 'Flue observation target', [
+    'generation', 'workCorrelation', 'harnessRevision', 'configurationRevision',
   ]);
-  const runId = validateWorkCorrelationId(correlation.runId, 'run id');
-  const runExecutionId = validateWorkCorrelationId(correlation.runExecutionId, 'execution id');
-  if (correlation.mode !== 'observe' && correlation.mode !== 'enforce') {
-    throw new Error('Work correlation mode is invalid.');
-  }
+  const generation = validateBoundedString(record.generation, 'observation generation', 256);
+  const workCorrelation = record.workCorrelation === undefined
+    ? undefined
+    : (() => {
+        const correlation = exactObject(record.workCorrelation, 'work correlation', [
+          'runId', 'runExecutionId', 'mode',
+        ]);
+        const runId = validateWorkCorrelationId(correlation.runId, 'run id');
+        const runExecutionId = validateWorkCorrelationId(correlation.runExecutionId, 'execution id');
+        if (correlation.mode !== 'observe' && correlation.mode !== 'enforce') {
+          throw new Error('Work correlation mode is invalid.');
+        }
+        const mode: 'observe' | 'enforce' = correlation.mode;
+        return { runId, runExecutionId, mode };
+      })();
+  const harnessRevision = record.harnessRevision === undefined
+    ? undefined
+    : validateSha256(record.harnessRevision, 'harness revision');
+  const configurationRevision = record.configurationRevision === undefined
+    ? undefined
+    : (() => {
+        const revision = exactObject(record.configurationRevision, 'configuration revision', [
+          'agent', 'channel',
+        ]);
+        const agent = validatePositiveInteger(revision.agent, 'Agent revision');
+        const channel = revision.channel === undefined
+          ? undefined
+          : validatePositiveInteger(revision.channel, 'Channel revision');
+        return { agent, ...(channel ? { channel } : {}) };
+      })();
   return {
     generation,
-    workCorrelation: { runId, runExecutionId, mode: correlation.mode },
+    ...(workCorrelation ? { workCorrelation } : {}),
+    ...(harnessRevision ? { harnessRevision } : {}),
+    ...(configurationRevision ? { configurationRevision } : {}),
   };
+}
+
+function validateSha256(value: unknown, label: string): string {
+  const parsed = validateBoundedString(value, label, 64);
+  if (!/^[a-f0-9]{64}$/.test(parsed)) throw new Error(`${label} is invalid.`);
+  return parsed;
+}
+
+function validatePositiveInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 1) {
+    throw new Error(`${label} is invalid.`);
+  }
+  return Number(value);
 }
 
 function validateFlueObservation(value: FlueTurnObservationV1): void {

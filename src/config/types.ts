@@ -251,6 +251,8 @@ export interface ResolvedAssignment {
   channelLabel?: string;
   channelPromptAddendum?: string;
   participationMode?: 'ambient' | 'mention_only';
+  /** Live Channel CAS revision; missing on DMs and legacy snapshots. */
+  channelRevision?: number;
   agent: CustomAgentConfig;
   // Optional pre-resolved model label. Set only when the assignment is served
   // from a frozen thread snapshot; undefined means resolve from the agent via

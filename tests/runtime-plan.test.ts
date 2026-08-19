@@ -193,6 +193,7 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
     kind: 'slack_conversation',
     channelId: 'C_RUNTIME',
   });
+  assert.deepEqual(plan.configurationRevision, { agent: 1 });
   assert.match(plan.harnessRevision, /^[a-f0-9]{64}$/);
   assert.equal(JSON.stringify(plan).includes('super-secret-token'), false);
   assert.equal(JSON.stringify(plan).includes('documents:read'), false);
@@ -223,6 +224,9 @@ function legacyHarnessRevision(plan: RuntimePlanV2): string {
       schemaVersion: plan.schemaVersion,
       continuityPolicy: plan.continuityPolicy,
       agentId: plan.agentId,
+      ...(plan.configurationRevision
+        ? { configurationRevision: plan.configurationRevision }
+        : {}),
       model: plan.model,
       instructions: plan.instructions,
       memoryEpoch: plan.memoryEpoch,
@@ -287,6 +291,11 @@ test('harness policy changes rotate while credential attribution does not', () =
     compile({ sandboxMode: 'bash' }),
     compile({ memoryEpoch: 4 }),
     compile({ continuityPolicy: 'slack-runtime-v3' }),
+    compile({
+      assignment: assignment({
+        agent: { ...structuredClone(AGENT), revision: AGENT.revision + 1 },
+      }),
+    }),
   ];
   for (const changed of cases) {
     assert.notEqual(changed.harnessRevision, baseline.harnessRevision);

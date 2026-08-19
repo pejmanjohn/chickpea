@@ -557,7 +557,7 @@ test('slack-thread uses frozen repository grants with a live token that stays ou
   }
 });
 
-test('slack-thread freezes effective config per durable thread id', async () => {
+test('legacy slack-thread initialization keeps pre-RuntimePlan snapshot behavior', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-thread-snapshot-'));
   const dbPath = join(dir, 'state.db');
 

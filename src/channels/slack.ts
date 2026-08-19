@@ -19,7 +19,6 @@ import {
 } from '../config/errors.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveAssignment, type AssignmentSurface } from '../config/resolver.ts';
-import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
 import {
   getSlackCredentialDependencies,
   resolveStores,
@@ -651,8 +650,6 @@ async function resolveIdentityGateAssignment(
       stores.config,
     );
   }
-  const frozen = await stores.snapshots.get(slackThreadKey(turn));
-  if (frozen) return frozen;
   return resolveAssignment(
     turn.workspaceId,
     turn.channelId,
@@ -786,42 +783,17 @@ async function processSlackEvent(
   // e. Resolve the config for this turn before canonical admission acquires
   //    the claims. A failure here must not release keys owned by a concurrent
   //    sibling event or Slack retry.
-  //    - CHANNELS freeze at the first turn: the gate resolves the effective
-  //      config ONCE and writes the write-once snapshot, so the presenter and
-  //      the durable agent both serve that same row (no first-turn attribution
-  //      drift). A started thread is served from its snapshot even if its
-  //      profile was since disabled/removed — a disable must not break an
-  //      in-flight thread — and a snapshot exists only for a thread whose first
-  //      turn passed this gate, so it cannot bypass fail-closed. Channels fail
-  //      closed if unassigned and never fall through to the global '*,*'
-  //      wildcard (see turnSurface / the resolver).
-  //    - DIRECT conversations are one continuous session, not a
-  //      discrete thread, so they are NOT frozen: they resolve current config
-  //      every turn, so admin edits to the DM profile reach existing DM users.
+  //    Every newly admitted event resolves current configuration. The durable
+  //    TurnJob below freezes that result for retries and an in-flight response;
+  //    a later event in the same Slack thread resolves again. Channels remain
+  //    fail-closed and never fall through to the global direct-message default.
   let assignment: ResolvedAssignment;
   try {
     const store = stores.config;
     const configStores = { agents: store, assignments: store };
     assignment = surface === 'direct'
       ? await requireSlackIdentityDmAssignment(identity, turn, stores)
-      : !candidateTurn
-        ? await getOrCreateSnapshot(stores.snapshots, threadKey, () =>
-            resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores).then(
-              async (config) => {
-                const modelCredential = await resolveModelCredentialAttribution(
-                  config.model,
-                  platformEnv,
-                  stores.settings,
-                  stores.usage,
-                );
-                return {
-                  ...config,
-                  ...(modelCredential ? { modelCredential } : {}),
-                };
-              },
-            ),
-          )
-        : await resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores);
+      : await resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, configStores);
   } catch (err) {
     // A model that cannot resolve is NOT fail-closed: admit with a best-effort
     // assignment so the turn still delivers the sanitized provider-failure
@@ -1038,26 +1010,13 @@ async function processSlackEvent(
       promotedDecisionKey = decisionKey;
       promotedClassifierUsage = { classification, requestedModel };
 
-      // Candidate classification deliberately did not create a frozen thread
-      // snapshot. Promotion now freezes the same effective assignment that the
-      // full agent will execute under.
+      // Candidate classification may take long enough for configuration to
+      // change. Re-resolve at promotion; the ensuing TurnJob is the freeze.
       if (surface === 'channel') {
-        assignment = await getOrCreateSnapshot(stores.snapshots, threadKey, () =>
-          resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, {
-            agents: stores.config,
-            assignments: stores.config,
-          }).then(async (config) => {
-            const modelCredential = await resolveModelCredentialAttribution(
-              config.model,
-              platformEnv,
-              stores.settings,
-              stores.usage,
-            );
-            return {
-              ...config,
-              ...(modelCredential ? { modelCredential } : {}),
-            };
-          }));
+        assignment = await resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, {
+          agents: stores.config,
+          assignments: stores.config,
+        });
       }
     } finally {
       releaseClassifier();

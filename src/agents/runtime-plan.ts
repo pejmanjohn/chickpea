@@ -68,6 +68,11 @@ export interface RuntimePlanV2 {
   agentId: string;
   /** Non-secret Slack app reference. Missing only on pre-U4 durable plans. */
   slackIdentityId?: string;
+  /** Object revisions used to explain which live configuration this turn froze. */
+  configurationRevision?: {
+    agent: number;
+    channel?: number;
+  };
   conversation: RuntimePlanConversationV2;
   model: string;
   instructions: string;
@@ -108,6 +113,12 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     continuityPolicy: input.continuityPolicy ?? DEFAULT_CONTINUITY_POLICY,
     agentId: input.assignment.agent.id,
     slackIdentityId: effectiveSlackIdentityId(input.assignment),
+    configurationRevision: {
+      agent: input.assignment.agent.revision,
+      ...(input.assignment.channelRevision
+        ? { channel: input.assignment.channelRevision }
+        : {}),
+    },
     conversation: {
       workspaceId: input.turn.workspaceId,
       channelId: input.turn.channelId,
@@ -181,6 +192,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'continuityPolicy',
     'agentId',
     'slackIdentityId',
+    'configurationRevision',
     'conversation',
     'model',
     'instructions',
@@ -192,7 +204,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'sandbox',
     'artifactDestination',
     'harnessRevision',
-  ], ['slackIdentityId']);
+  ], ['slackIdentityId', 'configurationRevision']);
   if (record.schemaVersion !== RUNTIME_PLAN_SCHEMA_VERSION) {
     throw new Error('Runtime plan schemaVersion must be 2.');
   }
@@ -201,6 +213,9 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
   const slackIdentityId = record.slackIdentityId === undefined
     ? undefined
     : boundedString(record.slackIdentityId, 'slackIdentityId', 1, 128);
+  const configurationRevision = record.configurationRevision === undefined
+    ? undefined
+    : parseConfigurationRevision(record.configurationRevision);
   const conversationRecord = exactRecord(record.conversation, 'conversation', [
     'workspaceId',
     'channelId',
@@ -267,6 +282,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     continuityPolicy,
     agentId,
     ...(slackIdentityId ? { slackIdentityId } : {}),
+    ...(configurationRevision ? { configurationRevision } : {}),
     conversation,
     model,
     instructions,
@@ -380,6 +396,9 @@ function computeHarnessRevision(
       continuityPolicy: plan.continuityPolicy,
       agentId: plan.agentId,
       ...(plan.slackIdentityId ? { slackIdentityId: plan.slackIdentityId } : {}),
+      ...(plan.configurationRevision
+        ? { configurationRevision: plan.configurationRevision }
+        : {}),
       model: plan.model,
       instructions: plan.instructions,
       memoryEpoch: plan.memoryEpoch,
@@ -391,6 +410,18 @@ function computeHarnessRevision(
       artifactDestinationKind: plan.artifactDestination.kind,
     }))
     .digest('hex');
+}
+
+function parseConfigurationRevision(
+  value: unknown,
+): NonNullable<RuntimePlanV2['configurationRevision']> {
+  const record = exactRecord(value, 'configurationRevision', ['agent', 'channel'], ['channel']);
+  return {
+    agent: positiveInteger(record.agent, 'configurationRevision.agent'),
+    ...(record.channel === undefined
+      ? {}
+      : { channel: positiveInteger(record.channel, 'configurationRevision.channel') }),
+  };
 }
 
 function canonicalJson(value: unknown): string {

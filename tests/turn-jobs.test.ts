@@ -492,11 +492,24 @@ test('observation matching uses exact receipts and rejects receiptless ambiguity
   const start = (id: string) => {
     store.enqueue(job(id));
     const decision = store.freezeRuntimePlan(id, runtimePlan);
-    store.prepareFlueDispatch(id, `message ${id}`, { generation: id });
+    store.prepareFlueDispatch(id, `message ${id}`, {
+      generation: id,
+      harnessRevision: runtimePlan.harnessRevision,
+      ...(runtimePlan.configurationRevision
+        ? { configurationRevision: runtimePlan.configurationRevision }
+        : {}),
+    });
     return decision.instanceId;
   };
   const instanceId = start('first');
-  assert.equal(store.matchFlueObservation(instanceId, 'sub-first')?.turnJobId, 'first');
+  assert.deepEqual(store.matchFlueObservation(instanceId, 'sub-first'), {
+    turnJobId: 'first',
+    instanceId,
+    submissionId: 'sub-first',
+    generation: 'first',
+    harnessRevision: runtimePlan.harnessRevision,
+    configurationRevision: runtimePlan.configurationRevision,
+  });
   start('second');
   assert.equal(store.matchFlueObservation(instanceId, 'sub-unknown'), undefined);
   store.recordFlueReceipt('first', {
@@ -641,7 +654,7 @@ test('runtime drain counts separate turn authorities and pending Slack cleanup',
   });
 });
 
-test('runtime plans freeze once and record surface-specific rotation decisions', () => {
+test('runtime plans freeze once and Slack-history rotations do not require a reset notice', () => {
   const store = newStore(() => 1_800_000_000_000);
   const dmTurn = turn({
     channelId: 'D1',
@@ -689,7 +702,7 @@ test('runtime plans freeze once and record surface-specific rotation decisions',
     assignment: { ...dmAssignment, model: 'anthropic/claude-haiku-4-5' },
   });
   const dmDecision = store.freezeRuntimePlan('dm-rotated', rotated);
-  assert.equal(dmDecision.continuityNoticeRequired, true);
+  assert.equal(dmDecision.continuityNoticeRequired, false);
 
   const driftedRetry = compileRuntimePlanV2({
     turn: dmTurn,

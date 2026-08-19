@@ -92,6 +92,12 @@ export type FlueSettlementCheckpointV1 =
 export interface FlueTurnObservationV1 {
   generation: string;
   workCorrelation?: WorkTraceCorrelation;
+  /** Effective live configuration frozen into this turn, never model-visible. */
+  harnessRevision?: string;
+  configurationRevision?: {
+    agent: number;
+    channel?: number;
+  };
 }
 
 export interface FlueObservationTarget extends FlueTurnObservationV1 {
