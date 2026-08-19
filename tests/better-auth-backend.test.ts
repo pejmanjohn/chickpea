@@ -22,7 +22,7 @@ test('reviewed Better Auth migrations are idempotent and Slack-only authenticati
   assert.equal(
     backend.database.prepare('SELECT count(*) AS count FROM chickpea_better_auth_migrations').get()
       ?.count,
-    1,
+    2,
   );
   assert.match(String(
     backend.database.prepare('SELECT digest FROM chickpea_better_auth_migrations').get()?.digest,

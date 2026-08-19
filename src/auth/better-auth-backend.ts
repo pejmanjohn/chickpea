@@ -31,6 +31,13 @@ export interface BetterAuthMembershipRecord {
   user?: BetterAuthUserRecord;
 }
 
+export interface BetterAuthMcpOAuthContinuationRecord {
+  idHash: string;
+  authorizationPath: string;
+  expiresAt: number;
+  createdAt: number;
+}
+
 export function mapBetterAuthUser(row: unknown): BetterAuthUserRecord | null {
   if (!row) return null;
   const value = row as Record<string, unknown>;
@@ -99,4 +106,8 @@ export interface BetterAuthDatabaseBackend {
     userId: string,
     organizationId: string,
   ): Promise<BetterAuthMembershipRecord | null>;
+  countMcpOAuthClients(): Promise<number>;
+  pruneUnusedMcpOAuthClients(createdBefore: string): Promise<number>;
+  putMcpOAuthContinuation(record: BetterAuthMcpOAuthContinuationRecord): Promise<void>;
+  consumeMcpOAuthContinuation(idHash: string, now: number): Promise<string | null>;
 }

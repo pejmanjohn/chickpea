@@ -4,14 +4,28 @@ import {
   requireSupportedOrigin,
   type BetterAuthPrivateSeam,
 } from './better-auth.ts';
+import { validatePublicMcpClientRegistration } from './mcp-oauth.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
+import { requestAuthSourceKey } from './source-key.ts';
 
 const MAX_AUTH_BODY_BYTES = 32 * 1024;
-type PublicRoute = 'session' | 'sign-out';
+type PublicRoute = 'read' | 'browser-mutation' | 'protocol-mutation' | 'registration';
 
 const PUBLIC_ROUTES = new Map<string, PublicRoute>([
-  ['GET /api/auth/get-session', 'session'],
-  ['POST /api/auth/sign-out', 'sign-out'],
+  ['GET /.well-known/oauth-protected-resource', 'read'],
+  ['GET /.well-known/oauth-protected-resource/mcp', 'read'],
+  ['GET /.well-known/oauth-authorization-server/api/auth', 'read'],
+  ['GET /api/auth/.well-known/oauth-authorization-server', 'read'],
+  ['GET /api/auth/get-session', 'read'],
+  ['GET /api/auth/jwks', 'read'],
+  ['GET /api/auth/oauth2/authorize', 'read'],
+  ['POST /api/auth/oauth2/authorize', 'protocol-mutation'],
+  ['POST /api/auth/oauth2/consent', 'browser-mutation'],
+  ['POST /api/auth/oauth2/continue', 'browser-mutation'],
+  ['POST /api/auth/oauth2/register', 'registration'],
+  ['POST /api/auth/oauth2/revoke', 'protocol-mutation'],
+  ['POST /api/auth/oauth2/token', 'protocol-mutation'],
+  ['POST /api/auth/sign-out', 'browser-mutation'],
 ] as const);
 
 export interface BetterAuthPublicHandlerInput {
@@ -19,7 +33,24 @@ export interface BetterAuthPublicHandlerInput {
   baseURL: string;
   secret: string;
   privateSeam?: BetterAuthPrivateSeam;
+  mcpRegistrationPolicy?: Partial<McpRegistrationPolicy>;
 }
+
+interface McpRegistrationPolicy {
+  maxRegistrationsPerWindow: number;
+  windowMs: number;
+  maxClients: number;
+  unusedClientRetentionMs: number;
+  now: () => number;
+}
+
+const DEFAULT_MCP_REGISTRATION_POLICY: McpRegistrationPolicy = {
+  maxRegistrationsPerWindow: 20,
+  windowMs: 10 * 60_000,
+  maxClients: 1_000,
+  unusedClientRetentionMs: 30 * 24 * 60 * 60_000,
+  now: Date.now,
+};
 
 /**
  * A deny-by-default public boundary around Better Auth. Setup, enrollment,
@@ -28,20 +59,88 @@ export interface BetterAuthPublicHandlerInput {
  */
 export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInput) {
   const baseURL = requireSupportedOrigin(input.baseURL);
-  const auth = createBetterAuth({ ...input, baseURL });
+  let auth: ReturnType<typeof createBetterAuth> | undefined;
+  const registrationGate = new McpRegistrationGate({
+    ...DEFAULT_MCP_REGISTRATION_POLICY,
+    ...input.mcpRegistrationPolicy,
+  });
 
   return async function handleBetterAuthPublicRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const route = PUBLIC_ROUTES.get(`${request.method.toUpperCase()} ${url.pathname}`);
     if (!route || url.origin !== baseURL) return notFound();
 
-    if (request.method !== 'GET') {
+    if (route === 'browser-mutation') {
       const provenance = validatePublicMutation(request, baseURL);
       if (provenance) return provenance;
     }
 
+    if (route === 'registration') {
+      const validation = await validateRegistrationRequest(request);
+      if (validation instanceof Response) return validation;
+      request = validation;
+      const registrationDenied = await registrationGate.check(request, input.backend);
+      if (registrationDenied) return registrationDenied;
+    }
+
+    auth ??= createBetterAuth({ ...input, baseURL });
+    await auth.$context;
     return auth.handler(request);
   };
+}
+
+class McpRegistrationGate {
+  private readonly windows = new Map<string, { count: number; startedAt: number }>();
+
+  constructor(private readonly policy: McpRegistrationPolicy) {}
+
+  async check(request: Request, backend: BetterAuthDatabaseBackend): Promise<Response | null> {
+    const now = this.policy.now();
+    const source = requestAuthSourceKey(request);
+    const current = this.windows.get(source);
+    const window = !current || current.startedAt + this.policy.windowMs <= now
+      ? { count: 0, startedAt: now }
+      : current;
+    if (window.count >= this.policy.maxRegistrationsPerWindow) {
+      const retryAfter = Math.max(1, Math.ceil(
+        (window.startedAt + this.policy.windowMs - now) / 1_000,
+      ));
+      return Response.json(
+        { error: 'registration_rate_limited' },
+        { status: 429, headers: { 'retry-after': String(retryAfter) } },
+      );
+    }
+
+    const createdBefore = new Date(now - this.policy.unusedClientRetentionMs).toISOString();
+    await backend.pruneUnusedMcpOAuthClients(createdBefore);
+    if (await backend.countMcpOAuthClients() >= this.policy.maxClients) {
+      return Response.json({ error: 'registration_quota_exceeded' }, { status: 429 });
+    }
+
+    window.count += 1;
+    this.windows.set(source, window);
+    return null;
+  }
+}
+
+async function validateRegistrationRequest(request: Request): Promise<Request | Response> {
+  const declaredLength = Number(request.headers.get('content-length') ?? 0);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_AUTH_BODY_BYTES) {
+    return Response.json({ error: 'request_too_large' }, { status: 413 });
+  }
+  const clone = request.clone();
+  let body: unknown;
+  try {
+    body = await clone.json();
+  } catch {
+    return Response.json({ error: 'invalid_client_metadata' }, { status: 400 });
+  }
+  const validation = validatePublicMcpClientRegistration(body);
+  if (!validation.ok) {
+    const status = validation.code === 'client_metadata_too_large' ? 413 : 400;
+    return Response.json({ error: validation.code }, { status });
+  }
+  return request;
 }
 
 function validatePublicMutation(request: Request, canonicalOrigin: string): Response | null {

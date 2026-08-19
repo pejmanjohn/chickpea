@@ -8,7 +8,7 @@ import { getMigrations } from 'better-auth/db/migration';
 import type { BetterAuthDatabaseBackend } from '../src/auth/better-auth-backend.ts';
 import { createBetterAuthOptions } from '../src/auth/better-auth.ts';
 
-export const PINNED_BETTER_AUTH_VERSION = '1.6.26';
+export const PINNED_BETTER_AUTH_VERSION = '1.7.1';
 
 export async function generateBetterAuthBootstrapSql(): Promise<string> {
   const database = new DatabaseSync(':memory:');
@@ -26,7 +26,7 @@ export async function generateBetterAuthBootstrapSql(): Promise<string> {
       '-- Fresh empty databases only. Do not edit this fixture by hand.',
       generated,
       '',
-      '-- Chickpea natural-key invariants absent from Better Auth 1.6.26 generation.',
+      '-- Chickpea natural-key invariants absent from Better Auth 1.7.1 generation.',
       'CREATE UNIQUE INDEX "account_providerId_accountId_uidx" ON "account" ("providerId", "accountId");',
       'CREATE UNIQUE INDEX "member_organizationId_userId_uidx" ON "member" ("organizationId", "userId");',
       '',

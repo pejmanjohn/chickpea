@@ -28,22 +28,33 @@ const ACCEPTED_SLACK_MANIFEST = new URL(
   import.meta.url,
 );
 const GENERATED_SCHEMA = new URL(
+  './fixtures/better-auth/1.7.1/0001_better_auth.sql',
+  import.meta.url,
+);
+const PRIOR_GENERATED_SCHEMA = new URL(
   './fixtures/better-auth/1.6.26/0001_better_auth.sql',
   import.meta.url,
 );
-const COMMITTED_SCHEMA = new URL(
+const INITIAL_COMMITTED_SCHEMA = new URL(
   '../migrations/better-auth/0001_better_auth.sql',
   import.meta.url,
 );
 
-test('U0 production seam and pinned bootstrap schema stay generated from one source', async () => {
+test('U1 production seam and pinned bootstrap schema stay generated from one source', async () => {
   assert.equal(BETTER_AUTH_PRIVATE_SESSION_PATH, '/chickpea-private/issue-session');
   assert.equal(slackAccountId('T123', 'U456'), 'slack:T123:U456');
   const generated = await generateBetterAuthBootstrapSql();
   assert.equal(generated, await readFile(GENERATED_SCHEMA, 'utf8'));
-  assert.equal(generated, await readFile(COMMITTED_SCHEMA, 'utf8'));
+  assert.equal(
+    await readFile(PRIOR_GENERATED_SCHEMA, 'utf8'),
+    await readFile(INITIAL_COMMITTED_SCHEMA, 'utf8'),
+    'the additive 1.7 migration must preserve the reviewed 1.6 bootstrap base',
+  );
   assert.match(generated, /account_providerId_accountId_uidx/);
+  assert.match(generated, /account_issuer_accountId_uidx/);
   assert.match(generated, /member_organizationId_userId_uidx/);
+  assert.match(generated, /create table "oauthClient"/);
+  assert.match(generated, /create table "oauthAccessToken"/);
 });
 
 interface CompatibilityRecord {
@@ -115,7 +126,7 @@ interface CompatibilityRecord {
   };
 }
 
-test('Better Auth 1.6.26 source and public exports stay pinned to the reviewed private seam', async () => {
+test('Better Auth 1.7.1 source and public exports stay pinned to the reviewed private seam', async () => {
   const record = JSON.parse(await readFile(COMPATIBILITY_RECORD, 'utf8')) as CompatibilityRecord;
   const repositoryPackage = JSON.parse(
     await readFile(new URL('../package.json', import.meta.url), 'utf8'),
@@ -126,16 +137,16 @@ test('Better Auth 1.6.26 source and public exports stay pinned to the reviewed p
 
   assert.equal(record.schemaVersion, 1);
   assert.equal(record.betterAuth.package, 'better-auth');
-  assert.equal(record.betterAuth.version, '1.6.26');
+  assert.equal(record.betterAuth.version, '1.7.1');
   assert.deepEqual(record.betterAuth.localContract, {
     reconciliation: 'verified-local',
     sessionIssuance: 'verified-local',
     publicBoundary: 'verified-local',
   });
-  assert.equal(repositoryPackage.dependencies?.['better-auth'], '1.6.26');
+  assert.equal(repositoryPackage.dependencies?.['better-auth'], '1.7.1');
   assert.equal(repositoryPackage.dependencies?.['@better-auth/core'], undefined,
     'the private seam must not import an undeclared Better Auth transitive package');
-  assert.equal(lock.packages?.['node_modules/better-auth']?.version, '1.6.26');
+  assert.equal(lock.packages?.['node_modules/better-auth']?.version, '1.7.1');
   assert.equal(typeof betterAuth, 'function');
   assert.equal(typeof createAuthEndpoint, 'function');
   assert.equal(typeof setSessionCookie, 'function');
@@ -155,7 +166,7 @@ test('Better Auth 1.6.26 source and public exports stay pinned to the reviewed p
     assert.equal(
       createHash('sha256').update(source).digest('hex'),
       pin.sha256,
-      `${pin.path} changed without refreshing the U0 compatibility record`,
+      `${pin.path} changed without refreshing the U1 compatibility record`,
     );
   }
 });

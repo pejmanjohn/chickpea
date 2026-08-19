@@ -27,6 +27,7 @@ import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
 import {
   safeSetupDestination,
+  safeSlackLoginDestination,
   slackAuthorizationHandoffScript,
   slackManualSetupClientScript,
   slackSetupClientScript,
@@ -1687,7 +1688,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     authResponseHeaders(c);
     const context = await slackAdmissionContext(c).catch(() => undefined);
     if (!context) return c.notFound();
-    return c.html(renderSlackSignInPage(safeSetupDestination(c.req.query('destination'))), 401);
+    return c.html(renderSlackSignInPage(safeSlackLoginDestination(c.req.query('destination'))), 401);
   });
   app.post('/auth/slack/oidc/start', async (c) => {
     authResponseHeaders(c);
@@ -1731,12 +1732,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         });
       } else if (purpose === 'login') {
         operationKey = 'login';
-        retryDestination = safeSetupDestination(form.destination);
+        retryDestination = safeSlackLoginDestination(form.destination);
         await limiter.assertAllowed('slack_oidc_start_operation', operationKey);
         started = await context.service.startLogin({
           browserBinding,
           redirectUri: `${requestOrigin(c)}/auth/slack/oidc/callback`,
-          destination: safeSetupDestination(form.destination),
+          destination: safeSlackLoginDestination(form.destination),
         });
       } else {
         const locator = form.invitation?.trim() ?? '';
@@ -6222,7 +6223,10 @@ function encodeSlackOidcCookie(
   nonce: string,
   destination: string,
 ): string {
-  return `${purpose}.${browserBinding}.${nonce}.${encodeURIComponent(safeSetupDestination(destination))}`;
+  const safeDestination = purpose === 'login'
+    ? safeSlackLoginDestination(destination)
+    : safeSetupDestination(destination);
+  return `${purpose}.${browserBinding}.${nonce}.${encodeURIComponent(safeDestination)}`;
 }
 
 function decodeSlackOidcCookie(value: string | undefined): {
@@ -6239,7 +6243,12 @@ function decodeSlackOidcCookie(value: string | undefined): {
       !nonce || nonce.length < 32 || nonce.length > 512 ||
       /\s/.test(browserBinding) || /\s/.test(nonce)) return undefined;
   let destination: string;
-  try { destination = safeSetupDestination(decodeURIComponent(destinationParts.join('.'))); }
+  try {
+    const decoded = decodeURIComponent(destinationParts.join('.'));
+    destination = purpose === 'login'
+      ? safeSlackLoginDestination(decoded)
+      : safeSetupDestination(decoded);
+  }
   catch { return undefined; }
   return { purpose, browserBinding, nonce, destination };
 }

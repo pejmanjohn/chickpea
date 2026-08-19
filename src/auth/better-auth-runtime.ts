@@ -36,13 +36,18 @@ export function createBetterAuthRuntimeRoutes(options: BetterAuthRuntimeOptions 
     onError: (c) => c.json({ error: 'request_too_large' }, 413),
   }));
 
-  app.all('/api/auth/*', async (c) => {
+  const handle = async (c: Context) => {
     try {
       return await dispatch(c, options);
     } catch {
       return c.json({ error: 'auth_unavailable' }, 503);
     }
-  });
+  };
+
+  app.all('/api/auth/*', handle);
+  app.all('/.well-known/oauth-protected-resource', handle);
+  app.all('/.well-known/oauth-protected-resource/mcp', handle);
+  app.all('/.well-known/oauth-authorization-server/api/auth', handle);
 
   return app;
 }

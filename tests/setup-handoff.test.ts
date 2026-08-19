@@ -4,6 +4,7 @@ import vm from 'node:vm';
 
 import {
   safeSetupDestination,
+  safeSlackLoginDestination,
   slackManualSetupClientScript,
   slackSetupClientScript,
 } from '../src/auth/setup-handoff.ts';
@@ -19,6 +20,21 @@ test('Slack setup accepts only same-origin Admin destinations', () => {
   assert.equal(safeSetupDestination('/admin/channels?next=/logout'), '/admin');
   assert.equal(safeSetupDestination('//attacker.example/admin'), '/admin');
   assert.equal(safeSetupDestination('https://attacker.example/admin'), '/admin');
+});
+
+test('Slack login accepts only Admin pages or an opaque MCP continuation', () => {
+  const continuation = 'A'.repeat(43);
+  assert.equal(
+    safeSlackLoginDestination(`/auth/mcp/resume/${continuation}`),
+    `/auth/mcp/resume/${continuation}`,
+  );
+  assert.equal(safeSlackLoginDestination('/admin/team'), '/admin/team');
+  assert.equal(safeSlackLoginDestination('/auth/mcp/resume/short'), '/admin');
+  assert.equal(
+    safeSlackLoginDestination(`/auth/mcp/resume/${continuation}?next=https://attacker.example`),
+    '/admin',
+  );
+  assert.equal(safeSlackLoginDestination('/auth/mcp/consent'), '/admin');
 });
 
 test('manual setup navigation is same-tab, local, and never persists secrets', () => {

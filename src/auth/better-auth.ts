@@ -1,9 +1,15 @@
 import { betterAuth, type BetterAuthOptions, type BetterAuthPlugin } from 'better-auth';
 import { createAuthEndpoint, createAuthMiddleware } from 'better-auth/api';
 import { setSessionCookie } from 'better-auth/cookies';
-import { getOrgAdapter, organization } from 'better-auth/plugins';
+import { createLocalAccountIssuer } from 'better-auth/db';
+import { getOrgAdapter, jwt, organization } from 'better-auth/plugins';
+import { mcp } from '@better-auth/mcp';
 
 import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
+import {
+  MCP_WORKSPACE_SCOPE,
+  mcpResourceForOrigin,
+} from './mcp-oauth.ts';
 
 export const BETTER_AUTH_BASE_PATH = '/api/auth';
 export const SESSION_IDLE_SECONDS = 4 * 60 * 60;
@@ -181,6 +187,28 @@ function createOptions(
         invitationExpiresIn: 7 * 24 * 60 * 60,
         async sendInvitationEmail() {},
       }),
+      jwt({
+        jwks: {
+          keyPairConfig: { alg: 'EdDSA', crv: 'Ed25519' },
+          rotationInterval: 30 * 24 * 60 * 60,
+          gracePeriod: 30 * 24 * 60 * 60,
+        },
+      }),
+      mcp({
+        resource: mcpResourceForOrigin(input.baseURL),
+        loginPage: '/auth/mcp/login',
+        consentPage: '/auth/mcp/consent',
+        scopes: [MCP_WORKSPACE_SCOPE],
+        grantTypes: ['authorization_code', 'refresh_token'],
+        accessTokenExpiresIn: 15 * 60,
+        refreshTokenExpiresIn: 30 * 24 * 60 * 60,
+        codeExpiresIn: 10 * 60,
+        allowDynamicClientRegistration: true,
+        allowUnauthenticatedClientRegistration: true,
+        clientRegistrationDefaultScopes: [MCP_WORKSPACE_SCOPE],
+        clientRegistrationAllowedScopes: [],
+        clientRegistrationRequirePKCE: true,
+      }) as unknown as BetterAuthPlugin,
       createPrivateSessionPlugin(input.privateSeam, internalMarker),
     ],
     telemetry: { enabled: false },
@@ -209,10 +237,10 @@ function createPrivateSessionPlugin(
             throw ctx.error('FORBIDDEN', { message: 'Active Chickpea authority is required.' });
           }
 
-          const account = await ctx.context.internalAdapter.findAccountByProviderId(
-            slackAccountId(admission.slackTeamId, admission.slackUserId),
-            BETTER_AUTH_SLACK_PROVIDER_ID,
-          );
+          const account = await ctx.context.internalAdapter.findAccountByKey({
+            issuer: createLocalAccountIssuer(BETTER_AUTH_SLACK_PROVIDER_ID),
+            accountId: slackAccountId(admission.slackTeamId, admission.slackUserId),
+          });
           const user = await ctx.context.internalAdapter.findUserById(admission.betterAuthUserId);
           const member = await getOrgAdapter(ctx.context).findMemberByOrgId({
             userId: admission.betterAuthUserId,
@@ -242,11 +270,9 @@ async function reconcileSlackIdentity(
   input: ReconcileSlackIdentityInput,
 ): Promise<ReconciledSlackIdentity> {
   const accountId = slackAccountId(input.slackTeamId, input.slackUserId);
+  const issuer = createLocalAccountIssuer(BETTER_AUTH_SLACK_PROVIDER_ID);
   const context = await auth.$context;
-  let account = await context.internalAdapter.findAccountByProviderId(
-    accountId,
-    BETTER_AUTH_SLACK_PROVIDER_ID,
-  );
+  let account = await context.internalAdapter.findAccountByKey({ issuer, accountId });
   let user = account
     ? await context.internalAdapter.findUserById(account.userId)
     : null;
@@ -268,20 +294,18 @@ async function reconcileSlackIdentity(
         email: opaqueIdentityEmail(),
         emailVerified: false,
         name: input.displayName,
-      });
+      }, { method: 'chickpea-slack-oidc' });
     }
 
     try {
       account = await context.internalAdapter.createAccount({
         accountId,
+        issuer,
         providerId: BETTER_AUTH_SLACK_PROVIDER_ID,
         userId: user.id,
       });
     } catch (error) {
-      const winner = await context.internalAdapter.findAccountByProviderId(
-        accountId,
-        BETTER_AUTH_SLACK_PROVIDER_ID,
-      );
+      const winner = await context.internalAdapter.findAccountByKey({ issuer, accountId });
       if (!input.expectedUserId) await context.internalAdapter.deleteUser(user.id).catch(() => {});
       if (!winner) throw error;
       if (input.expectedUserId && winner.userId !== input.expectedUserId) {

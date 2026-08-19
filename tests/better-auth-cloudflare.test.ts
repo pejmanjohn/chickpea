@@ -14,7 +14,7 @@ import { setCookieValues } from '../src/auth/cookies.ts';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const WRANGLER = join(ROOT, 'node_modules', '.bin', 'wrangler');
 const WORKER_FIXTURE = join(ROOT, 'tests', 'fixtures', 'better-auth', 'private-seam-worker.ts');
-const MIGRATIONS = join(ROOT, 'tests', 'fixtures', 'better-auth', '1.6.26');
+const MIGRATIONS = join(ROOT, 'migrations', 'better-auth');
 const WORKER_SECRET = 'u0-worker-secret-is-stable-across-isolate-restarts';
 
 test('production private seam survives real workerd, D1, and isolate restart', {

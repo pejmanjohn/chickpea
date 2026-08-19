@@ -2,6 +2,7 @@ import type { D1Database } from '@cloudflare/workers-types';
 
 import type {
   BetterAuthDatabaseBackend,
+  BetterAuthMcpOAuthContinuationRecord,
   BetterAuthMembershipRecord,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
@@ -96,6 +97,53 @@ export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
       `SELECT id, organizationId, userId, role, createdAt FROM member
        WHERE userId = ? AND organizationId = ? LIMIT 1`,
     ).bind(userId, organizationId).first());
+  }
+
+  async countMcpOAuthClients(): Promise<number> {
+    const row = await this.database.prepare(
+      `SELECT count(*) AS count FROM oauthClient
+       WHERE tokenEndpointAuthMethod = 'none' AND userId IS NULL`,
+    ).first<{ count: number }>();
+    return Number(row?.count ?? 0);
+  }
+
+  async pruneUnusedMcpOAuthClients(createdBefore: string): Promise<number> {
+    const result = await this.database.prepare(
+      `DELETE FROM oauthClient
+       WHERE tokenEndpointAuthMethod = 'none' AND userId IS NULL
+         AND createdAt < ?
+         AND NOT EXISTS (
+           SELECT 1 FROM oauthAccessToken WHERE oauthAccessToken.clientId = oauthClient.clientId
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM oauthRefreshToken WHERE oauthRefreshToken.clientId = oauthClient.clientId
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM oauthConsent WHERE oauthConsent.clientId = oauthClient.clientId
+         )`,
+    ).bind(createdBefore).run();
+    return Number(result.meta.changes ?? 0);
+  }
+
+  async putMcpOAuthContinuation(record: BetterAuthMcpOAuthContinuationRecord): Promise<void> {
+    await this.database.prepare(
+      `INSERT INTO chickpea_mcp_oauth_continuation
+         (id_hash, authorization_path, expires_at, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).bind(record.idHash, record.authorizationPath, record.expiresAt, record.createdAt).run();
+  }
+
+  async consumeMcpOAuthContinuation(idHash: string, now: number): Promise<string | null> {
+    const row = await this.database.prepare(
+      `DELETE FROM chickpea_mcp_oauth_continuation
+       WHERE id_hash = ? AND expires_at > ?
+       RETURNING authorization_path`,
+    ).bind(idHash, now).first<{ authorization_path: string }>();
+    if (row?.authorization_path) return row.authorization_path;
+    await this.database.prepare(
+      'DELETE FROM chickpea_mcp_oauth_continuation WHERE id_hash = ? AND expires_at <= ?',
+    ).bind(idHash, now).run();
+    return null;
   }
 }
 
