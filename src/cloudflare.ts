@@ -16,6 +16,7 @@ import {
   AgentStillSlackDmHandlerError,
   AgentStillReferencedError,
   ChannelAssignmentConflictError,
+  ChannelRevisionConflictError,
   SlackIdentityExistsError,
   SlackIdentityLifecycleError,
   SlackIdentityRevisionConflictError,
@@ -149,6 +150,12 @@ import { IdentityStateError } from './identity/errors.ts';
 import { IdentityStoreLogic } from './identity/store.ts';
 import type { IdentityStore } from './identity/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from './identity/types.ts';
+import { ManagementStoreLogic } from './management/store.ts';
+import {
+  ManagementError,
+  type ManagementRpcRequest,
+  type ManagementRpcResponse,
+} from './management/types.ts';
 import {
   DurableRunDriver,
   runDriverRetryDelayMs,
@@ -511,6 +518,7 @@ interface TagStateStores {
   routines: RoutineStoreLogic;
   usage: UsageStoreLogic;
   work: WorkStoreLogic;
+  management: ManagementStoreLogic;
 }
 
 export class TagStateStore extends DurableObject implements TagStateRpc {
@@ -553,6 +561,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         memory: new MemoryStoreLogic(db),
         routines: new RoutineStoreLogic(db),
         usage: new UsageStoreLogic(db),
+        management: new ManagementStoreLogic(db),
       } as Omit<TagStateStores, 'work'>;
       const completeStores: TagStateStores = {
         ...stores,
@@ -582,6 +591,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.identity.execute(request));
   }
 
+  async managementExecute(
+    request: ManagementRpcRequest,
+  ): Promise<StateRpcResult<ManagementRpcResponse>> {
+    return this.call((stores) => stores.management.execute(request));
+  }
+
   async configListAgents(): Promise<StateRpcResult<CustomAgentConfig[]>> {
     return this.call((stores) => stores.config.listAgents());
   }
@@ -608,8 +623,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.config.markOAuthReauthorizationRequired(target));
   }
 
-  async configDeleteAgent(agentId: string): Promise<StateRpcResult<boolean>> {
-    return this.call((stores) => stores.config.deleteAgent(agentId));
+  async configDeleteAgent(
+    agentId: string,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) => stores.config.deleteAgent(agentId, expectedRevision));
   }
 
   async configDeleteAgentWithMemory(
@@ -634,8 +652,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.config.getChannel(workspaceId, channelId) ?? null);
   }
 
-  async configPutChannel(channel: ChannelConfig): Promise<StateRpcResult<ChannelConfig>> {
-    return this.call((stores) => stores.config.putChannel(channel));
+  async configPutChannel(
+    channel: ChannelConfig,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<ChannelConfig>> {
+    return this.call((stores) => stores.config.putChannel(channel, expectedRevision));
   }
 
   async configPutChannelPlacement(
@@ -1619,6 +1640,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           actualAgentId: err.actualAgentId ?? '',
         });
       }
+      if (err instanceof ChannelRevisionConflictError) {
+        return rpcError('channel_revision_conflict', err.message, {
+          workspaceId: err.workspaceId,
+          channelId: err.channelId,
+          expectedRevision: String(err.expectedRevision),
+          actualRevision: String(err.actualRevision),
+        });
+      }
       if (err instanceof UnknownSlackIdentityError) {
         return rpcError('unknown_slack_identity', err.message, {
           identityId: err.identityId,
@@ -1659,6 +1688,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         return rpcError('identity', err.message, {
           identityCode: err.code,
           ...err.details,
+        });
+      }
+      if (err instanceof ManagementError) {
+        return rpcError('management', err.message, {
+          managementCode: err.code,
         });
       }
       if (err instanceof MemoryStateError) {

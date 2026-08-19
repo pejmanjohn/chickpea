@@ -24,6 +24,7 @@ import type { RoutineRpcRequest, RoutineRpcResponse } from '../routines/types.ts
 import type { UsageRpcRequest, UsageRpcResponse } from '../usage/types.ts';
 import type { WorkRpcRequest, WorkRpcResponse } from '../work/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from '../identity/types.ts';
+import type { ManagementRpcRequest, ManagementRpcResponse } from '../management/types.ts';
 import type {
   SlackCanonicalAdmissionInput,
   SlackCanonicalAdmissionResult,
@@ -79,6 +80,7 @@ export type StateRpcErrorCode =
   | 'agent_slack_dm_handler'
   | 'agent_slack_identity_conflict'
   | 'channel_assignment_conflict'
+  | 'channel_revision_conflict'
   | 'unknown_slack_identity'
   | 'slack_identity_exists'
   | 'slack_identity_still_referenced'
@@ -86,6 +88,7 @@ export type StateRpcErrorCode =
   | 'slack_identity_lifecycle'
   | 'workspace_default_slack_identity_protected'
   | 'identity'
+  | 'management'
   | 'memory'
   | 'routine'
   | 'usage'
@@ -202,6 +205,10 @@ export interface TurnProgress {
 export interface TagStateRpc {
   // -- identity and organization authorization ----------------------------
   identityExecute(request: IdentityRpcRequest): Promise<StateRpcResult<IdentityRpcResponse>>;
+  // -- requester-bound workspace management ledger -----------------------
+  managementExecute(
+    request: ManagementRpcRequest,
+  ): Promise<StateRpcResult<ManagementRpcResponse>>;
   // -- config: agents ------------------------------------------------------
   configListAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
   configGetAgent(agentId: string): Promise<StateRpcResult<CustomAgentConfig>>;
@@ -214,13 +221,16 @@ export interface TagStateRpc {
   configMarkOAuthReauthorizationRequired(
     target: OAuthReauthorizationTarget,
   ): Promise<StateRpcResult<boolean>>;
-  configDeleteAgent(agentId: string): Promise<StateRpcResult<boolean>>;
+  configDeleteAgent(agentId: string, expectedRevision?: number): Promise<StateRpcResult<boolean>>;
   configListChannels(): Promise<StateRpcResult<ChannelConfig[]>>;
   configGetChannel(
     workspaceId: string,
     channelId: string,
   ): Promise<StateRpcResult<ChannelConfig | null>>;
-  configPutChannel(channel: ChannelConfig): Promise<StateRpcResult<ChannelConfig>>;
+  configPutChannel(
+    channel: ChannelConfig,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<ChannelConfig>>;
   configPutChannelPlacement(
     input: ChannelPlacementMutation,
   ): Promise<StateRpcResult<ChannelPlacementResult>>;

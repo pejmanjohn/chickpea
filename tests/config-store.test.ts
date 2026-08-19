@@ -24,6 +24,7 @@ import {
   AgentRevisionConflictError,
   AgentStillReferencedError,
   ChannelAssignmentConflictError,
+  ChannelRevisionConflictError,
 } from '../src/config/errors.ts';
 import {
   WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
@@ -81,7 +82,7 @@ test('Channel config survives Agent placement changes and unassignment', async (
   await store.createAgent(agent({ id: 'agent_other', name: 'Other Agent' }));
   const configured = await store.putChannel(channel());
 
-  assert.deepEqual(configured, channel());
+  assert.deepEqual(configured, channel({ revision: 1 }));
   assert.deepEqual(await store.putAssignment(assignment()), assignment());
   assert.deepEqual(
     await store.putAssignment(assignment({ agentId: 'agent_other' })),
@@ -89,7 +90,7 @@ test('Channel config survives Agent placement changes and unassignment', async (
   );
   assert.equal(await store.deleteAssignment('T_TEST', 'C_TEST'), true);
   assert.equal(await store.getAssignment('T_TEST', 'C_TEST'), undefined);
-  assert.deepEqual(await store.getChannel('T_TEST', 'C_TEST'), channel());
+  assert.deepEqual(await store.getChannel('T_TEST', 'C_TEST'), channel({ revision: 1 }));
   store.close();
 });
 
@@ -110,13 +111,30 @@ test('channel placement mutation atomically fences stale assignment edits', asyn
     lifecycle: 'active',
   };
   try {
-    await store.putChannelPlacement({ channel, agentId: 'agent_one', expectedAgentId: null });
+    const initial = await store.putChannelPlacement({
+      channel,
+      agentId: 'agent_one',
+      expectedAgentId: null,
+      expectedRevision: 0,
+    });
+    assert.equal(initial.channel.revision, 1);
     const winner = await store.putChannelPlacement({
       channel: { ...channel, additionalInstructions: 'Winner.' },
       agentId: 'agent_two',
       expectedAgentId: 'agent_one',
+      expectedRevision: 1,
     });
     assert.equal(winner.assignment?.agentId, 'agent_two');
+    assert.equal(winner.channel.revision, 2);
+    await assert.rejects(
+      () => store.putChannelPlacement({
+        channel: { ...channel, additionalInstructions: 'Stale content.' },
+        agentId: 'agent_two',
+        expectedAgentId: 'agent_two',
+        expectedRevision: 1,
+      }),
+      ChannelRevisionConflictError,
+    );
     await assert.rejects(
       () => store.putChannelPlacement({
         channel: { ...channel, additionalInstructions: 'Stale loser.' },
@@ -943,7 +961,7 @@ test('SqliteConfigStore migrates the legacy v1 default-models column without los
       .all() as Array<{ id: string }>;
     migratedDb.close();
 
-    assert.equal(version.value, '10');
+    assert.equal(version.value, '11');
     assert.equal(
       agentColumns.some(({ name }) => name === 'default_models_json'),
       false,
@@ -982,7 +1000,7 @@ test('fresh databases start at the clean current config schema', () => {
       .all('config_slack_identities') as Array<{ name: string }>;
     db.close();
 
-    assert.equal(version.value, '10');
+    assert.equal(version.value, '11');
     assert.deepEqual(
       agentColumns.map(({ name }) => name),
       [
@@ -1039,6 +1057,7 @@ test('fresh databases start at the clean current config schema', () => {
       'additional_instructions',
       'participation_mode',
       'lifecycle',
+      'revision',
     ]);
   } finally {
     rmSync(dir, { recursive: true, force: true });

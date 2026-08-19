@@ -5,7 +5,8 @@ export type AuditDomain =
   | 'network_event'
   | 'usage'
   | 'work'
-  | 'slack_identity';
+  | 'slack_identity'
+  | 'management';
 
 export type SlackIdentityAuditEventType =
   | 'slack_identity.setup_started'

@@ -4,6 +4,7 @@ import {
   AgentExistsError,
   AgentStillReferencedError,
   ChannelAssignmentConflictError,
+  ChannelRevisionConflictError,
   SlackIdentityExistsError,
   SlackIdentityLifecycleError,
   SlackIdentityRevisionConflictError,
@@ -79,6 +80,7 @@ interface AssignmentRow {
 interface ChannelRow {
   workspace_id: string;
   channel_id: string;
+  revision?: number;
   label: string | null;
   additional_instructions: string | null;
   participation_mode: string;
@@ -175,14 +177,14 @@ export interface ConfigStore {
   createAgent(agent: AgentCreateInput): Promise<CustomAgentConfig>;
   updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): Promise<CustomAgentConfig>;
   markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean>;
-  deleteAgent(agentId: string): Promise<boolean>;
+  deleteAgent(agentId: string, expectedRevision?: number): Promise<boolean>;
   deleteAgentWithMemory(
     agentId: string,
     idempotencyKey: string,
   ): Promise<boolean>;
   listChannels(): Promise<ChannelConfig[]>;
   getChannel(workspaceId: string, channelId: string): Promise<ChannelConfig | undefined>;
-  putChannel(channel: ChannelConfig): Promise<ChannelConfig>;
+  putChannel(channel: ChannelConfig, expectedRevision?: number): Promise<ChannelConfig>;
   putChannelPlacement(input: ChannelPlacementMutation): Promise<ChannelPlacementResult>;
   listAssignments(): Promise<ChannelAssignment[]>;
   getAssignment(workspaceId: string, channelId: string): Promise<ChannelAssignment | undefined>;
@@ -395,10 +397,21 @@ export class ConfigStoreLogic {
     ).changes === 1;
   }
 
-  deleteAgent(agentId: string): boolean {
+  deleteAgent(agentId: string, expectedRevision?: number): boolean {
+    const current = this.getAgent(agentId);
+    const requiredRevision = expectedRevision ?? current.revision;
+    if (requiredRevision !== current.revision) {
+      throw new AgentRevisionConflictError(agentId, requiredRevision, current.revision);
+    }
     this.requireAgentHasNoBlockingReferences(agentId);
-    const deleted = this.db.run('DELETE FROM config_agents WHERE id = ?', agentId);
-    return deleted.changes === 1;
+    const deleted = this.db.run(
+      'DELETE FROM config_agents WHERE id = ? AND revision = ?',
+      agentId,
+      requiredRevision,
+    );
+    if (deleted.changes === 1) return true;
+    const actual = this.getAgent(agentId).revision;
+    throw new AgentRevisionConflictError(agentId, requiredRevision, actual);
   }
 
   deleteAgentWithMemory(
@@ -446,8 +459,8 @@ export class ConfigStoreLogic {
     return row ? rowToChannel(row as unknown as ChannelRow) : undefined;
   }
 
-  putChannel(channel: ChannelConfig): ChannelConfig {
-    this.putChannelRow(channel);
+  putChannel(channel: ChannelConfig, expectedRevision?: number): ChannelConfig {
+    this.putChannelRow(channel, expectedRevision);
     return this.getChannel(channel.workspaceId, channel.channelId) as ChannelConfig;
   }
 
@@ -463,7 +476,7 @@ export class ConfigStoreLogic {
           current?.agentId ?? null,
         );
       }
-      this.putChannelRow(input.channel);
+      this.putChannelRow(input.channel, input.expectedRevision);
       let assignment: ChannelAssignment | null = null;
       if (input.agentId) {
         assignment = {
@@ -480,23 +493,53 @@ export class ConfigStoreLogic {
     });
   }
 
-  private putChannelRow(channel: ChannelConfig): void {
-    this.db.run(
-      `INSERT INTO config_channels (
-        workspace_id, channel_id, label, additional_instructions, participation_mode, lifecycle
-      ) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(workspace_id, channel_id) DO UPDATE SET
-        label = excluded.label,
-        additional_instructions = excluded.additional_instructions,
-        participation_mode = excluded.participation_mode,
-        lifecycle = excluded.lifecycle`,
-      channel.workspaceId,
-      channel.channelId,
+  private putChannelRow(channel: ChannelConfig, expectedRevision?: number): void {
+    const current = this.getChannel(channel.workspaceId, channel.channelId);
+    if (!current) {
+      if (expectedRevision !== undefined && expectedRevision !== 0) {
+        throw new ChannelRevisionConflictError(
+          channel.workspaceId, channel.channelId, expectedRevision, 0,
+        );
+      }
+      this.db.run(
+        `INSERT INTO config_channels (
+          workspace_id, channel_id, revision, label, additional_instructions,
+          participation_mode, lifecycle
+        ) VALUES (?, ?, 1, ?, ?, ?, ?)`,
+        channel.workspaceId,
+        channel.channelId,
+        channel.label ?? null,
+        channel.additionalInstructions ?? null,
+        channel.participationMode,
+        channel.lifecycle,
+      );
+      return;
+    }
+    const actualRevision = current.revision ?? 1;
+    if (expectedRevision !== undefined && expectedRevision !== actualRevision) {
+      throw new ChannelRevisionConflictError(
+        channel.workspaceId, channel.channelId, expectedRevision, actualRevision,
+      );
+    }
+    const updated = this.db.run(
+      `UPDATE config_channels
+       SET label = ?, additional_instructions = ?, participation_mode = ?, lifecycle = ?,
+           revision = revision + 1
+       WHERE workspace_id = ? AND channel_id = ? AND revision = ?`,
       channel.label ?? null,
       channel.additionalInstructions ?? null,
       channel.participationMode,
       channel.lifecycle,
+      channel.workspaceId,
+      channel.channelId,
+      actualRevision,
     );
+    if (updated.changes !== 1) {
+      const latest = this.getChannel(channel.workspaceId, channel.channelId)?.revision ?? 0;
+      throw new ChannelRevisionConflictError(
+        channel.workspaceId, channel.channelId, actualRevision, latest,
+      );
+    }
   }
 
   listAssignments(): ChannelAssignment[] {
@@ -1412,6 +1455,17 @@ export class ConfigStoreLogic {
           }
         },
       },
+      {
+        version: 11,
+        up: (db) => {
+          const hasRevision = db
+            .all('PRAGMA table_info(config_channels)')
+            .some((column) => column.name === 'revision');
+          if (!hasRevision) {
+            db.exec('ALTER TABLE config_channels ADD COLUMN revision INTEGER NOT NULL DEFAULT 1');
+          }
+        },
+      },
     ];
     const row = this.db.get('SELECT value FROM config_meta WHERE key = ?', SCHEMA_VERSION_KEY) as
       | { value: string }
@@ -1560,6 +1614,7 @@ function rowToChannel(row: ChannelRow): ChannelConfig {
   return {
     workspaceId: row.workspace_id,
     channelId: row.channel_id,
+    revision: Number(row.revision ?? 1),
     ...(row.label ? { label: row.label } : {}),
     ...(row.additional_instructions
       ? { additionalInstructions: row.additional_instructions }

@@ -204,6 +204,8 @@ export interface ChannelPlacementMutation {
   channel: ChannelConfig;
   agentId: string | null;
   expectedAgentId: string | null;
+  /** Management callers provide this to fence both content and placement. */
+  expectedRevision?: number;
 }
 
 export interface ChannelPlacementResult {
@@ -218,6 +220,8 @@ export type ChannelLifecycle = 'active' | 'archived';
 export interface ChannelConfig {
   workspaceId: string;
   channelId: string;
+  /** Persisted Channels always expose a positive revision. */
+  revision?: number;
   label?: string;
   additionalInstructions?: string;
   participationMode: ChannelParticipationMode;

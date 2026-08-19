@@ -88,6 +88,20 @@ export class ChannelAssignmentConflictError extends Error {
   }
 }
 
+export class ChannelRevisionConflictError extends Error {
+  constructor(
+    readonly workspaceId: string,
+    readonly channelId: string,
+    readonly expectedRevision: number,
+    readonly actualRevision: number,
+  ) {
+    super(
+      `Channel ${workspaceId}/${channelId} changed (expected revision ${expectedRevision}, actual ${actualRevision})`,
+    );
+    this.name = 'ChannelRevisionConflictError';
+  }
+}
+
 export class UnknownSlackIdentityError extends Error {
   constructor(readonly identityId: string) {
     super(`Unknown Slack identity ${identityId}`);

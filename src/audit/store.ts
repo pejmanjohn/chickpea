@@ -204,6 +204,9 @@ function validateSafeMetadata(input: AppendAuditEvent, raw: string): void {
   if (input.domain === 'slack_identity') {
     validateSlackIdentityMetadata(input.eventType, parsed as Record<string, unknown>);
   }
+  if (input.domain === 'management') {
+    validateManagementMetadata(input.eventType, parsed as Record<string, unknown>);
+  }
 }
 
 const SAFE_AUDIT_METADATA_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/;
@@ -319,6 +322,29 @@ function validateSlackIdentityMetadata(
       !SAFE_AUDIT_METADATA_VALUE.test(value)
     ) {
       throw new Error(`Slack identity audit metadata ${key} is invalid`);
+    }
+  }
+}
+
+function validateManagementMetadata(
+  eventType: string,
+  metadata: Record<string, unknown>,
+): void {
+  const expectedKeys = eventType === 'management.request.completed'
+    ? ['operationId', 'outcomeCount', 'status']
+    : eventType === 'management.proposal.completed'
+      ? ['operationKind', 'proposalId', 'status']
+      : undefined;
+  if (!expectedKeys) throw new Error('Management audit event type is not allowlisted');
+  if (JSON.stringify(Object.keys(metadata).sort()) !== JSON.stringify(expectedKeys)) {
+    throw new Error('Management audit metadata shape is invalid');
+  }
+  if (!['completed', 'partial', 'confirmation_required'].includes(String(metadata.status))) {
+    throw new Error('Management audit status is invalid');
+  }
+  for (const [key, value] of Object.entries(metadata)) {
+    if (typeof value !== 'string' || !SAFE_AUDIT_METADATA_VALUE.test(value)) {
+      throw new Error(`Management audit metadata ${key} is invalid`);
     }
   }
 }

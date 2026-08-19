@@ -3,6 +3,7 @@ import {
   CfConfigStore,
   CfIdentityStore,
   CfMemoryStateStore,
+  CfManagementStore,
   CfRoutineStore,
   CfSettingsStore,
   CfSlackStateStore,
@@ -32,6 +33,7 @@ import type {
   SlackCredentialDependencies,
   SlackCredentialResolutionDependencies,
 } from '../slack/identity-credentials.ts';
+import { SqliteManagementStore, type ManagementStore } from '../management/store.ts';
 
 export { isCloudflareTarget } from './runtime-target.ts';
 
@@ -64,6 +66,7 @@ export interface AppStores {
   routines: RoutineStore;
   usage: UsageStore;
   work: WorkStore;
+  management: ManagementStore;
 }
 
 // Node singletons, cached by resolved DB path exactly like the pre-refactor
@@ -83,6 +86,7 @@ let cachedMemoryStore: CachedStore<SqliteMemoryStateStore> | undefined;
 let cachedRoutineStore: CachedStore<SqliteRoutineStore> | undefined;
 let cachedUsageStore: CachedStore<SqliteUsageStore> | undefined;
 let cachedWorkStore: CachedStore<SqliteWorkStore> | undefined;
+let cachedManagementStore: CachedStore<SqliteManagementStore> | undefined;
 
 function nodeCached<T extends { close(): void }>(
   cached: CachedStore<T> | undefined,
@@ -215,6 +219,17 @@ export function getWorkStore(env?: PlatformEnv): WorkStore {
   return cachedWorkStore.store;
 }
 
+export function getManagementStore(env?: PlatformEnv): ManagementStore {
+  if (isCloudflareTarget()) {
+    return new CfManagementStore(tagStateStub(env));
+  }
+  cachedManagementStore = nodeCached(
+    cachedManagementStore,
+    (path) => new SqliteManagementStore(path),
+  );
+  return cachedManagementStore.store;
+}
+
 export async function readRuntimeDrainStatus(env?: PlatformEnv): Promise<RuntimeDrainStatus> {
   if (isCloudflareTarget()) {
     const result = await tagStateStub(env).runtimeDrainStatus();
@@ -252,5 +267,6 @@ export function resolveStores(env?: PlatformEnv): AppStores {
     routines: getRoutineStore(env),
     usage: getUsageStore(env),
     work: getWorkStore(env),
+    management: getManagementStore(env),
   };
 }
