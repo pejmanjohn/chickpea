@@ -198,6 +198,7 @@ import {
   getConfigStore,
   getIdentityStore,
   getMemoryStateStore,
+  getManagementStore,
   getRoutineStore,
   getSettingsStore,
   getSlackCredentialDependencies,
@@ -341,6 +342,9 @@ import {
 import { PersonalTokenService } from '../auth/personal-token.ts';
 import type { AdminAuthenticationService, AuthPrincipal } from '../auth/types.ts';
 import { decodeRecoverySecret } from '../auth/recovery-secret.ts';
+import type { ManagementStore } from '../management/store.ts';
+import { WorkspaceManagementService } from '../management/service.ts';
+import { resolveEligibleSlackInvitee } from '../management/slack-directory.ts';
 
 interface BetterAuthContext {
   environment: BetterAuthEnvironment;
@@ -366,6 +370,7 @@ interface AdminRoutesOptions {
   authService?: AdminAuthenticationService | undefined;
   betterAuthEnvironment?: BetterAuthEnvironment | undefined;
   identity?: IdentityStore | undefined;
+  management?: ManagementStore | undefined;
   /**
    * Explicit encrypted Slack credential realm for tests and embedded hosts.
    * Production resolves persistent TAG_STATE and its target keyring from the
@@ -1025,6 +1030,30 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.usage ?? getUsageStore(c.env as PlatformEnv | undefined);
   const work = (c: Context) =>
     options.work ?? getWorkStore(c.env as PlatformEnv | undefined);
+  const management = (c: Context) =>
+    options.management ?? getManagementStore(c.env as PlatformEnv | undefined);
+  const managementService = (c: Context) => {
+    const env = c.env as PlatformEnv | undefined;
+    const identityStore = identity(c);
+    const settingsStore = settings(c);
+    return new WorkspaceManagementService({
+      identity: identityStore,
+      config: store(c),
+      management: management(c),
+      memory: memory(c),
+      routines: routines(c),
+      work: work(c),
+      routineSchedulingAvailable: isCloudflareTarget(),
+      setupBaseUrl: requestOrigin(c),
+      providerCredentialSource: async (providerId) =>
+        (await describeProviderKeySources(env, settingsStore))[providerId],
+      removeProviderCredential: async (providerId) =>
+        (await deleteProviderApiKey(providerId, env, settingsStore, usage(c))).source,
+      resolveSlackInvitee: (slackUserId) =>
+        resolveEligibleSlackInvitee(slackUserId, env, identityStore),
+    });
+  };
+  const sharedManagementEnabled = (!options.store && !options.identity) || Boolean(options.management);
   const slackState = (c: Context) =>
     options.slackState ?? getSlackStateStore(c.env as PlatformEnv | undefined);
   app.use('*', async (c, next) => {
@@ -2705,6 +2734,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const secret = context?.environment.secret ?? options.authSecret;
       return secret ? authRateLimiter(c, secret) : undefined;
     },
+    ...(sharedManagementEnabled
+      ? { management: managementService }
+      : {}),
   }));
   app.route('/admin/api', createMemoryAdminApi({
     store: memory,
@@ -3124,6 +3156,37 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
+    if (sharedManagementEnabled) {
+      const principal = principalByContext.get(c);
+      if (!principal) return c.json({ error: 'forbidden' }, 403);
+      const context = {
+        userId: principal.userId,
+        membershipId: principal.membershipId,
+        organizationId: principal.organizationId,
+        origin: { kind: 'admin' as const, sessionId: principal.correlationId },
+      };
+      const service = managementService(c);
+      const proposed = await service.applyWorkspaceChanges({
+        context,
+        idempotencyKey: `admin:provider:remove:${principal.correlationId}:${id}`,
+        operations: [{
+          itemId: 'remove_provider',
+          kind: 'remove_provider_credential',
+          providerId: id,
+        }],
+      });
+      const proposalId = proposed.outcomes[0]?.proposalId;
+      if (!proposalId) {
+        return c.json({ error: proposed.outcomes[0]?.code ?? 'provider_key_unavailable' }, 409);
+      }
+      await service.confirmWorkspaceChange({ context, proposalId });
+      const source = (await describeProviderKeySources(platformEnv, settingsStore))[id];
+      return c.json({
+        ok: true,
+        provider: providerSummary(id, source),
+        pinnedAgentCount: await countPinnedAgents(store(c), id),
+      });
+    }
     const resolved = await deleteProviderApiKey(
       id,
       platformEnv,

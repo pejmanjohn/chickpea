@@ -21,6 +21,8 @@ import {
 } from '../slack/credentials.ts';
 import type { ResolvedSlackIdentityCredentials } from '../slack/identity-credentials.ts';
 import { classifySlackUserForAdmission } from '../slack/user-classification.ts';
+import type { WorkspaceManagementService } from '../management/service.ts';
+import { ManagementError, type ManagementActorContext } from '../management/types.ts';
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60_000;
 const MAX_TEAM_BODY_BYTES = 2_048;
@@ -44,6 +46,7 @@ interface TeamAdminApiOptions {
   ) => Promise<SlackDirectoryUsersPage>;
   usersInfo?: (botToken: string, userId: string) => Promise<SlackDirectoryUserInfoResult>;
   revokeBetterAuthSessions?: (c: Context, betterAuthUserId: string) => Promise<number>;
+  management?: (c: Context) => WorkspaceManagementService;
   rateLimiter?: (c: Context) => Promise<AuthRateLimiter | undefined>;
   now?: () => number;
   randomBytes?: (length: number) => Uint8Array;
@@ -168,6 +171,26 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
     const parsed = v.safeParse(inviteSchema, await readJson(c, MAX_TEAM_BODY_BYTES));
     if (!parsed.success) return invalid(c);
     try {
+      if (options.management) {
+        const result = await options.management(c).applyWorkspaceChanges({
+          context: managementContext(principal),
+          idempotencyKey: `admin:invite:${principal.correlationId}:${parsed.output.slackUserId}`,
+          operations: [{
+            itemId: 'invite',
+            kind: 'invite_member',
+            slackUserId: parsed.output.slackUserId,
+          }],
+        });
+        const outcome = result.outcomes[0];
+        if (!outcome || outcome.disposition !== 'applied' || !outcome.handoffUrl) {
+          return managementFailure(c, outcome?.code);
+        }
+        const invitationId = outcome.changed?.find(({ kind }) => kind === 'invitation')?.id;
+        const invitation = (await options.store(c).listInvitations())
+          .find(({ id }) => id === invitationId);
+        if (!invitation) return c.json({ error: 'invitation_unavailable' }, 404);
+        return c.json({ invitation: safeInvitation(invitation), inviteLink: outcome.handoffUrl }, 201);
+      }
       const context = await directoryContext(options, c);
       if ('response' in context) return context.response;
       let lookup: SlackDirectoryUserInfoResult;
@@ -221,6 +244,31 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
       if (!existing || existing.organizationId !== principal.organizationId) {
         return c.json({ error: 'invitation_unavailable' }, 404);
       }
+      if (options.management) {
+        const service = options.management(c);
+        const snapshot = await service.inspectWorkspace(managementContext(principal));
+        const target = snapshot.team?.invitations.find(({ id }) => id === invitationId);
+        if (!target) return c.json({ error: 'invitation_unavailable' }, 404);
+        const proposed = await service.applyWorkspaceChanges({
+          context: managementContext(principal),
+          idempotencyKey: `admin:invitation:revoke:${principal.correlationId}:${invitationId}`,
+          operations: [{
+            itemId: 'revoke',
+            kind: 'revoke_invitation',
+            invitationId,
+            expectedRevision: target.revision,
+          }],
+        });
+        const proposalId = proposed.outcomes[0]?.proposalId;
+        if (!proposalId) return managementFailure(c, proposed.outcomes[0]?.code);
+        await service.confirmWorkspaceChange({
+          context: managementContext(principal),
+          proposalId,
+        });
+        const invitation = (await identity.listInvitations()).find(({ id }) => id === invitationId);
+        if (!invitation) return c.json({ error: 'invitation_unavailable' }, 404);
+        return c.json({ invitation: safeInvitation(invitation) });
+      }
       const invitation = await identity.revokeInvitation(invitationId);
       await identity.recordAuthAudit({
         event: 'authorization', outcome: 'success', action: 'team.invitation.revoke',
@@ -248,6 +296,32 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
       }
       const binding = (await identity.listExternalIdentities()).find((row) => row.membershipId === target.id);
       if (!binding) return c.json({ error: 'membership_unavailable' }, 404);
+      if (options.management) {
+        const service = options.management(c);
+        const proposed = await service.applyWorkspaceChanges({
+          context: managementContext(principal),
+          idempotencyKey: `admin:membership:update:${principal.correlationId}:${membershipId}`,
+          operations: [{
+            itemId: 'membership',
+            kind: 'update_member',
+            membershipId,
+            ...(parsed.output.role === undefined ? {} : { role: parsed.output.role }),
+            ...(parsed.output.status === undefined ? {} : { status: parsed.output.status }),
+          }],
+        });
+        const proposalId = proposed.outcomes[0]?.proposalId;
+        if (!proposalId) return managementFailure(c, proposed.outcomes[0]?.code);
+        await service.confirmWorkspaceChange({
+          context: managementContext(principal),
+          proposalId,
+        });
+        const membership = await identity.getMembership(membershipId);
+        if (!membership) return c.json({ error: 'membership_unavailable' }, 404);
+        if (membership.role !== target.role || membership.status !== target.status) {
+          await options.revokeBetterAuthSessions?.(c, binding.betterAuthUserId);
+        }
+        return c.json({ membership });
+      }
       const result = await identity.updateMembershipAuthority({
         membershipId,
         ...(parsed.output.role === undefined ? {} : { role: parsed.output.role }),
@@ -281,6 +355,22 @@ function requiredPrincipal(c: Context, permission: Permission): AuthPrincipal {
   const principal = requestPrincipal(c.req.raw);
   requirePermission(principal, permission);
   return principal!;
+}
+
+function managementContext(principal: AuthPrincipal): ManagementActorContext {
+  return {
+    userId: principal.userId,
+    membershipId: principal.membershipId,
+    organizationId: principal.organizationId,
+    origin: { kind: 'admin', sessionId: principal.correlationId },
+  };
+}
+
+function managementFailure(c: Context, code?: string): Response {
+  if (code === 'owner_required' || code === 'forbidden') {
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  return c.json({ error: code ?? 'management_unavailable' }, 409);
 }
 
 async function canonicalResolution(identity: IdentityStore, principal: AuthPrincipal) {
@@ -418,6 +508,7 @@ function teamError(c: Context, error: unknown) {
     return c.json({ error: 'rate_limited' }, 429);
   }
   if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+  if (error instanceof ManagementError) return managementFailure(c, error.code);
   if (error instanceof IdentityStateError) {
     if (['invitation_missing', 'membership_missing'].includes(error.code)) {
       return c.json({ error: 'resource_unavailable' }, 404);

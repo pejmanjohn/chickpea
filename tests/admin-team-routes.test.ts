@@ -8,6 +8,9 @@ import { AuthRateLimiter } from '../src/auth/rate-limit.ts';
 import { setRequestPrincipal } from '../src/auth/service.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
+import { WorkspaceManagementService } from '../src/management/service.ts';
+import { SqliteManagementStore } from '../src/management/store.ts';
 import type {
   SlackDirectoryMember,
   SlackDirectoryUserInfoResult,
@@ -276,5 +279,60 @@ test('removed Admin is eligible for an exact fresh invitation and existing sessi
     assert.equal(reinvite.status, 201, await reinvite.clone().text());
   } finally {
     team.identity.close();
+  }
+});
+
+test('Admin team mutations can delegate to the shared management service', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await createSlackOwner(identity, { now: NOW, suffix: 'team-management' });
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const management = new SqliteManagementStore(':memory:');
+  let sequence = 0;
+  const service = new WorkspaceManagementService({
+    identity,
+    config,
+    management,
+    setupBaseUrl: 'https://app.example',
+    now: () => NOW,
+    randomId: () => `team_management_${++sequence}`,
+    randomCapability: () => `${'m'.repeat(42)}${sequence % 10}`,
+    resolveSlackInvitee: async () => ({
+      slackTeamId: owner.user.slackTeamId,
+      displayName: 'Ada',
+    }),
+  });
+  const app = new Hono();
+  app.use('/admin/api/*', async (c, next) => {
+    setRequestPrincipal(c.req.raw, principal(owner));
+    await next();
+  });
+  app.route('/admin/api', createTeamAdminApi({
+    store: () => identity,
+    management: () => service,
+  }));
+  try {
+    const created = await app.request('https://app.example/admin/api/team/invitations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slackUserId: 'UINVITEE1' }),
+    });
+    assert.equal(created.status, 201, await created.clone().text());
+    const body = await created.json() as {
+      invitation: { id: string; expiresAt: number };
+      inviteLink: string;
+    };
+    assert.equal(body.invitation.expiresAt, NOW + 24 * 60 * 60_000);
+    assert.match(body.inviteLink, /^https:\/\/app\.example\/auth\/slack\/invite#invite=/);
+
+    const revoked = await app.request(
+      `https://app.example/admin/api/team/invitations/${body.invitation.id}`,
+      { method: 'DELETE' },
+    );
+    assert.equal(revoked.status, 200, await revoked.clone().text());
+    assert.equal((await revoked.json() as { invitation: { status: string } }).invitation.status, 'revoked');
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
   }
 });
