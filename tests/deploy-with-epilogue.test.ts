@@ -828,6 +828,8 @@ function writeCutoverArtifact(
           'FlueRoutineWorkflow',
         ],
       },
+      { tag: 'v7', new_sqlite_classes: ['AuthGuard'] },
+      { tag: 'v8', deleted_classes: ['AuthGuard'] },
     ],
   };
   writeFileSync(path.join(builtDir, 'wrangler.json'), JSON.stringify(config));
@@ -1011,6 +1013,37 @@ test('preflight preserves the v3 Sandbox class migration in both profiles', (con
     assert.equal(result.status, 1);
     assert.match(result.stderr, /v3 Sandbox SQLite class/);
   }
+});
+
+test('preflight preserves the applied AuthGuard creation and exact retirement', (context) => {
+  const missingHistory = createHarness();
+  const unsafeRetirement = createHarness();
+  context.after(() => {
+    rmSync(missingHistory.root, { recursive: true, force: true });
+    rmSync(unsafeRetirement.root, { recursive: true, force: true });
+  });
+
+  const missingPath = path.join(missingHistory.root, 'dist-cf', 'chickpea', 'wrangler.json');
+  const missingConfig = JSON.parse(readFileSync(missingPath, 'utf8'));
+  missingConfig.migrations = missingConfig.migrations.filter(
+    (migration: { tag: string }) => migration.tag !== 'v7',
+  );
+  writeFileSync(missingPath, JSON.stringify(missingConfig));
+
+  const unsafePath = path.join(unsafeRetirement.root, 'dist-cf', 'chickpea', 'wrangler.json');
+  const unsafeConfig = JSON.parse(readFileSync(unsafePath, 'utf8'));
+  unsafeConfig.migrations.find(
+    (migration: { tag: string }) => migration.tag === 'v8',
+  ).deleted_classes.push('TagStateStore');
+  writeFileSync(unsafePath, JSON.stringify(unsafeConfig));
+
+  const missingResult = runHarness(missingHistory, ['--skip-build', '--preflight-only']);
+  const unsafeResult = runHarness(unsafeRetirement, ['--skip-build', '--preflight-only']);
+
+  assert.equal(missingResult.status, 1);
+  assert.match(missingResult.stderr, /v7 AuthGuard SQLite class history/);
+  assert.equal(unsafeResult.status, 1);
+  assert.match(unsafeResult.stderr, /protected classes.*TagStateStore/);
 });
 
 test('deploy skip-build flag stays private while dry-run still reaches Wrangler', (context) => {

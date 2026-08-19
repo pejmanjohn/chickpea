@@ -73,6 +73,11 @@ const BETA_FLUE_CLASSES = Object.freeze([
   'FlueRoutineIntentAgent',
   'FlueRoutineWorkflow',
 ]);
+const RETIRED_AUTH_CLASSES = Object.freeze(['AuthGuard']);
+const EXPECTED_DELETED_CLASSES = Object.freeze([
+  ...BETA_FLUE_CLASSES,
+  ...RETIRED_AUTH_CLASSES,
+]);
 const V2_AGENT_CLASSES = Object.freeze([
   'FlueChickpeaSlackV2Agent',
   'FlueChickpeaRoutineIntentV2Agent',
@@ -292,14 +297,14 @@ function validateFlue2CutoverArtifact(artifact) {
   const deleted = migrations.flatMap((migration) => migration.deleted_classes ?? []);
   const renamed = renamedClassNames(migrations);
   const destructive = sortedUnique([...deleted, ...renamed]);
-  const unexpected = destructive.filter((name) => !BETA_FLUE_CLASSES.includes(name));
+  const unexpected = destructive.filter((name) => !EXPECTED_DELETED_CLASSES.includes(name));
   if (unexpected.length) failures.push(`unexpected deleted/renamed classes: ${unexpected.join(', ')}`);
   const protectedDestruction = destructive.filter((name) => PROTECTED_CLASSES.has(name));
   if (protectedDestruction.length) {
     failures.push(`protected classes marked deleted/renamed: ${protectedDestruction.join(', ')}`);
   }
-  if (!sameMembers(deleted, BETA_FLUE_CLASSES) || renamed.length > 0) {
-    failures.push('the exact four-class beta deletion set with no class renames');
+  if (!sameMembers(deleted, EXPECTED_DELETED_CLASSES) || renamed.length > 0) {
+    failures.push('the exact beta and retired AuthGuard deletion set with no class renames');
   }
   const reset = migrations.find((migration) => migration.tag === 'v6');
   if (!reset || !sameMembers(reset.new_sqlite_classes ?? [], V2_AGENT_CLASSES)) {
@@ -308,6 +313,14 @@ function validateFlue2CutoverArtifact(artifact) {
   const sandboxMigration = migrations.find((migration) => migration.tag === 'v3');
   if (!sandboxMigration || !sameMembers(sandboxMigration.new_sqlite_classes ?? [], ['Sandbox'])) {
     failures.push('v3 Sandbox SQLite class');
+  }
+  const authGuardMigration = migrations.find((migration) => migration.tag === 'v7');
+  if (!authGuardMigration || !sameMembers(authGuardMigration.new_sqlite_classes ?? [], RETIRED_AUTH_CLASSES)) {
+    failures.push('v7 AuthGuard SQLite class history');
+  }
+  const authGuardRetirement = migrations.find((migration) => migration.tag === 'v8');
+  if (!authGuardRetirement || !sameMembers(authGuardRetirement.deleted_classes ?? [], RETIRED_AUTH_CLASSES)) {
+    failures.push('v8 AuthGuard retirement');
   }
 
   const bindings = config.durable_objects?.bindings ?? [];
