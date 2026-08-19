@@ -9,20 +9,31 @@ import {
   getConfigStore,
   getIdentityStore,
   getManagementStore,
+  getMemoryStateStore,
+  getRoutineStore,
   getSettingsStore,
+  getUsageStore,
+  getWorkStore,
+  isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import { describeProviderKeySources } from '../config/provider-keys.ts';
+import {
+  deleteProviderApiKey,
+  describeProviderKeySources,
+} from '../config/provider-keys.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import {
   applyWorkspaceChangesValibotSchema,
   confirmWorkspaceChangeValibotSchema,
   getOperationValibotSchema,
   inspectWorkspaceValibotSchema,
+  inspectMemoryValibotSchema,
+  inspectRoutinesValibotSchema,
   revokeSetupLinkValibotSchema,
   undoWorkspaceChangeValibotSchema,
 } from './schemas.ts';
 import { WorkspaceManagementService } from './service.ts';
+import { resolveEligibleSlackInvitee } from './slack-directory.ts';
 import {
   invokeWorkspaceManagementTool,
   workspaceManagementToolDescription,
@@ -74,6 +85,26 @@ export function useWorkspaceManagementSlackTools(
     async run({ data }) {
       return slackToolOutput(await invokeLiveSlackTool(
         signal, resolvePlatformEnv, 'inspect_workspace', data,
+      ));
+    },
+  });
+  useTool({
+    name: 'inspect_memory',
+    description: workspaceManagementToolDescription('inspect_memory'),
+    input: inspectMemoryValibotSchema,
+    async run({ data }) {
+      return slackToolOutput(await invokeLiveSlackTool(
+        signal, resolvePlatformEnv, 'inspect_memory', data,
+      ));
+    },
+  });
+  useTool({
+    name: 'inspect_routines',
+    description: workspaceManagementToolDescription('inspect_routines'),
+    input: inspectRoutinesValibotSchema,
+    async run({ data }) {
+      return slackToolOutput(await invokeLiveSlackTool(
+        signal, resolvePlatformEnv, 'inspect_routines', data,
       ));
     },
   });
@@ -207,9 +238,17 @@ async function invokeLiveSlackTool<TName extends WorkspaceManagementToolName>(
     identity,
     config: getConfigStore(env),
     management: getManagementStore(env),
+    memory: getMemoryStateStore(env),
+    routines: getRoutineStore(env),
+    work: getWorkStore(env),
+    routineSchedulingAvailable: isCloudflareTarget(),
     setupBaseUrl: () => resolveSlackPublicUrl(env, settings),
     providerCredentialSource: async (providerId) =>
       (await describeProviderKeySources(env, settings))[providerId],
+    removeProviderCredential: async (providerId) =>
+      (await deleteProviderApiKey(providerId, env, settings, getUsageStore(env))).source,
+    resolveSlackInvitee: (slackUserId) =>
+      resolveEligibleSlackInvitee(slackUserId, env, identity),
   });
   return invokeSlackWorkspaceManagementTool({ signal, identity, service, name, args });
 }

@@ -10,7 +10,21 @@ import {
 } from '../config/errors.ts';
 import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
 import type { ChannelConfig, CustomAgentConfig } from '../config/types.ts';
-import type { IdentityStore, Membership } from '../identity/types.ts';
+import type { IdentityStore, Invitation, Membership } from '../identity/types.ts';
+import { ownerMemoryStoreId } from '../memory/ids.ts';
+import type {
+  MemoryOwnerRef,
+  MemoryStateStore,
+  OwnerMemoryEntry,
+} from '../memory/types.ts';
+import { validateMemoryContent } from '../memory/validation.ts';
+import {
+  normalizeOneTimeSchedule,
+  normalizeRoutineSchedule,
+} from '../routines/schedule.ts';
+import { RoutineService } from '../routines/service.ts';
+import type { RoutineDefinition, RoutineStore } from '../routines/types.ts';
+import type { WorkStore } from '../work/types.ts';
 import {
   canonicalJson,
   effectiveConfigurationRevision,
@@ -27,12 +41,15 @@ import {
   type LiveManagementActor,
   type ManagementApplyResult,
   type ManagementItemOutcome,
+  type ManagementMemorySnapshot,
   type ManagementObjectRef,
   type ManagementOperation,
   type ManagementOperationResult,
   type ManagementPreparedItem,
   type ManagementProposalRecord,
   type ManagementRequestProgress,
+  type ManagementRoutineInspectionInput,
+  type ManagementRoutineSnapshot,
   type ManagementSetupPublicStatus,
   type ManagementSetupRecord,
   type ManagementSetupTarget,
@@ -42,6 +59,10 @@ import {
 
 const PROPOSAL_TTL_MS = 15 * 60_000;
 const SETUP_TTL_MS = 24 * 60 * 60_000;
+const INVITATION_TTL_MS = 24 * 60 * 60_000;
+const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
+type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];
+type ManagedProviderSource = 'env' | 'stored' | 'missing';
 
 export interface WorkspaceManagementServiceInput {
   identity: Pick<
@@ -49,6 +70,14 @@ export interface WorkspaceManagementServiceInput {
     | 'getMembership'
     | 'getMembershipAccessOverlay'
     | 'updateMembershipAuthority'
+    | 'listMemberships'
+    | 'listExternalIdentities'
+    | 'listInvitations'
+    | 'getUser'
+    | 'getOrganization'
+    | 'createInvitation'
+    | 'resendInvitation'
+    | 'revokeInvitation'
   >;
   config: Pick<
     ConfigStore,
@@ -63,12 +92,33 @@ export interface WorkspaceManagementServiceInput {
     | 'putChannelPlacement'
     | 'getAssignment'
     | 'getAgentReferences'
+    | 'listSlackIdentities'
+    | 'getSlackIdentityReferences'
   >;
   management: ManagementStore;
+  memory?: Pick<
+    MemoryStateStore,
+    | 'getOwner'
+    | 'listOwnerEntries'
+    | 'getOwnerEntry'
+    | 'createOwnerEntry'
+    | 'updateOwnerEntry'
+    | 'forgetOwnerEntry'
+  >;
+  routines?: RoutineStore;
+  work?: Pick<WorkStore, 'getWork' | 'getBinding'>;
+  routineSchedulingAvailable?: boolean | (() => boolean | Promise<boolean>);
   setupBaseUrl?: string | (() => string | undefined | Promise<string | undefined>);
   providerCredentialSource?: (
-    providerId: 'anthropic' | 'openai' | 'openrouter',
-  ) => Promise<'env' | 'stored' | 'missing'>;
+    providerId: ManagedProviderId,
+  ) => Promise<ManagedProviderSource>;
+  removeProviderCredential?: (
+    providerId: ManagedProviderId,
+  ) => Promise<ManagedProviderSource>;
+  resolveSlackInvitee?: (slackUserId: string) => Promise<{
+    slackTeamId: string;
+    displayName: string | null;
+  }>;
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
@@ -78,6 +128,7 @@ interface ImmediateMutation {
   changed: ManagementObjectRef[];
   inverse?: ManagementOperation;
   resultingRevisions: Record<string, number>;
+  handoffUrl?: string;
 }
 
 /**
@@ -99,8 +150,68 @@ export class WorkspaceManagementService {
   async inspectWorkspace(
     context: ApplyWorkspaceChangesInput['context'],
   ): Promise<ManagementWorkspaceSnapshot> {
-    await this.requireLiveActor(context);
-    return this.snapshot(context.organizationId);
+    const actor = await this.requireLiveActor(context);
+    return this.snapshot(context.organizationId, actor.role === 'owner');
+  }
+
+  async inspectMemory(
+    context: ApplyWorkspaceChangesInput['context'],
+    ownerRef: MemoryOwnerRef,
+  ): Promise<ManagementMemorySnapshot> {
+    const actor = await this.requireLiveActor(context);
+    const owner = await this.requireMemoryOwner(actor, ownerRef);
+    const entries = await this.stores.memory!.listOwnerEntries(ownerRef);
+    return {
+      owner: {
+        workspaceId: owner.workspaceId,
+        ownerKind: owner.ownerKind,
+        ownerId: owner.ownerId,
+        storeId: owner.storeId,
+        lifecycle: owner.lifecycle,
+        resetEpoch: owner.resetEpoch,
+      },
+      entries: entries.map((entry) => ({
+        ...entry,
+        body: entry.status === 'forgotten' ? null : entry.body,
+      })),
+    };
+  }
+
+  async inspectRoutines(
+    context: ApplyWorkspaceChangesInput['context'],
+    input: ManagementRoutineInspectionInput,
+  ): Promise<ManagementRoutineSnapshot> {
+    const actor = await this.requireLiveActor(context);
+    await this.requireWorkspaceScope(actor, input.workspaceId);
+    if (!this.stores.routines) {
+      throw new ManagementError('invalid_request', 'Routine management is unavailable.');
+    }
+    let routines = await this.stores.routines.listRoutines(input.workspaceId, input.channelId);
+    if (input.routineId) routines = routines.filter(({ id }) => id === input.routineId);
+    return {
+      routines: await Promise.all(routines.map(async (routine) => {
+        const contentAccess = await routineContentAccess(this.stores.work, routine);
+        const readable = contentAccess === 'public';
+        return {
+          id: routine.id,
+          workspaceId: routine.workspaceId,
+          channelId: routine.channelId,
+          creatorUserId: routine.creatorUserId,
+          state: routine.deletedAt === null ? routine.state : 'deleted',
+          version: routine.version,
+          name: readable ? routine.name : null,
+          description: readable ? routine.description : null,
+          taskText: readable && routine.deletedAt === null ? routine.taskText : null,
+          triggerKind: routine.triggerKind,
+          scheduleInput: routine.scheduleInput,
+          scheduleJson: routine.scheduleJson,
+          timezone: routine.timezone,
+          outputPolicy: routine.outputPolicy,
+          nextRunAt: routine.nextRunAt,
+          contentAccess,
+        };
+      })),
+    };
   }
 
   async applyWorkspaceChanges(input: ApplyWorkspaceChangesInput): Promise<ManagementApplyResult> {
@@ -169,6 +280,7 @@ export class WorkspaceManagementService {
             operationKind: operation.kind,
             disposition: 'confirmation_required',
             proposalId: proposal.proposalId,
+            warning: proposal.summary,
           });
         } else if (operation.kind === 'request_setup') {
           const setup = await this.issueSetup(actor, operation);
@@ -180,12 +292,18 @@ export class WorkspaceManagementService {
             setupUrl: setup.url,
           });
         } else {
-          const mutation = await this.executeProgressiveItem(request.operationId, operation, progress);
+          const mutation = await this.executeProgressiveItem(
+            actor,
+            request.operationId,
+            operation,
+            progress,
+          );
           progress = appendOutcome(progress, index, {
             itemId: operation.itemId,
             operationKind: operation.kind,
             disposition: 'applied',
             changed: mutation.changed,
+            ...(mutation.handoffUrl ? { handoffUrl: mutation.handoffUrl } : {}),
           });
           if (request.operations.length === 1 && mutation.inverse) {
             await this.stores.management.putUndo({
@@ -575,10 +693,18 @@ export class WorkspaceManagementService {
     return { ...context, role: membership.role };
   }
 
-  private async snapshot(organizationId = ''): Promise<ManagementWorkspaceSnapshot> {
-    const [agents, channels] = await Promise.all([
+  private async snapshot(
+    organizationId = '',
+    includeTeam = false,
+  ): Promise<ManagementWorkspaceSnapshot> {
+    const [agents, channels, providerSources, slackIdentities] = await Promise.all([
       this.stores.config.listAgents(),
       this.stores.config.listChannels(),
+      Promise.all(MANAGED_PROVIDER_IDS.map(async (id) => [
+        id,
+        await this.stores.providerCredentialSource?.(id) ?? 'missing',
+      ] as const)),
+      this.stores.config.listSlackIdentities(),
     ]);
     const placements = await Promise.all(channels.map((channel) =>
       this.stores.config.getAssignment(channel.workspaceId, channel.channelId)));
@@ -590,25 +716,210 @@ export class WorkspaceManagementService {
         revision: channel.revision ?? 1,
       })),
     ];
+    const team = includeTeam ? await this.teamSnapshot(organizationId) : undefined;
     return {
       organizationId,
-      agents: agents.map(({ id, revision, name, enabled, model }) => ({
+      agents: agents.map(({
         id,
         revision,
         name,
+        instructions,
+        enabled,
+        model,
+        skills,
+        mcpServers,
+        apiConnections,
+        repositories,
+        slackIdentityId,
+      }) => ({
+        id,
+        revision,
+        name,
+        instructions,
         enabled,
         ...(model ? { model } : {}),
+        skills,
+        mcpServers,
+        apiConnections,
+        repositories,
+        ...(slackIdentityId ? { slackIdentityId } : {}),
       })),
       channels: channels.map((channel, index) => ({
         workspaceId: channel.workspaceId,
         channelId: channel.channelId,
         revision: channel.revision ?? 1,
         ...(channel.label ? { label: channel.label } : {}),
+        ...(channel.additionalInstructions
+          ? { additionalInstructions: channel.additionalInstructions }
+          : {}),
+        participationMode: channel.participationMode,
         lifecycle: channel.lifecycle,
         ...(placements[index] ? { agentId: placements[index]!.agentId } : {}),
       })),
+      providers: providerSources.map(([id, source]) => ({
+        id,
+        source,
+        mutable: source !== 'env',
+        affectedAgents: agents
+          .filter((agent) => modelBelongsToProvider(agent.model, id))
+          .map(({ id: agentId, name }) => ({ id: agentId, name })),
+      })),
+      slackIdentities: await Promise.all(slackIdentities.map(async (identity) => {
+        const references = await this.stores.config.getSlackIdentityReferences(identity.id);
+        return {
+          id: identity.id,
+          kind: identity.kind,
+          lifecycle: identity.lifecycle,
+          ...(identity.teamId ? { teamId: identity.teamId } : {}),
+          ...(identity.appId ? { appId: identity.appId } : {}),
+          ...(identity.botUserId ? { botUserId: identity.botUserId } : {}),
+          dmState: identity.dmState,
+          ...(identity.dmAgentId ? { dmAgentId: identity.dmAgentId } : {}),
+          credentialProvenance: identity.credentialProvenance,
+          connectionRevision: identity.connectionRevision,
+          ...(identity.observedDisplayName
+            ? { observedDisplayName: identity.observedDisplayName }
+            : {}),
+          health: identity.health,
+          agentIds: references.agentIds,
+        };
+      })),
+      ...(team ? { team } : {}),
       effectiveRevision: effectiveConfigurationRevision(refs),
     };
+  }
+
+  private async teamSnapshot(
+    organizationId: string,
+  ): Promise<NonNullable<ManagementWorkspaceSnapshot['team']>> {
+    const [memberships, bindings, invitations] = await Promise.all([
+      this.stores.identity.listMemberships(),
+      this.stores.identity.listExternalIdentities(),
+      this.stores.identity.listInvitations(),
+    ]);
+    const scopedMemberships = memberships.filter((membership) =>
+      membership.organizationId === organizationId);
+    const users = await Promise.all(scopedMemberships.map(({ userId }) =>
+      this.stores.identity.getUser(userId)));
+    const usersById = new Map(users.filter(Boolean).map((user) => [user!.id, user!]));
+    const bindingsByMembership = new Map(bindings
+      .filter((binding) => binding.organizationId === organizationId)
+      .map((binding) => [binding.membershipId, binding]));
+    const activeOwners = scopedMemberships.filter((membership) =>
+      membership.role === 'owner' && membership.status === 'active').length;
+    return {
+      soleOwnerWarning: activeOwners === 1,
+      members: scopedMemberships.map((membership) => {
+        const binding = bindingsByMembership.get(membership.id);
+        return {
+          id: membership.id,
+          userId: membership.userId,
+          displayName: usersById.get(membership.userId)?.displayName ?? null,
+          slackTeamId: binding?.slackTeamId ?? null,
+          slackUserId: binding?.slackUserId ?? null,
+          role: membership.role,
+          status: membership.status,
+          revision: membershipRevision(membership),
+        };
+      }),
+      invitations: invitations
+        .filter((invitation) => invitation.organizationId === organizationId && invitation.status === 'pending')
+        .map((invitation) => ({
+          id: invitation.id,
+          slackTeamId: invitation.slackTeamId,
+          slackUserId: invitation.slackUserId,
+          displayName: invitation.displayName,
+          role: invitation.role,
+          status: invitation.status,
+          expiresAt: invitation.expiresAt,
+          revision: invitationRevision(invitation),
+        })),
+    };
+  }
+
+  private async requireMemoryOwner(
+    actor: LiveManagementActor,
+    ownerRef: MemoryOwnerRef,
+    writable = false,
+  ) {
+    if (!this.stores.memory) {
+      throw new ManagementError('invalid_request', 'Memory management is unavailable.');
+    }
+    const organization = await this.stores.identity.getOrganization();
+    if (!organization || organization.id !== actor.organizationId ||
+        organization.slackTeamId !== ownerRef.workspaceId) {
+      throw new ManagementError('invalid_request', 'The memory owner was not found.');
+    }
+    const owner = await this.stores.memory.getOwner(ownerMemoryStoreId(ownerRef));
+    if (!owner || owner.workspaceId !== ownerRef.workspaceId ||
+        owner.ownerKind !== ownerRef.ownerKind || owner.ownerId !== ownerRef.ownerId ||
+        (writable && owner.lifecycle !== 'active')) {
+      throw new ManagementError('invalid_request', 'The memory owner was not found.');
+    }
+    return owner;
+  }
+
+  private async requireWorkspaceScope(
+    actor: LiveManagementActor,
+    workspaceId: string,
+  ): Promise<void> {
+    const organization = await this.stores.identity.getOrganization();
+    if (!organization || organization.id !== actor.organizationId ||
+        organization.slackTeamId !== workspaceId) {
+      throw new ManagementError('invalid_request', 'The workspace was not found.');
+    }
+  }
+
+  private async requireRoutineMutation(
+    actor: LiveManagementActor,
+    operation: Extract<ManagementOperation, {
+      kind: 'save_routine' | 'control_routine' | 'delete_routine';
+    }>,
+  ): Promise<void> {
+    if (!this.stores.routines) {
+      throw new ManagementError('invalid_request', 'Routine management is unavailable.');
+    }
+    await this.requireWorkspaceScope(actor, operation.workspaceId);
+    const channel = await this.stores.config.getChannel(operation.workspaceId, operation.channelId);
+    if (!channel || channel.lifecycle !== 'active') {
+      throw new ManagementError('invalid_request', 'The routine Channel was not found.');
+    }
+    if (operation.kind === 'save_routine') {
+      const available = typeof this.stores.routineSchedulingAvailable === 'function'
+        ? await this.stores.routineSchedulingAvailable()
+        : this.stores.routineSchedulingAvailable ?? true;
+      if (!available) {
+        throw new ManagementError('invalid_request', 'Routine scheduling is unavailable on this deployment.');
+      }
+    }
+    if (operation.kind === 'save_routine' && !operation.routineId) {
+      if (operation.expectedVersion !== undefined) {
+        throw new ManagementError('invalid_request', 'A new routine cannot have an expected version.');
+      }
+      return;
+    }
+    const routineId = operation.routineId;
+    if (!routineId) throw new ManagementError('invalid_request', 'The routine was not found.');
+    const routine = await this.stores.routines.getRoutine(routineId);
+    if (!routine || routine.deletedAt !== null || routine.workspaceId !== operation.workspaceId ||
+        routine.channelId !== operation.channelId || routine.version !== operation.expectedVersion) {
+      throw new ManagementError('revision_conflict', 'The routine changed.');
+    }
+  }
+
+  private async requireMemoryEntry(
+    actor: LiveManagementActor,
+    ownerRef: MemoryOwnerRef,
+    entryId: string,
+    writable = false,
+  ): Promise<OwnerMemoryEntry> {
+    const owner = await this.requireMemoryOwner(actor, ownerRef, writable);
+    const entry = await this.stores.memory!.getOwnerEntry(entryId);
+    if (!entry || entry.storeId !== owner.storeId || entry.workspaceId !== owner.workspaceId ||
+        entry.ownerKind !== owner.ownerKind || entry.ownerId !== owner.ownerId) {
+      throw new ManagementError('invalid_request', 'The memory entry was not found.');
+    }
+    return entry;
   }
 
   private async resultFor(
@@ -637,6 +948,43 @@ export class WorkspaceManagementService {
     clientRefs: Map<string, string>,
   ) {
     if (operation.kind === 'update_member') return { actor, operation };
+    if (operation.kind === 'invite_member') return { actor, operation };
+    if (operation.kind === 'revoke_invitation') {
+      const invitation = (await this.stores.identity.listInvitations())
+        .find(({ id }) => id === operation.invitationId);
+      if (!invitation || invitation.organizationId !== actor.organizationId ||
+          invitation.status !== 'pending' ||
+          invitationRevision(invitation) !== operation.expectedRevision) {
+        throw new ManagementError('invalid_request', 'The invitation is unavailable.');
+      }
+      return { actor, operation };
+    }
+    if (operation.kind === 'create_memory_entry') {
+      await this.requireMemoryOwner(actor, operation.owner, true);
+      return { actor, operation };
+    }
+    if (operation.kind === 'update_memory_entry' || operation.kind === 'forget_memory_entry') {
+      const entry = await this.requireMemoryEntry(actor, operation.owner, operation.entryId, true);
+      if (entry.version !== operation.expectedVersion || entry.status === 'forgotten') {
+        throw new ManagementError('revision_conflict', 'The memory entry changed.');
+      }
+      return { actor, operation };
+    }
+    if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+        operation.kind === 'delete_routine') {
+      await this.requireRoutineMutation(actor, operation);
+      return { actor, operation };
+    }
+    if (operation.kind === 'remove_provider_credential') {
+      const source = await this.stores.providerCredentialSource?.(operation.providerId) ?? 'missing';
+      if (source === 'env') {
+        throw new ManagementError('invalid_request', 'Deployment-provided credentials are read-only.');
+      }
+      if (source !== 'stored') {
+        throw new ManagementError('invalid_request', 'No stored provider credential is available to remove.');
+      }
+      return { actor, operation };
+    }
     if (operation.kind === 'request_setup') {
       const setup = await this.resolveSetupTarget(operation.target);
       return {
@@ -691,6 +1039,9 @@ export class WorkspaceManagementService {
     reason: string,
   ): Promise<ManagementProposalRecord> {
     const at = this.now();
+    const summary = operation.kind === 'remove_provider_credential'
+      ? await this.providerRemovalSummary(operation.providerId, reason)
+      : proposalSummary(operation, reason);
     return this.stores.management.putProposal({
       proposalId: `proposal_${this.randomId()}`,
       organizationId: actor.organizationId,
@@ -698,14 +1049,208 @@ export class WorkspaceManagementService {
       actorMembershipId: actor.membershipId,
       originKey: managementOriginKey(actor.origin),
       operation,
-      summary: proposalSummary(operation, reason),
+      summary,
       targetRevisions: await this.targetRevisions(operation),
       expiresAt: at + PROPOSAL_TTL_MS,
       at,
     });
   }
 
+  private async providerRemovalSummary(
+    providerId: ManagedProviderId,
+    reason: string,
+  ): Promise<string> {
+    const affected = (await this.stores.config.listAgents())
+      .filter((agent) => modelBelongsToProvider(agent.model, providerId))
+      .map(({ id, name }) => `${name} (${id})`);
+    return `${reason}:remove_provider_credential:provider:${providerId}:affected=${
+      affected.length ? affected.join(', ') : 'none'
+    }`;
+  }
+
+  private async issueMemberInvitation(
+    actor: LiveManagementActor,
+    slackUserId: string,
+  ): Promise<ImmediateMutation> {
+    if (!this.stores.resolveSlackInvitee) {
+      throw new ManagementError('invalid_request', 'Slack member invitation is unavailable.');
+    }
+    const [organization, invitee, bindings, memberships, invitations] = await Promise.all([
+      this.stores.identity.getOrganization(),
+      this.stores.resolveSlackInvitee(slackUserId),
+      this.stores.identity.listExternalIdentities(),
+      this.stores.identity.listMemberships(),
+      this.stores.identity.listInvitations(),
+    ]);
+    if (!organization || organization.id !== actor.organizationId || !organization.slackTeamId ||
+        invitee.slackTeamId !== organization.slackTeamId) {
+      throw new ManagementError('invalid_request', 'The Slack member is unavailable.');
+    }
+    const statusByMembership = new Map(memberships.map((membership) =>
+      [membership.id, membership.status]));
+    const alreadyBound = bindings.some((binding) =>
+      binding.organizationId === actor.organizationId &&
+      binding.slackTeamId === organization.slackTeamId &&
+      binding.slackUserId === slackUserId &&
+      statusByMembership.get(binding.membershipId) !== 'removed');
+    if (alreadyBound) {
+      throw new ManagementError('invalid_request', 'The Slack member already belongs to Chickpea.');
+    }
+    const rawCapability = this.randomCapability();
+    if (!/^[A-Za-z0-9_-]{43}$/.test(rawCapability)) {
+      throw new ManagementError('invalid_request', 'Invitation capability generation failed.');
+    }
+    const at = this.now();
+    const existing = invitations.find((invitation) =>
+      invitation.organizationId === actor.organizationId &&
+      invitation.slackTeamId === organization.slackTeamId &&
+      invitation.slackUserId === slackUserId &&
+      invitation.status === 'pending');
+    const invitation = existing
+      ? await this.stores.identity.resendInvitation({
+          invitationId: existing.id,
+          locatorHash: invitationDigest(rawCapability),
+          expiresAt: at + INVITATION_TTL_MS,
+        })
+      : await this.stores.identity.createInvitation({
+          organizationId: actor.organizationId,
+          slackTeamId: organization.slackTeamId,
+          slackUserId,
+          displayName: invitee.displayName,
+          role: 'admin',
+          locatorHash: invitationDigest(rawCapability),
+          inviterMembershipId: actor.membershipId,
+          expiresAt: at + INVITATION_TTL_MS,
+        });
+    const baseUrl = await this.resolveSetupBaseUrl();
+    const url = new URL('/auth/slack/invite', baseUrl);
+    url.hash = `invite=${encodeURIComponent(rawCapability)}`;
+    const revision = invitationRevision(invitation);
+    return {
+      changed: [{ kind: 'invitation', id: invitation.id, revision }],
+      resultingRevisions: { [`invitation:${invitation.id}`]: revision },
+      handoffUrl: url.href,
+    };
+  }
+
+  private async executeMemoryMutation(
+    actor: LiveManagementActor,
+    mutationId: string,
+    operation: Extract<ManagementOperation, {
+      kind: 'create_memory_entry' | 'update_memory_entry';
+    }>,
+  ): Promise<ImmediateMutation> {
+    try {
+      if (operation.kind === 'create_memory_entry') {
+        const owner = await this.requireMemoryOwner(actor, operation.owner, true);
+        const content = validateMemoryContent(operation.entry);
+        const idempotencyKey = `management:memory:create:${mutationId}:${operation.itemId}`;
+        const entryId = `mem_${createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32)}`;
+        const entry = await this.stores.memory!.createOwnerEntry({
+          entryId,
+          storeId: owner.storeId,
+          workspaceId: owner.workspaceId,
+          slug: operation.entry.slug,
+          slugSeed: operation.entry.slug,
+          ...content,
+          actorId: actor.userId,
+          actorClass: 'operator',
+          writeOrigin: actor.origin.kind === 'slack'
+            ? { kind: 'slack_channel', channelId: actor.origin.channelId }
+            : { kind: 'admin' },
+          idempotencyKey,
+        });
+        return memoryMutation(entry);
+      }
+      await this.requireMemoryEntry(actor, operation.owner, operation.entryId, true);
+      const content = validateMemoryContent(operation);
+      const entry = await this.stores.memory!.updateOwnerEntry({
+        entryId: operation.entryId,
+        expectedVersion: operation.expectedVersion,
+        ...content,
+        actorId: actor.userId,
+        actorClass: 'operator',
+        idempotencyKey: `management:memory:update:${mutationId}:${operation.itemId}`,
+      });
+      return memoryMutation(entry);
+    } catch (error) {
+      if (error instanceof ManagementError) throw error;
+      throw new ManagementError('revision_conflict', 'The memory mutation could not be applied.');
+    }
+  }
+
+  private async executeRoutineMutation(
+    actor: LiveManagementActor,
+    mutationId: string,
+    operation: Extract<ManagementOperation, {
+      kind: 'save_routine' | 'control_routine';
+    }>,
+  ): Promise<ImmediateMutation> {
+    await this.requireRoutineMutation(actor, operation);
+    const service = new RoutineService(this.stores.routines!, {
+      now: this.now,
+      routineId: () => `routine_${createHash('sha256')
+        .update(`${mutationId}:${operation.itemId}`)
+        .digest('hex')
+        .slice(0, 32)}`,
+    });
+    try {
+      if (operation.kind === 'control_routine') {
+        return routineMutation(await service.control({
+          routineId: operation.routineId,
+          expectedVersion: operation.expectedVersion,
+          action: operation.action,
+          actorId: actor.userId,
+          actorClass: 'operator',
+          reasonCode: 'workspace_management',
+          idempotencyKey: `management:routine:control:${mutationId}:${operation.itemId}`,
+        }));
+      }
+      const projection = operation.schedule.kind === 'cron'
+        ? normalizeRoutineSchedule(operation.schedule.expression, operation.timezone, this.now())
+        : normalizeOneTimeSchedule(operation.schedule.localDateTime, operation.timezone, this.now());
+      const definition = {
+        name: operation.name,
+        description: operation.description,
+        taskText: operation.taskText,
+        triggerKind: operation.schedule.kind === 'cron' ? 'schedule' as const : 'once' as const,
+        scheduleInput: operation.schedule.kind === 'cron'
+          ? operation.schedule.expression
+          : operation.schedule.localDateTime,
+        scheduleJson: projection.scheduleJson,
+        timezone: operation.timezone,
+        outputPolicy: operation.outputPolicy,
+        authorityMode: 'live_channel_v1' as const,
+      };
+      const request = operation.routineId
+        ? {
+            action: 'edit' as const,
+            routineId: operation.routineId,
+            ...(operation.expectedVersion !== undefined
+              ? { expectedVersion: operation.expectedVersion }
+              : {}),
+            definition,
+          }
+        : { action: 'create' as const, definition };
+      return routineMutation(await service.save({
+        ...request,
+        actorId: actor.userId,
+        actorClass: 'operator',
+        workspaceId: operation.workspaceId,
+        channelId: operation.channelId,
+        nextRunAt: projection.nextRunAt,
+        projectedDailyStarts: projection.projectedDailyStarts,
+        reservations: projection.reservations,
+        sourceVisibility: 'unknown',
+      }, `management:routine:save:${mutationId}:${operation.itemId}`));
+    } catch (error) {
+      if (error instanceof ManagementError) throw error;
+      throw new ManagementError('revision_conflict', 'The routine mutation could not be applied.');
+    }
+  }
+
   private async executeProgressiveItem(
+    actor: LiveManagementActor,
     requestId: string,
     operation: ManagementOperation,
     progress: ManagementRequestProgress,
@@ -721,7 +1266,7 @@ export class WorkspaceManagementService {
       );
     }
     const reconciled = await this.reconcilePrepared(prepared);
-    return reconciled ?? this.executeImmediate(operation, prepared);
+    return reconciled ?? this.executeImmediate(actor, requestId, operation, prepared);
   }
 
   private async prepareItem(operation: ManagementOperation): Promise<ManagementPreparedItem> {
@@ -825,6 +1370,8 @@ export class WorkspaceManagementService {
   }
 
   private async executeImmediate(
+    actor: LiveManagementActor,
+    mutationId: string,
     operation: ManagementOperation,
     prepared: ManagementPreparedItem,
   ): Promise<ImmediateMutation> {
@@ -859,6 +1406,14 @@ export class WorkspaceManagementService {
         });
         return mutationForChannel(placed.channel, prepared.inverse);
       }
+      case 'invite_member':
+        return this.issueMemberInvitation(actor, operation.slackUserId);
+      case 'create_memory_entry':
+      case 'update_memory_entry':
+        return this.executeMemoryMutation(actor, mutationId, operation);
+      case 'save_routine':
+      case 'control_routine':
+        return this.executeRoutineMutation(actor, mutationId, operation);
       default:
         throw new ManagementError('invalid_request', 'This operation cannot apply immediately.');
     }
@@ -956,6 +1511,82 @@ export class WorkspaceManagementService {
         },
       };
     }
+    if (operation.kind === 'remove_provider_credential') {
+      if (!this.stores.removeProviderCredential) {
+        throw new ManagementError('invalid_request', 'Provider credential removal is unavailable.');
+      }
+      const source = await this.stores.removeProviderCredential(operation.providerId);
+      const changed = [{
+        kind: 'provider' as const,
+        id: operation.providerId,
+        revision: providerRevision(source),
+      }];
+      return {
+        changed,
+        resultingRevisions: { [`provider:${operation.providerId}`]: providerRevision(source) },
+      };
+    }
+    if (operation.kind === 'revoke_invitation') {
+      const current = (await this.stores.identity.listInvitations())
+        .find(({ id }) => id === operation.invitationId);
+      if (!current || current.organizationId !== actor.organizationId || current.status !== 'pending') {
+        throw new ManagementError('proposal_stale', 'The invitation changed.');
+      }
+      const invitation = await this.stores.identity.revokeInvitation(operation.invitationId);
+      const revision = invitationRevision(invitation);
+      return {
+        changed: [{ kind: 'invitation', id: invitation.id, revision }],
+        resultingRevisions: { [`invitation:${invitation.id}`]: revision },
+      };
+    }
+    if (operation.kind === 'forget_memory_entry') {
+      await this.requireMemoryEntry(actor, operation.owner, operation.entryId, true);
+      try {
+        const entry = await this.stores.memory!.forgetOwnerEntry({
+          entryId: operation.entryId,
+          expectedVersion: operation.expectedVersion,
+          actorId: actor.userId,
+          actorClass: 'operator',
+          reasonCode: 'admin_delete',
+          idempotencyKey: `management:memory:forget:${proposalId}:${operation.itemId}`,
+        });
+        return memoryMutation(entry);
+      } catch (error) {
+        if (error instanceof ManagementError) throw error;
+        throw new ManagementError('revision_conflict', 'The memory entry changed.');
+      }
+    }
+    if (operation.kind === 'delete_routine') {
+      await this.requireRoutineMutation(actor, operation);
+      const seed = createHash('sha256').update(proposalId).digest('hex');
+      const service = new RoutineService(this.stores.routines!, {
+        now: this.now,
+        confirmationId: () => `rconfirm_${seed.slice(0, 32)}`,
+        token: () => seed.slice(0, 48),
+      });
+      try {
+        const confirmation = await service.createConfirmation({
+          action: 'delete',
+          routineId: operation.routineId,
+          expectedVersion: operation.expectedVersion,
+          actorId: actor.userId,
+          actorClass: 'operator',
+          workspaceId: operation.workspaceId,
+          channelId: operation.channelId,
+        });
+        return routineMutation(await service.confirm({
+          token: confirmation.token,
+          actorId: actor.userId,
+          workspaceId: operation.workspaceId,
+          channelId: operation.channelId,
+          previewHash: confirmation.previewHash,
+          idempotencyKey: `management:routine:delete:${proposalId}:${operation.itemId}`,
+        }));
+      } catch (error) {
+        if (error instanceof ManagementError) throw error;
+        throw new ManagementError('revision_conflict', 'The routine changed.');
+      }
+    }
     if (operation.kind === 'update_agent' && operation.patch.enabled === false) {
       const current = await this.stores.config.getAgent(operation.agentId);
       const references = await this.stores.config.getAgentReferences(operation.agentId);
@@ -994,11 +1625,37 @@ export class WorkspaceManagementService {
       };
     }
     const prepared = await this.prepareItem(operation);
-    return this.executeImmediate(operation, prepared);
+    return this.executeImmediate(actor, proposalId, operation, prepared);
   }
 
   private async targetRevisions(operation: ManagementOperation): Promise<Record<string, number>> {
     if (operation.kind === 'create_agent') return {};
+    if (operation.kind === 'invite_member') return {};
+    if (operation.kind === 'create_memory_entry') return {};
+    if (operation.kind === 'update_memory_entry' || operation.kind === 'forget_memory_entry') {
+      const entry = await this.stores.memory?.getOwnerEntry(operation.entryId);
+      return { [`memory:${operation.entryId}`]: entry?.version ?? 0 };
+    }
+    if (operation.kind === 'save_routine' && !operation.routineId) return {};
+    if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+        operation.kind === 'delete_routine') {
+      const routineId = operation.routineId!;
+      const routine = await this.stores.routines?.getRoutine(routineId);
+      return { [`routine:${routineId}`]: routine?.version ?? 0 };
+    }
+    if (operation.kind === 'revoke_invitation') {
+      const invitation = (await this.stores.identity.listInvitations())
+        .find(({ id }) => id === operation.invitationId);
+      return {
+        [`invitation:${operation.invitationId}`]: invitation
+          ? invitationRevision(invitation)
+          : 0,
+      };
+    }
+    if (operation.kind === 'remove_provider_credential') {
+      const source = await this.stores.providerCredentialSource?.(operation.providerId) ?? 'missing';
+      return { [`provider:${operation.providerId}`]: providerRevision(source) };
+    }
     if (operation.kind === 'request_setup') {
       const setup = await this.resolveSetupTarget(operation.target);
       return setup.target.kind === 'provider_credential'
@@ -1073,7 +1730,19 @@ export class WorkspaceManagementService {
       const source = await this.stores.providerCredentialSource?.(
         providerId as 'anthropic' | 'openai' | 'openrouter',
       ) ?? 'missing';
-      return source === 'stored' ? 1 : 0;
+      return providerRevision(source);
+    }
+    if (key.startsWith('invitation:')) {
+      const invitationId = key.slice('invitation:'.length);
+      const invitation = (await this.stores.identity.listInvitations())
+        .find(({ id }) => id === invitationId);
+      return invitation ? invitationRevision(invitation) : 0;
+    }
+    if (key.startsWith('memory:')) {
+      return (await this.stores.memory?.getOwnerEntry(key.slice('memory:'.length)))?.version ?? 0;
+    }
+    if (key.startsWith('routine:')) {
+      return (await this.stores.routines?.getRoutine(key.slice('routine:'.length)))?.version ?? 0;
     }
     throw new ManagementError('invalid_request', 'Unknown revision target.');
   }
@@ -1095,6 +1764,31 @@ export class WorkspaceManagementService {
           id: membership.id,
           revision: membershipRevision(membership),
         }];
+      }
+    } else if (operation.kind === 'remove_provider_credential') {
+      const source = await this.stores.providerCredentialSource?.(operation.providerId) ?? 'missing';
+      if (source === 'missing') {
+        changed = [{ kind: 'provider', id: operation.providerId, revision: providerRevision(source) }];
+      }
+    } else if (operation.kind === 'revoke_invitation') {
+      const invitation = (await this.stores.identity.listInvitations())
+        .find(({ id }) => id === operation.invitationId);
+      if (invitation?.status === 'revoked') {
+        changed = [{
+          kind: 'invitation',
+          id: invitation.id,
+          revision: invitationRevision(invitation),
+        }];
+      }
+    } else if (operation.kind === 'forget_memory_entry') {
+      const entry = await this.stores.memory?.getOwnerEntry(operation.entryId);
+      if (entry?.status === 'forgotten') {
+        changed = [{ kind: 'memory', id: entry.entryId, revision: entry.version }];
+      }
+    } else if (operation.kind === 'delete_routine') {
+      const routine = await this.stores.routines?.getRoutine(operation.routineId);
+      if (routine && routine.deletedAt !== null) {
+        changed = [{ kind: 'routine', id: routine.id, revision: routine.version }];
       }
     } else if (operation.kind === 'update_agent') {
       const current = await optionalAgent(this.stores.config, operation.agentId);
@@ -1283,6 +1977,19 @@ function agentPatchMatches(agent: CustomAgentConfig, patch: ConfigAgentPatch): b
 function proposalSummary(operation: ManagementOperation, reason: string): string {
   const target = operation.kind === 'update_member'
     ? operation.membershipId
+    : operation.kind === 'remove_provider_credential'
+      ? `provider:${operation.providerId}`
+    : operation.kind === 'invite_member'
+      ? `slack:${operation.slackUserId}`
+    : operation.kind === 'revoke_invitation'
+      ? `invitation:${operation.invitationId}`
+    : operation.kind === 'create_memory_entry'
+      ? `memory-owner:${operation.owner.ownerKind}:${operation.owner.ownerId}`
+    : operation.kind === 'update_memory_entry' || operation.kind === 'forget_memory_entry'
+      ? `memory:${operation.entryId}`
+    : operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+        operation.kind === 'delete_routine'
+      ? `routine:${operation.routineId ?? operation.channelId}`
     : operation.kind === 'put_channel'
       ? channelKey(operation.channel.workspaceId, operation.channel.channelId)
       : operation.kind === 'place_agent'
@@ -1307,10 +2014,74 @@ function providerLabel(providerId: 'anthropic' | 'openai' | 'openrouter'): strin
   return 'Anthropic';
 }
 
+function providerRevision(source: ManagedProviderSource): number {
+  if (source === 'stored') return 1;
+  if (source === 'env') return 2;
+  return 0;
+}
+
+function invitationRevision(invitation: Invitation): number {
+  let hash = 2_166_136_261;
+  for (const character of `${invitation.id}:${invitation.status}:${invitation.expiresAt}:${invitation.updatedAt}`) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return hash >>> 0;
+}
+
+function invitationDigest(capability: string): string {
+  return createHash('sha256').update(capability).digest('hex');
+}
+
+function memoryMutation(entry: OwnerMemoryEntry): ImmediateMutation {
+  return {
+    changed: [{ kind: 'memory', id: entry.entryId, revision: entry.version }],
+    resultingRevisions: { [`memory:${entry.entryId}`]: entry.version },
+  };
+}
+
+function routineMutation(routine: RoutineDefinition): ImmediateMutation {
+  return {
+    changed: [{ kind: 'routine', id: routine.id, revision: routine.version }],
+    resultingRevisions: { [`routine:${routine.id}`]: routine.version },
+  };
+}
+
+async function routineContentAccess(
+  store: Pick<WorkStore, 'getWork' | 'getBinding'> | undefined,
+  routine: RoutineDefinition,
+): Promise<'public' | 'private' | 'authorization_unknown'> {
+  if (!store || !routine.workId || !routine.bindingId) return 'authorization_unknown';
+  try {
+    const [work, binding] = await Promise.all([
+      store.getWork(routine.workId as Parameters<WorkStore['getWork']>[0]),
+      store.getBinding(routine.bindingId as Parameters<WorkStore['getBinding']>[0]),
+    ]);
+    if (!work || !binding || binding.workId !== work.id ||
+        work.id !== routine.workId || binding.id !== routine.bindingId) {
+      return 'authorization_unknown';
+    }
+    if (work.maximumSensitivity === 'public' && binding.sourceVisibility === 'public') {
+      return 'public';
+    }
+    return binding.sourceVisibility === 'private' ? 'private' : 'authorization_unknown';
+  } catch {
+    return 'authorization_unknown';
+  }
+}
+
+function modelBelongsToProvider(model: string | undefined, provider: ManagedProviderId): boolean {
+  return Boolean(model?.startsWith(`${provider}/`));
+}
+
 function withoutSetupCapabilities(result: ManagementApplyResult): ManagementApplyResult {
   return {
     ...result,
-    outcomes: result.outcomes.map(({ setupUrl: _setupUrl, ...outcome }) => outcome),
+    outcomes: result.outcomes.map(({
+      setupUrl: _setupUrl,
+      handoffUrl: _handoffUrl,
+      ...outcome
+    }) => outcome),
   };
 }
 
@@ -1319,7 +2090,11 @@ function withoutSetupCapabilitiesFromProgress(
 ): ManagementRequestProgress {
   return {
     ...progress,
-    outcomes: progress.outcomes.map(({ setupUrl: _setupUrl, ...outcome }) => outcome),
+    outcomes: progress.outcomes.map(({
+      setupUrl: _setupUrl,
+      handoffUrl: _handoffUrl,
+      ...outcome
+    }) => outcome),
   };
 }
 

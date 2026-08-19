@@ -5,20 +5,31 @@ import {
   getConfigStore,
   getIdentityStore,
   getManagementStore,
+  getMemoryStateStore,
+  getRoutineStore,
   getSettingsStore,
+  getUsageStore,
+  getWorkStore,
+  isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import { describeProviderKeySources } from '../config/provider-keys.ts';
+import {
+  deleteProviderApiKey,
+  describeProviderKeySources,
+} from '../config/provider-keys.ts';
 import {
   applyWorkspaceChangesZodSchema,
   confirmWorkspaceChangeZodSchema,
   getOperationZodSchema,
   inspectWorkspaceZodSchema,
+  inspectMemoryZodSchema,
+  inspectRoutinesZodSchema,
   MANAGEMENT_OPERATION_KINDS,
   revokeSetupLinkZodSchema,
   undoWorkspaceChangeZodSchema,
 } from './schemas.ts';
 import { WorkspaceManagementService } from './service.ts';
+import { resolveEligibleSlackInvitee } from './slack-directory.ts';
 import {
   invokeWorkspaceManagementTool,
   workspaceManagementToolDescription,
@@ -40,13 +51,22 @@ export function createWorkspaceManagementMcpHandler(
   setupBaseUrl?: string,
 ): McpRequestHandler {
   const settings = getSettingsStore(env);
+  const identity = getIdentityStore(env);
   const service = new WorkspaceManagementService({
-    identity: getIdentityStore(env),
+    identity,
     config: getConfigStore(env),
     management: getManagementStore(env),
+    memory: getMemoryStateStore(env),
+    routines: getRoutineStore(env),
+    work: getWorkStore(env),
+    routineSchedulingAvailable: isCloudflareTarget(),
     ...(setupBaseUrl ? { setupBaseUrl } : {}),
     providerCredentialSource: async (providerId) =>
       (await describeProviderKeySources(env, settings))[providerId],
+    removeProviderCredential: async (providerId) =>
+      (await deleteProviderApiKey(providerId, env, settings, getUsageStore(env))).source,
+    resolveSlackInvitee: (slackUserId) =>
+      resolveEligibleSlackInvitee(slackUserId, env, identity),
   });
   const handler = createMcpHandler(
     () => createWorkspaceManagementMcpServer({ principal, service }),
@@ -72,6 +92,28 @@ export function createWorkspaceManagementMcpServer(
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'inspect_workspace',
+    args,
+  )));
+
+  server.registerTool('inspect_memory', {
+    title: 'Inspect Chickpea memory',
+    description: workspaceManagementToolDescription('inspect_memory'),
+    inputSchema: inspectMemoryZodSchema,
+    annotations: { readOnlyHint: true },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'inspect_memory',
+    args,
+  )));
+
+  server.registerTool('inspect_routines', {
+    title: 'Inspect Chickpea routines',
+    description: workspaceManagementToolDescription('inspect_routines'),
+    inputSchema: inspectRoutinesZodSchema,
+    annotations: { readOnlyHint: true },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'inspect_routines',
     args,
   )));
 

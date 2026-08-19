@@ -23,10 +23,28 @@ export function classifyManagementOperation(
   if (actor.role !== 'admin' && actor.role !== 'owner') {
     return { allowed: false, reason: 'operational_access_required' };
   }
-  if (operation.kind === 'update_member') {
-    return actor.role === 'owner'
-      ? { allowed: true, posture: 'confirmation', reason: 'membership_authority_change' }
-      : { allowed: false, reason: 'owner_required' };
+  if (operation.kind === 'update_member' || operation.kind === 'invite_member' ||
+      operation.kind === 'revoke_invitation') {
+    if (actor.role !== 'owner') return { allowed: false, reason: 'owner_required' };
+    if (operation.kind === 'invite_member') {
+      return { allowed: true, posture: 'immediate', reason: 'member_invitation' };
+    }
+    return {
+      allowed: true,
+      posture: 'confirmation',
+      reason: operation.kind === 'revoke_invitation'
+        ? 'invitation_revocation'
+        : 'membership_authority_change',
+    };
+  }
+  if (operation.kind === 'remove_provider_credential') {
+    return { allowed: true, posture: 'confirmation', reason: 'provider_credential_removal' };
+  }
+  if (operation.kind === 'forget_memory_entry') {
+    return { allowed: true, posture: 'confirmation', reason: 'irreversible_memory_forget' };
+  }
+  if (operation.kind === 'delete_routine') {
+    return { allowed: true, posture: 'confirmation', reason: 'irreversible_routine_delete' };
   }
   if (operation.kind === 'delete_agent') {
     return { allowed: true, posture: 'confirmation', reason: 'agent_deletion' };

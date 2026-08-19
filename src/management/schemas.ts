@@ -8,6 +8,15 @@ export const MANAGEMENT_OPERATION_KINDS = [
   'put_channel',
   'place_agent',
   'update_member',
+  'remove_provider_credential',
+  'invite_member',
+  'revoke_invitation',
+  'create_memory_entry',
+  'update_memory_entry',
+  'forget_memory_entry',
+  'save_routine',
+  'control_routine',
+  'delete_routine',
   'request_setup',
 ] as const;
 
@@ -110,6 +119,16 @@ const zOperationBase = {
   itemId: zId,
   dependsOn: z.array(zId).max(25).optional(),
 };
+const zMemoryOwner = z.strictObject({
+  workspaceId: zId,
+  ownerKind: z.enum(['agent', 'channel']),
+  ownerId: zId,
+});
+const zMemoryType = z.enum(['fact', 'decision', 'project', 'feedback', 'preference']);
+const zRoutineSchedule = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('cron'), expression: zText(200) }),
+  z.strictObject({ kind: z.literal('once'), localDateTime: zText(64) }),
+]);
 const zSetupAgentTargetBase = {
   agentId: zId.optional(),
   agentClientRef: zId.optional(),
@@ -160,6 +179,81 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({
     ...zOperationBase,
+    kind: z.literal('remove_provider_credential'),
+    providerId: z.enum(['anthropic', 'openai', 'openrouter']),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('invite_member'),
+    slackUserId: z.string().regex(/^[A-Z][A-Z0-9]{1,63}$/),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('revoke_invitation'),
+    invitationId: zId,
+    expectedRevision: zRevision,
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('create_memory_entry'),
+    owner: zMemoryOwner,
+    entry: z.strictObject({
+      slug: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/),
+      description: z.string().max(2_000),
+      type: zMemoryType,
+      body: z.string().max(100_000),
+    }),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('update_memory_entry'),
+    owner: zMemoryOwner,
+    entryId: zId,
+    expectedVersion: z.number().int().positive(),
+    description: z.string().max(2_000),
+    type: zMemoryType,
+    body: z.string().max(100_000),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('forget_memory_entry'),
+    owner: zMemoryOwner,
+    entryId: zId,
+    expectedVersion: z.number().int().positive(),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('save_routine'),
+    workspaceId: zId,
+    channelId: zId,
+    routineId: zId.optional(),
+    expectedVersion: z.number().int().positive().optional(),
+    name: zText(200),
+    description: z.string().max(2_000),
+    taskText: zText(20_000),
+    schedule: zRoutineSchedule,
+    timezone: zText(100),
+    outputPolicy: z.enum(['post', 'post_on_change']),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('control_routine'),
+    workspaceId: zId,
+    channelId: zId,
+    routineId: zId,
+    expectedVersion: z.number().int().positive(),
+    action: z.enum(['pause', 'resume', 'disable']),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('delete_routine'),
+    workspaceId: zId,
+    channelId: zId,
+    routineId: zId,
+    expectedVersion: z.number().int().positive(),
+  }),
+  z.strictObject({
+    ...zOperationBase,
     kind: z.literal('request_setup'),
     target: zSetupTarget,
   }),
@@ -180,6 +274,12 @@ export const revokeSetupLinkZodSchema = z.strictObject({
   reissue: z.boolean().optional(),
 });
 export const inspectWorkspaceZodSchema = z.strictObject({});
+export const inspectMemoryZodSchema = zMemoryOwner;
+export const inspectRoutinesZodSchema = z.strictObject({
+  workspaceId: zId,
+  channelId: zId.optional(),
+  routineId: zId.optional(),
+});
 
 const vt = (max: number) => v.pipe(v.string(), v.minLength(1), v.maxLength(max));
 const vot = (max: number) => v.pipe(v.string(), v.maxLength(max));
@@ -275,6 +375,16 @@ const vChannel = v.strictObject({
   lifecycle: v.picklist(['active', 'archived']),
 });
 const vOperationBase = { itemId: vid, dependsOn: v.optional(va(vid, 25)) };
+const vMemoryOwner = v.strictObject({
+  workspaceId: vid,
+  ownerKind: v.picklist(['agent', 'channel']),
+  ownerId: vid,
+});
+const vMemoryType = v.picklist(['fact', 'decision', 'project', 'feedback', 'preference']);
+const vRoutineSchedule = v.variant('kind', [
+  v.strictObject({ kind: v.literal('cron'), expression: vt(200) }),
+  v.strictObject({ kind: v.literal('once'), localDateTime: vt(64) }),
+]);
 const vSetupAgentTargetBase = {
   agentId: v.optional(vid),
   agentClientRef: v.optional(vid),
@@ -325,6 +435,81 @@ export const managementOperationValibotSchema = v.variant('kind', [
   }),
   v.strictObject({
     ...vOperationBase,
+    kind: v.literal('remove_provider_credential'),
+    providerId: v.picklist(['anthropic', 'openai', 'openrouter']),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('invite_member'),
+    slackUserId: v.pipe(v.string(), v.regex(/^[A-Z][A-Z0-9]{1,63}$/)),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('revoke_invitation'),
+    invitationId: vid,
+    expectedRevision: vr,
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('create_memory_entry'),
+    owner: vMemoryOwner,
+    entry: v.strictObject({
+      slug: v.pipe(v.string(), v.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/)),
+      description: vot(2_000),
+      type: vMemoryType,
+      body: vot(100_000),
+    }),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('update_memory_entry'),
+    owner: vMemoryOwner,
+    entryId: vid,
+    expectedVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
+    description: vot(2_000),
+    type: vMemoryType,
+    body: vot(100_000),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('forget_memory_entry'),
+    owner: vMemoryOwner,
+    entryId: vid,
+    expectedVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('save_routine'),
+    workspaceId: vid,
+    channelId: vid,
+    routineId: v.optional(vid),
+    expectedVersion: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+    name: vt(200),
+    description: vot(2_000),
+    taskText: vt(20_000),
+    schedule: vRoutineSchedule,
+    timezone: vt(100),
+    outputPolicy: v.picklist(['post', 'post_on_change']),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('control_routine'),
+    workspaceId: vid,
+    channelId: vid,
+    routineId: vid,
+    expectedVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
+    action: v.picklist(['pause', 'resume', 'disable']),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('delete_routine'),
+    workspaceId: vid,
+    channelId: vid,
+    routineId: vid,
+    expectedVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  }),
+  v.strictObject({
+    ...vOperationBase,
     kind: v.literal('request_setup'),
     target: vSetupTarget,
   }),
@@ -345,3 +530,9 @@ export const revokeSetupLinkValibotSchema = v.strictObject({
   reissue: v.optional(v.boolean()),
 });
 export const inspectWorkspaceValibotSchema = v.strictObject({});
+export const inspectMemoryValibotSchema = vMemoryOwner;
+export const inspectRoutinesValibotSchema = v.strictObject({
+  workspaceId: vid,
+  channelId: v.optional(vid),
+  routineId: v.optional(vid),
+});

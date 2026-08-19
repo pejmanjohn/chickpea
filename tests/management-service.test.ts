@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityResolution } from '../src/identity/types.ts';
+import { SqliteMemoryStateStore } from '../src/memory/store.ts';
+import { SqliteRoutineStore } from '../src/routines/store.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import { ManagementError, type ManagementActorContext } from '../src/management/types.ts';
@@ -30,6 +33,12 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
 async function fixture() {
   let now = START;
   let sequence = 0;
+  let capabilitySequence = 0;
+  const providerSources = new Map<string, 'env' | 'stored' | 'missing'>([
+    ['anthropic', 'missing'],
+    ['openai', 'missing'],
+    ['openrouter', 'missing'],
+  ]);
   const identity = new SqliteIdentityStore(':memory:', { now: () => now });
   const owner = await createSlackOwner(identity, { now, suffix: 'management' });
   const invitation = await identity.createInvitation({
@@ -53,14 +62,28 @@ async function fixture() {
   });
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const management = new SqliteManagementStore(':memory:');
+  const memory = new SqliteMemoryStateStore(':memory:', () => now);
+  const routines = new SqliteRoutineStore(':memory:', () => now);
   const service = new WorkspaceManagementService({
     identity,
     config,
     management,
+    memory,
+    routines,
+    routineSchedulingAvailable: true,
     setupBaseUrl: 'http://localhost',
-    randomCapability: () => 'c'.repeat(43),
+    randomCapability: () => `${'c'.repeat(42)}${++capabilitySequence % 10}`,
     now: () => now,
     randomId: () => `id_${++sequence}`,
+    providerCredentialSource: async (providerId) => providerSources.get(providerId) ?? 'missing',
+    removeProviderCredential: async (providerId) => {
+      providerSources.set(providerId, 'missing');
+      return 'missing';
+    },
+    resolveSlackInvitee: async (slackUserId) => ({
+      slackTeamId: owner.user.slackTeamId,
+      displayName: slackUserId === 'U22222222' ? 'New Admin' : null,
+    }),
   });
   return {
     identity,
@@ -68,12 +91,19 @@ async function fixture() {
     admin,
     config,
     management,
+    memory,
+    routines,
     service,
+    setProviderSource: (providerId: string, source: 'env' | 'stored' | 'missing') => {
+      providerSources.set(providerId, source);
+    },
     tick: (milliseconds = 1) => { now += milliseconds; },
     close: () => {
       identity.close();
       config.close();
       management.close();
+      memory.close();
+      routines.close();
     },
   };
 }
@@ -135,6 +165,298 @@ test('Admin edits operations, Owner controls members, and suspended actors fail 
       () => f.service.inspectWorkspace(context(f.admin)),
       (error: unknown) => error instanceof ManagementError && error.code === 'forbidden',
     );
+  } finally {
+    f.close();
+  }
+});
+
+test('only Owners inspect team authority while provider status stays non-secret', async () => {
+  const f = await fixture();
+  try {
+    f.setProviderSource('openai', 'stored');
+    await f.config.createAgent(agent({
+      id: 'agent_openai',
+      name: 'OpenAI Agent',
+      model: 'openai/gpt-5',
+    }));
+    const ownerSnapshot = await f.service.inspectWorkspace(context(f.owner));
+    assert.equal(ownerSnapshot.team?.members.length, 2);
+    assert.equal(ownerSnapshot.team?.members.find(({ id }) => id === f.owner.membership.id)?.role, 'owner');
+    assert.equal(ownerSnapshot.providers.find(({ id }) => id === 'openai')?.source, 'stored');
+    assert.deepEqual(
+      ownerSnapshot.providers.find(({ id }) => id === 'openai')?.affectedAgents,
+      [{ id: 'agent_openai', name: 'OpenAI Agent' }],
+    );
+    assert.doesNotMatch(JSON.stringify(ownerSnapshot.providers), /api.?key|credentialvalue/i);
+
+    const adminSnapshot = await f.service.inspectWorkspace(context(f.admin));
+    assert.equal(adminSnapshot.team, undefined);
+    assert.equal(adminSnapshot.providers.find(({ id }) => id === 'openai')?.source, 'stored');
+  } finally {
+    f.close();
+  }
+});
+
+test('stored provider removal names affected Agents and requires a fresh confirmation', async () => {
+  const f = await fixture();
+  try {
+    f.setProviderSource('openai', 'stored');
+    await f.config.createAgent(agent({
+      id: 'agent_openai',
+      name: 'OpenAI Agent',
+      model: 'openai/gpt-5',
+    }));
+    const proposed = await f.service.applyWorkspaceChanges({
+      context: context(f.admin),
+      idempotencyKey: 'remove_openai',
+      operations: [{
+        itemId: 'remove',
+        kind: 'remove_provider_credential',
+        providerId: 'openai',
+      }],
+    });
+    assert.equal(proposed.status, 'confirmation_required');
+    assert.match(proposed.outcomes[0]?.warning ?? '', /provider_credential_removal/);
+    assert.match(proposed.outcomes[0]?.warning ?? '', /OpenAI Agent \(agent_openai\)/);
+    assert.equal((await f.service.inspectWorkspace(context(f.admin))).providers
+      .find(({ id }) => id === 'openai')?.source, 'stored');
+
+    const applied = await f.service.confirmWorkspaceChange({
+      context: context(f.admin),
+      proposalId: proposed.outcomes[0]!.proposalId!,
+    });
+    assert.equal(applied.outcomes[0]?.disposition, 'applied');
+    assert.equal((await f.service.inspectWorkspace(context(f.admin))).providers
+      .find(({ id }) => id === 'openai')?.source, 'missing');
+
+    f.setProviderSource('anthropic', 'env');
+    const denied = await f.service.applyWorkspaceChanges({
+      context: context(f.admin),
+      idempotencyKey: 'remove_env_anthropic',
+      operations: [{
+        itemId: 'remove',
+        kind: 'remove_provider_credential',
+        providerId: 'anthropic',
+      }],
+    });
+    assert.equal(denied.outcomes[0]?.disposition, 'failed');
+    assert.equal(denied.outcomes[0]?.code, 'invalid_request');
+  } finally {
+    f.close();
+  }
+});
+
+test('Owner invitation returns a 24-hour handoff, rotates on reissue, and revokes by confirmation', async () => {
+  const f = await fixture();
+  try {
+    const invited = await f.service.applyWorkspaceChanges({
+      context: context(f.owner),
+      idempotencyKey: 'invite_new_admin',
+      operations: [{ itemId: 'invite', kind: 'invite_member', slackUserId: 'U22222222' }],
+    });
+    assert.equal(invited.outcomes[0]?.disposition, 'applied');
+    const firstUrl = new URL(invited.outcomes[0]!.handoffUrl!);
+    const firstCapability = new URLSearchParams(firstUrl.hash.slice(1)).get('invite')!;
+    assert.equal(firstUrl.pathname, '/auth/slack/invite');
+    const firstInvitation = (await f.identity.listInvitations())
+      .find(({ slackUserId }) => slackUserId === 'U22222222')!;
+    assert.equal(firstInvitation.expiresAt, START + 24 * 60 * 60_000);
+    assert.equal(
+      (await f.management.getRequest(invited.operationId))?.result?.outcomes[0]?.handoffUrl,
+      undefined,
+    );
+    assert.equal(
+      (await f.identity.findInvitation(createHash('sha256').update(firstCapability).digest('hex')))?.id,
+      firstInvitation.id,
+    );
+
+    f.tick();
+    const reissued = await f.service.applyWorkspaceChanges({
+      context: context(f.owner),
+      idempotencyKey: 'reissue_new_admin',
+      operations: [{ itemId: 'invite', kind: 'invite_member', slackUserId: 'U22222222' }],
+    });
+    const secondUrl = new URL(reissued.outcomes[0]!.handoffUrl!);
+    const secondCapability = new URLSearchParams(secondUrl.hash.slice(1)).get('invite')!;
+    assert.notEqual(secondCapability, firstCapability);
+    assert.equal(
+      await f.identity.findInvitation(createHash('sha256').update(firstCapability).digest('hex')),
+      undefined,
+    );
+    const rotated = await f.identity.findInvitation(
+      createHash('sha256').update(secondCapability).digest('hex'),
+    );
+    const team = (await f.service.inspectWorkspace(context(f.owner))).team!;
+    const invitation = team.invitations.find(({ id }) => id === rotated!.id)!;
+    const proposed = await f.service.applyWorkspaceChanges({
+      context: context(f.owner),
+      idempotencyKey: 'revoke_new_admin',
+      operations: [{
+        itemId: 'revoke',
+        kind: 'revoke_invitation',
+        invitationId: invitation.id,
+        expectedRevision: invitation.revision,
+      }],
+    });
+    assert.equal(proposed.status, 'confirmation_required');
+    await f.service.confirmWorkspaceChange({
+      context: context(f.owner),
+      proposalId: proposed.outcomes[0]!.proposalId!,
+    });
+    assert.equal((await f.identity.listInvitations())
+      .find(({ id }) => id === invitation.id)?.status, 'revoked');
+  } finally {
+    f.close();
+  }
+});
+
+test('memory inspection and edits preserve owner scope and versioned irreversible confirmation', async () => {
+  const f = await fixture();
+  try {
+    const ownerRef = {
+      workspaceId: f.owner.user.slackTeamId,
+      ownerKind: 'agent' as const,
+      ownerId: 'agent_memory',
+    };
+    await f.memory.ensureOwner(ownerRef);
+    const created = await f.service.applyWorkspaceChanges({
+      context: context(f.admin),
+      idempotencyKey: 'memory_create',
+      operations: [{
+        itemId: 'memory',
+        kind: 'create_memory_entry',
+        owner: ownerRef,
+        entry: {
+          slug: 'customer-preference',
+          description: 'A durable customer preference.',
+          type: 'preference',
+          body: 'Customers prefer concise release notes.',
+        },
+      }],
+    });
+    assert.equal(created.outcomes[0]?.disposition, 'applied');
+    const entryId = created.outcomes[0]?.changed?.[0]?.id!;
+    const first = await f.service.inspectMemory(context(f.admin), ownerRef);
+    assert.equal(first.entries[0]?.body, 'Customers prefer concise release notes.');
+    assert.equal(first.entries[0]?.version, 1);
+
+    const updated = await f.service.applyWorkspaceChanges({
+      context: context(f.admin),
+      idempotencyKey: 'memory_update',
+      operations: [{
+        itemId: 'memory',
+        kind: 'update_memory_entry',
+        owner: ownerRef,
+        entryId,
+        expectedVersion: 1,
+        description: 'A durable customer preference.',
+        type: 'preference',
+        body: 'Customers prefer concise, linked release notes.',
+      }],
+    });
+    assert.equal(updated.outcomes[0]?.changed?.[0]?.revision, 2);
+
+    const proposed = await f.service.applyWorkspaceChanges({
+      context: context(f.admin),
+      idempotencyKey: 'memory_forget',
+      operations: [{
+        itemId: 'memory',
+        kind: 'forget_memory_entry',
+        owner: ownerRef,
+        entryId,
+        expectedVersion: 2,
+      }],
+    });
+    assert.equal(proposed.status, 'confirmation_required');
+    assert.match(proposed.outcomes[0]?.warning ?? '', /irreversible_memory_forget/);
+    await f.service.confirmWorkspaceChange({
+      context: context(f.admin),
+      proposalId: proposed.outcomes[0]!.proposalId!,
+    });
+    const forgotten = await f.service.inspectMemory(context(f.admin), ownerRef);
+    assert.equal(forgotten.entries[0]?.status, 'forgotten');
+    assert.equal(forgotten.entries[0]?.body, null);
+
+    await assert.rejects(
+      () => f.service.inspectMemory(context(f.admin), { ...ownerRef, workspaceId: 'T_OTHER' }),
+      (error: unknown) => error instanceof ManagementError && error.code === 'invalid_request',
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test('routine save and control are immediate, inspection redacts unknown authority, and delete confirms', async () => {
+  const f = await fixture();
+  try {
+    const workspaceId = f.owner.user.slackTeamId;
+    await f.config.putChannel({
+      workspaceId,
+      channelId: 'C_ROUTINES',
+      participationMode: 'mention_only',
+      lifecycle: 'active',
+    }, 0);
+    const created = await f.service.applyWorkspaceChanges({
+      context: context(f.admin),
+      idempotencyKey: 'routine_create',
+      operations: [{
+        itemId: 'routine',
+        kind: 'save_routine',
+        workspaceId,
+        channelId: 'C_ROUTINES',
+        name: 'Approval chaser',
+        description: 'Tracks pending approvals.',
+        taskText: 'Check pending approvals and post changes.',
+        schedule: { kind: 'cron', expression: '0 9 * * 1-5' },
+        timezone: 'America/Los_Angeles',
+        outputPolicy: 'post_on_change',
+      }],
+    });
+    assert.equal(created.outcomes[0]?.disposition, 'applied');
+    const routineId = created.outcomes[0]?.changed?.[0]?.id!;
+    const inspected = await f.service.inspectRoutines(context(f.admin), {
+      workspaceId,
+      routineId,
+    });
+    assert.equal(inspected.routines[0]?.contentAccess, 'authorization_unknown');
+    assert.equal(inspected.routines[0]?.taskText, null);
+    assert.equal(inspected.routines[0]?.scheduleInput, '0 9 * * 1-5');
+
+    const paused = await f.service.applyWorkspaceChanges({
+      context: context(f.admin),
+      idempotencyKey: 'routine_pause',
+      operations: [{
+        itemId: 'routine',
+        kind: 'control_routine',
+        workspaceId,
+        channelId: 'C_ROUTINES',
+        routineId,
+        expectedVersion: 1,
+        action: 'pause',
+      }],
+    });
+    assert.equal(paused.outcomes[0]?.changed?.[0]?.revision, 2);
+
+    const proposed = await f.service.applyWorkspaceChanges({
+      context: context(f.admin),
+      idempotencyKey: 'routine_delete',
+      operations: [{
+        itemId: 'routine',
+        kind: 'delete_routine',
+        workspaceId,
+        channelId: 'C_ROUTINES',
+        routineId,
+        expectedVersion: 2,
+      }],
+    });
+    assert.equal(proposed.status, 'confirmation_required');
+    assert.match(proposed.outcomes[0]?.warning ?? '', /irreversible_routine_delete/);
+    const deleted = await f.service.confirmWorkspaceChange({
+      context: context(f.admin),
+      proposalId: proposed.outcomes[0]!.proposalId!,
+    });
+    assert.equal(deleted.outcomes[0]?.disposition, 'applied');
+    assert.notEqual((await f.routines.getRoutine(routineId))?.deletedAt, null);
   } finally {
     f.close();
   }

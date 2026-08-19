@@ -3,10 +3,14 @@ import {
   ManagementError,
   type ManagementActorContext,
   type ManagementOperation,
+  type ManagementRoutineInspectionInput,
 } from './types.ts';
+import type { MemoryOwnerRef } from '../memory/types.ts';
 
 export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'inspect_workspace',
+  'inspect_memory',
+  'inspect_routines',
   'apply_workspace_changes',
   'confirm_workspace_change',
   'undo_workspace_change',
@@ -17,7 +21,9 @@ export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
 export type WorkspaceManagementToolName = typeof WORKSPACE_MANAGEMENT_TOOL_NAMES[number];
 
 const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
-  inspect_workspace: 'Inspect the current non-secret Chickpea Agents, Channels, placements, and revisions.',
+  inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority.',
+  inspect_memory: 'Inspect one Agent or Channel memory owner and its versioned entries.',
+  inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, or routine.',
   apply_workspace_changes: 'Apply one or more typed Chickpea workspace changes with durable idempotency and per-item outcomes.',
   confirm_workspace_change: 'Confirm one requester- and client-bound destructive or capability-expanding change proposal.',
   undo_workspace_change: 'Undo one eligible operation at the exact resulting revision.',
@@ -31,6 +37,8 @@ export function workspaceManagementToolDescription(name: WorkspaceManagementTool
 
 export type WorkspaceManagementToolArguments = {
   inspect_workspace: Record<never, never>;
+  inspect_memory: MemoryOwnerRef;
+  inspect_routines: ManagementRoutineInspectionInput;
   apply_workspace_changes: { idempotencyKey: string; operations: ManagementOperation[] };
   confirm_workspace_change: { proposalId: string };
   undo_workspace_change: { operationId: string; idempotencyKey: string };
@@ -58,6 +66,14 @@ export async function invokeWorkspaceManagementTool<TName extends WorkspaceManag
     switch (name) {
       case 'inspect_workspace':
         return success(await input.service.inspectWorkspace(context));
+      case 'inspect_memory': {
+        const value = args as WorkspaceManagementToolArguments['inspect_memory'];
+        return success(await input.service.inspectMemory(context, value));
+      }
+      case 'inspect_routines': {
+        const value = args as WorkspaceManagementToolArguments['inspect_routines'];
+        return success(await input.service.inspectRoutines(context, value));
+      }
       case 'apply_workspace_changes': {
         const value = args as WorkspaceManagementToolArguments['apply_workspace_changes'];
         return success(await input.service.applyWorkspaceChanges({ context, ...value }));

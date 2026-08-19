@@ -7,6 +7,16 @@ import type {
   MembershipStatus,
   OrganizationRole,
 } from '../identity/types.ts';
+import type {
+  MemoryEntryType,
+  MemoryOwnerRef,
+  OwnerMemoryEntry,
+} from '../memory/types.ts';
+import type {
+  RoutineDefinition,
+  RoutineOutputPolicy,
+  RoutineState,
+} from '../routines/types.ts';
 
 export type ManagementOrigin =
   | {
@@ -79,6 +89,74 @@ export type ManagementOperation =
       status?: MembershipStatus;
     })
   | (ManagementOperationBase & {
+      kind: 'remove_provider_credential';
+      providerId: 'anthropic' | 'openai' | 'openrouter';
+    })
+  | (ManagementOperationBase & {
+      kind: 'invite_member';
+      slackUserId: string;
+    })
+  | (ManagementOperationBase & {
+      kind: 'revoke_invitation';
+      invitationId: string;
+      expectedRevision: number;
+    })
+  | (ManagementOperationBase & {
+      kind: 'create_memory_entry';
+      owner: MemoryOwnerRef;
+      entry: {
+        slug: string;
+        description: string;
+        type: MemoryEntryType;
+        body: string;
+      };
+    })
+  | (ManagementOperationBase & {
+      kind: 'update_memory_entry';
+      owner: MemoryOwnerRef;
+      entryId: string;
+      expectedVersion: number;
+      description: string;
+      type: MemoryEntryType;
+      body: string;
+    })
+  | (ManagementOperationBase & {
+      kind: 'forget_memory_entry';
+      owner: MemoryOwnerRef;
+      entryId: string;
+      expectedVersion: number;
+    })
+  | (ManagementOperationBase & {
+      kind: 'save_routine';
+      workspaceId: string;
+      channelId: string;
+      routineId?: string;
+      expectedVersion?: number;
+      name: string;
+      description: string;
+      taskText: string;
+      schedule:
+        | { kind: 'cron'; expression: string }
+        | { kind: 'once'; localDateTime: string };
+      timezone: string;
+      outputPolicy: RoutineOutputPolicy;
+    })
+  | (ManagementOperationBase & {
+      kind: 'control_routine';
+      workspaceId: string;
+      channelId: string;
+      routineId: string;
+      expectedVersion: number;
+      action: 'pause' | 'resume' | 'disable';
+    })
+  | (ManagementOperationBase & {
+      kind: 'delete_routine';
+      workspaceId: string;
+      channelId: string;
+      routineId: string;
+      expectedVersion: number;
+    })
+  | (ManagementOperationBase & {
       kind: 'request_setup';
       target: ManagementSetupRequestTarget;
     });
@@ -115,7 +193,7 @@ export type ManagementDisposition =
   | 'skipped';
 
 export interface ManagementObjectRef {
-  kind: 'agent' | 'channel' | 'membership';
+  kind: 'agent' | 'channel' | 'membership' | 'provider' | 'invitation' | 'memory' | 'routine';
   id: string;
   revision?: number;
 }
@@ -128,6 +206,7 @@ export interface ManagementItemOutcome {
   proposalId?: string;
   setupOperationId?: string;
   setupUrl?: string;
+  handoffUrl?: string;
   undoAvailable?: boolean;
   code?: string;
   warning?: string;
@@ -262,18 +341,106 @@ export interface ManagementWorkspaceSnapshot {
     id: string;
     revision: number;
     name: string;
+    instructions: string;
     enabled: boolean;
     model?: string;
+    skills: AgentCreateInput['skills'];
+    mcpServers: AgentCreateInput['mcpServers'];
+    apiConnections: AgentCreateInput['apiConnections'];
+    repositories: AgentCreateInput['repositories'];
+    slackIdentityId?: string;
   }>;
   channels: Array<{
     workspaceId: string;
     channelId: string;
     revision: number;
     label?: string;
+    additionalInstructions?: string;
+    participationMode: ChannelConfig['participationMode'];
     lifecycle: ChannelConfig['lifecycle'];
     agentId?: string;
   }>;
+  providers: Array<{
+    id: 'anthropic' | 'openai' | 'openrouter';
+    source: 'env' | 'stored' | 'missing';
+    mutable: boolean;
+    affectedAgents: Array<{ id: string; name: string }>;
+  }>;
+  slackIdentities: Array<{
+    id: string;
+    kind: 'workspace_default' | 'dedicated';
+    lifecycle: 'setup_incomplete' | 'credentials_pending' | 'connected' | 'degraded' | 'retired';
+    teamId?: string;
+    appId?: string;
+    botUserId?: string;
+    dmState: 'on' | 'off' | 'needs_setup';
+    dmAgentId?: string;
+    credentialProvenance: 'workspace_default' | 'none' | 'stored';
+    connectionRevision: number;
+    observedDisplayName?: string;
+    health: 'unknown' | 'healthy' | 'degraded' | 'disconnected' | 'uninstalled' | 'unauthorized';
+    agentIds: string[];
+  }>;
+  team?: {
+    soleOwnerWarning: boolean;
+    members: Array<{
+      id: string;
+      userId: string;
+      displayName: string | null;
+      slackTeamId: string | null;
+      slackUserId: string | null;
+      role: OrganizationRole;
+      status: MembershipStatus;
+      revision: number;
+    }>;
+    invitations: Array<{
+      id: string;
+      slackTeamId: string;
+      slackUserId: string;
+      displayName: string | null;
+      role: OrganizationRole;
+      status: string;
+      expiresAt: number;
+      revision: number;
+    }>;
+  };
   effectiveRevision: string;
+}
+
+export interface ManagementMemorySnapshot {
+  owner: MemoryOwnerRef & {
+    storeId: string;
+    lifecycle: 'active' | 'sealed';
+    resetEpoch: number;
+  };
+  entries: Array<Omit<OwnerMemoryEntry, 'body'> & { body: string | null }>;
+}
+
+export interface ManagementRoutineInspectionInput {
+  workspaceId: string;
+  channelId?: string | undefined;
+  routineId?: string | undefined;
+}
+
+export interface ManagementRoutineSnapshot {
+  routines: Array<{
+    id: string;
+    workspaceId: string;
+    channelId: string;
+    creatorUserId: string;
+    state: RoutineState | 'deleted';
+    version: number;
+    name: string | null;
+    description: string | null;
+    taskText: string | null;
+    triggerKind: RoutineDefinition['triggerKind'];
+    scheduleInput: string;
+    scheduleJson: string;
+    timezone: string;
+    outputPolicy: RoutineOutputPolicy;
+    nextRunAt: number | null;
+    contentAccess: 'public' | 'private' | 'authorization_unknown';
+  }>;
 }
 
 export interface ApplyWorkspaceChangesInput {
