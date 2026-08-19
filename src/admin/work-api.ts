@@ -104,7 +104,7 @@ export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
   });
 
   app.post('/sessions/:runId/quarantine', async (c) => {
-    if (!safeMutationRequest(c, { principalAware: true })) return c.json({ error: 'cross_origin_denied' }, 403);
+    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
     const idempotencyKey = readIdempotencyKey(c);
     if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
     const parsed = v.safeParse(quarantineSchema, await readJson(c));
@@ -136,7 +136,7 @@ export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
   });
 
   app.post('/sessions/:runId/retire-stale', async (c) => {
-    if (!safeMutationRequest(c, { principalAware: true })) return c.json({ error: 'cross_origin_denied' }, 403);
+    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
     const idempotencyKey = readIdempotencyKey(c);
     if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
     const parsed = v.safeParse(quarantineSchema, await readJson(c));

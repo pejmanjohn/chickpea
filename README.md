@@ -22,7 +22,7 @@ The public Deploy button installs the slim runtime and Slack-native authenticati
 
 1. **Click Deploy.** There is no Chickpea secret to invent or save. The deploy creates its internal signing authority, provisions the Worker and D1 database, and finishes with one private setup link.
 2. **Open the private link.** It resumes one seven-day, deployment-bound setup transaction and shows only the next required action.
-3. **Create and install @Chickpea in Slack.** Chickpea creates the customer-owned app from the reviewed manifest, then Slack applies that workspace's own app-management policy. Any Slack member whom Slack permits may install it.
+3. **Create and install @Chickpea in Slack.** The default path uses a short-lived Slack App Configuration access token to create the customer-owned app from the reviewed manifest. If that token is unavailable, the same private setup link offers the original guided manual manifest journey under **Can't create an app configuration token?** Both modes then use Chickpea's confidential bot OAuth; no bot token is pasted into the browser. Slack applies that workspace's own app-management policy, so any member whom Slack permits may install it.
 4. **Become the first Owner with Slack.** Chickpea validates the exact app, workspace, actual bot grants, channel/directory access, and signed Events proof, then requires a second confidential Slack OIDC result for that same workspace. The installer's Slack identity becomes the first Chickpea Owner.
 5. **Choose one channel and try Chickpea.** Chickpea completes onboarding only after a real `@Chickpea` mention receives a visible threaded reply in that channel.
 

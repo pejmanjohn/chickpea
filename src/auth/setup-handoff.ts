@@ -59,3 +59,56 @@ export function slackSetupClientScript(): string {
   capability = "";
 })();`;
 }
+
+/** Historical manual-onboarding step navigation layered on the setup capability handoff. */
+export function slackManualSetupClientScript(): string {
+  return `${slackSetupClientScript()}
+(function () {
+  "use strict";
+  var root = document.documentElement;
+  var panels = document.querySelectorAll ? document.querySelectorAll("[data-manual-step-panel]") : [];
+  if (!root || !panels.length) return;
+  var allowed = { create: true, finish: true, events: true, credentials: true };
+  var initial = root.getAttribute("data-manual-initial-step") || "create";
+  initial = allowed[initial] ? initial : "create";
+  function show(step, focus) {
+    if (!allowed[step]) return;
+    root.setAttribute("data-manual-current-step", step);
+    for (var i = 0; i < panels.length; i += 1) {
+      var active = panels[i].getAttribute("data-manual-step-panel") === step;
+      panels[i].hidden = !active;
+      panels[i].setAttribute("aria-hidden", active ? "false" : "true");
+    }
+    if (focus) {
+      var heading = document.querySelector ? document.querySelector('[data-manual-step-panel="' + step + '"] h1') : null;
+      if (heading && heading.focus) heading.focus();
+    }
+  }
+  if (document.addEventListener) document.addEventListener("click", function (event) {
+    var target = event.target && event.target.closest ? event.target.closest("[data-manual-step-target]") : null;
+    if (!target) return;
+    var step = target.getAttribute("data-manual-step-target") || "";
+    if (!allowed[step]) return;
+    if (target.tagName !== "A") event.preventDefault();
+    show(step, target.tagName !== "A");
+  });
+  show(initial, false);
+})();`;
+}
+
+/** Same-origin transition script for CSP-safe navigation to Slack OAuth. */
+export function slackAuthorizationHandoffScript(): string {
+  return `(function () {
+  "use strict";
+  var link = document.querySelector ? document.querySelector("a[data-slack-authorization-link]") : null;
+  if (!link) return;
+  try {
+    var target = new URL(link.getAttribute("href") || "", location.origin);
+    var allowedPath = target.pathname === "/oauth/v2/authorize" ||
+      target.pathname === "/openid/connect/authorize";
+    if (target.origin !== "https://slack.com" || !allowedPath ||
+        target.username || target.password || target.hash) return;
+    location.replace(target.href);
+  } catch (_) {}
+})();`;
+}

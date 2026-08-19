@@ -454,6 +454,11 @@ function responseCookie(response, prefix) {
   return '';
 }
 
+function slackAuthorizationUrlFromHandoff(html) {
+  const encoded = /data-slack-authorization-link href="([^"]+)"/.exec(html)?.[1];
+  return new URL(encoded ? encoded.replaceAll('&amp;', '&') : 'about:blank');
+}
+
 async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
   const setupPage = await fetch(`${baseUrl}/admin/setup`);
   const setupHtml = await setupPage.text();
@@ -469,10 +474,34 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
   const opened = await postForm(baseUrl, '/admin/setup', {
     action: 'open', capability: setup.capability, destination: '/admin/channels',
   });
+  const openedHtml = await opened.text();
   check(
-    opened.status === 200 && (await opened.text()).includes('Create Slack app'),
-    'deploy capability opens one durable Slack app-creation transaction',
+    opened.status === 200 && openedHtml.includes('Create Slack app') &&
+      openedHtml.includes('First, generate an App Configuration token in Slack') &&
+      openedHtml.includes('href="/admin/setup/manual"'),
+    'deploy capability opens Compact C with the separate manual journey',
     `HTTP ${opened.status}`,
+  );
+
+  const manualOpened = await postForm(baseUrl, '/admin/setup/manual', {
+    action: 'open', capability: setup.capability, destination: '/admin/onboarding',
+  });
+  const manualHtml = await manualOpened.text();
+  const manualAsset = await fetch(`${baseUrl}/admin/assets/onboarding/create-workspace.webp`);
+  const manualAssetBytes = new Uint8Array(await manualAsset.arrayBuffer());
+  check(
+    manualOpened.status === 200 &&
+      manualHtml.includes('Create Chickpea') &&
+      manualHtml.includes('Finish creating Chickpea') &&
+      manualHtml.includes('Verify Event URL') &&
+      manualHtml.includes('Add app credentials') &&
+      !manualHtml.includes(setup.capability) &&
+      manualAsset.status === 200 &&
+      manualAsset.headers.get('content-type') === 'image/webp' &&
+      new TextDecoder().decode(manualAssetBytes.slice(0, 4)) === 'RIFF' &&
+      manualAssetBytes.byteLength > 10_000,
+    'separate manual journey restores its historical screens and public screenshot assets',
+    `page HTTP ${manualOpened.status}; asset HTTP ${manualAsset.status}`,
   );
 
   const created = await postForm(baseUrl, '/admin/setup', {
@@ -501,10 +530,10 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
   const installStart = await postForm(baseUrl, '/auth/slack/install/start', {
     capability: setup.capability, destination: '/admin/channels',
   });
-  const installAuthorization = new URL(installStart.headers.get('location') ?? 'about:blank');
+  const installAuthorization = slackAuthorizationUrlFromHandoff(await installStart.text());
   const installCookie = responseCookie(installStart, '__Secure-chickpea_slack_install=');
   check(
-    installStart.status === 302 && installAuthorization.origin === 'https://slack.com' &&
+    installStart.status === 200 && installAuthorization.origin === 'https://slack.com' &&
       Boolean(installAuthorization.searchParams.get('state')) && Boolean(installCookie),
     'bot OAuth start uses a narrow browser cookie and Slack authorization state',
     `HTTP ${installStart.status}`,
@@ -547,12 +576,12 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
   const ownerStart = await postForm(baseUrl, '/auth/slack/oidc/start', {
     purpose: 'first_owner', capability: setup.capability, destination: '/admin/channels',
   });
-  const ownerAuthorization = new URL(ownerStart.headers.get('location') ?? 'about:blank');
+  const ownerAuthorization = slackAuthorizationUrlFromHandoff(await ownerStart.text());
   const ownerCookie = responseCookie(ownerStart, '__Secure-chickpea_slack_oidc=');
   const state = ownerAuthorization.searchParams.get('state') ?? '';
   const nonce = ownerAuthorization.searchParams.get('nonce') ?? '';
   check(
-    ownerStart.status === 302 && ownerAuthorization.origin === 'https://slack.com' &&
+    ownerStart.status === 200 && ownerAuthorization.origin === 'https://slack.com' &&
       ownerAuthorization.searchParams.get('team') === WORKSPACE && Boolean(ownerCookie) &&
       state.length >= 32 && nonce.length >= 32,
     'first-Owner OIDC is exact-team and independently state/nonce/browser bound',
@@ -590,11 +619,11 @@ async function completeSlackLogin(baseUrl) {
   const start = await postForm(baseUrl, '/auth/slack/oidc/start', {
     purpose: 'login', destination: '/admin',
   });
-  const authorization = new URL(start.headers.get('location') ?? 'about:blank');
+  const authorization = slackAuthorizationUrlFromHandoff(await start.text());
   const oidcCookie = responseCookie(start, '__Secure-chickpea_slack_oidc=');
   const state = authorization.searchParams.get('state') ?? '';
   const nonce = authorization.searchParams.get('nonce') ?? '';
-  if (start.status !== 302 || !oidcCookie || state.length < 32 || nonce.length < 32) {
+  if (start.status !== 200 || !oidcCookie || state.length < 32 || nonce.length < 32) {
     throw new Error(`fresh Slack login did not start (HTTP ${start.status})`);
   }
   const callback = await fetch(

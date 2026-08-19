@@ -34,27 +34,19 @@ export function readIdempotencyKey(c: Context): string | undefined {
   return key && key.length <= 200 && /^[A-Za-z0-9_.:-]+$/.test(key) ? key : undefined;
 }
 
-/**
- * `principalAware: true` honours an authenticated principal first: machine
- * principals must present a personal token, and a mismatched Origin is rejected
- * before an Authorization header can vouch for the request. The default keeps
- * the older header-only posture (Authorization wins outright).
- */
-export function safeMutationRequest(
-  c: Context,
-  { principalAware }: { principalAware?: boolean } = {},
-): boolean {
-  if (principalAware) {
-    const principal = requestPrincipal(c.req.raw);
-    if (principal?.machine) return principal.authenticatorKind === 'personal_token';
-    const origin = c.req.header('origin');
-    if (origin && origin !== new URL(c.req.url).origin) return false;
-    if (c.req.header('authorization')) return true;
-    return Boolean(origin);
-  }
-  if (c.req.header('authorization')) return true;
+/** Validate mutation provenance after the outer Admin authentication gate. */
+export function safeMutationRequest(c: Context): boolean {
+  const principal = requestPrincipal(c.req.raw);
+  if (principal?.machine) return principal.authenticatorKind === 'personal_token';
+  // A human principal can only be attached by the outer Admin gate after it
+  // validates the canonical browser origin and mutation provenance. Mounted
+  // sub-apps may see the internal workerd URL here, so comparing Origin to
+  // c.req.url a second time would reject an already-validated request.
+  if (principal) return true;
   const origin = c.req.header('origin');
-  return Boolean(origin && origin === new URL(c.req.url).origin);
+  if (origin && origin !== new URL(c.req.url).origin) return false;
+  if (c.req.header('authorization')) return true;
+  return Boolean(origin);
 }
 
 export function sessionFingerprint(c: Context): string {

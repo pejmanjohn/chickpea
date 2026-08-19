@@ -5,6 +5,7 @@ import {
   renderSlackAccessDeniedPage,
   renderSlackOwnerCompletePage,
   renderSlackRecoveryPage,
+  renderSlackManualSetupPage,
   renderSlackSetupPage,
   renderSlackSignInPage,
 } from '../src/admin/page.ts';
@@ -39,15 +40,23 @@ test('Slack sign-in is the only visible login path and preserves a safe Admin de
   assert.doesNotMatch(html, /password|forgot|sign up|cloudflare access|admin token|migrate/i);
 });
 
-test('setup presents only the next durable action and keeps manual adoption secondary', () => {
+test('setup presents Compact C and sends manual setup to its separate journey', () => {
   const render = (state: SlackSetupTransaction['state']) => renderSlackSetupPage({
     setup: setup(state), destination: DESTINATION, manifest: MANIFEST,
-    manifestPrefillUrl: slackManifestPrefillUrl(MANIFEST),
   });
   const creation = render('awaiting_app_creation');
   assert.match(creation, /Create the Slack app/);
   assert.match(creation, /data-primary-action="create-app"/);
   assert.match(creation, /<details[^>]*data-secondary-action="manual-adoption"/);
+  assert.match(creation, /First, generate an App Configuration token in Slack/);
+  assert.match(creation, /https:\/\/api\.slack\.com\/apps#:~:text=Your%20App%20Configuration%20Tokens/);
+  assert.match(creation, /class="[^\"]*slack-logo-image/);
+  assert.match(creation, /xoxe\.xoxp-/);
+  assert.match(creation, /refresh token beginning xoxe-/i);
+  assert.match(creation, /Can&#39;t create an app configuration token\?/);
+  assert.match(creation, /href="\/admin\/setup\/manual"/);
+  assert.doesNotMatch(creation, /href="\/admin\/setup\/manual"[^>]*target="_blank"/);
+  assert.doesNotMatch(creation, /name="(?:appId|clientId|clientSecret|signingSecret|observedManifest)"/);
   assert.doesNotMatch(creation, /Install Chickpea in Slack|Become the first Owner/);
 
   const install = render('app_created');
@@ -62,6 +71,9 @@ test('setup presents only the next durable action and keeps manual adoption seco
   const events = render('bot_install_pending');
   assert.match(events, /data-primary-action="verify-events"/);
   assert.match(events, /signed Events/i);
+  assert.match(events, /https:\/\/api\.slack\.com\/apps\/A12345678\/event-subscriptions/);
+  assert.match(events, /Retry/);
+  assert.match(events, /Save Changes/);
 
   const owner = render('bot_installed');
   assert.match(owner, /data-primary-action="claim-owner"/);
@@ -69,10 +81,34 @@ test('setup presents only the next durable action and keeps manual adoption seco
   assert.doesNotMatch(owner, /configurationToken|Install Chickpea in Slack/);
 });
 
+test('manual setup restores the historical four-screen presentation but uses current adoption fields', () => {
+  const html = renderSlackManualSetupPage({
+    setup: setup('awaiting_app_creation'), destination: '/admin/onboarding',
+    manifest: MANIFEST, manifestPrefillUrl: slackManifestPrefillUrl(MANIFEST),
+  });
+  assert.match(html, /data-slack-manual-setup-state="awaiting_app_creation"/);
+  assert.match(html, /class="onboarding-shell"/);
+  assert.match(html, /Create Chickpea/);
+  assert.match(html, /Finish creating Chickpea/);
+  assert.match(html, /Verify the Event URL/);
+  assert.match(html, /Add app credentials/);
+  assert.match(html, /create-workspace\.webp/);
+  assert.match(html, /create-review\.webp/);
+  assert.match(html, /events-retry\.webp/);
+  assert.match(html, /signing-secret\.webp/);
+  assert.match(html, /name="appId"/);
+  assert.match(html, /name="clientId"/);
+  assert.match(html, /name="clientSecret"/);
+  assert.match(html, /name="signingSecret"/);
+  assert.match(html, /name="observedManifest"/);
+  assert.doesNotMatch(html, /name="botToken"|xoxb-/);
+  assert.match(html, /src="\/admin\/setup\/manual\/client\.js"/);
+});
+
 test('setup refresh auto-resumes privately while rejected submissions stay user-controlled', () => {
   const resumable = renderSlackSetupPage({
     destination: DESTINATION, manifest: MANIFEST,
-    manifestPrefillUrl: slackManifestPrefillUrl(MANIFEST), autoResume: true,
+    autoResume: true,
     notice: 'cancelled',
   });
   assert.match(resumable, /data-slack-setup-auto-resume="true"/);
@@ -82,7 +118,7 @@ test('setup refresh auto-resumes privately while rejected submissions stay user-
 
   const rejected = renderSlackSetupPage({
     destination: '/admin', manifest: MANIFEST,
-    manifestPrefillUrl: slackManifestPrefillUrl(MANIFEST), autoResume: false,
+    autoResume: false,
     error: 'setup_invalid',
   });
   assert.match(rejected, /data-slack-setup-auto-resume="false"/);

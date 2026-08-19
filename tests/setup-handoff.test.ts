@@ -4,6 +4,7 @@ import vm from 'node:vm';
 
 import {
   safeSetupDestination,
+  slackManualSetupClientScript,
   slackSetupClientScript,
 } from '../src/auth/setup-handoff.ts';
 
@@ -18,6 +19,15 @@ test('Slack setup accepts only same-origin Admin destinations', () => {
   assert.equal(safeSetupDestination('/admin/channels?next=/logout'), '/admin');
   assert.equal(safeSetupDestination('//attacker.example/admin'), '/admin');
   assert.equal(safeSetupDestination('https://attacker.example/admin'), '/admin');
+});
+
+test('manual setup navigation is same-tab, local, and never persists secrets', () => {
+  const script = slackManualSetupClientScript();
+  assert.match(script, /data-manual-step-target/);
+  assert.match(script, /data-manual-step-panel/);
+  assert.match(script, /hidden/);
+  assert.match(script, /history\.replaceState/);
+  assert.doesNotMatch(script, /localStorage|indexedDB|clientSecret|signingSecret|observedManifest/);
 });
 
 test('Slack setup client preserves the private fragment for resumable same-tab requests', () => {

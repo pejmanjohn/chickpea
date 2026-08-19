@@ -278,7 +278,7 @@ test('approval interruption destroys OAuth state and resume issues a fresh attem
   }
 });
 
-test('missing required token scopes fail closed while extra scopes are accepted', async () => {
+test('missing and extra token scopes both fail closed', async () => {
   const missing = await installFixture({ tokenScopes: REQUIRED_SLACK_BOT_SCOPES.slice(1) });
   try {
     const started = await missing.start();
@@ -310,18 +310,16 @@ test('missing required token scopes fail closed while extra scopes are accepted'
   const extra = await installFixture({ tokenScopes: [...REQUIRED_SLACK_BOT_SCOPES, 'commands'] });
   try {
     const started = await extra.start();
-    assert.equal((await extra.service.callback({
-      state: started.state,
-      browserBinding: BROWSER_BINDING,
-      redirectUri: REDIRECT_URI,
-      code: 'extra-scope',
-    })).status, 'waiting_events');
-    const pending = await extra.identity.getSlackSetupTransaction(extra.setup.id);
-    const candidate = await extra.identity.getSlackCredentialRevision(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      pending!.botCredentialRevision!,
+    await assert.rejects(
+      () => extra.service.callback({
+        state: started.state,
+        browserBinding: BROWSER_BINDING,
+        redirectUri: REDIRECT_URI,
+        code: 'extra-scope',
+      }),
+      (error: unknown) => error instanceof SlackInstallOAuthError && error.code === 'unexpected_scopes',
     );
-    assert.ok(candidate?.grantedScopes.includes('commands'));
+    assert.equal((await extra.identity.getSlackSetupTransaction(extra.setup.id))?.state, 'app_created');
   } finally {
     extra.close();
   }

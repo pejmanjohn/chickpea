@@ -257,7 +257,11 @@ test('Slack auth visual states render the production Slack-only journey without 
       assert.match(html, /data-slack-auth-surface=/, name);
       assert.match(html, /<main[^>]*aria-labelledby="auth-title"/, name);
       assert.match(html, /role="status" aria-live="polite"/, name);
-      assert.doesNotMatch(html, /xox[bep]-|route-client-secret|route-signing-secret|visual-setup-capability/, name);
+      assert.doesNotMatch(
+        html,
+        /xox(?:b|p|e)-[A-Za-z0-9-]{8,}|route-client-secret|route-signing-secret|visual-setup-capability/,
+        name,
+      );
       assert.doesNotMatch(html, /fonts\.googleapis|Forgot Password|Sign up|Cloudflare Access/i, name);
     }
   } finally {

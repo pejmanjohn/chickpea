@@ -18,7 +18,11 @@ import {
   type SlackIdentityBootstrapDeps,
 } from './identity-bootstrap.ts';
 import { purgePendingSlackChallenge, verifyPendingSlackChallenge } from './identity-handshake.ts';
-import { missingRequiredSlackBotScopes, REQUIRED_SLACK_BOT_SCOPES } from './scopes.ts';
+import {
+  missingRequiredSlackBotScopes,
+  REQUIRED_SLACK_BOT_SCOPES,
+  unexpectedSlackBotScopes,
+} from './scopes.ts';
 
 export const SLACK_INSTALL_ATTEMPT_TTL_MS = 15 * 60_000;
 export const SLACK_INSTALL_PROCESSING_LEASE_MS = 10 * 60_000;
@@ -45,6 +49,7 @@ export type SlackInstallOAuthErrorCode =
   | 'installer_mismatch'
   | 'bot_mismatch'
   | 'missing_scopes'
+  | 'unexpected_scopes'
   | 'directory_unavailable'
   | 'channel_unavailable'
   | 'events_unverified';
@@ -535,6 +540,9 @@ function validateTokenGrant(response: SlackBotTokenResponse, attempt: SlackOAuth
   const scopes = parseScopes(response.scope);
   const missing = missingRequiredSlackBotScopes(scopes);
   if (missing?.length) throw new SlackInstallOAuthError('missing_scopes');
+  if (unexpectedSlackBotScopes(scopes)?.length) {
+    throw new SlackInstallOAuthError('unexpected_scopes');
+  }
   return { botToken, appId, teamId, installerUserId, botUserId, scopes };
 }
 

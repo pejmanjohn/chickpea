@@ -152,7 +152,7 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
   });
 
   app.post('/audit/scheduled_work/routines/:routineId/control', async (c) => {
-    if (!safeMutationRequest(c, { principalAware: false })) return c.json({ error: 'cross_origin_denied' }, 403);
+    if (!safeMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
     const idempotencyKey = readIdempotencyKey(c);
     if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
     const parsed = v.safeParse(controlSchema, await readJson(c));

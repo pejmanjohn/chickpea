@@ -8,12 +8,14 @@ import * as v from 'valibot';
 import {
   renderAdminPage,
   renderSlackAccessDeniedPage,
+  renderSlackAuthorizationHandoffPage,
   renderSlackInvitationCompletePage,
   renderSlackInvitationMismatchPage,
   renderSlackInvitationPage,
   renderSlackInvitationUnavailablePage,
   renderSlackOwnerCompletePage,
   renderSlackRecoveryPage,
+  renderSlackManualSetupPage,
   renderSlackSetupPage,
   renderSlackSignInPage,
 } from './page.ts';
@@ -23,7 +25,12 @@ import { createRoutineAdminApi } from './routines-api.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
-import { safeSetupDestination, slackSetupClientScript } from '../auth/setup-handoff.ts';
+import {
+  safeSetupDestination,
+  slackAuthorizationHandoffScript,
+  slackManualSetupClientScript,
+  slackSetupClientScript,
+} from '../auth/setup-handoff.ts';
 import {
   SETUP_CAPABILITY_DIGEST_BINDING,
   SETUP_CAPABILITY_ISSUED_AT_BINDING,
@@ -1540,7 +1547,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         limiter.recordSuccess('slack_install_start_source', source),
         limiter.recordSuccess('slack_install_start_operation', setup.id),
       ]);
-      return c.redirect(started.authorizationUrl, 302);
+      return c.html(renderSlackAuthorizationHandoffPage(started.authorizationUrl));
     } catch (error) {
       await limiter.recordFailure('slack_install_start_source', source);
       if (setup) await limiter.recordFailure('slack_install_start_operation', setup.id);
@@ -1556,6 +1563,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // browser authority is the independent narrow cookie plus hashed OAuth
   // state; neither endpoint is routed through Better Auth or the Admin gate.
   app.use('/auth/slack/install/*', authSetupBodyLimit);
+  app.get('/auth/slack/continue.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    return c.body(slackAuthorizationHandoffScript());
+  });
   app.post('/auth/slack/install/start', (c) => beginSlackInstall(c, false));
   app.post('/auth/slack/install/resume', (c) => beginSlackInstall(c, true));
   app.post('/auth/slack/install/finalize', async (c) => {
@@ -1750,7 +1762,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         limiter.recordSuccess('slack_oidc_start_source', source),
         limiter.recordSuccess('slack_oidc_start_operation', operationKey),
       ]);
-      return c.redirect(started.authorizationUrl, 302);
+      return c.html(renderSlackAuthorizationHandoffPage(started.authorizationUrl));
     } catch (error) {
       await Promise.all([
         limiter.recordFailure('slack_oidc_start_source', source),
@@ -1861,6 +1873,123 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.body(slackSetupClientScript());
   });
 
+  app.get('/admin/setup/manual/client.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    return c.body(slackManualSetupClientScript());
+  });
+
+  // The pre-owner manual setup journey embeds these immutable historical
+  // screenshots, so they must remain available before the Admin auth gate.
+  app.get('/admin/assets/onboarding/:name', (c) => {
+    const bytes = onboardingAssetBytes(c.req.param('name'));
+    if (!bytes) return c.notFound();
+    c.header('Cache-Control', 'public, max-age=31536000, immutable');
+    c.header('Content-Type', 'image/webp');
+    return c.body(bytes);
+  });
+
+  app.get('/admin/setup/manual', async (c) => {
+    authResponseHeaders(c);
+    const capability = setupCapability(c);
+    if (!capability) return c.notFound();
+    c.header('Cache-Control', 'no-store');
+    c.header('Referrer-Policy', 'no-referrer');
+    const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
+    return c.html(renderSlackManualSetupPage({
+      destination: safeSetupDestination(c.req.query('destination') ?? '/admin/onboarding'),
+      manifest,
+      manifestPrefillUrl: slackManifestPrefillUrl(manifest),
+      autoResume: true,
+    }));
+  });
+
+  app.post('/admin/setup/manual', async (c) => {
+    authResponseHeaders(c);
+    const capability = setupCapability(c);
+    if (!capability) return c.notFound();
+    c.header('Cache-Control', 'no-store');
+    c.header('Referrer-Policy', 'no-referrer');
+    const source = authSourceKey(c);
+    const limiter = authRateLimiter(c, capability.digest);
+    const origin = requestOrigin(c);
+    let setup: SlackSetupTransaction | undefined;
+    let action = 'open';
+    try {
+      await limiter.assertAllowed('slack_manual_setup_source', source);
+      if (!validAuthFormPost(c, origin)) throw new AuthDeniedError();
+      const rawForm = await readForm(c);
+      action = boundedSetupField(rawForm.action ?? 'open', 32);
+      setup = await openSlackSetupTransaction(identity(c), {
+        capability: boundedSetupField(rawForm.capability, 512),
+        authority: capability,
+        canonicalAdminOrigin: origin,
+        destination: rawForm.destination ?? '/admin/onboarding',
+        ...(options.slackAppCreationNow ? { now: options.slackAppCreationNow } : {}),
+      });
+      await Promise.all([
+        limiter.assertAllowed(`slack_manual_setup_operation_${action}`, setup.id),
+        limiter.assertAllowed('slack_setup_deployment', 'deployment'),
+      ]);
+      const manifest = buildSlackAppManifest({ kind: 'control_plane', origin });
+      if (action === 'adopt') {
+        const credentials = slackCredentialDependencies(c);
+        if (!credentials) return c.json({ error: 'slack_setup_unavailable' }, 503);
+        const service = new SlackAppCreationService({
+          identity: identity(c), credentials,
+          ...(options.slackAppCreationNow ? { now: options.slackAppCreationNow } : {}),
+        });
+        setup = await service.adoptManual({
+          setupId: setup.id,
+          expectedRevision: setup.revision,
+          appId: boundedSetupField(rawForm.appId, 64),
+          clientId: boundedSetupField(rawForm.clientId, 256),
+          clientSecret: boundedSetupField(rawForm.clientSecret, 4_096),
+          signingSecret: boundedSetupField(rawForm.signingSecret, 4_096),
+          expectedManifest: manifest,
+          observedManifest: JSON.parse(boundedSetupField(rawForm.observedManifest, 7_500)),
+        });
+      } else if (action !== 'open') {
+        throw new AuthDeniedError();
+      }
+      await Promise.all([
+        limiter.recordSuccess('slack_manual_setup_source', source),
+        limiter.recordSuccess(`slack_manual_setup_operation_${action}`, setup.id),
+        limiter.recordSuccess('slack_setup_deployment', 'deployment'),
+      ]);
+      if (action === 'adopt') return c.redirect('/admin/setup', 303);
+      return c.html(renderSlackManualSetupPage({
+        setup,
+        destination: setup.destination,
+        manifest,
+        manifestPrefillUrl: slackManifestPrefillUrl(manifest),
+      }));
+    } catch (error) {
+      if (error instanceof AuthRateLimitError) {
+        c.header('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))));
+      } else {
+        await limiter.recordFailure('slack_manual_setup_source', source);
+        if (setup) await Promise.all([
+          limiter.recordFailure(`slack_manual_setup_operation_${action}`, setup.id),
+          limiter.recordFailure('slack_setup_deployment', 'deployment'),
+        ]);
+      }
+      const code = error instanceof AuthRateLimitError ? 'rate_limited'
+        : error instanceof SlackAppCreationError ? error.code : 'setup_invalid';
+      const status = error instanceof AuthRateLimitError ? 429
+        : code === 'setup_expired' ? 410
+          : code === 'setup_conflict' ? 409 : 400;
+      const manifest = buildSlackAppManifest({ kind: 'control_plane', origin });
+      return c.html(renderSlackManualSetupPage({
+        ...(setup ? { setup } : {}),
+        destination: setup?.destination ?? '/admin/onboarding',
+        manifest,
+        manifestPrefillUrl: slackManifestPrefillUrl(manifest),
+        error: code,
+      }), status);
+    }
+  });
+
   app.get('/admin/setup', async (c) => {
     authResponseHeaders(c);
     const capability = setupCapability(c);
@@ -1870,9 +1999,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const installStatus = safeSlackInstallStatus(c.req.query('slack_install'));
     const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
     return c.html(renderSlackSetupPage({
-      destination: safeSetupDestination(c.req.query('destination')),
+      destination: safeSetupDestination(c.req.query('destination') ?? '/admin/onboarding'),
       manifest,
-      manifestPrefillUrl: slackManifestPrefillUrl(manifest),
       autoResume: true,
       ...(installStatus ? { notice: installStatus } : {}),
     }));
@@ -1899,7 +2027,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         capability: boundedSetupField(rawForm.capability, 512),
         authority: capability,
         canonicalAdminOrigin: requestOrigin(c),
-        ...(rawForm.destination === undefined ? {} : { destination: rawForm.destination }),
+        destination: rawForm.destination ?? '/admin/onboarding',
         ...(options.slackAppCreationNow ? { now: options.slackAppCreationNow } : {}),
       });
       await Promise.all([
@@ -1945,7 +2073,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ]);
       return c.html(renderSlackSetupPage({
         setup, destination: setup.destination, manifest,
-        manifestPrefillUrl: slackManifestPrefillUrl(manifest),
         ...(notice ? { notice } : {}),
       }));
     } catch (error) {
@@ -1954,9 +2081,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
         return c.html(renderSlackSetupPage({
           ...(setup ? { setup } : {}),
-          destination: setup?.destination ?? '/admin',
+          destination: setup?.destination ?? '/admin/onboarding',
           manifest,
-          manifestPrefillUrl: slackManifestPrefillUrl(manifest),
           error: 'rate_limited',
         }), 429);
       }
@@ -1973,9 +2099,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
       return c.html(renderSlackSetupPage({
         ...(setup ? { setup } : {}),
-        destination: setup?.destination ?? '/admin',
+        destination: setup?.destination ?? '/admin/onboarding',
         manifest,
-        manifestPrefillUrl: slackManifestPrefillUrl(manifest),
         error: code,
       }), status);
     }
@@ -2089,7 +2214,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ...authority, redirectUri: `${requestOrigin(c)}/auth/slack/recovery/callback`,
         });
         await recoveryLimiterSuccess(limiter, source, action);
-        return c.redirect(started.authorizationUrl, 303);
+        return c.html(renderSlackAuthorizationHandoffPage(started.authorizationUrl));
       }
       if (action === 'finalize') {
         await service.finalize(authority);
@@ -2542,14 +2667,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c.header('Cache-Control', 'no-store');
     return c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) }));
   };
-
-  app.get('/admin/assets/onboarding/:name', (c) => {
-    const bytes = onboardingAssetBytes(c.req.param('name'));
-    if (!bytes) return c.notFound();
-    c.header('Cache-Control', 'public, max-age=31536000, immutable');
-    c.header('Content-Type', 'image/webp');
-    return c.body(bytes);
-  });
 
   app.get('/admin', adminPage);
 

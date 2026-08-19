@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto';
 import { test } from 'node:test';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import { renderSlackAuthorizationHandoffPage } from '../src/admin/page.ts';
 import { SlackAdmissionService } from '../src/auth/slack-admission.ts';
 import { AuthRateLimiter } from '../src/auth/rate-limit.ts';
 import { SlackOidcError } from '../src/auth/slack-oidc.ts';
@@ -13,6 +14,7 @@ import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { recordPendingSlackChallenge } from '../src/slack/identity-handshake.ts';
+import { buildSlackAppManifest } from '../src/slack/identity-manifest.ts';
 import { SLACK_INSTALL_PROCESSING_LEASE_MS } from '../src/slack/install-oauth.ts';
 import { REQUIRED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 
@@ -70,6 +72,94 @@ test('capability-gated Admin setup creates an app without reflecting or retainin
     const exported = await identity.exportSummary();
     assert.equal('locatorHash' in exported.slackSetupTransactions[0]!, false);
     assert.doesNotMatch(JSON.stringify(exported), /route-client-secret|route-signing-secret/);
+  } finally {
+    identity.close();
+  }
+});
+
+test('manual setup is a separate capability-gated journey that adopts into shared installation', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const authority = await mintSetupCapability({ now: () => NOW });
+  try {
+    const app = createAdminRoutes({
+      identity,
+      slackCredentials: { state: identity, keyring: generateCredentialKeyring('key_v1') },
+      slackAppCreationNow: () => NOW,
+    });
+    const env = setupEnv(authority);
+    const page = await app.request(`${ORIGIN}/admin/setup/manual`, {}, env);
+    assert.equal(page.status, 200);
+    const initialHtml = await page.text();
+    assert.match(initialHtml, /data-slack-manual-setup-state="capability_required"/);
+    assert.doesNotMatch(initialHtml, new RegExp(authority.capability));
+
+    const client = await app.request(`${ORIGIN}/admin/setup/manual/client.js`, {}, env);
+    assert.equal(client.status, 200);
+    assert.equal(client.headers.get('content-type'), 'application/javascript; charset=UTF-8');
+
+    const opened = await postManualSetup(app, env, {
+      action: 'open', capability: authority.capability,
+    });
+    assert.equal(opened.status, 200);
+    assert.match(await opened.text(), /Create Chickpea/);
+
+    const expectedManifest = buildExpectedManifest();
+    const invalid = await postManualSetup(app, env, {
+      action: 'adopt', capability: authority.capability,
+      appId: 'A12345678', clientId: '123.456',
+      clientSecret: 'route-client-secret-value', signingSecret: 'route-signing-secret-value',
+      observedManifest: JSON.stringify({ ...expectedManifest, display_information: { name: 'Wrong' } }),
+    });
+    assert.equal(invalid.status, 400);
+    const invalidHtml = await invalid.text();
+    assert.match(invalidHtml, /Add app credentials/);
+    assert.match(invalidHtml, /role="alert"/);
+    assert.doesNotMatch(invalidHtml, /route-client-secret-value|route-signing-secret-value/);
+
+    const adopted = await postManualSetup(app, env, {
+      action: 'adopt', capability: authority.capability,
+      appId: 'A12345678', clientId: '123.456',
+      clientSecret: 'route-client-secret-value', signingSecret: 'route-signing-secret-value',
+      observedManifest: JSON.stringify(expectedManifest),
+    });
+    assert.equal(adopted.status, 303);
+    assert.equal(adopted.headers.get('location'), '/admin/setup');
+    const setup = await identity.getSlackSetupTransaction('setup_default');
+    assert.equal(setup?.state, 'app_created');
+    assert.equal(setup?.destination, '/admin/onboarding');
+    assert.doesNotMatch(JSON.stringify(await identity.exportSummary()), /route-client-secret-value|route-signing-secret-value/);
+  } finally {
+    identity.close();
+  }
+});
+
+test('manual setup is absent without this deployment capability authority', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  try {
+    const app = createAdminRoutes({ identity });
+    assert.equal((await app.request(`${ORIGIN}/admin/setup/manual`)).status, 404);
+    assert.equal((await app.request(`${ORIGIN}/admin/setup/manual`, {
+      method: 'POST', headers: formHeaders(), body: new URLSearchParams({
+        action: 'open', capability: 'not-a-real-capability',
+      }),
+    })).status, 404);
+  } finally {
+    identity.close();
+  }
+});
+
+test('manual setup screenshots are public before the first Owner exists', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  try {
+    const app = createAdminRoutes({ identity });
+    const response = await app.request(`${ORIGIN}/admin/assets/onboarding/create-workspace.webp`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'image/webp');
+    assert.equal(response.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    assert.equal(new TextDecoder().decode(bytes.slice(0, 4)), 'RIFF');
+    assert.ok(bytes.byteLength > 10_000);
+    assert.equal((await app.request(`${ORIGIN}/admin/assets/onboarding/not-real.webp`)).status, 404);
   } finally {
     identity.close();
   }
@@ -220,9 +310,13 @@ test('public bot-install routes use an independent narrow browser cookie and nev
         capability: authority.capability, destination: '/admin/channels',
       }),
     }, env);
-    assert.equal(start.status, 302, await start.clone().text());
-    const authorization = new URL(start.headers.get('location')!);
-    assert.equal(authorization.origin, 'https://slack.com');
+    assert.equal(start.status, 200, await start.clone().text());
+    assert.equal(start.headers.get('location'), null);
+    const handoffHtml = await start.clone().text();
+    assert.match(handoffHtml, /Opening Slack/);
+    assert.match(handoffHtml, /data-slack-authorization-link/);
+    assert.match(handoffHtml, /https:\/\/slack\.com\/oauth\/v2\/authorize\?/);
+    assert.match(handoffHtml, /src="\/auth\/slack\/continue\.js"/);
     const cookie = start.headers.get('set-cookie')!;
     assert.match(cookie, /__Secure-chickpea_slack_install=/);
     assert.match(cookie, /Path=\/auth\/slack\/install/i);
@@ -233,8 +327,10 @@ test('public bot-install routes use an independent narrow browser cookie and nev
 
     assert.match(cookie, /Max-Age=900/i);
     const firstCookie = cookie.split(';', 1)[0]!;
+    const authorizationState = slackAuthorizationUrlFromHandoff(handoffHtml).searchParams.get('state');
+    assert.ok(authorizationState);
     const approvalUrl = new URL(`${ORIGIN}/auth/slack/install/callback`);
-    approvalUrl.searchParams.set('state', authorization.searchParams.get('state')!);
+    approvalUrl.searchParams.set('state', authorizationState);
     approvalUrl.searchParams.set('code', 'transport-ambiguous-code');
     const transport = await app.request(approvalUrl, { headers: { cookie: firstCookie } }, env);
     assert.equal(transport.status, 503);
@@ -266,16 +362,19 @@ test('public bot-install routes use an independent narrow browser cookie and nev
         capability: authority.capability, destination: '/admin/channels',
       }),
     }, env);
-    assert.equal(resume.status, 302, await resume.clone().text());
-    const resumedAuthorization = new URL(resume.headers.get('location')!);
-    assert.notEqual(resumedAuthorization.searchParams.get('state'), authorization.searchParams.get('state'));
+    assert.equal(resume.status, 200, await resume.clone().text());
+    const resumedHandoffHtml = await resume.clone().text();
+    const resumedAuthorizationState = slackAuthorizationUrlFromHandoff(resumedHandoffHtml)
+      .searchParams.get('state');
+    assert.ok(resumedAuthorizationState);
+    assert.notEqual(resumedAuthorizationState, authorizationState);
     const resumedCookieHeader = resume.headers.get('set-cookie')!;
     assert.notEqual(resumedCookieHeader.split(';', 1)[0], firstCookie);
     assert.match(resumedCookieHeader, /Max-Age=900/i);
 
     const resumedCookie = resumedCookieHeader.split(';', 1)[0]!;
     const callbackUrl = new URL(`${ORIGIN}/auth/slack/install/callback`);
-    callbackUrl.searchParams.set('state', resumedAuthorization.searchParams.get('state')!);
+    callbackUrl.searchParams.set('state', resumedAuthorizationState);
     callbackUrl.searchParams.set('code', 'route-code-secret');
     const callback = await app.request(callbackUrl, { headers: { cookie: resumedCookie } }, env);
     assert.equal(callback.status, 303, await callback.clone().text());
@@ -372,6 +471,38 @@ test('public Slack callback is rate limited without exchanging an unrecognized s
   }
 });
 
+test('Slack authorization handoff script only navigates to exact Slack OAuth endpoints', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  try {
+    const app = createAdminRoutes({ identity });
+    const response = await app.request(`${ORIGIN}/auth/slack/continue.js`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'application/javascript; charset=UTF-8');
+    const script = await response.text();
+    assert.match(script, /https:\/\/slack\.com/);
+    assert.match(script, /\/oauth\/v2\/authorize/);
+    assert.match(script, /\/openid\/connect\/authorize/);
+    assert.match(script, /location\.replace/);
+    assert.doesNotMatch(script, /innerHTML|eval\(/);
+  } finally {
+    identity.close();
+  }
+});
+
+test('Slack authorization handoff renderer rejects non-Slack and non-OAuth destinations', () => {
+  assert.throws(
+    () => renderSlackAuthorizationHandoffPage('https://attacker.example/oauth/v2/authorize'),
+    /invalid/i,
+  );
+  assert.throws(
+    () => renderSlackAuthorizationHandoffPage('https://slack.com/api/oauth.v2.access'),
+    /invalid/i,
+  );
+  assert.doesNotThrow(() => renderSlackAuthorizationHandoffPage(
+    'https://slack.com/openid/connect/authorize?state=safe-state',
+  ));
+});
+
 test('Slack-only sign-in uses a narrow nonce cookie and restores the safe Admin destination', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   let startInput: Record<string, unknown> | undefined;
@@ -413,8 +544,12 @@ test('Slack-only sign-in uses a narrow nonce cookie and restores the safe Admin 
         purpose: 'login', destination: '/admin/channels',
       }),
     });
-    assert.equal(start.status, 302);
-    assert.equal(start.headers.get('location'), `https://slack.com/openid/connect/authorize?state=${state}`);
+    assert.equal(start.status, 200);
+    assert.equal(start.headers.get('location'), null);
+    const handoffHtml = await start.clone().text();
+    assert.match(handoffHtml, /Opening Slack/);
+    assert.match(handoffHtml, new RegExp(`https://slack\\.com/openid/connect/authorize\\?state=${state}`));
+    assert.match(handoffHtml, /src="\/auth\/slack\/continue\.js"/);
     assert.equal('userId' in (startInput ?? {}), false, 'normal login cannot select a Slack subject');
     const cookie = start.headers.get('set-cookie')!;
     assert.match(cookie, /__Secure-chickpea_slack_oidc=login\./);
@@ -473,7 +608,7 @@ test('wrong-account login clears callback authority and returns a non-disclosing
         purpose: 'login', destination: 'https://attacker.example/admin',
       }),
     });
-    assert.equal(start.status, 302);
+    assert.equal(start.status, 200);
     assert.equal(startInput?.destination, '/admin');
     const cookie = start.headers.get('set-cookie')!;
     assert.doesNotMatch(cookie, /attacker/i);
@@ -547,7 +682,7 @@ test('Slack invitation handoff keeps the locator in the fragment/session tab and
         purpose: 'invitation', invitation: locator,
       }),
     });
-    assert.equal(start.status, 302, await start.clone().text());
+    assert.equal(start.status, 200, await start.clone().text());
     assert.equal(startInput?.locator, locator);
     assert.equal(startInput?.destination, '/admin/team');
     const cookie = start.headers.get('set-cookie')!;
@@ -649,10 +784,23 @@ function postSetup(
   app: ReturnType<typeof createAdminRoutes>,
   env: ReturnType<typeof setupEnv>,
   fields: Record<string, string>,
+  path = '/admin/setup',
 ) {
-  return app.request(`${ORIGIN}/admin/setup`, {
+  return app.request(`${ORIGIN}${path}`, {
     method: 'POST', headers: formHeaders(), body: new URLSearchParams(fields),
   }, env);
+}
+
+function postManualSetup(
+  app: ReturnType<typeof createAdminRoutes>,
+  env: ReturnType<typeof setupEnv>,
+  fields: Record<string, string>,
+) {
+  return postSetup(app, env, fields, '/admin/setup/manual');
+}
+
+function buildExpectedManifest() {
+  return buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN });
 }
 
 function formHeaders(): Record<string, string> {
@@ -661,4 +809,10 @@ function formHeaders(): Record<string, string> {
     'sec-fetch-site': 'same-origin',
     'content-type': 'application/x-www-form-urlencoded',
   };
+}
+
+function slackAuthorizationUrlFromHandoff(html: string): URL {
+  const encoded = /data-slack-authorization-link href="([^"]+)"/.exec(html)?.[1];
+  assert.ok(encoded, 'Slack handoff must expose a fallback authorization link');
+  return new URL(encoded.replaceAll('&amp;', '&'));
 }
