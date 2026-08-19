@@ -5,6 +5,7 @@ import {
   type AgentProps,
   type AgentRuntimeConfig,
   type SandboxFactory,
+  useDelivery,
   useInitialData,
   useInstruction,
   useMcpConnection,
@@ -69,6 +70,7 @@ import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
 import {
   getAgentSnapshotStore,
   getConfigStore,
+  getMemoryStateStore,
   getSettingsStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
@@ -116,6 +118,15 @@ import { createWorkspaceArtifactCapability } from '../sandbox/artifact-tool.ts';
 import { createWorkspaceArtifactTool } from '../sandbox/artifact-tool.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
+import {
+  autonomousMemoryInstruction,
+  createAutonomousAgentMemoryTool,
+  saveAutonomousMemory,
+  type AutonomousMemoryInput,
+} from '../memory/autonomous.ts';
+import { resolveAuthorizedAgentMemoryActor } from '../memory/runtime.ts';
+import { createMemoryScopeSlack, verifyMemoryMutationMembership } from '../memory/scope.ts';
+import { parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
 import { resolveSlackIdentityExecutionContext } from '../slack/identity-execution.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
@@ -873,7 +884,19 @@ export function ChickpeaSlack({ id }: AgentProps) {
   const initialData = useInitialData<RuntimePlanV2>();
   if (!initialData) throw new Error('ChickpeaSlack requires RuntimePlanV2 creation data.');
   const plan = parseRuntimePlanV2(initialData);
-  useRuntimePlanAgent(plan, id, { responseMetadataModel: plan.model });
+  const delivery = useDelivery();
+  const currentRequest = parseCurrentRequestEnvelope(delivery.body);
+  useRuntimePlanAgent(plan, id, {
+    responseMetadataModel: plan.model,
+    ...(currentRequest?.slackActorId && currentRequest.slackMessageTs
+      ? {
+          autonomousMemoryRequest: {
+            slackUserId: currentRequest.slackActorId,
+            messageTs: currentRequest.slackMessageTs,
+          },
+        }
+      : {}),
+  });
   return plan.instructions;
 }
 
@@ -881,12 +904,27 @@ export function ChickpeaSlack({ id }: AgentProps) {
 export function useRuntimePlanAgent(
   plan: RuntimePlanV2,
   id: string,
-  options: { responseMetadataModel?: string; sandboxConversationKey?: string } = {},
+  options: {
+    responseMetadataModel?: string;
+    sandboxConversationKey?: string;
+    /** Current host-validated Slack request. Never source this from model tool input. */
+    autonomousMemoryRequest?: { slackUserId: string; messageTs: string };
+  } = {},
 ): void {
   const thinkingLevel = thinkingLevelForModel(plan.model);
   useModel(plan.model, thinkingLevel ? { thinkingLevel } : {});
   if (options.responseMetadataModel) {
     useChickpeaResponseMetadata(options.responseMetadataModel);
+  }
+  if (options.autonomousMemoryRequest) {
+    const memoryTarget = plan.conversation.surface === 'direct_message' ? 'agent' : 'channel';
+    useInstruction(autonomousMemoryInstruction(memoryTarget));
+    useTool(createAutonomousAgentMemoryTool(memoryTarget, (input) =>
+      saveRuntimePlanAutonomousMemory(plan, options.autonomousMemoryRequest!, input).then(({ entry }) => ({
+        slug: entry.slug,
+        version: entry.version,
+      }))
+    ));
   }
   useInstruction('Never invent facts or claim access to context and tools you do not have.');
   for (const skill of resolveProfileSkills(
@@ -907,6 +945,61 @@ export function useRuntimePlanAgent(
   if (plan.sandbox.mode === 'cloudflare') {
     useTool(createRuntimePlanArtifactTool(plan));
   }
+}
+
+async function saveRuntimePlanAutonomousMemory(
+  plan: RuntimePlanV2,
+  request: { slackUserId: string; messageTs: string },
+  input: AutonomousMemoryInput,
+) {
+  const { slackUserId, messageTs } = request;
+  const env = await resolveAgentPlatformEnv();
+  const config = getConfigStore(env);
+  const identityId = plan.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
+  return saveAutonomousMemory({
+    surface: plan.conversation.surface,
+    workspaceId: plan.conversation.workspaceId,
+    channelId: plan.conversation.channelId,
+    threadTs: plan.conversation.threadTs,
+    messageTs,
+    agentId: plan.agentId,
+    slackUserId,
+  }, input, {
+    state: getMemoryStateStore(env),
+    authorize: async () => {
+      const [agent, identity] = await Promise.all([
+        config.getAgent(plan.agentId),
+        config.getSlackIdentity(identityId),
+      ]);
+      const liveIdentityIsValid = agent.enabled &&
+        (agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) === identityId &&
+        identity.teamId === plan.conversation.workspaceId &&
+        (identity.lifecycle === 'connected' || identity.lifecycle === 'degraded');
+      if (!liveIdentityIsValid) return false;
+      if (plan.conversation.surface === 'direct_message') {
+        if (identity.dmState !== 'on' || identity.dmAgentId !== plan.agentId) return false;
+        return Boolean(await resolveAuthorizedAgentMemoryActor({
+          workspaceId: plan.conversation.workspaceId,
+          userId: slackUserId,
+        }, env));
+      }
+      const [channel, assignment, execution] = await Promise.all([
+        config.getChannel(plan.conversation.workspaceId, plan.conversation.channelId),
+        config.getAssignment(plan.conversation.workspaceId, plan.conversation.channelId),
+        resolveSlackIdentityExecutionContext(identityId, env, {
+          config,
+          settings: getSettingsStore(env),
+        }),
+      ]);
+      if (!channel || channel.lifecycle !== 'active' || assignment?.agentId !== plan.agentId ||
+          execution.teamId !== plan.conversation.workspaceId) return false;
+      return verifyMemoryMutationMembership(
+        plan.conversation.channelId,
+        slackUserId,
+        createMemoryScopeSlack(execution.botToken, plan.conversation.workspaceId),
+      );
+    },
+  });
 }
 
 // Must stay a static literal — see the note on ChickpeaRoutineExecution.

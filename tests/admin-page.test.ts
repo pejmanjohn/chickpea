@@ -533,6 +533,7 @@ function runAdminPageHarness(
   memoryCreates: Array<{ body: Record<string, unknown>; idempotencyKey: string }>;
   memoryDeletes: Array<Record<string, unknown>>;
   memoryReviewPosts: Array<Record<string, unknown>>;
+  ownerMemoryGetCaches: Array<string | undefined>;
   scheduledControlPosts: Array<{ routineId: string; body: Record<string, unknown>; idempotencyKey: string }>;
   clipboardWrites: string[];
   resolveClipboardWrite(): void;
@@ -674,6 +675,7 @@ function runAdminPageHarness(
   const memoryCreates: Array<{ body: Record<string, unknown>; idempotencyKey: string }> = [];
   const memoryDeletes: Array<Record<string, unknown>> = [];
   const memoryReviewPosts: Array<Record<string, unknown>> = [];
+  const ownerMemoryGetCaches: Array<string | undefined> = [];
   const scheduledControlPosts: Array<{ routineId: string; body: Record<string, unknown>; idempotencyKey: string }> = [];
   const clipboardWrites: string[] = [];
   let clipboardWriteResolver: (() => void) | null = null;
@@ -1107,7 +1109,7 @@ function runAdminPageHarness(
     }
     return jsonResponse(result);
   };
-  const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<FakeResponse> => {
+  const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string>; cache?: string }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
     if (
       method === 'GET' &&
@@ -1228,6 +1230,7 @@ function runAdminPageHarness(
     }
     const ownerFilesMatch = path.match(/^\/admin\/api\/audit\/memory\/owners\/(agent|channel)\/([^/]+)\/([^/]+)\/files$/);
     if (ownerFilesMatch && method === 'GET') {
+      ownerMemoryGetCaches.push(options?.cache);
       return Promise.resolve(jsonResponse({
         owner: { ownerKind: ownerFilesMatch[1], workspaceId: ownerFilesMatch[2], ownerId: ownerFilesMatch[3] },
         files: defaultMemoryFiles,
@@ -1259,6 +1262,7 @@ function runAdminPageHarness(
     }
     const ownerEntryMatch = path.match(/^\/admin\/api\/audit\/memory\/owners\/(agent|channel)\/([^/]+)\/([^/]+)\/entries\/([^/]+)$/);
     if (ownerEntryMatch && method === 'GET') {
+      ownerMemoryGetCaches.push(options?.cache);
       return Promise.resolve(jsonResponse({
         owner: { ownerKind: ownerEntryMatch[1], workspaceId: ownerEntryMatch[2], ownerId: ownerEntryMatch[3] },
         entry: memoryEntry,
@@ -1287,6 +1291,7 @@ function runAdminPageHarness(
       return Promise.resolve(jsonResponse({ entry: { ...memoryEntry, status: 'forgotten' }, irreversible: true }));
     }
     if (path.match(/^\/admin\/api\/audit\/memory\/owners\/(agent|channel)\/[^/]+\/[^/]+\/entries\/[^/]+\/history$/) && method === 'GET') {
+      ownerMemoryGetCaches.push(options?.cache);
       return Promise.resolve(jsonResponse({ revisions: memoryHistory }));
     }
     if (path.startsWith('/admin/api/audit/memory/stores/') && path.includes('/files?sourceChannelId=') && method === 'GET') {
@@ -2468,6 +2473,7 @@ function runAdminPageHarness(
     memoryCreates,
     memoryDeletes,
     memoryReviewPosts,
+    ownerMemoryGetCaches,
     scheduledControlPosts,
     clipboardWrites,
     resolveClipboardWrite() {
@@ -4764,6 +4770,7 @@ test('Agent owner memory exposes generated index, editable files, history, revie
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-file', 'data-file': 'mem_release' }) });
   await flushAsync();
+  assert.deepEqual(harness.ownerMemoryGetCaches, ['no-store', 'no-store', 'no-store']);
   assert.match(harness.app.innerHTML, /Markdown body/);
   assert.match(harness.app.innerHTML, /<label class="field-label" for="owner-memory-name">Filename<\/label><input class="input mono" id="owner-memory-name" value="release-guidance\.md" readonly aria-readonly="true">/);
   assert.match(harness.app.innerHTML, /Version history \(1\)/);

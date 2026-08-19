@@ -83,6 +83,11 @@ export function createMemoryAdminApi(options: MemoryAdminApiOptions): Hono {
   const now = options.now ?? Date.now;
   const id = options.id ?? randomUUID;
 
+  app.use('*', async (c, next) => {
+    c.header('cache-control', 'no-store');
+    await next();
+  });
+
   app.get('/audit/memory/owners', async (c) => {
     try {
       return c.json({ owners: await options.store(c).listOwners(c.req.query('workspaceId')) });

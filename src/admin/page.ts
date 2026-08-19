@@ -7959,7 +7959,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       requestId: requestId
     };
     render();
-    return api(ownerMemoryBase(ownerKind, workspaceId, ownerId) + "/files").then(function (body) {
+    return api(ownerMemoryBase(ownerKind, workspaceId, ownerId) + "/files", { cache: "no-store" }).then(function (body) {
       var current = state.ownerMemory;
       if (current.requestId !== requestId || !ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
       current.files = body.files || [];
@@ -8005,7 +8005,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     memory.busy = "load";
     memory.error = "";
     render();
-    return Promise.all([api(base), api(base + "/history")]).then(function (parts) {
+    return Promise.all([
+      api(base, { cache: "no-store" }),
+      api(base + "/history", { cache: "no-store" })
+    ]).then(function (parts) {
       var current = state.ownerMemory;
       if (current.requestId !== requestId || current.selectedFile !== entryId) return;
       current.detail = parts[0];

@@ -22,6 +22,10 @@ export interface CurrentRequestEnvelope {
   memoryInfluenced: boolean;
   explicitExternalSideEffectIntent: boolean;
   explicitArtifactDeliveryIntent: boolean;
+  /** Host-validated actor for this delivery. Absent on legacy/non-Slack prompts. */
+  slackActorId?: string;
+  /** Host-validated Slack message coordinate paired with slackActorId. */
+  slackMessageTs?: string;
 }
 
 interface SubmissionPolicyState {
@@ -132,6 +136,8 @@ const WRITE_CAPABLE_MCP_VERBS = new Set([
 export function serializeCurrentRequestEnvelope(
   currentRequest: string,
   memoryInfluenced: boolean,
+  slackActorId?: string,
+  slackMessageTs?: string,
 ): string {
   const payload: CurrentRequestEnvelope = {
     schemaVersion: 1,
@@ -140,6 +146,7 @@ export function serializeCurrentRequestEnvelope(
       hasExplicitExternalSideEffectIntent(currentRequest),
     explicitArtifactDeliveryIntent:
       hasExplicitArtifactDeliveryIntent(currentRequest),
+    ...(slackActorId && slackMessageTs ? { slackActorId, slackMessageTs } : {}),
   };
   return [
     MEMORY_CURRENT_REQUEST_ENVELOPE_START,
@@ -161,12 +168,27 @@ export function parseCurrentRequestEnvelope(
 
   try {
     const value = JSON.parse(json) as Record<string, unknown>;
+    const keys = Object.keys(value);
+    const allowedKeys = new Set([
+      'schemaVersion',
+      'memoryInfluenced',
+      'explicitExternalSideEffectIntent',
+      'explicitArtifactDeliveryIntent',
+      'slackActorId',
+      'slackMessageTs',
+    ]);
+    const hasSlackCoordinates = value.slackActorId !== undefined &&
+      value.slackMessageTs !== undefined;
     if (
       value.schemaVersion !== 1 ||
       typeof value.memoryInfluenced !== 'boolean' ||
       typeof value.explicitExternalSideEffectIntent !== 'boolean' ||
       typeof value.explicitArtifactDeliveryIntent !== 'boolean' ||
-      Object.keys(value).length !== 4
+      (value.slackActorId !== undefined && !isSlackActorId(value.slackActorId)) ||
+      (value.slackMessageTs !== undefined && !isSlackMessageTs(value.slackMessageTs)) ||
+      (value.slackActorId === undefined) !== (value.slackMessageTs === undefined) ||
+      keys.some((key) => !allowedKeys.has(key)) ||
+      keys.length !== (hasSlackCoordinates ? 6 : 4)
     ) {
       return undefined;
     }
@@ -175,10 +197,24 @@ export function parseCurrentRequestEnvelope(
       memoryInfluenced: value.memoryInfluenced,
       explicitExternalSideEffectIntent: value.explicitExternalSideEffectIntent,
       explicitArtifactDeliveryIntent: value.explicitArtifactDeliveryIntent,
+      ...(hasSlackCoordinates
+        ? {
+            slackActorId: value.slackActorId as string,
+            slackMessageTs: value.slackMessageTs as string,
+          }
+        : {}),
     };
   } catch {
     return undefined;
   }
+}
+
+function isSlackActorId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(value);
+}
+
+function isSlackMessageTs(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{1,20}\.\d{1,10}$/.test(value);
 }
 
 /**

@@ -39,22 +39,14 @@ test('canonical memory commands parse after a Slack mention', () => {
   });
 });
 
-test('explicit conversational memory intent parses without rigid command syntax', () => {
-  assert.deepEqual(parseMemoryCommand('remember for this channel: Tone — Be concise'), {
-    kind: 'remember', name: 'Tone', description: 'Be concise', body: 'Be concise',
-  });
-  assert.deepEqual(parseMemoryCommand('Please remember that release updates should be concise.'), {
-    kind: 'remember',
-    name: 'release updates should be concise',
-    description: 'release updates should be concise.',
-    body: 'release updates should be concise.',
-  });
-  assert.deepEqual(parseMemoryCommand('Can you remember that staging deploys require smoke tests?'), {
-    kind: 'remember',
-    name: 'staging deploys require smoke tests',
-    description: 'staging deploys require smoke tests',
-    body: 'staging deploys require smoke tests',
-  });
+test('natural-language save requests defer to semantic Agent assessment', () => {
+  assert.equal(parseMemoryCommand('remember for this channel: Tone — Be concise'), undefined);
+  assert.equal(parseMemoryCommand('Please remember that release updates should be concise.'), undefined);
+  assert.equal(parseMemoryCommand('Can you remember that staging deploys require smoke tests?'), undefined);
+  assert.equal(parseMemoryCommand("Don't forget this: memory acceptance color is cobalt."), undefined);
+  assert.equal(parseMemoryCommand('dont forget that staging deploys require smoke tests'), undefined);
+  assert.equal(parseMemoryCommand('Keep this preference around for the next time we talk.'), undefined);
+  assert.equal(parseMemoryCommand('Make a note for later: production releases need my approval.'), undefined);
   assert.deepEqual(parseMemoryCommand('update memory `tone`: Prefer short answers'), {
     kind: 'update', target: 'tone', description: 'Prefer short answers', body: 'Prefer short answers',
   });
@@ -98,6 +90,8 @@ test('ordinary or ambiguous prose never mutates memory', () => {
     },
   );
   assert.equal(parseMemoryCommand('Keep this in mind for the current answer.'), undefined);
+  assert.equal(parseMemoryCommand("Don't forget this"), undefined);
+  assert.equal(parseMemoryCommand('Do not forget that'), undefined);
   assert.equal(parseMemoryCommand('Can you update the memory?'), undefined);
   assert.equal(parseMemoryCommand('!memory merge only-one')?.kind, 'invalid');
 });
