@@ -21,6 +21,7 @@ import {
 } from './mcp-oauth.ts';
 import { BetterAuthMcpOAuthContinuationStore } from './mcp-oauth-continuation.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
+import { createWorkspaceManagementMcpHandler } from '../management/mcp.ts';
 
 const MCP_BROWSER_BODY_LIMIT_BYTES = 16 * 1024;
 
@@ -30,6 +31,8 @@ export interface McpAuthenticatedPrincipal {
   membershipId: string;
   organizationId: string;
   role: OrganizationRole;
+  /** OAuth client identity from the verified access token (`azp`). */
+  clientId: string;
 }
 
 export type McpRequestHandler = (request: Request) => Promise<Response>;
@@ -40,7 +43,9 @@ export type McpServerFactory = (
 interface McpAuthenticatedRequestHandlerInput {
   baseURL: string;
   getJwks(): Promise<{ keys: JWK[] }>;
-  resolvePrincipal(betterAuthUserId: string): Promise<McpAuthenticatedPrincipal | undefined>;
+  resolvePrincipal(
+    betterAuthUserId: string,
+  ): Promise<Omit<McpAuthenticatedPrincipal, 'clientId'> | undefined>;
   createServer: McpServerFactory;
 }
 
@@ -83,10 +88,12 @@ export function createMcpAuthenticatedRequestHandler(
     if (typeof claims.sub !== 'string' || !claims.sub) {
       return oauthChallenge(401, metadata, 'invalid_token');
     }
+    const clientId = oauthClientId(claims);
+    if (!clientId) return oauthChallenge(401, metadata, 'invalid_token');
 
-    const principal = await input.resolvePrincipal(claims.sub).catch(() => undefined);
-    if (!principal) return forbidden();
-    const server = await input.createServer(principal);
+    const resolved = await input.resolvePrincipal(claims.sub).catch(() => undefined);
+    if (!resolved) return forbidden();
+    const server = await input.createServer({ ...resolved, clientId });
     return server(request);
   };
 }
@@ -207,7 +214,8 @@ async function dispatchMcp(c: Context, options: McpOAuthRuntimeOptions): Promise
     environment: runtime.environment,
     identity: runtime.identity,
     betterAuthOrganizationId: runtime.betterAuthOrganizationId,
-    createServer: options.createServer ?? unavailableServer,
+    createServer: options.createServer ?? ((principal) =>
+      createWorkspaceManagementMcpHandler(principal, c.env as PlatformEnv | undefined)),
   });
   return handler(c.req.raw);
 }
@@ -284,6 +292,13 @@ function grantedScopes(value: unknown): Set<string> {
   return new Set();
 }
 
+function oauthClientId(claims: JWTPayload): string | undefined {
+  const value = claims.client_id ?? claims.azp;
+  return typeof value === 'string' && value.length > 0 && value.length <= 256
+    ? value
+    : undefined;
+}
+
 function oauthChallenge(
   status: 401 | 403,
   metadata: string,
@@ -316,14 +331,6 @@ function forbidden(): Response {
     error: { code: -32003, message: 'Current Chickpea access does not permit this request.' },
     id: null,
   }, { status: 403, headers: { 'Cache-Control': 'no-store' } });
-}
-
-async function unavailableServer(): Promise<McpRequestHandler> {
-  return async () => Response.json({
-    jsonrpc: '2.0',
-    error: { code: -32601, message: 'Workspace management tools are not enabled yet.' },
-    id: null,
-  }, { status: 501, headers: { 'Cache-Control': 'no-store' } });
 }
 
 export async function verifySignedOAuthQuery(

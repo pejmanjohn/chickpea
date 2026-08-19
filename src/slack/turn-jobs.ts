@@ -352,12 +352,37 @@ export class TurnJobStoreLogic {
       }
       const binding = this.readAgentBinding(decision.runtimePlan.conversation.continuityKey);
       const continuing = binding?.instanceId === decision.instanceId ? binding : undefined;
+      const row = this.db.get('SELECT turn_json FROM turn_jobs WHERE id = ?', id);
+      if (!row?.turn_json) throw new Error('TurnJob is unavailable for Flue dispatch.');
+      const turn = JSON.parse(String(row.turn_json)) as NormalizedSlackTurn;
+      const signalThreadTs = turn.sessionThreadTs ?? turn.threadTs;
+      if (
+        turn.workspaceId !== decision.runtimePlan.conversation.workspaceId ||
+        turn.channelId !== decision.runtimePlan.conversation.channelId ||
+        signalThreadTs !== decision.runtimePlan.conversation.threadTs
+      ) {
+        throw new Error('Slack signal coordinates do not match RuntimePlanV2.');
+      }
       const envelope: FlueDispatchEnvelopeV1 = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         agentName: 'chickpea-slack-v2',
         instanceId: decision.instanceId,
         uid: continuing?.uid ?? null,
-        message: { kind: 'user', body: message },
+        message: {
+          kind: 'signal',
+          type: 'slack.message',
+          body: message,
+          tagName: 'slack_message',
+          attributes: {
+            workspaceId: turn.workspaceId,
+            channelId: turn.channelId,
+            threadTs: signalThreadTs,
+            slackUserId: turn.userId,
+            eventId: turn.eventId,
+            messageTs: turn.messageTs,
+            turnJobId: id,
+          },
+        },
         ...(continuing ? {} : { initialData: decision.runtimePlan }),
         idempotencyKey: id,
         ...(!continuing && binding
@@ -1031,14 +1056,13 @@ function parseFlueDispatchEnvelope(value: unknown): FlueDispatchEnvelopeV1 {
     'idempotencyKey',
     'previousBinding',
   ]);
-  if (record.schemaVersion !== 1 || record.agentName !== 'chickpea-slack-v2') {
+  if ((record.schemaVersion !== 1 && record.schemaVersion !== 2) ||
+      record.agentName !== 'chickpea-slack-v2') {
     throw new Error('Flue dispatch envelope version or agent is invalid.');
   }
   const instanceId = validateOpaqueAgentId(record.instanceId, 'instance id');
   const uid = record.uid === null ? null : validateFlueInstanceUid(record.uid);
-  const message = exactObject(record.message, 'Flue dispatch message', ['kind', 'body']);
-  if (message.kind !== 'user') throw new Error('Flue dispatch message kind is invalid.');
-  const body = validateBoundedString(message.body, 'dispatch message body', 1_000_000);
+  const body = parseDispatchMessageBody(record.message, record.schemaVersion);
   const idempotencyKey = validateBoundedString(record.idempotencyKey, 'idempotency key', 256);
   const initialData = record.initialData === undefined
     ? undefined
@@ -1055,15 +1079,85 @@ function parseFlueDispatchEnvelope(value: unknown): FlueDispatchEnvelopeV1 {
   const previousBinding = record.previousBinding === undefined
     ? undefined
     : parseBindingExpectation(record.previousBinding);
+  if (record.schemaVersion === 1) {
+    return {
+      schemaVersion: 1,
+      agentName: 'chickpea-slack-v2',
+      instanceId,
+      uid,
+      message: { kind: 'user', body },
+      ...(initialData ? { initialData } : {}),
+      idempotencyKey,
+      ...(previousBinding ? { previousBinding } : {}),
+    };
+  }
+  const message = parseSlackSignalMessage(record.message, idempotencyKey, initialData);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     agentName: 'chickpea-slack-v2',
     instanceId,
     uid,
-    message: { kind: 'user', body },
+    message,
     ...(initialData ? { initialData } : {}),
     idempotencyKey,
     ...(previousBinding ? { previousBinding } : {}),
+  };
+}
+
+function parseDispatchMessageBody(value: unknown, schemaVersion: 1 | 2): string {
+  const keys = schemaVersion === 1
+    ? ['kind', 'body']
+    : ['kind', 'type', 'body', 'tagName', 'attributes'];
+  const message = exactObject(value, 'Flue dispatch message', keys);
+  if (schemaVersion === 1 && message.kind !== 'user') {
+    throw new Error('Flue dispatch message kind is invalid.');
+  }
+  if (schemaVersion === 2 && message.kind !== 'signal') {
+    throw new Error('Flue dispatch message kind is invalid.');
+  }
+  return validateBoundedString(message.body, 'dispatch message body', 1_000_000);
+}
+
+function parseSlackSignalMessage(
+  value: unknown,
+  idempotencyKey: string,
+  initialData?: RuntimePlanV2,
+): Extract<FlueDispatchEnvelopeV1, { schemaVersion: 2 }>['message'] {
+  const message = exactObject(value, 'Flue dispatch message', [
+    'kind', 'type', 'body', 'tagName', 'attributes',
+  ]);
+  if (message.kind !== 'signal' || message.type !== 'slack.message' ||
+      message.tagName !== 'slack_message') {
+    throw new Error('Flue Slack signal metadata is invalid.');
+  }
+  const attributes = exactObject(message.attributes, 'Flue Slack signal attributes', [
+    'workspaceId', 'channelId', 'threadTs', 'slackUserId', 'eventId', 'messageTs', 'turnJobId',
+  ]);
+  const parsed = {
+    workspaceId: validateBoundedString(attributes.workspaceId, 'Slack workspace id', 128),
+    channelId: validateBoundedString(attributes.channelId, 'Slack channel id', 128),
+    threadTs: validateBoundedString(attributes.threadTs, 'Slack thread timestamp', 80),
+    slackUserId: validateBoundedString(attributes.slackUserId, 'Slack user id', 128),
+    eventId: validateBoundedString(attributes.eventId, 'Slack event id', 256),
+    messageTs: validateBoundedString(attributes.messageTs, 'Slack message timestamp', 80),
+    turnJobId: validateBoundedString(attributes.turnJobId, 'TurnJob id', 256),
+  };
+  if (parsed.turnJobId !== idempotencyKey) {
+    throw new Error('Flue Slack signal does not match its TurnJob.');
+  }
+  if (initialData && (
+    parsed.workspaceId !== initialData.conversation.workspaceId ||
+    parsed.channelId !== initialData.conversation.channelId ||
+    parsed.threadTs !== initialData.conversation.threadTs
+  )) {
+    throw new Error('Flue Slack signal does not match its RuntimePlanV2.');
+  }
+  return {
+    kind: 'signal',
+    type: 'slack.message',
+    body: validateBoundedString(message.body, 'dispatch message body', 1_000_000),
+    tagName: 'slack_message',
+    attributes: parsed,
   };
 }
 

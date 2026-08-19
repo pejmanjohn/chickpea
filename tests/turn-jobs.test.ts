@@ -267,11 +267,25 @@ test('dispatch envelope, receipt, and settlement checkpoints survive retry and r
   };
   const envelope = store.prepareFlueDispatch('dispatch-job', 'answer this', observation);
   assert.deepEqual(envelope, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     agentName: 'chickpea-slack-v2',
     instanceId: decision.instanceId,
     uid: null,
-    message: { kind: 'user', body: 'answer this' },
+    message: {
+      kind: 'signal',
+      type: 'slack.message',
+      body: 'answer this',
+      tagName: 'slack_message',
+      attributes: {
+        workspaceId: 'T1',
+        channelId: 'C1',
+        threadTs: '1000.0001',
+        slackUserId: 'U1',
+        eventId: 'Ev1',
+        messageTs: '1000.0001',
+        turnJobId: 'dispatch-job',
+      },
+    },
     initialData: runtimePlan,
     idempotencyKey: 'dispatch-job',
   });
@@ -329,6 +343,40 @@ test('dispatch envelope, receipt, and settlement checkpoints survive retry and r
     status: 'delivered',
     messageTs: '1800000000.000100',
   });
+});
+
+test('a pending legacy user-message envelope remains readable and retry-stable', () => {
+  const db = openStateDb(':memory:');
+  const store = new TurnJobStoreLogic(db);
+  const runtimePlan = compileRuntimePlanV2({
+    turn: turn(),
+    assignment: assignment(),
+    instructions: 'Frozen instructions.',
+    memoryEpoch: 1,
+    sandboxMode: 'bash',
+  });
+  store.enqueue(job('legacy-dispatch'));
+  const decision = store.freezeRuntimePlan('legacy-dispatch', runtimePlan);
+  const legacyEnvelope = {
+    schemaVersion: 1,
+    agentName: 'chickpea-slack-v2',
+    instanceId: decision.instanceId,
+    uid: null,
+    message: { kind: 'user', body: 'legacy answer' },
+    initialData: runtimePlan,
+    idempotencyKey: 'legacy-dispatch',
+  };
+  db.run(
+    'UPDATE turn_jobs SET dispatch_envelope_json = ? WHERE id = ?',
+    JSON.stringify(legacyEnvelope),
+    'legacy-dispatch',
+  );
+
+  assert.deepEqual(store.getDispatchEnvelope('legacy-dispatch'), legacyEnvelope);
+  assert.deepEqual(
+    store.prepareFlueDispatch('legacy-dispatch', 'legacy answer', { generation: 'retry' }),
+    legacyEnvelope,
+  );
 });
 
 test('pending jobs normalize persisted App Home runtime plans without poisoning the batch', () => {

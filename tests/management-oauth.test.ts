@@ -357,6 +357,17 @@ test('the MCP server factory runs only after audience, scope, and live membershi
   assert.equal(resolutions, 0);
   assert.equal(factories, 0);
 
+  const missingClient = await bearerRequest(resource, await signedAccessToken({
+    privateKey,
+    issuer,
+    audience: resource,
+    scope: MCP_WORKSPACE_SCOPE,
+    clientId: null,
+  }));
+  assert.equal((await handler(missingClient)).status, 401);
+  assert.equal(resolutions, 0);
+  assert.equal(factories, 0);
+
   const token = await signedAccessToken({
     privateKey,
     issuer,
@@ -372,6 +383,7 @@ test('the MCP server factory runs only after audience, scope, and live membershi
       membershipId: 'membership_1',
       organizationId: 'org_1',
       role: 'admin',
+      clientId: 'client_test',
     },
   });
   assert.equal(resolutions, 1);
@@ -389,9 +401,13 @@ async function signedAccessToken(input: {
   issuer: string;
   audience: string;
   scope: string;
+  clientId?: string | null;
 }): Promise<string> {
   const now = Math.floor(Date.now() / 1_000);
-  return new SignJWT({ scope: input.scope })
+  return new SignJWT({
+    scope: input.scope,
+    ...(input.clientId === null ? {} : { azp: input.clientId ?? 'client_test' }),
+  })
     .setProtectedHeader({ alg: 'EdDSA', kid: 'test-key' })
     .setIssuer(input.issuer)
     .setAudience(input.audience)

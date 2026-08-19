@@ -119,6 +119,7 @@ import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import { resolveSlackIdentityExecutionContext } from '../slack/identity-execution.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
+import { useWorkspaceManagementSlackTools } from '../management/slack-tools.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
 import {
@@ -874,6 +875,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
   if (!initialData) throw new Error('ChickpeaSlack requires RuntimePlanV2 creation data.');
   const plan = parseRuntimePlanV2(initialData);
   useRuntimePlanAgent(plan, id, { responseMetadataModel: plan.model });
+  useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv);
   return plan.instructions;
 }
 
