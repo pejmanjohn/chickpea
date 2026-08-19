@@ -916,6 +916,10 @@ export interface IdentityStore extends HumanIdentityDirectory {
   activateFirstOwner(input: ActivateFirstOwnerInput): Promise<IdentityResolution>;
   activateInvitation(input: ActivateInvitationInput): Promise<IdentityResolution>;
   resolveSlackIdentity(slackTeamId: string, slackUserId: string, organizationId?: string): Promise<IdentityResolution | undefined>;
+  resolveBetterAuthIdentity(
+    betterAuthUserId: string,
+    organizationId?: string,
+  ): Promise<IdentityResolution | undefined>;
   listExternalIdentities(): Promise<SlackIdentityBinding[]>;
   listMemberships(): Promise<Membership[]>;
   getUser(userId: string): Promise<User | undefined>;
@@ -1013,6 +1017,7 @@ export type IdentityRpcRequest =
   | { kind: 'activate_first_owner'; input: ActivateFirstOwnerInput }
   | { kind: 'activate_invitation'; input: ActivateInvitationInput }
   | { kind: 'resolve_slack_identity'; slackTeamId: string; slackUserId: string; organizationId?: string }
+  | { kind: 'resolve_better_auth_identity'; betterAuthUserId: string; organizationId?: string }
   | { kind: 'list_external_identities' }
   | { kind: 'list_memberships' }
   | { kind: 'get_user'; userId: string }

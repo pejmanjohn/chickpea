@@ -45,6 +45,22 @@ test('Cloudflare identity proxy forwards the canonical Slack tuple operation', a
   }]);
 });
 
+test('Cloudflare identity proxy uses the indexed Better Auth binding lookup', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const stub = rpcStub(calls, { kind: 'identity_resolution', resolution });
+  const store = new CfIdentityStore(stub);
+
+  assert.deepEqual(
+    await store.resolveBetterAuthIdentity('ba_user_owner', 'org_oss'),
+    resolution,
+  );
+  assert.deepEqual(calls, [{
+    kind: 'resolve_better_auth_identity',
+    betterAuthUserId: 'ba_user_owner',
+    organizationId: 'org_oss',
+  }]);
+});
+
 test('Cloudflare proxy forwards the atomic membership authority mutation', async () => {
   const calls: IdentityRpcRequest[] = [];
   const input = {

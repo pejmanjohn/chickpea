@@ -24,7 +24,21 @@ Control-plane access is invitation-only after bootstrap. An Owner creates a seve
 
 Chickpea roles are `owner`, `admin`, and `member`. Slack workspace roles do not grant Chickpea permissions. The last active Owner cannot be demoted, suspended, or removed. Session and personal-token authority is revoked when membership authority changes.
 
-Members of assigned Slack channels may interact with Agents without control-plane membership. Chickpea membership governs the Admin control plane and future MCP administration, not ordinary channel conversation.
+Members of assigned Slack channels may interact with Agents without control-plane membership. Chickpea membership governs Admin, Slack management tools, and MCP administration—not ordinary channel conversation. Owners can manage members and operational configuration; Admins can manage operational configuration; members have neither management authority.
+
+## Coding-agent MCP authorization
+
+The public management MCP is the exact deployment's `/mcp` resource. It uses OAuth 2.1 authorization-code flow with PKCE, explicit `chickpea:workspace` consent, resource indicators, short-lived signed JWT access tokens, revocation, and live Chickpea membership resolution on every request. Protected-resource and authorization-server metadata are published under the standard `/.well-known` routes.
+
+Current public clients register through a bounded Dynamic Client Registration compatibility window. Chickpea accepts only public clients, exact HTTPS or loopback redirect URIs, authorization-code plus optional refresh-token grants, and `none` token-endpoint authentication. Wildcards, remote HTTP redirects, confidential unauthenticated clients, oversized metadata, and rate/quota overflow are rejected. DCR is a compatibility bridge, not the long-term trust model; client-ID metadata documents remain gated until a Workers-safe resolver can prove DNS answers, reject special addresses, pin the address through TLS, and refuse redirects.
+
+Slack OIDC remains the human proof during MCP authorization. Chickpea stores an opaque one-use continuation before redirecting to Slack, then resumes only that server-created path. The access token's subject is mapped back to the exact live Slack binding, organization, active membership, role, and access overlay. A demoted, suspended, removed, or mismatched person loses MCP authority even if a previously issued JWT has not reached its nominal expiry. The client ID and actor bind confirmations and operation polling; neither is accepted from model-selected tool arguments.
+
+## Delegated credential setup
+
+MCP and Slack tools never accept provider keys, OAuth codes, connector headers, repository installation credentials, Slack bot tokens or signing secrets, or other secrets. A management operation instead creates a one-use setup link for one frozen action and target. The link expires after 24 hours; its raw capability exists only in the URL fragment, is exchanged for a path-scoped HttpOnly browser session, and is scrubbed before navigation. The link holder does not need a Chickpea session and cannot change the requester, organization, target, scopes, or action.
+
+The setup page uses no-store, no-referrer, frame denial, a restrictive content security policy, same-origin mutation checks, bounded bodies, and write-only credential fields. Expiry, revocation, replay, wrong action, target revision change, or browser-session mismatch makes no configuration change. Successful validation activates the exact connection once and writes a durable non-secret receipt. Slack-origin requests post that receipt to the original thread; MCP-origin requests expose it through operation polling and send it to the initiating Slack user through the workspace-default bot.
 
 ## Secrets and recovery
 

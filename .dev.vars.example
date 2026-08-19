@@ -13,6 +13,8 @@
 # Non-secret defaults live in product code so Cloudflare does not expose them
 # as customer-editable Deploy fields. Advanced operators may still set the
 # documented runtime kill switches after deployment when needed.
+# `CHICKPEA_LIVE_CHANNEL_CONFIG=false` restores write-once thread snapshots for
+# new Channel admissions without changing already admitted TurnJobs.
 
 # Channel memory is always on for eligible assigned channels. There is no
 # memory feature flag or opt-out secret to configure.

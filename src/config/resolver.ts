@@ -92,6 +92,7 @@ export async function resolveAssignment(
       ? { channelPromptAddendum: channel.additionalInstructions }
       : {}),
     participationMode: channel?.participationMode ?? 'ambient',
+    ...(channel?.revision ? { channelRevision: channel.revision } : {}),
     agent,
   };
 }

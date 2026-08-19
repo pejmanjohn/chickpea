@@ -27,6 +27,7 @@ import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
 import {
   safeSetupDestination,
+  safeSlackLoginDestination,
   slackAuthorizationHandoffScript,
   slackManualSetupClientScript,
   slackSetupClientScript,
@@ -149,6 +150,10 @@ import {
   stageMcpSecretCleanup,
   type ResolvedMcpSecrets,
 } from '../config/mcp-secrets.ts';
+import {
+  clearRepointedMcpCredentials,
+  safeUrlOrigin,
+} from '../config/mcp-connection-lifecycle.ts';
 import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
 import { validateMcpUrl } from '../config/mcp-url.ts';
 import { resolveAgentModel, type ModelResolvableAgent } from '../config/model-policy.ts';
@@ -197,6 +202,7 @@ import {
   getConfigStore,
   getIdentityStore,
   getMemoryStateStore,
+  getManagementStore,
   getRoutineStore,
   getSettingsStore,
   getSlackCredentialDependencies,
@@ -340,6 +346,8 @@ import {
 import { PersonalTokenService } from '../auth/personal-token.ts';
 import type { AdminAuthenticationService, AuthPrincipal } from '../auth/types.ts';
 import { decodeRecoverySecret } from '../auth/recovery-secret.ts';
+import type { ManagementStore } from '../management/store.ts';
+import { createLiveWorkspaceManagementService } from '../management/live-service.ts';
 
 interface BetterAuthContext {
   environment: BetterAuthEnvironment;
@@ -365,6 +373,7 @@ interface AdminRoutesOptions {
   authService?: AdminAuthenticationService | undefined;
   betterAuthEnvironment?: BetterAuthEnvironment | undefined;
   identity?: IdentityStore | undefined;
+  management?: ManagementStore | undefined;
   /**
    * Explicit encrypted Slack credential realm for tests and embedded hosts.
    * Production resolves persistent TAG_STATE and its target keyring from the
@@ -1025,6 +1034,51 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.usage ?? getUsageStore(c.env as PlatformEnv | undefined);
   const work = (c: Context) =>
     options.work ?? getWorkStore(c.env as PlatformEnv | undefined);
+  const management = (c: Context) =>
+    options.management ?? getManagementStore(c.env as PlatformEnv | undefined);
+  const managementService = (c: Context) => {
+    const env = c.env as PlatformEnv | undefined;
+    const identityStore = identity(c);
+    const settingsStore = settings(c);
+    return createLiveWorkspaceManagementService(env, {
+      identity: identityStore,
+      settings: settingsStore,
+      usage: usage(c),
+      overrides: {
+        config: store(c),
+        management: management(c),
+        memory: memory(c),
+        routines: routines(c),
+        work: work(c),
+        setupBaseUrl: requestOrigin(c),
+        countPendingSlackIdentityDeliveries: (identityId) =>
+          slackState(c).countPendingDeliveriesForSlackIdentity(identityId),
+        clearSlackIdentityCredentials: async (identityId) => {
+          const current = await resolveSlackIdentityCredentials(
+            identityId,
+            env,
+            slackCredentialResolutionDependencies(c) ?? settingsStore,
+          );
+          await clearSlackIdentityCredentials(
+            slackCredentialWriteTarget(c),
+            identityId,
+            current.connectionRevision,
+          );
+        },
+        cancelSlackIdentitySetup: (identityId, expectedRevision) =>
+          cancelSlackIdentityConnection({
+            config: store(c),
+            settings: settingsStore,
+            identityId,
+            expectedRevision,
+            ...(slackCredentialDependencies(c)
+              ? { credentialDependencies: slackCredentialDependencies(c) }
+              : {}),
+          }),
+      },
+    });
+  };
+  const sharedManagementEnabled = (!options.store && !options.identity) || Boolean(options.management);
   const slackState = (c: Context) =>
     options.slackState ?? getSlackStateStore(c.env as PlatformEnv | undefined);
   app.use('*', async (c, next) => {
@@ -1688,7 +1742,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     authResponseHeaders(c);
     const context = await slackAdmissionContext(c).catch(() => undefined);
     if (!context) return c.notFound();
-    return c.html(renderSlackSignInPage(safeSetupDestination(c.req.query('destination'))), 401);
+    return c.html(renderSlackSignInPage(safeSlackLoginDestination(c.req.query('destination'))), 401);
   });
   app.post('/auth/slack/oidc/start', async (c) => {
     authResponseHeaders(c);
@@ -1732,12 +1786,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         });
       } else if (purpose === 'login') {
         operationKey = 'login';
-        retryDestination = safeSetupDestination(form.destination);
+        retryDestination = safeSlackLoginDestination(form.destination);
         await limiter.assertAllowed('slack_oidc_start_operation', operationKey);
         started = await context.service.startLogin({
           browserBinding,
           redirectUri: `${requestOrigin(c)}/auth/slack/oidc/callback`,
-          destination: safeSetupDestination(form.destination),
+          destination: safeSlackLoginDestination(form.destination),
         });
       } else {
         const locator = form.invitation?.trim() ?? '';
@@ -2705,6 +2759,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const secret = context?.environment.secret ?? options.authSecret;
       return secret ? authRateLimiter(c, secret) : undefined;
     },
+    ...(sharedManagementEnabled
+      ? { management: managementService }
+      : {}),
   }));
   app.route('/admin/api', createMemoryAdminApi({
     store: memory,
@@ -3124,6 +3181,37 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
+    if (sharedManagementEnabled) {
+      const principal = principalByContext.get(c);
+      if (!principal) return c.json({ error: 'forbidden' }, 403);
+      const context = {
+        userId: principal.userId,
+        membershipId: principal.membershipId,
+        organizationId: principal.organizationId,
+        origin: { kind: 'admin' as const, sessionId: principal.correlationId },
+      };
+      const service = managementService(c);
+      const proposed = await service.applyWorkspaceChanges({
+        context,
+        idempotencyKey: `admin:provider:remove:${principal.correlationId}:${id}`,
+        operations: [{
+          itemId: 'remove_provider',
+          kind: 'remove_provider_credential',
+          providerId: id,
+        }],
+      });
+      const proposalId = proposed.outcomes[0]?.proposalId;
+      if (!proposalId) {
+        return c.json({ error: proposed.outcomes[0]?.code ?? 'provider_key_unavailable' }, 409);
+      }
+      await service.confirmWorkspaceChange({ context, proposalId });
+      const source = (await describeProviderKeySources(platformEnv, settingsStore))[id];
+      return c.json({
+        ok: true,
+        provider: providerSummary(id, source),
+        pinnedAgentCount: await countPinnedAgents(store(c), id),
+      });
+    }
     const resolved = await deleteProviderApiKey(
       id,
       platformEnv,
@@ -4057,12 +4145,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       // pointing at the new origin with the old credential still attached —
       // which is precisely the leak this closes, and no later PATCH would
       // detect it, because by then the stored URL already matches.
-      const repointed = mcpConnectionsWithChangedOrigin(current.mcpServers, patch.mcpServers);
-      for (const { connectionId, headerNames } of repointed) {
-        const ref = { agentId, connectionId };
-        await deleteMcpSecrets(ref, headerNames, c.env as PlatformEnv | undefined, settings(c));
-        await deleteMcpOAuthSettings(ref, settings(c));
-      }
+      await clearRepointedMcpCredentials({
+        agentId,
+        current: current.mcpServers,
+        next: patch.mcpServers,
+        ...(c.env ? { env: c.env as PlatformEnv } : {}),
+        settings: settings(c),
+      });
       const updated = await configStore.updateAgent(
         agentId,
         patch,
@@ -6223,7 +6312,10 @@ function encodeSlackOidcCookie(
   nonce: string,
   destination: string,
 ): string {
-  return `${purpose}.${browserBinding}.${nonce}.${encodeURIComponent(safeSetupDestination(destination))}`;
+  const safeDestination = purpose === 'login'
+    ? safeSlackLoginDestination(destination)
+    : safeSetupDestination(destination);
+  return `${purpose}.${browserBinding}.${nonce}.${encodeURIComponent(safeDestination)}`;
 }
 
 function decodeSlackOidcCookie(value: string | undefined): {
@@ -6240,7 +6332,12 @@ function decodeSlackOidcCookie(value: string | undefined): {
       !nonce || nonce.length < 32 || nonce.length > 512 ||
       /\s/.test(browserBinding) || /\s/.test(nonce)) return undefined;
   let destination: string;
-  try { destination = safeSetupDestination(decodeURIComponent(destinationParts.join('.'))); }
+  try {
+    const decoded = decodeURIComponent(destinationParts.join('.'));
+    destination = purpose === 'login'
+      ? safeSlackLoginDestination(decoded)
+      : safeSetupDestination(decoded);
+  }
   catch { return undefined; }
   return { purpose, browserBinding, nonce, destination };
 }
@@ -7365,15 +7462,6 @@ function agentStillReferenced(c: Context, error: AgentStillReferencedError): Res
   }, 409);
 }
 
-/** Origin of a URL, or undefined when it will not parse. Never throws. */
-function safeUrlOrigin(value: string): string | undefined {
-  try {
-    return new URL(value).origin;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * The origin an MCP connection's stored secrets were saved against. Returns
  * undefined when the agent or connection does not exist, so callers fail closed
@@ -7401,27 +7489,6 @@ async function savedMcpConnectionOrigin(
  * to the new one on the next turn. Drop the secrets whenever an existing
  * connection's origin changes; the operator re-enters them for the new target.
  */
-function mcpConnectionsWithChangedOrigin(
-  current: CustomAgentConfig['mcpServers'],
-  next: CustomAgentConfig['mcpServers'] | undefined,
-): { connectionId: string; headerNames: string[] }[] {
-  if (!next) return [];
-  const nextById = new Map(next.map((server) => [server.id, server]));
-  const changed: { connectionId: string; headerNames: string[] }[] = [];
-  for (const existing of current) {
-    const replacement = nextById.get(existing.id);
-    if (!replacement) continue;
-    const before = safeUrlOrigin(existing.url);
-    const after = safeUrlOrigin(replacement.url);
-    if (before !== undefined && after !== undefined && before === after) continue;
-    changed.push({
-      connectionId: existing.id,
-      headerNames: [...new Set([...existing.headerNames, ...replacement.headerNames])],
-    });
-  }
-  return changed;
-}
-
 function agentDeleteIdempotencyKey(c: Context, agentId: string): string {
   const supplied = c.req.header('idempotency-key')?.trim();
   return supplied && /^[A-Za-z0-9_.:-]{1,512}$/.test(supplied)

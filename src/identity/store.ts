@@ -174,6 +174,7 @@ export class IdentityStoreLogic {
       case 'activate_first_owner': return { kind: 'identity_resolution', resolution: this.activateFirstOwner(request.input) };
       case 'activate_invitation': return { kind: 'identity_resolution', resolution: this.activateInvitation(request.input) };
       case 'resolve_slack_identity': return { kind: 'identity_resolution', resolution: this.resolveSlackIdentity(request.slackTeamId, request.slackUserId, request.organizationId) ?? null };
+      case 'resolve_better_auth_identity': return { kind: 'identity_resolution', resolution: this.resolveBetterAuthIdentity(request.betterAuthUserId, request.organizationId) ?? null };
       case 'list_external_identities': return { kind: 'external_identities', externalIdentities: this.listExternalIdentities() };
       case 'list_memberships': return { kind: 'memberships', memberships: this.listMemberships() };
       case 'get_user': return { kind: 'user', user: this.getUser(request.userId) ?? null };
@@ -2068,6 +2069,24 @@ export class IdentityStoreLogic {
        WHERE b.slack_team_id = ? AND b.slack_user_id = ? ${organizationId ? 'AND b.organization_id = ?' : ''}
        LIMIT 1`,
       slackTeamIdValue, slackUserIdValue, ...(organizationId ? [organizationId] : []),
+    );
+    return row ? resolutionFromRow(row) : undefined;
+  }
+
+  resolveBetterAuthIdentity(
+    betterAuthUserId: string,
+    organizationId?: string,
+  ): IdentityResolution | undefined {
+    const row = this.db.get(
+      `SELECT
+        b.*, u.display_name AS u_display_name, u.created_at AS u_created_at, u.updated_at AS u_updated_at,
+        m.role AS m_role, m.status AS m_status, m.created_at AS m_created_at, m.updated_at AS m_updated_at
+       FROM identity_slack_bindings b
+       JOIN identity_users u ON u.user_id = b.user_id
+       JOIN identity_memberships m ON m.membership_id = b.membership_id
+       WHERE b.better_auth_user_id = ? ${organizationId ? 'AND b.organization_id = ?' : ''}
+       LIMIT 1`,
+      betterAuthUserId, ...(organizationId ? [organizationId] : []),
     );
     return row ? resolutionFromRow(row) : undefined;
   }

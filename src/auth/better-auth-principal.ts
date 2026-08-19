@@ -46,9 +46,9 @@ export class BetterAuthDirectory implements HumanIdentityDirectory {
   }
 
   async resolveBetterAuthUser(betterAuthUserId: string): Promise<IdentityResolution | undefined> {
-    const binding = (await this.input.access.listExternalIdentities()).find((candidate) =>
-      candidate.betterAuthUserId === betterAuthUserId);
-    if (!binding) return undefined;
+    const direct = await this.input.access.resolveBetterAuthIdentity(betterAuthUserId);
+    if (!direct) return undefined;
+    const { binding } = direct;
     const [betterAuthMembership, organization, user, membership, overlay] = await Promise.all([
       this.input.backend.getMembership(binding.betterAuthMembershipId),
       this.input.access.getOrganization(),

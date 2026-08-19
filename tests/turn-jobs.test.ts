@@ -267,11 +267,25 @@ test('dispatch envelope, receipt, and settlement checkpoints survive retry and r
   };
   const envelope = store.prepareFlueDispatch('dispatch-job', 'answer this', observation);
   assert.deepEqual(envelope, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     agentName: 'chickpea-slack-v2',
     instanceId: decision.instanceId,
     uid: null,
-    message: { kind: 'user', body: 'answer this' },
+    message: {
+      kind: 'signal',
+      type: 'slack.message',
+      body: 'answer this',
+      tagName: 'slack_message',
+      attributes: {
+        workspaceId: 'T1',
+        channelId: 'C1',
+        threadTs: '1000.0001',
+        slackUserId: 'U1',
+        eventId: 'Ev1',
+        messageTs: '1000.0001',
+        turnJobId: 'dispatch-job',
+      },
+    },
     initialData: runtimePlan,
     idempotencyKey: 'dispatch-job',
   });
@@ -329,6 +343,40 @@ test('dispatch envelope, receipt, and settlement checkpoints survive retry and r
     status: 'delivered',
     messageTs: '1800000000.000100',
   });
+});
+
+test('a pending legacy user-message envelope remains readable and retry-stable', () => {
+  const db = openStateDb(':memory:');
+  const store = new TurnJobStoreLogic(db);
+  const runtimePlan = compileRuntimePlanV2({
+    turn: turn(),
+    assignment: assignment(),
+    instructions: 'Frozen instructions.',
+    memoryEpoch: 1,
+    sandboxMode: 'bash',
+  });
+  store.enqueue(job('legacy-dispatch'));
+  const decision = store.freezeRuntimePlan('legacy-dispatch', runtimePlan);
+  const legacyEnvelope = {
+    schemaVersion: 1,
+    agentName: 'chickpea-slack-v2',
+    instanceId: decision.instanceId,
+    uid: null,
+    message: { kind: 'user', body: 'legacy answer' },
+    initialData: runtimePlan,
+    idempotencyKey: 'legacy-dispatch',
+  };
+  db.run(
+    'UPDATE turn_jobs SET dispatch_envelope_json = ? WHERE id = ?',
+    JSON.stringify(legacyEnvelope),
+    'legacy-dispatch',
+  );
+
+  assert.deepEqual(store.getDispatchEnvelope('legacy-dispatch'), legacyEnvelope);
+  assert.deepEqual(
+    store.prepareFlueDispatch('legacy-dispatch', 'legacy answer', { generation: 'retry' }),
+    legacyEnvelope,
+  );
 });
 
 test('pending jobs normalize persisted App Home runtime plans without poisoning the batch', () => {
@@ -444,11 +492,24 @@ test('observation matching uses exact receipts and rejects receiptless ambiguity
   const start = (id: string) => {
     store.enqueue(job(id));
     const decision = store.freezeRuntimePlan(id, runtimePlan);
-    store.prepareFlueDispatch(id, `message ${id}`, { generation: id });
+    store.prepareFlueDispatch(id, `message ${id}`, {
+      generation: id,
+      harnessRevision: runtimePlan.harnessRevision,
+      ...(runtimePlan.configurationRevision
+        ? { configurationRevision: runtimePlan.configurationRevision }
+        : {}),
+    });
     return decision.instanceId;
   };
   const instanceId = start('first');
-  assert.equal(store.matchFlueObservation(instanceId, 'sub-first')?.turnJobId, 'first');
+  assert.deepEqual(store.matchFlueObservation(instanceId, 'sub-first'), {
+    turnJobId: 'first',
+    instanceId,
+    submissionId: 'sub-first',
+    generation: 'first',
+    harnessRevision: runtimePlan.harnessRevision,
+    configurationRevision: runtimePlan.configurationRevision,
+  });
   start('second');
   assert.equal(store.matchFlueObservation(instanceId, 'sub-unknown'), undefined);
   store.recordFlueReceipt('first', {
@@ -593,7 +654,7 @@ test('runtime drain counts separate turn authorities and pending Slack cleanup',
   });
 });
 
-test('runtime plans freeze once and record surface-specific rotation decisions', () => {
+test('runtime plans freeze once and Slack-history rotations do not require a reset notice', () => {
   const store = newStore(() => 1_800_000_000_000);
   const dmTurn = turn({
     channelId: 'D1',
@@ -641,7 +702,7 @@ test('runtime plans freeze once and record surface-specific rotation decisions',
     assignment: { ...dmAssignment, model: 'anthropic/claude-haiku-4-5' },
   });
   const dmDecision = store.freezeRuntimePlan('dm-rotated', rotated);
-  assert.equal(dmDecision.continuityNoticeRequired, true);
+  assert.equal(dmDecision.continuityNoticeRequired, false);
 
   const driftedRetry = compileRuntimePlanV2({
     turn: dmTurn,

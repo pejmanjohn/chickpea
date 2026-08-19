@@ -12,7 +12,7 @@ import {
   resolveSlackControlPlaneAppCredentials,
   type SlackCredentialDependencies,
 } from '../slack/identity-credentials.ts';
-import { safeSetupDestination } from './setup-handoff.ts';
+import { safeSetupDestination, safeSlackLoginDestination } from './setup-handoff.ts';
 import {
   createBetterAuth,
   type BetterAuthAdmissionOperation,
@@ -136,7 +136,7 @@ export class SlackAdmissionService {
       purpose: 'login',
       browserBinding: input.browserBinding,
       redirectUri: input.redirectUri,
-      destination: safeSetupDestination(input.destination),
+      destination: safeSlackLoginDestination(input.destination),
       teamId: organization.slackTeamId,
       appId: credentials.appId,
       clientId: credentials.clientId,

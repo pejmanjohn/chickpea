@@ -18,6 +18,13 @@ export function safeSetupDestination(value: string | null | undefined): string {
   return '/admin';
 }
 
+/** Login may resume one opaque server-side MCP authorization continuation. */
+export function safeSlackLoginDestination(value: string | null | undefined): string {
+  const candidate = value?.trim() ?? '';
+  if (/^\/auth\/mcp\/resume\/[A-Za-z0-9_-]{43,128}$/.test(candidate)) return candidate;
+  return safeSetupDestination(candidate);
+}
+
 /** Fragment capability handoff for the seven-day Slack bootstrap transaction. */
 export function slackSetupClientScript(): string {
   return `(function () {

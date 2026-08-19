@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { resolveStateDbPath } from '../state/node-state-db.ts';
 import type {
   BetterAuthDatabaseBackend,
+  BetterAuthMcpOAuthContinuationRecord,
   BetterAuthMembershipRecord,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
@@ -104,6 +105,60 @@ export class NodeBetterAuthBackend implements BetterAuthDatabaseBackend {
       `SELECT id, organizationId, userId, role, createdAt FROM member
        WHERE userId = ? AND organizationId = ? LIMIT 1`,
     ).get(userId, organizationId));
+  }
+
+  async countMcpOAuthClients(): Promise<number> {
+    const row = this.database.prepare(
+      `SELECT count(*) AS count FROM oauthClient
+       WHERE tokenEndpointAuthMethod = 'none' AND userId IS NULL`,
+    ).get() as { count?: number } | undefined;
+    return Number(row?.count ?? 0);
+  }
+
+  async pruneUnusedMcpOAuthClients(createdBefore: string): Promise<number> {
+    const result = this.database.prepare(
+      `DELETE FROM oauthClient
+       WHERE tokenEndpointAuthMethod = 'none' AND userId IS NULL
+         AND createdAt < ?
+         AND NOT EXISTS (
+           SELECT 1 FROM oauthAccessToken WHERE oauthAccessToken.clientId = oauthClient.clientId
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM oauthRefreshToken WHERE oauthRefreshToken.clientId = oauthClient.clientId
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM oauthConsent WHERE oauthConsent.clientId = oauthClient.clientId
+         )`,
+    ).run(createdBefore);
+    return Number(result.changes);
+  }
+
+  async putMcpOAuthContinuation(record: BetterAuthMcpOAuthContinuationRecord): Promise<void> {
+    this.database.prepare(
+      `INSERT INTO chickpea_mcp_oauth_continuation
+         (id_hash, authorization_path, expires_at, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(record.idHash, record.authorizationPath, record.expiresAt, record.createdAt);
+  }
+
+  async consumeMcpOAuthContinuation(idHash: string, now: number): Promise<string | null> {
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const row = this.database.prepare(
+        `SELECT authorization_path, expires_at
+         FROM chickpea_mcp_oauth_continuation WHERE id_hash = ? LIMIT 1`,
+      ).get(idHash) as { authorization_path?: string; expires_at?: number } | undefined;
+      this.database.prepare(
+        'DELETE FROM chickpea_mcp_oauth_continuation WHERE id_hash = ?',
+      ).run(idHash);
+      this.database.exec('COMMIT;');
+      if (!row || typeof row.authorization_path !== 'string' ||
+          typeof row.expires_at !== 'number' || row.expires_at <= now) return null;
+      return row.authorization_path;
+    } catch (error) {
+      this.database.exec('ROLLBACK;');
+      throw error;
+    }
   }
 
   close(): void {

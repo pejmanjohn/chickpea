@@ -5,6 +5,7 @@ import { createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts
 import { createBetterAuthRuntimeRoutes } from '../src/auth/better-auth-runtime.ts';
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const ORIGIN = 'https://chickpea.example';
 const SECRET = Buffer.from(Uint8Array.from({ length: 32 }, (_, index) => (index * 53 + 17) % 256))
@@ -113,6 +114,44 @@ test('the unauthenticated auth routes cap the request body before buffering it',
   }));
   assert.equal(response.status, 413);
   identity.close();
+});
+
+test('runtime DCR rate limits persist across fresh per-request handlers', async () => {
+  const identity = new SqliteIdentityStore(':memory:');
+  try {
+    await createSlackOwner(identity, { suffix: 'runtime-dcr' });
+    const control = await identity.getAuthControl();
+    assert.ok(control);
+    await identity.updateAuthControl({
+      expectedRevision: control.revision,
+      canonicalAdminOrigin: ORIGIN,
+    });
+    const app = createBetterAuthRuntimeRoutes({ identity, authSecret: SECRET });
+    const registration = {
+      application_type: 'native',
+      client_name: 'Codex',
+      grant_types: ['authorization_code', 'refresh_token'],
+      redirect_uris: ['http://127.0.0.1:47321/callback'],
+      response_types: ['code'],
+      scope: 'chickpea:workspace',
+      token_endpoint_auth_method: 'none',
+    };
+    for (let index = 0; index < 20; index += 1) {
+      const response = await app.request(jsonRequest(
+        '/api/auth/oauth2/register',
+        { ...registration, client_name: `Codex ${index}` },
+      ));
+      assert.equal(response.status, 201, `registration ${index}: ${await response.clone().text()}`);
+    }
+    const limited = await app.request(jsonRequest(
+      '/api/auth/oauth2/register',
+      { ...registration, client_name: 'Codex limited' },
+    ));
+    assert.equal(limited.status, 429);
+    assert.deepEqual(await limited.json(), { error: 'registration_rate_limited' });
+  } finally {
+    identity.close();
+  }
 });
 
 function jsonRequest(

@@ -27,6 +27,7 @@ import {
   seededAssignments,
 } from '../../src/config/seed.ts';
 import type { CustomAgentConfig } from '../../src/config/types.ts';
+import { SqliteAgentSnapshotStore } from '../../src/config/snapshot-store.ts';
 
 /** The exec channel / root thread the default fixtures target. */
 const EXEC_CHANNEL = 'C_EXEC';
@@ -1484,7 +1485,7 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S34',
-    title: 'started thread keeps its initial instructions after an admin edit',
+    title: 'the next event in a started thread adopts edited instructions',
     config: snapshotScenarioConfig('agent_snapshot_freeze'),
     async run(instance) {
       await instance.postEvent(
@@ -1520,15 +1521,83 @@ export const scenarios: Scenario[] = [
       );
       await waitForProviderCallCount(instance, 4);
       assertProviderPrompt(instance, -1, {
+        includes: 'SNAPSHOT_BETA_INSTRUCTIONS',
+        excludes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
+      });
+      assert.doesNotMatch(
+        JSON.stringify(instance.backend.wireLog),
+        /fresh conversation context/i,
+      );
+      assert.ok(instance.configDbPath);
+      const snapshots = new SqliteAgentSnapshotStore(instance.configDbPath);
+      try {
+        assert.equal(
+          await snapshots.get('TDEMO:C_EXEC:1782771600.000100'),
+          undefined,
+          'new Channel events must not create AgentSnapshot rows',
+        );
+      } finally {
+        snapshots.close();
+      }
+    },
+  },
+  {
+    id: 'S34R',
+    title: 'the live-config rollback restores write-once Channel snapshots',
+    config: {
+      ...snapshotScenarioConfig('agent_snapshot_rollback'),
+      env: { CHICKPEA_LIVE_CHANNEL_CONFIG: 'false' },
+    },
+    async run(instance) {
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_S34R_T1',
+          event: {
+            text: '<@UBOT> start the rollback snapshot',
+            ts: '1782771650.000100',
+            event_ts: '1782771650.000100',
+          },
+        }),
+      );
+      await waitForProviderCallCount(instance, 2);
+      assertProviderPrompt(instance, -1, {
         includes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
         excludes: 'SNAPSHOT_BETA_INSTRUCTIONS',
       });
+
+      await patchAgent(instance, 'agent_snapshot_rollback', {
+        instructions: 'SNAPSHOT_BETA_INSTRUCTIONS: edited after rollback snapshot.',
+      });
+      await instance.postEvent(
+        channelThreadMessage({
+          event_id: 'Ev_S34R_T2',
+          event: {
+            text: 'continue under the rollback snapshot',
+            ts: '1782771651.000100',
+            event_ts: '1782771651.000100',
+            thread_ts: '1782771650.000100',
+          },
+        }),
+      );
+      await waitForProviderCallCount(instance, 4);
+      assertProviderPrompt(instance, -1, {
+        includes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
+        excludes: 'SNAPSHOT_BETA_INSTRUCTIONS',
+      });
+
+      assert.ok(instance.configDbPath);
+      const snapshots = new SqliteAgentSnapshotStore(instance.configDbPath);
+      try {
+        assert.ok(await snapshots.get('TDEMO:C_EXEC:1782771650.000100'));
+      } finally {
+        snapshots.close();
+      }
     },
   },
   {
     id: 'S35',
-    title: 'new thread picks up the edited instructions',
-    config: snapshotScenarioConfig('agent_snapshot_new_thread'),
+    title: 'the next event in a started thread adopts a reassigned Agent',
+    config: liveReassignmentScenarioConfig(),
     async run(instance) {
       await instance.postEvent(
         appMention({
@@ -1542,17 +1611,25 @@ export const scenarios: Scenario[] = [
       );
       await waitForProviderCallCount(instance, 2);
 
-      await patchAgent(instance, 'agent_snapshot_new_thread', {
-        instructions: 'SNAPSHOT_BETA_INSTRUCTIONS: edited profile instructions.',
+      const reassigned = await instance.adminRequest('/admin/api/assignments', {
+        method: 'PUT',
+        body: JSON.stringify({
+          workspaceId: 'TDEMO',
+          channelId: EXEC_CHANNEL,
+          agentId: 'agent_live_replacement',
+          enabled: true,
+        }),
       });
+      assert.equal(reassigned.status, 200, JSON.stringify(reassigned.body));
 
       await instance.postEvent(
-        appMention({
-          event_id: 'Ev_S35_T2_NEW_THREAD',
+        channelThreadMessage({
+          event_id: 'Ev_S35_T2_SAME_THREAD',
           event: {
-            text: '<@UBOT> start a separate thread after the admin edit',
+            text: 'continue in the same thread after reassignment',
             ts: '1782771701.000100',
             event_ts: '1782771701.000100',
+            thread_ts: '1782771700.000100',
           },
         }),
       );
@@ -1969,6 +2046,31 @@ function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
           enabled: true,
         },
       ],
+    },
+  };
+}
+
+function liveReassignmentScenarioConfig(): ScenarioLaneConfig {
+  const original = snapshotScenarioConfig('agent_live_original');
+  return {
+    ...original,
+    configSeed: {
+      agents: [
+        ...original.configSeed!.agents,
+        {
+          id: 'agent_live_replacement',
+          revision: 1,
+          name: 'Replacement Agent',
+          instructions: 'SNAPSHOT_BETA_INSTRUCTIONS: reassigned Agent instructions.',
+          enabled: true,
+          model: 'local-stub/snapshot-profile',
+          skills: [],
+          mcpServers: [],
+          apiConnections: [],
+          repositories: [],
+        },
+      ],
+      assignments: original.configSeed!.assignments,
     },
   };
 }

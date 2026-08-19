@@ -1,0 +1,190 @@
+import type { WorkspaceManagementService } from './service.ts';
+import {
+  ManagementError,
+  type ManagementActorContext,
+  type ManagementOperation,
+  type ManagementRoutineInspectionInput,
+} from './types.ts';
+import type { MemoryOwnerRef } from '../memory/types.ts';
+import type { PreviewWorkspaceRecipeInput } from './recipes.ts';
+import { emitManagementMetric } from './telemetry.ts';
+
+export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
+  'inspect_workspace',
+  'discover_slack_channels',
+  'inspect_slack_member_directory',
+  'test_mcp_connection',
+  'inspect_memory',
+  'inspect_routines',
+  'export_workspace_recipe',
+  'preview_workspace_recipe',
+  'apply_workspace_changes',
+  'confirm_workspace_change',
+  'undo_workspace_change',
+  'get_operation',
+  'revoke_setup_link',
+] as const;
+
+export type WorkspaceManagementToolName = typeof WORKSPACE_MANAGEMENT_TOOL_NAMES[number];
+
+const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
+  inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority.',
+  discover_slack_channels: 'Discover Channels in the connected Slack workspace before adding or placing a Chickpea Agent.',
+  inspect_slack_member_directory: 'Owner-only lookup of eligible Slack teammates who can be invited to Chickpea.',
+  test_mcp_connection: 'Test one saved Agent MCP connection with its write-only credentials and return a sanitized result plus discovered tools.',
+  inspect_memory: 'Inspect one Agent or Channel memory owner and its versioned entries.',
+  inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, or routine.',
+  export_workspace_recipe: 'Export selected Agents and their Channel intent as a versioned, secret-free portable recipe.',
+  preview_workspace_recipe: 'Preview a portable recipe against live workspace state and compile chosen outcomes into ordinary typed changes.',
+  apply_workspace_changes: 'Apply one or more typed Chickpea workspace changes with durable idempotency and per-item outcomes.',
+  confirm_workspace_change: 'Confirm one requester- and client-bound destructive or capability-expanding change proposal.',
+  undo_workspace_change: 'Undo one eligible operation at the exact resulting revision.',
+  get_operation: 'Read the durable result of one operation or confirmation proposal owned by the requester.',
+  revoke_setup_link: 'Revoke one unused requester-owned setup link and optionally issue a fresh 24-hour link.',
+};
+
+export function workspaceManagementToolDescription(name: WorkspaceManagementToolName): string {
+  return TOOL_DESCRIPTIONS[name];
+}
+
+export type WorkspaceManagementToolArguments = {
+  inspect_workspace: Record<never, never>;
+  discover_slack_channels: { refresh?: boolean | undefined };
+  inspect_slack_member_directory: { cursor?: string | undefined };
+  test_mcp_connection: { agentId: string; connectionId: string };
+  inspect_memory: MemoryOwnerRef;
+  inspect_routines: ManagementRoutineInspectionInput;
+  export_workspace_recipe: { agentIds?: string[] | undefined };
+  preview_workspace_recipe: PreviewWorkspaceRecipeInput;
+  apply_workspace_changes: { idempotencyKey: string; operations: ManagementOperation[] };
+  confirm_workspace_change: { proposalId: string };
+  undo_workspace_change: { operationId: string; idempotencyKey: string };
+  get_operation: { operationId: string };
+  revoke_setup_link: { setupOperationId: string; reissue?: boolean | undefined };
+};
+
+export type WorkspaceManagementToolResult =
+  | { ok: true; result: unknown }
+  | { ok: false; error: { code: string; message: string } };
+
+export interface WorkspaceManagementToolAdapterInput {
+  service: WorkspaceManagementService;
+  resolveContext(): Promise<ManagementActorContext>;
+}
+
+/** Transport-neutral invocation seam shared by MCP and Flue tool adapters. */
+export async function invokeWorkspaceManagementTool<TName extends WorkspaceManagementToolName>(
+  input: WorkspaceManagementToolAdapterInput,
+  name: TName,
+  args: WorkspaceManagementToolArguments[TName],
+): Promise<WorkspaceManagementToolResult> {
+  const startedAt = Date.now();
+  let surface = 'unknown';
+  try {
+    const context = await input.resolveContext();
+    surface = context.origin.kind;
+    const result = await executeWorkspaceManagementTool(input.service, context, name, args);
+    emitManagementMetric('tool.call', {
+      surface,
+      tool: name,
+      outcome: 'success',
+      durationMs: Date.now() - startedAt,
+    });
+    return success(result);
+  } catch (error) {
+    const result = failure(error);
+    emitManagementMetric('tool.call', {
+      surface,
+      tool: name,
+      outcome: 'error',
+      reason: error instanceof ManagementError ? error.code : 'management_error',
+      durationMs: Date.now() - startedAt,
+    });
+    return result;
+  }
+}
+
+async function executeWorkspaceManagementTool<TName extends WorkspaceManagementToolName>(
+  service: WorkspaceManagementService,
+  context: ManagementActorContext,
+  name: TName,
+  args: WorkspaceManagementToolArguments[TName],
+): Promise<unknown> {
+  switch (name) {
+      case 'inspect_workspace':
+        return service.inspectWorkspace(context);
+      case 'discover_slack_channels': {
+        const value = args as WorkspaceManagementToolArguments['discover_slack_channels'];
+        return service.discoverSlackChannels(context, value.refresh ?? false);
+      }
+      case 'inspect_slack_member_directory': {
+        const value = args as WorkspaceManagementToolArguments['inspect_slack_member_directory'];
+        return service.inspectSlackMemberDirectory(context, value.cursor);
+      }
+      case 'test_mcp_connection': {
+        const value = args as WorkspaceManagementToolArguments['test_mcp_connection'];
+        return service.testMcpConnection(context, value.agentId, value.connectionId);
+      }
+      case 'inspect_memory': {
+        const value = args as WorkspaceManagementToolArguments['inspect_memory'];
+        return service.inspectMemory(context, value);
+      }
+      case 'inspect_routines': {
+        const value = args as WorkspaceManagementToolArguments['inspect_routines'];
+        return service.inspectRoutines(context, value);
+      }
+      case 'export_workspace_recipe': {
+        const value = args as WorkspaceManagementToolArguments['export_workspace_recipe'];
+        return service.exportRecipe(context, value);
+      }
+      case 'preview_workspace_recipe': {
+        const value = args as WorkspaceManagementToolArguments['preview_workspace_recipe'];
+        return service.previewRecipe(context, value);
+      }
+      case 'apply_workspace_changes': {
+        const value = args as WorkspaceManagementToolArguments['apply_workspace_changes'];
+        return service.applyWorkspaceChanges({ context, ...value });
+      }
+      case 'confirm_workspace_change': {
+        const value = args as WorkspaceManagementToolArguments['confirm_workspace_change'];
+        return service.confirmWorkspaceChange({ context, ...value });
+      }
+      case 'undo_workspace_change': {
+        const value = args as WorkspaceManagementToolArguments['undo_workspace_change'];
+        return service.undoWorkspaceChange({ context, ...value });
+      }
+      case 'get_operation': {
+        const value = args as WorkspaceManagementToolArguments['get_operation'];
+        const operation = await service.getOperation(context, value.operationId);
+        return { operation: operation ?? null };
+      }
+      case 'revoke_setup_link': {
+        const value = args as WorkspaceManagementToolArguments['revoke_setup_link'];
+        return service.revokeSetupLink(
+          context,
+          value.setupOperationId,
+          value.reissue ?? false,
+        );
+      }
+  }
+}
+
+function success(result: unknown): WorkspaceManagementToolResult {
+  return { ok: true, result };
+}
+
+function failure(error: unknown): WorkspaceManagementToolResult {
+  if (error instanceof ManagementError) {
+    return {
+      ok: false,
+      error: {
+        code: error.code,
+        message: error.message,
+      },
+    };
+  }
+  return {
+    ok: false,
+    error: { code: 'management_error', message: 'The workspace management request failed.' },
+  };
+}

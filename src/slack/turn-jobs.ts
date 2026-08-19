@@ -283,12 +283,10 @@ export class TurnJobStoreLogic {
       const current = this.getFrozenRuntimePlan(id);
       if (current) return current;
       const instanceId = deriveRuntimePlanInstanceId(plan);
-      const binding = this.getAgentBinding(plan.conversation.continuityKey);
-      const continuityNoticeRequired = Boolean(
-        binding &&
-        binding.instanceId !== instanceId &&
-        plan.conversation.surface !== 'channel_thread',
-      );
+      // Every new Slack event rehydrates bounded Slack context into its prompt.
+      // A harness rotation therefore preserves the visible conversation and
+      // must not post the old, misleading "fresh conversation" notice.
+      const continuityNoticeRequired = false;
       const updated = this.db.run(
         `UPDATE turn_jobs
          SET runtime_plan_json = ?, agent_instance_id = ?, continuity_notice_required = ?
@@ -352,12 +350,37 @@ export class TurnJobStoreLogic {
       }
       const binding = this.readAgentBinding(decision.runtimePlan.conversation.continuityKey);
       const continuing = binding?.instanceId === decision.instanceId ? binding : undefined;
+      const row = this.db.get('SELECT turn_json FROM turn_jobs WHERE id = ?', id);
+      if (!row?.turn_json) throw new Error('TurnJob is unavailable for Flue dispatch.');
+      const turn = JSON.parse(String(row.turn_json)) as NormalizedSlackTurn;
+      const signalThreadTs = turn.sessionThreadTs ?? turn.threadTs;
+      if (
+        turn.workspaceId !== decision.runtimePlan.conversation.workspaceId ||
+        turn.channelId !== decision.runtimePlan.conversation.channelId ||
+        signalThreadTs !== decision.runtimePlan.conversation.threadTs
+      ) {
+        throw new Error('Slack signal coordinates do not match RuntimePlanV2.');
+      }
       const envelope: FlueDispatchEnvelopeV1 = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         agentName: 'chickpea-slack-v2',
         instanceId: decision.instanceId,
         uid: continuing?.uid ?? null,
-        message: { kind: 'user', body: message },
+        message: {
+          kind: 'signal',
+          type: 'slack.message',
+          body: message,
+          tagName: 'slack_message',
+          attributes: {
+            workspaceId: turn.workspaceId,
+            channelId: turn.channelId,
+            threadTs: signalThreadTs,
+            slackUserId: turn.userId,
+            eventId: turn.eventId,
+            messageTs: turn.messageTs,
+            turnJobId: id,
+          },
+        },
         ...(continuing ? {} : { initialData: decision.runtimePlan }),
         idempotencyKey: id,
         ...(!continuing && binding
@@ -1031,14 +1054,13 @@ function parseFlueDispatchEnvelope(value: unknown): FlueDispatchEnvelopeV1 {
     'idempotencyKey',
     'previousBinding',
   ]);
-  if (record.schemaVersion !== 1 || record.agentName !== 'chickpea-slack-v2') {
+  if ((record.schemaVersion !== 1 && record.schemaVersion !== 2) ||
+      record.agentName !== 'chickpea-slack-v2') {
     throw new Error('Flue dispatch envelope version or agent is invalid.');
   }
   const instanceId = validateOpaqueAgentId(record.instanceId, 'instance id');
   const uid = record.uid === null ? null : validateFlueInstanceUid(record.uid);
-  const message = exactObject(record.message, 'Flue dispatch message', ['kind', 'body']);
-  if (message.kind !== 'user') throw new Error('Flue dispatch message kind is invalid.');
-  const body = validateBoundedString(message.body, 'dispatch message body', 1_000_000);
+  const body = parseDispatchMessageBody(record.message, record.schemaVersion);
   const idempotencyKey = validateBoundedString(record.idempotencyKey, 'idempotency key', 256);
   const initialData = record.initialData === undefined
     ? undefined
@@ -1055,15 +1077,86 @@ function parseFlueDispatchEnvelope(value: unknown): FlueDispatchEnvelopeV1 {
   const previousBinding = record.previousBinding === undefined
     ? undefined
     : parseBindingExpectation(record.previousBinding);
+  if (record.schemaVersion === 1) {
+    return {
+      schemaVersion: 1,
+      agentName: 'chickpea-slack-v2',
+      instanceId,
+      uid,
+      message: { kind: 'user', body },
+      ...(initialData ? { initialData } : {}),
+      idempotencyKey,
+      ...(previousBinding ? { previousBinding } : {}),
+    };
+  }
+  const message = parseSlackSignalMessage(record.message, body, idempotencyKey, initialData);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     agentName: 'chickpea-slack-v2',
     instanceId,
     uid,
-    message: { kind: 'user', body },
+    message,
     ...(initialData ? { initialData } : {}),
     idempotencyKey,
     ...(previousBinding ? { previousBinding } : {}),
+  };
+}
+
+function parseDispatchMessageBody(value: unknown, schemaVersion: 1 | 2): string {
+  const keys = schemaVersion === 1
+    ? ['kind', 'body']
+    : ['kind', 'type', 'body', 'tagName', 'attributes'];
+  const message = exactObject(value, 'Flue dispatch message', keys);
+  if (schemaVersion === 1 && message.kind !== 'user') {
+    throw new Error('Flue dispatch message kind is invalid.');
+  }
+  if (schemaVersion === 2 && message.kind !== 'signal') {
+    throw new Error('Flue dispatch message kind is invalid.');
+  }
+  return validateBoundedString(message.body, 'dispatch message body', 1_000_000);
+}
+
+function parseSlackSignalMessage(
+  value: unknown,
+  body: string,
+  idempotencyKey: string,
+  initialData?: RuntimePlanV2,
+): Extract<FlueDispatchEnvelopeV1, { schemaVersion: 2 }>['message'] {
+  const message = exactObject(value, 'Flue dispatch message', [
+    'kind', 'type', 'body', 'tagName', 'attributes',
+  ]);
+  if (message.kind !== 'signal' || message.type !== 'slack.message' ||
+      message.tagName !== 'slack_message') {
+    throw new Error('Flue Slack signal metadata is invalid.');
+  }
+  const attributes = exactObject(message.attributes, 'Flue Slack signal attributes', [
+    'workspaceId', 'channelId', 'threadTs', 'slackUserId', 'eventId', 'messageTs', 'turnJobId',
+  ]);
+  const parsed = {
+    workspaceId: validateBoundedString(attributes.workspaceId, 'Slack workspace id', 128),
+    channelId: validateBoundedString(attributes.channelId, 'Slack channel id', 128),
+    threadTs: validateBoundedString(attributes.threadTs, 'Slack thread timestamp', 80),
+    slackUserId: validateBoundedString(attributes.slackUserId, 'Slack user id', 128),
+    eventId: validateBoundedString(attributes.eventId, 'Slack event id', 256),
+    messageTs: validateBoundedString(attributes.messageTs, 'Slack message timestamp', 80),
+    turnJobId: validateBoundedString(attributes.turnJobId, 'TurnJob id', 256),
+  };
+  if (parsed.turnJobId !== idempotencyKey) {
+    throw new Error('Flue Slack signal does not match its TurnJob.');
+  }
+  if (initialData && (
+    parsed.workspaceId !== initialData.conversation.workspaceId ||
+    parsed.channelId !== initialData.conversation.channelId ||
+    parsed.threadTs !== initialData.conversation.threadTs
+  )) {
+    throw new Error('Flue Slack signal does not match its RuntimePlanV2.');
+  }
+  return {
+    kind: 'signal',
+    type: 'slack.message',
+    body,
+    tagName: 'slack_message',
+    attributes: parsed,
   };
 }
 
@@ -1186,21 +1279,58 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
 }
 
 function parseFlueObservation(value: unknown): FlueTurnObservationV1 {
-  const record = exactObject(value, 'Flue observation target', ['generation', 'workCorrelation']);
-  const generation = validateBoundedString(record.generation, 'observation generation', 256);
-  if (record.workCorrelation === undefined) return { generation };
-  const correlation = exactObject(record.workCorrelation, 'work correlation', [
-    'runId', 'runExecutionId', 'mode',
+  const record = exactObject(value, 'Flue observation target', [
+    'generation', 'workCorrelation', 'harnessRevision', 'configurationRevision',
   ]);
-  const runId = validateWorkCorrelationId(correlation.runId, 'run id');
-  const runExecutionId = validateWorkCorrelationId(correlation.runExecutionId, 'execution id');
-  if (correlation.mode !== 'observe' && correlation.mode !== 'enforce') {
-    throw new Error('Work correlation mode is invalid.');
-  }
+  const generation = validateBoundedString(record.generation, 'observation generation', 256);
+  const workCorrelation = record.workCorrelation === undefined
+    ? undefined
+    : (() => {
+        const correlation = exactObject(record.workCorrelation, 'work correlation', [
+          'runId', 'runExecutionId', 'mode',
+        ]);
+        const runId = validateWorkCorrelationId(correlation.runId, 'run id');
+        const runExecutionId = validateWorkCorrelationId(correlation.runExecutionId, 'execution id');
+        if (correlation.mode !== 'observe' && correlation.mode !== 'enforce') {
+          throw new Error('Work correlation mode is invalid.');
+        }
+        const mode: 'observe' | 'enforce' = correlation.mode;
+        return { runId, runExecutionId, mode };
+      })();
+  const harnessRevision = record.harnessRevision === undefined
+    ? undefined
+    : validateSha256(record.harnessRevision, 'harness revision');
+  const configurationRevision = record.configurationRevision === undefined
+    ? undefined
+    : (() => {
+        const revision = exactObject(record.configurationRevision, 'configuration revision', [
+          'agent', 'channel',
+        ]);
+        const agent = validatePositiveInteger(revision.agent, 'Agent revision');
+        const channel = revision.channel === undefined
+          ? undefined
+          : validatePositiveInteger(revision.channel, 'Channel revision');
+        return { agent, ...(channel ? { channel } : {}) };
+      })();
   return {
     generation,
-    workCorrelation: { runId, runExecutionId, mode: correlation.mode },
+    ...(workCorrelation ? { workCorrelation } : {}),
+    ...(harnessRevision ? { harnessRevision } : {}),
+    ...(configurationRevision ? { configurationRevision } : {}),
   };
+}
+
+function validateSha256(value: unknown, label: string): string {
+  const parsed = validateBoundedString(value, label, 64);
+  if (!/^[a-f0-9]{64}$/.test(parsed)) throw new Error(`${label} is invalid.`);
+  return parsed;
+}
+
+function validatePositiveInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 1) {
+    throw new Error(`${label} is invalid.`);
+  }
+  return Number(value);
 }
 
 function validateFlueObservation(value: FlueTurnObservationV1): void {

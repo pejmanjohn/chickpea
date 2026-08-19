@@ -8,6 +8,7 @@ import {
   type DispatchReceipt,
 } from '@flue/runtime';
 
+import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import {
@@ -123,6 +124,8 @@ export interface PromptSlackAgentInput {
   conversationKey: string;
   useCloudflareSandbox: boolean;
   requestedModel: string | null;
+  /** Frozen, non-secret revision evidence retained by the adapter observation. */
+  runtimePlan?: RuntimePlanV2;
   workCorrelation?: WorkTraceCorrelation;
   env?: PlatformEnv;
   now?: () => number;
@@ -168,6 +171,14 @@ export async function promptSlackThreadAgent(
   const observation: FlueTurnObservationV1 = {
     generation: input.turnId,
     ...(input.workCorrelation ? { workCorrelation: input.workCorrelation } : {}),
+    ...(input.runtimePlan
+      ? {
+          harnessRevision: input.runtimePlan.harnessRevision,
+          ...(input.runtimePlan.configurationRevision
+            ? { configurationRevision: input.runtimePlan.configurationRevision }
+            : {}),
+        }
+      : {}),
   };
   let envelope = input.state.dispatchEnvelope ??
     await input.state.prepare(input.message, observation);

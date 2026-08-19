@@ -6,6 +6,7 @@ import {
   AgentStillSlackDmHandlerError,
   AgentStillReferencedError,
   ChannelAssignmentConflictError,
+  ChannelRevisionConflictError,
   SlackIdentityExistsError,
   SlackIdentityLifecycleError,
   SlackIdentityRevisionConflictError,
@@ -39,6 +40,8 @@ import type {
   SlackIdentityReferenceSummary,
 } from './types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
+import { ManagementError, type ManagementRpcRequest, type ManagementRpcResponse } from '../management/types.ts';
+import type { ManagementStore } from '../management/store.ts';
 import type {
   AdvanceAuthOperationInput,
   ActivateInvitationInput,
@@ -291,6 +294,13 @@ function unwrap<T>(result: StateRpcResult<T>): T {
         details?.expectedAgentId || null,
         details?.actualAgentId || null,
       );
+    case 'channel_revision_conflict':
+      throw new ChannelRevisionConflictError(
+        details?.workspaceId ?? 'unknown',
+        details?.channelId ?? 'unknown',
+        Number(details?.expectedRevision ?? 0),
+        Number(details?.actualRevision ?? 0),
+      );
     case 'unknown_slack_identity':
       throw new UnknownSlackIdentityError(details?.identityId ?? 'unknown');
     case 'slack_identity_exists':
@@ -323,6 +333,13 @@ function unwrap<T>(result: StateRpcResult<T>): T {
         identityCode as ConstructorParameters<typeof IdentityStateError>[0],
         message,
         identityDetails,
+      );
+    }
+    case 'management': {
+      const managementCode = details?.managementCode ?? 'invalid_request';
+      throw new ManagementError(
+        managementCode as ConstructorParameters<typeof ManagementError>[0],
+        message,
       );
     }
     case 'memory': {
@@ -735,6 +752,14 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'identity_resolution') throw unexpectedIdentityResponse();
     return orUndefined(response.resolution);
   }
+  async resolveBetterAuthIdentity(betterAuthUserId: string, organizationId?: string) {
+    const response = await this.execute({
+      kind: 'resolve_better_auth_identity', betterAuthUserId,
+      ...(organizationId === undefined ? {} : { organizationId }),
+    });
+    if (response.kind !== 'identity_resolution') throw unexpectedIdentityResponse();
+    return orUndefined(response.resolution);
+  }
   async listExternalIdentities() {
     const response = await this.execute({ kind: 'list_external_identities' });
     if (response.kind !== 'external_identities') throw unexpectedIdentityResponse();
@@ -889,6 +914,181 @@ function orUndefined<T>(value: T | null): T | undefined {
   return value === null ? undefined : value;
 }
 
+export class CfManagementStore implements ManagementStore {
+  constructor(private readonly stub: TagStateRpc) {}
+
+  async execute(request: ManagementRpcRequest): Promise<ManagementRpcResponse> {
+    return unwrap(await this.stub.managementExecute(request));
+  }
+
+  async reserveRequest(input: Parameters<ManagementStore['reserveRequest']>[0]) {
+    const response = await this.execute({ kind: 'reserve_request', input });
+    if (response.kind !== 'request_reservation') throw unexpectedManagementResponse();
+    return { request: response.request, created: response.created };
+  }
+
+  async getRequest(operationId: string) {
+    const response = await this.execute({ kind: 'get_request', operationId });
+    if (response.kind !== 'request') throw unexpectedManagementResponse();
+    return orUndefined(response.request);
+  }
+
+  async markRequestApplying(operationId: string, at: number) {
+    const response = await this.execute({ kind: 'mark_request_applying', operationId, at });
+    if (response.kind !== 'request' || !response.request) throw unexpectedManagementResponse();
+    return response.request;
+  }
+
+  async saveRequestProgress(
+    operationId: string,
+    progress: Parameters<ManagementStore['saveRequestProgress']>[1],
+    at: number,
+  ) {
+    const response = await this.execute({ kind: 'save_request_progress', operationId, progress, at });
+    if (response.kind !== 'request' || !response.request) throw unexpectedManagementResponse();
+    return response.request;
+  }
+
+  async completeRequest(
+    operationId: string,
+    result: Parameters<ManagementStore['completeRequest']>[1],
+    at: number,
+  ) {
+    const response = await this.execute({ kind: 'complete_request', operationId, result, at });
+    if (response.kind !== 'request' || !response.request) throw unexpectedManagementResponse();
+    return response.request;
+  }
+
+  async putProposal(input: Parameters<ManagementStore['putProposal']>[0]) {
+    const response = await this.execute({ kind: 'put_proposal', input });
+    if (response.kind !== 'proposal' || !response.proposal) throw unexpectedManagementResponse();
+    return response.proposal;
+  }
+
+  async getProposal(proposalId: string) {
+    const response = await this.execute({ kind: 'get_proposal', proposalId });
+    if (response.kind !== 'proposal') throw unexpectedManagementResponse();
+    return orUndefined(response.proposal);
+  }
+
+  async claimProposal(input: Parameters<ManagementStore['claimProposal']>[0]) {
+    const response = await this.execute({ kind: 'claim_proposal', input });
+    if (response.kind !== 'proposal' || !response.proposal) throw unexpectedManagementResponse();
+    return response.proposal;
+  }
+
+  async completeProposal(
+    proposalId: string,
+    result: Parameters<ManagementStore['completeProposal']>[1],
+    at: number,
+  ) {
+    const response = await this.execute({ kind: 'complete_proposal', proposalId, result, at });
+    if (response.kind !== 'proposal' || !response.proposal) throw unexpectedManagementResponse();
+    return response.proposal;
+  }
+
+  async markProposalStale(proposalId: string, at: number) {
+    const response = await this.execute({ kind: 'mark_proposal_stale', proposalId, at });
+    if (response.kind !== 'proposal' || !response.proposal) throw unexpectedManagementResponse();
+    return response.proposal;
+  }
+
+  async putUndo(record: Parameters<ManagementStore['putUndo']>[0]) {
+    const response = await this.execute({ kind: 'put_undo', record });
+    if (response.kind !== 'undo' || !response.undo) throw unexpectedManagementResponse();
+    return response.undo;
+  }
+
+  async getUndo(operationId: string) {
+    const response = await this.execute({ kind: 'get_undo', operationId });
+    if (response.kind !== 'undo') throw unexpectedManagementResponse();
+    return orUndefined(response.undo);
+  }
+
+  async consumeUndo(operationId: string, at: number) {
+    const response = await this.execute({ kind: 'consume_undo', operationId, at });
+    if (response.kind !== 'undo' || !response.undo) throw unexpectedManagementResponse();
+    return response.undo;
+  }
+
+  async putSetup(input: Parameters<ManagementStore['putSetup']>[0]) {
+    const response = await this.execute({ kind: 'put_setup', input });
+    if (response.kind !== 'setup' || !response.setup) throw unexpectedManagementResponse();
+    return response.setup;
+  }
+
+  async getSetup(setupOperationId: string, at?: number) {
+    const response = await this.execute({
+      kind: 'get_setup',
+      setupOperationId,
+      ...(at === undefined ? {} : { at }),
+    });
+    if (response.kind !== 'setup') throw unexpectedManagementResponse();
+    return orUndefined(response.setup);
+  }
+
+  async exchangeSetup(input: Parameters<ManagementStore['exchangeSetup']>[0]) {
+    const response = await this.execute({ kind: 'exchange_setup', input });
+    if (response.kind !== 'setup' || !response.setup) throw unexpectedManagementResponse();
+    return response.setup;
+  }
+
+  async authorizeSetup(input: Parameters<ManagementStore['authorizeSetup']>[0]) {
+    const response = await this.execute({ kind: 'authorize_setup', input });
+    if (response.kind !== 'setup' || !response.setup) throw unexpectedManagementResponse();
+    return response.setup;
+  }
+
+  async failSetup(
+    setupOperationId: string,
+    browserSessionDigest: string,
+    failureCode: string,
+    at: number,
+  ) {
+    const response = await this.execute({
+      kind: 'fail_setup', setupOperationId, browserSessionDigest, failureCode, at,
+    });
+    if (response.kind !== 'setup' || !response.setup) throw unexpectedManagementResponse();
+    return response.setup;
+  }
+
+  async completeSetup(input: Parameters<ManagementStore['completeSetup']>[0]) {
+    const response = await this.execute({ kind: 'complete_setup', input });
+    if (response.kind !== 'setup' || !response.setup) throw unexpectedManagementResponse();
+    return response.setup;
+  }
+
+  async revokeSetup(input: Parameters<ManagementStore['revokeSetup']>[0]) {
+    const response = await this.execute({ kind: 'revoke_setup', input });
+    if (response.kind !== 'setup' || !response.setup) throw unexpectedManagementResponse();
+    return response.setup;
+  }
+
+  async getOutboxForOperation(operationId: string) {
+    const response = await this.execute({ kind: 'get_outbox_for_operation', operationId });
+    if (response.kind !== 'outbox') throw unexpectedManagementResponse();
+    return orUndefined(response.outbox);
+  }
+
+  async claimDueOutbox(at: number, limit: number, leaseUntil: number) {
+    const response = await this.execute({ kind: 'claim_due_outbox', at, limit, leaseUntil });
+    if (response.kind !== 'outbox_batch') throw unexpectedManagementResponse();
+    return response.outbox;
+  }
+
+  async settleOutbox(input: Parameters<ManagementStore['settleOutbox']>[0]) {
+    const response = await this.execute({ kind: 'settle_outbox', ...input });
+    if (response.kind !== 'outbox' || !response.outbox) throw unexpectedManagementResponse();
+    return response.outbox;
+  }
+
+  async cleanupRetention(at: number, limit = 250) {
+    const response = await this.execute({ kind: 'cleanup_retention', at, limit });
+    if (response.kind !== 'retention') throw unexpectedManagementResponse();
+    return response.deleted;
+  }
+}
+
 export class CfConfigStore implements ConfigStore {
   constructor(private readonly stub: TagStateRpc) {}
 
@@ -912,8 +1112,8 @@ export class CfConfigStore implements ConfigStore {
     return unwrap(await this.stub.configMarkOAuthReauthorizationRequired(target));
   }
 
-  async deleteAgent(agentId: string): Promise<boolean> {
-    return unwrap(await this.stub.configDeleteAgent(agentId));
+  async deleteAgent(agentId: string, expectedRevision?: number): Promise<boolean> {
+    return unwrap(await this.stub.configDeleteAgent(agentId, expectedRevision));
   }
 
   async deleteAgentWithMemory(
@@ -931,8 +1131,8 @@ export class CfConfigStore implements ConfigStore {
     return orUndefined(unwrap(await this.stub.configGetChannel(workspaceId, channelId)));
   }
 
-  async putChannel(channel: ChannelConfig): Promise<ChannelConfig> {
-    return unwrap(await this.stub.configPutChannel(channel));
+  async putChannel(channel: ChannelConfig, expectedRevision?: number): Promise<ChannelConfig> {
+    return unwrap(await this.stub.configPutChannel(channel, expectedRevision));
   }
 
   async putChannelPlacement(input: ChannelPlacementMutation): Promise<ChannelPlacementResult> {
@@ -2154,6 +2354,10 @@ export class CfWorkStore implements WorkStore {
 
 function unexpectedMemoryResponse(): Error {
   return new Error('Unexpected memory state response');
+}
+
+function unexpectedManagementResponse(): Error {
+  return new Error('Unexpected management state RPC response');
 }
 
 function unexpectedIdentityResponse(): Error {

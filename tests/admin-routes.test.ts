@@ -1958,6 +1958,7 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
       channel: {
         workspaceId: 'T_ADMIN',
         channelId: 'C_ADMIN',
+        revision: 1,
         label: 'eng-releases',
         additionalInstructions: 'Admin channel addendum.',
         participationMode: 'ambient',

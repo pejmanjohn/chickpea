@@ -51,6 +51,7 @@ export interface EffectiveSlackConfig {
   channelLabel?: string;
   channelPromptAddendum?: string;
   participationMode?: 'ambient' | 'mention_only';
+  channelRevision?: number;
   agent: CustomAgentConfig;
   model: string;
   provider: string;
@@ -84,6 +85,7 @@ export async function resolveEffectiveSlackConfig(
       ? { channelPromptAddendum: assignment.channelPromptAddendum }
       : {}),
     participationMode: assignment.participationMode ?? 'ambient',
+    ...(assignment.channelRevision ? { channelRevision: assignment.channelRevision } : {}),
     agent: assignment.agent,
     model,
     provider: providerPrefix(model),
@@ -106,6 +108,7 @@ export function resolvedAssignmentFromEffectiveConfig(
       ? { channelPromptAddendum: config.channelPromptAddendum }
       : {}),
     participationMode: config.participationMode ?? 'ambient',
+    ...(config.channelRevision ? { channelRevision: config.channelRevision } : {}),
     agent: config.agent,
     model: config.model,
     ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),

@@ -133,6 +133,7 @@ import { parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
 import { resolveSlackIdentityExecutionContext } from '../slack/identity-execution.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
+import { useWorkspaceManagementSlackTools } from '../management/slack-tools.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
 import {
@@ -900,6 +901,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
         }
       : {}),
   });
+  useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv);
   return plan.instructions;
 }
 
