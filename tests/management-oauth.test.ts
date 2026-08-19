@@ -19,6 +19,7 @@ import {
   createMcpAuthenticatedRequestHandler,
   verifySignedOAuthQuery,
 } from '../src/auth/mcp-oauth-routes.ts';
+import { validateBrowserMutationProvenance } from '../src/auth/request-provenance.ts';
 
 test('MCP OAuth binds one workspace scope to the canonical protected resource', () => {
   assert.equal(MCP_WORKSPACE_SCOPE, 'chickpea:workspace');
@@ -174,6 +175,45 @@ test('browser handoff accepts only Better Auth signed, unexpired OAuth queries',
   assert.equal(await verifySignedOAuthQuery(query, secret, now + 600_001), false);
   query.append('sig', query.get('sig') ?? '');
   assert.equal(await verifySignedOAuthQuery(query, secret, now), false);
+});
+
+test('MCP consent can opt into opaque-origin same-origin form navigation', () => {
+  const origin = 'https://chickpea.example';
+  const headers = {
+    'content-type': 'application/x-www-form-urlencoded',
+    origin: 'null',
+    'sec-fetch-dest': 'document',
+    'sec-fetch-mode': 'navigate',
+    'sec-fetch-site': 'same-origin',
+  };
+  const options = {
+    canonicalOrigin: origin,
+    maxBodyBytes: 16 * 1024,
+    requireJson: false,
+    allowOpaqueOriginFormNavigation: true,
+  };
+
+  assert.deepEqual(validateBrowserMutationProvenance(new Request(
+    `${origin}/auth/mcp/consent`, { method: 'POST', headers, body: 'decision=allow' },
+  ), options), { ok: true });
+  assert.deepEqual(validateBrowserMutationProvenance(new Request(
+    `${origin}/auth/mcp/consent`, {
+      method: 'POST',
+      headers: { ...headers, 'sec-fetch-site': 'cross-site' },
+      body: 'decision=allow',
+    },
+  ), options), { ok: false, code: 'cross_origin_denied' });
+  assert.deepEqual(validateBrowserMutationProvenance(new Request(
+    'https://attacker.example/auth/mcp/consent', {
+      method: 'POST', headers, body: 'decision=allow',
+    },
+  ), options), { ok: false, code: 'cross_origin_denied' });
+  assert.deepEqual(validateBrowserMutationProvenance(new Request(
+    `${origin}/auth/mcp/consent`, { method: 'POST', headers, body: 'decision=allow' },
+  ), { ...options, allowOpaqueOriginFormNavigation: false }), {
+    ok: false,
+    code: 'cross_origin_denied',
+  });
 });
 
 test('public MCP registration enforces rate, quota, and unused-client retention', async () => {

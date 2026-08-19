@@ -190,6 +190,7 @@ async function submitMcpConsent(c: Context, options: McpOAuthRuntimeOptions): Pr
     canonicalOrigin: runtime.environment.baseURL,
     maxBodyBytes: MCP_BROWSER_BODY_LIMIT_BYTES,
     requireJson: false,
+    allowOpaqueOriginFormNavigation: true,
   });
   if (!provenance.ok) {
     const status = provenance.code === 'body_too_large' ? 413 : 403;
