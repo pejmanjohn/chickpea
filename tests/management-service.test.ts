@@ -3,6 +3,9 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
+import { clearRepointedMcpCredentials } from '../src/config/mcp-connection-lifecycle.ts';
+import { resolveMcpSecrets, saveMcpSecrets } from '../src/config/mcp-secrets.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityResolution } from '../src/identity/types.ts';
@@ -166,6 +169,109 @@ test('Admin edits operations, Owner controls members, and suspended actors fail 
       (error: unknown) => error instanceof ManagementError && error.code === 'forbidden',
     );
   } finally {
+    f.close();
+  }
+});
+
+test('a role downgrade revokes authority for an already-issued confirmation', async () => {
+  const f = await fixture();
+  try {
+    const promote = await f.service.applyWorkspaceChanges({
+      context: context(f.owner),
+      idempotencyKey: 'promote-second-owner',
+      operations: [{
+        itemId: 'promote', kind: 'update_member', membershipId: f.admin.membership.id,
+        role: 'owner', status: 'active',
+      }],
+    });
+    await f.service.confirmWorkspaceChange({
+      context: context(f.owner), proposalId: promote.outcomes[0]!.proposalId!,
+    });
+
+    const pending = await f.service.applyWorkspaceChanges({
+      context: context(f.owner),
+      idempotencyKey: 'owner-only-pending',
+      operations: [{
+        itemId: 'suspend', kind: 'update_member', membershipId: f.admin.membership.id,
+        status: 'suspended',
+      }],
+    });
+    const demote = await f.service.applyWorkspaceChanges({
+      context: context(f.admin),
+      idempotencyKey: 'demote-original-owner',
+      operations: [{
+        itemId: 'demote', kind: 'update_member', membershipId: f.owner.membership.id,
+        role: 'admin', status: 'active',
+      }],
+    });
+    await f.service.confirmWorkspaceChange({
+      context: context(f.admin), proposalId: demote.outcomes[0]!.proposalId!,
+    });
+    await assert.rejects(
+      () => f.service.confirmWorkspaceChange({
+        context: context(f.owner), proposalId: pending.outcomes[0]!.proposalId!,
+      }),
+      (error: unknown) => error instanceof ManagementError && error.code === 'forbidden',
+    );
+    assert.equal((await f.identity.getMembership(f.admin.membership.id))?.status, 'active');
+  } finally {
+    f.close();
+  }
+});
+
+test('management confirmation clears saved MCP credentials before an origin repoint', async () => {
+  const f = await fixture();
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const current = await f.config.createAgent(agent({
+      id: 'agent_mcp',
+      mcpServers: [{
+        id: 'search', displayName: 'Search', url: 'https://old.example/mcp',
+        transport: 'streamable-http', authMode: 'bearer', headerNames: ['X-Key'],
+        enabled: true, lifecycleStatus: 'ready', statusText: 'Ready',
+        discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
+      }],
+    }));
+    await saveMcpSecrets(
+      { agentId: current.id, connectionId: 'search' },
+      { bearerToken: 'old-bearer', headers: { 'X-Key': 'old-header' } },
+      undefined,
+      settings,
+    );
+    const service = new WorkspaceManagementService({
+      identity: f.identity,
+      config: f.config,
+      management: f.management,
+      setupBaseUrl: 'http://localhost',
+      prepareAgentUpdate: (existing, patch) => clearRepointedMcpCredentials({
+        agentId: existing.id,
+        current: existing.mcpServers,
+        next: patch.mcpServers,
+        settings,
+      }),
+      randomId: () => 'repoint',
+    });
+    const proposed = await service.applyWorkspaceChanges({
+      context: context(f.admin),
+      idempotencyKey: 'repoint-mcp',
+      operations: [{
+        itemId: 'repoint', kind: 'update_agent', agentId: current.id,
+        expectedRevision: current.revision,
+        patch: { mcpServers: [{ ...current.mcpServers[0]!, url: 'https://new.example/mcp' }] },
+      }],
+    });
+    assert.equal(proposed.outcomes[0]?.disposition, 'confirmation_required');
+    await service.confirmWorkspaceChange({
+      context: context(f.admin), proposalId: proposed.outcomes[0]!.proposalId!,
+    });
+    assert.deepEqual(await resolveMcpSecrets(
+      { agentId: current.id, connectionId: 'search' },
+      ['X-Key'],
+      undefined,
+      settings,
+    ), { headers: {} });
+  } finally {
+    settings.close();
     f.close();
   }
 });

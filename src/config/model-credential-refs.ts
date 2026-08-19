@@ -135,9 +135,13 @@ export async function rotateStoredModelCredential(
   settings: SettingsStore,
   usage: UsageStore,
   now: () => number = Date.now,
+  expectedVersion?: number,
 ): Promise<StoredCredentialMetadata> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const current = await storedCredentialMetadata(id, settings);
+    if (expectedVersion !== undefined && (current?.version ?? 0) !== expectedVersion) {
+      throw new Error('Provider credential metadata changed concurrently.');
+    }
     const timestamp = now();
     const next: StoredCredentialMetadata = {
       credentialRefId: current?.credentialRefId ?? `cred_${id}_${randomUUID()}`,
@@ -173,7 +177,12 @@ export async function rotateStoredModelCredential(
       ],
       ...(action.kind === 'delete' ? { delete: [providerApiKeySetting(id)] } : {}),
     });
-    if (!applied) continue;
+    if (!applied) {
+      if (expectedVersion !== undefined) {
+        throw new Error('Provider credential metadata changed concurrently.');
+      }
+      continue;
+    }
     if (current?.active) {
       await usage.retireCredential(current.credentialRefId, current.version, timestamp);
     }

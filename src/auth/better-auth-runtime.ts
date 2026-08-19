@@ -7,6 +7,8 @@ import {
 } from '../config/state-backend.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { createBetterAuthPublicHandler } from './better-auth-routes.ts';
+import { AuthRateLimitError, AuthRateLimiter } from './rate-limit.ts';
+import { requestAuthSourceKey } from './source-key.ts';
 import {
   resolveBetterAuthEnvironment,
   type BetterAuthEnvironment,
@@ -68,6 +70,32 @@ async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<
     authSecret: options.authSecret,
   });
   if (!environment) return Response.json({ error: 'auth_unavailable' }, { status: 503 });
+
+  if (c.req.method === 'POST' && c.req.path === '/api/auth/oauth2/register') {
+    const limiter = new AuthRateLimiter(identity, {
+      pepper: environment.secret,
+      perKeyLimit: 20,
+      globalLimit: 1_000,
+    });
+    const source = requestAuthSourceKey(c.req.raw);
+    try {
+      await limiter.assertAllowed('mcp_dcr', source);
+      // DCR is an anonymous resource-allocation attempt, so every attempt
+      // consumes quota regardless of whether Better Auth later accepts it.
+      await limiter.recordFailure('mcp_dcr', source);
+    } catch (error) {
+      if (!(error instanceof AuthRateLimitError)) throw error;
+      return Response.json(
+        { error: 'registration_rate_limited' },
+        {
+          status: 429,
+          headers: {
+            'retry-after': String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))),
+          },
+        },
+      );
+    }
+  }
 
   const handler = createBetterAuthEnvironmentPublicHandler({
     environment,

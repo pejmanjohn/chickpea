@@ -16,6 +16,9 @@ import {
   confirmWorkspaceChangeValibotSchema,
   getOperationValibotSchema,
   inspectWorkspaceValibotSchema,
+  discoverSlackChannelsValibotSchema,
+  inspectSlackMemberDirectoryValibotSchema,
+  testMcpConnectionValibotSchema,
   inspectMemoryValibotSchema,
   inspectRoutinesValibotSchema,
   exportRecipeValibotSchema,
@@ -76,6 +79,36 @@ export function useWorkspaceManagementSlackTools(
     async run({ data }) {
       return slackToolOutput(await invokeLiveSlackTool(
         signal, resolvePlatformEnv, 'inspect_workspace', data,
+      ));
+    },
+  });
+  useTool({
+    name: 'discover_slack_channels',
+    description: workspaceManagementToolDescription('discover_slack_channels'),
+    input: discoverSlackChannelsValibotSchema,
+    async run({ data }) {
+      return slackToolOutput(await invokeLiveSlackTool(
+        signal, resolvePlatformEnv, 'discover_slack_channels', data,
+      ));
+    },
+  });
+  useTool({
+    name: 'inspect_slack_member_directory',
+    description: workspaceManagementToolDescription('inspect_slack_member_directory'),
+    input: inspectSlackMemberDirectoryValibotSchema,
+    async run({ data }) {
+      return slackToolOutput(await invokeLiveSlackTool(
+        signal, resolvePlatformEnv, 'inspect_slack_member_directory', data,
+      ));
+    },
+  });
+  useTool({
+    name: 'test_mcp_connection',
+    description: workspaceManagementToolDescription('test_mcp_connection'),
+    input: testMcpConnectionValibotSchema,
+    async run({ data }) {
+      return slackToolOutput(await invokeLiveSlackTool(
+        signal, resolvePlatformEnv, 'test_mcp_connection', data,
       ));
     },
   });

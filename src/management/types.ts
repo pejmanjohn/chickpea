@@ -531,6 +531,7 @@ export interface ManagementProposalRecord {
   operation: ManagementOperation;
   summary: string;
   targetRevisions: Record<string, number>;
+  requestOperationId?: string;
   status: 'pending' | 'applying' | 'completed' | 'stale' | 'expired';
   result?: ManagementApplyResult;
   expiresAt: number;
@@ -596,6 +597,7 @@ export interface PutManagementProposalInput {
   operation: ManagementOperation;
   summary: string;
   targetRevisions: Record<string, number>;
+  requestOperationId?: string;
   expiresAt: number;
   at: number;
 }
@@ -693,7 +695,8 @@ export type ManagementRpcRequest =
       nextAttemptAt?: number;
       deliveryRef?: string;
       failureCode?: string;
-    };
+    }
+  | { kind: 'cleanup_retention'; at: number; limit: number };
 
 export type ManagementRpcResponse =
   | { kind: 'request_reservation'; request: ManagementRequestRecord; created: boolean }
@@ -702,4 +705,5 @@ export type ManagementRpcResponse =
   | { kind: 'undo'; undo: ManagementUndoRecord | null }
   | { kind: 'setup'; setup: ManagementSetupRecord | null }
   | { kind: 'outbox'; outbox: ManagementReceiptOutboxRecord | null }
-  | { kind: 'outbox_batch'; outbox: ManagementReceiptOutboxRecord[] };
+  | { kind: 'outbox_batch'; outbox: ManagementReceiptOutboxRecord[] }
+  | { kind: 'retention'; deleted: number };

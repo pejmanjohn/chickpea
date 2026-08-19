@@ -9,6 +9,9 @@ import {
   confirmWorkspaceChangeZodSchema,
   getOperationZodSchema,
   inspectWorkspaceZodSchema,
+  discoverSlackChannelsZodSchema,
+  inspectSlackMemberDirectoryZodSchema,
+  testMcpConnectionZodSchema,
   inspectMemoryZodSchema,
   inspectRoutinesZodSchema,
   exportRecipeZodSchema,
@@ -66,6 +69,39 @@ export function createWorkspaceManagementMcpServer(
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'inspect_workspace',
+    args,
+  )));
+
+  server.registerTool('discover_slack_channels', {
+    title: 'Discover Slack Channels',
+    description: workspaceManagementToolDescription('discover_slack_channels'),
+    inputSchema: discoverSlackChannelsZodSchema,
+    annotations: { readOnlyHint: true },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'discover_slack_channels',
+    args,
+  )));
+
+  server.registerTool('inspect_slack_member_directory', {
+    title: 'Inspect eligible Slack members',
+    description: workspaceManagementToolDescription('inspect_slack_member_directory'),
+    inputSchema: inspectSlackMemberDirectoryZodSchema,
+    annotations: { readOnlyHint: true },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'inspect_slack_member_directory',
+    args,
+  )));
+
+  server.registerTool('test_mcp_connection', {
+    title: 'Test saved MCP connection',
+    description: workspaceManagementToolDescription('test_mcp_connection'),
+    inputSchema: testMcpConnectionZodSchema,
+    annotations: { readOnlyHint: true },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'test_mcp_connection',
     args,
   )));
 

@@ -1,7 +1,10 @@
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
-import { resolveSlackIdentityExecutionContext } from '../slack/identity-execution.ts';
+import {
+  resolveSlackIdentityExecutionContext,
+  type SlackIdentityExecutionResolver,
+} from '../slack/identity-execution.ts';
 import type { ManagementStore } from './store.ts';
 import type {
   ManagementReceiptDestination,
@@ -126,12 +129,12 @@ export async function deliverManagementReceiptToSlack(
   input: {
     identity: Pick<IdentityStore, 'listExternalIdentities'>;
     env?: PlatformEnv;
+    resolveIdentity?: SlackIdentityExecutionResolver;
   },
 ): Promise<ManagementReceiptDeliveryResult> {
-  const execution = await resolveSlackIdentityExecutionContext(
-    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-    input.env,
-  );
+  const execution = await (input.resolveIdentity
+    ? input.resolveIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID)
+    : resolveSlackIdentityExecutionContext(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID, input.env));
   let channel: string;
   let threadTs: string | undefined;
   if (record.destination.kind === 'thread') {

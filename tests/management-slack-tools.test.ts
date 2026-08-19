@@ -15,6 +15,7 @@ import {
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
+import { WorkspaceManagementService } from '../src/management/service.ts';
 import type { ManagementOperation } from '../src/management/types.ts';
 import {
   createManagementAdapterFixture,
@@ -177,6 +178,70 @@ test('Slack and MCP adapters produce the same policy and revision outcomes for o
   } finally {
     slack.close();
     mcp.close();
+  }
+});
+
+test('Slack and MCP expose the same sanitized discovery and connection-test primitives', async () => {
+  const f = await createManagementAdapterFixture('discovery-parity');
+  try {
+    const service = new WorkspaceManagementService({
+      identity: f.identity,
+      config: f.config,
+      management: f.management,
+      discoverSlackChannels: async (refresh) => ({
+        teamId: f.owner.user.slackTeamId,
+        channels: [{ id: 'C_RESEARCH', name: 'research', isPrivate: false, isMember: true }],
+        truncated: false,
+        refresh,
+      }),
+      discoverSlackMembers: async (cursor) => ({
+        members: [{
+          slackUserId: 'U22222222', displayName: 'Ada', realName: 'Ada Lovelace',
+          handle: 'ada', avatarUrl: null,
+        }],
+        nextCursor: cursor ? null : 'next',
+      }),
+      testMcpConnection: async (agentId, connectionId) => ({
+        ok: true,
+        agentId,
+        connectionId,
+        tools: [{ name: 'search' }],
+      }),
+    });
+    const slackBase = {
+      signal: signal(f.owner.user.slackTeamId, f.owner.user.slackUserId),
+      identity: f.identity,
+      service,
+    };
+    const mcpBase = {
+      service,
+      resolveContext: async () => ({
+        userId: f.owner.user.id,
+        membershipId: f.owner.membership.id,
+        organizationId: f.owner.membership.organizationId,
+        origin: { kind: 'mcp' as const, clientId: 'client_codex' },
+      }),
+    };
+    for (const [name, args] of [
+      ['discover_slack_channels', { refresh: true }],
+      ['inspect_slack_member_directory', {}],
+      ['test_mcp_connection', { agentId: 'agent_1', connectionId: 'search' }],
+    ] as const) {
+      const slackResult = await invokeSlackWorkspaceManagementTool({
+        ...slackBase,
+        name,
+        args,
+      } as Parameters<typeof invokeSlackWorkspaceManagementTool>[0]);
+      const mcpResult = await invokeWorkspaceManagementTool(
+        mcpBase,
+        name,
+        args as never,
+      );
+      assert.deepEqual(slackResult, mcpResult);
+      assert.doesNotMatch(JSON.stringify(slackResult), /xox[baprs]-|bearer|clientSecret/i);
+    }
+  } finally {
+    f.close();
   }
 });
 

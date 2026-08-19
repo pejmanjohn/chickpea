@@ -1081,6 +1081,12 @@ export class CfManagementStore implements ManagementStore {
     if (response.kind !== 'outbox' || !response.outbox) throw unexpectedManagementResponse();
     return response.outbox;
   }
+
+  async cleanupRetention(at: number, limit = 250) {
+    const response = await this.execute({ kind: 'cleanup_retention', at, limit });
+    if (response.kind !== 'retention') throw unexpectedManagementResponse();
+    return response.deleted;
+  }
 }
 
 export class CfConfigStore implements ConfigStore {

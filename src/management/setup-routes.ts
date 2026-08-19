@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import { Hono, type Context } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 
 import {
   completeApiOAuthAuthorization,
@@ -42,6 +43,7 @@ import {
   saveProviderApiKey,
   type ProviderKeyId,
 } from '../config/provider-keys.ts';
+import { storedCredentialMetadata } from '../config/model-credential-refs.ts';
 import {
   getConfigStore,
   getIdentityStore,
@@ -111,6 +113,10 @@ export function createManagementSetupRoutes(
     setupResponseHeaders(c);
     await next();
   });
+  app.use('/setup/*', bodyLimit({
+    maxSize: MAX_FORM_BYTES,
+    onError: (c) => c.json({ error: 'request_too_large' }, 413),
+  }));
 
   app.get('/setup/:setupOperationId', async (c) => {
     const dependencies = setupDependencies(c, options);
@@ -448,6 +454,7 @@ async function completeFormAction(
       dependencies.platformEnv,
       dependencies.settings,
       dependencies.usage,
+      setup.target.expectedRevision,
     );
     if (providerId === 'openai' && current === 'missing') {
       await saveOpenAiAuthMethod(dependencies.settings, 'api_key');
@@ -710,7 +717,19 @@ async function assertExactTarget(
   setup: ManagementSetupRecord,
   dependencies: SetupDependencies,
 ): Promise<void> {
-  if (setup.target.kind === 'provider_credential') return;
+  if (setup.target.kind === 'provider_credential') {
+    const providerId = setup.target.provider as ProviderKeyId;
+    const source = (await describeProviderKeySources(
+      dependencies.platformEnv,
+      dependencies.settings,
+    ))[providerId];
+    const revision = (await storedCredentialMetadata(providerId, dependencies.settings))?.version ?? 0;
+    if (source === 'env' || revision !== setup.target.expectedRevision ||
+        (setup.target.replacement ? source !== 'stored' : source !== 'missing')) {
+      throw new Error('target_changed');
+    }
+    return;
+  }
   if (setup.target.kind === 'slack_identity') {
     if (!setup.target.identityId) throw new Error('target_changed');
     const identity = await dependencies.config.getSlackIdentity(setup.target.identityId);

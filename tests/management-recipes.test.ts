@@ -295,3 +295,82 @@ test('recipe import progressively creates live configuration and rejects a stale
     f.close();
   }
 });
+
+test('confirmed recipe overwrite resumes connector setup and Channel placement', async () => {
+  const f = await createManagementAdapterFixture('recipe-confirm-resume');
+  try {
+    const existing = await f.config.createAgent({
+      id: 'agent_existing', name: 'Existing', instructions: 'Old.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const context = {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      origin: { kind: 'mcp' as const, clientId: 'client_codex' },
+    };
+    const preview = await f.service.previewRecipe(context, {
+      agentStrategy: 'update',
+      recipe: {
+        schemaVersion: 1,
+        name: 'Existing',
+        agents: [{
+          symbol: 'agent_1', name: existing.name, instructions: 'Updated.', enabled: true,
+          skills: [],
+          mcpRequirements: [{
+            id: 'search', displayName: 'Search', url: 'https://mcp.example.com/mcp',
+            transport: 'streamable-http', authMode: 'bearer', headerNames: [],
+            enabled: true, allowedTools: ['search'],
+          }],
+          apiRequirements: [], repositoryRequirements: [],
+        }],
+        channels: [{
+          symbol: 'channel_1', label: 'research', participationMode: 'mention_only',
+          agentSymbol: 'agent_1',
+        }],
+      },
+      channelTargets: [{
+        symbol: 'channel_1', workspaceId: f.owner.user.slackTeamId,
+        channelId: 'C_RECIPE_RESUME', expectedRevision: 0, expectedAgentId: null,
+      }],
+    });
+    const proposed = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'recipe-confirm-resume',
+      operations: preview.operations,
+    });
+    assert.deepEqual(proposed.outcomes.map(({ disposition }) => disposition), [
+      'confirmation_required',
+    ]);
+    const resumed = await f.service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.outcomes[0]!.proposalId!,
+    });
+    assert.deepEqual(resumed.outcomes.map(({ disposition }) => disposition), [
+      'applied', 'setup_required', 'applied', 'confirmation_required',
+    ]);
+    assert.match(resumed.outcomes[1]!.setupUrl!, /#setup=/);
+    const durableAfterSetup = await f.management.getRequest(resumed.operationId);
+    assert.equal(durableAfterSetup?.progress.outcomes[1]?.setupUrl, undefined);
+    assert.doesNotMatch(JSON.stringify(durableAfterSetup), /#setup=/);
+    const confirmed = await f.service.confirmWorkspaceChange({
+      context,
+      proposalId: resumed.outcomes[3]!.proposalId!,
+    });
+    assert.deepEqual(confirmed.outcomes.map(({ disposition }) => disposition), [
+      'applied', 'setup_required', 'applied', 'applied',
+    ]);
+    assert.equal(confirmed.outcomes[1]?.setupUrl, undefined);
+    assert.doesNotMatch(
+      JSON.stringify(await f.management.getRequest(confirmed.operationId)),
+      /#setup=/,
+    );
+    assert.equal((await f.config.getAgent(existing.id)).instructions, 'Updated.');
+    assert.equal(
+      (await f.config.getAssignment(f.owner.user.slackTeamId, 'C_RECIPE_RESUME'))?.agentId,
+      existing.id,
+    );
+  } finally {
+    f.close();
+  }
+});

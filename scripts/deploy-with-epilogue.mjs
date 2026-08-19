@@ -801,20 +801,25 @@ function expectedAuthSchema(artifact) {
     path.dirname(artifact.configPath),
     binding?.migrations_dir ?? '',
   );
-  const migrationPath = path.join(migrationsDirectory, '0001_better_auth.sql');
-  let sql;
+  let migrationPaths;
   try {
-    sql = readFileSync(migrationPath, 'utf8');
+    migrationPaths = readdirSync(migrationsDirectory)
+      .filter((name) => name.endsWith('.sql'))
+      .sort()
+      .map((name) => path.join(migrationsDirectory, name));
+    if (migrationPaths.length === 0) throw new Error('no SQL migrations found');
   } catch (error) {
     throw new Error(
-      `Unable to read the pinned Better Auth bootstrap migration: ${
+      `Unable to read the reviewed Better Auth migration chain: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
   }
   const database = new DatabaseSync(':memory:');
   try {
-    database.exec(sql);
+    for (const migrationPath of migrationPaths) {
+      database.exec(readFileSync(migrationPath, 'utf8'));
+    }
     return normalizeAuthSchemaRows(database.prepare(AUTH_SCHEMA_QUERY).all());
   } finally {
     database.close();
@@ -859,7 +864,7 @@ function verifyRemoteAuthSchema(artifact) {
   const actual = normalizeAuthSchemaRows(resultSets[0].results);
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(
-      'AUTH_DB contains an incompatible Better Auth 0001 schema. ' +
+      'AUTH_DB contains an incompatible reviewed Better Auth migration-chain schema. ' +
       'This Slack-only release supports a fresh empty AUTH_DB only; reset the disposable database ' +
       'or provision a new one with the exact preserved binding before deploying.',
     );

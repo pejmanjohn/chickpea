@@ -15,7 +15,12 @@ import {
   WorkspaceDefaultSlackIdentityProtectedError,
 } from '../config/errors.ts';
 import { generateSlackIdentityIngressKey, type ConfigAgentPatch, type ConfigStore } from '../config/store.ts';
-import type { ChannelConfig, CustomAgentConfig, SlackIdentity } from '../config/types.ts';
+import {
+  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type ChannelConfig,
+  type CustomAgentConfig,
+  type SlackIdentity,
+} from '../config/types.ts';
 import type { SlackIdentityAuditEventType } from '../audit/types.ts';
 import type { IdentityStore, Invitation, Membership } from '../identity/types.ts';
 import { ownerMemoryStoreId } from '../memory/ids.ts';
@@ -107,6 +112,7 @@ export interface WorkspaceManagementServiceInput {
     | 'putChannel'
     | 'putChannelPlacement'
     | 'getAssignment'
+    | 'listAssignments'
     | 'getAgentReferences'
     | 'listSlackIdentities'
     | 'getSlackIdentity'
@@ -134,9 +140,19 @@ export interface WorkspaceManagementServiceInput {
   providerCredentialSource?: (
     providerId: ManagedProviderId,
   ) => Promise<ManagedProviderSource>;
+  providerCredentialRevision?: (
+    providerId: ManagedProviderId,
+  ) => Promise<number>;
   removeProviderCredential?: (
     providerId: ManagedProviderId,
   ) => Promise<ManagedProviderSource>;
+  prepareAgentUpdate?: (
+    agent: CustomAgentConfig,
+    patch: ConfigAgentPatch,
+  ) => Promise<void>;
+  discoverSlackChannels?: (refresh: boolean) => Promise<unknown>;
+  discoverSlackMembers?: (cursor?: string) => Promise<unknown>;
+  testMcpConnection?: (agentId: string, connectionId: string) => Promise<unknown>;
   resolveSlackInvitee?: (slackUserId: string) => Promise<{
     slackTeamId: string;
     displayName: string | null;
@@ -180,6 +196,43 @@ export class WorkspaceManagementService {
   ): Promise<ManagementWorkspaceSnapshot> {
     const actor = await this.requireLiveActor(context);
     return this.snapshot(context.organizationId, actor.role === 'owner');
+  }
+
+  async discoverSlackChannels(
+    context: ApplyWorkspaceChangesInput['context'],
+    refresh = false,
+  ): Promise<unknown> {
+    await this.requireLiveActor(context);
+    if (!this.stores.discoverSlackChannels) {
+      throw new ManagementError('invalid_request', 'Slack Channel discovery is unavailable.');
+    }
+    return this.stores.discoverSlackChannels(refresh);
+  }
+
+  async inspectSlackMemberDirectory(
+    context: ApplyWorkspaceChangesInput['context'],
+    cursor?: string,
+  ): Promise<unknown> {
+    const actor = await this.requireLiveActor(context);
+    if (actor.role !== 'owner') {
+      throw new ManagementError('forbidden', 'Only Owners can inspect eligible Slack members.');
+    }
+    if (!this.stores.discoverSlackMembers) {
+      throw new ManagementError('invalid_request', 'Slack member discovery is unavailable.');
+    }
+    return this.stores.discoverSlackMembers(cursor);
+  }
+
+  async testMcpConnection(
+    context: ApplyWorkspaceChangesInput['context'],
+    agentId: string,
+    connectionId: string,
+  ): Promise<unknown> {
+    await this.requireLiveActor(context);
+    if (!this.stores.testMcpConnection) {
+      throw new ManagementError('invalid_request', 'MCP connection testing is unavailable.');
+    }
+    return this.stores.testMcpConnection(agentId, connectionId);
   }
 
   async inspectMemory(
@@ -304,6 +357,10 @@ export class WorkspaceManagementService {
     );
     let progress = request.progress;
     const clientRefs = agentClientRefs(request.operations);
+    if (progress.outcomes.some(({ disposition }) => disposition === 'confirmation_required')) {
+      const pending = await this.resultFor(request.operationId, input.idempotencyKey, progress.outcomes);
+      return emitOperationOutcomes(actor.origin.kind, pending);
+    }
 
     for (let index = progress.nextIndex; index < request.operations.length; index += 1) {
       const storedOperation = request.operations[index]!;
@@ -336,7 +393,12 @@ export class WorkspaceManagementService {
             code: policy.reason,
           });
         } else if (policy.posture === 'confirmation') {
-          const proposal = await this.createProposal(actor, operation, policy.reason);
+          const proposal = await this.createProposal(
+            actor,
+            operation,
+            policy.reason,
+            request.operationId,
+          );
           progress = appendOutcome(progress, index, {
             itemId: operation.itemId,
             operationKind: operation.kind,
@@ -386,6 +448,7 @@ export class WorkspaceManagementService {
           withoutSetupCapabilitiesFromProgress(progress),
           this.now(),
         );
+        if (progress.outcomes.at(-1)?.disposition === 'confirmation_required') break;
       } catch (error) {
         if (!isExpectedMutationError(error)) throw error;
         progress = appendOutcome(progress, index, {
@@ -403,6 +466,9 @@ export class WorkspaceManagementService {
     }
 
     const result = await this.resultFor(request.operationId, input.idempotencyKey, progress.outcomes);
+    if (progress.outcomes.some(({ disposition }) => disposition === 'confirmation_required')) {
+      return emitOperationOutcomes(actor.origin.kind, result);
+    }
     await this.stores.management.completeRequest(
       request.operationId,
       withoutSetupCapabilities(result),
@@ -414,19 +480,25 @@ export class WorkspaceManagementService {
   async confirmWorkspaceChange(input: ConfirmWorkspaceChangeInput): Promise<ManagementApplyResult> {
     const actor = await this.requireLiveActor(input.context);
     const existing = await this.stores.management.getProposal(input.proposalId);
+    if (existing) this.assertProposalBinding(actor, existing);
     if (existing?.status === 'completed' && existing.result) {
       return emitOperationOutcomes(actor.origin.kind, existing.result);
     }
+    if (existing?.status === 'pending') {
+      await this.assertProposalStillAllowed(actor, existing);
+    }
     if (existing?.status === 'applying') {
+      await this.assertProposalStillAllowed(actor, existing);
       const reconciled = await this.reconcileConfirmed(existing);
       if (reconciled) {
         await this.auditConfirmedSlackIdentityMutation(actor, existing, undefined);
-        const completed = await this.stores.management.completeProposal(
+        const resumed = await this.resumeConfirmedRequest(actor, input.context, existing, reconciled);
+        await this.stores.management.completeProposal(
           existing.proposalId,
-          reconciled,
+          withoutSetupCapabilities(resumed),
           this.now(),
         );
-        return emitOperationOutcomes(actor.origin.kind, completed.result ?? reconciled);
+        return emitOperationOutcomes(actor.origin.kind, resumed);
       }
       throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
     }
@@ -458,12 +530,13 @@ export class WorkspaceManagementService {
           setupUrl: setup.url,
         }],
       );
+      const resumed = await this.resumeConfirmedRequest(actor, input.context, proposal, result);
       await this.stores.management.completeProposal(
         proposal.proposalId,
-        withoutSetupCapabilities(result),
+        withoutSetupCapabilities(resumed),
         this.now(),
       );
-      return emitOperationOutcomes(actor.origin.kind, result);
+      return emitOperationOutcomes(actor.origin.kind, resumed);
     }
 
     const identityBefore = proposal.operation.kind === 'retire_slack_identity' ||
@@ -482,12 +555,60 @@ export class WorkspaceManagementService {
         changed: mutation.changed,
       }],
     );
-    const completed = await this.stores.management.completeProposal(
+    const resumed = await this.resumeConfirmedRequest(actor, input.context, proposal, result);
+    await this.stores.management.completeProposal(
       proposal.proposalId,
-      result,
+      withoutSetupCapabilities(resumed),
       this.now(),
     );
-    return emitOperationOutcomes(actor.origin.kind, completed.result ?? result);
+    return emitOperationOutcomes(actor.origin.kind, resumed);
+  }
+
+  private async resumeConfirmedRequest(
+    actor: LiveManagementActor,
+    context: ApplyWorkspaceChangesInput['context'],
+    proposal: ManagementProposalRecord,
+    confirmed: ManagementApplyResult,
+  ): Promise<ManagementApplyResult> {
+    if (!proposal.requestOperationId) return confirmed;
+    const request = await this.stores.management.getRequest(proposal.requestOperationId);
+    if (!request || request.organizationId !== actor.organizationId ||
+        request.actorUserId !== actor.userId || request.actorMembershipId !== actor.membershipId ||
+        request.originKey !== managementOriginKey(actor.origin)) {
+      throw new ManagementError('proposal_binding_mismatch', 'The parent request is unavailable.');
+    }
+    if (request.status === 'completed' && request.result) return request.result;
+    const confirmedOutcome = confirmed.outcomes.find(({ itemId }) =>
+      itemId === proposal.operation.itemId);
+    if (!confirmedOutcome) {
+      throw new ManagementError('proposal_stale', 'The confirmed operation result is unavailable.');
+    }
+    const outcomes = request.progress.outcomes.map((outcome) =>
+      outcome.itemId === proposal.operation.itemId ? confirmedOutcome : outcome);
+    if (!outcomes.some(({ itemId, disposition }) =>
+      itemId === proposal.operation.itemId && disposition === 'applied') &&
+        confirmedOutcome.disposition !== 'setup_required') {
+      throw new ManagementError('proposal_stale', 'The parent request cannot resume.');
+    }
+    const resumedProgress = { ...request.progress, outcomes };
+    await this.stores.management.saveRequestProgress(
+      request.operationId,
+      withoutSetupCapabilitiesFromProgress(resumedProgress),
+      this.now(),
+    );
+    const resumed = await this.applyWorkspaceChanges({
+      context,
+      idempotencyKey: request.idempotencyKey,
+      operations: request.operations,
+    });
+    // Setup capabilities are response-only bearer secrets. Restore the one
+    // produced by this confirmation only in the immediate response after the
+    // parent request has durably saved its redacted progress/result.
+    return {
+      ...resumed,
+      outcomes: resumed.outcomes.map((outcome) =>
+        outcome.itemId === confirmedOutcome.itemId ? confirmedOutcome : outcome),
+    };
   }
 
   private async auditConfirmedSlackIdentityMutation(
@@ -686,7 +807,7 @@ export class WorkspaceManagementService {
           provider: request.providerId,
           targetId: `provider:${request.providerId}`,
           targetLabel: `Workspace ${providerLabel(request.providerId)} model provider`,
-          expectedRevision: source === 'stored' ? 1 : 0,
+          expectedRevision: await this.providerRevision(request.providerId),
           replacement: source === 'stored',
           formFields: ['apiKey'],
         },
@@ -804,24 +925,69 @@ export class WorkspaceManagementService {
           overlay.accessStatus !== 'active'))) {
       throw new ManagementError('forbidden', 'Workspace management is not available.');
     }
+    if (membership.role !== 'admin' && membership.role !== 'owner') {
+      throw new ManagementError('forbidden', 'Workspace management requires an Admin or Owner.');
+    }
+    await this.stores.management.cleanupRetention(this.now(), 100).catch(() => 0);
     return { ...context, role: membership.role };
+  }
+
+  private assertProposalBinding(
+    actor: LiveManagementActor,
+    proposal: ManagementProposalRecord,
+  ): void {
+    if (proposal.organizationId !== actor.organizationId ||
+        proposal.actorUserId !== actor.userId ||
+        proposal.actorMembershipId !== actor.membershipId ||
+        proposal.originKey !== managementOriginKey(actor.origin)) {
+      throw new ManagementError(
+        'proposal_binding_mismatch',
+        'The confirmation does not match its initiating user and origin.',
+      );
+    }
+  }
+
+  private async assertProposalStillAllowed(
+    actor: LiveManagementActor,
+    proposal: ManagementProposalRecord,
+  ): Promise<void> {
+    const facts = await this.policyFacts(
+      actor,
+      proposal.operation,
+      [proposal.operation],
+      agentClientRefs([proposal.operation]),
+    );
+    const policy = classifyManagementOperation(facts);
+    if (!policy.allowed) {
+      throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
+    }
   }
 
   private async snapshot(
     organizationId = '',
     includeTeam = false,
   ): Promise<ManagementWorkspaceSnapshot> {
-    const [agents, channels, providerSources, slackIdentities] = await Promise.all([
+    const [agents, channels, assignments, providerSources, slackIdentities] = await Promise.all([
       this.stores.config.listAgents(),
       this.stores.config.listChannels(),
+      this.stores.config.listAssignments(),
       Promise.all(MANAGED_PROVIDER_IDS.map(async (id) => [
         id,
         await this.stores.providerCredentialSource?.(id) ?? 'missing',
       ] as const)),
       this.stores.config.listSlackIdentities(),
     ]);
-    const placements = await Promise.all(channels.map((channel) =>
-      this.stores.config.getAssignment(channel.workspaceId, channel.channelId)));
+    const placementsByChannel = new Map(assignments.map((assignment) => [
+      channelKey(assignment.workspaceId, assignment.channelId),
+      assignment,
+    ]));
+    const agentIdsByIdentity = new Map<string, string[]>();
+    for (const agent of agents) {
+      const identityId = agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
+      const ids = agentIdsByIdentity.get(identityId) ?? [];
+      ids.push(agent.id);
+      agentIdsByIdentity.set(identityId, ids);
+    }
     const refs: ManagementObjectRef[] = [
       ...agents.map((agent) => ({ kind: 'agent' as const, id: agent.id, revision: agent.revision })),
       ...channels.map((channel) => ({
@@ -863,7 +1029,7 @@ export class WorkspaceManagementService {
         repositories,
         ...(slackIdentityId ? { slackIdentityId } : {}),
       })),
-      channels: channels.map((channel, index) => ({
+      channels: channels.map((channel) => ({
         workspaceId: channel.workspaceId,
         channelId: channel.channelId,
         revision: channel.revision ?? 1,
@@ -873,7 +1039,9 @@ export class WorkspaceManagementService {
           : {}),
         participationMode: channel.participationMode,
         lifecycle: channel.lifecycle,
-        ...(placements[index] ? { agentId: placements[index]!.agentId } : {}),
+        ...(placementsByChannel.get(channelKey(channel.workspaceId, channel.channelId))
+          ? { agentId: placementsByChannel.get(channelKey(channel.workspaceId, channel.channelId))!.agentId }
+          : {}),
       })),
       providers: providerSources.map(([id, source]) => ({
         id,
@@ -883,9 +1051,7 @@ export class WorkspaceManagementService {
           .filter((agent) => modelBelongsToProvider(agent.model, id))
           .map(({ id: agentId, name }) => ({ id: agentId, name })),
       })),
-      slackIdentities: await Promise.all(slackIdentities.map(async (identity) => {
-        const references = await this.stores.config.getSlackIdentityReferences(identity.id);
-        return {
+      slackIdentities: slackIdentities.map((identity) => ({
           id: identity.id,
           kind: identity.kind,
           lifecycle: identity.lifecycle,
@@ -900,8 +1066,7 @@ export class WorkspaceManagementService {
             ? { observedDisplayName: identity.observedDisplayName }
             : {}),
           health: identity.health,
-          agentIds: references.agentIds,
-        };
+          agentIds: agentIdsByIdentity.get(identity.id) ?? [],
       })),
       ...(team ? { team } : {}),
       effectiveRevision: effectiveConfigurationRevision(refs),
@@ -1193,6 +1358,7 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     operation: ManagementOperation,
     reason: string,
+    requestOperationId?: string,
   ): Promise<ManagementProposalRecord> {
     const at = this.now();
     const targetRevisions = await this.targetRevisions(operation);
@@ -1211,6 +1377,7 @@ export class WorkspaceManagementService {
       operation,
       summary,
       targetRevisions,
+      ...(requestOperationId ? { requestOperationId } : {}),
       expiresAt: at + PROPOSAL_TTL_MS,
       at,
     });
@@ -1660,7 +1827,7 @@ export class WorkspaceManagementService {
         return mutationForAgent(agent, prepared.inverse);
       }
       case 'update_agent': {
-        const agent = await this.stores.config.updateAgent(
+        const agent = await this.updateAgent(
           operation.agentId,
           operation.patch,
           operation.expectedRevision,
@@ -1955,7 +2122,7 @@ export class WorkspaceManagementService {
           revision: result.channel.revision ?? 1,
         });
       }
-      const agent = await this.stores.config.updateAgent(
+      const agent = await this.updateAgent(
         operation.agentId,
         operation.patch,
         operation.expectedRevision,
@@ -1996,8 +2163,7 @@ export class WorkspaceManagementService {
       };
     }
     if (operation.kind === 'remove_provider_credential') {
-      const source = await this.stores.providerCredentialSource?.(operation.providerId) ?? 'missing';
-      return { [`provider:${operation.providerId}`]: providerRevision(source) };
+      return { [`provider:${operation.providerId}`]: await this.providerRevision(operation.providerId) };
     }
     if (operation.kind === 'request_setup') {
       const setup = await this.resolveSetupTarget(operation.target);
@@ -2077,10 +2243,7 @@ export class WorkspaceManagementService {
       if (!['anthropic', 'openai', 'openrouter'].includes(providerId)) {
         throw new ManagementError('invalid_request', 'Unknown provider revision target.');
       }
-      const source = await this.stores.providerCredentialSource?.(
-        providerId as 'anthropic' | 'openai' | 'openrouter',
-      ) ?? 'missing';
-      return providerRevision(source);
+      return this.providerRevision(providerId as ManagedProviderId);
     }
     if (key.startsWith('slack_identity:')) {
       return (await optionalSlackIdentity(
@@ -2101,6 +2264,27 @@ export class WorkspaceManagementService {
       return (await this.stores.routines?.getRoutine(key.slice('routine:'.length)))?.version ?? 0;
     }
     throw new ManagementError('invalid_request', 'Unknown revision target.');
+  }
+
+  private async providerRevision(providerId: ManagedProviderId): Promise<number> {
+    if (this.stores.providerCredentialRevision) {
+      return this.stores.providerCredentialRevision(providerId);
+    }
+    const source = await this.stores.providerCredentialSource?.(providerId) ?? 'missing';
+    return providerRevision(source);
+  }
+
+  private async updateAgent(
+    agentId: string,
+    patch: ConfigAgentPatch,
+    expectedRevision: number,
+  ): Promise<CustomAgentConfig> {
+    const current = await this.stores.config.getAgent(agentId);
+    if (current.revision !== expectedRevision) {
+      throw new AgentRevisionConflictError(agentId, expectedRevision, current.revision);
+    }
+    await this.stores.prepareAgentUpdate?.(current, patch);
+    return this.stores.config.updateAgent(agentId, patch, expectedRevision);
   }
 
   private async reconcileConfirmed(
@@ -2363,9 +2547,20 @@ function containsExpandedMcp(
   return after.some((connection) => {
     if (!connection.enabled) return false;
     const prior = before.find(({ id }) => id === connection.id);
-    return !prior?.enabled || !isSubset(connection.allowedTools, prior.allowedTools) ||
+    return !prior?.enabled || mcpSecurityBoundaryChanged(prior, connection) ||
+      !isSubset(connection.allowedTools, prior.allowedTools) ||
       !isSubset(scopeTokens(connection.oauthScope), scopeTokens(prior.oauthScope));
   });
+}
+
+function mcpSecurityBoundaryChanged(
+  before: CustomAgentConfig['mcpServers'][number],
+  after: CustomAgentConfig['mcpServers'][number],
+): boolean {
+  return before.url !== after.url ||
+    before.transport !== after.transport ||
+    before.authMode !== after.authMode ||
+    canonicalJson([...before.headerNames].sort()) !== canonicalJson([...after.headerNames].sort());
 }
 
 function containsExpandedApi(

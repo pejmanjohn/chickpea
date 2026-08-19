@@ -149,12 +149,13 @@ export interface WorkspaceRecipePreview {
 }
 
 export async function exportWorkspaceRecipe(
-  config: Pick<ConfigStore, 'listAgents' | 'listChannels' | 'getAssignment'>,
+  config: Pick<ConfigStore, 'listAgents' | 'listChannels' | 'listAssignments'>,
   input: { agentIds?: string[] | undefined },
 ): Promise<WorkspaceRecipe> {
-  const [allAgents, channels] = await Promise.all([
+  const [allAgents, channels, assignments] = await Promise.all([
     config.listAgents(),
     config.listChannels(),
+    config.listAssignments(),
   ]);
   const selected = input.agentIds?.length
     ? allAgents.filter(({ id }) => input.agentIds!.includes(id))
@@ -163,14 +164,16 @@ export async function exportWorkspaceRecipe(
     throw new ManagementError('invalid_request', 'One or more recipe Agents were not found.');
   }
   const symbols = new Map(selected.map((agent, index) => [agent.id, `agent_${index + 1}`]));
-  const assignments = await Promise.all(channels.map((channel) =>
-    config.getAssignment(channel.workspaceId, channel.channelId)));
+  const assignmentsByChannel = new Map(assignments.map((assignment) => [
+    `${assignment.workspaceId}:${assignment.channelId}`,
+    assignment,
+  ]));
   const recipe: WorkspaceRecipe = {
     schemaVersion: WORKSPACE_RECIPE_SCHEMA_VERSION,
     name: selected.length === 1 ? selected[0]!.name : 'Chickpea workspace recipe',
     agents: selected.map((agent, index) => exportAgent(agent, `agent_${index + 1}`)),
     channels: channels.flatMap((channel, index) => {
-      const assignment = assignments[index];
+      const assignment = assignmentsByChannel.get(`${channel.workspaceId}:${channel.channelId}`);
       const agentSymbol = assignment ? symbols.get(assignment.agentId) : undefined;
       if (!agentSymbol) return [];
       return [{

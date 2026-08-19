@@ -49,6 +49,7 @@ interface ManagementProposalRow {
   operation_json: string;
   summary: string;
   target_revisions_json: string;
+  request_operation_id: string | null;
   status: ManagementProposalRecord['status'];
   result_json: string | null;
   expires_at: number;
@@ -158,6 +159,7 @@ export interface ManagementStore {
     deliveryRef?: string;
     failureCode?: string;
   }): Promise<ManagementReceiptOutboxRecord>;
+  cleanupRetention(at: number, limit?: number): Promise<number>;
   close?(): void;
 }
 
@@ -254,6 +256,8 @@ export class ManagementStoreLogic {
           kind: 'outbox',
           outbox: this.settleOutbox(request),
         };
+      case 'cleanup_retention':
+        return { kind: 'retention', deleted: this.cleanupRetention(request.at, request.limit) };
     }
   }
 
@@ -383,8 +387,8 @@ export class ManagementStoreLogic {
       `INSERT INTO management_proposals (
         proposal_id, organization_id, actor_user_id, actor_membership_id,
         origin_key, operation_json, summary, target_revisions_json,
-        status, result_json, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`,
+        request_operation_id, status, result_json, expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`,
       input.proposalId,
       input.organizationId,
       input.actorUserId,
@@ -393,6 +397,7 @@ export class ManagementStoreLogic {
       JSON.stringify(input.operation),
       input.summary,
       JSON.stringify(input.targetRevisions),
+      input.requestOperationId ?? null,
       input.expiresAt,
       input.at,
       input.at,
@@ -728,7 +733,10 @@ export class ManagementStoreLogic {
       if (setup.organizationId !== input.organizationId || setup.actorUserId !== input.actorUserId) {
         throw setupError('setup_not_found');
       }
-      if (!['pending', 'claimed', 'authorizing', 'failed'].includes(setup.status)) {
+      // Once authorization begins, external credential work may already be in
+      // flight. Refuse revocation instead of recording a revoked setup whose
+      // side effect can still complete after this transaction.
+      if (!['pending', 'claimed', 'failed'].includes(setup.status)) {
         throw setupError(setup.status === 'expired' ? 'setup_expired' : 'setup_unavailable');
       }
       this.db.run(
@@ -736,7 +744,7 @@ export class ManagementStoreLogic {
          SET status = 'revoked', token_digest = NULL, browser_session_digest = NULL,
              updated_at = ?
          WHERE setup_operation_id = ?
-           AND status IN ('pending', 'claimed', 'authorizing', 'failed')`,
+           AND status IN ('pending', 'claimed', 'failed')`,
         input.at,
         input.setupOperationId,
       );
@@ -818,6 +826,63 @@ export class ManagementStoreLogic {
     return row?.due_at === null || row?.due_at === undefined ? undefined : Number(row.due_at);
   }
 
+  cleanupRetention(at: number, limit = 250): number {
+    const cutoff = at - 30 * 24 * 60 * 60_000;
+    const boundedLimit = Math.max(1, Math.min(1_000, Math.trunc(limit)));
+    return this.db.transaction(() => {
+      let deleted = 0;
+      const remove = (sql: string, ...params: number[]) => {
+        deleted += this.db.run(sql, ...params).changes;
+      };
+      remove(
+        `DELETE FROM management_receipt_outbox WHERE outbox_id IN (
+           SELECT outbox_id FROM management_receipt_outbox
+           WHERE status IN ('delivered', 'failed') AND updated_at < ?
+           ORDER BY updated_at LIMIT ?
+         )`,
+        cutoff,
+        boundedLimit,
+      );
+      remove(
+        `DELETE FROM management_proposals WHERE proposal_id IN (
+           SELECT proposal_id FROM management_proposals
+           WHERE status IN ('completed', 'stale', 'expired') AND updated_at < ?
+           ORDER BY updated_at LIMIT ?
+         )`,
+        cutoff,
+        boundedLimit,
+      );
+      remove(
+        `DELETE FROM management_undo WHERE operation_id IN (
+           SELECT operation_id FROM management_undo
+           WHERE status = 'consumed' AND updated_at < ?
+           ORDER BY updated_at LIMIT ?
+         )`,
+        cutoff,
+        boundedLimit,
+      );
+      remove(
+        `DELETE FROM management_setup_operations WHERE setup_operation_id IN (
+           SELECT setup_operation_id FROM management_setup_operations
+           WHERE status IN ('completed', 'revoked', 'expired', 'failed') AND updated_at < ?
+           ORDER BY updated_at LIMIT ?
+         )`,
+        cutoff,
+        boundedLimit,
+      );
+      remove(
+        `DELETE FROM management_requests WHERE operation_id IN (
+           SELECT operation_id FROM management_requests
+           WHERE status IN ('completed', 'failed') AND updated_at < ?
+           ORDER BY updated_at LIMIT ?
+         )`,
+        cutoff,
+        boundedLimit,
+      );
+      return deleted;
+    });
+  }
+
   private installSchema(): void {
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS management_requests (
@@ -851,6 +916,7 @@ export class ManagementStoreLogic {
         operation_json TEXT NOT NULL,
         summary TEXT NOT NULL,
         target_revisions_json TEXT NOT NULL,
+        request_operation_id TEXT,
         status TEXT NOT NULL CHECK (status IN ('pending', 'applying', 'completed', 'stale', 'expired')),
         result_json TEXT,
         expires_at INTEGER NOT NULL,
@@ -858,9 +924,14 @@ export class ManagementStoreLogic {
         updated_at INTEGER NOT NULL
       )`,
     );
+    this.ensureProposalColumns();
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS management_proposals_state_idx
        ON management_proposals (organization_id, actor_user_id, status, expires_at)`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS management_proposals_retention_idx
+       ON management_proposals (status, updated_at)`,
     );
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS management_undo (
@@ -873,6 +944,10 @@ export class ManagementStoreLogic {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS management_undo_retention_idx
+       ON management_undo (status, updated_at)`,
     );
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS management_setup_operations (
@@ -903,6 +978,10 @@ export class ManagementStoreLogic {
        ON management_setup_operations (status, expires_at)`,
     );
     this.db.exec(
+      `CREATE INDEX IF NOT EXISTS management_setup_retention_idx
+       ON management_setup_operations (status, updated_at)`,
+    );
+    this.db.exec(
       `CREATE TABLE IF NOT EXISTS management_receipt_outbox (
         outbox_id TEXT PRIMARY KEY,
         operation_id TEXT NOT NULL,
@@ -921,6 +1000,14 @@ export class ManagementStoreLogic {
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS management_receipt_outbox_due_idx
        ON management_receipt_outbox (status, next_attempt_at)`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS management_receipt_outbox_retention_idx
+       ON management_receipt_outbox (status, updated_at)`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS management_receipt_outbox_operation_idx
+       ON management_receipt_outbox (operation_id, created_at)`,
     );
   }
 
@@ -942,6 +1029,15 @@ export class ManagementStoreLogic {
       if (!columns.has(name)) {
         this.db.exec(`ALTER TABLE management_setup_operations ADD COLUMN ${name} ${definition}`);
       }
+    }
+  }
+
+  private ensureProposalColumns(): void {
+    const columns = new Set((this.db.all('PRAGMA table_info(management_proposals)') as Array<{ name: string }>).map(
+      ({ name }) => name,
+    ));
+    if (!columns.has('request_operation_id')) {
+      this.db.exec('ALTER TABLE management_proposals ADD COLUMN request_operation_id TEXT');
     }
   }
 
@@ -1059,6 +1155,7 @@ function proposalFromRow(row: ManagementProposalRow): ManagementProposalRecord {
     operation: JSON.parse(row.operation_json) as ManagementProposalRecord['operation'],
     summary: row.summary,
     targetRevisions: JSON.parse(row.target_revisions_json) as Record<string, number>,
+    ...(row.request_operation_id ? { requestOperationId: row.request_operation_id } : {}),
     status: row.status,
     ...(row.result_json
       ? { result: JSON.parse(row.result_json) as ManagementApplyResult }

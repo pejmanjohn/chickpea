@@ -318,6 +318,16 @@ export const revokeSetupLinkZodSchema = z.strictObject({
   reissue: z.boolean().optional(),
 });
 export const inspectWorkspaceZodSchema = z.strictObject({});
+export const discoverSlackChannelsZodSchema = z.strictObject({
+  refresh: z.boolean().optional(),
+});
+export const inspectSlackMemberDirectoryZodSchema = z.strictObject({
+  cursor: z.string().max(512).optional(),
+});
+export const testMcpConnectionZodSchema = z.strictObject({
+  agentId: zId,
+  connectionId: zId,
+});
 export const inspectMemoryZodSchema = zMemoryOwner;
 export const inspectRoutinesZodSchema = z.strictObject({
   workspaceId: zId,
@@ -628,6 +638,16 @@ export const revokeSetupLinkValibotSchema = v.strictObject({
   reissue: v.optional(v.boolean()),
 });
 export const inspectWorkspaceValibotSchema = v.strictObject({});
+export const discoverSlackChannelsValibotSchema = v.strictObject({
+  refresh: v.optional(v.boolean()),
+});
+export const inspectSlackMemberDirectoryValibotSchema = v.strictObject({
+  cursor: v.optional(v.pipe(v.string(), v.maxLength(512))),
+});
+export const testMcpConnectionValibotSchema = v.strictObject({
+  agentId: vid,
+  connectionId: vid,
+});
 export const inspectMemoryValibotSchema = vMemoryOwner;
 export const inspectRoutinesValibotSchema = v.strictObject({
   workspaceId: vid,

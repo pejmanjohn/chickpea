@@ -150,6 +150,10 @@ import {
   stageMcpSecretCleanup,
   type ResolvedMcpSecrets,
 } from '../config/mcp-secrets.ts';
+import {
+  clearRepointedMcpCredentials,
+  safeUrlOrigin,
+} from '../config/mcp-connection-lifecycle.ts';
 import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
 import { validateMcpUrl } from '../config/mcp-url.ts';
 import { resolveAgentModel, type ModelResolvableAgent } from '../config/model-policy.ts';
@@ -4140,12 +4144,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       // pointing at the new origin with the old credential still attached —
       // which is precisely the leak this closes, and no later PATCH would
       // detect it, because by then the stored URL already matches.
-      const repointed = mcpConnectionsWithChangedOrigin(current.mcpServers, patch.mcpServers);
-      for (const { connectionId, headerNames } of repointed) {
-        const ref = { agentId, connectionId };
-        await deleteMcpSecrets(ref, headerNames, c.env as PlatformEnv | undefined, settings(c));
-        await deleteMcpOAuthSettings(ref, settings(c));
-      }
+      await clearRepointedMcpCredentials({
+        agentId,
+        current: current.mcpServers,
+        next: patch.mcpServers,
+        ...(c.env ? { env: c.env as PlatformEnv } : {}),
+        settings: settings(c),
+      });
       const updated = await configStore.updateAgent(
         agentId,
         patch,
@@ -7444,15 +7449,6 @@ function agentStillReferenced(c: Context, error: AgentStillReferencedError): Res
   }, 409);
 }
 
-/** Origin of a URL, or undefined when it will not parse. Never throws. */
-function safeUrlOrigin(value: string): string | undefined {
-  try {
-    return new URL(value).origin;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * The origin an MCP connection's stored secrets were saved against. Returns
  * undefined when the agent or connection does not exist, so callers fail closed
@@ -7480,27 +7476,6 @@ async function savedMcpConnectionOrigin(
  * to the new one on the next turn. Drop the secrets whenever an existing
  * connection's origin changes; the operator re-enters them for the new target.
  */
-function mcpConnectionsWithChangedOrigin(
-  current: CustomAgentConfig['mcpServers'],
-  next: CustomAgentConfig['mcpServers'] | undefined,
-): { connectionId: string; headerNames: string[] }[] {
-  if (!next) return [];
-  const nextById = new Map(next.map((server) => [server.id, server]));
-  const changed: { connectionId: string; headerNames: string[] }[] = [];
-  for (const existing of current) {
-    const replacement = nextById.get(existing.id);
-    if (!replacement) continue;
-    const before = safeUrlOrigin(existing.url);
-    const after = safeUrlOrigin(replacement.url);
-    if (before !== undefined && after !== undefined && before === after) continue;
-    changed.push({
-      connectionId: existing.id,
-      headerNames: [...new Set([...existing.headerNames, ...replacement.headerNames])],
-    });
-  }
-  return changed;
-}
-
 function agentDeleteIdempotencyKey(c: Context, agentId: string): string {
   const supplied = c.req.header('idempotency-key')?.trim();
   return supplied && /^[A-Za-z0-9_.:-]{1,512}$/.test(supplied)

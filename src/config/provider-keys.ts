@@ -86,6 +86,7 @@ export async function saveProviderApiKey(
   env?: PlatformEnv,
   store?: SettingsStore,
   usageStore?: UsageStore,
+  expectedVersion?: number,
 ): Promise<void> {
   const settings = store ?? getSettingsStore(env);
   await rotateStoredModelCredential(
@@ -93,6 +94,8 @@ export async function saveProviderApiKey(
     { kind: 'save', apiKey },
     settings,
     usageStore ?? getUsageStore(env),
+    Date.now,
+    expectedVersion,
   );
   await primeStoredProviderKeysFromStore(env, settings);
   const resolved = await resolveProviderApiKey(id, env, settings);

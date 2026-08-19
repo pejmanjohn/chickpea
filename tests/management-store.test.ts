@@ -137,6 +137,32 @@ test('confirmation proposals are actor, origin, expiry, and single-use bound', a
   }
 });
 
+test('management retention removes only terminal rows beyond 30 days', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  const old = NOW - 31 * 24 * 60 * 60_000;
+  try {
+    await store.reserveRequest({
+      operationId: 'old_terminal', organizationId: 'org_1', actorUserId: 'user_1',
+      actorMembershipId: 'member_1', originKey: 'mcp:client_1', idempotencyKey: 'old',
+      digest: 'a'.repeat(64), operations: [operation], at: old,
+    });
+    await store.completeRequest('old_terminal', {
+      operationId: 'old_terminal', idempotencyKey: 'old', status: 'completed',
+      outcomes: [], effectiveRevision: 'b'.repeat(64), activation: 'next_turn',
+    }, old);
+    await store.reserveRequest({
+      operationId: 'old_pending', organizationId: 'org_1', actorUserId: 'user_1',
+      actorMembershipId: 'member_1', originKey: 'mcp:client_1', idempotencyKey: 'pending',
+      digest: 'c'.repeat(64), operations: [operation], at: old,
+    });
+    assert.equal(await store.cleanupRetention(NOW), 1);
+    assert.equal(await store.getRequest('old_terminal'), undefined);
+    assert.ok(await store.getRequest('old_pending'));
+  } finally {
+    store.close();
+  }
+});
+
 test('terminal management writes append one allowlisted, secret-free audit receipt', () => {
   const db = openStateDb(':memory:');
   try {

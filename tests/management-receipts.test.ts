@@ -4,11 +4,16 @@ import { test } from 'node:test';
 import { AuditStoreLogic } from '../src/audit/store.ts';
 import {
   completeManagementSetupReceipt,
+  deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
   formatManagementSetupReceipt,
 } from '../src/management/receipts.ts';
 import { ManagementStoreLogic, SqliteManagementStore } from '../src/management/store.ts';
-import type { ManagementSetupRecord } from '../src/management/types.ts';
+import type {
+  ManagementReceiptOutboxRecord,
+  ManagementSetupRecord,
+} from '../src/management/types.ts';
+import type { SlackIdentityExecutionResolver } from '../src/slack/identity-execution.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 
 const NOW = 1_800_200_000_000;
@@ -153,4 +158,117 @@ test('receipt copy contains the approved non-secret details and audit metadata i
   } finally {
     db.close();
   }
+});
+
+test('the Slack receipt adapter preserves thread routing and stable delivery identity', async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const resolveIdentity: SlackIdentityExecutionResolver = async (identityId) => ({
+    identityId,
+    botToken: 'not-observable',
+    botUserId: 'B1',
+    teamId: 'T1',
+    client: {
+      chat: {
+        postMessage: async (input: Record<string, unknown>) => {
+          calls.push(input);
+          return { ok: true, ts: '1800200001.000100' };
+        },
+      },
+    } as never,
+  });
+  const record: ManagementReceiptOutboxRecord = {
+    outboxId: 'receipt_setup_thread',
+    operationId: 'setup_thread',
+    destination: {
+      kind: 'thread',
+      workspaceId: 'T1',
+      channelId: 'C1',
+      threadTs: '1800200000.000100',
+    },
+    receipt: {
+      setupOperationId: 'setup_thread',
+      connector: 'Gmail',
+      target: 'Customer Research',
+      scopes: ['gmail.readonly'],
+      initiator: 'Pejman',
+      completedAt: NOW,
+    },
+    status: 'delivering',
+    attempts: 1,
+    nextAttemptAt: NOW,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+
+  const delivered = await deliverManagementReceiptToSlack(record, {
+    identity: { listExternalIdentities: async () => [] },
+    resolveIdentity,
+  });
+
+  assert.deepEqual(delivered, { deliveryRef: 'slack:C1:1800200001.000100' });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], {
+    channel: 'C1',
+    thread_ts: '1800200000.000100',
+    text: formatManagementSetupReceipt(record.receipt),
+    client_msg_id: record.outboxId,
+  });
+  assert.doesNotMatch(JSON.stringify(calls), /not-observable/);
+});
+
+test('the Slack receipt adapter resolves an external MCP initiator to a DM', async () => {
+  let postedChannel = '';
+  const record: ManagementReceiptOutboxRecord = {
+    outboxId: 'receipt_setup_dm',
+    operationId: 'setup_dm',
+    destination: { kind: 'initiator_dm', organizationId: 'org_1', userId: 'user_1' },
+    receipt: {
+      setupOperationId: 'setup_dm',
+      connector: 'OpenAI',
+      target: 'Workspace',
+      scopes: [],
+      initiator: 'Pejman',
+      completedAt: NOW,
+    },
+    status: 'delivering',
+    attempts: 1,
+    nextAttemptAt: NOW,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const delivered = await deliverManagementReceiptToSlack(record, {
+    identity: {
+      listExternalIdentities: async () => [{
+        id: 'external_1',
+        provider: 'slack',
+        slackTeamId: 'T1',
+        slackUserId: 'U1',
+        userId: 'user_1',
+        organizationId: 'org_1',
+        membershipId: 'membership_1',
+        betterAuthUserId: 'better_user_1',
+        betterAuthMembershipId: 'better_membership_1',
+        revision: 1,
+        createdAt: NOW,
+        updatedAt: NOW,
+      }],
+    },
+    resolveIdentity: async (identityId) => ({
+      identityId,
+      botToken: 'not-observable',
+      botUserId: 'B1',
+      teamId: 'T1',
+      client: {
+        chat: {
+          postMessage: async (input: { channel: string }) => {
+            postedChannel = input.channel;
+            return { ok: true, ts: '1800200002.000100' };
+          },
+        },
+      } as never,
+    }),
+  });
+
+  assert.equal(postedChannel, 'U1');
+  assert.deepEqual(delivered, { deliveryRef: 'slack:U1:1800200002.000100' });
 });

@@ -1234,6 +1234,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       throw new Error(`state store unavailable in alarm: ${this.initError ?? 'unknown'}`);
     }
     const stores = this.stores;
+    stores.management.cleanupRetention(Date.now(), 250);
     const pending = stores.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
     if (pending.length === 0) {
       const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
@@ -1781,7 +1782,13 @@ async function drainCloudflareManagementReceipts(
   const at = Date.now();
   const claimed = stores.management.claimDueOutbox(at, 10, at + 30_000);
   if (claimed.length === 0) return;
-  const execution = await resolveIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+  let execution: Awaited<ReturnType<SlackIdentityExecutionResolver>>;
+  try {
+    execution = await resolveIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+  } catch {
+    for (const record of claimed) settleCloudflareReceiptRetry(stores, record);
+    return;
+  }
   for (const record of claimed) {
     try {
       let channel: string;
@@ -1815,20 +1822,28 @@ async function drainCloudflareManagementReceipts(
         deliveryRef: `slack:${channel}:${response.ts}`,
       });
     } catch {
-      const terminal = record.attempts >= 8;
-      stores.management.settleOutbox({
-        outboxId: record.outboxId,
-        outcome: terminal ? 'failed' : 'retry',
-        at: Date.now(),
-        ...(terminal
-          ? { failureCode: 'slack_delivery_failed' }
-          : {
-              nextAttemptAt: Date.now() +
-                Math.min(15 * 60_000, 5_000 * 2 ** Math.max(0, record.attempts - 1)),
-            }),
-      });
+      settleCloudflareReceiptRetry(stores, record);
     }
   }
+}
+
+function settleCloudflareReceiptRetry(
+  stores: TagStateStores,
+  record: ReturnType<TagStateStores['management']['claimDueOutbox']>[number],
+): void {
+  const now = Date.now();
+  const terminal = record.attempts >= 8;
+  stores.management.settleOutbox({
+    outboxId: record.outboxId,
+    outcome: terminal ? 'failed' : 'retry',
+    at: now,
+    ...(terminal
+      ? { failureCode: 'slack_delivery_failed' }
+      : {
+          nextAttemptAt: now +
+            Math.min(15 * 60_000, 5_000 * 2 ** Math.max(0, record.attempts - 1)),
+        }),
+  });
 }
 
 async function drainLedgerRuns(

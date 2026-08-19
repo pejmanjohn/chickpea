@@ -22,7 +22,10 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const DEPLOY_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'deploy-with-epilogue.mjs');
 const PROFILE_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'cloudflare-deployment-profile.mjs');
 const CAPABILITY_SCRIPT = path.join(PROJECT_ROOT, 'src', 'auth', 'setup-capability.mjs');
-const AUTH_MIGRATION = path.join(PROJECT_ROOT, 'migrations', 'better-auth', '0001_better_auth.sql');
+const AUTH_MIGRATIONS = [
+  '0001_better_auth.sql',
+  '0002_mcp_oauth.sql',
+].map((name) => path.join(PROJECT_ROOT, 'migrations', 'better-auth', name));
 
 function createHarness() {
   const root = mkdtempSync(path.join(tmpdir(), 'chickpea-deploy-wrapper-'));
@@ -42,7 +45,9 @@ function createHarness() {
   copyFileSync(DEPLOY_SCRIPT, path.join(scriptsDir, 'deploy-with-epilogue.mjs'));
   copyFileSync(PROFILE_SCRIPT, path.join(scriptsDir, 'cloudflare-deployment-profile.mjs'));
   copyFileSync(CAPABILITY_SCRIPT, path.join(authDir, 'setup-capability.mjs'));
-  copyFileSync(AUTH_MIGRATION, path.join(authMigrationsDir, '0001_better_auth.sql'));
+  for (const migrationPath of AUTH_MIGRATIONS) {
+    copyFileSync(migrationPath, path.join(authMigrationsDir, path.basename(migrationPath)));
+  }
 
   const commandLogger = (label: string) => `
     import { appendFileSync } from 'node:fs';
@@ -72,7 +77,7 @@ function createHarness() {
   writeFileSync(
     wranglerStub,
     commandLogger('wrangler') + `
-      import { readFileSync, statSync, writeFileSync } from 'node:fs';
+      import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
       import { DatabaseSync } from 'node:sqlite';
       import path from 'node:path';
       const args = process.argv.slice(2);
@@ -140,11 +145,12 @@ function createHarness() {
         const configPath = args[args.indexOf('--config') + 1];
         const config = JSON.parse(readFileSync(configPath, 'utf8'));
         const authDb = config.d1_databases.find((entry) => entry.binding === 'AUTH_DB');
-        const migrationPath = path.resolve(
-          path.dirname(configPath), authDb.migrations_dir, '0001_better_auth.sql',
-        );
         const database = new DatabaseSync(':memory:');
-        database.exec(readFileSync(migrationPath, 'utf8'));
+        const migrationDirectory = path.resolve(path.dirname(configPath), authDb.migrations_dir);
+        for (const migrationName of readdirSync(migrationDirectory)
+          .filter((name) => name.endsWith('.sql')).sort()) {
+          database.exec(readFileSync(path.join(migrationDirectory, migrationName), 'utf8'));
+        }
         const query = args[args.indexOf('--command') + 1];
         const results = database.prepare(query).all();
         database.close();
@@ -469,7 +475,7 @@ test('fresh source reuses an existing named AUTH_DB without creating another', (
   assert.equal(config.d1_databases[0].database_id, 'existing-database-id');
 });
 
-test('an incompatible applied Better Auth 0001 blocks Worker upload', (context) => {
+test('an incompatible applied Better Auth schema blocks Worker upload', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
 
@@ -484,11 +490,35 @@ test('an incompatible applied Better Auth 0001 blocks Worker upload', (context) 
   });
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /incompatible Better Auth 0001 schema/);
+  assert.match(result.stderr, /incompatible reviewed Better Auth migration-chain schema/);
   const invoked = commands(harness.logPath);
   assert.equal(invoked.some((command) => command.includes('"migrations","apply"')), true);
   assert.equal(invoked.some((command) => command.includes('"d1","execute"')), true);
   assert.equal(invoked.some((command) => command.startsWith('wrangler:["deploy"')), false);
+});
+
+test('a remote schema missing the reviewed 0002 migration blocks Worker upload', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const database = new DatabaseSync(':memory:');
+  database.exec(readFileSync(AUTH_MIGRATIONS[0]!, 'utf8'));
+  const results = database.prepare(
+    "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' " +
+      "AND name <> 'd1_migrations' ORDER BY type,name",
+  ).all();
+  database.close();
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_AUTH_SCHEMA: JSON.stringify([{ success: true, results }]),
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /incompatible reviewed Better Auth migration-chain schema/);
+  assert.equal(
+    commands(harness.logPath).some((command) => command.startsWith('wrangler:["deploy"')),
+    false,
+  );
 });
 
 test('the exact schema gate ignores only Cloudflare D1 internal KV metadata', (context) => {
@@ -496,7 +526,9 @@ test('the exact schema gate ignores only Cloudflare D1 internal KV metadata', (c
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
 
   const database = new DatabaseSync(':memory:');
-  database.exec(readFileSync(AUTH_MIGRATION, 'utf8'));
+  for (const migrationPath of AUTH_MIGRATIONS) {
+    database.exec(readFileSync(migrationPath, 'utf8'));
+  }
   const results = database.prepare(
     "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' " +
       "AND name <> 'd1_migrations' ORDER BY type,name",

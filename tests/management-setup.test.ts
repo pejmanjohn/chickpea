@@ -3,7 +3,13 @@ import { test } from 'node:test';
 
 import { resolveConnectorCredential } from '../src/config/connector-secrets.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
-import { PROVIDER_KEY_SETTING_KEYS, resolveProviderApiKey } from '../src/config/provider-keys.ts';
+import {
+  describeProviderKeySources,
+  PROVIDER_KEY_SETTING_KEYS,
+  resolveProviderApiKey,
+  saveProviderApiKey,
+} from '../src/config/provider-keys.ts';
+import { storedCredentialMetadata } from '../src/config/model-credential-refs.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { formatManagementSetupReceipt } from '../src/management/receipts.ts';
@@ -248,6 +254,33 @@ test('expired and revoked setup capabilities cannot be claimed or resumed', asyn
   }
 });
 
+test('public setup routes reject oversized streamed bodies before buffering', async () => {
+  const management = new SqliteManagementStore(':memory:');
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const app = createManagementSetupRoutes({ management, config, settings });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(20 * 1024));
+        controller.close();
+      },
+    });
+    const response = await app.request(new Request('http://localhost/setup/setup_missing/exchange', {
+      method: 'POST',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+      body,
+      // @ts-expect-error undici requires duplex for streamed request bodies
+      duplex: 'half',
+    }));
+    assert.equal(response.status, 413);
+  } finally {
+    management.close();
+    config.close();
+    settings.close();
+  }
+});
+
 test('stored provider replacement requires confirmation and reissue invalidates the old link', async () => {
   let now = START;
   let sequence = 0;
@@ -390,6 +423,82 @@ test('a provider key is validated in the browser lane and never enters MCP state
     management.close();
     settings.close();
     usage.close();
+  }
+});
+
+test('an older provider setup link cannot overwrite a newer rotation', async () => {
+  let sequence = 0;
+  let capability = 0;
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'provider-stale-link' });
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const usage = new SqliteUsageStore(':memory:');
+  try {
+    await saveProviderApiKey('openai', 'sk-initial', undefined, settings, usage);
+    const service = new WorkspaceManagementService({
+      identity,
+      config,
+      management,
+      setupBaseUrl: 'http://localhost',
+      providerCredentialSource: async (id) => (await describeProviderKeySources(undefined, settings))[id],
+      providerCredentialRevision: async (id) => (await storedCredentialMetadata(id, settings))?.version ?? 0,
+      now: () => START,
+      randomId: () => `stale_provider_${++sequence}`,
+      randomCapability: () => String(++capability).padStart(43, 'p'),
+    });
+    const context = {
+      userId: owner.user.id,
+      membershipId: owner.membership.id,
+      organizationId: owner.membership.organizationId,
+      origin: { kind: 'mcp' as const, clientId: 'codex' },
+    };
+    const issue = async (key: string) => {
+      const proposed = await service.applyWorkspaceChanges({
+        context,
+        idempotencyKey: key,
+        operations: [{
+          itemId: 'openai', kind: 'request_setup',
+          target: { kind: 'provider_credential', providerId: 'openai' },
+        }],
+      });
+      return service.confirmWorkspaceChange({
+        context,
+        proposalId: proposed.outcomes[0]!.proposalId!,
+      });
+    };
+    const older = await issue('older-provider-link');
+    const newer = await issue('newer-provider-link');
+    const app = createManagementSetupRoutes({
+      management, config, settings, usage, identity,
+      now: () => START,
+      validateProviderKey: async () => [],
+      deliverReceipt: async () => ({ deliveryRef: 'slack:U1:provider' }),
+    });
+    const complete = async (result: typeof newer, apiKey: string) => {
+      const outcome = result.outcomes[0]!;
+      const token = new URL(outcome.setupUrl!).hash.slice('#setup='.length);
+      const exchanged = await app.request(`http://localhost/setup/${outcome.setupOperationId}/exchange`, {
+        method: 'POST',
+        headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+        body: JSON.stringify({ capability: token }),
+      });
+      return app.request(`http://localhost/setup/${outcome.setupOperationId}/complete`, {
+        method: 'POST',
+        headers: {
+          origin: 'http://localhost',
+          cookie: exchanged.headers.get('set-cookie')!,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({ apiKey }).toString(),
+      });
+    };
+    assert.equal((await complete(newer, 'sk-newer')).status, 303);
+    assert.equal((await complete(older, 'sk-older')).status, 422);
+    assert.equal((await resolveProviderApiKey('openai', undefined, settings)).apiKey, 'sk-newer');
+  } finally {
+    identity.close(); config.close(); management.close(); settings.close(); usage.close();
   }
 });
 

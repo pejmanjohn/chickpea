@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
 
+const REQUEST_TIMEOUT_MS = 15_000;
+
+function fetchWithDeadline(input, init = {}) {
+  return fetch(input, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+}
+
 const rawBase = process.env.MANAGEMENT_MCP_BASE_URL?.trim();
 if (!rawBase) {
   console.error('Set MANAGEMENT_MCP_BASE_URL to a disposable Chickpea deployment.');
@@ -19,7 +25,7 @@ async function main(rawBaseUrl) {
   base.hash = '';
 
   const resourceUrl = new URL('/.well-known/oauth-protected-resource/mcp', base);
-  const resourceResponse = await fetch(resourceUrl, { redirect: 'error' });
+  const resourceResponse = await fetchWithDeadline(resourceUrl, { redirect: 'error' });
   requireStatus(resourceResponse, 200, 'protected-resource discovery');
   const resource = await resourceResponse.json();
   requireEqual(resource.resource, new URL('/mcp', base).href, 'protected resource');
@@ -28,13 +34,13 @@ async function main(rawBaseUrl) {
   }
 
   const authorizationUrl = new URL('/.well-known/oauth-authorization-server/api/auth', base);
-  const authorizationResponse = await fetch(authorizationUrl, { redirect: 'error' });
+  const authorizationResponse = await fetchWithDeadline(authorizationUrl, { redirect: 'error' });
   requireStatus(authorizationResponse, 200, 'authorization-server discovery');
   const authorization = await authorizationResponse.json();
   requireEqual(authorization.registration_endpoint, new URL('/api/auth/oauth2/register', base).href, 'DCR endpoint');
   requireEqual(authorization.token_endpoint, new URL('/api/auth/oauth2/token', base).href, 'token endpoint');
 
-  const challenge = await fetch(new URL('/mcp', base), {
+  const challenge = await fetchWithDeadline(new URL('/mcp', base), {
     method: 'POST',
     redirect: 'error',
     headers: mcpHeaders('tools/list', {}),
@@ -86,7 +92,7 @@ async function main(rawBaseUrl) {
 }
 
 async function mcpCall(base, token, method, params) {
-  const response = await fetch(new URL('/mcp', base), {
+  const response = await fetchWithDeadline(new URL('/mcp', base), {
     method: 'POST',
     redirect: 'error',
     headers: { ...mcpHeaders(method, params), authorization: `Bearer ${token}` },
