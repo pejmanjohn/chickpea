@@ -1437,14 +1437,23 @@ test('admin API validates skills: rejects whitespace-only description and duplic
         id: 'agent_ok',
         model: 'local-stub/x',
         skills: [
-          { name: 'good-skill', description: '  Trim me.  ', instructions: '  # body  ', enabled: true },
+          {
+            name: 'good-skill',
+            description: '  Trim me.  ',
+            instructions: '  # body  ',
+            enabled: true,
+            suggestedSkillId: 'paid-ads',
+          },
         ],
       }),
     );
     assert.equal(ok.status, 201);
-    const created = (await ok.json()) as { agent: { skills: Array<{ description: string; instructions: string }> } };
+    const created = (await ok.json()) as {
+      agent: { skills: Array<{ description: string; instructions: string; suggestedSkillId?: string }> };
+    };
     assert.equal(created.agent.skills[0]?.description, 'Trim me.');
     assert.equal(created.agent.skills[0]?.instructions, '# body');
+    assert.equal(created.agent.skills[0]?.suggestedSkillId, 'paid-ads');
   } finally {
     store.close();
   }
