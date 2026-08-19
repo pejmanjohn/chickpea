@@ -8,6 +8,7 @@ import {
   type AutonomousMemoryInput,
 } from '../src/memory/autonomous.ts';
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
+import { MemoryStateError } from '../src/memory/types.ts';
 
 const coordinates = {
   surface: 'direct_message' as const,
@@ -44,8 +45,54 @@ test('the autonomous memory tool saves one durable Agent memory and acknowledges
   assert.match(instruction, /explicitly asks[^.]*any wording/i);
   assert.match(instruction, /infer the intent semantically/i);
   assert.match(instruction, /never save secrets/i);
-  assert.match(instruction, /do not claim.*remembered.*tool succeeds/i);
+  assert.match(instruction, /claim something was remembered only when.*begins with "Saved"/i);
+  assert.match(instruction, /"Memory was not saved".*do not claim/i);
   assert.match(instruction, /at most once for the current request/i);
+});
+
+test('the autonomous memory tool reports an expected denied write without claiming success', async () => {
+  const tool = createAutonomousAgentMemoryTool('agent', async () => {
+    throw new MemoryStateError(
+      'memory_actor_forbidden',
+      'Only an active Owner or Admin can create autonomous Agent memory.',
+    );
+  });
+
+  assert.deepEqual(await tool.run({ data: durableFact }), {
+    output: 'Memory was not saved: Only an active Owner or Admin can create autonomous Agent memory.',
+  });
+});
+
+test('the autonomous memory tool preserves unexpected memory and infrastructure failures', async () => {
+  const domainFailure = createAutonomousAgentMemoryTool('agent', async () => {
+    throw new MemoryStateError('memory_rate_limited', 'Too many memory changes; try again later.');
+  });
+  const infrastructureFailure = createAutonomousAgentMemoryTool('agent', async () => {
+    throw new Error('state backend unavailable');
+  });
+
+  await assert.rejects(domainFailure.run({ data: durableFact }), /Too many memory changes/);
+  await assert.rejects(infrastructureFailure.run({ data: durableFact }), /state backend unavailable/);
+});
+
+test('the autonomous memory tool reports a real authorization denial without creating state', async () => {
+  const memory = new SqliteMemoryStateStore(':memory:');
+  try {
+    const tool = createAutonomousAgentMemoryTool('agent', async (input) => {
+      const { entry } = await saveAutonomousMemory(coordinates, input, {
+        state: memory,
+        authorize: async () => false,
+      });
+      return { slug: entry.slug, version: entry.version };
+    });
+
+    assert.deepEqual(await tool.run({ data: durableFact }), {
+      output: 'Memory was not saved: Only an active Owner or Admin can create autonomous Agent memory.',
+    });
+    assert.deepEqual(await memory.listOwners(coordinates.workspaceId), []);
+  } finally {
+    memory.close();
+  }
 });
 
 test('semantic retry identity is request-bound rather than model-wording-bound', async () => {
