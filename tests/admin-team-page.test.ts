@@ -13,6 +13,10 @@ interface FakeResponse {
 
 type Listener = (event: {
   target: ReturnType<typeof actionTarget>;
+  key?: string;
+  metaKey?: boolean;
+  ctrlKey?: boolean;
+  shiftKey?: boolean;
   preventDefault?(): void;
 }) => void;
 
@@ -25,11 +29,18 @@ function response(body: unknown, status = 200): FakeResponse {
   };
 }
 
-function actionTarget(attributes: Record<string, string>, value?: string) {
+function actionTarget(attributes: Record<string, string> = {}, value?: string, classes: string[] = []) {
   return {
     value,
     selectionStart: value?.length ?? 0,
-    closest(selector: string) { return selector === '[data-action]' ? this : null; },
+    closest(selector: string) {
+      if (selector === '[data-action]') return attributes['data-action'] ? this : null;
+      if (selector === '.team-action-menu') return classes.includes('team-action-menu') ? this : null;
+      if (selector === '[data-action="team-actions-toggle"]') {
+        return attributes['data-action'] === 'team-actions-toggle' ? this : null;
+      }
+      return null;
+    },
     getAttribute(name: string) { return attributes[name] ?? null; },
   };
 }
@@ -43,41 +54,41 @@ async function flush(): Promise<void> {
 function teamFixture(viewerRole: 'owner' | 'admin' = 'owner') {
   return {
     organization: { id: 'organization_1', displayName: 'Chickpea', slackTeamId: 'TACME' },
-    viewer: { userId: 'user_owner', membershipId: 'membership_owner', role: viewerRole },
-    soleOwnerWarning: true,
+    viewer: {
+      userId: viewerRole === 'owner' ? 'user_owner' : 'user_admin',
+      membershipId: viewerRole === 'owner' ? 'membership_owner' : 'membership_admin',
+      role: viewerRole,
+    },
     members: [
       {
-        id: 'membership_owner', userId: 'user_owner', displayName: 'Owner',
+        id: 'membership_owner', userId: 'user_owner', displayName: 'Pejman Owner',
         slackTeamId: 'TACME', slackUserId: 'UOWNER', role: 'owner', status: 'active',
       },
       {
         id: 'membership_admin', userId: 'user_admin', displayName: 'Alex Admin',
         slackTeamId: 'TACME', slackUserId: 'UADMIN', role: 'admin', status: 'active',
       },
+      {
+        id: 'membership_member', userId: 'user_member', displayName: 'Maya Member',
+        slackTeamId: 'TACME', slackUserId: 'UMEMBER', role: 'member', status: 'active',
+      },
+      {
+        id: 'membership_other_owner', userId: 'user_other_owner', displayName: 'Olive Owner',
+        slackTeamId: 'TACME', slackUserId: 'UOTHEROWNER', role: 'owner', status: 'active',
+      },
+      {
+        id: 'membership_suspended', userId: 'user_suspended', displayName: 'Sam Suspended',
+        slackTeamId: 'TACME', slackUserId: 'USUSPENDED', role: 'member', status: 'suspended',
+      },
+      {
+        id: 'membership_removed', userId: 'user_removed', displayName: 'Rae Removed',
+        slackTeamId: 'TACME', slackUserId: 'UREMOVED', role: 'member', status: 'removed',
+      },
     ],
-    invitations: [{
-      id: 'invitation_pending', slackTeamId: 'TACME', slackUserId: 'UPENDING',
-      displayName: 'Pending Person', role: 'admin', status: 'pending',
-      expiresAt: 4_102_444_800_000, createdAt: 1_786_100_000_000, updatedAt: 1_786_100_000_000,
-    }],
   };
 }
 
-const directoryMembers = [
-  {
-    slackUserId: 'UALEX1', displayName: 'Alex', realName: 'Alex One', handle: 'alex.one',
-    avatarUrl: 'https://avatars.slack-edge.com/alex-one.png',
-  },
-  {
-    slackUserId: 'UALEX2', displayName: 'Alex', realName: 'Alex Two', handle: 'alex.two',
-    avatarUrl: null,
-  },
-];
-
-async function createHarness(
-  viewerRole: 'owner' | 'admin' = 'owner',
-  options: { directoryFailure?: boolean; clipboardFailure?: boolean } = {},
-) {
+async function createHarness(viewerRole: 'owner' | 'admin' = 'owner') {
   const team = teamFixture(viewerRole);
   let html = '';
   const app = {
@@ -87,7 +98,6 @@ async function createHarness(
   };
   const listeners: Record<string, Listener> = {};
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
-  const clipboard: string[] = [];
   const location = { pathname: '/admin/team', search: '' };
   const applyPath = (path: string) => {
     const url = new URL(path, 'https://chickpea.example');
@@ -111,41 +121,10 @@ async function createHarness(
     if (path === '/admin/api/slack-behavior') return response({});
     if (path === '/admin/api/audit/memory/scopes') return response({ scopes: [] });
     if (path === '/admin/api/team' && method === 'GET') return response(team);
-    if (path === '/admin/api/team/directory' && method === 'GET') {
-      if (options.directoryFailure) throw new TypeError('Failed to fetch');
-      return response({ members: directoryMembers, nextCursor: 'cursor-next' });
-    }
-    if (path === '/admin/api/team/directory?cursor=cursor-next' && method === 'GET') {
-      return response({ members: [], nextCursor: null });
-    }
-    if (path === '/admin/api/team/directory/UMANUAL' && method === 'GET') {
-      return response({ member: {
-        slackUserId: 'UMANUAL', displayName: 'Manual Member', realName: 'Manual Member',
-        handle: 'manual.member', avatarUrl: null,
-      } });
-    }
-    if (path === '/admin/api/team/invitations' && method === 'POST') {
-      const slackUserId = String((body as { slackUserId: string }).slackUserId);
-      const invitation = {
-        id: 'invitation_created', slackTeamId: 'TACME', slackUserId,
-        displayName: 'Alex', role: 'admin', status: 'pending',
-        expiresAt: 4_102_444_800_000, createdAt: Date.now(), updatedAt: Date.now(),
-      };
-      team.invitations.unshift(invitation);
-      return response({
-        invitation,
-        inviteLink: 'https://chickpea.example/auth/slack/invite#invite=private-slack-locator',
-      }, 201);
-    }
-    if (path.startsWith('/admin/api/team/invitations/') && method === 'DELETE') {
-      team.invitations = team.invitations.filter((row) => !path.endsWith(row.id));
-      return response({ invitation: { id: path.split('/').at(-1), status: 'revoked' } });
-    }
     if (path.startsWith('/admin/api/team/memberships/') && method === 'PATCH') {
       const id = path.split('/').at(-1);
       const member = team.members.find((row) => row.id === id);
       if (member) Object.assign(member, body);
-      if ((body as { role?: string }).role === 'owner') team.soleOwnerWarning = false;
       return response({ membership: member });
     }
     return response({ error: 'not_found' }, 404);
@@ -159,112 +138,126 @@ async function createHarness(
       replaceState(_state: unknown, _title: string, path: string) { applyPath(path); },
     },
     location, URL, URLSearchParams,
-    navigator: {
-      clipboard: {
-        async writeText(value: string) {
-          if (options.clipboardFailure) throw new Error('clipboard denied');
-          clipboard.push(value);
-        },
-      },
-    },
+    navigator: {},
     window: { addEventListener() {} },
   }, { filename: 'admin-team-page-inline.js' });
   await flush();
-  return { app, clipboard, listeners, requests, team };
+  return { app, listeners, requests, team };
 }
 
-test('Team page is Slack-native, disambiguates duplicate names, and warns the sole Owner', async () => {
+test('Team explains automatic provisioning and never loads invitation or Slack-directory UI', async () => {
   const harness = await createHarness();
-  assert.match(harness.app.innerHTML, /Invite from Slack/);
-  assert.match(harness.app.innerHTML, /Add a second Owner/);
-  assert.match(harness.app.innerHTML, /alex\.one · UALEX1/);
-  assert.match(harness.app.innerHTML, /alex\.two · UALEX2/);
-  assert.match(harness.app.innerHTML, /paste a Slack member ID/i);
-  assert.match(harness.app.innerHTML, /UPENDING · Expires/);
-  assert.match(harness.app.innerHTML, /Promote to Owner/);
-  assert.match(harness.app.innerHTML, /data-action="team-suspend-open"/);
-  assert.doesNotMatch(harness.app.innerHTML, /email|password|Cloudflare Access/i);
+  assert.match(harness.app.innerHTML, /join automatically the first time they interact with an Agent/i);
+  assert.match(harness.app.innerHTML, /Guests and Slack Connect/i);
+  assert.match(harness.app.innerHTML, /6 members/);
+  assert.doesNotMatch(harness.app.innerHTML, /Invite from Slack|Invite administrator|Add a second Owner|Pending Slack invitations|Join links/i);
+  assert.doesNotMatch(harness.app.innerHTML, /team-directory|team-invite|slack_directory_unavailable/i);
+  assert.equal(harness.requests.some((request) =>
+    request.path.includes('/team/directory') || request.path.includes('/team/invitations')), false);
 });
 
-test('Owner selects one exact Slack tuple and receives a fragment-only invitation link', async () => {
+test('Owner changes ordinary roles directly from one member row menu', async () => {
   const harness = await createHarness();
   const click = harness.listeners.click!;
-  const submit = harness.listeners.submit!;
-  click({ target: actionTarget({ 'data-action': 'team-member-select', 'data-slack-user': 'UALEX2' }) });
-  submit({ target: actionTarget({ 'data-action': 'team-invite-form' }), preventDefault() {} });
-  await flush();
-  const create = harness.requests.find((request) =>
-    request.path === '/admin/api/team/invitations' && request.method === 'POST');
-  assert.deepEqual(create?.body, { slackUserId: 'UALEX2' });
-  assert.match(harness.app.innerHTML, /Slack invitation ready/);
-  click({ target: actionTarget({ 'data-action': 'team-copy-link' }) });
-  await flush();
-  assert.deepEqual(harness.clipboard, [
-    'https://chickpea.example/auth/slack/invite#invite=private-slack-locator',
-  ]);
-});
-
-test('member-ID fallback verifies before selection and directory failures stay retryable', async () => {
-  const failed = await createHarness('owner', { directoryFailure: true });
-  assert.match(failed.app.innerHTML, /could not be reached/i);
-  assert.match(failed.app.innerHTML, /data-action="team-directory-retry"/);
-
-  const harness = await createHarness();
-  harness.listeners.input!({ target: actionTarget({ 'data-action': 'team-member-id' }, 'umanual') });
-  harness.listeners.click!({ target: actionTarget({ 'data-action': 'team-member-verify' }) });
-  await flush();
-  assert.ok(harness.requests.some((request) => request.path === '/admin/api/team/directory/UMANUAL'));
-  assert.match(harness.app.innerHTML, /Manual Member/);
-  assert.match(harness.app.innerHTML, /Selected Manual Member · @manual\.member · UMANUAL/);
-});
-
-test('suspend, revoke, restore, and promotion use explicit Slack-member lifecycle actions', async () => {
-  const harness = await createHarness();
-  const click = harness.listeners.click!;
-  click({ target: actionTarget({ 'data-action': 'team-suspend-open', 'data-membership': 'membership_admin' }) });
-  assert.match(harness.app.innerHTML, /An Owner can restore this membership later/);
-  click({ target: actionTarget({ 'data-action': 'team-remove-confirm' }) });
-  await flush();
-  assert.ok(harness.requests.some((request) =>
-    request.path.endsWith('/membership_admin') && (request.body as { status?: string }).status === 'suspended'));
-  assert.match(harness.app.innerHTML, /data-action="team-restore"/);
-
-  click({ target: actionTarget({ 'data-action': 'team-restore', 'data-membership': 'membership_admin' }) });
-  await flush();
-  click({ target: actionTarget({ 'data-action': 'team-promote', 'data-membership': 'membership_admin' }) });
-  await flush();
-  assert.equal(harness.team.soleOwnerWarning, false);
-  assert.doesNotMatch(harness.app.innerHTML, /Add a second Owner/);
+  click({ target: actionTarget({
+    'data-action': 'team-actions-toggle', 'data-membership': 'membership_member',
+  }) });
+  assert.match(harness.app.innerHTML, /role="menu" aria-label="Actions for Maya Member"/);
+  assert.match(harness.app.innerHTML, /Make Admin/);
+  assert.match(harness.app.innerHTML, /Make Owner/);
+  assert.match(harness.app.innerHTML, /Suspend access/);
+  assert.match(harness.app.innerHTML, /Remove from Chickpea/);
 
   click({ target: actionTarget({
-    'data-action': 'team-revoke-open', 'data-invitation': 'invitation_pending',
-    'data-slack-user': 'UPENDING',
-  }) });
-  assert.match(harness.app.innerHTML, /private link will stop working immediately/);
-  click({ target: actionTarget({ 'data-action': 'team-remove-confirm' }) });
+    'data-action': 'team-role-action', 'data-membership': 'membership_member', 'data-role': 'admin',
+  }, undefined, ['team-action-menu']) });
   await flush();
   assert.ok(harness.requests.some((request) =>
-    request.path.endsWith('/invitation_pending') && request.method === 'DELETE'));
+    request.path.endsWith('/membership_member') &&
+    (request.body as { role?: string }).role === 'admin'));
+  assert.equal(harness.team.members.find((row) => row.id === 'membership_member')?.role, 'admin');
 });
 
-test('Admin can view exact members but receives no Owner controls', async () => {
-  const harness = await createHarness('admin');
-  assert.match(harness.app.innerHTML, /UOWNER/);
-  assert.doesNotMatch(harness.app.innerHTML, /Invite from Slack|Promote to Owner|team-suspend-open|team-remove-open/);
-  assert.equal(harness.requests.some((request) => request.path.includes('/team/directory')), false);
-});
+test('Owner transitions and destructive access changes require confirmation', async () => {
+  const harness = await createHarness();
+  const click = harness.listeners.click!;
 
-test('clipboard failure exposes the invitation link for manual selection', async () => {
-  const harness = await createHarness('owner', { clipboardFailure: true });
-  harness.listeners.click!({ target: actionTarget({
-    'data-action': 'team-member-select', 'data-slack-user': 'UALEX1',
+  click({ target: actionTarget({
+    'data-action': 'team-actions-toggle', 'data-membership': 'membership_member',
   }) });
-  harness.listeners.submit!({
-    target: actionTarget({ 'data-action': 'team-invite-form' }), preventDefault() {},
+  click({ target: actionTarget({
+    'data-action': 'team-role-action', 'data-membership': 'membership_member', 'data-role': 'owner',
+  }, undefined, ['team-action-menu']) });
+  assert.match(harness.app.innerHTML, /Make Maya Member an Owner\?/);
+  assert.equal(harness.requests.some((request) => request.path.endsWith('/membership_member')), false);
+  click({ target: actionTarget({ 'data-action': 'team-confirm-apply' }) });
+  await flush();
+  assert.ok(harness.requests.some((request) =>
+    request.path.endsWith('/membership_member') &&
+    (request.body as { role?: string }).role === 'owner'));
+
+  click({ target: actionTarget({
+    'data-action': 'team-actions-toggle', 'data-membership': 'membership_other_owner',
+  }) });
+  click({ target: actionTarget({
+    'data-action': 'team-role-action', 'data-membership': 'membership_other_owner', 'data-role': 'admin',
+  }, undefined, ['team-action-menu']) });
+  assert.match(harness.app.innerHTML, /Make Olive Owner an Admin\?/);
+  click({ target: actionTarget({ 'data-action': 'team-confirm-cancel' }) });
+
+  click({ target: actionTarget({
+    'data-action': 'team-actions-toggle', 'data-membership': 'membership_admin',
+  }) });
+  click({ target: actionTarget({
+    'data-action': 'team-status-action', 'data-membership': 'membership_admin', 'data-status': 'suspended',
+  }, undefined, ['team-action-menu']) });
+  assert.match(harness.app.innerHTML, /Suspend access for Alex Admin\?/);
+  click({ target: actionTarget({ 'data-action': 'team-confirm-apply' }) });
+  await flush();
+  assert.ok(harness.requests.some((request) =>
+    request.path.endsWith('/membership_admin') &&
+    (request.body as { status?: string }).status === 'suspended'));
+});
+
+test('restore is direct while removed, self, and non-Owner rows are read-only', async () => {
+  const harness = await createHarness();
+  const click = harness.listeners.click!;
+  click({ target: actionTarget({
+    'data-action': 'team-actions-toggle', 'data-membership': 'membership_suspended',
+  }) });
+  assert.match(harness.app.innerHTML, /Restore access/);
+  assert.doesNotMatch(harness.app.innerHTML, /Make Admin|Make Owner|Suspend access/);
+  click({ target: actionTarget({
+    'data-action': 'team-status-action', 'data-membership': 'membership_suspended', 'data-status': 'active',
+  }, undefined, ['team-action-menu']) });
+  await flush();
+  assert.ok(harness.requests.some((request) =>
+    request.path.endsWith('/membership_suspended') &&
+    (request.body as { status?: string }).status === 'active'));
+
+  assert.doesNotMatch(harness.app.innerHTML, /data-membership="membership_removed"[^>]*aria-haspopup/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-membership="membership_owner"[^>]*aria-haspopup/);
+
+  const adminHarness = await createHarness('admin');
+  assert.match(adminHarness.app.innerHTML, /UOWNER/);
+  assert.doesNotMatch(adminHarness.app.innerHTML, /data-action="team-actions-toggle"/);
+});
+
+test('row menu closes on outside click and Escape', async () => {
+  const harness = await createHarness();
+  const click = harness.listeners.click!;
+  click({ target: actionTarget({
+    'data-action': 'team-actions-toggle', 'data-membership': 'membership_member',
+  }) });
+  assert.match(harness.app.innerHTML, /role="menu"/);
+  click({ target: actionTarget() });
+  assert.doesNotMatch(harness.app.innerHTML, /role="menu"/);
+
+  click({ target: actionTarget({
+    'data-action': 'team-actions-toggle', 'data-membership': 'membership_member',
+  }) });
+  harness.listeners.keydown!({
+    target: actionTarget(), key: 'Escape', preventDefault() {},
   });
-  await flush();
-  harness.listeners.click!({ target: actionTarget({ 'data-action': 'team-copy-link' }) });
-  await flush();
-  assert.match(harness.app.innerHTML, /Copy this teammate join link manually/);
-  assert.match(harness.app.innerHTML, /id="team-invite-link"/);
+  assert.doesNotMatch(harness.app.innerHTML, /role="menu"/);
 });
