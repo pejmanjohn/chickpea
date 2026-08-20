@@ -89,6 +89,26 @@ test('enqueue is idempotent by id and round-trips the job payload', () => {
   assert.equal(pending[0]?.assignment.model, 'local-stub/x');
 });
 
+test('OAuth callback resumes a terminal authorization turn once in the same conversation', () => {
+  const store = newStore();
+  const original = job('msg:C1:oauth');
+  original.turn.actorMembershipId = 'membership_alice';
+  original.turn.threadTs = '1000.0001';
+  assert.equal(store.enqueue(original), true);
+  store.markDelivered(original.id);
+
+  assert.equal(store.resumeAfterOAuth(original.id, 'oauthcontinuation_1'), true);
+  assert.equal(store.resumeAfterOAuth(original.id, 'oauthcontinuation_1'), false);
+  const resumed = store.listPending();
+  assert.equal(resumed.length, 1);
+  assert.equal(resumed[0]?.id, 'oauthresume:oauthcontinuation_1');
+  assert.equal(resumed[0]?.turn.threadTs, original.turn.threadTs);
+  assert.equal(resumed[0]?.turn.actorMembershipId, 'membership_alice');
+  assert.match(resumed[0]?.turn.text ?? '', /authorization is complete/i);
+  assert.equal(resumed[0]?.runtimePlan, undefined, 'resume must compile live connection state');
+  assert.equal(resumed[0]?.executionAuthority, 'legacy');
+});
+
 test('TurnJob round-trips a dedicated identity without storing credentials', () => {
   const store = newStore();
   const dedicated = job('dedicated');

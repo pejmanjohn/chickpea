@@ -17,6 +17,7 @@ import {
   projectEffectiveMcpConnections,
 } from '../connections/runtime.ts';
 import type { EffectiveConnectionAccount } from '../connections/types.ts';
+import type { PersonalConnectionAuthorizationOption } from '../connections/types.ts';
 
 export const RUNTIME_PLAN_SCHEMA_VERSION = 2 as const;
 export const DEFAULT_CONTINUITY_POLICY = 'slack-runtime-v3' as const;
@@ -66,6 +67,22 @@ export interface RuntimePlanRepositoryV2 {
   allRepos?: boolean;
 }
 
+export interface RuntimePlanConnectionAuthorizationV2 {
+  providerId: string;
+  templateAccountId: string;
+  accounts: Array<{
+    id: string;
+    label: string;
+    purpose?: string;
+    lifecycle: 'pending' | 'ready' | 'needs_attention';
+  }>;
+}
+
+export interface RuntimePlanConnectionChoiceV2 {
+  providerId: string;
+  choices: Array<{ label: string; purpose?: string; scope: 'team' | 'personal' }>;
+}
+
 export interface RuntimePlanV2 {
   schemaVersion: typeof RUNTIME_PLAN_SCHEMA_VERSION;
   continuityPolicy: string;
@@ -75,6 +92,10 @@ export interface RuntimePlanV2 {
   actorMembershipId?: string;
   /** Credential-free account references frozen for this task. */
   connectionAccountIds?: string[];
+  /** Actor-safe personal provider options available for inline authorization. */
+  connectionAuthorizations?: RuntimePlanConnectionAuthorizationV2[];
+  /** Providers withheld until the user identifies one plausible account. */
+  connectionChoices?: RuntimePlanConnectionChoiceV2[];
   /** Non-secret Slack app reference. Missing only on pre-U4 durable plans. */
   slackIdentityId?: string;
   /** Object revisions used to explain which live configuration this turn froze. */
@@ -107,6 +128,8 @@ export interface CompileRuntimePlanV2Input {
   sandboxMode: RuntimePlanSandboxMode;
   continuityPolicy?: string;
   effectiveConnections?: readonly EffectiveConnectionAccount[];
+  connectionAuthorizations?: readonly PersonalConnectionAuthorizationOption[];
+  connectionChoices?: readonly RuntimePlanConnectionChoiceV2[];
 }
 
 /**
@@ -133,6 +156,11 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
       ? { actorMembershipId: input.turn.actorMembershipId }
       : {}),
     connectionAccountIds: effectiveConnections?.map(({ account }) => account.id) ?? [],
+    connectionAuthorizations: compileConnectionAuthorizations(input.connectionAuthorizations),
+    connectionChoices: (input.connectionChoices ?? []).map((choice) => ({
+      providerId: choice.providerId,
+      choices: choice.choices.map((candidate) => ({ ...candidate })),
+    })),
     slackIdentityId: effectiveSlackIdentityId(input.assignment),
     configurationRevision: {
       agent: input.assignment.agent.revision,
@@ -214,6 +242,8 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'agentId',
     'actorMembershipId',
     'connectionAccountIds',
+    'connectionAuthorizations',
+    'connectionChoices',
     'slackIdentityId',
     'configurationRevision',
     'conversation',
@@ -227,7 +257,14 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'sandbox',
     'artifactDestination',
     'harnessRevision',
-  ], ['slackIdentityId', 'configurationRevision', 'actorMembershipId', 'connectionAccountIds']);
+  ], [
+    'slackIdentityId',
+    'configurationRevision',
+    'actorMembershipId',
+    'connectionAccountIds',
+    'connectionAuthorizations',
+    'connectionChoices',
+  ]);
   if (record.schemaVersion !== RUNTIME_PLAN_SCHEMA_VERSION) {
     throw new Error('Runtime plan schemaVersion must be 2.');
   }
@@ -244,6 +281,17 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
       (value) => boundedString(value, 'connectionAccountId', 1, 160),
       128,
     );
+  const connectionAuthorizations = record.connectionAuthorizations === undefined
+    ? []
+    : arrayOf(
+      record.connectionAuthorizations,
+      'connectionAuthorizations',
+      parseConnectionAuthorization,
+      64,
+    );
+  const connectionChoices = record.connectionChoices === undefined
+    ? []
+    : arrayOf(record.connectionChoices, 'connectionChoices', parseConnectionChoice, 64);
   const slackIdentityId = record.slackIdentityId === undefined
     ? undefined
     : boundedString(record.slackIdentityId, 'slackIdentityId', 1, 128);
@@ -317,6 +365,8 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     agentId,
     ...(actorMembershipId ? { actorMembershipId } : {}),
     ...(record.connectionAccountIds === undefined ? {} : { connectionAccountIds }),
+    ...(record.connectionAuthorizations === undefined ? {} : { connectionAuthorizations }),
+    ...(record.connectionChoices === undefined ? {} : { connectionChoices }),
     ...(slackIdentityId ? { slackIdentityId } : {}),
     ...(configurationRevision ? { configurationRevision } : {}),
     conversation,
@@ -334,13 +384,33 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
   const expected = computeHarnessRevision(parsed);
   const legacyCandidate = { ...parsed };
   delete legacyCandidate.connectionAccountIds;
-  const legacyExpected = !parsed.actorMembershipId && connectionAccountIds.length === 0
+  delete legacyCandidate.connectionAuthorizations;
+  delete legacyCandidate.connectionChoices;
+  const legacyExpected = !parsed.actorMembershipId && connectionAccountIds.length === 0 &&
+      connectionAuthorizations.length === 0 && connectionChoices.length === 0
     ? computeHarnessRevision(legacyCandidate)
     : undefined;
   if (harnessRevision !== expected && harnessRevision !== legacyExpected) {
     throw new Error('Runtime plan harnessRevision does not match its harness policy.');
   }
   return parsed;
+}
+
+function compileConnectionAuthorizations(
+  options: readonly PersonalConnectionAuthorizationOption[] | undefined,
+): RuntimePlanConnectionAuthorizationV2[] {
+  return (options ?? []).map((option) => ({
+    providerId: option.providerId,
+    templateAccountId: option.templateAccountId,
+    accounts: option.accounts.flatMap((account) => account.lifecycle === 'revoked'
+      ? []
+      : [{
+          id: account.id,
+          label: account.label,
+          ...(account.purpose ? { purpose: account.purpose } : {}),
+          lifecycle: account.lifecycle,
+        }]),
+  })).sort(compareBy('providerId'));
 }
 
 function compileSkills(skills: readonly SkillConfig[] | undefined): RuntimePlanSkillV2[] {
@@ -440,6 +510,12 @@ function computeHarnessRevision(
       ...(plan.connectionAccountIds !== undefined
         ? { connectionAccountIds: plan.connectionAccountIds }
         : {}),
+      ...(plan.connectionAuthorizations !== undefined
+        ? { connectionAuthorizations: plan.connectionAuthorizations }
+        : {}),
+      ...(plan.connectionChoices !== undefined
+        ? { connectionChoices: plan.connectionChoices }
+        : {}),
       ...(plan.slackIdentityId ? { slackIdentityId: plan.slackIdentityId } : {}),
       ...(plan.configurationRevision
         ? { configurationRevision: plan.configurationRevision }
@@ -455,6 +531,64 @@ function computeHarnessRevision(
       artifactDestinationKind: plan.artifactDestination.kind,
     }))
     .digest('hex');
+}
+
+function parseConnectionAuthorization(value: unknown): RuntimePlanConnectionAuthorizationV2 {
+  const record = exactRecord(value, 'connection authorization', [
+    'providerId',
+    'templateAccountId',
+    'accounts',
+  ]);
+  return {
+    providerId: boundedString(record.providerId, 'connection authorization providerId', 1, 128),
+    templateAccountId: boundedString(
+      record.templateAccountId,
+      'connection authorization templateAccountId',
+      1,
+      160,
+    ),
+    accounts: arrayOf(record.accounts, 'connection authorization accounts', (candidate) => {
+      const account = exactRecord(candidate, 'connection authorization account', [
+        'id',
+        'label',
+        'purpose',
+        'lifecycle',
+      ], ['purpose']);
+      return {
+        id: boundedString(account.id, 'connection authorization account id', 1, 160),
+        label: boundedString(account.label, 'connection authorization account label', 1, 120),
+        ...(account.purpose === undefined
+          ? {}
+          : { purpose: boundedString(account.purpose, 'connection authorization account purpose', 1, 500) }),
+        lifecycle: oneOf(account.lifecycle, 'connection authorization account lifecycle', [
+          'pending',
+          'ready',
+          'needs_attention',
+        ] as const),
+      };
+    }, 32),
+  };
+}
+
+function parseConnectionChoice(value: unknown): RuntimePlanConnectionChoiceV2 {
+  const record = exactRecord(value, 'connection choice', ['providerId', 'choices']);
+  return {
+    providerId: boundedString(record.providerId, 'connection choice providerId', 1, 128),
+    choices: arrayOf(record.choices, 'connection choices', (candidate) => {
+      const choice = exactRecord(candidate, 'connection choice account', [
+        'label',
+        'purpose',
+        'scope',
+      ], ['purpose']);
+      return {
+        label: boundedString(choice.label, 'connection choice label', 1, 120),
+        ...(choice.purpose === undefined
+          ? {}
+          : { purpose: boundedString(choice.purpose, 'connection choice purpose', 1, 500) }),
+        scope: oneOf(choice.scope, 'connection choice scope', ['team', 'personal'] as const),
+      };
+    }, 32),
+  };
 }
 
 function parseConfigurationRevision(

@@ -25,6 +25,8 @@ import {
 } from '../activity/status.ts';
 import {
   ApiOAuthError,
+  connectionAccountIdFromOAuthRef,
+  connectionAccountOAuthRef,
   resolveApiOAuthAccessToken,
   type ApiOAuthProvider,
   type ApiOAuthRef,
@@ -101,6 +103,7 @@ import {
   resolveConnectionSecretForInvocation,
   resolveEffectiveConnectionAccounts,
 } from '../connections/runtime.ts';
+import { usePersonalConnectionAuthorizationSlackTool } from '../connections/slack-authorization.ts';
 
 import type {
   SandboxCredentialMode,
@@ -511,7 +514,7 @@ export async function resolveApiConnectionsForTurn(
           try {
             const oauthInput = {
               ref: accountContext
-                ? { agentId: connection.id, connectionId: 'account' }
+                ? connectionAccountOAuthRef(connection.id)
                 : { agentId, connectionId: connection.id },
               provider: connection.oauthProvider,
             };
@@ -825,7 +828,7 @@ export async function createSlackAgentRuntime(
               resolveOAuthAccessToken: (oauthInput) => resolveMcpOAuthAccessToken(
                 {
                   ...oauthInput,
-                  ref: { agentId: oauthInput.ref.connectionId, connectionId: 'account' },
+                  ref: connectionAccountOAuthRef(oauthInput.ref.connectionId),
                 },
                 {
                   settings: settingsStore,
@@ -836,8 +839,9 @@ export async function createSlackAgentRuntime(
                       agentId: config.agent.id,
                       actorMembershipId: input.actorMembershipId!,
                     });
-                    const account = current.find(({ account }) => account.id === ref.agentId)?.account;
-                    return ref.connectionId === 'account' && account?.policy.kind === 'mcp' &&
+                    const accountId = connectionAccountIdFromOAuthRef(ref);
+                    const account = current.find(({ account }) => account.id === accountId)?.account;
+                    return !!accountId && account?.policy.kind === 'mcp' &&
                       account.policy.authMode === 'oauth' && account.policy.url === serverUrl;
                   },
                 },
@@ -1020,6 +1024,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
       : {}),
   });
   useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv);
+  usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
   return plan.instructions;
 }
 

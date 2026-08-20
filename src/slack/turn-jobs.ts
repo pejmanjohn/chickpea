@@ -226,6 +226,34 @@ export class TurnJobStoreLogic {
     return inserted.changes === 1;
   }
 
+  /**
+   * Continue an OAuth-suspended Slack task as a fresh delivery into the same
+   * Agent conversation. The original row may already be terminal (it posted
+   * the authorization link); the continuation id makes callback replay
+   * idempotent while the new plan resolves the newly-ready account live.
+   */
+  resumeAfterOAuth(originalTaskId: string, continuationId: string): boolean {
+    const row = this.db.get(
+      `SELECT ${TURN_JOB_SELECT_COLUMNS} FROM turn_jobs WHERE id = ? LIMIT 1`,
+      originalTaskId,
+    ) as unknown as TurnJobRow | undefined;
+    if (!row) return false;
+    const original = this.decodeRow(row);
+    const id = `oauthresume:${continuationId}`;
+    return this.enqueue({
+      id,
+      evtKey: `evt:${id}`,
+      msgKey: id,
+      turn: {
+        ...original.turn,
+        eventId: id,
+        text: 'Personal connection authorization is complete. Continue the interrupted request now without repeating any action already completed.',
+      },
+      assignment: original.assignment,
+      executionAuthority: 'legacy',
+    });
+  }
+
   /** Undelivered jobs in enqueue order — the alarm's work list. */
   listPending(
     limit = 100,

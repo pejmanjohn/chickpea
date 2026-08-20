@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { Hono } from 'hono';
+import { PhotonImage } from '@cf-wasm/photon';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
@@ -300,7 +301,9 @@ test('Avatar uploads create a new immutable revision used by later Slack replies
   const fixture = harness();
   try {
     const { agent } = await createAgent(fixture.app);
-    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB', 'base64');
+    const source = new PhotonImage(Uint8Array.from([24, 92, 61, 255]), 1, 1);
+    const png = Buffer.from(source.get_bytes());
+    source.free();
     const response = await fixture.app.request(
       'http://localhost/admin/api/agents/agent_support/avatar',
       {

@@ -96,6 +96,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   admitCanonical(input: SlackCanonicalAdmissionInput): Promise<SlackCanonicalAdmissionResult>;
   /** Node fallback when Slack truth cannot authorize a canonical Work/Run. */
   enqueueTurn?(job: TurnJob): Promise<boolean>;
+  resumeTurnAfterOAuth?(originalTaskId: string, continuationId: string): Promise<boolean>;
   pinAgentBinding(
     input: SlackAgentBinding,
     expected?: SlackAgentBindingExpectation,
@@ -429,6 +430,10 @@ export class SqliteSlackStateStore implements SlackStateStore {
 
   async enqueueTurn(job: TurnJob) {
     return this.turnJobs.enqueue(job);
+  }
+
+  async resumeTurnAfterOAuth(originalTaskId: string, continuationId: string) {
+    return this.turnJobs.resumeAfterOAuth(originalTaskId, continuationId);
   }
 
   async pinAgentBinding(input: SlackAgentBinding, expected?: SlackAgentBindingExpectation) {

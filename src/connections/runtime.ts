@@ -14,7 +14,9 @@ import type {
 import type { SettingsStore } from '../config/settings-store.ts';
 import type {
   ConnectionSelection,
+  ConnectionRequestResolution,
   EffectiveConnectionAccount,
+  PersonalConnectionAuthorizationOption,
 } from './types.ts';
 
 export async function resolveEffectiveConnectionAccounts(input: {
@@ -28,20 +30,68 @@ export async function resolveEffectiveConnectionAccounts(input: {
     input.config.listAgentConnectionBindings(input.agentId),
   ]);
   const byId = new Map(accounts.map((account) => [account.id, account]));
-  return bindings.flatMap((binding) => {
-    const account = byId.get(binding.connectionAccountId);
-    if (!account || !binding.enabled || account.lifecycle !== 'ready') return [];
-    if (account.providerId !== binding.providerId) return [];
-    if (account.ownerKind === 'member' && account.ownerMembershipId !== input.actorMembershipId) {
-      return [];
-    }
-    return [{
+  const resolved = bindings.flatMap((binding) => {
+    const bound = byId.get(binding.connectionAccountId);
+    if (!bound || !binding.enabled || bound.providerId !== binding.providerId) return [];
+    const candidates = bound.ownerKind === 'team'
+      ? [bound]
+      : accounts.filter((account) =>
+          account.ownerKind === 'member' &&
+          account.ownerMembershipId === input.actorMembershipId &&
+          account.providerId === bound.providerId &&
+          compatiblePersonalPolicy(bound.policy, account.policy)
+        );
+    return candidates.flatMap((account) => account.lifecycle === 'ready' ? [{
       account,
       binding,
       policy: applyCapabilityCeiling(account.policy, binding),
       scope: account.ownerKind === 'member' ? 'personal' as const : 'team' as const,
+    }] : []);
+  });
+  return [...new Map(resolved.map((entry) => [entry.account.id, entry])).values()];
+}
+
+/**
+ * Member-owned bindings are personal provider capabilities. They expose the
+ * invoking member's own account labels and one credential-free template, but
+ * never another member's account identity or secret reference.
+ */
+export async function resolvePersonalConnectionAuthorizationOptions(input: {
+  config: Pick<ConfigStore, 'listConnectionAccounts' | 'listAgentConnectionBindings'>;
+  workspaceId: string;
+  agentId: string;
+  actorMembershipId: string;
+}): Promise<PersonalConnectionAuthorizationOption[]> {
+  const [accounts, bindings] = await Promise.all([
+    input.config.listConnectionAccounts(input.workspaceId),
+    input.config.listAgentConnectionBindings(input.agentId),
+  ]);
+  const byId = new Map(accounts.map((account) => [account.id, account]));
+  const options = bindings.flatMap((binding) => {
+    const template = byId.get(binding.connectionAccountId);
+    if (!binding.enabled || !template || template.ownerKind !== 'member' ||
+        template.providerId !== binding.providerId) return [];
+    const actorAccounts = accounts.filter((account) =>
+      account.ownerKind === 'member' &&
+      account.ownerMembershipId === input.actorMembershipId &&
+      account.providerId === template.providerId &&
+      account.lifecycle !== 'revoked' &&
+      compatiblePersonalPolicy(template.policy, account.policy)
+    );
+    return [{
+      providerId: template.providerId,
+      templateAccountId: template.id,
+      policy: applyCapabilityCeiling(template.policy, binding),
+      allowedCapabilities: [...binding.allowedCapabilities],
+      accounts: actorAccounts.map(({ id, label, purpose, lifecycle }) => ({
+        id,
+        label,
+        ...(purpose ? { purpose } : {}),
+        lifecycle,
+      })),
     }];
   });
+  return [...new Map(options.map((option) => [option.providerId.toLowerCase(), option])).values()];
 }
 
 export function selectConnectionAccount(input: {
@@ -64,6 +114,44 @@ export function selectConnectionAccount(input: {
     return { kind: 'selected', connection: matches[0]!, reason: 'language' };
   }
   return { kind: 'ambiguous', providerId: input.providerId, choices: matches.length > 1 ? matches : choices };
+}
+
+/** Fail closed when one provider has several plausible credentials. */
+export function selectConnectionsForRequest(input: {
+  connections: readonly EffectiveConnectionAccount[];
+  requestText: string;
+}): ConnectionRequestResolution {
+  const byProvider = new Map<string, EffectiveConnectionAccount[]>();
+  for (const connection of input.connections) {
+    const key = connection.account.providerId.toLowerCase();
+    const group = byProvider.get(key) ?? [];
+    group.push(connection);
+    byProvider.set(key, group);
+  }
+  const selected: EffectiveConnectionAccount[] = [];
+  const ambiguous: ConnectionRequestResolution['ambiguous'] = [];
+  for (const [providerId, choices] of byProvider) {
+    const decision = selectConnectionAccount({
+      connections: choices,
+      providerId,
+      requestText: input.requestText,
+    });
+    if (decision.kind === 'selected') {
+      selected.push(decision.connection);
+      continue;
+    }
+    if (decision.kind === 'ambiguous') {
+      ambiguous.push({
+        providerId,
+        choices: decision.choices.map(({ account, scope }) => ({
+          label: account.label,
+          ...(account.purpose ? { purpose: account.purpose } : {}),
+          scope,
+        })),
+      });
+    }
+  }
+  return { selected, ambiguous };
 }
 
 export function projectEffectiveApiConnections(
@@ -160,6 +248,24 @@ function applyCapabilityCeiling(
     return { ...policy, oauthScopes: (policy.oauthScopes ?? []).filter((scope) => allowed.has(scope)) };
   }
   return { ...policy, allowedMethods: policy.allowedMethods.filter((method) => allowed.has(method)) };
+}
+
+function compatiblePersonalPolicy(
+  template: ConnectionAccountPolicy,
+  candidate: ConnectionAccountPolicy,
+): boolean {
+  if (template.kind !== candidate.kind) return false;
+  if (template.kind === 'api' && candidate.kind === 'api') {
+    return template.authMode === candidate.authMode &&
+      template.oauthProvider === candidate.oauthProvider &&
+      (template.presetId ?? '') === (candidate.presetId ?? '');
+  }
+  if (template.kind === 'mcp' && candidate.kind === 'mcp') {
+    return template.authMode === candidate.authMode &&
+      template.url === candidate.url &&
+      (template.presetId ?? '') === (candidate.presetId ?? '');
+  }
+  return false;
 }
 
 function accountLanguageKeys(account: ConnectionAccount): string[] {

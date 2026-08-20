@@ -107,6 +107,8 @@ import { createSlackWebClient } from './web-client.ts';
 import {
   externalActionAuthorityInstructions,
   resolveEffectiveConnectionAccounts,
+  resolvePersonalConnectionAuthorizationOptions,
+  selectConnectionsForRequest,
 } from '../connections/runtime.ts';
 
 export { createSlackWebClient } from './web-client.ts';
@@ -1214,12 +1216,24 @@ async function freezeRuntimePlanForTurn(input: {
     baseInstructions,
     externalActionAuthorityInstructions(input.assignment.agent.instructions),
   ].join('\n');
-  const effectiveConnections = input.turn.actorMembershipId
-    ? await resolveEffectiveConnectionAccounts({
+  const actorConnectionContext = input.turn.actorMembershipId
+    ? {
         config: getConfigStore(input.platformEnv),
         workspaceId: input.turn.workspaceId,
         agentId: input.assignment.agentId,
         actorMembershipId: input.turn.actorMembershipId,
+      }
+    : undefined;
+  const [allEffectiveConnections, connectionAuthorizations] = actorConnectionContext
+    ? await Promise.all([
+        resolveEffectiveConnectionAccounts(actorConnectionContext),
+        resolvePersonalConnectionAuthorizationOptions(actorConnectionContext),
+      ])
+    : [undefined, undefined];
+  const connectionResolution = allEffectiveConnections
+    ? selectConnectionsForRequest({
+        connections: allEffectiveConnections,
+        requestText: input.turn.text,
       })
     : undefined;
   const candidate = compileRuntimePlanV2({
@@ -1228,7 +1242,9 @@ async function freezeRuntimePlanForTurn(input: {
     instructions,
     memoryEpoch: input.memoryEpoch,
     sandboxMode: sandboxDecision.selection,
-    ...(effectiveConnections ? { effectiveConnections } : {}),
+    ...(connectionResolution ? { effectiveConnections: connectionResolution.selected } : {}),
+    ...(connectionAuthorizations ? { connectionAuthorizations } : {}),
+    ...(connectionResolution ? { connectionChoices: connectionResolution.ambiguous } : {}),
   });
   const decision = input.persist
     ? await input.persist(candidate)

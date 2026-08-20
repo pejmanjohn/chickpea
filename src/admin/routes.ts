@@ -52,6 +52,8 @@ import {
 import slackAppManifest from '../../slack-app-manifest.json' with { type: 'json' };
 import {
   apiOAuthSettingKeys,
+  connectionAccountIdFromOAuthRef,
+  connectionAccountOAuthRef,
   apiOAuthReturnRefFromState,
   ApiOAuthError,
   cancelApiOAuthAuthorization,
@@ -474,7 +476,10 @@ interface AdminRoutesOptions {
     dependencies: ApiOAuthDependencies,
   ) => ReturnType<typeof cancelApiOAuthAuthorization>) | undefined;
   /** Delivery seam for resuming the exact Slack task after OAuth succeeds. */
-  onOAuthContinuationReady?: ((continuation: OAuthContinuation) => Promise<void>) | undefined;
+  onOAuthContinuationReady?: ((
+    continuation: OAuthContinuation,
+    env: PlatformEnv | undefined,
+  ) => Promise<void>) | undefined;
   openAiSubscriptionProtocol?: OpenAiSubscriptionAuthorizationProtocol | undefined;
   openAiSubscriptionNow?: (() => number) | undefined;
   openAiSubscriptionRandomBytes?: ((length: number) => Uint8Array) | undefined;
@@ -1653,8 +1658,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     validateConnection: (ref, provider) =>
       isCurrentApiOAuthConnection(store(c), ref, provider),
     onReauthorizationRequired: async (ref, provider) => {
-      if (ref.connectionId.startsWith('connection_')) {
-        const account = await findConnectionAccount(store(c), ref.connectionId);
+      const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+      if (connectionAccountId) {
+        const account = await findConnectionAccount(store(c), connectionAccountId);
         if (!account || !isApiOAuthAccount(account, provider)) return;
         await store(c).putConnectionAccount(
           { ...account, lifecycle: 'needs_attention' },
@@ -2866,7 +2872,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           state: continuationState,
         });
         if (options.onOAuthContinuationReady) {
-          await options.onOAuthContinuationReady(continuation);
+          await options.onOAuthContinuationReady(
+            continuation,
+            c.env as PlatformEnv | undefined,
+          );
           await claimOAuthContinuationResume({
             settings: settings(c),
             continuationId: continuation.id,
@@ -3150,7 +3159,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!isApiOAuthAccount(account, parsed.output.provider)) {
         return c.json({ error: 'oauth_not_enabled' }, 409);
       }
-      const ref = { agentId, connectionId: account.id };
+      const ref = connectionAccountOAuthRef(account.id);
       await deleteApiOAuthSettings(ref, settings(c));
       await saveApiOAuthClient(ref, parsed.output, settings(c));
       if (!(await isCurrentApiOAuthConnection(store(c), ref, parsed.output.provider))) {
@@ -3184,7 +3193,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           parsed.output.continuation.workspaceId !== account.workspaceId) {
         throw new AuthorizationError();
       }
-      const ref = { agentId, connectionId: account.id };
+      const ref = connectionAccountOAuthRef(account.id);
       const result = await startApiOAuth(
         {
           ref,
@@ -6976,6 +6985,10 @@ function apiOAuthAdminRedirect(
   status: 'connected' | 'cancelled' | 'failed',
   ref: ApiOAuthRef,
 ): string {
+  const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+  if (connectionAccountId) {
+    return `/admin?oauth=${status}&connection=${encodeURIComponent(connectionAccountId)}&lane=api`;
+  }
   return (
     `/admin/agents/${encodeURIComponent(ref.agentId)}` +
     `?oauth=${status}&connection=${encodeURIComponent(ref.connectionId)}&lane=api`
@@ -6987,13 +7000,11 @@ async function isCurrentApiOAuthConnection(
   ref: ApiOAuthRef,
   provider: ApiOAuthProvider,
 ): Promise<boolean> {
-  if (ref.connectionId.startsWith('connection_')) {
-    const account = await findConnectionAccount(configStore, ref.connectionId);
+  const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+  if (connectionAccountId) {
+    const account = await findConnectionAccount(configStore, connectionAccountId);
     if (!account || account.lifecycle === 'revoked') return false;
-    const binding = (await configStore.listAgentConnectionBindings(ref.agentId)).find(
-      (candidate) => candidate.connectionAccountId === account.id && candidate.enabled,
-    );
-    return !!binding && isApiOAuthAccount(account, provider);
+    return isApiOAuthAccount(account, provider);
   }
   try {
     const connection = (await configStore.getAgent(ref.agentId)).apiConnections.find(
@@ -7015,8 +7026,9 @@ async function replaceReadyApiOAuthConnection(
   provider: ApiOAuthProvider,
   identity: { accountName?: string } | undefined,
 ): Promise<void> {
-  if (ref.connectionId.startsWith('connection_')) {
-    const account = await findConnectionAccount(configStore, ref.connectionId);
+  const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+  if (connectionAccountId) {
+    const account = await findConnectionAccount(configStore, connectionAccountId);
     if (!account || !isApiOAuthAccount(account, provider)) {
       throw new ApiOAuthError('connection_missing', 'OAuth connection no longer exists');
     }
@@ -7053,8 +7065,9 @@ async function replacePendingApiOAuthConnection(
   ref: ApiOAuthRef,
   provider: ApiOAuthProvider,
 ): Promise<void> {
-  if (ref.connectionId.startsWith('connection_')) {
-    const account = await findConnectionAccount(configStore, ref.connectionId);
+  const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+  if (connectionAccountId) {
+    const account = await findConnectionAccount(configStore, connectionAccountId);
     if (!account || !isApiOAuthAccount(account, provider)) {
       throw new ApiOAuthError('connection_missing', 'OAuth connection no longer exists');
     }

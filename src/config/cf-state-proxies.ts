@@ -1522,6 +1522,10 @@ export class CfSlackStateStore implements SlackStateStore {
     return unwrap(await this.stub.admitSlackTurn(input));
   }
 
+  async resumeTurnAfterOAuth(originalTaskId: string, continuationId: string) {
+    return unwrap(await this.stub.resumeTurnAfterOAuth(originalTaskId, continuationId));
+  }
+
   async pinAgentBinding(
     input: Parameters<SlackStateStore['pinAgentBinding']>[0],
     expected?: Parameters<SlackStateStore['pinAgentBinding']>[1],

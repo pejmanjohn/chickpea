@@ -522,6 +522,11 @@ export interface TagStateRpc {
    * invocation's fate. Idempotent by `job.id` (a duplicate enqueue is ignored).
    */
   enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>>;
+  /** Clone a completed authorization-link turn into one idempotent resume turn. */
+  resumeTurnAfterOAuth(
+    originalTaskId: string,
+    continuationId: string,
+  ): Promise<StateRpcResult<boolean>>;
   // -- status relay (Cloudflare cross-isolate activity narration) -----------
   /**
    * Forward safe activity observed inside the agent DO isolate to the status

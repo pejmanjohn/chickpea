@@ -1353,6 +1353,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return result;
   }
 
+  async resumeTurnAfterOAuth(
+    originalTaskId: string,
+    continuationId: string,
+  ): Promise<StateRpcResult<boolean>> {
+    const result = this.call((stores) =>
+      stores.turnJobs.resumeAfterOAuth(originalTaskId, continuationId)
+    );
+    if (result.ok && result.value && (await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
+    }
+    return result;
+  }
+
   /**
    * Cross-isolate activity narration (see src/slack/status-relay.ts): the agent
    * DO observes safe lifecycle/tool summaries and relays them here, where the alarm

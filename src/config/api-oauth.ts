@@ -34,6 +34,26 @@ export interface ApiOAuthRef {
   connectionId: string;
 }
 
+/**
+ * Reusable connection-account OAuth is keyed to the account, never to an
+ * Agent binding. The existing ref shape is retained for the provider state
+ * codec, with an explicit sentinel keeping account credentials reusable
+ * across every Agent that is allowed to use the account.
+ */
+export function connectionAccountOAuthRef(connectionAccountId: string): ApiOAuthRef {
+  if (!CONNECTION_ID_PATTERN.test(connectionAccountId) ||
+      !connectionAccountId.startsWith('connection_')) {
+    throw new ApiOAuthError('connection_missing', 'Connection account id is invalid');
+  }
+  return { agentId: connectionAccountId, connectionId: 'account' };
+}
+
+export function connectionAccountIdFromOAuthRef(ref: ApiOAuthRef): string | undefined {
+  return ref.connectionId === 'account' && ref.agentId.startsWith('connection_')
+    ? ref.agentId
+    : undefined;
+}
+
 export interface ApiOAuthDependencies {
   settings: SettingsStore;
   fetchFn?: typeof fetch;
@@ -127,6 +147,16 @@ export async function saveApiOAuthClient(
     clientSecret: requiredBounded(input.clientSecret, 2_048),
   };
   await settings.setSetting(apiOAuthSettingKeys(ref)[0], JSON.stringify(client));
+}
+
+/** Copy only the deployment-owned OAuth client, never personal tokens. */
+export async function copyApiOAuthClient(
+  source: ApiOAuthRef,
+  target: ApiOAuthRef,
+  settings: SettingsStore,
+): Promise<void> {
+  const client = await readClient(source, settings);
+  await saveApiOAuthClient(target, client, settings);
 }
 
 export async function describeApiOAuthSources(

@@ -2760,7 +2760,7 @@ test('connection-account OAuth resumes the exact Slack task once and updates the
     const app = appWithAdminOptions(store, {
       settings,
       startApiOAuth: async (input) => {
-        assert.deepEqual(input.ref, { agentId: 'agent_mail', connectionId: accountId });
+        assert.deepEqual(input.ref, { agentId: accountId, connectionId: 'account' });
         return {
           authorizationUrl: new URL('https://accounts.example.test/authorize?state=account-provider-state'),
           state: 'account-provider-state',
@@ -2769,7 +2769,7 @@ test('connection-account OAuth resumes the exact Slack task once and updates the
       completeApiOAuth: async ({ state }) => {
         assert.equal(state, 'account-provider-state');
         return {
-          ref: { agentId: 'agent_mail', connectionId: accountId },
+          ref: { agentId: accountId, connectionId: 'account' },
           provider: 'google',
           identity: { accountName: 'owner@acme.test' },
         };

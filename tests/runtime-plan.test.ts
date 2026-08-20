@@ -202,6 +202,62 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
   assert.equal(parseRuntimePlanV2(structuredClone(plan)).harnessRevision, plan.harnessRevision);
 });
 
+test('personal authorization choices freeze labels and lifecycle without credential policy', () => {
+  const plan = compile({
+    turn: turn({ actorMembershipId: 'membership_alice' }),
+    connectionAuthorizations: [{
+      providerId: 'google',
+      templateAccountId: 'connection_template',
+      policy: {
+        kind: 'api',
+        allowedHosts: ['gmail.googleapis.com'],
+        pathPrefixes: ['/gmail/v1/users/me'],
+        headerName: 'authorization',
+        headerValuePrefix: 'Bearer ',
+        allowedMethods: ['GET'],
+        authMode: 'oauth',
+        oauthProvider: 'google',
+        oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+      },
+      allowedCapabilities: ['GET'],
+      accounts: [{
+        id: 'connection_work',
+        label: 'Work',
+        purpose: 'Company mail',
+        lifecycle: 'needs_attention',
+      }],
+    }],
+    connectionChoices: [{
+      providerId: 'google',
+      choices: [
+        { label: 'Work', purpose: 'Company mail', scope: 'personal' },
+        { label: 'Personal', scope: 'personal' },
+      ],
+    }],
+  });
+
+  assert.deepEqual(plan.connectionAuthorizations, [{
+    providerId: 'google',
+    templateAccountId: 'connection_template',
+    accounts: [{
+      id: 'connection_work',
+      label: 'Work',
+      purpose: 'Company mail',
+      lifecycle: 'needs_attention',
+    }],
+  }]);
+  assert.deepEqual(plan.connectionChoices?.[0]?.choices.map(({ label }) => label), [
+    'Work',
+    'Personal',
+  ]);
+  const serialized = JSON.stringify({
+    authorizations: plan.connectionAuthorizations,
+    choices: plan.connectionChoices,
+  });
+  assert.doesNotMatch(serialized, /gmail\.googleapis|gmail\.readonly|secretRef|clientSecret|Bearer/i);
+  assert.equal(parseRuntimePlanV2(structuredClone(plan)).harnessRevision, plan.harnessRevision);
+});
+
 test('Slack identity rotates new plans while legacy plans remain readable', () => {
   const baseline = compile();
   const dedicated = compile({
