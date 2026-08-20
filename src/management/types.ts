@@ -120,15 +120,6 @@ export type ManagementOperation =
       expectedRevision: number;
     })
   | (ManagementOperationBase & {
-      kind: 'invite_member';
-      slackUserId: string;
-    })
-  | (ManagementOperationBase & {
-      kind: 'revoke_invitation';
-      invitationId: string;
-      expectedRevision: number;
-    })
-  | (ManagementOperationBase & {
       kind: 'create_memory_entry';
       owner: MemoryOwnerRef;
       entry: {
@@ -224,7 +215,7 @@ export type ManagementDisposition =
   | 'skipped';
 
 export interface ManagementObjectRef {
-  kind: 'agent' | 'channel' | 'membership' | 'provider' | 'invitation' | 'memory' | 'routine' | 'slack_identity';
+  kind: 'agent' | 'channel' | 'membership' | 'provider' | 'memory' | 'routine' | 'slack_identity';
   id: string;
   revision?: number;
 }
@@ -397,7 +388,6 @@ export interface ManagementWorkspaceSnapshot {
     affectedAgents: Array<{ id: string; name: string }>;
   }>;
   team?: {
-    soleOwnerWarning: boolean;
     members: Array<{
       id: string;
       userId: string;
@@ -406,16 +396,6 @@ export interface ManagementWorkspaceSnapshot {
       slackUserId: string | null;
       role: OrganizationRole;
       status: MembershipStatus;
-      revision: number;
-    }>;
-    invitations: Array<{
-      id: string;
-      slackTeamId: string;
-      slackUserId: string;
-      displayName: string | null;
-      role: OrganizationRole;
-      status: string;
-      expiresAt: number;
       revision: number;
     }>;
   };

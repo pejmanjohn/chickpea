@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
@@ -96,10 +95,6 @@ async function fixture() {
       providerSources.set(providerId, 'missing');
       return 'missing';
     },
-    resolveSlackInvitee: async (slackUserId) => ({
-      slackTeamId: owner.user.slackTeamId,
-      displayName: slackUserId === 'U22222222' ? 'New Admin' : null,
-    }),
   });
   return {
     identity,
@@ -360,70 +355,6 @@ test('stored provider removal names affected Agents and requires a fresh confirm
     });
     assert.equal(denied.outcomes[0]?.disposition, 'failed');
     assert.equal(denied.outcomes[0]?.code, 'invalid_request');
-  } finally {
-    f.close();
-  }
-});
-
-test('Owner invitation returns a 24-hour handoff, rotates on reissue, and revokes by confirmation', async () => {
-  const f = await fixture();
-  try {
-    const invited = await f.service.applyWorkspaceChanges({
-      context: context(f.owner),
-      idempotencyKey: 'invite_new_admin',
-      operations: [{ itemId: 'invite', kind: 'invite_member', slackUserId: 'U22222222' }],
-    });
-    assert.equal(invited.outcomes[0]?.disposition, 'applied');
-    const firstUrl = new URL(invited.outcomes[0]!.handoffUrl!);
-    const firstCapability = new URLSearchParams(firstUrl.hash.slice(1)).get('invite')!;
-    assert.equal(firstUrl.pathname, '/auth/slack/invite');
-    const firstInvitation = (await f.identity.listInvitations())
-      .find(({ slackUserId }) => slackUserId === 'U22222222')!;
-    assert.equal(firstInvitation.expiresAt, START + 24 * 60 * 60_000);
-    assert.equal(
-      (await f.management.getRequest(invited.operationId))?.result?.outcomes[0]?.handoffUrl,
-      undefined,
-    );
-    assert.equal(
-      (await f.identity.findInvitation(createHash('sha256').update(firstCapability).digest('hex')))?.id,
-      firstInvitation.id,
-    );
-
-    f.tick();
-    const reissued = await f.service.applyWorkspaceChanges({
-      context: context(f.owner),
-      idempotencyKey: 'reissue_new_admin',
-      operations: [{ itemId: 'invite', kind: 'invite_member', slackUserId: 'U22222222' }],
-    });
-    const secondUrl = new URL(reissued.outcomes[0]!.handoffUrl!);
-    const secondCapability = new URLSearchParams(secondUrl.hash.slice(1)).get('invite')!;
-    assert.notEqual(secondCapability, firstCapability);
-    assert.equal(
-      await f.identity.findInvitation(createHash('sha256').update(firstCapability).digest('hex')),
-      undefined,
-    );
-    const rotated = await f.identity.findInvitation(
-      createHash('sha256').update(secondCapability).digest('hex'),
-    );
-    const team = (await f.service.inspectWorkspace(context(f.owner))).team!;
-    const invitation = team.invitations.find(({ id }) => id === rotated!.id)!;
-    const proposed = await f.service.applyWorkspaceChanges({
-      context: context(f.owner),
-      idempotencyKey: 'revoke_new_admin',
-      operations: [{
-        itemId: 'revoke',
-        kind: 'revoke_invitation',
-        invitationId: invitation.id,
-        expectedRevision: invitation.revision,
-      }],
-    });
-    assert.equal(proposed.status, 'confirmation_required');
-    await f.service.confirmWorkspaceChange({
-      context: context(f.owner),
-      proposalId: proposed.outcomes[0]!.proposalId!,
-    });
-    assert.equal((await f.identity.listInvitations())
-      .find(({ id }) => id === invitation.id)?.status, 'revoked');
   } finally {
     f.close();
   }

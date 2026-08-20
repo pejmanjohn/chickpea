@@ -23,18 +23,12 @@ export function classifyManagementOperation(
   if (actor.role !== 'admin' && actor.role !== 'owner') {
     return { allowed: false, reason: 'operational_access_required' };
   }
-  if (operation.kind === 'update_member' || operation.kind === 'invite_member' ||
-      operation.kind === 'revoke_invitation') {
+  if (operation.kind === 'update_member') {
     if (actor.role !== 'owner') return { allowed: false, reason: 'owner_required' };
-    if (operation.kind === 'invite_member') {
-      return { allowed: true, posture: 'immediate', reason: 'member_invitation' };
-    }
     return {
       allowed: true,
       posture: 'confirmation',
-      reason: operation.kind === 'revoke_invitation'
-        ? 'invitation_revocation'
-        : 'membership_authority_change',
+      reason: 'membership_authority_change',
     };
   }
   if (operation.kind === 'remove_provider_credential') {

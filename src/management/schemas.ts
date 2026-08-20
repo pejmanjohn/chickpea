@@ -7,8 +7,6 @@ export const MANAGEMENT_OPERATION_KINDS = [
   'delete_agent',
   'update_member',
   'remove_provider_credential',
-  'invite_member',
-  'revoke_invitation',
   'create_memory_entry',
   'update_memory_entry',
   'forget_memory_entry',
@@ -167,17 +165,6 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({
     ...zOperationBase,
-    kind: z.literal('invite_member'),
-    slackUserId: z.string().regex(/^[A-Z][A-Z0-9]{1,63}$/),
-  }),
-  z.strictObject({
-    ...zOperationBase,
-    kind: z.literal('revoke_invitation'),
-    invitationId: zId,
-    expectedRevision: zRevision,
-  }),
-  z.strictObject({
-    ...zOperationBase,
     kind: z.literal('create_memory_entry'),
     owner: zMemoryOwner,
     entry: z.strictObject({
@@ -259,9 +246,6 @@ export const revokeSetupLinkZodSchema = z.strictObject({
 export const inspectWorkspaceZodSchema = z.strictObject({});
 export const discoverSlackChannelsZodSchema = z.strictObject({
   refresh: z.boolean().optional(),
-});
-export const inspectSlackMemberDirectoryZodSchema = z.strictObject({
-  cursor: z.string().max(512).optional(),
 });
 export const testMcpConnectionZodSchema = z.strictObject({
   agentId: zId,
@@ -425,17 +409,6 @@ export const managementOperationValibotSchema = v.variant('kind', [
   }),
   v.strictObject({
     ...vOperationBase,
-    kind: v.literal('invite_member'),
-    slackUserId: v.pipe(v.string(), v.regex(/^[A-Z][A-Z0-9]{1,63}$/)),
-  }),
-  v.strictObject({
-    ...vOperationBase,
-    kind: v.literal('revoke_invitation'),
-    invitationId: vid,
-    expectedRevision: vr,
-  }),
-  v.strictObject({
-    ...vOperationBase,
     kind: v.literal('create_memory_entry'),
     owner: vMemoryOwner,
     entry: v.strictObject({
@@ -517,9 +490,6 @@ export const revokeSetupLinkValibotSchema = v.strictObject({
 export const inspectWorkspaceValibotSchema = v.strictObject({});
 export const discoverSlackChannelsValibotSchema = v.strictObject({
   refresh: v.optional(v.boolean()),
-});
-export const inspectSlackMemberDirectoryValibotSchema = v.strictObject({
-  cursor: v.optional(v.pipe(v.string(), v.maxLength(512))),
 });
 export const testMcpConnectionValibotSchema = v.strictObject({
   agentId: vid,

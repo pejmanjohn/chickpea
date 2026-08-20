@@ -194,13 +194,6 @@ test('Slack and MCP expose the same sanitized discovery and connection-test prim
         truncated: false,
         refresh,
       }),
-      discoverSlackMembers: async (cursor) => ({
-        members: [{
-          slackUserId: 'U22222222', displayName: 'Ada', realName: 'Ada Lovelace',
-          handle: 'ada', avatarUrl: null,
-        }],
-        nextCursor: cursor ? null : 'next',
-      }),
       testMcpConnection: async (agentId, connectionId) => ({
         ok: true,
         agentId,
@@ -224,7 +217,6 @@ test('Slack and MCP expose the same sanitized discovery and connection-test prim
     };
     for (const [name, args] of [
       ['discover_slack_channels', { refresh: true }],
-      ['inspect_slack_member_directory', {}],
       ['test_mcp_connection', { agentId: 'agent_1', connectionId: 'search' }],
     ] as const) {
       const slackResult = await invokeSlackWorkspaceManagementTool({
@@ -284,6 +276,13 @@ test('MCP Zod and Flue Valibot schemas accept the same canonical operation inven
     },
   ];
   for (const operation of retiredOperations) {
+    assert.equal(managementOperationZodSchema.safeParse(operation).success, false, operation.kind);
+    assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, false, operation.kind);
+  }
+  for (const operation of [
+    { itemId: 'invite', kind: 'invite_member', slackUserId: 'U22222222' },
+    { itemId: 'revoke', kind: 'revoke_invitation', invitationId: 'invitation_1', expectedRevision: 1 },
+  ]) {
     assert.equal(managementOperationZodSchema.safeParse(operation).success, false, operation.kind);
     assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, false, operation.kind);
   }

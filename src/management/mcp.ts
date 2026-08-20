@@ -10,7 +10,6 @@ import {
   getOperationZodSchema,
   inspectWorkspaceZodSchema,
   discoverSlackChannelsZodSchema,
-  inspectSlackMemberDirectoryZodSchema,
   testMcpConnectionZodSchema,
   inspectMemoryZodSchema,
   inspectRoutinesZodSchema,
@@ -80,17 +79,6 @@ export function createWorkspaceManagementMcpServer(
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'discover_slack_channels',
-    args,
-  )));
-
-  server.registerTool('inspect_slack_member_directory', {
-    title: 'Inspect eligible Slack members',
-    description: workspaceManagementToolDescription('inspect_slack_member_directory'),
-    inputSchema: inspectSlackMemberDirectoryZodSchema,
-    annotations: { readOnlyHint: true },
-  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
-    adapter,
-    'inspect_slack_member_directory',
     args,
   )));
 

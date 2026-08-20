@@ -8,7 +8,7 @@ The deployment publishes an OAuth-protected MCP at `https://<chickpea-origin>/mc
 
 The compact tool surface is:
 
-- `inspect_workspace`, `inspect_memory`, and `inspect_routines`
+- `inspect_workspace`, `discover_slack_channels`, `test_mcp_connection`, `inspect_memory`, and `inspect_routines`
 - `export_workspace_recipe` and `preview_workspace_recipe`
 - `apply_workspace_changes`
 - `confirm_workspace_change` and `undo_workspace_change`
@@ -38,7 +38,7 @@ Slack workspace roles are not Chickpea roles. Every call re-resolves the live Ch
 Safe creation and ordinary reversible edits apply immediately. Chickpea returns a bound proposal before:
 
 - deleting an Agent, routine, or durable memory entry;
-- changing member authority or revoking an invitation;
+- changing member authority;
 - removing or replacing credentials;
 - expanding capability scope;
 - disabling an Agent that is published to a Channel; or
@@ -96,7 +96,7 @@ The receipt may include the target, scopes, initiator, operation ID, and a provi
 
 Agent memory uses the Agent owner scope and expected version. Inspection returns active entry bodies only to an authorized operator; forgetting is irreversible and confirmation-gated. Channels do not own instructions or memory. Routine inspection preserves content authority, and routine save/control/delete use the existing schedule and version contracts.
 
-Only Owners can inspect team authority, invite an exact Slack member, revoke an invitation, or change membership role/status. Member invitation handoffs expire after 24 hours and rotate when reissued. Provider inspection returns availability and affected Agents, never a key or environment-secret value. Deployment-provided credentials are visibly read-only.
+Eligible full Slack members are provisioned automatically the first time they interact with an Agent. Guests and Slack Connect users are not provisioned. Only Owners can inspect team authority or change an existing membership's role/status. Provider inspection returns availability and affected Agents, never a key or environment-secret value. Deployment-provided credentials are visibly read-only.
 
 ## Portable recipes
 

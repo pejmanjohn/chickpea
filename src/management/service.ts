@@ -21,7 +21,7 @@ import {
   type SlackIdentity,
 } from '../config/types.ts';
 import type { SlackIdentityAuditEventType } from '../audit/types.ts';
-import type { IdentityStore, Invitation, Membership } from '../identity/types.ts';
+import type { IdentityStore, Membership } from '../identity/types.ts';
 import { ownerMemoryStoreId } from '../memory/ids.ts';
 import type {
   MemoryOwnerRef,
@@ -79,7 +79,6 @@ import {
 
 const PROPOSAL_TTL_MS = 15 * 60_000;
 const SETUP_TTL_MS = 24 * 60 * 60_000;
-const INVITATION_TTL_MS = 24 * 60 * 60_000;
 const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
 type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];
 type ManagedProviderSource = 'env' | 'stored' | 'missing';
@@ -92,12 +91,8 @@ export interface WorkspaceManagementServiceInput {
     | 'updateMembershipAuthority'
     | 'listMemberships'
     | 'listExternalIdentities'
-    | 'listInvitations'
     | 'getUser'
     | 'getOrganization'
-    | 'createInvitation'
-    | 'resendInvitation'
-    | 'revokeInvitation'
   >;
   config: Pick<
     ConfigStore,
@@ -151,12 +146,7 @@ export interface WorkspaceManagementServiceInput {
     patch: ConfigAgentPatch,
   ) => Promise<void>;
   discoverSlackChannels?: (refresh: boolean) => Promise<unknown>;
-  discoverSlackMembers?: (cursor?: string) => Promise<unknown>;
   testMcpConnection?: (agentId: string, connectionId: string) => Promise<unknown>;
-  resolveSlackInvitee?: (slackUserId: string) => Promise<{
-    slackTeamId: string;
-    displayName: string | null;
-  }>;
   countPendingSlackIdentityDeliveries?: (identityId: string) => Promise<number>;
   clearSlackIdentityCredentials?: (identityId: string) => Promise<void>;
   cancelSlackIdentitySetup?: (
@@ -207,20 +197,6 @@ export class WorkspaceManagementService {
       throw new ManagementError('invalid_request', 'Slack Channel discovery is unavailable.');
     }
     return this.stores.discoverSlackChannels(refresh);
-  }
-
-  async inspectSlackMemberDirectory(
-    context: ApplyWorkspaceChangesInput['context'],
-    cursor?: string,
-  ): Promise<unknown> {
-    const actor = await this.requireLiveActor(context);
-    if (actor.role !== 'owner') {
-      throw new ManagementError('forbidden', 'Only Owners can inspect eligible Slack members.');
-    }
-    if (!this.stores.discoverSlackMembers) {
-      throw new ManagementError('invalid_request', 'Slack member discovery is unavailable.');
-    }
-    return this.stores.discoverSlackMembers(cursor);
   }
 
   async testMcpConnection(
@@ -1041,10 +1017,9 @@ export class WorkspaceManagementService {
   private async teamSnapshot(
     organizationId: string,
   ): Promise<NonNullable<ManagementWorkspaceSnapshot['team']>> {
-    const [memberships, bindings, invitations] = await Promise.all([
+    const [memberships, bindings] = await Promise.all([
       this.stores.identity.listMemberships(),
       this.stores.identity.listExternalIdentities(),
-      this.stores.identity.listInvitations(),
     ]);
     const scopedMemberships = memberships.filter((membership) =>
       membership.organizationId === organizationId);
@@ -1054,10 +1029,7 @@ export class WorkspaceManagementService {
     const bindingsByMembership = new Map(bindings
       .filter((binding) => binding.organizationId === organizationId)
       .map((binding) => [binding.membershipId, binding]));
-    const activeOwners = scopedMemberships.filter((membership) =>
-      membership.role === 'owner' && membership.status === 'active').length;
     return {
-      soleOwnerWarning: activeOwners === 1,
       members: scopedMemberships.map((membership) => {
         const binding = bindingsByMembership.get(membership.id);
         return {
@@ -1071,18 +1043,6 @@ export class WorkspaceManagementService {
           revision: membershipRevision(membership),
         };
       }),
-      invitations: invitations
-        .filter((invitation) => invitation.organizationId === organizationId && invitation.status === 'pending')
-        .map((invitation) => ({
-          id: invitation.id,
-          slackTeamId: invitation.slackTeamId,
-          slackUserId: invitation.slackUserId,
-          displayName: invitation.displayName,
-          role: invitation.role,
-          status: invitation.status,
-          expiresAt: invitation.expiresAt,
-          revision: invitationRevision(invitation),
-        })),
     };
   }
 
@@ -1218,17 +1178,6 @@ export class WorkspaceManagementService {
     clientRefs: Map<string, string>,
   ) {
     if (operation.kind === 'update_member') return { actor, operation };
-    if (operation.kind === 'invite_member') return { actor, operation };
-    if (operation.kind === 'revoke_invitation') {
-      const invitation = (await this.stores.identity.listInvitations())
-        .find(({ id }) => id === operation.invitationId);
-      if (!invitation || invitation.organizationId !== actor.organizationId ||
-          invitation.status !== 'pending' ||
-          invitationRevision(invitation) !== operation.expectedRevision) {
-        throw new ManagementError('invalid_request', 'The invitation is unavailable.');
-      }
-      return { actor, operation };
-    }
     if (operation.kind === 'create_memory_entry') {
       await this.requireMemoryOwner(actor, operation.owner, true);
       return { actor, operation };
@@ -1358,71 +1307,6 @@ export class WorkspaceManagementService {
     return `${reason}:remove_provider_credential:provider:${providerId}:affected=${
       affected.length ? affected.join(', ') : 'none'
     }`;
-  }
-
-  private async issueMemberInvitation(
-    actor: LiveManagementActor,
-    slackUserId: string,
-  ): Promise<ImmediateMutation> {
-    if (!this.stores.resolveSlackInvitee) {
-      throw new ManagementError('invalid_request', 'Slack member invitation is unavailable.');
-    }
-    const [organization, invitee, bindings, memberships, invitations] = await Promise.all([
-      this.stores.identity.getOrganization(),
-      this.stores.resolveSlackInvitee(slackUserId),
-      this.stores.identity.listExternalIdentities(),
-      this.stores.identity.listMemberships(),
-      this.stores.identity.listInvitations(),
-    ]);
-    if (!organization || organization.id !== actor.organizationId || !organization.slackTeamId ||
-        invitee.slackTeamId !== organization.slackTeamId) {
-      throw new ManagementError('invalid_request', 'The Slack member is unavailable.');
-    }
-    const statusByMembership = new Map(memberships.map((membership) =>
-      [membership.id, membership.status]));
-    const alreadyBound = bindings.some((binding) =>
-      binding.organizationId === actor.organizationId &&
-      binding.slackTeamId === organization.slackTeamId &&
-      binding.slackUserId === slackUserId &&
-      statusByMembership.get(binding.membershipId) !== 'removed');
-    if (alreadyBound) {
-      throw new ManagementError('invalid_request', 'The Slack member already belongs to Chickpea.');
-    }
-    const rawCapability = this.randomCapability();
-    if (!/^[A-Za-z0-9_-]{43}$/.test(rawCapability)) {
-      throw new ManagementError('invalid_request', 'Invitation capability generation failed.');
-    }
-    const at = this.now();
-    const existing = invitations.find((invitation) =>
-      invitation.organizationId === actor.organizationId &&
-      invitation.slackTeamId === organization.slackTeamId &&
-      invitation.slackUserId === slackUserId &&
-      invitation.status === 'pending');
-    const invitation = existing
-      ? await this.stores.identity.resendInvitation({
-          invitationId: existing.id,
-          locatorHash: invitationDigest(rawCapability),
-          expiresAt: at + INVITATION_TTL_MS,
-        })
-      : await this.stores.identity.createInvitation({
-          organizationId: actor.organizationId,
-          slackTeamId: organization.slackTeamId,
-          slackUserId,
-          displayName: invitee.displayName,
-          role: 'admin',
-          locatorHash: invitationDigest(rawCapability),
-          inviterMembershipId: actor.membershipId,
-          expiresAt: at + INVITATION_TTL_MS,
-        });
-    const baseUrl = await this.resolveSetupBaseUrl();
-    const url = new URL('/auth/slack/invite', baseUrl);
-    url.hash = `invite=${encodeURIComponent(rawCapability)}`;
-    const revision = invitationRevision(invitation);
-    return {
-      changed: [{ kind: 'invitation', id: invitation.id, revision }],
-      resultingRevisions: { [`invitation:${invitation.id}`]: revision },
-      handoffUrl: url.href,
-    };
   }
 
   private async executeMemoryMutation(
@@ -1832,8 +1716,6 @@ export class WorkspaceManagementService {
         );
         return mutationForSlackIdentity(identity, prepared.inverse);
       }
-      case 'invite_member':
-        return this.issueMemberInvitation(actor, operation.slackUserId);
       case 'create_memory_entry':
       case 'update_memory_entry':
         return this.executeMemoryMutation(actor, mutationId, operation);
@@ -2001,19 +1883,6 @@ export class WorkspaceManagementService {
         operation.expectedRevision,
       ));
     }
-    if (operation.kind === 'revoke_invitation') {
-      const current = (await this.stores.identity.listInvitations())
-        .find(({ id }) => id === operation.invitationId);
-      if (!current || current.organizationId !== actor.organizationId || current.status !== 'pending') {
-        throw new ManagementError('proposal_stale', 'The invitation changed.');
-      }
-      const invitation = await this.stores.identity.revokeInvitation(operation.invitationId);
-      const revision = invitationRevision(invitation);
-      return {
-        changed: [{ kind: 'invitation', id: invitation.id, revision }],
-        resultingRevisions: { [`invitation:${invitation.id}`]: revision },
-      };
-    }
     if (operation.kind === 'forget_memory_entry') {
       await this.requireMemoryEntry(actor, operation.owner, operation.entryId, true);
       try {
@@ -2105,7 +1974,6 @@ export class WorkspaceManagementService {
 
   private async targetRevisions(operation: ManagementOperation): Promise<Record<string, number>> {
     if (operation.kind === 'create_agent' || operation.kind === 'create_slack_identity') return {};
-    if (operation.kind === 'invite_member') return {};
     if (operation.kind === 'create_memory_entry') return {};
     if (operation.kind === 'update_memory_entry' || operation.kind === 'forget_memory_entry') {
       const entry = await this.stores.memory?.getOwnerEntry(operation.entryId);
@@ -2117,15 +1985,6 @@ export class WorkspaceManagementService {
       const routineId = operation.routineId!;
       const routine = await this.stores.routines?.getRoutine(routineId);
       return { [`routine:${routineId}`]: routine?.version ?? 0 };
-    }
-    if (operation.kind === 'revoke_invitation') {
-      const invitation = (await this.stores.identity.listInvitations())
-        .find(({ id }) => id === operation.invitationId);
-      return {
-        [`invitation:${operation.invitationId}`]: invitation
-          ? invitationRevision(invitation)
-          : 0,
-      };
     }
     if (operation.kind === 'remove_provider_credential') {
       return { [`provider:${operation.providerId}`]: await this.providerRevision(operation.providerId) };
@@ -2216,12 +2075,6 @@ export class WorkspaceManagementService {
         key.slice('slack_identity:'.length),
       ))?.connectionRevision ?? 0;
     }
-    if (key.startsWith('invitation:')) {
-      const invitationId = key.slice('invitation:'.length);
-      const invitation = (await this.stores.identity.listInvitations())
-        .find(({ id }) => id === invitationId);
-      return invitation ? invitationRevision(invitation) : 0;
-    }
     if (key.startsWith('memory:')) {
       return (await this.stores.memory?.getOwnerEntry(key.slice('memory:'.length)))?.version ?? 0;
     }
@@ -2293,16 +2146,6 @@ export class WorkspaceManagementService {
           kind: 'slack_identity',
           id: identity.id,
           revision: identity.connectionRevision,
-        }];
-      }
-    } else if (operation.kind === 'revoke_invitation') {
-      const invitation = (await this.stores.identity.listInvitations())
-        .find(({ id }) => id === operation.invitationId);
-      if (invitation?.status === 'revoked') {
-        changed = [{
-          kind: 'invitation',
-          id: invitation.id,
-          revision: invitationRevision(invitation),
         }];
       }
     } else if (operation.kind === 'forget_memory_entry') {
@@ -2561,10 +2404,6 @@ function proposalSummary(operation: ManagementOperation, reason: string): string
         operation.kind === 'retire_slack_identity' ||
         operation.kind === 'cancel_slack_identity_setup'
       ? operation.identityId
-    : operation.kind === 'invite_member'
-      ? `slack:${operation.slackUserId}`
-    : operation.kind === 'revoke_invitation'
-      ? `invitation:${operation.invitationId}`
     : operation.kind === 'create_memory_entry'
       ? `memory-owner:${operation.owner.ownerKind}:${operation.owner.ownerId}`
     : operation.kind === 'update_memory_entry' || operation.kind === 'forget_memory_entry'
@@ -2602,19 +2441,6 @@ function providerRevision(source: ManagedProviderSource): number {
   if (source === 'stored') return 1;
   if (source === 'env') return 2;
   return 0;
-}
-
-function invitationRevision(invitation: Invitation): number {
-  let hash = 2_166_136_261;
-  for (const character of `${invitation.id}:${invitation.status}:${invitation.expiresAt}:${invitation.updatedAt}`) {
-    hash ^= character.charCodeAt(0);
-    hash = Math.imul(hash, 16_777_619);
-  }
-  return hash >>> 0;
-}
-
-function invitationDigest(capability: string): string {
-  return createHash('sha256').update(capability).digest('hex');
 }
 
 function memoryMutation(entry: OwnerMemoryEntry): ImmediateMutation {

@@ -36,10 +36,10 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
   ]),
   operation: new Set([
     'create_agent', 'update_agent', 'delete_agent', 'put_channel', 'place_agent',
-    'update_member', 'remove_provider_credential', 'invite_member',
+    'update_member', 'remove_provider_credential',
     'create_slack_identity', 'set_slack_identity_dms', 'retire_slack_identity',
     'cancel_slack_identity_setup',
-    'revoke_invitation', 'create_memory_entry', 'update_memory_entry',
+    'create_memory_entry', 'update_memory_entry',
     'forget_memory_entry', 'save_routine', 'control_routine', 'delete_routine',
     'request_setup',
   ]),

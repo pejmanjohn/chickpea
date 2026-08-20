@@ -33,6 +33,7 @@ test('public MCP exposes the compact workspace contract and applies an initial A
       (tools.result as { tools: Array<{ name: string }> }).tools.map(({ name }) => name),
       WORKSPACE_MANAGEMENT_TOOL_NAMES,
     );
+    assert.doesNotMatch(JSON.stringify(tools.result), /inspect_slack_member_directory/);
     const resources = await mcpCall(handler.fetch, 'resources/list', {});
     assert.deepEqual(
       (resources.result as { resources: Array<{ uri: string }> }).resources.map(({ uri }) => uri),
@@ -45,6 +46,7 @@ test('public MCP exposes the compact workspace contract and applies an initial A
       contents: Array<{ text: string }>;
     }).contents[0]!.text;
     assert.deepEqual(JSON.parse(schemaText).operationKinds, MANAGEMENT_OPERATION_KINDS);
+    assert.doesNotMatch(schemaText, /invite_member|revoke_invitation/);
 
     const workspaceId = f.owner.user.slackTeamId;
     const applied = await mcpCall(handler.fetch, 'tools/call', {

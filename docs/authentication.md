@@ -1,6 +1,6 @@
 # Authentication and authorization
 
-Chickpea has one human identity path: Slack OpenID Connect. Better Auth stores the provider account and opaque browser session. Chickpea owns the workspace binding, members, roles, invitations, authorization overlays, setup and recovery capabilities, and audit history.
+Chickpea has one human identity path: Slack OpenID Connect. Better Auth stores the provider account and opaque browser session. Chickpea owns the workspace binding, members, roles, authorization overlays, setup and recovery capabilities, and audit history.
 
 ## First Owner
 
@@ -16,15 +16,15 @@ The installer then completes Sign in with Slack. Chickpea compares the exact Ope
 
 `/auth/slack/sign-in` starts a confidential Slack OIDC flow using `openid profile`, a browser-bound hashed state, a nonce, and the exact installed workspace. The callback exchanges the code with `client_secret_post`, validates issuer, audience, nonce, token type, team, and user, then creates the Better Auth provider account/session only after Chickpea admission succeeds.
 
-A valid Slack identity is not sufficient by itself. Each Admin request re-resolves the canonical `(team_id, user_id)` binding and requires an active Chickpea membership. Suspended, removed, mismatched-workspace, and uninvited people receive a uniform denial and no session authority.
+A valid Slack identity is not sufficient by itself. Each Admin request re-resolves the canonical `(team_id, user_id)` binding and requires an active Chickpea membership. Full members of the installed Slack workspace are provisioned the first time they interact with an Agent; they can then use Slack OIDC to sign in. Suspended, removed, mismatched-workspace, not-yet-provisioned, guest, and Slack Connect identities receive a uniform denial and no session authority.
 
-## Invitations and roles
+## Membership and roles
 
-Control-plane access is invitation-only after bootstrap. An Owner creates a seven-day invitation for an exact Slack `team_id` and `user_id`; the capability is shared privately and stored only as a digest. Redemption requires a fresh OIDC proof for that same tuple. Reissue invalidates the prior link, and expiry, revocation, mismatch, and replay fail closed.
+After bootstrap, eligible full Slack members become ordinary Chickpea members on their first Agent interaction. Provisioning binds the exact Slack `team_id` and `user_id`; it never infers identity from a display name or email address. Guests, Slack Connect users, bots, app users, and deactivated Slack accounts remain conversational-only and are not provisioned.
 
 Chickpea roles are `owner`, `admin`, and `member`. Slack workspace roles do not grant Chickpea permissions. The last active Owner cannot be demoted, suspended, or removed. Session and personal-token authority is revoked when membership authority changes.
 
-Members of assigned Slack channels may interact with Agents without control-plane membership. Chickpea membership governs Admin, Slack management tools, and MCP administration—not ordinary channel conversation. Owners can manage members and operational configuration; Admins can manage operational configuration; members have neither management authority.
+Slack participants may interact with Agents without management authority. Chickpea membership governs Admin, Slack management tools, and MCP administration—not ordinary channel conversation. Owners can manage existing members and operational configuration; Admins can manage operational configuration; members have neither management authority.
 
 ## Coding-agent MCP authorization
 

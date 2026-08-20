@@ -12,7 +12,6 @@ import { emitManagementMetric } from './telemetry.ts';
 export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'inspect_workspace',
   'discover_slack_channels',
-  'inspect_slack_member_directory',
   'test_mcp_connection',
   'inspect_memory',
   'inspect_routines',
@@ -30,7 +29,6 @@ export type WorkspaceManagementToolName = typeof WORKSPACE_MANAGEMENT_TOOL_NAMES
 const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority.',
   discover_slack_channels: 'Discover Channels in the connected Slack workspace before publishing a Chickpea Agent.',
-  inspect_slack_member_directory: 'Owner-only lookup of eligible Slack teammates who can be invited to Chickpea.',
   test_mcp_connection: 'Test one saved Agent MCP connection with its write-only credentials and return a sanitized result plus discovered tools.',
   inspect_memory: 'Inspect one Agent memory and its versioned entries.',
   inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, or routine.',
@@ -50,7 +48,6 @@ export function workspaceManagementToolDescription(name: WorkspaceManagementTool
 export type WorkspaceManagementToolArguments = {
   inspect_workspace: Record<never, never>;
   discover_slack_channels: { refresh?: boolean | undefined };
-  inspect_slack_member_directory: { cursor?: string | undefined };
   test_mcp_connection: { agentId: string; connectionId: string };
   inspect_memory: MemoryOwnerRef & { ownerKind: 'agent' };
   inspect_routines: ManagementRoutineInspectionInput;
@@ -116,10 +113,6 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
       case 'discover_slack_channels': {
         const value = args as WorkspaceManagementToolArguments['discover_slack_channels'];
         return service.discoverSlackChannels(context, value.refresh ?? false);
-      }
-      case 'inspect_slack_member_directory': {
-        const value = args as WorkspaceManagementToolArguments['inspect_slack_member_directory'];
-        return service.inspectSlackMemberDirectory(context, value.cursor);
       }
       case 'test_mcp_connection': {
         const value = args as WorkspaceManagementToolArguments['test_mcp_connection'];

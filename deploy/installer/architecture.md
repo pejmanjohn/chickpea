@@ -6,7 +6,7 @@ Chickpea's OSS installer provisions a fresh Worker, `TAG_STATE`, and one exact `
 | --- | --- |
 | Human identity | Slack OpenID Connect through the selected Slack app; the exact Slack team/user tuple remains canonical |
 | Browser session/provider account | Better Auth in the deployment's `AUTH_DB` |
-| Workspace, members, roles, invitations | Chickpea's Slack-tuple identity state in `TAG_STATE` |
+| Workspace, members, roles | Chickpea's Slack-tuple identity state in `TAG_STATE` |
 | Slack app/bot credentials | Shared lane: private Chickpea gateway. Customer-owned lane: versioned AES-GCM envelopes in `TAG_STATE` with an independent deployment keyring |
 | Shared-app binding | Deployment-owned P-256 key and one tenant-bound gateway claim; no Slack token or app configuration token enters the deployment |
 | Setup | Hashed, expiring, single-deployment capability and resumable state machine |
@@ -22,7 +22,7 @@ Chickpea's OSS installer provisions a fresh Worker, `TAG_STATE`, and one exact `
 4. Slack applies its own workspace app-management policy. Chickpea accepts any installer Slack permits and does not duplicate Slack Owner/Admin rules.
 5. The selected transport validates the exact app, team, bot identity, and grants. In the shared lane the gateway retains Slack credentials and exposes only the versioned operation allowlist; in the customer-owned lane the deployment atomically promotes its encrypted credential revision.
 6. The installer completes confidential Slack OIDC. The shared gateway exchanges and verifies provider tokens and returns only a bounded identity proof; the direct lane performs that verification locally. Exact `team_id` equality is required, and the installer's `user_id` becomes the first Chickpea Owner.
-7. Later control-plane members require an exact Slack tuple invitation. Ordinary Channel members can still use assigned Agents without Admin membership.
+7. Later full Slack members are provisioned automatically the first time they interact with an Agent. They start as ordinary Chickpea members; an Owner can change an existing member's role or access from Team.
 
 Product code consumes a normalized principal plus Chickpea permissions. It does not consume raw Better Auth cookies, Slack tokens, D1 rows, or Slack workspace role labels.
 

@@ -25,9 +25,7 @@ import {
   clearManagedSlackIdentityCredentials,
   countManagedSlackIdentityDeliveries,
 } from './slack-identity-lifecycle.ts';
-import { resolveEligibleSlackInvitee } from './slack-directory.ts';
 import {
-  discoverEligibleSlackMembers,
   discoverManagedSlackChannels,
   testManagedMcpConnection,
 } from './discovery.ts';
@@ -75,7 +73,6 @@ export function createLiveWorkspaceManagementService(
       ...(env ? { env } : {}),
     }),
     discoverSlackChannels: (refresh) => discoverManagedSlackChannels(refresh, env, identity),
-    discoverSlackMembers: (cursor) => discoverEligibleSlackMembers(cursor, env, identity),
     testMcpConnection: (agentId, connectionId) => testManagedMcpConnection({
       agentId,
       connectionId,
@@ -83,8 +80,6 @@ export function createLiveWorkspaceManagementService(
       config,
       settings,
     }),
-    resolveSlackInvitee: (slackUserId) =>
-      resolveEligibleSlackInvitee(slackUserId, env, identity),
     countPendingSlackIdentityDeliveries: (identityId) =>
       countManagedSlackIdentityDeliveries(identityId, env),
     clearSlackIdentityCredentials: (identityId) =>
