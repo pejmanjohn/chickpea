@@ -61,6 +61,7 @@ import type {
   AdmitSlackOidcAttemptInput,
   BeginSlackAppCreationInput,
   BeginSlackCredentialRotationInput,
+  BindSlackMemberBrowserIdentityInput,
   AuthOperationKind,
   ClaimOwnerInput,
   ConsumeAuthOperationInput,
@@ -97,6 +98,7 @@ import type {
   RecordSlackEventsProofInput,
   RecordSlackRecoveryCandidateInput,
   PromoteSlackBotInstallationInput,
+  ProvisionSlackMemberInput,
   FailSlackBotInstallationInput,
   SettleSlackOAuthAttemptInput,
   SettleSlackOidcAttemptInput,
@@ -754,6 +756,18 @@ export class CfIdentityStore implements IdentityStore {
   async activateInvitation(input: ActivateInvitationInput) {
     const response = await this.execute({ kind: 'activate_invitation', input });
     if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
+    return response.resolution;
+  }
+  async provisionSlackMember(input: ProvisionSlackMemberInput) {
+    const response = await this.execute({ kind: 'provision_slack_member', input });
+    if (response.kind !== 'slack_member_provisioning') throw unexpectedIdentityResponse();
+    return response.result;
+  }
+  async bindSlackMemberBrowserIdentity(input: BindSlackMemberBrowserIdentityInput) {
+    const response = await this.execute({ kind: 'bind_slack_member_browser_identity', input });
+    if (response.kind !== 'identity_resolution' || !response.resolution) {
+      throw unexpectedIdentityResponse();
+    }
     return response.resolution;
   }
   async resolveSlackIdentity(slackTeamId: string, slackUserId: string, organizationId?: string) {

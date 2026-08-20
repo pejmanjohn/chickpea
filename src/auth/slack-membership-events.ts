@@ -53,6 +53,8 @@ export async function applySlackUserChange(
     credentialRevision: active.revision,
   });
   if (!result.changed) return { outcome: 'duplicate' };
-  await input.betterAuth?.deleteSessionsForUser(binding.binding.betterAuthUserId);
+  if (binding.binding.betterAuthUserId) {
+    await input.betterAuth?.deleteSessionsForUser(binding.binding.betterAuthUserId);
+  }
   return { outcome: 'suspended' };
 }

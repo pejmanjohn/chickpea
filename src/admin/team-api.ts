@@ -31,7 +31,7 @@ const opaqueId = v.pipe(v.string(), v.regex(/^[A-Za-z0-9_-]{1,200}$/));
 const inviteSchema = v.strictObject({ slackUserId: slackIdSchema });
 const membershipPatchSchema = v.pipe(
   v.strictObject({
-    role: v.optional(v.picklist(['owner', 'admin'])),
+    role: v.optional(v.picklist(['owner', 'admin', 'member'])),
     status: v.optional(v.picklist(['active', 'suspended', 'removed'])),
   }),
   v.check((body) => body.role !== undefined || body.status !== undefined),
@@ -318,7 +318,9 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
         const membership = await identity.getMembership(membershipId);
         if (!membership) return c.json({ error: 'membership_unavailable' }, 404);
         if (membership.role !== target.role || membership.status !== target.status) {
-          await options.revokeBetterAuthSessions?.(c, binding.betterAuthUserId);
+          if (binding.betterAuthUserId) {
+            await options.revokeBetterAuthSessions?.(c, binding.betterAuthUserId);
+          }
         }
         return c.json({ membership });
       }
@@ -339,7 +341,9 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
         slackTeamId: binding.slackTeamId,
         slackUserId: binding.slackUserId,
       });
-      if (result.changed) await options.revokeBetterAuthSessions?.(c, binding.betterAuthUserId);
+      if (result.changed && binding.betterAuthUserId) {
+        await options.revokeBetterAuthSessions?.(c, binding.betterAuthUserId);
+      }
       return c.json({ membership: result.membership });
     } catch (error) {
       return teamError(c, error);

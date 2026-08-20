@@ -19,7 +19,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
   const f = await createManagementAdapterFixture('client-matrix');
   try {
     const principal: McpAuthenticatedPrincipal = {
-      betterAuthUserId: f.admin.binding.betterAuthUserId,
+      betterAuthUserId: f.admin.binding.betterAuthUserId!,
       userId: f.admin.user.id,
       membershipId: f.admin.membership.id,
       organizationId: f.admin.membership.organizationId,

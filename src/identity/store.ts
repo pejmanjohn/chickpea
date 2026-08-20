@@ -20,6 +20,7 @@ import type {
   AuthRateLimitState,
   BeginSlackAppCreationInput,
   BeginSlackCredentialRotationInput,
+  BindSlackMemberBrowserIdentityInput,
   BrowserSessionRecord,
   ClaimOwnerInput,
   ConsumeAuthOperationInput,
@@ -69,11 +70,13 @@ import type {
   RecordSlackEventsProofInput,
   RecordSlackRecoveryCandidateInput,
   PromoteSlackBotInstallationInput,
+  ProvisionSlackMemberInput,
   FailSlackBotInstallationInput,
   SettleSlackOAuthAttemptInput,
   SettleSlackOidcAttemptInput,
   SlackOAuthAttempt,
   SlackOidcAttempt,
+  SlackMemberProvisioningResult,
   SlackEventsProof,
   SlackRecoverySession,
   StageSlackRecoveryAppCredentialsInput,
@@ -173,6 +176,12 @@ export class IdentityStoreLogic {
       case 'claim_owner': return { kind: 'identity_resolution', resolution: this.claimOwner(request.input) };
       case 'activate_first_owner': return { kind: 'identity_resolution', resolution: this.activateFirstOwner(request.input) };
       case 'activate_invitation': return { kind: 'identity_resolution', resolution: this.activateInvitation(request.input) };
+      case 'provision_slack_member': return {
+        kind: 'slack_member_provisioning', result: this.provisionSlackMember(request.input),
+      };
+      case 'bind_slack_member_browser_identity': return {
+        kind: 'identity_resolution', resolution: this.bindSlackMemberBrowserIdentity(request.input),
+      };
       case 'resolve_slack_identity': return { kind: 'identity_resolution', resolution: this.resolveSlackIdentity(request.slackTeamId, request.slackUserId, request.organizationId) ?? null };
       case 'resolve_better_auth_identity': return { kind: 'identity_resolution', resolution: this.resolveBetterAuthIdentity(request.betterAuthUserId, request.organizationId) ?? null };
       case 'list_external_identities': return { kind: 'external_identities', externalIdentities: this.listExternalIdentities() };
@@ -1668,8 +1677,22 @@ export class IdentityStoreLogic {
            ORDER BY activated_at DESC LIMIT 1`,
           resolution.membership.id,
         );
-        if (!row) throw identityError('auth_operation_unavailable', 'Slack authority is not active.');
-        operation = authOperationFromRow(row);
+        if (row) {
+          operation = authOperationFromRow(row);
+        } else if (resolution.membership.role === 'member' &&
+            !resolution.binding.betterAuthUserId && !resolution.binding.betterAuthMembershipId) {
+          operation = this.createAuthOperation({
+            kind: 'login',
+            organizationId: resolution.membership.organizationId,
+            expectedSlackTeamId: teamId,
+            expectedSlackUserId: userId,
+            chickpeaRole: 'member',
+            capabilityHash: input.capabilityHash,
+            expiresAt: input.expiresAt,
+          });
+        } else {
+          throw identityError('auth_operation_unavailable', 'Slack authority is not active.');
+        }
       }
       const changed = this.db.run(
         `UPDATE identity_slack_oidc_attempts SET status = 'admitted', operation_id = ?,
@@ -1997,6 +2020,131 @@ export class IdentityStoreLogic {
     });
   }
 
+  provisionSlackMember(input: ProvisionSlackMemberInput): SlackMemberProvisioningResult {
+    return this.db.transaction(() => {
+      const teamId = slackId(input.slackTeamId, 'Slack team ID');
+      const slackUserId = slackId(input.slackUserId, 'Slack user ID');
+      const organization = this.requiredOrganization();
+      if (organization.authMode !== 'slack_active' || organization.slackTeamId !== teamId) {
+        throw identityError('organization_missing', 'The Slack workspace is not active for this organization.');
+      }
+      const existing = this.resolveSlackIdentity(teamId, slackUserId, organization.id);
+      if (existing) {
+        if (existing.membership.status !== 'active') {
+          return { outcome: 'deactivated', resolution: existing };
+        }
+        const at = input.at ?? this.now();
+        this.db.run(
+          `UPDATE identity_users SET display_name = ?, contact_email = ?, updated_at = ?
+           WHERE user_id = ?`,
+          input.displayName === undefined
+            ? existing.user.displayName
+            : cleanDisplayName(input.displayName),
+          input.contactEmail === undefined
+            ? existing.user.contactEmail
+            : cleanContactEmail(input.contactEmail),
+          at,
+          existing.user.id,
+        );
+        return {
+          outcome: 'active',
+          resolution: this.requiredResolution(teamId, slackUserId, organization.id),
+        };
+      }
+
+      const at = input.at ?? this.now();
+      const userId = newId('user');
+      const membershipId = newId('membership');
+      const bindingId = newId('slackbinding');
+      this.db.run(
+        `INSERT INTO identity_users (
+          user_id, slack_team_id, slack_user_id, display_name, contact_email, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        userId, teamId, slackUserId, cleanDisplayName(input.displayName),
+        cleanContactEmail(input.contactEmail), at, at,
+      );
+      this.db.run(
+        `INSERT INTO identity_memberships (
+          membership_id, organization_id, user_id, role, status, created_at, updated_at
+        ) VALUES (?, ?, ?, 'member', 'active', ?, ?)`,
+        membershipId, organization.id, userId, at, at,
+      );
+      this.db.run(
+        `INSERT INTO identity_slack_bindings (
+          binding_id, slack_team_id, slack_user_id, user_id, organization_id, membership_id,
+          better_auth_user_id, better_auth_membership_id, revision, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)`,
+        bindingId, teamId, slackUserId, userId, organization.id, membershipId, at, at,
+      );
+      return {
+        outcome: 'provisioned',
+        resolution: this.requiredResolution(teamId, slackUserId, organization.id),
+      };
+    });
+  }
+
+  bindSlackMemberBrowserIdentity(input: BindSlackMemberBrowserIdentityInput): IdentityResolution {
+    return this.db.transaction(() => {
+      const attempt = this.requiredSlackOidcAttempt(input.attemptId);
+      const operation = this.requiredAuthOperation(input.operationId);
+      const teamId = slackId(input.slackTeamId, 'Slack team ID');
+      const slackUserId = slackId(input.slackUserId, 'Slack user ID');
+      if (attempt.purpose !== 'login' || attempt.status !== 'admitted' ||
+          attempt.leaseGeneration !== input.expectedOidcLeaseGeneration ||
+          attempt.operationId !== operation.id || attempt.admittedTeamId !== teamId ||
+          attempt.admittedSlackUserId !== slackUserId || operation.kind !== 'login' ||
+          operation.status !== 'reserved' || operation.chickpeaRole !== 'member' ||
+          !operation.organizationId ||
+          operation.capabilityHash !== credentialHash(input.capabilityHash) ||
+          operation.expectedSlackTeamId !== teamId || operation.expectedSlackUserId !== slackUserId) {
+        throw identityError('auth_operation_conflict', 'Slack member browser binding authority changed.');
+      }
+      const resolution = this.requiredResolution(teamId, slackUserId, operation.organizationId);
+      if (resolution.membership.status !== 'active' || resolution.membership.role !== 'member' ||
+          resolution.binding.betterAuthUserId || resolution.binding.betterAuthMembershipId) {
+        throw identityError('external_identity_conflict', 'Slack member browser identity is already bound.');
+      }
+      const control = this.requiredAuthControl(DEFAULT_INSTALLATION_ID);
+      if (!control.betterAuthOrganizationId ||
+          control.betterAuthOrganizationId !== input.betterAuthOrganizationId) {
+        throw identityError('external_identity_conflict', 'Browser organization identity does not match.');
+      }
+      const at = input.at ?? this.now();
+      try {
+        this.db.run(
+          `UPDATE identity_slack_bindings SET better_auth_user_id = ?,
+            better_auth_membership_id = ?, revision = revision + 1, updated_at = ?
+           WHERE binding_id = ? AND better_auth_user_id IS NULL AND better_auth_membership_id IS NULL`,
+          nonEmpty(input.betterAuthUserId, 'Better Auth user ID'),
+          nonEmpty(input.betterAuthMembershipId, 'Better Auth membership ID'),
+          at, resolution.binding.id,
+        );
+      } catch {
+        throw identityError('external_identity_conflict', 'Browser identity is already bound elsewhere.');
+      }
+      this.db.run(
+        `UPDATE identity_users SET contact_email = ?, updated_at = ? WHERE user_id = ?`,
+        input.contactEmail === undefined
+          ? resolution.user.contactEmail
+          : cleanContactEmail(input.contactEmail),
+        at, resolution.user.id,
+      );
+      const changed = this.db.run(
+        `UPDATE identity_auth_operations SET status = 'active', step = 1,
+          better_auth_user_id = ?, better_auth_organization_id = ?,
+          better_auth_membership_id = ?, chickpea_membership_id = ?,
+          activated_at = ?, updated_at = ?
+         WHERE operation_id = ? AND status = 'reserved'`,
+        input.betterAuthUserId, input.betterAuthOrganizationId, input.betterAuthMembershipId,
+        resolution.membership.id, at, at, operation.id,
+      ).changes;
+      if (changed !== 1) {
+        throw identityError('auth_operation_conflict', 'Slack member browser binding changed concurrently.');
+      }
+      return this.requiredResolution(teamId, slackUserId, resolution.membership.organizationId);
+    });
+  }
+
   private claimOwnerInTransaction(input: ClaimOwnerInput): IdentityResolution {
       const claim = this.requiredOwnerClaim();
       if (claim.status === 'active') {
@@ -2061,7 +2209,8 @@ export class IdentityStoreLogic {
   ): IdentityResolution | undefined {
     const row = this.db.get(
       `SELECT
-        b.*, u.display_name AS u_display_name, u.created_at AS u_created_at, u.updated_at AS u_updated_at,
+        b.*, u.display_name AS u_display_name, u.contact_email AS u_contact_email,
+        u.created_at AS u_created_at, u.updated_at AS u_updated_at,
         m.role AS m_role, m.status AS m_status, m.created_at AS m_created_at, m.updated_at AS m_updated_at
        FROM identity_slack_bindings b
        JOIN identity_users u ON u.user_id = b.user_id
@@ -2079,7 +2228,8 @@ export class IdentityStoreLogic {
   ): IdentityResolution | undefined {
     const row = this.db.get(
       `SELECT
-        b.*, u.display_name AS u_display_name, u.created_at AS u_created_at, u.updated_at AS u_updated_at,
+        b.*, u.display_name AS u_display_name, u.contact_email AS u_contact_email,
+        u.created_at AS u_created_at, u.updated_at AS u_updated_at,
         m.role AS m_role, m.status AS m_status, m.created_at AS m_created_at, m.updated_at AS m_updated_at
        FROM identity_slack_bindings b
        JOIN identity_users u ON u.user_id = b.user_id
@@ -2563,8 +2713,8 @@ export class IdentityStoreLogic {
     const bindingId = newId('slackbinding');
     this.db.run(
       `INSERT INTO identity_users (
-        user_id, slack_team_id, slack_user_id, display_name, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?)`,
+        user_id, slack_team_id, slack_user_id, display_name, contact_email, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, NULL, ?, ?)`,
       userId, slackId(input.slackTeamId, 'Slack team ID'),
       slackId(input.slackUserId, 'Slack user ID'), cleanDisplayName(input.displayName), at, at,
     );
@@ -3081,13 +3231,22 @@ function mergeOpaque(current: string | null, candidate: string | null | undefine
 
 function slackId(value: string, field: string): string {
   const normalized = value.trim();
-  if (!/^[A-Za-z0-9]{2,64}$/.test(normalized)) throw identityError('identity_invalid', `${field} is invalid.`);
+  if (!/^[A-Za-z0-9_]{2,64}$/.test(normalized)) throw identityError('identity_invalid', `${field} is invalid.`);
   return normalized;
 }
 
 function cleanDisplayName(value: string | null | undefined): string | null {
   if (value === undefined || value === null || !value.trim()) return null;
   return strictText(value, 'display name', 120);
+}
+
+function cleanContactEmail(value: string | null | undefined): string | null {
+  if (value === undefined || value === null || !value.trim()) return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+    throw identityError('identity_invalid', 'Contact email is invalid.');
+  }
+  return normalized;
 }
 
 function validOrigin(value: string): string {
@@ -3178,7 +3337,8 @@ function organizationFromRow(row: Record<string, unknown>): Organization {
 }
 function userFromRow(row: Record<string, unknown>): User {
   return { id: String(row.user_id), slackTeamId: String(row.slack_team_id), slackUserId: String(row.slack_user_id),
-    displayName: nullableString(row.display_name), createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
+    displayName: nullableString(row.display_name), contactEmail: nullableString(row.contact_email),
+    createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
 }
 function membershipFromRow(row: Record<string, unknown>): Membership {
   return { id: String(row.membership_id), organizationId: String(row.organization_id), userId: String(row.user_id),
@@ -3188,8 +3348,8 @@ function membershipFromRow(row: Record<string, unknown>): Membership {
 function slackBindingFromRow(row: Record<string, unknown>): SlackIdentityBinding {
   return { id: String(row.binding_id), provider: 'slack', slackTeamId: String(row.slack_team_id),
     slackUserId: String(row.slack_user_id), userId: String(row.user_id), organizationId: String(row.organization_id),
-    membershipId: String(row.membership_id), betterAuthUserId: String(row.better_auth_user_id),
-    betterAuthMembershipId: String(row.better_auth_membership_id), revision: Number(row.revision),
+    membershipId: String(row.membership_id), betterAuthUserId: nullableString(row.better_auth_user_id),
+    betterAuthMembershipId: nullableString(row.better_auth_membership_id), revision: Number(row.revision),
     createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
 }
 function ownerClaimFromRow(row: Record<string, unknown>): OwnerClaim {
@@ -3228,7 +3388,8 @@ function resolutionFromRow(row: Record<string, unknown>): IdentityResolution {
   const binding = slackBindingFromRow(row);
   return { binding,
     user: { id: binding.userId, slackTeamId: binding.slackTeamId, slackUserId: binding.slackUserId,
-      displayName: nullableString(row.u_display_name), createdAt: Number(row.u_created_at), updatedAt: Number(row.u_updated_at) },
+      displayName: nullableString(row.u_display_name), contactEmail: nullableString(row.u_contact_email),
+      createdAt: Number(row.u_created_at), updatedAt: Number(row.u_updated_at) },
     membership: { id: binding.membershipId, organizationId: binding.organizationId, userId: binding.userId,
       role: row.m_role as Membership['role'], status: row.m_status as Membership['status'],
       createdAt: Number(row.m_created_at), updatedAt: Number(row.m_updated_at) } };

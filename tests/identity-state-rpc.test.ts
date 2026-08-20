@@ -17,7 +17,7 @@ import type {
 const resolution: IdentityResolution = {
   user: {
     id: 'user_owner', slackTeamId: 'T_ACME', slackUserId: 'U_OWNER',
-    displayName: 'Owner', createdAt: 10, updatedAt: 10,
+    displayName: 'Owner', contactEmail: null, createdAt: 10, updatedAt: 10,
   },
   membership: {
     id: 'membership_owner', organizationId: 'org_oss', userId: 'user_owner',
@@ -43,6 +43,56 @@ test('Cloudflare identity proxy forwards the canonical Slack tuple operation', a
     slackUserId: 'U_OWNER',
     organizationId: 'org_oss',
   }]);
+});
+
+test('Cloudflare identity proxy forwards Slack member provisioning and browser binding', async () => {
+  const provisioningCalls: IdentityRpcRequest[] = [];
+  const provisioned = {
+    outcome: 'provisioned' as const,
+    resolution: {
+      ...resolution,
+      user: { ...resolution.user, id: 'user_member', slackUserId: 'U_MEMBER' },
+      membership: {
+        ...resolution.membership,
+        id: 'membership_member', userId: 'user_member', role: 'member' as const,
+      },
+      binding: {
+        ...resolution.binding,
+        id: 'binding_member', slackUserId: 'U_MEMBER', userId: 'user_member',
+        membershipId: 'membership_member', betterAuthUserId: null,
+        betterAuthMembershipId: null,
+      },
+    },
+  };
+  const store = new CfIdentityStore(rpcStub(provisioningCalls, {
+    kind: 'slack_member_provisioning', result: provisioned,
+  }));
+  const provisionInput = {
+    slackTeamId: 'T_ACME', slackUserId: 'U_MEMBER', displayName: 'Member',
+  };
+  assert.deepEqual(await store.provisionSlackMember(provisionInput), provisioned);
+  assert.deepEqual(provisioningCalls, [{ kind: 'provision_slack_member', input: provisionInput }]);
+
+  const bindingCalls: IdentityRpcRequest[] = [];
+  const bound = {
+    ...provisioned.resolution,
+    binding: {
+      ...provisioned.resolution.binding,
+      betterAuthUserId: 'ba_user_member', betterAuthMembershipId: 'ba_member_member',
+    },
+  };
+  const bindStore = new CfIdentityStore(rpcStub(bindingCalls, {
+    kind: 'identity_resolution', resolution: bound,
+  }));
+  const bindInput = {
+    attemptId: 'attempt_member', expectedOidcLeaseGeneration: 1,
+    operationId: 'operation_member', capabilityHash: 'a'.repeat(64),
+    slackTeamId: 'T_ACME', slackUserId: 'U_MEMBER',
+    betterAuthUserId: 'ba_user_member', betterAuthOrganizationId: 'ba_org',
+    betterAuthMembershipId: 'ba_member_member',
+  };
+  assert.deepEqual(await bindStore.bindSlackMemberBrowserIdentity(bindInput), bound);
+  assert.deepEqual(bindingCalls, [{ kind: 'bind_slack_member_browser_identity', input: bindInput }]);
 });
 
 test('Cloudflare identity proxy uses the indexed Better Auth binding lookup', async () => {

@@ -19,6 +19,7 @@ export type SlackAdmissionTruthReason =
   | 'eligible'
   | 'slack_truth_unavailable'
   | 'ineligible_actor'
+  | 'deactivated_actor'
   | 'unsupported_conversation'
   | 'workspace_mismatch';
 
@@ -45,6 +46,7 @@ export async function resolveSlackAdmissionTruth(
   turn: NormalizedSlackTurn,
   botUserId: string,
   reader: SlackAdmissionTruthReader,
+  provision?: (user: SlackUserFacts) => Promise<boolean>,
 ): Promise<SlackAdmissionTruth> {
   const direct = isDirectSlackTurn(turn);
   const [actor, conversation] = await Promise.all([
@@ -58,6 +60,7 @@ export async function resolveSlackAdmissionTruth(
   ) {
     return denied('ineligible_actor');
   }
+  if (provision && !(await provision(actor.user))) return denied('deactivated_actor');
   if (direct) {
     return {
       eligible: true,

@@ -9,6 +9,7 @@ import { Hono } from 'hono';
 
 import { resolveBetterAuthEnvironment } from '../auth/better-auth-environment.ts';
 import { applySlackUserChange } from '../auth/slack-membership-events.ts';
+import { provisionSlackInteractionMember } from '../auth/slack-admission.ts';
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
@@ -931,6 +932,20 @@ async function processSlackEvent(
         turn,
         resolvedBotUserId,
         slackAdmissionTruthReader(botToken),
+        async (user) => {
+          const authControl = await stores.identity.getAuthControl();
+          // Slack can be connected before the workspace Owner finishes the
+          // separate product-auth handoff. Preserve that setup/runtime lane;
+          // automatic member authority begins only once Slack auth is active.
+          if (authControl?.authMode !== 'slack_active') return true;
+          const member = await provisionSlackInteractionMember({
+            identity: stores.identity,
+            slackTeamId: turn.workspaceId,
+            botUserId: resolvedBotUserId,
+            user,
+          });
+          return member.outcome === 'provisioned' || member.outcome === 'active';
+        },
       );
     } catch {
       // Shadow truth is observational in U3. A transient resolver failure must

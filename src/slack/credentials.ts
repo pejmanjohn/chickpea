@@ -381,6 +381,8 @@ export interface SlackConversationFacts {
 export interface SlackUserFacts {
   id: string;
   teamId: string | undefined;
+  displayName?: string | undefined;
+  email?: string | undefined;
   timezone?: string | undefined;
   deleted: boolean;
   bot: boolean;
@@ -433,9 +435,19 @@ function toUserFacts(raw: unknown): SlackUserFacts | null {
   if (!raw || typeof raw !== 'object') return null;
   const user = raw as Record<string, unknown>;
   if (typeof user.id !== 'string') return null;
+  const profile = user.profile && typeof user.profile === 'object'
+    ? user.profile as Record<string, unknown>
+    : {};
+  const displayName = [profile.display_name, profile.real_name, user.real_name, user.name]
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  const email = typeof profile.email === 'string' && profile.email.trim()
+    ? profile.email.trim()
+    : undefined;
   return {
     id: user.id,
     teamId: typeof user.team_id === 'string' ? user.team_id : undefined,
+    ...(displayName ? { displayName } : {}),
+    ...(email ? { email } : {}),
     timezone: typeof user.tz === 'string' ? user.tz : undefined,
     deleted: user.deleted === true,
     bot: user.is_bot === true,

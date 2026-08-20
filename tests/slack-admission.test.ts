@@ -40,10 +40,10 @@ test('first installer is reserved before Better Auth and becomes the sole exact 
     });
     const authorization = new URL(started.authorizationUrl);
     assert.equal(authorization.origin + authorization.pathname, 'https://slack.com/openid/connect/authorize');
-    assert.equal(authorization.searchParams.get('scope'), 'openid profile');
+    assert.equal(authorization.searchParams.get('scope'), 'openid profile email');
     assert.equal(authorization.searchParams.get('team'), 'TACME');
     assert.equal(authorization.searchParams.has('code_challenge'), false);
-    assert.equal(authorization.searchParams.has('email'), false);
+    assert.equal(authorization.searchParams.get('scope')?.includes('email'), true);
     const attempt = await fixture.identity.getSlackOidcAttempt(started.attemptId);
     assert.ok(attempt);
     assert.equal(attempt.expectedTeamId, 'TACME');
@@ -124,6 +124,69 @@ test('normal login selects no user and admits only the returned active canonical
         'code' in error && error.code === 'user_mismatch',
     );
     assert.equal((await fixture.identity.getSlackOidcAttempt(started.attemptId))?.status, 'failed');
+  } finally {
+    backend.close();
+    fixture.close();
+  }
+});
+
+test('Sign in with Slack binds a provisioned member to the same tuple and treats email as contact data', async () => {
+  const fixture = await installedFixture();
+  const backend = new NodeBetterAuthBackend(':memory:');
+  try {
+    const ownerService = admissionService(fixture, backend, () => ({
+      slackTeamId: 'TACME', slackUserId: 'UINSTALLER', displayName: 'Owner',
+    }));
+    const ownerStart = await ownerService.startFirstOwner({
+      setupId: fixture.setup.id, expectedSetupRevision: fixture.setup.revision,
+      browserBinding: BROWSER, redirectUri: REDIRECT,
+    });
+    await ownerService.callback({
+      purpose: 'first_owner', state: ownerStart.state, nonce: ownerStart.nonce,
+      browserBinding: BROWSER, redirectUri: REDIRECT, code: 'owner-code',
+      request: new Request(REDIRECT),
+    });
+
+    const provisioned = await fixture.identity.provisionSlackMember({
+      slackTeamId: 'TACME', slackUserId: 'UMEMBER', displayName: 'Member',
+      contactEmail: 'before@example.com',
+    });
+    const originalBindingId = provisioned.resolution.binding.id;
+    assert.equal(provisioned.resolution.binding.betterAuthUserId, null);
+
+    const memberService = admissionService(fixture, backend, () => ({
+      slackTeamId: 'TACME', slackUserId: 'UMEMBER', displayName: 'Member Renamed',
+      contactEmail: 'after@example.com',
+    }));
+    const started = await memberService.startLogin({
+      browserBinding: `${BROWSER}-member`, redirectUri: REDIRECT, destination: '/admin/agents',
+    });
+    const completed = await memberService.callback({
+      purpose: 'login', state: started.state, nonce: started.nonce,
+      browserBinding: `${BROWSER}-member`, redirectUri: REDIRECT, code: 'member-code',
+      request: new Request(REDIRECT),
+    });
+    assert.equal(completed.destination, '/admin/agents');
+    assert.match(completed.sessionResponse.headers.get('set-cookie') ?? '', /better-auth\.session_token=/);
+
+    const bound = (await fixture.identity.resolveSlackIdentity('TACME', 'UMEMBER'))!;
+    assert.equal(bound.binding.id, originalBindingId);
+    assert.ok(bound.binding.betterAuthUserId);
+    assert.ok(bound.binding.betterAuthMembershipId);
+    assert.equal(bound.membership.role, 'member');
+    assert.equal(bound.user.contactEmail, 'after@example.com');
+    assert.equal(
+      backend.database.prepare('SELECT COUNT(*) AS count FROM account WHERE accountId = ?')
+        .get('slack:TACME:UMEMBER')?.count,
+      1,
+    );
+
+    const replay = await memberService.callback({
+      purpose: 'login', state: started.state, nonce: started.nonce,
+      browserBinding: `${BROWSER}-member`, redirectUri: REDIRECT, code: 'must-not-reexchange',
+      request: new Request(REDIRECT),
+    });
+    assert.match(replay.sessionResponse.headers.get('set-cookie') ?? '', /better-auth\.session_token=/);
   } finally {
     backend.close();
     fixture.close();
@@ -443,7 +506,7 @@ function admissionService(
     authorizationUrl(input: Record<string, string>) {
       const url = new URL('https://slack.com/openid/connect/authorize');
       url.search = new URLSearchParams({
-        response_type: 'code', client_id: input.clientId!, scope: 'openid profile',
+        response_type: 'code', client_id: input.clientId!, scope: 'openid profile email',
         redirect_uri: input.redirectUri!, state: input.state!, nonce: input.nonce!, team: input.teamId!,
       }).toString();
       return url.toString();

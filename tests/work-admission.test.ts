@@ -280,6 +280,32 @@ test('Slack truth admits only a positively verified same-workspace active human'
   }
 });
 
+test('Slack truth rejects a member whose canonical Chickpea membership is deactivated', async () => {
+  const result = await resolveSlackAdmissionTruth(turn(), 'U_bot', {
+    async user() {
+      return {
+        ok: true,
+        user: {
+          id: 'U_member', teamId: 'T_home', deleted: false, bot: false,
+          appUser: false, restricted: false, ultraRestricted: false, stranger: false,
+        },
+      };
+    },
+    async conversation() {
+      return {
+        ok: true,
+        facts: {
+          id: 'C_public', name: 'general', private: false, archived: false,
+          frozen: false, shared: false, externallyShared: false,
+          organizationShared: false, pendingShared: false, member: true,
+          teamId: 'T_home',
+        },
+      };
+    },
+  }, async () => false);
+  assert.deepEqual(result, { eligible: false, reason: 'deactivated_actor' });
+});
+
 test('Slack claims, Run, content, thread registration, and relay row commit atomically', () => {
   const db = openStateDb(':memory:');
   try {

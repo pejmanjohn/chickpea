@@ -27,7 +27,7 @@ test('Slack OIDC uses only the pinned confidential Sign in with Slack endpoints 
   assert.equal(SLACK_OIDC_TOKEN_URL, 'https://slack.com/api/openid.connect.token');
   assert.equal(SLACK_OIDC_USERINFO_URL, 'https://slack.com/api/openid.connect.userInfo');
   assert.equal(SLACK_OIDC_JWKS_URL, 'https://slack.com/openid/connect/keys');
-  assert.deepEqual(SLACK_OIDC_SCOPES, ['openid', 'profile']);
+  assert.deepEqual(SLACK_OIDC_SCOPES, ['openid', 'profile', 'email']);
 });
 
 test('confidential Slack OIDC validates pinned JWT, userinfo, and active human membership', async () => {

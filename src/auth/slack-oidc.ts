@@ -21,7 +21,7 @@ export const SLACK_OIDC_AUTHORIZE_URL = 'https://slack.com/openid/connect/author
 export const SLACK_OIDC_TOKEN_URL = 'https://slack.com/api/openid.connect.token';
 export const SLACK_OIDC_USERINFO_URL = 'https://slack.com/api/openid.connect.userInfo';
 export const SLACK_OIDC_JWKS_URL = 'https://slack.com/openid/connect/keys';
-export const SLACK_OIDC_SCOPES = ['openid', 'profile'] as const;
+export const SLACK_OIDC_SCOPES = ['openid', 'profile', 'email'] as const;
 export const MAX_SLACK_OIDC_RESPONSE_BYTES = 64 * 1_024;
 
 const TEAM_CLAIM = 'https://slack.com/team_id';
@@ -56,6 +56,7 @@ export interface SlackOidcProof {
   slackTeamId: string;
   slackUserId: string;
   displayName: string;
+  contactEmail?: string;
 }
 
 export interface SlackOidcGatewayDependencies {
@@ -185,10 +186,12 @@ export class SlackOidcGateway {
         classifySlackUserForAdmission(facts, teamId, botCredentials.botUserId) !== 'eligible_human') {
       throw new SlackOidcError('inactive_user');
     }
+    const email = contactEmail(userInfo);
     return {
       slackTeamId: teamId,
       slackUserId: userId,
       displayName: displayName(userInfo),
+      ...(email ? { contactEmail: email } : {}),
     };
   }
 
@@ -322,6 +325,13 @@ function displayName(userInfo: Record<string, unknown>): string {
     if (typeof candidate === 'string' && candidate.trim()) return candidate.trim().slice(0, 120);
   }
   return 'Slack member';
+}
+
+function contactEmail(userInfo: Record<string, unknown>): string | undefined {
+  const value = userInfo.email;
+  return typeof value === 'string' && value.length <= 320 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+    ? value.toLowerCase()
+    : undefined;
 }
 
 function exactString(value: unknown, max: number): string | undefined {

@@ -50,13 +50,16 @@ export class BetterAuthDirectory implements HumanIdentityDirectory {
     if (!direct) return undefined;
     const { binding } = direct;
     const [betterAuthMembership, organization, user, membership, overlay] = await Promise.all([
-      this.input.backend.getMembership(binding.betterAuthMembershipId),
+      binding.betterAuthMembershipId
+        ? this.input.backend.getMembership(binding.betterAuthMembershipId)
+        : Promise.resolve(null),
       this.input.access.getOrganization(),
       this.input.access.getUser(binding.userId),
       this.input.access.getMembership(binding.membershipId),
       this.input.access.getMembershipAccessOverlay(binding.membershipId),
     ]);
-    if (!betterAuthMembership || betterAuthMembership.role !== 'member' ||
+    if (!binding.betterAuthUserId || !binding.betterAuthMembershipId ||
+        !betterAuthMembership || betterAuthMembership.role !== 'member' ||
         betterAuthMembership.userId !== betterAuthUserId ||
         betterAuthMembership.organizationId !== this.input.organizationId ||
         !organization || !user || !membership ||

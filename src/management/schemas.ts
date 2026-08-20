@@ -190,7 +190,7 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
     ...zOperationBase,
     kind: z.literal('update_member'),
     membershipId: zId,
-    role: z.enum(['owner', 'admin']).optional(),
+    role: z.enum(['owner', 'admin', 'member']).optional(),
     status: z.enum(['active', 'suspended', 'removed']).optional(),
   }),
   z.strictObject({
@@ -510,7 +510,7 @@ export const managementOperationValibotSchema = v.variant('kind', [
     ...vOperationBase,
     kind: v.literal('update_member'),
     membershipId: vid,
-    role: v.optional(v.picklist(['owner', 'admin'])),
+    role: v.optional(v.picklist(['owner', 'admin', 'member'])),
     status: v.optional(v.picklist(['active', 'suspended', 'removed'])),
   }),
   v.strictObject({

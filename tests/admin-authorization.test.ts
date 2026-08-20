@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
-import { permissionForRole, requirePermission } from '../src/auth/permissions.ts';
+import {
+  canEditAgent,
+  permissionForRole,
+  requireAgentChannelPublication,
+  requirePermission,
+} from '../src/auth/permissions.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 
@@ -15,6 +20,9 @@ function principal(role: AuthPrincipal['role']): AuthPrincipal {
 }
 
 test('team authority is split so Admin can inspect but only Owner can mutate membership', () => {
+  assert.equal(permissionForRole('member').has('agent.create'), true);
+  assert.equal(permissionForRole('member').has('connection.create_personal'), true);
+  assert.equal(permissionForRole('member').has('team.view'), false);
   assert.equal(permissionForRole('owner').has('auth.manage'), true);
   assert.equal(permissionForRole('admin').has('admin.configure'), true);
   assert.equal(permissionForRole('admin').has('auth.manage'), false);
@@ -29,6 +37,26 @@ test('team authority is split so Admin can inspect but only Owner can mutate mem
   assert.doesNotThrow(() => requirePermission(principal('admin'), 'team.view'));
   assert.throws(() => requirePermission(principal('admin'), 'team.invite'), /forbidden/i);
   assert.throws(() => requirePermission(principal('admin'), 'auth.manage'), /forbidden/i);
+});
+
+test('Agent collaboration and Slack Channel membership are separate authority checks', () => {
+  const creator = principal('member');
+  const other = { ...principal('member'), membershipId: 'membership_other' };
+  const admin = principal('admin');
+  const agent = {
+    creatorMembershipId: creator.membershipId,
+    editPolicy: 'creator_and_admins' as const,
+  };
+  assert.equal(canEditAgent(creator, agent), true);
+  assert.equal(canEditAgent(admin, agent), true);
+  assert.equal(canEditAgent(other, agent), false);
+  assert.equal(canEditAgent(other, { ...agent, editPolicy: 'all_members' }), true);
+  assert.doesNotThrow(() => requireAgentChannelPublication(creator, agent, true));
+  assert.throws(
+    () => requireAgentChannelPublication(admin, agent, false),
+    /forbidden/i,
+    'Admin authority cannot publish into a Channel the actor does not belong to',
+  );
 });
 
 test('deployment/shared token cannot become a product principal', async () => {

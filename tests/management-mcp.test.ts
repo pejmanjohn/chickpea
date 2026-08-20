@@ -16,7 +16,7 @@ test('public MCP exposes the compact workspace contract and applies an initial A
   const f = await createManagementAdapterFixture('mcp');
   try {
     const principal: McpAuthenticatedPrincipal = {
-      betterAuthUserId: f.admin.binding.betterAuthUserId,
+      betterAuthUserId: f.admin.binding.betterAuthUserId!,
       userId: f.admin.user.id,
       membershipId: f.admin.membership.id,
       organizationId: f.admin.membership.organizationId,

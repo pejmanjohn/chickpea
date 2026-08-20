@@ -376,7 +376,7 @@ function isActiveAdmission(
   operationId: string,
 ): value is BetterAuthAdmissionOperation {
   return Boolean(value && value.operationId === operationId && value.status === 'active' &&
-    (value.chickpeaRole === 'owner' || value.chickpeaRole === 'admin'));
+    (value.chickpeaRole === 'owner' || value.chickpeaRole === 'admin' || value.chickpeaRole === 'member'));
 }
 
 export function slackAccountId(teamId: string, userId: string): string {
