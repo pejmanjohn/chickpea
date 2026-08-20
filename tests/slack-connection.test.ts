@@ -1624,6 +1624,72 @@ test('connection status reports missing credentials and substitutes the request 
   });
 });
 
+test('connection status treats a retained shared-gateway installation as connected without local Slack secrets', async () => {
+  await withEnv(NO_SLACK_ENV, async () => {
+    const settings = new SqliteSettingsStore(':memory:');
+    const config = new SqliteConfigStore(':memory:');
+    try {
+      await markWorkspaceDefaultConnected(config, {
+        teamId: 'TGATEWAY',
+        appId: 'AGATEWAY',
+        botUserId: 'UCHICKPEA',
+        credentialProvenance: 'workspace_default',
+      });
+      const pending = await config.ensureWorkspaceInstallation({
+        workspaceId: 'TGATEWAY',
+        transportMode: 'gateway',
+        teamId: 'TGATEWAY',
+        appId: 'AGATEWAY',
+        botUserId: 'UCHICKPEA',
+        gatewayBindingId: 'binding_gateway',
+      });
+      const app = appWith(settings, config);
+      const pendingResponse = await app.request('/admin/api/slack-connection', {
+        headers: auth(),
+      });
+      assert.equal(
+        (await pendingResponse.json() as { connected: boolean }).connected,
+        true,
+      );
+
+      const healthy = await config.updateWorkspaceInstallation('TGATEWAY', {
+        health: 'healthy',
+      }, pending.revision);
+
+      const response = await app.request('/admin/api/slack-connection', { headers: auth() });
+      assert.equal(response.status, 200);
+      const body = (await response.json()) as {
+        connected: boolean;
+        credentials: Record<string, string>;
+        transportMode: string;
+        health: string;
+      };
+      assert.equal(body.connected, true);
+      assert.deepEqual(body.credentials, {
+        botToken: 'missing',
+        signingSecret: 'missing',
+        botUserId: 'missing',
+      });
+      assert.equal(body.transportMode, 'gateway');
+      assert.equal(body.health, 'healthy');
+
+      await config.updateWorkspaceInstallation('TGATEWAY', {
+        health: 'revoked',
+      }, healthy.revision);
+      const revokedResponse = await app.request('/admin/api/slack-connection', {
+        headers: auth(),
+      });
+      assert.equal(
+        (await revokedResponse.json() as { connected: boolean }).connected,
+        false,
+      );
+    } finally {
+      config.close();
+      settings.close();
+    }
+  });
+});
+
 test('connection status honors x-forwarded-proto/host when deriving the events URL', async () => {
   await withEnv(NO_SLACK_ENV, async () => {
     const settings = new SqliteSettingsStore(':memory:');

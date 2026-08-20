@@ -6670,18 +6670,23 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         store(c).getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID),
         store(c).listWorkspaceInstallations(),
       ]);
-      const installation = teamInfo.teamId
-        ? installations.find((candidate) => candidate.workspaceId === teamInfo.teamId)
+      const connectedTeamId = teamInfo.teamId ?? defaultIdentity.teamId;
+      const installation = connectedTeamId
+        ? installations.find((candidate) => candidate.workspaceId === connectedTeamId)
         : installations[0];
+      const identityConnected =
+        defaultIdentity.lifecycle === 'connected' || defaultIdentity.lifecycle === 'degraded';
+      const directConnected =
+        credentials.botToken !== 'missing' && credentials.signingSecret !== 'missing';
+      const gatewayConnected =
+        installation?.transportMode === 'gateway' &&
+        Boolean(installation.gatewayBindingId) &&
+        installation.health !== 'revoked';
       const requestUrl =
         `${requestOrigin(c)}/channels/slack/events/${defaultIdentity.ingressKey}`;
       return c.json({
         credentials,
-        connected:
-          (defaultIdentity.lifecycle === 'connected' ||
-            defaultIdentity.lifecycle === 'degraded') &&
-          credentials.botToken !== 'missing' &&
-          credentials.signingSecret !== 'missing',
+        connected: identityConnected && (directConnected || gatewayConnected),
         teamId: teamInfo.teamId ?? null,
         teamName: teamInfo.teamName ?? null,
         transportMode: installation?.transportMode ?? 'direct',
