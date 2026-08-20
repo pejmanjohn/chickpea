@@ -267,7 +267,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       clientId: binding.clientId,
       callbackUrl: input.redirectUri,
       state: input.state,
-      nonce: input.nonce,
+      oidcNonce: input.nonce,
     });
     const record = valueRecord(value, 'Gateway OIDC response is invalid.');
     const authorizationUrl = new URL(String(record.authorizationUrl));
@@ -300,7 +300,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       workspaceId: binding.workspaceId,
       attemptId: input.attemptId,
       code: input.code,
-      nonce: input.nonce,
+      oidcNonce: input.nonce,
       expectedTeamId: input.expectedTeamId,
       ...(input.expectedSlackUserId
         ? { expectedSlackUserId: input.expectedSlackUserId }
@@ -408,13 +408,13 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
   ): Promise<unknown> {
     const identity = await this.identity();
     const request = await signGatewayRequest(identity, {
+      ...body,
       protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
       deploymentId: identity.deploymentId,
       requestId: requestId(),
       issuedAt: this.now(),
       nonce: requestId('nonce'),
       kind,
-      ...body,
     });
     return this.requestJson(path, { method: 'POST', body: JSON.stringify(request) });
   }

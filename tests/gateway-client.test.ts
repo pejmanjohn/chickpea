@@ -428,6 +428,9 @@ test('shared-app Slack OIDC returns a bounded identity proof without exposing pr
     assert.deepEqual(oidcRequests.map(({ path }) => path), [
       '/v1/oidc/authorize', '/v1/oidc/exchange',
     ]);
+    assert.notEqual(oidcRequests[0]?.body.nonce, oidcRequests[1]?.body.nonce);
+    assert.equal(oidcRequests[0]?.body.oidcNonce, 'nonce_test');
+    assert.equal(oidcRequests[1]?.body.oidcNonce, 'nonce_test');
     assert.ok(await Promise.all(oidcRequests.map(({ body }) =>
       verifyGatewayRequestSignature({ publicKey: gateway.publicKey!, request: body as never })
     )).then((values) => values.every(Boolean)));
