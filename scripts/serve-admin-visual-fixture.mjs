@@ -35,6 +35,7 @@ export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
     path: '/admin/channels/TVISUAL/C_RELEASES',
     actions: Object.freeze(['Advanced']),
   }),
+  team: Object.freeze({ path: '/admin/team', actions: Object.freeze([]) }),
 });
 
 export const CANONICAL_SLACK_AUTH_VISUAL_STATES = Object.freeze({
@@ -90,6 +91,56 @@ async function seedVisualSlackOwner(identity) {
     betterAuthUserId: 'ba_user_visual',
     betterAuthMembershipId: 'ba_member_visual',
   });
+}
+
+async function seedVisualTeam(identity, provisionSlackInteractionMember, owner) {
+  const fixtures = [
+    { slackUserId: 'UVISUALADMIN', displayName: 'Alex Admin', role: 'admin', status: 'active' },
+    { slackUserId: 'UVISUALMEMBER', displayName: 'Maya Member', role: 'member', status: 'active' },
+    { slackUserId: 'UVISUALOWNER2', displayName: 'Olive Owner', role: 'owner', status: 'active' },
+    { slackUserId: 'UVISUALSUSPENDED', displayName: 'Sam Suspended', role: 'member', status: 'suspended' },
+    { slackUserId: 'UVISUALREMOVED', displayName: 'Rae Removed', role: 'member', status: 'removed' },
+  ];
+  for (const fixture of fixtures) {
+    const provisioned = await provisionSlackInteractionMember({
+      identity,
+      slackTeamId: WORKSPACE_ID,
+      botUserId: LOCAL_SLACK_BOT_ID,
+      user: {
+        id: fixture.slackUserId,
+        teamId: WORKSPACE_ID,
+        displayName: fixture.displayName,
+        deleted: false,
+        bot: false,
+        appUser: false,
+        restricted: false,
+        ultraRestricted: false,
+        stranger: false,
+      },
+    });
+    const membership = provisioned.resolution?.membership;
+    if (!membership) throw new Error(`Could not seed visual member ${fixture.slackUserId}.`);
+    if (fixture.role !== membership.role) {
+      await identity.updateMembershipAuthority({
+        membershipId: membership.id,
+        role: fixture.role,
+        actorMembershipId: owner.membership.id,
+        authenticationSurface: 'better_auth',
+        correlationId: `visual-role-${fixture.slackUserId}`,
+        reasonCode: 'owner_changed_member_role',
+      });
+    }
+    if (fixture.status !== 'active') {
+      await identity.updateMembershipAuthority({
+        membershipId: membership.id,
+        status: fixture.status,
+        actorMembershipId: owner.membership.id,
+        authenticationSurface: 'better_auth',
+        correlationId: `visual-status-${fixture.slackUserId}`,
+        reasonCode: 'admin_deactivated_member',
+      });
+    }
+  }
 }
 
 function assertLoopbackHost(host) {
@@ -456,6 +507,7 @@ export async function startAdminVisualFixture(options = {}) {
     const { SqliteSlackStateStore } = await loadTsModule('src/slack/claim-store.ts');
     const { SqliteAgentSnapshotStore } = await loadTsModule('src/config/snapshot-store.ts');
     const { SqliteIdentityStore } = await loadTsModule('src/identity/store.ts');
+    const { provisionSlackInteractionMember } = await loadTsModule('src/auth/slack-admission.ts');
     const { generateCredentialKeyring } = await loadTsModule('src/slack/credential-keyring.ts');
     const { writeSlackIdentityCredentials } = await loadTsModule('src/slack/identity-credentials.ts');
     const {
@@ -502,6 +554,7 @@ export async function startAdminVisualFixture(options = {}) {
     );
     await seedMemory(memory);
     const owner = await seedVisualSlackOwner(identity);
+    await seedVisualTeam(identity, provisionSlackInteractionMember, owner);
 
     const adminToken = `visual-${randomBytes(18).toString('base64url')}`;
     const app = new Hono();
