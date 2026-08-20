@@ -419,6 +419,38 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   };
 }
 
+function assertDraftAgentCreated(
+  body: unknown,
+  requested: CustomAgentConfig,
+): CustomAgentConfig {
+  const created = (body as { agent: CustomAgentConfig }).agent;
+  assert.equal(created.id, requested.id);
+  assert.equal(created.name, requested.name);
+  assert.equal(created.instructions, requested.instructions);
+  assert.equal(created.enabled, requested.enabled);
+  assert.equal(created.model, requested.model);
+  assert.deepEqual(created.skills, requested.skills);
+  assert.deepEqual(created.mcpServers, requested.mcpServers);
+  assert.deepEqual(created.apiConnections, requested.apiConnections);
+  assert.deepEqual(created.repositories, requested.repositories);
+  assert.equal(created.lifecycle, 'draft');
+  assert.equal(created.creatorMembershipId, 'membership_test_owner');
+  assert.equal(created.editPolicy, 'creator_and_admins');
+  assert.equal(created.configurationGeneration, 1);
+  assert.equal(created.slackPresence?.requestedHandle, requested.name);
+  assert.equal(created.slackPresence?.normalizedHandle, 'admin-agent');
+  assert.equal(created.slackPresence?.desiredState, 'unpublished');
+  assert.equal(created.slackPresence?.health, 'unpublished');
+  assert.equal(created.slackPresence?.avatar.kind, 'generated');
+  assert.equal(created.slackPresence?.avatar.revision, 1);
+  assert.match(created.slackPresence?.avatar.seed ?? '', /^[0-9a-f-]{36}$/);
+  assert.equal(
+    created.slackPresence?.avatar.url,
+    `http://localhost/assets/agents/${encodeURIComponent(requested.id)}/avatar/1`,
+  );
+  return created;
+}
+
 test('the worker root redirects to /admin instead of a bare 404', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
@@ -1527,7 +1559,7 @@ test('admin API accepts an unpinned agent only when SLACK_TAG_MODEL is set', asy
         });
 
         assert.equal(response.status, 201);
-        assert.deepEqual(await response.json(), { agent: createdAgent });
+        assertDraftAgentCreated(await response.json(), createdAgent);
       },
     );
   } finally {
@@ -1576,6 +1608,7 @@ test('admin API projects live frozen thread roots and blocks Agent deletion', as
   const snapshots: AgentSnapshotStore = {
     async get() { return undefined; },
     async putIfAbsent(_threadKey, snapshot) { return snapshot; },
+    async replace(_threadKey, snapshot) { return snapshot; },
     async listLiveRootsByAgent(agentId) {
       return agentId === 'agent_admin' ? roots : [];
     },
@@ -1903,7 +1936,7 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
       body: JSON.stringify(createdAgent),
     });
     assert.equal(createAgent.status, 201);
-    assert.deepEqual(await createAgent.json(), { agent: createdAgent });
+    assertDraftAgentCreated(await createAgent.json(), createdAgent);
 
     const patchAgent = await app.request('/admin/api/agents/agent_admin', {
       method: 'PATCH',
@@ -2060,12 +2093,11 @@ test('admin API accepts a free-text model with an unknown provider prefix but wa
     // provider surface, so unknown prefixes save fine — with a visible warning
     // instead of a false all-clear.
     assert.equal(response.status, 201);
-    assert.deepEqual(await response.json(), {
-      agent: freeTextAgent,
-      warnings: [
-        { code: 'unknown_provider', provider: 'anthropc', knownProviders: ['local-stub'] },
-      ],
-    });
+    const body = await response.json() as { agent: CustomAgentConfig; warnings: unknown[] };
+    assertDraftAgentCreated(body, freeTextAgent);
+    assert.deepEqual(body.warnings, [
+      { code: 'unknown_provider', provider: 'anthropc', knownProviders: ['local-stub'] },
+    ]);
   } finally {
     store.close();
   }
@@ -2551,7 +2583,7 @@ test('admin API accepts exact apiConnection hosts and round-trips every field', 
       body: JSON.stringify(createdAgent),
     });
     assert.equal(create.status, 201);
-    assert.deepEqual(await create.json(), { agent: createdAgent });
+    assertDraftAgentCreated(await create.json(), createdAgent);
 
     const patched = [
       apiConnection({
@@ -3138,7 +3170,7 @@ test('admin API accepts an agent with a valid mcpServers entry and round-trips i
       body: JSON.stringify(createdAgent),
     });
     assert.equal(create.status, 201);
-    assert.deepEqual(await create.json(), { agent: createdAgent });
+    assertDraftAgentCreated(await create.json(), createdAgent);
 
     // A PATCH carrying only mcpServers must preserve the array verbatim.
     const patched = [mcpServer({
@@ -5695,6 +5727,11 @@ test('Agent-first admin projections expose capabilities, placements, readiness, 
       additionalInstructions: 'Keep updates concise.', participationMode: 'ambient', lifecycle: 'active',
     });
     await store.putAssignment({ workspaceId: 'T123', channelId: 'C456', agentId: configured.id });
+    await store.putAgentChannelGrant({
+      workspaceId: 'T123', channelId: 'C456', agentId: configured.id,
+      status: 'active', createdByMembershipId: 'membership_test_owner',
+      channelLabel: 'operations', channelIsPrivate: false,
+    });
     await store.createSlackIdentity({
       id: 'slack_identity_ops', ingressKey: 'identity_ingress_ops_0123456789abcdef',
       kind: 'dedicated', lifecycle: 'connected', teamId: 'T123', dmState: 'on',

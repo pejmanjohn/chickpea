@@ -65,10 +65,14 @@ class FakeTransport implements SlackTransport {
   async lookupMember(userId: string): Promise<SlackMember> {
     return {
       id: userId, deleted: false, bot: false, restricted: false, ultraRestricted: false,
+      appUser: false, stranger: false,
     };
   }
   async lookupChannel(): Promise<SlackChannel> { return this.channel; }
   async channelHasMember(): Promise<boolean> { return this.memberAllowed; }
+  async openDirectConversation(): Promise<SlackChannel> {
+    return { id: 'D_OWNER', private: true, member: true, archived: false };
+  }
   async joinPublicChannel(): Promise<SlackChannel> {
     this.channel = { ...this.channel, member: true };
     return this.channel;

@@ -25,6 +25,11 @@ function createInput(runId = 'run_presentation_1') {
     bindingId: 'binding_presentation',
     workBindingGeneration: 7,
     runFencingToken: 0,
+    persona: {
+      name: 'Support Triage',
+      avatarUrl: 'https://chickpea.example/assets/agents/support/avatar/3',
+      avatarRevision: 3,
+    },
     root: ROOT,
     taskLabels: ['Inspect the record', 'Prepare the recommendation'],
   } as const;
@@ -41,6 +46,7 @@ test('presentation creation freezes identity and stable native tasks', () => {
     assert.equal(created.projectionVersion, 1);
     assert.deepEqual(created.progressiveEligibility, { status: 'pending' });
     assert.equal(created.stream.state, 'absent');
+    assert.deepEqual(created.persona, createInput().persona);
     assert.equal(created.plan?.displayMode, 'plan');
     assert.deepEqual(created.plan?.tasks.map(({ title, status }) => ({ title, status })), [
       { title: 'Inspect the record', status: 'pending' },
@@ -53,6 +59,14 @@ test('presentation creation freezes identity and stable native tasks', () => {
 
     assert.throws(
       () => store.create({ ...createInput(), root: { ...ROOT, threadTs: '1785700001.000100' } }),
+      (error: unknown) =>
+        error instanceof SlackPresentationStateError && error.code === 'identity_conflict',
+    );
+    assert.throws(
+      () => store.create({
+        ...createInput(),
+        persona: { ...createInput().persona, avatarRevision: 4 },
+      }),
       (error: unknown) =>
         error instanceof SlackPresentationStateError && error.code === 'identity_conflict',
     );

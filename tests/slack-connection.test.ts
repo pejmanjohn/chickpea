@@ -230,7 +230,11 @@ function signedSlackEvent(
   payload: Record<string, unknown>,
   timestamp = Math.floor(Date.now() / 1_000),
 ): { body: string; headers: Record<string, string> } {
-  const body = JSON.stringify(payload);
+  const body = JSON.stringify(
+    payload.type === 'event_callback' && !Number.isFinite(payload.event_time)
+      ? { ...payload, event_time: timestamp }
+      : payload,
+  );
   const timestampText = String(timestamp);
   return {
     body,
@@ -1695,7 +1699,7 @@ test('connection status reports missing credentials and substitutes the request 
       assert.ok(manifest.features.agent_view);
       assert.equal(manifest.features.assistant_view, undefined);
       assert.ok(manifest.settings.event_subscriptions.bot_events.includes('app_context_changed'));
-      assert.equal(manifest.settings.interactivity.is_enabled, false);
+      assert.equal(manifest.settings.interactivity.is_enabled, true);
     } finally {
       config.close();
       settings.close();

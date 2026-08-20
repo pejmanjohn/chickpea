@@ -12,7 +12,7 @@ export const SLACK_BOT_SCOPES = Object.freeze([
   'app_mentions:read', 'assistant:write', 'channels:history', 'channels:join',
   'channels:read', 'chat:write', 'chat:write.customize', 'files:write',
   'groups:history', 'groups:read',
-  'im:history', 'mpim:read', 'reactions:read', 'reactions:write', 'users:read',
+  'im:history', 'im:write', 'mpim:read', 'reactions:read', 'reactions:write', 'users:read',
   'usergroups:read', 'usergroups:write', 'users:read.email',
 ] as const);
 

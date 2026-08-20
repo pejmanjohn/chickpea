@@ -398,6 +398,10 @@ export interface TagStateRpc {
     threadKey: string,
     snapshot: AgentSnapshot,
   ): Promise<StateRpcResult<AgentSnapshot>>;
+  snapshotReplace(
+    threadKey: string,
+    snapshot: AgentSnapshot,
+  ): Promise<StateRpcResult<AgentSnapshot>>;
   snapshotListLiveRootsByAgent(
     agentId: string,
   ): Promise<StateRpcResult<AgentSnapshotRootReference[]>>;

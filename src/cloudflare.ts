@@ -1026,6 +1026,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.snapshots.putIfAbsent(threadKey, snapshot));
   }
 
+  async snapshotReplace(
+    threadKey: string,
+    snapshot: AgentSnapshot,
+  ): Promise<StateRpcResult<AgentSnapshot>> {
+    return this.call((stores) => stores.snapshots.replace(threadKey, snapshot));
+  }
+
   async snapshotListLiveRootsByAgent(
     agentId: string,
   ): Promise<StateRpcResult<AgentSnapshotRootReference[]>> {

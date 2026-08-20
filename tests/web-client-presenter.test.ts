@@ -13,6 +13,7 @@ function presenterWith(client: unknown): WebClientPresenter {
     channelId: 'C_BOUND',
     threadTs: '1782770400.000100',
     agentName: 'Test agent',
+    agentAvatarUrl: 'https://chickpea.example/assets/agents/test/avatar/1',
     agentId: 'agent_test',
   });
 }
@@ -39,12 +40,16 @@ test('setStatus keeps composer liveness generic while activity loading detail ch
       thread_ts: '1782770400.000100',
       status: 'is thinking...',
       loading_messages: ['is thinking...'],
+      username: 'Test agent',
+      icon_url: 'https://chickpea.example/assets/agents/test/avatar/1',
     },
     {
       channel_id: 'C_BOUND',
       thread_ts: '1782770400.000100',
       status: 'is thinking...',
       loading_messages: ['is thinking...', 'Searching the workspace'],
+      username: 'Test agent',
+      icon_url: 'https://chickpea.example/assets/agents/test/avatar/1',
     },
   ]);
 });
@@ -76,6 +81,8 @@ test('postArtifact sends bytes to files.uploadV2 in the requested thread', async
     file: Buffer.from([137, 80, 78, 71]),
     filename: 'proof.png',
     title: 'Browser proof',
+    username: 'Test agent',
+    icon_url: 'https://chickpea.example/assets/agents/test/avatar/1',
   });
 });
 
@@ -189,10 +196,14 @@ test('deliverRequesterOnly posts an ephemeral response to the requesting member'
     user?: string;
     thread_ts?: string;
     text?: string;
+    username?: string;
+    icon_url?: string;
   };
   assert.equal(call.channel, 'C_INVOKING');
   assert.equal(call.user, 'U_REQUESTER');
   assert.equal(call.thread_ts, undefined);
+  assert.equal(call.username, 'Test agent');
+  assert.equal(call.icon_url, undefined);
   assert.doesNotMatch(call.text ?? '', /\*\*https:\/\//);
 });
 

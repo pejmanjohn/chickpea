@@ -55,6 +55,7 @@
         "groups:history",
         "groups:read",
         "im:history",
+        "im:write",
         "mpim:read",
         "reactions:read",
         "reactions:write",

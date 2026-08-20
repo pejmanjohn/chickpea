@@ -30,8 +30,10 @@ test('direct transport maps Slack operations without exposing credentials or a r
     email: 'ada@example.com',
     deleted: false,
     bot: false,
+    appUser: false,
     restricted: false,
     ultraRestricted: false,
+    stranger: false,
   });
   assert.deepEqual(await transport.lookupChannel('C123'), {
     id: 'C123',
@@ -41,6 +43,7 @@ test('direct transport maps Slack operations without exposing credentials or a r
     archived: false,
   });
   assert.equal(await transport.channelHasMember('C123', 'U123'), true);
+  assert.equal((await transport.openDirectConversation('U123')).id, 'D123');
   assert.deepEqual(await transport.joinPublicChannel('C123'), {
     id: 'C123',
     name: 'support',
@@ -81,6 +84,7 @@ test('direct transport maps Slack operations without exposing credentials or a r
     'users.info',
     'conversations.info',
     'conversations.members',
+    'conversations.open',
     'conversations.join',
     'usergroups.list',
     'usergroups.create',
@@ -108,6 +112,7 @@ test('direct transport maps Slack operations without exposing credentials or a r
     'lookupChannel',
     'lookupMember',
     'mode',
+    'openDirectConversation',
     'postMessage',
     'publishAppHome',
     'updateUserGroup',
@@ -175,6 +180,7 @@ function fakeClient(
         ok: true,
         user: {
           id: 'U123', team_id: 'T123', name: 'ada', deleted: false, is_bot: false,
+          is_app_user: false, is_stranger: false,
           is_restricted: false, is_ultra_restricted: false,
           profile: { display_name: 'Ada Lovelace', email: 'ada@example.com' },
         },
@@ -184,6 +190,12 @@ function fakeClient(
       info: (input) => call('conversations.info', input, { ok: true, channel }),
       members: (input) => call('conversations.members', input, {
         ok: true, members: ['U123'], response_metadata: { next_cursor: '' },
+      }),
+      open: (input) => call('conversations.open', input, {
+        ok: true,
+        channel: {
+          id: 'D123', is_im: true, is_private: true, is_member: true, is_archived: false,
+        },
       }),
       join: (input) => call('conversations.join', input, { ok: true, channel }),
     },
@@ -222,6 +234,7 @@ function stubTransport(mode: 'direct' | 'gateway'): SlackTransport {
     lookupMember: unsupported,
     lookupChannel: unsupported,
     channelHasMember: unsupported,
+    openDirectConversation: unsupported,
     joinPublicChannel: unsupported,
     listUserGroups: unsupported,
     createUserGroup: unsupported,

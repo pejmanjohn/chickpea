@@ -1462,6 +1462,10 @@ export class CfAgentSnapshotStore implements AgentSnapshotStore {
     return unwrap(await this.stub.snapshotPutIfAbsent(threadKey, snapshot));
   }
 
+  async replace(threadKey: string, snapshot: AgentSnapshot): Promise<AgentSnapshot> {
+    return unwrap(await this.stub.snapshotReplace(threadKey, snapshot));
+  }
+
   async listLiveRootsByAgent(agentId: string): Promise<AgentSnapshotRootReference[]> {
     return unwrap(await this.stub.snapshotListLiveRootsByAgent(agentId));
   }

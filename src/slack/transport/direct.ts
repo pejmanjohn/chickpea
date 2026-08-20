@@ -18,7 +18,12 @@ type SlackApiMethod = (input?: SlackApiInput) => Promise<unknown>;
 /** Narrow SDK seam used for direct-adapter tests and alternative runtimes. */
 export interface DirectSlackApiClient {
   users: { info: SlackApiMethod };
-  conversations: { info: SlackApiMethod; join: SlackApiMethod; members: SlackApiMethod };
+  conversations: {
+    info: SlackApiMethod;
+    join: SlackApiMethod;
+    members: SlackApiMethod;
+    open: SlackApiMethod;
+  };
   usergroups: {
     list: SlackApiMethod;
     create: SlackApiMethod;
@@ -73,6 +78,13 @@ export function createDirectSlackTransportFromClient(
       throw new SlackTransportError('conversations.members', 'pagination_limit', {
         retryable: true,
       });
+    },
+
+    async openDirectConversation(userId): Promise<SlackChannel> {
+      const result = await call(client.conversations.open, 'conversations.open', {
+        users: userId,
+      });
+      return mapChannel(requiredRecord(result.channel, 'conversations.open'));
     },
 
     async joinPublicChannel(channelId): Promise<SlackChannel> {
@@ -188,8 +200,10 @@ function mapMember(user: SlackApiResult): SlackMember {
     ...(stringValue(profile.email) ? { email: stringValue(profile.email) } : {}),
     deleted: user.deleted === true,
     bot: user.is_bot === true,
+    appUser: user.is_app_user === true,
     restricted: user.is_restricted === true,
     ultraRestricted: user.is_ultra_restricted === true,
+    stranger: user.is_stranger === true,
   };
 }
 

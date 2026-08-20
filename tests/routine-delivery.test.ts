@@ -26,7 +26,13 @@ const access = {
   config: {
     agentId: 'agent_default',
     model: 'anthropic/claude-sonnet-4',
-    agent: { name: 'Default' },
+    agent: {
+      id: 'agent_default',
+      name: 'Default',
+      slackPresence: {
+        avatar: { kind: 'generated', revision: 2, seed: 'agent_default' },
+      },
+    },
   } as never,
   accessHash: 'a'.repeat(64),
   botToken: 'xoxb-test',
@@ -65,6 +71,11 @@ test('routine delivery claims once, posts at top level, and records the Slack re
   assert.equal(requests.length, 1);
   assert.equal(requests[0]?.channel, 'C_TEST');
   assert.equal(requests[0]?.thread_ts, undefined);
+  assert.equal(requests[0]?.username, 'Default');
+  assert.equal(
+    requests[0]?.icon_url,
+    'https://chickpea.example/assets/agents/agent_default/avatar/2',
+  );
   assert.match(requests[0]?.text ?? '', /Completed the write/);
   assert.doesNotMatch(requests[0]?.blocks ?? '', /rrun_test|!routines show/);
   assert.match(requests[0]?.blocks ?? '', /View in Audit/);

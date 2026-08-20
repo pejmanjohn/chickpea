@@ -246,6 +246,9 @@ class FakeSlackTransport implements SlackTransport {
   async lookupMember(): Promise<never> { throw new Error('unused'); }
   async lookupChannel() { return { ...this.channel }; }
   async channelHasMember() { return this.actorIsMember; }
+  async openDirectConversation() {
+    return { id: 'D_ACTOR', private: true, member: true, archived: false };
+  }
   async joinPublicChannel() { this.joinCalls += 1; this.channel.member = true; return { ...this.channel }; }
   async listUserGroups() { return this.groups.map((group) => ({ ...group })); }
   async createUserGroup(input: { name: string; handle: string; description?: string }) {

@@ -74,6 +74,12 @@ export interface SlackRunPresentationV1 {
     progressiveStreaming: boolean;
     nativeTasks: boolean;
   };
+  /** Immutable Agent authorship captured before any Slack effect. */
+  persona?: {
+    name: string;
+    avatarUrl: string;
+    avatarRevision: number;
+  };
   root: {
     workspaceId: string;
     channelId: string;
@@ -122,6 +128,7 @@ export interface SlackRunPresentationCreateInput {
   workBindingGeneration: number;
   runFencingToken: number;
   features?: Partial<SlackRunPresentationV1['features']>;
+  persona?: SlackRunPresentationV1['persona'];
   root: SlackRunPresentationV1['root'];
   taskLabels?: readonly string[];
 }
@@ -352,6 +359,7 @@ export class SlackRunPresentationStoreLogic {
           progressiveStreaming: input.features?.progressiveStreaming ?? false,
           nativeTasks: input.features?.nativeTasks ?? false,
         },
+        ...(input.persona ? { persona: { ...input.persona } } : {}),
         root: { ...input.root },
         stream: {
           state: 'absent',
@@ -935,6 +943,13 @@ function validateCreateInput(input: SlackRunPresentationCreateInput): void {
   validateId(input.root.channelId, 'Channel id');
   validateSlackTimestamp(input.root.threadTs, 'Slack root timestamp');
   validateId(input.root.requesterUserId, 'Requester user id');
+  if (input.persona) {
+    validateLabel(input.persona.name);
+    validatePositiveInteger(input.persona.avatarRevision, 'Avatar revision');
+    if (!/^https:\/\//.test(input.persona.avatarUrl) || input.persona.avatarUrl.length > 2_048) {
+      throw stateError('invalid_input', 'Avatar URL must be a bounded HTTPS URL.');
+    }
+  }
   if (input.taskLabels !== undefined) buildPlan(input.runId, input.taskLabels);
 }
 
@@ -963,6 +978,7 @@ function sameCreateIdentity(
       progressiveStreaming: input.features?.progressiveStreaming ?? false,
       nativeTasks: input.features?.nativeTasks ?? false,
     }) &&
+    JSON.stringify(presentation.persona) === JSON.stringify(input.persona) &&
     JSON.stringify(presentation.plan) === JSON.stringify(expectedPlan);
 }
 

@@ -13,6 +13,7 @@ import { ROUTINE_LIMITS } from './limits.ts';
 import { RoutineRuntimeError, type RoutineRuntimeAccess } from './runtime.ts';
 import type { RoutineDefinition, RoutineRun, RoutineStore } from './types.ts';
 import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
+import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 
 const ROUTINE_SLACK_TIMEOUT_MS = 10_000;
 
@@ -108,9 +109,17 @@ async function deliverRoutineSlackMessage(
     );
   }
 
+  const agentAvatarUrl = agentAvatarUrlForPresentation(
+    input.access.config.agent,
+    input.access.publicUrl,
+  );
   const payload = {
     channel: input.routine.channelId,
     ...(typeof message === 'string' ? { text: message } : message),
+    username: input.access.config.agent.name,
+    ...(agentAvatarUrl
+      ? { icon_url: agentAvatarUrl }
+      : {}),
     unfurl_links: false,
     unfurl_media: false,
   };

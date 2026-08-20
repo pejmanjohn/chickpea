@@ -45,6 +45,7 @@ export interface SlackCanonicalAdmissionInput {
   turnJob?: TurnJob;
   presentation?: {
     root: SlackRunPresentationV1['root'];
+    persona?: SlackRunPresentationV1['persona'];
     taskLabels?: readonly string[];
     features?: Partial<SlackRunPresentationV1['features']>;
   };
@@ -308,6 +309,9 @@ export class SlackStateLogic {
           workBindingGeneration: admission.binding.generation,
           runFencingToken: admission.run.fencingToken,
           root: input.presentation.root,
+          ...(input.presentation.persona
+            ? { persona: input.presentation.persona }
+            : {}),
           ...(input.presentation.features
             ? { features: input.presentation.features }
             : {}),

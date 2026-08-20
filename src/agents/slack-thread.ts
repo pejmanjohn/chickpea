@@ -82,6 +82,8 @@ import {
   type RepositoryGrant,
   type SkillConfig,
 } from '../config/types.ts';
+import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
+import { resolveSlackPublicUrl } from '../slack/credentials.ts';
 import {
   isDeniedRepositoryEndpoint,
   matchesGrantedCodeSearch,
@@ -794,20 +796,26 @@ export async function createSlackAgentRuntime(
       channel: channelId,
       threadTs: artifactThreadTs,
       postArtifact: async (input) => {
-        presenter ??= resolveSlackIdentityExecutionContext(
-          config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-          env,
-          { settings: settingsStore },
-        ).then(
-          (identity) =>
-            new WebClientPresenter(identity.client, {
-              channelId,
-              threadTs: artifactThreadTs,
-              agentName: config.agent.name,
-              agentId: config.agent.id,
-              workspaceId,
-            }),
-        );
+        presenter ??= Promise.all([
+          resolveSlackIdentityExecutionContext(
+            config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+            env,
+            { settings: settingsStore },
+          ),
+          resolveSlackPublicUrl(env, settingsStore).catch(() => undefined),
+        ]).then(([identity, publicUrl]) => {
+          const agentAvatarUrl = agentAvatarUrlForPresentation(config.agent, publicUrl);
+          return new WebClientPresenter(identity.client, {
+            channelId,
+            threadTs: artifactThreadTs,
+            agentName: config.agent.name,
+            ...(agentAvatarUrl
+              ? { agentAvatarUrl }
+              : {}),
+            agentId: config.agent.id,
+            workspaceId,
+          });
+        });
         return (await presenter).postArtifact(input);
       },
     });
@@ -1158,18 +1166,23 @@ function createRuntimePlanArtifactTool(plan: RuntimePlanV2) {
       presenter ??= (async () => {
         const env = await resolveAgentPlatformEnv();
         const config = getConfigStore(env);
-        const [profile, identity] = await Promise.all([
+        const [profile, identity, publicUrl] = await Promise.all([
           config.getAgent(plan.agentId),
           resolveSlackIdentityExecutionContext(
             plan.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
             env,
             { config, settings: getSettingsStore(env) },
           ),
+          resolveSlackPublicUrl(env).catch(() => undefined),
         ]);
+        const agentAvatarUrl = agentAvatarUrlForPresentation(profile, publicUrl);
         return new WebClientPresenter(identity.client, {
           channelId: plan.conversation.channelId,
           threadTs: plan.conversation.threadTs,
           agentName: profile.name,
+          ...(agentAvatarUrl
+            ? { agentAvatarUrl }
+            : {}),
           agentId: plan.agentId,
           workspaceId: plan.conversation.workspaceId,
         });

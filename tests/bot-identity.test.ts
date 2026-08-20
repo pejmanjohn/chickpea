@@ -53,7 +53,7 @@ test('Slack manifest defaults the app and bot display names to Chickpea', () => 
   assert.notEqual(description.trim(), '');
 });
 
-test('Slack manifest uses the minimal Agent View contract without enabling actions', () => {
+test('Slack manifest enables App Home interactivity alongside the Agent View contract', () => {
   const manifest = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')) as {
     features?: {
       agent_view?: {
@@ -85,7 +85,7 @@ test('Slack manifest uses the minimal Agent View contract without enabling actio
     { title: 'Plan a task', message: 'Help me plan this task:' },
   ]);
   assert.equal(manifest.features?.agent_view?.actions, undefined);
-  assert.equal(manifest.settings?.interactivity?.is_enabled, false);
+  assert.equal(manifest.settings?.interactivity?.is_enabled, true);
 
   const scopes = manifest.oauth_config?.scopes?.bot ?? [];
   assert.ok(scopes.includes('assistant:write'));

@@ -18,6 +18,7 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
 import {
   getOrCreateSnapshot,
+  getOrReplaceSnapshotForRoute,
   SnapshotStoreLogic,
   snapshotFromEffectiveConfig,
   SqliteAgentSnapshotStore,
@@ -244,6 +245,51 @@ test('putIfAbsent is write-once: a losing writer gets the PERSISTED row back', a
     winner.close();
     loser.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an explicit Agent handoff replaces the frozen thread snapshot exactly once', async () => {
+  const store = new SqliteAgentSnapshotStore(':memory:', () => 3_000);
+  try {
+    const first = await getOrReplaceSnapshotForRoute(
+      store,
+      'T_SNAPSHOT:C_HANDOFF:1',
+      { agentId: AGENT_ID, agentGeneration: 1 },
+      () => effConfig('C_HANDOFF', ALPHA),
+      () => 1_000,
+    );
+    const replacementAgent = agent({
+      id: 'agent_handoff',
+      revision: 1,
+      configurationGeneration: 2,
+      instructions: BETA,
+    });
+    const handedOff = await getOrReplaceSnapshotForRoute(
+      store,
+      'T_SNAPSHOT:C_HANDOFF:1',
+      { agentId: replacementAgent.id, agentGeneration: 2 },
+      () => ({
+        ...effConfig('C_HANDOFF', BETA),
+        agentId: replacementAgent.id,
+        agent: replacementAgent,
+      }),
+      () => 2_000,
+    );
+    const continued = await getOrReplaceSnapshotForRoute(
+      store,
+      'T_SNAPSHOT:C_HANDOFF:1',
+      { agentId: replacementAgent.id, agentGeneration: 2 },
+      () => { throw new Error('ordinary continuation must keep the handed-off snapshot'); },
+      () => 2_500,
+    );
+
+    assert.equal(first.agentId, AGENT_ID);
+    assert.equal(handedOff.agentId, replacementAgent.id);
+    assert.equal(handedOff.instructions, BETA);
+    assert.equal(handedOff.createdAt, 2_000);
+    assert.deepEqual(continued, handedOff);
+  } finally {
+    store.close();
   }
 });
 

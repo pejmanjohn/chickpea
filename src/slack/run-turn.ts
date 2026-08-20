@@ -44,6 +44,7 @@ import {
   ensureContinuityNotice,
 } from './continuity-notice.ts';
 import { resolveSlackCredentials, resolveSlackPublicUrl } from './credentials.ts';
+import { agentAvatarUrlForPresentation } from './agent-presence/avatar-assets.ts';
 import type { SlackStatusUpdate } from './replies.ts';
 import { registerSlackStatusTurn } from './status-registry.ts';
 import type { SlackTurnContext } from './thread-context.ts';
@@ -262,6 +263,7 @@ export async function runTurn(
   // pinned): on a button deploy nobody sets the env var, so without the stored
   // fallback the footer's "Configure" link would be dead.
   const publicUrl = await resolveSlackPublicUrl(platformEnv);
+  const agentAvatarUrl = agentAvatarUrlForPresentation(assignment.agent, publicUrl);
   // Natural-language Routine intent runs through a fresh, tool-less v2 agent.
   // A selected ledger canary deliberately skips that pre-parser;
   // explicit Routine commands are kept off this lane at admission.
@@ -274,6 +276,9 @@ export async function runTurn(
         channelId: turn.channelId,
         threadTs: turn.threadTs,
         agentName: assignment.agent.name,
+        ...(agentAvatarUrl
+          ? { agentAvatarUrl }
+          : {}),
         agentId: assignment.agent.id,
         modelLabel: resolvedModel,
         publicUrl,
@@ -406,6 +411,9 @@ export async function runTurn(
     channelId: turn.channelId,
     threadTs: turn.threadTs,
     agentName: assignment.agent.name,
+    ...(agentAvatarUrl
+      ? { agentAvatarUrl }
+      : {}),
     agentId: assignment.agent.id,
     modelLabel: resolvedModel,
     publicUrl,
@@ -950,6 +958,9 @@ export async function repairSlackInteractionProgress(
     channelId: turn.channelId,
     threadTs: turn.threadTs,
     agentName: assignment.agent.name,
+    ...(assignment.agent.slackPresence?.avatar.url
+      ? { agentAvatarUrl: assignment.agent.slackPresence.avatar.url }
+      : {}),
     agentId: assignment.agent.id,
     modelLabel: assignment.model ?? tryResolveAgentModel(assignment.agent),
     userId: turn.userId,
@@ -1255,10 +1266,14 @@ export async function deliverAgentFailureFinal(
 ): Promise<void> {
   const resolvedModel = assignment.model ?? tryResolveAgentModel(assignment.agent);
   const publicUrl = await resolveSlackPublicUrl(platformEnv);
+  const agentAvatarUrl = agentAvatarUrlForPresentation(assignment.agent, publicUrl);
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,
     agentName: assignment.agent.name,
+    ...(agentAvatarUrl
+      ? { agentAvatarUrl }
+      : {}),
     agentId: assignment.agent.id,
     modelLabel: resolvedModel,
     publicUrl,

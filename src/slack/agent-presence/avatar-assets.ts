@@ -24,6 +24,15 @@ export function agentAvatarUrl(
   return `${new URL(origin).origin}/assets/agents/${encodeURIComponent(agentId)}/avatar/${revision}`;
 }
 
+export function agentAvatarUrlForPresentation(
+  agent: CustomAgentConfig,
+  publicOrigin: string | undefined,
+): string | undefined {
+  if (agent.slackPresence?.avatar.url) return agent.slackPresence.avatar.url;
+  if (!publicOrigin || !agent.slackPresence) return undefined;
+  return agentAvatarUrl(publicOrigin, agent.id, agent.slackPresence.avatar.revision);
+}
+
 export async function uploadAgentAvatar(input: {
   config: ConfigStore;
   settings: SettingsStore;

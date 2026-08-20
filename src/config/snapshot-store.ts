@@ -39,6 +39,8 @@ export interface AgentSnapshotStore {
    * PERSISTED row either way, never a losing writer's discarded build.
    */
   putIfAbsent(threadKey: string, snapshot: AgentSnapshot): Promise<AgentSnapshot>;
+  /** Replace the active snapshot after an authorized Agent handoff. */
+  replace(threadKey: string, snapshot: AgentSnapshot): Promise<AgentSnapshot>;
   listLiveRootsByAgent(agentId: string): Promise<AgentSnapshotRootReference[]>;
   /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
   close?(): void;
@@ -126,6 +128,31 @@ export class SnapshotStoreLogic {
       throw new Error(`Agent snapshot for ${threadKey} was not readable after insert`);
     }
     return stored;
+  }
+
+  replace(threadKey: string, snapshot: AgentSnapshot): AgentSnapshot {
+    this.purgeExpired();
+    this.db.run(
+      `INSERT INTO agent_snapshots (
+        thread_key, snapshot_json, snapshot_hash, created_at,
+        schema_version, agent_id, last_activity_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(thread_key) DO UPDATE SET
+        snapshot_json = excluded.snapshot_json,
+        snapshot_hash = excluded.snapshot_hash,
+        created_at = excluded.created_at,
+        schema_version = excluded.schema_version,
+        agent_id = excluded.agent_id,
+        last_activity_at = excluded.last_activity_at`,
+      threadKey,
+      JSON.stringify(snapshot),
+      snapshot.snapshotHash,
+      snapshot.createdAt,
+      snapshot.schemaVersion,
+      snapshot.agentId,
+      snapshot.createdAt,
+    );
+    return this.get(threadKey)!;
   }
 
   listLiveRootsByAgent(agentId: string): AgentSnapshotRootReference[] {
@@ -217,6 +244,27 @@ export async function getOrCreateSnapshot(
   if (existing) return existing;
   const built = snapshotFromEffectiveConfig(await resolve(), now());
   return store.putIfAbsent(threadKey, built);
+}
+
+/**
+ * Converge a thread snapshot on its persisted Agent route. A handoff (or an
+ * explicit re-invocation after an Agent edit) replaces the old frozen config;
+ * ordinary replies keep serving the same snapshot.
+ */
+export async function getOrReplaceSnapshotForRoute(
+  store: AgentSnapshotStore,
+  threadKey: string,
+  route: { agentId: string; agentGeneration: number },
+  resolve: () => EffectiveSlackConfig | Promise<EffectiveSlackConfig>,
+  now: () => number = Date.now,
+): Promise<AgentSnapshot> {
+  const existing = await store.get(threadKey);
+  const existingGeneration = existing?.agent.configurationGeneration ?? existing?.agent.revision;
+  if (
+    existing && existing.agentId === route.agentId &&
+    existingGeneration === route.agentGeneration
+  ) return existing;
+  return store.replace(threadKey, snapshotFromEffectiveConfig(await resolve(), now()));
 }
 
 export function snapshotFromEffectiveConfig(

@@ -22,8 +22,10 @@ export interface SlackMember {
   email?: string;
   deleted: boolean;
   bot: boolean;
+  appUser: boolean;
   restricted: boolean;
   ultraRestricted: boolean;
+  stranger: boolean;
 }
 
 export interface SlackChannel {
@@ -68,6 +70,7 @@ export interface SlackTransport {
   lookupMember(userId: string): Promise<SlackMember>;
   lookupChannel(channelId: string): Promise<SlackChannel>;
   channelHasMember(channelId: string, userId: string): Promise<boolean>;
+  openDirectConversation(userId: string): Promise<SlackChannel>;
   joinPublicChannel(channelId: string): Promise<SlackChannel>;
   listUserGroups(options?: { includeDisabled?: boolean }): Promise<SlackUserGroup[]>;
   createUserGroup(input: {

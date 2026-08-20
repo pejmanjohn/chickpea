@@ -71,6 +71,14 @@ export async function resolveEffectiveSlackConfig(
   const assignment = await resolveAssignment(workspaceId, channelId, stores, {
     surface: surfaceForChannelId(channelId),
   });
+  return effectiveSlackConfigFromAssignment(assignment, env);
+}
+
+/** Build the frozen execution projection after the Agent router has selected ownership. */
+export function effectiveSlackConfigFromAssignment(
+  assignment: ResolvedAssignment,
+  env: NodeJS.ProcessEnv = process.env,
+): EffectiveSlackConfig {
   const model = resolveAgentModel(assignment.agent, env);
   const instructionLayers = effectiveSlackInstructionLayers(assignment);
   const instructions = instructionLayers.map((layer) => layer.text).join('\n');
@@ -84,7 +92,7 @@ export async function resolveEffectiveSlackConfig(
     ...(assignment.channelPromptAddendum
       ? { channelPromptAddendum: assignment.channelPromptAddendum }
       : {}),
-    participationMode: assignment.participationMode ?? 'ambient',
+    participationMode: assignment.participationMode ?? 'mention_only',
     ...(assignment.channelRevision ? { channelRevision: assignment.channelRevision } : {}),
     agent: assignment.agent,
     model,
