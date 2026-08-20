@@ -38,22 +38,43 @@ export async function seedOfflineDemoChannelConfig(stateDbPath, options = {}) {
   const { seededAgents, seededAssignments, demoChannelAssignments } =
     await loadTsModule('src/config/seed.ts');
 
+  const demoAssignments = options.workspaceId && options.channelId
+    ? [{
+        ...demoChannelAssignments.find((assignment) => assignment.channelId === 'C_EXEC'),
+        workspaceId: options.workspaceId,
+        channelId: options.channelId,
+      }]
+    : demoChannelAssignments;
+  const assignments = [...demoAssignments, ...seededAssignments];
+
   const store = new SqliteConfigStore(stateDbPath, {
     agents: seededAgents,
     // The TDEMO fixtures are no longer part of the install seed; the offline
     // harnesses opt back into them here, on top of the real seed (the '*/*'
     // DM wildcard), from the single fixture source in src/config/seed.ts.
-    assignments: [
-      ...(options.workspaceId && options.channelId
-        ? [{
-            ...demoChannelAssignments.find((assignment) => assignment.channelId === 'C_EXEC'),
-            workspaceId: options.workspaceId,
-            channelId: options.channelId,
-          }]
-        : demoChannelAssignments),
-      ...seededAssignments,
-    ],
+    assignments,
   });
+  // The compatibility assignments still feed old parity assertions, while
+  // the Agent-first runtime authorizes Channels exclusively through active
+  // reach grants. Seed both views from the same fixture rows so the packaged
+  // app smoke exercises production routing and memory authorization.
+  for (const assignment of demoAssignments) {
+    await store.ensureWorkspaceInstallation({
+      workspaceId: assignment.workspaceId,
+      transportMode: 'direct',
+      defaultAgentId: assignment.agentId,
+      teamId: assignment.workspaceId,
+    });
+    await store.putAgentChannelGrant({
+      workspaceId: assignment.workspaceId,
+      channelId: assignment.channelId,
+      agentId: assignment.agentId,
+      status: 'active',
+      createdByMembershipId: 'membership_offline_verifier',
+      ...(assignment.channelLabel ? { channelLabel: assignment.channelLabel } : {}),
+      channelIsPrivate: assignment.channelId.startsWith('G'),
+    });
+  }
   store.close();
 }
 
