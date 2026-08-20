@@ -5,12 +5,15 @@ export const SLACK_BOT_DISPLAY_NAME_MAX_LENGTH = 80;
 export const SLACK_BOT_OAUTH_CALLBACK_PATH = '/auth/slack/install/callback';
 export const SLACK_OIDC_CALLBACK_PATH = '/auth/slack/oidc/callback';
 export const SLACK_EVENTS_PATH = '/channels/slack/events';
+export const SLACK_INTERACTIONS_PATH = '/channels/slack/interactions';
 export const SLACK_REFERENCE_ORIGIN = 'https://chickpea.example';
 
 export const SLACK_BOT_SCOPES = Object.freeze([
   'app_mentions:read', 'assistant:write', 'channels:history', 'channels:join',
-  'channels:read', 'chat:write', 'files:write', 'groups:history', 'groups:read',
+  'channels:read', 'chat:write', 'chat:write.customize', 'files:write',
+  'groups:history', 'groups:read',
   'im:history', 'mpim:read', 'reactions:read', 'reactions:write', 'users:read',
+  'usergroups:read', 'usergroups:write', 'users:read.email',
 ] as const);
 
 const SHARED_BOT_EVENTS = Object.freeze([
@@ -44,7 +47,7 @@ export interface SlackAppManifest {
   };
   settings: {
     event_subscriptions: { request_url: string; bot_events: string[] };
-    interactivity?: { is_enabled: boolean };
+    interactivity?: { is_enabled: boolean; request_url?: string };
     org_deploy_enabled: boolean;
     socket_mode_enabled: boolean;
     token_rotation_enabled: boolean;
@@ -78,6 +81,7 @@ export function buildSlackAppManifest(intent: SlackAppManifestIntent): SlackAppM
       ),
       description: 'A dedicated Chickpea identity for Slack.',
       requestUrl: safeHttpsUrl(intent.requestUrl, 'Slack Request URL'),
+      interactionUrl: dedicatedInteractionUrl(intent.requestUrl),
       botEvents: [...DEDICATED_BOT_EVENTS],
       includeOidc: false,
     });
@@ -95,6 +99,7 @@ export function buildSlackAppManifest(intent: SlackAppManifestIntent): SlackAppM
     ),
     description: 'A self-hosted, model-agnostic AI agent for Slack.',
     requestUrl: `${origin}${SLACK_EVENTS_PATH}`,
+    interactionUrl: `${origin}${SLACK_INTERACTIONS_PATH}`,
     botEvents: [...CONTROL_PLANE_EVENTS],
     includeOidc: true,
     redirectUrls: [
@@ -154,6 +159,9 @@ export function validateSlackAppManifestUrlRepair(
   const subscriptions = record(settings.event_subscriptions);
   subscriptions.request_url = expected.settings.event_subscriptions.request_url;
   settings.event_subscriptions = subscriptions;
+  const interactivity = record(settings.interactivity);
+  interactivity.request_url = expected.settings.interactivity?.request_url;
+  settings.interactivity = interactivity;
   candidate.settings = settings;
   validateSlackAppManifest(candidate, expected);
 }
@@ -163,6 +171,7 @@ function manifestCore(input: {
   botDisplayName: string;
   description: string;
   requestUrl: string;
+  interactionUrl: string;
   botEvents: string[];
   includeOidc: boolean;
   redirectUrls?: string[];
@@ -175,7 +184,7 @@ function manifestCore(input: {
     },
     features: {
       app_home: {
-        home_tab_enabled: false,
+        home_tab_enabled: true,
         messages_tab_enabled: true,
         messages_tab_read_only_enabled: false,
       },
@@ -198,13 +207,13 @@ function manifestCore(input: {
     oauth_config: {
       ...(input.redirectUrls ? { redirect_urls: input.redirectUrls } : {}),
       scopes: {
-        ...(input.includeOidc ? { user: ['openid', 'profile'] } : {}),
+        ...(input.includeOidc ? { user: ['openid', 'profile', 'email'] } : {}),
         bot: [...SLACK_BOT_SCOPES],
       },
     },
     settings: {
       event_subscriptions: { request_url: input.requestUrl, bot_events: input.botEvents },
-      interactivity: { is_enabled: false },
+      interactivity: { is_enabled: true, request_url: input.interactionUrl },
       org_deploy_enabled: false,
       socket_mode_enabled: false,
       token_rotation_enabled: false,
@@ -222,6 +231,8 @@ function manifestContract(value: unknown): unknown {
   const scopes = record(oauth.scopes);
   const settings = record(manifest.settings);
   const subscriptions = record(settings.event_subscriptions);
+  const appHome = record(features.app_home);
+  const interactivity = record(settings.interactivity);
   return {
     appName: stringValue(display.name),
     botDisplayName: stringValue(botUser.display_name),
@@ -230,8 +241,21 @@ function manifestContract(value: unknown): unknown {
     botScopes: stringArray(scopes.bot).sort(),
     requestUrl: stringValue(subscriptions.request_url),
     botEvents: stringArray(subscriptions.bot_events).sort(),
+    appHomeEnabled: appHome.home_tab_enabled === true,
+    interactivityEnabled: interactivity.is_enabled === true,
+    interactivityUrl: stringValue(interactivity.request_url),
     pkceEnabled: oauth.pkce_enabled ?? null,
   };
+}
+
+function dedicatedInteractionUrl(eventsUrl: string): string {
+  const parsed = new URL(safeHttpsUrl(eventsUrl, 'Slack Request URL'));
+  parsed.pathname = parsed.pathname.endsWith('/events')
+    ? `${parsed.pathname.slice(0, -'/events'.length)}/interactions`
+    : `${parsed.pathname.replace(/\/+$/, '')}/interactions`;
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString();
 }
 
 function record(value: unknown): Record<string, unknown> {

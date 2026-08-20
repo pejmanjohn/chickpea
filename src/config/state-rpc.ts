@@ -30,6 +30,7 @@ import type {
   SlackIdentityDmState,
   SlackIdentityReferenceSummary,
   WorkspaceInstallation,
+  WorkspaceInstallationPatch,
 } from './types.ts';
 import type { MemoryRpcRequest, MemoryRpcResponse } from '../memory/types.ts';
 import type { RoutineRpcRequest, RoutineRpcResponse } from '../routines/types.ts';
@@ -249,6 +250,11 @@ export interface TagStateRpc {
     workspaceId: string,
   ): Promise<StateRpcResult<WorkspaceInstallation | null>>;
   configListWorkspaceInstallations(): Promise<StateRpcResult<WorkspaceInstallation[]>>;
+  configUpdateWorkspaceInstallation(
+    workspaceId: string,
+    patch: WorkspaceInstallationPatch,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<WorkspaceInstallation>>;
   configSetWorkspaceDefaultAgent(
     workspaceId: string,
     agentId: string,

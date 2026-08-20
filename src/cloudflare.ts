@@ -94,6 +94,7 @@ import type {
   SlackIdentityDmState,
   SlackIdentityReferenceSummary,
   WorkspaceInstallation,
+  WorkspaceInstallationPatch,
 } from './config/types.ts';
 import type { AppendAuditEvent, AuditEvent, AuditEventFilter } from './audit/types.ts';
 import {
@@ -690,6 +691,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 
   async configListWorkspaceInstallations(): Promise<StateRpcResult<WorkspaceInstallation[]>> {
     return this.call((stores) => stores.config.listWorkspaceInstallations());
+  }
+
+  async configUpdateWorkspaceInstallation(
+    workspaceId: string,
+    patch: WorkspaceInstallationPatch,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<WorkspaceInstallation>> {
+    return this.call((stores) =>
+      stores.config.updateWorkspaceInstallation(workspaceId, patch, expectedRevision),
+    );
   }
 
   async configSetWorkspaceDefaultAgent(

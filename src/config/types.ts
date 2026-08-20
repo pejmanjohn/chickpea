@@ -261,6 +261,16 @@ export interface EnsureWorkspaceInstallationInput {
   gatewayBindingId?: string;
 }
 
+export interface WorkspaceInstallationPatch {
+  transportMode?: SlackTransportMode;
+  teamId?: string | null;
+  appId?: string | null;
+  botUserId?: string | null;
+  gatewayBindingId?: string | null;
+  health?: InstallationHealth;
+  healthDetail?: string | null;
+}
+
 export type AgentChannelGrantStatus = 'pending' | 'active' | 'needs_attention';
 
 /** A Channel grants reach to many Agents and carries no behavior of its own. */

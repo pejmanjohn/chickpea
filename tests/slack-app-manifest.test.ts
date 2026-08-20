@@ -29,7 +29,12 @@ test('programmatic and manual control-plane manifests are identical and retain t
   const manual = JSON.parse(prefill.searchParams.get('manifest_json') ?? '{}');
   assert.deepEqual(manual, manifest);
 
-  assert.deepEqual(manifest.oauth_config.scopes, acceptedFixture.manifest.oauth_config.scopes);
+  assert.ok(
+    acceptedFixture.manifest.oauth_config.scopes.bot.every((scope) =>
+      manifest.oauth_config.scopes.bot.includes(scope)
+    ),
+  );
+  assert.deepEqual(manifest.oauth_config.scopes.user, ['openid', 'profile', 'email']);
   assert.deepEqual(
     manifest.oauth_config.redirect_urls!.map((url) => new URL(url).pathname),
     ['/auth/slack/install/callback', '/auth/slack/oidc/callback'],
@@ -37,8 +42,19 @@ test('programmatic and manual control-plane manifests are identical and retain t
   assert.equal(manifest.settings.event_subscriptions.request_url, `${ORIGIN}/channels/slack/events`);
   assert.ok(manifest.settings.event_subscriptions.bot_events.includes('user_change'));
   assert.equal('pkce_enabled' in manifest.oauth_config, false);
-  assert.equal(manifest.oauth_config.scopes.bot.length, 14);
+  assert.deepEqual(
+    manifest.oauth_config.scopes.bot.filter((scope) =>
+      ['chat:write.customize', 'usergroups:read', 'usergroups:write', 'users:read.email']
+        .includes(scope)
+    ),
+    ['chat:write.customize', 'usergroups:read', 'usergroups:write', 'users:read.email'],
+  );
   assert.ok(manifest.oauth_config.scopes.bot.includes('mpim:read'));
+  assert.equal(manifest.features.app_home.home_tab_enabled, true);
+  assert.deepEqual(manifest.settings.interactivity, {
+    is_enabled: true,
+    request_url: `${ORIGIN}/channels/slack/interactions`,
+  });
   assert.deepEqual(validateSlackAppManifest(manual, manifest), {
     fingerprint: slackManifestFingerprint(manifest),
   });

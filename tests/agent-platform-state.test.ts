@@ -218,6 +218,11 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
   const ok = <T>(value: T): Promise<StateRpcResult<T>> => Promise.resolve({ ok: true, value });
   const stub = {
     configEnsureWorkspaceInstallation: () => ok(installation),
+    configUpdateWorkspaceInstallation: () => ok({
+      ...installation,
+      revision: installation.revision + 1,
+      health: 'healthy' as const,
+    }),
     configListAgentChannelGrants: () => ok([grant]),
     configGetAgentThreadRoute: () => ok(route),
     configListConnectionAccounts: () => ok([account]),
@@ -231,6 +236,10 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
       transportMode: 'gateway',
     }),
     installation,
+  );
+  assert.equal(
+    (await store.updateWorkspaceInstallation('T_PLATFORM', { health: 'healthy' })).health,
+    'healthy',
   );
   assert.deepEqual(await store.listAgentChannelGrants('T_PLATFORM', 'C_SUPPORT'), [grant]);
   assert.deepEqual(

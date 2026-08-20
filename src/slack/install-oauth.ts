@@ -311,6 +311,7 @@ export class SlackInstallOAuthService {
     const setup = await this.requiredSetup(setupId);
     if (setup.state === 'bot_installed') {
       await this.syncPresentation(setup, 'connected', this.now());
+      await this.syncWorkspaceInstallation(setup);
       return setupResult('bot_installed', setup);
     }
     if (setup.state !== 'bot_install_pending' || !setup.botCredentialRevision ||
@@ -381,6 +382,7 @@ export class SlackInstallOAuthService {
       );
     }
     await this.syncPresentation(installed, 'connected', this.now());
+    await this.syncWorkspaceInstallation(installed);
     return setupResult('bot_installed', installed);
   }
 
@@ -507,6 +509,43 @@ export class SlackInstallOAuthService {
         health: 'healthy',
         healthDetail: null,
       },
+    );
+  }
+
+  private async syncWorkspaceInstallation(setup: SlackSetupTransaction): Promise<void> {
+    if (!setup.appId || !setup.slackTeamId || !setup.botUserId) return;
+    let installation = await this.dependencies.config.getWorkspaceInstallation(
+      setup.slackTeamId,
+    );
+    if (!installation) {
+      installation = await this.dependencies.config.ensureWorkspaceInstallation({
+        workspaceId: setup.slackTeamId,
+        transportMode: 'direct',
+        teamId: setup.slackTeamId,
+        appId: setup.appId,
+        botUserId: setup.botUserId,
+      });
+    }
+    if (
+      installation.transportMode === 'direct' &&
+      installation.teamId === setup.slackTeamId &&
+      installation.appId === setup.appId &&
+      installation.botUserId === setup.botUserId &&
+      installation.health === 'healthy' &&
+      installation.healthDetail === undefined
+    ) return;
+    await this.dependencies.config.updateWorkspaceInstallation(
+      setup.slackTeamId,
+      {
+        transportMode: 'direct',
+        teamId: setup.slackTeamId,
+        appId: setup.appId,
+        botUserId: setup.botUserId,
+        gatewayBindingId: null,
+        health: 'healthy',
+        healthDetail: null,
+      },
+      installation.revision,
     );
   }
 }

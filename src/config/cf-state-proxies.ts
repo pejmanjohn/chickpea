@@ -50,6 +50,7 @@ import type {
   SlackIdentityDmState,
   SlackIdentityReferenceSummary,
   WorkspaceInstallation,
+  WorkspaceInstallationPatch,
 } from './types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import { ManagementError, type ManagementRpcRequest, type ManagementRpcResponse } from '../management/types.ts';
@@ -1172,6 +1173,16 @@ export class CfConfigStore implements ConfigStore {
 
   async listWorkspaceInstallations(): Promise<WorkspaceInstallation[]> {
     return unwrap(await this.stub.configListWorkspaceInstallations());
+  }
+
+  async updateWorkspaceInstallation(
+    workspaceId: string,
+    patch: WorkspaceInstallationPatch,
+    expectedRevision?: number,
+  ): Promise<WorkspaceInstallation> {
+    return unwrap(
+      await this.stub.configUpdateWorkspaceInstallation(workspaceId, patch, expectedRevision),
+    );
   }
 
   async setWorkspaceDefaultAgent(

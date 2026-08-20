@@ -8,6 +8,7 @@ import {
   slackThreadKey,
 } from '../src/slack/thread-key.ts';
 import {
+  normalizeSlackInboundEnvelope,
   normalizeSlackTurn,
   stripSlackMessageAppContext,
 } from '../src/slack/turn-normalization.ts';
@@ -18,6 +19,16 @@ import {
   privateChannelThreadMessage,
   topLevelChannelMessage,
 } from './helpers/slack-fixtures.ts';
+
+test('Slack ingress normalizes to one credential-free transport envelope', () => {
+  const payload = fixture();
+  assert.deepEqual(normalizeSlackInboundEnvelope(payload), {
+    workspaceId: payload.team_id,
+    eventId: payload.event_id,
+    eventTime: payload.event_time,
+    event: payload.event,
+  });
+});
 
 test('Slack turn normalization classifies mentions, thread replies, DMs, and ambient top-level messages', () => {
   const options = { slackIdentityId: 'slack_identity_default', botUserId: 'UBOT' };

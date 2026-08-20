@@ -116,6 +116,15 @@ test('confidential callback validates the issued bot capabilities and waits for 
     assert.equal(installed.status, 'bot_installed');
     assert.equal(installed.teamId, 'TACME');
     assert.equal(installed.installerUserId, 'UINSTALLER');
+    const workspaceInstallation = await fixture.config.getWorkspaceInstallation('TACME');
+    assert.equal(workspaceInstallation?.revision, 2);
+    assert.equal(workspaceInstallation?.transportMode, 'direct');
+    assert.equal(workspaceInstallation?.defaultAgentId, 'agent_default');
+    assert.equal(workspaceInstallation?.teamId, 'TACME');
+    assert.equal(workspaceInstallation?.appId, 'A12345678');
+    assert.equal(workspaceInstallation?.botUserId, 'UBOT');
+    assert.equal(workspaceInstallation?.health, 'healthy');
+    assert.equal(workspaceInstallation?.healthDetail, undefined);
     const active = await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
     assert.equal(active?.purpose, 'connected_credentials');
     assert.equal(active?.teamId, 'TACME');

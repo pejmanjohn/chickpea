@@ -42,6 +42,7 @@ import {
   type SlackIdentityDmState,
   type SlackIdentityReferenceSummary,
   type WorkspaceInstallation,
+  type WorkspaceInstallationPatch,
 } from './types.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
@@ -286,6 +287,11 @@ export interface ConfigStore {
   ensureWorkspaceInstallation(input: EnsureWorkspaceInstallationInput): Promise<WorkspaceInstallation>;
   getWorkspaceInstallation(workspaceId: string): Promise<WorkspaceInstallation | undefined>;
   listWorkspaceInstallations(): Promise<WorkspaceInstallation[]>;
+  updateWorkspaceInstallation(
+    workspaceId: string,
+    patch: WorkspaceInstallationPatch,
+    expectedRevision?: number,
+  ): Promise<WorkspaceInstallation>;
   setWorkspaceDefaultAgent(
     workspaceId: string,
     agentId: string,
@@ -446,6 +452,42 @@ export class ConfigStoreLogic {
     return this.db
       .all('SELECT * FROM config_workspace_installations ORDER BY workspace_id')
       .map((row) => rowToWorkspaceInstallation(row as unknown as WorkspaceInstallationRow));
+  }
+
+  updateWorkspaceInstallation(
+    workspaceId: string,
+    patch: WorkspaceInstallationPatch,
+    expectedRevision?: number,
+  ): WorkspaceInstallation {
+    const current = this.getWorkspaceInstallation(workspaceId);
+    if (!current) throw new Error(`Unknown workspace installation ${workspaceId}`);
+    const requiredRevision = expectedRevision ?? current.revision;
+    if (requiredRevision !== current.revision) {
+      throw new Error(
+        `Workspace installation ${workspaceId} changed (expected revision ${requiredRevision}, actual ${current.revision})`,
+      );
+    }
+    const updated = this.db.run(
+      `UPDATE config_workspace_installations
+       SET transport_mode = ?, team_id = ?, app_id = ?, bot_user_id = ?,
+           gateway_binding_id = ?, health = ?, health_detail = ?,
+           revision = revision + 1, updated_at = ?
+       WHERE workspace_id = ? AND revision = ?`,
+      patch.transportMode ?? current.transportMode,
+      patch.teamId === undefined ? current.teamId ?? null : patch.teamId,
+      patch.appId === undefined ? current.appId ?? null : patch.appId,
+      patch.botUserId === undefined ? current.botUserId ?? null : patch.botUserId,
+      patch.gatewayBindingId === undefined
+        ? current.gatewayBindingId ?? null
+        : patch.gatewayBindingId,
+      patch.health ?? current.health,
+      patch.healthDetail === undefined ? current.healthDetail ?? null : patch.healthDetail,
+      Date.now(),
+      workspaceId,
+      current.revision,
+    );
+    if (updated.changes !== 1) throw new Error(`Workspace installation ${workspaceId} changed`);
+    return this.getWorkspaceInstallation(workspaceId)!;
   }
 
   setWorkspaceDefaultAgent(

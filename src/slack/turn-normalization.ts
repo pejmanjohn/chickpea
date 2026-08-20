@@ -9,10 +9,29 @@ import {
   type SlackTurnNormalization,
   type SlackTurnSource,
 } from './types.ts';
+import type { SlackInboundEnvelope } from './transport/types.ts';
 
 export interface SlackTurnNormalizationOptions {
   slackIdentityId: string;
   botUserId?: string;
+}
+
+/** Strip Slack's transport wrapper into the credential-free runtime envelope. */
+export function normalizeSlackInboundEnvelope(
+  payload: SlackEventFixture,
+): SlackInboundEnvelope | undefined {
+  if (
+    payload.type !== 'event_callback' ||
+    !payload.team_id ||
+    !payload.event_id ||
+    !Number.isFinite(payload.event_time)
+  ) return undefined;
+  return {
+    workspaceId: payload.team_id,
+    eventId: payload.event_id,
+    eventTime: payload.event_time,
+    event: payload.event,
+  };
 }
 
 interface RunnableTurnInput {
@@ -36,7 +55,7 @@ export function normalizeSlackTurn(
   options: SlackTurnNormalizationOptions,
 ): SlackTurnNormalization {
   payload = stripSlackMessageAppContext(payload);
-  if (payload.type !== 'event_callback') {
+  if (!normalizeSlackInboundEnvelope(payload)) {
     return { status: 'ignored', reason: 'non_event_callback' };
   }
 

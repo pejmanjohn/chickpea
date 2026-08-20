@@ -6,7 +6,7 @@
   },
   "features": {
     "app_home": {
-      "home_tab_enabled": false,
+      "home_tab_enabled": true,
       "messages_tab_enabled": true,
       "messages_tab_read_only_enabled": false
     },
@@ -40,7 +40,8 @@
     "scopes": {
       "user": [
         "openid",
-        "profile"
+        "profile",
+        "email"
       ],
       "bot": [
         "app_mentions:read",
@@ -49,6 +50,7 @@
         "channels:join",
         "channels:read",
         "chat:write",
+        "chat:write.customize",
         "files:write",
         "groups:history",
         "groups:read",
@@ -56,7 +58,10 @@
         "mpim:read",
         "reactions:read",
         "reactions:write",
-        "users:read"
+        "users:read",
+        "usergroups:read",
+        "usergroups:write",
+        "users:read.email"
       ]
     }
   },
@@ -78,7 +83,8 @@
       ]
     },
     "interactivity": {
-      "is_enabled": false
+      "is_enabled": true,
+      "request_url": "https://chickpea.example/channels/slack/interactions"
     },
     "org_deploy_enabled": false,
     "socket_mode_enabled": false,
