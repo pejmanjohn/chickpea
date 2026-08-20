@@ -170,8 +170,11 @@ export async function readSlackConnectionRevision(
 
 let publicUrlCache: { expiresAt: number; value: string | undefined } | undefined;
 
-function envPublicUrl(): string | undefined {
-  const raw = process.env.SLACK_TAG_PUBLIC_URL?.trim();
+function envPublicUrl(env?: PlatformEnv): string | undefined {
+  const platformValue = env?.SLACK_TAG_PUBLIC_URL;
+  const raw = (
+    typeof platformValue === 'string' ? platformValue : process.env.SLACK_TAG_PUBLIC_URL
+  )?.trim();
   return raw ? raw.replace(/\/+$/, '') : undefined;
 }
 
@@ -185,7 +188,7 @@ export async function resolveSlackPublicUrl(
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<string | undefined> {
-  const fromEnv = envPublicUrl();
+  const fromEnv = envPublicUrl(env);
   if (fromEnv) {
     return fromEnv;
   }

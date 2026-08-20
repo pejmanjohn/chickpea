@@ -6,6 +6,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
 import {
   GATEWAY_BINDING_SETTING,
   GATEWAY_SESSION_SETTING,
@@ -191,6 +192,10 @@ test('shared-app claim binds one workspace without storing Slack credentials', a
       { setupId: setup.id, setupRevision: setup.revision },
     );
     assert.equal(claim.authorizationUrl, 'https://gateway.chickpea.test/install/claim_test');
+    assert.equal(
+      await settings.getSetting(SLACK_SETTING_KEYS.publicUrl),
+      'https://self-hosted.example',
+    );
     assert.equal(gateway.requests[0]?.path, '/v1/claims');
     assert.equal(gateway.requests[0]?.body.kind, 'claim.create');
     assert.equal(await verifyGatewayRequestSignature({

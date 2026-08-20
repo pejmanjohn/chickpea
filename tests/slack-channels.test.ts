@@ -658,6 +658,16 @@ test('resolveSlackPublicUrl prefers env, falls back to the stored origin, else u
       await withEnv({ SLACK_TAG_PUBLIC_URL: 'https://pinned.example/' }, async () => {
         assert.equal(await resolveSlackPublicUrl(undefined, settings), 'https://pinned.example');
       });
+
+      // Cloudflare exposes Worker vars on the platform env object rather than
+      // the host process, and that explicit deployment origin wins as well.
+      assert.equal(
+        await resolveSlackPublicUrl(
+          { SLACK_TAG_PUBLIC_URL: 'https://worker-pinned.example/' },
+          settings,
+        ),
+        'https://worker-pinned.example',
+      );
     } finally {
       settings.close();
       invalidateStoredSlackPublicUrl();

@@ -647,6 +647,7 @@ function handleSlackInteractionsForIdentity(
         ...selection,
         stores,
         transport: createDirectSlackTransport(credentials.botToken ?? ''),
+        ...(platformEnv ? { platformEnv } : {}),
         ...(botUserId ? { botUserId } : {}),
       }).catch((error) => {
         console.error('[chickpea] App Home Agent seed failed:', sanitizeError(error));
@@ -769,6 +770,7 @@ async function seedAgentAppHomeThread(input: {
   agentId: string;
   stores: AppStores;
   transport: SlackTransport;
+  platformEnv?: PlatformEnv;
   botUserId?: string;
 }): Promise<void> {
   if (!input.botUserId) return;
@@ -784,7 +786,7 @@ async function seedAgentAppHomeThread(input: {
   if (!actor.routing.fullMember || !actor.routing.discoverableAgentIds?.has(input.agentId)) return;
   const agent = await input.stores.config.getAgent(input.agentId);
   if (!agent.enabled || agent.lifecycle === 'archived') return;
-  const avatarUrl = await resolvedAgentAvatarUrl(agent, input.stores, undefined);
+  const avatarUrl = await resolvedAgentAvatarUrl(agent, input.stores, input.platformEnv);
   if (!avatarUrl) return;
   const dm = await input.transport.openDirectConversation(input.userId);
   const root = await input.transport.postMessage({
@@ -1094,6 +1096,7 @@ export async function processGatewayAgentSelection(
     ...selection,
     stores,
     transport: createGatewaySlackTransport(gateway),
+    ...(platformEnv ? { platformEnv } : {}),
     botUserId: installation.botUserId,
   });
   return 'accepted';

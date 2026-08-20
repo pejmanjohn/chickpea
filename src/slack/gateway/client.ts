@@ -2,6 +2,7 @@ import type { ConfigStore } from '../../config/store.ts';
 import type { SettingsStore } from '../../config/settings-store.ts';
 import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../../config/types.ts';
 import type { IdentityStore } from '../../identity/types.ts';
+import { primeStoredSlackPublicUrl, SLACK_SETTING_KEYS } from '../credentials.ts';
 import type { CredentialKeyring } from '../secret-envelope.ts';
 import { SlackTransportError } from '../transport/types.ts';
 import {
@@ -110,6 +111,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     setup?: { setupId: string; setupRevision: number },
   ): Promise<GatewayClaimCreateResponse> {
     const identity = await this.identity();
+    const safeReturnUrl = returnUrl ? requireReturnUrl(returnUrl) : undefined;
     const unsigned = {
       protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
       kind: 'claim.create' as const,
@@ -118,19 +120,27 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       issuedAt: this.now(),
       nonce: requestId('nonce'),
       publicKey: identity.publicKey,
-      ...(returnUrl ? { returnUrl: requireReturnUrl(returnUrl) } : {}),
+      ...(safeReturnUrl ? { returnUrl: safeReturnUrl } : {}),
     } satisfies Omit<GatewayClaimCreateRequest, 'signature'>;
     const request = await signGatewayRequest(identity, unsigned);
     const response = parseGatewayClaimCreateResponse(await this.requestJson(
       '/v1/claims',
       { method: 'POST', body: JSON.stringify(request) },
     ));
-    await this.dependencies.settings.setSetting(GATEWAY_CLAIM_SETTING, JSON.stringify({
+    const claimState = JSON.stringify({
       claimId: response.claimId,
       expiresAt: response.expiresAt,
       authorizationUrl: response.authorizationUrl,
       ...(setup ? setup : {}),
-    } satisfies GatewayClaimState));
+    } satisfies GatewayClaimState);
+    const publicOrigin = safeReturnUrl ? new URL(safeReturnUrl).origin : undefined;
+    await this.dependencies.settings.applySettingsPatch({
+      set: [
+        { key: GATEWAY_CLAIM_SETTING, value: claimState },
+        ...(publicOrigin ? [{ key: SLACK_SETTING_KEYS.publicUrl, value: publicOrigin }] : []),
+      ],
+    });
+    if (publicOrigin) primeStoredSlackPublicUrl(publicOrigin);
     return response;
   }
 
