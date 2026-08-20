@@ -18,9 +18,8 @@
  *      the stub reply marker
  *   4. status rejected         -> a durable plain progress post precedes the
  *      final, final still delivered, no status retry storm
- *   5. provider 500            -> durable operator-recovery state after the
- *      bounded Flue reattachment budget, no misleading Slack final, no raw
- *      provider error marker, status cleared
+ *   5. provider 500            -> one sanitized Slack failure, no raw provider
+ *      error marker, status cleared
  *   6. NET_GUARD_LOG empty     -> zero external traffic across all scenarios
  *
  * A suitable Node >= 22.19 builds and spawns the Flue server; the shared
@@ -30,7 +29,6 @@
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 
 import {
   REPO_ROOT,
@@ -38,6 +36,7 @@ import {
   buildNodeServer,
   getFreePort,
   loadFake,
+  loadTsModule,
   postSignedEvent,
   seedOfflineDemoChannelConfig,
   seedOfflineSlackAuthority,
@@ -53,6 +52,7 @@ const ROOT_THREAD_TS = '1782770400.000100';
 // Load the TypeScript fake backend through tsx's runtime loader.
 const { FakeSlackBackend, STUB_REPLY_MARKER, RAW_PROVIDER_ERROR_MARKER, isMarkdownPost } =
   await loadFake();
+const { AGENT_FAILURE_TEXT } = await loadTsModule('src/slack/web-client-presenter.ts');
 
 const netGuardLog = join(mkdtempSync(join(tmpdir(), 'flue-net-guard-')), 'external-hosts.log');
 const stateDbPath = join(mkdtempSync(join(tmpdir(), 'flue-offline-state-')), 'state.db');
@@ -75,26 +75,6 @@ const results = [];
 function record(name, passed, detail) {
   results.push({ name, passed, detail });
   console.log(`${passed ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
-}
-
-async function waitForRecoveryRequired(path, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const db = new DatabaseSync(path, { readOnly: true });
-    try {
-      const count = Number(
-        db.prepare(
-          `SELECT COUNT(*) AS count FROM turn_jobs
-           WHERE delivered = 0 AND status = 'recovery_required'`,
-        ).get()?.count ?? 0,
-      );
-      if (count > 0) return count;
-    } finally {
-      db.close();
-    }
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  return 0;
 }
 
 const backend = new FakeSlackBackend({
@@ -272,9 +252,8 @@ try {
     );
   }
 
-  // Check 5: provider 500 exhausts the bounded Flue reattachment budget into
-  // explicit operator recovery. A dispatched turn must not be replaced with
-  // a second run or a misleading generic final.
+  // Check 5: provider failures produce one static, sanitized Slack final. The
+  // teammate should not see raw provider details or a status left spinning.
   {
     backend.reset();
     backend.configure({ slack: { rejectSetStatus: false }, provider: { mode: 'http_500' } });
@@ -282,21 +261,21 @@ try {
       eventsUrl,
       craftMention({ eventId: 'Ev_OFFLINE_500', ts: '1782770920.000100' }),
     );
-    const recoveryRequired = await waitForRecoveryRequired(stateDbPath, 40_000);
-    const finals = backend.finals();
+    const finals = await waitForFinals(backend, 1, 15_000);
+    const [final] = finals;
     const lastStatus = backend.statusCalls().at(-1);
     const slackWire = JSON.stringify(backend.wireLog);
 
     const passed =
-      recoveryRequired === 1 &&
-      finals.length === 0 &&
+      finals.length === 1 &&
+      final?.text === AGENT_FAILURE_TEXT &&
       !slackWire.includes(RAW_PROVIDER_ERROR_MARKER) &&
       lastStatus !== undefined &&
       String(lastStatus.body.status) === '';
     record(
-      'provider 500 -> durable recovery state, status cleared, no raw error leak',
+      'provider 500 -> one sanitized final, status cleared, no raw error leak',
       passed,
-      `recoveryRequired=${recoveryRequired} finals=${finals.length} ` +
+      `finals=${finals.length} sanitized=${final?.text === AGENT_FAILURE_TEXT} ` +
         `rawLeak=${slackWire.includes(RAW_PROVIDER_ERROR_MARKER)} ` +
         `lastStatus="${String(lastStatus?.body.status)}"`,
     );
