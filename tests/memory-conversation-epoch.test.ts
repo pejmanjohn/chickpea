@@ -70,13 +70,11 @@ test('owner reset epochs and selected content hashes rotate memory fingerprints 
   const store = new SqliteMemoryStateStore(':memory:', () => 1_000);
   try {
     const agent = await store.ensureOwner({ workspaceId: 'T', ownerKind: 'agent', ownerId: 'A' });
-    const channel = await store.ensureOwner({ workspaceId: 'T', ownerKind: 'channel', ownerId: 'C' });
     const scope = bindAuthorizedMemoryScope({
-      surface: 'channel', workspaceId: 'T', agentOwner: agent, channelOwner: channel,
-      writeOwner: channel,
+      surface: 'channel', workspaceId: 'T', agentOwner: agent, writeOwner: agent,
     });
     const selected = await store.createOwnerEntry({
-      entryId: 'mem_selected', storeId: channel.storeId, workspaceId: 'T', slug: 'selected',
+      entryId: 'mem_selected', storeId: agent.storeId, workspaceId: 'T', slug: 'selected',
       description: 'Selected', type: 'fact', body: 'One', actorId: 'U', actorClass: 'operator',
       idempotencyKey: 'seed:selected',
     });
@@ -86,10 +84,9 @@ test('owner reset epochs and selected content hashes rotate memory fingerprints 
     const irrelevant = { ...selected, entryId: 'mem_irrelevant', version: 99, contentHash: 'elsewhere' };
     assert.equal(memorySelectionFingerprint([{ entry: selected }]), first, irrelevant.entryId);
     const scopeFirst = authorizedMemoryScopeFingerprint(scope);
-    const reset = await store.resetOwner(channel, { actorId: 'U', idempotencyKey: 'reset:channel' });
+    const reset = await store.resetOwner(agent, { actorId: 'U', idempotencyKey: 'reset:agent' });
     const scopeReset = bindAuthorizedMemoryScope({
-      surface: 'channel', workspaceId: 'T', agentOwner: agent, channelOwner: reset,
-      writeOwner: reset,
+      surface: 'channel', workspaceId: 'T', agentOwner: reset, writeOwner: reset,
     });
     assert.notEqual(authorizedMemoryScopeFingerprint(scopeReset), scopeFirst);
   } finally {

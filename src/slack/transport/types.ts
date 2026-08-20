@@ -36,6 +36,11 @@ export interface SlackChannel {
   archived: boolean;
 }
 
+export interface SlackChannelList {
+  channels: SlackChannel[];
+  truncated: boolean;
+}
+
 export interface SlackUserGroup {
   id: string;
   name: string;
@@ -69,6 +74,7 @@ export interface SlackTransport {
   readonly mode: SlackTransportMode;
   lookupMember(userId: string): Promise<SlackMember>;
   lookupChannel(channelId: string): Promise<SlackChannel>;
+  listChannels(): Promise<SlackChannelList>;
   channelHasMember(channelId: string, userId: string): Promise<boolean>;
   openDirectConversation(userId: string): Promise<SlackChannel>;
   joinPublicChannel(channelId: string): Promise<SlackChannel>;

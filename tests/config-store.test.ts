@@ -198,8 +198,6 @@ test('effective config projects back to the exact admitted assignment for owner-
     agentId: 'agent_test',
     slackIdentityId: 'slack_identity_finance',
     channelLabel: 'eng-releases',
-    channelPromptAddendum: 'Prefer release context.',
-    participationMode: 'mention_only' as const,
     agent: agent(),
     model: 'local-stub/test',
     provider: 'local-stub',
@@ -213,7 +211,6 @@ test('effective config projects back to the exact admitted assignment for owner-
     agentId: 'agent_test',
     slackIdentityId: 'slack_identity_finance',
     channelLabel: 'eng-releases',
-    channelPromptAddendum: 'Prefer release context.',
     participationMode: 'mention_only',
     agent: effective.agent,
     model: 'local-stub/test',
@@ -224,13 +221,11 @@ test('effective instructions expose Agent as the primary behavior layer', () => 
   const layers = effectiveSlackInstructionLayers({
     workspaceId: 'T_TEST',
     channelId: 'C_TEST',
-    channelPromptAddendum: 'Channel addendum.',
     agent: agent({ instructions: 'Agent instructions.' }),
   });
   assert.deepEqual(layers.map(({ source, label }) => ({ source, label })), [
     { source: 'interaction_defaults', label: 'Slack interaction defaults' },
     { source: 'agent', label: 'Agent' },
-    { source: 'channel', label: 'Channel instructions' },
     { source: 'runtime', label: 'Runtime' },
     { source: 'guardrail', label: 'Guardrail' },
   ]);

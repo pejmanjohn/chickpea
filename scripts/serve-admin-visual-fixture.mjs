@@ -182,8 +182,7 @@ async function seedConfig(store) {
       workspaceId: WORKSPACE_ID,
       channelId: 'C_RELEASES',
       label: 'release-room',
-      additionalInstructions: 'Lead with launch blockers and reversible next steps.',
-      participationMode: 'ambient',
+      participationMode: 'mention_only',
       lifecycle: 'active',
       agentId: 'agent_release',
     },
@@ -191,7 +190,6 @@ async function seedConfig(store) {
       workspaceId: WORKSPACE_ID,
       channelId: 'C_SUPPORT',
       label: 'customer-support',
-      additionalInstructions: 'Escalate urgent support patterns.',
       participationMode: 'mention_only',
       lifecycle: 'active',
       agentId: 'agent_research',
@@ -200,15 +198,15 @@ async function seedConfig(store) {
       workspaceId: WORKSPACE_ID,
       channelId: 'C_CUSTOMER',
       label: 'customer-insights',
-      participationMode: 'ambient',
+      participationMode: 'mention_only',
       lifecycle: 'active',
-      agentId: 'agent_customer',
+      agentId: null,
     },
     {
       workspaceId: WORKSPACE_ID,
       channelId: 'C_UNASSIGNED',
       label: 'product-feedback',
-      participationMode: 'ambient',
+      participationMode: 'mention_only',
       lifecycle: 'active',
       agentId: null,
     },
@@ -224,14 +222,21 @@ async function seedConfig(store) {
   for (const { agentId, ...channel } of channels) {
     await store.putChannel(channel);
     if (agentId) {
-      await store.putAssignment({
+      await store.putAgentChannelGrant({
         workspaceId: channel.workspaceId,
         channelId: channel.channelId,
         agentId,
+        status: 'active',
+        createdByMembershipId: 'membership_visual_owner',
+        channelLabel: channel.label,
       });
     }
   }
-  await store.putAssignment({ workspaceId: '*', channelId: '*', agentId: 'agent_research' });
+  await store.ensureWorkspaceInstallation({
+    workspaceId: WORKSPACE_ID,
+    transportMode: 'direct',
+    defaultAgentId: 'agent_research',
+  });
 
   const defaultIdentity = await store.getSlackIdentity('slack_identity_default');
   await store.updateSlackIdentity(defaultIdentity.id, defaultIdentity.connectionRevision, {
@@ -256,11 +261,6 @@ async function seedMemory(memory) {
     ownerKind: 'agent',
     ownerId: 'agent_research',
   });
-  const channelOwner = await memory.ensureOwner({
-    workspaceId: WORKSPACE_ID,
-    ownerKind: 'channel',
-    ownerId: 'C_RELEASES',
-  });
   const entries = [
     {
       entryId: 'mem_visual_audience',
@@ -282,12 +282,12 @@ async function seedMemory(memory) {
     },
     {
       entryId: 'mem_visual_release',
-      storeId: channelOwner.storeId,
+      storeId: agentOwner.storeId,
       slug: 'release-checklist',
-      description: 'Exact-Channel launch checklist.',
+      description: 'Agent launch checklist.',
       type: 'project',
       body: 'Check focused tests, rollout risk, owner, and rollback before launch.',
-      writeOrigin: { kind: 'slack_channel', channelId: 'C_RELEASES' },
+      writeOrigin: { kind: 'admin' },
     },
   ];
   for (const entry of entries) {

@@ -864,6 +864,7 @@ function writeCutoverArtifact(
       },
       { tag: 'v7', new_sqlite_classes: ['AuthGuard'] },
       { tag: 'v8', deleted_classes: ['AuthGuard'] },
+      { tag: 'v9', new_sqlite_classes: ['SlackGatewaySession'] },
     ],
   };
   writeFileSync(path.join(builtDir, 'wrangler.json'), JSON.stringify(config));

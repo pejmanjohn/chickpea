@@ -66,6 +66,12 @@ export async function bindRoutineAgentAuthority(input: {
   if (current && current.agentId !== input.assignment.agentId) {
     throw new RoutineAuthorityError('agent_unavailable', 'A schedule cannot silently move to another Agent.');
   }
+  if (current && current.runsAsMembershipId !== input.actorMembershipId) {
+    throw new RoutineAuthorityError(
+      'creator_ineligible',
+      'Only the Runs as member can edit this schedule until its authority is explicitly reassigned.',
+    );
+  }
   const runsAsMembershipId = current?.runsAsMembershipId ?? input.actorMembershipId;
   const effectiveConnections = await resolveEffectiveConnectionAccounts({
     config,

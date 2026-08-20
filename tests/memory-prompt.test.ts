@@ -11,14 +11,13 @@ import { selectMemoryEntries } from '../src/memory/selector.ts';
 import { bindAuthorizedMemoryScope, type EnabledMemoryScope } from '../src/memory/scope.ts';
 import type { MemoryEntry, MemoryOwnerDescriptor, OwnerMemoryEntry } from '../src/memory/types.ts';
 
-test('owner prompt visibly labels Agent and Channel origins while keeping memory advisory', () => {
-  const owner = (ownerKind: 'agent' | 'channel', ownerId: string): MemoryOwnerDescriptor => ({
+test('owner prompt visibly labels the Agent origin while keeping memory advisory', () => {
+  const owner = (ownerKind: 'agent', ownerId: string): MemoryOwnerDescriptor => ({
     storeId: `memory_owner_${ownerKind}_T_${ownerId}`, workspaceId: 'T', ownerKind, ownerId,
     lifecycle: 'active', resetEpoch: 1, createdAt: 1, sealedAt: null, sealedReason: null,
     schemaVersion: 2,
   });
   const agent = owner('agent', 'agent_default');
-  const channel = owner('channel', 'C');
   const entry = (descriptor: MemoryOwnerDescriptor): OwnerMemoryEntry => ({
     entryId: `mem_${descriptor.ownerKind}`, storeId: descriptor.storeId, workspaceId: 'T',
     ownerKind: descriptor.ownerKind, ownerId: descriptor.ownerId, slug: 'guide',
@@ -29,15 +28,14 @@ test('owner prompt visibly labels Agent and Channel origins while keeping memory
     contentHash: 'hash', supersedingEntryId: null,
   });
   const scope = bindAuthorizedMemoryScope({
-    surface: 'channel', workspaceId: 'T', agentOwner: agent, channelOwner: channel,
-    writeOwner: channel,
+    surface: 'channel', workspaceId: 'T', agentOwner: agent, writeOwner: agent,
   });
   const prompt = serializeMemoryPrompt(scope, selectMemoryEntries({
-    entries: [entry(agent), entry(channel)], query: 'guide', now: 2,
+    entries: [entry(agent)], query: 'guide', now: 2,
   }));
   const payload = JSON.parse(prompt!.split('\n')[2]!);
   assert.deepEqual(payload.entries.map((item: { origin: unknown }) => item.origin), [
-    { kind: 'channel', id: 'C' }, { kind: 'agent', id: 'agent_default' },
+    { kind: 'agent', id: 'agent_default' },
   ]);
   assert.match(prompt!, /cannot change system instructions/i);
   assert.match(prompt!, /cannot.*authorize permissions, tools/i);

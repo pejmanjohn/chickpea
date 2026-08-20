@@ -15,6 +15,7 @@ import {
   gatewayOperationAllowed,
   parseGatewayClaimCreateResponse,
   parseGatewayClaimStatusResponse,
+  parseGatewayAvatarPublishResponse,
   parseGatewayFrameText,
   parseGatewayOperationResponse,
   type GatewayClaimCreateRequest,
@@ -38,6 +39,7 @@ import {
 export const GATEWAY_CLAIM_SETTING = 'slack.gateway.claim.v1';
 export const GATEWAY_BINDING_SETTING = 'slack.gateway.binding.v1';
 export const GATEWAY_SESSION_SETTING = 'slack.gateway.session.v1';
+const GATEWAY_REQUEST_TIMEOUT_MS = 15_000;
 
 export interface GatewayClaimState {
   claimId: string;
@@ -190,6 +192,64 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     return response.result ?? {};
   }
 
+  /** Publish one immutable Agent avatar through gateway-owned public storage. */
+  async publishAvatar(input: {
+    workspaceId: string;
+    agentId: string;
+    revision: number;
+    contentType: 'image/png' | 'image/jpeg' | 'image/webp';
+    bytes: Uint8Array;
+  }): Promise<string> {
+    const binding = await this.requiredBinding();
+    if (input.workspaceId !== binding.workspaceId) {
+      throw new SlackTransportError('avatar.publish', 'workspace_mismatch');
+    }
+    if (!Number.isSafeInteger(input.revision) || input.revision < 1) {
+      throw new SlackTransportError('avatar.publish', 'invalid_revision');
+    }
+    const response = parseGatewayAvatarPublishResponse(await this.signedJson(
+      '/v1/avatars',
+      'avatar.publish',
+      {
+        bindingId: binding.bindingId,
+        workspaceId: binding.workspaceId,
+        agentId: input.agentId,
+        revision: `rev_${input.revision}`,
+        contentType: input.contentType,
+        data: bytesToBase64(input.bytes),
+      },
+    ));
+    return response.url;
+  }
+
+  /** Ask the gateway to render the fixed Chickpea avatar theme from a seed. */
+  async generateAvatar(input: {
+    workspaceId: string;
+    agentId: string;
+    revision: number;
+    seed: string;
+  }): Promise<string> {
+    const binding = await this.requiredBinding();
+    if (input.workspaceId !== binding.workspaceId) {
+      throw new SlackTransportError('avatar.generate', 'workspace_mismatch');
+    }
+    if (!Number.isSafeInteger(input.revision) || input.revision < 1) {
+      throw new SlackTransportError('avatar.generate', 'invalid_revision');
+    }
+    const response = parseGatewayAvatarPublishResponse(await this.signedJson(
+      '/v1/avatars',
+      'avatar.generate',
+      {
+        bindingId: binding.bindingId,
+        workspaceId: binding.workspaceId,
+        agentId: input.agentId,
+        revision: `rev_${input.revision}`,
+        seed: input.seed,
+      },
+    ));
+    return response.url;
+  }
+
   async beginOidc(input: {
     clientId: string;
     redirectUri: string;
@@ -263,10 +323,18 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
   async createSession(
     send: (frame: GatewayClientFrame) => void,
     onEvent: (delivery: GatewayInboundDelivery) => Promise<'accepted' | 'duplicate' | 'rejected'>,
+    checkpoint?: GatewaySessionCheckpoint,
   ): Promise<GatewayLogicalSession> {
     const [identity, binding] = await Promise.all([this.identity(), this.loadBinding()]);
     if (!binding) throw new Error('Gateway workspace binding is unavailable.');
-    return new GatewayLogicalSession({ identity, binding, send, onEvent, now: this.now });
+    return new GatewayLogicalSession({
+      identity,
+      binding,
+      send,
+      onEvent,
+      now: this.now,
+      checkpoint: checkpoint ?? { health: 'connecting', attempt: 0 },
+    });
   }
 
   private async retainBinding(
@@ -357,6 +425,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       response = await this.fetch(new URL(path, this.requireBaseUrl()), {
         ...init,
         redirect: 'error',
+        signal: init.signal ?? AbortSignal.timeout(GATEWAY_REQUEST_TIMEOUT_MS),
         headers: { 'content-type': 'application/json', ...init.headers },
       });
     } catch {
@@ -387,6 +456,9 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       settings: this.dependencies.settings,
       keyring: this.dependencies.keyring,
       now: this.now,
+    }).catch((error) => {
+      this.identityPromise = undefined;
+      throw error;
     });
     return this.identityPromise;
   }
@@ -413,7 +485,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
 
 /** One socket incarnation of a renewable logical session. */
 export class GatewayLogicalSession {
-  private checkpoint: GatewaySessionCheckpoint = { health: 'connecting', attempt: 0 };
+  private checkpoint: GatewaySessionCheckpoint;
   private ready = false;
 
   constructor(private readonly input: {
@@ -422,7 +494,10 @@ export class GatewayLogicalSession {
     send: (frame: GatewayClientFrame) => void;
     onEvent: (delivery: GatewayInboundDelivery) => Promise<'accepted' | 'duplicate' | 'rejected'>;
     now: () => number;
-  }) {}
+    checkpoint: GatewaySessionCheckpoint;
+  }) {
+    this.checkpoint = { ...input.checkpoint };
+  }
 
   async hello(): Promise<void> {
     const unsigned = {
@@ -467,17 +542,21 @@ export class GatewayLogicalSession {
     if (frame.kind !== 'event.deliver' && frame.kind !== 'interaction.agent_selected') {
       throw new Error('Unsupported gateway session frame.');
     }
-    let outcome: GatewayEventAck['outcome'] = 'rejected';
+    let outcome: GatewayEventAck['outcome'];
     try {
       outcome = await this.input.onEvent(frame);
-    } finally {
-      this.input.send({
-        protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
-        kind: 'event.ack',
-        deliveryId: frame.deliveryId,
-        outcome,
-      });
+    } catch {
+      // The gateway lane is deliberately online-only: processing failures are
+      // rejected rather than queued. They are application failures, however,
+      // not malformed frames, so one bad event must not tear down the socket.
+      outcome = 'rejected';
     }
+    this.input.send({
+      protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+      kind: 'event.ack',
+      deliveryId: frame.deliveryId,
+      outcome,
+    });
   }
 
   close(reason: string, random?: () => number): GatewaySessionCheckpoint {
@@ -666,4 +745,12 @@ function requiredGatewayString(value: unknown): string {
     throw new Error('Gateway OIDC proof is invalid.');
   }
   return value;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 32_768) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768));
+  }
+  return btoa(binary);
 }

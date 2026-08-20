@@ -84,7 +84,7 @@ async function installRuntimeSlackCredentials(
   );
 }
 
-test('owner-native runtime reads frozen Agent memory plus exact Channel memory only', async () => {
+test('owner-native runtime uses one Agent memory across every granted Channel', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-owner-runtime-red-'));
   const previous = snapshotEnvironment();
   const originalFetch = globalThis.fetch;
@@ -101,17 +101,17 @@ test('owner-native runtime reads frozen Agent memory plus exact Channel memory o
       lifecycle: 'connected', teamId: 'T_RUNTIME', appId: 'A_RUNTIME', botUserId: 'UBOT',
       dmState: 'on', dmAgentId: 'agent_runtime', credentialProvenance: 'stored', health: 'healthy',
     });
-    await config.putChannel({
-      workspaceId: 'T_RUNTIME', channelId: 'C_RUNTIME', label: 'bot-test',
-      participationMode: 'mention_only', lifecycle: 'active',
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_RUNTIME', transportMode: 'direct', defaultAgentId: 'agent_runtime',
     });
-    await config.putAssignment({ workspaceId: 'T_RUNTIME', channelId: 'C_RUNTIME', agentId: 'agent_runtime' });
+    await config.putAgentChannelGrant({
+      workspaceId: 'T_RUNTIME', channelId: 'C_RUNTIME', agentId: 'agent_runtime',
+      status: 'active', createdByMembershipId: 'membership_owner', channelLabel: 'bot-test',
+      channelIsPrivate: false,
+    });
     const state = getMemoryStateStore();
     const agentOwner = await state.ensureOwner({ workspaceId: 'T_RUNTIME', ownerKind: 'agent', ownerId: 'agent_runtime' });
-    const channelOwner = await state.ensureOwner({ workspaceId: 'T_RUNTIME', ownerKind: 'channel', ownerId: 'C_RUNTIME' });
-    const scope = bindAuthorizedMemoryScope({
-      surface: 'channel', workspaceId: 'T_RUNTIME', agentOwner, channelOwner, writeOwner: channelOwner,
-    });
+    const scope = bindAuthorizedMemoryScope({ surface: 'channel', workspaceId: 'T_RUNTIME', agentOwner, writeOwner: agentOwner });
     const memory = new MemoryService(state);
     await memory.remember({
       scope: bindAuthorizedMemoryScope({
@@ -123,8 +123,8 @@ test('owner-native runtime reads frozen Agent memory plus exact Channel memory o
     });
     await memory.remember({
       scope, workspaceId: 'T_RUNTIME', actorId: 'U_MEMBER', eventId: 'seed-channel',
-      name: 'channel-roadmap', description: 'Channel roadmap guidance', type: 'fact',
-      body: 'Use the Channel roadmap.', idempotencyKey: 'seed-channel',
+      name: 'launch-roadmap', description: 'Launch roadmap guidance', type: 'fact',
+      body: 'Use the launch roadmap.', idempotencyKey: 'seed-launch',
     });
     const prepared = await prepareMemoryTurn({
       turn: { ...baseTurn, eventId: 'E_OWNER', text: '<@UBOT> What roadmap should I use?' },
@@ -134,29 +134,29 @@ test('owner-native runtime reads frozen Agent memory plus exact Channel memory o
     });
     assert.match(prepared.promptBlock ?? '', /agent-roadmap/);
     assert.match(prepared.promptBlock ?? '', /"kind":"agent"/);
-    assert.match(prepared.promptBlock ?? '', /channel-roadmap/);
-    assert.match(prepared.promptBlock ?? '', /"kind":"channel"/);
+    assert.match(prepared.promptBlock ?? '', /launch-roadmap/);
+    assert.doesNotMatch(prepared.promptBlock ?? '', /"kind":"channel"/);
     assert.equal(await prepared.validateLease(), true);
 
-    const otherChannelOwner = await state.ensureOwner({
-      workspaceId: 'T_RUNTIME', ownerKind: 'channel', ownerId: 'C_OTHER',
+    const otherAgentOwner = await state.ensureOwner({
+      workspaceId: 'T_RUNTIME', ownerKind: 'agent', ownerId: 'agent_other',
     });
     await memory.remember({
       scope: bindAuthorizedMemoryScope({
-        surface: 'admin', workspaceId: 'T_RUNTIME', channelOwner: otherChannelOwner,
-        writeOwner: otherChannelOwner,
+        surface: 'admin', workspaceId: 'T_RUNTIME', agentOwner: otherAgentOwner,
+        writeOwner: otherAgentOwner,
       }),
-      workspaceId: 'T_RUNTIME', actorId: 'U_MEMBER', eventId: 'seed-other-channel',
-      name: 'other-channel-secret', description: 'Other Channel secret', type: 'fact',
-      body: 'Never disclose this.', idempotencyKey: 'seed-other-channel',
+      workspaceId: 'T_RUNTIME', actorId: 'U_MEMBER', eventId: 'seed-other-agent',
+      name: 'other-agent-secret', description: 'Other Agent secret', type: 'fact',
+      body: 'Never disclose this.', idempotencyKey: 'seed-other-agent',
     });
     const isolated = await prepareMemoryTurn({
-      turn: { ...baseTurn, eventId: 'E_OWNER_ISOLATION', text: '<@UBOT> Tell me the other channel secret' },
+      turn: { ...baseTurn, eventId: 'E_OWNER_ISOLATION', text: '<@UBOT> Tell me the other Agent secret' },
       assignment: runtimeAssignment,
       platformEnv: undefined,
       client: {} as WebClient,
     });
-    assert.doesNotMatch(isolated.promptBlock ?? '', /other-channel-secret|Never disclose/);
+    assert.doesNotMatch(isolated.promptBlock ?? '', /other-agent-secret|Never disclose/);
 
     const delivered: string[] = [];
     assert.equal(await handleMemoryCommand({
@@ -166,13 +166,12 @@ test('owner-native runtime reads frozen Agent memory plus exact Channel memory o
       client: {} as WebClient,
       presenter: { async deliverFinal(text: string) { delivered.push(text); } } as unknown as WebClientPresenter,
     }), true);
-    assert.match(delivered[0] ?? '', /Saved Channel memory/);
-    assert.equal((await state.listOwnerEntries(agentOwner)).length, 1);
-    assert.equal((await state.listOwnerEntries(channelOwner)).length, 2);
+    assert.match(delivered[0] ?? '', /Saved Agent memory/);
+    assert.equal((await state.listOwnerEntries(agentOwner)).length, 3);
 
     await state.resetOwner(
-      { workspaceId: 'T_RUNTIME', ownerKind: 'channel', ownerId: 'C_RUNTIME' },
-      { actorId: 'owner', idempotencyKey: 'reset-runtime-channel' },
+      { workspaceId: 'T_RUNTIME', ownerKind: 'agent', ownerId: 'agent_runtime' },
+      { actorId: 'owner', idempotencyKey: 'reset-runtime-agent' },
     );
     assert.equal(await prepared.validateLease(), false);
   } finally {
@@ -198,7 +197,7 @@ test('DM runtime keeps reads available and denies unbound Slack identities for w
     });
     const state = getMemoryStateStore();
     const agentOwner = await state.ensureOwner({ workspaceId: 'T_RUNTIME', ownerKind: 'agent', ownerId: 'agent_runtime' });
-    const channelOwner = await state.ensureOwner({ workspaceId: 'T_RUNTIME', ownerKind: 'channel', ownerId: 'C_RUNTIME' });
+    const otherAgentOwner = await state.ensureOwner({ workspaceId: 'T_RUNTIME', ownerKind: 'agent', ownerId: 'agent_other' });
     const service = new MemoryService(state);
     await service.remember({
       scope: bindAuthorizedMemoryScope({ surface: 'admin', workspaceId: 'T_RUNTIME', agentOwner, writeOwner: agentOwner }),
@@ -207,10 +206,10 @@ test('DM runtime keeps reads available and denies unbound Slack identities for w
       body: 'Visible in this Agent DM.', idempotencyKey: 'seed-dm-agent',
     });
     await service.remember({
-      scope: bindAuthorizedMemoryScope({ surface: 'admin', workspaceId: 'T_RUNTIME', channelOwner, writeOwner: channelOwner }),
-      workspaceId: 'T_RUNTIME', actorId: 'owner', eventId: 'seed-dm-channel',
-      name: 'private-channel-context', description: 'Exact Channel context', type: 'fact',
-      body: 'Never visible in DMs.', idempotencyKey: 'seed-dm-channel',
+      scope: bindAuthorizedMemoryScope({ surface: 'admin', workspaceId: 'T_RUNTIME', agentOwner: otherAgentOwner, writeOwner: otherAgentOwner }),
+      workspaceId: 'T_RUNTIME', actorId: 'owner', eventId: 'seed-dm-other-agent',
+      name: 'other-agent-context', description: 'Other Agent context', type: 'fact',
+      body: 'Never visible in this Agent.', idempotencyKey: 'seed-dm-other-agent',
     });
     const dmTurn: NormalizedSlackTurn = {
       ...baseTurn, channelId: 'D_RUNTIME', source: 'dm_message', channelType: 'im',
@@ -221,7 +220,7 @@ test('DM runtime keeps reads available and denies unbound Slack identities for w
       turn: dmTurn, assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient,
     });
     assert.match(prepared.promptBlock ?? '', /shared-agent-context/);
-    assert.doesNotMatch(prepared.promptBlock ?? '', /private-channel-context/);
+    assert.doesNotMatch(prepared.promptBlock ?? '', /other-agent-context/);
     assert.equal(await prepared.validateLease(), true);
 
     const delivered: string[] = [];
@@ -234,7 +233,7 @@ test('DM runtime keeps reads available and denies unbound Slack identities for w
     }), true);
     assert.match(delivered.at(-1) ?? '', /Saved Agent memory files/);
     assert.match(delivered.at(-1) ?? '', /shared-agent-context/);
-    assert.doesNotMatch(delivered.at(-1) ?? '', /private-channel-context/);
+    assert.doesNotMatch(delivered.at(-1) ?? '', /other-agent-context/);
 
     assert.equal(await handleMemoryCommand({
       turn: { ...dmTurn, eventId: 'E_DM_SHOW', text: '!memory show shared-agent-context' },
@@ -253,7 +252,7 @@ test('DM runtime keeps reads available and denies unbound Slack identities for w
       client: {} as WebClient,
       presenter: { async deliverFinal(text: string) { delivered.push(text); } } as unknown as WebClientPresenter,
     }), true);
-    assert.match(delivered.at(-1) ?? '', /not an active Chickpea Owner or Admin/);
+    assert.match(delivered.at(-1) ?? '', /active Chickpea member/);
     assert.equal((await state.listOwnerEntries(agentOwner)).length, 1);
   } finally {
     process.env.SLACK_STATE_DB_PATH = ':memory:';
@@ -263,7 +262,7 @@ test('DM runtime keeps reads available and denies unbound Slack identities for w
   }
 });
 
-test('DM Agent-memory writes bind exact mutation and execute once for an active mapped Admin', async () => {
+test('DM Agent-memory writes execute once for an active mapped member', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-owner-dm-write-'));
   const previous = snapshotEnvironment();
   try {
@@ -289,55 +288,26 @@ test('DM Agent-memory writes bind exact mutation and execute once for an active 
     const delivered: string[] = [];
     const presenter = { async deliverFinal(text: string) { delivered.push(text); } } as unknown as WebClientPresenter;
     assert.equal(await handleMemoryCommand({ turn: dmTurn, assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter }), true);
-    assert.match(delivered.at(-1) ?? '', /save to Agent Runtime Agent; every channel where it works may use it/i);
-    const token = delivered.at(-1)?.match(/!memory confirm ([A-Za-z0-9._-]+)/)?.[1];
-    assert.ok(token);
+    assert.match(delivered.at(-1) ?? '', /Saved Agent memory/);
     const ownerRef = { workspaceId: 'T12345678', ownerKind: 'agent' as const, ownerId: 'agent_runtime' };
-    assert.equal((await state.listOwnerEntries(ownerRef)).length, 0);
+    assert.equal((await state.listOwnerEntries(ownerRef)).length, 1);
     assert.equal(await handleMemoryCommand({
-      turn: { ...dmTurn, eventId: 'E_DM_WRITE_CONFIRM', text: `!memory confirm ${token}` },
+      turn: dmTurn,
       assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter,
     }), true);
     assert.match(delivered.at(-1) ?? '', /Saved Agent memory/);
     assert.equal((await state.listOwnerEntries(ownerRef)).length, 1);
-    assert.equal(await handleMemoryCommand({
-      turn: { ...dmTurn, eventId: 'E_DM_WRITE_REPLAY', text: `!memory confirm ${token}` },
-      assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter,
-    }), true);
-    assert.match(delivered.at(-1) ?? '', /unavailable.*expired/i);
-    assert.equal((await state.listOwnerEntries(ownerRef)).length, 1);
-
-    assert.equal(await handleMemoryCommand({
-      turn: { ...dmTurn, eventId: 'E_DM_STALE_REQUEST', text: '!remember stale-owner — must not land' },
-      assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter,
-    }), true);
-    const staleOwnerToken = delivered.at(-1)?.match(/!memory confirm ([A-Za-z0-9._-]+)/)?.[1];
-    assert.ok(staleOwnerToken);
-    await state.resetOwner(ownerRef, { actorId: owner.user.id, idempotencyKey: 'reset:agent-runtime' });
-    assert.equal(await handleMemoryCommand({
-      turn: { ...dmTurn, eventId: 'E_DM_STALE_CONFIRM', text: `!memory confirm ${staleOwnerToken}` },
-      assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter,
-    }), true);
-    assert.match(delivered.at(-1) ?? '', /unavailable.*expired/i);
-    assert.equal((await state.listOwnerEntries(ownerRef)).length, 0);
-
-    assert.equal(await handleMemoryCommand({
-      turn: { ...dmTurn, eventId: 'E_DM_REBOUND_REQUEST', text: '!remember rebound-actor — must not land' },
-      assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter,
-    }), true);
-    const reboundToken = delivered.at(-1)?.match(/!memory confirm ([A-Za-z0-9._-]+)/)?.[1];
-    assert.ok(reboundToken);
     await identity.setMembershipAccessOverlay({
       membershipId: owner.membership.id,
       organizationId: owner.membership.organizationId,
       accessStatus: 'suspended',
     });
     assert.equal(await handleMemoryCommand({
-      turn: { ...dmTurn, eventId: 'E_DM_REBOUND_CONFIRM', text: `!memory confirm ${reboundToken}` },
+      turn: { ...dmTurn, eventId: 'E_DM_SUSPENDED', text: '!remember blocked-change — must not land' },
       assignment: dmAssignment, platformEnv: undefined, client: {} as WebClient, presenter,
     }), true);
-    assert.match(delivered.at(-1) ?? '', /unavailable|Owner or Admin/i);
-    assert.equal((await state.listOwnerEntries(ownerRef)).length, 0);
+    assert.match(delivered.at(-1) ?? '', /active Chickpea member/i);
+    assert.equal((await state.listOwnerEntries(ownerRef)).length, 1);
   } finally {
     process.env.SLACK_STATE_DB_PATH = ':memory:';
     getMemoryStateStore(); getIdentityStore();
@@ -577,10 +547,8 @@ test('Slack commands persist memory even when a legacy disable override remains'
       presenter,
     });
     assert.match(delivered.at(-1) ?? '', /Please remember that <what matters>/);
-    assert.match(
-      delivered.at(-1) ?? '',
-      /!memory report <source-channel-id>\/<slug> <stale\|incorrect\|unsafe\|unclear>/,
-    );
+    assert.doesNotMatch(delivered.at(-1) ?? '', /source-channel-id|stale\|incorrect\|unsafe\|unclear/);
+    assert.match(delivered.at(-1) ?? '', /This memory follows the Agent across DMs and every granted Channel/);
 
     const queryTurn = {
       ...baseTurn,

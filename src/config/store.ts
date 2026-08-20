@@ -1013,7 +1013,7 @@ export class ConfigStoreLogic {
       next.lifecycle ?? (next.enabled ? 'active' : 'archived'),
       next.creatorMembershipId ?? null,
       next.editPolicy ?? 'creator_and_admins',
-      next.configurationGeneration ?? current.configurationGeneration ?? 1,
+      (current.configurationGeneration ?? 1) + 1,
       JSON.stringify(next.slackPresence ?? defaultAgentSlackPresence(next.id, next.name)),
       next.archivedAt ?? null,
       model,

@@ -34,6 +34,44 @@ import {
 
 const NOW = Date.UTC(2026, 7, 20, 12);
 
+test('gateway deployment identity retries after a transient settings failure', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  let failIdentityRead = true;
+  const flakySettings = new Proxy(settings, {
+    get(target, property) {
+      if (property === 'getSetting') {
+        return async (key: string) => {
+          if (failIdentityRead && key === GATEWAY_DEPLOYMENT_IDENTITY_SETTING) {
+            failIdentityRead = false;
+            throw new Error('settings temporarily unavailable');
+          }
+          return target.getSetting(key);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const client = new GatewayDeploymentClient({
+    settings: flakySettings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => NOW,
+  });
+  try {
+    await assert.rejects(client.beginClaim(), /temporarily unavailable/);
+    const claim = await client.beginClaim();
+    assert.equal(claim.claimId, 'claim_test');
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
 test('shared-app claim binds one workspace without storing Slack credentials', async () => {
   const settings = new SqliteSettingsStore(':memory:', () => NOW);
   const config = configStore();
@@ -116,6 +154,12 @@ test('gateway transport maps only allowlisted tenant-bound Slack operations', as
       deleted: false, bot: false, appUser: false, restricted: false,
       ultraRestricted: false, stranger: false,
     });
+    assert.deepEqual(await transport.listChannels(), {
+      channels: [{
+        id: 'C_SUPPORT', name: 'support', private: false, member: true, archived: false,
+      }],
+      truncated: false,
+    });
     const group = await transport.createUserGroup({
       name: 'Support', handle: 'support', description: 'Support Agent',
     });
@@ -126,7 +170,7 @@ test('gateway transport maps only allowlisted tenant-bound Slack operations', as
     });
     assert.deepEqual(posted, { channelId: 'C_SUPPORT', ts: '2.2' });
     assert.deepEqual(gateway.operations.map((entry) => entry.operation), [
-      'users.info', 'usergroups.create', 'chat.postMessage',
+      'users.info', 'conversations.list', 'usergroups.create', 'chat.postMessage',
     ]);
     assert.ok(gateway.requests.slice(2).every((entry) =>
       entry.body.workspaceId === 'TGATEWAY' && entry.body.bindingId === 'binding_test'
@@ -134,6 +178,80 @@ test('gateway transport maps only allowlisted tenant-bound Slack operations', as
     assert.ok(await Promise.all(gateway.requests.slice(2).map((entry) =>
       verifyGatewayRequestSignature({ publicKey: gateway.publicKey!, request: entry.body as never })
     )).then((values) => values.every(Boolean)));
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway client publishes an immutable Agent avatar without exposing Slack credentials', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => NOW,
+  });
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+    const url = await client.publishAvatar({
+      workspaceId: 'TGATEWAY', agentId: 'agent_support', revision: 2,
+      contentType: 'image/png', bytes,
+    });
+    assert.equal(url, 'https://cdn.chickpea.test/avatars/binding_test/agent_support/rev_2.png');
+    const request = gateway.requests.find(({ path }) => path === '/v1/avatars');
+    assert.ok(request);
+    assert.equal(request.body.kind, 'avatar.publish');
+    assert.equal(request.body.bindingId, 'binding_test');
+    assert.equal(request.body.workspaceId, 'TGATEWAY');
+    assert.equal(request.body.agentId, 'agent_support');
+    assert.equal(request.body.revision, 'rev_2');
+    assert.equal(request.body.contentType, 'image/png');
+    assert.equal(request.body.data, 'iVBORw0KGgoB');
+    assert.equal(await verifyGatewayRequestSignature({
+      publicKey: gateway.publicKey!, request: request.body as never,
+    }), true);
+    assert.doesNotMatch(JSON.stringify(request.body), /xox[baprs]-/i);
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway client requests a fixed generated avatar without sending SVG', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => NOW,
+  });
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const url = await client.generateAvatar({
+      workspaceId: 'TGATEWAY', agentId: 'agent_support', revision: 1,
+      seed: 'support-seed',
+    });
+    assert.equal(url, 'https://cdn.chickpea.test/avatars/binding_test/agent_support/rev_1.svg');
+    const request = gateway.requests.find(({ path }) => path === '/v1/avatars');
+    assert.ok(request);
+    assert.equal(request.body.kind, 'avatar.generate');
+    assert.equal(request.body.seed, 'support-seed');
+    assert.equal(Object.hasOwn(request.body, 'data'), false);
+    assert.equal(await verifyGatewayRequestSignature({
+      publicKey: gateway.publicKey!, request: request.body as never,
+    }), true);
   } finally {
     settings.close();
     config.close();
@@ -249,6 +367,7 @@ test('logical sessions authenticate before delivery, ack once, and fence tenant 
       (frame) => sent.push(frame),
       async (delivery) => {
         deliveries.push(delivery.deliveryId);
+        if (delivery.deliveryId === 'delivery_failure') throw new Error('store unavailable');
         return deliveries.length === 1 ? 'accepted' : 'duplicate';
       },
     );
@@ -290,6 +409,10 @@ test('logical sessions authenticate before delivery, ack once, and fence tenant 
     assert.deepEqual(sent.slice(-3).map((frame) =>
       frame.kind === 'event.ack' ? frame.outcome : undefined
     ), ['accepted', 'duplicate', 'duplicate']);
+    await session.handle(JSON.stringify({ ...delivery, deliveryId: 'delivery_failure' }));
+    const failureAck = sent.at(-1);
+    assert.equal(failureAck?.kind, 'event.ack');
+    assert.equal(failureAck?.kind === 'event.ack' ? failureAck.outcome : undefined, 'rejected');
 
     await assert.rejects(
       session.handle(JSON.stringify({
@@ -351,13 +474,79 @@ test('session runner reconnects and rotates a renewable logical session', async 
       rotateAt: NOW + 15 * 60_000,
     }));
     await spin();
-    assert.equal(timers.at(-1)?.delay, 12 * 60_000);
+    assert.ok(timers.some(({ delay }) => delay === 12 * 60_000));
+    assert.ok(timers.some(({ delay }) => delay === 90_000));
     await waitFor(async () => {
       const value = await settings.getSetting(GATEWAY_SESSION_SETTING);
       return value ? JSON.parse(value).health === 'healthy' : false;
     });
     sockets[0]!.fail();
     assert.ok((timers.at(-1)?.delay ?? -1) >= 0);
+    await waitFor(async () => {
+      const value = await settings.getSetting(GATEWAY_SESSION_SETTING);
+      return value ? JSON.parse(value).attempt === 1 : false;
+    });
+    timers.at(-1)!.callback();
+    await waitFor(() => sockets.length === 2);
+    sockets[1]!.fail();
+    await waitFor(async () => {
+      const value = await settings.getSetting(GATEWAY_SESSION_SETTING);
+      return value ? JSON.parse(value).attempt === 2 : false;
+    });
+    runner.stop();
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('session runner reconnects a half-open socket after heartbeat timeout', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => clock,
+  });
+  let clock = NOW;
+  const socket = new FakeSocket();
+  const timers: Array<{ callback: () => void; delay: number }> = [];
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const runner = new GatewaySessionRunner({
+      client,
+      onEvent: async () => 'accepted',
+      createSocket: () => socket,
+      now: () => clock,
+      setTimer: ((callback: () => void, delay: number) => {
+        timers.push({ callback, delay });
+        return timers.length as unknown as ReturnType<typeof setTimeout>;
+      }),
+      clearTimer: () => {},
+    });
+    await runner.start();
+    socket.open();
+    await waitFor(() => socket.sent.length === 1);
+    socket.message(JSON.stringify({
+      protocolVersion: 1, kind: 'session.ready', bindingId: 'binding_test',
+      workspaceId: 'TGATEWAY', sessionId: 'session_timeout', heartbeatIntervalMs: 30_000,
+      rotateAt: NOW + 15 * 60_000,
+    }));
+    await spin();
+    const heartbeat = timers.find(({ delay }) => delay === 90_000);
+    assert.ok(heartbeat);
+    clock = NOW + 90_001;
+    heartbeat.callback();
+    await waitFor(async () => {
+      const value = await settings.getSetting(GATEWAY_SESSION_SETTING);
+      return value ? JSON.parse(value).reason === 'heartbeat_timeout' : false;
+    });
+    assert.equal(socket.readyState, 3);
     runner.stop();
   } finally {
     settings.close();
@@ -408,6 +597,12 @@ class FakeGateway {
         ok: true,
         result: operationResult(operation, operationInput),
       });
+    }
+    if (url.pathname === '/v1/avatars') {
+      const extension = body.kind === 'avatar.generate' ? 'svg' : 'png';
+      return json({
+        url: `https://cdn.chickpea.test/avatars/${body.bindingId}/${body.agentId}/${body.revision}.${extension}`,
+      }, 201);
     }
     if (url.pathname === '/v1/oidc/authorize') {
       return json({
@@ -497,6 +692,16 @@ function operationResult(operation: string, input: Record<string, unknown>): Rec
         is_member: true,
         is_private: false,
       },
+    };
+  }
+  if (operation === 'conversations.list') {
+    return {
+      ok: true,
+      channels: [{
+        id: 'C_SUPPORT', name: 'support', is_member: true,
+        is_private: false, is_archived: false,
+      }],
+      response_metadata: { next_cursor: '' },
     };
   }
   return { ok: true };

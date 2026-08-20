@@ -32,7 +32,7 @@ function agent(id: string, name: string): CustomAgentConfig {
   };
 }
 
-test('routine provider input includes its current Agent and exact Channel memory only', async () => {
+test('routine provider input includes only its current Agent memory', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-memory-'));
   const dbPath = join(directory, 'state.db');
   try {
@@ -42,19 +42,13 @@ test('routine provider input includes its current Agent and exact Channel memory
       const agentB = agent('agent_routine_b', 'Routine B');
       await config.createAgent(agentA);
       await config.createAgent(agentB);
-      await config.putChannel({
-        workspaceId: 'T_ROUTINE', channelId: 'C_ROUTINE', label: 'routine',
-        participationMode: 'mention_only', lifecycle: 'active',
+      await config.ensureWorkspaceInstallation({
+        workspaceId: 'T_ROUTINE', transportMode: 'direct', defaultAgentId: agentA.id,
       });
-      await config.putChannel({
-        workspaceId: 'T_ROUTINE', channelId: 'C_OTHER', label: 'other',
-        participationMode: 'mention_only', lifecycle: 'active',
-      });
-      await config.putAssignment({
+      await config.putAgentChannelGrant({
         workspaceId: 'T_ROUTINE', channelId: 'C_ROUTINE', agentId: agentA.id,
-      });
-      await config.putAssignment({
-        workspaceId: 'T_ROUTINE', channelId: 'C_OTHER', agentId: agentB.id,
+        status: 'active', createdByMembershipId: 'membership_creator',
+        channelLabel: 'routine', channelIsPrivate: false,
       });
 
       const state = getMemoryStateStore();
@@ -64,24 +58,14 @@ test('routine provider input includes its current Agent and exact Channel memory
       const bOwner = await state.ensureOwner({
         workspaceId: 'T_ROUTINE', ownerKind: 'agent', ownerId: agentB.id,
       });
-      const channelOwner = await state.ensureOwner({
-        workspaceId: 'T_ROUTINE', ownerKind: 'channel', ownerId: 'C_ROUTINE',
-      });
-      const otherChannelOwner = await state.ensureOwner({
-        workspaceId: 'T_ROUTINE', ownerKind: 'channel', ownerId: 'C_OTHER',
-      });
       const memory = new MemoryService(state);
       for (const [owner, name, body, eventId] of [
         [aOwner, 'routine-agent-roadmap', 'Authorized Agent roadmap.', 'seed-a'],
         [bOwner, 'routine-agent-b-roadmap', 'Forbidden Agent B roadmap.', 'seed-b'],
-        [channelOwner, 'routine-channel-roadmap', 'Authorized exact Channel roadmap.', 'seed-channel'],
-        [otherChannelOwner, 'routine-other-channel-roadmap', 'Forbidden other Channel roadmap.', 'seed-other'],
       ] as const) {
         await memory.remember({
           scope: bindAuthorizedMemoryScope({
-            surface: 'admin', workspaceId: 'T_ROUTINE',
-            ...(owner.ownerKind === 'agent' ? { agentOwner: owner } : { channelOwner: owner }),
-            writeOwner: owner,
+            surface: 'admin', workspaceId: 'T_ROUTINE', agentOwner: owner, writeOwner: owner,
           }),
           workspaceId: 'T_ROUTINE', actorId: 'U_CREATOR', eventId,
           name, description: 'Routine roadmap context', type: 'fact', body,
@@ -132,10 +116,7 @@ test('routine provider input includes its current Agent and exact Channel memory
         const prepared = await prepareRoutinePrompt(run, routine, access, undefined, client);
         assert.match(prepared.prompt, /routine-agent-roadmap/);
         assert.match(prepared.prompt, /Authorized Agent roadmap/);
-        assert.match(prepared.prompt, /routine-channel-roadmap/);
-        assert.match(prepared.prompt, /Authorized exact Channel roadmap/);
         assert.doesNotMatch(prepared.prompt, /routine-agent-b-roadmap|Forbidden Agent B/);
-        assert.doesNotMatch(prepared.prompt, /routine-other-channel-roadmap|Forbidden other Channel/);
       } finally {
         routines.close();
       }

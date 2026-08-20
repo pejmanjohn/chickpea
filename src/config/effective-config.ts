@@ -32,7 +32,6 @@ export const SLACK_INTERACTION_DEFAULTS = [
 export type InstructionLayerSource =
   | 'interaction_defaults'
   | 'agent'
-  | 'channel'
   | 'runtime'
   | 'guardrail';
 
@@ -49,9 +48,6 @@ export interface EffectiveSlackConfig {
   /** Explicit on live resolution; missing only on legacy/synthetic fixtures. */
   slackIdentityId?: string;
   channelLabel?: string;
-  channelPromptAddendum?: string;
-  participationMode?: 'ambient' | 'mention_only';
-  channelRevision?: number;
   agent: CustomAgentConfig;
   model: string;
   provider: string;
@@ -89,11 +85,6 @@ export function effectiveSlackConfigFromAssignment(
     agentId: assignment.agentId,
     slackIdentityId: assignment.slackIdentityId!,
     ...(assignment.channelLabel ? { channelLabel: assignment.channelLabel } : {}),
-    ...(assignment.channelPromptAddendum
-      ? { channelPromptAddendum: assignment.channelPromptAddendum }
-      : {}),
-    participationMode: assignment.participationMode ?? 'mention_only',
-    ...(assignment.channelRevision ? { channelRevision: assignment.channelRevision } : {}),
     agent: assignment.agent,
     model,
     provider: providerPrefix(model),
@@ -112,11 +103,7 @@ export function resolvedAssignmentFromEffectiveConfig(
     agentId: config.agentId,
     slackIdentityId: config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     ...(config.channelLabel ? { channelLabel: config.channelLabel } : {}),
-    ...(config.channelPromptAddendum
-      ? { channelPromptAddendum: config.channelPromptAddendum }
-      : {}),
-    participationMode: config.participationMode ?? 'ambient',
-    ...(config.channelRevision ? { channelRevision: config.channelRevision } : {}),
+    participationMode: 'mention_only',
     agent: config.agent,
     model: config.model,
     ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),
@@ -126,7 +113,7 @@ export function resolvedAssignmentFromEffectiveConfig(
 export function effectiveSlackInstructionLayers(
   assignment: Pick<
     ResolvedAssignment,
-    'workspaceId' | 'channelId' | 'channelPromptAddendum' | 'agent'
+    'workspaceId' | 'channelId' | 'agent'
   >,
 ): InstructionLayer[] {
   return [
@@ -136,15 +123,6 @@ export function effectiveSlackInstructionLayers(
       text: SLACK_INTERACTION_DEFAULTS,
     },
     { source: 'agent', label: 'Agent', text: assignment.agent.instructions },
-    ...(assignment.channelPromptAddendum
-      ? [
-          {
-            source: 'channel' as const,
-            label: 'Channel instructions',
-            text: assignment.channelPromptAddendum,
-          },
-        ]
-      : []),
     {
       source: 'runtime',
       label: 'Runtime',
@@ -157,7 +135,7 @@ export function effectiveSlackInstructionLayers(
 export function effectiveSlackInstructions(
   assignment: Pick<
     ResolvedAssignment,
-    'workspaceId' | 'channelId' | 'channelPromptAddendum' | 'agent'
+    'workspaceId' | 'channelId' | 'agent'
   >,
 ): string {
   return effectiveSlackInstructionLayers(assignment).map((layer) => layer.text).join('\n');

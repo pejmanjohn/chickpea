@@ -43,38 +43,58 @@ export class AgentPresenceReconciler {
     if (agent.lifecycle === 'archived') {
       throw new AgentPresenceError('slack_operation_failed', 'Archived Agents cannot be published.');
     }
-    if (!await transport.channelHasMember(input.channelId, input.actorSlackUserId)) {
-      throw new AgentPresenceError(
-        'channel_membership_required',
-        'Join the Slack Channel before adding this Agent.',
-      );
+    let channel;
+    try {
+      channel = await transport.lookupChannel(input.channelId);
+    } catch (error) {
+      const classified = classifyAgentPresenceError(error);
+      await this.recordFailure(agent, classified);
+      throw classified;
     }
-    const channel = await transport.lookupChannel(input.channelId);
-    const existingGrant = (await config.listAgentChannelGrants(
-      input.workspaceId,
-      input.channelId,
-    )).find((grant) => grant.agentId === agent.id);
-    const pendingGrant = await config.putAgentChannelGrant(
-      {
-        workspaceId: input.workspaceId,
-        channelId: input.channelId,
-        agentId: agent.id,
-        status: 'pending',
-        createdByMembershipId: input.actorMembershipId,
-        ...(channel.name ? { channelLabel: channel.name } : {}),
-        channelIsPrivate: channel.private,
-      },
-      existingGrant?.revision ?? 0,
-    );
-    if (!channel.member) {
-      if (channel.private) {
-        const error = new AgentPresenceError(
-          'private_channel_invite_required',
-          'Invite Chickpea to the private Slack Channel before retrying.',
+    const ensurePendingGrant = async (): Promise<AgentChannelGrant> => {
+      const existingGrant = (await config.listAgentChannelGrants(
+        input.workspaceId,
+        input.channelId,
+      )).find((grant) => grant.agentId === agent.id);
+      return config.putAgentChannelGrant(
+        {
+          workspaceId: input.workspaceId,
+          channelId: input.channelId,
+          agentId: agent.id,
+          status: 'pending',
+          createdByMembershipId: input.actorMembershipId,
+          ...(channel.name ? { channelLabel: channel.name } : {}),
+          channelIsPrivate: channel.private,
+        },
+        existingGrant?.revision ?? 0,
+      );
+    };
+    // A bot cannot enumerate membership in a private Channel it cannot see.
+    // Surface the actionable invite step before attempting that impossible
+    // membership probe.
+    if (!channel.member && channel.private) {
+      await ensurePendingGrant();
+      const error = new AgentPresenceError(
+        'private_channel_invite_required',
+        'Invite Chickpea to the private Slack Channel before retrying.',
+      );
+      await this.recordFailure(agent, error);
+      throw error;
+    }
+    try {
+      if (!await transport.channelHasMember(input.channelId, input.actorSlackUserId)) {
+        throw new AgentPresenceError(
+          'channel_membership_required',
+          'Join the Slack Channel before adding this Agent.',
         );
-        await this.recordFailure(agent, error);
-        throw error;
       }
+    } catch (error) {
+      const classified = classifyAgentPresenceError(error);
+      await this.recordFailure(await config.getAgent(agent.id), classified);
+      throw classified;
+    }
+    const pendingGrant = await ensurePendingGrant();
+    if (!channel.member) {
       try {
         await transport.joinPublicChannel(input.channelId);
       } catch (error) {

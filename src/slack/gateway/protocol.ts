@@ -157,6 +157,10 @@ export interface GatewayOperationResponse {
   };
 }
 
+export interface GatewayAvatarPublishResponse {
+  url: string;
+}
+
 export type GatewayServerFrame =
   | GatewaySessionReady
   | GatewayEventDelivery
@@ -293,6 +297,11 @@ export function parseGatewayOperationResponse(value: unknown): GatewayOperationR
         : { retryAfterMs: requirePositiveInteger(error.retryAfterMs, 3_600_000) }),
     },
   };
+}
+
+export function parseGatewayAvatarPublishResponse(value: unknown): GatewayAvatarPublishResponse {
+  const record = exactRecord(value, 'invalid_avatar_response');
+  return { url: requireHttpsUrl(record.url) };
 }
 
 export function gatewayOperationAllowed(value: unknown): value is GatewaySlackOperation {

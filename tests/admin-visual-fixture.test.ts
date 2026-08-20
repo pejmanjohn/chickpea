@@ -24,7 +24,7 @@ interface VisualFixtureModule {
 }
 
 interface ChannelProjection {
-  assignment: unknown;
+  grants: Array<{ agentId: string }>;
   channelId: string;
   readiness: { code: string };
   source: string;
@@ -115,11 +115,11 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
     const byId = new Map<string, ChannelProjection>(
       channels.channels.map((channel: ChannelProjection) => [channel.channelId, channel]),
     );
-    assert.equal(byId.get('C_RELEASES')?.source, 'configured_and_discovered');
+    assert.equal(byId.get('C_RELEASES')?.source, 'granted_and_discovered');
     assert.equal(byId.get('C_RELEASES')?.readiness.code, 'ready');
     assert.equal(byId.get('C_SUPPORT')?.readiness.code, 'membership_required');
-    assert.equal(byId.get('C_UNASSIGNED')?.assignment, null);
-    assert.equal(byId.get('C_UNASSIGNED')?.readiness.code, 'unassigned');
+    assert.deepEqual(byId.get('C_UNASSIGNED')?.grants, []);
+    assert.equal(byId.get('C_UNASSIGNED')?.readiness.code, 'no_agents');
     assert.equal(byId.get('C_DISCOVERED')?.source, 'discovered');
 
     const owners = await fixtureJson<{ owners: MemoryOwnerProjection[] }>(
@@ -128,25 +128,17 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
     );
     assert.ok(owners.owners.some((owner) =>
       owner.ownerKind === 'agent' && owner.ownerId === 'agent_research'));
-    assert.ok(owners.owners.some((owner) =>
-      owner.ownerKind === 'channel' && owner.ownerId === 'C_RELEASES'));
+    assert.equal(owners.owners.some((owner) => owner.ownerKind === 'channel'), false);
 
     const agentFiles = await fixtureJson<{ files: Array<{ name: string }> }>(
       fixture,
       '/admin/api/audit/memory/owners/agent/TVISUAL/agent_research/files',
     );
-    const channelFiles = await fixtureJson<{ files: Array<{ name: string }> }>(
-      fixture,
-      '/admin/api/audit/memory/owners/channel/TVISUAL/C_RELEASES/files',
-    );
     assert.deepEqual(agentFiles.files.map((file) => file.name), [
       'MEMORY.md',
       'audience-notes.md',
-      'research-principles.md',
-    ]);
-    assert.deepEqual(channelFiles.files.map((file) => file.name), [
-      'MEMORY.md',
       'release-checklist.md',
+      'research-principles.md',
     ]);
   } finally {
     await fixture.close();

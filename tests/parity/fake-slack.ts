@@ -158,6 +158,7 @@ export interface FakeSlackChannel {
 export interface FakeSlackUser {
   id: string;
   teamId?: string;
+  email?: string;
   timezone?: string;
   isBot?: boolean;
   isAppUser?: boolean;
@@ -237,6 +238,14 @@ export class FakeSlackBackend {
   private reactionsRemoveError: string | undefined;
   private channelMembers: Record<string, string[]>;
   private workspaceUsers: FakeSlackUser[];
+  private userGroups: Array<{
+    id: string;
+    name: string;
+    handle: string;
+    description?: string;
+    is_disabled: boolean;
+    date_update: number;
+  }> = [];
   private oauth: FakeSlackOAuthConfig | undefined;
   private readonly repliesPages: RepliesPage[];
   private readonly historyMessages: unknown[];
@@ -898,6 +907,46 @@ export class FakeSlackBackend {
         found.isMember = true;
         return { ok: true, channel: channelPayload(found) };
       }
+      case 'usergroups.list': {
+        const includeDisabled = body.include_disabled === true || body.include_disabled === 'true';
+        return {
+          ok: true,
+          usergroups: this.userGroups.filter((group) => includeDisabled || !group.is_disabled),
+        };
+      }
+      case 'usergroups.create': {
+        const handle = String(body.handle ?? '');
+        if (!handle || this.userGroups.some((group) => group.handle === handle)) {
+          return { ok: false, error: handle ? 'handle_already_exists' : 'invalid_arguments' };
+        }
+        const group = {
+          id: `S_FAKE_${this.userGroups.length + 1}`,
+          name: String(body.name ?? handle),
+          handle,
+          ...(body.description ? { description: String(body.description) } : {}),
+          is_disabled: false,
+          date_update: Math.floor(Date.now() / 1000),
+        };
+        this.userGroups.push(group);
+        return { ok: true, usergroup: group };
+      }
+      case 'usergroups.update': {
+        const group = this.userGroups.find((candidate) => candidate.id === String(body.usergroup ?? ''));
+        if (!group) return { ok: false, error: 'subteam_not_found' };
+        if (body.name !== undefined) group.name = String(body.name);
+        if (body.handle !== undefined) group.handle = String(body.handle);
+        if (body.description !== undefined) group.description = String(body.description);
+        group.date_update = Math.floor(Date.now() / 1000);
+        return { ok: true, usergroup: group };
+      }
+      case 'usergroups.disable':
+      case 'usergroups.enable': {
+        const group = this.userGroups.find((candidate) => candidate.id === String(body.usergroup ?? ''));
+        if (!group) return { ok: false, error: 'subteam_not_found' };
+        group.is_disabled = method === 'usergroups.disable';
+        group.date_update = Math.floor(Date.now() / 1000);
+        return { ok: true, usergroup: group };
+      }
       case 'users.info': {
         const requested = String(body.user ?? '');
         const configured = this.workspaceUsers.find((user) => user.id === requested);
@@ -916,6 +965,7 @@ export class FakeSlackBackend {
             profile: {
               display_name: this.identity.displayName,
               real_name: this.identity.realName,
+              email: configured?.email,
               image_512: this.identity.image512Url,
               image_72: this.identity.image72Url,
             },
@@ -933,6 +983,7 @@ export class FakeSlackBackend {
             deleted: user.deleted ?? false,
             is_restricted: user.isRestricted ?? false,
             is_ultra_restricted: user.isUltraRestricted ?? false,
+            profile: { email: user.email },
           })),
           response_metadata: { next_cursor: '' },
         };

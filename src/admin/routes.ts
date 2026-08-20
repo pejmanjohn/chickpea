@@ -278,6 +278,7 @@ import type {
   McpConnectionConfig,
   McpConnectionIdentity,
   SlackIdentity,
+  WorkspaceInstallation,
 } from '../config/types.ts';
 import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import {
@@ -300,6 +301,7 @@ import {
   slackConversationsInfo,
   slackConversationsJoin,
   SLACK_SETTING_KEYS,
+  type SlackChannelSummary,
   type SlackCredentialSources,
   type SlackTeamInfo,
 } from '../slack/credentials.ts';
@@ -353,7 +355,7 @@ import {
 } from '../slack/gateway/client.ts';
 import { startNodeGatewaySession } from '../slack/gateway/node-runtime.ts';
 import { GatewaySlackOidcProvider } from '../auth/gateway-slack-oidc.ts';
-import type { SlackTransport } from '../slack/transport/types.ts';
+import { SlackTransportError, type SlackTransport } from '../slack/transport/types.ts';
 import { slackIdentityPendingEnvelopeSettingKey } from '../slack/identity-handshake.ts';
 import {
   SlackInstallOAuthError,
@@ -1098,10 +1100,8 @@ async function sandboxStatus(
 const slackBehaviorPatchSchema = v.pipe(
   v.partial(
     v.strictObject({
-      allowDms: v.boolean(),
       unassignedHint: v.boolean(),
       welcomeOnJoin: v.boolean(),
-      ambientParticipation: v.boolean(),
       progressiveStreaming: v.boolean(),
       nativeTasks: v.boolean(),
     }),
@@ -1389,6 +1389,79 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     return createDirectSlackTransport(credentials.botToken);
   };
+  const discoverSlackChannels = async (
+    c: Context,
+  ): Promise<{
+    channels: SlackChannelSummary[];
+    truncated: boolean;
+    connected: boolean;
+    teamInfo: SlackTeamInfo;
+  }> => {
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const settingsStore = settings(c);
+    const [installations, credentials] = await Promise.all([
+      store(c).listWorkspaceInstallations(),
+      resolveSlackCredentials(
+        platformEnv,
+        settingsStore,
+        slackCredentialResolutionDependencies(c),
+      ),
+    ]);
+    let descriptor: { teamId: string; teamName?: string } | undefined;
+    try {
+      descriptor = await slackWorkspaceDescriptor(c);
+    } catch {
+      // Token-authenticated fixtures can predate organization metadata.
+    }
+    const installation = installations.find(({ workspaceId, health }) =>
+      health !== 'revoked' && (!descriptor || workspaceId === descriptor.teamId)
+    );
+    const workspaceId = descriptor?.teamId ?? installation?.workspaceId;
+    const connected = Boolean(
+      (options.slackTransport && workspaceId) || installation || credentials.botToken,
+    );
+
+    if (workspaceId && (options.slackTransport || installation)) {
+      try {
+        const listed = await (await agentSlackTransport(c, workspaceId)).listChannels();
+        return {
+          channels: listed.channels
+            .filter(({ archived }) => !archived)
+            .map((channel) => ({
+              id: channel.id,
+              name: channel.name ?? channel.id,
+              isPrivate: channel.private,
+              isMember: channel.member,
+            })),
+          truncated: listed.truncated,
+          connected,
+          teamInfo: { teamId: workspaceId, teamName: descriptor?.teamName },
+        };
+      } catch (error) {
+        // A legacy direct install can have a valid token before it has a
+        // WorkspaceInstallation record. Keep that narrow fallback operational.
+        if (!credentials.botToken) throw error;
+      }
+    }
+
+    if (credentials.botToken) {
+      const listed = await listSlackChannels(credentials.botToken, {
+        refresh: c.req.query('refresh') === '1',
+      });
+      const teamInfo = await resolveTeamInfoSafely(
+        platformEnv,
+        settingsStore,
+        slackCredentialResolutionDependencies(c),
+      );
+      return { ...listed, connected: true, teamInfo };
+    }
+    return {
+      channels: [],
+      truncated: false,
+      connected,
+      teamInfo: { teamId: workspaceId, teamName: descriptor?.teamName },
+    };
+  };
   const agentActor = async (c: Context): Promise<{
     principal: AuthPrincipal;
     slackUserId: string;
@@ -1533,14 +1606,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c: Context,
     identity: SlackIdentity,
   ) => {
-    const behavior = await resolveSlackBehaviorSettings(
-      c.env as PlatformEnv | undefined,
-      settings(c),
-    );
     return slackIdentityAdminResponse(
       identity,
       store(c),
-      behavior.allowDms.value,
+      true,
       slackState(c),
       identity.kind === 'workspace_default'
         ? await describeSlackCredentialSources(
@@ -3303,12 +3372,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
     const configStore = store(c);
-    const [allAgents, assignments, identities, channels, grants] = await Promise.all([
+    const [allAgents, assignments, identities, grants, installations] = await Promise.all([
       configStore.listAgents(),
       configStore.listAssignments(),
       configStore.listSlackIdentities(),
-      configStore.listChannels(),
       configStore.listAgentChannelGrants(),
+      configStore.listWorkspaceInstallations(),
     ]);
     const principal = principalByContext.get(c);
     const rawAgents = principal
@@ -3328,11 +3397,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json({
       agents: await Promise.all(agents.map((agent, index) =>
         agentAdminProjection(agent, configStore, snapshots(c), {
-          assignments: assignments.filter(({ agentId }) => agentId === agent.id),
-          identities: identities.filter((identity) =>
-            identity.id === (agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) ||
-            identity.dmAgentId === agent.id
-          ),
           references: {
             agentId: agent.id,
             channelAssignments: assignments
@@ -3345,8 +3409,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               .filter(({ setupIntent }) => setupIntent?.sourceAgentId === agent.id)
               .map(({ id }) => id),
           },
-          channels,
           grants: grants.filter(({ agentId }) => agentId === agent.id),
+          installations,
           snapshotRoots: roots[index]!,
         })
       )),
@@ -5005,6 +5069,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       } catch {
         return invalidRequest(c, 'The avatar data is not valid base64.');
       }
+      const gatewayInstallation = (await store(c).listWorkspaceInstallations()).find(
+        (installation) => installation.transportMode === 'gateway',
+      );
+      const gatewayClient = gatewayInstallation
+        ? createGatewayDeploymentClient(c.env as PlatformEnv | undefined)
+        : undefined;
       const updated = await uploadAgentAvatar({
         config: store(c),
         settings: settings(c),
@@ -5012,6 +5082,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         bytes,
         contentType: parsed.output.contentType,
         publicOrigin: requestOrigin(c),
+        ...(gatewayClient && gatewayInstallation
+          ? {
+              publish: (avatar) => gatewayClient.publishAvatar({
+                workspaceId: gatewayInstallation.workspaceId,
+                ...avatar,
+              }),
+            }
+          : {}),
       });
       return c.json({
         agent: await agentAdminProjection(updated, store(c), snapshots(c)),
@@ -5033,8 +5111,29 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const actor = await agentActor(c);
       if (actor.slackTeamId !== parsed.output.workspaceId) throw new AuthorizationError();
-      const current = await store(c).getAgent(agentId);
+      let current = await store(c).getAgent(agentId);
       requireAgentEdit(actor.principal, current);
+      const installation = await store(c).getWorkspaceInstallation(parsed.output.workspaceId);
+      if (installation?.transportMode === 'gateway' &&
+          current.slackPresence?.avatar.kind === 'generated') {
+        const avatar = current.slackPresence.avatar;
+        const url = await createGatewayDeploymentClient(
+          c.env as PlatformEnv | undefined,
+        ).generateAvatar({
+          workspaceId: installation.workspaceId,
+          agentId,
+          revision: avatar.revision,
+          seed: avatar.seed ?? agentId,
+        });
+        if (avatar.url !== url) {
+          current = await store(c).updateAgent(agentId, {
+            slackPresence: {
+              ...current.slackPresence,
+              avatar: { ...avatar, url },
+            },
+          }, current.revision);
+        }
+      }
       const reconciler = new AgentPresenceReconciler({
         config: store(c),
         transport: await agentSlackTransport(c, parsed.output.workspaceId),
@@ -5060,8 +5159,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.delete('/admin/api/agents/:id/channels/:workspaceId/:channelId', async (c) => {
     const agentId = c.req.param('id');
     try {
+      const actor = await agentActor(c);
+      if (actor.slackTeamId !== c.req.param('workspaceId')) throw new AuthorizationError();
       const current = await store(c).getAgent(agentId);
-      requireAgentEdit(principalByContext.get(c), current);
+      requireAgentEdit(actor.principal, current);
       const removed = await store(c).deleteAgentChannelGrant(
         c.req.param('workspaceId'),
         c.req.param('channelId'),
@@ -5089,19 +5190,24 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         config: store(c),
         transport: await agentSlackTransport(c, workspaceId),
       });
-      const pendingGrant = (await store(c).listAgentChannelGrants()).find(
+      const pendingGrants = (await store(c).listAgentChannelGrants()).filter(
         (grant) => grant.agentId === agentId && grant.workspaceId === workspaceId &&
           grant.status !== 'active',
       );
-      const updated = pendingGrant
-        ? (await reconciler.publish({
+      let updated = current;
+      if (pendingGrants.length > 0) {
+        for (const pendingGrant of pendingGrants) {
+          updated = (await reconciler.publish({
             workspaceId,
             agentId,
             channelId: pendingGrant.channelId,
             actorMembershipId: actor.principal.membershipId,
             actorSlackUserId: actor.slackUserId,
-          })).agent
-        : await reconciler.retry(agentId);
+          })).agent;
+        }
+      } else {
+        updated = await reconciler.retry(agentId);
+      }
       return c.json({
         agent: await agentAdminProjection(updated, store(c), snapshots(c)),
       });
@@ -5155,7 +5261,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (error instanceof AgentPresenceError) {
         return agentPresenceFailureResponse(c, agentId, error);
       }
-      return c.json({ error: 'replacement_default_agent_required' }, 409);
+      return internalError(c, error);
     }
   });
 
@@ -5328,6 +5434,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   const onboardingSlackContext = async (c: Context) => {
     const settingsStore = settings(c);
+    const gatewayInstallation = (await store(c).listWorkspaceInstallations()).find(
+      (installation) => installation.transportMode === 'gateway' &&
+        installation.health !== 'revoked' && Boolean(installation.gatewayBindingId),
+    );
+    if (gatewayInstallation) {
+      return {
+        connected: true,
+        teamId: gatewayInstallation.teamId ?? gatewayInstallation.workspaceId,
+        teamName: await settingsStore.getSetting(SLACK_SETTING_KEYS.teamName) ?? undefined,
+      };
+    }
     await completeWorkspaceDefaultSlackConnectionIfVerified({
       config: store(c),
       settings: settingsStore,
@@ -5473,41 +5590,62 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (slack.teamId !== parsed.output.workspaceId) {
         return c.json({ error: 'workspace_mismatch' }, 400);
       }
-      const assignment = await store(c).getAssignment(
+      const installation = await store(c).getWorkspaceInstallation(parsed.output.workspaceId);
+      const defaultAgentId = installation?.defaultAgentId ?? 'agent_default';
+      const grant = (await store(c).listAgentChannelGrants(
         parsed.output.workspaceId,
         parsed.output.channelId,
+      )).find((candidate) =>
+        candidate.agentId === defaultAgentId && candidate.status === 'active'
       );
-      if (!assignment || assignment.agentId !== 'agent_default') {
-        return c.json({ error: 'onboarding_assignment_missing' }, 409);
+      if (!grant) {
+        return c.json({ error: 'onboarding_grant_missing' }, 409);
       }
-      const { botToken } = await resolveSlackCredentials(
-        c.env as PlatformEnv | undefined,
-        settings(c),
-        slackCredentialResolutionDependencies(c),
-      );
-      if (!botToken) return c.json({ error: 'slack_not_connected' }, 409);
-      let membership: Awaited<ReturnType<typeof slackConversationsInfo>>;
-      try {
-        membership = await (options.slackConversationsInfo ?? slackConversationsInfo)(
-          botToken,
-          parsed.output.channelId,
+      if (installation?.transportMode === 'gateway') {
+        try {
+          const channel = await (await agentSlackTransport(
+            c,
+            parsed.output.workspaceId,
+          )).lookupChannel(parsed.output.channelId);
+          if (channel.member !== true) {
+            return c.json({ error: 'slack_channel_membership_required' }, 409);
+          }
+        } catch (error) {
+          if (error instanceof SlackTransportError && error.code === 'channel_not_found') {
+            return c.json({ error: 'channel_not_found' }, 400);
+          }
+          return c.json({ error: 'slack_channel_check_failed' }, 502);
+        }
+      } else {
+        const { botToken } = await resolveSlackCredentials(
+          c.env as PlatformEnv | undefined,
+          settings(c),
+          slackCredentialResolutionDependencies(c),
         );
-      } catch {
-        return c.json({ error: 'slack_channel_check_failed' }, 502);
-      }
-      if (!membership.ok || !membership.channel) {
-        return c.json({
-          error: membership.error === 'channel_not_found'
-            ? 'channel_not_found'
-            : 'slack_channel_check_failed',
-        }, membership.error === 'channel_not_found' ? 400 : 502);
-      }
-      if (membership.channel.isMember !== true) {
-        return c.json({ error: 'slack_channel_membership_required' }, 409);
+        if (!botToken) return c.json({ error: 'slack_not_connected' }, 409);
+        let membership: Awaited<ReturnType<typeof slackConversationsInfo>>;
+        try {
+          membership = await (options.slackConversationsInfo ?? slackConversationsInfo)(
+            botToken,
+            parsed.output.channelId,
+          );
+        } catch {
+          return c.json({ error: 'slack_channel_check_failed' }, 502);
+        }
+        if (!membership.ok || !membership.channel) {
+          return c.json({
+            error: membership.error === 'channel_not_found'
+              ? 'channel_not_found'
+              : 'slack_channel_check_failed',
+          }, membership.error === 'channel_not_found' ? 400 : 502);
+        }
+        if (membership.channel.isMember !== true) {
+          return c.json({ error: 'slack_channel_membership_required' }, 409);
+        }
       }
       const started = await startOnboardingTry(settings(c), {
         expectedRevision: snapshot.revision,
-        agentId: assignment.agentId,
+        agentId: defaultAgentId,
         workspaceId: parsed.output.workspaceId,
         channelId: parsed.output.channelId,
         channelName:
@@ -5578,40 +5716,37 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.get('/admin/api/channels', async (c) => {
     const configStore = store(c);
-    const [configuredChannels, assignments, agents, credentials] = await Promise.all([
+    const [configuredChannels, grants, agents] = await Promise.all([
       configStore.listChannels(),
-      configStore.listAssignments(),
+      configStore.listAgentChannelGrants(),
       configStore.listAgents(),
-      resolveSlackCredentials(
-        c.env as PlatformEnv | undefined,
-        settings(c),
-        slackCredentialResolutionDependencies(c),
-      ),
     ]);
     let discoveredChannels: Awaited<ReturnType<typeof listSlackChannels>>['channels'] = [];
     let discoveryError: string | null = null;
-    if (credentials.botToken) {
-      try {
-        discoveredChannels = (await listSlackChannels(credentials.botToken, {
-          refresh: c.req.query('refresh') === '1',
-        })).channels;
-      } catch (error) {
-        discoveryError = error instanceof SlackChannelsError
-          ? error.slackError
+    let discoveryConnected = false;
+    let teamInfo: SlackTeamInfo = { teamId: undefined, teamName: undefined };
+    try {
+      const discovery = await discoverSlackChannels(c);
+      discoveredChannels = discovery.channels;
+      discoveryConnected = discovery.connected;
+      teamInfo = discovery.teamInfo;
+    } catch (error) {
+      discoveryConnected = true;
+      discoveryError = error instanceof SlackChannelsError
+        ? error.slackError
+        : error instanceof SlackTransportError
+          ? error.code
           : 'slack_list_failed';
-      }
     }
-    const teamInfo = await resolveTeamInfoSafely(
-      c.env as PlatformEnv | undefined,
-      settings(c),
-      slackCredentialResolutionDependencies(c),
+    const discoveredChannelsById = new Map(
+      discoveredChannels.map((channel) => [channel.id, channel]),
     );
     const channelsByKey = new Map(
       configuredChannels.map((channel) => [
         `${channel.workspaceId}\u0000${channel.channelId}`,
         {
           channel,
-          discovered: discoveredChannels.find(({ id }) => id === channel.channelId),
+          discovered: discoveredChannelsById.get(channel.channelId),
         },
       ]),
     );
@@ -5624,7 +5759,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               workspaceId: teamInfo.teamId,
               channelId: discovered.id,
               label: discovered.name,
-              participationMode: 'ambient',
+              participationMode: 'mention_only',
               lifecycle: 'active',
             },
             discovered,
@@ -5632,66 +5767,78 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
       }
     }
-    const assignmentsByChannel = new Map(
-      assignments.map((assignment) => [
-        `${assignment.workspaceId}\u0000${assignment.channelId}`,
-        assignment,
-      ]),
-    );
+    for (const grant of grants) {
+      const key = `${grant.workspaceId}\u0000${grant.channelId}`;
+      if (!channelsByKey.has(key)) {
+        channelsByKey.set(key, {
+          channel: {
+            workspaceId: grant.workspaceId,
+            channelId: grant.channelId,
+            ...(grant.channelLabel ? { label: grant.channelLabel } : {}),
+            participationMode: 'mention_only',
+            lifecycle: 'active',
+          },
+          discovered: discoveredChannelsById.get(grant.channelId),
+        });
+      }
+    }
+    const grantsByChannel = new Map<string, AgentChannelGrant[]>();
+    for (const grant of grants) {
+      const key = `${grant.workspaceId}\u0000${grant.channelId}`;
+      const current = grantsByChannel.get(key) ?? [];
+      current.push(grant);
+      grantsByChannel.set(key, current);
+    }
     const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
     return c.json({
       channels: [...channelsByKey.values()].map(({ channel, discovered }) => {
-        const assignment = assignmentsByChannel.get(
+        const channelGrants = grantsByChannel.get(
           `${channel.workspaceId}\u0000${channel.channelId}`,
-        );
-        const assignedAgent = assignment ? agentsById.get(assignment.agentId) : undefined;
+        ) ?? [];
+        const projectedGrants = channelGrants.map((grant) => {
+          const agent = agentsById.get(grant.agentId);
+          return {
+            agentId: grant.agentId,
+            agentName: agent?.name ?? null,
+            agentEnabled: agent?.enabled ?? false,
+            agentLifecycle: agent?.lifecycle ?? null,
+            status: grant.status,
+          };
+        });
         const readiness = channel.lifecycle === 'archived'
           ? { ready: false, code: 'channel_archived', reasons: ['Channel is archived.'] }
-          : !assignment
-            ? { ready: false, code: 'unassigned', reasons: ['Choose an Agent.'] }
-            : !assignedAgent
-              ? { ready: false, code: 'agent_missing', reasons: ['Assigned Agent no longer exists.'] }
-              : !assignedAgent.enabled
-                ? { ready: false, code: 'agent_disabled', reasons: ['Assigned Agent is disabled.'] }
-                : discovered?.isMember === false
-                  ? { ready: false, code: 'membership_required', reasons: ['Invite Chickpea to this channel.'] }
-                  : { ready: true, code: 'ready', reasons: [] };
+          : channelGrants.length === 0
+            ? { ready: false, code: 'no_agents', reasons: ['No Agents are active in this Channel.'] }
+            : projectedGrants.some(({ agentName }) => agentName === null)
+              ? { ready: false, code: 'agent_missing', reasons: ['A granted Agent no longer exists.'] }
+              : projectedGrants.some(({ agentEnabled, agentLifecycle }) =>
+                  !agentEnabled || agentLifecycle === 'archived')
+                ? { ready: false, code: 'agent_unavailable', reasons: ['A granted Agent is unavailable.'] }
+                : channelGrants.some(({ status }) => status !== 'active')
+                  ? { ready: false, code: 'grant_needs_attention', reasons: ['An Agent grant needs attention.'] }
+                  : discovered?.isMember === false
+                    ? { ready: false, code: 'membership_required', reasons: ['Invite Chickpea to this Channel.'] }
+                    : { ready: true, code: 'ready', reasons: [] };
         return {
           workspaceId: channel.workspaceId,
           channelId: channel.channelId,
           channelName: channel.label ?? channel.channelId,
           source: discovered
-            ? (configuredChannels.some((candidate) =>
-                candidate.workspaceId === channel.workspaceId &&
-                candidate.channelId === channel.channelId)
-              ? 'configured_and_discovered'
+            ? (channelGrants.length > 0
+              ? 'granted_and_discovered'
               : 'discovered')
-            : 'configured',
+            : 'granted',
           isPrivate: discovered?.isPrivate ?? null,
           isMember: discovered?.isMember ?? null,
-          assignment: assignment
-            ? {
-                agentId: assignment.agentId,
-                agentName: assignedAgent?.name ?? null,
-                agentEnabled: assignedAgent?.enabled ?? false,
-              }
-            : null,
-          behavior: {
-            participationMode: channel.participationMode,
-            hasAdditionalInstructions: Boolean(channel.additionalInstructions?.trim()),
-            lifecycle: channel.lifecycle,
-          },
+          grants: projectedGrants,
           readiness,
           links: {
             channel: `/admin/channels/${encodeURIComponent(channel.workspaceId)}/${encodeURIComponent(channel.channelId)}`,
-            agent: assignment
-              ? `/admin/agents/${encodeURIComponent(assignment.agentId)}`
-              : null,
           },
         };
       }),
       discovery: {
-        connected: Boolean(credentials.botToken),
+        connected: discoveryConnected,
         error: discoveryError,
       },
     });
@@ -5832,25 +5979,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // channels.ts); ?refresh=1 bypasses after the operator invites the bot to a
   // new channel. Fails closed with a clear envelope when Slack is not connected.
   app.get('/admin/api/slack-channels', async (c) => {
-    const platformEnv = c.env as PlatformEnv | undefined;
-    const settingsStore = settings(c);
-    const { botToken } = await resolveSlackCredentials(
-      platformEnv,
-      settingsStore,
-      slackCredentialResolutionDependencies(c),
-    );
-    if (!botToken) {
-      return c.json({ error: 'slack_not_configured' }, 409);
-    }
-    const teamInfo = await resolveTeamInfoSafely(
-      platformEnv,
-      settingsStore,
-      slackCredentialResolutionDependencies(c),
-    );
     try {
-      const { channels, truncated } = await listSlackChannels(botToken, {
-        refresh: c.req.query('refresh') === '1',
-      });
+      const { channels, truncated, connected, teamInfo } = await discoverSlackChannels(c);
+      if (!connected) return c.json({ error: 'slack_not_configured' }, 409);
       return c.json({
         channels,
         teamId: teamInfo.teamId ?? null,
@@ -5862,6 +5993,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         // A live Slack rejection (invalid_auth, missing_scope, ...): surface it
         // as a clear 502 envelope rather than a bare internal error.
         return c.json({ error: 'slack_list_failed', detail: err.slackError }, 502);
+      }
+      if (err instanceof SlackTransportError) {
+        return c.json({ error: 'slack_list_failed', detail: err.code }, 502);
       }
       return internalError(c, err);
     }
@@ -5906,16 +6040,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const configStore = store(c);
       const identities = await configStore.listSlackIdentities();
-      const behavior = await resolveSlackBehaviorSettings(
-        c.env as PlatformEnv | undefined,
-        settings(c),
-      );
       const responses = await Promise.all(
         identities.map((identity) =>
           slackIdentityAdminResponse(
             identity,
             configStore,
-            behavior.allowDms.value,
+            true,
             slackState(c),
             identity.kind === 'workspace_default'
               ? describeSlackCredentialSources(
@@ -5930,7 +6060,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       c.header('Cache-Control', 'no-store');
       return c.json({
         identities: responses,
-        globalDmAllowed: behavior.allowDms.value,
+        globalDmAllowed: true,
       });
     } catch (error) {
       return slackIdentityAdminError(c, error);
@@ -5985,15 +6115,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         identity,
         identity,
       );
-      const behavior = await resolveSlackBehaviorSettings(
-        c.env as PlatformEnv | undefined,
-        settings(c),
-      );
       return c.json({
         identity: await slackIdentityAdminResponse(
           identity,
           configStore,
-          behavior.allowDms.value,
+          true,
           slackState(c),
         ),
         setupUrl: slackIdentitySetupUrl(identity.id),
@@ -6480,9 +6606,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         settingsStore,
         slackCredentialResolutionDependencies(c),
       );
-      const defaultIdentity = await store(c).getSlackIdentity(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      );
+      const [defaultIdentity, installations] = await Promise.all([
+        store(c).getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID),
+        store(c).listWorkspaceInstallations(),
+      ]);
+      const installation = teamInfo.teamId
+        ? installations.find((candidate) => candidate.workspaceId === teamInfo.teamId)
+        : installations[0];
       const requestUrl =
         `${requestOrigin(c)}/channels/slack/events/${defaultIdentity.ingressKey}`;
       return c.json({
@@ -6494,6 +6624,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           credentials.signingSecret !== 'missing',
         teamId: teamInfo.teamId ?? null,
         teamName: teamInfo.teamName ?? null,
+        transportMode: installation?.transportMode ?? 'direct',
+        health: installation?.health ?? defaultIdentity.health,
+        healthDetail: installation?.healthDetail ?? defaultIdentity.healthDetail ?? null,
         requestUrl,
         manifestUrl: slackManifestUrl(requestUrl),
       });
@@ -8579,42 +8712,28 @@ async function agentAdminProjection(
   configStore: ConfigStore,
   snapshotStore: AgentSnapshotStore,
   preloaded?: {
-    assignments: ChannelAssignment[];
-    identities: SlackIdentity[];
     references: AgentReferenceSummary;
-    channels: ChannelConfig[];
     grants: AgentChannelGrant[];
+    installations: WorkspaceInstallation[];
     snapshotRoots: Awaited<ReturnType<AgentSnapshotStore['listLiveRootsByAgent']>>;
   },
 ): Promise<object> {
   const projectionData = preloaded ?? await (async () => {
-    const [assignments, identities, references, channels, grants, snapshotRoots] = await Promise.all([
-      configStore.listAssignmentsForAgent(agent.id),
-      configStore.listSlackIdentitiesForAgent(agent.id),
+    const [references, grants, installations, snapshotRoots] = await Promise.all([
       configStore.getAgentReferences(agent.id),
-      configStore.listChannels(),
       configStore.listAgentChannelGrants(),
+      configStore.listWorkspaceInstallations(),
       snapshotStore.listLiveRootsByAgent(agent.id),
     ]);
     return {
-      assignments,
-      identities,
       references,
-      channels,
       grants: grants.filter((grant) => grant.agentId === agent.id),
+      installations,
       snapshotRoots,
     };
   })();
-  const { assignments, identities, references, channels, grants, snapshotRoots } = projectionData;
-  const channelsByKey = new Map(
-    channels.map((channel) => [
-      `${channel.workspaceId}\u0000${channel.channelId}`,
-      channel,
-    ]),
-  );
-  const workspaceId = assignments[0]?.workspaceId ??
-    identities.find((identity) => identity.dmAgentId === agent.id)?.teamId ??
-    identities.find((identity) => identity.teamId)?.teamId;
+  const { references, grants, installations, snapshotRoots } = projectionData;
+  const workspaceId = grants[0]?.workspaceId ?? installations[0]?.workspaceId;
   return {
     ...agent,
     slackPresenceRecovery: agent.slackPresence?.health === 'needs_attention' &&
@@ -8654,20 +8773,10 @@ async function agentAdminProjection(
         enabled,
       })),
     },
-    identity: (() => {
-      const selectedId = agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
-      const selected = identities.find(({ id }) => id === selectedId);
-      return selected
-        ? {
-            id: selected.id,
-            displayName: selected.observedDisplayName ??
-              selected.setupIntent?.displayName ??
-              (selected.kind === 'workspace_default' ? 'Chickpea' : selected.id),
-            lifecycle: selected.lifecycle,
-            health: selected.health,
-          }
-        : null;
-    })(),
+    isWorkspaceDefault: installations.some(({ defaultAgentId }) => defaultAgentId === agent.id),
+    defaultForWorkspaces: installations
+      .filter(({ defaultAgentId }) => defaultAgentId === agent.id)
+      .map(({ workspaceId: installedWorkspaceId }) => installedWorkspaceId),
     whereItWorks: {
       channels: grants.map((grant) => ({
         workspaceId: grant.workspaceId,
@@ -8677,28 +8786,6 @@ async function agentAdminProjection(
         channelIsPrivate: grant.channelIsPrivate ?? null,
         href: `/admin/channels/${encodeURIComponent(grant.workspaceId)}/${encodeURIComponent(grant.channelId)}`,
       })),
-      legacyChannels: assignments.map((assignment) => {
-        const channel = channelsByKey.get(
-          `${assignment.workspaceId}\u0000${assignment.channelId}`,
-        );
-        return {
-          workspaceId: assignment.workspaceId,
-          channelId: assignment.channelId,
-          channelName: channel?.label ?? assignment.channelId,
-          participationMode: channel?.participationMode ?? 'ambient',
-          href: `/admin/channels/${encodeURIComponent(assignment.workspaceId)}/${encodeURIComponent(assignment.channelId)}`,
-        };
-      }),
-      directMessages: identities
-        .filter((identity) => identity.dmAgentId === agent.id)
-        .map((identity) => ({
-          identityId: identity.id,
-          identityName: identity.observedDisplayName ??
-            identity.setupIntent?.displayName ??
-            (identity.kind === 'workspace_default' ? 'Chickpea' : identity.id),
-          workspaceId: identity.teamId ?? null,
-          state: identity.dmState,
-        })),
     },
     memoryOwner: workspaceId
       ? { ownerKind: 'agent', workspaceId, ownerId: agent.id }

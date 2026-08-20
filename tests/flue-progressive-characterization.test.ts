@@ -74,7 +74,7 @@ function DeniedMemoryProbe() {
   useTool(createAutonomousAgentMemoryTool('agent', async () => {
     throw new MemoryStateError(
       'memory_actor_forbidden',
-      'Only an active Owner or Admin can create autonomous Agent memory.',
+      'Only an active workspace member currently permitted to use this Agent can change its memory.',
     );
   }, { finishDenied }));
   return 'Use remember_memory for the scripted request.';
@@ -310,7 +310,7 @@ test(
       assert.equal(deniedMemoryRead.reply.text, '');
       assert.equal(
         resultFromAgentReply(deniedMemoryRead.reply, MODEL).text,
-        'Memory was not saved: Only an active Owner or Admin can create autonomous Agent memory.',
+        'Memory was not saved: Only an active workspace member currently permitted to use this Agent can change its memory.',
       );
       assert.equal(faux.state.callCount, 9, 'denial terminates without a second model call');
 

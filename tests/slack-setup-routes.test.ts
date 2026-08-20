@@ -57,7 +57,10 @@ test('capability-gated Admin setup creates an app without reflecting or retainin
       action: 'open', capability: authority.capability, destination: '/admin/channels',
     });
     assert.equal(opened.status, 200);
-    assert.match(await opened.text(), /Create the Slack app/);
+    const openedHtml = await opened.text();
+    assert.match(openedHtml, /Add Chickpea to Slack/);
+    assert.match(openedHtml, /data-primary-action="gateway-install"/);
+    assert.match(openedHtml, /Use your own Slack app instead/);
 
     const created = await postSetup(app, env, {
       action: 'create', capability: authority.capability,

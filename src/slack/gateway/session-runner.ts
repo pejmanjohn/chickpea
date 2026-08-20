@@ -1,5 +1,9 @@
 import type { GatewayDeploymentClient, GatewayLogicalSession } from './client.ts';
 import type { GatewayInboundDelivery } from './protocol.ts';
+import {
+  GATEWAY_HEARTBEAT_TIMEOUT_MS,
+  gatewaySessionHealthy,
+} from './session.ts';
 
 export interface GatewaySocket {
   readonly readyState: number;
@@ -25,6 +29,7 @@ export class GatewaySessionRunner {
   private socket: GatewaySocket | undefined;
   private session: GatewayLogicalSession | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
   private stopped = true;
   private readonly now: () => number;
   private readonly setTimer: NonNullable<GatewaySessionRunnerOptions['setTimer']>;
@@ -38,42 +43,55 @@ export class GatewaySessionRunner {
 
   async start(): Promise<boolean> {
     this.stopped = false;
-    const binding = await this.options.client.loadBinding();
-    if (!binding) return false;
-    await this.options.client.recordSessionCheckpoint({ health: 'connecting', attempt: 0 });
+    const [binding, prior] = await Promise.all([
+      this.options.client.loadBinding(),
+      this.options.client.loadSessionCheckpoint(),
+    ]);
+    if (!binding) {
+      this.stopped = true;
+      return false;
+    }
+    const connecting = { health: 'connecting' as const, attempt: prior?.attempt ?? 0 };
+    await this.options.client.recordSessionCheckpoint(connecting);
     this.clearScheduled();
-    const socket = (this.options.createSocket ?? defaultSocket)(binding.sessionUrl);
-    this.socket = socket;
+    this.clearHeartbeat();
+    let socket: GatewaySocket | undefined;
     const session = await this.options.client.createSession(
       (frame) => {
-        if (this.socket === socket && socket.readyState === 1) {
+        if (this.socket === socket && socket?.readyState === 1) {
           socket.send(JSON.stringify(frame));
         }
       },
       this.options.onEvent,
+      connecting,
     );
+    const connectedSocket = (this.options.createSocket ?? defaultSocket)(binding.sessionUrl);
+    socket = connectedSocket;
+    this.socket = connectedSocket;
     this.session = session;
-    socket.addEventListener('open', () => {
-      if (this.socket !== socket || this.stopped) return;
-      void session.hello().catch(() => this.reconnect(socket, 'hello_failed'));
+    connectedSocket.addEventListener('open', () => {
+      if (this.socket !== connectedSocket || this.stopped) return;
+      void session.hello().catch(() => this.reconnect(connectedSocket, 'hello_failed'));
     });
-    socket.addEventListener('message', (event) => {
-      if (this.socket !== socket || this.stopped) return;
+    connectedSocket.addEventListener('message', (event) => {
+      if (this.socket !== connectedSocket || this.stopped) return;
       const raw = typeof event.data === 'string' ? event.data : '';
       void session.handle(raw).then(() => {
         void this.options.client.recordSessionCheckpoint(session.state());
         const rotateAt = session.state().rotateAt;
-        if (rotateAt) this.schedule(() => socket.close(1000, 'rotate'), rotateAt - this.now());
-      }).catch(() => this.reconnect(socket, 'invalid_frame'));
+        if (rotateAt) this.schedule(() => connectedSocket.close(1000, 'rotate'), rotateAt - this.now());
+        this.scheduleHeartbeat(connectedSocket, session);
+      }).catch(() => this.reconnect(connectedSocket, 'invalid_frame'));
     });
-    socket.addEventListener('close', () => this.reconnect(socket, 'closed'));
-    socket.addEventListener('error', () => this.reconnect(socket, 'network'));
+    connectedSocket.addEventListener('close', () => this.reconnect(connectedSocket, 'closed'));
+    connectedSocket.addEventListener('error', () => this.reconnect(connectedSocket, 'network'));
     return true;
   }
 
   stop(): void {
     this.stopped = true;
     this.clearScheduled();
+    this.clearHeartbeat();
     this.socket?.close(1000, 'shutdown');
     this.socket = undefined;
     this.session = undefined;
@@ -86,6 +104,7 @@ export class GatewaySessionRunner {
   private reconnect(socket: GatewaySocket, reason: string): void {
     if (this.stopped || this.socket !== socket) return;
     this.socket = undefined;
+    this.clearHeartbeat();
     try {
       socket.close(1012, 'reconnect');
     } catch {
@@ -110,6 +129,26 @@ export class GatewaySessionRunner {
   private clearScheduled(): void {
     if (this.timer !== undefined) this.clearTimer(this.timer);
     this.timer = undefined;
+  }
+
+  private scheduleHeartbeat(socket: GatewaySocket, session: GatewayLogicalSession): void {
+    this.clearHeartbeat();
+    const lastHeartbeatAt = session.state().lastHeartbeatAt;
+    if (lastHeartbeatAt === undefined) return;
+    const delay = Math.max(0, lastHeartbeatAt + GATEWAY_HEARTBEAT_TIMEOUT_MS - this.now());
+    this.heartbeatTimer = this.setTimer(() => {
+      if (this.stopped || this.socket !== socket) return;
+      if (!gatewaySessionHealthy(session.state(), this.now())) {
+        this.reconnect(socket, 'heartbeat_timeout');
+        return;
+      }
+      this.scheduleHeartbeat(socket, session);
+    }, delay);
+  }
+
+  private clearHeartbeat(): void {
+    if (this.heartbeatTimer !== undefined) this.clearTimer(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
   }
 }
 

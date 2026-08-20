@@ -27,6 +27,14 @@ function auth(): HeadersInit {
 
 function identity(): IdentityStore {
   return {
+    getOrganization: async () => ({
+      id: 'org_oss',
+      name: 'Acme',
+      slackTeamId: 'T_TEST',
+      provisioningMode: 'all_workspace_members',
+      createdAt: 1,
+      updatedAt: 1,
+    }),
     getMembership: async (id: string) => id === 'membership_test_owner'
       ? {
           id,
@@ -69,6 +77,7 @@ class FakeTransport implements SlackTransport {
     };
   }
   async lookupChannel(): Promise<SlackChannel> { return this.channel; }
+  async listChannels() { return { channels: [this.channel], truncated: false }; }
   async channelHasMember(): Promise<boolean> { return this.memberAllowed; }
   async openDirectConversation(): Promise<SlackChannel> {
     return { id: 'D_OWNER', private: true, member: true, archived: false };
@@ -159,6 +168,36 @@ test('Agent create owns its handle, generated avatar, edit policy, and creator',
     assert.equal(avatar.status, 200);
     assert.equal(avatar.headers.get('content-type'), 'image/svg+xml');
     assert.match(avatar.headers.get('cache-control') ?? '', /immutable/);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('shared-gateway channel discovery uses the credential-free transport', async () => {
+  const fixture = harness();
+  try {
+    fixture.transport.channel = {
+      id: 'C_SUPPORT', name: 'support', private: true, member: true, archived: false,
+    };
+    const picker = await fixture.app.request('http://localhost/admin/api/slack-channels', {
+      headers: auth(),
+    });
+    assert.equal(picker.status, 200);
+    const pickerBody = await picker.json() as Record<string, any>;
+    assert.deepEqual(pickerBody.channels, [{
+      id: 'C_SUPPORT', name: 'support', isPrivate: true, isMember: true,
+    }]);
+    assert.equal(pickerBody.teamId, 'T_TEST');
+
+    const channels = await fixture.app.request('http://localhost/admin/api/channels', {
+      headers: auth(),
+    });
+    assert.equal(channels.status, 200);
+    const channelsBody = await channels.json() as Record<string, any>;
+    assert.equal(channelsBody.discovery.connected, true);
+    assert.equal(channelsBody.channels[0].channelId, 'C_SUPPORT');
+    assert.equal(channelsBody.channels[0].isPrivate, true);
   } finally {
     fixture.store.close();
     fixture.settings.close();

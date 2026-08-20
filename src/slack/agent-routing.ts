@@ -209,7 +209,12 @@ export async function discoverableAgents(input: {
       continue;
     }
     const channels = grantedChannelsByAgent.get(agent.id) ?? new Set<string>();
-    if ((await Promise.all([...channels].map(channelMember))).some(Boolean)) visible.push(agent);
+    for (const channelId of channels) {
+      if (await channelMember(channelId)) {
+        visible.push(agent);
+        break;
+      }
+    }
   }
   return visible.sort((left, right) => left.name.localeCompare(right.name));
 }

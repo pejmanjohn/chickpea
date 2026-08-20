@@ -97,6 +97,7 @@ export const laneB: Lane = {
       ? new SqliteConfigStore(configDbPath, config.configSeed)
       : new SqliteConfigStore(configDbPath);
     try {
+      await seedAgentPlatformFixture(store, config, canonicalSlackTeamId);
       const identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
       await store.updateSlackIdentity(identity.id, identity.connectionRevision, {
         lifecycle: 'connected',
@@ -127,13 +128,13 @@ export const laneB: Lane = {
     } finally {
       credentialState.close();
     }
+    adminCookie = await seedParityAdminSession(
+      configDbPath,
+      authDbPath,
+      baseUrl,
+      canonicalSlackTeamId,
+    );
     if (config.configSeed) {
-      adminCookie = await seedParityAdminSession(
-        configDbPath,
-        authDbPath,
-        baseUrl,
-        canonicalSlackTeamId,
-      );
       configEnv.LOCAL_STUB_MODELS = config.configSeed.agents
         .flatMap((agent) => agent.model?.startsWith('local-stub/')
           ? [agent.model.slice('local-stub/'.length)]
@@ -319,6 +320,62 @@ async function seedParityAdminSession(
   }
 }
 
+/**
+ * The parity scenarios predate Agent-owned Slack routing and intentionally keep
+ * their terse assignment-shaped fixture declarations. Materialize those test
+ * declarations into the product's canonical installation and Channel-grant
+ * records before the real server starts. Runtime assertions therefore exercise
+ * the Agent router; the legacy seed rows are never consulted for admission.
+ */
+async function seedAgentPlatformFixture(
+  store: SqliteConfigStore,
+  config: ScenarioLaneConfig,
+  canonicalWorkspaceId: string,
+): Promise<void> {
+  const seed = config.configSeed;
+  const agents = seed?.agents ?? await store.listAgents();
+  const assignments = seed?.assignments ?? [];
+  const wildcard = assignments.find((assignment) =>
+    assignment.enabled && assignment.workspaceId === '*' && assignment.channelId === '*'
+  );
+  const exact = assignments.filter((assignment) =>
+    assignment.enabled &&
+    assignment.workspaceId !== '*' &&
+    assignment.channelId !== '*' &&
+    !assignment.workspaceId.includes('*') &&
+    !assignment.channelId.includes('*')
+  );
+  const workspaceIds = new Set([
+    canonicalWorkspaceId,
+    ...exact.map((assignment) => assignment.workspaceId),
+  ]);
+
+  for (const workspaceId of workspaceIds) {
+    const workspaceAssignments = exact.filter((assignment) => assignment.workspaceId === workspaceId);
+    const defaultAgentId = workspaceAssignments[0]?.agentId ?? wildcard?.agentId ?? agents[0]?.id;
+    if (!defaultAgentId) continue;
+    await store.ensureWorkspaceInstallation({
+      workspaceId,
+      transportMode: 'direct',
+      defaultAgentId,
+      teamId: workspaceId,
+      appId: config.slack?.identity?.appId ?? 'ADEMO',
+      botUserId: config.slack?.identity?.botUserId ?? 'UBOT',
+    });
+    for (const assignment of workspaceAssignments) {
+      await store.putAgentChannelGrant({
+        workspaceId,
+        channelId: assignment.channelId,
+        agentId: assignment.agentId,
+        status: 'active',
+        createdByMembershipId: 'membership_parity_owner',
+        ...(assignment.channelLabel ? { channelLabel: assignment.channelLabel } : {}),
+        channelIsPrivate: assignment.channelId.startsWith('G'),
+      });
+    }
+  }
+}
+
 /** Durable execution rechecks real app membership. Custom config seeds used by
  * parity therefore need matching conversations.info rows just like the demo
  * helper's explicit fixtures. */
@@ -337,7 +394,6 @@ function slackFixturesFor(config: ScenarioLaneConfig): FakeSlackBehaviorConfig |
       isPrivate: assignment.channelId.startsWith('G'),
       teamId: assignment.workspaceId,
     }));
-  if (!config.slack && derived.length === 0) return undefined;
   const channels = new Map<string, FakeSlackChannel>();
   for (const channel of derived) channels.set(channel.id, channel);
   for (const channel of config.slack?.channels ?? []) channels.set(channel.id, channel);
@@ -351,8 +407,8 @@ function slackFixturesFor(config: ScenarioLaneConfig): FakeSlackBehaviorConfig |
     [...channels.keys()].map((channelId) => [channelId, ['U_ALICE', 'U_BOB', identity.botUserId]]),
   );
   const workspaceUsers = config.slack?.workspaceUsers ?? [
-    { id: 'U_ALICE', teamId: identity.teamId },
-    { id: 'U_BOB', teamId: identity.teamId },
+    { id: 'U_ALICE', teamId: identity.teamId, email: 'alice@example.com' },
+    { id: 'U_BOB', teamId: identity.teamId, email: 'bob@example.com' },
     { id: identity.botUserId, teamId: identity.teamId, isBot: true, isAppUser: true },
   ];
   return {

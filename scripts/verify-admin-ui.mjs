@@ -3,11 +3,11 @@
  * Prove the /admin configuration loop without Slack network access:
  *   1. mount the real Hono admin routes against an in-memory SQLite store,
  *   2. establish an exact Slack-bound Owner and authenticate as that principal,
- *   3. create an Agent and addendum-bearing Channel placement through /admin/api,
- *   4. read the server-side effective-config panel data,
- *   5. edit the addendum and prove the panel data changes in the same process,
- *   6. seed Agent and exact-Channel memory and prove owner/index, conflict,
- *      history, and irreversible-delete contracts through the authenticated admin plane.
+ *   3. create an Agent and legacy addendum-bearing Channel placement through /admin/api,
+ *   4. prove the effective Agent config ignores Channel-local instructions,
+ *   5. edit the legacy addendum and prove the Agent snapshot remains stable,
+ *   6. seed Agent memory and prove Channel memory is forbidden while Agent-owned
+ *      conflict, history, and irreversible-delete contracts remain available.
  */
 import {
   assertNodeVersion,
@@ -26,7 +26,6 @@ const MODEL_SPECIFIER = 'local-stub/admin-ui-model';
 const FIRST_ADDENDUM = 'ADMIN_UI_ADDENDUM_V1: prefer release readiness.';
 const SECOND_ADDENDUM = 'ADMIN_UI_ADDENDUM_V2: prefer launch-risk deltas.';
 const MEMORY_ENTRY_ID = 'mem_admin_ui_release';
-const AGENT_MEMORY_ENTRY_ID = 'mem_admin_ui_agent';
 const ROUTINE_ID = 'routine_admin_ui_release';
 
 const results = [];
@@ -201,18 +200,13 @@ try {
     priceVersionId: 'openai_2026-07-28',
     priceUnknownReason: null,
   });
-  const channelMemory = await memory.ensureOwner({
-    workspaceId: WORKSPACE_ID,
-    ownerKind: 'channel',
-    ownerId: CHANNEL_ID,
-  });
   const agentMemory = await memory.ensureOwner({
     workspaceId: WORKSPACE_ID,
     ownerKind: 'agent',
     ownerId: AGENT_ID,
   });
   await memory.createOwnerEntry({
-    entryId: AGENT_MEMORY_ENTRY_ID,
+    entryId: MEMORY_ENTRY_ID,
     storeId: agentMemory.storeId,
     workspaceId: WORKSPACE_ID,
     slug: 'release-principles',
@@ -223,19 +217,6 @@ try {
     actorClass: 'member',
     writeOrigin: { kind: 'admin' },
     idempotencyKey: 'admin-ui-agent-memory-create',
-  });
-  await memory.createOwnerEntry({
-    entryId: MEMORY_ENTRY_ID,
-    storeId: channelMemory.storeId,
-    workspaceId: WORKSPACE_ID,
-    slug: 'release-guidance',
-    description: 'Use the release checklist.',
-    type: 'project',
-    body: 'Run focused tests before release.',
-    actorId: 'U_ADMIN_UI_MEMBER',
-    actorClass: 'member',
-    writeOrigin: { kind: 'slack_channel', channelId: CHANNEL_ID },
-    idempotencyKey: 'admin-ui-channel-memory-create',
   });
   await memory.observeChannelScope({
     workspaceId: WORKSPACE_ID,
@@ -451,10 +432,11 @@ try {
   const first = await readEffectiveConfig(app);
   const firstConfig = first.body?.config;
   record(
-    'effective-config resolves model and first addendum',
+    'effective-config resolves the Agent and ignores Channel-local instructions',
     first.status === 200 &&
       firstConfig?.model === MODEL_SPECIFIER &&
-      firstConfig?.instructions?.includes(FIRST_ADDENDUM),
+      firstConfig?.instructions?.includes('ADMIN_UI_AGENT_INSTRUCTIONS') &&
+      !firstConfig?.instructions?.includes(FIRST_ADDENDUM),
     `status=${first.status} model=${String(firstConfig?.model)}`,
   );
 
@@ -475,12 +457,12 @@ try {
   const second = await readEffectiveConfig(app);
   const secondConfig = second.body?.config;
   record(
-    'effective-config reflects edited addendum in the same process',
+    'editing legacy Channel instructions cannot change the Agent snapshot',
     second.status === 200 &&
-      secondConfig?.instructions?.includes(SECOND_ADDENDUM) &&
+      !secondConfig?.instructions?.includes(SECOND_ADDENDUM) &&
       !secondConfig?.instructions?.includes(FIRST_ADDENDUM) &&
-      secondConfig?.snapshotHash !== firstConfig?.snapshotHash,
-    `status=${second.status} hashChanged=${String(secondConfig?.snapshotHash !== firstConfig?.snapshotHash)}`,
+      secondConfig?.snapshotHash === firstConfig?.snapshotHash,
+    `status=${second.status} hashStable=${String(secondConfig?.snapshotHash === firstConfig?.snapshotHash)}`,
   );
 
   const owners = await adminJson(app, `/admin/api/audit/memory/owners?workspaceId=${WORKSPACE_ID}`);
@@ -493,20 +475,18 @@ try {
     `/admin/api/audit/memory/owners/agent/${WORKSPACE_ID}/${AGENT_ID}/files`,
   );
   record(
-    'Memory owner tree separates Agent memory from exact-Channel memory',
+    'Memory is Agent-owned and exact-Channel memory is forbidden',
     owners.status === 200 &&
       owners.body?.owners?.some((owner) => owner.ownerKind === 'agent' && owner.ownerId === AGENT_ID) &&
-      owners.body?.owners?.some((owner) => owner.ownerKind === 'channel' && owner.ownerId === CHANNEL_ID) &&
-      channelFiles.status === 200 &&
-      channelFiles.body?.files?.[0]?.name === 'MEMORY.md' &&
-      channelFiles.body?.files?.[1]?.name === 'release-guidance.md' &&
+      !owners.body?.owners?.some((owner) => owner.ownerKind === 'channel') &&
+      channelFiles.status === 403 &&
       agentFiles.status === 200 &&
       agentFiles.body?.files?.[1]?.name === 'release-principles.md',
     `owners=${owners.status} channel=${channelFiles.status} agent=${agentFiles.status}`,
   );
 
-  const channelEntryPath =
-    `/admin/api/audit/memory/owners/channel/${WORKSPACE_ID}/${CHANNEL_ID}/entries/${MEMORY_ENTRY_ID}`;
+  const agentEntryPath =
+    `/admin/api/audit/memory/owners/agent/${WORKSPACE_ID}/${AGENT_ID}/entries/${MEMORY_ENTRY_ID}`;
 
   const editBody = JSON.stringify({
     expectedVersion: 1,
@@ -514,12 +494,12 @@ try {
     type: 'project',
     body: 'Run focused tests and the durability gate before release.',
   });
-  const edit = await adminJson(app, channelEntryPath, {
+  const edit = await adminJson(app, agentEntryPath, {
     method: 'PUT',
     headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-edit' },
     body: editBody,
   });
-  const conflict = await adminJson(app, channelEntryPath, {
+  const conflict = await adminJson(app, agentEntryPath, {
     method: 'PUT',
     headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-conflict' },
     body: editBody,
@@ -531,23 +511,23 @@ try {
     `edit=${edit.status} conflict=${conflict.status}`,
   );
 
-  const history = await adminJson(app, `${channelEntryPath}/history`);
+  const history = await adminJson(app, `${agentEntryPath}/history`);
   record(
-    'Channel memory history stays under the exact owner route',
+    'Agent memory history stays under the Agent owner route',
     history.status === 200 && history.body?.revisions?.length === 2,
     `status=${history.status} revisions=${String(history.body?.revisions?.length)}`,
   );
 
   const unacknowledgedDelete = await adminJson(
     app,
-    channelEntryPath,
+    agentEntryPath,
     {
       method: 'DELETE',
       headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-delete-rejected' },
       body: JSON.stringify({ expectedVersion: 2, acknowledgeIrreversible: false }),
     },
   );
-  const deleted = await adminJson(app, channelEntryPath, {
+  const deleted = await adminJson(app, agentEntryPath, {
     method: 'DELETE',
     headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-delete' },
     body: JSON.stringify({ expectedVersion: 2, acknowledgeIrreversible: true }),

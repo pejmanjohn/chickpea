@@ -42,6 +42,12 @@ test('direct transport maps Slack operations without exposing credentials or a r
     member: true,
     archived: false,
   });
+  assert.deepEqual(await transport.listChannels(), {
+    channels: [{
+      id: 'C123', name: 'support', private: false, member: true, archived: false,
+    }],
+    truncated: false,
+  });
   assert.equal(await transport.channelHasMember('C123', 'U123'), true);
   assert.equal((await transport.openDirectConversation('U123')).id, 'D123');
   assert.deepEqual(await transport.joinPublicChannel('C123'), {
@@ -83,6 +89,7 @@ test('direct transport maps Slack operations without exposing credentials or a r
   assert.deepEqual(calls.map((entry) => entry.method), [
     'users.info',
     'conversations.info',
+    'conversations.list',
     'conversations.members',
     'conversations.open',
     'conversations.join',
@@ -108,6 +115,7 @@ test('direct transport maps Slack operations without exposing credentials or a r
     'disableUserGroup',
     'enableUserGroup',
     'joinPublicChannel',
+    'listChannels',
     'listUserGroups',
     'lookupChannel',
     'lookupMember',
@@ -188,6 +196,9 @@ function fakeClient(
     },
     conversations: {
       info: (input) => call('conversations.info', input, { ok: true, channel }),
+      list: (input) => call('conversations.list', input, {
+        ok: true, channels: [channel], response_metadata: { next_cursor: '' },
+      }),
       members: (input) => call('conversations.members', input, {
         ok: true, members: ['U123'], response_metadata: { next_cursor: '' },
       }),
@@ -233,6 +244,7 @@ function stubTransport(mode: 'direct' | 'gateway'): SlackTransport {
     mode,
     lookupMember: unsupported,
     lookupChannel: unsupported,
+    listChannels: unsupported,
     channelHasMember: unsupported,
     openDirectConversation: unsupported,
     joinPublicChannel: unsupported,

@@ -209,6 +209,36 @@ test('uploaded avatars create immutable revisions while generated avatars vary b
   }
 });
 
+test('uploaded avatars can publish through shared gateway storage before saving their public URL', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+    const published: unknown[] = [];
+    const updated = await uploadAgentAvatar({
+      config, settings, agentId: 'agent_support', bytes: png,
+      contentType: 'image/png', publicOrigin: 'https://self-hosted.example',
+      publish: async (input) => {
+        published.push(input);
+        return 'https://gateway.chickpea.test/avatars/binding/agent_support/rev_2.png';
+      },
+    });
+    assert.deepEqual(published, [{
+      agentId: 'agent_support', revision: 2, contentType: 'image/png', bytes: png,
+    }]);
+    assert.equal(updated.slackPresence?.avatar.url,
+      'https://gateway.chickpea.test/avatars/binding/agent_support/rev_2.png');
+    assert.deepEqual(
+      (await readAgentAvatarAsset({ settings, agentId: 'agent_support', revision: 2 }))?.bytes,
+      png,
+    );
+  } finally {
+    config.close();
+    settings.close?.();
+  }
+});
+
 function agent(id: string, name: string, handle: string): CustomAgentConfig {
   return {
     id,
@@ -245,6 +275,7 @@ class FakeSlackTransport implements SlackTransport {
 
   async lookupMember(): Promise<never> { throw new Error('unused'); }
   async lookupChannel() { return { ...this.channel }; }
+  async listChannels() { return { channels: [{ ...this.channel }], truncated: false }; }
   async channelHasMember() { return this.actorIsMember; }
   async openDirectConversation() {
     return { id: 'D_ACTOR', private: true, member: true, archived: false };

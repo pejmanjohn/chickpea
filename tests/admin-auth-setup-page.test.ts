@@ -40,20 +40,21 @@ test('Slack sign-in is the only visible login path and preserves a safe Admin de
   assert.doesNotMatch(html, /password|forgot|sign up|cloudflare access|admin token|migrate/i);
 });
 
-test('setup presents Compact C and sends manual setup to its separate journey', () => {
+test('setup leads with Add to Slack and keeps the customer-owned app as a fallback', () => {
   const render = (state: SlackSetupTransaction['state']) => renderSlackSetupPage({
     setup: setup(state), destination: DESTINATION, manifest: MANIFEST,
   });
   const creation = render('awaiting_app_creation');
-  assert.match(creation, /Create the Slack app/);
-  assert.match(creation, /data-primary-action="create-app"/);
-  assert.match(creation, /<details[^>]*data-secondary-action="manual-adoption"/);
-  assert.match(creation, /First, generate an App Configuration token in Slack/);
+  assert.match(creation, /Add Chickpea to Slack/);
+  assert.match(creation, /data-primary-action="gateway-install"/);
+  assert.match(creation, /No app configuration token or Slack credentials to copy/);
+  assert.match(creation, /<details[^>]*data-secondary-action="customer-owned-app"/);
+  assert.match(creation, /Use your own Slack app instead/);
+  assert.match(creation, /Generate an App Configuration token in Slack/);
   assert.match(creation, /https:\/\/api\.slack\.com\/apps#:~:text=Your%20App%20Configuration%20Tokens/);
   assert.match(creation, /class="[^\"]*slack-logo-image/);
   assert.match(creation, /xoxe\.xoxp-/);
   assert.match(creation, /refresh token beginning xoxe-/i);
-  assert.match(creation, /Can&#39;t create an app configuration token\?/);
   assert.match(creation, /href="\/admin\/setup\/manual"/);
   assert.doesNotMatch(creation, /href="\/admin\/setup\/manual"[^>]*target="_blank"/);
   assert.doesNotMatch(creation, /name="(?:appId|clientId|clientSecret|signingSecret|observedManifest)"/);

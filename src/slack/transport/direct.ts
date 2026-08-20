@@ -21,6 +21,7 @@ export interface DirectSlackApiClient {
   conversations: {
     info: SlackApiMethod;
     join: SlackApiMethod;
+    list: SlackApiMethod;
     members: SlackApiMethod;
     open: SlackApiMethod;
   };
@@ -61,6 +62,15 @@ export function createDirectSlackTransportFromClient(
         channel: channelId,
       });
       return mapChannel(requiredRecord(result.channel, 'conversations.info'));
+    },
+
+    async listChannels() {
+      return collectChannels((cursor) => call(client.conversations.list, 'conversations.list', {
+        types: 'public_channel,private_channel',
+        exclude_archived: true,
+        limit: CHANNEL_PAGE_LIMIT,
+        ...(cursor ? { cursor } : {}),
+      }));
     },
 
     async channelHasMember(channelId, userId): Promise<boolean> {
@@ -161,6 +171,37 @@ export function createDirectSlackTransportFromClient(
       return { channelId, ts };
     },
   };
+}
+
+const MAX_CHANNELS = 2_000;
+const CHANNEL_PAGE_LIMIT = 200;
+const MAX_CHANNEL_PAGES = 64;
+
+async function collectChannels(
+  page: (cursor?: string) => Promise<SlackApiResult>,
+): Promise<{ channels: SlackChannel[]; truncated: boolean }> {
+  const channels: SlackChannel[] = [];
+  let cursor: string | undefined;
+  for (let pageIndex = 0; pageIndex < MAX_CHANNEL_PAGES; pageIndex += 1) {
+    const result = await page(cursor);
+    if (Array.isArray(result.channels)) {
+      channels.push(...result.channels.map((channel) =>
+        mapChannel(requiredRecord(channel, 'conversations.list'))
+      ));
+    }
+    cursor = stringValue(record(result.response_metadata).next_cursor).trim() || undefined;
+    if (channels.length >= MAX_CHANNELS) {
+      const truncated = channels.length > MAX_CHANNELS || Boolean(cursor);
+      channels.length = MAX_CHANNELS;
+      return { channels: sortChannels(channels), truncated };
+    }
+    if (!cursor) return { channels: sortChannels(channels), truncated: false };
+  }
+  return { channels: sortChannels(channels), truncated: Boolean(cursor) };
+}
+
+function sortChannels(channels: SlackChannel[]): SlackChannel[] {
+  return channels.sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id));
 }
 
 async function call(

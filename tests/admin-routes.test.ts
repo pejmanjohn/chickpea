@@ -58,6 +58,7 @@ import { loopbackListenSkipReason } from './helpers/listen.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 import { FakeSlackBackend } from './parity/fake-slack.ts';
+import type { SlackTransport } from '../src/slack/transport/types.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import {
   writeSlackIdentityCredentials,
@@ -154,6 +155,7 @@ interface AdminHarnessOptions {
     botToken: string,
     channelId: string,
   ) => Promise<SlackConversationsInfoResult>;
+  slackTransport?: SlackTransport;
 }
 
 function appWithAdmin(store: ConfigStore, adminToken?: string): Hono {
@@ -218,6 +220,7 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
       ...(options.slackConversationsInfo
         ? { slackConversationsInfo: options.slackConversationsInfo }
         : {}),
+      ...(options.slackTransport ? { slackTransport: options.slackTransport } : {}),
     }),
   );
   return app;
@@ -1841,13 +1844,21 @@ test('onboarding API derives live stages and completes only after a delivered se
       workspaceId: 'TDESIGN',
       channelId: 'CSTART',
       label: 'start-here',
-      participationMode: 'ambient',
+      participationMode: 'mention_only',
       lifecycle: 'active',
     });
-    await store.putAssignment({
+    await store.ensureWorkspaceInstallation({
+      workspaceId: 'TDESIGN',
+      transportMode: 'direct',
+      defaultAgentId: 'agent_default',
+    });
+    await store.putAgentChannelGrant({
       workspaceId: 'TDESIGN',
       channelId: 'CSTART',
       agentId: 'agent_default',
+      status: 'active',
+      createdByMembershipId: 'membership_test_owner',
+      channelLabel: 'start-here',
     });
     onboardingChannelMember = false;
     const notJoined = await app.request('/admin/api/onboarding/try', {
@@ -1892,6 +1903,91 @@ test('onboarding API derives live stages and completes only after a delivered se
     assert.equal((await complete.json() as { stage: string }).stage, 'complete');
   } finally {
     credentialState.close();
+    settings.close();
+    store.close();
+  }
+});
+
+test('shared gateway onboarding needs no local Slack token and checks membership through the transport', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  let gatewayMember = false;
+  const slackTransport = {
+    mode: 'gateway',
+    async lookupChannel(channelId: string) {
+      return {
+        id: channelId,
+        name: 'start-here',
+        private: false,
+        member: gatewayMember,
+        archived: false,
+      };
+    },
+  } as SlackTransport;
+  try {
+    const journey = await beginOnboardingJourney(settings, 1_800_000_000_000);
+    const pending = await store.ensureWorkspaceInstallation({
+      workspaceId: 'TGATEWAY',
+      transportMode: 'gateway',
+      defaultAgentId: 'agent_default',
+      teamId: 'TGATEWAY',
+      appId: 'AGATEWAY',
+      botUserId: 'UCHICKPEA',
+      gatewayBindingId: 'binding_gateway',
+    });
+    await store.updateWorkspaceInstallation('TGATEWAY', {
+      health: 'healthy',
+    }, pending.revision);
+    await store.putChannel({
+      workspaceId: 'TGATEWAY',
+      channelId: 'CSTART',
+      label: 'start-here',
+      participationMode: 'mention_only',
+      lifecycle: 'active',
+    });
+    await store.putAgentChannelGrant({
+      workspaceId: 'TGATEWAY',
+      channelId: 'CSTART',
+      agentId: 'agent_default',
+      status: 'active',
+      createdByMembershipId: 'membership_test_owner',
+      channelLabel: 'start-here',
+    });
+    await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme Gateway');
+    const app = appWithAdminOptions(store, { settings, slackTransport });
+
+    const choose = await app.request('/admin/api/onboarding', { headers: auth(ADMIN_TOKEN) });
+    assert.equal(choose.status, 200);
+    assert.deepEqual(await choose.json(), {
+      stage: 'choose_channel',
+      revision: journey.revision,
+      agentId: null,
+      redirectTo: null,
+      workspace: { id: 'TGATEWAY', name: 'Acme Gateway' },
+      channel: null,
+      tryStartedAt: null,
+      completedAt: null,
+    });
+
+    const tryRequest = () => app.request('/admin/api/onboarding/try', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        expectedRevision: journey.revision,
+        workspaceId: 'TGATEWAY',
+        channelId: 'CSTART',
+        channelName: 'start-here',
+      }),
+    });
+    const notJoined = await tryRequest();
+    assert.equal(notJoined.status, 409);
+    assert.deepEqual(await notJoined.json(), { error: 'slack_channel_membership_required' });
+
+    gatewayMember = true;
+    const started = await tryRequest();
+    assert.equal(started.status, 200);
+    assert.equal((await started.json() as { stage: string }).stage, 'try');
+  } finally {
     settings.close();
     store.close();
   }
@@ -2480,11 +2576,11 @@ test('effective config endpoint resolves through the runtime assignment path', a
     assert.equal(body.config.model, 'local-stub/effective-model');
     assert.equal(body.config.provider, 'local-stub');
     assert.match(body.config.instructions, /Base profile instructions from the admin test\./);
-    assert.match(body.config.instructions, /Channel addendum from the admin test\./);
+    assert.doesNotMatch(body.config.instructions, /Channel addendum from the admin test\./);
     assert.match(body.config.instructions, /Do not reveal Slack tokens/);
     assert.deepEqual(
       body.config.instructionLayers.map((layer) => layer.source),
-      ['interaction_defaults', 'agent', 'channel', 'runtime', 'guardrail'],
+      ['interaction_defaults', 'agent', 'runtime', 'guardrail'],
     );
   } finally {
     store.close();
@@ -5915,6 +6011,9 @@ test('Agent-first admin projections expose capabilities, placements, readiness, 
       status: 'active', createdByMembershipId: 'membership_test_owner',
       channelLabel: 'operations', channelIsPrivate: false,
     });
+    await store.ensureWorkspaceInstallation({
+      workspaceId: 'T123', transportMode: 'direct', defaultAgentId: configured.id,
+    });
     await store.createSlackIdentity({
       id: 'slack_identity_ops', ingressKey: 'identity_ingress_ops_0123456789abcdef',
       kind: 'dedicated', lifecycle: 'connected', teamId: 'T123', dmState: 'on',
@@ -5930,17 +6029,20 @@ test('Agent-first admin projections expose capabilities, placements, readiness, 
     assert.equal(detail.agent.capabilityPreviews.connectors[0].name, 'Linear');
     assert.equal(detail.agent.capabilityPreviews.repositories[0].name, 'acme/ops');
     assert.equal(detail.agent.whereItWorks.channels[0].channelName, 'operations');
-    assert.equal(detail.agent.whereItWorks.directMessages[0].identityId, 'slack_identity_ops');
+    assert.equal(detail.agent.isWorkspaceDefault, true);
+    assert.deepEqual(detail.agent.defaultForWorkspaces, ['T123']);
+    assert.equal(detail.agent.whereItWorks.directMessages, undefined);
     assert.deepEqual(detail.agent.memoryOwner, { ownerKind: 'agent', workspaceId: 'T123', ownerId: 'agent_ops' });
     assert.equal(detail.agent.deletion.blocked, true);
 
     const channelsResponse = await app.request('/admin/api/channels', { headers: auth(ADMIN_TOKEN) });
     assert.equal(channelsResponse.status, 200);
     const channels = (await channelsResponse.json()) as any;
-    assert.equal(channels.channels[0].assignment.agentId, 'agent_ops');
-    assert.equal(channels.channels[0].assignment.agentName, 'Operations');
+    assert.equal(channels.channels[0].grants[0].agentId, 'agent_ops');
+    assert.equal(channels.channels[0].grants[0].agentName, 'Operations');
     assert.equal(channels.channels[0].readiness.code, 'ready');
-    assert.equal(channels.channels[0].links.agent, '/admin/agents/agent_ops');
+    assert.equal(channels.channels[0].links.agent, undefined);
+    assert.equal(channels.channels[0].behavior, undefined);
 
     const removedProfilePage = await app.request('/admin/profiles/agent_ops', { headers: auth(ADMIN_TOKEN) });
     assert.equal(removedProfilePage.status, 404);

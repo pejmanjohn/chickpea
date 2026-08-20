@@ -55,6 +55,14 @@ const RELEASE_SCRIBE_PROFILE: CustomAgentConfig = {
   ].join(' '),
   enabled: true,
   model: PARITY_MODEL,
+  slackPresence: {
+    requestedHandle: 'release-scribe',
+    normalizedHandle: 'release-scribe',
+    desiredState: 'active',
+    health: 'healthy',
+    userGroupId: 'SRELEASE',
+    avatar: { kind: 'generated', revision: 1, seed: 'release-scribe' },
+  },
   skills: [],
   mcpServers: [],
   apiConnections: [],
@@ -75,6 +83,14 @@ const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
   ].join(' '),
   enabled: true,
   model: PARITY_MODEL,
+  slackPresence: {
+    requestedHandle: 'exec-brief',
+    normalizedHandle: 'exec-brief',
+    desiredState: 'active',
+    health: 'healthy',
+    userGroupId: 'SEXEC',
+    avatar: { kind: 'generated', revision: 1, seed: 'exec-brief' },
+  },
   skills: [],
   mcpServers: [],
   apiConnections: [],
@@ -141,7 +157,8 @@ export const scenarios: Scenario[] = [
       assert.equal(response.status, 200);
       assert.deepEqual(response.body, { challenge: 'parity-challenge' });
       await instance.quiesce();
-      assert.equal(instance.backend.wireLog.length, 0);
+      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 0);
+      assert.equal(instance.backend.callsOfMethod('chat.startStream').length, 0);
     },
   },
   {
@@ -359,17 +376,14 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S10',
-    title: 'ambient top-level chatter is classified and remains silent',
-    // The channel MUST be assigned here: with no assignment the turn would be
-    // dropped by fail-closed resolution and this scenario would pass without
-    // exercising the top-level-ignore gate it exists to protect.
+    title: 'unmentioned top-level chatter stays silent without classification',
     config: demoChannelConfig(),
     async run(instance) {
       const response = await instance.postEvent(topLevelChannelMessage());
       assert.equal(response.status, 200);
       await instance.quiesce();
       assert.equal(instance.backend.finals().length, 0);
-      assert.equal(instance.backend.providerCalls().length, 1);
+      assert.equal(instance.backend.providerCalls().length, 0);
       assert.equal(instance.backend.statusCalls().length, 0);
     },
   },
@@ -631,7 +645,7 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S10C',
-    title: 'useful ambient work is promoted without a mention',
+    title: 'work-shaped top-level chatter still requires an explicit Agent entry point',
     config: demoChannelConfig(),
     async run(instance) {
       await instance.postEvent(topLevelChannelMessage({
@@ -639,48 +653,20 @@ export const scenarios: Scenario[] = [
         event: { text: 'PARITY_AMBIENT_WORK', ts: '1782770500.000100' },
       }));
       await instance.quiesce();
-      assert.equal(instance.backend.providerCalls().length, 2);
-      assert.equal(instance.backend.callsOfMethod('reactions.add').length, 1);
-
-      // Ambient promotion is the one shape classified BEFORE Work admission, so
-      // its checklist is the only one that reaches the presentation as native
-      // task labels. Native task plans are on by default, so the interim
-      // checklist post is superseded once the native stream is proven started:
-      // it is DELETED, never finalized with chat.update.
-      const checklistPosts = instance.backend.callsOfMethod('chat.postMessage');
-      assert.equal(checklistPosts.length, 1);
-      const checklistTs = checklistPosts[0]?.responseTs;
-      assert.ok(checklistTs);
-      const deletes = instance.backend.callsOfMethod('chat.delete');
-      assert.equal(deletes.length, 1);
-      assert.equal(deletes[0]?.body.ts, checklistTs);
-      assert.equal(instance.backend.callsOfMethod('chat.update').length, 0);
-
-      // The classifier's checklist becomes the native task card, opened
-      // in_progress with the stream and closed complete with it.
-      const [start] = instance.backend.callsOfMethod('chat.startStream');
-      assert.ok(start);
-      assert.equal(start.body.task_display_mode, 'timeline');
-      assert.deepEqual(
-        chunkFields(start.body.chunks, 'task_update'),
-        [['task_update', 'Ambient result artifact', 'in_progress']],
-      );
-      const [stop] = instance.backend.callsOfMethod('chat.stopStream');
-      assert.ok(stop);
-      assert.deepEqual(
-        chunkFields(stop.body.chunks, 'task_update'),
-        [['task_update', 'Ambient result artifact', 'complete']],
-      );
-
-      assert.equal(instance.backend.finals().length, 1);
-      assert.equal(instance.backend.finals()[0]?.threadTs, '1782770500.000100');
+      assert.equal(instance.backend.providerCalls().length, 0);
+      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 0);
+      assert.equal(instance.backend.callsOfMethod('chat.startStream').length, 0);
+      assert.equal(instance.backend.finals().length, 0);
     },
   },
   {
     id: 'S10D',
-    title: 'a human reaction on a reply resolves and answers in the root thread',
+    title: 'a human reaction can continue a thread an Agent already owns',
     config: demoChannelConfig(),
     async run(instance) {
+      await instance.postEvent(appMention());
+      await instance.quiesce();
+      instance.backend.reset();
       await instance.postEvent(reactionAdded());
       await instance.quiesce();
       assert.equal(instance.backend.callsOfMethod('reactions.get').length, 1);
@@ -770,7 +756,7 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S12',
-    title: 'Agent View lifecycle events are acknowledged without running',
+    title: 'App Home publishes the Agent directory while context changes stay inert',
     config: {},
     async run(instance) {
       const openedResponse = await instance.postEvent(appHomeOpened());
@@ -779,7 +765,9 @@ export const scenarios: Scenario[] = [
       assert.ok(changedResponse.status >= 200 && changedResponse.status < 300);
 
       await instance.quiesce();
-      assert.equal(instance.backend.wireLog.length, 0);
+      assert.equal(instance.backend.callsOfMethod('views.publish').length, 1);
+      assert.equal(instance.backend.providerCalls().length, 0);
+      assert.equal(instance.backend.finals().length, 0);
     },
   },
   {
@@ -1110,7 +1098,7 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S25',
-    title: 'channel prompt addendum appears only for assignments that set one',
+    title: 'legacy Channel prompt addenda cannot alter Agent instructions',
     config: {
       configSeed: {
         agents: [
@@ -1153,9 +1141,9 @@ export const scenarios: Scenario[] = [
       );
       await instance.quiesce();
 
-      const withAddendum = instance.backend.providerCalls().at(-1);
-      assert.ok(withAddendum);
-      assert.match(JSON.stringify(withAddendum.body), /CHANNEL_ADDENDUM_MARKER/);
+      const firstPrompt = instance.backend.providerCalls().at(-1);
+      assert.ok(firstPrompt);
+      assert.doesNotMatch(JSON.stringify(firstPrompt.body), /CHANNEL_ADDENDUM_MARKER/);
 
       await instance.postEvent(
         appMention({
@@ -1170,9 +1158,9 @@ export const scenarios: Scenario[] = [
       );
       await instance.quiesce();
 
-      const withoutAddendum = instance.backend.providerCalls().at(-1);
-      assert.ok(withoutAddendum);
-      assert.doesNotMatch(JSON.stringify(withoutAddendum.body), /CHANNEL_ADDENDUM_MARKER/);
+      const secondPrompt = instance.backend.providerCalls().at(-1);
+      assert.ok(secondPrompt);
+      assert.doesNotMatch(JSON.stringify(secondPrompt.body), /CHANNEL_ADDENDUM_MARKER/);
     },
   },
   {
@@ -1226,18 +1214,15 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S29',
-    title: 'two distinct Agents feed distinct per-channel instructions to the provider',
-    // The seed now ships ONE neutral Agent, so this per-channel-differentiation
-    // proof builds its own two distinct Agents (inline fixtures below) in the
-    // scenario's own store seed rather than relying on the install seed.
+    title: 'two Agent handles in one channel select distinct instructions',
     config: twoProfileDifferentiationConfig(),
     async run(instance) {
       await instance.postEvent(
         appMention({
           event_id: 'Ev_DEMO_RELEASE_SCRIBE',
           event: {
-            channel: 'C_ENG',
-            text: '<@UBOT> draft the release note for the latency fix',
+            channel: EXEC_CHANNEL,
+            text: '<!subteam^SRELEASE|release-scribe> draft the release note for the latency fix',
             ts: '1782771200.000100',
             event_ts: '1782771200.000100',
           },
@@ -1258,7 +1243,7 @@ export const scenarios: Scenario[] = [
           event_id: 'Ev_DEMO_EXEC_BRIEF',
           event: {
             channel: EXEC_CHANNEL,
-            text: '<@UBOT> brief leadership on the launch plan',
+            text: '<!subteam^SEXEC|exec-brief> brief leadership on the launch plan',
             ts: '1782771201.000100',
             event_ts: '1782771201.000100',
           },
@@ -1458,28 +1443,23 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S33',
-    title: 'SLACK_TAG_ALLOW_DMS=false silences DMs but leaves channels working',
-    config: demoChannelConfig({
-      env: { SLACK_TAG_ALLOW_DMS: 'false' },
-    }),
+    title: 'the base Chickpea Agent remains reachable in DMs and assigned channels',
+    config: demoChannelConfig(),
     async run(instance) {
-      // Direct messages are turned off org-wide → no reply, nothing on the wire.
       await instance.postEvent(dmMessage());
       await instance.quiesce();
       assert.equal(
         instance.backend.finals().length,
-        0,
-        'a DM must stay silent when direct messages are disabled',
+        1,
+        'the base Agent must answer a full workspace member in DM',
       );
-      assert.equal(instance.backend.wireLog.length, 0);
 
-      // An assigned channel still replies — the toggle is DM-only.
       await instance.postEvent(appMention());
       await instance.quiesce();
       assert.equal(
         instance.backend.finals().length,
-        1,
-        'channels are unaffected by the direct-message toggle',
+        2,
+        'the same installation also answers an assigned channel',
       );
     },
   },
@@ -1531,64 +1511,10 @@ export const scenarios: Scenario[] = [
       assert.ok(instance.configDbPath);
       const snapshots = new SqliteAgentSnapshotStore(instance.configDbPath);
       try {
-        assert.equal(
-          await snapshots.get('TDEMO:C_EXEC:1782771600.000100'),
-          undefined,
-          'new Channel events must not create AgentSnapshot rows',
-        );
-      } finally {
-        snapshots.close();
-      }
-    },
-  },
-  {
-    id: 'S34R',
-    title: 'the live-config rollback restores write-once Channel snapshots',
-    config: {
-      ...snapshotScenarioConfig('agent_snapshot_rollback'),
-      env: { CHICKPEA_LIVE_CHANNEL_CONFIG: 'false' },
-    },
-    async run(instance) {
-      await instance.postEvent(
-        appMention({
-          event_id: 'Ev_S34R_T1',
-          event: {
-            text: '<@UBOT> start the rollback snapshot',
-            ts: '1782771650.000100',
-            event_ts: '1782771650.000100',
-          },
-        }),
-      );
-      await waitForProviderCallCount(instance, 2);
-      assertProviderPrompt(instance, -1, {
-        includes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
-        excludes: 'SNAPSHOT_BETA_INSTRUCTIONS',
-      });
-
-      await patchAgent(instance, 'agent_snapshot_rollback', {
-        instructions: 'SNAPSHOT_BETA_INSTRUCTIONS: edited after rollback snapshot.',
-      });
-      await instance.postEvent(
-        channelThreadMessage({
-          event_id: 'Ev_S34R_T2',
-          event: {
-            text: 'continue under the rollback snapshot',
-            ts: '1782771651.000100',
-            event_ts: '1782771651.000100',
-            thread_ts: '1782771650.000100',
-          },
-        }),
-      );
-      await waitForProviderCallCount(instance, 4);
-      assertProviderPrompt(instance, -1, {
-        includes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
-        excludes: 'SNAPSHOT_BETA_INSTRUCTIONS',
-      });
-
-      assert.ok(instance.configDbPath);
-      const snapshots = new SqliteAgentSnapshotStore(instance.configDbPath);
-      try {
-        assert.ok(await snapshots.get('TDEMO:C_EXEC:1782771650.000100'));
+        const snapshot = await snapshots.get('TDEMO:C_EXEC:1782771600.000100');
+        assert.equal(snapshot?.agentId, 'agent_snapshot_freeze');
+        assert.match(snapshot?.agent.instructions ?? '', /SNAPSHOT_BETA_INSTRUCTIONS/);
+        assert.doesNotMatch(snapshot?.instructions ?? '', /CHANNEL_ADDENDUM_MARKER/);
       } finally {
         snapshots.close();
       }
@@ -1596,37 +1522,30 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S35',
-    title: 'the next event in a started thread adopts a reassigned Agent',
-    config: liveReassignmentScenarioConfig(),
+    title: 'an explicit Agent handle hands an existing thread to that Agent',
+    config: twoProfileDifferentiationConfig(),
     async run(instance) {
       await instance.postEvent(
         appMention({
           event_id: 'Ev_S35_T1',
           event: {
-            text: '<@UBOT> start before the admin edit',
+            text: '<!subteam^SRELEASE|release-scribe> start the release draft',
             ts: '1782771700.000100',
             event_ts: '1782771700.000100',
           },
         }),
       );
       await waitForProviderCallCount(instance, 2);
-
-      const reassigned = await instance.adminRequest('/admin/api/assignments', {
-        method: 'PUT',
-        body: JSON.stringify({
-          workspaceId: 'TDEMO',
-          channelId: EXEC_CHANNEL,
-          agentId: 'agent_live_replacement',
-          enabled: true,
-        }),
+      assertProviderPrompt(instance, -1, {
+        includes: 'Release Scribe',
+        excludes: 'Exec Brief',
       });
-      assert.equal(reassigned.status, 200, JSON.stringify(reassigned.body));
 
       await instance.postEvent(
         channelThreadMessage({
           event_id: 'Ev_S35_T2_SAME_THREAD',
           event: {
-            text: 'continue in the same thread after reassignment',
+            text: '<!subteam^SEXEC|exec-brief> take over this thread',
             ts: '1782771701.000100',
             event_ts: '1782771701.000100',
             thread_ts: '1782771700.000100',
@@ -1635,8 +1554,8 @@ export const scenarios: Scenario[] = [
       );
       await waitForProviderCallCount(instance, 4);
       assertProviderPrompt(instance, -1, {
-        includes: 'SNAPSHOT_BETA_INSTRUCTIONS',
-        excludes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
+        includes: 'Exec Brief',
+        excludes: 'Release Scribe',
       });
     },
   },
@@ -1754,7 +1673,9 @@ export const scenarios: Scenario[] = [
     title: 'mention in an unassigned channel stays fail-closed but hints the mentioner ephemerally',
     // No configSeed: C_EXEC is deliberately unassigned so the turn drops at
     // fail-closed resolution — the hint is the ONLY thing allowed to escape.
-    config: {},
+    config: {
+      slack: { channels: [{ id: EXEC_CHANNEL, name: 'exec', isMember: true, teamId: 'TDEMO' }] },
+    },
     async run(instance) {
       const first = await instance.postEvent(appMention({ event_id: 'Ev_S38_T1' }));
       assert.equal(first.status, 200);
@@ -1767,14 +1688,13 @@ export const scenarios: Scenario[] = [
 
       // Exactly one ephemeral hint, to the mentioner, in the mentioned channel.
       const hints = instance.backend.callsOfMethod('chat.postEphemeral');
-      assert.equal(hints.length, 1);
+      assert.equal(hints.length, 1, instance.debugOutput?.() ?? 'missing routing feedback');
       const [hint] = hints;
       assert.equal(hint?.body.channel, 'C_EXEC');
       assert.equal(hint?.body.user, 'U_ALICE');
-      assert.ok(String(hint?.body.text).includes('No Agent is assigned'));
-      assert.ok(String(hint?.body.text).includes('Configure'));
+      assert.ok(String(hint?.body.text).includes('not available here'));
 
-      // Rate-limited: a repeat mention inside the claim-TTL window adds none.
+      // Every explicit failed attempt gets actionable feedback.
       await instance.postEvent(
         appMention({
           event_id: 'Ev_S38_T2',
@@ -1782,7 +1702,7 @@ export const scenarios: Scenario[] = [
         }),
       );
       await instance.quiesce();
-      assert.equal(instance.backend.callsOfMethod('chat.postEphemeral').length, 1);
+      assert.equal(instance.backend.callsOfMethod('chat.postEphemeral').length, 2);
 
       // Ambient (non-mention) traffic in an unassigned channel never hints —
       // only an explicit mention signals intent to talk to the bot.
@@ -1793,7 +1713,7 @@ export const scenarios: Scenario[] = [
         }),
       );
       await instance.quiesce();
-      assert.equal(instance.backend.callsOfMethod('chat.postEphemeral').length, 1);
+      assert.equal(instance.backend.callsOfMethod('chat.postEphemeral').length, 2);
 
       // A mention in an ambiguous 'G…' conversation (legacy private channel vs
       // group DM) is fail-closed like a channel but must NOT hint: /admin
@@ -1805,7 +1725,7 @@ export const scenarios: Scenario[] = [
         }),
       );
       await instance.quiesce();
-      assert.equal(instance.backend.callsOfMethod('chat.postEphemeral').length, 1);
+      assert.equal(instance.backend.callsOfMethod('chat.postEphemeral').length, 2);
     },
   },
   {
@@ -1846,13 +1766,12 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S40',
-    title: 'stored Slack behavior settings gate DMs, unassigned hints, and join welcomes',
+    title: 'stored Slack behavior settings gate hints and welcomes without disabling DMs',
     config: demoChannelConfig(),
     async run(instance) {
       const saved = await instance.adminRequest('/admin/api/slack-behavior', {
         method: 'PUT',
         body: JSON.stringify({
-          allowDms: false,
           unassignedHint: false,
           welcomeOnJoin: false,
         }),
@@ -1867,7 +1786,8 @@ export const scenarios: Scenario[] = [
       );
       assert.equal(dm.status, 200, JSON.stringify(dm.body));
       await instance.quiesce();
-      assert.equal(instance.backend.wireLog.length, 0, 'stored allowDms=false must silence DMs');
+      assert.equal(instance.backend.finals().length, 1, 'the base Agent always remains DM-able');
+      instance.backend.reset();
 
       const unassigned = await instance.postEvent(
         appMention({
@@ -1881,13 +1801,9 @@ export const scenarios: Scenario[] = [
       );
       assert.equal(unassigned.status, 200, JSON.stringify(unassigned.body));
       await instance.quiesce();
-      assert.deepEqual(
-        instance.backend.wireLog.map((entry) => entry.method),
-        ['auth.test'],
-        'stored unassignedHint=false permits only the cached identity probe',
-      );
       assert.equal(instance.backend.finals().length, 0);
       assert.equal(instance.backend.callsOfMethod('chat.postEphemeral').length, 0);
+      instance.backend.reset();
 
       const joined = await instance.postEvent(
         memberJoinedChannel({
@@ -1901,11 +1817,8 @@ export const scenarios: Scenario[] = [
       );
       assert.equal(joined.status, 200, JSON.stringify(joined.body));
       await instance.quiesce();
-      assert.deepEqual(
-        instance.backend.wireLog.map((entry) => entry.method),
-        ['auth.test'],
-        'stored welcomeOnJoin=false must suppress the welcome after the cached identity probe',
-      );
+      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 0);
+      instance.backend.reset();
 
       const channel = await instance.postEvent(
         appMention({
@@ -1998,9 +1911,8 @@ function reactionAdded(
 }
 
 /**
- * Seed for S29: two distinct profiles (Release Scribe on #eng, Exec Brief on the
- * exec channel) so the scenario can prove the same install produces DIFFERENT
- * per-channel voices — the proof that used to lean on the two seeded profiles.
+ * Seed for S29/S35: two Agent handles granted to the same channel. Addressing
+ * the Slack user group, not the channel, selects the Agent persona.
  */
 function twoProfileDifferentiationConfig(): ScenarioLaneConfig {
   return {
@@ -2010,7 +1922,7 @@ function twoProfileDifferentiationConfig(): ScenarioLaneConfig {
         { ...EXEC_BRIEF_PROFILE },
       ],
       assignments: [
-        { workspaceId: 'TDEMO', channelId: 'C_ENG', agentId: 'agent_release_scribe', enabled: true },
+        { workspaceId: 'TDEMO', channelId: EXEC_CHANNEL, agentId: 'agent_release_scribe', enabled: true },
         { workspaceId: 'TDEMO', channelId: EXEC_CHANNEL, agentId: 'agent_exec_brief', enabled: true },
       ],
     },
@@ -2046,31 +1958,6 @@ function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
           enabled: true,
         },
       ],
-    },
-  };
-}
-
-function liveReassignmentScenarioConfig(): ScenarioLaneConfig {
-  const original = snapshotScenarioConfig('agent_live_original');
-  return {
-    ...original,
-    configSeed: {
-      agents: [
-        ...original.configSeed!.agents,
-        {
-          id: 'agent_live_replacement',
-          revision: 1,
-          name: 'Replacement Agent',
-          instructions: 'SNAPSHOT_BETA_INSTRUCTIONS: reassigned Agent instructions.',
-          enabled: true,
-          model: 'local-stub/snapshot-profile',
-          skills: [],
-          mcpServers: [],
-          apiConnections: [],
-          repositories: [],
-        },
-      ],
-      assignments: original.configSeed!.assignments,
     },
   };
 }

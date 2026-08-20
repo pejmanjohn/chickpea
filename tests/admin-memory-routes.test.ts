@@ -16,7 +16,7 @@ const ADMIN_TOKEN = 'admin-memory-secret';
 const NOW = Date.UTC(2026, 6, 25, 12);
 
 async function harness() {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const memory = new SqliteMemoryStateStore(':memory:', () => NOW);
   const routines = new SqliteRoutineStore(':memory:', () => NOW);
@@ -32,10 +32,15 @@ async function harness() {
     idempotencyKey: 'memory:test:create',
   });
   const agentOwner = await memory.ensureOwner({ workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: 'agent_default' });
-  const channelOwner = await memory.ensureOwner({ workspaceId: 'T_TEST', ownerKind: 'channel', ownerId: 'C_PRODUCT' });
+  await config.createAgent({
+    id: 'agent_other', name: 'Other Agent', instructions: 'Keep other memory separate.',
+    enabled: true, lifecycle: 'active', skills: [], mcpServers: [], apiConnections: [],
+    repositories: [],
+  });
+  await memory.ensureOwner({ workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: 'agent_other' });
   const ownerEntry = await memory.createOwnerEntry({
-    entryId: 'mem_owner_product', storeId: channelOwner.storeId, workspaceId: 'T_TEST',
-    slug: 'channel-guidance', description: 'Only this channel.', type: 'fact', body: 'Channel owner body.',
+    entryId: 'mem_owner_product', storeId: agentOwner.storeId, workspaceId: 'T_TEST',
+    slug: 'launch-guidance', description: 'Agent launch guidance.', type: 'fact', body: 'Agent launch body.',
     actorId: 'U_MEMBER', actorClass: 'member', idempotencyKey: 'memory:test:owner-create',
   });
   await memory.createOwnerEntry({
@@ -48,14 +53,13 @@ async function harness() {
     store: config, settings, memory, routines, ...testAdminAuthority(ADMIN_TOKEN),
     knownProviders: new Set(),
   }));
-  return { app, config, settings, memory, routines, publicStore, entry, agentOwner, channelOwner, ownerEntry };
+  return { app, config, settings, memory, routines, publicStore, entry, agentOwner, ownerEntry };
 }
 
 const auth = testAdminHeaders(ADMIN_TOKEN);
 
 test('owner memory creation is authenticated, route-owned, validated, and idempotent', async () => {
   const h = await harness();
-  const channelBase = '/admin/api/audit/memory/owners/channel/T_TEST/C_PRODUCT';
   const agentBase = '/admin/api/audit/memory/owners/agent/T_TEST/agent_default';
   const body = {
     slug: 'launch-notes',
@@ -69,13 +73,13 @@ test('owner memory creation is authenticated, route-owned, validated, and idempo
     'idempotency-key': 'owner-create-1',
   };
   try {
-    assert.equal((await h.app.request(`${channelBase}/entries`, {
+    assert.equal((await h.app.request(`${agentBase}/entries`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'idempotency-key': 'unauth' },
       body: JSON.stringify(body),
     })).status, 401);
 
-    assert.equal((await h.app.request(`${channelBase}/entries`, {
+    assert.equal((await h.app.request(`${agentBase}/entries`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${ADMIN_TOKEN}`,
@@ -86,7 +90,7 @@ test('owner memory creation is authenticated, route-owned, validated, and idempo
       body: JSON.stringify(body),
     })).status, 403);
 
-    const created = await h.app.request(`${channelBase}/entries`, {
+    const created = await h.app.request(`${agentBase}/entries`, {
       method: 'POST', headers, body: JSON.stringify(body),
     });
     const createdText = await created.text();
@@ -96,44 +100,37 @@ test('owner memory creation is authenticated, route-owned, validated, and idempo
       entry: { entryId: string; ownerKind: string; ownerId: string; writeOrigin: { kind: string } };
       projected: string;
     };
-    assert.deepEqual(createdBody.owner, h.channelOwner);
-    assert.equal(createdBody.entry.ownerKind, 'channel');
-    assert.equal(createdBody.entry.ownerId, 'C_PRODUCT');
+    assert.deepEqual(createdBody.owner, h.agentOwner);
+    assert.equal(createdBody.entry.ownerKind, 'agent');
+    assert.equal(createdBody.entry.ownerId, 'agent_default');
     assert.deepEqual(createdBody.entry.writeOrigin, { kind: 'admin' });
     assert.match(createdBody.projected, /Ship after the final review\./);
 
-    const replay = await h.app.request(`${channelBase}/entries`, {
+    const replay = await h.app.request(`${agentBase}/entries`, {
       method: 'POST', headers, body: JSON.stringify(body),
     });
     assert.equal(replay.status, 201);
     assert.equal((await replay.json() as { entry: { entryId: string } }).entry.entryId,
       createdBody.entry.entryId);
-    assert.equal((await h.memory.listOwnerEntries(h.channelOwner)).length, 2);
+    assert.equal((await h.memory.listOwnerEntries(h.agentOwner)).length, 3);
 
-    const mismatch = await h.app.request(`${channelBase}/entries`, {
+    const mismatch = await h.app.request(`${agentBase}/entries`, {
       method: 'POST', headers, body: JSON.stringify({ ...body, body: 'Different content.' }),
     });
     assert.equal(mismatch.status, 409);
     assert.equal((await mismatch.json() as { error: string }).error, 'memory_idempotency_mismatch');
 
-    const spoofedOwner = await h.app.request(`${channelBase}/entries`, {
+    const spoofedOwner = await h.app.request(`${agentBase}/entries`, {
       method: 'POST',
       headers: { ...headers, 'idempotency-key': 'owner-create-spoof' },
       body: JSON.stringify({ ...body, ownerId: 'agent_default' }),
     });
     assert.equal(spoofedOwner.status, 400);
 
-    const agentCreate = await h.app.request(`${agentBase}/entries`, {
-      method: 'POST', headers, body: JSON.stringify(body),
-    });
-    assert.equal(agentCreate.status, 201);
-    const agentBody = await agentCreate.json() as { entry: { entryId: string; ownerKind: string } };
-    assert.equal(agentBody.entry.ownerKind, 'agent');
-    assert.notEqual(agentBody.entry.entryId, createdBody.entry.entryId);
     assert.equal((await h.app.request(
-      `${agentBase}/entries/${createdBody.entry.entryId}`,
+      `/admin/api/audit/memory/owners/channel/T_TEST/C_PRODUCT/entries/${createdBody.entry.entryId}`,
       { headers: auth },
-    )).status, 404);
+    )).status, 403);
   } finally {
     h.routines.close(); h.memory.close(); h.settings.close(); h.config.close();
   }
@@ -141,7 +138,7 @@ test('owner memory creation is authenticated, route-owned, validated, and idempo
 
 test('owner memory routes authenticate and derive exact owner from the route', async () => {
   const h = await harness();
-  const base = '/admin/api/audit/memory/owners/channel/T_TEST/C_PRODUCT';
+  const base = '/admin/api/audit/memory/owners/agent/T_TEST/agent_default';
   try {
     for (const path of [
       '/admin/api/audit/memory/owners', `${base}/files`,
@@ -160,17 +157,17 @@ test('owner memory routes authenticate and derive exact owner from the route', a
     assert.equal(files.status, 200);
     assert.equal(files.headers.get('cache-control'), 'no-store');
     assert.deepEqual(((await files.json()) as { files: Array<{ name: string }> }).files.map(({ name }) => name),
-      ['MEMORY.md', 'channel-guidance.md']);
+      ['MEMORY.md', 'agent-guidance.md', 'launch-guidance.md']);
 
     const wrongOwner = await h.app.request(
-      `/admin/api/audit/memory/owners/agent/T_TEST/agent_default/entries/${h.ownerEntry.entryId}`,
+      `/admin/api/audit/memory/owners/agent/T_TEST/agent_other/entries/${h.ownerEntry.entryId}`,
       { headers: auth },
     );
     assert.equal(wrongOwner.status, 404);
 
     const update = await h.app.request(`${base}/entries/${h.ownerEntry.entryId}`, {
       method: 'PUT', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'owner-edit-1' },
-      body: JSON.stringify({ expectedVersion: 1, description: 'Updated channel only.', type: 'fact', body: 'New body.' }),
+      body: JSON.stringify({ expectedVersion: 1, description: 'Updated Agent guidance.', type: 'fact', body: 'New body.' }),
     });
     const updateText = await update.text();
     assert.equal(update.status, 200, updateText);
@@ -184,8 +181,8 @@ test('owner memory routes authenticate and derive exact owner from the route', a
     const exported = await h.app.request(`${base}/export`, { headers: auth });
     assert.equal(exported.status, 200);
     const archive = decodeMemoryArchive(new Uint8Array(await exported.arrayBuffer()));
-    assert.equal(JSON.stringify(archive).includes('Agent owner body.'), false);
-    assert.deepEqual(archive.map(({ path }) => path), ['MEMORY.md', 'channel-guidance.md', 'manifest.json']);
+    assert.equal(JSON.stringify(archive).includes('Agent owner body.'), true);
+    assert.deepEqual(archive.map(({ path }) => path), ['MEMORY.md', 'agent-guidance.md', 'launch-guidance.md', 'manifest.json']);
   } finally {
     h.config.close(); h.settings.close(); h.memory.close(); h.routines.close();
   }

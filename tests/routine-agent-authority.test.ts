@@ -78,6 +78,17 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
       team.id, ownerPersonal.id,
     ].sort());
 
+    await assert.rejects(
+      bindRoutineAgentAuthority({
+        routine: { ...routine, taskText: 'Use the other member\'s account.' },
+        assignment,
+        actorMembershipId: bob.resolution.membership.id,
+        env: undefined,
+      }, { config, identity }),
+      (error: unknown) => error instanceof RoutineAuthorityError &&
+        error.reason === 'creator_ineligible',
+    );
+
     const reassigned = await reassignRoutineAgentAuthority({
       scheduleId: routine.id,
       runsAsMembershipId: bob.resolution.membership.id,

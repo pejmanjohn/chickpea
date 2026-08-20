@@ -216,10 +216,8 @@ const NO_SLACK_ENV: NodeJS.ProcessEnv = {
   SLACK_SIGNING_SECRET: undefined,
   SLACK_BOT_USER_ID: undefined,
   SLACK_API_URL: undefined,
-  SLACK_TAG_ALLOW_DMS: undefined,
   SLACK_TAG_UNASSIGNED_HINT: undefined,
   SLACK_TAG_WELCOME_ON_JOIN: undefined,
-  SLACK_TAG_AMBIENT_PARTICIPATION: undefined,
   // requestOrigin() honors SLACK_TAG_PUBLIC_URL as an operator pin; clear it so
   // the request-derived origin tests are hermetic against the dev shell.
   SLACK_TAG_PUBLIC_URL: undefined,
@@ -509,7 +507,7 @@ test('slack-connection endpoints fail closed without Slack session authority', a
     const putBehavior = await app.request('/admin/api/slack-behavior', {
       method: 'PUT',
       headers: { ...auth(), 'content-type': 'application/json' },
-      body: JSON.stringify({ allowDms: false }),
+      body: JSON.stringify({ unassignedHint: false }),
     });
     assert.equal(putBehavior.status, 503);
   } finally {
@@ -1475,10 +1473,8 @@ test('Slack behavior settings default on, persist booleans, and report provenanc
       const defaults = await app.request('/admin/api/slack-behavior', { headers: auth() });
       assert.equal(defaults.status, 200);
       assert.deepEqual(await defaults.json(), {
-        allowDms: { value: true, source: 'default' },
         unassignedHint: { value: true, source: 'default' },
         welcomeOnJoin: { value: true, source: 'default' },
-        ambientParticipation: { value: true, source: 'default' },
         progressiveStreaming: { value: false, source: 'default' },
         nativeTasks: { value: true, source: 'default' },
       });
@@ -1487,7 +1483,7 @@ test('Slack behavior settings default on, persist booleans, and report provenanc
         method: 'PUT',
         headers: { ...auth(), 'content-type': 'application/json' },
         body: JSON.stringify({
-          allowDms: false,
+          unassignedHint: false,
           welcomeOnJoin: false,
           nativeTasks: true,
           progressiveStreaming: true,
@@ -1495,10 +1491,8 @@ test('Slack behavior settings default on, persist booleans, and report provenanc
       });
       assert.equal(saved.status, 200);
       assert.deepEqual(await saved.json(), {
-        allowDms: { value: false, source: 'stored' },
-        unassignedHint: { value: true, source: 'default' },
+        unassignedHint: { value: false, source: 'stored' },
         welcomeOnJoin: { value: false, source: 'stored' },
-        ambientParticipation: { value: true, source: 'default' },
         progressiveStreaming: { value: true, source: 'stored' },
         nativeTasks: { value: true, source: 'stored' },
       });
@@ -1530,14 +1524,12 @@ test('Slack behavior multi-key updates use one atomic settings patch', async () 
       const saved = await app.request('/admin/api/slack-behavior', {
         method: 'PUT',
         headers: { ...auth(), 'content-type': 'application/json' },
-        body: JSON.stringify({ allowDms: false, welcomeOnJoin: false }),
+        body: JSON.stringify({ unassignedHint: false, welcomeOnJoin: false }),
       });
       assert.equal(saved.status, 200);
       assert.deepEqual(await saved.json(), {
-        allowDms: { value: false, source: 'stored' },
-        unassignedHint: { value: true, source: 'default' },
+        unassignedHint: { value: false, source: 'stored' },
         welcomeOnJoin: { value: false, source: 'stored' },
-        ambientParticipation: { value: true, source: 'default' },
         progressiveStreaming: { value: false, source: 'default' },
         nativeTasks: { value: true, source: 'default' },
       });
@@ -1552,15 +1544,13 @@ test('Slack behavior env overrides are read-only and PUT is atomic', async () =>
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await withEnv(
-      { ...NO_SLACK_ENV, SLACK_TAG_ALLOW_DMS: 'false', SLACK_TAG_WELCOME_ON_JOIN: '0' },
+      { ...NO_SLACK_ENV, SLACK_TAG_WELCOME_ON_JOIN: '0' },
       async () => {
         const app = appWith(settings);
         const current = await app.request('/admin/api/slack-behavior', { headers: auth() });
         assert.deepEqual(await current.json(), {
-          allowDms: { value: false, source: 'env' },
           unassignedHint: { value: true, source: 'default' },
           welcomeOnJoin: { value: false, source: 'env' },
-          ambientParticipation: { value: true, source: 'default' },
           progressiveStreaming: { value: false, source: 'default' },
           nativeTasks: { value: true, source: 'default' },
         });
@@ -1568,12 +1558,12 @@ test('Slack behavior env overrides are read-only and PUT is atomic', async () =>
         const conflict = await app.request('/admin/api/slack-behavior', {
           method: 'PUT',
           headers: { ...auth(), 'content-type': 'application/json' },
-          body: JSON.stringify({ allowDms: true, unassignedHint: false }),
+          body: JSON.stringify({ welcomeOnJoin: true, unassignedHint: false }),
         });
         assert.equal(conflict.status, 409);
         assert.deepEqual(await conflict.json(), {
           error: 'slack_setting_read_only',
-          settings: ['allowDms'],
+          settings: ['welcomeOnJoin'],
         });
 
         // No partial write: the otherwise-writable sibling remains default.
@@ -1596,17 +1586,14 @@ test('blank Slack behavior env placeholders do not lock browser-managed settings
     await withEnv(
       {
         ...NO_SLACK_ENV,
-        SLACK_TAG_ALLOW_DMS: '',
         SLACK_TAG_UNASSIGNED_HINT: '   ',
       },
       async () => {
         const app = appWith(settings);
         const current = await app.request('/admin/api/slack-behavior', { headers: auth() });
         assert.deepEqual(await current.json(), {
-          allowDms: { value: true, source: 'default' },
           unassignedHint: { value: true, source: 'default' },
           welcomeOnJoin: { value: true, source: 'default' },
-          ambientParticipation: { value: true, source: 'default' },
           progressiveStreaming: { value: false, source: 'default' },
           nativeTasks: { value: true, source: 'default' },
         });
@@ -1614,16 +1601,14 @@ test('blank Slack behavior env placeholders do not lock browser-managed settings
         const saved = await app.request('/admin/api/slack-behavior', {
           method: 'PUT',
           headers: { ...auth(), 'content-type': 'application/json' },
-          body: JSON.stringify({ allowDms: false, unassignedHint: false }),
+          body: JSON.stringify({ unassignedHint: false, nativeTasks: false }),
         });
         assert.equal(saved.status, 200);
         assert.deepEqual(await saved.json(), {
-          allowDms: { value: false, source: 'stored' },
           unassignedHint: { value: false, source: 'stored' },
           welcomeOnJoin: { value: true, source: 'default' },
-          ambientParticipation: { value: true, source: 'default' },
           progressiveStreaming: { value: false, source: 'default' },
-          nativeTasks: { value: true, source: 'default' },
+          nativeTasks: { value: false, source: 'stored' },
         });
       },
     );
@@ -1637,7 +1622,7 @@ test('Slack behavior PUT rejects empty, unknown, and non-boolean bodies', async 
   try {
     await withEnv(NO_SLACK_ENV, async () => {
       const app = appWith(settings);
-      for (const body of [{}, { surprise: true }, { allowDms: 'false' }, undefined]) {
+      for (const body of [{}, { surprise: true }, { unassignedHint: 'false' }, undefined]) {
         const response = await app.request('/admin/api/slack-behavior', {
           method: 'PUT',
           headers: { ...auth(), 'content-type': 'application/json' },

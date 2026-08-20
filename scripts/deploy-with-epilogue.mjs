@@ -322,6 +322,10 @@ function validateFlue2CutoverArtifact(artifact) {
   if (!authGuardRetirement || !sameMembers(authGuardRetirement.deleted_classes ?? [], RETIRED_AUTH_CLASSES)) {
     failures.push('v8 AuthGuard retirement');
   }
+  const gatewaySessionMigration = migrations.find((migration) => migration.tag === 'v9');
+  if (!gatewaySessionMigration || !sameMembers(gatewaySessionMigration.new_sqlite_classes ?? [], ['SlackGatewaySession'])) {
+    failures.push('v9 SlackGatewaySession SQLite class');
+  }
 
   const bindings = config.durable_objects?.bindings ?? [];
   const hasBinding = (name, className) => bindings.some(

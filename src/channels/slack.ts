@@ -664,6 +664,8 @@ async function resolveAgentRoutingActor(input: {
   workspaceId: string;
   userId: string;
   channelId?: string;
+  channelMembershipProven?: boolean;
+  includeDiscoverableAgents?: boolean;
   botUserId: string;
   transport: SlackTransport;
   stores: AppStores;
@@ -711,10 +713,11 @@ async function resolveAgentRoutingActor(input: {
     }
   }
   const channelMember = input.channelId
-    ? await input.transport.channelHasMember(input.channelId, input.userId)
+    ? input.channelMembershipProven === true ||
+      await input.transport.channelHasMember(input.channelId, input.userId)
     : false;
   let discoverableAgentIds: ReadonlySet<string> | undefined;
-  if (fullMember) {
+  if (fullMember && input.includeDiscoverableAgents !== false) {
     const agents = await discoverableAgents({
       config: input.stores.config,
       workspaceId: input.workspaceId,
@@ -825,6 +828,7 @@ async function postAgentRoutingFeedback(input: {
   surface: AssignmentSurface;
   result: Extract<AgentRoutingResult, { kind: 'denied' | 'ambiguous' }>;
   client: ReturnType<typeof createSlackWebClient>;
+  channelHintEnabled: boolean;
 }): Promise<void> {
   const alternatives = input.result.alternatives.length > 0
     ? ` Available here: ${input.result.alternatives.map(({ handle }) => `@${handle}`).join(', ')}.`
@@ -835,6 +839,15 @@ async function postAgentRoutingFeedback(input: {
       ? 'Only full workspace members can start private Agent conversations.'
       : `That Agent is not available here.${alternatives}`;
   if (input.surface === 'channel') {
+    // Channel denials follow the same operator-controlled and fail-closed
+    // feedback policy as legacy unassigned mentions. In particular, a G… id
+    // is ambiguous between a private channel and a group DM, so do not point
+    // the person at channel configuration for it.
+    if (
+      !input.channelHintEnabled ||
+      input.turn.source !== 'app_mention' ||
+      !input.turn.channelId.startsWith('C')
+    ) return;
     await input.client.chat.postEphemeral({
       channel: input.turn.channelId,
       user: input.turn.userId,
@@ -995,6 +1008,7 @@ export async function processGatewaySlackEnvelope(
   const installation = await stores.config.getWorkspaceInstallation(envelope.workspaceId);
   if (
     !installation || installation.transportMode !== 'gateway' ||
+    installation.health === 'revoked' ||
     !installation.gatewayBindingId || !installation.appId || !installation.botUserId
   ) return 'rejected';
   const gateway = providedClient ?? createGatewayDeploymentClient(platformEnv);
@@ -1069,6 +1083,7 @@ export async function processGatewayAgentSelection(
   const installation = await stores.config.getWorkspaceInstallation(selection.workspaceId);
   if (
     !installation || installation.transportMode !== 'gateway' ||
+    installation.health === 'revoked' ||
     !installation.botUserId || !installation.gatewayBindingId
   ) return 'rejected';
   const gateway = providedClient ?? createGatewayDeploymentClient(platformEnv);
@@ -1137,10 +1152,6 @@ async function processSlackEvent(
   const state = stores.slackState;
   const preliminarySurface = turnSurface(preliminaryTurn);
   const liveChannelConfig = liveChannelConfigurationEnabled(platformEnv);
-  if (!agentPlatformInstallation && preliminarySurface === 'direct' && !behavior.allowDms.value) {
-    return;
-  }
-
   if (!agentPlatformInstallation) {
     try {
       const gateAssignment = await resolveIdentityGateAssignment(
@@ -1181,8 +1192,11 @@ async function processSlackEvent(
   });
   if (normalization.status !== 'runnable') return;
   const turn = normalization.turn;
-  let candidateTurn =
-    turn.source === 'ambient_channel_message' || turn.source === 'reaction_added';
+  // Channels are explicit-entry only. Unmentioned top-level messages never
+  // classify, spend provider budget, or create work. Existing Slack threads
+  // may continue through their recorded Agent route.
+  if (turn.source === 'ambient_channel_message') return;
+  let candidateTurn = turn.source === 'reaction_added';
   let threadKey = slackThreadKey(turn);
 
   // c. Implicit thread replies require a thread this app already started (a
@@ -1211,13 +1225,6 @@ async function processSlackEvent(
   const evtKey = `evt:${payload.event_id}`;
   const msgKey = `msg:${turn.channelId}:${turn.messageTs}`;
 
-  // e. Resolve the config for this turn before canonical admission acquires
-  //    the claims. A failure here must not release keys owned by a concurrent
-  //    sibling event or Slack retry.
-  //    Every newly admitted event resolves current configuration. The durable
-  //    TurnJob below freezes that result for retries and an in-flight response;
-  //    a later event in the same Slack thread resolves again. Channels remain
-  //    fail-closed and never fall through to the global direct-message default.
   let assignment: ResolvedAssignment;
   let routedBaseAssignment: ResolvedAssignment | undefined;
   let agentRoutingActor: ResolvedAgentRoutingActor | undefined;
@@ -1228,6 +1235,30 @@ async function processSlackEvent(
   const runtimeClient = execution?.client ?? (
     credentials.botToken ? createSlackWebClient(credentials.botToken) : undefined
   );
+  if (agentPlatformInstallation && turn.source === 'reaction_added') {
+    if (!runtimeClient || !(await resolveReactionTargetContext(turn, runtimeClient))) {
+      await state.claim(evtKey);
+      await state.claim(msgKey);
+      return;
+    }
+    threadKey = slackThreadKey(turn);
+  }
+
+  // e. Resolve the config for this turn before canonical admission acquires
+  //    the claims. A failure here must not release keys owned by a concurrent
+  //    sibling event or Slack retry. Reaction events that cannot resolve a
+  //    Slack target are consumed above as transport noise, before config work.
+  //    Every newly admitted event resolves current configuration. The durable
+  //    TurnJob below freezes that result for retries and an in-flight response;
+  //    a later event in the same Slack thread resolves again. Channels remain
+  //    fail-closed and never fall through to the global direct-message default.
+  if (
+    agentPlatformInstallation &&
+    (turn.source === 'implicit_thread_reply' || turn.source === 'reaction_added') &&
+    !(await stores.config.getAgentThreadRoute(turn.workspaceId, turn.channelId, turn.threadTs))
+  ) {
+    return;
+  }
   try {
     const store = stores.config;
     const configStores = { agents: store, assignments: store };
@@ -1237,6 +1268,8 @@ async function processSlackEvent(
         workspaceId: turn.workspaceId,
         userId: turn.userId,
         ...(surface === 'channel' ? { channelId: turn.channelId } : {}),
+        channelMembershipProven: surface === 'channel',
+        includeDiscoverableAgents: surface !== 'channel',
         botUserId: resolvedBotUserId,
         transport: runtimeTransport,
         stores,
@@ -1254,6 +1287,7 @@ async function processSlackEvent(
           surface,
           result: routed,
           client: runtimeClient,
+          channelHintEnabled: behavior.unassignedHint.value,
         });
         return;
       }
@@ -1375,6 +1409,7 @@ async function processSlackEvent(
   const { botToken } = credentials;
   const slackClient = runtimeClient;
   if (
+    !agentPlatformInstallation &&
     turn.source === 'reaction_added' &&
     (!slackClient || !(await resolveReactionTargetContext(turn, slackClient)))
   ) {
@@ -1459,18 +1494,7 @@ async function processSlackEvent(
     turn.actorMembershipId = admittedActorMembershipId;
   }
 
-  // Ambient messages and inbound reactions are candidates, not durable work.
-  // Deterministic eligibility and the live rollback/assignment ceiling run
-  // before the model classifier, so mention-only channels create no cost.
-  if (
-    !agentPlatformInstallation &&
-    candidateTurn &&
-    (!behavior.ambientParticipation.value || assignment.participationMode === 'mention_only')
-  ) {
-    await state.claim(evtKey);
-    await state.claim(msgKey);
-    return;
-  }
+  // Inbound reactions are candidates, not durable work.
   if (candidateTurn && !admissionTruth.eligible) {
     console.info(
       `[chickpea] Slack candidate denied: ${admissionTruth.reason} (${turn.source})`,

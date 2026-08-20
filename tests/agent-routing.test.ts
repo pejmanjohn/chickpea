@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
-import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
+import { discoverableAgents, resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
 function turn(patch: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn {
@@ -72,6 +72,31 @@ test('an Agent user-group mention opens a route and an unmentioned reply continu
     });
     assert.equal(continued.kind, 'routed');
     if (continued.kind === 'routed') assert.equal(continued.source, 'thread_owner');
+  } finally {
+    store.close();
+  }
+});
+
+test('Agent discovery checks granted Channels lazily and reuses membership results', async () => {
+  const { store, support, finance } = await fixture();
+  try {
+    for (const agent of [support, finance]) {
+      await store.putAgentChannelGrant({
+        workspaceId: 'T1', channelId: 'C2', agentId: agent.id, status: 'active',
+        createdByMembershipId: 'membership_owner', channelLabel: 'later', channelIsPrivate: false,
+      });
+    }
+    const calls: string[] = [];
+    const visible = await discoverableAgents({
+      config: store,
+      workspaceId: 'T1',
+      channelMember: async (channelId) => {
+        calls.push(channelId);
+        return channelId === 'C1';
+      },
+    });
+    assert.deepEqual(visible.map(({ id }) => id).sort(), [finance.id, support.id].sort());
+    assert.deepEqual(calls, ['C1']);
   } finally {
     store.close();
   }

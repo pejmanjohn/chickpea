@@ -340,12 +340,12 @@ test('every Agent receives shared Slack teammate defaults before voice overrides
     assignments: store,
   });
   assert.deepEqual(config.instructionLayers.map((layer) => layer.source), [
-    'interaction_defaults', 'agent', 'channel', 'runtime', 'guardrail',
+    'interaction_defaults', 'agent', 'runtime', 'guardrail',
   ]);
   assert.match(config.instructions, /Lead with the outcome/);
   assert.match(config.instructions, /Current Slack user text may express task intent/);
   assert.match(config.instructions, /Use a playful voice/);
-  assert.ok(config.instructions.indexOf('Use a playful voice.') < config.instructions.indexOf('Keep replies compact.'));
-  assert.ok(config.instructions.indexOf('Keep replies compact.') < config.instructions.indexOf('Do not reveal Slack tokens'));
+  assert.doesNotMatch(config.instructions, /Keep replies compact\./);
+  assert.ok(config.instructions.indexOf('Use a playful voice.') < config.instructions.indexOf('Do not reveal Slack tokens'));
   store.close();
 });

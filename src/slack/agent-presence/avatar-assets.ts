@@ -40,15 +40,23 @@ export async function uploadAgentAvatar(input: {
   bytes: Uint8Array;
   contentType: string;
   publicOrigin: string;
+  publish?: (input: {
+    agentId: string;
+    revision: number;
+    contentType: StoredAvatarAsset['contentType'];
+    bytes: Uint8Array;
+  }) => Promise<string>;
 }): Promise<CustomAgentConfig> {
   const contentType = validateRaster(input.bytes, input.contentType);
   const agent = await input.config.getAgent(input.agentId);
   const revision = (agent.slackPresence?.avatar.revision ?? 0) + 1;
-  const url = agentAvatarUrl(input.publicOrigin, input.agentId, revision);
   await input.settings.setSetting(
     avatarAssetKey(input.agentId, revision),
     JSON.stringify({ contentType, base64: bytesToBase64(input.bytes) } satisfies StoredAvatarAsset),
   );
+  const url = input.publish
+    ? await input.publish({ agentId: input.agentId, revision, contentType, bytes: input.bytes })
+    : agentAvatarUrl(input.publicOrigin, input.agentId, revision);
   return input.config.updateAgent(
     input.agentId,
     {
@@ -56,7 +64,6 @@ export async function uploadAgentAvatar(input: {
         ...requiredPresence(agent),
         avatar: { kind: 'uploaded', revision, url },
       },
-      configurationGeneration: (agent.configurationGeneration ?? 1) + 1,
     },
     agent.revision,
   );
