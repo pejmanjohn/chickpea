@@ -307,17 +307,53 @@ export type AgentThreadRouteInput = Omit<AgentThreadRoute, 'revision' | 'updated
 export type ConnectionAccountOwnerKind = 'team' | 'member';
 export type ConnectionAccountLifecycle = 'pending' | 'ready' | 'needs_attention' | 'revoked';
 
+/** Non-secret API policy owned by a reusable connection account. */
+export interface ConnectionAccountApiPolicy {
+  kind: 'api';
+  allowedHosts: string[];
+  pathPrefixes: string[];
+  headerName: string;
+  headerValuePrefix?: string;
+  allowedMethods: string[];
+  authMode: 'credential' | 'oauth';
+  oauthProvider?: 'google';
+  oauthScopes?: string[];
+  oauthAppType?: 'workspace-internal' | 'external';
+  presetId?: string;
+}
+
+/** Non-secret MCP policy owned by a reusable connection account. */
+export interface ConnectionAccountMcpPolicy {
+  kind: 'mcp';
+  url: string;
+  transport: 'streamable-http' | 'sse';
+  authMode: 'none' | 'bearer' | 'oauth';
+  headerNames: string[];
+  discoveredTools: McpConnectionToolInfo[];
+  allowedTools: string[];
+  oauthScope?: string;
+  presetId?: string;
+}
+
+export type ConnectionAccountPolicy =
+  | ConnectionAccountApiPolicy
+  | ConnectionAccountMcpPolicy;
+
 /** Reusable credential ownership record; secret material stays behind secretRefId. */
 export interface ConnectionAccount {
   id: string;
   workspaceId: string;
   revision: number;
   ownerKind: ConnectionAccountOwnerKind;
+  /** Required for personal accounts and absent for team accounts. */
   ownerMembershipId?: string;
+  /** The member who may manage a team account alongside Chickpea Admins. */
+  createdByMembershipId: string;
   providerId: string;
   label: string;
   purpose?: string;
   identity?: McpConnectionIdentity;
+  policy: ConnectionAccountPolicy;
   secretRefId: string;
   lifecycle: ConnectionAccountLifecycle;
   createdAt: number;
@@ -330,6 +366,8 @@ export interface AgentConnectionBinding {
   agentId: string;
   connectionAccountId: string;
   providerId: string;
+  /** Empty means every capability allowed by the account policy. */
+  allowedCapabilities: string[];
   enabled: boolean;
   createdAt: number;
   updatedAt: number;

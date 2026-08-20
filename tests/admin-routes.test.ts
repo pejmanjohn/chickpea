@@ -40,6 +40,7 @@ import type { McpConnectInput, McpDiscoveryResult } from '../src/config/mcp-test
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
+import type { OAuthContinuation } from '../src/connections/types.ts';
 import { beginOnboardingJourney, startOnboardingTry } from '../src/config/onboarding-state.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
@@ -129,6 +130,7 @@ interface AdminHarnessOptions {
     state: string,
     dependencies: ApiOAuthDependencies,
   ) => Promise<{ ref: ApiOAuthRef; provider: ApiOAuthProvider }>;
+  onOAuthContinuationReady?: (continuation: OAuthContinuation) => Promise<void>;
   modelCatalogRefresh?: (
     options: RefreshModelCatalogOptions,
   ) => Promise<ModelCatalogRefreshResult>;
@@ -187,6 +189,9 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
       ...(options.startApiOAuth ? { startApiOAuth: options.startApiOAuth } : {}),
       ...(options.completeApiOAuth ? { completeApiOAuth: options.completeApiOAuth } : {}),
       ...(options.cancelApiOAuth ? { cancelApiOAuth: options.cancelApiOAuth } : {}),
+      ...(options.onOAuthContinuationReady
+        ? { onOAuthContinuationReady: options.onOAuthContinuationReady }
+        : {}),
       modelCatalogRefresh: options.modelCatalogRefresh ?? (async () => ({
         status: 'fresh',
         revision: activeModelCatalogSnapshot().revision,
@@ -2569,6 +2574,177 @@ test('admin API maps an assignment to a missing agent to a stable unknown_agent 
 });
 
 // --- API Connections -----------------------------------------------------------
+
+test('Agent connection API creates one reusable account, attaches it, and never returns its secret', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await store.createAgent(agent({ id: 'agent_connections_primary' }));
+    await store.createAgent(agent({ id: 'agent_connections_secondary' }));
+    await store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST',
+      transportMode: 'direct',
+      defaultAgentId: 'agent_connections_primary',
+    });
+    const app = appWithAdminOptions(store, { settings });
+    const create = await app.request('/admin/api/agents/agent_connections_primary/connections', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        workspaceId: 'T_TEST',
+        ownerKind: 'team',
+        providerId: 'zendesk',
+        label: 'Support Zendesk',
+        purpose: 'Answer support tickets',
+        credential: 'zendesk-secret-value',
+        api: apiConnection({
+          id: 'zendesk',
+          displayName: 'Zendesk',
+          allowedHosts: ['acme.zendesk.com'],
+          pathPrefixes: ['/api/v2/'],
+          allowedMethods: ['GET', 'POST'],
+        }),
+      }),
+    });
+    const createText = await create.text();
+    assert.equal(create.status, 201, createText);
+    const created = JSON.parse(createText) as {
+      account: { id: string; label: string; lifecycle: string };
+      binding: { connectionAccountId: string };
+    };
+    assert.equal(created.account.label, 'Support Zendesk');
+    assert.equal(created.account.lifecycle, 'ready');
+    assert.equal(created.binding.connectionAccountId, created.account.id);
+    assert.doesNotMatch(JSON.stringify(created), /zendesk-secret-value|secretRefId/);
+
+    const attach = await app.request(
+      `/admin/api/agents/agent_connections_secondary/connections/${created.account.id}/attach`,
+      {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+    );
+    assert.equal(attach.status, 201);
+    assert.equal((await store.listConnectionAccounts('T_TEST')).length, 1);
+
+    const list = await app.request(
+      '/admin/api/agents/agent_connections_secondary/connections?workspaceId=T_TEST',
+      { headers: auth(ADMIN_TOKEN) },
+    );
+    assert.equal(list.status, 200);
+    const listedText = await list.text();
+    assert.match(listedText, /Support Zendesk/);
+    assert.doesNotMatch(listedText, /zendesk-secret-value|secretRefId/);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('connection-account OAuth resumes the exact Slack task once and updates the reusable account', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const resumed: OAuthContinuation[] = [];
+  try {
+    await store.createAgent(agent({ id: 'agent_mail' }));
+    await store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST',
+      transportMode: 'direct',
+      defaultAgentId: 'agent_mail',
+    });
+    let accountId = '';
+    const app = appWithAdminOptions(store, {
+      settings,
+      startApiOAuth: async (input) => {
+        assert.deepEqual(input.ref, { agentId: 'agent_mail', connectionId: accountId });
+        return {
+          authorizationUrl: new URL('https://accounts.example.test/authorize?state=account-provider-state'),
+          state: 'account-provider-state',
+        };
+      },
+      completeApiOAuth: async ({ state }) => {
+        assert.equal(state, 'account-provider-state');
+        return {
+          ref: { agentId: 'agent_mail', connectionId: accountId },
+          provider: 'google',
+          identity: { accountName: 'owner@acme.test' },
+        };
+      },
+      onOAuthContinuationReady: async (continuation) => {
+        resumed.push(continuation);
+      },
+    });
+    const createdResponse = await app.request('/admin/api/agents/agent_mail/connections', {
+      method: 'POST',
+      headers: auth(ADMIN_TOKEN),
+      body: JSON.stringify({
+        workspaceId: 'T_TEST',
+        ownerKind: 'member',
+        providerId: 'google',
+        label: 'Work Gmail',
+        api: googleApiConnection(),
+      }),
+    });
+    assert.equal(createdResponse.status, 201);
+    const created = await createdResponse.json() as { account: { id: string } };
+    accountId = created.account.id;
+
+    const client = await app.request(
+      `/admin/api/agents/agent_mail/connections/${accountId}/oauth/api/client`,
+      {
+        method: 'PUT',
+        headers: auth(ADMIN_TOKEN),
+        body: JSON.stringify({ provider: 'google', clientId: 'client-id', clientSecret: 'client-secret' }),
+      },
+    );
+    assert.equal(client.status, 200);
+
+    const started = await app.request(
+      `/admin/api/agents/agent_mail/connections/${accountId}/oauth/api/start`,
+      {
+        method: 'POST',
+        headers: auth(ADMIN_TOKEN),
+        body: JSON.stringify({
+          continuation: {
+            workspaceId: 'T_TEST',
+            channelId: 'D_OWNER',
+            threadTs: '123.456',
+            taskId: 'task_find_invoice',
+          },
+        }),
+      },
+    );
+    const startBody = await started.json() as { authorizationUrl: string; continuationId: string };
+    assert.equal(started.status, 200);
+    assert.match(startBody.authorizationUrl, /^https:\/\/accounts\.example\.test/);
+    assert.match(startBody.continuationId, /^oauthcontinuation_/);
+
+    const callback = await app.request(
+      'https://chickpea.example.test/oauth/api/callback?code=success&state=account-provider-state',
+    );
+    assert.equal(callback.status, 303);
+    assert.match(callback.headers.get('location') ?? '', new RegExp(`connection=${accountId}`));
+    assert.equal(resumed.length, 1);
+    assert.equal(resumed[0]?.actorMembershipId, 'membership_test_owner');
+    assert.equal(resumed[0]?.agentId, 'agent_mail');
+    assert.equal(resumed[0]?.channelId, 'D_OWNER');
+    assert.equal(resumed[0]?.threadTs, '123.456');
+    assert.equal(resumed[0]?.taskId, 'task_find_invoice');
+    const account = (await store.listConnectionAccounts('T_TEST')).find((candidate) => candidate.id === accountId);
+    assert.equal(account?.lifecycle, 'ready');
+    assert.equal(account?.identity?.accountName, 'owner@acme.test');
+
+    const replay = await app.request(
+      'https://chickpea.example.test/oauth/api/callback?code=success&state=account-provider-state',
+    );
+    assert.equal(replay.status, 303);
+    assert.equal(resumed.length, 1, 'provider callback replay must not resume the task twice');
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
 
 test('admin API accepts exact apiConnection hosts and round-trips every field', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });

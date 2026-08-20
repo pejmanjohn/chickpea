@@ -10,7 +10,7 @@ import { resolveAgentModel } from '../config/model-policy.ts';
 import { getGithubConnection } from '../config/github-app.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
-import { getSettingsStore, getUsageStore, getWorkStore } from '../config/state-backend.ts';
+import { getConfigStore, getSettingsStore, getUsageStore, getWorkStore } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type {
@@ -104,6 +104,10 @@ import {
   type SlackPresentationStatePort,
 } from './agent-view-presentation.ts';
 import { createSlackWebClient } from './web-client.ts';
+import {
+  externalActionAuthorityInstructions,
+  resolveEffectiveConnectionAccounts,
+} from '../connections/runtime.ts';
 
 export { createSlackWebClient } from './web-client.ts';
 
@@ -1201,16 +1205,29 @@ async function freezeRuntimePlanForTurn(input: {
     input.platformEnv,
     input.settingsStore,
   );
-  const instructions =
+  const baseInstructions =
     'instructions' in input.assignment && typeof input.assignment.instructions === 'string'
       ? input.assignment.instructions
       : effectiveSlackInstructions(input.assignment);
+  const instructions = [
+    baseInstructions,
+    externalActionAuthorityInstructions(input.assignment.agent.instructions),
+  ].join('\n');
+  const effectiveConnections = input.turn.actorMembershipId
+    ? await resolveEffectiveConnectionAccounts({
+        config: getConfigStore(input.platformEnv),
+        workspaceId: input.turn.workspaceId,
+        agentId: input.assignment.agentId,
+        actorMembershipId: input.turn.actorMembershipId,
+      })
+    : undefined;
   const candidate = compileRuntimePlanV2({
     turn: input.turn,
     assignment: input.assignment,
     instructions,
     memoryEpoch: input.memoryEpoch,
     sandboxMode: sandboxDecision.selection,
+    ...(effectiveConnections ? { effectiveConnections } : {}),
   });
   const decision = input.persist
     ? await input.persist(candidate)

@@ -9,7 +9,9 @@ const LEASE_ATTEMPTS = 64;
 const FETCH_TIMEOUT_MS = 10_000;
 const IDENTITY_TEXT_MAX = 160;
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,127}$/;
-const CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+// Reusable connection-account ids include an underscore and carry a generated
+// suffix; legacy per-Agent ids remain a strict subset of this bounded shape.
+const CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,191}$/;
 
 const GOOGLE_AUTHORIZATION_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';

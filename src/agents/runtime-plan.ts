@@ -12,6 +12,11 @@ import { opaqueId } from '../work/admission.ts';
 import { effectiveSlackIdentityId } from '../slack/identity-admission.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
+import {
+  projectEffectiveApiConnections,
+  projectEffectiveMcpConnections,
+} from '../connections/runtime.ts';
+import type { EffectiveConnectionAccount } from '../connections/types.ts';
 
 export const RUNTIME_PLAN_SCHEMA_VERSION = 2 as const;
 export const DEFAULT_CONTINUITY_POLICY = 'slack-runtime-v3' as const;
@@ -66,6 +71,10 @@ export interface RuntimePlanV2 {
   continuityPolicy: string;
   /** Durable profile identity used only by trusted live resource resolvers. */
   agentId: string;
+  /** Slack-provisioned product actor; required for personal connection accounts. */
+  actorMembershipId?: string;
+  /** Credential-free account references frozen for this task. */
+  connectionAccountIds?: string[];
   /** Non-secret Slack app reference. Missing only on pre-U4 durable plans. */
   slackIdentityId?: string;
   /** Object revisions used to explain which live configuration this turn froze. */
@@ -97,6 +106,7 @@ export interface CompileRuntimePlanV2Input {
   memoryEpoch: number;
   sandboxMode: RuntimePlanSandboxMode;
   continuityPolicy?: string;
+  effectiveConnections?: readonly EffectiveConnectionAccount[];
 }
 
 /**
@@ -108,10 +118,21 @@ export interface CompileRuntimePlanV2Input {
 export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimePlanV2 {
   const conversationThreadTs = input.turn.sessionThreadTs ?? input.turn.threadTs;
   const continuityKey = opaqueId('agent', slackThreadKey(input.turn));
+  const effectiveConnections = input.effectiveConnections;
+  const mcpConnections = effectiveConnections
+    ? projectEffectiveMcpConnections(effectiveConnections)
+    : input.assignment.agent.mcpServers;
+  const apiConnections = effectiveConnections
+    ? projectEffectiveApiConnections(effectiveConnections)
+    : input.assignment.agent.apiConnections;
   const planWithoutRevision: Omit<RuntimePlanV2, 'harnessRevision'> = {
     schemaVersion: RUNTIME_PLAN_SCHEMA_VERSION,
     continuityPolicy: input.continuityPolicy ?? DEFAULT_CONTINUITY_POLICY,
     agentId: input.assignment.agent.id,
+    ...(input.turn.actorMembershipId
+      ? { actorMembershipId: input.turn.actorMembershipId }
+      : {}),
+    connectionAccountIds: effectiveConnections?.map(({ account }) => account.id) ?? [],
     slackIdentityId: effectiveSlackIdentityId(input.assignment),
     configurationRevision: {
       agent: input.assignment.agent.revision,
@@ -130,8 +151,8 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     instructions: input.instructions,
     memoryEpoch: input.memoryEpoch,
     skills: compileSkills(input.assignment.agent.skills),
-    mcpConnections: compileMcpConnections(input.assignment.agent.mcpServers),
-    apiConnections: compileApiConnections(input.assignment.agent.apiConnections),
+    mcpConnections: compileMcpConnections(mcpConnections),
+    apiConnections: compileApiConnections(apiConnections),
     repositories: compileRepositories(input.assignment.agent.repositories),
     sandbox: { mode: input.sandboxMode },
     artifactDestination: {
@@ -191,6 +212,8 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'schemaVersion',
     'continuityPolicy',
     'agentId',
+    'actorMembershipId',
+    'connectionAccountIds',
     'slackIdentityId',
     'configurationRevision',
     'conversation',
@@ -204,12 +227,23 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'sandbox',
     'artifactDestination',
     'harnessRevision',
-  ], ['slackIdentityId', 'configurationRevision']);
+  ], ['slackIdentityId', 'configurationRevision', 'actorMembershipId', 'connectionAccountIds']);
   if (record.schemaVersion !== RUNTIME_PLAN_SCHEMA_VERSION) {
     throw new Error('Runtime plan schemaVersion must be 2.');
   }
   const continuityPolicy = boundedString(record.continuityPolicy, 'continuityPolicy', 1, 80);
   const agentId = boundedString(record.agentId, 'agentId', 1, 128);
+  const actorMembershipId = record.actorMembershipId === undefined
+    ? undefined
+    : boundedString(record.actorMembershipId, 'actorMembershipId', 1, 160);
+  const connectionAccountIds = record.connectionAccountIds === undefined
+    ? []
+    : arrayOf(
+      record.connectionAccountIds,
+      'connectionAccountIds',
+      (value) => boundedString(value, 'connectionAccountId', 1, 160),
+      128,
+    );
   const slackIdentityId = record.slackIdentityId === undefined
     ? undefined
     : boundedString(record.slackIdentityId, 'slackIdentityId', 1, 128);
@@ -281,6 +315,8 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     schemaVersion: RUNTIME_PLAN_SCHEMA_VERSION,
     continuityPolicy,
     agentId,
+    ...(actorMembershipId ? { actorMembershipId } : {}),
+    ...(record.connectionAccountIds === undefined ? {} : { connectionAccountIds }),
     ...(slackIdentityId ? { slackIdentityId } : {}),
     ...(configurationRevision ? { configurationRevision } : {}),
     conversation,
@@ -296,7 +332,12 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     harnessRevision,
   };
   const expected = computeHarnessRevision(parsed);
-  if (harnessRevision !== expected) {
+  const legacyCandidate = { ...parsed };
+  delete legacyCandidate.connectionAccountIds;
+  const legacyExpected = !parsed.actorMembershipId && connectionAccountIds.length === 0
+    ? computeHarnessRevision(legacyCandidate)
+    : undefined;
+  if (harnessRevision !== expected && harnessRevision !== legacyExpected) {
     throw new Error('Runtime plan harnessRevision does not match its harness policy.');
   }
   return parsed;
@@ -395,6 +436,10 @@ function computeHarnessRevision(
       schemaVersion: plan.schemaVersion,
       continuityPolicy: plan.continuityPolicy,
       agentId: plan.agentId,
+      ...(plan.actorMembershipId ? { actorMembershipId: plan.actorMembershipId } : {}),
+      ...(plan.connectionAccountIds !== undefined
+        ? { connectionAccountIds: plan.connectionAccountIds }
+        : {}),
       ...(plan.slackIdentityId ? { slackIdentityId: plan.slackIdentityId } : {}),
       ...(plan.configurationRevision
         ? { configurationRevision: plan.configurationRevision }

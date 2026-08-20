@@ -1283,6 +1283,7 @@ async function processSlackEvent(
     eligible: false,
     reason: 'slack_truth_unavailable',
   };
+  let admittedActorMembershipId = agentRoutingActor?.principal?.membershipId;
   if (agentPlatformInstallation && agentRoutingActor && agentSourceVisibility) {
     admissionTruth = {
       eligible: true,
@@ -1308,6 +1309,13 @@ async function processSlackEvent(
             botUserId: resolvedBotUserId,
             user,
           });
+          if (
+            'resolution' in member && member.resolution &&
+            (member.outcome === 'provisioned' || member.outcome === 'active') &&
+            member.resolution.membership.status === 'active'
+          ) {
+            admittedActorMembershipId = member.resolution.membership.id;
+          }
           return member.outcome === 'provisioned' || member.outcome === 'active';
         },
       );
@@ -1318,6 +1326,9 @@ async function processSlackEvent(
   }
   if (!agentPlatformInstallation && identity.kind === 'dedicated' && !admissionTruth.eligible) {
     return;
+  }
+  if (admissionTruth.eligible && admittedActorMembershipId) {
+    turn.actorMembershipId = admittedActorMembershipId;
   }
 
   // Ambient messages and inbound reactions are candidates, not durable work.

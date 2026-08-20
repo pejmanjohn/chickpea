@@ -25,6 +25,16 @@ import { createRoutineAdminApi } from './routines-api.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
+import { ConnectionAccountService } from '../connections/store.ts';
+import {
+  authorizeOAuthContinuationFromProvider,
+  cancelOAuthContinuationFromProvider,
+  claimOAuthContinuationResume,
+  createOAuthContinuation,
+  linkOAuthProviderState,
+  takeOAuthContinuationForProviderState,
+} from '../connections/oauth-continuation.ts';
+import type { OAuthContinuation } from '../connections/types.ts';
 import {
   safeSetupDestination,
   safeSlackLoginDestination,
@@ -258,6 +268,7 @@ import type {
   AgentReferenceSummary,
   ChannelAssignment,
   ChannelConfig,
+  ConnectionAccount,
   CustomAgentConfig,
   McpConnectionConfig,
   McpConnectionIdentity,
@@ -447,6 +458,8 @@ interface AdminRoutesOptions {
     state: string,
     dependencies: ApiOAuthDependencies,
   ) => ReturnType<typeof cancelApiOAuthAuthorization>) | undefined;
+  /** Delivery seam for resuming the exact Slack task after OAuth succeeds. */
+  onOAuthContinuationReady?: ((continuation: OAuthContinuation) => Promise<void>) | undefined;
   openAiSubscriptionProtocol?: OpenAiSubscriptionAuthorizationProtocol | undefined;
   openAiSubscriptionNow?: (() => number) | undefined;
   openAiSubscriptionRandomBytes?: ((length: number) => Uint8Array) | undefined;
@@ -730,6 +743,32 @@ const apiConnectionsSchema = v.pipe(
   ),
 );
 
+const connectionAccountCreateSchema = v.pipe(
+  v.object({
+    workspaceId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9_]{2,32}$/)),
+    ownerKind: v.picklist(['team', 'member']),
+    providerId: v.pipe(v.string(), v.trim(), v.regex(/^[a-z0-9][a-z0-9_-]{0,127}$/)),
+    label: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(160)),
+    purpose: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(500))),
+    credential: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(32_768))),
+    api: v.optional(apiConnectionSchema),
+    mcp: v.optional(mcpServerSchema),
+    allowedCapabilities: v.optional(v.pipe(
+      v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(256))),
+      v.maxLength(128),
+    )),
+  }),
+  v.check((input) => Number(Boolean(input.api)) + Number(Boolean(input.mcp)) === 1,
+    'exactly one connection policy is required'),
+);
+
+const connectionAccountAttachSchema = v.object({
+  allowedCapabilities: v.optional(v.pipe(
+    v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(256))),
+    v.maxLength(128),
+  )),
+});
+
 const repositoryGrantSchema = v.pipe(
   v.object({
     id: v.pipe(v.string(), v.regex(AGENT_ID_PATTERN)),
@@ -894,6 +933,15 @@ const apiOAuthClientSchema = v.object({
   provider: v.literal('google'),
   clientId: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(512)),
   clientSecret: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(2_048)),
+});
+
+const connectionAccountOAuthStartSchema = v.object({
+  continuation: v.optional(v.object({
+    workspaceId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9_]{2,32}$/)),
+    channelId: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128)),
+    threadTs: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(64)),
+    taskId: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(160)),
+  })),
 });
 
 const assignmentSchema = v.object({
@@ -1318,6 +1366,26 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!membership || membership.status !== 'active' || !user) throw new AuthorizationError();
     return { principal, slackUserId: user.slackUserId, slackTeamId: user.slackTeamId };
   };
+  const connectionAccounts = (c: Context): ConnectionAccountService =>
+    new ConnectionAccountService({ config: store(c), settings: settings(c) });
+  const managedConnectionAccount = async (
+    c: Context,
+    agentId: string,
+    connectionAccountId: string,
+  ): Promise<{ principal: AuthPrincipal; account: ConnectionAccount }> => {
+    const principal = principalByContext.get(c);
+    if (!principal) throw new AuthorizationError('principal_required');
+    const agent = await store(c).getAgent(agentId);
+    requireAgentEdit(principal, agent);
+    const account = await connectionAccounts(c).getForManagement(principal, connectionAccountId);
+    const binding = (await store(c).listAgentConnectionBindings(agentId)).find(
+      (candidate) => candidate.connectionAccountId === account.id && candidate.enabled,
+    );
+    if (!binding) throw new AuthorizationError();
+    const organization = await identity(c).getOrganization();
+    if (organization?.slackTeamId !== account.workspaceId) throw new AuthorizationError();
+    return { principal, account };
+  };
   const agentPresenceFailureResponse = async (
     c: Context,
     agentId: string,
@@ -1481,6 +1549,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     validateConnection: (ref, provider) =>
       isCurrentApiOAuthConnection(store(c), ref, provider),
     onReauthorizationRequired: async (ref, provider) => {
+      if (ref.connectionId.startsWith('connection_')) {
+        const account = await findConnectionAccount(store(c), ref.connectionId);
+        if (!account || !isApiOAuthAccount(account, provider)) return;
+        await store(c).putConnectionAccount(
+          { ...account, lifecycle: 'needs_attention' },
+          account.revision,
+        );
+        return;
+      }
       await store(c).markOAuthReauthorizationRequired({
         lane: 'api',
         ...ref,
@@ -2586,6 +2663,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       if (providerError) {
         const cancelled = await cancelApiOAuth(state, apiOAuthDependencies(c));
+        const continuationState = await takeOAuthContinuationForProviderState({
+          settings: settings(c),
+          providerState: state,
+        });
+        if (continuationState) {
+          await cancelOAuthContinuationFromProvider({
+            settings: settings(c),
+            state: continuationState,
+          });
+        }
         const status = providerError === 'access_denied' ? 'cancelled' : 'failed';
         return c.redirect(apiOAuthAdminRedirect(status, cancelled.ref), 303);
       }
@@ -2609,6 +2696,23 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           await deleteApiOAuthSettings(completed.ref, settings(c));
         }
         throw error;
+      }
+      const continuationState = await takeOAuthContinuationForProviderState({
+        settings: settings(c),
+        providerState: state,
+      });
+      if (continuationState) {
+        const continuation = await authorizeOAuthContinuationFromProvider({
+          settings: settings(c),
+          state: continuationState,
+        });
+        if (options.onOAuthContinuationReady) {
+          await options.onOAuthContinuationReady(continuation);
+          await claimOAuthContinuationResume({
+            settings: settings(c),
+            continuationId: continuation.id,
+          });
+        }
       }
       return c.redirect(apiOAuthAdminRedirect('connected', completed.ref), 303);
     } catch (error) {
@@ -2870,6 +2974,101 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         error instanceof ApiOAuthError ? error.code : 'internal_error',
       );
       return c.json({ error: 'oauth_unavailable' }, 502);
+    }
+  });
+
+  app.put('/admin/api/agents/:agentId/connections/:connectionAccountId/oauth/api/client', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const agentId = c.req.param('agentId');
+    const connectionAccountId = c.req.param('connectionAccountId');
+    if (!AGENT_ID_PATTERN.test(agentId) || !/^connection_[A-Za-z0-9_-]{1,180}$/.test(connectionAccountId)) {
+      return invalidRequest(c);
+    }
+    const parsed = v.safeParse(apiOAuthClientSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const { account } = await managedConnectionAccount(c, agentId, connectionAccountId);
+      if (!isApiOAuthAccount(account, parsed.output.provider)) {
+        return c.json({ error: 'oauth_not_enabled' }, 409);
+      }
+      const ref = { agentId, connectionId: account.id };
+      await deleteApiOAuthSettings(ref, settings(c));
+      await saveApiOAuthClient(ref, parsed.output, settings(c));
+      if (!(await isCurrentApiOAuthConnection(store(c), ref, parsed.output.provider))) {
+        await deleteApiOAuthSettings(ref, settings(c));
+        return c.json({ error: 'connection_changed' }, 409);
+      }
+      await replacePendingApiOAuthConnection(store(c), ref, parsed.output.provider);
+      return c.json({ source: 'stored' });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:agentId/connections/:connectionAccountId/oauth/api/start', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const agentId = c.req.param('agentId');
+    const connectionAccountId = c.req.param('connectionAccountId');
+    if (!AGENT_ID_PATTERN.test(agentId) || !/^connection_[A-Za-z0-9_-]{1,180}$/.test(connectionAccountId)) {
+      return invalidRequest(c);
+    }
+    const parsed = v.safeParse(connectionAccountOAuthStartSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const { principal, account } = await managedConnectionAccount(c, agentId, connectionAccountId);
+      if (!isApiOAuthAccount(account, 'google') || account.policy.kind !== 'api') {
+        return c.json({ error: 'oauth_not_enabled' }, 409);
+      }
+      if (parsed.output.continuation?.workspaceId !== undefined &&
+          parsed.output.continuation.workspaceId !== account.workspaceId) {
+        throw new AuthorizationError();
+      }
+      const ref = { agentId, connectionId: account.id };
+      const result = await startApiOAuth(
+        {
+          ref,
+          provider: 'google',
+          callbackUrl: `${requestOrigin(c)}/oauth/api/callback`,
+          scopes: account.policy.oauthScopes!,
+        },
+        apiOAuthDependencies(c),
+      );
+      let continuationId: string | undefined;
+      if (parsed.output.continuation) {
+        const issued = await createOAuthContinuation({
+          settings: settings(c),
+          workspaceId: account.workspaceId,
+          actorMembershipId: principal.membershipId,
+          agentId,
+          channelId: parsed.output.continuation.channelId,
+          threadTs: parsed.output.continuation.threadTs,
+          taskId: parsed.output.continuation.taskId,
+          providerId: account.providerId,
+          accountId: account.id,
+        });
+        await linkOAuthProviderState({
+          settings: settings(c),
+          providerState: result.state,
+          continuationState: issued.state,
+        });
+        continuationId = issued.continuation.id;
+      }
+      return c.json({
+        authorizationUrl: result.authorizationUrl.href,
+        ...(continuationId ? { continuationId } : {}),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof ApiOAuthError && error.code === 'client_missing') {
+        return c.json({ error: 'oauth_client_missing' }, 409);
+      }
+      if (error instanceof ApiOAuthError && error.code === 'connection_missing') {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      return internalError(c, error);
     }
   });
 
@@ -4261,6 +4460,179 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     );
     await deleteMcpOAuthSettings(ref, settingsStore);
     return c.json({ ok: true });
+  });
+
+  app.get('/admin/api/agents/:id/connections', async (c) => {
+    const workspaceId = c.req.query('workspaceId')?.trim();
+    if (!workspaceId || !/^[A-Z0-9_]{2,32}$/.test(workspaceId)) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const agent = await store(c).getAgent(c.req.param('id'));
+      if (!canEditAgent(principal, agent)) throw new AuthorizationError();
+      const organization = await identity(c).getOrganization();
+      if (organization?.slackTeamId !== workspaceId) throw new AuthorizationError();
+      const [views, bindings] = await Promise.all([
+        connectionAccounts(c).listViews(workspaceId),
+        store(c).listAgentConnectionBindings(agent.id),
+      ]);
+      const visible = views.filter(
+        (account) => account.ownerKind === 'team' ||
+          account.ownerMembershipId === principal.membershipId,
+      );
+      const byId = new Map(bindings.map((binding) => [binding.connectionAccountId, binding]));
+      return c.json({
+        attached: visible.flatMap((account) => {
+          const binding = byId.get(account.id);
+          return binding?.enabled ? [{ account, binding }] : [];
+        }),
+        available: visible.filter((account) => !byId.get(account.id)?.enabled),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/connections', async (c) => {
+    const parsed = v.safeParse(connectionAccountCreateSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const organization = await identity(c).getOrganization();
+      if (organization?.slackTeamId !== parsed.output.workspaceId) throw new AuthorizationError();
+      const configStore = store(c);
+      const agent = await configStore.getAgent(c.req.param('id'));
+      requireAgentEdit(principal, agent);
+      const source = parsed.output.api ?? parsed.output.mcp!;
+      const policy = parsed.output.api
+        ? {
+            kind: 'api' as const,
+            allowedHosts: [...parsed.output.api.allowedHosts],
+            pathPrefixes: [...parsed.output.api.pathPrefixes],
+            headerName: parsed.output.api.headerName,
+            ...(parsed.output.api.headerValuePrefix
+              ? { headerValuePrefix: parsed.output.api.headerValuePrefix }
+              : {}),
+            allowedMethods: [...parsed.output.api.allowedMethods],
+            authMode: parsed.output.api.authMode ?? 'credential' as const,
+            ...(parsed.output.api.oauthProvider
+              ? { oauthProvider: parsed.output.api.oauthProvider }
+              : {}),
+            ...(parsed.output.api.oauthScopes
+              ? { oauthScopes: [...parsed.output.api.oauthScopes] }
+              : {}),
+            ...(parsed.output.api.oauthAppType
+              ? { oauthAppType: parsed.output.api.oauthAppType }
+              : {}),
+            ...(parsed.output.api.presetId ? { presetId: parsed.output.api.presetId } : {}),
+          }
+        : {
+            kind: 'mcp' as const,
+            url: parsed.output.mcp!.url,
+            transport: parsed.output.mcp!.transport,
+            authMode: parsed.output.mcp!.authMode,
+            headerNames: [...parsed.output.mcp!.headerNames],
+            discoveredTools: parsed.output.mcp!.discoveredTools.map((tool) => ({
+              name: tool.name,
+              ...(tool.title ? { title: tool.title } : {}),
+              ...(tool.description ? { description: tool.description } : {}),
+            })),
+            allowedTools: [...parsed.output.mcp!.allowedTools],
+            ...(parsed.output.mcp!.oauthScope ? { oauthScope: parsed.output.mcp!.oauthScope } : {}),
+            ...(parsed.output.mcp!.presetId ? { presetId: parsed.output.mcp!.presetId } : {}),
+          };
+      const service = connectionAccounts(c);
+      const account = await service.create({
+        principal,
+        workspaceId: parsed.output.workspaceId,
+        ownerKind: parsed.output.ownerKind,
+        providerId: parsed.output.providerId,
+        label: parsed.output.label,
+        ...(parsed.output.purpose ? { purpose: parsed.output.purpose } : {}),
+        ...(source.identity ? {
+          identity: {
+            ...(source.identity.workspaceName
+              ? { workspaceName: source.identity.workspaceName }
+              : {}),
+            ...(source.identity.accountName
+              ? { accountName: source.identity.accountName }
+              : {}),
+          },
+        } : {}),
+        policy,
+        ...(parsed.output.credential ? { credential: parsed.output.credential } : {}),
+      });
+      const binding = await service.attach({
+        principal,
+        agentId: agent.id,
+        connectionAccountId: account.id,
+        allowedCapabilities: parsed.output.allowedCapabilities ?? [],
+      });
+      const { secretRefId: _secretRefId, ...safeAccount } = account;
+      return c.json({ account: safeAccount, binding }, 201);
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/connections/:connectionAccountId/attach', async (c) => {
+    const parsed = v.safeParse(connectionAccountAttachSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const binding = await connectionAccounts(c).attach({
+        principal,
+        agentId: c.req.param('id'),
+        connectionAccountId: c.req.param('connectionAccountId'),
+        allowedCapabilities: parsed.output.allowedCapabilities ?? [],
+      });
+      return c.json({ binding }, 201);
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.delete('/admin/api/agents/:id/connections/:connectionAccountId', async (c) => {
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const binding = await connectionAccounts(c).detach({
+        principal,
+        agentId: c.req.param('id'),
+        connectionAccountId: c.req.param('connectionAccountId'),
+      });
+      return c.json({ binding });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/connections/:connectionAccountId/revoke', async (c) => {
+    const body = await readJson(c.req);
+    if (!isRecord(body) || Object.keys(body).length > 0) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const account = await connectionAccounts(c).revoke({
+        principal,
+        connectionAccountId: c.req.param('connectionAccountId'),
+      });
+      const { secretRefId: _secretRefId, ...safeAccount } = account;
+      return c.json({ account: safeAccount });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      return internalError(c, error);
+    }
   });
 
   app.get('/admin/api/agents/:id', async (c) => {
@@ -6277,10 +6649,18 @@ function apiOAuthAdminRedirect(
 }
 
 async function isCurrentApiOAuthConnection(
-  configStore: Pick<ConfigStore, 'getAgent'>,
+  configStore: ConfigStore,
   ref: ApiOAuthRef,
   provider: ApiOAuthProvider,
 ): Promise<boolean> {
+  if (ref.connectionId.startsWith('connection_')) {
+    const account = await findConnectionAccount(configStore, ref.connectionId);
+    if (!account || account.lifecycle === 'revoked') return false;
+    const binding = (await configStore.listAgentConnectionBindings(ref.agentId)).find(
+      (candidate) => candidate.connectionAccountId === account.id && candidate.enabled,
+    );
+    return !!binding && isApiOAuthAccount(account, provider);
+  }
   try {
     const connection = (await configStore.getAgent(ref.agentId)).apiConnections.find(
       (candidate) => candidate.id === ref.connectionId,
@@ -6301,6 +6681,18 @@ async function replaceReadyApiOAuthConnection(
   provider: ApiOAuthProvider,
   identity: { accountName?: string } | undefined,
 ): Promise<void> {
+  if (ref.connectionId.startsWith('connection_')) {
+    const account = await findConnectionAccount(configStore, ref.connectionId);
+    if (!account || !isApiOAuthAccount(account, provider)) {
+      throw new ApiOAuthError('connection_missing', 'OAuth connection no longer exists');
+    }
+    await configStore.putConnectionAccount({
+      ...account,
+      lifecycle: 'ready',
+      ...(identity ? { identity } : {}),
+    }, account.revision);
+    return;
+  }
   const agent = await configStore.getAgent(ref.agentId);
   const index = agent.apiConnections.findIndex(
     (connection) => connection.id === ref.connectionId &&
@@ -6327,6 +6719,18 @@ async function replacePendingApiOAuthConnection(
   ref: ApiOAuthRef,
   provider: ApiOAuthProvider,
 ): Promise<void> {
+  if (ref.connectionId.startsWith('connection_')) {
+    const account = await findConnectionAccount(configStore, ref.connectionId);
+    if (!account || !isApiOAuthAccount(account, provider)) {
+      throw new ApiOAuthError('connection_missing', 'OAuth connection no longer exists');
+    }
+    const { identity: _identity, ...withoutIdentity } = account;
+    await configStore.putConnectionAccount({
+      ...withoutIdentity,
+      lifecycle: 'pending',
+    }, account.revision);
+    return;
+  }
   const agent = await configStore.getAgent(ref.agentId);
   const index = agent.apiConnections.findIndex(
     (connection) => connection.id === ref.connectionId &&
@@ -6346,6 +6750,30 @@ async function replacePendingApiOAuthConnection(
     statusText: 'Not connected',
   };
   await configStore.updateAgent(ref.agentId, { apiConnections });
+}
+
+async function findConnectionAccount(
+  configStore: ConfigStore,
+  connectionAccountId: string,
+): Promise<ConnectionAccount | undefined> {
+  for (const installation of await configStore.listWorkspaceInstallations()) {
+    const account = (await configStore.listConnectionAccounts(installation.workspaceId)).find(
+      (candidate) => candidate.id === connectionAccountId,
+    );
+    if (account) return account;
+  }
+  return undefined;
+}
+
+function isApiOAuthAccount(
+  account: ConnectionAccount,
+  provider: ApiOAuthProvider,
+): boolean {
+  return account.policy.kind === 'api' &&
+    account.policy.authMode === 'oauth' &&
+    account.policy.oauthProvider === provider &&
+    Array.isArray(account.policy.oauthScopes) &&
+    account.policy.oauthScopes.length > 0;
 }
 
 async function normalizeApiOAuthPatch(
@@ -6934,6 +7362,7 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
       (c.req.method === 'GET' && c.req.path === '/admin/api/team')) return 'team.view';
   if (c.req.path.startsWith('/admin/api/team/invitations')) return 'team.invite';
   if (c.req.path.startsWith('/admin/api/team/memberships')) return 'team.manage_members';
+  if (c.req.path.startsWith('/admin/api/connections/')) return 'connection.create_team';
   if (
     c.req.path === '/admin/api/agents' ||
     c.req.path.startsWith('/admin/api/agents/') ||

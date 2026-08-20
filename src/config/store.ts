@@ -137,10 +137,12 @@ interface ConnectionAccountRow {
   revision: number;
   owner_kind: string;
   owner_membership_id: string | null;
+  created_by_membership_id: string;
   provider_id: string;
   label: string;
   purpose: string | null;
   identity_json: string | null;
+  policy_json: string;
   secret_ref_id: string;
   lifecycle: string;
   created_at: number;
@@ -151,6 +153,7 @@ interface AgentConnectionBindingRow {
   agent_id: string;
   connection_account_id: string;
   provider_id: string;
+  allowed_capabilities_json: string;
   enabled: number;
   created_at: number;
   updated_at: number;
@@ -750,6 +753,7 @@ export class ConfigStoreLogic {
     input: ConnectionAccountInput,
     expectedRevision?: number,
   ): ConnectionAccount {
+    validateConnectionAccountInput(input);
     const current = this.db.get(
       'SELECT * FROM config_connection_accounts WHERE id = ?',
       input.id,
@@ -761,24 +765,36 @@ export class ConfigStoreLogic {
       }
       this.db.run(
         `INSERT INTO config_connection_accounts (
-          id, workspace_id, revision, owner_kind, owner_membership_id,
-          provider_id, label, purpose, identity_json, secret_ref_id, lifecycle,
+          id, workspace_id, revision, owner_kind, owner_membership_id, created_by_membership_id,
+          provider_id, label, purpose, identity_json, policy_json, secret_ref_id, lifecycle,
           created_at, updated_at
-        ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         input.id,
         input.workspaceId,
         input.ownerKind,
         input.ownerMembershipId ?? null,
+        input.createdByMembershipId,
         input.providerId,
         input.label,
         input.purpose ?? null,
         input.identity ? JSON.stringify(input.identity) : null,
+        JSON.stringify(input.policy),
         input.secretRefId,
         input.lifecycle,
         now,
         now,
       );
     } else {
+      if (
+        current.workspace_id !== input.workspaceId ||
+        current.owner_kind !== input.ownerKind ||
+        (current.owner_membership_id ?? undefined) !== input.ownerMembershipId ||
+        current.created_by_membership_id !== input.createdByMembershipId ||
+        current.provider_id !== input.providerId ||
+        current.secret_ref_id !== input.secretRefId
+      ) {
+        throw new Error('Connection account ownership and secret reference are immutable');
+      }
       const requiredRevision = expectedRevision ?? Number(current.revision);
       if (requiredRevision !== Number(current.revision)) {
         throw new Error(
@@ -787,12 +803,13 @@ export class ConfigStoreLogic {
       }
       this.db.run(
         `UPDATE config_connection_accounts
-         SET label = ?, purpose = ?, identity_json = ?, lifecycle = ?,
+         SET label = ?, purpose = ?, identity_json = ?, policy_json = ?, lifecycle = ?,
              revision = revision + 1, updated_at = ?
          WHERE id = ? AND revision = ?`,
         input.label,
         input.purpose ?? null,
         input.identity ? JSON.stringify(input.identity) : null,
+        JSON.stringify(input.policy),
         input.lifecycle,
         now,
         input.id,
@@ -818,15 +835,18 @@ export class ConfigStoreLogic {
     const now = Date.now();
     this.db.run(
       `INSERT INTO config_agent_connection_bindings (
-        agent_id, connection_account_id, provider_id, enabled, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
+        agent_id, connection_account_id, provider_id, allowed_capabilities_json,
+        enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(agent_id, connection_account_id) DO UPDATE SET
         provider_id = excluded.provider_id,
+        allowed_capabilities_json = excluded.allowed_capabilities_json,
         enabled = excluded.enabled,
         updated_at = excluded.updated_at`,
       input.agentId,
       input.connectionAccountId,
       input.providerId,
+      JSON.stringify([...new Set(input.allowedCapabilities)]),
       input.enabled ? 1 : 0,
       now,
       now,
@@ -1832,10 +1852,12 @@ export class ConfigStoreLogic {
         revision INTEGER NOT NULL,
         owner_kind TEXT NOT NULL,
         owner_membership_id TEXT,
+        created_by_membership_id TEXT NOT NULL,
         provider_id TEXT NOT NULL,
         label TEXT NOT NULL,
         purpose TEXT,
         identity_json TEXT,
+        policy_json TEXT NOT NULL,
         secret_ref_id TEXT NOT NULL,
         lifecycle TEXT NOT NULL,
         created_at INTEGER NOT NULL,
@@ -1850,6 +1872,7 @@ export class ConfigStoreLogic {
         agent_id TEXT NOT NULL,
         connection_account_id TEXT NOT NULL,
         provider_id TEXT NOT NULL,
+        allowed_capabilities_json TEXT NOT NULL,
         enabled INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
@@ -2428,6 +2451,34 @@ function rowToAgentThreadRoute(row: AgentThreadRouteRow): AgentThreadRoute {
   };
 }
 
+function validateConnectionAccountInput(input: ConnectionAccountInput): void {
+  if (!input.id.trim() || !input.workspaceId.trim() || !input.providerId.trim()) {
+    throw new Error('Connection account identity is incomplete');
+  }
+  if (!input.createdByMembershipId.trim() || !input.secretRefId.trim()) {
+    throw new Error('Connection account authority is incomplete');
+  }
+  if (input.ownerKind === 'member' && !input.ownerMembershipId?.trim()) {
+    throw new Error('Personal connection accounts require an owner membership');
+  }
+  if (input.ownerKind === 'team' && input.ownerMembershipId !== undefined) {
+    throw new Error('Team connection accounts cannot have a personal owner');
+  }
+  if (!input.label.trim() || input.label.length > 160) {
+    throw new Error('Connection account label is invalid');
+  }
+  if (input.policy.kind === 'api') {
+    if (input.policy.allowedHosts.length === 0 || input.policy.allowedMethods.length === 0) {
+      throw new Error('API connection account policy is incomplete');
+    }
+    if (input.policy.authMode === 'oauth' && !input.policy.oauthProvider) {
+      throw new Error('OAuth API connection account requires a provider');
+    }
+  } else if (!input.policy.url.trim()) {
+    throw new Error('MCP connection account policy is incomplete');
+  }
+}
+
 function rowToConnectionAccount(row: ConnectionAccountRow): ConnectionAccount {
   let identity: ConnectionAccount['identity'];
   if (row.identity_json) {
@@ -2438,16 +2489,19 @@ function rowToConnectionAccount(row: ConnectionAccountRow): ConnectionAccount {
       // Invalid non-secret provider metadata is omitted; secret lookup stays fenced.
     }
   }
+  const policy = JSON.parse(row.policy_json) as ConnectionAccount['policy'];
   return {
     id: row.id,
     workspaceId: row.workspace_id,
     revision: Number(row.revision),
     ownerKind: row.owner_kind === 'member' ? 'member' : 'team',
     ...(row.owner_membership_id ? { ownerMembershipId: row.owner_membership_id } : {}),
+    createdByMembershipId: row.created_by_membership_id,
     providerId: row.provider_id,
     label: row.label,
     ...(row.purpose ? { purpose: row.purpose } : {}),
     ...(identity ? { identity } : {}),
+    policy,
     secretRefId: row.secret_ref_id,
     lifecycle:
       row.lifecycle === 'ready' || row.lifecycle === 'needs_attention' || row.lifecycle === 'revoked'
@@ -2459,10 +2513,20 @@ function rowToConnectionAccount(row: ConnectionAccountRow): ConnectionAccount {
 }
 
 function rowToAgentConnectionBinding(row: AgentConnectionBindingRow): AgentConnectionBinding {
+  let allowedCapabilities: string[] = [];
+  try {
+    const parsed = JSON.parse(row.allowed_capabilities_json) as unknown;
+    if (Array.isArray(parsed)) {
+      allowedCapabilities = parsed.filter((value): value is string => typeof value === 'string');
+    }
+  } catch {
+    allowedCapabilities = [];
+  }
   return {
     agentId: row.agent_id,
     connectionAccountId: row.connection_account_id,
     providerId: row.provider_id,
+    allowedCapabilities,
     enabled: Boolean(row.enabled),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),

@@ -19,6 +19,52 @@ export interface ConnectorCredentialRef {
   connectionId: string;
 }
 
+/** Canonical U6 secret reference. It is independent of every Agent binding. */
+export interface ConnectionAccountSecretRef {
+  secretRefId: string;
+}
+
+export function connectionAccountSecretSettingKey(secretRefId: string): string {
+  return `connection-account.${validatedSecretRefId(secretRefId)}.credential`;
+}
+
+export function connectionAccountSecretEnvVar(secretRefId: string): string {
+  return `CONNECTION_ACCOUNT_${encodeEnvSegment(validatedSecretRefId(secretRefId))}_CREDENTIAL`;
+}
+
+export async function saveConnectionAccountSecret(
+  secretRefId: string,
+  value: string,
+  env?: PlatformEnv,
+  store?: SettingsStore,
+): Promise<void> {
+  const normalized = value.trim();
+  if (!normalized) throw new Error('Connection account credential is empty');
+  const settings = store ?? getSettingsStore(env);
+  await settings.setSetting(connectionAccountSecretSettingKey(secretRefId), normalized);
+}
+
+export async function resolveConnectionAccountSecret(
+  ref: ConnectionAccountSecretRef,
+  env?: PlatformEnv,
+  store?: SettingsStore,
+): Promise<string | undefined> {
+  const settings = store ?? getSettingsStore(env);
+  const fromEnv = nonEmpty(process.env[connectionAccountSecretEnvVar(ref.secretRefId)]);
+  if (fromEnv) return fromEnv;
+  return nonEmpty(await settings.getSetting(connectionAccountSecretSettingKey(ref.secretRefId)));
+}
+
+/** Revocation is a tombstone: secret material disappears; the account row remains. */
+export async function tombstoneConnectionAccountSecret(
+  secretRefId: string,
+  env?: PlatformEnv,
+  store?: SettingsStore,
+): Promise<void> {
+  const settings = store ?? getSettingsStore(env);
+  await settings.deleteSetting(connectionAccountSecretSettingKey(secretRefId));
+}
+
 export function connectorCredentialSettingKey(
   agentId: string,
   connectionId: string,
@@ -166,6 +212,14 @@ function encodeEnvSegment(value: string): string {
     .replace(/[^A-Z0-9]/g, (character) =>
       '_' + character.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'),
     );
+}
+
+function validatedSecretRefId(value: string): string {
+  const normalized = value.trim();
+  if (!/^[a-z0-9][a-z0-9_-]{0,127}$/.test(normalized)) {
+    throw new Error('Connection account secret reference is invalid');
+  }
+  return normalized;
 }
 
 function validateCleanupKeys(agentId: string, settingKeys: readonly string[]): string[] {

@@ -5776,6 +5776,17 @@ test('saving a profile with a filled-but-not-added skill editor commits the skil
 
 // ---- Connections (remote MCP servers) --------------------------------------
 
+test('Agent connections expose reusable Team and personal accounts with Google OAuth', () => {
+  const page = renderAdminPage();
+  assert.match(page, />Team connection</);
+  assert.match(page, />My connection</);
+  assert.match(page, />Google OAuth</);
+  assert.match(page, /Credentials are stored once and can be safely reused/);
+  assert.match(page, /Every Agent using it will lose access and dependent schedules will pause/);
+  assert.match(page, /\/connections\?workspaceId=/);
+  assert.match(page, /\/oauth\/api\/start/);
+});
+
 function connectionsAgent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: 'agent_conn',

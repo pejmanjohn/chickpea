@@ -152,6 +152,8 @@ export interface NormalizedSlackTurn {
   slackIdentityId?: string;
   text: string;
   userId: string;
+  /** Product membership resolved from verified Slack truth before admission. */
+  actorMembershipId?: string;
   messageTs: string;
   threadTs: string;
   sessionThreadTs?: string;

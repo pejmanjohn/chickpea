@@ -34,6 +34,8 @@ import {
   isValidApiOAuthConnectionPolicy,
 } from '../config/api-oauth-policy.ts';
 import { resolveConnectorCredential } from '../config/connector-secrets.ts';
+import type { SettingsStore } from '../config/settings-store.ts';
+import type { ConfigStore } from '../config/store.ts';
 import { connectorSkillsForConnections } from '../config/connector-skills.ts';
 import {
   buildEgressPlan,
@@ -58,6 +60,7 @@ import {
   resolveRuntimePlanMcpConnections,
   resolveProfileMcpTools,
 } from '../config/profile-mcp.ts';
+import { resolveMcpOAuthAccessToken } from '../config/mcp-oauth.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
 import {
   resolveRuntimeModel,
@@ -92,6 +95,12 @@ import {
   validEnabledRepositoryGrants,
 } from '../sandbox/egress-handler.ts';
 import { githubAuthorizationHeader } from '../sandbox/github-auth.ts';
+import {
+  projectEffectiveApiConnections,
+  projectEffectiveMcpConnections,
+  resolveConnectionSecretForInvocation,
+  resolveEffectiveConnectionAccounts,
+} from '../connections/runtime.ts';
 
 import type {
   SandboxCredentialMode,
@@ -217,6 +226,12 @@ export interface ApiConnectionResolutionDependencies {
     ref: ApiOAuthRef;
     provider: ApiOAuthProvider;
   }) => Promise<string>;
+  accountContext?: {
+    config: Pick<ConfigStore, 'listConnectionAccounts' | 'listAgentConnectionBindings'>;
+    settings?: SettingsStore;
+    workspaceId: string;
+    actorMembershipId: string;
+  };
 }
 
 /**
@@ -481,6 +496,7 @@ export async function resolveApiConnectionsForTurn(
     connections
       .filter((connection) => connection.enabled)
       .map(async (connection): Promise<ResolvedApiConnectionForTurn | undefined> => {
+        const accountContext = dependencies.accountContext;
         let credential: string | undefined;
         if (connection.authMode === 'oauth') {
           if (
@@ -491,10 +507,30 @@ export async function resolveApiConnectionsForTurn(
             return undefined;
           }
           try {
-            credential = await resolveOAuthToken({
-              ref: { agentId, connectionId: connection.id },
+            const oauthInput = {
+              ref: accountContext
+                ? { agentId: connection.id, connectionId: 'account' }
+                : { agentId, connectionId: connection.id },
               provider: connection.oauthProvider,
-            });
+            };
+            credential = accountContext && !dependencies.resolveOAuthToken
+              ? await resolveApiOAuthAccessToken(oauthInput, {
+                  settings: accountContext.settings ?? getSettingsStore(env),
+                  validateConnection: async (ref, provider) => {
+                    const current = await resolveEffectiveConnectionAccounts({
+                      config: accountContext.config,
+                      workspaceId: accountContext.workspaceId,
+                      agentId,
+                      actorMembershipId: accountContext.actorMembershipId,
+                    });
+                    const account = current.find(({ account }) => account.id === ref.agentId)?.account;
+                    return ref.connectionId === 'account' &&
+                      account?.providerId === provider &&
+                      account.policy.kind === 'api' &&
+                      account.policy.authMode === 'oauth';
+                  },
+                })
+              : await resolveOAuthToken(oauthInput);
           } catch (error) {
             console.warn(
               `[chickpea] API OAuth unavailable (${connection.id}): ` +
@@ -503,10 +539,17 @@ export async function resolveApiConnectionsForTurn(
             return undefined;
           }
         } else {
-          credential = await resolveCredential(
-            { agentId, connectionId: connection.id },
-            env,
-          );
+          credential = accountContext
+            ? await resolveConnectionSecretForInvocation({
+                config: accountContext.config,
+                ...(accountContext.settings ? { settings: accountContext.settings } : {}),
+                ...(env ? { env } : {}),
+                workspaceId: accountContext.workspaceId,
+                agentId,
+                actorMembershipId: accountContext.actorMembershipId,
+                connectionAccountId: connection.id,
+              })
+            : await resolveCredential({ agentId, connectionId: connection.id }, env);
         }
         if (!credential) return undefined;
 
@@ -541,6 +584,7 @@ export interface SlackAgentRuntimeInput {
   freezeChannel?: boolean;
   artifactThreadTs?: string | null;
   threadTs?: string;
+  actorMembershipId?: string;
   declarationsOwnedByHooks?: boolean;
   forcedSandbox?: SandboxSelection;
   sandboxConversationKey?: string;
@@ -557,6 +601,14 @@ export async function createSlackAgentRuntime(
   const stores = { agents: store, assignments: store };
   const adapterContext = await resolveSlackAgentAdapterContext(input, env);
   const { workspaceId, channelId } = adapterContext;
+  const effectiveConnectionAccounts = input.actorMembershipId
+    ? await resolveEffectiveConnectionAccounts({
+        config: store,
+        workspaceId,
+        agentId: input.liveConfig?.agentId ?? input.id,
+        actorMembershipId: input.actorMembershipId,
+      })
+    : undefined;
   const artifactThreadTs = input.artifactThreadTs === null
     ? undefined
     : (input.artifactThreadTs ?? adapterContext.threadTs);
@@ -611,7 +663,23 @@ export async function createSlackAgentRuntime(
   ] =
     await Promise.all([
       resolveEgressPolicy(env),
-      resolveApiConnectionsForTurn(config.agent.id, config.agent.apiConnections ?? [], env),
+      resolveApiConnectionsForTurn(
+        config.agent.id,
+        effectiveConnectionAccounts
+          ? projectEffectiveApiConnections(effectiveConnectionAccounts)
+          : config.agent.apiConnections ?? [],
+        env,
+        effectiveConnectionAccounts && input.actorMembershipId
+          ? {
+              accountContext: {
+                config: store,
+                settings: settingsStore,
+                workspaceId,
+                actorMembershipId: input.actorMembershipId,
+              },
+            }
+          : {},
+      ),
       resolveSandboxSettings(settingsStore),
       getGithubConnection(settingsStore).then(
         (connection) => connection.mode === 'app',
@@ -717,7 +785,9 @@ export async function createSlackAgentRuntime(
   ];
   registerActivityContext(id, {
     skills: skills.map((skill) => ({ name: skill.name })),
-    mcpConnections: (config.agent.mcpServers ?? [])
+    mcpConnections: (effectiveConnectionAccounts
+      ? projectEffectiveMcpConnections(effectiveConnectionAccounts)
+      : config.agent.mcpServers ?? [])
       .filter(isProfileMcpServerEligible)
       .map(({ id: connectionId, displayName }) => ({ id: connectionId, displayName })),
     apiConnections: apiConnectionActivities,
@@ -730,10 +800,48 @@ export async function createSlackAgentRuntime(
   // name collides with a built-in or skill (a duplicate name kills the turn).
   const mcpTools = input.declarationsOwnedByHooks
     ? []
-    : await resolveProfileMcpTools(config.agent.mcpServers, {
+    : await resolveProfileMcpTools(
+        effectiveConnectionAccounts
+          ? projectEffectiveMcpConnections(effectiveConnectionAccounts)
+          : config.agent.mcpServers,
+      {
         agentId: config.agent.id,
         env,
         existingToolNames: skills.map((s) => s.name),
+        ...(effectiveConnectionAccounts && input.actorMembershipId
+          ? {
+              resolveBearerCredential: (connectionAccountId: string) =>
+                resolveConnectionSecretForInvocation({
+                  config: store,
+                  settings: settingsStore,
+                  ...(env ? { env } : {}),
+                  workspaceId,
+                  agentId: config.agent.id,
+                  actorMembershipId: input.actorMembershipId!,
+                  connectionAccountId,
+                }),
+              resolveOAuthAccessToken: (oauthInput) => resolveMcpOAuthAccessToken(
+                {
+                  ...oauthInput,
+                  ref: { agentId: oauthInput.ref.connectionId, connectionId: 'account' },
+                },
+                {
+                  settings: settingsStore,
+                  validateConnection: async (ref, serverUrl) => {
+                    const current = await resolveEffectiveConnectionAccounts({
+                      config: store,
+                      workspaceId,
+                      agentId: config.agent.id,
+                      actorMembershipId: input.actorMembershipId!,
+                    });
+                    const account = current.find(({ account }) => account.id === ref.agentId)?.account;
+                    return ref.connectionId === 'account' && account?.policy.kind === 'mcp' &&
+                      account.policy.authMode === 'oauth' && account.policy.url === serverUrl;
+                  },
+                },
+              ),
+            }
+          : {}),
         onConnectionStart: ({ displayName }) => {
           publishActivityStatus(id, connectingActivityStatus(displayName), env);
         },
@@ -949,14 +1057,16 @@ export function useRuntimePlanAgent(
   )) {
     useSkill(skill);
   }
-  for (const connection of resolveRuntimePlanMcpConnections(
-    plan.agentId,
-    plan.mcpConnections,
-    ({ displayName }) => {
-      publishActivityStatus(id, connectingActivityStatus(displayName));
-    },
-  )) {
-    useMcpConnection(connection);
+  if (!plan.actorMembershipId) {
+    for (const connection of resolveRuntimePlanMcpConnections(
+      plan.agentId,
+      plan.mcpConnections,
+      ({ displayName }) => {
+        publishActivityStatus(id, connectingActivityStatus(displayName));
+      },
+    )) {
+      useMcpConnection(connection);
+    }
   }
   useSandbox(createRuntimePlanSandbox(plan, options.sandboxConversationKey));
   if (plan.sandbox.mode === 'cloudflare') {
@@ -1057,8 +1167,9 @@ function createRuntimePlanSandbox(
         },
         freezeChannel: false,
         artifactThreadTs: null,
-        declarationsOwnedByHooks: true,
+        declarationsOwnedByHooks: !plan.actorMembershipId,
         forcedSandbox: plan.sandbox.mode,
+        ...(plan.actorMembershipId ? { actorMembershipId: plan.actorMembershipId } : {}),
         ...(sandboxConversationKey ? { sandboxConversationKey } : {}),
       });
       if (!runtime.sandbox) throw new Error('RuntimePlanV2 sandbox is unavailable.');
@@ -1074,7 +1185,7 @@ function projectRuntimePlanAgent(
   if (current.id !== plan.agentId || !current.enabled) {
     throw new SealedAgentThreadError(plan.agentId);
   }
-  const apiConnections = plan.apiConnections.map((declaration) => {
+  const apiConnections = plan.actorMembershipId ? [] : plan.apiConnections.map((declaration) => {
     const live = current.apiConnections.find((candidate) =>
       candidate.id === declaration.id && runtimeApiConnectionMatches(candidate, declaration)
     );
@@ -1088,7 +1199,7 @@ function projectRuntimePlanAgent(
     if (!live) throw new Error('RuntimePlanV2 repository policy changed.');
     return live;
   });
-  const mcpServers = plan.mcpConnections.flatMap((declaration) => {
+  const mcpServers = plan.actorMembershipId ? [] : plan.mcpConnections.flatMap((declaration) => {
     const live = current.mcpServers.find((candidate) =>
       candidate.id === declaration.id &&
       candidate.enabled &&
