@@ -50,7 +50,7 @@ test('Agent collaboration and Slack Channel membership are separate authority ch
   assert.equal(canEditAgent(creator, agent), true);
   assert.equal(canEditAgent(admin, agent), true);
   assert.equal(canEditAgent(other, agent), false);
-  assert.equal(canEditAgent(other, { ...agent, editPolicy: 'all_members' }), true);
+  assert.equal(canEditAgent(other, { ...agent, editPolicy: 'all_workspace_members' }), true);
   assert.doesNotThrow(() => requireAgentChannelPublication(creator, agent, true));
   assert.throws(
     () => requireAgentChannelPublication(admin, agent, false),

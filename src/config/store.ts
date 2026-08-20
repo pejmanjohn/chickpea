@@ -48,6 +48,7 @@ import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
+import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 
 export interface ConfigSeed {
   agents: readonly AgentCreateInput[];
@@ -2373,16 +2374,6 @@ function parseAgentSlackPresence(
   } catch {
     return defaultAgentSlackPresence(agentId, name);
   }
-}
-
-function normalizeAgentHandle(value: string): string {
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80);
-  return normalized || 'agent';
 }
 
 function rowToWorkspaceInstallation(row: WorkspaceInstallationRow): WorkspaceInstallation {

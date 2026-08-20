@@ -1,0 +1,323 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import { Hono } from 'hono';
+
+import { createAdminRoutes } from '../src/admin/routes.ts';
+import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
+import type { IdentityStore } from '../src/identity/types.ts';
+import type {
+  SlackAppHomeReference,
+  SlackChannel,
+  SlackMember,
+  SlackMessageReference,
+  SlackTransport,
+  SlackUserGroup,
+} from '../src/slack/transport/types.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+
+const TOKEN = 'agent-admin-token';
+
+function auth(): HeadersInit {
+  return testAdminHeaders(TOKEN, { 'content-type': 'application/json' });
+}
+
+function identity(): IdentityStore {
+  return {
+    getMembership: async (id: string) => id === 'membership_test_owner'
+      ? {
+          id,
+          organizationId: 'org_oss',
+          userId: 'user_test_owner',
+          role: 'owner',
+          status: 'active',
+          createdAt: 1,
+          updatedAt: 1,
+        }
+      : undefined,
+    getUser: async (id: string) => id === 'user_test_owner'
+      ? {
+          id,
+          slackTeamId: 'T_TEST',
+          slackUserId: 'U_OWNER',
+          displayName: 'Owner',
+          contactEmail: 'owner@example.com',
+          createdAt: 1,
+          updatedAt: 1,
+        }
+      : undefined,
+    recordAuthAudit: async () => undefined,
+  } as unknown as IdentityStore;
+}
+
+class FakeTransport implements SlackTransport {
+  readonly mode = 'direct' as const;
+  groups: SlackUserGroup[] = [];
+  channel: SlackChannel = {
+    id: 'C_SUPPORT', name: 'support', private: false, member: false, archived: false,
+  };
+  memberAllowed = true;
+  createError?: Error;
+
+  async lookupMember(userId: string): Promise<SlackMember> {
+    return {
+      id: userId, deleted: false, bot: false, restricted: false, ultraRestricted: false,
+    };
+  }
+  async lookupChannel(): Promise<SlackChannel> { return this.channel; }
+  async channelHasMember(): Promise<boolean> { return this.memberAllowed; }
+  async joinPublicChannel(): Promise<SlackChannel> {
+    this.channel = { ...this.channel, member: true };
+    return this.channel;
+  }
+  async listUserGroups(): Promise<SlackUserGroup[]> { return this.groups.slice(); }
+  async createUserGroup(input: { name: string; handle: string; description?: string }): Promise<SlackUserGroup> {
+    if (this.createError) throw this.createError;
+    const group = { id: `S${this.groups.length + 1}`, ...input, disabled: false };
+    this.groups.push(group);
+    return group;
+  }
+  async updateUserGroup(id: string, patch: Partial<Omit<SlackUserGroup, 'id' | 'disabled'>>): Promise<SlackUserGroup> {
+    const index = this.groups.findIndex((group) => group.id === id);
+    this.groups[index] = { ...this.groups[index]!, ...patch };
+    return this.groups[index]!;
+  }
+  async disableUserGroup(id: string): Promise<SlackUserGroup> {
+    return this.setDisabled(id, true);
+  }
+  async enableUserGroup(id: string): Promise<SlackUserGroup> {
+    return this.setDisabled(id, false);
+  }
+  async publishAppHome(): Promise<SlackAppHomeReference> { return {}; }
+  async postMessage(): Promise<SlackMessageReference> { return { channelId: 'C', ts: '1' }; }
+
+  private setDisabled(id: string, disabled: boolean): SlackUserGroup {
+    const index = this.groups.findIndex((group) => group.id === id);
+    this.groups[index] = { ...this.groups[index]!, disabled };
+    return this.groups[index]!;
+  }
+}
+
+function harness(transport = new FakeTransport()) {
+  const store = new SqliteConfigStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const sourceIdentity = identity();
+  const authority = testAdminAuthority(TOKEN, undefined, sourceIdentity);
+  const snapshots = {
+    listLiveRootsByAgent: async () => [],
+  } as unknown as AgentSnapshotStore;
+  const app = new Hono();
+  app.route('/', createAdminRoutes({
+    store,
+    settings,
+    snapshots,
+    slackTransport: transport,
+    knownProviders: new Set(['local-stub']),
+    ...authority,
+  }));
+  return { app, store, settings, transport };
+}
+
+async function createAgent(app: Hono, name = 'Support Triage') {
+  const response = await app.request('http://localhost/admin/api/agents', {
+    method: 'POST',
+    headers: auth(),
+    body: JSON.stringify({
+      id: 'agent_support',
+      name,
+      handle: 'support',
+      description: 'Triages support questions',
+      editPolicy: 'creator_and_admins',
+      instructions: 'Answer support questions.',
+      enabled: true,
+      model: 'local-stub/admin-agent',
+    }),
+  });
+  assert.equal(response.status, 201);
+  return (await response.json()) as { agent: Record<string, any> };
+}
+
+test('Agent create owns its handle, generated avatar, edit policy, and creator', async () => {
+  const fixture = harness();
+  try {
+    const { agent } = await createAgent(fixture.app);
+    assert.equal(agent.creatorMembershipId, 'membership_test_owner');
+    assert.equal(agent.editPolicy, 'creator_and_admins');
+    assert.equal(agent.lifecycle, 'draft');
+    assert.equal(agent.slackPresence.normalizedHandle, 'support');
+    assert.equal(agent.slackPresence.avatar.kind, 'generated');
+    assert.match(agent.slackPresence.avatar.url, /\/assets\/agents\/agent_support\/avatar\/1$/);
+
+    const avatar = await fixture.app.request(agent.slackPresence.avatar.url);
+    assert.equal(avatar.status, 200);
+    assert.equal(avatar.headers.get('content-type'), 'image/svg+xml');
+    assert.match(avatar.headers.get('cache-control') ?? '', /immutable/);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('Channel publication joins Chickpea, creates the user group, and activates the grant', async () => {
+  const fixture = harness();
+  try {
+    await createAgent(fixture.app);
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/channels',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({ workspaceId: 'T_TEST', channelId: 'C_SUPPORT' }),
+      },
+    );
+    assert.equal(response.status, 201);
+    const body = await response.json() as Record<string, any>;
+    assert.equal(body.grant.status, 'active');
+    assert.equal(body.agent.slackPresence.health, 'healthy');
+    assert.equal(fixture.transport.channel.member, true);
+    assert.deepEqual(fixture.transport.groups.map(({ handle }) => handle), ['support']);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('Published Agent edits update the existing Slack handle instead of creating another group', async () => {
+  const fixture = harness();
+  try {
+    await createAgent(fixture.app);
+    const published = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/channels',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({ workspaceId: 'T_TEST', channelId: 'C_SUPPORT' }),
+      },
+    );
+    const publishedBody = await published.json() as Record<string, any>;
+    const groupId = publishedBody.agent.slackPresence.userGroupId;
+
+    const edited = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support',
+      {
+        method: 'PATCH', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: publishedBody.agent.revision,
+          name: 'Customer Care',
+          handle: 'customer-care',
+          description: 'Handles customer questions',
+        }),
+      },
+    );
+    assert.equal(edited.status, 200);
+    const editedBody = await edited.json() as Record<string, any>;
+    assert.equal(editedBody.agent.slackPresence.health, 'healthy');
+    assert.equal(editedBody.agent.slackPresence.userGroupId, groupId);
+    assert.equal(fixture.transport.groups.length, 1);
+    assert.deepEqual(fixture.transport.groups[0], {
+      id: groupId,
+      name: 'Customer Care',
+      handle: 'customer-care',
+      description: 'Handles customer questions',
+      disabled: false,
+    });
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('Slack policy failures preserve the Agent and return exact recovery steps', async () => {
+  const transport = new FakeTransport();
+  transport.createError = new SlackTransportError('usergroups.create', 'permission_denied');
+  const fixture = harness(transport);
+  try {
+    await createAgent(fixture.app);
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/channels',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({ workspaceId: 'T_TEST', channelId: 'C_SUPPORT' }),
+      },
+    );
+    assert.equal(response.status, 409);
+    const body = await response.json() as Record<string, any>;
+    assert.equal(body.error, 'user_group_policy_denied');
+    assert.match(body.recovery.explanation, /Reconnect.*will not change/i);
+    assert.match(body.recovery.steps[0], /Roles & permissions/);
+    assert.equal(body.agent.slackPresence.health, 'needs_attention');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('Avatar uploads create a new immutable revision used by later Slack replies', async () => {
+  const fixture = harness();
+  try {
+    const { agent } = await createAgent(fixture.app);
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB', 'base64');
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/avatar',
+      {
+        method: 'PUT', headers: auth(),
+        body: JSON.stringify({ contentType: 'image/png', base64: png.toString('base64') }),
+      },
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json() as Record<string, any>;
+    assert.equal(body.agent.slackPresence.avatar.kind, 'uploaded');
+    assert.equal(body.agent.slackPresence.avatar.revision, 2);
+    assert.notEqual(body.agent.slackPresence.avatar.url, agent.slackPresence.avatar.url);
+    const uploaded = await fixture.app.request(body.agent.slackPresence.avatar.url);
+    assert.equal(uploaded.status, 200);
+    assert.equal(uploaded.headers.get('content-type'), 'image/png');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('Archive disables the same Slack handle and restore re-enables it', async () => {
+  const fixture = harness();
+  try {
+    await createAgent(fixture.app);
+    const published = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/channels',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({ workspaceId: 'T_TEST', channelId: 'C_SUPPORT' }),
+      },
+    );
+    const publishedBody = await published.json() as Record<string, any>;
+    const groupId = publishedBody.agent.slackPresence.userGroupId;
+    const archived = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/archive',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({ expectedRevision: publishedBody.agent.revision }),
+      },
+    );
+    assert.equal(archived.status, 200);
+    const archivedBody = await archived.json() as Record<string, any>;
+    assert.equal(archivedBody.agent.lifecycle, 'archived');
+    assert.equal(fixture.transport.groups.find(({ id }) => id === groupId)?.disabled, true);
+
+    const restored = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/restore',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({ expectedRevision: archivedBody.agent.revision }),
+      },
+    );
+    assert.equal(restored.status, 200);
+    const restoredBody = await restored.json() as Record<string, any>;
+    assert.equal(restoredBody.agent.lifecycle, 'active');
+    assert.equal(restoredBody.agent.slackPresence.userGroupId, groupId);
+    assert.equal(fixture.transport.groups.find(({ id }) => id === groupId)?.disabled, false);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});

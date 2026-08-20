@@ -67,6 +67,7 @@ export interface SlackTransport {
   readonly mode: SlackTransportMode;
   lookupMember(userId: string): Promise<SlackMember>;
   lookupChannel(channelId: string): Promise<SlackChannel>;
+  channelHasMember(channelId: string, userId: string): Promise<boolean>;
   joinPublicChannel(channelId: string): Promise<SlackChannel>;
   listUserGroups(options?: { includeDisabled?: boolean }): Promise<SlackUserGroup[]>;
   createUserGroup(input: {

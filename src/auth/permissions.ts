@@ -45,7 +45,7 @@ export class AuthorizationError extends Error {
 
 export interface AgentAuthorityDescriptor {
   creatorMembershipId?: string;
-  editPolicy?: 'creator_and_admins' | 'all_members';
+  editPolicy?: 'creator_and_admins' | 'all_workspace_members';
 }
 
 export function permissionForRole(role: OrganizationRole): ReadonlySet<Permission> {
@@ -65,7 +65,8 @@ export function canEditAgent(
 ): boolean {
   if (!principal) return false;
   if (principal.role === 'owner' || principal.role === 'admin') return true;
-  return agent.creatorMembershipId === principal.membershipId || agent.editPolicy === 'all_members';
+  return agent.creatorMembershipId === principal.membershipId ||
+    agent.editPolicy === 'all_workspace_members';
 }
 
 export function requireAgentEdit(

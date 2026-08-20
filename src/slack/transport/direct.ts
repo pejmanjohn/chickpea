@@ -18,7 +18,7 @@ type SlackApiMethod = (input?: SlackApiInput) => Promise<unknown>;
 /** Narrow SDK seam used for direct-adapter tests and alternative runtimes. */
 export interface DirectSlackApiClient {
   users: { info: SlackApiMethod };
-  conversations: { info: SlackApiMethod; join: SlackApiMethod };
+  conversations: { info: SlackApiMethod; join: SlackApiMethod; members: SlackApiMethod };
   usergroups: {
     list: SlackApiMethod;
     create: SlackApiMethod;
@@ -56,6 +56,23 @@ export function createDirectSlackTransportFromClient(
         channel: channelId,
       });
       return mapChannel(requiredRecord(result.channel, 'conversations.info'));
+    },
+
+    async channelHasMember(channelId, userId): Promise<boolean> {
+      let cursor: string | undefined;
+      for (let page = 0; page < 100; page += 1) {
+        const result = await call(client.conversations.members, 'conversations.members', {
+          channel: channelId,
+          limit: 200,
+          ...(cursor ? { cursor } : {}),
+        });
+        if (Array.isArray(result.members) && result.members.includes(userId)) return true;
+        cursor = stringValue(record(result.response_metadata).next_cursor).trim() || undefined;
+        if (!cursor) return false;
+      }
+      throw new SlackTransportError('conversations.members', 'pagination_limit', {
+        retryable: true,
+      });
     },
 
     async joinPublicChannel(channelId): Promise<SlackChannel> {

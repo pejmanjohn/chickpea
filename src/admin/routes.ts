@@ -254,6 +254,7 @@ import {
   type RefreshModelCatalogOptions,
 } from '../model-catalog/index.ts';
 import type {
+  AgentChannelGrant,
   AgentReferenceSummary,
   ChannelAssignment,
   ChannelConfig,
@@ -314,6 +315,21 @@ import {
   type SlackCredentialDependencies,
   type SlackCredentialResolutionDependencies,
 } from '../slack/identity-credentials.ts';
+import {
+  AgentAvatarError,
+  agentAvatarUrl,
+  readAgentAvatarAsset,
+  uploadAgentAvatar,
+} from '../slack/agent-presence/avatar-assets.ts';
+import {
+  AgentPresenceError,
+  agentPresenceRecovery,
+  classifyAgentPresenceError,
+} from '../slack/agent-presence/errors.ts';
+import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
+import { createDirectSlackTransport } from '../slack/transport/direct.ts';
+import type { SlackTransport } from '../slack/transport/types.ts';
 import { slackIdentityPendingEnvelopeSettingKey } from '../slack/identity-handshake.ts';
 import {
   SlackInstallOAuthError,
@@ -335,7 +351,13 @@ import {
 import { SlackAdmissionService } from '../auth/slack-admission.ts';
 import { SlackOidcError } from '../auth/slack-oidc.ts';
 import { createBetterAuthEnvironmentPublicHandler } from '../auth/better-auth-runtime.ts';
-import { AuthorizationError, requirePermission, type Permission } from '../auth/permissions.ts';
+import {
+  AuthorizationError,
+  canEditAgent,
+  requireAgentEdit,
+  requirePermission,
+  type Permission,
+} from '../auth/permissions.ts';
 import { validateMutationProvenance } from '../auth/request-provenance.ts';
 import { AuthRateLimitError, AuthRateLimiter } from '../auth/rate-limit.ts';
 import { requestAuthSourceKey } from '../auth/source-key.ts';
@@ -445,6 +467,8 @@ interface AdminRoutesOptions {
   slackInstallFetch?: typeof fetch | undefined;
   slackInstallNow?: (() => number) | undefined;
   slackInstallRandomBytes?: ((length: number) => Uint8Array) | undefined;
+  /** Agent-facing Slack capability seam. Production resolves the direct app token. */
+  slackTransport?: SlackTransport | ((workspaceId: string) => Promise<SlackTransport>) | undefined;
 }
 
 const MAX_SLACK_IDENTITY_ADMIN_BODY_BYTES = 64 * 1_024;
@@ -740,6 +764,9 @@ const repositoriesSchema = v.pipe(
 const agentSchema = v.object({
   id: agentIdSchema,
   name: nonEmptyString,
+  description: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(500))),
+  handle: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120))),
+  editPolicy: v.optional(v.picklist(['creator_and_admins', 'all_workspace_members'])),
   instructions: nonEmptyString,
   enabled: v.boolean(),
   model: v.optional(modelSpecifier),
@@ -752,6 +779,9 @@ const agentSchema = v.object({
 const agentPatchSchema = v.object({
   expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
   name: v.optional(nonEmptyString),
+  description: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(500))),
+  handle: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120))),
+  editPolicy: v.optional(v.picklist(['creator_and_admins', 'all_workspace_members'])),
   instructions: v.optional(nonEmptyString),
   enabled: v.optional(v.boolean()),
   model: v.optional(v.nullable(modelSpecifier)),
@@ -759,6 +789,26 @@ const agentPatchSchema = v.object({
   mcpServers: v.optional(mcpServersSchema),
   apiConnections: v.optional(apiConnectionsSchema),
   repositories: v.optional(repositoriesSchema),
+});
+
+const publishAgentSchema = v.strictObject({
+  workspaceId: nonEmptyString,
+  channelId: nonEmptyString,
+});
+const retryAgentPresenceSchema = v.strictObject({
+  workspaceId: v.optional(nonEmptyString),
+});
+const archiveAgentSchema = v.strictObject({
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  replacementDefaultAgentId: v.optional(agentIdSchema),
+});
+const restoreAgentSchema = v.strictObject({
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  workspaceId: v.optional(nonEmptyString),
+});
+const agentAvatarUploadSchema = v.strictObject({
+  contentType: v.picklist(['image/png', 'image/jpeg', 'image/webp']),
+  base64: v.pipe(v.string(), v.minLength(4), v.maxLength(750_000)),
 });
 
 const githubOrgSchema = v.pipe(
@@ -1222,6 +1272,74 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return { teamId: organization.slackTeamId };
     }
   };
+  const agentSlackTransport = async (
+    c: Context,
+    workspaceId: string,
+  ): Promise<SlackTransport> => {
+    if (typeof options.slackTransport === 'function') {
+      return options.slackTransport(workspaceId);
+    }
+    if (options.slackTransport) return options.slackTransport;
+    const installation = await store(c).getWorkspaceInstallation(workspaceId);
+    if (!installation) {
+      throw new AgentPresenceError(
+        'slack_operation_failed',
+        'Connect Chickpea to this Slack workspace before publishing an Agent.',
+      );
+    }
+    if (installation.transportMode !== 'direct') {
+      throw new AgentPresenceError(
+        'slack_operation_failed',
+        'This Slack gateway installation is not available in this deployment yet.',
+      );
+    }
+    const credentials = await resolveSlackIdentityCredentials(
+      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      c.env as PlatformEnv | undefined,
+      slackCredentialResolutionDependencies(c) ?? settings(c),
+    );
+    if (!credentials.botToken) {
+      throw new AgentPresenceError(
+        'slack_operation_failed',
+        'Connect Chickpea to Slack before publishing an Agent.',
+      );
+    }
+    return createDirectSlackTransport(credentials.botToken);
+  };
+  const agentActor = async (c: Context): Promise<{
+    principal: AuthPrincipal;
+    slackUserId: string;
+    slackTeamId: string;
+  }> => {
+    const principal = principalByContext.get(c);
+    if (!principal) throw new AuthorizationError('principal_required');
+    const membership = await identity(c).getMembership(principal.membershipId);
+    const user = membership ? await identity(c).getUser(membership.userId) : undefined;
+    if (!membership || membership.status !== 'active' || !user) throw new AuthorizationError();
+    return { principal, slackUserId: user.slackUserId, slackTeamId: user.slackTeamId };
+  };
+  const agentPresenceFailureResponse = async (
+    c: Context,
+    agentId: string,
+    error: unknown,
+  ): Promise<Response> => {
+    const classified = classifyAgentPresenceError(error);
+    const agent = await store(c).getAgent(agentId);
+    const handle = agent.slackPresence?.normalizedHandle ?? normalizeAgentHandle(agent.name);
+    const status = classified.code === 'rate_limited'
+      ? 429
+      : classified.code === 'slack_unavailable'
+      ? 503
+      : 409;
+    return c.json({
+      error: classified.code,
+      message: classified.message,
+      retryable: classified.retryable,
+      suggestions: classified.suggestions,
+      recovery: agentPresenceRecovery(classified, handle),
+      agent: await agentAdminProjection(agent, store(c), snapshots(c)),
+    }, status);
+  };
   const authRateLimiter = (c: Context, token: string): AuthRateLimiter =>
     options.authRateLimiter ?? new AuthRateLimiter(identity(c), { pepper: token });
   const recordSandboxAudit = async (
@@ -1418,6 +1536,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     maxSize: MAX_ADMIN_MUTATION_BODY_BYTES,
     onError: (c) => c.json({ error: 'request_too_large' }, 413),
   });
+  const enforceAgentMutationAuthority = async (
+    c: Context,
+    principal: AuthPrincipal,
+  ): Promise<void> => {
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) return;
+    const match = c.req.path.match(/^\/admin\/api\/agents\/([^/]+)/);
+    if (!match) return;
+    const agentId = decodeURIComponent(match[1]!);
+    try {
+      requireAgentEdit(principal, await store(c).getAgent(agentId));
+    } catch (error) {
+      // Preserve each route's stable 404 response for a missing Agent. Every
+      // existing Agent, including nested connector routes, is fenced here.
+      if (!(error instanceof UnknownAgentError)) throw error;
+    }
+  };
 
   const adminGate = async (c: Context, next: Next) => {
     let authService: AdminAuthenticationService | undefined;
@@ -1440,6 +1574,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         try {
           if (principal.machine && !machinePrincipalAllowed(c)) throw new AuthorizationError();
           requirePermission(principal, permission);
+          await enforceAgentMutationAuthority(c, principal);
           await identity(c).recordAuthAudit({
             event: 'authorization',
             outcome: 'success',
@@ -2496,6 +2631,28 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  // Slack fetches persona images without a Chickpea browser session. Revisions
+  // are immutable, so public caching cannot make a later upload appear stale.
+  app.get('/assets/agents/:agentId/avatar/:revision', async (c) => {
+    const agentId = c.req.param('agentId');
+    const revision = Number(c.req.param('revision'));
+    if (!AGENT_ID_PATTERN.test(agentId) || !Number.isSafeInteger(revision) || revision < 1) {
+      return c.notFound();
+    }
+    try {
+      await store(c).getAgent(agentId);
+      const asset = await readAgentAvatarAsset({ settings: settings(c), agentId, revision });
+      if (!asset) return c.notFound();
+      c.header('Content-Type', asset.contentType);
+      c.header('Cache-Control', 'public, max-age=31536000, immutable');
+      c.header('X-Content-Type-Options', 'nosniff');
+      return c.body(new Uint8Array(asset.bytes).buffer);
+    } catch (error) {
+      if (error instanceof UnknownAgentError) return c.notFound();
+      return internalError(c, error);
+    }
+  });
+
   // The worker's root is not a product surface — send visitors to the admin
   // (the gate/login there handles auth). Bare 404 at `/` read as a broken
   // install during live testing.
@@ -2857,12 +3014,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
     const configStore = store(c);
-    const [rawAgents, assignments, identities, channels] = await Promise.all([
+    const [allAgents, assignments, identities, channels, grants] = await Promise.all([
       configStore.listAgents(),
       configStore.listAssignments(),
       configStore.listSlackIdentities(),
       configStore.listChannels(),
+      configStore.listAgentChannelGrants(),
     ]);
+    const principal = principalByContext.get(c);
+    const rawAgents = principal
+      ? allAgents.filter((agent) =>
+          canEditAgent(principal, agent) ||
+          grants.some((grant) => grant.agentId === agent.id && grant.status === 'active')
+        )
+      : allAgents;
     const agents = await Promise.all(
       rawAgents.map((agent) =>
         withApiConnectionSources(agent, platformEnv, settingsStore),
@@ -2892,6 +3057,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               .map(({ id }) => id),
           },
           channels,
+          grants: grants.filter(({ agentId }) => agentId === agent.id),
           snapshotRoots: roots[index]!,
         })
       )),
@@ -3572,7 +3738,27 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) {
       return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
-    let agent = toAgentConfig(parsed.output);
+    const requestedHandle = parsed.output.handle ?? parsed.output.name;
+    const principal = principalByContext.get(c);
+    let agent: AgentCreateInput = {
+      ...toAgentConfig(parsed.output),
+      lifecycle: 'draft',
+      ...(principal ? { creatorMembershipId: principal.membershipId } : {}),
+      editPolicy: parsed.output.editPolicy ?? 'creator_and_admins',
+      configurationGeneration: 1,
+      slackPresence: {
+        requestedHandle,
+        normalizedHandle: normalizeAgentHandle(requestedHandle),
+        desiredState: 'unpublished',
+        health: 'unpublished',
+        avatar: {
+          kind: 'generated',
+          revision: 1,
+          seed: randomUUID(),
+          url: agentAvatarUrl(requestOrigin(c), parsed.output.id, 1),
+        },
+      },
+    };
     await loadModelCatalog(settings(c));
     const modelCompatibilityError = activeCatalogCompatibilityError(
       agent.model,
@@ -4080,6 +4266,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/agents/:id', async (c) => {
     try {
       const agent = await store(c).getAgent(c.req.param('id'));
+      const principal = principalByContext.get(c);
+      if (principal && !canEditAgent(principal, agent)) {
+        const discoverable = (await store(c).listAgentChannelGrants()).some(
+          (grant) => grant.agentId === agent.id && grant.status === 'active',
+        );
+        if (!discoverable) return c.json({ error: 'not_found' }, 404);
+      }
       const enriched = await withApiConnectionSources(
         agent,
         c.env as PlatformEnv | undefined,
@@ -4104,6 +4297,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const configStore = store(c);
       const agentId = c.req.param('id');
       const current = await configStore.getAgent(agentId);
+      const principal = principalByContext.get(c);
+      if (principal) requireAgentEdit(principal, current);
       if (current.revision !== parsed.output.expectedRevision) {
         throw new AgentRevisionConflictError(
           agentId,
@@ -4112,6 +4307,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         );
       }
       const patch = toAgentPatch(parsed.output);
+      if (parsed.output.handle !== undefined) {
+        const requestedHandle = parsed.output.handle;
+        const presence = current.slackPresence;
+        if (!presence) throw new Error(`Agent ${agentId} has no Slack presence`);
+        patch.slackPresence = {
+          ...presence,
+          requestedHandle,
+          normalizedHandle: normalizeAgentHandle(requestedHandle),
+          health: presence.desiredState === 'active' ? 'pending' : presence.health,
+        };
+      }
       if (patch.apiConnections) {
         patch.apiConnections = await normalizeApiOAuthPatch(
           agentId,
@@ -4152,16 +4358,41 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(c.env ? { env: c.env as PlatformEnv } : {}),
         settings: settings(c),
       });
-      const updated = await configStore.updateAgent(
+      let updated = await configStore.updateAgent(
         agentId,
         patch,
         parsed.output.expectedRevision,
       );
+      let presenceRecovery = null;
+      const reconcilePresence = updated.slackPresence?.desiredState === 'active' && (
+        parsed.output.handle !== undefined ||
+        parsed.output.name !== undefined ||
+        parsed.output.description !== undefined
+      );
+      if (reconcilePresence) {
+        try {
+          const actor = await agentActor(c);
+          const transport = await agentSlackTransport(c, actor.slackTeamId);
+          updated = await new AgentPresenceReconciler({
+            config: configStore,
+            transport,
+          }).retry(agentId);
+        } catch (error) {
+          const classified = classifyAgentPresenceError(error);
+          updated = await configStore.getAgent(agentId);
+          presenceRecovery = agentPresenceRecovery(
+            classified,
+            updated.slackPresence?.normalizedHandle ?? normalizeAgentHandle(updated.name),
+          );
+        }
+      }
       return c.json({
         agent: await agentAdminProjection(updated, configStore, snapshots(c)),
+        presenceRecovery,
         ...providerWarnings(next.model, providerIds()),
       });
     } catch (err) {
+      if (err instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (err instanceof UnknownAgentError) {
         return c.json({ error: 'not_found' }, 404);
       }
@@ -4184,6 +4415,208 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return agentStillReferenced(c, err);
       }
       return internalError(c, err);
+    }
+  });
+
+  app.put('/admin/api/agents/:id/avatar', async (c) => {
+    const parsed = v.safeParse(agentAvatarUploadSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const agentId = c.req.param('id');
+    try {
+      const current = await store(c).getAgent(agentId);
+      requireAgentEdit(principalByContext.get(c), current);
+      let bytes: Uint8Array;
+      try {
+        const binary = atob(parsed.output.base64);
+        bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      } catch {
+        return invalidRequest(c, 'The avatar data is not valid base64.');
+      }
+      const updated = await uploadAgentAvatar({
+        config: store(c),
+        settings: settings(c),
+        agentId,
+        bytes,
+        contentType: parsed.output.contentType,
+        publicOrigin: requestOrigin(c),
+      });
+      return c.json({
+        agent: await agentAdminProjection(updated, store(c), snapshots(c)),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof AgentAvatarError) {
+        return c.json({ error: error.code }, error.code === 'too_large' ? 413 : 400);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/channels', async (c) => {
+    const parsed = v.safeParse(publishAgentSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const agentId = c.req.param('id');
+    try {
+      const actor = await agentActor(c);
+      if (actor.slackTeamId !== parsed.output.workspaceId) throw new AuthorizationError();
+      const current = await store(c).getAgent(agentId);
+      requireAgentEdit(actor.principal, current);
+      const reconciler = new AgentPresenceReconciler({
+        config: store(c),
+        transport: await agentSlackTransport(c, parsed.output.workspaceId),
+      });
+      const result = await reconciler.publish({
+        workspaceId: parsed.output.workspaceId,
+        agentId,
+        channelId: parsed.output.channelId,
+        actorMembershipId: actor.principal.membershipId,
+        actorSlackUserId: actor.slackUserId,
+      });
+      return c.json({
+        grant: result.grant,
+        agent: await agentAdminProjection(result.agent, store(c), snapshots(c)),
+      }, 201);
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return agentPresenceFailureResponse(c, agentId, error);
+    }
+  });
+
+  app.delete('/admin/api/agents/:id/channels/:workspaceId/:channelId', async (c) => {
+    const agentId = c.req.param('id');
+    try {
+      const current = await store(c).getAgent(agentId);
+      requireAgentEdit(principalByContext.get(c), current);
+      const removed = await store(c).deleteAgentChannelGrant(
+        c.req.param('workspaceId'),
+        c.req.param('channelId'),
+        agentId,
+      );
+      return c.json({ removed });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/slack/retry', async (c) => {
+    const parsed = v.safeParse(retryAgentPresenceSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const agentId = c.req.param('id');
+    try {
+      const actor = await agentActor(c);
+      const workspaceId = parsed.output.workspaceId ?? actor.slackTeamId;
+      if (actor.slackTeamId !== workspaceId) throw new AuthorizationError();
+      const current = await store(c).getAgent(agentId);
+      requireAgentEdit(actor.principal, current);
+      const reconciler = new AgentPresenceReconciler({
+        config: store(c),
+        transport: await agentSlackTransport(c, workspaceId),
+      });
+      const pendingGrant = (await store(c).listAgentChannelGrants()).find(
+        (grant) => grant.agentId === agentId && grant.workspaceId === workspaceId &&
+          grant.status !== 'active',
+      );
+      const updated = pendingGrant
+        ? (await reconciler.publish({
+            workspaceId,
+            agentId,
+            channelId: pendingGrant.channelId,
+            actorMembershipId: actor.principal.membershipId,
+            actorSlackUserId: actor.slackUserId,
+          })).agent
+        : await reconciler.retry(agentId);
+      return c.json({
+        agent: await agentAdminProjection(updated, store(c), snapshots(c)),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return agentPresenceFailureResponse(c, agentId, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/archive', async (c) => {
+    const parsed = v.safeParse(archiveAgentSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const agentId = c.req.param('id');
+    try {
+      const actor = await agentActor(c);
+      const current = await store(c).getAgent(agentId);
+      requireAgentEdit(actor.principal, current);
+      if (current.revision !== parsed.output.expectedRevision) {
+        throw new AgentRevisionConflictError(
+          agentId,
+          parsed.output.expectedRevision,
+          current.revision,
+        );
+      }
+      const isWorkspaceDefault = (await store(c).listWorkspaceInstallations()).some(
+        (installation) => installation.defaultAgentId === agentId,
+      );
+      if (isWorkspaceDefault && !parsed.output.replacementDefaultAgentId) {
+        return c.json({ error: 'replacement_default_agent_required' }, 409);
+      }
+      const archiveOptions = parsed.output.replacementDefaultAgentId
+        ? { replacementDefaultAgentId: parsed.output.replacementDefaultAgentId }
+        : {};
+      const updated = current.slackPresence?.userGroupId
+        ? await new AgentPresenceReconciler({
+            config: store(c),
+            transport: await agentSlackTransport(c, actor.slackTeamId),
+          }).archive(agentId, archiveOptions)
+        : await store(c).archiveAgent(agentId, {
+            expectedRevision: current.revision,
+            ...archiveOptions,
+          });
+      return c.json({ agent: await agentAdminProjection(updated, store(c), snapshots(c)) });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof AgentRevisionConflictError) {
+        return c.json({ error: 'agent_revision_conflict' }, 409);
+      }
+      if (error instanceof AgentPresenceError) {
+        return agentPresenceFailureResponse(c, agentId, error);
+      }
+      return c.json({ error: 'replacement_default_agent_required' }, 409);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/restore', async (c) => {
+    const parsed = v.safeParse(restoreAgentSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const agentId = c.req.param('id');
+    try {
+      const actor = await agentActor(c);
+      const current = await store(c).getAgent(agentId);
+      requireAgentEdit(actor.principal, current);
+      if (current.revision !== parsed.output.expectedRevision) {
+        throw new AgentRevisionConflictError(
+          agentId,
+          parsed.output.expectedRevision,
+          current.revision,
+        );
+      }
+      const workspaceId = parsed.output.workspaceId ?? actor.slackTeamId;
+      if (workspaceId !== actor.slackTeamId) throw new AuthorizationError();
+      const updated = current.slackPresence?.userGroupId
+        ? await new AgentPresenceReconciler({
+            config: store(c),
+            transport: await agentSlackTransport(c, workspaceId),
+          }).restore(agentId)
+        : await store(c).restoreAgent(agentId, current.revision);
+      return c.json({ agent: await agentAdminProjection(updated, store(c), snapshots(c)) });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof AgentRevisionConflictError) {
+        return c.json({ error: 'agent_revision_conflict' }, 409);
+      }
+      return agentPresenceFailureResponse(c, agentId, error);
     }
   });
 
@@ -6494,13 +6927,24 @@ function isAdminPageGet(c: Context): boolean {
   );
 }
 
-function permissionForAdminRequest(c: Context, principal: AuthPrincipal): Permission {
-  if ((principal.role as string) === 'member' && isAdminPageGet(c)) return 'admin.configure';
+function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permission {
+  if (isAdminPageGet(c)) return 'agent.create';
   if (c.req.path === '/admin/logout') return 'account.view';
   if (c.req.path === '/admin/team' ||
       (c.req.method === 'GET' && c.req.path === '/admin/api/team')) return 'team.view';
   if (c.req.path.startsWith('/admin/api/team/invitations')) return 'team.invite';
   if (c.req.path.startsWith('/admin/api/team/memberships')) return 'team.manage_members';
+  if (
+    c.req.path === '/admin/api/agents' ||
+    c.req.path.startsWith('/admin/api/agents/') ||
+    (c.req.method === 'GET' && [
+      '/admin/api/assignments',
+      '/admin/api/models',
+      '/admin/api/channels',
+      '/admin/api/slack-connection',
+      '/admin/api/slack-channels',
+    ].includes(c.req.path))
+  ) return 'agent.create';
   return 'admin.configure';
 }
 
@@ -6564,6 +7008,8 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): AgentCreateInp
   return {
     id: input.id,
     name: input.name,
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.editPolicy !== undefined ? { editPolicy: input.editPolicy } : {}),
     instructions: input.instructions,
     enabled: input.enabled,
     ...(input.model !== undefined ? { model: input.model } : {}),
@@ -6722,6 +7168,8 @@ type AgentPatch = Partial<Omit<CustomAgentConfig, 'id' | 'revision' | 'model'>> 
 function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch {
   const patch: AgentPatch = {};
   if (input.name !== undefined) patch.name = input.name;
+  if (input.description !== undefined) patch.description = input.description;
+  if (input.editPolicy !== undefined) patch.editPolicy = input.editPolicy;
   if (input.instructions !== undefined) patch.instructions = input.instructions;
   if (input.enabled !== undefined) patch.enabled = input.enabled;
   if (input.model !== undefined) patch.model = input.model;
@@ -7505,20 +7953,29 @@ async function agentAdminProjection(
     identities: SlackIdentity[];
     references: AgentReferenceSummary;
     channels: ChannelConfig[];
+    grants: AgentChannelGrant[];
     snapshotRoots: Awaited<ReturnType<AgentSnapshotStore['listLiveRootsByAgent']>>;
   },
 ): Promise<object> {
   const projectionData = preloaded ?? await (async () => {
-    const [assignments, identities, references, channels, snapshotRoots] = await Promise.all([
+    const [assignments, identities, references, channels, grants, snapshotRoots] = await Promise.all([
       configStore.listAssignmentsForAgent(agent.id),
       configStore.listSlackIdentitiesForAgent(agent.id),
       configStore.getAgentReferences(agent.id),
       configStore.listChannels(),
+      configStore.listAgentChannelGrants(),
       snapshotStore.listLiveRootsByAgent(agent.id),
     ]);
-    return { assignments, identities, references, channels, snapshotRoots };
+    return {
+      assignments,
+      identities,
+      references,
+      channels,
+      grants: grants.filter((grant) => grant.agentId === agent.id),
+      snapshotRoots,
+    };
   })();
-  const { assignments, identities, references, channels, snapshotRoots } = projectionData;
+  const { assignments, identities, references, channels, grants, snapshotRoots } = projectionData;
   const channelsByKey = new Map(
     channels.map((channel) => [
       `${channel.workspaceId}\u0000${channel.channelId}`,
@@ -7530,6 +7987,16 @@ async function agentAdminProjection(
     identities.find((identity) => identity.teamId)?.teamId;
   return {
     ...agent,
+    slackPresenceRecovery: agent.slackPresence?.health === 'needs_attention' &&
+        agent.slackPresence.errorCode
+      ? agentPresenceRecovery(
+          {
+            code: agent.slackPresence.errorCode as AgentPresenceError['code'],
+            message: agent.slackPresence.errorDetail ?? 'Slack could not finish the change.',
+          },
+          agent.slackPresence.normalizedHandle,
+        )
+      : null,
     tabs: ['instructions', 'skills', 'connectors', 'repositories', 'memory'],
     capabilityPreviews: {
       skills: agent.skills.map(({ name, description, enabled }) => ({ name, description, enabled })),
@@ -7572,7 +8039,15 @@ async function agentAdminProjection(
         : null;
     })(),
     whereItWorks: {
-      channels: assignments.map((assignment) => {
+      channels: grants.map((grant) => ({
+        workspaceId: grant.workspaceId,
+        channelId: grant.channelId,
+        channelName: grant.channelLabel ?? grant.channelId,
+        status: grant.status,
+        channelIsPrivate: grant.channelIsPrivate ?? null,
+        href: `/admin/channels/${encodeURIComponent(grant.workspaceId)}/${encodeURIComponent(grant.channelId)}`,
+      })),
+      legacyChannels: assignments.map((assignment) => {
         const channel = channelsByKey.get(
           `${assignment.workspaceId}\u0000${assignment.channelId}`,
         );
