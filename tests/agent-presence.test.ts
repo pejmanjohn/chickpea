@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { PhotonImage } from '@cf-wasm/photon';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
@@ -188,7 +189,7 @@ test('uploaded avatars create immutable revisions while generated avatars vary b
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
-    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+    const png = pngWithTextMetadata();
     const firstUrl = agentAvatarUrl('https://chickpea.example', 'agent_support', 1);
     const updated = await uploadAgentAvatar({
       config, settings, agentId: 'agent_support', bytes: png,
@@ -198,10 +199,12 @@ test('uploaded avatars create immutable revisions while generated avatars vary b
     assert.equal(updated.slackPresence?.avatar.url,
       'https://chickpea.example/assets/agents/agent_support/avatar/2');
     assert.equal(firstUrl, 'https://chickpea.example/assets/agents/agent_support/avatar/1');
-    assert.deepEqual(
-      (await readAgentAvatarAsset({ settings, agentId: 'agent_support', revision: 2 }))?.bytes,
-      png,
-    );
+    const stored = await readAgentAvatarAsset({
+      settings, agentId: 'agent_support', revision: 2,
+    });
+    assert.equal(stored?.contentType, 'image/png');
+    assert.notDeepEqual(stored?.bytes, png);
+    assert.doesNotMatch(new TextDecoder().decode(stored?.bytes), /private-location/);
     assert.notEqual(generatedAgentAvatarSvg('agent-a'), generatedAgentAvatarSvg('agent-b'));
   } finally {
     config.close();
@@ -214,7 +217,7 @@ test('uploaded avatars can publish through shared gateway storage before saving 
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
-    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+    const png = pngWithTextMetadata();
     const published: unknown[] = [];
     const updated = await uploadAgentAvatar({
       config, settings, agentId: 'agent_support', bytes: png,
@@ -224,20 +227,97 @@ test('uploaded avatars can publish through shared gateway storage before saving 
         return 'https://gateway.chickpea.test/avatars/binding/agent_support/rev_2.png';
       },
     });
-    assert.deepEqual(published, [{
-      agentId: 'agent_support', revision: 2, contentType: 'image/png', bytes: png,
-    }]);
+    assert.equal(published.length, 1);
+    const publication = published[0] as {
+      agentId: string;
+      revision: number;
+      contentType: string;
+      bytes: Uint8Array;
+    };
+    assert.equal(publication.agentId, 'agent_support');
+    assert.equal(publication.revision, 2);
+    assert.equal(publication.contentType, 'image/png');
+    assert.notDeepEqual(publication.bytes, png);
+    assert.doesNotMatch(new TextDecoder().decode(publication.bytes), /private-location/);
     assert.equal(updated.slackPresence?.avatar.url,
       'https://gateway.chickpea.test/avatars/binding/agent_support/rev_2.png');
     assert.deepEqual(
       (await readAgentAvatarAsset({ settings, agentId: 'agent_support', revision: 2 }))?.bytes,
-      png,
+      publication.bytes,
     );
   } finally {
     config.close();
     settings.close?.();
   }
 });
+
+test('avatar upload rejects raster signatures that do not decode', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    await assert.rejects(
+      () => uploadAgentAvatar({
+        config,
+        settings,
+        agentId: 'agent_support',
+        bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]),
+        contentType: 'image/png',
+        publicOrigin: 'https://chickpea.example',
+      }),
+      (error: unknown) => error instanceof Error && error.message === 'invalid_image',
+    );
+  } finally {
+    config.close();
+    settings.close?.();
+  }
+});
+
+function pngWithTextMetadata(): Uint8Array {
+  const image = new PhotonImage(Uint8Array.from([24, 92, 61, 255]), 1, 1);
+  const png = Uint8Array.from(image.get_bytes());
+  image.free();
+  const marker = Uint8Array.from([0x49, 0x45, 0x4e, 0x44]);
+  const iendType = findBytes(png, marker);
+  assert.ok(iendType >= 4);
+  const chunkStart = iendType - 4;
+  const payload = new TextEncoder().encode('location\0private-location');
+  const type = new TextEncoder().encode('tEXt');
+  const chunk = new Uint8Array(12 + payload.length);
+  new DataView(chunk.buffer).setUint32(0, payload.length);
+  chunk.set(type, 4);
+  chunk.set(payload, 8);
+  new DataView(chunk.buffer).setUint32(8 + payload.length, crc32(concat(type, payload)));
+  return concat(png.subarray(0, chunkStart), chunk, png.subarray(chunkStart));
+}
+
+function findBytes(value: Uint8Array, needle: Uint8Array): number {
+  for (let offset = 0; offset <= value.length - needle.length; offset += 1) {
+    if (needle.every((byte, index) => value[offset + index] === byte)) return offset;
+  }
+  return -1;
+}
+
+function concat(...values: Uint8Array[]): Uint8Array {
+  const output = new Uint8Array(values.reduce((sum, value) => sum + value.length, 0));
+  let offset = 0;
+  for (const value of values) {
+    output.set(value, offset);
+    offset += value.length;
+  }
+  return output;
+}
+
+function crc32(value: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of value) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
 
 function agent(id: string, name: string, handle: string): CustomAgentConfig {
   return {

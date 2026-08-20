@@ -1,11 +1,17 @@
+import { PhotonImage, SamplingFilter, resize } from '@cf-wasm/photon';
+
 import type { SettingsStore } from '../../config/settings-store.ts';
 import type { ConfigStore } from '../../config/store.ts';
 import type { CustomAgentConfig } from '../../config/types.ts';
 
 export const MAX_AGENT_AVATAR_BYTES = 512 * 1_024;
+export const MAX_AGENT_AVATAR_SOURCE_DIMENSION = 4_096;
+export const MAX_AGENT_AVATAR_SOURCE_PIXELS = 16_777_216;
+export const NORMALIZED_AGENT_AVATAR_DIMENSION = 512;
+const MAX_NORMALIZED_AGENT_AVATAR_BYTES = 2 * 1_024 * 1_024;
 
 interface StoredAvatarAsset {
-  contentType: 'image/png' | 'image/jpeg' | 'image/webp';
+  contentType: 'image/png';
   base64: string;
 }
 
@@ -47,15 +53,23 @@ export async function uploadAgentAvatar(input: {
     bytes: Uint8Array;
   }) => Promise<string>;
 }): Promise<CustomAgentConfig> {
-  const contentType = validateRaster(input.bytes, input.contentType);
+  const normalized = normalizeRaster(input.bytes, input.contentType);
   const agent = await input.config.getAgent(input.agentId);
   const revision = (agent.slackPresence?.avatar.revision ?? 0) + 1;
   await input.settings.setSetting(
     avatarAssetKey(input.agentId, revision),
-    JSON.stringify({ contentType, base64: bytesToBase64(input.bytes) } satisfies StoredAvatarAsset),
+    JSON.stringify({
+      contentType: normalized.contentType,
+      base64: bytesToBase64(normalized.bytes),
+    } satisfies StoredAvatarAsset),
   );
   const url = input.publish
-    ? await input.publish({ agentId: input.agentId, revision, contentType, bytes: input.bytes })
+    ? await input.publish({
+        agentId: input.agentId,
+        revision,
+        contentType: normalized.contentType,
+        bytes: normalized.bytes,
+      })
     : agentAvatarUrl(input.publicOrigin, input.agentId, revision);
   return input.config.updateAgent(
     input.agentId,
@@ -80,7 +94,7 @@ export async function readAgentAvatarAsset(input: {
       const parsed = JSON.parse(stored) as Partial<StoredAvatarAsset>;
       if (
         typeof parsed.base64 === 'string' &&
-        ['image/png', 'image/jpeg', 'image/webp'].includes(parsed.contentType ?? '')
+        parsed.contentType === 'image/png'
       ) {
         return { contentType: parsed.contentType!, bytes: base64ToBytes(parsed.base64) };
       }
@@ -105,7 +119,10 @@ function requiredPresence(agent: CustomAgentConfig) {
   return agent.slackPresence;
 }
 
-function validateRaster(bytes: Uint8Array, declared: string): StoredAvatarAsset['contentType'] {
+export function normalizeRaster(
+  bytes: Uint8Array,
+  declared: string,
+): { contentType: StoredAvatarAsset['contentType']; bytes: Uint8Array } {
   if (bytes.byteLength === 0) throw new AgentAvatarError('invalid_image');
   if (bytes.byteLength > MAX_AGENT_AVATAR_BYTES) throw new AgentAvatarError('too_large');
   const normalized = declared.split(';', 1)[0]?.trim().toLowerCase();
@@ -115,7 +132,115 @@ function validateRaster(bytes: Uint8Array, declared: string): StoredAvatarAsset[
     : undefined;
   if (!detected) throw new AgentAvatarError('invalid_image');
   if (normalized && normalized !== detected) throw new AgentAvatarError('unsupported_type');
-  return detected;
+  const dimensions = rasterDimensions(bytes, detected);
+  if (!dimensions) throw new AgentAvatarError('invalid_image');
+  if (dimensions.width > MAX_AGENT_AVATAR_SOURCE_DIMENSION ||
+      dimensions.height > MAX_AGENT_AVATAR_SOURCE_DIMENSION ||
+      dimensions.width * dimensions.height > MAX_AGENT_AVATAR_SOURCE_PIXELS) {
+    throw new AgentAvatarError('too_large');
+  }
+
+  let decoded: PhotonImage | undefined;
+  let output: PhotonImage | undefined;
+  try {
+    decoded = PhotonImage.new_from_byteslice(bytes);
+    const width = decoded.get_width();
+    const height = decoded.get_height();
+    if (width !== dimensions.width || height !== dimensions.height || width <= 0 || height <= 0) {
+      throw new AgentAvatarError('invalid_image');
+    }
+    const scale = Math.min(1, NORMALIZED_AGENT_AVATAR_DIMENSION / Math.max(width, height));
+    output = scale < 1
+      ? resize(
+          decoded,
+          Math.max(1, Math.round(width * scale)),
+          Math.max(1, Math.round(height * scale)),
+          SamplingFilter.Lanczos3,
+        )
+      : decoded;
+    const normalizedBytes = Uint8Array.from(output.get_bytes());
+    if (normalizedBytes.byteLength === 0 ||
+        normalizedBytes.byteLength > MAX_NORMALIZED_AGENT_AVATAR_BYTES) {
+      throw new AgentAvatarError('too_large');
+    }
+    return { contentType: 'image/png', bytes: normalizedBytes };
+  } catch (error) {
+    if (error instanceof AgentAvatarError) throw error;
+    throw new AgentAvatarError('invalid_image');
+  } finally {
+    if (output && output !== decoded) output.free();
+    decoded?.free();
+  }
+}
+
+function rasterDimensions(
+  bytes: Uint8Array,
+  contentType: 'image/png' | 'image/jpeg' | 'image/webp',
+): { width: number; height: number } | undefined {
+  if (contentType === 'image/png') {
+    if (bytes.length < 24 || text(bytes, 12, 16) !== 'IHDR') return undefined;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return boundedDimensions(view.getUint32(16), view.getUint32(20));
+  }
+  if (contentType === 'image/jpeg') return jpegDimensions(bytes);
+  return webpDimensions(bytes);
+}
+
+function jpegDimensions(bytes: Uint8Array): { width: number; height: number } | undefined {
+  let offset = 2;
+  while (offset + 4 <= bytes.length) {
+    if (bytes[offset] !== 0xff) return undefined;
+    while (bytes[offset] === 0xff) offset += 1;
+    const marker = bytes[offset++];
+    if (marker === undefined || marker === 0xd9 || marker === 0xda) return undefined;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 2 > bytes.length) return undefined;
+    const length = (bytes[offset]! << 8) | bytes[offset + 1]!;
+    if (length < 2 || offset + length > bytes.length) return undefined;
+    if (isJpegStartOfFrame(marker)) {
+      if (length < 7) return undefined;
+      return boundedDimensions(
+        (bytes[offset + 5]! << 8) | bytes[offset + 6]!,
+        (bytes[offset + 3]! << 8) | bytes[offset + 4]!,
+      );
+    }
+    offset += length;
+  }
+  return undefined;
+}
+
+function isJpegStartOfFrame(marker: number): boolean {
+  return marker >= 0xc0 && marker <= 0xcf &&
+    ![0xc4, 0xc8, 0xcc].includes(marker);
+}
+
+function webpDimensions(bytes: Uint8Array): { width: number; height: number } | undefined {
+  if (bytes.length < 30) return undefined;
+  const chunk = text(bytes, 12, 16);
+  if (chunk === 'VP8X') {
+    return boundedDimensions(readUint24(bytes, 24) + 1, readUint24(bytes, 27) + 1);
+  }
+  if (chunk === 'VP8 ' && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) {
+    return boundedDimensions(
+      ((bytes[27]! << 8) | bytes[26]!) & 0x3fff,
+      ((bytes[29]! << 8) | bytes[28]!) & 0x3fff,
+    );
+  }
+  if (chunk === 'VP8L' && bytes[20] === 0x2f) {
+    const bits = bytes[21]! | (bytes[22]! << 8) | (bytes[23]! << 16) | (bytes[24]! << 24);
+    return boundedDimensions((bits & 0x3fff) + 1, ((bits >>> 14) & 0x3fff) + 1);
+  }
+  return undefined;
+}
+
+function readUint24(bytes: Uint8Array, offset: number): number {
+  return bytes[offset]! | (bytes[offset + 1]! << 8) | (bytes[offset + 2]! << 16);
+}
+
+function boundedDimensions(width: number, height: number) {
+  return Number.isSafeInteger(width) && Number.isSafeInteger(height) && width > 0 && height > 0
+    ? { width, height }
+    : undefined;
 }
 
 function isPng(bytes: Uint8Array): boolean {
