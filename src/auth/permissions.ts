@@ -5,7 +5,6 @@ export type Permission =
   | 'account.view'
   | 'admin.configure'
   | 'team.view'
-  | 'team.invite'
   | 'team.manage_members'
   | 'team.manage_owners'
   | 'auth.manage'
@@ -29,7 +28,6 @@ const ADMIN = new Set<Permission>([
 ]);
 const OWNER = new Set<Permission>([
   ...ADMIN,
-  'team.invite',
   'team.manage_members',
   'team.manage_owners',
   'auth.manage',

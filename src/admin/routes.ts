@@ -3281,11 +3281,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.route('/admin/api', createTeamAdminApi({
     store: identity,
-    resolveCredentials: (c) => resolveSlackIdentityCredentials(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      c.env as PlatformEnv | undefined,
-      slackCredentialResolutionDependencies(c),
-    ),
     revokeBetterAuthSessions: async (c, betterAuthUserId) => {
       const context = await betterAuthContext(c);
       return context?.environment.backend.deleteSessionsForUser(betterAuthUserId) ?? 0;
@@ -7775,7 +7770,6 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
   if (c.req.path === '/admin/logout') return 'account.view';
   if (c.req.path === '/admin/team' ||
       (c.req.method === 'GET' && c.req.path === '/admin/api/team')) return 'team.view';
-  if (c.req.path.startsWith('/admin/api/team/invitations')) return 'team.invite';
   if (c.req.path.startsWith('/admin/api/team/memberships')) return 'team.manage_members';
   if (c.req.path.startsWith('/admin/api/connections/')) return 'connection.create_team';
   if (
