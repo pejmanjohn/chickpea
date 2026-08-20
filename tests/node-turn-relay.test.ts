@@ -601,6 +601,7 @@ function identityContext(
 ): SlackIdentityExecutionContext {
   return {
     identityId,
+    transportMode: 'direct',
     botToken: `token-for-${identityId}`,
     botUserId: `U_${identityId}`,
     teamId: 'T_node',

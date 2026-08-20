@@ -37,6 +37,10 @@
 			{
 				"name": "TAG_STATE",
 				"class_name": "TagStateStore"
+			},
+			{
+				"name": "SLACK_GATEWAY_SESSION",
+				"class_name": "SlackGatewaySession"
 			}
 		]
 	},
@@ -110,6 +114,12 @@
 			"tag": "v8",
 			"deleted_classes": [
 				"AuthGuard"
+			]
+		},
+		{
+			"tag": "v9",
+			"new_sqlite_classes": [
+				"SlackGatewaySession"
 			]
 		}
 	]

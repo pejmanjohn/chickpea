@@ -369,6 +369,7 @@ test('runTurn fails closed before provider or Slack when trusted owner binding c
     };
     await runTurn(turn, { ...runtimeAssignment, channelId: 'D_RUNTIME' }, undefined, {
       identityContext: {
+        transportMode: 'direct',
         identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
         botToken: 'xoxb-owner-binding-fence', botUserId: 'UBOT', teamId: 'T_RUNTIME', client,
       },
@@ -427,6 +428,7 @@ test('runTurn sends authorized Agent memory to the actual provider input without
     const assignment = { ...runtimeAssignment, channelId: 'D_RUNTIME' };
     await runTurn(turn, assignment, undefined, {
       identityContext: {
+        transportMode: 'direct',
         identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
         botToken: 'xoxb-provider-test', botUserId: 'UBOT', teamId: 'T_RUNTIME', client,
       },
@@ -494,6 +496,7 @@ test('runTurn emits no provider call or Slack final when the owner lease is stal
     };
     await runTurn(turn, { ...runtimeAssignment, channelId: 'D_RUNTIME' }, undefined, {
       identityContext: {
+        transportMode: 'direct',
         identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
         botToken: 'xoxb-provider-fence', botUserId: 'UBOT', teamId: 'T_RUNTIME', client,
       },

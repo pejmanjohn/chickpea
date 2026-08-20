@@ -341,6 +341,7 @@ test('runTurn resolves the authenticated self-mention placeholder before Slack d
 
   await runTurn(turn, assignment, undefined, {
     identityContext: {
+      transportMode: 'direct',
       identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
       botToken: 'xoxb-test',
       botUserId: 'U_CHICKPEA',

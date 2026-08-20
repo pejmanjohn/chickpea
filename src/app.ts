@@ -18,6 +18,7 @@ import {
 } from './memory/tool-policy.ts';
 import { publishActivityStatus } from './slack/activity-publisher.ts';
 import { startNodeTurnRelay } from './slack/node-turn-relay.ts';
+import { startNodeGatewaySession } from './slack/gateway/node-runtime.ts';
 import { workModelInvocationInterceptor } from './work/model-invocation.ts';
 import {
   observeResponseMetadata,
@@ -103,6 +104,7 @@ app.use('*', async (c, next) => {
 // and ledger-authoritative interactive Runs. Ledger admission stays default-off
 // and exact-channel scoped by SLACK_TAG_LEDGER_CANARY_CHANNELS.
 startNodeTurnRelay();
+startNodeGatewaySession();
 app.route('/', createBetterAuthRuntimeRoutes());
 app.route('/', createMcpOAuthRuntimeRoutes());
 app.route('/', createManagementSetupRoutes());

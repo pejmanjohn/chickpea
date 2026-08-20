@@ -1,8 +1,9 @@
 import type { WebClient } from '@slack/web-api';
 
 import type { SettingsStore } from '../config/settings-store.ts';
+import type { WorkspaceInstallation } from '../config/types.ts';
 import { UnknownSlackIdentityError } from '../config/errors.ts';
-import { getConfigStore, type PlatformEnv } from '../config/state-backend.ts';
+import { getConfigStore, getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import {
   WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type SlackIdentity,
@@ -18,6 +19,10 @@ import {
   type SlackCredentialResolutionDependencies,
 } from './identity-credentials.ts';
 import { createSlackWebClient } from './web-client.ts';
+import { GatewayDeploymentClient } from './gateway/client.ts';
+import { loadCredentialKeyring } from './credential-keyring.ts';
+import { resolveChickpeaGatewayUrl } from './gateway/runtime.ts';
+import { createGatewaySlackWebClient } from './gateway/web-client.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import { isDirectSlackTurn } from './work-admission.ts';
 
@@ -25,6 +30,9 @@ type MaybePromise<T> = T | Promise<T>;
 
 export interface SlackIdentityPolicyReader {
   getSlackIdentity(identityId: string): MaybePromise<SlackIdentity>;
+  getWorkspaceInstallation?(
+    workspaceId: string,
+  ): MaybePromise<WorkspaceInstallation | undefined>;
   updateSlackIdentity?(
     identityId: string,
     expectedRevision: number,
@@ -38,7 +46,9 @@ export interface SlackIdentityPolicyReader {
 
 export interface SlackIdentityExecutionContext {
   identityId: string;
-  botToken: string;
+  transportMode: 'direct' | 'gateway';
+  /** Present only for a customer-owned direct Slack app. */
+  botToken?: string;
   botUserId: string;
   teamId: string;
   /** Cached presentation label only; botUserId remains the mention authority. */
@@ -110,6 +120,7 @@ export async function resolveSlackIdentityExecutionContext(
     config?: SlackIdentityPolicyReader;
     settings?: SettingsStore;
     credentialDependencies?: SlackCredentialResolutionDependencies;
+    gatewayClient?: GatewayDeploymentClient;
     now?: () => number;
   } = {},
 ): Promise<SlackIdentityExecutionContext> {
@@ -140,6 +151,18 @@ export async function resolveSlackIdentityExecutionContext(
     )
   ) {
     throw new SlackIdentityUnavailableError(identityId, `identity_${identity.health}`);
+  }
+
+  const installation = identityId === WORKSPACE_DEFAULT_SLACK_IDENTITY_ID &&
+      config.getWorkspaceInstallation && identity.teamId
+    ? await config.getWorkspaceInstallation(identity.teamId)
+    : undefined;
+  if (installation?.transportMode === 'gateway') {
+    return resolveGatewayExecutionContext(identity, installation, env, {
+      config,
+      ...(options.settings ? { settings: options.settings } : {}),
+      ...(options.gatewayClient ? { gatewayClient: options.gatewayClient } : {}),
+    });
   }
 
   let credentials: Awaited<ReturnType<typeof resolveSlackIdentityCredentials>>;
@@ -216,6 +239,7 @@ export async function resolveSlackIdentityExecutionContext(
   }
   return {
     identityId,
+    transportMode: 'direct',
     botToken: credentials.botToken,
     botUserId: auth.botUserId,
     teamId: auth.teamId,
@@ -234,15 +258,15 @@ export async function verifySlackIdentityTurnAccess(
     throw new SlackIdentityUnavailableError(context.identityId, 'workspace_mismatch');
   }
   if (isDirectSlackTurn(turn)) return;
-  const conversation = await slackConversationsInfo(context.botToken, turn.channelId);
-  if (
-    !conversation.ok ||
-    !conversation.facts ||
-    conversation.facts.id !== turn.channelId ||
-    (conversation.facts.teamId !== undefined &&
-      conversation.facts.teamId !== turn.workspaceId) ||
-    !conversation.facts.member
-  ) {
+  if (context.transportMode === 'direct' && context.botToken) {
+    const conversation = await slackConversationsInfo(context.botToken, turn.channelId);
+    if (
+      conversation.ok &&
+      conversation.facts &&
+      conversation.facts.id === turn.channelId &&
+      (conversation.facts.teamId === undefined || conversation.facts.teamId === turn.workspaceId) &&
+      conversation.facts.member
+    ) return;
     throw new SlackIdentityUnavailableError(
       context.identityId,
       conversation.error ?? 'not_in_channel',
@@ -251,6 +275,64 @@ export async function verifySlackIdentityTurnAccess(
         : { retryAfterMs: conversation.retryAfterMs },
     );
   }
+  try {
+    const result = await context.client.conversations.info({ channel: turn.channelId });
+    const channel = result.channel as Record<string, unknown> | undefined;
+    if (!result.ok || !channel || channel.id !== turn.channelId || channel.is_member !== true) {
+      throw new SlackIdentityUnavailableError(context.identityId, 'not_in_channel');
+    }
+  } catch (error) {
+    if (error instanceof SlackIdentityUnavailableError) throw error;
+    throw normalizeSlackIdentityExecutionError(error, context.identityId);
+  }
+}
+
+async function resolveGatewayExecutionContext(
+  identity: SlackIdentity,
+  installation: WorkspaceInstallation,
+  env: PlatformEnv | undefined,
+  options: {
+    config: SlackIdentityPolicyReader;
+    settings?: SettingsStore;
+    gatewayClient?: GatewayDeploymentClient;
+  },
+): Promise<SlackIdentityExecutionContext> {
+  const settings = options.settings ?? getSettingsStore(env);
+  const gateway = options.gatewayClient ?? new GatewayDeploymentClient({
+    settings,
+    config: options.config as import('../config/store.ts').ConfigStore,
+    keyring: loadCredentialKeyring(env),
+    gatewayBaseUrl: resolveChickpeaGatewayUrl(env),
+  });
+  const binding = await gateway.loadBinding();
+  if (!binding || binding.workspaceId !== installation.workspaceId ||
+      binding.bindingId !== installation.gatewayBindingId) {
+    throw new SlackIdentityUnavailableError(identity.id, 'gateway_binding_missing', {
+      retryable: true,
+    });
+  }
+  const client = createGatewaySlackWebClient(gateway);
+  let auth: Awaited<ReturnType<typeof client.auth.test>>;
+  try {
+    auth = await client.auth.test();
+  } catch {
+    throw new SlackIdentityUnavailableError(identity.id, 'gateway_unreachable', {
+      retryable: true,
+    });
+  }
+  const botUserId = typeof auth.user_id === 'string' ? auth.user_id : binding.botUserId;
+  const teamId = typeof auth.team_id === 'string' ? auth.team_id : binding.workspaceId;
+  if (teamId !== installation.workspaceId || botUserId !== installation.botUserId) {
+    throw new SlackIdentityUnavailableError(identity.id, 'gateway_binding_mismatch');
+  }
+  return {
+    identityId: identity.id,
+    transportMode: 'gateway',
+    botUserId,
+    teamId,
+    ...(identity.observedDisplayName ? { displayName: identity.observedDisplayName } : {}),
+    client,
+  };
 }
 
 export function effectiveTurnSlackIdentityId(turn: NormalizedSlackTurn): string {

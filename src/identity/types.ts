@@ -396,6 +396,15 @@ export interface MarkSlackSetupApprovalPendingInput extends SlackSetupTransition
   appId: string;
 }
 
+export interface RecordSharedSlackInstallationInput extends SlackSetupTransitionInput {
+  appId: string;
+  clientId: string;
+  bindingId: string;
+  slackTeamId: string;
+  installerSlackUserId: string;
+  botUserId: string;
+}
+
 export type SlackOAuthAttemptKind = 'slack_bot_install';
 export type SlackOAuthAttemptPurpose = 'setup_bot_install';
 export type SlackOAuthAttemptStatus =
@@ -912,6 +921,9 @@ export interface IdentityStore extends HumanIdentityDirectory {
   restartSlackAppCreation(input: SlackSetupTransitionInput): Promise<SlackSetupTransaction>;
   markSlackSetupApprovalPending(input: MarkSlackSetupApprovalPendingInput): Promise<SlackSetupTransaction>;
   resumeSlackSetupAfterApproval(input: SlackSetupTransitionInput): Promise<SlackSetupTransaction>;
+  recordSharedSlackInstallation(
+    input: RecordSharedSlackInstallationInput,
+  ): Promise<SlackSetupTransaction>;
   createSlackOAuthAttempt(input: CreateSlackOAuthAttemptInput): Promise<SlackOAuthAttempt>;
   getSlackOAuthAttempt(attemptId: string): Promise<SlackOAuthAttempt | undefined>;
   acquireSlackOAuthAttempt(input: AcquireSlackOAuthAttemptInput): Promise<SlackOAuthAttempt>;
@@ -1015,6 +1027,7 @@ export type IdentityRpcRequest =
   | { kind: 'restart_slack_app_creation'; input: SlackSetupTransitionInput }
   | { kind: 'mark_slack_setup_approval_pending'; input: MarkSlackSetupApprovalPendingInput }
   | { kind: 'resume_slack_setup_after_approval'; input: SlackSetupTransitionInput }
+  | { kind: 'record_shared_slack_installation'; input: RecordSharedSlackInstallationInput }
   | { kind: 'create_slack_oauth_attempt'; input: CreateSlackOAuthAttemptInput }
   | { kind: 'get_slack_oauth_attempt'; attemptId: string }
   | { kind: 'acquire_slack_oauth_attempt'; input: AcquireSlackOAuthAttemptInput }

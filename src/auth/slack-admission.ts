@@ -22,6 +22,7 @@ import type { BetterAuthEnvironment } from './better-auth-environment.ts';
 import {
   SlackOidcError,
   SlackOidcGateway,
+  type SlackOidcProvider,
   type SlackOidcGatewayDependencies,
 } from './slack-oidc.ts';
 import type { SlackUserFacts } from '../slack/credentials.ts';
@@ -34,7 +35,13 @@ export interface SlackAdmissionDependencies {
   identity: IdentityStore;
   credentials: SlackCredentialDependencies;
   environment: BetterAuthEnvironment;
-  gateway?: SlackOidcGateway;
+  gateway?: SlackOidcProvider;
+  credentialProvider?: () => Promise<{
+    appId: string;
+    clientId: string;
+    teamId: string;
+    connectionRevision: string;
+  }>;
   fetch?: typeof fetch;
   slackApiBaseUrl?: string;
   jwks?: SlackOidcGatewayDependencies['jwks'];
@@ -83,7 +90,7 @@ export async function provisionSlackInteractionMember(input: {
 export class SlackAdmissionService {
   private readonly now: () => number;
   private readonly randomBytes: (length: number) => Uint8Array;
-  private readonly gateway: SlackOidcGateway;
+  private readonly gateway: SlackOidcProvider;
 
   constructor(private readonly dependencies: SlackAdmissionDependencies) {
     this.now = dependencies.now ?? Date.now;
@@ -420,7 +427,7 @@ export class SlackAdmissionService {
       state,
       nonce,
       expiresAt: input.expiresAt,
-      authorizationUrl: this.gateway.authorizationUrl({
+      authorizationUrl: await this.gateway.authorizationUrl({
         clientId: input.clientId,
         redirectUri: input.redirectUri,
         state,
@@ -690,6 +697,9 @@ export class SlackAdmissionService {
 
   private async requiredCredentials() {
     try {
+      if (this.dependencies.credentialProvider) {
+        return await this.dependencies.credentialProvider();
+      }
       const credentials = await resolveSlackControlPlaneAppCredentials(
         this.dependencies.credentials,
         WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,

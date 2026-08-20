@@ -59,6 +59,21 @@ export interface SlackOidcProof {
   contactEmail?: string;
 }
 
+export interface SlackOidcProvider {
+  authorizationUrl(input: {
+    clientId: string;
+    redirectUri: string;
+    state: string;
+    nonce: string;
+    teamId: string;
+  }): string | Promise<string>;
+  exchangeAndVerify(input: {
+    attempt: SlackOidcAttempt;
+    code: string;
+    nonce: string;
+  }): Promise<SlackOidcProof>;
+}
+
 export interface SlackOidcGatewayDependencies {
   credentials: SlackCredentialDependencies;
   fetch?: typeof fetch;
@@ -68,7 +83,7 @@ export interface SlackOidcGatewayDependencies {
   now?: () => number;
 }
 
-export class SlackOidcGateway {
+export class SlackOidcGateway implements SlackOidcProvider {
   private readonly fetch: typeof fetch;
   private readonly jwks: JWTVerifyGetKey;
   private readonly now: () => number;

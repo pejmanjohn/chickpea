@@ -141,7 +141,7 @@ import {
 import {
   isAuthorizedAgentMemoryMember,
 } from '../memory/runtime.ts';
-import { createMemoryScopeSlack, verifyMemoryMutationMembership } from '../memory/scope.ts';
+import { createMemoryScopeSlackFromWebClient, verifyMemoryMutationMembership } from '../memory/scope.ts';
 import { parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
 import { resolveSlackIdentityExecutionContext } from '../slack/identity-execution.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
@@ -1127,7 +1127,7 @@ async function saveRuntimePlanAutonomousMemory(
       return verifyMemoryMutationMembership(
         plan.conversation.channelId,
         slackUserId,
-        createMemoryScopeSlack(execution.botToken, plan.conversation.workspaceId),
+        createMemoryScopeSlackFromWebClient(execution.client, plan.conversation.workspaceId),
       );
     },
   });

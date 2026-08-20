@@ -345,6 +345,14 @@ import {
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
+import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
+import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
+import {
+  GATEWAY_BINDING_SETTING,
+  GATEWAY_CLAIM_SETTING,
+} from '../slack/gateway/client.ts';
+import { startNodeGatewaySession } from '../slack/gateway/node-runtime.ts';
+import { GatewaySlackOidcProvider } from '../auth/gateway-slack-oidc.ts';
 import type { SlackTransport } from '../slack/transport/types.ts';
 import { slackIdentityPendingEnvelopeSettingKey } from '../slack/identity-handshake.ts';
 import {
@@ -1291,6 +1299,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     );
     if (!environment || environment.baseURL !== requestOrigin(c)) return undefined;
     const apiBaseUrl = slackApiBaseUrl(c);
+    const gatewayInstallation = (await store(c).listWorkspaceInstallations()).find(
+      (installation) => installation.transportMode === 'gateway',
+    );
+    const gatewayClient = gatewayInstallation
+      ? createGatewayDeploymentClient(c.env as PlatformEnv | undefined)
+      : undefined;
+    const gatewayBinding = gatewayClient ? await gatewayClient.loadBinding() : undefined;
     return {
       service: new SlackAdmissionService({
         identity: identityStore,
@@ -1299,6 +1314,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         onFirstOwnerActivated: async () => {
           await beginOnboardingJourney(settings(c));
         },
+        ...(gatewayClient && gatewayBinding
+          ? {
+              gateway: new GatewaySlackOidcProvider(gatewayClient),
+              credentialProvider: async () => ({
+                appId: gatewayBinding.appId,
+                clientId: gatewayBinding.clientId,
+                teamId: gatewayBinding.workspaceId,
+                connectionRevision: gatewayBinding.bindingId,
+              }),
+            }
+          : {}),
         ...(apiBaseUrl ? { slackApiBaseUrl: apiBaseUrl } : {}),
       }),
       limiterSecret: environment.secret,
@@ -1345,10 +1371,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         'Connect Chickpea to this Slack workspace before publishing an Agent.',
       );
     }
-    if (installation.transportMode !== 'direct') {
-      throw new AgentPresenceError(
-        'slack_operation_failed',
-        'This Slack gateway installation is not available in this deployment yet.',
+    if (installation.transportMode === 'gateway') {
+      return createGatewaySlackTransport(
+        createGatewayDeploymentClient(c.env as PlatformEnv | undefined),
       );
     }
     const credentials = await resolveSlackIdentityCredentials(
@@ -2289,11 +2314,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c.header('Cache-Control', 'no-store');
     c.header('Referrer-Policy', 'no-referrer');
     const installStatus = safeSlackInstallStatus(c.req.query('slack_install'));
+    let gatewayState: 'disconnected' | 'pending' | 'connected' | 'error' = 'disconnected';
+    try {
+      if (await settings(c).getSetting(GATEWAY_BINDING_SETTING)) {
+        gatewayState = 'connected';
+      } else if (await settings(c).getSetting(GATEWAY_CLAIM_SETTING)) {
+        if (c.req.query('gateway_return') === '1') {
+          const result = await createGatewayDeploymentClient(
+            c.env as PlatformEnv | undefined,
+          ).refreshClaim();
+          gatewayState = result.state === 'bound' ? 'connected' : 'pending';
+          if (gatewayState === 'connected') {
+            startNodeGatewaySession(c.env as PlatformEnv | undefined);
+          }
+        } else {
+          gatewayState = 'pending';
+        }
+      }
+    } catch {
+      gatewayState = 'error';
+    }
     const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
     return c.html(renderSlackSetupPage({
       destination: safeSetupDestination(c.req.query('destination') ?? '/admin/onboarding'),
       manifest,
       autoResume: true,
+      gatewayState,
       ...(installStatus ? { notice: installStatus } : {}),
     }));
   });
@@ -2336,7 +2382,26 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(options.slackAppCreationNow ? { now: options.slackAppCreationNow } : {}),
       });
       const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
-      if (action === 'create') {
+      if (action === 'gateway_begin') {
+        const claim = await createGatewayDeploymentClient(
+          c.env as PlatformEnv | undefined,
+        ).beginClaim(
+          `${requestOrigin(c)}/admin/setup?gateway_return=1`,
+          { setupId: setup.id, setupRevision: setup.revision },
+        );
+        await Promise.all([
+          limiter.recordSuccess('slack_setup_source', source),
+          limiter.recordSuccess(`slack_setup_operation_${action}`, setup.id),
+          limiter.recordSuccess('slack_setup_deployment', 'deployment'),
+        ]);
+        return c.redirect(claim.authorizationUrl, 303);
+      } else if (action === 'gateway_refresh') {
+        const result = await createGatewayDeploymentClient(
+          c.env as PlatformEnv | undefined,
+        ).refreshClaim();
+        if (result.state === 'bound') startNodeGatewaySession(c.env as PlatformEnv | undefined);
+        return c.redirect('/admin/setup', 303);
+      } else if (action === 'create') {
         setup = await service.create({
           setupId: setup.id, expectedRevision: setup.revision,
           configurationToken: boundedSetupField(rawForm.configurationToken, 512), manifest,

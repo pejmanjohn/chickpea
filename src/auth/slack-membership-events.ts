@@ -15,6 +15,15 @@ export interface ApplySlackUserChangeInput {
   event: SlackUserChangeEvent;
 }
 
+export interface ApplyGatewaySlackUserChangeInput {
+  identity: IdentityStore;
+  betterAuth?: Pick<BetterAuthDatabaseBackend, 'deleteSessionsForUser'>;
+  payloadTeamId: string;
+  apiAppId: string;
+  eventId: string;
+  event: SlackUserChangeEvent;
+}
+
 export type SlackUserChangeResult = {
   outcome: 'suspended' | 'duplicate' | 'ignored';
 };
@@ -39,6 +48,29 @@ export async function applySlackUserChange(
       active.teamId !== input.payloadTeamId) {
     return { outcome: 'ignored' };
   }
+  return suspendSlackMember(input, active.revision);
+}
+
+/** Apply a gateway-verified deactivation after the caller validates the exact durable app binding. */
+export async function applyGatewaySlackUserChange(
+  input: ApplyGatewaySlackUserChangeInput,
+): Promise<SlackUserChangeResult> {
+  const user = input.event.user;
+  if (!SLACK_ID.test(input.payloadTeamId) || !SLACK_ID.test(input.apiAppId) ||
+      !SLACK_ID.test(user.id) || (user.team_id !== undefined && user.team_id !== input.payloadTeamId)) {
+    return { outcome: 'ignored' };
+  }
+  if (user.deleted !== true && user.is_bot !== true && user.is_app_user !== true) {
+    return { outcome: 'ignored' };
+  }
+  return suspendSlackMember(input, `gateway:${input.apiAppId}:${input.payloadTeamId}`);
+}
+
+async function suspendSlackMember(
+  input: ApplyGatewaySlackUserChangeInput,
+  credentialRevision: string,
+): Promise<SlackUserChangeResult> {
+  const user = input.event.user;
   const binding = await input.identity.resolveSlackIdentity(input.payloadTeamId, user.id);
   if (!binding) return { outcome: 'ignored' };
   const result = await input.identity.updateMembershipAuthority({
@@ -50,7 +82,7 @@ export async function applySlackUserChange(
     idempotencyKey: `slack-user-change:${input.eventId}`,
     slackTeamId: input.payloadTeamId,
     slackUserId: user.id,
-    credentialRevision: active.revision,
+    credentialRevision,
   });
   if (!result.changed) return { outcome: 'duplicate' };
   if (binding.binding.betterAuthUserId) {

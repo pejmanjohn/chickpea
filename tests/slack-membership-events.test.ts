@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { SqliteIdentityStore } from '../src/identity/store.ts';
-import { applySlackUserChange } from '../src/auth/slack-membership-events.ts';
+import {
+  applyGatewaySlackUserChange,
+  applySlackUserChange,
+} from '../src/auth/slack-membership-events.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const NOW = 1_786_100_000_000;
@@ -83,4 +86,29 @@ test('user_change never reactivates from an active or out-of-order payload', asy
       user: { id: 'U12345678', team_id: 'T12345678', deleted: false, is_bot: false, is_app_user: false },
     },
   })).outcome, 'ignored');
+});
+
+test('gateway-bound user_change suspends the exact provisioned member without local Slack credentials', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await createSlackOwner(identity, { now: NOW });
+  const deletedUsers: string[] = [];
+  const input = {
+    identity,
+    betterAuth: { async deleteSessionsForUser(userId: string) { deletedUsers.push(userId); return 1; } },
+    payloadTeamId: 'T12345678',
+    apiAppId: 'A12345678',
+    eventId: 'Ev_GATEWAY_USER_CHANGE_1',
+    event: {
+      type: 'user_change' as const,
+      event_ts: '1786100000.000300',
+      user: {
+        id: 'U12345678', team_id: 'T12345678', deleted: true,
+        is_bot: false, is_app_user: false,
+      },
+    },
+  };
+  assert.equal((await applyGatewaySlackUserChange(input)).outcome, 'suspended');
+  assert.equal((await applyGatewaySlackUserChange(input)).outcome, 'duplicate');
+  assert.deepEqual(deletedUsers, [owner.binding.betterAuthUserId]);
+  assert.equal((await identity.getMembershipAccessOverlay(owner.membership.id))?.accessStatus, 'suspended');
 });

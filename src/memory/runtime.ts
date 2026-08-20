@@ -17,6 +17,7 @@ import { parseMemoryCommand, type MemoryCommand } from './commands.ts';
 import { fitMemorySelectionToPrompt, serializeMemoryPrompt } from './prompt.ts';
 import { sha256Hex } from './markdown.ts';
 import {
+  createMemoryScopeSlackFromWebClient,
   createMemoryScopeSlack,
   authorizedMemoryScopeFingerprint,
   bindAuthorizedMemoryScope,
@@ -372,10 +373,7 @@ async function resolveOwnerRuntime(
   const credentials = resolvedBotToken
     ? { botToken: resolvedBotToken, botUserId: identityBotUserId }
     : await resolveSlackCredentials(platformEnv);
-  if (!credentials.botToken) {
-    throw new MemoryStateError('memory_slack_unavailable', 'Slack memory is unavailable.');
-  }
-  let botUserId = resolvedBotUserId ?? credentials.botUserId;
+  let botUserId = resolvedBotUserId ?? identityBotUserId ?? credentials.botUserId;
   if (!botUserId) {
     const auth = await client.auth.test();
     botUserId = typeof auth.user_id === 'string' ? auth.user_id : undefined;
@@ -385,7 +383,9 @@ async function resolveOwnerRuntime(
   }
   return {
     state,
-    slack: createMemoryScopeSlack(credentials.botToken, turn.workspaceId),
+    slack: credentials.botToken
+      ? createMemoryScopeSlack(credentials.botToken, turn.workspaceId)
+      : createMemoryScopeSlackFromWebClient(client, turn.workspaceId),
     scope: bindAuthorizedMemoryScope({
       surface: 'channel',
       workspaceId: turn.workspaceId,
@@ -488,10 +488,7 @@ async function resolveRuntime(
   const credentials = resolvedBotToken
     ? { botToken: resolvedBotToken, botUserId: identityBotUserId }
     : await resolveSlackCredentials(platformEnv);
-  if (!credentials.botToken) {
-    throw new MemoryStateError('memory_slack_unavailable', 'Slack memory is unavailable.');
-  }
-  let botUserId = resolvedBotUserId ?? credentials.botUserId;
+  let botUserId = resolvedBotUserId ?? identityBotUserId ?? credentials.botUserId;
   if (!botUserId) {
     const auth = await client.auth.test();
     botUserId = typeof auth.user_id === 'string' ? auth.user_id : undefined;
@@ -499,7 +496,9 @@ async function resolveRuntime(
   if (!botUserId) {
     throw new MemoryStateError('memory_slack_unavailable', 'Slack memory is unavailable.');
   }
-  const slack = createMemoryScopeSlack(credentials.botToken, turn.workspaceId);
+  const slack = credentials.botToken
+    ? createMemoryScopeSlack(credentials.botToken, turn.workspaceId)
+    : createMemoryScopeSlackFromWebClient(client, turn.workspaceId);
   const scope = await resolveMemoryScope(
     {
       workspaceId: turn.workspaceId,
@@ -1309,7 +1308,6 @@ async function resolveCommandBotUserId(
       ? { botToken: resolvedBotToken, botUserId: undefined }
       : await resolveSlackCredentials(platformEnv);
     if (credentials.botUserId) return credentials.botUserId;
-    if (!credentials.botToken) return undefined;
     const auth = await client.auth.test();
     return typeof auth.user_id === 'string' ? auth.user_id : undefined;
   } catch {

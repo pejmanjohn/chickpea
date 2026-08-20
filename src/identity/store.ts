@@ -141,6 +141,7 @@ export class IdentityStoreLogic {
       case 'restart_slack_app_creation': return { kind: 'slack_setup_transaction', transaction: this.restartSlackAppCreation(request.input) };
       case 'mark_slack_setup_approval_pending': return { kind: 'slack_setup_transaction', transaction: this.markSlackSetupApprovalPending(request.input) };
       case 'resume_slack_setup_after_approval': return { kind: 'slack_setup_transaction', transaction: this.resumeSlackSetupAfterApproval(request.input) };
+      case 'record_shared_slack_installation': return { kind: 'slack_setup_transaction', transaction: this.recordSharedSlackInstallation(request.input) };
       case 'create_slack_oauth_attempt': return { kind: 'slack_oauth_attempt', attempt: this.createSlackOAuthAttempt(request.input) };
       case 'get_slack_oauth_attempt': return { kind: 'slack_oauth_attempt', attempt: this.getSlackOAuthAttempt(request.attemptId) ?? null };
       case 'acquire_slack_oauth_attempt': return { kind: 'slack_oauth_attempt', attempt: this.acquireSlackOAuthAttempt(request.input) };
@@ -1249,6 +1250,48 @@ export class IdentityStoreLogic {
       if (attemptChanged !== 1) {
         throw identityError('auth_operation_conflict', 'Slack OAuth state changed concurrently.');
       }
+      return this.requiredSlackSetupTransaction(setup.id);
+    });
+  }
+
+  recordSharedSlackInstallation(
+    input: import('./types.ts').RecordSharedSlackInstallationInput,
+  ): SlackSetupTransaction {
+    return this.db.transaction(() => {
+      const existing = this.requiredSlackSetupTransaction(input.setupId);
+      if (
+        existing.state === 'bot_installed' && existing.appId === input.appId &&
+        existing.credentialRevision === input.bindingId &&
+        existing.botCredentialRevision === input.bindingId &&
+        existing.slackTeamId === input.slackTeamId &&
+        existing.installerSlackUserId === input.installerSlackUserId &&
+        existing.botUserId === input.botUserId
+      ) return existing;
+      const setup = this.requiredSlackSetupTransition(
+        input.setupId,
+        input.expectedRevision,
+        ['awaiting_app_creation'],
+      );
+      const appId = slackId(input.appId, 'Slack app ID');
+      const teamId = slackId(input.slackTeamId, 'Slack team ID');
+      const installerId = slackId(input.installerSlackUserId, 'Slack installer user ID');
+      const botUserId = slackId(input.botUserId, 'Slack bot user ID');
+      const clientId = strictText(input.clientId, 'Slack client ID', 256);
+      const bindingId = strictText(input.bindingId, 'Slack gateway binding ID', 256);
+      const at = this.now();
+      const changed = this.db.run(
+        `UPDATE identity_slack_setup_transactions SET state = 'bot_installed',
+          revision = revision + 1, app_id = ?, credential_revision = ?,
+          bot_credential_revision = ?, slack_team_id = ?, installer_slack_user_id = ?,
+          bot_user_id = ?, last_error_code = NULL, updated_at = ?
+         WHERE setup_id = ? AND revision = ? AND state = 'awaiting_app_creation'`,
+        appId, bindingId, bindingId, teamId, installerId, botUserId, at,
+        setup.id, setup.revision,
+      ).changes;
+      if (changed !== 1) throw identityError('auth_operation_conflict', 'Slack setup changed concurrently.');
+      // Client ID is persisted on the subsequent OIDC attempt; validating it
+      // here prevents a malformed gateway binding from crossing that boundary.
+      void clientId;
       return this.requiredSlackSetupTransaction(setup.id);
     });
   }

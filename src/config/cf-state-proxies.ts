@@ -96,6 +96,7 @@ import type {
   MarkSlackSetupApprovalPendingInput,
   MarkSlackOAuthApprovalPendingInput,
   RecordSlackBotInstallationCandidateInput,
+  RecordSharedSlackInstallationInput,
   RecordSlackEventsProofInput,
   RecordSlackRecoveryCandidateInput,
   PromoteSlackBotInstallationInput,
@@ -634,6 +635,13 @@ export class CfIdentityStore implements IdentityStore {
   async promoteSlackBotInstallation(input: PromoteSlackBotInstallationInput) {
     const response = await this.execute({ kind: 'promote_slack_bot_installation', input });
     if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
+    return response.transaction;
+  }
+  async recordSharedSlackInstallation(input: RecordSharedSlackInstallationInput) {
+    const response = await this.execute({ kind: 'record_shared_slack_installation', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) {
+      throw unexpectedIdentityResponse();
+    }
     return response.transaction;
   }
   async failSlackBotInstallation(input: FailSlackBotInstallationInput) {

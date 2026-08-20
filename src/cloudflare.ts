@@ -155,6 +155,10 @@ import {
   type RoutineRpcResponse,
 } from './routines/types.ts';
 import { createRoutineScheduledHandler } from './routines/scheduler-adapter.ts';
+import {
+  SlackGatewaySession,
+  wakeCloudflareGatewaySession,
+} from './slack/gateway/cloudflare-session.ts';
 import { UsageStoreLogic } from './usage/store.ts';
 import { UsageStateError } from './usage/store-error.ts';
 import type { UsageRpcRequest, UsageRpcResponse, UsageStore } from './usage/types.ts';
@@ -1730,8 +1734,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           {
             config: {
               getSlackIdentity: async (id) => stores.config.getSlackIdentity(id),
+              getWorkspaceInstallation: async (workspaceId) =>
+                stores.config.getWorkspaceInstallation(workspaceId),
               updateSlackIdentity: async (id, expectedRevision, patch) =>
                 stores.config.updateSlackIdentity(id, expectedRevision, patch),
+            },
+            settings: {
+              getSetting: async (key) => stores.settings.getSetting(key),
+              getSettings: async (keys) => stores.settings.getSettings(keys),
+              setSetting: async (key, value) => stores.settings.setSetting(key, value),
+              deleteSetting: async (key) => stores.settings.deleteSetting(key),
+              applySettingsPatch: async (patch) => stores.settings.applySettingsPatch(patch),
+              mergeSettingStringSet: async (key, values) =>
+                stores.settings.mergeSettingStringSet(key, values),
             },
             credentialDependencies: {
               // The alarm is already executing inside TAG_STATE; using the
@@ -2098,7 +2113,10 @@ async function runWorkMaintenance(
   if (!result.ok) {
     throw new Error(`Work maintenance failed: ${result.error.message}`);
   }
+  await wakeCloudflareGatewaySession(rawEnv);
 }
+
+export { SlackGatewaySession };
 
 async function runRoutineHeartbeat(
   scheduledTime: number,

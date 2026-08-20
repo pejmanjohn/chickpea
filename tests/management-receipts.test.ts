@@ -164,6 +164,7 @@ test('the Slack receipt adapter preserves thread routing and stable delivery ide
   const calls: Array<Record<string, unknown>> = [];
   const resolveIdentity: SlackIdentityExecutionResolver = async (identityId) => ({
     identityId,
+    transportMode: 'direct',
     botToken: 'not-observable',
     botUserId: 'B1',
     teamId: 'T1',
@@ -255,6 +256,7 @@ test('the Slack receipt adapter resolves an external MCP initiator to a DM', asy
     },
     resolveIdentity: async (identityId) => ({
       identityId,
+      transportMode: 'direct',
       botToken: 'not-observable',
       botUserId: 'B1',
       teamId: 'T1',
