@@ -41,12 +41,25 @@ function tempDbPath(): { dir: string; path: string } {
 }
 
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
+  const id = overrides.id ?? 'agent_test';
+  const name = overrides.name ?? 'Test Agent';
+  const handle = name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
   return {
-    id: 'agent_test',
+    id,
     revision: 1,
-    name: 'Test Agent',
+    name,
     instructions: 'Answer from the test fixture.',
     enabled: true,
+    lifecycle: 'active',
+    editPolicy: 'creator_and_admins',
+    configurationGeneration: 1,
+    slackPresence: {
+      requestedHandle: handle,
+      normalizedHandle: handle,
+      desiredState: 'unpublished',
+      health: 'unpublished',
+      avatar: { kind: 'generated', revision: 1, seed: id },
+    },
     skills: [],
     mcpServers: [],
     apiConnections: [],
@@ -1015,6 +1028,13 @@ test('fresh databases start at the clean current config schema', () => {
         'repositories_json',
         'slack_identity_id',
         'revision',
+        'description',
+        'lifecycle',
+        'creator_membership_id',
+        'edit_policy',
+        'configuration_generation',
+        'slack_presence_json',
+        'archived_at',
       ],
     );
     assert.deepEqual(

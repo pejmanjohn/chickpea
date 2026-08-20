@@ -7,17 +7,29 @@ import type {
 } from './store.ts';
 import type {
   AgentCreateInput,
+  AgentChannelGrant,
+  AgentChannelGrantInput,
+  AgentConnectionBinding,
+  AgentConnectionBindingInput,
+  AgentScheduleReference,
+  AgentScheduleReferenceInput,
   AgentSnapshot,
   AgentSnapshotRootReference,
   AgentReferenceSummary,
+  AgentThreadRoute,
+  AgentThreadRouteInput,
   ChannelAssignment,
   ChannelConfig,
   ChannelPlacementMutation,
   ChannelPlacementResult,
   CustomAgentConfig,
+  ConnectionAccount,
+  ConnectionAccountInput,
+  EnsureWorkspaceInstallationInput,
   SlackIdentity,
   SlackIdentityDmState,
   SlackIdentityReferenceSummary,
+  WorkspaceInstallation,
 } from './types.ts';
 import type { MemoryRpcRequest, MemoryRpcResponse } from '../memory/types.ts';
 import type { RoutineRpcRequest, RoutineRpcResponse } from '../routines/types.ts';
@@ -222,6 +234,68 @@ export interface TagStateRpc {
     target: OAuthReauthorizationTarget,
   ): Promise<StateRpcResult<boolean>>;
   configDeleteAgent(agentId: string, expectedRevision?: number): Promise<StateRpcResult<boolean>>;
+  configArchiveAgent(
+    agentId: string,
+    options?: { replacementDefaultAgentId?: string; expectedRevision?: number },
+  ): Promise<StateRpcResult<CustomAgentConfig>>;
+  configRestoreAgent(
+    agentId: string,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<CustomAgentConfig>>;
+  configEnsureWorkspaceInstallation(
+    input: EnsureWorkspaceInstallationInput,
+  ): Promise<StateRpcResult<WorkspaceInstallation>>;
+  configGetWorkspaceInstallation(
+    workspaceId: string,
+  ): Promise<StateRpcResult<WorkspaceInstallation | null>>;
+  configListWorkspaceInstallations(): Promise<StateRpcResult<WorkspaceInstallation[]>>;
+  configSetWorkspaceDefaultAgent(
+    workspaceId: string,
+    agentId: string,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<WorkspaceInstallation>>;
+  configListAgentChannelGrants(
+    workspaceId?: string,
+    channelId?: string,
+  ): Promise<StateRpcResult<AgentChannelGrant[]>>;
+  configPutAgentChannelGrant(
+    input: AgentChannelGrantInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<AgentChannelGrant>>;
+  configDeleteAgentChannelGrant(
+    workspaceId: string,
+    channelId: string,
+    agentId: string,
+  ): Promise<StateRpcResult<boolean>>;
+  configGetAgentThreadRoute(
+    workspaceId: string,
+    channelId: string,
+    threadTs: string,
+  ): Promise<StateRpcResult<AgentThreadRoute | null>>;
+  configPutAgentThreadRoute(
+    input: AgentThreadRouteInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<AgentThreadRoute>>;
+  configListConnectionAccounts(
+    workspaceId: string,
+  ): Promise<StateRpcResult<ConnectionAccount[]>>;
+  configPutConnectionAccount(
+    input: ConnectionAccountInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<ConnectionAccount>>;
+  configListAgentConnectionBindings(
+    agentId: string,
+  ): Promise<StateRpcResult<AgentConnectionBinding[]>>;
+  configPutAgentConnectionBinding(
+    input: AgentConnectionBindingInput,
+  ): Promise<StateRpcResult<AgentConnectionBinding>>;
+  configListAgentScheduleReferences(
+    agentId: string,
+  ): Promise<StateRpcResult<AgentScheduleReference[]>>;
+  configPutAgentScheduleReference(
+    input: AgentScheduleReferenceInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<AgentScheduleReference>>;
   configListChannels(): Promise<StateRpcResult<ChannelConfig[]>>;
   configGetChannel(
     workspaceId: string,

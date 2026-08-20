@@ -19,16 +19,29 @@ import type { AssignmentLookupOptions } from './resolver.ts';
 import { seededAgents, seededAssignments } from './seed.ts';
 import {
   WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type AgentChannelGrant,
+  type AgentChannelGrantInput,
+  type AgentConnectionBinding,
+  type AgentConnectionBindingInput,
   type AgentReferenceSummary,
+  type AgentScheduleReference,
+  type AgentScheduleReferenceInput,
+  type AgentSlackPresence,
+  type AgentThreadRoute,
+  type AgentThreadRouteInput,
   type AgentCreateInput,
   type ChannelAssignment,
   type ChannelConfig,
   type ChannelPlacementMutation,
   type ChannelPlacementResult,
   type CustomAgentConfig,
+  type ConnectionAccount,
+  type ConnectionAccountInput,
+  type EnsureWorkspaceInstallationInput,
   type SlackIdentity,
   type SlackIdentityDmState,
   type SlackIdentityReferenceSummary,
+  type WorkspaceInstallation,
 } from './types.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
@@ -69,6 +82,89 @@ interface AgentRow {
   api_connections_json?: string | null;
   repositories_json?: string | null;
   slack_identity_id?: string | null;
+  description?: string | null;
+  lifecycle?: string | null;
+  creator_membership_id?: string | null;
+  edit_policy?: string | null;
+  configuration_generation?: number | null;
+  slack_presence_json?: string | null;
+  archived_at?: number | null;
+}
+
+interface WorkspaceInstallationRow {
+  workspace_id: string;
+  revision: number;
+  transport_mode: string;
+  default_agent_id: string;
+  team_id: string | null;
+  app_id: string | null;
+  bot_user_id: string | null;
+  gateway_binding_id: string | null;
+  health: string;
+  health_detail: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface AgentChannelGrantRow {
+  workspace_id: string;
+  channel_id: string;
+  agent_id: string;
+  revision: number;
+  status: string;
+  created_by_membership_id: string;
+  channel_label: string | null;
+  channel_is_private: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface AgentThreadRouteRow {
+  workspace_id: string;
+  channel_id: string;
+  thread_ts: string;
+  agent_id: string;
+  agent_generation: number;
+  revision: number;
+  updated_at: number;
+}
+
+interface ConnectionAccountRow {
+  id: string;
+  workspace_id: string;
+  revision: number;
+  owner_kind: string;
+  owner_membership_id: string | null;
+  provider_id: string;
+  label: string;
+  purpose: string | null;
+  identity_json: string | null;
+  secret_ref_id: string;
+  lifecycle: string;
+  created_at: number;
+  updated_at: number;
+}
+
+interface AgentConnectionBindingRow {
+  agent_id: string;
+  connection_account_id: string;
+  provider_id: string;
+  enabled: number;
+  created_at: number;
+  updated_at: number;
+}
+
+interface AgentScheduleReferenceRow {
+  schedule_id: string;
+  agent_id: string;
+  workspace_id: string;
+  channel_id: string;
+  creator_membership_id: string;
+  required_connection_account_ids_json: string;
+  state: string;
+  revision: number;
+  created_at: number;
+  updated_at: number;
 }
 
 interface AssignmentRow {
@@ -182,6 +278,46 @@ export interface ConfigStore {
     agentId: string,
     idempotencyKey: string,
   ): Promise<boolean>;
+  archiveAgent(
+    agentId: string,
+    options?: { replacementDefaultAgentId?: string; expectedRevision?: number },
+  ): Promise<CustomAgentConfig>;
+  restoreAgent(agentId: string, expectedRevision?: number): Promise<CustomAgentConfig>;
+  ensureWorkspaceInstallation(input: EnsureWorkspaceInstallationInput): Promise<WorkspaceInstallation>;
+  getWorkspaceInstallation(workspaceId: string): Promise<WorkspaceInstallation | undefined>;
+  listWorkspaceInstallations(): Promise<WorkspaceInstallation[]>;
+  setWorkspaceDefaultAgent(
+    workspaceId: string,
+    agentId: string,
+    expectedRevision?: number,
+  ): Promise<WorkspaceInstallation>;
+  listAgentChannelGrants(workspaceId?: string, channelId?: string): Promise<AgentChannelGrant[]>;
+  putAgentChannelGrant(
+    input: AgentChannelGrantInput,
+    expectedRevision?: number,
+  ): Promise<AgentChannelGrant>;
+  deleteAgentChannelGrant(workspaceId: string, channelId: string, agentId: string): Promise<boolean>;
+  getAgentThreadRoute(
+    workspaceId: string,
+    channelId: string,
+    threadTs: string,
+  ): Promise<AgentThreadRoute | undefined>;
+  putAgentThreadRoute(
+    input: AgentThreadRouteInput,
+    expectedRevision?: number,
+  ): Promise<AgentThreadRoute>;
+  listConnectionAccounts(workspaceId: string): Promise<ConnectionAccount[]>;
+  putConnectionAccount(
+    input: ConnectionAccountInput,
+    expectedRevision?: number,
+  ): Promise<ConnectionAccount>;
+  listAgentConnectionBindings(agentId: string): Promise<AgentConnectionBinding[]>;
+  putAgentConnectionBinding(input: AgentConnectionBindingInput): Promise<AgentConnectionBinding>;
+  listAgentScheduleReferences(agentId: string): Promise<AgentScheduleReference[]>;
+  putAgentScheduleReference(
+    input: AgentScheduleReferenceInput,
+    expectedRevision?: number,
+  ): Promise<AgentScheduleReference>;
   listChannels(): Promise<ChannelConfig[]>;
   getChannel(workspaceId: string, channelId: string): Promise<ChannelConfig | undefined>;
   putChannel(channel: ChannelConfig, expectedRevision?: number): Promise<ChannelConfig>;
@@ -268,8 +404,457 @@ export class ConfigStoreLogic {
       )`,
     );
     this.runMigrations();
+    this.installAgentPlatformSchema();
     this.seedOnce(seed);
     this.backfillWorkspaceDefaultSlackIdentity();
+  }
+
+  ensureWorkspaceInstallation(input: EnsureWorkspaceInstallationInput): WorkspaceInstallation {
+    const existing = this.getWorkspaceInstallation(input.workspaceId);
+    if (existing) return existing;
+    const defaultAgentId = input.defaultAgentId ?? this.requireFirstActiveAgent().id;
+    this.requireActiveAgent(defaultAgentId);
+    const now = Date.now();
+    this.db.run(
+      `INSERT INTO config_workspace_installations (
+        workspace_id, revision, transport_mode, default_agent_id, team_id,
+        app_id, bot_user_id, gateway_binding_id, health, health_detail,
+        created_at, updated_at
+      ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)`,
+      input.workspaceId,
+      input.transportMode,
+      defaultAgentId,
+      input.teamId ?? null,
+      input.appId ?? null,
+      input.botUserId ?? null,
+      input.gatewayBindingId ?? null,
+      now,
+      now,
+    );
+    return this.getWorkspaceInstallation(input.workspaceId)!;
+  }
+
+  getWorkspaceInstallation(workspaceId: string): WorkspaceInstallation | undefined {
+    const row = this.db.get(
+      'SELECT * FROM config_workspace_installations WHERE workspace_id = ?',
+      workspaceId,
+    );
+    return row ? rowToWorkspaceInstallation(row as unknown as WorkspaceInstallationRow) : undefined;
+  }
+
+  listWorkspaceInstallations(): WorkspaceInstallation[] {
+    return this.db
+      .all('SELECT * FROM config_workspace_installations ORDER BY workspace_id')
+      .map((row) => rowToWorkspaceInstallation(row as unknown as WorkspaceInstallationRow));
+  }
+
+  setWorkspaceDefaultAgent(
+    workspaceId: string,
+    agentId: string,
+    expectedRevision?: number,
+  ): WorkspaceInstallation {
+    const current = this.getWorkspaceInstallation(workspaceId);
+    if (!current) throw new Error(`Unknown workspace installation ${workspaceId}`);
+    this.requireActiveAgent(agentId);
+    const requiredRevision = expectedRevision ?? current.revision;
+    if (requiredRevision !== current.revision) {
+      throw new Error(
+        `Workspace installation ${workspaceId} changed (expected revision ${requiredRevision}, actual ${current.revision})`,
+      );
+    }
+    const updated = this.db.run(
+      `UPDATE config_workspace_installations
+       SET default_agent_id = ?, revision = revision + 1, updated_at = ?
+       WHERE workspace_id = ? AND revision = ?`,
+      agentId,
+      Date.now(),
+      workspaceId,
+      current.revision,
+    );
+    if (updated.changes !== 1) throw new Error(`Workspace installation ${workspaceId} changed`);
+    return this.getWorkspaceInstallation(workspaceId)!;
+  }
+
+  archiveAgent(
+    agentId: string,
+    options: { replacementDefaultAgentId?: string; expectedRevision?: number } = {},
+  ): CustomAgentConfig {
+    const current = this.getAgent(agentId);
+    const requiredRevision = options.expectedRevision ?? current.revision;
+    if (requiredRevision !== current.revision) {
+      throw new AgentRevisionConflictError(agentId, requiredRevision, current.revision);
+    }
+    const installations = this.listWorkspaceInstallations().filter(
+      (installation) => installation.defaultAgentId === agentId,
+    );
+    if (installations.length > 0 && !options.replacementDefaultAgentId) {
+      throw new Error(`Archiving ${agentId} requires a replacement default Agent`);
+    }
+    if (options.replacementDefaultAgentId) {
+      this.requireActiveAgent(options.replacementDefaultAgentId);
+    }
+    return this.db.transaction(() => {
+      for (const installation of installations) {
+        this.setWorkspaceDefaultAgent(
+          installation.workspaceId,
+          options.replacementDefaultAgentId!,
+          installation.revision,
+        );
+      }
+      const now = Date.now();
+      const updated = this.db.run(
+        `UPDATE config_agents
+         SET lifecycle = 'archived', enabled = 0, archived_at = ?,
+             configuration_generation = configuration_generation + 1,
+             revision = revision + 1
+         WHERE id = ? AND revision = ?`,
+        now,
+        agentId,
+        current.revision,
+      );
+      if (updated.changes !== 1) {
+        throw new AgentRevisionConflictError(agentId, current.revision, this.getAgent(agentId).revision);
+      }
+      this.db.run('DELETE FROM config_agent_channel_grants WHERE agent_id = ?', agentId);
+      this.db.run(
+        `UPDATE config_agent_schedule_references
+         SET state = 'paused', revision = revision + 1, updated_at = ?
+         WHERE agent_id = ? AND state = 'active'`,
+        now,
+        agentId,
+      );
+      return this.getAgent(agentId);
+    });
+  }
+
+  restoreAgent(agentId: string, expectedRevision?: number): CustomAgentConfig {
+    const current = this.getAgent(agentId);
+    const requiredRevision = expectedRevision ?? current.revision;
+    if (requiredRevision !== current.revision) {
+      throw new AgentRevisionConflictError(agentId, requiredRevision, current.revision);
+    }
+    const updated = this.db.run(
+      `UPDATE config_agents
+       SET lifecycle = 'active', enabled = 1, archived_at = NULL,
+           configuration_generation = configuration_generation + 1,
+           revision = revision + 1
+       WHERE id = ? AND revision = ?`,
+      agentId,
+      current.revision,
+    );
+    if (updated.changes !== 1) throw new Error(`Agent ${agentId} changed`);
+    return this.getAgent(agentId);
+  }
+
+  listAgentChannelGrants(workspaceId?: string, channelId?: string): AgentChannelGrant[] {
+    const clauses: string[] = [];
+    const params: string[] = [];
+    if (workspaceId) {
+      clauses.push('workspace_id = ?');
+      params.push(workspaceId);
+    }
+    if (channelId) {
+      clauses.push('channel_id = ?');
+      params.push(channelId);
+    }
+    const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
+    return this.db
+      .all(
+        `SELECT * FROM config_agent_channel_grants${where}
+         ORDER BY workspace_id, channel_id, agent_id`,
+        ...params,
+      )
+      .map((row) => rowToAgentChannelGrant(row as unknown as AgentChannelGrantRow));
+  }
+
+  putAgentChannelGrant(
+    input: AgentChannelGrantInput,
+    expectedRevision?: number,
+  ): AgentChannelGrant {
+    this.requireActiveAgent(input.agentId);
+    const current = this.db.get(
+      `SELECT * FROM config_agent_channel_grants
+       WHERE workspace_id = ? AND channel_id = ? AND agent_id = ?`,
+      input.workspaceId,
+      input.channelId,
+      input.agentId,
+    ) as unknown as AgentChannelGrantRow | undefined;
+    const now = Date.now();
+    if (!current) {
+      if (expectedRevision !== undefined && expectedRevision !== 0) {
+        throw new Error(`Agent Channel grant changed (expected revision ${expectedRevision}, actual 0)`);
+      }
+      this.db.run(
+        `INSERT INTO config_agent_channel_grants (
+          workspace_id, channel_id, agent_id, revision, status,
+          created_by_membership_id, channel_label, channel_is_private,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+        input.workspaceId,
+        input.channelId,
+        input.agentId,
+        input.status,
+        input.createdByMembershipId,
+        input.channelLabel ?? null,
+        input.channelIsPrivate === undefined ? null : input.channelIsPrivate ? 1 : 0,
+        now,
+        now,
+      );
+    } else {
+      const requiredRevision = expectedRevision ?? Number(current.revision);
+      if (requiredRevision !== Number(current.revision)) {
+        throw new Error(
+          `Agent Channel grant changed (expected revision ${requiredRevision}, actual ${current.revision})`,
+        );
+      }
+      this.db.run(
+        `UPDATE config_agent_channel_grants
+         SET status = ?, created_by_membership_id = ?, channel_label = ?,
+             channel_is_private = ?, revision = revision + 1, updated_at = ?
+         WHERE workspace_id = ? AND channel_id = ? AND agent_id = ? AND revision = ?`,
+        input.status,
+        input.createdByMembershipId,
+        input.channelLabel ?? null,
+        input.channelIsPrivate === undefined ? null : input.channelIsPrivate ? 1 : 0,
+        now,
+        input.workspaceId,
+        input.channelId,
+        input.agentId,
+        current.revision,
+      );
+    }
+    return this.listAgentChannelGrants(input.workspaceId, input.channelId).find(
+      (grant) => grant.agentId === input.agentId,
+    )!;
+  }
+
+  deleteAgentChannelGrant(workspaceId: string, channelId: string, agentId: string): boolean {
+    return this.db.run(
+      `DELETE FROM config_agent_channel_grants
+       WHERE workspace_id = ? AND channel_id = ? AND agent_id = ?`,
+      workspaceId,
+      channelId,
+      agentId,
+    ).changes === 1;
+  }
+
+  getAgentThreadRoute(
+    workspaceId: string,
+    channelId: string,
+    threadTs: string,
+  ): AgentThreadRoute | undefined {
+    const row = this.db.get(
+      `SELECT * FROM config_agent_thread_routes
+       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ?`,
+      workspaceId,
+      channelId,
+      threadTs,
+    );
+    return row ? rowToAgentThreadRoute(row as unknown as AgentThreadRouteRow) : undefined;
+  }
+
+  putAgentThreadRoute(input: AgentThreadRouteInput, expectedRevision?: number): AgentThreadRoute {
+    this.requireActiveAgent(input.agentId);
+    const current = this.getAgentThreadRoute(input.workspaceId, input.channelId, input.threadTs);
+    const now = Date.now();
+    if (!current) {
+      if (expectedRevision !== undefined && expectedRevision !== 0) {
+        throw new Error(`Agent thread route changed (expected revision ${expectedRevision}, actual 0)`);
+      }
+      this.db.run(
+        `INSERT INTO config_agent_thread_routes (
+          workspace_id, channel_id, thread_ts, agent_id, agent_generation,
+          revision, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 1, ?)`,
+        input.workspaceId,
+        input.channelId,
+        input.threadTs,
+        input.agentId,
+        input.agentGeneration,
+        now,
+      );
+    } else {
+      const requiredRevision = expectedRevision ?? current.revision;
+      if (requiredRevision !== current.revision) {
+        throw new Error(
+          `Agent thread route changed (expected revision ${requiredRevision}, actual ${current.revision})`,
+        );
+      }
+      const updated = this.db.run(
+        `UPDATE config_agent_thread_routes
+         SET agent_id = ?, agent_generation = ?, revision = revision + 1, updated_at = ?
+         WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND revision = ?`,
+        input.agentId,
+        input.agentGeneration,
+        now,
+        input.workspaceId,
+        input.channelId,
+        input.threadTs,
+        current.revision,
+      );
+      if (updated.changes !== 1) throw new Error('Agent thread route changed');
+    }
+    return this.getAgentThreadRoute(input.workspaceId, input.channelId, input.threadTs)!;
+  }
+
+  listConnectionAccounts(workspaceId: string): ConnectionAccount[] {
+    return this.db
+      .all('SELECT * FROM config_connection_accounts WHERE workspace_id = ? ORDER BY id', workspaceId)
+      .map((row) => rowToConnectionAccount(row as unknown as ConnectionAccountRow));
+  }
+
+  putConnectionAccount(
+    input: ConnectionAccountInput,
+    expectedRevision?: number,
+  ): ConnectionAccount {
+    const current = this.db.get(
+      'SELECT * FROM config_connection_accounts WHERE id = ?',
+      input.id,
+    ) as unknown as ConnectionAccountRow | undefined;
+    const now = Date.now();
+    if (!current) {
+      if (expectedRevision !== undefined && expectedRevision !== 0) {
+        throw new Error(`Connection account changed (expected revision ${expectedRevision}, actual 0)`);
+      }
+      this.db.run(
+        `INSERT INTO config_connection_accounts (
+          id, workspace_id, revision, owner_kind, owner_membership_id,
+          provider_id, label, purpose, identity_json, secret_ref_id, lifecycle,
+          created_at, updated_at
+        ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        input.id,
+        input.workspaceId,
+        input.ownerKind,
+        input.ownerMembershipId ?? null,
+        input.providerId,
+        input.label,
+        input.purpose ?? null,
+        input.identity ? JSON.stringify(input.identity) : null,
+        input.secretRefId,
+        input.lifecycle,
+        now,
+        now,
+      );
+    } else {
+      const requiredRevision = expectedRevision ?? Number(current.revision);
+      if (requiredRevision !== Number(current.revision)) {
+        throw new Error(
+          `Connection account changed (expected revision ${requiredRevision}, actual ${current.revision})`,
+        );
+      }
+      this.db.run(
+        `UPDATE config_connection_accounts
+         SET label = ?, purpose = ?, identity_json = ?, lifecycle = ?,
+             revision = revision + 1, updated_at = ?
+         WHERE id = ? AND revision = ?`,
+        input.label,
+        input.purpose ?? null,
+        input.identity ? JSON.stringify(input.identity) : null,
+        input.lifecycle,
+        now,
+        input.id,
+        current.revision,
+      );
+    }
+    return this.listConnectionAccounts(input.workspaceId).find((account) => account.id === input.id)!;
+  }
+
+  listAgentConnectionBindings(agentId: string): AgentConnectionBinding[] {
+    return this.db
+      .all('SELECT * FROM config_agent_connection_bindings WHERE agent_id = ? ORDER BY connection_account_id', agentId)
+      .map((row) => rowToAgentConnectionBinding(row as unknown as AgentConnectionBindingRow));
+  }
+
+  putAgentConnectionBinding(input: AgentConnectionBindingInput): AgentConnectionBinding {
+    this.getAgent(input.agentId);
+    const account = this.db.get('SELECT provider_id FROM config_connection_accounts WHERE id = ?', input.connectionAccountId);
+    if (!account) throw new Error(`Unknown connection account ${input.connectionAccountId}`);
+    if (String(account.provider_id) !== input.providerId) {
+      throw new Error(`Connection account ${input.connectionAccountId} does not use ${input.providerId}`);
+    }
+    const now = Date.now();
+    this.db.run(
+      `INSERT INTO config_agent_connection_bindings (
+        agent_id, connection_account_id, provider_id, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(agent_id, connection_account_id) DO UPDATE SET
+        provider_id = excluded.provider_id,
+        enabled = excluded.enabled,
+        updated_at = excluded.updated_at`,
+      input.agentId,
+      input.connectionAccountId,
+      input.providerId,
+      input.enabled ? 1 : 0,
+      now,
+      now,
+    );
+    return this.listAgentConnectionBindings(input.agentId).find(
+      (binding) => binding.connectionAccountId === input.connectionAccountId,
+    )!;
+  }
+
+  listAgentScheduleReferences(agentId: string): AgentScheduleReference[] {
+    return this.db
+      .all('SELECT * FROM config_agent_schedule_references WHERE agent_id = ? ORDER BY schedule_id', agentId)
+      .map((row) => rowToAgentScheduleReference(row as unknown as AgentScheduleReferenceRow));
+  }
+
+  putAgentScheduleReference(
+    input: AgentScheduleReferenceInput,
+    expectedRevision?: number,
+  ): AgentScheduleReference {
+    this.getAgent(input.agentId);
+    const current = this.db.get(
+      'SELECT * FROM config_agent_schedule_references WHERE schedule_id = ?',
+      input.scheduleId,
+    ) as unknown as AgentScheduleReferenceRow | undefined;
+    const now = Date.now();
+    if (!current) {
+      if (expectedRevision !== undefined && expectedRevision !== 0) {
+        throw new Error(`Agent schedule reference changed (expected revision ${expectedRevision}, actual 0)`);
+      }
+      this.db.run(
+        `INSERT INTO config_agent_schedule_references (
+          schedule_id, agent_id, workspace_id, channel_id, creator_membership_id,
+          required_connection_account_ids_json, state, revision, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        input.scheduleId,
+        input.agentId,
+        input.workspaceId,
+        input.channelId,
+        input.creatorMembershipId,
+        JSON.stringify(input.requiredConnectionAccountIds),
+        input.state,
+        now,
+        now,
+      );
+    } else {
+      const requiredRevision = expectedRevision ?? Number(current.revision);
+      if (requiredRevision !== Number(current.revision)) {
+        throw new Error(
+          `Agent schedule reference changed (expected revision ${requiredRevision}, actual ${current.revision})`,
+        );
+      }
+      this.db.run(
+        `UPDATE config_agent_schedule_references
+         SET agent_id = ?, workspace_id = ?, channel_id = ?, creator_membership_id = ?,
+             required_connection_account_ids_json = ?, state = ?,
+             revision = revision + 1, updated_at = ?
+         WHERE schedule_id = ? AND revision = ?`,
+        input.agentId,
+        input.workspaceId,
+        input.channelId,
+        input.creatorMembershipId,
+        JSON.stringify(input.requiredConnectionAccountIds),
+        input.state,
+        now,
+        input.scheduleId,
+        current.revision,
+      );
+    }
+    return this.listAgentScheduleReferences(input.agentId).find(
+      (reference) => reference.scheduleId === input.scheduleId,
+    )!;
   }
 
   listAgents(): CustomAgentConfig[] {
@@ -326,13 +911,22 @@ export class ConfigStoreLogic {
     }
     this.db.run(
       `UPDATE config_agents
-       SET name = ?, instructions = ?, enabled = ?, model = ?,
+       SET name = ?, description = ?, instructions = ?, enabled = ?, lifecycle = ?,
+           creator_membership_id = ?, edit_policy = ?,
+           configuration_generation = ?, slack_presence_json = ?, archived_at = ?, model = ?,
            skills_json = ?, mcp_servers_json = ?, api_connections_json = ?, repositories_json = ?,
            slack_identity_id = ?, revision = revision + 1
        WHERE id = ? AND revision = ?`,
       next.name,
+      next.description ?? null,
       next.instructions,
       next.enabled ? 1 : 0,
+      next.lifecycle ?? (next.enabled ? 'active' : 'archived'),
+      next.creatorMembershipId ?? null,
+      next.editPolicy ?? 'creator_and_admins',
+      next.configurationGeneration ?? current.configurationGeneration ?? 1,
+      JSON.stringify(next.slackPresence ?? defaultAgentSlackPresence(next.id, next.name)),
+      next.archivedAt ?? null,
       model,
       JSON.stringify(next.skills),
       JSON.stringify(next.mcpServers),
@@ -1121,6 +1715,140 @@ export class ConfigStoreLogic {
     }
   }
 
+  private installAgentPlatformSchema(): void {
+    const columns = new Set(
+      this.db.all('PRAGMA table_info(config_agents)').map((column) => String(column.name)),
+    );
+    const addAgentColumn = (name: string, definition: string): void => {
+      if (!columns.has(name)) this.db.exec(`ALTER TABLE config_agents ADD COLUMN ${name} ${definition}`);
+    };
+    addAgentColumn('description', 'TEXT');
+    addAgentColumn('lifecycle', "TEXT NOT NULL DEFAULT 'active'");
+    addAgentColumn('creator_membership_id', 'TEXT');
+    addAgentColumn('edit_policy', "TEXT NOT NULL DEFAULT 'creator_and_admins'");
+    addAgentColumn('configuration_generation', 'INTEGER NOT NULL DEFAULT 1');
+    addAgentColumn('slack_presence_json', "TEXT NOT NULL DEFAULT '{}'");
+    addAgentColumn('archived_at', 'INTEGER');
+
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS config_workspace_installations (
+        workspace_id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL,
+        transport_mode TEXT NOT NULL,
+        default_agent_id TEXT NOT NULL,
+        team_id TEXT,
+        app_id TEXT,
+        bot_user_id TEXT,
+        gateway_binding_id TEXT,
+        health TEXT NOT NULL,
+        health_detail TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (default_agent_id) REFERENCES config_agents(id)
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS config_agent_channel_grants (
+        workspace_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        created_by_membership_id TEXT NOT NULL,
+        channel_label TEXT,
+        channel_is_private INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (workspace_id, channel_id, agent_id),
+        FOREIGN KEY (agent_id) REFERENCES config_agents(id)
+      )`,
+    );
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS config_agent_channel_grants_agent_idx ON config_agent_channel_grants(agent_id)',
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS config_agent_thread_routes (
+        workspace_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        thread_ts TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        agent_generation INTEGER NOT NULL,
+        revision INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (workspace_id, channel_id, thread_ts),
+        FOREIGN KEY (agent_id) REFERENCES config_agents(id)
+      )`,
+    );
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS config_agent_thread_routes_agent_idx ON config_agent_thread_routes(agent_id)',
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS config_connection_accounts (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        owner_kind TEXT NOT NULL,
+        owner_membership_id TEXT,
+        provider_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        purpose TEXT,
+        identity_json TEXT,
+        secret_ref_id TEXT NOT NULL,
+        lifecycle TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    );
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS config_connection_accounts_workspace_idx ON config_connection_accounts(workspace_id)',
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS config_agent_connection_bindings (
+        agent_id TEXT NOT NULL,
+        connection_account_id TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        enabled INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (agent_id, connection_account_id),
+        FOREIGN KEY (agent_id) REFERENCES config_agents(id),
+        FOREIGN KEY (connection_account_id) REFERENCES config_connection_accounts(id)
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS config_agent_schedule_references (
+        schedule_id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        creator_membership_id TEXT NOT NULL,
+        required_connection_account_ids_json TEXT NOT NULL,
+        state TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (agent_id) REFERENCES config_agents(id)
+      )`,
+    );
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS config_agent_schedule_references_agent_idx ON config_agent_schedule_references(agent_id)',
+    );
+  }
+
+  private requireFirstActiveAgent(): CustomAgentConfig {
+    const agent = this.listAgents().find((candidate) => candidate.lifecycle !== 'archived' && candidate.enabled);
+    if (!agent) throw new Error('A workspace installation requires an active Agent');
+    return agent;
+  }
+
+  private requireActiveAgent(agentId: string): CustomAgentConfig {
+    const agent = this.getAgent(agentId);
+    if (!agent.enabled || agent.lifecycle === 'archived') {
+      throw new Error(`Agent ${agentId} is not active`);
+    }
+    return agent;
+  }
+
   private seedOnce(seed: ConfigSeed): void {
     const seeded = this.db.get('SELECT value FROM config_meta WHERE key = ?', SEED_META_KEY);
     if (seeded) return;
@@ -1160,15 +1888,24 @@ export class ConfigStoreLogic {
   private insertAgent(agent: AgentCreateInput): { changes: number } {
     return this.db.run(
       `INSERT INTO config_agents (
-        id, revision, name, instructions, enabled, model,
+        id, revision, name, description, instructions, enabled, lifecycle,
+        creator_membership_id, edit_policy, configuration_generation,
+        slack_presence_json, archived_at, model,
         skills_json, mcp_servers_json, api_connections_json, repositories_json,
         slack_identity_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       1,
       agent.name,
+      agent.description ?? null,
       agent.instructions,
       agent.enabled ? 1 : 0,
+      agent.lifecycle ?? (agent.enabled ? 'active' : 'archived'),
+      agent.creatorMembershipId ?? null,
+      agent.editPolicy ?? 'creator_and_admins',
+      agent.configurationGeneration ?? 1,
+      JSON.stringify(agent.slackPresence ?? defaultAgentSlackPresence(agent.id, agent.name)),
+      agent.archivedAt ?? null,
       agent.model ?? null,
       JSON.stringify(agent.skills ?? []),
       JSON.stringify(agent.mcpServers ?? []),
@@ -1532,14 +2269,197 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
     id: row.id,
     revision: Number(row.revision ?? 1),
     name: row.name,
+    ...(row.description ? { description: row.description } : {}),
     instructions: row.instructions,
     enabled: Boolean(row.enabled),
+    lifecycle: (row.lifecycle === 'draft' ||
+    row.lifecycle === 'needs_attention' ||
+    row.lifecycle === 'archived'
+      ? row.lifecycle
+      : 'active'),
+    ...(row.creator_membership_id ? { creatorMembershipId: row.creator_membership_id } : {}),
+    editPolicy:
+      row.edit_policy === 'all_workspace_members'
+        ? 'all_workspace_members'
+        : 'creator_and_admins',
+    configurationGeneration: Number(row.configuration_generation ?? 1),
+    slackPresence: parseAgentSlackPresence(row.slack_presence_json, row.id, row.name),
+    ...(row.archived_at !== null && row.archived_at !== undefined
+      ? { archivedAt: Number(row.archived_at) }
+      : {}),
     ...(row.model ? { model: row.model } : {}),
     skills: JSON.parse(row.skills_json) as CustomAgentConfig['skills'],
     mcpServers: JSON.parse(row.mcp_servers_json) as CustomAgentConfig['mcpServers'],
     apiConnections: parseApiConnections(row.api_connections_json),
     repositories: parseRepositories(row.repositories_json),
     ...(row.slack_identity_id ? { slackIdentityId: row.slack_identity_id } : {}),
+  };
+}
+
+function defaultAgentSlackPresence(agentId: string, name: string): AgentSlackPresence {
+  const normalizedHandle = normalizeAgentHandle(name || agentId);
+  return {
+    requestedHandle: normalizedHandle,
+    normalizedHandle,
+    desiredState: 'unpublished',
+    health: 'unpublished',
+    avatar: {
+      kind: 'generated',
+      revision: 1,
+      seed: agentId,
+    },
+  };
+}
+
+function parseAgentSlackPresence(
+  raw: string | null | undefined,
+  agentId: string,
+  name: string,
+): AgentSlackPresence {
+  try {
+    const parsed = JSON.parse(raw ?? '{}') as Partial<AgentSlackPresence>;
+    const fallback = defaultAgentSlackPresence(agentId, name);
+    if (!parsed || typeof parsed !== 'object') return fallback;
+    return {
+      ...fallback,
+      ...parsed,
+      avatar: {
+        ...fallback.avatar,
+        ...(parsed.avatar ?? {}),
+      },
+    };
+  } catch {
+    return defaultAgentSlackPresence(agentId, name);
+  }
+}
+
+function normalizeAgentHandle(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  return normalized || 'agent';
+}
+
+function rowToWorkspaceInstallation(row: WorkspaceInstallationRow): WorkspaceInstallation {
+  return {
+    workspaceId: row.workspace_id,
+    revision: Number(row.revision),
+    transportMode: row.transport_mode === 'gateway' ? 'gateway' : 'direct',
+    defaultAgentId: row.default_agent_id,
+    ...(row.team_id ? { teamId: row.team_id } : {}),
+    ...(row.app_id ? { appId: row.app_id } : {}),
+    ...(row.bot_user_id ? { botUserId: row.bot_user_id } : {}),
+    ...(row.gateway_binding_id ? { gatewayBindingId: row.gateway_binding_id } : {}),
+    health:
+      row.health === 'healthy' || row.health === 'needs_attention' || row.health === 'revoked'
+        ? row.health
+        : 'pending',
+    ...(row.health_detail ? { healthDetail: row.health_detail } : {}),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function rowToAgentChannelGrant(row: AgentChannelGrantRow): AgentChannelGrant {
+  return {
+    workspaceId: row.workspace_id,
+    channelId: row.channel_id,
+    agentId: row.agent_id,
+    revision: Number(row.revision),
+    status:
+      row.status === 'active' || row.status === 'needs_attention'
+        ? row.status
+        : 'pending',
+    createdByMembershipId: row.created_by_membership_id,
+    ...(row.channel_label ? { channelLabel: row.channel_label } : {}),
+    ...(row.channel_is_private !== null
+      ? { channelIsPrivate: Boolean(row.channel_is_private) }
+      : {}),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function rowToAgentThreadRoute(row: AgentThreadRouteRow): AgentThreadRoute {
+  return {
+    workspaceId: row.workspace_id,
+    channelId: row.channel_id,
+    threadTs: row.thread_ts,
+    agentId: row.agent_id,
+    agentGeneration: Number(row.agent_generation),
+    revision: Number(row.revision),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function rowToConnectionAccount(row: ConnectionAccountRow): ConnectionAccount {
+  let identity: ConnectionAccount['identity'];
+  if (row.identity_json) {
+    try {
+      const parsed = JSON.parse(row.identity_json) as ConnectionAccount['identity'];
+      if (parsed && typeof parsed === 'object') identity = parsed;
+    } catch {
+      // Invalid non-secret provider metadata is omitted; secret lookup stays fenced.
+    }
+  }
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    revision: Number(row.revision),
+    ownerKind: row.owner_kind === 'member' ? 'member' : 'team',
+    ...(row.owner_membership_id ? { ownerMembershipId: row.owner_membership_id } : {}),
+    providerId: row.provider_id,
+    label: row.label,
+    ...(row.purpose ? { purpose: row.purpose } : {}),
+    ...(identity ? { identity } : {}),
+    secretRefId: row.secret_ref_id,
+    lifecycle:
+      row.lifecycle === 'ready' || row.lifecycle === 'needs_attention' || row.lifecycle === 'revoked'
+        ? row.lifecycle
+        : 'pending',
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function rowToAgentConnectionBinding(row: AgentConnectionBindingRow): AgentConnectionBinding {
+  return {
+    agentId: row.agent_id,
+    connectionAccountId: row.connection_account_id,
+    providerId: row.provider_id,
+    enabled: Boolean(row.enabled),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function rowToAgentScheduleReference(row: AgentScheduleReferenceRow): AgentScheduleReference {
+  let requiredConnectionAccountIds: string[] = [];
+  try {
+    const parsed = JSON.parse(row.required_connection_account_ids_json) as unknown;
+    if (Array.isArray(parsed)) {
+      requiredConnectionAccountIds = parsed.filter((value): value is string => typeof value === 'string');
+    }
+  } catch {
+    requiredConnectionAccountIds = [];
+  }
+  return {
+    scheduleId: row.schedule_id,
+    agentId: row.agent_id,
+    workspaceId: row.workspace_id,
+    channelId: row.channel_id,
+    creatorMembershipId: row.creator_membership_id,
+    requiredConnectionAccountIds,
+    state:
+      row.state === 'paused' || row.state === 'needs_attention' || row.state === 'archived'
+        ? row.state
+        : 'active',
+    revision: Number(row.revision),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
   };
 }
 

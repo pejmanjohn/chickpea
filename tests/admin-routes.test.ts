@@ -391,12 +391,25 @@ async function withCloudflareUserAgent<T>(run: () => Promise<T>): Promise<T> {
 }
 
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
+  const id = overrides.id ?? 'agent_admin';
+  const name = overrides.name ?? 'Admin Agent';
+  const handle = name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
   return {
-    id: 'agent_admin',
+    id,
     revision: 1,
-    name: 'Admin Agent',
+    name,
     instructions: 'Use admin-managed instructions.',
     enabled: true,
+    lifecycle: 'active',
+    editPolicy: 'creator_and_admins',
+    configurationGeneration: 1,
+    slackPresence: {
+      requestedHandle: handle,
+      normalizedHandle: handle,
+      desiredState: 'unpublished',
+      health: 'unpublished',
+      avatar: { kind: 'generated', revision: 1, seed: id },
+    },
     model: 'local-stub/admin-agent',
     skills: [],
     mcpServers: [],

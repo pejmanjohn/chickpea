@@ -71,17 +71,29 @@ import {
 } from './config/store.ts';
 import type { AgentCreateInput } from './config/types.ts';
 import type {
+  AgentChannelGrant,
+  AgentChannelGrantInput,
+  AgentConnectionBinding,
+  AgentConnectionBindingInput,
+  AgentScheduleReference,
+  AgentScheduleReferenceInput,
   AgentSnapshot,
   AgentSnapshotRootReference,
   AgentReferenceSummary,
+  AgentThreadRoute,
+  AgentThreadRouteInput,
   ChannelAssignment,
   ChannelConfig,
   ChannelPlacementMutation,
   ChannelPlacementResult,
   CustomAgentConfig,
+  ConnectionAccount,
+  ConnectionAccountInput,
+  EnsureWorkspaceInstallationInput,
   SlackIdentity,
   SlackIdentityDmState,
   SlackIdentityReferenceSummary,
+  WorkspaceInstallation,
 } from './config/types.ts';
 import type { AppendAuditEvent, AuditEvent, AuditEventFilter } from './audit/types.ts';
 import {
@@ -648,6 +660,125 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       idempotencyKey,
       stores.memory,
     ));
+  }
+
+  async configArchiveAgent(
+    agentId: string,
+    options?: { replacementDefaultAgentId?: string; expectedRevision?: number },
+  ): Promise<StateRpcResult<CustomAgentConfig>> {
+    return this.call((stores) => stores.config.archiveAgent(agentId, options));
+  }
+
+  async configRestoreAgent(
+    agentId: string,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<CustomAgentConfig>> {
+    return this.call((stores) => stores.config.restoreAgent(agentId, expectedRevision));
+  }
+
+  async configEnsureWorkspaceInstallation(
+    input: EnsureWorkspaceInstallationInput,
+  ): Promise<StateRpcResult<WorkspaceInstallation>> {
+    return this.call((stores) => stores.config.ensureWorkspaceInstallation(input));
+  }
+
+  async configGetWorkspaceInstallation(
+    workspaceId: string,
+  ): Promise<StateRpcResult<WorkspaceInstallation | null>> {
+    return this.call((stores) => stores.config.getWorkspaceInstallation(workspaceId) ?? null);
+  }
+
+  async configListWorkspaceInstallations(): Promise<StateRpcResult<WorkspaceInstallation[]>> {
+    return this.call((stores) => stores.config.listWorkspaceInstallations());
+  }
+
+  async configSetWorkspaceDefaultAgent(
+    workspaceId: string,
+    agentId: string,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<WorkspaceInstallation>> {
+    return this.call((stores) =>
+      stores.config.setWorkspaceDefaultAgent(workspaceId, agentId, expectedRevision),
+    );
+  }
+
+  async configListAgentChannelGrants(
+    workspaceId?: string,
+    channelId?: string,
+  ): Promise<StateRpcResult<AgentChannelGrant[]>> {
+    return this.call((stores) => stores.config.listAgentChannelGrants(workspaceId, channelId));
+  }
+
+  async configPutAgentChannelGrant(
+    input: AgentChannelGrantInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<AgentChannelGrant>> {
+    return this.call((stores) => stores.config.putAgentChannelGrant(input, expectedRevision));
+  }
+
+  async configDeleteAgentChannelGrant(
+    workspaceId: string,
+    channelId: string,
+    agentId: string,
+  ): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) =>
+      stores.config.deleteAgentChannelGrant(workspaceId, channelId, agentId),
+    );
+  }
+
+  async configGetAgentThreadRoute(
+    workspaceId: string,
+    channelId: string,
+    threadTs: string,
+  ): Promise<StateRpcResult<AgentThreadRoute | null>> {
+    return this.call(
+      (stores) => stores.config.getAgentThreadRoute(workspaceId, channelId, threadTs) ?? null,
+    );
+  }
+
+  async configPutAgentThreadRoute(
+    input: AgentThreadRouteInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<AgentThreadRoute>> {
+    return this.call((stores) => stores.config.putAgentThreadRoute(input, expectedRevision));
+  }
+
+  async configListConnectionAccounts(
+    workspaceId: string,
+  ): Promise<StateRpcResult<ConnectionAccount[]>> {
+    return this.call((stores) => stores.config.listConnectionAccounts(workspaceId));
+  }
+
+  async configPutConnectionAccount(
+    input: ConnectionAccountInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<ConnectionAccount>> {
+    return this.call((stores) => stores.config.putConnectionAccount(input, expectedRevision));
+  }
+
+  async configListAgentConnectionBindings(
+    agentId: string,
+  ): Promise<StateRpcResult<AgentConnectionBinding[]>> {
+    return this.call((stores) => stores.config.listAgentConnectionBindings(agentId));
+  }
+
+  async configPutAgentConnectionBinding(
+    input: AgentConnectionBindingInput,
+  ): Promise<StateRpcResult<AgentConnectionBinding>> {
+    return this.call((stores) => stores.config.putAgentConnectionBinding(input));
+  }
+
+  async configListAgentScheduleReferences(
+    agentId: string,
+  ): Promise<StateRpcResult<AgentScheduleReference[]>> {
+    return this.call((stores) => stores.config.listAgentScheduleReferences(agentId));
+  }
+
+  async configPutAgentScheduleReference(
+    input: AgentScheduleReferenceInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<AgentScheduleReference>> {
+    return this.call((stores) => stores.config.putAgentScheduleReference(input, expectedRevision));
   }
 
   async configListChannels(): Promise<StateRpcResult<ChannelConfig[]>> {

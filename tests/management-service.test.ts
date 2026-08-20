@@ -19,12 +19,25 @@ import { createSlackOwner } from './helpers/slack-owner.ts';
 const START = 1_800_000_000_000;
 
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
+  const id = overrides.id ?? 'agent_test';
+  const name = overrides.name ?? 'Test Agent';
+  const handle = name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
   return {
-    id: 'agent_test',
+    id,
     revision: 1,
-    name: 'Test Agent',
+    name,
     instructions: 'Answer carefully.',
     enabled: true,
+    lifecycle: 'active',
+    editPolicy: 'creator_and_admins',
+    configurationGeneration: 1,
+    slackPresence: {
+      requestedHandle: handle,
+      normalizedHandle: handle,
+      desiredState: 'unpublished',
+      health: 'unpublished',
+      avatar: { kind: 'generated', revision: 1, seed: id },
+    },
     skills: [],
     mcpServers: [],
     apiConnections: [],

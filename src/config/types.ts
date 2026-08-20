@@ -177,13 +177,52 @@ export interface AgentReferenceSummary {
   identityReferenceIds: string[];
 }
 
+export type AgentLifecycle = 'draft' | 'active' | 'needs_attention' | 'archived';
+export type AgentEditPolicy = 'creator_and_admins' | 'all_workspace_members';
+export type AgentPresenceDesiredState = 'unpublished' | 'active' | 'disabled';
+export type AgentPresenceHealth =
+  | 'unpublished'
+  | 'pending'
+  | 'healthy'
+  | 'needs_attention';
+
+export interface AgentAvatarRevision {
+  kind: 'generated' | 'uploaded';
+  revision: number;
+  /** Stable seed for generated art; absent after a user replaces the image. */
+  seed?: string;
+  /** Immutable public asset used for future Slack messages. */
+  url?: string;
+}
+
+/** Desired and observed Slack address state owned directly by an Agent. */
+export interface AgentSlackPresence {
+  requestedHandle: string;
+  normalizedHandle: string;
+  desiredState: AgentPresenceDesiredState;
+  health: AgentPresenceHealth;
+  avatar: AgentAvatarRevision;
+  userGroupId?: string;
+  errorCode?: string;
+  errorDetail?: string;
+  observedAt?: number;
+}
+
 export interface CustomAgentConfig {
   id: string;
   /** Durable optimistic-concurrency token. Persisted agents always expose it. */
   revision: number;
   name: string;
+  description?: string;
   instructions: string;
   enabled: boolean;
+  /** New Agent-platform lifecycle. Optional only while legacy call sites move. */
+  lifecycle?: AgentLifecycle;
+  creatorMembershipId?: string;
+  editPolicy?: AgentEditPolicy;
+  configurationGeneration?: number;
+  slackPresence?: AgentSlackPresence;
+  archivedAt?: number;
   model?: string;
   skills: SkillConfig[];
   mcpServers: McpConnectionConfig[];
@@ -192,6 +231,125 @@ export interface CustomAgentConfig {
   /** Missing means inherit WORKSPACE_DEFAULT_SLACK_IDENTITY_ID. */
   slackIdentityId?: string;
 }
+
+export type SlackTransportMode = 'direct' | 'gateway';
+export type InstallationHealth = 'pending' | 'healthy' | 'needs_attention' | 'revoked';
+
+/** One Slack installation per deployed workspace; never a user-facing identity. */
+export interface WorkspaceInstallation {
+  workspaceId: string;
+  revision: number;
+  transportMode: SlackTransportMode;
+  defaultAgentId: string;
+  teamId?: string;
+  appId?: string;
+  botUserId?: string;
+  gatewayBindingId?: string;
+  health: InstallationHealth;
+  healthDetail?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface EnsureWorkspaceInstallationInput {
+  workspaceId: string;
+  transportMode: SlackTransportMode;
+  defaultAgentId?: string;
+  teamId?: string;
+  appId?: string;
+  botUserId?: string;
+  gatewayBindingId?: string;
+}
+
+export type AgentChannelGrantStatus = 'pending' | 'active' | 'needs_attention';
+
+/** A Channel grants reach to many Agents and carries no behavior of its own. */
+export interface AgentChannelGrant {
+  workspaceId: string;
+  channelId: string;
+  agentId: string;
+  revision: number;
+  status: AgentChannelGrantStatus;
+  createdByMembershipId: string;
+  channelLabel?: string;
+  channelIsPrivate?: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type AgentChannelGrantInput = Omit<
+  AgentChannelGrant,
+  'revision' | 'createdAt' | 'updatedAt'
+>;
+
+export interface AgentThreadRoute {
+  workspaceId: string;
+  channelId: string;
+  threadTs: string;
+  agentId: string;
+  agentGeneration: number;
+  revision: number;
+  updatedAt: number;
+}
+
+export type AgentThreadRouteInput = Omit<AgentThreadRoute, 'revision' | 'updatedAt'>;
+
+export type ConnectionAccountOwnerKind = 'team' | 'member';
+export type ConnectionAccountLifecycle = 'pending' | 'ready' | 'needs_attention' | 'revoked';
+
+/** Reusable credential ownership record; secret material stays behind secretRefId. */
+export interface ConnectionAccount {
+  id: string;
+  workspaceId: string;
+  revision: number;
+  ownerKind: ConnectionAccountOwnerKind;
+  ownerMembershipId?: string;
+  providerId: string;
+  label: string;
+  purpose?: string;
+  identity?: McpConnectionIdentity;
+  secretRefId: string;
+  lifecycle: ConnectionAccountLifecycle;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type ConnectionAccountInput = Omit<ConnectionAccount, 'revision' | 'createdAt' | 'updatedAt'>;
+
+export interface AgentConnectionBinding {
+  agentId: string;
+  connectionAccountId: string;
+  providerId: string;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type AgentConnectionBindingInput = Omit<
+  AgentConnectionBinding,
+  'createdAt' | 'updatedAt'
+>;
+
+export type AgentScheduleState = 'active' | 'paused' | 'needs_attention' | 'archived';
+
+/** Cross-domain authority reference; the routine engine owns execution details. */
+export interface AgentScheduleReference {
+  scheduleId: string;
+  agentId: string;
+  workspaceId: string;
+  channelId: string;
+  creatorMembershipId: string;
+  requiredConnectionAccountIds: string[];
+  state: AgentScheduleState;
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type AgentScheduleReferenceInput = Omit<
+  AgentScheduleReference,
+  'revision' | 'createdAt' | 'updatedAt'
+>;
 
 /** Create/seed input. Persistence assigns revision 1 regardless of caller input. */
 export type AgentCreateInput = Omit<CustomAgentConfig, 'revision'> & { revision?: number };

@@ -27,17 +27,29 @@ import type {
 } from './store.ts';
 import type {
   AgentCreateInput,
+  AgentChannelGrant,
+  AgentChannelGrantInput,
+  AgentConnectionBinding,
+  AgentConnectionBindingInput,
+  AgentScheduleReference,
+  AgentScheduleReferenceInput,
   AgentSnapshot,
   AgentSnapshotRootReference,
   AgentReferenceSummary,
+  AgentThreadRoute,
+  AgentThreadRouteInput,
   ChannelAssignment,
   ChannelConfig,
   ChannelPlacementMutation,
   ChannelPlacementResult,
   CustomAgentConfig,
+  ConnectionAccount,
+  ConnectionAccountInput,
+  EnsureWorkspaceInstallationInput,
   SlackIdentity,
   SlackIdentityDmState,
   SlackIdentityReferenceSummary,
+  WorkspaceInstallation,
 } from './types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import { ManagementError, type ManagementRpcRequest, type ManagementRpcResponse } from '../management/types.ts';
@@ -1121,6 +1133,112 @@ export class CfConfigStore implements ConfigStore {
     idempotencyKey: string,
   ): Promise<boolean> {
     return unwrap(await this.stub.configDeleteAgentWithMemory(agentId, idempotencyKey));
+  }
+
+  async archiveAgent(
+    agentId: string,
+    options?: { replacementDefaultAgentId?: string; expectedRevision?: number },
+  ): Promise<CustomAgentConfig> {
+    return unwrap(await this.stub.configArchiveAgent(agentId, options));
+  }
+
+  async restoreAgent(agentId: string, expectedRevision?: number): Promise<CustomAgentConfig> {
+    return unwrap(await this.stub.configRestoreAgent(agentId, expectedRevision));
+  }
+
+  async ensureWorkspaceInstallation(
+    input: EnsureWorkspaceInstallationInput,
+  ): Promise<WorkspaceInstallation> {
+    return unwrap(await this.stub.configEnsureWorkspaceInstallation(input));
+  }
+
+  async getWorkspaceInstallation(workspaceId: string): Promise<WorkspaceInstallation | undefined> {
+    return orUndefined(unwrap(await this.stub.configGetWorkspaceInstallation(workspaceId)));
+  }
+
+  async listWorkspaceInstallations(): Promise<WorkspaceInstallation[]> {
+    return unwrap(await this.stub.configListWorkspaceInstallations());
+  }
+
+  async setWorkspaceDefaultAgent(
+    workspaceId: string,
+    agentId: string,
+    expectedRevision?: number,
+  ): Promise<WorkspaceInstallation> {
+    return unwrap(
+      await this.stub.configSetWorkspaceDefaultAgent(workspaceId, agentId, expectedRevision),
+    );
+  }
+
+  async listAgentChannelGrants(
+    workspaceId?: string,
+    channelId?: string,
+  ): Promise<AgentChannelGrant[]> {
+    return unwrap(await this.stub.configListAgentChannelGrants(workspaceId, channelId));
+  }
+
+  async putAgentChannelGrant(
+    input: AgentChannelGrantInput,
+    expectedRevision?: number,
+  ): Promise<AgentChannelGrant> {
+    return unwrap(await this.stub.configPutAgentChannelGrant(input, expectedRevision));
+  }
+
+  async deleteAgentChannelGrant(
+    workspaceId: string,
+    channelId: string,
+    agentId: string,
+  ): Promise<boolean> {
+    return unwrap(await this.stub.configDeleteAgentChannelGrant(workspaceId, channelId, agentId));
+  }
+
+  async getAgentThreadRoute(
+    workspaceId: string,
+    channelId: string,
+    threadTs: string,
+  ): Promise<AgentThreadRoute | undefined> {
+    return orUndefined(
+      unwrap(await this.stub.configGetAgentThreadRoute(workspaceId, channelId, threadTs)),
+    );
+  }
+
+  async putAgentThreadRoute(
+    input: AgentThreadRouteInput,
+    expectedRevision?: number,
+  ): Promise<AgentThreadRoute> {
+    return unwrap(await this.stub.configPutAgentThreadRoute(input, expectedRevision));
+  }
+
+  async listConnectionAccounts(workspaceId: string): Promise<ConnectionAccount[]> {
+    return unwrap(await this.stub.configListConnectionAccounts(workspaceId));
+  }
+
+  async putConnectionAccount(
+    input: ConnectionAccountInput,
+    expectedRevision?: number,
+  ): Promise<ConnectionAccount> {
+    return unwrap(await this.stub.configPutConnectionAccount(input, expectedRevision));
+  }
+
+  async listAgentConnectionBindings(agentId: string): Promise<AgentConnectionBinding[]> {
+    return unwrap(await this.stub.configListAgentConnectionBindings(agentId));
+  }
+
+  async putAgentConnectionBinding(
+    input: AgentConnectionBindingInput,
+  ): Promise<AgentConnectionBinding> {
+    return unwrap(await this.stub.configPutAgentConnectionBinding(input));
+  }
+
+  async listAgentScheduleReferences(agentId: string): Promise<AgentScheduleReference[]> {
+    return unwrap(await this.stub.configListAgentScheduleReferences(agentId));
+  }
+
+  async putAgentScheduleReference(
+    input: AgentScheduleReferenceInput,
+    expectedRevision?: number,
+  ): Promise<AgentScheduleReference> {
+    return unwrap(await this.stub.configPutAgentScheduleReference(input, expectedRevision));
   }
 
   async listChannels(): Promise<ChannelConfig[]> {
