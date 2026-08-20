@@ -45,10 +45,8 @@ interface AutonomousMemoryDependencies {
   id?: (prefix: string) => string;
 }
 
-export function autonomousMemoryInstruction(target: AutonomousMemoryTarget): string {
-  const destination = target === 'agent'
-    ? 'Agent memory, which follows this Agent wherever it works'
-    : 'exact Channel memory, which is available only in this Channel';
+export function autonomousMemoryInstruction(_target: AutonomousMemoryTarget): string {
+  const destination = 'Agent memory, which follows this Agent wherever it works';
   return [
     `Use remember_memory to save to ${destination}.`,
     'If the current user explicitly asks you to remember, retain, keep, save, or note something for later, in any wording, infer the intent semantically and call the tool when the content is clear and safe.',
@@ -63,13 +61,13 @@ export function autonomousMemoryInstruction(target: AutonomousMemoryTarget): str
 }
 
 export function createAutonomousAgentMemoryTool(
-  target: AutonomousMemoryTarget,
+  _target: AutonomousMemoryTarget,
   save: (input: AutonomousMemoryInput) => Promise<{ slug: string; version: number }>,
   options: {
     finishDenied?: (result: AutonomousMemoryResult) => void;
   } = {},
 ) {
-  const label = target === 'agent' ? 'Agent' : 'Channel';
+  const label = 'Agent';
   return {
     name: 'remember_memory',
     description: `Save one explicit memory request or durable reusable fact, preference, decision, feedback item, or project convention to ${label} memory.`,
@@ -80,7 +78,7 @@ export function createAutonomousAgentMemoryTool(
         const saved = await save(data);
         return { output: `Saved ${label} memory \`${saved.slug}\` (v${saved.version}).` };
       } catch (error) {
-        const failure = autonomousMemoryFailureText(target, error);
+        const failure = autonomousMemoryFailureText(error);
         if (failure) {
           const result: AutonomousMemoryResult = {
             outcome: 'not_saved',
@@ -104,16 +102,11 @@ export function autonomousMemoryResultText(value: unknown): string | undefined {
   return parsed.success ? parsed.output.at(-1)?.text : undefined;
 }
 
-function autonomousMemoryFailureText(
-  target: AutonomousMemoryTarget,
-  error: unknown,
-): string | undefined {
+function autonomousMemoryFailureText(error: unknown): string | undefined {
   if (!(error instanceof MemoryStateError)) return undefined;
   switch (error.code) {
     case 'memory_actor_forbidden':
-      return target === 'agent'
-        ? 'Only an active Owner or Admin can create autonomous Agent memory.'
-        : 'Only a current Channel member can create autonomous Channel memory.';
+      return 'Only an active workspace member currently permitted to use this Agent can change its memory.';
     case 'memory_actor_unavailable':
       return 'Chickpea could not verify an active Owner or Admin.';
     case 'memory_membership_unknown':
@@ -131,12 +124,9 @@ export async function saveAutonomousMemory(
   dependencies: AutonomousMemoryDependencies,
 ): Promise<{ entry: OwnerMemoryEntry }> {
   if (!(await dependencies.authorize(coordinates))) {
-    const message = coordinates.surface === 'direct_message'
-      ? 'Only an active Owner or Admin can create autonomous Agent memory.'
-      : 'Only a current Channel member can create autonomous Channel memory.';
     throw new MemoryStateError(
       'memory_actor_forbidden',
-      message,
+      'Only an active workspace member currently permitted to use this Agent can change its memory.',
     );
   }
   const agentOwner = await dependencies.state.ensureOwner({
@@ -144,22 +134,12 @@ export async function saveAutonomousMemory(
     ownerKind: 'agent',
     ownerId: coordinates.agentId,
   });
-  const channelOwner = coordinates.surface === 'channel_thread'
-    ? await dependencies.state.ensureOwner({
-        workspaceId: coordinates.workspaceId,
-        ownerKind: 'channel',
-        ownerId: coordinates.channelId,
-      })
-    : undefined;
-  const scope = coordinates.surface === 'direct_message'
-    ? bindAuthorizedMemoryScope({
-        surface: 'dm', workspaceId: coordinates.workspaceId,
-        agentOwner, writeOwner: agentOwner,
-      })
-    : bindAuthorizedMemoryScope({
-        surface: 'channel', workspaceId: coordinates.workspaceId,
-        agentOwner, channelOwner: channelOwner!, writeOwner: channelOwner!,
-      });
+  const scope = bindAuthorizedMemoryScope({
+    surface: coordinates.surface === 'direct_message' ? 'dm' : 'channel',
+    workspaceId: coordinates.workspaceId,
+    agentOwner,
+    writeOwner: agentOwner,
+  });
   const digest = createHash('sha256').update(JSON.stringify([
     coordinates.surface,
     coordinates.workspaceId,

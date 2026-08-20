@@ -164,7 +164,9 @@ interface AgentScheduleReferenceRow {
   agent_id: string;
   workspace_id: string;
   channel_id: string;
-  creator_membership_id: string;
+  created_by_membership_id: string;
+  runs_as_membership_id: string;
+  authority_receipt_id: string;
   required_connection_account_ids_json: string;
   state: string;
   revision: number;
@@ -324,6 +326,7 @@ export interface ConfigStore {
   listAgentConnectionBindings(agentId: string): Promise<AgentConnectionBinding[]>;
   putAgentConnectionBinding(input: AgentConnectionBindingInput): Promise<AgentConnectionBinding>;
   listAgentScheduleReferences(agentId: string): Promise<AgentScheduleReference[]>;
+  getAgentScheduleReference(scheduleId: string): Promise<AgentScheduleReference | undefined>;
   putAgentScheduleReference(
     input: AgentScheduleReferenceInput,
     expectedRevision?: number,
@@ -862,6 +865,14 @@ export class ConfigStoreLogic {
       .map((row) => rowToAgentScheduleReference(row as unknown as AgentScheduleReferenceRow));
   }
 
+  getAgentScheduleReference(scheduleId: string): AgentScheduleReference | undefined {
+    const row = this.db.get(
+      'SELECT * FROM config_agent_schedule_references WHERE schedule_id = ?',
+      scheduleId,
+    ) as unknown as AgentScheduleReferenceRow | undefined;
+    return row ? rowToAgentScheduleReference(row) : undefined;
+  }
+
   putAgentScheduleReference(
     input: AgentScheduleReferenceInput,
     expectedRevision?: number,
@@ -878,14 +889,17 @@ export class ConfigStoreLogic {
       }
       this.db.run(
         `INSERT INTO config_agent_schedule_references (
-          schedule_id, agent_id, workspace_id, channel_id, creator_membership_id,
+          schedule_id, agent_id, workspace_id, channel_id, created_by_membership_id,
+          runs_as_membership_id, authority_receipt_id,
           required_connection_account_ids_json, state, revision, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         input.scheduleId,
         input.agentId,
         input.workspaceId,
         input.channelId,
-        input.creatorMembershipId,
+        input.createdByMembershipId,
+        input.runsAsMembershipId,
+        input.authorityReceiptId,
         JSON.stringify(input.requiredConnectionAccountIds),
         input.state,
         now,
@@ -898,16 +912,28 @@ export class ConfigStoreLogic {
           `Agent schedule reference changed (expected revision ${requiredRevision}, actual ${current.revision})`,
         );
       }
+      if (input.createdByMembershipId !== current.created_by_membership_id) {
+        throw new Error('A schedule creator is immutable');
+      }
+      if (
+        input.runsAsMembershipId !== current.runs_as_membership_id &&
+        input.authorityReceiptId === current.authority_receipt_id
+      ) {
+        throw new Error('Schedule authority reassignment requires a new receipt');
+      }
       this.db.run(
         `UPDATE config_agent_schedule_references
-         SET agent_id = ?, workspace_id = ?, channel_id = ?, creator_membership_id = ?,
+         SET agent_id = ?, workspace_id = ?, channel_id = ?, created_by_membership_id = ?,
+             runs_as_membership_id = ?, authority_receipt_id = ?,
              required_connection_account_ids_json = ?, state = ?,
              revision = revision + 1, updated_at = ?
          WHERE schedule_id = ? AND revision = ?`,
         input.agentId,
         input.workspaceId,
         input.channelId,
-        input.creatorMembershipId,
+        input.createdByMembershipId,
+        input.runsAsMembershipId,
+        input.authorityReceiptId,
         JSON.stringify(input.requiredConnectionAccountIds),
         input.state,
         now,
@@ -1887,7 +1913,9 @@ export class ConfigStoreLogic {
         agent_id TEXT NOT NULL,
         workspace_id TEXT NOT NULL,
         channel_id TEXT NOT NULL,
-        creator_membership_id TEXT NOT NULL,
+        created_by_membership_id TEXT NOT NULL,
+        runs_as_membership_id TEXT NOT NULL,
+        authority_receipt_id TEXT NOT NULL,
         required_connection_account_ids_json TEXT NOT NULL,
         state TEXT NOT NULL,
         revision INTEGER NOT NULL,
@@ -2548,7 +2576,9 @@ function rowToAgentScheduleReference(row: AgentScheduleReferenceRow): AgentSched
     agentId: row.agent_id,
     workspaceId: row.workspace_id,
     channelId: row.channel_id,
-    creatorMembershipId: row.creator_membership_id,
+    createdByMembershipId: row.created_by_membership_id,
+    runsAsMembershipId: row.runs_as_membership_id,
+    authorityReceiptId: row.authority_receipt_id,
     requiredConnectionAccountIds,
     state:
       row.state === 'paused' || row.state === 'needs_attention' || row.state === 'archived'

@@ -28,11 +28,10 @@ function service(state: SqliteMemoryStateStore): MemoryService {
   });
 }
 
-test('owner-native service reads Agent plus exact Channel and always writes the prebound owner', async () => {
+test('owner-native service reads and writes the same Agent memory on every surface', async () => {
   const state = new SqliteMemoryStateStore(':memory:', () => 1_000);
   try {
     const agent = await state.ensureOwner({ workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: 'agent_default' });
-    const channel = await state.ensureOwner({ workspaceId: 'T_TEST', ownerKind: 'channel', ownerId: 'C_SOURCE' });
     const other = await state.ensureOwner({ workspaceId: 'T_TEST', ownerKind: 'channel', ownerId: 'C_OTHER' });
     await state.createOwnerEntry({
       entryId: 'mem_agent', storeId: agent.storeId, workspaceId: 'T_TEST', slug: 'shared',
@@ -45,8 +44,7 @@ test('owner-native service reads Agent plus exact Channel and always writes the 
       actorClass: 'operator', idempotencyKey: 'seed:other',
     });
     const scope = bindAuthorizedMemoryScope({
-      surface: 'channel', workspaceId: 'T_TEST', agentOwner: agent, channelOwner: channel,
-      writeOwner: channel,
+      surface: 'channel', workspaceId: 'T_TEST', agentOwner: agent, writeOwner: agent,
     });
     const memory = service(state);
     const created = await memory.remember({
@@ -56,21 +54,23 @@ test('owner-native service reads Agent plus exact Channel and always writes the 
       // Deliberately untrusted extra input: the service has no owner argument and ignores it.
       ownerId: agent.ownerId,
     } as Parameters<MemoryService['remember']>[0] & { ownerId: string });
-    assert.equal(created.entry.storeId, channel.storeId);
+    assert.equal(created.entry.storeId, agent.storeId);
     await assert.rejects(() => memory.remember({
       scope, workspaceId: 'T_TEST', actorId: 'U_MEMBER', eventId: 'E_OWNER',
       name: 'Channel only', description: 'Changed replay', type: 'fact', body: 'Different body',
       idempotencyKey: 'owner:remember:1',
     }), /different memory content/i);
-    assert.deepEqual((await memory.list({ scope })).map(({ entryId }) => entryId), ['mem_agent', created.entry.entryId]);
+    assert.deepEqual((await memory.list({ scope })).map(({ entryId }) => entryId).sort(), [
+      'mem_agent', created.entry.entryId,
+    ].sort());
     assert.equal((await state.listOwnerEntries(other)).length, 1);
 
-    const dm = bindAuthorizedMemoryScope({ surface: 'dm', workspaceId: 'T_TEST', agentOwner: agent });
-    assert.deepEqual((await memory.list({ scope: dm })).map(({ entryId }) => entryId), ['mem_agent']);
-    await assert.rejects(() => memory.remember({
-      scope: dm, workspaceId: 'T_TEST', actorId: 'U_MEMBER', eventId: 'E_DM', name: 'No write',
-      description: 'No write', type: 'fact', body: 'No write', idempotencyKey: 'owner:dm:1',
-    }), /not authorized/i);
+    const dm = bindAuthorizedMemoryScope({
+      surface: 'dm', workspaceId: 'T_TEST', agentOwner: agent, writeOwner: agent,
+    });
+    assert.deepEqual((await memory.list({ scope: dm })).map(({ entryId }) => entryId).sort(), [
+      'mem_agent', created.entry.entryId,
+    ].sort());
   } finally {
     state.close();
   }
@@ -79,9 +79,9 @@ test('owner-native service reads Agent plus exact Channel and always writes the 
 test('owner-native mutations preserve conflicts, review, expiry, merge, and irreversible forget', async () => {
   const state = new SqliteMemoryStateStore(':memory:', () => 1_000);
   try {
-    const channel = await state.ensureOwner({ workspaceId: 'T_TEST', ownerKind: 'channel', ownerId: 'C_SOURCE' });
+    const agent = await state.ensureOwner({ workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: 'agent_default' });
     const scope = bindAuthorizedMemoryScope({
-      surface: 'admin', workspaceId: 'T_TEST', channelOwner: channel, writeOwner: channel,
+      surface: 'admin', workspaceId: 'T_TEST', agentOwner: agent, writeOwner: agent,
     });
     const memory = service(state);
     const first = await memory.remember({
@@ -124,7 +124,7 @@ test('owner-native mutations preserve conflicts, review, expiry, merge, and irre
     });
     assert.equal(forgotten.entry.status, 'forgotten');
     assert.equal(forgotten.entry.body, '');
-    assert.ok((await state.listAuditEvents({ storeId: channel.storeId }))
+    assert.ok((await state.listAuditEvents({ storeId: agent.storeId }))
       .some(({ eventType }) => eventType === 'memory.merged'));
   } finally { state.close(); }
 });

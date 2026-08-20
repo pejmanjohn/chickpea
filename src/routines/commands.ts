@@ -1,5 +1,6 @@
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { getRoutineStore } from '../config/state-backend.ts';
+import type { ResolvedAssignment } from '../config/types.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { SlackIdentityExecutionContext } from '../slack/identity-execution.ts';
@@ -32,6 +33,10 @@ import {
   type RoutineCapability,
 } from './scheduler-adapter.ts';
 import { RoutineService, type RoutineSaveRequest } from './service.ts';
+import {
+  bindRoutineAgentAuthority,
+  resolveRoutineAgentAuthority,
+} from './agent-authority.ts';
 import {
   canManageRoutineChannel,
   parseSlackChannelMention,
@@ -68,6 +73,9 @@ interface RoutineCommandExecutionContext {
   now: () => number;
   canManageChannel: typeof canManageRoutineChannel;
   botToken?: string;
+  assignment?: ResolvedAssignment;
+  bindAuthority: typeof bindRoutineAgentAuthority;
+  resolveAuthority: typeof resolveRoutineAgentAuthority;
 }
 
 const OPAQUE = '[A-Za-z0-9_-]{1,200}';
@@ -132,6 +140,11 @@ export async function handleRoutineSlackRequest(
     capability?: RoutineCapability;
     canManageChannel?: typeof canManageRoutineChannel;
     identityContext?: SlackIdentityExecutionContext;
+    assignment?: ResolvedAssignment;
+    /** Test seam; production always uses the canonical Agent authority binder. */
+    bindAuthority?: typeof bindRoutineAgentAuthority;
+    /** Test seam; production always re-resolves live Agent authority. */
+    resolveAuthority?: typeof resolveRoutineAgentAuthority;
   } = {},
 ): Promise<string | undefined> {
   const store = dependencies.store ?? getRoutineStore(env);
@@ -140,7 +153,11 @@ export async function handleRoutineSlackRequest(
   const canManageChannel = dependencies.canManageChannel ?? canManageRoutineChannel;
   const botToken = dependencies.identityContext?.botToken;
   const commandContext: RoutineCommandExecutionContext = {
-    turn, store, env, capability, now, canManageChannel, ...(botToken ? { botToken } : {}),
+    turn, store, env, capability, now, canManageChannel,
+    bindAuthority: dependencies.bindAuthority ?? bindRoutineAgentAuthority,
+    resolveAuthority: dependencies.resolveAuthority ?? resolveRoutineAgentAuthority,
+    ...(botToken ? { botToken } : {}),
+    ...(dependencies.assignment ? { assignment: dependencies.assignment } : {}),
   };
   const command = parseRoutineCommand(turn.text);
   if (command) {
@@ -191,7 +208,17 @@ export async function handleRoutineSlackRequest(
   try {
     if (intent.action === 'create' || intent.action === 'edit') {
       requireRoutineScheduling(capability);
-      return await saveRoutineIntent(intent, turn, store, now, defaultTimezone, env, botToken);
+      return await saveRoutineIntent(
+        intent,
+        turn,
+        store,
+        now,
+        defaultTimezone,
+        env,
+        botToken,
+        dependencies.assignment,
+        dependencies.bindAuthority ?? bindRoutineAgentAuthority,
+      );
     }
     if (isRoutineManagementIntent(intent)) {
       return await executeNaturalRoutineManagement(intent, commandContext);
@@ -206,7 +233,10 @@ async function executeRoutineCommand(
   command: RoutineCommand,
   context: RoutineCommandExecutionContext,
 ): Promise<string> {
-  const { turn, store, env, capability, now, canManageChannel, botToken } = context;
+  const {
+    turn, store, env, capability, now, canManageChannel, botToken, assignment,
+    bindAuthority, resolveAuthority,
+  } = context;
   const service = new RoutineService(store, { now });
   if (command.kind === 'help' || command.kind === 'invalid') return renderRoutineHelp();
   if (command.kind === 'list') {
@@ -292,6 +322,8 @@ async function executeRoutineCommand(
   }
   if (command.kind === 'run') {
     requireRoutineScheduling(capability);
+    const authority = await resolveAuthority(routine, env);
+    if (assignment && authority.reference.agentId !== assignment.agentId) return notFoundText();
     if (routine.triggerKind === 'once') {
       throw new RoutineStateError(
         'routine_one_time_run_unsupported',
@@ -350,6 +382,7 @@ async function executeRoutineCommand(
         botToken,
       ),
     }, `routine:slack:${turn.eventId}:clone:${routine.id}`);
+    await bindSavedRoutineAuthority(created, assignment, turn, env, service, bindAuthority);
     return renderRoutineSaved(created, { action: 'create' });
   }
   const receipt = await service.createConfirmation({
@@ -371,6 +404,8 @@ async function saveRoutineIntent(
   defaultTimezone?: string,
   env?: PlatformEnv,
   botToken?: string,
+  assignment?: ResolvedAssignment,
+  bindAuthority: typeof bindRoutineAgentAuthority = bindRoutineAgentAuthority,
 ): Promise<string> {
   const service = new RoutineService(store, { now });
   const resolution = intent.action === 'edit'
@@ -448,10 +483,55 @@ async function saveRoutineIntent(
     request,
     `routine:slack:${turn.eventId}:${action}:${request.routineId ?? 'new'}`,
   );
+  await bindSavedRoutineAuthority(routine, assignment, turn, env, service, bindAuthority);
   return renderRoutineSaved(routine, {
     action,
     timezoneDefaulted: !current && (intent.timezoneWasDefaulted === true || !intent.timezone),
   });
+}
+
+async function bindSavedRoutineAuthority(
+  routine: RoutineDefinition,
+  assignment: ResolvedAssignment | undefined,
+  turn: NormalizedSlackTurn,
+  env: PlatformEnv | undefined,
+  service: RoutineService,
+  bindAuthority: typeof bindRoutineAgentAuthority,
+): Promise<void> {
+  if (!assignment || !turn.actorMembershipId) {
+    await service.control({
+      routineId: routine.id,
+      expectedVersion: routine.version,
+      action: 'pause',
+      actorId: turn.userId,
+      actorClass: 'member',
+      reasonCode: 'schedule_authority_missing',
+      idempotencyKey: `routine:authority-missing:${routine.id}:${routine.version}`,
+    });
+    throw new RoutineStateError(
+      'routine_access_denied',
+      'The schedule was saved paused because its Agent or Runs as member was unavailable.',
+    );
+  }
+  try {
+    await bindAuthority({
+      routine,
+      assignment,
+      actorMembershipId: turn.actorMembershipId,
+      env,
+    });
+  } catch (error) {
+    await service.control({
+      routineId: routine.id,
+      expectedVersion: routine.version,
+      action: 'pause',
+      actorId: turn.userId,
+      actorClass: 'member',
+      reasonCode: 'schedule_authority_missing',
+      idempotencyKey: `routine:authority-failed:${routine.id}:${routine.version}`,
+    }).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function executeNaturalRoutineManagement(

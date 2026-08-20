@@ -1848,7 +1848,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 .channel-enabled-control { align-items: center; display: flex; gap: 9px; }
 .channel-enabled-label { color: var(--text-2); font-size: .6875rem; font-weight: 700; }
 .channel-header-error { background: #fbf1da; border-radius: 10px; color: #835e1e; font-size: .75rem; margin-top: 7px; padding: 9px 11px; }
-.channel-agent-section, .channel-capabilities-section, .channel-participation-section, .channel-try-section { margin-top: 0; }
+.channel-agent-section, .channel-capabilities-section, .channel-try-section { margin-top: 0; }
 .channel-agent-hero { align-items: center; background: var(--ember-tint); display: grid; grid-template-columns: auto minmax(0, 1fr) auto; padding: 18px; }
 .channel-agent-hero > .agent-roster-icon { height: 44px; width: 44px; }
 .channel-agent-hero > .agent-roster-icon .ic { height: 21px; width: 21px; }
@@ -1867,9 +1867,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 .channel-section-heading > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .channel-section-heading .section-title, .channel-section-heading .hint { margin: 0; }
 .channel-section-slack-mark { height: 18px; width: 18px; }
-.channel-participation-card { align-items: center; background: var(--well); border-radius: 14px; display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr) minmax(220px, 300px); padding: 16px 18px; }
-.channel-participation-copy { display: flex; flex-direction: column; gap: 3px; }
-.channel-participation-card .field { min-width: 0; }
 .channel-try-card { align-items: center; display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr) auto; }
 .channel-try-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .channel-try-prompt { color: var(--text); font-size: .8125rem; font-weight: 700; line-height: 1.55; }
@@ -1954,7 +1951,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   .channel-detail-controls { justify-content: space-between; padding-top: 0; width: 100%; }
   .channel-agent-hero { align-items: flex-start; grid-template-columns: auto minmax(0, 1fr); }
   .channel-agent-actions { grid-column: 1 / -1; justify-content: flex-end; width: 100%; }
-  .channel-participation-card, .channel-try-card { align-items: stretch; grid-template-columns: 1fr; }
+  .channel-try-card { align-items: stretch; grid-template-columns: 1fr; }
   .channel-try-actions { justify-content: flex-start; }
   .channels-index-head { align-items: stretch; flex-direction: column; }
   .channels-index-head .btn-primary { align-self: flex-start; }
@@ -2550,10 +2547,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     channelIndexError: "",
     channelIndexQuery: "",
     swapOpen: false,
-    channelDraft: { enabled: true, channelPromptAddendum: "", participationMode: "ambient" },
+    channelDraft: { enabled: true },
     // Channel-memory actions re-render the page. Preserve this disclosure so
     // those actions do not hide their own form inside a collapsed <details>.
-    channelAdvancedOpen: false,
     channelTryNotice: "",
     channelTryError: false,
     channelTryRequestId: 0,
@@ -2664,6 +2660,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // view deliberately exposes Team vs My account without ever receiving a
     // credential or secret reference from the server.
     agentConnections: { agentId: "", workspaceId: "", attached: [], available: [], loading: false, error: "", notice: "" },
+    agentSchedules: { agentId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" },
     connectionAccountsSupported: null,
     connectionAccountForm: null,
     // Non-null only while the gallery's single Custom connection flow is open.
@@ -2980,6 +2977,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       "arrow-path": "M13.836 2.477a.75.75 0 0 1 .75.75v3.182a.75.75 0 0 1-.75.75h-3.182a.75.75 0 0 1 0-1.5h1.37l-.84-.841a4.5 4.5 0 0 0-7.08.932.75.75 0 0 1-1.3-.75 6 6 0 0 1 9.44-1.242l.842.84V3.227a.75.75 0 0 1 .75-.75Zm-.911 7.5A.75.75 0 0 1 13.2 11a6 6 0 0 1-9.44 1.241l-.84-.84v1.372a.75.75 0 0 1-1.5 0V9.591a.75.75 0 0 1 .75-.75H5.35a.75.75 0 0 1 0 1.5H3.98l.841.84a4.5 4.5 0 0 0 7.08-.932.75.75 0 0 1 1.025-.272Z",
       "exclamation-triangle": "M6.701 2.25c.577-1 2.02-1 2.598 0l5.196 9a1.5 1.5 0 0 1-1.299 2.25H2.804a1.5 1.5 0 0 1-1.299-2.25l5.196-9ZM8 5a.75.75 0 0 1 .75.75v2.5a.75.75 0 0 1-1.5 0v-2.5A.75.75 0 0 1 8 5Zm0 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z",
       robot: "M6.5 1.75a1.5 1.5 0 0 1 3 0v.5h1.75A2.75 2.75 0 0 1 14 5v5a2.75 2.75 0 0 1-2.75 2.75h-.5v1a.75.75 0 0 1-1.5 0v-1h-2.5v1a.75.75 0 0 1-1.5 0v-1h-.5A2.75 2.75 0 0 1 2 10V5a2.75 2.75 0 0 1 2.75-2.75H6.5v-.5Zm-1.75 2A1.25 1.25 0 0 0 3.5 5v5c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25V5c0-.69-.56-1.25-1.25-1.25h-6.5ZM6 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2Zm4 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2ZM5.75 9h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1 0-1.5Z",
+      clock: "M8 1.25a6.75 6.75 0 1 0 0 13.5 6.75 6.75 0 0 0 0-13.5Zm0 1.5A5.25 5.25 0 1 1 8 13.25 5.25 5.25 0 0 1 8 2.75Zm.75 1.5a.75.75 0 0 0-1.5 0V8c0 .2.08.39.22.53l2.5 2.5a.75.75 0 1 0 1.06-1.06L8.75 7.69V4.25Z",
       ellipsis: "M3.75 8a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Zm5.5 0a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Zm5.5 0a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Z",
       gear: "M8.75 1.25a.75.75 0 0 0-1.5 0v.58a6.2 6.2 0 0 0-1.38.57l-.41-.41A.75.75 0 0 0 4.4 3.05l.41.41c-.24.44-.43.9-.57 1.38h-.58a.75.75 0 0 0 0 1.5h.58c.14.48.33.94.57 1.38l-.41.41A.75.75 0 1 0 5.46 9.2l.41-.41c.44.24.9.43 1.38.57v.58a.75.75 0 0 0 1.5 0v-.58a6.2 6.2 0 0 0 1.38-.57l.41.41a.75.75 0 1 0 1.06-1.06l-.41-.41c.24-.44.43-.9.57-1.38h.58a.75.75 0 0 0 0-1.5h-.58a6.2 6.2 0 0 0-.57-1.38l.41-.41A.75.75 0 0 0 10.54 2l-.41.41a6.2 6.2 0 0 0-1.38-.57v-.59ZM8 7.5a1.9 1.9 0 1 1 0-3.8 1.9 1.9 0 0 1 0 3.8Z",
       hash: "M5.9 2.14a.75.75 0 0 1 .71.97L6.08 4.8h3.4l.6-1.91a.75.75 0 1 1 1.43.44l-.46 1.47h1.7a.75.75 0 0 1 0 1.5h-2.17l-1 3.2h2.17a.75.75 0 0 1 0 1.5H9.11l-.6 1.91a.75.75 0 1 1-1.43-.44L7.54 11h-3.4l-.6 1.91a.75.75 0 1 1-1.43-.44L2.57 11H.75a.75.75 0 0 1 0-1.5h2.29l1-3.2H1.75a.75.75 0 0 1 0-1.5h2.76l.68-2.17a.75.75 0 0 1 .71-.52Zm-.29 4.16-1 3.2H8l1-3.2H5.61Z",
@@ -3080,8 +3078,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       channelLabel: channel.channelName,
       agentId: channel.assignment && channel.assignment.agentId || "",
       enabled: true,
-      channelPromptAddendum: "",
-      participationMode: channel.behavior && channel.behavior.participationMode || "ambient"
+      participationMode: "mention_only"
     };
   }
 
@@ -3192,6 +3189,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     resetProfileTransientState();
     render();
     loadAgentConnections(selected.id);
+    loadAgentSchedules(selected.id);
     loadOwnerMemory("agent", connectedTeamId(), selected.id);
   }
 
@@ -3203,6 +3201,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.editingAgentId = null;
     resetProfileTransientState();
     state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], loading: false, error: "", notice: "" };
+    state.agentSchedules = { agentId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
     render();
   }
 
@@ -4534,7 +4533,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       // non-blocking empty so the rest of the admin still renders.
       var emptyBlock = state.addChannelOpen ? "" : '<div class="empty">' +
         '<h1 class="page-title">No channels yet &mdash; add one</h1>' +
-        '<p class="hint">Pick a Slack Channel and assign an Agent. Mentions guarantee a response; Chickpea may also join useful unmentioned conversation.</p>' +
+        '<p class="hint">Pick a Slack Channel and assign an Agent. Then mention the Agent handle when you want it to respond.</p>' +
         addChannelButtonHtml("btn btn-soft") +
         '</div>';
       return '<main class="main"><div class="main-inner">' + invite + addPanel + emptyBlock + '</div></main>';
@@ -4553,15 +4552,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       channelBack +
       '<span class="agent-kicker">Slack Channel</span>' +
       '<h1 class="page-title mono-title">' + esc(channelLabel(assignment)) + '</h1>' +
-      '<p class="hint">Its assigned Agent supplies the capabilities; this page holds only Channel-local behavior and memory.</p>' +
+      '<p class="hint">Channels are reach grants. Agent behavior, memory, connections, and schedules stay on the Agent.</p>' +
       headerError + '</div><div class="channel-detail-controls"><span class="channel-detail-status ' + detailStatus.key + '" title="' + esc(detailStatus.reason) + '" role="status">' + esc(detailStatus.label) + '</span>' +
       '<label class="channel-enabled-control"><span class="channel-enabled-label">' + (enabled ? "Enabled" : "Disabled") + '</span>' +
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="channel-enabled" ' + (enabled ? "checked" : "") + ' aria-label="Channel enabled"></span></label></div></header>' +
       profileSectionHtml(agent, assignment) +
       channelCapabilitiesHtml(agent) +
-      channelInstructionsHtml() +
       channelTryHtml(assignment) +
-      advancedHtml(assignment) +
       saveBarHtml() +
       '</div></div></main>';
   }
@@ -4620,7 +4617,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       slackBehaviorRowHtml("allowDms", "Allow direct messages", "Chickpea answers Slack DMs with the install\'s base Agent and provider budget.") +
       slackBehaviorRowHtml("unassignedHint", "Help people configure unassigned channels", "When someone mentions " + slackMentionText() + " in an unassigned channel, Chickpea privately shares setup steps.") +
       slackBehaviorRowHtml("welcomeOnJoin", "Post a welcome when " + slackMentionText() + " joins an assigned channel", "Chickpea starts the conversation with a short welcome message.") +
-      slackBehaviorRowHtml("ambientParticipation", "Allow ambient participation", "Chickpea may selectively respond to useful unmentioned messages in assigned channels. Turn this off for an installation-wide mention-only rollback.") +
       slackBehaviorRowHtml("nativeTasks", "Show native task plans", "Project admitted Work as Slack task cards. The existing checklist remains the fallback when Slack rejects the native stream.") +
       slackBehaviorRowHtml("progressiveStreaming", "Stream safe answer text", "Show answer-only text as it is generated. Memory, recovery, sandbox, and effect-capable turns remain terminal-only.") +
       '</div>' +
@@ -4667,8 +4663,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
           channelName: normalizeChannelLabel(assignment.channelLabel) || assignment.channelId,
           assignment: agent ? { agentId: agent.id, agentName: agent.name, agentEnabled: agent.enabled } : null,
           behavior: {
-            participationMode: assignment.participationMode || "ambient",
-            hasAdditionalInstructions: !!assignment.channelPromptAddendum
+            participationMode: "mention_only",
+            hasAdditionalInstructions: false
           },
           readiness: null,
           configured: true
@@ -4972,6 +4968,47 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     });
   }
 
+  function loadAgentSchedules(agentId) {
+    state.agentSchedules = { agentId: agentId, schedules: [], members: [], loading: true, busy: "", error: "", notice: "" };
+    render();
+    return api("/admin/api/agents/" + encodeURIComponent(agentId) + "/schedules", { cache: "no-store" }).then(function (body) {
+      if (state.agentSchedules.agentId !== agentId) return;
+      state.agentSchedules.schedules = body.schedules || [];
+      state.agentSchedules.members = body.members || [];
+      state.agentSchedules.loading = false;
+      state.agentSchedules.error = "";
+      render();
+    }).catch(function (error) {
+      if (state.agentSchedules.agentId !== agentId) return;
+      state.agentSchedules.loading = false;
+      state.agentSchedules.error = (error && (error.serverMessage || error.message)) || "Could not load schedules.";
+      render();
+    });
+  }
+
+  function reassignAgentSchedule(scheduleId, expectedRevision) {
+    var schedules = state.agentSchedules;
+    var select = document.getElementById("schedule-runs-as-" + scheduleId);
+    var membershipId = select && select.value ? select.value : "";
+    if (!membershipId || schedules.busy) return;
+    schedules.busy = scheduleId;
+    schedules.error = "";
+    schedules.notice = "";
+    render();
+    return postJson(
+      "/admin/api/agents/" + encodeURIComponent(schedules.agentId) + "/schedules/" + encodeURIComponent(scheduleId) + "/reassign",
+      "POST",
+      { runsAsMembershipId: membershipId, expectedAuthorityRevision: Number(expectedRevision) }
+    ).then(function () {
+      schedules.notice = "Schedule authority updated and paused work resumed.";
+      return loadAgentSchedules(schedules.agentId);
+    }).catch(function (error) {
+      schedules.busy = "";
+      schedules.error = (error && (error.serverMessage || error.message)) || "Could not update Runs as.";
+      render();
+    });
+  }
+
   function newConnectionAccountForm() {
     state.connectionAccountForm = {
       ownerKind: "team",
@@ -5227,7 +5264,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function addChannelPanelHtml() {
     if (!state.addChannelOpen) return "";
     var head = '<div class="section-head"><div><h2 class="section-title">Add a channel</h2>' +
-      '<p class="hint">Add a Slack Channel and assign ' + esc(addChannelAgentName()) + '. Mentions guarantee a response; ambient messages may also be evaluated.</p></div>' +
+      '<p class="hint">Add a Slack Channel and assign ' + esc(addChannelAgentName()) + '. Mention an Agent handle when you want it to respond.</p></div>' +
       '<button type="button" class="btn btn-ghost btn-sm" data-action="cancel-add-channel">Cancel</button></div>';
     if (!isSlackConnected()) {
       return '<section class="section">' + head +
@@ -5375,29 +5412,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '<div class="channel-capability-groups">' + channelCapabilityGroupHtml("skill", "Skills", skills) + channelCapabilityGroupHtml("connector", "Connectors", connectors) + channelCapabilityGroupHtml("repository", "Repositories", repositories) + '</div></section>';
   }
 
-  function channelInstructionsHtml() {
-    return '<section class="section channel-participation-section"><div class="channel-participation-card"><div class="channel-participation-copy"><div class="channel-section-heading"><span class="channel-section-icon semantic-icon tone-slack" role="img" aria-label="Slack"><span class="channel-section-slack-mark slack-logo-image" aria-hidden="true"></span></span><div><h2 class="section-title">When it speaks</h2><p class="hint">Mentions always receive a response. Ambient participation can also contribute when it is useful.</p></div></div></div>' +
-      '<div class="field"><label class="field-label" for="participation-mode">Participation</label>' +
-      '<span class="select-wrap"><select class="input" id="participation-mode" data-action="channel-participation">' +
-      '<option value="ambient"' + (state.channelDraft.participationMode === "ambient" ? " selected" : "") + '>Ambient (mentions guaranteed)</option>' +
-      '<option value="mention_only"' + (state.channelDraft.participationMode === "mention_only" ? " selected" : "") + '>Mention only</option></select>' + icon("chevron-down", "select-caret") + '</span>' +
-      '<p class="hint">Channel-only; the Agent stays unchanged.</p></div></div></section>';
-  }
-
   function channelTryHtml(assignment) {
     var deepLink = "https://app.slack.com/client/" + encodeURIComponent(assignment.workspaceId) + "/" + encodeURIComponent(assignment.channelId);
     var noticeClass = state.channelTryError ? " error" : "";
     return '<section class="section channel-try-section"><div class="channel-try-card"><div class="channel-try-copy"><span class="agent-kicker">Try it in Slack</span><p class="channel-try-prompt">' + esc(ONBOARDING_PROMPT) + '</p><span class="hint">A real Slack reply is the proof that this placement is ready.</span><span class="channel-try-status' + noticeClass + '" role="status">' + esc(state.channelTryNotice) + '</span></div>' +
       '<div class="channel-try-actions"><button type="button" class="btn btn-soft" data-action="copy-channel-prompt">Copy prompt</button><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Open ' + esc(channelLabel(assignment)) + '</a></div></div></section>';
-  }
-
-  function advancedHtml(assignment) {
-    var assignedMemoryAgent = agentById(assignment.agentId);
-    return '<details class="advanced channel-advanced-card"' + (state.channelAdvancedOpen ? " open" : "") + '><summary data-action="channel-advanced-toggle">Advanced</summary><div class="channel-advanced-content">' +
-      '<section class="channel-advanced-section"><div class="section-head"><div><h2 class="section-title">Additional instructions</h2><p class="hint">Appended after the assigned Agent instructions in this Channel only.</p></div></div>' +
-      '<div class="field"><label class="field-label" for="addendum">Channel additional instructions</label><textarea class="textarea" id="addendum" rows="6" data-action="channel-addendum" placeholder="Add context unique to this Channel">' + esc(state.channelDraft.channelPromptAddendum || "") + '</textarea></div></section>' +
-      '<section class="channel-advanced-section"><div class="section-head"><div><h2 class="section-title">Channel memory</h2><p class="hint">Exact-Channel files stay here even if the assigned Agent changes.</p></div></div>' + ownerMemoryPanelHtml("channel", assignment.channelId, assignment.channelLabel || assignment.channelId, assignedMemoryAgent ? assignedMemoryAgent.name : "No Agent assigned") + '</section>' +
-      '</div></details>';
   }
 
   function saveBarHtml() {
@@ -5841,7 +5860,45 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '<button type="button" class="owner-memory-add" data-action="owner-memory-create-open"' + (memory.busy || memory.dirty ? " disabled" : "") + '><strong>+ Add file</strong><small>Markdown memory</small></button></aside>' + editor + '</div>' + status;
   }
 
-  // ---- Capability tabs (Instructions / Skills / Connectors / Repositories / Memory) -
+  function agentSchedulesPanelHtml(draft) {
+    var schedules = state.agentSchedules;
+    if (!draft || !draft.id) {
+      return '<div class="empty"><p class="field-label">Save this Agent to add schedules</p><p class="hint">Scheduled work always belongs to one Agent and one Runs as member.</p></div>';
+    }
+    if (schedules.agentId !== draft.id || schedules.loading) {
+      return '<div class="empty"><p class="hint">Loading Agent schedules&hellip;</p></div>';
+    }
+    var status = schedules.error
+      ? '<p class="error" role="alert">' + esc(schedules.error) + ' <button type="button" class="btn btn-soft btn-sm" data-action="agent-schedules-retry">Retry</button></p>'
+      : schedules.notice ? '<p class="hint" role="status">' + esc(schedules.notice) + '</p>' : '';
+    if (!schedules.schedules.length) {
+      return status + '<div class="empty"><p class="field-label">No scheduled work</p><p class="hint">Ask this Agent in Slack to schedule a recurring or one-time task. The destination, required connections, and Runs as authority are saved together.</p></div>';
+    }
+    var rows = schedules.schedules.map(function (entry) {
+      var reference = entry.reference || {};
+      var routine = entry.routine || {};
+      var runsAs = entry.runsAs || {};
+      var needsAttention = reference.state === "needs_attention" || routine.state === "paused";
+      var memberOptions = (schedules.members || []).map(function (member) {
+        var selected = member.membershipId === reference.runsAsMembershipId;
+        var label = member.displayName || member.contactEmail || member.membershipId;
+        return '<option value="' + esc(member.membershipId) + '"' + (selected ? ' selected' : '') + '>' + esc(label) + '</option>';
+      }).join("");
+      return '<article class="connection-account-row"><div class="connection-account-copy"><div><strong>' + esc(routine.name || reference.scheduleId) + '</strong> ' +
+        '<span class="badge ' + (needsAttention ? 'badge-off' : 'badge-on') + '">' + esc(needsAttention ? "Needs attention" : (routine.state || reference.state || "active")) + '</span></div>' +
+        '<p class="hint">' + esc(routine.description || "Scheduled Agent work") + '</p>' +
+        '<p class="hint"><strong>Runs as:</strong> ' + esc(runsAs.displayName || runsAs.contactEmail || reference.runsAsMembershipId || "Unavailable") +
+        ' &middot; <strong>Destination:</strong> ' + esc(reference.channelId || "") +
+        ' &middot; <strong>Connections:</strong> ' + Number((reference.requiredConnectionAccountIds || []).length) + '</p>' +
+        (routine.pausedReason ? '<p class="error">Paused: ' + esc(routine.pausedReason) + '</p>' : '') + '</div>' +
+        '<div class="connection-account-actions"><label class="field-label" for="schedule-runs-as-' + esc(reference.scheduleId) + '">Runs as</label>' +
+        '<select class="select" id="schedule-runs-as-' + esc(reference.scheduleId) + '">' + memberOptions + '</select>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="agent-schedule-reassign" data-schedule-id="' + esc(reference.scheduleId) + '" data-revision="' + Number(reference.revision || 0) + '"' + (schedules.busy ? ' disabled' : '') + '>Save authority</button></div></article>';
+    }).join("");
+    return status + '<p class="hint ptab-hint">Each schedule uses this Agent\\'s instructions and memory. Team connections are shared; personal connections always resolve as the named member.</p><div class="connection-account-list">' + rows + '</div>';
+  }
+
+  // ---- Capability tabs (Instructions / Skills / Connectors / Repositories / Memory / Schedules) -
 
   // One panel is visible at a time; the other three stay MOUNTED but [hidden] so
   // their form fields survive re-renders and collectProfileDraft() keeps
@@ -5857,7 +5914,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       skills: !!(state.skillEditor || state.skillImport),
       connections: !!(state.connectionEditor || state.apiConnectionEditor),
       repositories: !!(state.repositoryPicker || state.repositoryAddOpen),
-      memory: !!state.ownerMemory.dirty
+      memory: !!state.ownerMemory.dirty,
+      schedules: !!state.agentSchedules.error
     };
     var repositoryCount = enabledRepositoryGrants(draft).length;
     var tabs = [
@@ -5865,7 +5923,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       { id: "skills", label: "Skills", count: (draft.skills || []).filter(function (skill) { return skill.enabled; }).length, icon: "sparkle", tone: "skill", description: "Repeatable ways this Agent knows how to help." },
       { id: "connections", label: "Connectors", count: state.agentConnections.agentId === draft.id && !state.agentConnections.legacyFallback ? state.agentConnections.attached.length : (draft.mcpServers || []).length + (draft.apiConnections || []).length, icon: "check", tone: "connector", description: "Team and personal accounts this Agent can use." },
       { id: "repositories", label: "Repositories", count: repositoryCount, icon: "repository", tone: "repository", description: "Code and documentation this Agent can work with." },
-      { id: "memory", label: "Memory", count: ownerMemoryFileCount(), icon: "robot", tone: "memory", description: "Durable context this Agent can use wherever it works." }
+      { id: "memory", label: "Memory", count: ownerMemoryFileCount(), icon: "robot", tone: "memory", description: "Durable context this Agent can use wherever it works." },
+      { id: "schedules", label: "Schedules", count: state.agentSchedules.agentId === draft.id ? state.agentSchedules.schedules.length : 0, icon: "clock", tone: "schedule", description: "Recurring and one-time work owned by this Agent." }
     ];
     var bar = tabs.map(function (tab) {
       var on = tab.id === active;
@@ -5885,13 +5944,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       panel(tabs[2], connectionsPanelHtml(draft)) +
       panel(tabs[3], repositoriesPanelHtml(draft)) +
       panel(tabs[4], ownerMemoryPanelHtml("agent", draft.id, draft.name)) +
+      panel(tabs[5], agentSchedulesPanelHtml(draft)) +
       '</div>' +
       '</section>';
   }
 
   function instructionsPanelHtml(draft, showPlaceholder) {
     return '<div class="field agent-instructions-editor">' + profileInstructionsFieldHtml(draft, showPlaceholder) +
-      '<p class="agent-instructions-guidance">' + icon("check") + '<span>Channels can add local instructions without replacing this Agent behavior.</span></p></div>';
+      '<p class="agent-instructions-guidance">' + icon("check") + '<span>These instructions follow the Agent across every permitted Channel and DM.</span></p></div>';
   }
 
   function skillsPanelHtml(draft) {
@@ -11192,21 +11252,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }, 1600);
   }
 
-  // The dirty -> enabled rule for the save bar lives in saveBarHtml; this
-  // mirrors it for the keystroke path, which skips a full render to preserve
-  // textarea focus.
-  function syncSaveBar() {
-    var discard = document.querySelector('[data-action="discard-channel"]');
-    var save = document.querySelector('[data-action="save-channel"]');
-    if (discard) discard.disabled = !state.dirty;
-    if (save) save.disabled = !state.dirty;
-  }
-
   function channelDraftFrom(assignment) {
     return {
-      enabled: assignment ? assignment.enabled : true,
-      channelPromptAddendum: (assignment && assignment.channelPromptAddendum) || "",
-      participationMode: (assignment && assignment.participationMode) || "ambient"
+      enabled: assignment ? assignment.enabled : true
     };
   }
 
@@ -11215,7 +11263,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.active = { workspaceId: workspaceId, channelId: channelId };
     var assignment = activeChannelRecord();
     state.channelDraft = channelDraftFrom(assignment);
-    state.channelAdvancedOpen = false;
     state.channelTryRequestId += 1;
     state.channelTryNotice = "";
     state.channelTryError = false;
@@ -11227,11 +11274,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.addChannelInvite = "";
     // Re-render when the resolution lands — the click handler's synchronous
     // render() only paints the "Resolving..." placeholder.
-    Promise.all([
-      loadEffective(),
-      loadChannelScheduledRoutines(workspaceId, channelId),
-      loadOwnerMemory("channel", workspaceId, channelId)
-    ]).then(render);
+    loadEffective().then(render);
   }
 
   var onboardingPollTimer = null;
@@ -11505,8 +11548,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (expectedAgentId !== undefined) body.expectedAgentId = expectedAgentId;
     var normalizedLabel = normalizeChannelLabel(label);
     if (normalizedLabel) body.channelLabel = normalizedLabel;
-    if (addendum !== undefined) body.channelPromptAddendum = addendum;
-    if (participationMode === "ambient" || participationMode === "mention_only") body.participationMode = participationMode;
+    body.participationMode = "mention_only";
     return postJson("/admin/api/assignments", "PUT", body);
   }
 
@@ -11855,10 +11897,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "copy-onboarding-prompt") { copyOnboardingPrompt(); }
     if (action === "copy-channel-prompt") { copyChannelPrompt(); }
     if (action === "select-channel") { state.view = "channels"; state.channelScreen = "detail"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
-    if (action === "channel-advanced-toggle") {
-      var channelAdvancedDetails = target.closest("details");
-      state.channelAdvancedOpen = !(channelAdvancedDetails && channelAdvancedDetails.open);
-    }
     if (action === "open-channel-memory") {
       openAuditLogs(target.getAttribute("data-store") || "", target.getAttribute("data-channel") || "", "");
     }
@@ -11960,6 +11998,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "connection-account-attach") { attachConnectionAccount(target.getAttribute("data-connection-id") || ""); }
     if (action === "connection-account-detach") { detachConnectionAccount(target.getAttribute("data-connection-id") || ""); }
     if (action === "connection-account-revoke") { revokeConnectionAccount(target.getAttribute("data-connection-id") || ""); }
+    if (action === "agent-schedules-retry" && state.profileDraft) { loadAgentSchedules(state.profileDraft.id); }
+    if (action === "agent-schedule-reassign") {
+      reassignAgentSchedule(
+        target.getAttribute("data-schedule-id") || "",
+        target.getAttribute("data-revision") || "0"
+      );
+    }
     if (action === "repo-add") { openRepositoryAdd(); }
     if (action === "repo-add-cancel") { closeRepositoryPicker(); }
     if (action === "repo-manage") {
@@ -12550,12 +12595,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       if (action === "owner-memory-create-description") { state.ownerMemory.createDraft.description = target.value; state.ownerMemory.error = ""; }
       if (action === "owner-memory-create-body") { state.ownerMemory.createDraft.body = target.value; state.ownerMemory.error = ""; }
     }
-    if (action === "channel-addendum") {
-      state.channelDraft.channelPromptAddendum = target.value;
-      state.dirty = true;
-      state.saveError = "";
-      syncSaveBar();
-    }
     if (action === "slack-identity-create-app-name") { state.slackIdentityCreateDraft.appName = target.value; }
     if (action === "slack-identity-create-display-name") { state.slackIdentityCreateDraft.displayName = target.value; }
     if (action === "slack-identity-setup-app-name") { state.slackIdentitySetupDraft.appName = target.value; }
@@ -12800,11 +12839,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }
     if (action === "channel-enabled") {
       state.channelDraft.enabled = target.checked;
-      state.dirty = true;
-      render();
-    }
-    if (action === "channel-participation") {
-      state.channelDraft.participationMode = target.value === "mention_only" ? "mention_only" : "ambient";
       state.dirty = true;
       render();
     }
@@ -13549,9 +13583,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var assignment = activeChannelRecord();
     var select = document.querySelector('[data-role="swap-profile"]');
     if (!assignment || !select) return;
-    // Swap only the profile; keep the channel's persisted enabled/instructions
-    // so an unsaved textarea edit is not committed as a side effect.
-    putAssignment(assignment.workspaceId, assignment.channelId, select.value, assignment.enabled, assignment.channelPromptAddendum, assignment.channelLabel, assignment.participationMode || state.channelDraft.participationMode, assignment.agentId || null).then(function () {
+    putAssignment(assignment.workspaceId, assignment.channelId, select.value, assignment.enabled, undefined, assignment.channelLabel, "mention_only", assignment.agentId || null).then(function () {
       state.swapOpen = false;
       return refreshData();
     }).catch(function (error) { state.saveError = addChannelErrorText(error); render(); });
@@ -13560,7 +13592,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function saveChannel(onSaved) {
     var assignment = activeChannelRecord();
     if (!assignment) return;
-    putAssignment(assignment.workspaceId, assignment.channelId, assignment.agentId, state.channelDraft.enabled, state.channelDraft.channelPromptAddendum, assignment.channelLabel, state.channelDraft.participationMode, assignment.agentId).then(function () {
+    putAssignment(assignment.workspaceId, assignment.channelId, assignment.agentId, state.channelDraft.enabled, undefined, assignment.channelLabel, "mention_only", assignment.agentId).then(function () {
       state.dirty = false;
       state.saveError = "";
       return refreshData().then(function () {

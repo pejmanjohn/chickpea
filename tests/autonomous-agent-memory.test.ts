@@ -58,24 +58,24 @@ test('the autonomous memory tool reports an expected denied write without claimi
   const tool = createAutonomousAgentMemoryTool('agent', async () => {
     throw new MemoryStateError(
       'memory_actor_forbidden',
-      'Only an active Owner or Admin can create autonomous Agent memory.',
+      'Only an active workspace member currently permitted to use this Agent can change its memory.',
     );
   }, {
     finishDenied: (result) => terminal.push(result),
   });
 
   assert.deepEqual(await tool.run({ data: durableFact }), {
-    output: 'Memory was not saved: Only an active Owner or Admin can create autonomous Agent memory.',
+    output: 'Memory was not saved: Only an active workspace member currently permitted to use this Agent can change its memory.',
     terminate: true,
   });
   assert.equal(AUTONOMOUS_MEMORY_RESULT_DATA_NAME, 'autonomousMemoryResult');
   assert.deepEqual(terminal, [{
     outcome: 'not_saved',
-    text: 'Memory was not saved: Only an active Owner or Admin can create autonomous Agent memory.',
+    text: 'Memory was not saved: Only an active workspace member currently permitted to use this Agent can change its memory.',
   }]);
   assert.equal(
     autonomousMemoryResultText(terminal),
-    'Memory was not saved: Only an active Owner or Admin can create autonomous Agent memory.',
+    'Memory was not saved: Only an active workspace member currently permitted to use this Agent can change its memory.',
   );
   assert.equal(autonomousMemoryResultText([{ outcome: 'saved', text: 'false claim' }]), undefined);
   assert.ok(AutonomousMemoryResultSchema);
@@ -105,7 +105,7 @@ test('the autonomous memory tool reports a real authorization denial without cre
     });
 
     assert.deepEqual(await tool.run({ data: durableFact }), {
-      output: 'Memory was not saved: Only an active Owner or Admin can create autonomous Agent memory.',
+      output: 'Memory was not saved: Only an active workspace member currently permitted to use this Agent can change its memory.',
     });
     assert.deepEqual(await memory.listOwners(coordinates.workspaceId), []);
   } finally {
@@ -168,7 +168,7 @@ test('autonomous Agent memory is owner-authorized, durable, and idempotent', asy
   }
 });
 
-test('semantic channel memory writes only to the exact Channel owner', async () => {
+test('semantic channel memory writes to the same Agent memory used in DMs', async () => {
   const memory = new SqliteMemoryStateStore(':memory:', () => 1_783_000_000_000);
   const channelCoordinates = {
     ...coordinates,
@@ -192,17 +192,17 @@ test('semantic channel memory writes only to the exact Channel owner', async () 
       ownerId: coordinates.agentId,
     });
 
-    assert.equal(saved.entry.ownerKind, 'channel');
-    assert.equal((await memory.listOwnerEntries(channelOwner)).length, 1);
-    assert.equal((await memory.listOwnerEntries(agentOwner)).length, 0);
-    assert.deepEqual(saved.entry.writeOrigin, { kind: 'slack_channel', channelId: 'C_AUTO' });
-    assert.match(autonomousMemoryInstruction('channel'), /exact Channel memory/i);
+    assert.equal(saved.entry.ownerKind, 'agent');
+    assert.equal((await memory.listOwnerEntries(channelOwner)).length, 0);
+    assert.equal((await memory.listOwnerEntries(agentOwner)).length, 1);
+    assert.deepEqual(saved.entry.writeOrigin, { kind: 'admin' });
+    assert.match(autonomousMemoryInstruction('channel'), /Agent memory/i);
   } finally {
     memory.close();
   }
 });
 
-test('autonomous Agent memory rejects a DM actor who is not an active Owner or Admin', async () => {
+test('autonomous Agent memory rejects a DM actor who is not an active permitted member', async () => {
   const memory = new SqliteMemoryStateStore(':memory:');
   try {
     await assert.rejects(
@@ -210,7 +210,7 @@ test('autonomous Agent memory rejects a DM actor who is not an active Owner or A
         state: memory,
         authorize: async () => false,
       }),
-      /Only an active Owner or Admin can create autonomous Agent memory/,
+      /Only an active workspace member currently permitted to use this Agent can change its memory/,
     );
     assert.deepEqual(await memory.listOwners(coordinates.workspaceId), []);
   } finally {

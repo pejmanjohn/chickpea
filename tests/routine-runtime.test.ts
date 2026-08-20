@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import type { WebClient } from '@slack/web-api';
 
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
-import { NoAssignmentError } from '../src/config/errors.ts';
+import { RoutineAuthorityError } from '../src/routines/agent-authority.ts';
 import {
   resolveRoutineRuntimeAccess,
   RoutineRuntimeError,
@@ -43,7 +43,8 @@ const run = {
   scheduledFor: 1, triggerSource: 'schedule', requestedBy: null, status: 'admitting',
   failureClass: null, publicError: null, admissionOwner: 'heartbeat', admissionLeaseUntil: 2,
   flueRunId: 'run_test', queuedAt: 1, admittedAt: 1, startedAt: null, finishedAt: null,
-  resolvedAccessHash: null, resolvedAgentId: null, model: null, inputTokens: null,
+  resolvedAccessHash: null, resolvedAgentId: null, resolvedAuthorityReceiptId: null,
+  resolvedRunsAsMembershipId: null, model: null, inputTokens: null,
   providerAuthRoute: null,
   outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costEstimate: null,
   costUnit: null, deadlineAt: 9999999999999, sandboxSessionId: null, toolCallCount: 0,
@@ -178,7 +179,9 @@ test('runtime access fails closed for creator removal, bot removal, and assignme
   );
   await assert.rejects(
     () => resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
-      config: async () => { throw new NoAssignmentError('gone'); },
+      authority: async () => {
+        throw new RoutineAuthorityError('schedule_authority_missing', 'gone');
+      },
     })),
     (error: unknown) => error instanceof RoutineRuntimeError && error.failureClass === 'assignment_missing',
   );

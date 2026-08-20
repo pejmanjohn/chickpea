@@ -24,33 +24,26 @@ const fullMember = {
   stranger: false,
 };
 
-test('trusted owner binding permits exactly Agent plus exact Channel, or Agent-only DM', () => {
+test('trusted owner binding permits exactly one Agent memory on every surface', () => {
   const agent = {
     storeId: 'memory_owner_agent_T_TEST_agent_default', workspaceId: 'T_TEST',
     ownerKind: 'agent' as const, ownerId: 'agent_default', lifecycle: 'active' as const,
     resetEpoch: 3, createdAt: 1, sealedAt: null, sealedReason: null, schemaVersion: 2 as const,
   };
-  const channel = {
-    ...agent, storeId: 'memory_owner_channel_T_TEST_C_SOURCE', ownerKind: 'channel' as const,
-    ownerId: 'C_SOURCE', resetEpoch: 7,
-  };
   const channelScope = bindAuthorizedMemoryScope({
-    surface: 'channel', workspaceId: 'T_TEST', agentOwner: agent,
-    channelOwner: channel, writeOwner: channel,
+    surface: 'channel', workspaceId: 'T_TEST', agentOwner: agent, writeOwner: agent,
   });
-  assert.deepEqual(channelScope.readOwners.map(({ ownerKind }) => ownerKind), ['agent', 'channel']);
-  assert.equal(channelScope.writeOwner?.ownerKind, 'channel');
+  assert.deepEqual(channelScope.readOwners.map(({ ownerKind }) => ownerKind), ['agent']);
+  assert.equal(channelScope.writeOwner?.ownerKind, 'agent');
   const dmScope = bindAuthorizedMemoryScope({
-    surface: 'dm', workspaceId: 'T_TEST', agentOwner: agent,
+    surface: 'dm', workspaceId: 'T_TEST', agentOwner: agent, writeOwner: agent,
   });
   assert.deepEqual(dmScope.readOwners.map(({ ownerKind }) => ownerKind), ['agent']);
-  assert.equal(dmScope.writeOwner, null);
+  assert.equal(dmScope.writeOwner?.ownerKind, 'agent');
   assert.throws(() => bindAuthorizedMemoryScope({
     surface: 'channel', workspaceId: 'T_TEST', agentOwner: agent,
-    channelOwner: {
-      ...channel, ownerId: 'C_OTHER', storeId: 'memory_owner_channel_T_TEST_C_OTHER',
-    }, writeOwner: channel,
-  }), /write owner/i);
+    channelOwner: { ...agent, ownerKind: 'channel' as const, ownerId: 'C_OTHER' },
+  }), /Agent memory/i);
 });
 
 function slack(overrides: Partial<MemoryScopeSlack> = {}): MemoryScopeSlack {

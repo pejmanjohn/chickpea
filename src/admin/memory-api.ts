@@ -30,7 +30,6 @@ import {
   type MemoryEntryFilter,
   type MemoryEntryScopeSummary,
   type MemoryOwnerDescriptor,
-  type MemoryOwnerKind,
   type MemoryOwnerRef,
   type MemoryRevision,
   type MemoryStateStore,
@@ -620,11 +619,11 @@ async function listAllEntries(
 
 async function routeOwner(c: Context, state: MemoryStateStore): Promise<MemoryOwnerDescriptor> {
   const ownerKind = c.req.param('ownerKind');
-  if (ownerKind !== 'agent' && ownerKind !== 'channel') {
-    throw new MemoryStateError('memory_owner_invalid', 'Memory owner is invalid.');
+  if (ownerKind !== 'agent') {
+    throw new MemoryStateError('memory_owner_invalid', 'Memory belongs to an Agent.');
   }
   const ownerRef: MemoryOwnerRef = {
-    ownerKind: ownerKind as MemoryOwnerKind,
+    ownerKind: 'agent',
     workspaceId: parseId(requiredRouteParam(c, 'workspaceId')),
     ownerId: parseId(requiredRouteParam(c, 'ownerId')),
   };

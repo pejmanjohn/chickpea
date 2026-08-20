@@ -176,6 +176,8 @@ interface RunRow {
   finished_at: number | null;
   resolved_access_hash: string | null;
   resolved_agent_id: string | null;
+  resolved_authority_receipt_id: string | null;
+  resolved_runs_as_membership_id: string | null;
   model: string | null;
   provider_auth_route: RoutineRun['providerAuthRoute'];
   input_tokens: number | null;
@@ -1556,13 +1558,16 @@ export class RoutineStoreLogic {
       }
       this.db.run(
         `UPDATE routine_runs SET status = 'running', started_at = ?,
-           resolved_access_hash = ?, resolved_agent_id = ?, model = ?,
+           resolved_access_hash = ?, resolved_agent_id = ?,
+           resolved_authority_receipt_id = ?, resolved_runs_as_membership_id = ?, model = ?,
            provider_auth_route = ?, trace_id = ?, flue_agent_envelope_json = ?,
            admission_owner = NULL, admission_lease_until = NULL
          WHERE id = ? AND status = 'admitting'`,
         input.startedAt,
         input.resolvedAccessHash,
         input.resolvedAgentId,
+        input.resolvedAuthorityReceiptId,
+        input.resolvedRunsAsMembershipId,
         input.model,
         input.providerAuthRoute ?? null,
         input.traceId,
@@ -1886,7 +1891,8 @@ export class RoutineStoreLogic {
         flue_agent_envelope_json TEXT, flue_agent_settlement_json TEXT,
         queued_at INTEGER NOT NULL,
         admitted_at INTEGER, started_at INTEGER, finished_at INTEGER,
-        resolved_access_hash TEXT, resolved_agent_id TEXT, model TEXT,
+        resolved_access_hash TEXT, resolved_agent_id TEXT,
+        resolved_authority_receipt_id TEXT, resolved_runs_as_membership_id TEXT, model TEXT,
         provider_auth_route TEXT,
         input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
         cache_write_tokens INTEGER, cost_estimate REAL, cost_unit TEXT,
@@ -1907,6 +1913,8 @@ export class RoutineStoreLogic {
       ['usage_completeness', 'TEXT'],
       ['flue_agent_envelope_json', 'TEXT'],
       ['flue_agent_settlement_json', 'TEXT'],
+      ['resolved_authority_receipt_id', 'TEXT'],
+      ['resolved_runs_as_membership_id', 'TEXT'],
     ] as const) {
       if (!runColumns.some((column) => column.name === name)) {
         this.db.exec(`ALTER TABLE routine_runs ADD COLUMN ${name} ${definition}`);
@@ -2957,6 +2965,8 @@ function validateAgentDispatchInput(input: PrepareRoutineAgentDispatchInput): vo
     !Number.isSafeInteger(input.startedAt) ||
     !/^[a-f0-9]{64}$/.test(input.resolvedAccessHash) ||
     !isOpaqueRoutineId(input.resolvedAgentId) ||
+    !isOpaqueRoutineId(input.resolvedAuthorityReceiptId) ||
+    !isOpaqueRoutineId(input.resolvedRunsAsMembershipId) ||
     !input.model || input.model.length > 500 ||
     (input.providerAuthRoute !== undefined &&
       !['openai_api_key', 'openai_subscription'].includes(input.providerAuthRoute)) ||
@@ -3225,6 +3235,8 @@ function rowToRun(row: RunRow): RoutineRun {
     finishedAt: row.finished_at,
     resolvedAccessHash: row.resolved_access_hash,
     resolvedAgentId: row.resolved_agent_id,
+    resolvedAuthorityReceiptId: row.resolved_authority_receipt_id,
+    resolvedRunsAsMembershipId: row.resolved_runs_as_membership_id,
     model: row.model,
     providerAuthRoute: row.provider_auth_route,
     inputTokens: row.input_tokens,

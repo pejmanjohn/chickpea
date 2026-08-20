@@ -230,6 +230,11 @@ import { generateSlackIdentityIngressKey, type ConfigStore } from '../config/sto
 import type { AgentCreateInput } from '../config/types.ts';
 import type { MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
+import { RoutineService } from '../routines/service.ts';
+import {
+  reassignRoutineAgentAuthority,
+  RoutineAuthorityError,
+} from '../routines/agent-authority.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
@@ -767,6 +772,11 @@ const connectionAccountAttachSchema = v.object({
     v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(256))),
     v.maxLength(128),
   )),
+});
+
+const scheduleAuthorityReassignSchema = v.strictObject({
+  runsAsMembershipId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9_-]{1,200}$/)),
+  expectedAuthorityRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
 });
 
 const repositoryGrantSchema = v.pipe(
@@ -1629,6 +1639,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!(error instanceof UnknownAgentError)) throw error;
     }
   };
+  const enforceAgentMemoryAuthority = async (
+    c: Context,
+    principal: AuthPrincipal,
+  ): Promise<void> => {
+    const match = c.req.path.match(
+      /^\/admin\/api\/audit\/memory\/owners\/([^/]+)\/[^/]+\/([^/]+)(?:\/|$)/,
+    );
+    if (!match) return;
+    const ownerKind = decodeURIComponent(match[1]!);
+    if (ownerKind !== 'agent') {
+      throw new AuthorizationError();
+    }
+    requireAgentEdit(principal, await store(c).getAgent(decodeURIComponent(match[2]!)));
+  };
 
   const adminGate = async (c: Context, next: Next) => {
     let authService: AdminAuthenticationService | undefined;
@@ -1652,6 +1676,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           if (principal.machine && !machinePrincipalAllowed(c)) throw new AuthorizationError();
           requirePermission(principal, permission);
           await enforceAgentMutationAuthority(c, principal);
+          await enforceAgentMemoryAuthority(c, principal);
           await identity(c).recordAuthAudit({
             event: 'authorization',
             outcome: 'success',
@@ -4631,6 +4656,117 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({ account: safeAccount });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      return internalError(c, error);
+    }
+  });
+
+  app.get('/admin/api/agents/:id/schedules', async (c) => {
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const agent = await store(c).getAgent(c.req.param('id'));
+      requireAgentEdit(principal, agent);
+      const references = await store(c).listAgentScheduleReferences(agent.id);
+      const memberships = new Map(
+        (await identity(c).listMemberships()).map((membership) => [membership.id, membership]),
+      );
+      const userRows = await Promise.all([...memberships.values()].map((membership) =>
+        identity(c).getUser(membership.userId)
+      ));
+      const users = new Map(userRows.flatMap((user) => user ? [[user.id, user] as const] : []));
+      return c.json({
+        members: [...memberships.values()].filter((membership) => membership.status === 'active')
+          .map((membership) => ({
+            membershipId: membership.id,
+            role: membership.role,
+            displayName: users.get(membership.userId)?.displayName ?? null,
+            contactEmail: users.get(membership.userId)?.contactEmail ?? null,
+          })),
+        schedules: await Promise.all(references.map(async (reference) => {
+          const routine = await routines(c).getRoutine(reference.scheduleId);
+          const membership = memberships.get(reference.runsAsMembershipId);
+          const user = membership ? users.get(membership.userId) : undefined;
+          return {
+            reference,
+            routine: routine
+              ? {
+                  id: routine.id,
+                  name: routine.name,
+                  description: routine.description,
+                  state: routine.state,
+                  version: routine.version,
+                  nextRunAt: routine.nextRunAt,
+                  lastFinishedAt: routine.lastFinishedAt,
+                  pausedReason: routine.pausedReason,
+                }
+              : null,
+            runsAs: membership
+              ? {
+                  membershipId: membership.id,
+                  role: membership.role,
+                  status: membership.status,
+                  displayName: user?.displayName ?? null,
+                  contactEmail: user?.contactEmail ?? null,
+                }
+              : null,
+          };
+        })),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/schedules/:scheduleId/reassign', async (c) => {
+    const parsed = v.safeParse(scheduleAuthorityReassignSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const config = store(c);
+      const agent = await config.getAgent(c.req.param('id'));
+      requireAgentEdit(principal, agent);
+      const current = await config.getAgentScheduleReference(c.req.param('scheduleId'));
+      if (!current || current.agentId !== agent.id) return c.json({ error: 'not_found' }, 404);
+      if (current.revision !== parsed.output.expectedAuthorityRevision) {
+        return c.json({ error: 'schedule_authority_conflict', currentRevision: current.revision }, 409);
+      }
+      const [membership, organization] = await Promise.all([
+        identity(c).getMembership(parsed.output.runsAsMembershipId),
+        identity(c).getOrganization(),
+      ]);
+      if (!membership || membership.status !== 'active' ||
+          membership.organizationId !== organization?.id ||
+          organization.slackTeamId !== current.workspaceId) {
+        return c.json({ error: 'runs_as_unavailable' }, 409);
+      }
+      const reference = await reassignRoutineAgentAuthority({
+        scheduleId: current.scheduleId,
+        runsAsMembershipId: membership.id,
+        config,
+        identity: identity(c),
+      });
+      const routine = await routines(c).getRoutine(current.scheduleId);
+      const resumed = routine?.state === 'paused'
+        ? await new RoutineService(routines(c)).control({
+            routineId: routine.id,
+            expectedVersion: routine.version,
+            action: 'resume',
+            actorId: principal.membershipId,
+            actorClass: 'operator',
+            reasonCode: 'authority_reassigned',
+            idempotencyKey: `admin:schedule-reassign:${reference.authorityReceiptId}`,
+          })
+        : routine;
+      return c.json({ reference, routine: resumed ?? null });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof RoutineAuthorityError) {
+        return c.json({ error: 'runs_as_unavailable' }, 409);
+      }
       return internalError(c, error);
     }
   });
@@ -8426,7 +8562,7 @@ async function agentAdminProjection(
           agent.slackPresence.normalizedHandle,
         )
       : null,
-    tabs: ['instructions', 'skills', 'connectors', 'repositories', 'memory'],
+    tabs: ['instructions', 'skills', 'connectors', 'repositories', 'memory', 'schedules'],
     capabilityPreviews: {
       skills: agent.skills.map(({ name, description, enabled }) => ({ name, description, enabled })),
       connectors: [

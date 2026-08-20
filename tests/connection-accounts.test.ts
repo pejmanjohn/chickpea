@@ -231,7 +231,8 @@ test('revocation tombstones the secret and pauses dependent schedules before fin
     });
     await config.putAgentScheduleReference({
       scheduleId: 'schedule_triage', agentId: 'agent_support', workspaceId: 'T_CONNECTIONS',
-      channelId: 'C_SUPPORT', creatorMembershipId: 'membership_creator',
+      channelId: 'C_SUPPORT', createdByMembershipId: 'membership_creator',
+      runsAsMembershipId: 'membership_creator', authorityReceiptId: 'schedule_authority_creator',
       requiredConnectionAccountIds: [account.id], state: 'active',
     });
     const revoked = await service.revoke({

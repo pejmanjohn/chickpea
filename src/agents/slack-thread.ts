@@ -138,7 +138,9 @@ import {
   saveAutonomousMemory,
   type AutonomousMemoryInput,
 } from '../memory/autonomous.ts';
-import { resolveAuthorizedAgentMemoryActor } from '../memory/runtime.ts';
+import {
+  isAuthorizedAgentMemoryMember,
+} from '../memory/runtime.ts';
 import { createMemoryScopeSlack, verifyMemoryMutationMembership } from '../memory/scope.ts';
 import { parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
 import { resolveSlackIdentityExecutionContext } from '../slack/identity-execution.ts';
@@ -1038,7 +1040,7 @@ export function useRuntimePlanAgent(
     useChickpeaResponseMetadata(options.responseMetadataModel);
   }
   if (options.autonomousMemoryRequest) {
-    const memoryTarget = plan.conversation.surface === 'direct_message' ? 'agent' : 'channel';
+    const memoryTarget = 'agent';
     const finishDeniedMemory = useDataWriter(AUTONOMOUS_MEMORY_RESULT_DATA_NAME, {
       schema: AutonomousMemoryResultSchema,
     });
@@ -1104,21 +1106,23 @@ async function saveRuntimePlanAutonomousMemory(
         (identity.lifecycle === 'connected' || identity.lifecycle === 'degraded');
       if (!liveIdentityIsValid) return false;
       if (plan.conversation.surface === 'direct_message') {
-        if (identity.dmState !== 'on' || identity.dmAgentId !== plan.agentId) return false;
-        return Boolean(await resolveAuthorizedAgentMemoryActor({
+        if (identity.dmState !== 'on') return false;
+        return isAuthorizedAgentMemoryMember({
           workspaceId: plan.conversation.workspaceId,
           userId: slackUserId,
-        }, env));
+        }, env);
       }
-      const [channel, assignment, execution] = await Promise.all([
-        config.getChannel(plan.conversation.workspaceId, plan.conversation.channelId),
-        config.getAssignment(plan.conversation.workspaceId, plan.conversation.channelId),
+      const [grants, execution] = await Promise.all([
+        config.listAgentChannelGrants(
+          plan.conversation.workspaceId,
+          plan.conversation.channelId,
+        ),
         resolveSlackIdentityExecutionContext(identityId, env, {
           config,
           settings: getSettingsStore(env),
         }),
       ]);
-      if (!channel || channel.lifecycle !== 'active' || assignment?.agentId !== plan.agentId ||
+      if (!grants.some((grant) => grant.agentId === plan.agentId && grant.status === 'active') ||
           execution.teamId !== plan.conversation.workspaceId) return false;
       return verifyMemoryMutationMembership(
         plan.conversation.channelId,

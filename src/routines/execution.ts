@@ -52,6 +52,7 @@ import {
   usageRuntimeRecordingEnabled,
 } from '../usage/runtime-recorder.ts';
 import { opaqueId } from '../work/admission.ts';
+import { externalActionAuthorityInstructions } from '../connections/runtime.ts';
 import { createWorkExecutionLifecycle } from '../work/executor.ts';
 import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import type { RunId } from '../work/types.ts';
@@ -73,6 +74,7 @@ import {
   RoutineRuntimeError,
   type RoutineRuntimeAccess,
 } from './runtime.ts';
+import { markRoutineAuthorityNeedsAttention } from './agent-authority.ts';
 import type {
   RoutineAdmissionAttempt,
   RoutineAgentDispatchEnvelopeV1,
@@ -157,6 +159,26 @@ export async function executeRoutineOccurrence(
   } catch (error) {
     if (error instanceof RoutineSupersededError) return 'superseded';
     const failure = runtimeFailure(error, false);
+    if ([
+      'assignment_missing',
+      'creator_ineligible',
+      'channel_ineligible',
+      'credential_unavailable',
+    ].includes(failure.failureClass)) {
+      await Promise.all([
+        markRoutineAuthorityNeedsAttention(routine.id, input.env).catch(() => undefined),
+        input.store.control({
+          routineId: routine.id,
+          expectedVersion: routine.version,
+          action: 'pause',
+          actorId: routine.creatorUserId,
+          actorClass: 'system',
+          reasonCode: failure.failureClass,
+          idempotencyKey:
+            `routine:authority-pause:${routine.id}:${routine.version}:${failure.failureClass}`,
+        }).catch(() => undefined),
+      ]);
+    }
     if (failure.failureClass === 'assignment_missing' && current.status === 'admitting') {
       await skipUnresolvedRun(input.store, current.id, failure.publicError, now());
     } else {
@@ -416,6 +438,8 @@ async function prepareExecution(
     envelope,
     resolvedAccessHash: access.accessHash,
     resolvedAgentId: access.config.agentId,
+    resolvedAuthorityReceiptId: access.authorityReceiptId ?? 'legacy_authority',
+    resolvedRunsAsMembershipId: access.actorMembershipId ?? 'legacy_membership',
     model: access.config.model,
     ...(runtimeModel.providerAuthRoute ? { providerAuthRoute: runtimeModel.providerAuthRoute } : {}),
     traceId: input.run.id,
@@ -523,9 +547,15 @@ function createEnvelope(input: {
       agent: input.access.config.agent,
       model: input.runtimeModel,
     },
-    instructions: input.access.config.instructions,
+    instructions: [
+      input.access.config.instructions,
+      externalActionAuthorityInstructions(input.access.config.agent.instructions),
+    ].join('\n'),
     memoryEpoch: input.prompt.memoryEpoch,
     sandboxMode: input.sandboxMode,
+    ...(input.access.effectiveConnections
+      ? { effectiveConnections: input.access.effectiveConnections }
+      : {}),
   });
   const initialData: RoutineExecutionInitialData = {
     runtimePlan,

@@ -295,7 +295,7 @@ async function prepareOwnerMemoryTurn(
     serializedBytes: promptBlock ? new TextEncoder().encode(promptBlock).byteLength : 0,
     truncated: selection.truncated,
     agentCount: selection.entries.filter(({ entry }) => entry.ownerKind === 'agent').length,
-    channelCount: selection.entries.filter(({ entry }) => entry.ownerKind === 'channel').length,
+    channelCount: 0,
     inject: context.inject,
   });
   return {
@@ -345,12 +345,9 @@ async function resolveOwnerRuntime(
     throw new MemoryStateError('memory_owner_unavailable', 'The admitted Agent is disabled.');
   }
   if (turn.source !== 'dm_message') {
-    const [channel, liveAssignment] = await Promise.all([
-      liveConfig.getChannel(turn.workspaceId, turn.channelId),
-      liveConfig.getAssignment(turn.workspaceId, turn.channelId),
-    ]);
-    if (!channel || channel.lifecycle !== 'active' || !liveAssignment) {
-      throw new MemoryStateError('memory_owner_unavailable', 'The Channel placement is unavailable.');
+    const grants = await liveConfig.listAgentChannelGrants(turn.workspaceId, turn.channelId);
+    if (!grants.some((grant) => grant.agentId === assignment.agentId && grant.status === 'active')) {
+      throw new MemoryStateError('memory_owner_unavailable', 'The Agent is not permitted in this Channel.');
     }
   }
   await runMemoryRetentionHousekeeping(state);
@@ -363,7 +360,9 @@ async function resolveOwnerRuntime(
     return {
       state,
       slack: null,
-      scope: bindAuthorizedMemoryScope({ surface: 'dm', workspaceId: turn.workspaceId, agentOwner }),
+      scope: bindAuthorizedMemoryScope({
+        surface: 'dm', workspaceId: turn.workspaceId, agentOwner, writeOwner: agentOwner,
+      }),
       service: new MemoryService(state),
       botUserId: identityBotUserId ?? null,
       assignment,
@@ -384,11 +383,6 @@ async function resolveOwnerRuntime(
   if (!botUserId) {
     throw new MemoryStateError('memory_slack_unavailable', 'Slack memory is unavailable.');
   }
-  const channelOwner = await state.ensureOwner({
-    workspaceId: turn.workspaceId,
-    ownerKind: 'channel',
-    ownerId: turn.channelId,
-  });
   return {
     state,
     slack: createMemoryScopeSlack(credentials.botToken, turn.workspaceId),
@@ -396,8 +390,7 @@ async function resolveOwnerRuntime(
       surface: 'channel',
       workspaceId: turn.workspaceId,
       agentOwner,
-      channelOwner,
-      writeOwner: channelOwner,
+      writeOwner: agentOwner,
     }),
     service: new MemoryService(state),
     botUserId,
@@ -424,15 +417,13 @@ async function validateOwnerMemoryLease(
       (runtime.botUserId !== null && identity.botUserId !== undefined && identity.botUserId !== runtime.botUserId)
     ) return false;
     if (turn.source === 'dm_message') {
-      if (identity.dmState !== 'on' || identity.dmAgentId !== runtime.assignment.agentId) return false;
+      if (identity.dmState !== 'on') return false;
     } else {
-      const [channel, liveAssignment] = await Promise.all([
-        config.getChannel(turn.workspaceId, turn.channelId),
-        config.getAssignment(turn.workspaceId, turn.channelId),
-      ]);
-      if (!channel || channel.lifecycle !== 'active' || !liveAssignment) return false;
-      const liveAgent = await config.getAgent(liveAssignment.agentId);
-      if (!liveAgent.enabled || !runtime.slack || !runtime.botUserId) return false;
+      const grants = await config.listAgentChannelGrants(turn.workspaceId, turn.channelId);
+      if (!grants.some((grant) =>
+        grant.agentId === runtime.assignment.agentId && grant.status === 'active'
+      )) return false;
+      if (!runtime.slack || !runtime.botUserId) return false;
       if (!(await validateOwnerSlackLease(turn, runtime.slack, runtime.botUserId))) return false;
     }
     const currentOwners = await Promise.all(
@@ -480,7 +471,7 @@ async function validateOwnerSlackLease(
 
 function ownerMemoryFooterItems(selection: MemorySelection<OwnerMemoryEntry>): string[] {
   return selection.entries.map(({ entry }) =>
-    `Memory supplied: ${entry.slug} (${entry.ownerKind === 'agent' ? 'Agent' : 'Channel'} ${escapeSlackControlCharacters(entry.ownerId)})`
+    `Memory supplied: ${entry.slug} (Agent ${escapeSlackControlCharacters(entry.ownerId)})`
   );
 }
 
@@ -848,7 +839,6 @@ async function validateDmOwnerWriteChallenge(
   if (!agent.enabled || effectiveSlackIdentityId(runtime.assignment) !== challenge.slackIdentityId ||
       slackIdentity.connectionRevision !== challenge.slackIdentityRevision ||
       slackIdentity.teamId !== turn.workspaceId || slackIdentity.dmState !== 'on' ||
-      slackIdentity.dmAgentId !== challenge.agentId ||
       (slackIdentity.lifecycle !== 'connected' && slackIdentity.lifecycle !== 'degraded')) return false;
   const actor = await resolveAuthorizedAgentMemoryActor(turn, runtime.platformEnv);
   return !!actor && actor.binding.id === challenge.actorBindingId &&
@@ -878,9 +868,32 @@ export async function resolveAuthorizedAgentMemoryActor(
       membership.organizationId !== binding.organizationId || membership.status !== 'active' ||
       (membership.role !== 'owner' && membership.role !== 'admin') ||
       (overlay && (overlay.organizationId !== membership.organizationId || overlay.accessStatus !== 'active'))) {
-    throw new MemoryStateError('memory_actor_forbidden', 'Only an active Owner or Admin can change Agent memory from Slack.');
+    throw new MemoryStateError('memory_actor_forbidden', 'Only an active Owner or Admin can edit Agent memory from Slack.');
   }
   return { binding, membership: membership as Membership & { role: 'owner' | 'admin' }, overlay };
+}
+
+export async function isAuthorizedAgentMemoryMember(
+  turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'userId'>,
+  platformEnv: PlatformEnv | undefined,
+): Promise<boolean> {
+  const identity = getIdentityStore(platformEnv);
+  const resolution = await identity.resolveSlackIdentity(turn.workspaceId, turn.userId);
+  const binding = resolution?.binding;
+  if (!binding) return false;
+  const directory = await currentHumanIdentityDirectory(identity, platformEnv);
+  if (!directory) return false;
+  const membership = await directory.getMembership(binding.membershipId);
+  const overlay = await identity.getMembershipAccessOverlay(binding.membershipId);
+  return Boolean(
+    membership && membership.userId === binding.userId &&
+    membership.organizationId === binding.organizationId &&
+    membership.status === 'active' &&
+    (!overlay || (
+      overlay.organizationId === membership.organizationId &&
+      overlay.accessStatus === 'active'
+    )),
+  );
 }
 
 async function executeConfirmedDmOwnerMutation(

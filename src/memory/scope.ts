@@ -131,20 +131,14 @@ export function bindAuthorizedMemoryScope(input: {
   channelOwner?: MemoryOwnerDescriptor;
   writeOwner?: MemoryOwnerDescriptor | null;
 }): AuthorizedMemoryScope {
-  const owners = [input.agentOwner, input.channelOwner].filter(
+  const owners = [input.agentOwner].filter(
     (owner): owner is MemoryOwnerDescriptor => owner !== undefined,
   );
-  if (input.surface === 'channel') {
-    if (owners.length !== 2 || owners[0]?.ownerKind !== 'agent' || owners[1]?.ownerKind !== 'channel') {
-      throw new MemoryStateError('memory_owner_invalid', 'Channel memory requires one Agent and exact Channel owner.');
-    }
-  } else if (input.surface === 'dm') {
-    if (owners.length !== 1 || owners[0]?.ownerKind !== 'agent' || input.channelOwner) {
-      throw new MemoryStateError('memory_owner_invalid', 'DM memory permits only its Agent owner.');
-    }
-  }
-  if (input.surface === 'admin' && owners.length !== 1) {
-    throw new MemoryStateError('memory_owner_invalid', 'Admin memory requires one route-bound owner.');
+  if (owners.length !== 1 || owners[0]?.ownerKind !== 'agent' || input.channelOwner) {
+    throw new MemoryStateError(
+      'memory_owner_invalid',
+      'Every conversational surface uses the admitted Agent memory.',
+    );
   }
   if (owners.some((owner) =>
     owner.workspaceId !== input.workspaceId ||
@@ -162,7 +156,7 @@ export function bindAuthorizedMemoryScope(input: {
     writeOwner.workspaceId !== input.workspaceId ||
     writeOwner.lifecycle !== 'active' ||
     !unique.has(writeOwner.storeId) ||
-    (input.surface === 'channel' && writeOwner.storeId !== input.channelOwner?.storeId)
+    writeOwner.storeId !== input.agentOwner?.storeId
   )) {
     throw new MemoryStateError('memory_owner_invalid', 'Write owner is not authorized by this memory scope.');
   }

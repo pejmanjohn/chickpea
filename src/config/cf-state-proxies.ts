@@ -1259,6 +1259,10 @@ export class CfConfigStore implements ConfigStore {
     return unwrap(await this.stub.configListAgentScheduleReferences(agentId));
   }
 
+  async getAgentScheduleReference(scheduleId: string): Promise<AgentScheduleReference | undefined> {
+    return orUndefined(unwrap(await this.stub.configGetAgentScheduleReference(scheduleId)));
+  }
+
   async putAgentScheduleReference(
     input: AgentScheduleReferenceInput,
     expectedRevision?: number,

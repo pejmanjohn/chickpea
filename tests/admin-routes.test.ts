@@ -44,6 +44,8 @@ import type { OAuthContinuation } from '../src/connections/types.ts';
 import { beginOnboardingJourney, startOnboardingTry } from '../src/config/onboarding-state.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
+import { SqliteMemoryStateStore } from '../src/memory/store.ts';
+import { SqliteRoutineStore } from '../src/routines/store.ts';
 import {
   WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type SlackIdentity,
@@ -54,6 +56,7 @@ import {
 import { withEnv } from './helpers/env.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { createSlackOwner } from './helpers/slack-owner.ts';
 import { FakeSlackBackend } from './parity/fake-slack.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import {
@@ -145,6 +148,8 @@ interface AdminHarnessOptions {
   slackCredentials?: SlackCredentialDependencies;
   work?: WorkStore;
   snapshots?: AgentSnapshotStore;
+  memory?: SqliteMemoryStateStore;
+  routines?: SqliteRoutineStore;
   slackConversationsInfo?: (
     botToken: string,
     channelId: string,
@@ -208,6 +213,8 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
       ...(options.slackCredentials ? { slackCredentials: options.slackCredentials } : {}),
       ...(options.work ? { work: options.work } : {}),
       ...(options.snapshots ? { snapshots: options.snapshots } : {}),
+      ...(options.memory ? { memory: options.memory } : {}),
+      ...(options.routines ? { routines: options.routines } : {}),
       ...(options.slackConversationsInfo
         ? { slackConversationsInfo: options.slackConversationsInfo }
         : {}),
@@ -1960,7 +1967,7 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
     assert.equal(patchedBody.agent.instructions, 'Updated runtime instructions.');
     assert.equal(patchedBody.agent.model, 'local-stub/admin-updated');
     assert.deepEqual(patchedBody.agent.tabs, [
-      'instructions', 'skills', 'connectors', 'repositories', 'memory',
+      'instructions', 'skills', 'connectors', 'repositories', 'memory', 'schedules',
     ]);
 
     const stalePatch = await app.request('/admin/api/agents/agent_admin', {
@@ -5918,7 +5925,7 @@ test('Agent-first admin projections expose capabilities, placements, readiness, 
     const detailResponse = await app.request(`/admin/api/agents/${configured.id}`, { headers: auth(ADMIN_TOKEN) });
     assert.equal(detailResponse.status, 200);
     const detail = (await detailResponse.json()) as any;
-    assert.deepEqual(detail.agent.tabs, ['instructions', 'skills', 'connectors', 'repositories', 'memory']);
+    assert.deepEqual(detail.agent.tabs, ['instructions', 'skills', 'connectors', 'repositories', 'memory', 'schedules']);
     assert.equal(detail.agent.capabilityPreviews.skills[0].name, 'project-health');
     assert.equal(detail.agent.capabilityPreviews.connectors[0].name, 'Linear');
     assert.equal(detail.agent.capabilityPreviews.repositories[0].name, 'acme/ops');
@@ -5939,5 +5946,93 @@ test('Agent-first admin projections expose capabilities, placements, readiness, 
     assert.equal(removedProfilePage.status, 404);
   } finally {
     store.close();
+  }
+});
+
+test('Agent schedules and memory stay Agent-scoped in Admin', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const identity = new SqliteIdentityStore(':memory:');
+  const memory = new SqliteMemoryStateStore(':memory:');
+  const routines = new SqliteRoutineStore(':memory:');
+  try {
+    const owner = await createSlackOwner(identity, {
+      teamId: 'T_TEST', userId: 'U_OWNER_AUTHORITY', suffix: 'admin_agent_authority',
+    });
+    const member = await identity.provisionSlackMember({
+      slackTeamId: 'T_TEST', slackUserId: 'U_MEMBER_AUTHORITY',
+      displayName: 'Member', contactEmail: 'member@acme.test',
+    });
+    const configured = await config.createAgent({
+      ...agent({ id: 'agent_authority', name: 'Authority Agent' }),
+      creatorMembershipId: owner.membership.id,
+    });
+    await config.putAgentChannelGrant({
+      workspaceId: 'T_TEST', channelId: 'C_AUTHORITY', agentId: configured.id,
+      status: 'active', createdByMembershipId: owner.membership.id,
+    });
+    await config.putAgentScheduleReference({
+      scheduleId: 'schedule_authority', agentId: configured.id,
+      workspaceId: 'T_TEST', channelId: 'C_AUTHORITY',
+      createdByMembershipId: owner.membership.id,
+      runsAsMembershipId: owner.membership.id,
+      authorityReceiptId: 'schedule_authority_owner',
+      requiredConnectionAccountIds: [], state: 'active',
+    });
+    const ownerMemory = await memory.ensureOwner({
+      workspaceId: 'T_TEST', ownerKind: 'agent', ownerId: configured.id,
+    });
+    await memory.createOwnerEntry({
+      entryId: 'mem_agent_admin', storeId: ownerMemory.storeId, workspaceId: 'T_TEST',
+      slug: 'shared-context', slugSeed: 'shared-context', description: 'Shared Agent context',
+      type: 'fact', body: 'One memory in every surface.', actorId: 'U_OWNER_AUTHORITY',
+      actorClass: 'operator', idempotencyKey: 'seed:agent-memory',
+    });
+    const app = appWithAdminOptions(config, { identity, memory, routines });
+
+    const schedulesResponse = await app.request(
+      `/admin/api/agents/${configured.id}/schedules`,
+      { headers: auth(ADMIN_TOKEN) },
+    );
+    assert.equal(schedulesResponse.status, 200);
+    const schedules = await schedulesResponse.json() as any;
+    assert.equal(schedules.schedules[0].reference.runsAsMembershipId, owner.membership.id);
+    assert.ok(schedules.members.some((candidate: any) =>
+      candidate.membershipId === member.resolution?.membership.id &&
+      candidate.contactEmail === 'member@acme.test'
+    ));
+
+    const reassignedResponse = await app.request(
+      `/admin/api/agents/${configured.id}/schedules/schedule_authority/reassign`,
+      {
+        method: 'POST', headers: auth(ADMIN_TOKEN),
+        body: JSON.stringify({
+          runsAsMembershipId: member.resolution!.membership.id,
+          expectedAuthorityRevision: 1,
+        }),
+      },
+    );
+    assert.equal(reassignedResponse.status, 200);
+    const reassigned = await reassignedResponse.json() as any;
+    assert.equal(reassigned.reference.runsAsMembershipId, member.resolution!.membership.id);
+    assert.notEqual(reassigned.reference.authorityReceiptId, 'schedule_authority_owner');
+
+    const agentMemoryResponse = await app.request(
+      `/admin/api/audit/memory/owners/agent/T_TEST/${configured.id}/files`,
+      { headers: auth(ADMIN_TOKEN) },
+    );
+    assert.equal(agentMemoryResponse.status, 200);
+    const agentMemory = await agentMemoryResponse.json() as any;
+    assert.ok(agentMemory.files.some((file: any) => file.name === 'shared-context.md'));
+
+    const channelMemoryResponse = await app.request(
+      '/admin/api/audit/memory/owners/channel/T_TEST/C_AUTHORITY/files',
+      { headers: auth(ADMIN_TOKEN) },
+    );
+    assert.equal(channelMemoryResponse.status, 403);
+  } finally {
+    config.close();
+    identity.close();
+    memory.close();
+    routines.close();
   }
 });

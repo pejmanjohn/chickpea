@@ -242,6 +242,10 @@ export interface RoutineRun {
   finishedAt: number | null;
   resolvedAccessHash: string | null;
   resolvedAgentId: string | null;
+  /** Immutable authority receipt captured for this admitted run. */
+  resolvedAuthorityReceiptId: string | null;
+  /** Immutable canonical actor captured for this admitted run. */
+  resolvedRunsAsMembershipId: string | null;
   model: string | null;
   providerAuthRoute: ProviderAuthRoute | null;
   inputTokens: number | null;
@@ -409,6 +413,8 @@ export interface PrepareRoutineAgentDispatchInput {
   envelope: RoutineAgentDispatchEnvelopeV1;
   resolvedAccessHash: string;
   resolvedAgentId: string;
+  resolvedAuthorityReceiptId: string;
+  resolvedRunsAsMembershipId: string;
   model: string;
   providerAuthRoute?: ProviderAuthRoute;
   traceId: string;

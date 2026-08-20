@@ -274,6 +274,7 @@ export async function runTurn(
   if (!ledgerAuthority && isRoutineSlackTurn(turn)) {
     const routineText = await handleRoutineSlackRequest(turn, platformEnv, {
       ...(identityContext ? { identityContext } : {}),
+      assignment,
     });
     if (routineText !== undefined) {
       const routinePresenter = new WebClientPresenter(client, {

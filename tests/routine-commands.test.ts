@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  handleRoutineSlackRequest,
+  handleRoutineSlackRequest as handleRoutineSlackRequestImpl,
   parseRoutineCommand,
   routineResponseVisibility,
 } from '../src/routines/commands.ts';
+import type { ResolvedAssignment } from '../src/config/types.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineCapability } from '../src/routines/scheduler-adapter.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
@@ -15,10 +16,47 @@ const enabled: RoutineCapability = {
   target: 'cloudflare', available: true, enabled: true, reason: 'enabled',
 };
 const canManageChannel = async () => true;
+const TEST_ASSIGNMENT: ResolvedAssignment = {
+  workspaceId: 'T_TEST',
+  channelId: 'C_TEST',
+  agentId: 'agent_test',
+  participationMode: 'mention_only',
+  agent: {
+    id: 'agent_test', revision: 1, name: 'Test Agent', instructions: 'Test.', enabled: true,
+    lifecycle: 'active', creatorMembershipId: 'membership_test',
+    editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  },
+};
+
+const TEST_AUTHORITY_REFERENCE = {
+  scheduleId: 'routine_test', agentId: TEST_ASSIGNMENT.agentId,
+  workspaceId: 'T_TEST', channelId: 'C_TEST', createdByMembershipId: 'membership_test',
+  runsAsMembershipId: 'membership_test', authorityReceiptId: 'schedule_authority_test',
+  requiredConnectionAccountIds: [], state: 'active' as const,
+  revision: 1, createdAt: NOW, updatedAt: NOW,
+};
+
+async function handleRoutineSlackRequest(
+  ...args: Parameters<typeof handleRoutineSlackRequestImpl>
+): ReturnType<typeof handleRoutineSlackRequestImpl> {
+  const [requestTurn, env, dependencies = {}] = args;
+  return handleRoutineSlackRequestImpl(requestTurn, env, {
+    assignment: TEST_ASSIGNMENT,
+    bindAuthority: async ({ routine }) => ({ ...TEST_AUTHORITY_REFERENCE, scheduleId: routine.id }),
+    resolveAuthority: async (routine) => ({
+      reference: { ...TEST_AUTHORITY_REFERENCE, scheduleId: routine.id },
+      agent: TEST_ASSIGNMENT.agent,
+      actorSlackUserId: 'U_MEMBER',
+      effectiveConnections: [],
+    }),
+    ...dependencies,
+  });
+}
 
 function turn(text: string, eventId = `Ev_${Math.random().toString(36).slice(2)}`): NormalizedSlackTurn {
   return {
     workspaceId: 'T_TEST', channelId: 'C_TEST', eventId, text, userId: 'U_MEMBER',
+    actorMembershipId: 'membership_test',
     messageTs: '1785000000.000100', threadTs: '1785000000.000100',
     source: 'app_mention', contextMode: 'channel_history',
   };

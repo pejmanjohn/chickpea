@@ -298,6 +298,9 @@ export interface TagStateRpc {
   configListAgentScheduleReferences(
     agentId: string,
   ): Promise<StateRpcResult<AgentScheduleReference[]>>;
+  configGetAgentScheduleReference(
+    scheduleId: string,
+  ): Promise<StateRpcResult<AgentScheduleReference | null>>;
   configPutAgentScheduleReference(
     input: AgentScheduleReferenceInput,
     expectedRevision?: number,

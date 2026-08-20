@@ -2,11 +2,10 @@ import type { WebClient } from '@slack/web-api';
 
 import {
   computeSnapshotHash,
-  resolveEffectiveSlackConfig,
+  effectiveSlackConfigFromAssignment,
   type EffectiveSlackConfig,
 } from '../config/effective-config.ts';
-import { NoAssignmentError } from '../config/errors.ts';
-import { getConfigStore, type PlatformEnv } from '../config/state-backend.ts';
+import type { PlatformEnv } from '../config/state-backend.ts';
 import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import {
   resolveSlackCredentials,
@@ -21,6 +20,12 @@ import {
   type SlackIdentityExecutionResolver,
 } from '../slack/identity-execution.ts';
 import { hashRoutineValue } from './ids.ts';
+import {
+  resolveRoutineAgentAuthority,
+  RoutineAuthorityError,
+  type ResolvedRoutineAuthority,
+} from './agent-authority.ts';
+import type { EffectiveConnectionAccount } from '../connections/types.ts';
 import type {
   RoutineDefinition,
   RoutineFailureClass,
@@ -40,6 +45,10 @@ export interface RoutineRuntimeAccess {
   /** The exact authenticated client shared by context, memory, and delivery. */
   client?: WebClient;
   publicUrl?: string | undefined;
+  actorMembershipId?: string;
+  actorSlackUserId?: string;
+  authorityReceiptId?: string;
+  effectiveConnections?: EffectiveConnectionAccount[];
 }
 
 export class RoutineRuntimeError extends Error {
@@ -64,6 +73,10 @@ interface RoutineAccessDependencies {
     env: PlatformEnv | undefined,
   ) => Promise<EffectiveSlackConfig>;
   identityExecution?: SlackIdentityExecutionResolver;
+  authority?: (
+    routine: RoutineDefinition,
+    env: PlatformEnv | undefined,
+  ) => Promise<ResolvedRoutineAuthority>;
 }
 
 /** Live, fail-closed authorization preflight performed before Agent construction. */
@@ -77,28 +90,40 @@ export async function resolveRoutineRuntimeAccess(
   if (!revision) {
     throw new RoutineRuntimeError('result_invalid', 'The saved routine revision is unavailable.');
   }
-  const routineStore = dependencies.config ?? (async (workspaceId, channelId, platformEnv) => {
-    const config = getConfigStore(platformEnv);
-    return resolveEffectiveSlackConfig(workspaceId, channelId, {
-      agents: config,
-      assignments: config,
-    });
-  });
+  let authority: ResolvedRoutineAuthority | undefined;
+  let config: EffectiveSlackConfig;
+  if (!dependencies.config || dependencies.authority) {
+    try {
+      authority = await (dependencies.authority ?? resolveRoutineAgentAuthority)(routine, env);
+      config = effectiveSlackConfigFromAssignment({
+        workspaceId: routine.workspaceId,
+        channelId: routine.channelId,
+        agentId: authority.reference.agentId,
+        slackIdentityId:
+          authority.agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        participationMode: 'mention_only',
+        agent: authority.agent,
+      });
+    } catch (error) {
+      if (error instanceof RoutineAuthorityError) {
+        throw new RoutineRuntimeError(
+          error.reason === 'creator_ineligible'
+            ? 'creator_ineligible'
+            : error.reason === 'destination_unavailable'
+              ? 'channel_ineligible'
+              : error.reason === 'connection_unavailable'
+                ? 'credential_unavailable'
+                : 'assignment_missing',
+          error.message,
+        );
+      }
+      throw error;
+    }
+  } else {
+    config = await dependencies.config(routine.workspaceId, routine.channelId, env);
+  }
   const getConversation = dependencies.conversation ?? slackConversationsInfo;
   const getMembers = dependencies.members ?? slackConversationsMembers;
-
-  let config: EffectiveSlackConfig;
-  try {
-    config = await routineStore(routine.workspaceId, routine.channelId, env);
-  } catch (error) {
-    if (error instanceof NoAssignmentError) {
-      throw new RoutineRuntimeError(
-        'assignment_missing',
-        'This Channel no longer has an active Chickpea Agent.',
-      );
-    }
-    throw new RoutineRuntimeError('access_denied', 'Current channel access could not be resolved.');
-  }
   const slackIdentityId = config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
   let botToken: string | undefined;
   let botUserId: string | undefined;
@@ -162,29 +187,29 @@ export async function resolveRoutineRuntimeAccess(
         : 'Current Slack channel access could not be verified.',
     );
   }
-  if (routine.creatorUserId === botUserId) {
-    throw new RoutineRuntimeError('creator_ineligible', 'The routine creator is no longer eligible.');
+  const actorSlackUserId = authority?.actorSlackUserId ?? routine.creatorUserId;
+  if (actorSlackUserId === botUserId) {
+    throw new RoutineRuntimeError('creator_ineligible', 'The routine Runs as member is no longer eligible.');
   }
   const creatorIsMember = await hasChannelMember(
     botToken,
     routine.channelId,
-    routine.creatorUserId,
+    actorSlackUserId,
     getMembers,
   );
   if (creatorIsMember === false) {
-    throw new RoutineRuntimeError('creator_ineligible', 'The routine creator left this channel.');
+    throw new RoutineRuntimeError('creator_ineligible', 'The routine Runs as member left this channel.');
   }
   if (creatorIsMember === undefined) {
     throw new RoutineRuntimeError('access_denied', 'Current channel membership could not be verified.');
   }
 
-  // Any channel member may rewrite a routine's body, so the creator is not
-  // necessarily the author of what is about to run. Anchoring eligibility only
-  // to the creator let an editor who has since left the channel keep their
-  // rewritten task executing under someone else's standing authority. Require
-  // the author of the CURRENT definition to be eligible too.
+  // Legacy injected access had no canonical Runs as actor, so preserve its
+  // stricter editor check. Agent-owned schedules intentionally execute as the
+  // explicit member in their authority receipt regardless of who last edited
+  // the task body.
   const editorUserId = routine.updatedBy;
-  if (editorUserId && editorUserId !== routine.creatorUserId) {
+  if (!authority && editorUserId && editorUserId !== routine.creatorUserId) {
     if (editorUserId === botUserId) {
       throw new RoutineRuntimeError('creator_ineligible', 'The routine editor is no longer eligible.');
     }
@@ -206,10 +231,13 @@ export async function resolveRoutineRuntimeAccess(
     JSON.stringify({
       config: computeSnapshotHash(config),
       slackIdentityId,
-      creatorUserId: routine.creatorUserId,
-      // A change of author is a change of authority: keep it in the hash so a
-      // decision cached against the previous author is invalidated.
-      editorUserId: editorUserId ?? null,
+      actorSlackUserId,
+      actorMembershipId: authority?.reference.runsAsMembershipId ?? null,
+      authorityReceiptId: authority?.reference.authorityReceiptId ?? null,
+      ...(!authority ? {
+        creatorUserId: routine.creatorUserId,
+        editorUserId: editorUserId ?? null,
+      } : {}),
       botUserId,
       channelId: facts.id,
       channelPrivate: facts.private,
@@ -224,6 +252,14 @@ export async function resolveRoutineRuntimeAccess(
     botUserId,
     ...(client ? { client } : {}),
     publicUrl: await resolveSlackPublicUrl(env).catch(() => undefined),
+    ...(authority
+      ? {
+          actorMembershipId: authority.reference.runsAsMembershipId,
+          actorSlackUserId: authority.actorSlackUserId,
+          authorityReceiptId: authority.reference.authorityReceiptId,
+          effectiveConnections: authority.effectiveConnections,
+        }
+      : {}),
   };
 }
 

@@ -386,7 +386,11 @@ export interface AgentScheduleReference {
   agentId: string;
   workspaceId: string;
   channelId: string;
-  creatorMembershipId: string;
+  createdByMembershipId: string;
+  /** The current trusted actor whose personal accounts and authority are used. */
+  runsAsMembershipId: string;
+  /** Changes only through an explicit authority assignment receipt. */
+  authorityReceiptId: string;
   requiredConnectionAccountIds: string[];
   state: AgentScheduleState;
   revision: number;
