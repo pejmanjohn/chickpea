@@ -23,9 +23,9 @@
  *      (iii) an implicit (mention-free) thread reply IS admitted and answered —
  *      the joined thread survived the restart. Negative control on DB_B: the
  *      same implicit reply produces nothing (thread never started there).
- *   5. Run the focused snapshot helper: edit profile config after a thread's
- *      first turn, restart, and prove that thread keeps its frozen config while
- *      future threads see the edit.
+ *   5. Run the focused live-Agent helper: edit Agent config after a thread's
+ *      first turn, restart, and prove the next reply uses the current Agent
+ *      config. Agent edits intentionally apply everywhere on the next message.
  *
  * Run with Node >= 22.19:
  *   node scripts/verify-durability.mjs
@@ -135,7 +135,7 @@ async function runServerTurn({ serverEntry, fakeUrl, dbPath, netGuardLog, payloa
     await stopChild(child);
     throw error;
   }
-  return { child, eventsUrl };
+  return { child, eventsUrl, getOutput };
 }
 
 // Load every TypeScript dependency before the restart probes begin. Registering
@@ -211,7 +211,7 @@ try {
   // --- Turn 2 on DB_A: fresh process, same DB. Marker must replay. ---
   backend.reset();
   {
-    const { child } = await runServerTurn({
+    const { child, getOutput } = await runServerTurn({
       serverEntry,
       fakeUrl: fake.url,
       dbPath: dbA,
@@ -220,6 +220,7 @@ try {
     });
     const finals = await waitForFinals(backend, 1, 15_000);
     const t2Final = finals.at(-1);
+    if (finals.length === 0) log(`T2 server output:\n${getOutput()}`);
 
     const providerCalls = backend.providerCalls();
     const providerReplaysMarker = providerCalls.some((call) =>
@@ -266,7 +267,7 @@ try {
   // --- Durable claims + registry: yet another fresh process on DB_A. ---
   backend.reset();
   {
-    const { child, eventsUrl } = await runServerTurn({
+    const { child, eventsUrl, getOutput } = await runServerTurn({
       serverEntry,
       fakeUrl: fake.url,
       dbPath: dbA,
@@ -298,6 +299,7 @@ try {
       threadReply({ eventId: 'Ev_DUR_IMPL', ts: '1782770700.000100', threadTs: ROOT_TS }),
     );
     const implicitFinals = await waitForFinals(backend, 1, 15_000);
+    if (implicitFinals.length === 0) log(`registry server output:\n${getOutput()}`);
     await stopChild(child);
     record(
       'DURABLE REGISTRY: implicit thread reply IS admitted after restart (one final)',
@@ -489,7 +491,7 @@ try {
   await backend.close();
 }
 
-log('\nRunning snapshot-freeze restart verification...');
+log('\nRunning live-Agent config restart verification...');
 const snapshotRun = spawnSync(
   process.execPath,
   [join(REPO_ROOT, 'scripts', 'verify-snapshot-durability.mjs')],
@@ -500,7 +502,7 @@ const snapshotRun = spawnSync(
   },
 );
 record(
-  'SNAPSHOT DURABILITY: frozen thread config survives a process restart',
+  'LIVE AGENT CONFIG: edited instructions survive restart and reach the same thread',
   snapshotRun.status === 0,
   snapshotRun.error
     ? snapshotRun.error.message

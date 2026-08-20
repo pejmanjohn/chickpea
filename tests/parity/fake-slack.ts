@@ -544,7 +544,9 @@ export class FakeSlackBackend {
   /** Clear the wire log and per-turn counters (keeps behavior config). */
   reset(): void {
     this.wireLog.length = 0;
-    this.tsCounter = 0;
+    // Slack message timestamps remain unique for the lifetime of a workspace.
+    // Reusing them after a log reset makes restart tests manufacture a delivery
+    // coordinate collision that the real Slack API cannot produce.
     this.stopStreamCalls = 0;
     this.finalStreamFailedOnce = false;
     this.finalPostFailedOnce = false;

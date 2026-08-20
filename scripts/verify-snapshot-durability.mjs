@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * Helper invoked by verify-durability.mjs to prove per-thread config snapshots
- * survive a process restart. It remains directly runnable for focused diagnosis.
+ * Helper invoked by verify-durability.mjs to prove live Agent config survives
+ * a process restart. It remains directly runnable for focused diagnosis.
  *
  * Flow (offline, fake Slack/provider):
  *   1. Boot the built app on DB_A + STATE_A.
  *   2. Patch the assigned profile to instructions A through /admin/api/*.
- *   3. First turn in a Slack thread writes the thread snapshot.
- *   4. Patch the profile to instructions B through /admin/api/*.
+ *   3. First turn in a Slack thread uses instructions A.
+ *   4. Patch the Agent to instructions B through /admin/api/*.
  *   5. SIGKILL, restart on the same DB_A + STATE_A.
- *   6. Follow up in the same thread. The provider request must still carry A,
- *      while the admin effective config reports B for future threads.
+ *   6. Follow up in the same thread. The provider request and Admin effective
+ *      config must both carry B because Agent edits apply on the next message.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -38,7 +38,7 @@ const ACTOR_USER_ID = 'UALICE01';
 const EXEC_CHANNEL = 'CEXEC123';
 const ROOT_TS = '1782772000.000100';
 const ALPHA = 'SNAPSHOT_SCRIPT_ALPHA: original instructions for this thread.';
-const BETA = 'SNAPSHOT_SCRIPT_BETA: edited instructions for future threads.';
+const BETA = 'SNAPSHOT_SCRIPT_BETA: edited instructions for the live Agent.';
 
 const results = [];
 let personalToken = '';
@@ -226,7 +226,7 @@ try {
   );
 
   await stopChild(server.child);
-  log('server SIGKILLed after writing the snapshot and editing config');
+  log('server SIGKILLed after the first turn and Agent edit');
 
   backend.reset();
   server = await startServer({ serverEntry, fakeUrl: fake.url, dbPath, stateDbPath, keyringPath, netGuardLog });
@@ -249,8 +249,8 @@ try {
   await stopChild(server.child);
 
   record(
-    'post-restart same-thread provider request still carries initial instructions',
-    secondHasAlpha && !secondHasBeta,
+    'post-restart same-thread provider request carries current Agent instructions',
+    !secondHasAlpha && secondHasBeta,
     `alpha=${secondHasAlpha} beta=${secondHasBeta}`,
   );
   record(
@@ -258,12 +258,15 @@ try {
     effectiveAfterRestart.status === 200 && restartedEffectiveHasBeta,
     `status=${effectiveAfterRestart.status} beta=${restartedEffectiveHasBeta}`,
   );
-  log(`matching pre/post-restart instruction marker: ${firstHasAlpha ? 'ALPHA' : 'missing'} -> ${secondHasAlpha ? 'ALPHA' : 'missing'}`);
+  log(
+    `matching pre/post-restart instruction marker: ` +
+      `${firstHasAlpha ? 'ALPHA' : 'missing'} -> ${secondHasBeta ? 'BETA' : 'missing'}`,
+  );
 
   const attempted = existsSync(netGuardLog) ? readFileSync(netGuardLog, 'utf8').trim() : '';
   record('NET_GUARD_LOG empty -> zero external traffic', attempted === '', attempted || 'none');
 } catch (error) {
-  record('snapshot durability harness', false, error instanceof Error ? error.stack : String(error));
+  record('live Agent durability harness', false, error instanceof Error ? error.stack : String(error));
 } finally {
   await backend.close();
   rmSync(dbDir, { recursive: true, force: true });
