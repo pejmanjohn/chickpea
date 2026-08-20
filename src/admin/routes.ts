@@ -348,6 +348,7 @@ import {
 } from '../slack/agent-presence/errors.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
+import { discoverableAgents } from '../slack/agent-routing.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
@@ -976,8 +977,6 @@ const assignmentSchema = v.object({
   enabled: v.boolean(),
   expectedAgentId: v.optional(v.nullable(agentIdSchema)),
   channelLabel: v.optional(v.string()),
-  channelPromptAddendum: v.optional(v.string()),
-  participationMode: v.optional(v.picklist(['ambient', 'mention_only'])),
 });
 
 const onboardingTrySchema = v.strictObject({
@@ -2508,6 +2507,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(notice ? { notice } : {}),
       }));
     } catch (error) {
+      if (action === 'gateway_begin' || action === 'gateway_refresh') {
+        const detail = error instanceof SlackTransportError
+          ? `${error.operation}:${error.code}`
+          : error instanceof Error
+            ? error.message.replace(/[A-Za-z0-9_-]{32,}/g, '[redacted]').slice(0, 240)
+            : 'unknown';
+        console.error('[chickpea] shared Slack gateway setup failed:', detail);
+      }
       if (error instanceof AuthRateLimitError) {
         c.header('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))));
         const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
@@ -2523,10 +2530,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         limiter.recordFailure(`slack_setup_operation_${action}`, setup.id),
         limiter.recordFailure('slack_setup_deployment', 'deployment'),
       ]);
-      const code = error instanceof SlackAppCreationError ? error.code : 'setup_invalid';
+      const code = (action === 'gateway_begin' || action === 'gateway_refresh')
+        && error instanceof SlackTransportError
+        ? slackGatewaySetupPageError(error.code)
+        : error instanceof SlackAppCreationError ? error.code : 'setup_invalid';
       const status = code === 'ambiguous_external_effect' ? 409
         : code === 'setup_expired' ? 410
         : code === 'setup_conflict' ? 409
+        : code === 'gateway_not_configured' || code === 'gateway_unreachable' ? 503
+        : code === 'gateway_redirect_rejected' || code === 'gateway_rejected' ? 502
         : 400;
       const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
       return c.html(renderSlackSetupPage({
@@ -3389,12 +3401,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       configStore.listWorkspaceInstallations(),
     ]);
     const principal = principalByContext.get(c);
-    const rawAgents = principal
-      ? allAgents.filter((agent) =>
-          canEditAgent(principal, agent) ||
-          grants.some((grant) => grant.agentId === agent.id && grant.status === 'active')
-        )
-      : allAgents;
+    let rawAgents = allAgents;
+    if (principal) {
+      const editableIds = new Set(
+        allAgents.filter((agent) => canEditAgent(principal, agent)).map((agent) => agent.id),
+      );
+      const needsSlackVisibility = allAgents.some((agent) => !editableIds.has(agent.id));
+      let discoverableIds = new Set<string>();
+      if (needsSlackVisibility) {
+        try {
+          const actor = await agentActor(c);
+          const transport = await agentSlackTransport(c, actor.slackTeamId);
+          discoverableIds = new Set((await discoverableAgents({
+            config: configStore,
+            workspaceId: actor.slackTeamId,
+            principal,
+            channelMember: (channelId) => transport.channelHasMember(channelId, actor.slackUserId),
+          })).map((agent) => agent.id));
+        } catch {
+          // Slack membership is the authority for non-editors. If it cannot be
+          // proven, keep the directory private while retaining editable Agents.
+        }
+      }
+      rawAgents = allAgents.filter((agent) =>
+        editableIds.has(agent.id) || discoverableIds.has(agent.id)
+      );
+    }
     const agents = await Promise.all(
       rawAgents.map((agent) =>
         withApiConnectionSources(agent, platformEnv, settingsStore),
@@ -3408,9 +3440,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         agentAdminProjection(agent, configStore, snapshots(c), {
           references: {
             agentId: agent.id,
-            channelAssignments: assignments
-              .filter(({ agentId }) => agentId === agent.id)
-              .map(({ workspaceId, channelId }) => ({ workspaceId, channelId })),
+            channelAssignments: [...new Map(
+              [
+                ...assignments
+                  .filter(({ agentId }) => agentId === agent.id)
+                  .map(({ workspaceId, channelId }) => ({ workspaceId, channelId })),
+                ...grants
+                  .filter(({ agentId }) => agentId === agent.id)
+                  .map(({ workspaceId, channelId }) => ({ workspaceId, channelId })),
+              ].map((reference) => [
+                `${reference.workspaceId}\u0000${reference.channelId}`,
+                reference,
+              ]),
+            ).values()],
             dmIdentityIds: identities
               .filter(({ dmAgentId }) => dmAgentId === agent.id)
               .map(({ id }) => id),
@@ -4914,9 +4956,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const agent = await store(c).getAgent(c.req.param('id'));
       const principal = principalByContext.get(c);
       if (principal && !canEditAgent(principal, agent)) {
-        const discoverable = (await store(c).listAgentChannelGrants()).some(
-          (grant) => grant.agentId === agent.id && grant.status === 'active',
-        );
+        let discoverable = false;
+        try {
+          const actor = await agentActor(c);
+          const transport = await agentSlackTransport(c, actor.slackTeamId);
+          discoverable = (await discoverableAgents({
+            config: store(c),
+            workspaceId: actor.slackTeamId,
+            principal,
+            channelMember: (channelId) => transport.channelHasMember(channelId, actor.slackUserId),
+          })).some((candidate) => candidate.id === agent.id);
+        } catch {
+          // An Agent detail lookup must not widen directory visibility when
+          // Slack membership cannot be proven.
+        }
         if (!discoverable) return c.json({ error: 'not_found' }, 404);
       }
       const enriched = await withApiConnectionSources(
@@ -5768,7 +5821,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               workspaceId: teamInfo.teamId,
               channelId: discovered.id,
               label: discovered.name,
-              participationMode: 'mention_only',
               lifecycle: 'active',
             },
             discovered,
@@ -5784,7 +5836,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             workspaceId: grant.workspaceId,
             channelId: grant.channelId,
             ...(grant.channelLabel ? { label: grant.channelLabel } : {}),
-            participationMode: 'mention_only',
             lifecycle: 'active',
           },
           discovered: discoveredChannelsById.get(grant.channelId),
@@ -6969,6 +7020,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   return app;
+}
+
+function slackGatewaySetupPageError(code: string): string {
+  switch (code) {
+    case 'gateway_not_configured':
+    case 'gateway_unreachable':
+    case 'gateway_redirect_rejected':
+    case 'gateway_rejected':
+      return code;
+    default:
+      return 'gateway_rejected';
+  }
 }
 
 function mcpOAuthAdminRedirect(
@@ -8318,10 +8381,6 @@ function toAdminAssignment(
     ...assignment,
     enabled: true,
     ...(channel?.label !== undefined ? { channelLabel: channel.label } : {}),
-    ...(channel?.additionalInstructions !== undefined
-      ? { channelPromptAddendum: channel.additionalInstructions }
-      : {}),
-    participationMode: channel?.participationMode ?? 'ambient',
   };
 }
 
@@ -8334,10 +8393,6 @@ function toChannel(
     workspaceId: input.workspaceId,
     channelId: input.channelId,
     ...(label !== undefined ? { label } : {}),
-    ...(input.channelPromptAddendum !== undefined
-      ? { additionalInstructions: input.channelPromptAddendum }
-      : {}),
-    participationMode: input.participationMode ?? 'ambient',
     lifecycle: 'active',
   };
 }

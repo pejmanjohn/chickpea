@@ -1,9 +1,8 @@
 export type SlackParticipationMode = 'ambient' | 'mention_only';
-export type SlackParticipationScope = 'channel' | 'thread';
 
 export interface SlackParticipationControl {
   mode: SlackParticipationMode;
-  scope: SlackParticipationScope;
+  scope: 'thread';
 }
 
 /** Deliberately narrow direct-instruction parser. It recognizes controls, not
@@ -18,23 +17,18 @@ export function parseSlackParticipationControl(text: string): SlackParticipation
     .replace(/^(?:please\s+|can you\s+|could you\s+)/, '')
     .replace(/[.!]+$/, '')
     .trim();
-  const scope: SlackParticipationScope | null = /\b(?:this|the)\s+thread\b/.test(normalized)
-    ? 'thread'
-    : /\b(?:this|the)\s+channel\b/.test(normalized)
-      ? 'channel'
-      : null;
-  if (!scope) return null;
+  if (!/\b(?:this|the)\s+thread\b/.test(normalized)) return null;
   if (
-    /^(?:only|just)\s+(?:respond|reply|answer)\s+when\s+(?:you(?:'re| are)\s+)?(?:mentioned|tagged)\s+in\s+(?:this|the)\s+(?:thread|channel)$/.test(direct) ||
-    /^(?:go|stay)\s+quiet\s+in\s+(?:this|the)\s+(?:thread|channel)$/.test(direct)
+    /^(?:only|just)\s+(?:respond|reply|answer)\s+when\s+(?:you(?:'re| are)\s+)?(?:mentioned|tagged)\s+in\s+(?:this|the)\s+thread$/.test(direct) ||
+    /^(?:go|stay)\s+quiet\s+in\s+(?:this|the)\s+thread$/.test(direct)
   ) {
-    return { mode: 'mention_only', scope };
+    return { mode: 'mention_only', scope: 'thread' };
   }
   if (
-    /^(?:resume|allow|enable)\s+ambient\s+(?:responses?|participation)\s+in\s+(?:this|the)\s+(?:thread|channel)$/.test(direct) ||
-    /^(?:respond|reply|answer)\s+(?:again\s+)?without\s+(?:a\s+)?(?:mention|tag)\s+in\s+(?:this|the)\s+(?:thread|channel)$/.test(direct)
+    /^(?:resume|allow|enable)\s+ambient\s+(?:responses?|participation)\s+in\s+(?:this|the)\s+thread$/.test(direct) ||
+    /^(?:respond|reply|answer)\s+(?:again\s+)?without\s+(?:a\s+)?(?:mention|tag)\s+in\s+(?:this|the)\s+thread$/.test(direct)
   ) {
-    return { mode: 'ambient', scope };
+    return { mode: 'ambient', scope: 'thread' };
   }
   return null;
 }

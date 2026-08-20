@@ -387,8 +387,6 @@ export interface ManagementWorkspaceSnapshot {
     channelId: string;
     revision: number;
     label?: string;
-    additionalInstructions?: string;
-    participationMode: ChannelConfig['participationMode'];
     lifecycle: ChannelConfig['lifecycle'];
     agentId?: string;
   }>;

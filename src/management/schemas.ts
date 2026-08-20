@@ -116,8 +116,6 @@ const zChannel = z.strictObject({
   channelId: zId,
   revision: z.number().int().positive().optional(),
   label: zOptionalText(240).optional(),
-  additionalInstructions: zOptionalText(100_000).optional(),
-  participationMode: z.enum(['ambient', 'mention_only']),
   lifecycle: z.enum(['active', 'archived']),
 });
 const zOperationBase = {
@@ -439,8 +437,6 @@ const vChannel = v.strictObject({
   channelId: vid,
   revision: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
   label: v.optional(vot(240)),
-  additionalInstructions: v.optional(vot(100_000)),
-  participationMode: v.picklist(['ambient', 'mention_only']),
   lifecycle: v.picklist(['active', 'archived']),
 });
 const vOperationBase = { itemId: vid, dependsOn: v.optional(va(vid, 25)) };

@@ -2092,10 +2092,6 @@ export class RoutineStoreLogic {
         channelId: routine.channelId,
         agentId: agent.id,
         ...(channel?.label ? { channelLabel: channel.label } : {}),
-        ...(channel?.additionalInstructions
-          ? { channelPromptAddendum: channel.additionalInstructions }
-          : {}),
-        participationMode: channel?.participationMode ?? 'ambient',
         agent,
       };
     } catch {

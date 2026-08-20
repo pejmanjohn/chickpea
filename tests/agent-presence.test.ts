@@ -159,6 +159,73 @@ test('retry adopts an exact group after an ambiguous create and never creates a 
   }
 });
 
+test('retry never adopts a foreign same-handle group after an ambiguous create', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const transport = new FakeSlackTransport();
+  transport.ambiguousCreate = true;
+  transport.ambiguousCreatePersistsGroup = false;
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    await assert.rejects(
+      () => reconciler.publish({
+        workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+        actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
+      }),
+      (error: unknown) => error instanceof AgentPresenceError &&
+        error.code === 'user_group_create_ambiguous',
+    );
+    transport.groups.push({
+      id: 'S_FOREIGN',
+      name: 'Somebody else',
+      handle: 'support',
+      description: 'Not Chickpea\'s group',
+      disabled: false,
+      updatedAt: Math.floor(NOW / 1_000) + 1,
+    });
+    transport.ambiguousCreate = false;
+
+    await assert.rejects(
+      () => reconciler.reconcile('agent_support'),
+      (error: unknown) => error instanceof AgentPresenceError &&
+        error.code === 'user_group_create_ambiguous',
+    );
+    assert.equal((await config.getAgent('agent_support')).slackPresence?.userGroupId, undefined);
+    assert.equal(transport.createCalls, 1);
+  } finally {
+    config.close();
+  }
+});
+
+test('a handle edit racing Slack creation converges on one updated user group', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    transport.onCreate = async () => {
+      const current = await config.getAgent('agent_support');
+      await config.updateAgent(current.id, {
+        name: 'Support Pro',
+        slackPresence: {
+          ...current.slackPresence!,
+          requestedHandle: 'support-pro',
+          normalizedHandle: 'support-pro',
+        },
+      }, current.revision);
+    };
+    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    const reconciled = await reconciler.reconcile('agent_support');
+
+    assert.equal(reconciled.name, 'Support Pro');
+    assert.equal(reconciled.slackPresence?.normalizedHandle, 'support-pro');
+    assert.equal(reconciled.slackPresence?.userGroupId, 'S1');
+    assert.equal(transport.groups.length, 1);
+    assert.equal(transport.groups[0]?.handle, 'support-pro');
+  } finally {
+    config.close();
+  }
+});
+
 test('archive disables the alias and removes grants; restore enables the same alias', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const transport = new FakeSlackTransport();
@@ -251,6 +318,36 @@ test('uploaded avatars can publish through shared gateway storage before saving 
   }
 });
 
+test('concurrent avatar uploads reserve distinct immutable URLs', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const results = await Promise.allSettled([
+      uploadAgentAvatar({
+        config, settings, agentId: 'agent_support', bytes: pngWithTextMetadata([24, 92, 61, 255]),
+        contentType: 'image/png', publicOrigin: 'https://chickpea.example',
+      }),
+      uploadAgentAvatar({
+        config, settings, agentId: 'agent_support', bytes: pngWithTextMetadata([180, 30, 90, 255]),
+        contentType: 'image/png', publicOrigin: 'https://chickpea.example',
+      }),
+    ]);
+    assert.equal(results.filter(({ status }) => status === 'fulfilled').length, 1);
+    assert.equal(results.filter(({ status }) => status === 'rejected').length, 1);
+    const [revision2, revision3] = await Promise.all([
+      readAgentAvatarAsset({ settings, agentId: 'agent_support', revision: 2 }),
+      readAgentAvatarAsset({ settings, agentId: 'agent_support', revision: 3 }),
+    ]);
+    assert.ok(revision2);
+    assert.ok(revision3);
+    assert.notDeepEqual(revision2.bytes, revision3.bytes);
+  } finally {
+    config.close();
+    settings.close?.();
+  }
+});
+
 test('avatar upload rejects raster signatures that do not decode', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -273,8 +370,8 @@ test('avatar upload rejects raster signatures that do not decode', async () => {
   }
 });
 
-function pngWithTextMetadata(): Uint8Array {
-  const image = new PhotonImage(Uint8Array.from([24, 92, 61, 255]), 1, 1);
+function pngWithTextMetadata(pixel = [24, 92, 61, 255]): Uint8Array {
+  const image = new PhotonImage(Uint8Array.from(pixel), 1, 1);
   const png = Uint8Array.from(image.get_bytes());
   image.free();
   const marker = Uint8Array.from([0x49, 0x45, 0x4e, 0x44]);
@@ -350,6 +447,8 @@ class FakeSlackTransport implements SlackTransport {
   createCalls = 0;
   createError: Error | undefined;
   ambiguousCreate = false;
+  ambiguousCreatePersistsGroup = true;
+  onCreate?: () => Promise<void>;
   channel = { id: 'C_SUPPORT', name: 'support', private: false, member: false, archived: false };
   groups: SlackUserGroup[] = [];
 
@@ -370,13 +469,15 @@ class FakeSlackTransport implements SlackTransport {
       handle: input.handle,
       ...(input.description ? { description: input.description } : {}),
       disabled: false,
+      updatedAt: Math.floor(NOW / 1_000),
     };
     if (this.ambiguousCreate) {
-      this.groups.push(group);
+      if (this.ambiguousCreatePersistsGroup) this.groups.push(group);
       throw new SlackTransportError('usergroups.create', 'slack_unreachable', { retryable: true });
     }
     if (this.createError) throw this.createError;
     this.groups.push(group);
+    await this.onCreate?.();
     return { ...group };
   }
   async updateUserGroup(id: string, patch: Partial<SlackUserGroup>) {

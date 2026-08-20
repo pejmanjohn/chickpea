@@ -320,9 +320,6 @@ export async function runTurn(
         'instructions' in assignment && typeof assignment.instructions === 'string'
           ? assignment.instructions
           : assignment.agent.instructions,
-      ...(assignment.channelPromptAddendum
-        ? { channelInstructions: assignment.channelPromptAddendum }
-        : {}),
       requestedModel: resolvedModel ?? null,
     }, platformEnv);
     interactionIntent = classification.intent;

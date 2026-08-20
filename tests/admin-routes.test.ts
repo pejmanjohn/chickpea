@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import type { AuthPrincipal } from '../src/auth/types.ts';
 import flueApp from '../src/app.ts';
 import type { RuntimeDrainStatus } from '../src/config/state-rpc.ts';
 import { SqliteSlackStateStore, type SlackStateStore } from '../src/slack/claim-store.ts';
@@ -156,6 +157,7 @@ interface AdminHarnessOptions {
     channelId: string,
   ) => Promise<SlackConversationsInfoResult>;
   slackTransport?: SlackTransport;
+  authPrincipal?: AuthPrincipal;
 }
 
 function appWithAdmin(store: ConfigStore, adminToken?: string): Hono {
@@ -180,7 +182,7 @@ function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = 
       store,
       settings,
       ...(token
-        ? testAdminAuthority(token, undefined, options.identity)
+        ? testAdminAuthority(token, undefined, options.identity, options.authPrincipal)
         : (options.identity ? { identity: options.identity } : {})),
       knownProviders: new Set(['local-stub']),
       ...(options.discoverMcp ? { discoverMcp: options.discoverMcp } : {}),
@@ -1844,7 +1846,6 @@ test('onboarding API derives live stages and completes only after a delivered se
       workspaceId: 'TDESIGN',
       channelId: 'CSTART',
       label: 'start-here',
-      participationMode: 'mention_only',
       lifecycle: 'active',
     });
     await store.ensureWorkspaceInstallation({
@@ -1942,7 +1943,6 @@ test('shared gateway onboarding needs no local Slack token and checks membership
       workspaceId: 'TGATEWAY',
       channelId: 'CSTART',
       label: 'start-here',
-      participationMode: 'mention_only',
       lifecycle: 'active',
     });
     await store.putAgentChannelGrant({
@@ -2095,7 +2095,6 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
         agentId: 'agent_admin',
         enabled: true,
         channelLabel: 'eng-releases',
-        channelPromptAddendum: 'Admin channel addendum.',
       }),
     });
     assert.equal(putAssignment.status, 200);
@@ -2106,16 +2105,12 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
         agentId: 'agent_admin',
         enabled: true,
         channelLabel: 'eng-releases',
-        channelPromptAddendum: 'Admin channel addendum.',
-        participationMode: 'ambient',
       },
       channel: {
         workspaceId: 'T_ADMIN',
         channelId: 'C_ADMIN',
         revision: 1,
         label: 'eng-releases',
-        additionalInstructions: 'Admin channel addendum.',
-        participationMode: 'ambient',
         lifecycle: 'active',
       },
     });
@@ -2132,8 +2127,6 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
         agentId: 'agent_admin',
         enabled: true,
         channelLabel: 'eng-releases',
-        channelPromptAddendum: 'Admin channel addendum.',
-        participationMode: 'ambient',
       },
     });
 
@@ -2149,8 +2142,6 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
           agentId: 'agent_admin',
           enabled: true,
           channelLabel: 'eng-releases',
-          channelPromptAddendum: 'Admin channel addendum.',
-          participationMode: 'ambient',
         },
       ],
     });
@@ -2545,8 +2536,6 @@ test('effective config endpoint resolves through the runtime assignment path', a
     await store.putChannel({
       workspaceId: 'T_ADMIN',
       channelId: 'C_ADMIN',
-      additionalInstructions: 'Channel addendum from the admin test.',
-      participationMode: 'ambient',
       lifecycle: 'active',
     });
     await store.putAssignment({
@@ -6002,7 +5991,7 @@ test('Agent-first admin projections expose capabilities, placements, readiness, 
   try {
     await store.putChannel({
       workspaceId: 'T123', channelId: 'C456', label: 'operations',
-      additionalInstructions: 'Keep updates concise.', participationMode: 'ambient', lifecycle: 'active',
+      lifecycle: 'active',
     });
     await store.putAssignment({ workspaceId: 'T123', channelId: 'C456', agentId: configured.id });
     await store.putAgentChannelGrant({
@@ -6047,6 +6036,81 @@ test('Agent-first admin projections expose capabilities, placements, readiness, 
     assert.equal(removedProfilePage.status, 404);
   } finally {
     store.close();
+  }
+});
+
+test('Agent directory reveals non-editable Agents only through current Slack Channel membership', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const identity = new SqliteIdentityStore(':memory:');
+  try {
+    const owner = await createSlackOwner(identity, {
+      teamId: 'T_TEST', userId: 'U_OWNER_DIRECTORY', suffix: 'admin_agent_directory',
+    });
+    const provisioned = await identity.provisionSlackMember({
+      slackTeamId: 'T_TEST', slackUserId: 'U_MEMBER_DIRECTORY',
+      displayName: 'Directory member', contactEmail: 'directory@acme.test',
+    });
+    assert.ok(provisioned.resolution);
+    const membership = provisioned.resolution.membership;
+    const user = provisioned.resolution.user;
+    const own = await config.createAgent(agent({
+      id: 'agent_own', name: 'Own Agent', creatorMembershipId: membership.id,
+    }));
+    const visible = await config.createAgent(agent({
+      id: 'agent_visible', name: 'Visible Agent', creatorMembershipId: owner.membership.id,
+    }));
+    const hidden = await config.createAgent(agent({
+      id: 'agent_hidden', name: 'Hidden Agent', creatorMembershipId: owner.membership.id,
+      instructions: 'Private hidden instructions.',
+    }));
+    for (const [candidate, channelId] of [[visible, 'C_MEMBER'], [hidden, 'C_OTHER']] as const) {
+      await config.putAgentChannelGrant({
+        workspaceId: 'T_TEST', channelId, agentId: candidate.id,
+        status: 'active', createdByMembershipId: owner.membership.id,
+      });
+    }
+    const slackTransport = {
+      mode: 'direct',
+      async channelHasMember(channelId: string, slackUserId: string) {
+        assert.equal(slackUserId, user.slackUserId);
+        return channelId === 'C_MEMBER';
+      },
+    } as SlackTransport;
+    const app = appWithAdminOptions(config, {
+      identity,
+      slackTransport,
+      authPrincipal: {
+        userId: user.id,
+        membershipId: membership.id,
+        organizationId: membership.organizationId,
+        role: 'member',
+        authenticatorKind: 'test_slack_session',
+        credentialId: 'session_directory_member',
+        correlationId: 'request_directory_member',
+        machine: false,
+      },
+    });
+
+    const response = await app.request('/admin/api/agents', { headers: auth(ADMIN_TOKEN) });
+    assert.equal(response.status, 200);
+    const body = await response.json() as {
+      agents: Array<{ id: string; instructions: string; deletion: { blocked: boolean } }>;
+    };
+    assert.deepEqual(body.agents.map(({ id }) => id).sort(), [own.id, visible.id].sort());
+    assert.equal(JSON.stringify(body).includes('Private hidden instructions.'), false);
+    assert.equal(body.agents.find(({ id }) => id === visible.id)?.deletion.blocked, true);
+
+    const ownDetail = await app.request(`/admin/api/agents/${own.id}`, { headers: auth(ADMIN_TOKEN) });
+    assert.equal(ownDetail.status, 200);
+    const visibleDetail = await app.request(`/admin/api/agents/${visible.id}`, { headers: auth(ADMIN_TOKEN) });
+    assert.equal(visibleDetail.status, 200);
+    assert.equal(((await visibleDetail.json()) as any).agent.deletion.blocked, true);
+    const hiddenDetail = await app.request(`/admin/api/agents/${hidden.id}`, { headers: auth(ADMIN_TOKEN) });
+    assert.equal(hiddenDetail.status, 404);
+    assert.equal(JSON.stringify(await hiddenDetail.json()).includes('Private hidden instructions.'), false);
+  } finally {
+    identity.close();
+    config.close();
   }
 });
 

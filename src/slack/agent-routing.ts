@@ -253,7 +253,6 @@ function assignmentForAgent(
     // Internal transport coordinate only; Slack presentation belongs to Agent.
     slackIdentityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     ...(grant?.channelLabel ? { channelLabel: grant.channelLabel } : {}),
-    participationMode: 'mention_only',
     agent,
   };
 }

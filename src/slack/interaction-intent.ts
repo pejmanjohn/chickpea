@@ -78,7 +78,6 @@ export interface SlackInteractionIntentContext {
   source: SlackInteractionSource;
   guaranteed: boolean;
   profileInstructions: string;
-  channelInstructions?: string;
   recentContext?: string[];
   reactionTargetText?: string;
   activeWork?: boolean;
@@ -398,7 +397,6 @@ function interactionClassifierContext(context: SlackInteractionIntentContext): C
     `Reacted-to message: ${JSON.stringify(context.reactionTargetText ?? '')}`,
     `Bounded recent context: ${JSON.stringify(context.recentContext ?? [])}`,
     `Profile guidance: ${JSON.stringify(context.profileInstructions)}`,
-    `Channel guidance: ${JSON.stringify(context.channelInstructions ?? '')}`,
   ].join('\n');
   return {
     systemPrompt: SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS,

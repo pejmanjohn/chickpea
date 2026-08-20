@@ -22,6 +22,7 @@ import {
 } from '../src/slack/gateway/protocol.ts';
 import { gatewayReconnectAt, gatewaySessionHealthy } from '../src/slack/gateway/session.ts';
 import { createGatewaySlackTransport } from '../src/slack/transport/gateway.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
 import {
   resolveSlackIdentityExecutionContext,
   verifySlackIdentityTurnAccess,
@@ -31,8 +32,36 @@ import {
   GatewaySessionRunner,
   type GatewaySocket,
 } from '../src/slack/gateway/session-runner.ts';
+import {
+  DEFAULT_CHICKPEA_GATEWAY_URL,
+  resolveChickpeaGatewayUrl,
+} from '../src/slack/gateway/runtime.ts';
 
 const NOW = Date.UTC(2026, 7, 20, 12);
+
+test('fresh deployments default to the live shared gateway origin', () => {
+  const prior = process.env.CHICKPEA_GATEWAY_URL;
+  delete process.env.CHICKPEA_GATEWAY_URL;
+  try {
+    assert.equal(
+      resolveChickpeaGatewayUrl(),
+      `${DEFAULT_CHICKPEA_GATEWAY_URL}/`,
+    );
+    assert.equal(
+      DEFAULT_CHICKPEA_GATEWAY_URL,
+      'https://chickpea-slack-gateway.pejmanjohn.workers.dev',
+    );
+    assert.throws(
+      () => resolveChickpeaGatewayUrl({
+        CHICKPEA_GATEWAY_URL: 'https://gateway.example/tenant',
+      } as never),
+      /HTTPS origin/,
+    );
+  } finally {
+    if (prior === undefined) delete process.env.CHICKPEA_GATEWAY_URL;
+    else process.env.CHICKPEA_GATEWAY_URL = prior;
+  }
+});
 
 test('gateway deployment identity retries after a transient settings failure', async () => {
   const settings = new SqliteSettingsStore(':memory:', () => NOW);
@@ -66,6 +95,69 @@ test('gateway deployment identity retries after a transient settings failure', a
     await assert.rejects(client.beginClaim(), /temporarily unavailable/);
     const claim = await client.beginClaim();
     assert.equal(claim.claimId, 'claim_test');
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway client preserves the Cloudflare global fetch receiver', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const originalFetch = globalThis.fetch;
+  let receiverWasGlobal = false;
+  globalThis.fetch = function (this: unknown, _input: string | URL | Request) {
+    receiverWasGlobal = this === globalThis;
+    return Promise.resolve(new Response(JSON.stringify({
+      protocolVersion: 1,
+      claimId: 'claim_receiver',
+      expiresAt: NOW + 60_000,
+      authorizationUrl: 'https://gateway.chickpea.test/install/claim_receiver',
+    }), { status: 201, headers: { 'content-type': 'application/json' } }));
+  } as typeof fetch;
+  try {
+    const client = new GatewayDeploymentClient({
+      settings,
+      config,
+      keyring: generateCredentialKeyring('key_gateway'),
+      gatewayBaseUrl: 'https://gateway.chickpea.test',
+      now: () => NOW,
+    });
+    await client.beginClaim();
+    assert.equal(receiverWasGlobal, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway client uses Cloudflare-safe manual redirects and rejects them', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  let observedRedirect: RequestRedirect | undefined;
+  const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    observedRedirect = init?.redirect;
+    return new Response(null, {
+      status: 302,
+      headers: { location: 'https://attacker.example/collect' },
+    });
+  };
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch,
+    now: () => NOW,
+  });
+  try {
+    await assert.rejects(
+      client.beginClaim(),
+      (error: unknown) => error instanceof SlackTransportError
+        && error.code === 'gateway_redirect_rejected',
+    );
+    assert.equal(observedRedirect, 'manual');
   } finally {
     settings.close();
     config.close();

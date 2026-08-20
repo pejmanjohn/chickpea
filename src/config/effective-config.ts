@@ -103,7 +103,6 @@ export function resolvedAssignmentFromEffectiveConfig(
     agentId: config.agentId,
     slackIdentityId: config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     ...(config.channelLabel ? { channelLabel: config.channelLabel } : {}),
-    participationMode: 'mention_only',
     agent: config.agent,
     model: config.model,
     ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),

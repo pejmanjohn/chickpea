@@ -159,16 +159,38 @@ export class AgentPresenceReconciler {
           );
           throw collision;
         }
+        if (!matchesAmbiguousCreateLease(handleMatch, presence.pendingCreate)) {
+          throw new AgentPresenceError(
+            'user_group_create_ambiguous',
+            `Slack has a matching @${normalizedHandle} user group, but Chickpea cannot prove it came from the interrupted create. Change the Agent handle or ask a Slack Admin to resolve the collision.`,
+          );
+        }
         group = handleMatch;
       }
     }
 
     if (!group) {
+      const pendingCreate = {
+        name: agent.name,
+        handle: normalizedHandle,
+        description: agent.description ?? `${agent.name} Agent`,
+        startedAt: this.now(),
+      };
+      agent = await config.updateAgent(
+        agent.id,
+        {
+          slackPresence: {
+            ...requiredPresence(agent),
+            pendingCreate,
+          },
+        },
+        agent.revision,
+      );
       try {
         group = await transport.createUserGroup({
-          name: agent.name,
-          handle: normalizedHandle,
-          description: agent.description ?? `${agent.name} Agent`,
+          name: pendingCreate.name,
+          handle: pendingCreate.handle,
+          description: pendingCreate.description,
         });
       } catch (error) {
         if (error instanceof Error &&
@@ -186,14 +208,35 @@ export class AgentPresenceReconciler {
       group = await this.updateGroupIfNeeded(group, agent, normalizedHandle);
       if (group.disabled) group = await transport.enableUserGroup(group.id);
     }
-    const current = await config.getAgent(agent.id);
+    let current = await config.getAgent(agent.id);
+    const currentPresence = requiredPresence(current);
+    const currentHandle = normalizeAgentHandle(currentPresence.requestedHandle || current.name);
+    const desiredChangedDuringSlackIo = current.name !== agent.name ||
+      current.description !== agent.description || currentHandle !== normalizedHandle;
+    if (desiredChangedDuringSlackIo) {
+      // Preserve the observed group id before reconciling the newer desired
+      // state. Otherwise a handle edit racing the Slack request could orphan a
+      // just-created group and create a second one on Retry.
+      current = await config.updateAgent(
+        current.id,
+        {
+          slackPresence: {
+            ...currentPresence,
+            userGroupId: group.id,
+            health: 'pending',
+          },
+        },
+        current.revision,
+      );
+      return this.reconcile(current.id);
+    }
     return config.updateAgent(
       current.id,
       {
         lifecycle: 'active',
         enabled: true,
         slackPresence: {
-          ...withoutPresenceErrors(requiredPresence(current)),
+          ...withoutPendingCreate(withoutPresenceErrors(requiredPresence(current))),
           requestedHandle: presence.requestedHandle || normalizedHandle,
           normalizedHandle,
           desiredState: 'active',
@@ -350,4 +393,23 @@ function withoutPresenceErrors(
 ): Omit<AgentSlackPresence, 'errorCode' | 'errorDetail'> {
   const { errorCode: _errorCode, errorDetail: _errorDetail, ...clean } = presence;
   return clean;
+}
+
+function withoutPendingCreate(
+  presence: Omit<AgentSlackPresence, 'errorCode' | 'errorDetail'>,
+): Omit<AgentSlackPresence, 'errorCode' | 'errorDetail' | 'pendingCreate'> {
+  const { pendingCreate: _pendingCreate, ...clean } = presence;
+  return clean;
+}
+
+function matchesAmbiguousCreateLease(
+  group: SlackUserGroup,
+  lease: AgentSlackPresence['pendingCreate'],
+): boolean {
+  if (!lease || group.updatedAt === undefined) return false;
+  return group.name === lease.name &&
+    group.handle === lease.handle &&
+    group.description === lease.description &&
+    // Slack's date_update is expressed in whole Unix seconds.
+    group.updatedAt >= Math.floor(lease.startedAt / 1_000);
 }

@@ -88,10 +88,6 @@ export async function resolveAssignment(
     agentId: agent.id,
     slackIdentityId: agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     ...(channel?.label ? { channelLabel: channel.label } : {}),
-    ...(channel?.additionalInstructions
-      ? { channelPromptAddendum: channel.additionalInstructions }
-      : {}),
-    participationMode: channel?.participationMode ?? 'ambient',
     ...(channel?.revision ? { channelRevision: channel.revision } : {}),
     agent,
   };

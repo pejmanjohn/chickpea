@@ -36,7 +36,6 @@ export function safeConfigForAssignment(
         profileId: assignment.agentId,
         configuredModel,
         instructions: agent.instructions,
-        channelPromptAddendum: assignment.channelPromptAddendum ?? null,
         skillNames,
         connectionIds,
         repositoryIds,

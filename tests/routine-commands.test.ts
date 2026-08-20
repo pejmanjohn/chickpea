@@ -20,7 +20,6 @@ const TEST_ASSIGNMENT: ResolvedAssignment = {
   workspaceId: 'T_TEST',
   channelId: 'C_TEST',
   agentId: 'agent_test',
-  participationMode: 'mention_only',
   agent: {
     id: 'agent_test', revision: 1, name: 'Test Agent', instructions: 'Test.', enabled: true,
     lifecycle: 'active', creatorMembershipId: 'membership_test',

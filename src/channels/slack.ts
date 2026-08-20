@@ -1436,9 +1436,6 @@ async function processSlackEvent(
         'instructions' in assignment && typeof assignment.instructions === 'string'
           ? assignment.instructions
           : assignment.agent.instructions,
-      ...(assignment.channelPromptAddendum
-        ? { channelInstructions: assignment.channelPromptAddendum }
-        : {}),
     });
     if (immediateIntent) turn.interactionIntent = immediateIntent;
   }
@@ -1507,36 +1504,8 @@ async function processSlackEvent(
   const participationControl = !candidateTurn && admissionTruth.eligible
     ? parseSlackParticipationControl(turn.text)
     : null;
-  if (!agentPlatformInstallation && participationControl?.scope === 'thread') {
+  if (!agentPlatformInstallation && participationControl) {
     await state.setParticipation(threadKey, participationControl.mode);
-  } else if (
-    !agentPlatformInstallation && participationControl?.scope === 'channel' &&
-    surface === 'channel'
-  ) {
-    const current = await stores.config.getAssignment(turn.workspaceId, turn.channelId);
-    const currentChannel = await stores.config.getChannel(turn.workspaceId, turn.channelId);
-    await stores.config.putChannel({
-      workspaceId: turn.workspaceId,
-      channelId: turn.channelId,
-      ...(currentChannel?.label || assignment.channelLabel
-        ? { label: currentChannel?.label ?? assignment.channelLabel }
-        : {}),
-      ...(currentChannel?.additionalInstructions || assignment.channelPromptAddendum
-        ? {
-            additionalInstructions:
-              currentChannel?.additionalInstructions ?? assignment.channelPromptAddendum,
-          }
-        : {}),
-      participationMode: participationControl.mode,
-      lifecycle: currentChannel?.lifecycle ?? 'active',
-    });
-    if (!current) {
-      await stores.config.putAssignment({
-        workspaceId: turn.workspaceId,
-        channelId: turn.channelId,
-        agentId: assignment.agentId,
-      });
-    }
   }
 
   let promotedDecisionKey: string | undefined;
@@ -2000,9 +1969,6 @@ async function classifyCandidateTurn(
       'instructions' in assignment && typeof assignment.instructions === 'string'
         ? assignment.instructions
         : assignment.agent.instructions,
-    ...(assignment.channelPromptAddendum
-      ? { channelInstructions: assignment.channelPromptAddendum }
-      : {}),
     requestedModel,
     recentContext: context.messages.map((message) => `${message.userId}: ${message.text}`),
     ...(turn.reactionTargetText

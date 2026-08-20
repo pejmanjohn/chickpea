@@ -4,10 +4,10 @@ import { test } from 'node:test';
 import { ACTIVE_WORK_TTL_MS, SqliteSlackStateStore } from '../src/slack/claim-store.ts';
 import { parseSlackParticipationControl } from '../src/slack/participation-control.ts';
 
-test('participation controls recognize bounded channel and thread instructions only', () => {
-  assert.deepEqual(
+test('participation controls recognize bounded thread instructions only', () => {
+  assert.equal(
     parseSlackParticipationControl('<@UBOT> only respond when mentioned in this channel'),
-    { mode: 'mention_only', scope: 'channel' },
+    null,
   );
   assert.deepEqual(
     parseSlackParticipationControl('<@UBOT> respond again without a mention in this thread'),

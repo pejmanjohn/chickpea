@@ -5,7 +5,8 @@
 	"preview_urls": false,
 	"compatibility_date": "2026-08-20",
 	"compatibility_flags": [
-		"nodejs_compat"
+		"nodejs_compat",
+		"global_fetch_strictly_public"
 	],
 	// Without this, a fresh install captures NO logs at all — the sanitized
 	// Slack error is then the only trace of a provider failure (learned the

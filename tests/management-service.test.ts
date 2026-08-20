@@ -512,7 +512,6 @@ test('routine save and control are immediate, inspection redacts unknown authori
     await f.config.putChannel({
       workspaceId,
       channelId: 'C_ROUTINES',
-      participationMode: 'mention_only',
       lifecycle: 'active',
     }, 0);
     const created = await f.service.applyWorkspaceChanges({
@@ -600,7 +599,6 @@ test('one progressive request creates an Agent, Channel, and initial placement w
           channel: {
             workspaceId: 'T1',
             channelId: 'C_RESEARCH',
-            participationMode: 'mention_only',
             lifecycle: 'active',
           },
           expectedRevision: 0,
@@ -672,7 +670,7 @@ test('one progressive request keeps the Agent live while returning setup for an 
           kind: 'put_channel',
           channel: {
             workspaceId: 'T1', channelId: 'C_RESEARCH',
-            participationMode: 'mention_only', lifecycle: 'active',
+            lifecycle: 'active',
           },
           expectedRevision: 0,
         },
@@ -710,7 +708,6 @@ test('Agent deletion reports placements and only the same actor and Slack thread
         channel: {
           workspaceId: 'T1',
           channelId,
-          participationMode: 'ambient',
           lifecycle: 'active',
         },
         agentId: 'agent_test',

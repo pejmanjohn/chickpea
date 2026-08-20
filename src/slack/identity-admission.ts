@@ -39,7 +39,6 @@ export async function resolveSlackIdentityDmAssignment(
     workspaceId,
     channelId,
     agentId: agent.id,
-    participationMode: 'ambient',
     agent,
   };
 }

@@ -99,7 +99,6 @@ export async function resolveRoutineRuntimeAccess(
         workspaceId: routine.workspaceId,
         channelId: routine.channelId,
         agentId: authority.reference.agentId,
-        participationMode: 'mention_only',
         agent: authority.agent,
       });
     } catch (error) {

@@ -91,7 +91,6 @@ export function initialManagementBundle(workspaceId: string, channelId: string) 
         workspaceId,
         channelId,
         label: 'research',
-        participationMode: 'mention_only' as const,
         lifecycle: 'active' as const,
       },
       expectedRevision: 0,

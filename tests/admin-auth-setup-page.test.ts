@@ -126,6 +126,21 @@ test('setup refresh auto-resumes privately while rejected submissions stay user-
   assert.match(rejected, /role="alert"[^>]*tabindex="-1"/);
 });
 
+test('shared gateway failures explain safety, retry, and the customer-owned fallback', () => {
+  for (const error of ['gateway_not_configured', 'gateway_unreachable'] as const) {
+    const html = renderSlackSetupPage({
+      setup: setup('awaiting_app_creation'),
+      destination: DESTINATION,
+      manifest: MANIFEST,
+      error,
+    });
+    assert.match(html, /Your deployment and setup link are safe/);
+    assert.match(html, /data-primary-action="gateway-install"/);
+    assert.match(html, /Use your own Slack app instead/);
+    assert.match(html, /role="alert"/);
+  }
+});
+
 test('wrong-account and uninvited denial is safe and gives a Slack retry without implying basic access', () => {
   const html = renderSlackAccessDeniedPage({
     purpose: 'login', destination: DESTINATION, reason: 'user_mismatch',

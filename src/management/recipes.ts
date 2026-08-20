@@ -76,8 +76,6 @@ const workspaceRecipeSchema = z.strictObject({
   channels: z.array(z.strictObject({
     symbol: recipeId.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/),
     label: recipeOptionalText(240).optional(),
-    additionalInstructions: recipeOptionalText(100_000).optional(),
-    participationMode: z.enum(['ambient', 'mention_only']),
     agentSymbol: recipeId.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/),
   })).max(100),
 });
@@ -110,8 +108,6 @@ export interface WorkspaceRecipeAgent {
 export interface WorkspaceRecipeChannel {
   symbol: string;
   label?: string;
-  additionalInstructions?: string;
-  participationMode: 'ambient' | 'mention_only';
   agentSymbol: string;
 }
 
@@ -179,10 +175,6 @@ export async function exportWorkspaceRecipe(
       return [{
         symbol: `channel_${index + 1}`,
         ...(channel.label ? { label: channel.label } : {}),
-        ...(channel.additionalInstructions
-          ? { additionalInstructions: channel.additionalInstructions }
-          : {}),
-        participationMode: channel.participationMode,
         agentSymbol,
       }];
     }),
@@ -332,10 +324,6 @@ export async function previewWorkspaceRecipe(
         workspaceId: target.workspaceId,
         channelId: target.channelId,
         ...(channel.label ? { label: channel.label } : {}),
-        ...(channel.additionalInstructions
-          ? { additionalInstructions: channel.additionalInstructions }
-          : {}),
-        participationMode: channel.participationMode,
         lifecycle: 'active',
       },
       expectedRevision: target.expectedRevision,

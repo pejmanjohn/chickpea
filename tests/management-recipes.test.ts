@@ -47,7 +47,7 @@ test('recipe export retains operational requirements and strips workspace author
     });
     await config.putChannel({
       workspaceId: 'T_SECRET', channelId: 'C_SECRET', label: 'research',
-      participationMode: 'mention_only', lifecycle: 'active',
+      lifecycle: 'active',
     }, 0);
     await config.putChannelPlacement({
       channel: (await config.getChannel('T_SECRET', 'C_SECRET'))!,
@@ -89,7 +89,7 @@ test('recipe preview exposes conflict choices then compiles clone, placement, an
         repositoryRequirements: [{ id: 'repo', fullName: 'northstar/research', enabled: true }],
       }],
       channels: [{
-        symbol: 'channel_1', label: 'research', participationMode: 'mention_only',
+        symbol: 'channel_1', label: 'research',
         agentSymbol: 'agent_1',
       }],
     };
@@ -242,7 +242,7 @@ test('recipe import progressively creates live configuration and rejects a stale
         repositoryRequirements: [{ id: 'repo', fullName: 'northstar/research', enabled: true }],
       }],
       channels: [{
-        symbol: 'channel_1', label: 'research', participationMode: 'mention_only',
+        symbol: 'channel_1', label: 'research',
         agentSymbol: 'agent_1',
       }],
     };
@@ -325,7 +325,7 @@ test('confirmed recipe overwrite resumes connector setup and Channel placement',
           apiRequirements: [], repositoryRequirements: [],
         }],
         channels: [{
-          symbol: 'channel_1', label: 'research', participationMode: 'mention_only',
+          symbol: 'channel_1', label: 'research',
           agentSymbol: 'agent_1',
         }],
       },

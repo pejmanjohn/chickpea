@@ -75,7 +75,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
   private binding: GatewayWorkspaceBinding | undefined;
 
   constructor(private readonly dependencies: GatewayClientDependencies) {
-    this.fetch = dependencies.fetch ?? globalThis.fetch;
+    this.fetch = dependencies.fetch ?? globalThis.fetch.bind(globalThis);
     this.now = dependencies.now ?? Date.now;
     this.requireBaseUrl();
   }
@@ -424,12 +424,21 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     try {
       response = await this.fetch(new URL(path, this.requireBaseUrl()), {
         ...init,
-        redirect: 'error',
+        // Cloudflare Workers reject `redirect: "error"` before sending the
+        // request. Keep redirects manual and fail closed below instead.
+        redirect: 'manual',
         signal: init.signal ?? AbortSignal.timeout(GATEWAY_REQUEST_TIMEOUT_MS),
         headers: { 'content-type': 'application/json', ...init.headers },
       });
-    } catch {
+    } catch (error) {
+      const detail = error instanceof Error
+        ? error.message.replace(/[A-Za-z0-9_-]{32,}/g, '[redacted]').slice(0, 240)
+        : 'unknown';
+      console.warn('[chickpea] shared Slack gateway request failed before response:', detail);
       throw new SlackTransportError('gateway.request', 'gateway_unreachable', { retryable: true });
+    }
+    if (response.status >= 300 && response.status < 400) {
+      throw new SlackTransportError('gateway.request', 'gateway_redirect_rejected');
     }
     const text = await boundedResponseText(response, MAX_GATEWAY_FRAME_BYTES);
     let payload: unknown;

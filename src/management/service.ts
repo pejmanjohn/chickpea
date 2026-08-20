@@ -1032,10 +1032,6 @@ export class WorkspaceManagementService {
         channelId: channel.channelId,
         revision: channel.revision ?? 1,
         ...(channel.label ? { label: channel.label } : {}),
-        ...(channel.additionalInstructions
-          ? { additionalInstructions: channel.additionalInstructions }
-          : {}),
-        participationMode: channel.participationMode,
         lifecycle: channel.lifecycle,
         ...(placementsByChannel.get(channelKey(channel.workspaceId, channel.channelId))
           ? { agentId: placementsByChannel.get(channelKey(channel.workspaceId, channel.channelId))!.agentId }

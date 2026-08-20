@@ -1725,6 +1725,7 @@ details[open].advanced summary::before {
 .agent-advanced-row + .agent-advanced-row { border-top: 1px solid var(--line); border-radius: 0; }
 .agent-advanced-row .btn { flex-shrink: 0; }
 .where-list, .capability-preview-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.where-entry { align-items: center; display: inline-flex; gap: 4px; }
 .where-pill, .capability-pill {
   align-items: center;
   background: var(--well);
@@ -1740,6 +1741,7 @@ details[open].advanced summary::before {
   padding: 7px 11px;
 }
 button.where-pill, button.capability-pill { cursor: pointer; }
+.where-remove { min-height: 32px; padding: 6px 9px; }
 .owner-memory-intro { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 14px; justify-content: space-between; }
 .owner-memory-intro p { margin: 0; }
 .owner-memory-assignee { background: #f2e8d5; border-radius: 999px; color: var(--text-2); font-size: .6875rem; font-weight: 750; padding: 6px 9px; }
@@ -2694,7 +2696,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // Audit Logs has two live domains: Scheduled Work for routines and their
     // executions, and Memory for durable channel context. The selected domain
     // owns its own route and loading state so switching tabs cannot mix data.
-    auditDomain: "memory",
+    auditDomain: "scheduled-work",
     scheduledRoutines: null,
     scheduledLoading: false,
     scheduledError: "",
@@ -2972,26 +2974,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }) || null;
   }
 
-  function activeChannelRecord() {
-    var assignment = activeAssignment();
-    var channel = activeChannelProjection();
-    if (assignment) {
-      var projectedLabel = channel && normalizeChannelLabel(channel.channelName);
-      return projectedLabel && !normalizeChannelLabel(assignment.channelLabel)
-        ? Object.assign({}, assignment, { channelLabel: projectedLabel })
-        : assignment;
-    }
-    if (!channel) return null;
-    return {
-      workspaceId: channel.workspaceId,
-      channelId: channel.channelId,
-      channelLabel: channel.channelName,
-      agentId: channel.assignment && channel.assignment.agentId || "",
-      enabled: true,
-      participationMode: "mention_only"
-    };
-  }
-
   function firstWorkspaceAssignment() {
     return state.assignments.find(function (assignment) {
       return assignment.workspaceId !== "*";
@@ -3137,15 +3119,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       return "/admin/settings/" + encodeURIComponent(state.settingsSection);
     }
     if (state.view === "audit") {
-      if (state.auditDomain === "scheduled-work") {
-        return "/admin/audit-logs/scheduled-work" + (state.scheduledSelection ? "/" + encodeURIComponent(state.scheduledSelection) : "");
-      }
-      var memoryPath = "/admin/audit-logs/memory";
-      if (state.memorySelection.storeId && state.memorySelection.channelId) {
-        memoryPath += "/" + encodeURIComponent(state.memorySelection.storeId) + "/" + encodeURIComponent(state.memorySelection.channelId);
-        if (state.memorySelection.entryId) memoryPath += "/" + encodeURIComponent(state.memorySelection.entryId);
-      }
-      return memoryPath;
+      return "/admin/audit-logs/scheduled-work" + (state.scheduledSelection ? "/" + encodeURIComponent(state.scheduledSelection) : "");
     }
     if (state.view === "profiles") {
       if (state.profileScreen === "create") return "/admin/agents/new";
@@ -3394,10 +3368,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function selectedAgentIdForRoster() {
     if (state.view === "profiles" && state.profileScreen === "edit") return state.editingAgentId || "";
-    if (state.view === "channels" && state.channelScreen === "detail") {
-      var activeChannel = activeChannelRecord();
-      return activeChannel && activeChannel.agentId || "";
-    }
     return "";
   }
 
@@ -3464,7 +3434,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (state.view === "team") return teamRailHtml();
     if (isAgentChannelSurface()) return profilesRailHtml();
     if (state.view === "settings") return settingsRailHtml();
-    if (state.view === "audit") return state.auditDomain === "scheduled-work" ? scheduledWorkRailHtml() : auditRailHtml();
+    if (state.view === "audit") return scheduledWorkRailHtml();
     return channelsRailHtml();
   }
 
@@ -4148,8 +4118,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var groups = summary.groups || [];
     if (!groups.length) return '<div class="empty"><p class="hint">No breakdown data for this period.</p></div>';
     var rows = groups.map(function (group) {
-      var assignment = state.usageGroupBy === "channel" ? state.assignments.find(function (candidate) { return candidate.channelId === group.key; }) : null;
-      var label = group.label || (assignment && normalizeChannelLabel(assignment.channelLabel)) || (state.usageGroupBy === "channel" && group.key === "direct_message" ? "Direct message" : group.key) || "Unknown";
+      var channel = state.usageGroupBy === "channel" ? (state.channelIndex || []).find(function (candidate) { return candidate.channelId === group.key; }) : null;
+      var label = group.label || (channel && normalizeChannelLabel(channel.channelName)) || (state.usageGroupBy === "channel" && group.key === "direct_message" ? "Direct message" : group.key) || "Unknown";
       label = state.usageGroupBy === "channel" && label !== "Direct message" && !String(label).startsWith("#") ? "#" + label : label;
       return '<tr><td><button type="button" class="usage-row-action" data-action="usage-group-filter" data-value="' + esc(group.key) + '" data-label="' + esc(label) + '">' + esc(label) + '</button></td>' +
         '<td class="number">' + usageInt(group.operationCount) + '</td><td class="number">' + usageInt(group.inputTokens) + '</td>' +
@@ -4362,7 +4332,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       return '<main class="main"><div class="main-inner">' + settingsMainHtml() + '</div></main>';
     }
     if (state.view === "audit") {
-      return '<main class="main"><div class="main-inner audit-main">' + (state.auditDomain === "scheduled-work" ? scheduledWorkMainHtml() : auditMemoryMainHtml()) + '</div></main>';
+      return '<main class="main"><div class="main-inner audit-main">' + scheduledWorkMainHtml() + '</div></main>';
     }
     if (state.channelScreen === "overview") {
       return '<main class="main"><div class="main-inner slack-overview">' + slackOverviewHtml() + '</div></main>';
@@ -4372,14 +4342,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (state.slack && !state.slack.connected) {
       return '<main class="main"><div class="main-inner">' + slackStepperHtml() + '</div></main>';
     }
-    var assignment = activeChannelRecord();
+    var channel = activeChannelProjection();
     var connected = isSlackConnected();
     // Connected: credential provenance is demoted to a collapsed disclosure at
     // the very bottom so it never competes with the funnel or the channel page.
     var slackBottom = connected ? connectionDetailsHtml() : "";
     var addPanel = addChannelPanelHtml();
     var invite = inviteReminderHtml();
-    if (!assignment) {
+    if (!channel) {
       if (connected) {
         // Connected + zero channels: the funnel is the single focus of the
         // screen — replaced by the picker when the operator opens it.
@@ -4395,28 +4365,26 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         '</div>';
       return '<main class="main"><div class="main-inner">' + invite + addPanel + emptyBlock + '</div></main>';
     }
-    var agent = agentById(assignment.agentId);
-    var channelBack = agent
-      ? '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="channel-back" data-agent="' + esc(agent.id) + '">&larr; ' + esc(agent.name) + '</button>'
-      : '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="channel-back">&larr; Channels</button>';
-    var enabled = state.channelDraft.enabled;
-    var detailStatus = channelDetailStatus(agent);
-    var headerError = state.effectiveError
-      ? '<p class="channel-header-error" role="alert">' + esc(state.effectiveError) + '</p>'
-      : "";
+    var readiness = channel.readiness || null;
+    var detailStatus = !(channel.grants || []).length
+      ? { key: "unassigned", label: "No Agents", reason: "Publish an Agent from its Channels tab." }
+      : readiness && readiness.ready === false
+      ? { key: "needs-attention", label: "Needs attention", reason: (readiness.reasons || []).join(". ") || "Review the Agent grants for this Channel." }
+      : { key: "ready", label: "Ready", reason: "Chickpea can route every active Agent grant in this Channel." };
+    var channelRecord = {
+      workspaceId: channel.workspaceId,
+      channelId: channel.channelId,
+      channelLabel: channel.channelName || channel.channelId
+    };
     return '<main class="main"><div class="main-inner"><div class="channel-detail-page">' + invite + addPanel +
       '<header class="channel-detail-header"><div class="channel-detail-head-copy">' +
-      channelBack +
+      '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="channel-back">&larr; Channels</button>' +
       '<span class="agent-kicker">Slack Channel</span>' +
-      '<h1 class="page-title mono-title">' + esc(channelLabel(assignment)) + '</h1>' +
-      '<p class="hint">Channels are reach grants. Agent behavior, memory, connections, and schedules stay on the Agent.</p>' +
-      headerError + '</div><div class="channel-detail-controls"><span class="channel-detail-status ' + detailStatus.key + '" title="' + esc(detailStatus.reason) + '" role="status">' + esc(detailStatus.label) + '</span>' +
-      '<label class="channel-enabled-control"><span class="channel-enabled-label">' + (enabled ? "Enabled" : "Disabled") + '</span>' +
-      '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="channel-enabled" ' + (enabled ? "checked" : "") + ' aria-label="Channel enabled"></span></label></div></header>' +
-      profileSectionHtml(agent, assignment) +
-      channelCapabilitiesHtml(agent) +
-      channelTryHtml(assignment) +
-      saveBarHtml() +
+      '<h1 class="page-title mono-title">#' + esc(normalizeChannelLabel(channel.channelName || channel.channelId)) + '</h1>' +
+      '<p class="hint">This page is an inventory of reach. Every Agent keeps its own behavior, memory, connections, and schedules.</p>' +
+      '</div><div class="channel-detail-controls"><span class="channel-detail-status ' + detailStatus.key + '" title="' + esc(detailStatus.reason) + '" role="status">' + esc(detailStatus.label) + '</span></div></header>' +
+      channelGrantRosterHtml(channel) +
+      channelTryHtml(channelRecord) +
       '</div></div></main>';
   }
 
@@ -4429,9 +4397,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function connectedAssignmentCount() {
     var teamId = connectedTeamId();
-    var channels = concreteAssignments();
+    var channels = (state.channelIndex || []).filter(function (channel) {
+      return Array.isArray(channel.grants) && channel.grants.length > 0;
+    });
     return teamId
-      ? channels.filter(function (assignment) { return assignment.workspaceId === teamId; }).length
+      ? channels.filter(function (channel) { return channel.workspaceId === teamId; }).length
       : channels.length;
   }
 
@@ -4471,8 +4441,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         '<button type="button" class="btn btn-soft btn-sm" data-action="slack-behavior-retry">Retry</button></div>';
     }
     return '<div class="behavior-list">' +
-      slackBehaviorRowHtml("unassignedHint", "Help people configure unassigned channels", "When someone mentions " + slackMentionText() + " in an unassigned channel, Chickpea privately shares setup steps.") +
-      slackBehaviorRowHtml("welcomeOnJoin", "Post a welcome when " + slackMentionText() + " joins an assigned channel", "Chickpea starts the conversation with a short welcome message.") +
       slackBehaviorRowHtml("nativeTasks", "Show native task plans", "Project admitted Work as Slack task cards. The existing checklist remains the fallback when Slack rejects the native stream.") +
       slackBehaviorRowHtml("progressiveStreaming", "Stream safe answer text", "Show answer-only text as it is generated. Memory, recovery, sandbox, and effect-capable turns remain terminal-only.") +
       '</div>' +
@@ -4733,9 +4701,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function funnelHtml() {
     return '<div class="empty" style="align-items:center; text-align:center; gap:14px; padding:46px 32px;">' +
-      '<h1 class="page-title" style="font-size:1.1875rem;">Choose where Chickpea answers</h1>' +
-      '<p class="hint" style="max-width:452px; font-size:0.875rem; line-height:1.55;">Chickpea only answers where you allow it. Pick a Slack channel to start &mdash; it comes with sensible defaults, and you can customize instructions, model, and tools per channel anytime.</p>' +
-      '<button type="button" class="btn btn-primary" style="margin-top:4px; padding:9px 18px;" data-action="toggle-add-channel">Choose a channel</button>' +
+      '<h1 class="page-title" style="font-size:1.1875rem;">Publish an Agent to start</h1>' +
+      '<p class="hint" style="max-width:452px; font-size:0.875rem; line-height:1.55;">Channels grant reach only. Open an Agent and choose the Slack Channels where its handle should work.</p>' +
+      '<button type="button" class="btn btn-primary" style="margin-top:4px; padding:9px 18px;" data-action="open-profiles">Open Agents</button>' +
       '<p class="hint">Want proof right now? DM <span class="mono" style="color:var(--text-2);">' + slackMentionHtml() + '</span> &mdash; direct messages already work.</p>' +
       '</div>';
   }
@@ -5101,8 +5069,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function addChannelPanelHtml() {
     if (!state.addChannelOpen) return "";
-    var head = '<div class="section-head"><div><h2 class="section-title">Add a channel</h2>' +
-      '<p class="hint">Add a Slack Channel and assign ' + esc(addChannelAgentName()) + '. Mention an Agent handle when you want it to respond.</p></div>' +
+    var head = '<div class="section-head"><div><h2 class="section-title">Publish ' + esc(addChannelAgentName()) + '</h2>' +
+      '<p class="hint">Choose a Slack Channel where this Agent’s handle should work. Existing Agent grants stay in place.</p></div>' +
       '<button type="button" class="btn btn-ghost btn-sm" data-action="cancel-add-channel">Cancel</button></div>';
     if (!isSlackConnected()) {
       return '<section class="section">' + head +
@@ -5149,7 +5117,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         '<button type="button" class="link-btn" data-action="toggle-manual-channel">Enter ID manually</button></p></div>';
     }
     var foot = '<div class="save-bar" style="justify-content:flex-start;">' +
-      '<button type="submit" class="btn btn-primary btn-sm">Add channel</button>' +
+      '<button type="submit" class="btn btn-primary btn-sm">Publish Agent</button>' +
       (state.addChannelError ? '<p class="field-error">' + esc(state.addChannelError) + '</p>' : "") + '</div>';
     return '<section class="section">' + head +
       '<form data-action="add-channel-form" style="display:flex; flex-direction:column; gap:16px;">' +
@@ -5185,69 +5153,25 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return serverMessage || (detail ? message + ": " + detail : message);
   }
 
-  function channelDetailStatus(agent) {
-    var projection = activeChannelProjection();
-    var readiness = projection && projection.readiness;
-    if (!agent) return { key: "unassigned", label: "Needs Agent", reason: "Choose an Agent before this Channel can answer." };
-    if (!state.channelDraft.enabled) return { key: "disabled", label: "Disabled", reason: "This Channel is disabled." };
-    if (agent.enabled === false) return { key: "needs-attention", label: "Needs attention", reason: "Enable the assigned Agent." };
-    if (state.effectiveError) return { key: "needs-attention", label: "Needs attention", reason: state.effectiveError };
-    if (readiness && readiness.ready === false) {
-      return {
-        key: "needs-attention",
-        label: "Needs attention",
-        reason: readiness.reasons && readiness.reasons.length ? readiness.reasons.join(". ") : "Review this Channel's setup."
-      };
-    }
-    if (!state.effective) return { key: "resolving", label: "Resolving", reason: "Resolving the Agent and Channel configuration." };
-    return { key: "ready", label: "Ready", reason: "This Channel has a resolved Agent configuration." };
-  }
-
-  function profileSectionHtml(agent, assignment) {
-    var identityName = "@" + ((agent && agent.slackPresence && agent.slackPresence.normalizedHandle) || "Chickpea");
-    var row = agent
-      ? '<div class="channel-agent-hero"><span class="agent-roster-icon variant-' + agentIconVariant(agent.id) + '" aria-hidden="true">' + icon("robot") + '</span>' +
-        '<div class="channel-agent-copy"><span class="agent-kicker">Assigned Agent</span><h2>' + esc(agent.name) + '</h2>' +
-        '<p class="channel-agent-intro" title="' + esc(agentIntroduction(agent.instructions)) + '">' + esc(agentIntroduction(agent.instructions)) + '</p>' +
-        '<span class="channel-agent-meta">' + esc(modelLabel(agent)) + ' · replies as ' + esc(identityName) + ' · Agent changes apply to new threads</span></div>' +
-        '<div class="channel-agent-actions"><button type="button" class="btn btn-soft btn-sm" data-action="open-profiles" data-agent="' + esc(agent.id) + '">View Agent</button>' +
-        '<button type="button" class="btn btn-ghost btn-sm" data-action="toggle-swap">Change Agent</button></div></div>'
-      : '<div class="empty channel-agent-empty"><p class="field-label">No Agent assigned</p><p class="hint">Choose an Agent before this Channel can answer.</p><button type="button" class="btn btn-soft btn-sm" data-action="toggle-swap">Choose Agent</button></div>';
-    if (state.swapOpen) {
-      row += '<div class="bundle-row"><span class="select-wrap"><select class="input" aria-label="Assigned Agent" data-role="swap-profile">' + state.agents.map(function (candidate) {
-        return '<option value="' + esc(candidate.id) + '"' + (candidate.id === assignment.agentId ? " selected" : "") + '>' + esc(candidate.name) + '</option>';
-      }).join("") + '</select>' + icon("chevron-down", "select-caret") + '</span><button type="button" class="btn btn-primary btn-sm" data-action="attach-selected-profile">Use Agent</button></div>';
-    }
-    return '<section class="section channel-agent-section" aria-label="Assigned Agent">' + row + '</section>';
-  }
-
-  function channelCapabilityGroupHtml(kind, title, items) {
-    var visible = (items || []).filter(function (item) { return item.enabled !== false; }).slice(0, 4);
-    var extra = Math.max(0, (items || []).filter(function (item) { return item.enabled !== false; }).length - visible.length);
-    var pills = visible.map(function (item) {
-      var mark = kind === "repository"
-        ? icon("repository")
-        : kind === "connector" && item.presetId && presetById(item.presetId)
-          ? connectorLogoHtml(presetById(item.presetId))
-          : icon("check");
-      return '<span class="capability-preview-pill">' + mark + '<span>' + esc(item.name || item.fullName || item.displayName || item.id) + '</span></span>';
+  function channelGrantRosterHtml(channel) {
+    var grants = channel && Array.isArray(channel.grants) ? channel.grants : [];
+    var rows = grants.map(function (grant) {
+      var agent = agentById(grant.agentId);
+      var name = grant.agentName || (agent && agent.name) || grant.agentId;
+      var handle = agent && agent.slackPresence && agent.slackPresence.normalizedHandle;
+      var status = grant.status === "active" ? "Active" : "Needs attention";
+      return '<div class="channel-agent-hero"><span class="agent-roster-icon variant-' + agentIconVariant(grant.agentId) + '" aria-hidden="true">' + icon("robot") + '</span>' +
+        '<div class="channel-agent-copy"><span class="agent-kicker">Agent grant</span><h2>' + esc(name) + '</h2>' +
+        '<p class="channel-agent-intro">' + esc(handle ? "Mention @" + handle + " to start a thread with this Agent." : "Finish the Agent handle before using it in Slack.") + '</p>' +
+        '<span class="channel-agent-meta">' + esc(status) + ' · managed on the Agent</span></div>' +
+        '<div class="channel-agent-actions"><button type="button" class="btn btn-soft btn-sm" data-action="open-profiles" data-agent="' + esc(grant.agentId) + '">View Agent</button></div></div>';
     }).join("");
-    if (extra) pills += '<span class="capability-preview-pill">+' + extra + ' more</span>';
-    if (!pills) pills = '<span class="hint">None added</span>';
-    var headingIcon = kind === "repository" ? "repository" : kind === "connector" ? "gear" : "sparkle";
-    var tone = kind === "repository" ? "repository" : kind === "connector" ? "connector" : "skill";
-    return '<div class="channel-capability-group" data-capability="' + kind + '"><div class="channel-capability-group-head"><span class="channel-capability-icon semantic-icon tone-' + tone + '" aria-hidden="true">' + icon(headingIcon) + '</span><strong>' + title + '</strong></div><div class="capability-preview-list">' + pills + '</div></div>';
-  }
-
-  function channelCapabilitiesHtml(agent) {
-    var previews = agent && agent.capabilityPreviews || {};
-    var skills = previews.skills || (agent && agent.skills) || [];
-    var connectors = previews.connectors || ((agent && agent.mcpServers) || []).concat((agent && agent.apiConnections) || []);
-    var repositories = previews.repositories || (agent && agent.repositories) || [];
-    return '<section class="section channel-capabilities-section"><div class="section-head channel-section-heading"><span class="channel-section-icon semantic-icon tone-capability" aria-hidden="true">' + icon("sparkle") + '</span><div><h2 class="section-title">Inherited capabilities</h2><p class="hint">Skills, Connectors, and Repositories come from ' +
-      (agent ? '<button type="button" class="link-btn" data-action="open-profiles" data-agent="' + esc(agent.id) + '">' + esc(agent.name || "Agent") + ' <span aria-hidden="true">&nearr;</span></button>' : 'the assigned Agent') +
-      ' and stay shared everywhere it works.</p></div></div>' +
-      '<div class="channel-capability-groups">' + channelCapabilityGroupHtml("skill", "Skills", skills) + channelCapabilityGroupHtml("connector", "Connectors", connectors) + channelCapabilityGroupHtml("repository", "Repositories", repositories) + '</div></section>';
+    if (!rows) {
+      rows = '<div class="empty channel-agent-empty"><p class="field-label">No Agents published here</p>' +
+        '<p class="hint">Open an Agent and add this Channel from its Channels tab. Publishing is additive, so Agents never replace one another.</p></div>';
+    }
+    return '<section class="section channel-agent-section" aria-label="Agent grants"><div class="section-head"><div><h2 class="section-title">Agents available here</h2>' +
+      '<p class="hint">Channel members can invoke any listed Agent. Remove or add reach from each Agent’s Channels tab.</p></div></div>' + rows + '</section>';
   }
 
   function channelTryHtml(assignment) {
@@ -5255,15 +5179,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var noticeClass = state.channelTryError ? " error" : "";
     return '<section class="section channel-try-section"><div class="channel-try-card"><div class="channel-try-copy"><span class="agent-kicker">Try it in Slack</span><p class="channel-try-prompt">' + esc(ONBOARDING_PROMPT) + '</p><span class="hint">A real Slack reply is the proof that this placement is ready.</span><span class="channel-try-status' + noticeClass + '" role="status">' + esc(state.channelTryNotice) + '</span></div>' +
       '<div class="channel-try-actions"><button type="button" class="btn btn-soft" data-action="copy-channel-prompt">Copy prompt</button><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Open ' + esc(channelLabel(assignment)) + '</a></div></div></section>';
-  }
-
-  function saveBarHtml() {
-    return '<div class="save-bar">' +
-      '<p class="save-note">Changes apply to new threads without a restart.</p>' +
-      (state.saveError ? '<p class="field-error">' + esc(state.saveError) + '</p>' : "") +
-      '<button type="button" class="btn btn-ghost" data-action="discard-channel" ' + (!state.dirty ? "disabled" : "") + '>Discard</button>' +
-      '<button type="button" class="btn btn-primary" data-action="save-channel" ' + (!state.dirty ? "disabled" : "") + '>Save changes</button>' +
-      '</div>';
   }
 
   // ---- Profiles master-detail view (cards 09-12) ---------------------------
@@ -7207,7 +7122,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var concrete = concreteAssignmentsForAgent(draft.id);
     var channelRows = '<div class="where-list">';
     concrete.forEach(function (assignment) {
-      channelRows += '<button type="button" class="where-pill" data-action="open-channel-from-profile" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '"># ' + esc(normalizeChannelLabel(assignment.channelLabel) || assignment.channelId) + ' <span aria-hidden="true">&nearr;</span></button>';
+      var label = normalizeChannelLabel(assignment.channelLabel) || assignment.channelId;
+      channelRows += '<span class="where-entry"><button type="button" class="where-pill" data-action="open-channel-from-profile" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '"># ' + esc(label) + ' <span aria-hidden="true">&nearr;</span></button>' +
+        '<button type="button" class="btn btn-ghost btn-sm where-remove" data-action="detach-channel" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '" data-label="' + esc(label) + '" aria-label="Remove this Agent from #' + esc(label) + '">' + icon("x-mark") + '</button></span>';
     });
     channelRows += '</div>';
     if (!concrete.length) channelRows = '<p class="agent-placement-empty">No Channels yet. Add this Agent to one when it is ready.</p>';
@@ -7547,10 +7464,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function auditTabsHtml() {
-    var scheduled = state.auditDomain === "scheduled-work";
     return '<div class="audit-tabs" role="tablist" aria-label="Audit domains">' +
-      '<button type="button" class="audit-tab' + (scheduled ? " active" : "") + '" role="tab" aria-selected="' + (scheduled ? "true" : "false") + '" data-action="audit-tab-scheduled">Scheduled work</button>' +
-      '<button type="button" class="audit-tab' + (!scheduled ? " active" : "") + '" role="tab" aria-selected="' + (!scheduled ? "true" : "false") + '" data-action="audit-tab-memory">Memory</button>' +
+      '<button type="button" class="audit-tab active" role="tab" aria-selected="true" data-action="audit-tab-scheduled">Scheduled work</button>' +
       '<button type="button" class="audit-tab" role="tab" disabled aria-disabled="true" title="Coming later">Network events</button>' +
       '</div>';
   }
@@ -7574,8 +7489,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function scheduledChannelLabel(workspaceId, channelId) {
-    var assignment = assignmentByKey(workspaceId, channelId);
-    return assignment ? channelLabel(assignment) : "#" + String(channelId || "channel");
+    var channel = (state.channelIndex || []).find(function (candidate) {
+      return candidate.workspaceId === workspaceId && candidate.channelId === channelId;
+    });
+    return "#" + normalizeChannelLabel(channel && channel.channelName || channelId || "channel");
   }
 
   function scheduledStatusBadge(status) {
@@ -7610,10 +7527,16 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         ? "workspace|" + filters.workspaceId
         : "";
     var workspaces = [];
-    state.assignments.filter(function (assignment) { return assignment.workspaceId !== "*"; }).forEach(function (assignment) {
-      var workspace = workspaces.find(function (candidate) { return candidate.id === assignment.workspaceId; });
-      if (!workspace) { workspace = { id: assignment.workspaceId, channels: [] }; workspaces.push(workspace); }
-      if (!workspace.channels.some(function (candidate) { return candidate.channelId === assignment.channelId; })) workspace.channels.push(assignment);
+    (state.channelIndex || []).forEach(function (channel) {
+      var workspace = workspaces.find(function (candidate) { return candidate.id === channel.workspaceId; });
+      if (!workspace) { workspace = { id: channel.workspaceId, channels: [] }; workspaces.push(workspace); }
+      if (!workspace.channels.some(function (candidate) { return candidate.channelId === channel.channelId; })) {
+        workspace.channels.push({
+          workspaceId: channel.workspaceId,
+          channelId: channel.channelId,
+          channelLabel: channel.channelName || channel.channelId
+        });
+      }
     });
     if (filters.workspaceId && !workspaces.some(function (workspace) { return workspace.id === filters.workspaceId; })) {
       workspaces.push({ id: filters.workspaceId, channels: [] });
@@ -8491,17 +8414,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function openAuditLogs(storeId, channelId, entryId) {
-    state.view = "audit";
-    state.profileScreen = "list";
-    state.auditDomain = "memory";
-    state.memorySelection = { storeId: storeId || "", channelId: channelId || "", entryId: entryId || "" };
-    state.memoryFilesRequestId += 1;
-    state.memoryEntryRequestId += 1;
-    state.memorySelectedFile = entryId || "";
-    state.memoryError = "";
-    state.memoryNotice = "";
-    render();
-    loadMemoryScopes();
+    openScheduledWork("");
   }
 
   function loadMemoryScopes() {
@@ -10433,17 +10346,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }, 1600);
   }
 
-  function channelDraftFrom(assignment) {
-    return {
-      enabled: assignment ? assignment.enabled : true
-    };
-  }
-
   function selectActive(workspaceId, channelId) {
     state.channelScreen = "detail";
     state.active = { workspaceId: workspaceId, channelId: channelId };
-    var assignment = activeChannelRecord();
-    state.channelDraft = channelDraftFrom(assignment);
     state.channelTryRequestId += 1;
     state.channelTryNotice = "";
     state.channelTryError = false;
@@ -10453,9 +10358,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // The invite reminder belongs to the just-added channel; drop it when the
     // operator navigates elsewhere.
     state.addChannelInvite = "";
-    // Re-render when the resolution lands — the click handler's synchronous
-    // render() only paints the "Resolving..." placeholder.
-    loadEffective().then(render);
+    render();
   }
 
   var onboardingPollTimer = null;
@@ -10535,19 +10438,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.onboardingBusy = true;
     state.onboardingError = "";
     render();
-    var savedAssignment = null;
-    var savedChannel = null;
-    putAssignment(workspace.id, channel.id, agent.id, true, undefined, channel.name, undefined, null).then(function (result) {
-      if (!result || result.isMember !== true) {
+    publishAgentToChannel(agent.id, workspace.id, channel.id).then(function (result) {
+      if (!result || !result.grant || result.grant.status !== "active") {
         state.onboardingBusy = false;
-        state.onboardingError = result && result.isMember === false
-          ? "Chickpea could not join #" + channel.name + ". Invite @Chickpea there, then Refresh and try again."
-          : "Chickpea could not verify that it joined #" + channel.name + ". Refresh and try again.";
+        state.onboardingError = "Chickpea could not finish publishing the Agent to #" + channel.name + ". Review the recovery steps and retry.";
         render();
         return null;
       }
-      savedAssignment = result && result.assignment;
-      savedChannel = result && result.channel;
+      if (result.agent) applyAgentMutation(result.agent, ["whereItWorks", "slackPresence", "slackPresenceRecovery"]);
       return postJson("/admin/api/onboarding/try", "POST", {
         expectedRevision: state.onboarding.revision,
         workspaceId: workspace.id,
@@ -10560,18 +10458,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.onboardingBusy = false;
       state.onboardingChannelSelected = "";
       state.onboardingNotice = "";
-      if (savedAssignment) {
-        state.assignments = state.assignments.filter(function (assignment) {
-          return assignment.workspaceId !== savedAssignment.workspaceId || assignment.channelId !== savedAssignment.channelId;
-        });
-        state.assignments.push(Object.assign({}, savedAssignment, {
-          channelLabel: normalizeChannelLabel(
-            savedChannel && savedChannel.label
-              ? savedChannel.label
-              : (channel.name || savedAssignment.channelId)
-          )
-        }));
-      }
       render();
     }).catch(function (error) {
       state.onboardingBusy = false;
@@ -10645,7 +10531,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function refreshData() {
     return Promise.all([
       api("/admin/api/agents"),
-      api("/admin/api/assignments"),
       api("/admin/api/models"),
       // Resilient on purpose: the connection card is auxiliary — if this
       // endpoint fails, the rest of the admin page must still render.
@@ -10654,11 +10539,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         return { body: body, error: "" };
       }).catch(function (error) {
         return { body: null, error: error.serverMessage || error.message || "Could not load Slack behavior." };
-      }),
-      api("/admin/api/audit/memory/scopes").then(function (body) {
-        return { scopes: body.scopes || [], error: "" };
-      }).catch(function (error) {
-        return { scopes: null, error: error.serverMessage || error.message || "Could not load memory counts." };
       }),
       api("/admin/api/onboarding").then(function (body) {
         return { body: body, error: "" };
@@ -10677,55 +10557,28 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       })
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
-      state.assignments = parts[1].assignments || [];
-      state.models = parts[2];
-      state.slack = parts[3];
-      state.slackBehavior = parts[4].body;
-      state.slackBehaviorError = parts[4].error;
+      state.assignments = [];
+      state.models = parts[1];
+      state.slack = parts[2];
+      state.slackBehavior = parts[3].body;
+      state.slackBehaviorError = parts[3].error;
       state.slackBehaviorBusy = "";
-      state.memoryScopes = parts[5].scopes;
-      state.memoryScopesError = parts[5].error;
-      state.onboarding = parts[6].body;
-      state.onboardingError = parts[6].error;
-      state.channelIndex = parts[7].channels;
-      state.channelIndexError = parts[7].error;
-      if (state.active) {
-        var assignment = activeAssignment();
-        if (assignment) {
-          state.channelDraft = channelDraftFrom(assignment);
-        }
-      }
+      state.onboarding = parts[4].body;
+      state.onboardingError = parts[4].error;
+      state.channelIndex = parts[5].channels;
+      state.channelIndexError = parts[5].error;
       syncChannelFormWorkspacePrefill();
-      if (state.active) {
-        return Promise.all([
-          loadEffective(),
-          loadChannelScheduledRoutines(state.active.workspaceId, state.active.channelId)
-        ]);
-      }
-      return loadEffective();
-    }).then(function () {
       render();
     }).catch(function (error) {
       document.querySelector(".main-inner").innerHTML = '<div class="empty"><p class="field-label">Admin failed to load</p><p class="error">' + esc(error.message) + '</p></div>';
     });
   }
 
-  function loadEffective() {
-    state.effective = null;
-    state.effectiveError = "";
-    if (!state.active) return Promise.resolve();
-    return api("/admin/api/effective-config?workspaceId=" + encodeURIComponent(state.active.workspaceId) + "&channelId=" + encodeURIComponent(state.active.channelId))
-      .then(function (body) { state.effective = body.config; })
-      .catch(function (error) { state.effectiveError = error.serverMessage || error.message; });
-  }
-
-  function putAssignment(workspaceId, channelId, agentId, enabled, addendum, label, participationMode, expectedAgentId) {
-    var body = { workspaceId: workspaceId, channelId: channelId, agentId: agentId, enabled: enabled };
-    if (expectedAgentId !== undefined) body.expectedAgentId = expectedAgentId;
-    var normalizedLabel = normalizeChannelLabel(label);
-    if (normalizedLabel) body.channelLabel = normalizedLabel;
-    body.participationMode = "mention_only";
-    return postJson("/admin/api/assignments", "PUT", body);
+  function publishAgentToChannel(agentId, workspaceId, channelId) {
+    return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/channels", "POST", {
+      workspaceId: workspaceId,
+      channelId: channelId
+    });
   }
 
   // ---- pea mascot: eye tracking, proximity expression, click boop ----------
@@ -10935,10 +10788,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "leave-save") {
       var pendingLeave = state.leavePrompt;
       state.leavePrompt = null;
-      if (pendingLeave && pendingLeave.kind === "channel") {
-        saveChannel(function () { performChannelLeave(pendingLeave); });
-      } else {
+      if (pendingLeave && pendingLeave.kind !== "channel") {
         saveProfile(function () { performProfileLeave(pendingLeave); });
+      } else if (pendingLeave) {
+        performChannelLeave(pendingLeave);
       }
       return;
     }
@@ -11091,9 +10944,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }
     if (action === "toggle-manual-channel") { state.addChannelManual = !state.addChannelManual; state.addChannelError = ""; render(); }
     if (action === "toggle-swap") { state.swapOpen = !state.swapOpen; render(); }
-    if (action === "attach-selected-profile") { attachSelectedProfile(); }
-    if (action === "discard-channel") { var a = activeAssignment(); if (a) selectActive(a.workspaceId, a.channelId); render(); }
-    if (action === "save-channel") { saveChannel(); }
     // Profiles master-detail navigation + form actions.
     if (action === "new-profile") { openNewProfile(); }
     if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) openProfileEditor(selected); }
@@ -11145,6 +10995,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "attach-new-channel") { state.attachPicker = false; state.attachChannelSelected = ""; state.attachError = ""; openAddChannel(target.getAttribute("data-agent") || ""); }
     if (action === "attach-cancel") { state.attachPicker = false; state.attachChannelSelected = ""; state.attachError = ""; render(); }
     if (action === "attach-channel-confirm" && state.profileDraft) { attachProfileToChannel(); }
+    if (action === "detach-channel" && state.profileDraft) {
+      detachProfileFromChannel(
+        target.getAttribute("data-workspace") || "",
+        target.getAttribute("data-channel") || "",
+        target.getAttribute("data-label") || "Channel"
+      );
+    }
     if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; resetProfileTransientState(); render(); }
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
@@ -11168,7 +11025,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }
     if (action === "usage-open-settings") { openSettings("providers"); }
     if (action === "audit-tab-scheduled" && state.auditDomain !== "scheduled-work") { openScheduledWork(""); }
-    if (action === "audit-tab-memory" && state.auditDomain !== "memory") { openAuditLogs("", "", ""); }
     if (action === "scheduled-retry") { loadScheduledRoutines(); }
     if (action === "scheduled-back-list") {
       state.scheduledSelection = "";
@@ -11943,11 +11799,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.sandboxError = "";
       render();
     }
-    if (action === "channel-enabled") {
-      state.channelDraft.enabled = target.checked;
-      state.dirty = true;
-      render();
-    }
     if (action === "slack-behavior") {
       saveSlackBehavior(target.getAttribute("data-setting"), !!target.checked);
     }
@@ -12597,13 +12448,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       var picked = findSlackChannel(channelId);
       if (picked) label = picked.name;
     }
-    // The rail add is for NEW channels — refuse to silently steal one already
-    // assigned to another profile (server would happily overwrite it).
-    if (assignmentByKey(workspaceId, channelId)) {
-      fail("Channel " + channelId + " is already assigned. Select it from the list to edit.");
+    var existingChannel = (state.channelIndex || []).find(function (candidate) {
+      return candidate.workspaceId === workspaceId && candidate.channelId === channelId;
+    });
+    if (existingChannel && (existingChannel.grants || []).some(function (grant) { return grant.agentId === agent.id; })) {
+      fail(agent.name + " is already available in this Channel.");
       return;
     }
-    putAssignment(workspaceId, channelId, agent.id, true, undefined, label, undefined, null).then(function (result) {
+    publishAgentToChannel(agent.id, workspaceId, channelId).then(function (result) {
       state.addChannelOpen = false;
       state.addChannelManual = false;
       state.addChannelError = "";
@@ -12611,35 +12463,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.channelFormDraft.channelId = "";
       state.active = { workspaceId: workspaceId, channelId: channelId };
       state.channelScreen = "detail";
-      // Slack's authoritative name (server override) becomes the display label.
-      var savedLabel = normalizeChannelLabel((result && result.channel && result.channel.label) || label || channelId);
-      state.addChannelInvite = result && result.isMember === false
-        ? channelInviteWarning(savedLabel)
+      state.addChannelInvite = result && result.grant && result.grant.status !== "active"
+        ? channelInviteWarning(normalizeChannelLabel(result.grant.channelLabel || label || channelId))
         : "";
       return refreshData();
     }).catch(function (error) { fail(addChannelErrorText(error)); });
-  }
-
-  function attachSelectedProfile() {
-    var assignment = activeChannelRecord();
-    var select = document.querySelector('[data-role="swap-profile"]');
-    if (!assignment || !select) return;
-    putAssignment(assignment.workspaceId, assignment.channelId, select.value, assignment.enabled, undefined, assignment.channelLabel, "mention_only", assignment.agentId || null).then(function () {
-      state.swapOpen = false;
-      return refreshData();
-    }).catch(function (error) { state.saveError = addChannelErrorText(error); render(); });
-  }
-
-  function saveChannel(onSaved) {
-    var assignment = activeChannelRecord();
-    if (!assignment) return;
-    putAssignment(assignment.workspaceId, assignment.channelId, assignment.agentId, state.channelDraft.enabled, undefined, assignment.channelLabel, "mention_only", assignment.agentId).then(function () {
-      state.dirty = false;
-      state.saveError = "";
-      return refreshData().then(function () {
-        if (onSaved) onSaved();
-      });
-    }).catch(function (error) { state.saveError = error.message; render(); });
   }
 
   // Commit an open skill editor into the draft before a profile save. Returns
@@ -14232,6 +14060,22 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     });
   }
 
+  function detachProfileFromChannel(workspaceId, channelId, label) {
+    var draft = state.profileDraft;
+    if (!draft || !draft.id || !workspaceId || !channelId) return;
+    state.profileError = "";
+    api("/admin/api/agents/" + encodeURIComponent(draft.id) + "/channels/" +
+      encodeURIComponent(workspaceId) + "/" + encodeURIComponent(channelId), {
+      method: "DELETE"
+    }).then(function () {
+      state.attachNotice = "Agent removed from #" + normalizeChannelLabel(label) + ".";
+      return refreshData();
+    }).catch(function (error) {
+      state.profileError = (error && (error.serverMessage || error.message)) || "Could not remove this Agent from the Channel.";
+      render();
+    });
+  }
+
   // Boot: capture the deep link BEFORE the first data render (which would
   // otherwise sync the URL to the default state), apply it once data is
   // loaded, then turn URL sync on with a replace so landing on /admin becomes
@@ -14599,6 +14443,10 @@ function slackSetupPageMessage(code: string): string {
     case 'setup_conflict': return 'Setup changed in another tab. Reload to inspect the current stage.';
     case 'invalid_configuration_token': return 'Slack rejected the configuration token. Generate a fresh token and retry.';
     case 'invalid_manifest': return 'The Slack app contract does not match this deployment.';
+    case 'gateway_not_configured': return 'Chickpea’s shared Slack app is not ready yet. Your deployment and setup link are safe. Retry after the service is configured, or use your own Slack app below.';
+    case 'gateway_unreachable': return 'Chickpea’s shared Slack service could not be reached. Your deployment and setup link are safe. Retry Add to Slack, or use your own Slack app below.';
+    case 'gateway_redirect_rejected': return 'The shared Slack service returned an unsafe redirect, so Chickpea stopped setup without changing anything. Retry, or use your own Slack app below.';
+    case 'gateway_rejected': return 'The shared Slack service could not start this installation. Nothing changed. Retry Add to Slack, or use your own Slack app below.';
     case 'rate_limited': return 'Too many setup attempts. Wait for the retry window before continuing.';
     default: return 'Slack setup could not continue. No secret or role was changed.';
   }

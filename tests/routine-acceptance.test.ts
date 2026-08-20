@@ -37,7 +37,6 @@ const assignment: ResolvedAssignment = {
   channelId: config.channelId,
   agentId: config.agentId,
   agent: config.agent,
-  participationMode: 'mention_only',
 };
 
 function turn(text: string, eventId: string): NormalizedSlackTurn {

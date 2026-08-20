@@ -55,14 +55,21 @@ export async function uploadAgentAvatar(input: {
 }): Promise<CustomAgentConfig> {
   const normalized = normalizeRaster(input.bytes, input.contentType);
   const agent = await input.config.getAgent(input.agentId);
-  const revision = (agent.slackPresence?.avatar.revision ?? 0) + 1;
-  await input.settings.setSetting(
-    avatarAssetKey(input.agentId, revision),
-    JSON.stringify({
-      contentType: normalized.contentType,
-      base64: bytesToBase64(normalized.bytes),
-    } satisfies StoredAvatarAsset),
-  );
+  const asset = JSON.stringify({
+    contentType: normalized.contentType,
+    base64: bytesToBase64(normalized.bytes),
+  } satisfies StoredAvatarAsset);
+  let revision = (agent.slackPresence?.avatar.revision ?? 0) + 1;
+  // Reserve an immutable revision atomically. Concurrent editors may have read
+  // the same Agent revision, but they must never overwrite bytes at the same
+  // public URL even when one later loses the Agent CAS.
+  while (!await input.settings.applySettingsPatch({
+    expected: { key: avatarAssetKey(input.agentId, revision), value: null },
+    set: [{ key: avatarAssetKey(input.agentId, revision), value: asset }],
+  })) {
+    revision += 1;
+    if (!Number.isSafeInteger(revision)) throw new AgentAvatarError('too_large');
+  }
   const url = input.publish
     ? await input.publish({
         agentId: input.agentId,

@@ -783,6 +783,7 @@ function writeCutoverArtifact(
     missingBinding?: string;
     deletedClasses?: string[];
     compatibilityDate?: string;
+    publicGlobalFetch?: boolean;
     tracing?: boolean;
     cloudflareTracer?: boolean;
     sandboxCommandRedaction?: boolean;
@@ -818,6 +819,9 @@ function writeCutoverArtifact(
     name: options.workerName ?? 'chickpea',
     main: 'index.js',
     compatibility_date: options.compatibilityDate ?? '2026-06-01',
+    compatibility_flags: options.publicGlobalFetch === false
+      ? ['nodejs_compat']
+      : ['nodejs_compat', 'global_fetch_strictly_public'],
     observability: { enabled: true, traces: { enabled: options.tracing ?? true } },
     vars: {
       SLACK_TAG_LEDGER_CANARY_CHANNELS: options.selector ?? '',
@@ -1209,18 +1213,21 @@ test('preflight rejects missing bindings, missing content-free tracing, and stal
   const missingTracer = createHarness();
   const missingSandboxRedaction = createHarness();
   const stale = createHarness();
+  const privateGlobalFetch = createHarness();
   context.after(() => {
     rmSync(missingState.root, { recursive: true, force: true });
     rmSync(tracingDisabled.root, { recursive: true, force: true });
     rmSync(missingTracer.root, { recursive: true, force: true });
     rmSync(missingSandboxRedaction.root, { recursive: true, force: true });
     rmSync(stale.root, { recursive: true, force: true });
+    rmSync(privateGlobalFetch.root, { recursive: true, force: true });
   });
   writeCutoverArtifact(missingState, { missingBinding: 'TAG_STATE' });
   writeCutoverArtifact(tracingDisabled, { tracing: false });
   writeCutoverArtifact(missingTracer, { cloudflareTracer: false });
   writeCutoverArtifact(missingSandboxRedaction, { sandboxCommandRedaction: false });
   writeCutoverArtifact(stale, { compatibilityDate: '2026-03-31' });
+  writeCutoverArtifact(privateGlobalFetch, { publicGlobalFetch: false });
 
   const stateResult = runHarness(missingState, ['--skip-build', '--preflight-only']);
   const tracingDisabledResult = runHarness(
@@ -1233,6 +1240,10 @@ test('preflight rejects missing bindings, missing content-free tracing, and stal
     ['--skip-build', '--preflight-only'],
   );
   const staleResult = runHarness(stale, ['--skip-build', '--preflight-only']);
+  const privateGlobalFetchResult = runHarness(
+    privateGlobalFetch,
+    ['--skip-build', '--preflight-only'],
+  );
 
   assert.equal(stateResult.status, 1);
   assert.match(stateResult.stderr, /TAG_STATE\/TagStateStore binding/);
@@ -1244,6 +1255,8 @@ test('preflight rejects missing bindings, missing content-free tracing, and stal
   assert.match(missingSandboxRedactionResult.stderr, /content-free Cloudflare Sandbox exec/);
   assert.equal(staleResult.status, 1);
   assert.match(staleResult.stderr, /compatibility_date at or above 2026-04-01/);
+  assert.equal(privateGlobalFetchResult.status, 1);
+  assert.match(privateGlobalFetchResult.stderr, /global_fetch_strictly_public/);
 });
 
 test('deploy rejects stale custom Wrangler config flags before any command runs', (context) => {

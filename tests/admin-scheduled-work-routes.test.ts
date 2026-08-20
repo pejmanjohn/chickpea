@@ -114,7 +114,6 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
       workspaceId: 'T_TEST',
       channelId: 'C_TEST',
       label: 'routine-admin-lab',
-      participationMode: 'ambient',
       lifecycle: 'active',
     });
     await config.putAssignment({

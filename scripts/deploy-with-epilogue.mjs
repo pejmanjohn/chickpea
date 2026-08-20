@@ -360,6 +360,9 @@ function validateFlue2CutoverArtifact(artifact) {
   ) {
     failures.push('compatibility_date at or above 2026-04-01');
   }
+  if (!(config.compatibility_flags ?? []).includes('global_fetch_strictly_public')) {
+    failures.push('global_fetch_strictly_public for the shared Slack gateway');
+  }
   if (failures.length) {
     throw new Error(`Flue 2 cutover preflight failed; missing or unsafe ${failures.join(', ')}.`);
   }

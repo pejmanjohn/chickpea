@@ -20,7 +20,6 @@ const baseContext = {
   source: 'app_mention' as const,
   guaranteed: true,
   profileInstructions: 'Answer as a teammate.',
-  channelInstructions: '',
 };
 
 test('validated interaction dispositions enforce guaranteed and substantive-turn rules', () => {
@@ -332,7 +331,6 @@ test('every Agent receives shared Slack teammate defaults before voice overrides
     }],
     assignments: [{
       workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: 'agent_custom', enabled: true,
-      channelPromptAddendum: 'Keep replies compact.',
     }],
   });
   const config = await resolveEffectiveSlackConfig('T_TEST', 'C_TEST', {

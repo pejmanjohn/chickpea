@@ -63,7 +63,7 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
     const routine = routineDefinition();
     const assignment: ResolvedAssignment = {
       workspaceId: WORKSPACE, channelId: CHANNEL, agentId: agent.id,
-      participationMode: 'mention_only', agent,
+      agent,
     };
     const first = await bindRoutineAgentAuthority({
       routine, assignment, actorMembershipId: owner.membership.id, env: undefined,

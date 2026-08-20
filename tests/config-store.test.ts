@@ -82,8 +82,6 @@ function channel(overrides: Partial<ChannelConfig> = {}): ChannelConfig {
     workspaceId: 'T_TEST',
     channelId: 'C_TEST',
     label: 'eng-releases',
-    additionalInstructions: 'Prefer channel-local launch context.',
-    participationMode: 'mention_only',
     lifecycle: 'active',
     ...overrides,
   };
@@ -119,8 +117,6 @@ test('channel placement mutation atomically fences stale assignment edits', asyn
     workspaceId: 'T123',
     channelId: 'C456',
     label: 'ops',
-    additionalInstructions: 'Initial.',
-    participationMode: 'ambient',
     lifecycle: 'active',
   };
   try {
@@ -132,7 +128,7 @@ test('channel placement mutation atomically fences stale assignment edits', asyn
     });
     assert.equal(initial.channel.revision, 1);
     const winner = await store.putChannelPlacement({
-      channel: { ...channel, additionalInstructions: 'Winner.' },
+      channel: { ...channel, label: 'winner' },
       agentId: 'agent_two',
       expectedAgentId: 'agent_one',
       expectedRevision: 1,
@@ -141,7 +137,7 @@ test('channel placement mutation atomically fences stale assignment edits', asyn
     assert.equal(winner.channel.revision, 2);
     await assert.rejects(
       () => store.putChannelPlacement({
-        channel: { ...channel, additionalInstructions: 'Stale content.' },
+        channel: { ...channel, label: 'stale-content' },
         agentId: 'agent_two',
         expectedAgentId: 'agent_two',
         expectedRevision: 1,
@@ -150,14 +146,14 @@ test('channel placement mutation atomically fences stale assignment edits', asyn
     );
     await assert.rejects(
       () => store.putChannelPlacement({
-        channel: { ...channel, additionalInstructions: 'Stale loser.' },
+        channel: { ...channel, label: 'stale-loser' },
         agentId: 'agent_one',
         expectedAgentId: 'agent_one',
       }),
       ChannelAssignmentConflictError,
     );
     assert.equal((await store.getAssignment('T123', 'C456'))?.agentId, 'agent_two');
-    assert.equal((await store.getChannel('T123', 'C456'))?.additionalInstructions, 'Winner.');
+    assert.equal((await store.getChannel('T123', 'C456'))?.label, 'winner');
   } finally {
     store.close();
   }
@@ -211,7 +207,6 @@ test('effective config projects back to the exact admitted assignment for owner-
     agentId: 'agent_test',
     slackIdentityId: 'slack_identity_finance',
     channelLabel: 'eng-releases',
-    participationMode: 'mention_only',
     agent: effective.agent,
     model: 'local-stub/test',
   });
@@ -541,15 +536,6 @@ test('retiring an off identity clears its remembered DM Agent so the tombstone c
   store.close();
 });
 
-test('channel participation defaults to ambient and persists mention-only narrowing', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  const ambient = await store.putChannel(channel({ participationMode: 'ambient' }));
-  assert.equal(ambient.participationMode, 'ambient');
-  const narrowed = await store.putChannel(channel({ participationMode: 'mention_only' }));
-  assert.equal(narrowed.participationMode, 'mention_only');
-  store.close();
-});
-
 test('SqliteConfigStore round-trips non-empty skills through create and update', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const withSkills = agent({
@@ -776,6 +762,27 @@ test('SqliteConfigStore blocks deleting Agents that still have assignments', asy
   store.close();
 });
 
+test('SqliteConfigStore blocks deleting Agents that still have Channel grants', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  await store.createAgent(agent());
+  await store.putAgentChannelGrant({
+    workspaceId: 'T_TEST',
+    channelId: 'C_GRANTED',
+    agentId: 'agent_test',
+    status: 'active',
+    createdByMembershipId: 'membership_owner',
+  });
+
+  await assert.rejects(
+    () => store.deleteAgent('agent_test'),
+    (error: unknown) =>
+      error instanceof AgentStillReferencedError && error.references === 'T_TEST/C_GRANTED',
+  );
+  assert.equal((await store.getAgent('agent_test')).id, 'agent_test');
+
+  store.close();
+});
+
 test('SqliteConfigStore seeds an empty file database exactly once', async () => {
   const { dir, path } = tempDbPath();
   const seedAgent = agent({ id: 'agent_seed' });
@@ -856,7 +863,7 @@ test('SqliteConfigStore survives restart on a file database', async () => {
     await first.putChannel(channel({
       workspaceId: 'T_FILE',
       channelId: 'C_FILE',
-      additionalInstructions: 'Persist this channel rule.',
+      label: 'persisted-channel',
     }));
     await first.putAssignment(assignment({
       workspaceId: 'T_FILE',
@@ -873,8 +880,8 @@ test('SqliteConfigStore survives restart on a file database', async () => {
       agentId: created.id,
     });
     assert.equal(
-      (await second.getChannel('T_FILE', 'C_FILE'))?.additionalInstructions,
-      'Persist this channel rule.',
+      (await second.getChannel('T_FILE', 'C_FILE'))?.label,
+      'persisted-channel',
     );
     second.close();
   } finally {
@@ -1224,10 +1231,10 @@ test(':memory: config stores are isolated by connection', async () => {
   second.close();
 });
 
-test('resolveAssignment accepts SqliteConfigStore and preserves channel addendum', async () => {
+test('resolveAssignment accepts SqliteConfigStore and resolves Agent authority', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   await store.createAgent(agent());
-  await store.putChannel(channel({ additionalInstructions: 'Use the runtime channel rule.' }));
+  await store.putChannel(channel());
   await store.putAssignment(assignment());
 
   const resolved = await resolveAssignment('T_TEST', 'C_TEST', {
@@ -1236,7 +1243,6 @@ test('resolveAssignment accepts SqliteConfigStore and preserves channel addendum
   });
 
   assert.equal(resolved.agent.id, 'agent_test');
-  assert.equal(resolved.channelPromptAddendum, 'Use the runtime channel rule.');
 
   store.close();
 });

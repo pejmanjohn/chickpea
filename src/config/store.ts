@@ -19,6 +19,7 @@ import type { AssignmentLookupOptions } from './resolver.ts';
 import { seededAgents, seededAssignments } from './seed.ts';
 import {
   WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  type AgentChannelReference,
   type AgentChannelGrant,
   type AgentChannelGrantInput,
   type AgentConnectionBinding,
@@ -60,8 +61,6 @@ export interface ConfigSeed {
 type ConfigSeedAssignment = ChannelAssignment & {
   enabled?: boolean;
   channelLabel?: string;
-  channelPromptAddendum?: string;
-  participationMode?: ChannelConfig['participationMode'];
 };
 
 const DEFAULT_SEED: ConfigSeed = {
@@ -1192,8 +1191,8 @@ export class ConfigStoreLogic {
         channel.workspaceId,
         channel.channelId,
         channel.label ?? null,
-        channel.additionalInstructions ?? null,
-        channel.participationMode,
+        null,
+        'mention_only',
         channel.lifecycle,
       );
       return;
@@ -1210,8 +1209,8 @@ export class ConfigStoreLogic {
            revision = revision + 1
        WHERE workspace_id = ? AND channel_id = ? AND revision = ?`,
       channel.label ?? null,
-      channel.additionalInstructions ?? null,
-      channel.participationMode,
+      null,
+      'mention_only',
       channel.lifecycle,
       channel.workspaceId,
       channel.channelId,
@@ -1341,11 +1340,18 @@ export class ConfigStoreLogic {
   getAgentReferences(agentId: string): AgentReferenceSummary {
     this.getAgent(agentId);
     const identities = this.listSlackIdentities();
+    const channels = new Map<string, AgentChannelReference>();
+    for (const { workspaceId, channelId } of this.listAssignmentsForAgent(agentId)) {
+      channels.set(`${workspaceId}\u0000${channelId}`, { workspaceId, channelId });
+    }
+    for (const { workspaceId, channelId } of this.listAgentChannelGrants().filter(
+      (grant) => grant.agentId === agentId,
+    )) {
+      channels.set(`${workspaceId}\u0000${channelId}`, { workspaceId, channelId });
+    }
     return {
       agentId,
-      channelAssignments: this.listAssignmentsForAgent(agentId).map(
-        ({ workspaceId, channelId }) => ({ workspaceId, channelId }),
-      ),
+      channelAssignments: [...channels.values()],
       dmIdentityIds: identities
         .filter((identity) => identity.dmAgentId === agentId)
         .map(({ id }) => id),
@@ -2663,10 +2669,6 @@ function rowToChannel(row: ChannelRow): ChannelConfig {
     channelId: row.channel_id,
     revision: Number(row.revision ?? 1),
     ...(row.label ? { label: row.label } : {}),
-    ...(row.additional_instructions
-      ? { additionalInstructions: row.additional_instructions }
-      : {}),
-    participationMode: row.participation_mode === 'mention_only' ? 'mention_only' : 'ambient',
     lifecycle: row.lifecycle === 'archived' ? 'archived' : 'active',
   };
 }
@@ -2675,7 +2677,6 @@ function defaultChannelConfig(workspaceId: string, channelId: string): ChannelCo
   return {
     workspaceId,
     channelId,
-    participationMode: 'ambient',
     lifecycle: 'active',
   };
 }
@@ -2684,10 +2685,6 @@ function channelFromSeedAssignment(assignment: ConfigSeedAssignment): ChannelCon
   return {
     ...defaultChannelConfig(assignment.workspaceId, assignment.channelId),
     ...(assignment.channelLabel ? { label: assignment.channelLabel } : {}),
-    ...(assignment.channelPromptAddendum
-      ? { additionalInstructions: assignment.channelPromptAddendum }
-      : {}),
-    participationMode: assignment.participationMode ?? 'ambient',
   };
 }
 

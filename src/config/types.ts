@@ -203,6 +203,18 @@ export interface AgentSlackPresence {
   health: AgentPresenceHealth;
   avatar: AgentAvatarRevision;
   userGroupId?: string;
+  /**
+   * Durable evidence recorded immediately before a non-idempotent
+   * `usergroups.create` call. Slack has no idempotency key for that API, so a
+   * retry may adopt a matching group only when its immutable preflight facts
+   * prove that it was created by the ambiguous attempt.
+   */
+  pendingCreate?: {
+    name: string;
+    handle: string;
+    description: string;
+    startedAt: number;
+  };
   errorCode?: string;
   errorDetail?: string;
   observedAt?: number;
@@ -425,18 +437,15 @@ export interface ChannelPlacementResult {
   assignment: ChannelAssignment | null;
 }
 
-export type ChannelParticipationMode = 'ambient' | 'mention_only';
 export type ChannelLifecycle = 'active' | 'archived';
 
-/** Durable Channel-owned state. Agent placement lives only in ChannelAssignment. */
+/** Reach-only Slack Channel inventory. Agent behavior lives on the Agent. */
 export interface ChannelConfig {
   workspaceId: string;
   channelId: string;
   /** Persisted Channels always expose a positive revision. */
   revision?: number;
   label?: string;
-  additionalInstructions?: string;
-  participationMode: ChannelParticipationMode;
   lifecycle: ChannelLifecycle;
 }
 
@@ -461,8 +470,6 @@ export interface ResolvedAssignment {
   /** @deprecated Internal direct-install execution coordinate. */
   slackIdentityId?: string;
   channelLabel?: string;
-  channelPromptAddendum?: string;
-  participationMode?: 'ambient' | 'mention_only';
   /** Live Channel CAS revision; missing on DMs and legacy snapshots. */
   channelRevision?: number;
   agent: CustomAgentConfig;

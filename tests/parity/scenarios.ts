@@ -1121,7 +1121,6 @@ export const scenarios: Scenario[] = [
             channelId: EXEC_CHANNEL,
             agentId: 'agent_addendum',
             enabled: true,
-            channelPromptAddendum: 'CHANNEL_ADDENDUM_MARKER: prefer launch-local context.',
           },
           {
             workspaceId: 'TDEMO',

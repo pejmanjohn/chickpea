@@ -3,10 +3,9 @@
  * Prove the /admin configuration loop without Slack network access:
  *   1. mount the real Hono admin routes against an in-memory SQLite store,
  *   2. establish an exact Slack-bound Owner and authenticate as that principal,
- *   3. create an Agent and legacy addendum-bearing Channel placement through /admin/api,
- *   4. prove the effective Agent config ignores Channel-local instructions,
- *   5. edit the legacy addendum and prove the Agent snapshot remains stable,
- *   6. seed Agent memory and prove Channel memory is forbidden while Agent-owned
+ *   3. create two Agents and publish both to one Channel through the additive grant API,
+ *   4. prove the Channel inventory exposes both grants without one replacing the other,
+ *   5. seed Agent memory and prove Channel memory is forbidden while Agent-owned
  *      conflict, history, and irreversible-delete contracts remain available.
  */
 import {
@@ -18,13 +17,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const ADMIN_ORIGIN = 'https://admin-ui.example';
-const WORKSPACE_ID = 'T_ADMIN_UI';
+const WORKSPACE_ID = 'TADMINUI1';
 const CHANNEL_ID = 'C_ADMIN_UI';
 const CHANNEL_LABEL = 'eng-releases';
 const AGENT_ID = 'agent_admin_ui';
 const MODEL_SPECIFIER = 'local-stub/admin-ui-model';
-const FIRST_ADDENDUM = 'ADMIN_UI_ADDENDUM_V1: prefer release readiness.';
-const SECOND_ADDENDUM = 'ADMIN_UI_ADDENDUM_V2: prefer launch-risk deltas.';
 const MEMORY_ENTRY_ID = 'mem_admin_ui_release';
 const ROUTINE_ID = 'routine_admin_ui_release';
 
@@ -60,14 +57,6 @@ async function adminBody(app, method, path, body) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-}
-
-async function readEffectiveConfig(app) {
-  return adminJson(
-    app,
-    `/admin/api/effective-config?workspaceId=${encodeURIComponent(WORKSPACE_ID)}` +
-      `&channelId=${encodeURIComponent(CHANNEL_ID)}`,
-  );
 }
 
 let store;
@@ -262,6 +251,36 @@ try {
     deadlineAt: Date.now() + 900_000,
   });
   const app = new Hono();
+  const userGroups = [];
+  const slackChannel = {
+    id: CHANNEL_ID, name: CHANNEL_LABEL, private: false, member: true, archived: false,
+  };
+  const slackTransport = {
+    mode: 'direct',
+    async lookupMember(userId) {
+      return { id: userId, teamId: WORKSPACE_ID, deleted: false, bot: false, appUser: false, restricted: false, ultraRestricted: false, stranger: false };
+    },
+    async lookupChannel() { return slackChannel; },
+    async listChannels() { return { channels: [slackChannel], truncated: false }; },
+    async channelHasMember() { return true; },
+    async openDirectConversation(userId) { return { ...slackChannel, id: `D_${userId}`, private: true }; },
+    async joinPublicChannel() { return slackChannel; },
+    async listUserGroups() { return [...userGroups]; },
+    async createUserGroup(input) {
+      const group = { id: `S${userGroups.length + 1}`, ...input, disabled: false, updatedAt: Math.floor(Date.now() / 1000) };
+      userGroups.push(group);
+      return group;
+    },
+    async updateUserGroup(id, patch) {
+      const group = userGroups.find((candidate) => candidate.id === id);
+      Object.assign(group, patch);
+      return group;
+    },
+    async disableUserGroup(id) { return this.updateUserGroup(id, { disabled: true }); },
+    async enableUserGroup(id) { return this.updateUserGroup(id, { disabled: false }); },
+    async publishAppHome() { return {}; },
+    async postMessage() { return { channelId: CHANNEL_ID, ts: '1.0' }; },
+  };
   app.route(
     '/',
     createAdminRoutes({
@@ -288,6 +307,7 @@ try {
         },
       },
       knownProviders: new Set(['local-stub']),
+      slackTransport,
     }),
   );
 
@@ -299,22 +319,20 @@ try {
     retiredLogin.status === 404 &&
       pageResponse.status === 200 &&
       pageResponse.headers.get('cache-control') === 'no-store' &&
-      pageHtml.includes('Inherited capabilities') &&
+      pageHtml.includes('Agents available here') &&
       !pageHtml.includes('Resolved configuration') &&
       pageHtml.includes('data-action="copy-channel-prompt"'),
     `retiredLogin=${retiredLogin.status} page=${pageResponse.status}`,
   );
 
   record(
-    'admin page carries live audit domains without the retired Sessions UI',
+    'admin page keeps Agent-owned Scheduled Work audit without Channel-memory navigation',
     pageHtml.includes('Audit logs') &&
       !pageHtml.includes('SESSIONS_ADMIN_UI') &&
       !pageHtml.includes('data-action="open-sessions"') &&
       pageHtml.includes('data-action="audit-tab-scheduled">Scheduled work') &&
-      pageHtml.includes('data-action="audit-tab-memory">Memory') &&
-      pageHtml.includes('aria-disabled="true" title="Coming later">Network events') &&
-      pageHtml.includes('Generated index · changes are made through individual files.') &&
-      pageHtml.includes('Prior exports, Slack or provider logs, backups, and Flue transcripts may still retain copies'),
+      !pageHtml.includes('data-action="audit-tab-memory"') &&
+      pageHtml.includes('aria-disabled="true" title="Coming later">Network events'),
   );
 
   record(
@@ -413,56 +431,38 @@ try {
     `status=${created.status}`,
   );
 
-  const assigned = await adminBody(app, 'PUT', '/admin/api/assignments', {
+  const assigned = await adminBody(app, 'POST', `/admin/api/agents/${AGENT_ID}/channels`, {
     workspaceId: WORKSPACE_ID,
     channelId: CHANNEL_ID,
-    channelLabel: CHANNEL_LABEL,
-    agentId: AGENT_ID,
-    enabled: true,
-    channelPromptAddendum: FIRST_ADDENDUM,
   });
   record(
-    'PUT /admin/api/assignments creates the labeled addendum assignment',
-    assigned.status === 200 &&
-      assigned.body?.channel?.label === CHANNEL_LABEL &&
-      assigned.body?.channel?.additionalInstructions === FIRST_ADDENDUM,
+    'POST /admin/api/agents/:id/channels publishes the first Agent grant',
+    assigned.status === 201 && assigned.body?.grant?.agentId === AGENT_ID &&
+      assigned.body?.grant?.status === 'active',
     `status=${assigned.status}`,
   );
 
-  const first = await readEffectiveConfig(app);
-  const firstConfig = first.body?.config;
-  record(
-    'effective-config resolves the Agent and ignores Channel-local instructions',
-    first.status === 200 &&
-      firstConfig?.model === MODEL_SPECIFIER &&
-      firstConfig?.instructions?.includes('ADMIN_UI_AGENT_INSTRUCTIONS') &&
-      !firstConfig?.instructions?.includes(FIRST_ADDENDUM),
-    `status=${first.status} model=${String(firstConfig?.model)}`,
-  );
-
-  const edited = await adminBody(app, 'PUT', '/admin/api/assignments', {
+  const secondAgentId = 'agent_admin_ui_two';
+  const secondCreated = await adminBody(app, 'POST', '/admin/api/agents', {
+    id: secondAgentId,
+    name: 'Release Analyst',
+    instructions: 'Review release risk.',
+    enabled: true,
+    model: MODEL_SPECIFIER,
+  });
+  const secondPublished = await adminBody(app, 'POST', `/admin/api/agents/${secondAgentId}/channels`, {
     workspaceId: WORKSPACE_ID,
     channelId: CHANNEL_ID,
-    channelLabel: CHANNEL_LABEL,
-    agentId: AGENT_ID,
-    enabled: true,
-    channelPromptAddendum: SECOND_ADDENDUM,
   });
+  const channelInventory = await adminJson(app, '/admin/api/channels');
+  const verifiedChannel = channelInventory.body?.channels?.find((channel) => channel.channelId === CHANNEL_ID);
   record(
-    'PUT /admin/api/assignments edits the addendum without remounting routes',
-    edited.status === 200,
-    `status=${edited.status}`,
-  );
-
-  const second = await readEffectiveConfig(app);
-  const secondConfig = second.body?.config;
-  record(
-    'editing legacy Channel instructions cannot change the Agent snapshot',
-    second.status === 200 &&
-      !secondConfig?.instructions?.includes(SECOND_ADDENDUM) &&
-      !secondConfig?.instructions?.includes(FIRST_ADDENDUM) &&
-      secondConfig?.snapshotHash === firstConfig?.snapshotHash,
-    `status=${second.status} hashStable=${String(secondConfig?.snapshotHash === firstConfig?.snapshotHash)}`,
+    'Channel inventory keeps multiple additive Agent grants',
+    secondCreated.status === 201 && secondPublished.status === 201 && channelInventory.status === 200 &&
+      verifiedChannel?.grants?.length === 2 &&
+      verifiedChannel.grants.some((grant) => grant.agentId === AGENT_ID) &&
+      verifiedChannel.grants.some((grant) => grant.agentId === secondAgentId),
+    `create=${secondCreated.status} publish=${secondPublished.status} grants=${String(verifiedChannel?.grants?.length)}`,
   );
 
   const owners = await adminJson(app, `/admin/api/audit/memory/owners?workspaceId=${WORKSPACE_ID}`);
