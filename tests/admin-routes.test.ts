@@ -2564,7 +2564,6 @@ test('effective config endpoint resolves through the runtime assignment path', a
     const body = (await response.json()) as {
       config: {
         agentId: string;
-        slackIdentityId: string;
         model: string;
         provider: string;
         instructions: string;
@@ -2572,7 +2571,7 @@ test('effective config endpoint resolves through the runtime assignment path', a
       };
     };
     assert.equal(body.config.agentId, 'agent_admin');
-    assert.equal(body.config.slackIdentityId, identityId);
+    assert.equal('slackIdentityId' in body.config, false);
     assert.equal(body.config.model, 'local-stub/effective-model');
     assert.equal(body.config.provider, 'local-stub');
     assert.match(body.config.instructions, /Base profile instructions from the admin test\./);

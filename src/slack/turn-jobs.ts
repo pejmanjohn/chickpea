@@ -1036,7 +1036,6 @@ export class TurnJobStoreLogic {
     const turn = JSON.parse(row.turn_json) as NormalizedSlackTurn;
     const assignment = JSON.parse(row.assignment_json) as ResolvedAssignment;
     turn.slackIdentityId ??= WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
-    assignment.slackIdentityId ??= WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
     return {
       id: row.id,
       evtKey: row.evt_key,

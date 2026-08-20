@@ -15,7 +15,6 @@ const config: EffectiveSlackConfig = {
   workspaceId: 'T_TEST',
   channelId: 'C_TEST',
   agentId: 'agent_default',
-  slackIdentityId: 'slack_identity_default',
   agent: {
     id: 'agent_default', revision: 1, name: 'Chickpea', instructions: 'Be useful.', enabled: true,
     model: 'anthropic/claude-sonnet-4-6', skills: [], mcpServers: [], apiConnections: [], repositories: [],
@@ -97,12 +96,9 @@ test('runtime access resolves current channel membership and hashes only non-sec
   assert.notEqual(changed.accessHash, access.accessHash);
 });
 
-test('runtime access resolves the live Agent identity and includes it in the access hash', async () => {
+test('runtime access resolves the one workspace Slack installation', async () => {
   const identityIds: string[] = [];
-  const dedicatedConfig = {
-    ...config,
-    slackIdentityId: 'slack_identity_finance',
-  };
+  const dedicatedConfig = { ...config };
   const access = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
     config: async () => dedicatedConfig,
     identityCredentials: async (identityId: string) => {
@@ -116,17 +112,17 @@ test('runtime access resolves the live Agent identity and includes it in the acc
     },
   }));
   const changed = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
-    config: async () => ({ ...dedicatedConfig, slackIdentityId: 'slack_identity_legal' }),
+    config: async () => ({ ...dedicatedConfig }),
     identityCredentials: async () => ({
       botToken: 'xoxb-legal', signingSecret: undefined, botUserId: 'UBOT',
       connectionRevision: 'rev-legal',
     }),
   }));
 
-  assert.deepEqual(identityIds, ['slack_identity_finance']);
-  assert.equal(access.slackIdentityId, 'slack_identity_finance');
+  assert.deepEqual(identityIds, ['slack_identity_default']);
+  assert.equal(access.slackIdentityId, 'slack_identity_default');
   assert.equal(access.botToken, 'xoxb-finance');
-  assert.notEqual(access.accessHash, changed.accessHash);
+  assert.equal(access.accessHash, changed.accessHash);
 });
 
 test('production routine access shares the lifecycle-gated identity client', async () => {

@@ -8044,9 +8044,8 @@ async function countSlackIdentityPendingDeliveries(
   }
   try {
     return (await slackStateStore.listPendingTurns()).filter(
-      ({ turn, assignment }) =>
-        (turn.slackIdentityId ?? assignment.slackIdentityId ??
-          WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) === identityId,
+      ({ turn }) =>
+        (turn.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) === identityId,
     ).length;
   } catch {
     // A missing or unavailable inventory must not make safe identity reads fail.
@@ -8832,7 +8831,6 @@ function effectiveConfigResponse(config: EffectiveSlackConfig): object {
     workspaceId: config.workspaceId,
     channelId: config.channelId,
     agentId: config.agentId,
-    slackIdentityId: config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     agent: {
       id: config.agent.id,
       name: config.agent.name,

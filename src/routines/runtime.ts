@@ -99,8 +99,6 @@ export async function resolveRoutineRuntimeAccess(
         workspaceId: routine.workspaceId,
         channelId: routine.channelId,
         agentId: authority.reference.agentId,
-        slackIdentityId:
-          authority.agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
         participationMode: 'mention_only',
         agent: authority.agent,
       });
@@ -124,7 +122,7 @@ export async function resolveRoutineRuntimeAccess(
   }
   const getConversation = dependencies.conversation ?? slackConversationsInfo;
   const getMembers = dependencies.members ?? slackConversationsMembers;
-  const slackIdentityId = config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
+  const slackIdentityId = WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
   let botToken: string | undefined;
   let botUserId: string | undefined;
   let client: WebClient | undefined;

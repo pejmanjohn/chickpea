@@ -912,7 +912,7 @@ export async function createSlackAgentRuntime(
       postArtifact: async (input) => {
         presenter ??= Promise.all([
           resolveSlackIdentityExecutionContext(
-            config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+            WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
             env,
             { settings: settingsStore },
           ),
@@ -1089,7 +1089,6 @@ async function saveRuntimePlanAutonomousMemory(
   const { slackUserId, messageTs } = request;
   const env = await resolveAgentPlatformEnv();
   const config = getConfigStore(env);
-  const identityId = plan.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
   return saveAutonomousMemory({
     surface: plan.conversation.surface,
     workspaceId: plan.conversation.workspaceId,
@@ -1101,17 +1100,15 @@ async function saveRuntimePlanAutonomousMemory(
   }, input, {
     state: getMemoryStateStore(env),
     authorize: async () => {
-      const [agent, identity] = await Promise.all([
+      const [agent, installation] = await Promise.all([
         config.getAgent(plan.agentId),
-        config.getSlackIdentity(identityId),
+        config.getWorkspaceInstallation(plan.conversation.workspaceId),
       ]);
-      const liveIdentityIsValid = agent.enabled &&
-        (agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) === identityId &&
-        identity.teamId === plan.conversation.workspaceId &&
-        (identity.lifecycle === 'connected' || identity.lifecycle === 'degraded');
-      if (!liveIdentityIsValid) return false;
+      const installationIsValid = agent.enabled && agent.lifecycle !== 'archived' &&
+        installation?.workspaceId === plan.conversation.workspaceId &&
+        installation.health !== 'revoked';
+      if (!installationIsValid) return false;
       if (plan.conversation.surface === 'direct_message') {
-        if (identity.dmState !== 'on') return false;
         return isAuthorizedAgentMemoryMember({
           workspaceId: plan.conversation.workspaceId,
           userId: slackUserId,
@@ -1122,7 +1119,7 @@ async function saveRuntimePlanAutonomousMemory(
           plan.conversation.workspaceId,
           plan.conversation.channelId,
         ),
-        resolveSlackIdentityExecutionContext(identityId, env, {
+        resolveSlackIdentityExecutionContext(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID, env, {
           config,
           settings: getSettingsStore(env),
         }),
@@ -1289,7 +1286,7 @@ function createRuntimePlanArtifactTool(plan: RuntimePlanV2) {
         const [profile, identity, publicUrl] = await Promise.all([
           config.getAgent(plan.agentId),
           resolveSlackIdentityExecutionContext(
-            plan.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+            WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
             env,
             { config, settings: getSettingsStore(env) },
           ),

@@ -11,9 +11,8 @@ interface SlackIdentityAgentReader {
 
 /** Resolve old snapshots safely while new assignments carry an explicit identity. */
 export function effectiveSlackIdentityId(assignment: ResolvedAssignment): string {
-  return assignment.slackIdentityId ??
-    assignment.agent.slackIdentityId ??
-    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
+  void assignment;
+  return WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
 }
 
 export function assignmentUsesSlackIdentity(
@@ -40,7 +39,6 @@ export async function resolveSlackIdentityDmAssignment(
     workspaceId,
     channelId,
     agentId: agent.id,
-    slackIdentityId: identity.id,
     participationMode: 'ambient',
     agent,
   };

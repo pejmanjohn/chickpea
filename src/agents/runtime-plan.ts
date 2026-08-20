@@ -9,7 +9,6 @@ import {
   type SkillConfig,
 } from '../config/types.ts';
 import { opaqueId } from '../work/admission.ts';
-import { effectiveSlackIdentityId } from '../slack/identity-admission.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
@@ -96,8 +95,6 @@ export interface RuntimePlanV2 {
   connectionAuthorizations?: RuntimePlanConnectionAuthorizationV2[];
   /** Providers withheld until the user identifies one plausible account. */
   connectionChoices?: RuntimePlanConnectionChoiceV2[];
-  /** Non-secret Slack app reference. Missing only on pre-U4 durable plans. */
-  slackIdentityId?: string;
   /** Object revisions used to explain which live configuration this turn froze. */
   configurationRevision?: {
     agent: number;
@@ -161,7 +158,6 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
       providerId: choice.providerId,
       choices: choice.choices.map((candidate) => ({ ...candidate })),
     })),
-    slackIdentityId: effectiveSlackIdentityId(input.assignment),
     configurationRevision: {
       agent: input.assignment.agent.revision,
       ...(input.assignment.channelRevision
@@ -244,7 +240,6 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'connectionAccountIds',
     'connectionAuthorizations',
     'connectionChoices',
-    'slackIdentityId',
     'configurationRevision',
     'conversation',
     'model',
@@ -258,7 +253,6 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'artifactDestination',
     'harnessRevision',
   ], [
-    'slackIdentityId',
     'configurationRevision',
     'actorMembershipId',
     'connectionAccountIds',
@@ -292,9 +286,6 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
   const connectionChoices = record.connectionChoices === undefined
     ? []
     : arrayOf(record.connectionChoices, 'connectionChoices', parseConnectionChoice, 64);
-  const slackIdentityId = record.slackIdentityId === undefined
-    ? undefined
-    : boundedString(record.slackIdentityId, 'slackIdentityId', 1, 128);
   const configurationRevision = record.configurationRevision === undefined
     ? undefined
     : parseConfigurationRevision(record.configurationRevision);
@@ -367,7 +358,6 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     ...(record.connectionAccountIds === undefined ? {} : { connectionAccountIds }),
     ...(record.connectionAuthorizations === undefined ? {} : { connectionAuthorizations }),
     ...(record.connectionChoices === undefined ? {} : { connectionChoices }),
-    ...(slackIdentityId ? { slackIdentityId } : {}),
     ...(configurationRevision ? { configurationRevision } : {}),
     conversation,
     model,
@@ -516,7 +506,6 @@ function computeHarnessRevision(
       ...(plan.connectionChoices !== undefined
         ? { connectionChoices: plan.connectionChoices }
         : {}),
-      ...(plan.slackIdentityId ? { slackIdentityId: plan.slackIdentityId } : {}),
       ...(plan.configurationRevision
         ? { configurationRevision: plan.configurationRevision }
         : {}),

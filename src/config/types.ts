@@ -100,7 +100,7 @@ export interface RepositoryGrant {
 
 export type OpenAiAuthMethod = 'api_key' | 'subscription';
 
-/** Stable identity inherited by every Agent without an explicit selection. */
+/** Internal coordinate for the one customer-owned Slack installation. */
 export const WORKSPACE_DEFAULT_SLACK_IDENTITY_ID = 'slack_identity_default';
 
 export type SlackIdentityKind = 'workspace_default' | 'dedicated';
@@ -228,7 +228,7 @@ export interface CustomAgentConfig {
   mcpServers: McpConnectionConfig[];
   apiConnections: ApiConnectionConfig[];
   repositories: RepositoryGrant[];
-  /** Missing means inherit WORKSPACE_DEFAULT_SLACK_IDENTITY_ID. */
+  /** @deprecated Internal compatibility only; Agents do not expose Slack identities. */
   slackIdentityId?: string;
 }
 
@@ -458,7 +458,7 @@ export interface ResolvedAssignment {
   workspaceId: string;
   channelId: string;
   agentId: string;
-  /** Effective Slack transport for this assignment. Missing only on legacy snapshots. */
+  /** @deprecated Internal direct-install execution coordinate. */
   slackIdentityId?: string;
   channelLabel?: string;
   channelPromptAddendum?: string;

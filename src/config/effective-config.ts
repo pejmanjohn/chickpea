@@ -45,7 +45,7 @@ export interface EffectiveSlackConfig {
   workspaceId: string;
   channelId: string;
   agentId: string;
-  /** Explicit on live resolution; missing only on legacy/synthetic fixtures. */
+  /** @deprecated Internal direct-install execution coordinate. */
   slackIdentityId?: string;
   channelLabel?: string;
   agent: CustomAgentConfig;

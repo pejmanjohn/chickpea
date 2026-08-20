@@ -423,7 +423,6 @@ test('a relay batch isolates one client per referenced Slack identity', async ()
     item.turn.channelId = `C_${identity}`;
     item.turn.threadTs = `100.${index + 10}`;
     item.turn.slackIdentityId = `slack_identity_${identity}`;
-    item.assignment.slackIdentityId = `slack_identity_${identity}`;
     return item;
   });
   const state = relayStateFor(jobs);
@@ -465,7 +464,6 @@ test('a retained TurnJob resolves a rotated token for the same identity on its n
     dispatchEnvelope: { idempotencyKey: 'msg_relay_rotation' },
   };
   item.turn.slackIdentityId = 'slack_identity_finance';
-  item.assignment.slackIdentityId = 'slack_identity_finance';
   const jobs = [item];
   const state = relayStateFor(jobs);
   const firstClient = { tokenVersion: 1 } as unknown as WebClient;
@@ -494,7 +492,6 @@ test('a retained TurnJob resolves a rotated token for the same identity on its n
 test('an unavailable identity enters recovery without model execution or default fallback', async () => {
   const item = relayJob('unavailable');
   item.turn.slackIdentityId = 'slack_identity_finance';
-  item.assignment.slackIdentityId = 'slack_identity_finance';
   item.progress.interactionIntent = {
     disposition: 'work',
     reason: 'substantive_request',
@@ -535,7 +532,6 @@ test('an unavailable identity enters recovery without model execution or default
 test('a transient identity preflight keeps the turn pending without model work or repair', async () => {
   const item = relayJob('identity-retry');
   item.turn.slackIdentityId = 'slack_identity_finance';
-  item.assignment.slackIdentityId = 'slack_identity_finance';
   const jobs = [item];
   const recovery: Array<{ id: string; reason: string }> = [];
   let executions = 0;

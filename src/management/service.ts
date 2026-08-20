@@ -983,7 +983,7 @@ export class WorkspaceManagementService {
     ]));
     const agentIdsByIdentity = new Map<string, string[]>();
     for (const agent of agents) {
-      const identityId = agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
+      const identityId = WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
       const ids = agentIdsByIdentity.get(identityId) ?? [];
       ids.push(agent.id);
       agentIdsByIdentity.set(identityId, ids);
@@ -1015,7 +1015,6 @@ export class WorkspaceManagementService {
         mcpServers,
         apiConnections,
         repositories,
-        slackIdentityId,
       }) => ({
         id,
         revision,
@@ -1027,7 +1026,6 @@ export class WorkspaceManagementService {
         mcpServers,
         apiConnections,
         repositories,
-        ...(slackIdentityId ? { slackIdentityId } : {}),
       })),
       channels: channels.map((channel) => ({
         workspaceId: channel.workspaceId,
@@ -1700,7 +1698,7 @@ export class WorkspaceManagementService {
               appName: operation.appName,
               displayName: operation.displayName,
               sourceAgentId: dmAgent.id,
-              sourceAgentSlackIdentityId: dmAgent.slackIdentityId ?? null,
+              sourceAgentSlackIdentityId: null,
             },
           } satisfies SlackIdentity,
         };
@@ -2432,9 +2430,8 @@ function applyAgentPatch(agent: CustomAgentConfig, patch: ConfigAgentPatch): Cus
     ...agent,
     ...patch,
     revision: agent.revision + 1,
-  } as CustomAgentConfig & { model?: string | null; slackIdentityId?: string | null };
+  } as CustomAgentConfig & { model?: string | null };
   if (patch.model === null) delete next.model;
-  if (patch.slackIdentityId === null) delete next.slackIdentityId;
   return next as CustomAgentConfig;
 }
 
@@ -2448,7 +2445,6 @@ function fullAgentPatch(agent: CustomAgentConfig): ConfigAgentPatch {
     mcpServers: agent.mcpServers,
     apiConnections: agent.apiConnections,
     repositories: agent.repositories,
-    slackIdentityId: agent.slackIdentityId ?? null,
   };
 }
 
@@ -2520,8 +2516,6 @@ async function optionalSlackIdentity(
 }
 
 function capabilityScopeExpanded(agent: CustomAgentConfig, patch: ConfigAgentPatch): boolean {
-  if (patch.slackIdentityId !== undefined &&
-      patch.slackIdentityId !== (agent.slackIdentityId ?? null)) return true;
   if (patch.repositories && containsExpandedRepositories(agent.repositories, patch.repositories)) return true;
   if (patch.mcpServers && containsExpandedMcp(agent.mcpServers, patch.mcpServers)) return true;
   if (patch.apiConnections && containsExpandedApi(agent.apiConnections, patch.apiConnections)) return true;

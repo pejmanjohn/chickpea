@@ -18,7 +18,6 @@ import {
   compileRuntimePlanV2,
   runtimePlanSandboxConversationKey,
 } from '../agents/runtime-plan.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import {
   canonicalRuntimeModel,
   resolveRuntimeModel,
@@ -543,7 +542,6 @@ function createEnvelope(input: {
       workspaceId: input.routine.workspaceId,
       channelId: input.routine.channelId,
       agentId: input.access.config.agentId,
-      slackIdentityId: input.access.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
       agent: input.access.config.agent,
       model: input.runtimeModel,
     },

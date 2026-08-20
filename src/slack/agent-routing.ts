@@ -250,8 +250,7 @@ function assignmentForAgent(
     workspaceId: turn.workspaceId,
     channelId: turn.channelId,
     agentId: agent.id,
-    // Temporary internal execution coordinate until the U8 gateway transport
-    // removes the legacy identity credential seam entirely.
+    // Internal transport coordinate only; Slack presentation belongs to Agent.
     slackIdentityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     ...(grant?.channelLabel ? { channelLabel: grant.channelLabel } : {}),
     participationMode: 'mention_only',
