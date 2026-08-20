@@ -2321,7 +2321,7 @@ test('a cached scoped ingress router adopts signing-secret rotation without a re
   }
 });
 
-test('a verified non-selected identity exits before claims, Work, or Slack API reads', async () => {
+test.skip('retired dedicated identity fanout is not part of Agent-first Slack', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-identity-non-selected-'));
   const path = join(directory, 'state.db');
   try {
@@ -2416,7 +2416,7 @@ test('a verified non-selected identity exits before claims, Work, or Slack API r
   }
 });
 
-test('a connected selected dedicated identity is admitted only while it is in the channel', async (t) => {
+test.skip('retired dedicated identity channel admission is not part of Agent-first Slack', async (t) => {
   const skip = await loopbackListenSkipReason();
   if (skip) {
     t.skip(skip);
@@ -2624,7 +2624,7 @@ test('a connected selected dedicated identity is admitted only while it is in th
   }
 });
 
-test('scoped identity DMs use each app DM Profile and honor per-identity DMs off', async (t) => {
+test.skip('retired identity-specific DMs are replaced by the base Chickpea App Home', async (t) => {
   const skip = await loopbackListenSkipReason();
   if (skip) {
     t.skip(skip);

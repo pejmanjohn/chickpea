@@ -67,7 +67,7 @@ function turn(overrides: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn
   };
 }
 
-test('identity admission selects DMs from the receiving app and channels from the Profile', async () => {
+test('legacy DM bindings cannot change the one workspace Slack execution identity', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [assignment().agent], assignments: [] });
   const financeIdentity: SlackIdentity = {
     id: 'slack_identity_finance',
@@ -94,8 +94,12 @@ test('identity admission selects DMs from the receiving app and channels from th
     store,
   );
   assert.equal(dm?.agentId, 'agent_default');
-  assert.equal(dm?.slackIdentityId, financeIdentity.id);
-  assert.equal(assignmentUsesSlackIdentity(dm as ResolvedAssignment, financeIdentity.id), true);
+  assert.equal(dm?.slackIdentityId, undefined);
+  assert.equal(assignmentUsesSlackIdentity(dm as ResolvedAssignment, financeIdentity.id), false);
+  assert.equal(
+    assignmentUsesSlackIdentity(dm as ResolvedAssignment, WORKSPACE_DEFAULT_SLACK_IDENTITY_ID),
+    true,
+  );
   assert.equal(assignmentUsesSlackIdentity(assignment(), financeIdentity.id), false);
 
   const off = { ...financeIdentity, dmState: 'off' as const };
@@ -106,14 +110,14 @@ test('identity admission selects DMs from the receiving app and channels from th
   store.close();
 });
 
-test('Slack Run correlation carries identity references without credentials', () => {
+test('Slack Run correlation uses the one workspace app reference without credentials', () => {
   const input = prepareSlackShadowAdmission({
     turn: turn({ slackIdentityId: 'slack_identity_finance' }),
     assignment: { ...assignment(), slackIdentityId: 'slack_identity_finance' },
     sourceVisibility: 'public',
     admittedAt: NOW,
   });
-  assert.equal(input.safeConfig.slackIdentityId, 'slack_identity_finance');
+  assert.equal(input.safeConfig.slackIdentityId, WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
   assert.doesNotMatch(JSON.stringify(input.safeConfig), /xoxb-|botToken|signingSecret/i);
 });
 

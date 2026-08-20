@@ -881,7 +881,11 @@ test('existing turn job tables gain progress storage without losing pending rows
     assert.equal(pending[0]?.executionAuthority, 'legacy');
     assert.deepEqual(pending[0]?.progress, {});
     assert.equal(pending[0]?.turn.slackIdentityId, WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-    assert.equal(pending[0]?.assignment.slackIdentityId, WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+    assert.equal(
+      pending[0]?.assignment.slackIdentityId,
+      undefined,
+      'clean-slate Agent-first snapshots do not invent an assignment identity',
+    );
     const bindingColumns = db.all('PRAGMA table_info(slack_agent_bindings)')
       .map((column) => String(column.name));
     assert.deepEqual(bindingColumns, ['continuity_key', 'instance_id', 'uid', 'updated_at']);
