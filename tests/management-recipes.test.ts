@@ -59,7 +59,7 @@ test('recipe export retains operational requirements and strips workspace author
     assert.equal(recipe.schemaVersion, 1);
     assert.equal(recipe.agents[0]?.repositoryRequirements[0]?.fullName, 'northstar/research');
     assert.equal(recipe.agents[0]?.mcpRequirements[0]?.authMode, 'oauth');
-    assert.equal(recipe.channels[0]?.label, 'research');
+    assert.equal(Object.hasOwn(recipe, 'channels'), false);
     assert.doesNotMatch(serialized, /T_SECRET|C_SECRET|alex@northstar/);
     assert.doesNotMatch(serialized, /installationId|accountLogin|slackIdentityId|identity/);
   } finally {
@@ -67,7 +67,7 @@ test('recipe export retains operational requirements and strips workspace author
   }
 });
 
-test('recipe preview exposes conflict choices then compiles clone, placement, and setup operations', async () => {
+test('recipe preview exposes conflict choices then compiles Agent and setup operations', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     await config.createAgent({
@@ -88,25 +88,16 @@ test('recipe preview exposes conflict choices then compiles clone, placement, an
         apiRequirements: [],
         repositoryRequirements: [{ id: 'repo', fullName: 'northstar/research', enabled: true }],
       }],
-      channels: [{
-        symbol: 'channel_1', label: 'research',
-        agentSymbol: 'agent_1',
-      }],
     };
     const source = async () => 'missing' as const;
     const conflict = await previewWorkspaceRecipe(config, source, { recipe });
     assert.equal(conflict.agents[0]?.status, 'conflict');
     assert.deepEqual(conflict.agents[0]?.choices, ['clone', 'update', 'skip']);
     assert.equal(conflict.operations.length, 0);
-    assert.equal(conflict.channels[0]?.status, 'target_required');
 
     const clone = await previewWorkspaceRecipe(config, source, {
       recipe,
       agentStrategy: 'clone',
-      channelTargets: [{
-        symbol: 'channel_1', workspaceId: 'T_TARGET', channelId: 'C_TARGET',
-        expectedRevision: 0, expectedAgentId: null,
-      }],
     });
     assert.equal(clone.agents[0]?.status, 'clone');
     assert.deepEqual(clone.agents[0]?.setupRequired.sort(), [
@@ -114,9 +105,7 @@ test('recipe preview exposes conflict choices then compiles clone, placement, an
     ].sort());
     assert.deepEqual(clone.operations.map(({ kind }) => kind), [
       'create_agent', 'request_setup', 'request_setup', 'request_setup',
-      'put_channel', 'place_agent',
     ]);
-    assert.equal(clone.channels[0]?.status, 'ready');
 
     const update = await previewWorkspaceRecipe(config, source, {
       recipe,
@@ -143,7 +132,6 @@ test('recipe preview rejects authority and credential fields before compiling wr
         skills: [], mcpRequirements: [], apiRequirements: [], repositoryRequirements: [],
         clientSecret: 'not-allowed',
       }],
-      channels: [],
     };
     await assert.rejects(
       () => previewWorkspaceRecipe(config, async () => 'missing', { recipe: unsafe }),
@@ -183,7 +171,6 @@ test('recipe preview rejects malformed nested requirements and oversized operati
         skills: [], mcpRequirements: [{ displayName: 'Missing fields' }],
         apiRequirements: [], repositoryRequirements: [],
       }],
-      channels: [],
     };
     await assert.rejects(
       () => previewWorkspaceRecipe(config, async () => 'missing', { recipe: malformed }),
@@ -197,7 +184,6 @@ test('recipe preview rejects malformed nested requirements and oversized operati
         symbol: `agent_${index}`, name: `Agent ${index}`, instructions: '', enabled: true,
         skills: [], mcpRequirements: [], apiRequirements: [], repositoryRequirements: [],
       })),
-      channels: [],
     };
     await assert.rejects(
       () => previewWorkspaceRecipe(config, async () => 'missing', { recipe: tooLarge }),
@@ -241,32 +227,18 @@ test('recipe import progressively creates live configuration and rejects a stale
         apiRequirements: [],
         repositoryRequirements: [{ id: 'repo', fullName: 'northstar/research', enabled: true }],
       }],
-      channels: [{
-        symbol: 'channel_1', label: 'research',
-        agentSymbol: 'agent_1',
-      }],
     };
-    const preview = await f.service.previewRecipe(context, {
-      recipe,
-      channelTargets: [{
-        symbol: 'channel_1', workspaceId: f.owner.user.slackTeamId,
-        channelId: 'C_RECIPE', expectedRevision: 0, expectedAgentId: null,
-      }],
-    });
+    const preview = await f.service.previewRecipe(context, { recipe });
     const applied = await f.service.applyWorkspaceChanges({
       context,
       idempotencyKey: 'recipe-import',
       operations: preview.operations,
     });
     assert.deepEqual(applied.outcomes.map(({ disposition }) => disposition), [
-      'applied', 'setup_required', 'setup_required', 'setup_required', 'applied', 'applied',
+      'applied', 'setup_required', 'setup_required', 'setup_required',
     ]);
     const created = (await f.config.listAgents()).find(({ name }) => name === 'Research');
     assert.ok(created);
-    assert.equal(
-      (await f.config.getAssignment(f.owner.user.slackTeamId, 'C_RECIPE'))?.agentId,
-      created.id,
-    );
 
     const updateRecipe = {
       ...recipe,
@@ -277,7 +249,6 @@ test('recipe import progressively creates live configuration and rejects a stale
         mcpRequirements: [],
         repositoryRequirements: [],
       }],
-      channels: [],
     };
     const updatePreview = await f.service.previewRecipe(context, {
       recipe: updateRecipe,
@@ -296,7 +267,7 @@ test('recipe import progressively creates live configuration and rejects a stale
   }
 });
 
-test('confirmed recipe overwrite resumes connector setup and Channel placement', async () => {
+test('confirmed recipe overwrite resumes connector setup', async () => {
   const f = await createManagementAdapterFixture('recipe-confirm-resume');
   try {
     const existing = await f.config.createAgent({
@@ -324,15 +295,7 @@ test('confirmed recipe overwrite resumes connector setup and Channel placement',
           }],
           apiRequirements: [], repositoryRequirements: [],
         }],
-        channels: [{
-          symbol: 'channel_1', label: 'research',
-          agentSymbol: 'agent_1',
-        }],
       },
-      channelTargets: [{
-        symbol: 'channel_1', workspaceId: f.owner.user.slackTeamId,
-        channelId: 'C_RECIPE_RESUME', expectedRevision: 0, expectedAgentId: null,
-      }],
     });
     const proposed = await f.service.applyWorkspaceChanges({
       context,
@@ -347,29 +310,13 @@ test('confirmed recipe overwrite resumes connector setup and Channel placement',
       proposalId: proposed.outcomes[0]!.proposalId!,
     });
     assert.deepEqual(resumed.outcomes.map(({ disposition }) => disposition), [
-      'applied', 'setup_required', 'applied', 'confirmation_required',
+      'applied', 'setup_required',
     ]);
     assert.match(resumed.outcomes[1]!.setupUrl!, /#setup=/);
     const durableAfterSetup = await f.management.getRequest(resumed.operationId);
     assert.equal(durableAfterSetup?.progress.outcomes[1]?.setupUrl, undefined);
     assert.doesNotMatch(JSON.stringify(durableAfterSetup), /#setup=/);
-    const confirmed = await f.service.confirmWorkspaceChange({
-      context,
-      proposalId: resumed.outcomes[3]!.proposalId!,
-    });
-    assert.deepEqual(confirmed.outcomes.map(({ disposition }) => disposition), [
-      'applied', 'setup_required', 'applied', 'applied',
-    ]);
-    assert.equal(confirmed.outcomes[1]?.setupUrl, undefined);
-    assert.doesNotMatch(
-      JSON.stringify(await f.management.getRequest(confirmed.operationId)),
-      /#setup=/,
-    );
     assert.equal((await f.config.getAgent(existing.id)).instructions, 'Updated.');
-    assert.equal(
-      (await f.config.getAssignment(f.owner.user.slackTeamId, 'C_RECIPE_RESUME'))?.agentId,
-      existing.id,
-    );
   } finally {
     f.close();
   }

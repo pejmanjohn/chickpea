@@ -1,5 +1,6 @@
 import type { ConfigAgentPatch } from '../config/store.ts';
 import type {
+  AgentChannelGrantStatus,
   AgentCreateInput,
   ChannelConfig,
 } from '../config/types.ts';
@@ -380,7 +381,6 @@ export interface ManagementWorkspaceSnapshot {
     mcpServers: AgentCreateInput['mcpServers'];
     apiConnections: AgentCreateInput['apiConnections'];
     repositories: AgentCreateInput['repositories'];
-    slackIdentityId?: string;
   }>;
   channels: Array<{
     workspaceId: string;
@@ -388,28 +388,13 @@ export interface ManagementWorkspaceSnapshot {
     revision: number;
     label?: string;
     lifecycle: ChannelConfig['lifecycle'];
-    agentId?: string;
+    grants: Array<{ agentId: string; status: AgentChannelGrantStatus }>;
   }>;
   providers: Array<{
     id: 'anthropic' | 'openai' | 'openrouter';
     source: 'env' | 'stored' | 'missing';
     mutable: boolean;
     affectedAgents: Array<{ id: string; name: string }>;
-  }>;
-  slackIdentities: Array<{
-    id: string;
-    kind: 'workspace_default' | 'dedicated';
-    lifecycle: 'setup_incomplete' | 'credentials_pending' | 'connected' | 'degraded' | 'retired';
-    teamId?: string;
-    appId?: string;
-    botUserId?: string;
-    dmState: 'on' | 'off' | 'needs_setup';
-    dmAgentId?: string;
-    credentialProvenance: 'workspace_default' | 'none' | 'stored';
-    connectionRevision: number;
-    observedDisplayName?: string;
-    health: 'unknown' | 'healthy' | 'degraded' | 'disconnected' | 'uninstalled' | 'unauthorized';
-    agentIds: string[];
   }>;
   team?: {
     soleOwnerWarning: boolean;

@@ -29,12 +29,12 @@ export type WorkspaceManagementToolName = typeof WORKSPACE_MANAGEMENT_TOOL_NAMES
 
 const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority.',
-  discover_slack_channels: 'Discover Channels in the connected Slack workspace before adding or placing a Chickpea Agent.',
+  discover_slack_channels: 'Discover Channels in the connected Slack workspace before publishing a Chickpea Agent.',
   inspect_slack_member_directory: 'Owner-only lookup of eligible Slack teammates who can be invited to Chickpea.',
   test_mcp_connection: 'Test one saved Agent MCP connection with its write-only credentials and return a sanitized result plus discovered tools.',
-  inspect_memory: 'Inspect one Agent or Channel memory owner and its versioned entries.',
+  inspect_memory: 'Inspect one Agent memory and its versioned entries.',
   inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, or routine.',
-  export_workspace_recipe: 'Export selected Agents and their Channel intent as a versioned, secret-free portable recipe.',
+  export_workspace_recipe: 'Export selected Agents and their connection requirements as a versioned, secret-free portable recipe.',
   preview_workspace_recipe: 'Preview a portable recipe against live workspace state and compile chosen outcomes into ordinary typed changes.',
   apply_workspace_changes: 'Apply one or more typed Chickpea workspace changes with durable idempotency and per-item outcomes.',
   confirm_workspace_change: 'Confirm one requester- and client-bound destructive or capability-expanding change proposal.',
@@ -52,7 +52,7 @@ export type WorkspaceManagementToolArguments = {
   discover_slack_channels: { refresh?: boolean | undefined };
   inspect_slack_member_directory: { cursor?: string | undefined };
   test_mcp_connection: { agentId: string; connectionId: string };
-  inspect_memory: MemoryOwnerRef;
+  inspect_memory: MemoryOwnerRef & { ownerKind: 'agent' };
   inspect_routines: ManagementRoutineInspectionInput;
   export_workspace_recipe: { agentIds?: string[] | undefined };
   preview_workspace_recipe: PreviewWorkspaceRecipeInput;

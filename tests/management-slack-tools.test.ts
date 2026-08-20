@@ -87,7 +87,7 @@ test('Slack resolves the current speaker on every tool call and never accepts a 
   }
 });
 
-test('Slack and MCP adapters produce the same policy and revision outcomes for one Agent bundle', async () => {
+test('Slack and MCP adapters produce the same policy and revision outcomes for one Agent creation', async () => {
   const slack = await createManagementAdapterFixture('slack-parity');
   const mcp = await createManagementAdapterFixture('mcp-parity');
   try {
@@ -100,7 +100,7 @@ test('Slack and MCP adapters produce the same policy and revision outcomes for o
       name: 'apply_workspace_changes',
       args: {
         idempotencyKey: 'initial-bundle',
-        operations: initialManagementBundle(slackWorkspace, 'C_RESEARCH') as ManagementOperation[],
+        operations: [initialManagementBundle(slackWorkspace, 'C_RESEARCH')[0] as ManagementOperation],
       },
     });
     const mcpResult = await invokeWorkspaceManagementTool({
@@ -113,7 +113,7 @@ test('Slack and MCP adapters produce the same policy and revision outcomes for o
       }),
     }, 'apply_workspace_changes', {
       idempotencyKey: 'initial-bundle',
-      operations: initialManagementBundle(mcpWorkspace, 'C_RESEARCH') as ManagementOperation[],
+      operations: [initialManagementBundle(mcpWorkspace, 'C_RESEARCH')[0] as ManagementOperation],
     });
     assert.equal(slackResult.ok, true);
     assert.equal(mcpResult.ok, true);
@@ -135,8 +135,8 @@ test('Slack and MCP adapters produce the same policy and revision outcomes for o
       };
     };
     assert.deepEqual(summarize(slackResult.result), summarize(mcpResult.result));
-    assert.equal((await slack.config.getChannel(slackWorkspace, 'C_RESEARCH'))?.revision, 2);
-    assert.equal((await mcp.config.getChannel(mcpWorkspace, 'C_RESEARCH'))?.revision, 2);
+    assert.equal(await slack.config.getChannel(slackWorkspace, 'C_RESEARCH'), undefined);
+    assert.equal(await mcp.config.getChannel(mcpWorkspace, 'C_RESEARCH'), undefined);
 
     const slackExport = await invokeSlackWorkspaceManagementTool({
       signal: signal(slackWorkspace, slack.admin.user.slackUserId),
@@ -250,10 +250,16 @@ test('MCP Zod and Flue Valibot schemas accept the same canonical operation inven
     initialManagementBundle('T1', 'C1')[0] as ManagementOperation,
     { itemId: 'update', kind: 'update_agent', agentId: 'agent_1', expectedRevision: 1, patch: { instructions: 'New.' } },
     { itemId: 'delete', kind: 'delete_agent', agentId: 'agent_1', expectedRevision: 2 },
-    initialManagementBundle('T1', 'C1')[1] as ManagementOperation,
-    { itemId: 'place', kind: 'place_agent', workspaceId: 'T1', channelId: 'C1', expectedRevision: 1, expectedAgentId: null, agentId: 'agent_1' },
     { itemId: 'member', kind: 'update_member', membershipId: 'membership_1', role: 'admin', status: 'active' },
     { itemId: 'setup', kind: 'request_setup', target: { kind: 'provider_credential', providerId: 'openai' } },
+  ];
+  for (const operation of fixtures) {
+    assert.equal(managementOperationZodSchema.safeParse(operation).success, true, operation.kind);
+    assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, true, operation.kind);
+  }
+  const retiredOperations: ManagementOperation[] = [
+    initialManagementBundle('T1', 'C1')[1] as ManagementOperation,
+    { itemId: 'place', kind: 'place_agent', workspaceId: 'T1', channelId: 'C1', expectedRevision: 1, expectedAgentId: null, agentId: 'agent_1' },
     {
       itemId: 'identity-create', kind: 'create_slack_identity',
       identityId: 'slack_identity_support', initialDmAgentId: 'agent_1',
@@ -277,9 +283,9 @@ test('MCP Zod and Flue Valibot schemas accept the same canonical operation inven
       target: { kind: 'slack_identity', identityId: 'slack_identity_support' },
     },
   ];
-  for (const operation of fixtures) {
-    assert.equal(managementOperationZodSchema.safeParse(operation).success, true, operation.kind);
-    assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, true, operation.kind);
+  for (const operation of retiredOperations) {
+    assert.equal(managementOperationZodSchema.safeParse(operation).success, false, operation.kind);
+    assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, false, operation.kind);
   }
   const forged = { ...fixtures[0], actorUserId: 'user_forged' };
   assert.equal(managementOperationZodSchema.safeParse(forged).success, false);

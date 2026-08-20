@@ -16,7 +16,6 @@ import {
 } from '../config/errors.ts';
 import { generateSlackIdentityIngressKey, type ConfigAgentPatch, type ConfigStore } from '../config/store.ts';
 import {
-  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type ChannelConfig,
   type CustomAgentConfig,
   type SlackIdentity,
@@ -110,6 +109,7 @@ export interface WorkspaceManagementServiceInput {
     | 'listChannels'
     | 'getChannel'
     | 'putChannel'
+    | 'listAgentChannelGrants'
     | 'putChannelPlacement'
     | 'getAssignment'
     | 'listAssignments'
@@ -317,7 +317,6 @@ export class WorkspaceManagementService {
       surface: context.origin.kind,
       outcome: 'success',
       agentCount: preview.agents.length,
-      channelCount: preview.channels.length,
       operationCount: preview.operations.length,
       conflictCount: preview.agents.filter(({ status }) =>
         status === 'conflict' || status === 'ambiguous').length,
@@ -967,26 +966,21 @@ export class WorkspaceManagementService {
     organizationId = '',
     includeTeam = false,
   ): Promise<ManagementWorkspaceSnapshot> {
-    const [agents, channels, assignments, providerSources, slackIdentities] = await Promise.all([
+    const [agents, channels, grants, providerSources] = await Promise.all([
       this.stores.config.listAgents(),
       this.stores.config.listChannels(),
-      this.stores.config.listAssignments(),
+      this.stores.config.listAgentChannelGrants(),
       Promise.all(MANAGED_PROVIDER_IDS.map(async (id) => [
         id,
         await this.stores.providerCredentialSource?.(id) ?? 'missing',
       ] as const)),
-      this.stores.config.listSlackIdentities(),
     ]);
-    const placementsByChannel = new Map(assignments.map((assignment) => [
-      channelKey(assignment.workspaceId, assignment.channelId),
-      assignment,
-    ]));
-    const agentIdsByIdentity = new Map<string, string[]>();
-    for (const agent of agents) {
-      const identityId = WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
-      const ids = agentIdsByIdentity.get(identityId) ?? [];
-      ids.push(agent.id);
-      agentIdsByIdentity.set(identityId, ids);
+    const grantsByChannel = new Map<string, Array<{ agentId: string; status: typeof grants[number]['status'] }>>();
+    for (const grant of grants) {
+      const key = channelKey(grant.workspaceId, grant.channelId);
+      const entries = grantsByChannel.get(key) ?? [];
+      entries.push({ agentId: grant.agentId, status: grant.status });
+      grantsByChannel.set(key, entries);
     }
     const refs: ManagementObjectRef[] = [
       ...agents.map((agent) => ({ kind: 'agent' as const, id: agent.id, revision: agent.revision })),
@@ -994,11 +988,6 @@ export class WorkspaceManagementService {
         kind: 'channel' as const,
         id: channelKey(channel.workspaceId, channel.channelId),
         revision: channel.revision ?? 1,
-      })),
-      ...slackIdentities.map((identity) => ({
-        kind: 'slack_identity' as const,
-        id: identity.id,
-        revision: identity.connectionRevision,
       })),
     ];
     const team = includeTeam ? await this.teamSnapshot(organizationId) : undefined;
@@ -1033,9 +1022,8 @@ export class WorkspaceManagementService {
         revision: channel.revision ?? 1,
         ...(channel.label ? { label: channel.label } : {}),
         lifecycle: channel.lifecycle,
-        ...(placementsByChannel.get(channelKey(channel.workspaceId, channel.channelId))
-          ? { agentId: placementsByChannel.get(channelKey(channel.workspaceId, channel.channelId))!.agentId }
-          : {}),
+        grants: (grantsByChannel.get(channelKey(channel.workspaceId, channel.channelId)) ?? [])
+          .sort((left, right) => left.agentId.localeCompare(right.agentId)),
       })),
       providers: providerSources.map(([id, source]) => ({
         id,
@@ -1044,23 +1032,6 @@ export class WorkspaceManagementService {
         affectedAgents: agents
           .filter((agent) => modelBelongsToProvider(agent.model, id))
           .map(({ id: agentId, name }) => ({ id: agentId, name })),
-      })),
-      slackIdentities: slackIdentities.map((identity) => ({
-          id: identity.id,
-          kind: identity.kind,
-          lifecycle: identity.lifecycle,
-          ...(identity.teamId ? { teamId: identity.teamId } : {}),
-          ...(identity.appId ? { appId: identity.appId } : {}),
-          ...(identity.botUserId ? { botUserId: identity.botUserId } : {}),
-          dmState: identity.dmState,
-          ...(identity.dmAgentId ? { dmAgentId: identity.dmAgentId } : {}),
-          credentialProvenance: identity.credentialProvenance,
-          connectionRevision: identity.connectionRevision,
-          ...(identity.observedDisplayName
-            ? { observedDisplayName: identity.observedDisplayName }
-            : {}),
-          health: identity.health,
-          agentIds: agentIdsByIdentity.get(identity.id) ?? [],
       })),
       ...(team ? { team } : {}),
       effectiveRevision: effectiveConfigurationRevision(refs),

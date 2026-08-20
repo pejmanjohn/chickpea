@@ -73,18 +73,12 @@ const workspaceRecipeSchema = z.strictObject({
     apiRequirements: z.array(recipeApiRequirementSchema).max(50),
     repositoryRequirements: z.array(recipeRepositoryRequirementSchema).max(100),
   })).min(1).max(100),
-  channels: z.array(z.strictObject({
-    symbol: recipeId.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/),
-    label: recipeOptionalText(240).optional(),
-    agentSymbol: recipeId.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/),
-  })).max(100),
 });
 
 export interface WorkspaceRecipe {
   schemaVersion: 1;
   name: string;
   agents: WorkspaceRecipeAgent[];
-  channels: WorkspaceRecipeChannel[];
 }
 
 export interface WorkspaceRecipeAgent {
@@ -105,24 +99,9 @@ export interface WorkspaceRecipeAgent {
   repositoryRequirements: Array<Pick<RepositoryGrant, 'id' | 'fullName' | 'enabled'>>;
 }
 
-export interface WorkspaceRecipeChannel {
-  symbol: string;
-  label?: string;
-  agentSymbol: string;
-}
-
-export interface RecipeChannelTarget {
-  symbol: string;
-  workspaceId: string;
-  channelId: string;
-  expectedRevision: number;
-  expectedAgentId: string | null;
-}
-
 export interface PreviewWorkspaceRecipeInput {
   recipe: unknown;
   agentStrategy?: 'clone' | 'update' | 'skip' | undefined;
-  channelTargets?: RecipeChannelTarget[] | undefined;
 }
 
 export interface WorkspaceRecipePreview {
@@ -136,48 +115,24 @@ export interface WorkspaceRecipePreview {
     setupRequired: string[];
     unavailable: string[];
   }>;
-  channels: Array<{
-    symbol: string;
-    status: 'target_required' | 'ready';
-    target?: RecipeChannelTarget;
-  }>;
   operations: ManagementOperation[];
 }
 
 export async function exportWorkspaceRecipe(
-  config: Pick<ConfigStore, 'listAgents' | 'listChannels' | 'listAssignments'>,
+  config: Pick<ConfigStore, 'listAgents'>,
   input: { agentIds?: string[] | undefined },
 ): Promise<WorkspaceRecipe> {
-  const [allAgents, channels, assignments] = await Promise.all([
-    config.listAgents(),
-    config.listChannels(),
-    config.listAssignments(),
-  ]);
+  const allAgents = await config.listAgents();
   const selected = input.agentIds?.length
     ? allAgents.filter(({ id }) => input.agentIds!.includes(id))
     : allAgents;
   if (input.agentIds?.some((id) => !selected.some((agent) => agent.id === id))) {
     throw new ManagementError('invalid_request', 'One or more recipe Agents were not found.');
   }
-  const symbols = new Map(selected.map((agent, index) => [agent.id, `agent_${index + 1}`]));
-  const assignmentsByChannel = new Map(assignments.map((assignment) => [
-    `${assignment.workspaceId}:${assignment.channelId}`,
-    assignment,
-  ]));
   const recipe: WorkspaceRecipe = {
     schemaVersion: WORKSPACE_RECIPE_SCHEMA_VERSION,
     name: selected.length === 1 ? selected[0]!.name : 'Chickpea workspace recipe',
     agents: selected.map((agent, index) => exportAgent(agent, `agent_${index + 1}`)),
-    channels: channels.flatMap((channel, index) => {
-      const assignment = assignmentsByChannel.get(`${channel.workspaceId}:${channel.channelId}`);
-      const agentSymbol = assignment ? symbols.get(assignment.agentId) : undefined;
-      if (!agentSymbol) return [];
-      return [{
-        symbol: `channel_${index + 1}`,
-        ...(channel.label ? { label: channel.label } : {}),
-        agentSymbol,
-      }];
-    }),
   };
   assertRecipeSafe(recipe);
   return recipe;
@@ -191,19 +146,9 @@ export async function previewWorkspaceRecipe(
   const recipe = parseWorkspaceRecipe(input.recipe);
   const digest = createHash('sha256').update(canonicalJson(recipe)).digest('hex');
   const currentAgents = await config.listAgents();
-  const targetEntries = input.channelTargets ?? [];
-  const targets = new Map(targetEntries.map((target) => [target.symbol, target]));
-  if (targets.size !== targetEntries.length) {
-    throw new ManagementError('invalid_request', 'Channel targets must use unique symbols.');
-  }
   const strategy = input.agentStrategy;
   const operations: ManagementOperation[] = [];
   const allocatedAgentIds = new Set(currentAgents.map(({ id }) => id));
-  const resolvedAgents = new Map<string, {
-    agentId?: string;
-    clientRef?: string;
-    dependencyItemId?: string;
-  }>();
   const agentPreviews: WorkspaceRecipePreview['agents'] = [];
 
   for (const recipeAgent of recipe.agents) {
@@ -220,10 +165,6 @@ export async function previewWorkspaceRecipe(
       });
       appendSetupOperations(operations, recipeAgent, { agentClientRef: clientRef });
       appendProviderSetupOperation(operations, recipeAgent, availability);
-      resolvedAgents.set(recipeAgent.symbol, {
-        clientRef,
-        dependencyItemId: `create_${recipeAgent.symbol}`,
-      });
       agentPreviews.push({
         symbol: recipeAgent.symbol,
         status: 'create',
@@ -253,7 +194,6 @@ export async function previewWorkspaceRecipe(
       continue;
     }
     if (strategy === 'skip') {
-      resolvedAgents.set(recipeAgent.symbol, { agentId: existing.id });
       agentPreviews.push({
         symbol: recipeAgent.symbol,
         status: 'skip',
@@ -277,10 +217,6 @@ export async function previewWorkspaceRecipe(
       });
       appendSetupOperations(operations, recipeAgent, { agentClientRef: clientRef });
       appendProviderSetupOperation(operations, recipeAgent, availability);
-      resolvedAgents.set(recipeAgent.symbol, {
-        clientRef,
-        dependencyItemId: `clone_${recipeAgent.symbol}`,
-      });
       agentPreviews.push({
         symbol: recipeAgent.symbol,
         status: 'clone',
@@ -300,10 +236,6 @@ export async function previewWorkspaceRecipe(
     });
     appendSetupOperations(operations, recipeAgent, { agentId: existing.id });
     appendProviderSetupOperation(operations, recipeAgent, availability);
-    resolvedAgents.set(recipeAgent.symbol, {
-      agentId: existing.id,
-      dependencyItemId: `update_${recipeAgent.symbol}`,
-    });
     agentPreviews.push({
       symbol: recipeAgent.symbol,
       status: 'update',
@@ -312,42 +244,13 @@ export async function previewWorkspaceRecipe(
     });
   }
 
-  const channelPreviews = recipe.channels.map((channel) => {
-    const target = targets.get(channel.symbol);
-    const agent = resolvedAgents.get(channel.agentSymbol);
-    if (!target || !agent) return { symbol: channel.symbol, status: 'target_required' as const };
-    const putItemId = `channel_${channel.symbol}`;
-    operations.push({
-      itemId: putItemId,
-      kind: 'put_channel',
-      channel: {
-        workspaceId: target.workspaceId,
-        channelId: target.channelId,
-        ...(channel.label ? { label: channel.label } : {}),
-        lifecycle: 'active',
-      },
-      expectedRevision: target.expectedRevision,
-    });
-    operations.push({
-      itemId: `place_${channel.symbol}`,
-      dependsOn: [putItemId, ...(agent.dependencyItemId ? [agent.dependencyItemId] : [])],
-      kind: 'place_agent',
-      workspaceId: target.workspaceId,
-      channelId: target.channelId,
-      expectedRevision: target.expectedRevision + 1,
-      expectedAgentId: target.expectedAgentId,
-      ...(agent.clientRef ? { agentClientRef: agent.clientRef } : { agentId: agent.agentId! }),
-    });
-    return { symbol: channel.symbol, status: 'ready' as const, target };
-  });
-
   if (operations.length > 25) {
     throw new ManagementError(
       'invalid_request',
       'The recipe compiles to more than 25 operations. Split it into smaller recipes.',
     );
   }
-  return { recipeDigest: digest, agents: agentPreviews, channels: channelPreviews, operations };
+  return { recipeDigest: digest, agents: agentPreviews, operations };
 }
 
 function appendProviderSetupOperation(
@@ -521,13 +424,6 @@ function parseWorkspaceRecipe(value: unknown): WorkspaceRecipe {
       throw new ManagementError('invalid_request', 'The workspace recipe model is unsupported.');
     }
     agentSymbols.add(agent.symbol);
-  }
-  const channelSymbols = new Set<string>();
-  for (const channel of recipe.channels) {
-    if (channelSymbols.has(channel.symbol) || !agentSymbols.has(channel.agentSymbol)) {
-      throw new ManagementError('invalid_request', 'The workspace recipe Channel is invalid.');
-    }
-    channelSymbols.add(channel.symbol);
   }
   assertRecipeSafe(recipe);
   return structuredClone(recipe);

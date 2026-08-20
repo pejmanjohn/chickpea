@@ -51,7 +51,7 @@ test('public MCP exposes the compact workspace contract and applies an initial A
       name: 'apply_workspace_changes',
       arguments: {
         idempotencyKey: 'mcp-initial-bundle',
-        operations: initialManagementBundle(workspaceId, 'C_RESEARCH_MCP'),
+        operations: [initialManagementBundle(workspaceId, 'C_RESEARCH_MCP')[0]],
       },
     });
     const toolResult = JSON.parse((applied.result as {
@@ -60,9 +60,9 @@ test('public MCP exposes the compact workspace contract and applies an initial A
     assert.equal(toolResult.ok, true);
     assert.deepEqual(
       toolResult.result.outcomes.map(({ disposition }: { disposition: string }) => disposition),
-      ['applied', 'applied', 'applied'],
+      ['applied'],
     );
-    assert.equal((await f.config.getAssignment(workspaceId, 'C_RESEARCH_MCP'))?.agentId, 'agent_research');
+    assert.equal(await f.config.getAssignment(workspaceId, 'C_RESEARCH_MCP'), undefined);
     assert.equal(toolResult.result.activation, 'next_turn');
     assert.doesNotMatch(JSON.stringify(toolResult), /authorization|bearerToken|clientSecret|refreshToken/i);
 
