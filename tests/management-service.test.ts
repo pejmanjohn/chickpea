@@ -657,8 +657,8 @@ test('one progressive request keeps the Agent live while returning setup for an 
       repositories: [{
         id: 'repo_research',
         installationId: 42,
-        accountLogin: 'magoosh',
-        fullName: 'magoosh/research',
+        accountLogin: 'northstar',
+        fullName: 'northstar/research',
         enabled: true,
       }],
     });

@@ -111,7 +111,7 @@ When access is missing, add `request_setup` for the exact Agent connection, repo
 Anyone who can see the link can complete its exact frozen action without signing into Chickpea. Share it as a credential-bearing capability. The page shows the connector, target, requested scopes, and replacement warning. It cannot change those values. OAuth connections redirect to the provider; multi-field credentials use a Chickpea form. Validation clears submitted fields, activates the connection once, and creates a non-secret receipt such as:
 
 ```text
-pejman@magoosh.com has been connected to Gmail connector.
+alex@northstar.example has been connected to Gmail connector.
 ```
 
 The receipt may include the target, scopes, initiator, operation ID, and a provider-returned non-secret account label. It never includes a token, code, key, client secret, header value, or repository installation credential.

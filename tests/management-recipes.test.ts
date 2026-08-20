@@ -29,7 +29,7 @@ test('recipe export retains operational requirements and strips workspace author
         transport: 'streamable-http', authMode: 'oauth', headerNames: [], enabled: true,
         lifecycleStatus: 'ready', statusText: 'Connected',
         discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
-        identity: { accountName: 'pejman@magoosh.com', workspaceName: 'Magoosh' },
+        identity: { accountName: 'alex@northstar.example', workspaceName: 'Northstar' },
         presetId: 'notion',
       }],
       apiConnections: [{
@@ -38,11 +38,11 @@ test('recipe export retains operational requirements and strips workspace author
         enabled: true, authMode: 'oauth', oauthProvider: 'google',
         oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
         oauthAppType: 'external', lifecycleStatus: 'ready', statusText: 'Connected',
-        identity: { accountName: 'pejman@magoosh.com' }, presetId: 'gmail',
+        identity: { accountName: 'alex@northstar.example' }, presetId: 'gmail',
       }],
       repositories: [{
-        id: 'repo', installationId: 42, accountLogin: 'magoosh',
-        fullName: 'magoosh/research', enabled: true,
+        id: 'repo', installationId: 42, accountLogin: 'northstar',
+        fullName: 'northstar/research', enabled: true,
       }],
     });
     await config.putChannel({
@@ -57,10 +57,10 @@ test('recipe export retains operational requirements and strips workspace author
     const recipe = await exportWorkspaceRecipe(config, { agentIds: ['agent_research'] });
     const serialized = JSON.stringify(recipe);
     assert.equal(recipe.schemaVersion, 1);
-    assert.equal(recipe.agents[0]?.repositoryRequirements[0]?.fullName, 'magoosh/research');
+    assert.equal(recipe.agents[0]?.repositoryRequirements[0]?.fullName, 'northstar/research');
     assert.equal(recipe.agents[0]?.mcpRequirements[0]?.authMode, 'oauth');
     assert.equal(recipe.channels[0]?.label, 'research');
-    assert.doesNotMatch(serialized, /T_SECRET|C_SECRET|pejman@m/);
+    assert.doesNotMatch(serialized, /T_SECRET|C_SECRET|alex@northstar/);
     assert.doesNotMatch(serialized, /installationId|accountLogin|slackIdentityId|identity/);
   } finally {
     config.close();
@@ -86,7 +86,7 @@ test('recipe preview exposes conflict choices then compiles clone, placement, an
           enabled: true, allowedTools: ['search'], presetId: 'notion',
         }],
         apiRequirements: [],
-        repositoryRequirements: [{ id: 'repo', fullName: 'magoosh/research', enabled: true }],
+        repositoryRequirements: [{ id: 'repo', fullName: 'northstar/research', enabled: true }],
       }],
       channels: [{
         symbol: 'channel_1', label: 'research', participationMode: 'mention_only',
@@ -110,7 +110,7 @@ test('recipe preview exposes conflict choices then compiles clone, placement, an
     });
     assert.equal(clone.agents[0]?.status, 'clone');
     assert.deepEqual(clone.agents[0]?.setupRequired.sort(), [
-      'Notion', 'magoosh/research', 'openai model provider',
+      'Notion', 'northstar/research', 'openai model provider',
     ].sort());
     assert.deepEqual(clone.operations.map(({ kind }) => kind), [
       'create_agent', 'request_setup', 'request_setup', 'request_setup',
@@ -239,7 +239,7 @@ test('recipe import progressively creates live configuration and rejects a stale
           enabled: true, allowedTools: ['search'], presetId: 'notion',
         }],
         apiRequirements: [],
-        repositoryRequirements: [{ id: 'repo', fullName: 'magoosh/research', enabled: true }],
+        repositoryRequirements: [{ id: 'repo', fullName: 'northstar/research', enabled: true }],
       }],
       channels: [{
         symbol: 'channel_1', label: 'research', participationMode: 'mention_only',

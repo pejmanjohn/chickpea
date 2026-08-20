@@ -62,8 +62,8 @@ test('completion and notification are separate durable outcomes', async () => {
       setup,
       browserSessionDigest: setup.browserSessionDigest!,
       connector: 'Gmail',
-      accountLabel: 'pejman@magoosh.com',
-      initiator: 'Pejman',
+      accountLabel: 'alex@northstar.example',
+      initiator: 'Alex',
       at: NOW + 1,
     });
     assert.equal((await store.getSetup(setup.setupOperationId))?.status, 'completed');
@@ -113,15 +113,15 @@ test('receipt copy contains the approved non-secret details and audit metadata i
     connector: 'Gmail',
     target: 'Customer Research',
     scopes: ['gmail.readonly'],
-    initiator: 'Pejman',
-    accountLabel: 'pejman@magoosh.com',
+    initiator: 'Alex',
+    accountLabel: 'alex@northstar.example',
     completedAt: NOW,
   };
   const text = formatManagementSetupReceipt(receipt);
-  assert.match(text, /^pejman@magoosh\.com has been connected to Gmail connector\./);
+  assert.match(text, /^alex@northstar\.example has been connected to Gmail connector\./);
   assert.match(text, /Target: Customer Research/);
   assert.match(text, /Scopes: gmail\.readonly/);
-  assert.match(text, /Initiated by: Pejman/);
+  assert.match(text, /Initiated by: Alex/);
 
   const db = openStateDb(':memory:');
   try {
@@ -154,7 +154,7 @@ test('receipt copy contains the approved non-secret details and audit metadata i
       setupOperationId: 'setup_receipt',
       scopeCount: '1',
     });
-    assert.doesNotMatch(events[0]!.metadataJson, /pejman|gmail\.readonly|magoosh/i);
+    assert.doesNotMatch(events[0]!.metadataJson, /alex|gmail\.readonly|northstar/i);
   } finally {
     db.close();
   }
@@ -191,7 +191,7 @@ test('the Slack receipt adapter preserves thread routing and stable delivery ide
       connector: 'Gmail',
       target: 'Customer Research',
       scopes: ['gmail.readonly'],
-      initiator: 'Pejman',
+      initiator: 'Alex',
       completedAt: NOW,
     },
     status: 'delivering',
@@ -228,7 +228,7 @@ test('the Slack receipt adapter resolves an external MCP initiator to a DM', asy
       connector: 'OpenAI',
       target: 'Workspace',
       scopes: [],
-      initiator: 'Pejman',
+      initiator: 'Alex',
       completedAt: NOW,
     },
     status: 'delivering',
