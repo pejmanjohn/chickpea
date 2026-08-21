@@ -5966,6 +5966,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         });
       } catch (error) {
         const detail = error instanceof SlackTransportError ? error.code : 'gateway_unreachable';
+        if (detail === 'gateway_not_connected') {
+          try {
+            const current = await store(c).getWorkspaceInstallation(installation.workspaceId);
+            if (current && current.healthDetail !== detail) {
+              await store(c).updateWorkspaceInstallation(installation.workspaceId, {
+                health: 'needs_attention',
+                healthDetail: detail,
+              }, current.revision);
+            }
+          } catch {
+            // The diagnostic response is still authoritative for this request;
+            // a concurrent installation update will be reflected on reload.
+          }
+        }
         const diagnostic = error instanceof Error
           ? error.message.replace(/[A-Za-z0-9_-]{32,}/g, '[redacted]').slice(0, 240)
           : 'unknown';

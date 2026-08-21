@@ -424,6 +424,7 @@ button, input, textarea, select { font: inherit; }
 .platform-logo { flex-shrink: 0; height: 20px; object-fit: contain; width: 20px; }
 .slack-logo-image { background: url("${SLACK_LOGO_DATA_URL}") center / contain no-repeat; display: inline-block; }
 .platform-row .platform-status { color: var(--ok); font-size: 0.6875rem; font-weight: 700; margin-left: auto; }
+.platform-row .platform-status.attention { color: var(--danger); }
 .ws-row {
   align-items: center;
   color: var(--text);
@@ -1351,6 +1352,7 @@ details[open].advanced summary::before {
 }
 .agent-slack-status::before { background: currentColor; border-radius: 50%; content: ""; height: 7px; width: 7px; }
 .agent-slack-status.disconnected { color: var(--text-3); }
+.agent-slack-status.attention { color: var(--danger); }
 .agent-workspace-row { margin: 3px 0 2px; padding: 6px 0; }
 .agent-roster { display: flex; flex-direction: column; gap: 4px; }
 .agent-roster-item {
@@ -3269,8 +3271,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function topbarHtml() {
     // Desktop section navigation lives persistently at the bottom of the rail.
     // This duplicate action row is mobile-only and is revealed by the hamburger.
+    var slackPresentation = slackConnectionPresentation();
     var connectedBadge = isSlackConnected()
-      ? '<span class="badge badge-on"><span class="dot"></span>Connected</span>'
+      ? '<span class="badge ' + (slackPresentation.key === "connected" ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + esc(slackPresentation.label) + '</span>'
       : "";
     var scoped = isAgentChannelSurface();
     var mobileRoster = scoped && state.mobileAgentRosterOpen;
@@ -3413,7 +3416,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '<div class="rail-head"><span class="section-eyebrow">Channels</span></div>' +
       '<button type="button" class="platform-row' + (state.view === "channels" && state.channelScreen === "overview" ? " active" : "") + '" data-action="open-channels">' +
       '<span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack' +
-      (isSlackConnected() ? '<span class="platform-status">Connected</span>' : '') + '</button>';
+      (isSlackConnected() ? '<span class="platform-status' + (slackConnectionPresentation().key === "connected" ? '' : ' attention') + '">' + esc(slackConnectionPresentation().label) + '</span>' : '') + '</button>';
     if (channels.length === 0) {
       html += '<div class="ws-row">' + icon("chevron-down") + esc(railGroupLabel(connectedTeamId())) + '</div>' +
         '<div class="empty" style="margin:8px 0 8px 12px; padding:12px;"><p class="hint" style="margin:0;">No channels yet</p></div>';
@@ -3514,9 +3517,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function profilesRailHtml() {
     var connected = isSlackConnected();
+    var slackPresentation = slackConnectionPresentation();
     var workspaceLabel = railGroupLabel(connectedTeamId());
     var status = connected
-      ? '<span class="agent-slack-status">Connected</span>'
+      ? '<span class="agent-slack-status' + (slackPresentation.key === "connected" ? '' : ' attention') + '">' + esc(slackPresentation.label) + '</span>'
       : '<span class="agent-slack-status disconnected">Not connected</span>';
     return '<aside class="rail primary-shell-sidebar agent-shell-sidebar">' +
       primaryShellBrandHtml() +
@@ -4443,10 +4447,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var count = connectedAssignmentCount();
     var mutable = slackConnectionMutable();
     var connectionBusy = !!state.slackConnectionBusy;
+    var slackPresentation = slackConnectionPresentation();
     var workspace = '<section class="section"><div class="section-head"><h2 class="section-title">Connected workspace</h2></div>' +
       '<div class="workspace-card"><div class="workspace-ident"><span class="workspace-icon"><span class="platform-logo slack-logo-image" aria-hidden="true"></span></span>' +
       '<div style="min-width:0;"><div class="workspace-name">' + esc(connectedTeamName()) + '</div><div class="workspace-meta mono">Team ID ' + esc(connectedTeamId() || "Unknown") + '</div></div></div>' +
-      '<span class="badge badge-on"><span class="dot"></span>Connected</span>' +
+      '<span class="badge ' + (slackPresentation.key === "connected" ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + esc(slackPresentation.label) + '</span>' +
       '<span class="hint">' + esc(count + " configured " + (count === 1 ? "channel" : "channels")) + '</span>' +
       '<span class="hint">' + esc(slackCredentialSummary()) + '</span></div></section>';
     var behavior = '<section class="section"><div class="section-head"><div><h2 class="section-title">Slack behavior</h2>' +
@@ -4582,6 +4587,19 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function isSlackConnected() {
     return !!(state.slack && state.slack.connected);
+  }
+
+  function slackConnectionPresentation() {
+    if (!isSlackConnected() || (state.slack && state.slack.health === "revoked")) {
+      return { key: "disconnected", label: "Not connected" };
+    }
+    if (state.slack && state.slack.health && state.slack.health !== "healthy") {
+      if (state.slack.healthDetail === "gateway_not_connected") {
+        return { key: "attention", label: "Reconnect required" };
+      }
+      return { key: "attention", label: "Needs attention" };
+    }
+    return { key: "connected", label: "Connected" };
   }
 
   function slackDisplayName() {
@@ -11482,6 +11500,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }).catch(function (error) {
       state.slackTestBusy = false;
       state.slackConnectionBusy = "";
+      var detail = error.detail || (error.payload && error.payload.detail);
+      if (state.slack && error.message === "slack_gateway_unreachable" && detail === "gateway_not_connected") {
+        state.slack.health = "needs_attention";
+        state.slack.healthDetail = "gateway_not_connected";
+      }
       state.slackTestStatus = { ok: false, message: slackErrorText(error.message, error.detail, error.serverMessage, error.payload) };
       render();
     });

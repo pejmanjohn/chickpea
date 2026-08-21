@@ -2336,6 +2336,35 @@ test('Slack connection test explains that required permissions are not applied y
   assert.match(harness.app.innerHTML, /scoped recovery flow/);
 });
 
+test('a stale shared-app binding changes every Slack status to Reconnect required', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/slack',
+    slackConnection: {
+      ...connectedSlackFixture(),
+      transportMode: 'gateway',
+      credentials: { botToken: 'missing', signingSecret: 'missing', botUserId: 'missing' },
+    },
+    slackTestError: {
+      status: 502,
+      error: 'slack_gateway_unreachable',
+      detail: 'gateway_not_connected',
+    },
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Connected workspace/);
+  assert.match(harness.app.innerHTML, />Connected</);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-test' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /This deployment is no longer linked to the shared Slack app/);
+  assert.match(harness.app.innerHTML, /badge badge-off[^>]*>[\s\S]*?Reconnect required/);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /agent-slack-status attention[^>]*>Reconnect required/);
+  assert.doesNotMatch(harness.app.innerHTML, /agent-slack-status[^>]*>Connected/);
+});
+
 test('Slack behavior load and save failures stay honest and recoverable', async () => {
   const loadHarness = runAdminPageHarness({
     initialPath: '/admin/settings/slack/identities',
