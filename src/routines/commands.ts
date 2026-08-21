@@ -36,6 +36,7 @@ import {
 import { RoutineService, type RoutineSaveRequest } from './service.ts';
 import {
   bindRoutineAgentAuthority,
+  isActiveRoutineActor,
   resolveRoutineAgentAuthority,
 } from './agent-authority.ts';
 import {
@@ -148,8 +149,22 @@ export async function handleRoutineSlackRequest(
     bindAuthority?: typeof bindRoutineAgentAuthority;
     /** Test seam; production always re-resolves live Agent authority. */
     resolveAuthority?: typeof resolveRoutineAgentAuthority;
+    /** Test seam; production always revalidates the canonical member. */
+    isActiveActor?: typeof isActiveRoutineActor;
   } = {},
 ): Promise<string | undefined> {
+  const activeActor = dependencies.isActiveActor ?? isActiveRoutineActor;
+  if (
+    !turn.actorMembershipId ||
+    !(await activeActor({
+      actorMembershipId: turn.actorMembershipId,
+      workspaceId: turn.workspaceId,
+      slackUserId: turn.userId,
+      env,
+    }))
+  ) {
+    return 'Only an active Chickpea member can manage schedules.';
+  }
   const store = dependencies.store ?? getRoutineStore(env);
   const now = dependencies.now ?? Date.now;
   const capability = dependencies.capability ?? routineCapability();

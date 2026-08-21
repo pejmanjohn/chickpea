@@ -30,7 +30,10 @@ import {
   cancelOAuthContinuationFromProvider,
   claimOAuthContinuationResume,
   createOAuthContinuation,
+  inspectOAuthContinuationFromProvider,
+  isOAuthContinuationActorActive,
   linkOAuthProviderState,
+  OAuthContinuationError,
   takeOAuthContinuationForProviderState,
 } from '../connections/oauth-continuation.ts';
 import type { OAuthContinuation } from '../connections/types.ts';
@@ -2750,6 +2753,23 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         apiOAuthDependencies(c),
       );
       ref = completed.ref;
+      const continuationState = await takeOAuthContinuationForProviderState({
+        settings: settings(c),
+        providerState: state,
+      });
+      if (continuationState) {
+        const pendingContinuation = await inspectOAuthContinuationFromProvider({
+          settings: settings(c),
+          state: continuationState,
+        });
+        if (!(await isOAuthContinuationActorActive({
+          continuation: pendingContinuation,
+          identity: identity(c),
+        }))) {
+          await deleteApiOAuthSettings(completed.ref, settings(c));
+          throw new OAuthContinuationError('wrong_actor');
+        }
+      }
       try {
         await replaceReadyApiOAuthConnection(
           store(c),
@@ -2766,10 +2786,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         throw error;
       }
-      const continuationState = await takeOAuthContinuationForProviderState({
-        settings: settings(c),
-        providerState: state,
-      });
       if (continuationState) {
         const continuation = await authorizeOAuthContinuationFromProvider({
           settings: settings(c),

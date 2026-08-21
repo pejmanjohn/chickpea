@@ -104,6 +104,7 @@ export type ManagementOperation =
     })
   | (ManagementOperationBase & {
       kind: 'save_routine';
+      agentId: string;
       workspaceId: string;
       channelId: string;
       routineId?: string;
@@ -318,8 +319,21 @@ export interface ManagementWorkspaceSnapshot {
     id: string;
     revision: number;
     name: string;
+    description?: string;
     instructions: string;
     enabled: boolean;
+    lifecycle?: AgentCreateInput['lifecycle'];
+    creatorMembershipId?: string;
+    editPolicy?: AgentCreateInput['editPolicy'];
+    configurationGeneration?: number;
+    slackPresence?: {
+      requestedHandle: string;
+      normalizedHandle: string;
+      desiredState: NonNullable<AgentCreateInput['slackPresence']>['desiredState'];
+      health: NonNullable<AgentCreateInput['slackPresence']>['health'];
+      errorCode?: string;
+      avatar: NonNullable<AgentCreateInput['slackPresence']>['avatar'];
+    };
     model?: string;
     skills: AgentCreateInput['skills'];
     mcpServers: AgentCreateInput['mcpServers'];

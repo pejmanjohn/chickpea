@@ -107,6 +107,7 @@ test('scheduled work crosses creation, v2 receipt, restart, reattached read, and
       undefined,
       {
         store, capability: enabled, now: () => now, canManageChannel: async () => true,
+        isActiveActor: async () => true,
         assignment,
         bindAuthority: async ({ routine }): Promise<AgentScheduleReference> => ({
           scheduleId: routine.id,

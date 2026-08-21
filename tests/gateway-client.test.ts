@@ -347,6 +347,72 @@ test('shared-app claim binds one workspace without storing Slack credentials', a
   }
 });
 
+test('a gateway reconnect cannot silently rebind a deployment to another workspace', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => NOW,
+  });
+  try {
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_ALREADY_BOUND',
+      transportMode: 'gateway',
+    });
+    await client.beginClaim();
+    await assert.rejects(
+      client.refreshClaim(),
+      /already connected to Slack workspace T_ALREADY_BOUND/,
+    );
+    assert.equal(await config.getWorkspaceInstallation('TGATEWAY'), undefined);
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway transport failures preserve the exact Slack operation for ambiguity handling', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const keyring = generateCredentialKeyring('key_gateway');
+  try {
+    const connected = new GatewayDeploymentClient({
+      settings,
+      config,
+      keyring,
+      gatewayBaseUrl: 'https://gateway.chickpea.test',
+      fetch: gateway.fetch,
+      now: () => NOW,
+    });
+    await connected.beginClaim();
+    await connected.refreshClaim();
+    const disconnected = new GatewayDeploymentClient({
+      settings,
+      config,
+      keyring,
+      gatewayBaseUrl: 'https://gateway.chickpea.test',
+      fetch: async () => { throw new Error('network reset'); },
+      now: () => NOW,
+    });
+    await assert.rejects(
+      disconnected.call('usergroups.create', {
+        name: 'Support', handle: 'support', description: 'Support Agent',
+      }),
+      (error: unknown) => error instanceof SlackTransportError &&
+        error.operation === 'usergroups.create' && error.retryable === true,
+    );
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
 test('gateway transport maps only allowlisted tenant-bound Slack operations', async () => {
   const settings = new SqliteSettingsStore(':memory:', () => NOW);
   const config = configStore();
@@ -755,13 +821,61 @@ test('session runner reconnects a half-open socket after heartbeat timeout', asy
       rotateAt: NOW + 15 * 60_000,
     }));
     await spin();
-    const heartbeat = timers.find(({ delay }) => delay === 90_000);
+    const heartbeat = timers.findLast(({ delay }) => delay === 90_000);
     assert.ok(heartbeat);
     clock = NOW + 90_001;
     heartbeat.callback();
     await waitFor(async () => {
       const value = await settings.getSetting(GATEWAY_SESSION_SETTING);
       return value ? JSON.parse(value).reason === 'heartbeat_timeout' : false;
+    });
+    assert.equal(socket.readyState, 3);
+    runner.stop();
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('session runner reconnects when the gateway never sends session.ready', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => clock,
+  });
+  let clock = NOW;
+  const socket = new FakeSocket();
+  const timers: Array<{ callback: () => void; delay: number }> = [];
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const runner = new GatewaySessionRunner({
+      client,
+      onEvent: async () => 'accepted',
+      createSocket: () => socket,
+      now: () => clock,
+      setTimer: ((callback: () => void, delay: number) => {
+        timers.push({ callback, delay });
+        return timers.length as unknown as ReturnType<typeof setTimeout>;
+      }),
+      clearTimer: () => {},
+    });
+    await runner.start();
+    socket.open();
+    await waitFor(() => socket.sent.length === 1);
+    const readyTimeout = timers.find(({ delay }) => delay === 90_000);
+    assert.ok(readyTimeout);
+    clock = NOW + 90_001;
+    readyTimeout.callback();
+    await waitFor(async () => {
+      const value = await settings.getSetting(GATEWAY_SESSION_SETTING);
+      return value ? JSON.parse(value).reason === 'ready_timeout' : false;
     });
     assert.equal(socket.readyState, 3);
     runner.stop();

@@ -43,6 +43,29 @@ test('fresh Agent platform state designates one normal default Agent', async () 
   }
 });
 
+test('one Chickpea deployment cannot bind a second Slack workspace', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  try {
+    await store.ensureWorkspaceInstallation({
+      workspaceId: 'T_PRIMARY',
+      transportMode: 'gateway',
+    });
+    await assert.rejects(
+      store.ensureWorkspaceInstallation({
+        workspaceId: 'T_OTHER',
+        transportMode: 'gateway',
+      }),
+      /already connected to Slack workspace T_PRIMARY/,
+    );
+    assert.deepEqual(
+      (await store.listWorkspaceInstallations()).map(({ workspaceId }) => workspaceId),
+      ['T_PRIMARY'],
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test('Agent grants are many-to-many and thread routes retain their coordinate', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [] });
   try {

@@ -2073,7 +2073,14 @@ export class IdentityStoreLogic {
       }
       const existing = this.resolveSlackIdentity(teamId, slackUserId, organization.id);
       if (existing) {
-        if (existing.membership.status !== 'active') {
+        const access = this.getMembershipAccessOverlay(existing.membership.id);
+        if (
+          existing.membership.status !== 'active' ||
+          (access && (
+            access.organizationId !== organization.id ||
+            access.accessStatus !== 'active'
+          ))
+        ) {
           return { outcome: 'deactivated', resolution: existing };
         }
         const at = input.at ?? this.now();

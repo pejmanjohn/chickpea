@@ -1,12 +1,15 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
 import type { SettingsStore } from '../config/settings-store.ts';
+import type { IdentityStore } from '../identity/types.ts';
+import { isActiveConnectionActor } from './runtime.ts';
 import type {
   OAuthContinuation,
   OAuthContinuationResult,
 } from './types.ts';
 
 const DEFAULT_TTL_MS = 15 * 60_000;
+const RESUME_PENDING_INDEX_KEY = 'connection-oauth-resume-pending';
 
 export class OAuthContinuationError extends Error {
   readonly name = 'OAuthContinuationError';
@@ -117,6 +120,9 @@ export async function authorizeOAuthContinuationFromProvider(input: {
     });
     throw new OAuthContinuationError('expired');
   }
+  // Index first. A crash can leave a harmless pending entry, but can never
+  // leave an authorized continuation invisible to the periodic repair loop.
+  await input.settings.mergeSettingStringSet(RESUME_PENDING_INDEX_KEY, [continuation.id]);
   const authorized: OAuthContinuation = { ...continuation, status: 'authorized', updatedAt: now };
   const changed = await input.settings.applySettingsPatch({
     expected: { key: settingKey, value: raw },
@@ -124,6 +130,44 @@ export async function authorizeOAuthContinuationFromProvider(input: {
   });
   if (!changed) throw new OAuthContinuationError('replayed');
   return authorized;
+}
+
+/** Read and verify the task capability before promoting a freshly authorized account. */
+export async function inspectOAuthContinuationFromProvider(input: {
+  settings: SettingsStore;
+  state: string;
+  now?: () => number;
+}): Promise<OAuthContinuation> {
+  const { id, capability } = decodeState(input.state);
+  const raw = await input.settings.getSetting(key(id));
+  if (!raw) throw new OAuthContinuationError('invalid_state');
+  const continuation = parse(raw);
+  if (!safeHashEqual(continuation.stateHash, hash(capability))) {
+    throw new OAuthContinuationError('invalid_state');
+  }
+  if (continuation.status !== 'pending') throw new OAuthContinuationError('replayed');
+  if (continuation.expiresAt <= (input.now ?? Date.now)()) {
+    throw new OAuthContinuationError('expired');
+  }
+  return continuation;
+}
+
+/** Exact active membership fence for OAuth promotion and later resume repair. */
+export async function isOAuthContinuationActorActive(input: {
+  continuation: OAuthContinuation;
+  identity: Pick<
+    IdentityStore,
+    | 'getOrganization'
+    | 'getMembership'
+    | 'getMembershipAccessOverlay'
+    | 'listExternalIdentities'
+  >;
+}): Promise<boolean> {
+  return isActiveConnectionActor({
+    identity: input.identity,
+    workspaceId: input.continuation.workspaceId,
+    actorMembershipId: input.continuation.actorMembershipId,
+  });
 }
 
 export async function cancelOAuthContinuationFromProvider(input: {
@@ -196,7 +240,86 @@ export async function claimOAuthContinuationResume(input: {
     set: [{ key: settingKey, value: JSON.stringify(resumed) }],
   });
   if (!changed) throw new OAuthContinuationError('replayed');
+  await removePendingResumeId(input.settings, continuation.id);
   return resumed;
+}
+
+/** Repair authorized-but-not-resumed tasks from the durable settings outbox. */
+export async function repairPendingOAuthContinuationResumes(input: {
+  settings: SettingsStore;
+  onReady: (continuation: OAuthContinuation) => Promise<void>;
+  limit?: number;
+  now?: () => number;
+}): Promise<{ resumed: number; pending: number; pruned: number }> {
+  const now = input.now ?? Date.now;
+  const ids = await pendingResumeIds(input.settings);
+  let resumed = 0;
+  let pending = 0;
+  let pruned = 0;
+  for (const id of ids.slice(0, input.limit ?? 25)) {
+    const raw = await input.settings.getSetting(key(id));
+    if (!raw) {
+      await removePendingResumeId(input.settings, id);
+      pruned += 1;
+      continue;
+    }
+    let continuation: OAuthContinuation;
+    try {
+      continuation = parse(raw);
+    } catch {
+      await removePendingResumeId(input.settings, id);
+      pruned += 1;
+      continue;
+    }
+    if (continuation.status === 'authorized') {
+      if (continuation.expiresAt <= now()) {
+        const expired = { ...continuation, status: 'expired' as const, updatedAt: now() };
+        await input.settings.applySettingsPatch({
+          expected: { key: key(id), value: raw },
+          set: [{ key: key(id), value: JSON.stringify(expired) }],
+        });
+        await removePendingResumeId(input.settings, id);
+        pruned += 1;
+        continue;
+      }
+      await input.onReady(continuation);
+      await claimOAuthContinuationResume({
+        settings: input.settings,
+        continuationId: continuation.id,
+        now,
+      });
+      resumed += 1;
+      continue;
+    }
+    if (continuation.status === 'pending') {
+      const checkedAt = now();
+      if (continuation.expiresAt <= checkedAt) {
+        const changed = await input.settings.applySettingsPatch({
+          expected: { key: key(id), value: raw },
+          set: [{
+            key: key(id),
+            value: JSON.stringify({
+              ...continuation,
+              status: 'expired' as const,
+              updatedAt: checkedAt,
+            }),
+          }],
+        });
+        if (changed) {
+          await removePendingResumeId(input.settings, id);
+          pruned += 1;
+        } else {
+          pending += 1;
+        }
+        continue;
+      }
+      pending += 1;
+      continue;
+    }
+    await removePendingResumeId(input.settings, id);
+    pruned += 1;
+  }
+  return { resumed, pending, pruned };
 }
 
 function key(id: string): string {
@@ -211,6 +334,43 @@ function providerStateKey(providerState: string): string {
     throw new OAuthContinuationError('invalid_state');
   }
   return `connection-oauth-provider-state.${hash(providerState)}`;
+}
+
+async function pendingResumeIds(settings: SettingsStore): Promise<string[]> {
+  const raw = await settings.getSetting(RESUME_PENDING_INDEX_KEY);
+  if (!raw) return [];
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return Array.isArray(value)
+      ? [...new Set(value.filter((id): id is string =>
+          typeof id === 'string' && /^oauthcontinuation_[a-zA-Z0-9_-]{1,160}$/.test(id)
+        ))]
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+async function removePendingResumeId(settings: SettingsStore, id: string): Promise<void> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const raw = await settings.getSetting(RESUME_PENDING_INDEX_KEY);
+    if (!raw) return;
+    let ids: string[];
+    try {
+      const value = JSON.parse(raw) as unknown;
+      ids = Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+    } catch {
+      ids = [];
+    }
+    const remaining = [...new Set(ids)].filter((candidate) => candidate !== id);
+    const changed = await settings.applySettingsPatch({
+      expected: { key: RESUME_PENDING_INDEX_KEY, value: raw },
+      ...(remaining.length
+        ? { set: [{ key: RESUME_PENDING_INDEX_KEY, value: JSON.stringify(remaining) }] }
+        : { delete: [RESUME_PENDING_INDEX_KEY] }),
+    });
+    if (changed) return;
+  }
 }
 
 function encodeState(id: string, capability: string): string {

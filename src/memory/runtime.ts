@@ -1,6 +1,8 @@
 import type { WebClient } from '@slack/web-api';
 
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { createHash } from 'node:crypto';
+
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { getConfigStore, getIdentityStore, getMemoryStateStore } from '../config/state-backend.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
@@ -306,6 +308,8 @@ async function executeAgentMemoryCommand(
       agentId: runtime.assignment.agentId,
       body: memory.body.trim() ? `${memory.body.trim()}\n\n${addition}` : addition,
       expectedRevision: memory.revision,
+      idempotencyKey: `slack-memory:${turn.eventId}`,
+      idempotencyDigest: memoryMutationDigest(command),
     });
     return `Saved Agent memory (revision ${saved.revision}).`;
   }
@@ -322,6 +326,8 @@ async function executeAgentMemoryCommand(
       agentId: runtime.assignment.agentId,
       body: renderMemoryContent(validated),
       expectedRevision: memory.revision,
+      idempotencyKey: `slack-memory:${turn.eventId}`,
+      idempotencyDigest: memoryMutationDigest(command),
     });
     return `Updated Agent memory (revision ${saved.revision}).`;
   }
@@ -329,6 +335,10 @@ async function executeAgentMemoryCommand(
     return 'Clear this Agent’s memory from its Memory tab in Chickpea admin.';
   }
   return memoryHelpText(runtime.surface);
+}
+
+function memoryMutationDigest(command: MemoryCommand): string {
+  return createHash('sha256').update(JSON.stringify(command)).digest('hex');
 }
 
 export async function isAuthorizedAgentMemoryMember(

@@ -276,6 +276,12 @@ export class ConfigStoreLogic {
   ensureWorkspaceInstallation(input: EnsureWorkspaceInstallationInput): WorkspaceInstallation {
     const existing = this.getWorkspaceInstallation(input.workspaceId);
     if (existing) return existing;
+    const installed = this.listWorkspaceInstallations();
+    if (installed.length > 0) {
+      throw new Error(
+        `This Chickpea deployment is already connected to Slack workspace ${installed[0]!.workspaceId}.`,
+      );
+    }
     const defaultAgentId = input.defaultAgentId ?? this.requireFirstActiveAgent().id;
     this.requireActiveAgent(defaultAgentId);
     const now = Date.now();

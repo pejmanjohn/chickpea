@@ -56,6 +56,7 @@ export class AgentPresenceReconciler {
         input.workspaceId,
         input.channelId,
       )).find((grant) => grant.agentId === agent.id);
+      if (existingGrant?.status === 'active') return existingGrant;
       return config.putAgentChannelGrant(
         {
           workspaceId: input.workspaceId,
@@ -123,6 +124,9 @@ export class AgentPresenceReconciler {
   async reconcile(agentId: string): Promise<CustomAgentConfig> {
     const { config, transport } = this.dependencies;
     let agent = await config.getAgent(agentId);
+    if (agent.lifecycle === 'archived') {
+      throw new AgentPresenceError('slack_operation_failed', 'Archived Agents cannot be reconciled.');
+    }
     const presence = requiredPresence(agent);
     const normalizedHandle = normalizeAgentHandle(presence.requestedHandle || agent.name);
     agent = await config.updateAgent(
@@ -210,6 +214,10 @@ export class AgentPresenceReconciler {
     }
     let current = await config.getAgent(agent.id);
     const currentPresence = requiredPresence(current);
+    if (current.lifecycle === 'archived' || currentPresence.desiredState === 'disabled') {
+      if (!group.disabled) await transport.disableUserGroup(group.id);
+      throw new AgentPresenceError('slack_operation_failed', 'Archived Agents cannot be reconciled.');
+    }
     const currentHandle = normalizeAgentHandle(currentPresence.requestedHandle || current.name);
     const desiredChangedDuringSlackIo = current.name !== agent.name ||
       current.description !== agent.description || currentHandle !== normalizedHandle;
@@ -250,6 +258,10 @@ export class AgentPresenceReconciler {
   }
 
   async retry(agentId: string): Promise<CustomAgentConfig> {
+    const agent = await this.dependencies.config.getAgent(agentId);
+    if (agent.lifecycle === 'archived') {
+      throw new AgentPresenceError('slack_operation_failed', 'Archived Agents cannot be retried.');
+    }
     try {
       return await this.reconcile(agentId);
     } catch (error) {

@@ -138,13 +138,9 @@ export interface CompileRuntimePlanV2Input {
 export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimePlanV2 {
   const conversationThreadTs = input.turn.sessionThreadTs ?? input.turn.threadTs;
   const continuityKey = opaqueId('agent', slackThreadKey(input.turn));
-  const effectiveConnections = input.effectiveConnections;
-  const mcpConnections = effectiveConnections
-    ? projectEffectiveMcpConnections(effectiveConnections)
-    : input.assignment.agent.mcpServers;
-  const apiConnections = effectiveConnections
-    ? projectEffectiveApiConnections(effectiveConnections)
-    : input.assignment.agent.apiConnections;
+  const effectiveConnections = input.effectiveConnections ?? [];
+  const mcpConnections = projectEffectiveMcpConnections(effectiveConnections);
+  const apiConnections = projectEffectiveApiConnections(effectiveConnections);
   const planWithoutRevision: Omit<RuntimePlanV2, 'harnessRevision'> = {
     schemaVersion: RUNTIME_PLAN_SCHEMA_VERSION,
     continuityPolicy: input.continuityPolicy ?? DEFAULT_CONTINUITY_POLICY,

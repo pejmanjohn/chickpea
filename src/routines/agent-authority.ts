@@ -177,6 +177,24 @@ export async function markRoutineAuthorityNeedsAttention(
   await config.putAgentScheduleReference({ ...current, state: 'needs_attention' }, current.revision);
 }
 
+/** Revalidate the exact Slack-bound product member before Routine control. */
+export async function isActiveRoutineActor(input: {
+  actorMembershipId: string;
+  workspaceId: string;
+  slackUserId: string;
+  env: PlatformEnv | undefined;
+}, dependencies: { identity?: IdentityStore } = {}): Promise<boolean> {
+  try {
+    return await requireActiveMembership(
+      dependencies.identity ?? getIdentityStore(input.env),
+      input.actorMembershipId,
+      input.workspaceId,
+    ) === input.slackUserId;
+  } catch {
+    return false;
+  }
+}
+
 async function requireActiveMembership(
   identity: IdentityStore,
   membershipId: string,

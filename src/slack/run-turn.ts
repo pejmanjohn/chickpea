@@ -1227,22 +1227,20 @@ async function freezeRuntimePlanForTurn(input: {
         resolveEffectiveConnectionAccounts(actorConnectionContext),
         resolvePersonalConnectionAuthorizationOptions(actorConnectionContext),
       ])
-    : [undefined, undefined];
-  const connectionResolution = allEffectiveConnections
-    ? selectConnectionsForRequest({
-        connections: allEffectiveConnections,
-        requestText: input.turn.text,
-      })
-    : undefined;
+    : [[], undefined];
+  const connectionResolution = selectConnectionsForRequest({
+    connections: allEffectiveConnections,
+    requestText: input.turn.text,
+  });
   const candidate = compileRuntimePlanV2({
     turn: input.turn,
     assignment: input.assignment,
     instructions,
     memoryEpoch: input.memoryEpoch,
     sandboxMode: sandboxDecision.selection,
-    ...(connectionResolution ? { effectiveConnections: connectionResolution.selected } : {}),
+    effectiveConnections: connectionResolution.selected,
     ...(connectionAuthorizations ? { connectionAuthorizations } : {}),
-    ...(connectionResolution ? { connectionChoices: connectionResolution.ambiguous } : {}),
+    connectionChoices: connectionResolution.ambiguous,
   });
   const decision = input.persist
     ? await input.persist(candidate)

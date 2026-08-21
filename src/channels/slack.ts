@@ -51,6 +51,7 @@ import {
 } from '../slack/behavior-settings.ts';
 import {
   discoverableAgents,
+  parseAgentUserGroupMentions,
   resolveAgentRoute,
   type AgentRoutingActor,
   type AgentRoutingResult,
@@ -638,9 +639,12 @@ async function postAgentRoutingFeedback(input: {
     // Explicit base-app and Agent-handle mentions receive a private denial.
     // Ambient roots remain silent, and a denied Agent never becomes visible
     // through the alternatives list.
+    const explicitAgentMention = input.turn.source === 'agent_mention' ||
+      (input.turn.source === 'implicit_thread_reply' &&
+        parseAgentUserGroupMentions(input.turn.text).length > 0);
     if (
       !input.channelHintEnabled ||
-      (input.turn.source !== 'app_mention' && input.turn.source !== 'agent_mention') ||
+      (input.turn.source !== 'app_mention' && !explicitAgentMention) ||
       (!input.turn.channelId.startsWith('C') && input.turn.channelType !== 'group')
     ) return;
     await input.client.chat.postEphemeral({
@@ -714,6 +718,10 @@ interface SlackEventExecution {
   transport: SlackTransport;
   client: ReturnType<typeof createSlackWebClient>;
   botUserId: string;
+}
+
+class SlackDurableEnqueueError extends Error {
+  override readonly name = 'SlackDurableEnqueueError';
 }
 
 /**
@@ -1362,6 +1370,7 @@ async function processSlackEvent(
       if (promotedDecisionKey) await state.release(promotedDecisionKey);
       if (marksActiveWork) await state.setActiveWork(threadKey, msgKey, false);
       console.error('[chickpea] enqueue turn failed:', enqueued.error.message);
+      throw new SlackDurableEnqueueError(enqueued.error.message);
     }
     return;
   }

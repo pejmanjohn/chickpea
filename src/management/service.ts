@@ -12,6 +12,7 @@ import {
   type AgentChannelGrant,
   type ChannelConfig,
   type CustomAgentConfig,
+  type ResolvedAssignment,
 } from '../config/types.ts';
 import type { IdentityStore, Membership } from '../identity/types.ts';
 import type {
@@ -23,6 +24,7 @@ import {
   normalizeRoutineSchedule,
 } from '../routines/schedule.ts';
 import { RoutineService } from '../routines/service.ts';
+import { bindRoutineAgentAuthority } from '../routines/agent-authority.ts';
 import type { RoutineDefinition, RoutineStore } from '../routines/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import {
@@ -96,6 +98,10 @@ export interface WorkspaceManagementServiceInput {
     | 'putAgentChannelGrant'
     | 'deleteAgentChannelGrant'
     | 'getAgentReferences'
+    | 'getAgentScheduleReference'
+    | 'putAgentScheduleReference'
+    | 'listConnectionAccounts'
+    | 'listAgentConnectionBindings'
   >;
   management: ManagementStore;
   memory?: Pick<
@@ -870,6 +876,11 @@ export class WorkspaceManagementService {
         id: channelKey(channel.workspaceId, channel.channelId),
         revision: channel.revision ?? 1,
       })),
+      ...grants.map((grant) => ({
+        kind: 'channel_grant' as const,
+        id: grantKey(grant.workspaceId, grant.channelId, grant.agentId),
+        revision: grant.revision,
+      })),
     ];
     const team = includeTeam ? await this.teamSnapshot(organizationId) : undefined;
     return {
@@ -878,8 +889,14 @@ export class WorkspaceManagementService {
         id,
         revision,
         name,
+        description,
         instructions,
         enabled,
+        lifecycle,
+        creatorMembershipId,
+        editPolicy,
+        configurationGeneration,
+        slackPresence,
         model,
         skills,
         mcpServers,
@@ -889,8 +906,25 @@ export class WorkspaceManagementService {
         id,
         revision,
         name,
+        ...(description ? { description } : {}),
         instructions,
         enabled,
+        ...(lifecycle ? { lifecycle } : {}),
+        ...(creatorMembershipId ? { creatorMembershipId } : {}),
+        ...(editPolicy ? { editPolicy } : {}),
+        ...(configurationGeneration !== undefined ? { configurationGeneration } : {}),
+        ...(slackPresence
+          ? {
+              slackPresence: {
+                requestedHandle: slackPresence.requestedHandle,
+                normalizedHandle: slackPresence.normalizedHandle,
+                desiredState: slackPresence.desiredState,
+                health: slackPresence.health,
+                ...(slackPresence.errorCode ? { errorCode: slackPresence.errorCode } : {}),
+                avatar: { ...slackPresence.avatar },
+              },
+            }
+          : {}),
         ...(model ? { model } : {}),
         skills,
         mcpServers,
@@ -992,6 +1026,18 @@ export class WorkspaceManagementService {
       if (!available) {
         throw new ManagementError('invalid_request', 'Routine scheduling is unavailable on this deployment.');
       }
+      const agent = await optionalAgent(this.stores.config, operation.agentId);
+      const grants = await this.stores.config.listAgentChannelGrants(
+        operation.workspaceId,
+        operation.channelId,
+      );
+      if (!agent || !agent.enabled || agent.lifecycle === 'archived' ||
+          !grants.some((grant) => grant.agentId === agent.id && grant.status === 'active')) {
+        throw new ManagementError(
+          'invalid_request',
+          'The schedule Agent is not active in this Channel.',
+        );
+      }
     }
     if (operation.kind === 'save_routine' && !operation.routineId) {
       if (operation.expectedVersion !== undefined) {
@@ -1028,9 +1074,10 @@ export class WorkspaceManagementService {
   }
 
   private async effectiveRevision(): Promise<string> {
-    const [agents, channels] = await Promise.all([
+    const [agents, channels, grants] = await Promise.all([
       this.stores.config.listAgents(),
       this.stores.config.listChannels(),
+      this.stores.config.listAgentChannelGrants(),
     ]);
     return effectiveConfigurationRevision([
       ...agents.map(({ id, revision }) => ({ kind: 'agent' as const, id, revision })),
@@ -1038,6 +1085,11 @@ export class WorkspaceManagementService {
         kind: 'channel' as const,
         id: channelKey(workspaceId, channelId),
         revision: revision ?? 1,
+      })),
+      ...grants.map(({ workspaceId, channelId, agentId, revision }) => ({
+        kind: 'channel_grant' as const,
+        id: grantKey(workspaceId, channelId, agentId),
+        revision,
       })),
     ]);
   }
@@ -1230,7 +1282,7 @@ export class WorkspaceManagementService {
             definition,
           }
         : { action: 'create' as const, definition };
-      return routineMutation(await service.save({
+      const routine = await service.save({
         ...request,
         actorId: actor.userId,
         actorClass: 'operator',
@@ -1240,7 +1292,40 @@ export class WorkspaceManagementService {
         projectedDailyStarts: projection.projectedDailyStarts,
         reservations: projection.reservations,
         sourceVisibility: 'unknown',
-      }, `management:routine:save:${mutationId}:${operation.itemId}`));
+      }, `management:routine:save:${mutationId}:${operation.itemId}`);
+      const agent = await this.stores.config.getAgent(operation.agentId);
+      const assignment: ResolvedAssignment = {
+        workspaceId: operation.workspaceId,
+        channelId: operation.channelId,
+        agentId: agent.id,
+        agent,
+      };
+      try {
+        await bindRoutineAgentAuthority({
+          routine,
+          assignment,
+          actorMembershipId: actor.membershipId,
+          env: undefined,
+        }, {
+          config: this.stores.config as ConfigStore,
+          identity: this.stores.identity as IdentityStore,
+        });
+      } catch {
+        await service.control({
+          routineId: routine.id,
+          expectedVersion: routine.version,
+          action: 'pause',
+          actorId: actor.userId,
+          actorClass: 'operator',
+          reasonCode: 'schedule_authority_missing',
+          idempotencyKey: `management:routine:authority-failed:${mutationId}:${operation.itemId}`,
+        }).catch(() => undefined);
+        throw new ManagementError(
+          'invalid_request',
+          'The schedule was saved paused because its Agent authority could not be bound.',
+        );
+      }
+      return routineMutation(routine);
     } catch (error) {
       if (error instanceof ManagementError) throw error;
       throw new ManagementError('revision_conflict', 'The routine mutation could not be applied.');
@@ -1526,7 +1611,14 @@ export class WorkspaceManagementService {
     proposalId: string,
   ): Promise<ImmediateMutation> {
     if (operation.kind === 'delete_agent') {
+      const agent = await this.stores.config.getAgent(operation.agentId);
       const references = await this.stores.config.getAgentReferences(operation.agentId);
+      if (references.channelGrants.length > 0 || agent.slackPresence?.userGroupId) {
+        throw new ManagementError(
+          'invalid_request',
+          'Archive the Agent and remove its Slack reach before deleting it.',
+        );
+      }
       const changed: ManagementObjectRef[] = [];
       for (const grant of references.channelGrants) {
         await this.stores.config.deleteAgentChannelGrant(

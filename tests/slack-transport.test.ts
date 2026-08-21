@@ -11,6 +11,7 @@ import {
   selectSlackTransport,
   type SlackTransport,
 } from '../src/slack/transport/types.ts';
+import { createGatewaySlackTransport } from '../src/slack/transport/gateway.ts';
 
 interface RecordedCall {
   method: string;
@@ -126,6 +127,89 @@ test('direct transport maps Slack operations without exposing credentials or a r
     'updateUserGroup',
   ]);
   assert.doesNotMatch(JSON.stringify(transport), /xoxb|token|client/i);
+});
+
+test('gateway transport follows Slack cursors for Channels and membership', async () => {
+  const calls: Array<{ operation: string; input: Record<string, unknown> }> = [];
+  const transport = createGatewaySlackTransport({
+    workspaceId: 'T123',
+    async call(operation, input) {
+      calls.push({ operation, input });
+      if (operation === 'conversations.list') {
+        return input.cursor === 'channels-next'
+          ? {
+              channels: [{ id: 'C2', name: 'zeta', is_member: true }],
+              response_metadata: { next_cursor: '' },
+            }
+          : {
+              channels: [{ id: 'C1', name: 'alpha', is_member: true }],
+              response_metadata: { next_cursor: 'channels-next' },
+            };
+      }
+      if (operation === 'conversations.members') {
+        return input.cursor === 'members-next'
+          ? { members: ['U_TARGET'], response_metadata: { next_cursor: '' } }
+          : { members: ['U_OTHER'], response_metadata: { next_cursor: 'members-next' } };
+      }
+      throw new Error(`Unexpected ${operation}`);
+    },
+  });
+
+  assert.deepEqual(await transport.listChannels(), {
+    channels: [
+      { id: 'C1', name: 'alpha', private: false, member: true, archived: false },
+      { id: 'C2', name: 'zeta', private: false, member: true, archived: false },
+    ],
+    truncated: false,
+  });
+  assert.equal(await transport.channelHasMember('C1', 'U_TARGET'), true);
+  assert.deepEqual(calls.map(({ input }) => input.cursor ?? null), [
+    null,
+    'channels-next',
+    null,
+    'members-next',
+  ]);
+});
+
+test('direct transport follows Slack cursors for Channels and membership', async () => {
+  const calls: RecordedCall[] = [];
+  const client = fakeClient(calls);
+  client.conversations.list = async (input) => {
+    calls.push({ method: 'conversations.list', input });
+    return input?.cursor === 'channels-next'
+      ? {
+          ok: true,
+          channels: [{ id: 'C2', name: 'zeta', is_member: true }],
+          response_metadata: { next_cursor: '' },
+        }
+      : {
+          ok: true,
+          channels: [{ id: 'C1', name: 'alpha', is_member: true }],
+          response_metadata: { next_cursor: 'channels-next' },
+        };
+  };
+  client.conversations.members = async (input) => {
+    calls.push({ method: 'conversations.members', input });
+    return input?.cursor === 'members-next'
+      ? { ok: true, members: ['U_TARGET'], response_metadata: { next_cursor: '' } }
+      : { ok: true, members: ['U_OTHER'], response_metadata: { next_cursor: 'members-next' } };
+  };
+  const transport = createDirectSlackTransportFromClient(client);
+
+  assert.deepEqual(await transport.listChannels(), {
+    channels: [
+      { id: 'C1', name: 'alpha', private: false, member: true, archived: false },
+      { id: 'C2', name: 'zeta', private: false, member: true, archived: false },
+    ],
+    truncated: false,
+  });
+  assert.equal(await transport.channelHasMember('C1', 'U_TARGET'), true);
+  assert.deepEqual(calls.map(({ input }) => input?.cursor ?? null), [
+    null,
+    'channels-next',
+    null,
+    'members-next',
+  ]);
 });
 
 test('direct transport turns Slack failures into stable capability errors', async () => {

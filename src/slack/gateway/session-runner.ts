@@ -85,6 +85,14 @@ export class GatewaySessionRunner {
     });
     connectedSocket.addEventListener('close', () => this.reconnect(connectedSocket, 'closed'));
     connectedSocket.addEventListener('error', () => this.reconnect(connectedSocket, 'network'));
+    // A completed WebSocket upgrade is not a usable session until the gateway
+    // authenticates it with session.ready. Cover the half-open-before-first-
+    // frame case instead of waiting forever for heartbeat state that does not
+    // exist yet.
+    this.schedule(
+      () => this.reconnect(connectedSocket, 'ready_timeout'),
+      GATEWAY_HEARTBEAT_TIMEOUT_MS,
+    );
     return true;
   }
 

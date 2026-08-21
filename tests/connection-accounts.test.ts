@@ -26,6 +26,7 @@ import {
   createOAuthContinuation,
   linkOAuthProviderState,
   OAuthContinuationError,
+  repairPendingOAuthContinuationResumes,
   takeOAuthContinuationForProviderState,
 } from '../src/connections/oauth-continuation.ts';
 import { startPersonalConnectionAuthorization } from '../src/connections/slack-authorization.ts';
@@ -72,6 +73,44 @@ function gmailPolicy() {
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/gmail.modify',
     ],
+  };
+}
+
+function activeConnectionIdentity(membershipId: string) {
+  return {
+    getOrganization: async () => ({
+      id: 'organization_test',
+      displayName: 'Connections Test',
+      slackTeamId: 'T_CONNECTIONS',
+      authMode: 'slack_active' as const,
+      canonicalAdminOrigin: 'https://chickpea.test',
+      createdAt: 1,
+      updatedAt: 1,
+    }),
+    getMembership: async () => ({
+      id: membershipId,
+      userId: `user_${membershipId}`,
+      organizationId: 'organization_test',
+      role: 'member' as const,
+      status: 'active' as const,
+      createdAt: 1,
+      updatedAt: 1,
+    }),
+    getMembershipAccessOverlay: async () => undefined,
+    listExternalIdentities: async () => [{
+      id: `binding_${membershipId}`,
+      provider: 'slack' as const,
+      userId: `user_${membershipId}`,
+      membershipId,
+      organizationId: 'organization_test',
+      slackTeamId: 'T_CONNECTIONS',
+      slackUserId: 'U_TEST',
+      betterAuthUserId: null,
+      betterAuthMembershipId: null,
+      revision: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    }],
   };
 }
 
@@ -215,9 +254,33 @@ test('personal accounts resolve only for their owner and language selects a uniq
       resolveConnectionSecretForInvocation({
         config,
         settings,
+        identity: activeConnectionIdentity('membership_bob'),
         workspaceId: 'T_CONNECTIONS',
         agentId: 'agent_mail',
         actorMembershipId: 'membership_bob',
+        connectionAccountId: work.id,
+      }),
+      /not available to this actor/,
+    );
+    const suspendedIdentity = {
+      ...activeConnectionIdentity('membership_alice'),
+      getMembershipAccessOverlay: async () => ({
+        membershipId: 'membership_alice',
+        organizationId: 'organization_test',
+        accessStatus: 'suspended' as const,
+        membershipVersion: 2,
+        createdAt: 1,
+        updatedAt: 2,
+      }),
+    };
+    await assert.rejects(
+      resolveConnectionSecretForInvocation({
+        config,
+        settings,
+        identity: suspendedIdentity,
+        workspaceId: 'T_CONNECTIONS',
+        agentId: 'agent_mail',
+        actorMembershipId: 'membership_alice',
         connectionAccountId: work.id,
       }),
       /not available to this actor/,
@@ -377,6 +440,84 @@ test('provider OAuth state authorizes only its linked Slack continuation and con
     assert.equal(authorized.actorMembershipId, 'membership_alice');
     assert.equal(authorized.agentId, 'agent_mail');
     assert.equal(authorized.taskId, 'task_2');
+  } finally {
+    settings.close();
+  }
+});
+
+test('authorized OAuth continuations survive a failed resume and repair exactly once', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const created = await createOAuthContinuation({
+      settings, workspaceId: 'T_CONNECTIONS', actorMembershipId: 'membership_alice',
+      agentId: 'agent_mail', channelId: 'D_ALICE', threadTs: '2.000', taskId: 'task_repair',
+      providerId: 'google', accountId: 'connection_google', now: () => 100,
+      randomId: (() => { let id = 0; return () => `repair${++id}`; })(),
+    });
+    const authorized = await authorizeOAuthContinuationFromProvider({
+      settings,
+      state: created.state,
+      now: () => 101,
+    });
+    let deliveries = 0;
+    await assert.rejects(
+      repairPendingOAuthContinuationResumes({
+        settings,
+        now: () => 102,
+        onReady: async () => {
+          deliveries += 1;
+          throw new Error('queue temporarily unavailable');
+        },
+      }),
+      /temporarily unavailable/,
+    );
+    assert.equal(deliveries, 1);
+    const repaired = await repairPendingOAuthContinuationResumes({
+      settings,
+      now: () => 103,
+      onReady: async (continuation) => {
+        assert.equal(continuation.id, authorized.id);
+        deliveries += 1;
+      },
+    });
+    assert.deepEqual(repaired, { resumed: 1, pending: 0, pruned: 0 });
+    assert.equal(deliveries, 2);
+    assert.deepEqual(await repairPendingOAuthContinuationResumes({
+      settings,
+      now: () => 104,
+      onReady: async () => { deliveries += 1; },
+    }), { resumed: 0, pending: 0, pruned: 0 });
+  } finally {
+    settings.close();
+  }
+});
+
+test('OAuth continuation repair prunes a pending entry that expired before authorization', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const created = await createOAuthContinuation({
+      settings, workspaceId: 'T_CONNECTIONS', actorMembershipId: 'membership_alice',
+      agentId: 'agent_mail', channelId: 'D_ALICE', threadTs: '2.500', taskId: 'task_expired',
+      providerId: 'google', accountId: 'connection_google', now: () => 100,
+      ttlMs: 10,
+      randomId: (() => { let id = 0; return () => `expired${++id}`; })(),
+    });
+    await settings.setSetting(
+      'connection-oauth-resume-pending',
+      JSON.stringify([created.continuation.id]),
+    );
+    let deliveries = 0;
+    assert.deepEqual(await repairPendingOAuthContinuationResumes({
+      settings,
+      now: () => 111,
+      onReady: async () => { deliveries += 1; },
+    }), { resumed: 0, pending: 0, pruned: 1 });
+    assert.equal(deliveries, 0);
+    assert.deepEqual(await repairPendingOAuthContinuationResumes({
+      settings,
+      now: () => 112,
+      onReady: async () => { deliveries += 1; },
+    }), { resumed: 0, pending: 0, pruned: 0 });
   } finally {
     settings.close();
   }

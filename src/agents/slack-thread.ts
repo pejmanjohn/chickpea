@@ -76,6 +76,7 @@ import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
 import {
   getAgentSnapshotStore,
   getConfigStore,
+  getIdentityStore,
   getMemoryStateStore,
   getSettingsStore,
   type PlatformEnv,
@@ -101,6 +102,7 @@ import {
   projectEffectiveMcpConnections,
   resolveConnectionSecretForInvocation,
   resolveEffectiveConnectionAccounts,
+  isActiveConnectionActor,
 } from '../connections/runtime.ts';
 import { usePersonalConnectionAuthorizationSlackTool } from '../connections/slack-authorization.ts';
 
@@ -153,7 +155,6 @@ import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
 import {
   parseRuntimePlanV2,
-  type RuntimePlanApiConnectionV2,
   type RuntimePlanRepositoryV2,
   type RuntimePlanV2,
 } from './runtime-plan.ts';
@@ -496,11 +497,16 @@ export async function resolveApiConnectionsForTurn(
       },
     });
   });
+  const accountContext = dependencies.accountContext;
+  if (accountContext && !(await isActiveConnectionActor({
+    identity: getIdentityStore(env),
+    workspaceId: accountContext.workspaceId,
+    actorMembershipId: accountContext.actorMembershipId,
+  }))) return [];
   const resolved = await Promise.all(
     connections
       .filter((connection) => connection.enabled)
       .map(async (connection): Promise<ResolvedApiConnectionForTurn | undefined> => {
-        const accountContext = dependencies.accountContext;
         let credential: string | undefined;
         if (connection.authMode === 'oauth') {
           if (
@@ -612,7 +618,7 @@ export async function createSlackAgentRuntime(
         agentId: input.liveConfig?.agentId ?? input.id,
         actorMembershipId: input.actorMembershipId,
       })
-    : undefined;
+    : [];
   const artifactThreadTs = input.artifactThreadTs === null
     ? undefined
     : (input.artifactThreadTs ?? adapterContext.threadTs);
@@ -675,11 +681,9 @@ export async function createSlackAgentRuntime(
       resolveEgressPolicy(env),
       resolveApiConnectionsForTurn(
         config.agent.id,
-        effectiveConnectionAccounts
-          ? projectEffectiveApiConnections(effectiveConnectionAccounts)
-          : config.agent.apiConnections ?? [],
+        projectEffectiveApiConnections(effectiveConnectionAccounts),
         env,
-        effectiveConnectionAccounts && input.actorMembershipId
+        input.actorMembershipId
           ? {
               accountContext: {
                 config: store,
@@ -795,9 +799,7 @@ export async function createSlackAgentRuntime(
   ];
   registerActivityContext(id, {
     skills: skills.map((skill) => ({ name: skill.name })),
-    mcpConnections: (effectiveConnectionAccounts
-      ? projectEffectiveMcpConnections(effectiveConnectionAccounts)
-      : config.agent.mcpServers ?? [])
+    mcpConnections: projectEffectiveMcpConnections(effectiveConnectionAccounts)
       .filter(isProfileMcpServerEligible)
       .map(({ id: connectionId, displayName }) => ({ id: connectionId, displayName })),
     apiConnections: apiConnectionActivities,
@@ -811,14 +813,12 @@ export async function createSlackAgentRuntime(
   const mcpTools = input.declarationsOwnedByHooks
     ? []
     : await resolveProfileMcpTools(
-        effectiveConnectionAccounts
-          ? projectEffectiveMcpConnections(effectiveConnectionAccounts)
-          : config.agent.mcpServers,
+        projectEffectiveMcpConnections(effectiveConnectionAccounts),
       {
         agentId: config.agent.id,
         env,
         existingToolNames: skills.map((s) => s.name),
-        ...(effectiveConnectionAccounts && input.actorMembershipId
+        ...(input.actorMembershipId
           ? {
               resolveBearerCredential: (connectionAccountId: string) =>
                 resolveConnectionSecretForInvocation({
@@ -830,27 +830,34 @@ export async function createSlackAgentRuntime(
                   actorMembershipId: input.actorMembershipId!,
                   connectionAccountId,
                 }),
-              resolveOAuthAccessToken: (oauthInput) => resolveMcpOAuthAccessToken(
-                {
-                  ...oauthInput,
-                  ref: connectionAccountOAuthRef(oauthInput.ref.connectionId),
-                },
-                {
-                  settings: settingsStore,
-                  validateConnection: async (ref, serverUrl) => {
-                    const current = await resolveEffectiveConnectionAccounts({
-                      config: store,
-                      workspaceId,
-                      agentId: config.agent.id,
-                      actorMembershipId: input.actorMembershipId!,
-                    });
-                    const accountId = connectionAccountIdFromOAuthRef(ref);
-                    const account = current.find(({ account }) => account.id === accountId)?.account;
-                    return !!accountId && account?.policy.kind === 'mcp' &&
-                      account.policy.authMode === 'oauth' && account.policy.url === serverUrl;
+              resolveOAuthAccessToken: async (oauthInput) => {
+                if (!(await isActiveConnectionActor({
+                  identity: getIdentityStore(env),
+                  workspaceId,
+                  actorMembershipId: input.actorMembershipId!,
+                }))) throw new Error('Connection account is not available to this actor');
+                return resolveMcpOAuthAccessToken(
+                  {
+                    ...oauthInput,
+                    ref: connectionAccountOAuthRef(oauthInput.ref.connectionId),
                   },
-                },
-              ),
+                  {
+                    settings: settingsStore,
+                    validateConnection: async (ref, serverUrl) => {
+                      const current = await resolveEffectiveConnectionAccounts({
+                        config: store,
+                        workspaceId,
+                        agentId: config.agent.id,
+                        actorMembershipId: input.actorMembershipId!,
+                      });
+                      const accountId = connectionAccountIdFromOAuthRef(ref);
+                      const account = current.find(({ account }) => account.id === accountId)?.account;
+                      return !!accountId && account?.policy.kind === 'mcp' &&
+                        account.policy.authMode === 'oauth' && account.policy.url === serverUrl;
+                    },
+                  },
+                );
+              },
             }
           : {}),
         onConnectionStart: ({ displayName }) => {
@@ -1194,13 +1201,7 @@ function projectRuntimePlanAgent(
   if (current.id !== plan.agentId || !current.enabled) {
     throw new SealedAgentThreadError(plan.agentId);
   }
-  const apiConnections = plan.actorMembershipId ? [] : plan.apiConnections.map((declaration) => {
-    const live = current.apiConnections.find((candidate) =>
-      candidate.id === declaration.id && runtimeApiConnectionMatches(candidate, declaration)
-    );
-    if (!live) throw new Error('RuntimePlanV2 API connection policy changed.');
-    return live;
-  });
+  const apiConnections: CustomAgentConfig['apiConnections'] = [];
   const repositories = plan.repositories.map((declaration) => {
     const live = current.repositories.find((candidate) =>
       candidate.id === declaration.id && runtimeRepositoryMatches(candidate, declaration)
@@ -1208,18 +1209,7 @@ function projectRuntimePlanAgent(
     if (!live) throw new Error('RuntimePlanV2 repository policy changed.');
     return live;
   });
-  const mcpServers = plan.actorMembershipId ? [] : plan.mcpConnections.flatMap((declaration) => {
-    const live = current.mcpServers.find((candidate) =>
-      candidate.id === declaration.id &&
-      candidate.enabled &&
-      candidate.lifecycleStatus === 'ready' &&
-      candidate.url === declaration.url &&
-      candidate.transport === declaration.transport &&
-      candidate.authMode === declaration.authMode &&
-      declaration.allowedTools.every((tool) => candidate.allowedTools.includes(tool))
-    );
-    return live ? [live] : [];
-  });
+  const mcpServers: CustomAgentConfig['mcpServers'] = [];
   return {
     id: current.id,
     revision: current.revision,
@@ -1248,22 +1238,6 @@ async function requireLiveFrozenAgent(
   }
 }
 
-function runtimeApiConnectionMatches(
-  current: ApiConnectionConfig,
-  planned: RuntimePlanApiConnectionV2,
-): boolean {
-  return current.enabled &&
-    (current.lifecycleStatus === undefined || current.lifecycleStatus === 'ready') &&
-    sameStringSet(current.allowedHosts.map((host) => host.toLowerCase()), planned.allowedHosts) &&
-    sameStringSet(current.pathPrefixes, planned.pathPrefixes) &&
-    sameStringSet(current.allowedMethods.map((method) => method.toUpperCase()), planned.allowedMethods) &&
-    current.headerName.toLowerCase() === planned.headerName &&
-    (current.headerValuePrefix ?? undefined) === planned.headerValuePrefix &&
-    (current.authMode ?? 'credential') === planned.authMode &&
-    current.oauthProvider === planned.oauthProvider &&
-    sameStringSet(current.oauthScopes ?? [], planned.oauthScopes ?? []);
-}
-
 function runtimeRepositoryMatches(
   current: RepositoryGrant,
   planned: RuntimePlanRepositoryV2,
@@ -1271,10 +1245,6 @@ function runtimeRepositoryMatches(
   return current.enabled &&
     current.fullName.toLowerCase() === planned.fullName.toLowerCase() &&
     Boolean(current.allRepos) === Boolean(planned.allRepos);
-}
-
-function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
-  return JSON.stringify([...new Set(left)].sort()) === JSON.stringify([...new Set(right)].sort());
 }
 
 function createRuntimePlanArtifactTool(plan: RuntimePlanV2) {

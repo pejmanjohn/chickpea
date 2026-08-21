@@ -133,3 +133,39 @@ test('guests and Slack Connect actors stay conversational-only and receive no me
     identity.close();
   }
 });
+
+test('deleted, bot, app, installation-bot, and unverified actors receive no membership', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await createSlackOwner(identity, { now: NOW });
+  try {
+    const base = {
+      teamId: owner.binding.slackTeamId,
+      deleted: false,
+      bot: false,
+      appUser: false,
+      restricted: false,
+      ultraRestricted: false,
+      stranger: false,
+    };
+    for (const user of [
+      { ...base, id: 'UDELETED', deleted: true },
+      { ...base, id: 'UBOTACTOR', bot: true },
+      { ...base, id: 'UAPPACTOR', appUser: true },
+      { ...base, id: 'UBOT', bot: true },
+      { ...base, id: 'UNVERIFIED', teamId: undefined },
+    ]) {
+      const result = await provisionSlackInteractionMember({
+        identity,
+        slackTeamId: owner.binding.slackTeamId,
+        botUserId: 'UBOT',
+        user,
+      });
+      assert.equal(result.outcome, 'denied');
+      assert.equal(result.resolution, undefined);
+      assert.equal(slackInteractionMayUseGrantedChannel(result), false);
+    }
+    assert.equal((await identity.listMemberships()).length, 1);
+  } finally {
+    identity.close();
+  }
+});

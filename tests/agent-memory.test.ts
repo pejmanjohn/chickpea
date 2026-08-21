@@ -94,6 +94,36 @@ test('Agent memory uses optimistic concurrency and a bounded current body', asyn
   }
 });
 
+test('Agent memory retries are idempotent and reject key reuse for another write', async () => {
+  const store = new SqliteMemoryStateStore(':memory:');
+  try {
+    const input = {
+      agentId: 'agent_support',
+      body: 'Remember the Acme escalation policy.',
+      expectedRevision: 0,
+      idempotencyKey: 'slack-memory:Ev123',
+      idempotencyDigest: 'digest-one',
+    };
+    assert.equal((await store.putAgentMemory(input)).revision, 1);
+    assert.deepEqual(await store.putAgentMemory(input), {
+      agentId: 'agent_support',
+      body: input.body,
+      revision: 1,
+    });
+    await assert.rejects(
+      store.putAgentMemory({
+        ...input,
+        body: 'A different mutation',
+        idempotencyDigest: 'digest-two',
+      }),
+      (error: unknown) => error instanceof MemoryStateError &&
+        error.code === 'memory_idempotency_conflict',
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test('authorized autonomous writes append durable context to the same Agent body', async () => {
   const store = new SqliteMemoryStateStore(':memory:');
   try {
@@ -120,6 +150,30 @@ test('authorized autonomous writes append durable context to the same Agent body
     assert.match(memory.body, /## Support voice/);
     assert.match(memory.body, /## Escalation rule/);
     assert.doesNotMatch(memory.body, /C_ONE|D_MEMBER|U_MEMBER|timestamp|source/i);
+  } finally {
+    store.close();
+  }
+});
+
+test('an autonomous memory retry produces one durable revision', async () => {
+  const store = new SqliteMemoryStateStore(':memory:');
+  const memory = {
+    name: 'Support voice',
+    description: 'Use concise replies.',
+    type: 'preference' as const,
+    body: 'Use concise replies.',
+  };
+  try {
+    await saveAutonomousMemory(coordinates, memory, {
+      state: store,
+      authorize: async () => true,
+    });
+    const retried = await saveAutonomousMemory(coordinates, memory, {
+      state: store,
+      authorize: async () => true,
+    });
+    assert.equal(retried.entry.version, 1);
+    assert.equal((await store.getAgentMemory('agent_support')).revision, 1);
   } finally {
     store.close();
   }

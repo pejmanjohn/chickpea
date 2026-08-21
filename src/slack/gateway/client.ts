@@ -216,6 +216,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     const response = parseGatewayOperationResponse(await this.requestJson(
       `/v1/workspaces/${encodeURIComponent(binding.workspaceId)}/operations`,
       { method: 'POST', body: JSON.stringify(request) },
+      operation,
     ));
     if (response.requestId !== request.requestId) {
       throw new SlackTransportError(operation, 'response_mismatch');
@@ -383,6 +384,14 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     if (binding.deploymentId !== identity.deploymentId) {
       throw new Error('Gateway binding belongs to another deployment.');
     }
+    const installations = await this.dependencies.config.listWorkspaceInstallations();
+    const differentWorkspace = installations.find(({ workspaceId }) =>
+      workspaceId !== binding.workspaceId);
+    if (differentWorkspace) {
+      throw new Error(
+        `This Chickpea deployment is already connected to Slack workspace ${differentWorkspace.workspaceId}.`,
+      );
+    }
     if (this.dependencies.identity && claim.setupId && claim.setupRevision) {
       await this.dependencies.identity.recordSharedSlackInstallation({
         setupId: claim.setupId,
@@ -438,7 +447,11 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     return this.requestJson(path, { method: 'POST', body: JSON.stringify(request) });
   }
 
-  private async requestJson(path: string, init: RequestInit): Promise<unknown> {
+  private async requestJson(
+    path: string,
+    init: RequestInit,
+    operation = 'gateway.request',
+  ): Promise<unknown> {
     let response: Response;
     try {
       response = await this.fetch(new URL(path, this.requireBaseUrl()), {
@@ -454,24 +467,24 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
         ? error.message.replace(/[A-Za-z0-9_-]{32,}/g, '[redacted]').slice(0, 240)
         : 'unknown';
       console.warn('[chickpea] shared Slack gateway request failed before response:', detail);
-      throw new SlackTransportError('gateway.request', 'gateway_unreachable', { retryable: true });
+      throw new SlackTransportError(operation, 'gateway_unreachable', { retryable: true });
     }
     if (response.status >= 300 && response.status < 400) {
-      throw new SlackTransportError('gateway.request', 'gateway_redirect_rejected');
+      throw new SlackTransportError(operation, 'gateway_redirect_rejected');
     }
     const text = await boundedResponseText(response, MAX_GATEWAY_FRAME_BYTES);
     let payload: unknown;
     try {
       payload = JSON.parse(text);
     } catch {
-      throw new SlackTransportError('gateway.request', 'invalid_gateway_response');
+      throw new SlackTransportError(operation, 'invalid_gateway_response');
     }
     if (!response.ok) {
       const record = payload && typeof payload === 'object' && !Array.isArray(payload)
         ? payload as Record<string, unknown>
         : {};
       throw new SlackTransportError(
-        'gateway.request',
+        operation,
         typeof record.error === 'string' ? record.error : 'gateway_rejected',
         { retryable: response.status >= 500 || response.status === 429 },
       );

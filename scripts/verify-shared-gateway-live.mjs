@@ -43,14 +43,16 @@ try {
     assert.ok(storedIdentity);
     assert.doesNotMatch(storedIdentity, /"d"\s*:/);
     assert.doesNotMatch(storedIdentity, /xox[baprs]-/i);
+    const tolerated = process.env.CHICKPEA_GATEWAY_EXPECT_UNCONFIGURED === '1';
     console.log(JSON.stringify({
-      ok: true,
+      ok: false,
+      skipped: tolerated,
       gatewayBaseUrl,
       claimState: 'blocked_until_shared_app_configuration',
       deploymentPrivateKeyEncrypted: true,
       slackCredentialsStoredByDeployment: false,
     }));
-    process.exitCode = 0;
+    if (!tolerated) throw error;
     claim = undefined;
   }
   if (claim) {

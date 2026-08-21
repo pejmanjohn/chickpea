@@ -96,6 +96,32 @@ test('publication fails closed when the actor is not a member or Chickpea needs 
   }
 });
 
+test('a failed republish never downgrades an existing active Channel grant', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport });
+    await reconciler.publish({
+      workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
+    });
+    transport.channel.private = true;
+    transport.channel.member = false;
+    await assert.rejects(
+      reconciler.publish({
+        workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+        actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
+      }),
+      (error: unknown) => error instanceof AgentPresenceError &&
+        error.code === 'private_channel_invite_required',
+    );
+    assert.equal((await config.listAgentChannelGrants())[0]?.status, 'active');
+  } finally {
+    config.close();
+  }
+});
+
 test('Slack policy denial saves needs-attention state with the exact role recovery path', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();
@@ -246,6 +272,27 @@ test('archive disables the alias and removes grants; restore enables the same al
     assert.equal(restored.lifecycle, 'active');
     assert.equal(restored.slackPresence?.desiredState, 'active');
     assert.equal(transport.groups[0]?.disabled, false);
+  } finally {
+    config.close();
+  }
+});
+
+test('Retry never resurrects an archived Agent or its Slack user group', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport });
+    await reconciler.publish({
+      workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
+    });
+    await reconciler.archive('agent_support');
+    await assert.rejects(reconciler.retry('agent_support'), /Archived Agents cannot be retried/);
+    const archived = await config.getAgent('agent_support');
+    assert.equal(archived.lifecycle, 'archived');
+    assert.equal(archived.enabled, false);
+    assert.equal(transport.groups[0]?.disabled, true);
   } finally {
     config.close();
   }

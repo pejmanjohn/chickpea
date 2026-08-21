@@ -165,6 +165,7 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     ...zOperationBase,
     kind: z.literal('save_routine'),
+    agentId: zId,
     workspaceId: zId,
     channelId: zId,
     routineId: zId.optional(),
@@ -382,6 +383,7 @@ export const managementOperationValibotSchema = v.variant('kind', [
   v.strictObject({
     ...vOperationBase,
     kind: v.literal('save_routine'),
+    agentId: vid,
     workspaceId: vid,
     channelId: vid,
     routineId: v.optional(vid),

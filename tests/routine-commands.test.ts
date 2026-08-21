@@ -41,6 +41,7 @@ async function handleRoutineSlackRequest(
   const [requestTurn, env, dependencies = {}] = args;
   return handleRoutineSlackRequestImpl(requestTurn, env, {
     assignment: TEST_ASSIGNMENT,
+    isActiveActor: async () => true,
     bindAuthority: async ({ routine }) => ({ ...TEST_AUTHORITY_REFERENCE, scheduleId: routine.id }),
     resolveAuthority: async (routine) => ({
       reference: { ...TEST_AUTHORITY_REFERENCE, scheduleId: routine.id },
@@ -97,6 +98,15 @@ test('only a cross-channel routine list is requester-only', () => {
   );
   assert.equal(routineResponseVisibility('!routines <#invalid mention>', 'C_TEST'), 'requester');
   assert.equal(routineResponseVisibility('!routines show routine_one', 'C_TEST'), 'channel');
+});
+
+test('guests and suspended identities cannot create or control schedules', async () => {
+  const response = await handleRoutineSlackRequestImpl(
+    turn('Every weekday at 9, summarize support.', 'Ev_ineligible'),
+    undefined,
+    { isActiveActor: async () => false },
+  );
+  assert.equal(response, 'Only an active Chickpea member can manage schedules.');
 });
 
 test('natural-language creation persists in one message while deletion stays confirmed', async () => {

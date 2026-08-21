@@ -21,6 +21,9 @@ export interface PutAgentMemoryInput {
   agentId: string;
   body: string;
   expectedRevision: number;
+  /** Stable command/tool key. A retry with the same digest returns without writing. */
+  idempotencyKey?: string;
+  idempotencyDigest?: string;
 }
 
 export type MemoryRpcRequest =

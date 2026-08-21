@@ -2,7 +2,7 @@ import {
   resolveConnectionAccountSecret,
   type ConnectionAccountSecretRef,
 } from '../config/connector-secrets.ts';
-import type { PlatformEnv } from '../config/state-backend.ts';
+import { getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type {
   AgentConnectionBinding,
@@ -12,6 +12,7 @@ import type {
   McpConnectionConfig,
 } from '../config/types.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import type { IdentityStore } from '../identity/types.ts';
 import type {
   ConnectionSelection,
   ConnectionRequestResolution,
@@ -210,7 +211,21 @@ export async function resolveConnectionSecretForInvocation(input: {
   agentId: string;
   actorMembershipId: string;
   connectionAccountId: string;
+  identity?: Pick<
+    IdentityStore,
+    | 'getOrganization'
+    | 'getMembership'
+    | 'getMembershipAccessOverlay'
+    | 'listExternalIdentities'
+  >;
 }): Promise<string> {
+  if (!(await isActiveConnectionActor({
+    identity: input.identity ?? getIdentityStore(input.env),
+    workspaceId: input.workspaceId,
+    actorMembershipId: input.actorMembershipId,
+  }))) {
+    throw new Error('Connection account is not available to this actor');
+  }
   const eligible = await resolveEffectiveConnectionAccounts(input);
   const selected = eligible.find(({ account }) => account.id === input.connectionAccountId);
   if (!selected) throw new Error('Connection account is not available to this actor');
@@ -221,6 +236,38 @@ export async function resolveConnectionSecretForInvocation(input: {
   );
   if (!secret) throw new Error('Connection account authorization is unavailable');
   return secret;
+}
+
+export async function isActiveConnectionActor(input: {
+  identity: Pick<
+    IdentityStore,
+    | 'getOrganization'
+    | 'getMembership'
+    | 'getMembershipAccessOverlay'
+    | 'listExternalIdentities'
+  >;
+  workspaceId: string;
+  actorMembershipId: string;
+}): Promise<boolean> {
+  const [organization, membership, overlay, bindings] = await Promise.all([
+    input.identity.getOrganization(),
+    input.identity.getMembership(input.actorMembershipId),
+    input.identity.getMembershipAccessOverlay(input.actorMembershipId),
+    input.identity.listExternalIdentities(),
+  ]);
+  return Boolean(
+    organization && organization.slackTeamId === input.workspaceId &&
+    membership && membership.organizationId === organization.id &&
+    membership.status === 'active' &&
+    bindings.some((binding) =>
+      binding.membershipId === input.actorMembershipId &&
+      binding.organizationId === organization.id &&
+      binding.slackTeamId === input.workspaceId
+    ) &&
+    (!overlay || (
+      overlay.organizationId === organization.id && overlay.accessStatus === 'active'
+    )),
+  );
 }
 
 /** Trusted authority stays visibly separate from task and tool content. */

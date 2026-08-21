@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import * as v from 'valibot';
 
 import {
@@ -135,6 +137,8 @@ export async function saveAutonomousMemory(
     agentId: coordinates.agentId,
     body,
     expectedRevision: current.revision,
+    idempotencyKey: `autonomous-memory:${coordinates.workspaceId}:${coordinates.channelId}:${coordinates.messageTs}`,
+    idempotencyDigest: createHash('sha256').update(JSON.stringify(input)).digest('hex'),
   });
   return { entry: { slug: 'memory', version: saved.revision } };
 }

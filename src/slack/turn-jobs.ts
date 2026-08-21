@@ -232,13 +232,18 @@ export class TurnJobStoreLogic {
    * idempotent while the new plan resolves the newly-ready account live.
    */
   resumeAfterOAuth(originalTaskId: string, continuationId: string): boolean {
+    const id = `oauthresume:${continuationId}`;
+    const existing = this.db.get(
+      'SELECT id FROM turn_jobs WHERE id = ? LIMIT 1',
+      id,
+    ) as { id: string } | undefined;
+    if (existing) return true;
     const row = this.db.get(
       `SELECT ${TURN_JOB_SELECT_COLUMNS} FROM turn_jobs WHERE id = ? LIMIT 1`,
       originalTaskId,
     ) as unknown as TurnJobRow | undefined;
     if (!row) return false;
     const original = this.decodeRow(row);
-    const id = `oauthresume:${continuationId}`;
     return this.enqueue({
       id,
       evtKey: `evt:${id}`,

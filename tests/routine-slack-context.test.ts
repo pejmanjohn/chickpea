@@ -23,6 +23,7 @@ test('routine handling admits channel mentions and their implicit thread replies
   };
   assert.equal(isRoutineSlackTurn({ ...base, source: 'app_mention' }), true);
   assert.equal(isRoutineSlackTurn({ ...base, source: 'implicit_thread_reply' }), true);
+  assert.equal(isRoutineSlackTurn({ ...base, source: 'agent_mention' }), true);
   assert.equal(isRoutineSlackTurn({ ...base, source: 'implicit_thread_reply', channelType: 'im' }), false);
   assert.equal(isRoutineSlackTurn({ ...base, source: 'dm_message', channelType: 'im' }), false);
 });

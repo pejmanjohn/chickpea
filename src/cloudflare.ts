@@ -49,8 +49,17 @@ import type {
   RuntimeDrainStatus,
 } from './config/state-rpc.ts';
 import { buildRuntimeDrainStatus, tagStateStub } from './config/state-rpc.ts';
-import type { PlatformEnv } from './config/state-backend.ts';
-import { getRoutineStore, getSettingsStore } from './config/state-backend.ts';
+import {
+  getIdentityStore,
+  getRoutineStore,
+  getSettingsStore,
+  getSlackStateStore,
+  type PlatformEnv,
+} from './config/state-backend.ts';
+import {
+  isOAuthContinuationActorActive,
+  repairPendingOAuthContinuationResumes,
+} from './connections/oauth-continuation.ts';
 import {
   ConfigStoreLogic,
   type ConfigAgentPatch,
@@ -1798,6 +1807,23 @@ async function runWorkMaintenance(
   if (!result.ok) {
     throw new Error(`Work maintenance failed: ${result.error.message}`);
   }
+  const platformEnv = rawEnv as PlatformEnv;
+  await repairPendingOAuthContinuationResumes({
+    settings: getSettingsStore(platformEnv),
+    onReady: async (continuation) => {
+      if (!(await isOAuthContinuationActorActive({
+        continuation,
+        identity: getIdentityStore(platformEnv),
+      }))) {
+        throw new Error('OAuth continuation member is no longer active.');
+      }
+      const resumed = await getSlackStateStore(platformEnv).resumeTurnAfterOAuth?.(
+        continuation.taskId,
+        continuation.id,
+      );
+      if (!resumed) throw new Error('OAuth continuation task is unavailable.');
+    },
+  });
   await wakeCloudflareGatewaySession(rawEnv);
 }
 
