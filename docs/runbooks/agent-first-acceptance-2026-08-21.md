@@ -6,10 +6,10 @@ This report records the independent Fable review, the resulting remediations, an
 
 ## Reviewed revisions
 
-- Main repository: `fdbe4e8d0c0027096644a8ac4085a6f697ec28f9`
+- Main runtime implementation: `fdbe4e8d0c0027096644a8ac4085a6f697ec28f9`
 - Main pull request: <https://github.com/pejmanjohn/chickpea/pull/5>
 - Disposable Worker: <https://chickpea-agent-first-disposable.pejmanjohn.workers.dev>
-- Disposable Worker version: `d4c8087e-0d64-468b-abe5-0737a0516866` at 100%
+- Disposable Worker version: `76665bf7-895e-4078-9133-4677dbe83563` at 100%
 - Private gateway repository: `94071730ea1538de538dcd10070d21b94f9a2590`
 - Private gateway pull request: <https://github.com/pejmanjohn/chickpea-slack-gateway/pull/1>
 - Private gateway: <https://chickpea-slack-gateway.pejmanjohn.workers.dev>
@@ -58,7 +58,7 @@ Private gateway at `9407173`:
 
 ## Live Cloudflare and Acme acceptance
 
-- The disposable Worker serves version `d4c8087e-0d64-468b-abe5-0737a0516866` at 100% and preserved its existing `AUTH_DB` binding and reviewed schema.
+- The disposable Worker serves version `76665bf7-895e-4078-9133-4677dbe83563` at 100% and preserved its existing `AUTH_DB` binding and reviewed schema.
 - The permanent gateway serves version `4e08b065-7866-4a6d-b63f-7cc7e50e0379` at 100% and returns protocol version 1 from its health endpoint.
 - `npm run verify:gateway-live` created a pending claim, retained only an encrypted deployment identity, and stored no Slack credential in the deployment.
 - A live anonymous gateway WebSocket opened in 1.1 seconds and was closed by the authentication alarm after 20.9 seconds with code `1008` and reason `authentication_timeout`. The alarm is scheduled for 10 seconds; Cloudflare documents that alarm execution can be delayed, so this is a bounded authentication fence rather than a hard 10-second network SLA.
