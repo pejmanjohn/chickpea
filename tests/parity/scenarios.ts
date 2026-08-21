@@ -1217,7 +1217,7 @@ export const scenarios: Scenario[] = [
     config: twoProfileDifferentiationConfig(),
     async run(instance) {
       await instance.postEvent(
-        appMention({
+        topLevelChannelMessage({
           event_id: 'Ev_DEMO_RELEASE_SCRIBE',
           event: {
             channel: EXEC_CHANNEL,
@@ -1238,7 +1238,7 @@ export const scenarios: Scenario[] = [
       assert.match(releasePrompt, /fenced code\/diff snippet/i);
 
       await instance.postEvent(
-        appMention({
+        topLevelChannelMessage({
           event_id: 'Ev_DEMO_EXEC_BRIEF',
           event: {
             channel: EXEC_CHANNEL,

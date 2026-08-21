@@ -168,8 +168,7 @@ export class WebClientPresenter {
         channel_id: this.target.channelId,
         thread_ts: this.target.threadTs,
         status: '',
-        ...this.persona(),
-      } as unknown as Parameters<WebClient['assistant']['threads']['setStatus']>[0]);
+      });
     } catch {
       // A failed clear is non-fatal; the turn already delivered its final.
     }

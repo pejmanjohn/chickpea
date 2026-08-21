@@ -100,7 +100,7 @@ export interface SlackTransport {
     threadTs?: string;
     text: string;
     blocks?: unknown[];
-    persona: SlackMessagePersona;
+    persona?: SlackMessagePersona;
   }): Promise<SlackMessageReference>;
 }
 

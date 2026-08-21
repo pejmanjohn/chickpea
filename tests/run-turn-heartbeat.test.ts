@@ -438,6 +438,7 @@ test('a stalled detail status does not delay agent start or final delivery', asy
   const agentStarted = deferred<void>();
   const finalAttempted = deferred<void>();
   const lateClear = deferred<void>();
+  const lifecycle: string[] = [];
   let nonEmptyStatusCalls = 0;
   let clearCalls = 0;
   const client = {
@@ -446,6 +447,7 @@ test('a stalled detail status does not delay agent start or final delivery', asy
         async setStatus(input: { status?: string }) {
           if (input.status === '') {
             clearCalls += 1;
+            lifecycle.push('clear');
             if (clearCalls === 2) lateClear.resolve(undefined);
             return { ok: true };
           }
@@ -462,6 +464,7 @@ test('a stalled detail status does not delay agent start or final delivery', asy
     },
     chat: {
       startStream: async () => {
+        lifecycle.push('final');
         finalAttempted.resolve(undefined);
         return { ok: true, ts: 'final-ts' };
       },
@@ -493,6 +496,11 @@ test('a stalled detail status does not delay agent start or final delivery', asy
   await finalAttempted.promise;
   assert.equal(await Promise.race([outcome, delay(100, 'timeout' as const)]), 'resolved');
   assert.equal(clearCalls, 1, 'final delivery should trigger an immediate clear');
+  assert.deepEqual(
+    lifecycle.slice(0, 2),
+    ['final', 'clear'],
+    'the final must be posted before the status is cleared',
+  );
 
   detailWrite.resolve(undefined);
   await lateClear.promise;

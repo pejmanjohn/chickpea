@@ -215,6 +215,7 @@ test('canonical visual states use authenticated production URLs and UI actions o
         path: '/admin/channels/TVISUAL/C_RELEASES',
         actions: ['Advanced'],
       },
+      team: { path: '/admin/team', actions: [] },
     });
 
     for (const state of Object.values(fixture.canonicalStates)) {
@@ -312,7 +313,7 @@ test('production Admin markup exposes the shared primary shell and scoped Agent 
   assert.match(html, /app\.className = "frame onboarding-frame"/);
   assert.match(html, /isPrimaryAdminSurface\(\) \? " primary-admin-shell"/);
   assert.match(html, /<nav class="rail' \+ \(primaryShell \? ' primary-shell-sidebar' : ''\) \+ '" aria-label="Settings">/);
-  assert.match(html, /<a class="section-nav-item" href="\/admin\/account">Account<\/a>/);
+  assert.doesNotMatch(html, /href="\/admin\/account"|>Account<\/a>/);
   assert.doesNotMatch(html, /fixtureState|fixtureCredential|agent_research|C_RELEASES|TVISUAL/);
   assert.doesNotMatch(html, /\.onboarding[^,{]*,\s*\.admin-surface|\.settings[^,{]*,\s*\.admin-surface/);
 });

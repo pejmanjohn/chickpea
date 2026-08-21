@@ -162,8 +162,6 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
     }
   });
 
-  app.onError((error, c) => teamError(c, error));
-
   return app;
 }
 

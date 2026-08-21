@@ -31,8 +31,9 @@ test('Slack sign-in is the only visible login path and preserves a safe Admin de
   assert.match(html, /data-slack-auth-surface="sign-in"/);
   assert.match(html, /Sign in with Slack/);
   assert.match(html, /name="destination" value="\/admin\/channels"/);
-  assert.match(html, /Control-plane access is invitation-only/);
-  assert.match(html, /assigned channels without signing in here/);
+  assert.match(html, /Full Slack members get access after their first Agent interaction/);
+  assert.match(html, /Guests and Slack Connect participants remain Slack-only/);
+  assert.doesNotMatch(html, /invitation-only|invited to manage/i);
   assert.match(html, /<main[^>]*aria-labelledby="auth-title"/);
   assert.match(html, /role="status" aria-live="polite"/);
   assert.match(html, /autofocus/);
@@ -141,25 +142,25 @@ test('shared gateway failures explain safety, retry, and the customer-owned fall
   }
 });
 
-test('wrong-account and uninvited denial is safe and gives a Slack retry without implying basic access', () => {
+test('wrong-account denial explains automatic provisioning and gives a Slack retry', () => {
   const html = renderSlackAccessDeniedPage({
     purpose: 'login', destination: DESTINATION, reason: 'user_mismatch',
     workspace: { teamId: 'TACME', teamName: 'Acme' },
   });
   assert.match(html, /Try another Slack account/);
   assert.match(html, /Acme \(TACME\)/);
-  assert.match(html, /You can still use Chickpea agents in assigned Slack channels/);
+  assert.match(html, /First interact with a Chickpea Agent/);
+  assert.match(html, /If access was suspended or removed, ask an Owner to restore it/);
   assert.match(html, /name="purpose" value="login"/);
   assert.match(html, /name="destination" value="\/admin\/channels"/);
   assert.doesNotMatch(html, /invited user|expected user|email|password/i);
 });
 
-test('first-Owner completion warns about redundancy and returns to the exact safe view', () => {
+test('first-Owner completion returns directly to the exact safe view', () => {
   const html = renderSlackOwnerCompletePage(DESTINATION);
   assert.match(html, /data-slack-auth-surface="owner-complete"/);
   assert.match(html, /You’re the first Owner/);
-  assert.match(html, /add a second Owner/i);
-  assert.match(html, /destructive fresh reset/i);
+  assert.doesNotMatch(html, /add a second Owner|destructive fresh reset|invite an Admin/i);
   assert.match(html, /href="\/admin\/channels"/);
   assert.doesNotMatch(html, /password|admin token|cloudflare access/i);
 });

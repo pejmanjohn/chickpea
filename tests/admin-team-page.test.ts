@@ -97,6 +97,7 @@ async function createHarness(viewerRole: 'owner' | 'admin' = 'owner') {
     set innerHTML(value: string) { html = value; },
   };
   const listeners: Record<string, Listener> = {};
+  let focused = '';
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
   const location = { pathname: '/admin/team', search: '' };
   const applyPath = (path: string) => {
@@ -106,8 +107,22 @@ async function createHarness(viewerRole: 'owner' | 'admin' = 'owner') {
   };
   const document = {
     getElementById(id: string) { return id === 'app' ? app : null; },
-    querySelector() { return null; },
-    querySelectorAll() { return []; },
+    querySelector(selector: string) {
+      if (selector === '[data-action="team-role-action"]' && html.includes('data-action="team-role-action"')) {
+        return { focus() { focused = 'team-role-action'; } };
+      }
+      if (selector === '[data-action="team-status-action"]' && html.includes('data-action="team-status-action"')) {
+        return { focus() { focused = 'team-status-action'; } };
+      }
+      return null;
+    },
+    querySelectorAll(selector: string) {
+      if (selector !== '[data-action="team-actions-toggle"]') return [];
+      return team.members.filter((member) => member.status !== 'removed').map((member) => ({
+        getAttribute(name: string) { return name === 'data-membership' ? member.id : null; },
+        focus() { focused = `trigger:${member.id}`; },
+      }));
+    },
     addEventListener(type: string, listener: Listener) { listeners[type] = listener; },
   };
   const fetch = async (path: string, init?: { method?: string; body?: string }): Promise<FakeResponse> => {
@@ -142,7 +157,7 @@ async function createHarness(viewerRole: 'owner' | 'admin' = 'owner') {
     window: { addEventListener() {} },
   }, { filename: 'admin-team-page-inline.js' });
   await flush();
-  return { app, listeners, requests, team };
+  return { app, listeners, requests, team, focused: () => focused };
 }
 
 test('Team explains automatic provisioning and never loads invitation or Slack-directory UI', async () => {
@@ -162,6 +177,7 @@ test('Owner changes ordinary roles directly from one member row menu', async () 
   click({ target: actionTarget({
     'data-action': 'team-actions-toggle', 'data-membership': 'membership_member',
   }) });
+  assert.equal(harness.focused(), 'team-role-action');
   assert.match(harness.app.innerHTML, /role="menu" aria-label="Actions for Maya Member"/);
   assert.match(harness.app.innerHTML, /Make Admin/);
   assert.match(harness.app.innerHTML, /Make Owner/);
@@ -260,4 +276,5 @@ test('row menu closes on outside click and Escape', async () => {
     target: actionTarget(), key: 'Escape', preventDefault() {},
   });
   assert.doesNotMatch(harness.app.innerHTML, /role="menu"/);
+  assert.equal(harness.focused(), 'trigger:membership_member');
 });

@@ -2727,6 +2727,23 @@ test('Agent connection API creates one reusable account, attaches it, and never 
     const listedText = await list.text();
     assert.match(listedText, /Support Zendesk/);
     assert.doesNotMatch(listedText, /zendesk-secret-value|secretRefId/);
+
+    const inventory = await app.request(
+      '/admin/api/connections?workspaceId=T_TEST',
+      { headers: auth(ADMIN_TOKEN) },
+    );
+    const inventoryText = await inventory.text();
+    assert.equal(inventory.status, 200, inventoryText);
+    const inventoryBody = JSON.parse(inventoryText) as {
+      accounts: Array<{ account: { label: string }; agents: Array<{ id: string }> }>;
+    };
+    assert.equal(inventoryBody.accounts.length, 1);
+    assert.equal(inventoryBody.accounts[0]?.account.label, 'Support Zendesk');
+    assert.deepEqual(
+      inventoryBody.accounts[0]?.agents.map(({ id }) => id).sort(),
+      ['agent_connections_primary', 'agent_connections_secondary'],
+    );
+    assert.doesNotMatch(inventoryText, /zendesk-secret-value|secretRefId/);
   } finally {
     settings.close();
     store.close();
@@ -6108,6 +6125,49 @@ test('Agent directory reveals non-editable Agents only through current Slack Cha
     const hiddenDetail = await app.request(`/admin/api/agents/${hidden.id}`, { headers: auth(ADMIN_TOKEN) });
     assert.equal(hiddenDetail.status, 404);
     assert.equal(JSON.stringify(await hiddenDetail.json()).includes('Private hidden instructions.'), false);
+  } finally {
+    identity.close();
+    config.close();
+  }
+});
+
+test('opening a valid Agent repairs its missing memory owner', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const identity = new SqliteIdentityStore(':memory:');
+  const memory = new SqliteMemoryStateStore(':memory:');
+  try {
+    const owner = await createSlackOwner(identity, {
+      teamId: 'T_TEST', userId: 'U_OWNER_MEMORY_BOOTSTRAP', suffix: 'admin_memory_bootstrap',
+    });
+    const configured = await config.createAgent({
+      ...agent({ id: 'agent_memory_bootstrap', name: 'Memory Bootstrap' }),
+      creatorMembershipId: owner.membership.id,
+    });
+    assert.equal((await memory.listOwners('T_TEST')).length, 0);
+
+    const app = appWithAdminOptions(config, { identity, memory });
+    const agentResponse = await app.request('/admin/api/agents', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(agentResponse.status, 200);
+    assert.ok(((await agentResponse.json()) as any).agents.some(
+      (candidate: any) => candidate.id === configured.id,
+    ));
+
+    const owners = await memory.listOwners('T_TEST');
+    assert.equal(owners.length, 1);
+    assert.equal(owners[0]?.ownerKind, 'agent');
+    assert.equal(owners[0]?.ownerId, configured.id);
+
+    const memoryResponse = await app.request(
+      `/admin/api/audit/memory/owners/agent/T_TEST/${configured.id}/files`,
+      { headers: auth(ADMIN_TOKEN) },
+    );
+    assert.equal(memoryResponse.status, 200);
+    const files = ((await memoryResponse.json()) as any).files;
+    assert.equal(files.length, 1);
+    assert.equal(files[0]?.name, 'MEMORY.md');
+    assert.equal(files[0]?.generated, true);
   } finally {
     identity.close();
     config.close();

@@ -117,8 +117,10 @@ export function createGatewaySlackTransport(client: GatewayOperationClient): Sla
         ...(input.threadTs ? { thread_ts: input.threadTs } : {}),
         text: input.text,
         ...(input.blocks ? { blocks: input.blocks } : {}),
-        username: input.persona.name,
-        icon_url: input.persona.avatarUrl,
+        ...(input.persona ? {
+          username: input.persona.name,
+          icon_url: input.persona.avatarUrl,
+        } : {}),
       });
       return {
         channelId: requiredString(result.channel, 'chat.postMessage'),

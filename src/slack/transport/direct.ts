@@ -163,8 +163,10 @@ export function createDirectSlackTransportFromClient(
         ...(input.threadTs ? { thread_ts: input.threadTs } : {}),
         text: input.text,
         ...(input.blocks ? { blocks: input.blocks } : {}),
-        username: input.persona.name,
-        icon_url: input.persona.avatarUrl,
+        ...(input.persona ? {
+          username: input.persona.name,
+          icon_url: input.persona.avatarUrl,
+        } : {}),
       });
       const channelId = requiredString(result.channel, 'chat.postMessage');
       const ts = requiredString(result.ts, 'chat.postMessage');

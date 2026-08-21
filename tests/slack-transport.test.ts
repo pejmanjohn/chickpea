@@ -146,6 +146,18 @@ test('direct transport turns Slack failures into stable capability errors', asyn
   );
 });
 
+test('direct transport omits persona fields when posting as the base Slack app', async () => {
+  const calls: RecordedCall[] = [];
+  const transport = createDirectSlackTransportFromClient(fakeClient(calls));
+
+  await transport.postMessage({ channelId: 'D123', text: 'Start a thread with @sprout.' });
+
+  assert.deepEqual(calls.at(-1)?.input, {
+    channel: 'D123',
+    text: 'Start a thread with @sprout.',
+  });
+});
+
 test('workspace installation selects one transport mode at the runtime edge', () => {
   const direct = stubTransport('direct');
   const gateway = stubTransport('gateway');

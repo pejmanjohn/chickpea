@@ -736,6 +736,7 @@ export function deriveSlackThreadTitle(message: string, workLabel?: string): str
   }
   const sanitized = source
     .replace(/<@[^>]+>/g, '')
+    .replace(/<!subteam\^[^>|]+(?:\|[^>]+)?>/g, '')
     .replace(/[`*_~#[\]()>]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();

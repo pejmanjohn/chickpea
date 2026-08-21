@@ -50,6 +50,7 @@ import {
   SLACK_REQUEST_FRESHNESS_MS,
   verifyPendingSlackChallenge,
 } from '../src/slack/identity-handshake.ts';
+import type { SlackTransport } from '../src/slack/transport/types.ts';
 import {
   buildSlackIdentityManifest,
   slackManifestPrefillUrl,
@@ -252,6 +253,7 @@ function appWith(
   settings: SettingsStore,
   store?: SqliteConfigStore,
   slackCredentials?: SlackCredentialDependencies,
+  slackTransport?: SlackTransport,
 ): Hono {
   const app = new Hono();
   app.route('/', createAdminRoutes({
@@ -259,6 +261,7 @@ function appWith(
     ...testAdminAuthority(ADMIN_TOKEN),
     ...(store ? { store } : {}),
     ...(slackCredentials ? { slackCredentials } : {}),
+    ...(slackTransport ? { slackTransport } : {}),
   }));
   return app;
 }
@@ -1663,6 +1666,7 @@ test('connection status treats a retained shared-gateway installation as connect
         credentials: Record<string, string>;
         transportMode: string;
         health: string;
+        teamId: string | null;
       };
       assert.equal(body.connected, true);
       assert.deepEqual(body.credentials, {
@@ -1672,6 +1676,7 @@ test('connection status treats a retained shared-gateway installation as connect
       });
       assert.equal(body.transportMode, 'gateway');
       assert.equal(body.health, 'healthy');
+      assert.equal(body.teamId, 'TGATEWAY');
 
       await config.updateWorkspaceInstallation('TGATEWAY', {
         health: 'revoked',
@@ -1683,6 +1688,71 @@ test('connection status treats a retained shared-gateway installation as connect
         (await revokedResponse.json() as { connected: boolean }).connected,
         false,
       );
+    } finally {
+      config.close();
+      settings.close();
+    }
+  });
+});
+
+test('connection test verifies a shared-gateway installation without local Slack secrets', async () => {
+  await withEnv(NO_SLACK_ENV, async () => {
+    const settings = new SqliteSettingsStore(':memory:');
+    const config = new SqliteConfigStore(':memory:');
+    const gatewayTransport = {
+      mode: 'gateway',
+      async lookupMember(userId: string) {
+        assert.equal(userId, 'UCHICKPEA');
+        return {
+          id: userId,
+          teamId: 'TGATEWAY',
+          name: 'chickpea',
+          displayName: 'Chickpea',
+          deleted: false,
+          bot: true,
+          appUser: true,
+          restricted: false,
+          ultraRestricted: false,
+          stranger: false,
+        };
+      },
+    } as SlackTransport;
+    try {
+      await markWorkspaceDefaultConnected(config, {
+        teamId: 'TGATEWAY',
+        appId: 'AGATEWAY',
+        botUserId: 'UCHICKPEA',
+        credentialProvenance: 'workspace_default',
+      });
+      await config.ensureWorkspaceInstallation({
+        workspaceId: 'TGATEWAY',
+        transportMode: 'gateway',
+        teamId: 'TGATEWAY',
+        appId: 'AGATEWAY',
+        botUserId: 'UCHICKPEA',
+        gatewayBindingId: 'binding_gateway',
+      });
+      await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme Gateway');
+
+      const response = await appWith(settings, config, undefined, gatewayTransport).request(
+        '/admin/api/slack-connection/test',
+        {
+          method: 'POST',
+          headers: { ...auth(), 'content-type': 'application/json' },
+          body: '{}',
+        },
+      );
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        ok: true,
+        teamId: 'TGATEWAY',
+        teamName: 'Acme Gateway',
+        botName: 'Chickpea',
+        botUserId: 'UCHICKPEA',
+        transportMode: 'gateway',
+      });
+      assert.equal((await config.getWorkspaceInstallation('TGATEWAY'))?.health, 'healthy');
     } finally {
       config.close();
       settings.close();

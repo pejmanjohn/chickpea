@@ -1744,32 +1744,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 .where-remove { min-height: 32px; padding: 6px 9px; }
 .owner-memory-intro { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 14px; justify-content: space-between; }
 .owner-memory-intro p { margin: 0; }
-.owner-memory-assignee { background: #f2e8d5; border-radius: 999px; color: var(--text-2); font-size: .6875rem; font-weight: 750; padding: 6px 9px; }
-.owner-memory-layout { border: 1px solid #e7dcc7; border-radius: 12px; display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: 465px; overflow: hidden; }
-.agent-tabs-card [id="ptab-panel-memory"] .owner-memory-layout { border-bottom: 0; border-left: 0; border-radius: 0; border-right: 0; margin: 8px -28px -28px; }
-.owner-memory-files { background: #fbf6ea; border-right: 1px solid #e7dcc7; min-width: 0; padding: 18px 12px; }
-.owner-memory-files-head { align-items: center; color: #74664e; display: flex; font-size: .6875rem; font-weight: 800; justify-content: space-between; letter-spacing: .11em; padding: 0 8px 10px; text-transform: uppercase; }
-.owner-memory-files-head small { align-items: center; background: #ece0c9; border-radius: 999px; display: inline-flex; font-size: .625rem; height: 21px; justify-content: center; letter-spacing: 0; min-width: 21px; }
-.owner-memory-file-list { display: grid; gap: 4px; }
-.owner-memory-file, .owner-memory-add { background: transparent; border: 1px solid transparent; border-radius: 9px; color: var(--text-2); cursor: pointer; display: flex; flex-direction: column; font: inherit; gap: 3px; min-width: 0; padding: 10px; text-align: left; width: 100%; }
-.owner-memory-file:hover, .owner-memory-add:hover { background: #f5ead4; }
-.owner-memory-file:disabled, .owner-memory-add:disabled { cursor: not-allowed; opacity: .55; }
-.owner-memory-file.on { background: #f2e3c2; border-color: #dec999; box-shadow: inset 3px 0 var(--admin-visual-gold); color: var(--text); }
-.owner-memory-file-name { font-family: var(--mono); font-size: .6875rem; font-weight: 750; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
-.owner-memory-file-meta, .owner-memory-add small { color: var(--text-3); font-size: .625rem; text-transform: capitalize; }
-.owner-memory-add { border-top-color: #e7dcc7; margin-top: 9px; }
-.owner-memory-editor { background: #fffdf8; display: flex; flex-direction: column; gap: 13px; min-width: 0; padding: 22px 24px 24px; }
+.owner-memory-editor { background: #fffdf8; border: 1px solid #e7dcc7; border-radius: 12px; display: flex; flex-direction: column; gap: 13px; min-width: 0; padding: 22px 24px 24px; }
+.agent-tabs-card [id="ptab-panel-memory"] .owner-memory-editor { border-bottom: 0; border-left: 0; border-radius: 0; border-right: 0; margin: 8px -28px -28px; }
 .owner-memory-editor-head { align-items: flex-start; border-bottom: 1px solid #eee4d1; display: flex; gap: 18px; justify-content: space-between; padding-bottom: 16px; }
-.owner-memory-editor h3 { color: var(--text); font-family: var(--mono); font-size: 1rem; letter-spacing: -.02em; margin: 0 0 4px; }
 .owner-memory-form { display: grid; gap: 13px; }
-.owner-memory-form input[readonly] { background: #f5efe3; color: #81755f; }
-.owner-memory-state { align-items: center; background: var(--ok-tint); border-radius: 999px; color: var(--ok); display: inline-flex; font-size: .625rem; font-weight: 800; padding: 6px 9px; text-transform: capitalize; }
-.owner-memory-state.readonly { background: #ece6d9; color: #776c58; }
-.owner-memory-source { background: #2f2b24; border-radius: 11px; color: #eee6d6; font-family: var(--mono); font-size: .6875rem; line-height: 1.75; margin: 5px 0 0; min-height: 315px; overflow: auto; padding: 18px; white-space: pre-wrap; }
-.owner-memory-fields { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr) 180px; }
+.owner-memory-editor textarea { line-height: 1.65; min-height: 300px; resize: vertical; }
 .owner-memory-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; padding-top: 1px; }
-.owner-memory-history { border-top: 1px solid #eee4d1; padding-top: 11px; }
-.owner-memory-history > summary { color: #695d48; cursor: pointer; font-size: .6875rem; font-weight: 750; }
 .owner-memory-status { color: var(--text-3); font-size: .75rem; min-height: 18px; }
 .owner-memory-status.error { color: var(--danger); }
 .channel-detail-page { display: flex; flex-direction: column; gap: 24px; }
@@ -1877,11 +1857,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   .agent-overflow { margin-left: auto; }
   .agent-detail-card, .agent-placement-card, .agent-model-card { align-items: stretch; grid-template-columns: 1fr; }
   .agent-placement-groups { grid-template-columns: 1fr; }
-  .owner-memory-layout { grid-template-columns: 1fr; }
-  .agent-tabs-card [id="ptab-panel-memory"] .owner-memory-layout { margin: 8px -20px -20px; }
-  .owner-memory-files { border-bottom: 1px solid #e7dcc7; border-right: 0; max-height: none; overflow: visible; }
-  .owner-memory-file-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .owner-memory-fields, .channel-capability-groups { grid-template-columns: 1fr; }
+  .owner-memory-editor { padding: 20px; }
+  .agent-tabs-card [id="ptab-panel-memory"] .owner-memory-editor { margin: 8px -20px -20px; }
+  .channel-capability-groups { grid-template-columns: 1fr; }
   .owner-memory-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .owner-memory-actions .spacer { display: none; }
   .owner-memory-actions .btn { width: 100%; }
@@ -1907,9 +1885,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 }
 
 @media (max-width: 740px) {
-  .agent-profile-page .ptabs { overflow-x: auto; }
+  .agent-profile-page .ptabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: visible; }
+  .agent-profile-page .ptab { min-width: 0; padding-inline: 8px; text-align: center; }
   .agent-profile-page .agent-tabs-card .ptab-panel { padding: 20px; }
   .agent-profile-page .save-bar-inner { align-items: stretch; }
+}
+@media (max-width: 480px) {
+  .agent-profile-page .ptabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* ---- profile repositories ---------------------------------------------- */
@@ -2620,6 +2602,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     settingsSection: "providers",
     settingsLoaded: false,
     settingsLoadGeneration: 0,
+    connectionInventory: { accounts: [], loading: false, error: "" },
     providerSettingsRequestId: 0,
     settingsError: "",
     modelCatalog: null,
@@ -2747,7 +2730,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       workspaceId: "",
       ownerId: "",
       files: null,
-      selectedFile: "MEMORY.md",
+      selectedFile: "",
       detail: null,
       history: [],
       draft: null,
@@ -3322,8 +3305,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-channels" data-section-switcher="true">Channels</button>' +
         '<button type="button" class="btn btn-soft' + (primarySection() === "team" ? " nav-active" : "") + '" data-action="open-team" data-section-switcher="true">Team</button>' +
         (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (primarySection() === "usage" ? " nav-active" : "") + '" data-action="open-usage" data-section-switcher="true">Usage</button>' : '') +
-        '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>' +
-        '<a class="btn btn-soft" href="/admin/account">Account</a>';
+        '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>';
     // The brand doubles as a home affordance to the canonical Agent.
     return '<header class="topbar' + (scoped ? ' admin-mobile-topbar' : '') + '">' +
       '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + '<span class="brand-name">Chickpea</span></button></div>' +
@@ -3401,7 +3383,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         var selected = active === section.id;
         return '<button type="button" class="section-nav-item' + (selected ? " active" : "") + '" data-action="' + section.action + '" data-section-switcher="true"' +
           (selected ? ' aria-current="page"' : '') + '>' + section.label + '</button>';
-      }).join("") + '<a class="section-nav-item" href="/admin/account">Account</a></nav>';
+      }).join("") + '</nav>';
   }
 
   // The connected workspace's display name for a rail group header: the friendly
@@ -3517,23 +3499,29 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '<section class="team-card" aria-labelledby="members-heading"><h2 id="members-heading">Members</h2><p class="hint">Owners can change roles, suspend access, restore access, or permanently remove a member.</p><div class="team-list">' + (members.length ? members.map(teamMemberRowHtml).join("") : '<p class="team-empty">No one has interacted with an Agent yet.</p>') + '</div></section>';
   }
 
+  function teamMembershipLabel(value) {
+    return value.charAt(0).toUpperCase() + value.slice(1);
+  }
+
   function teamMemberRowHtml(member) {
     var viewer = state.team && state.team.viewer ? state.team.viewer : { role: "admin", membershipId: "" };
     var canManage = viewer.role === "owner" && viewer.membershipId !== member.id && member.status !== "removed";
     var busy = state.teamBusy === "member:" + member.id;
     var label = member.displayName || member.slackUserId || "Slack member";
     var menuOpen = state.teamActionMenuId === member.id;
-    var roleActions = ["member", "admin", "owner"].filter(function (role) { return role !== member.role; }).map(function (role) {
-      return '<button type="button" role="menuitem" data-action="team-role-action" data-membership="' + esc(member.id) + '" data-role="' + esc(role) + '">Make ' + esc(role.charAt(0).toUpperCase() + role.slice(1)) + '</button>';
-    }).join("");
+    var roleActions = member.status === "suspended" ? "" : ["member", "admin", "owner"]
+      .filter(function (role) { return role !== member.role; })
+      .map(function (role) {
+        return '<button type="button" role="menuitem" data-action="team-role-action" data-membership="' + esc(member.id) + '" data-role="' + esc(role) + '">Make ' + esc(teamMembershipLabel(role)) + '</button>';
+      }).join("");
     var accessActions = member.status === "suspended"
       ? '<button type="button" role="menuitem" data-action="team-status-action" data-membership="' + esc(member.id) + '" data-status="active">Restore access</button><div class="team-action-divider" role="separator"></div><button type="button" role="menuitem" class="danger" data-action="team-status-action" data-membership="' + esc(member.id) + '" data-status="removed">Remove from Chickpea</button>'
       : roleActions + '<div class="team-action-divider" role="separator"></div><button type="button" role="menuitem" data-action="team-status-action" data-membership="' + esc(member.id) + '" data-status="suspended">Suspend access</button><button type="button" role="menuitem" class="danger" data-action="team-status-action" data-membership="' + esc(member.id) + '" data-status="removed">Remove from Chickpea</button>';
     var actions = canManage
       ? '<div class="team-actions-wrap"><button type="button" class="team-actions-trigger" data-action="team-actions-toggle" data-membership="' + esc(member.id) + '" aria-haspopup="menu" aria-expanded="' + (menuOpen ? 'true' : 'false') + '" aria-label="Actions for ' + esc(label) + '"' + (busy ? ' disabled' : '') + '>' + icon("ellipsis") + '</button>' + (menuOpen ? '<div class="team-action-menu" role="menu" aria-label="Actions for ' + esc(label) + '">' + accessActions + '</div>' : '') + '</div>'
       : '';
-    var roleLabel = member.role.charAt(0).toUpperCase() + member.role.slice(1);
-    var statusLabel = member.status.charAt(0).toUpperCase() + member.status.slice(1);
+    var roleLabel = teamMembershipLabel(member.role);
+    var statusLabel = teamMembershipLabel(member.status);
     return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(label) + (viewer.membershipId === member.id ? ' <span class="hint">(you)</span>' : '') + '</div><div class="team-row-sub">' + esc(member.slackUserId || "Slack identity unavailable") + '</div><div class="team-statuses"><span class="team-status ' + esc(member.role) + '">' + esc(roleLabel) + '</span><span class="team-status ' + esc(member.status) + '">' + esc(statusLabel) + '</span></div></div><div class="team-row-actions">' + actions + '</div></article>';
   }
 
@@ -3564,6 +3552,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function settingsRailHtml() {
     var sections = [
       { id: "slack", name: "Slack", meta: "Installation" },
+      { id: "connections", name: "Connections", meta: "Shared inventory" },
       { id: "providers", name: "Model providers", meta: "Keys and models" },
       { id: "github", name: "GitHub", meta: "Accounts and access" },
       { id: "sandbox", name: "Coding sandbox", meta: "Workspace runtime" },
@@ -3790,7 +3779,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function confirmTeamRole(member, role) {
     var label = member.displayName || member.slackUserId || "this member";
-    var roleLabel = role.charAt(0).toUpperCase() + role.slice(1);
+    var roleLabel = teamMembershipLabel(role);
     var article = role === "member" ? "a" : "an";
     state.teamConfirm = {
       membershipId: member.id,
@@ -4278,6 +4267,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function slackCredentialSummary() {
+    if (state.slack && state.slack.transportMode === "gateway") {
+      return "Connection managed by Chickpea gateway";
+    }
     var credentials = state.slack && state.slack.credentials;
     if (!credentials) return "Credential status unavailable";
     var sources = [credentials.botToken, credentials.signingSecret];
@@ -4487,6 +4479,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '<p class="hint">Manage this Slack workspace connection.</p></div></div>' +
       '<div class="action-well">' + testButton +
       slackConnectionStatusHtml() + '</div>' +
+      (!mutable ? '<div class="action-well"><div class="danger-copy"><span class="danger-title">Reconnect the shared Slack app</span>' +
+      '<span class="hint">Refresh Slack authorization without changing Agents, Channel grants, or saved settings.</span></div>' +
+      '<a href="/admin/slack-gateway/reconnect" class="btn btn-soft i-lead"' +
+      (connectionBusy ? ' aria-disabled="true"' : '') + '>' + icon("arrow-path") + 'Reconnect with Slack</a></div>' : '') +
       '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect this workspace</span>' +
       '<span class="hint">Stops Chickpea from answering. Agents and Channel configuration stay saved so you can reconnect later. This does not uninstall the Slack app.</span>' +
       (!mutable ? '<span class="hint">This connection is managed by the environment and is read-only here.</span>' : "") +
@@ -4552,6 +4548,22 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function focusAction(action) {
     var control = document.querySelector('[data-action="' + action + '"]');
     if (control && control.focus) control.focus();
+  }
+
+  function focusTeamActionMenu() {
+    var control = document.querySelector('[data-action="team-role-action"]') ||
+      document.querySelector('[data-action="team-status-action"]');
+    if (control && control.focus) control.focus();
+  }
+
+  function focusTeamActionTrigger(membershipId) {
+    var controls = document.querySelectorAll('[data-action="team-actions-toggle"]');
+    for (var index = 0; index < controls.length; index += 1) {
+      if (controls[index].getAttribute("data-membership") === membershipId) {
+        if (controls[index].focus) controls[index].focus();
+        return;
+      }
+    }
   }
 
   function focusSlackDisconnectDialog() {
@@ -5020,6 +5032,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function slackErrorText(message, detail, serverMessage) {
     if (message === "slack_unreachable") return "Could not reach the Slack API. Check connectivity and try again.";
+    if (message === "slack_gateway_unreachable" && detail === "gateway_not_connected") return "This deployment is no longer linked to the shared Slack app. Open Slack setup and use Add to Slack again.";
+    if (message === "slack_gateway_unreachable") return "The shared Slack connection is temporarily unavailable. Retry now; if it continues, open Slack setup and use Add to Slack again.";
     if (message === "slack_auth_failed") return "Slack rejected the installed bot credential.";
     if (message === "slack_missing_scopes") return "The Slack installation is missing required permissions. Use the scoped recovery flow to repair it.";
     return serverMessage || (detail ? message + ": " + detail : message);
@@ -5371,10 +5385,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       skillImportPickerHtml(imp) + "</div>";
   }
 
-  function ownerMemoryFileCount() {
-    return (state.ownerMemory.files || []).length;
-  }
-
   function ownerMemoryMatches(ownerKind, workspaceId, ownerId) {
     var memory = state.ownerMemory;
     return memory.ownerKind === ownerKind && memory.workspaceId === workspaceId && memory.ownerId === ownerId;
@@ -5383,79 +5393,43 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function ownerMemoryPanelHtml(ownerKind, ownerId, ownerLabel, assignedAgentName) {
     var workspaceId = connectedTeamId();
     var memory = state.ownerMemory;
-    var ownerName = ownerKind === "channel" ? channelLabel({ channelLabel: ownerLabel, channelId: ownerId }) : ownerLabel;
-    var reach = ownerKind === "agent"
-      ? "This memory follows " + ownerName + " everywhere it works."
-      : "This memory stays only in " + ownerName + ", even if its Agent changes.";
-    var assignee = ownerKind === "channel"
-      ? '<span class="owner-memory-assignee">Assigned Agent: ' + esc(assignedAgentName || "No Agent assigned") + '</span>'
-      : "";
+    var ownerName = ownerLabel || "this Agent";
+    var reach = "One shared memory follows " + ownerName + " everywhere it works, including Channels and direct messages.";
     if (!ownerId) {
-      return '<div class="empty"><p class="field-label">Save this Agent to add memory</p><p class="hint">Memory files bind to the durable Agent id.</p></div>';
+      return '<div class="empty"><p class="field-label">Save this Agent to add memory</p><p class="hint">Memory belongs to the durable Agent.</p></div>';
     }
     if (!workspaceId) {
       return '<div class="empty"><p class="field-label">Connect Slack to use memory</p><p class="hint">Memory ownership is scoped to the connected workspace.</p></div>';
     }
     if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) {
-      return '<div class="empty"><p class="field-label">Loading memory files&hellip;</p><p class="hint">' + esc(reach) + '</p></div>';
+      return '<div class="empty"><p class="field-label">Loading memory&hellip;</p><p class="hint">' + esc(reach) + '</p></div>';
     }
     var status = memory.error
       ? '<p class="owner-memory-status error" role="alert">' + esc(memory.error) + '</p>'
       : '<p class="owner-memory-status" role="status" aria-live="polite">' + esc(memory.notice || (memory.dirty ? "Unsaved memory changes" : "")) + '</p>';
     if (memory.loading && !memory.files) {
-      return '<div class="empty"><p class="field-label">Loading memory files&hellip;</p><p class="hint">' + esc(reach) + '</p></div>' + status;
+      return '<div class="empty"><p class="field-label">Loading memory&hellip;</p><p class="hint">' + esc(reach) + '</p></div>' + status;
     }
     if (!memory.files) {
       return '<div class="empty"><p class="field-label">Memory is unavailable</p><p class="hint">' + esc(reach) + '</p><button type="button" class="btn btn-soft btn-sm" data-action="owner-memory-retry">Retry</button></div>' + status;
     }
     var selected = memory.files.find(function (file) {
-      return (file.generated ? "MEMORY.md" : file.entryId) === memory.selectedFile;
-    }) || memory.files[0] || null;
-    var files = memory.files.map(function (file) {
-      var key = file.generated ? "MEMORY.md" : file.entryId;
-      var selectedFile = selected && key === (selected.generated ? "MEMORY.md" : selected.entryId);
-      var meta = file.generated ? "Generated · read-only" : (file.status || "active") + " · v" + (file.version || 1);
-      return '<button type="button" class="owner-memory-file' + (selectedFile ? " on" : "") + '" data-action="owner-memory-file" data-file="' + esc(key) + '" aria-label="Open memory file ' + esc(file.name) + ', ' + esc(meta) + '"' + (selectedFile ? ' aria-current="page"' : '') + '>' +
-        '<strong class="owner-memory-file-name" title="' + esc(file.name) + '">' + esc(file.name) + '</strong><small class="owner-memory-file-meta">' + esc(meta) + '</small></button>';
-    }).join("");
-    var editor;
-    if (memory.createDraft) {
-      var create = memory.createDraft;
-      editor = '<section class="owner-memory-editor"><div class="owner-memory-editor-head"><div><h3>New memory file</h3><p class="hint">Create one focused Markdown file for this ' + (ownerKind === "agent" ? "Agent" : "Channel") + '.</p></div></div><div class="owner-memory-form">' +
-        '<div class="owner-memory-fields"><div class="field"><label class="field-label" for="owner-memory-create-slug">Filename</label><div style="display:flex;align-items:center;gap:6px;"><input class="input mono" id="owner-memory-create-slug" value="' + esc(create.slug) + '" placeholder="project-context" data-action="owner-memory-create-slug"><span class="mono">.md</span></div><p class="hint">Letters, numbers, hyphens, and underscores only.</p></div>' +
-        '<div class="field"><label class="field-label" for="owner-memory-create-type">Type</label><select class="input" id="owner-memory-create-type" data-action="owner-memory-create-type">' + ["fact", "decision", "project", "feedback", "preference"].map(function (type) { return '<option value="' + type + '"' + (create.type === type ? " selected" : "") + '>' + type.charAt(0).toUpperCase() + type.slice(1) + '</option>'; }).join("") + '</select></div></div>' +
-        '<div class="field"><label class="field-label" for="owner-memory-create-description">Description</label><input class="input" id="owner-memory-create-description" value="' + esc(create.description) + '" data-action="owner-memory-create-description"></div>' +
-        '<div class="field"><label class="field-label" for="owner-memory-create-body">Markdown body</label><textarea class="textarea" id="owner-memory-create-body" rows="9" data-action="owner-memory-create-body">' + esc(create.body) + '</textarea></div>' +
-        '<div class="owner-memory-actions"><span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-create-cancel"' + (memory.busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="owner-memory-create-confirm"' + (memory.busy ? " disabled" : "") + '>' + (memory.busy === "create" ? "Creating&hellip;" : "Create file") + '</button></div></div></section>';
-    } else if (!selected) {
-      editor = '<div class="empty"><p class="field-label">No memory files yet</p><p class="hint">Create a Markdown file to give this ' + (ownerKind === "agent" ? "Agent" : "Channel") + ' durable context.</p></div>';
-    } else if (selected.generated) {
-      editor = '<section class="owner-memory-editor"><div class="owner-memory-editor-head"><div><h3>MEMORY.md</h3><p class="hint">Generated index · edit individual files to change it.</p></div><span class="owner-memory-state readonly">Read-only</span></div>' +
-        '<pre class="owner-memory-source">' + esc(selected.content || "# Memory\\n") + '</pre></section>';
-    } else if (!memory.detail || memory.detail.entry.entryId !== selected.entryId) {
-      editor = '<section class="owner-memory-editor"><p class="hint">' + (memory.busy === "load" ? "Loading file&hellip;" : "Choose this file again to load it.") + '</p></section>';
-    } else {
-      var entry = memory.detail.entry;
-      var draft = memory.draft || { description: entry.description || "", type: entry.type || "fact", body: entry.body || "" };
-      var review = memory.detail.unresolvedReview;
-      var reviewHtml = review ? '<div class="memory-review"><strong>Review requested</strong><span>' + esc(review.reasonCode || "Needs operator review") + '</span><span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-resolve-review">Mark reviewed</button></div>' : "";
-      var historyHtml = '<details class="owner-memory-history"><summary>Version history (' + memory.history.length + ')</summary><div class="adv-rows">' + (memory.history.length ? memory.history.map(function (revision) {
-        return '<div class="kv"><dt>Version ' + Number(revision.version || 0) + '</dt><dd>' + esc((revision.actorClass || "operator") + " · " + formatMemoryDate(revision.createdAt || revision.modifiedAt || revision.timestamp)) + '</dd></div>';
-      }).join("") : '<p class="hint">No earlier versions.</p>') + '</div></details>';
-      editor = '<section class="owner-memory-editor"><div class="owner-memory-editor-head"><div><h3>' + esc(selected.name) + '</h3><p class="hint">Version ' + Number(entry.version) + ' · ' + esc(reach) + '</p></div><span class="owner-memory-state">' + esc(entry.status || "active") + '</span></div><div class="owner-memory-form">' +
-        '<div class="owner-memory-fields"><div class="field"><label class="field-label" for="owner-memory-name">Filename</label><input class="input mono" id="owner-memory-name" value="' + esc(selected.name) + '" readonly aria-readonly="true"></div>' +
-        '<div class="field"><label class="field-label" for="owner-memory-type">Type</label><select class="input" id="owner-memory-type" data-action="owner-memory-type">' + ["fact", "decision", "project", "feedback", "preference"].map(function (type) { return '<option value="' + type + '"' + (draft.type === type ? " selected" : "") + '>' + type.charAt(0).toUpperCase() + type.slice(1) + '</option>'; }).join("") + '</select></div></div>' +
-        '<div class="field"><label class="field-label" for="owner-memory-description">Description</label><input class="input" id="owner-memory-description" value="' + esc(draft.description) + '" data-action="owner-memory-description"></div>' +
-        '<div class="field"><label class="field-label" for="owner-memory-body">Markdown body</label><textarea class="textarea" id="owner-memory-body" rows="9" data-action="owner-memory-body">' + esc(draft.body) + '</textarea></div>' +
-        reviewHtml + historyHtml +
-        (memory.conflict ? '<div class="callout"><span>Your draft is preserved. This file changed elsewhere.</span><button type="button" class="btn btn-soft btn-sm" data-action="owner-memory-use-latest">Load latest</button></div>' : '') +
-        (memory.deleteConfirm ? '<div class="callout" role="alert"><span>Forget this file? This is irreversible and removes it from the generated MEMORY.md.</span><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-delete-cancel">Cancel</button><button type="button" class="btn btn-danger btn-sm" data-action="owner-memory-delete-confirm">Forget file</button></div>' : '') +
-        '<div class="owner-memory-actions"><button type="button" class="btn btn-danger btn-sm" data-action="owner-memory-delete-open"' + (memory.dirty || memory.busy || entry.status === "forgotten" ? " disabled" : "") + '>Forget file</button><span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-discard"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>Discard</button><button type="button" class="btn btn-primary btn-sm" data-action="owner-memory-save"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>' + (memory.busy === "save" ? "Saving&hellip;" : "Save file") + '</button></div></div></section>';
+      return !file.generated && file.status !== "forgotten" && file.entryId === memory.selectedFile;
+    }) || memory.files.find(function (file) { return !file.generated && file.status !== "forgotten"; }) || null;
+    if (selected && (!memory.detail || memory.detail.entry.entryId !== selected.entryId)) {
+      return '<div class="empty"><p class="field-label">Loading memory&hellip;</p><p class="hint">' + esc(reach) + '</p></div>' + status;
     }
-    var fileCount = memory.files.length;
-    return '<div class="owner-memory-intro"><p class="hint">' + esc(reach) + ' MEMORY.md is generated; individual Markdown files are editable.</p>' + assignee + '</div>' +
-      '<div class="owner-memory-layout"><aside class="owner-memory-files" aria-label="Memory files"><div class="owner-memory-files-head"><span>Files</span><small aria-label="' + fileCount + ' memory ' + (fileCount === 1 ? "file" : "files") + '">' + fileCount + '</small></div><div class="owner-memory-file-list">' + files + '</div>' +
-      '<button type="button" class="owner-memory-add" data-action="owner-memory-create-open"' + (memory.busy || memory.dirty ? " disabled" : "") + '><strong>+ Add file</strong><small>Markdown memory</small></button></aside>' + editor + '</div>' + status;
+    var entry = memory.detail ? memory.detail.entry : null;
+    var draft = memory.draft || {
+      description: entry ? entry.description || "" : "Current Agent memory",
+      type: entry ? entry.type || "project" : "project",
+      body: entry ? entry.body || "" : ""
+    };
+    return '<div class="owner-memory-intro"><p class="hint">' + esc(reach) + '</p></div>' +
+      '<section class="owner-memory-editor"><div class="owner-memory-form">' +
+      '<div class="field"><label class="field-label" for="owner-memory-body">Memory</label><textarea class="textarea" id="owner-memory-body" rows="14" placeholder="What should this Agent remember?" data-action="owner-memory-body">' + esc(draft.body) + '</textarea><p class="hint">Keep durable context here. The Agent may also update this memory while it works.</p></div>' +
+      (memory.conflict ? '<div class="callout"><span>Your draft is preserved because this memory changed elsewhere.</span><button type="button" class="btn btn-soft btn-sm" data-action="owner-memory-use-latest">Load latest</button></div>' : '') +
+      '<div class="owner-memory-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-discard"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>Discard</button><button type="button" class="btn btn-primary btn-sm" data-action="owner-memory-save"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>' + (memory.busy === "save" || memory.busy === "create" ? "Saving&hellip;" : "Save memory") + '</button></div></div></section>' + status;
   }
 
   function agentSchedulesPanelHtml(draft) {
@@ -5496,7 +5470,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return status + '<p class="hint ptab-hint">Each schedule uses this Agent\\'s instructions and memory. Team connections are shared; personal connections always resolve as the named member.</p><div class="connection-account-list">' + rows + '</div>';
   }
 
-  // ---- Capability tabs (Instructions / Skills / Connectors / Repositories / Memory / Schedules) -
+  // ---- Capability tabs (Instructions / Skills / Connections / Repositories / Memory / Schedules) -
 
   // One panel is visible at a time; the other three stay MOUNTED but [hidden] so
   // their form fields survive re-renders and collectProfileDraft() keeps
@@ -5519,9 +5493,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var tabs = [
       { id: "instructions", label: "Instructions", count: 0, icon: "pencil", tone: "instructions", description: "The role, priorities, and boundaries this Agent follows everywhere it works." },
       { id: "skills", label: "Skills", count: (draft.skills || []).filter(function (skill) { return skill.enabled; }).length, icon: "sparkle", tone: "skill", description: "Repeatable ways this Agent knows how to help." },
-      { id: "connections", label: "Connectors", count: state.agentConnections.agentId === draft.id && !state.agentConnections.legacyFallback ? state.agentConnections.attached.length : (draft.mcpServers || []).length + (draft.apiConnections || []).length, icon: "check", tone: "connector", description: "Team and personal accounts this Agent can use." },
+      { id: "connections", label: "Connections", count: state.agentConnections.agentId === draft.id && !state.agentConnections.legacyFallback ? state.agentConnections.attached.length : (draft.mcpServers || []).length + (draft.apiConnections || []).length, icon: "check", tone: "connector", description: "Team and personal accounts this Agent can use." },
       { id: "repositories", label: "Repositories", count: repositoryCount, icon: "repository", tone: "repository", description: "Code and documentation this Agent can work with." },
-      { id: "memory", label: "Memory", count: ownerMemoryFileCount(), icon: "robot", tone: "memory", description: "Durable context this Agent can use wherever it works." },
+      { id: "memory", label: "Memory", count: 0, icon: "robot", tone: "memory", description: "Durable context this Agent can use wherever it works." },
       { id: "schedules", label: "Schedules", count: state.agentSchedules.agentId === draft.id ? state.agentSchedules.schedules.length : 0, icon: "clock", tone: "schedule", description: "Recurring and one-time work owned by this Agent." }
     ];
     var bar = tabs.map(function (tab) {
@@ -8015,7 +7989,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       workspaceId: workspaceId,
       ownerId: ownerId,
       files: sameOwner ? memory.files : null,
-      selectedFile: sameOwner && keepSelection ? memory.selectedFile : "MEMORY.md",
+      selectedFile: sameOwner && keepSelection ? memory.selectedFile : "",
       detail: null,
       history: [],
       draft: null,
@@ -8023,7 +7997,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       loading: true,
       busy: "load",
       error: "",
-      notice: "",
+      notice: sameOwner && keepSelection ? memory.notice : "",
       conflict: null,
       deleteConfirm: false,
       createDraft: null,
@@ -8037,17 +8011,18 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       current.loading = false;
       current.busy = "";
       var selected = current.files.find(function (file) {
-        return (file.generated ? "MEMORY.md" : file.entryId) === current.selectedFile;
-      });
-      if (!selected) current.selectedFile = "MEMORY.md";
+        return !file.generated && file.status !== "forgotten" && file.entryId === current.selectedFile;
+      }) || current.files.find(function (file) { return !file.generated && file.status !== "forgotten"; });
+      current.selectedFile = selected ? selected.entryId : "";
+      if (!selected) current.draft = { description: "Current Agent memory", type: "project", body: "" };
       render();
-      if (current.selectedFile !== "MEMORY.md") return loadOwnerMemoryEntry(current.selectedFile);
+      if (current.selectedFile) return loadOwnerMemoryEntry(current.selectedFile);
     }).catch(function (error) {
       var current = state.ownerMemory;
       if (current.requestId !== requestId || !ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
       current.loading = false;
       current.busy = "";
-      current.error = error.serverMessage || error.message || "Could not load memory files.";
+      current.error = error.serverMessage || error.message || "Could not load memory.";
       render();
     });
   }
@@ -8076,18 +8051,15 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     memory.busy = "load";
     memory.error = "";
     render();
-    return Promise.all([
-      api(base, { cache: "no-store" }),
-      api(base + "/history", { cache: "no-store" })
-    ]).then(function (parts) {
+    return api(base, { cache: "no-store" }).then(function (body) {
       var current = state.ownerMemory;
       if (current.requestId !== requestId || current.selectedFile !== entryId) return;
-      current.detail = parts[0];
-      current.history = parts[1].revisions || [];
+      current.detail = body;
+      current.history = [];
       current.draft = {
-        description: parts[0].entry.description || "",
-        type: parts[0].entry.type || "fact",
-        body: parts[0].entry.body || ""
+        description: body.entry.description || "Current Agent memory",
+        type: body.entry.type || "project",
+        body: body.entry.body || ""
       };
       current.dirty = false;
       current.busy = "";
@@ -8118,7 +8090,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function saveOwnerMemoryEntry() {
     var memory = state.ownerMemory;
-    if (!memory.detail || !memory.draft || !memory.dirty || memory.busy) return;
+    if (!memory.draft || !memory.dirty || memory.busy) return;
+    if (!memory.detail) return createOwnerMemoryBody();
     var entry = memory.detail.entry;
     var base = ownerMemoryBase(memory.ownerKind, memory.workspaceId, memory.ownerId);
     var ownerKey = memory.ownerKind + ":" + memory.workspaceId + ":" + memory.ownerId;
@@ -8137,17 +8110,17 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       current.draft = { description: body.entry.description || "", type: body.entry.type || "fact", body: body.entry.body || "" };
       current.dirty = false;
       current.busy = "";
-      current.notice = "Memory file saved.";
+      current.notice = "Memory saved.";
       return loadOwnerMemory(current.ownerKind, current.workspaceId, current.ownerId, true);
     }).catch(function (error) {
       var current = state.ownerMemory;
       if (ownerKey !== current.ownerKind + ":" + current.workspaceId + ":" + current.ownerId) return;
       current.busy = "";
       if (error.payload && error.payload.error === "memory_version_conflict") {
-        current.error = "This file changed elsewhere. Your draft is preserved.";
+        current.error = "This memory changed elsewhere. Your draft is preserved.";
         current.conflict = { currentVersion: error.payload.currentVersion };
       } else {
-        current.error = error.serverMessage || error.message || "Could not save this memory file.";
+        current.error = error.serverMessage || error.message || "Could not save memory.";
       }
       render();
     });
@@ -8155,14 +8128,48 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function discardOwnerMemoryDraft() {
     var memory = state.ownerMemory;
-    if (!memory.detail) return;
-    var entry = memory.detail.entry;
-    memory.draft = { description: entry.description || "", type: entry.type || "fact", body: entry.body || "" };
+    var entry = memory.detail ? memory.detail.entry : null;
+    memory.draft = {
+      description: entry ? entry.description || "Current Agent memory" : "Current Agent memory",
+      type: entry ? entry.type || "project" : "project",
+      body: entry ? entry.body || "" : ""
+    };
     memory.dirty = false;
     memory.error = "";
     memory.notice = "Draft discarded.";
     memory.conflict = null;
     render();
+  }
+
+  function createOwnerMemoryBody() {
+    var memory = state.ownerMemory;
+    if (!memory.draft || !memory.dirty || memory.busy) return;
+    var ownerKind = memory.ownerKind;
+    var workspaceId = memory.workspaceId;
+    var ownerId = memory.ownerId;
+    memory.busy = "create";
+    memory.error = "";
+    memory.notice = "";
+    render();
+    return api(ownerMemoryBase(ownerKind, workspaceId, ownerId) + "/entries", {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "admin-ui:owner-memory:" + Date.now() + ":" + Math.random().toString(36).slice(2) },
+      body: JSON.stringify({ slug: "agent-memory", description: "Current Agent memory", type: "project", body: memory.draft.body })
+    }).then(function (body) {
+      var current = state.ownerMemory;
+      if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
+      current.busy = "";
+      current.dirty = false;
+      current.selectedFile = body.entry.entryId;
+      current.notice = "Memory saved.";
+      return loadOwnerMemory(ownerKind, workspaceId, ownerId, true);
+    }).catch(function (error) {
+      var current = state.ownerMemory;
+      if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
+      current.busy = "";
+      current.error = error.serverMessage || error.message || "Could not save memory.";
+      render();
+    });
   }
 
   function openOwnerMemoryCreate() {
@@ -8791,6 +8798,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }
     return head +
       settingsPanelHtml("slack", slackWorkspaceSettingsHtml()) +
+      settingsPanelHtml("connections", connectionInventoryHtml()) +
       settingsPanelHtml("providers", providerSection) +
       settingsPanelHtml("github", githubSectionHtml()) +
       settingsPanelHtml("sandbox", sandboxSectionHtml()) +
@@ -8799,6 +8807,25 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function settingsPanelHtml(id, body) {
     return '<div class="settings-panel" data-settings-panel="' + id + '"' + (state.settingsSection === id ? '' : ' hidden') + '>' + body + '</div>';
+  }
+
+  function connectionInventoryHtml() {
+    var inventory = state.connectionInventory;
+    var head = '<section class="section"><div class="section-head"><div><h2 class="section-title">Connections</h2><p class="hint">A secondary inventory of Team connections and your personal accounts. Add connections and choose access from an Agent.</p></div></div>';
+    if (inventory.loading) return head + '<p class="hint">Loading connections&hellip;</p></section>';
+    if (inventory.error) return head + '<div class="callout" role="alert"><span>' + esc(inventory.error) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="connection-inventory-retry">Retry</button></div></section>';
+    if (!inventory.accounts.length) return head + '<div class="empty-inline"><strong>No connections yet</strong><span>Open an Agent, choose Connections, and connect the service it needs.</span></div></section>';
+    var rows = inventory.accounts.map(function (entry) {
+      var account = entry.account || {};
+      var agents = entry.agents || [];
+      var owner = account.ownerKind === "team" ? "Team" : "Personal";
+      var status = account.lifecycle === "ready" ? "Connected" : "Needs attention";
+      var agentLinks = agents.length ? agents.map(function (agent) {
+        return '<button type="button" class="capability-pill" data-action="edit-profile" data-agent="' + esc(agent.id) + '">' + esc(agent.name || agent.id) + '</button>';
+      }).join("") : '<span class="hint">Not used by an Agent</span>';
+      return '<article class="connection-account-row"><div class="connection-account-copy"><div><strong>' + esc(account.label || account.providerId || "Connection") + '</strong> <span class="badge-src">' + esc(owner) + '</span> <span class="badge ' + (account.lifecycle === "ready" ? "badge-on" : "badge-off") + '">' + esc(status) + '</span></div><p class="hint">' + esc(account.providerId || "Custom") + (account.purpose ? ' &middot; ' + esc(account.purpose) : '') + '</p><div class="where-list" aria-label="Agents using ' + esc(account.label || "this connection") + '">' + agentLinks + '</div></div></article>';
+    }).join("");
+    return head + '<div class="connection-account-list">' + rows + '</div></section>';
   }
 
   function modelCatalogStatusHtml() {
@@ -9119,12 +9146,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function normalizeSettingsSection(value) {
     var aliases = {
       "model-settings": "providers",
+      "connection-settings": "connections",
       "github-settings": "github",
       "sandbox-settings": "sandbox",
       "egress-settings": "outbound"
     };
     var section = aliases[String(value || "")] || String(value || "");
-    return ["slack", "providers", "github", "sandbox", "outbound"].includes(section) ? section : "providers";
+    return ["slack", "connections", "providers", "github", "sandbox", "outbound"].includes(section) ? section : "providers";
   }
 
   function settingsLoadIsCurrent(generation) {
@@ -9156,12 +9184,39 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       render();
       return;
     }
+    if (state.settingsSection === "connections") {
+      state.connectionInventory = { accounts: [], loading: true, error: "" };
+      render();
+      loadConnectionInventory(generation);
+      return;
+    }
     render();
     loadSettings(generation).then(function () { renderSettingsLoad(generation); });
     loadModelCatalogStatus(generation).then(function () { renderSettingsLoad(generation); });
     loadGithubStatus(generation).then(function () { renderSettingsLoad(generation); });
     loadEgress(generation).then(function () { renderSettingsLoad(generation); });
     loadSandboxStatus(generation).then(function () { renderSettingsLoad(generation); });
+  }
+
+  function loadConnectionInventory(generation) {
+    var workspaceId = connectedTeamId();
+    if (!workspaceId) {
+      state.connectionInventory = { accounts: [], loading: false, error: "Connect Slack before reviewing connections." };
+      renderSettingsLoad(generation);
+      return Promise.resolve();
+    }
+    state.connectionInventory.loading = true;
+    state.connectionInventory.error = "";
+    renderSettingsLoad(generation);
+    return api("/admin/api/connections?workspaceId=" + encodeURIComponent(workspaceId), { cache: "no-store" }).then(function (body) {
+      if (!settingsLoadIsCurrent(generation) || state.settingsSection !== "connections") return;
+      state.connectionInventory = { accounts: body.accounts || [], loading: false, error: "" };
+      render();
+    }).catch(function (error) {
+      if (!settingsLoadIsCurrent(generation) || state.settingsSection !== "connections") return;
+      state.connectionInventory = { accounts: [], loading: false, error: error.serverMessage || error.message || "Could not load connections." };
+      render();
+    });
   }
 
   function loadGithubStatus(generation) {
@@ -10538,8 +10593,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
     if (state.teamConfirm) {
       if (action === "team-confirm-cancel") {
+        var cancelledTeamAction = state.teamConfirm;
         state.teamConfirm = null;
         render();
+        focusTeamActionTrigger(cancelledTeamAction.membershipId);
       } else if (action === "team-confirm-apply") {
         var confirmedTeamAction = state.teamConfirm;
         state.teamConfirm = null;
@@ -10732,7 +10789,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "team-actions-toggle" && !state.teamBusy) {
       var toggleMembershipId = target.getAttribute("data-membership") || "";
       state.teamActionMenuId = state.teamActionMenuId === toggleMembershipId ? "" : toggleMembershipId;
+      var teamMenuOpening = !!state.teamActionMenuId;
       render();
+      if (teamMenuOpening) focusTeamActionMenu();
+      else focusTeamActionTrigger(toggleMembershipId);
     }
     if (action === "team-role-action" && !state.teamBusy) {
       var roleMembershipId = target.getAttribute("data-membership") || "";
@@ -10849,12 +10909,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "open-settings") { openSettings(target.getAttribute("data-section") || ""); }
     if (action === "settings-section") {
       var nextSettingsSection = normalizeSettingsSection(target.getAttribute("data-section") || "providers");
-      if (nextSettingsSection === "slack" || state.settingsSection === "slack") openSettings(nextSettingsSection);
+      if (nextSettingsSection === "slack" || nextSettingsSection === "connections" || state.settingsSection === "slack" || state.settingsSection === "connections") openSettings(nextSettingsSection);
       else {
         state.settingsSection = nextSettingsSection;
         render();
       }
     }
+    if (action === "connection-inventory-retry") { loadConnectionInventory(state.settingsLoadGeneration); }
     if (action === "usage-retry") { loadUsage(true); }
     if (action === "usage-load-more") { loadMoreUsageOperations(); }
     if (action === "usage-custom-apply") { applyCustomUsageRange(); }
@@ -11804,8 +11865,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }
     if (state.teamActionMenuId && (event.key === "Escape" || event.key === "Esc")) {
       event.preventDefault();
+      var closingTeamMenuId = state.teamActionMenuId;
       state.teamActionMenuId = "";
       render();
+      focusTeamActionTrigger(closingTeamMenuId);
       return;
     }
     if (state.sandboxConfirm && state.sandboxSaving && event.key === "Tab") {
@@ -11940,7 +12003,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var tabButton = event.target && event.target.closest && event.target.closest(".ptab");
     if (tabButton && (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End")) {
       event.preventDefault();
-      var order = ["instructions", "skills", "connections", "repositories", "memory"];
+      var order = ["instructions", "skills", "connections", "repositories", "memory", "schedules"];
       var current = order.indexOf(state.profileTab || "instructions");
       var next =
         event.key === "ArrowLeft" ? (current + order.length - 1) % order.length :
@@ -14029,8 +14092,8 @@ export function renderSlackSignInPage(destination: string): string {
     surface: 'sign-in',
     eyebrow: 'Chickpea control plane',
     title: 'Sign in with Slack',
-    intro: 'Use the Slack identity invited to manage this Chickpea workspace.',
-    status: 'Control-plane access is invitation-only. Teammates can use Chickpea in assigned channels without signing in here.',
+    intro: 'Use the same Slack identity you use with Chickpea in this workspace.',
+    status: 'Full Slack members get access after their first Agent interaction. Guests and Slack Connect participants remain Slack-only.',
     body: `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="login"><input type="hidden" name="destination" value="${escapeHtmlAttribute(safeDestination)}"><button class="auth-button" type="submit" autofocus>Continue with Slack</button></form>`,
   });
 }
@@ -14051,7 +14114,7 @@ export function renderSlackAccessDeniedPage(input: {
       : 'That Slack account cannot access Chickpea';
   const intro = firstOwner
     ? `Use the same active Slack member who installed Chickpea in ${workspace}.`
-    : `Use an invited active member of ${workspace}.`;
+    : `First interact with a Chickpea Agent in ${workspace}, then sign in with that same active Slack member.`;
   const capability = firstOwner
     ? '<input data-slack-setup-capability type="hidden" name="capability">'
     : '';
@@ -14061,7 +14124,9 @@ export function renderSlackAccessDeniedPage(input: {
     eyebrow: firstOwner ? 'First Owner setup' : 'Access not granted',
     title,
     intro,
-    status: 'No Chickpea account or role was created. You can still use Chickpea agents in assigned Slack channels.',
+    status: firstOwner
+      ? 'No Chickpea account or role was created.'
+      : 'No Chickpea account or role was created. If access was suspended or removed, ask an Owner to restore it.',
     alert: cancelled || expired ? undefined : 'This Slack identity does not match the required Chickpea access.',
     body: `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="${input.purpose}">${capability}<input type="hidden" name="destination" value="${escapeHtmlAttribute(safeDestination)}"><button class="auth-button" type="submit" autofocus>Try another Slack account</button></form>${setupScript}`,
   });
@@ -14075,7 +14140,7 @@ export function renderSlackOwnerCompletePage(destination: string): string {
     title: 'You’re the first Owner',
     intro: 'Slack installation and your exact identity are verified. Chickpea is ready to configure.',
     status: 'Your requested control-plane view is ready.',
-    body: `<div class="auth-warning" role="note"><strong>Add a second Owner</strong>If this sole Slack identity is lost, recovery requires a destructive fresh reset. After opening Chickpea, invite an Admin and promote that verified person to Owner.</div><div class="auth-actions"><a class="auth-link" href="${escapeHtmlAttribute(safeDestination)}" autofocus>Open Chickpea</a></div>`,
+    body: `<div class="auth-actions"><a class="auth-link" href="${escapeHtmlAttribute(safeDestination)}" autofocus>Open Chickpea</a></div>`,
   });
 }
 
@@ -14117,7 +14182,7 @@ export function renderSlackInvitationUnavailablePage(): string {
   return renderSlackJourneyPage({
     surface: 'invitation-unavailable', eyebrow: 'Invitation unavailable',
     title: 'This invitation is no longer available',
-    intro: 'Ask a Chickpea Owner to select your Slack member again and create a fresh invitation.',
+    intro: 'Use a Chickpea Agent in Slack, then sign in with the same full member account. If access was removed, ask an Owner to restore it.',
     status: 'No access was granted.', rootAttributes: 'data-invitation-state="unavailable"',
     body: '<script src="/auth/slack/invite/client.js" defer></script>',
   });

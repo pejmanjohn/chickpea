@@ -5,6 +5,11 @@ import type { CustomAgentConfig } from '../config/types.ts';
 
 export const START_AGENT_ACTION_ID = 'chickpea.agent.start';
 
+export function agentAppHomeStarterMessage(agentName: string, handle?: string): string {
+  const address = handle ? `Start a thread with @${handle}. ` : '';
+  return `${address}Reply in this thread to work with ${agentName}.`;
+}
+
 export function agentDirectoryAppHome(agents: readonly CustomAgentConfig[]): View {
   const blocks: Array<Record<string, unknown>> = [
     {

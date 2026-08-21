@@ -6,7 +6,7 @@ export interface SlackStatusTurnRegistration {
   drain(): Promise<void>;
   close(): void;
   /** Fence new writes, clear now, and clear once more if an in-flight write lands late. */
-  finish(clearStatus: () => Promise<void>): void;
+  finish(clearStatus: () => Promise<void>): Promise<void>;
 }
 
 type StatusPresenter = Pick<WebClientPresenter, 'setStatus'>;
@@ -132,17 +132,21 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     }
   }
 
-  finish(clearStatus: () => Promise<void>): void {
+  async finish(clearStatus: () => Promise<void>): Promise<void> {
     if (this.finished) return;
     this.finished = true;
     const activeResult = this.active?.result;
     this.close();
-    this.clearIfUnowned(clearStatus);
+    const firstClear = this.clearIfUnowned(clearStatus);
     if (activeResult) {
       void activeResult.finally(() => {
-        this.clearIfUnowned(clearStatus);
+        return this.clearIfUnowned(clearStatus);
       });
     }
+    // The ordinary no-write-in-flight path must reach Slack before the Worker
+    // turn settles. A late in-flight status still gets its second clear above
+    // without delaying final delivery.
+    await firstClear;
   }
 
   private scheduleNext(): void {
@@ -212,19 +216,21 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     }
   }
 
-  private clearBestEffort(clearStatus: () => Promise<void>): void {
+  private async clearBestEffort(clearStatus: () => Promise<void>): Promise<void> {
     try {
-      void clearStatus().catch(() => undefined);
+      await clearStatus();
     } catch {
       // Status cleanup is cosmetic and must never interfere with final delivery.
     }
   }
 
-  private clearIfUnowned(clearStatus: () => Promise<void>): void {
+  private clearIfUnowned(clearStatus: () => Promise<void>): Promise<void> {
     // A later turn owns the shared Slack thread status once registered.
     // Never let cleanup from this generation clear that newer turn.
-    if ((activeSlackStatusTurns.get(this.instanceId)?.size ?? 0) > 0) return;
-    this.clearBestEffort(clearStatus);
+    if ((activeSlackStatusTurns.get(this.instanceId)?.size ?? 0) > 0) {
+      return Promise.resolve();
+    }
+    return this.clearBestEffort(clearStatus);
   }
 }
 

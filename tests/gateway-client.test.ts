@@ -212,6 +212,7 @@ test('shared-app claim binds one workspace without storing Slack credentials', a
     assert.equal(installation?.gatewayBindingId, 'binding_test');
     assert.equal(installation?.botUserId, 'UBOT');
     assert.equal(installation?.teamId, 'TGATEWAY');
+    assert.equal(installation?.health, 'healthy');
     const defaultIdentity = await config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
     assert.equal(defaultIdentity.teamId, 'TGATEWAY');
     assert.equal(defaultIdentity.botUserId, 'UBOT');
@@ -340,7 +341,7 @@ test('gateway client requests a fixed generated avatar without sending SVG', asy
       workspaceId: 'TGATEWAY', agentId: 'agent_support', revision: 1,
       seed: 'support-seed',
     });
-    assert.equal(url, 'https://cdn.chickpea.test/avatars/binding_test/agent_support/rev_1.svg');
+    assert.equal(url, 'https://cdn.chickpea.test/avatars/binding_test/agent_support/rev_1.png');
     const request = gateway.requests.find(({ path }) => path === '/v1/avatars');
     assert.ok(request);
     assert.equal(request.body.kind, 'avatar.generate');
@@ -699,7 +700,7 @@ class FakeGateway {
       });
     }
     if (url.pathname === '/v1/avatars') {
-      const extension = body.kind === 'avatar.generate' ? 'svg' : 'png';
+      const extension = 'png';
       return json({
         url: `https://cdn.chickpea.test/avatars/${body.bindingId}/${body.agentId}/${body.revision}.${extension}`,
       }, 201);

@@ -1058,9 +1058,9 @@ async function main() {
 
     const team = await adminFetch(baseUrl, '/admin/api/team');
     check(
-      team.status === 200 && team.body?.soleOwnerWarning === true &&
+      team.status === 200 && !('soleOwnerWarning' in (team.body ?? {})) &&
         team.body?.members?.length === 1 && team.body?.members?.[0]?.slackUserId === OWNER_USER_ID,
-      'first OIDC admission creates one exact sole Owner and keeps the redundancy warning visible',
+      'first OIDC admission creates one exact Owner without obsolete enrollment state',
       `HTTP ${team.status} members=${String(team.body?.members?.length)}`,
     );
     const connectedAdmin = await renderAdminWithWorkerdState(baseUrl, '/admin/onboarding');

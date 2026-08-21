@@ -11,6 +11,7 @@ import { GatewaySessionRunner } from './session-runner.ts';
 
 export interface SlackGatewaySessionRpc {
   wake(): Promise<void>;
+  restart(): Promise<void>;
 }
 
 /**
@@ -45,6 +46,12 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
       this.runner = undefined;
       throw error;
     }
+  }
+
+  async restart(): Promise<void> {
+    this.runner?.stop();
+    this.runner = undefined;
+    await this.wake();
   }
 }
 

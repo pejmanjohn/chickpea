@@ -52,11 +52,13 @@ import {
 } from '../slack/behavior-settings.ts';
 import {
   discoverableAgents,
+  parseAgentUserGroupMentions,
   resolveAgentRoute,
   type AgentRoutingActor,
   type AgentRoutingResult,
 } from '../slack/agent-routing.ts';
 import {
+  agentAppHomeStarterMessage,
   agentDirectoryAppHome,
   parseAgentAppHomeSelection,
 } from '../slack/app-home.ts';
@@ -786,13 +788,13 @@ async function seedAgentAppHomeThread(input: {
   if (!actor.routing.fullMember || !actor.routing.discoverableAgentIds?.has(input.agentId)) return;
   const agent = await input.stores.config.getAgent(input.agentId);
   if (!agent.enabled || agent.lifecycle === 'archived') return;
-  const avatarUrl = await resolvedAgentAvatarUrl(agent, input.stores, input.platformEnv);
-  if (!avatarUrl) return;
   const dm = await input.transport.openDirectConversation(input.userId);
   const root = await input.transport.postMessage({
     channelId: dm.id,
-    text: `${agent.name} is ready. Reply in this thread to start.`,
-    persona: { name: agent.name, avatarUrl },
+    text: agentAppHomeStarterMessage(
+      agent.name,
+      agent.slackPresence?.normalizedHandle ?? agent.slackPresence?.requestedHandle,
+    ),
   });
   const synthetic: NormalizedSlackTurn = {
     workspaceId: input.workspaceId,
@@ -1195,10 +1197,14 @@ async function processSlackEvent(
   });
   if (normalization.status !== 'runnable') return;
   const turn = normalization.turn;
-  // Channels are explicit-entry only. Unmentioned top-level messages never
-  // classify, spend provider budget, or create work. Existing Slack threads
-  // may continue through their recorded Agent route.
-  if (turn.source === 'ambient_channel_message') return;
+  // Channels are explicit-entry only. A configured Agent user-group mention
+  // is an explicit entry even though Slack delivers it as message.channels,
+  // not app_mention. Ordinary unmentioned top-level messages still never
+  // classify, spend provider budget, or create work.
+  if (
+    turn.source === 'ambient_channel_message' &&
+    (!agentPlatformInstallation || parseAgentUserGroupMentions(turn.text).length === 0)
+  ) return;
   let candidateTurn = turn.source === 'reaction_added';
   let threadKey = slackThreadKey(turn);
 

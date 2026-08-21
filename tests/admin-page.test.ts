@@ -6,9 +6,9 @@ import { renderAdminPage } from '../src/admin/page.ts';
 import { connectorSkillsForConnections } from '../src/config/connector-skills.ts';
 import { seededAgents, seededAssignments } from '../src/config/seed.ts';
 
-test('admin navigation exposes the signed-in account surface', () => {
+test('admin navigation omits the unimplemented account destination', () => {
   const html = renderAdminPage();
-  assert.match(html, /href="\/admin\/account">Account<\/a>/);
+  assert.doesNotMatch(html, /href="\/admin\/account"|>Account<\/a>/);
 });
 
 test('the dedicated onboarding frame remains document-scrollable on desktop', () => {
@@ -1398,6 +1398,18 @@ function runAdminPageHarness(
         entry: memoryEntry,
         projected: '---\nname: "release-guidance"\n---\n\n' + memoryEntry.body + '\n',
         unresolvedReview: memoryReview,
+      }));
+    }
+    if (path === '/admin/api/connections?workspaceId=T_DESIGN' && method === 'GET') {
+      return Promise.resolve(jsonResponse({
+        accounts: [{
+          account: {
+            id: 'connection_zendesk', workspaceId: 'T_DESIGN', ownerKind: 'team',
+            providerId: 'zendesk', label: 'Support Zendesk', purpose: 'Customer support',
+            lifecycle: 'ready', credentialConfigured: true,
+          },
+          agents: [{ id: 'agent_release', name: 'Release Profile' }],
+        }],
       }));
     }
     if (path === '/admin/api/agents' && method === 'GET') {
@@ -3708,7 +3720,7 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
     /class="agent-replies-as"><span class="agent-replies-slack slack-logo-image" role="img" aria-label="Slack"><\/span>Mention as <span class="mono">@release-profile<\/span>/,
   );
   assert.match(harness.app.innerHTML, /aria-label="Agent setup"/);
-  for (const tab of ['Instructions', 'Skills', 'Connectors', 'Repositories', 'Memory']) {
+  for (const tab of ['Instructions', 'Skills', 'Connections', 'Repositories', 'Memory', 'Schedules']) {
     assert.match(harness.app.innerHTML, new RegExp(`role="tab"[^>]*>${tab}`));
   }
   assert.match(harness.app.innerHTML, /aria-label="Agent instructions"/);
@@ -3752,7 +3764,8 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(page, /\.channel-hash\s*\{[^}]*background:\s*var\(--semantic-channel-bg\);[^}]*color:\s*var\(--semantic-channel-fg\);/s);
   assert.match(page, /\.agent-placement-card > \.bundle-row, \.agent-placement-card > \.callout\s*\{[^}]*grid-column:\s*1 \/ -1;/s);
   assert.match(page, /@container \(max-width: 750px\)[\s\S]*?\.agent-profile-header[^{]*\{[^}]*align-items:\s*flex-start;[^}]*flex-direction:\s*column;/s);
-  assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.agent-profile-page \.ptabs\s*\{[^}]*overflow-x:\s*auto;/s);
+  assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.agent-profile-page \.ptabs\s*\{[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\);[^}]*overflow:\s*visible;/s);
+  assert.match(page, /@media \(max-width: 480px\)[\s\S]*?\.agent-profile-page \.ptabs\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/s);
 });
 
 test('Where it works keeps Channel grants and renders the workspace Default Agent for private messages', async () => {
@@ -4257,90 +4270,62 @@ test('Agent roster keeps long names and placement counts accessible while trunca
   assert.match(renderAdminPage(), /\.agent-roster-name\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
 });
 
-test('Agent owner memory exposes generated index, editable files, history, review, save, and forget', async () => {
+test('Agent owner memory exposes one directly editable current body without file or history concepts', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin' });
   await flushAsync();
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
-  assert.match(harness.app.innerHTML, /class="owner-memory-files-head"[\s\S]*?<span>Files<\/span>[\s\S]*?aria-label="2 memory files">2<\/small>/);
-  assert.match(harness.app.innerHTML, /data-tab="memory"[^>]*>Memory<span class="ptab-count">2<\/span>/);
-  assert.match(harness.app.innerHTML, /# Channel Memory Index/);
+  assert.deepEqual(harness.ownerMemoryGetCaches, ['no-store', 'no-store']);
+  assert.match(harness.app.innerHTML, /One shared memory follows Release Profile everywhere it works/);
+  assert.match(harness.app.innerHTML, /<label class="field-label" for="owner-memory-body">Memory<\/label>/);
+  assert.match(harness.app.innerHTML, /Run &lt;script&gt;alert\(1\)&lt;\/script&gt; before release\./);
+  assert.doesNotMatch(harness.app.innerHTML, /Filename|Version history|Review requested|Add file|Forget file|MEMORY\.md/);
 
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-file', 'data-file': 'mem_release' }) });
-  await flushAsync();
-  assert.deepEqual(harness.ownerMemoryGetCaches, ['no-store', 'no-store', 'no-store']);
-  assert.match(harness.app.innerHTML, /Markdown body/);
-  assert.match(harness.app.innerHTML, /<label class="field-label" for="owner-memory-name">Filename<\/label><input class="input mono" id="owner-memory-name" value="release-guidance\.md" readonly aria-readonly="true">/);
-  assert.match(harness.app.innerHTML, /Version history \(1\)/);
-  assert.match(harness.app.innerHTML, /Review requested/);
-
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-resolve-review' }) });
-  await flushAsync();
-  assert.deepEqual(harness.memoryReviewPosts, [{ expectedVersion: 1, resolution: 'confirmed' }]);
-
-  harness.listeners.input?.({ target: valueTarget({ 'data-action': 'owner-memory-description' }, 'Updated Agent memory') });
   harness.listeners.input?.({ target: valueTarget({ 'data-action': 'owner-memory-body' }, 'Use the updated checklist.') });
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-save' }) });
   await flushAsync();
   assert.deepEqual(harness.memoryPuts.at(-1), {
     expectedVersion: 1,
-    description: 'Updated Agent memory',
+    description: 'Use the checklist.',
     type: 'project',
     body: 'Use the updated checklist.',
   });
-
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-delete-open' }) });
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-delete-confirm' }) });
-  await flushAsync();
-  assert.deepEqual(harness.memoryDeletes.at(-1), { expectedVersion: 2, acknowledgeIrreversible: true });
+  assert.match(harness.app.innerHTML, /Memory saved\./);
 });
 
-test('shared owner memory uses the prototype file rail, accessible ellipsis, and dark generated source', async () => {
-  const longName = 'a-very-long-memory-filename-that-must-stay-on-one-line.md';
+test('shared Agent memory stays a simple responsive editor', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+
+  const page = renderAdminPage();
+  assert.match(harness.app.innerHTML, /class="owner-memory-editor"/);
+  assert.match(page, /\.owner-memory-editor\s*\{[^}]*min-width:\s*0;[^}]*padding:\s*22px 24px 24px;/s);
+  assert.match(page, /\.owner-memory-editor textarea\s*\{[^}]*min-height:\s*300px;/s);
+  assert.match(page, /@container \(max-width: 750px\)[\s\S]*?\.owner-memory-editor\s*\{[^}]*padding:\s*20px;/s);
+});
+
+test('saving an empty Agent memory creates the hidden canonical body', async () => {
   const harness = runAdminPageHarness({
-    initialPath: '/admin/agents/agent_release',
+    initialPath: '/admin',
     ownerMemoryFiles: [
-      { name: 'MEMORY.md', path: 'agent/agent_release/MEMORY.md', generated: true, entryId: null, content: '# Agent index\n\n<script>unsafe()</script>\n' },
-      { name: longName, path: `agent/agent_release/${longName}`, generated: false, entryId: 'mem_release', version: 1, status: 'active', description: 'Long filename proof.' },
+      { name: 'MEMORY.md', path: 'agent/agent_release/MEMORY.md', generated: true, entryId: null, content: '# Agent memory\n' },
     ],
   });
   await flushAsync();
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
-
-  assert.match(harness.app.innerHTML, new RegExp(`class="owner-memory-file"[^>]*aria-label="Open memory file ${longName}, active · v1"`));
-  assert.match(harness.app.innerHTML, new RegExp(`class="owner-memory-file-name" title="${longName}">${longName}<\\/strong>`));
-  assert.doesNotMatch(harness.app.innerHTML, /<script>unsafe\(\)<\/script>/);
-  assert.match(harness.app.innerHTML, /&lt;script&gt;unsafe\(\)&lt;\/script&gt;/);
-
-  const page = renderAdminPage();
-  assert.match(page, /\.owner-memory-layout\s*\{[^}]*grid-template-columns:\s*210px minmax\(0, 1fr\);/s);
-  assert.match(page, /\.owner-memory-file-name\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
-  assert.match(page, /\.owner-memory-source\s*\{[^}]*background:\s*#2f2b24;[^}]*color:\s*#eee6d6;[^}]*overflow:\s*auto;/s);
-  assert.match(page, /@container \(max-width: 750px\)[\s\S]*?\.owner-memory-layout\s*\{[^}]*grid-template-columns:\s*1fr;/s);
-  assert.match(page, /@container \(max-width: 750px\)[\s\S]*?\.owner-memory-file-list\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/s);
-});
-
-test('Agent owner memory creates a constrained Markdown file with an idempotency key', async () => {
-  const harness = runAdminPageHarness({ initialPath: '/admin' });
-  await flushAsync();
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-create-open' }) });
-  harness.listeners.input?.({ target: valueTarget({ 'data-action': 'owner-memory-create-slug' }, 'launch-context.md') });
-  harness.listeners.input?.({ target: valueTarget({ 'data-action': 'owner-memory-create-description' }, 'Durable launch context') });
-  harness.listeners.change?.({ target: valueTarget({ 'data-action': 'owner-memory-create-type' }, 'project') });
-  harness.listeners.input?.({ target: valueTarget({ 'data-action': 'owner-memory-create-body' }, '# Launch context\nShip safely.') });
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-create-confirm' }) });
+  harness.listeners.input?.({ target: valueTarget({ 'data-action': 'owner-memory-body' }, '# Launch context\nShip safely.') });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-save' }) });
   await flushAsync();
 
   assert.deepEqual(harness.memoryCreates[0]?.body, {
-    slug: 'launch-context',
-    description: 'Durable launch context',
+    slug: 'agent-memory',
+    description: 'Current Agent memory',
     type: 'project',
     body: '# Launch context\nShip safely.',
   });
-  assert.match(harness.memoryCreates[0]?.idempotencyKey ?? '', /^admin-ui:owner-memory-create:/);
-  assert.match(harness.app.innerHTML, /launch-context\.md/);
-  assert.match(harness.app.innerHTML, /class="owner-memory-files-head"[\s\S]*?aria-label="3 memory files">3<\/small>/);
-  assert.match(harness.app.innerHTML, /data-tab="memory"[^>]*>Memory<span class="ptab-count">3<\/span>/);
+  assert.match(harness.memoryCreates[0]?.idempotencyKey ?? '', /^admin-ui:owner-memory:/);
+  assert.match(harness.app.innerHTML, /# Launch context\nShip safely\./);
+  assert.doesNotMatch(harness.app.innerHTML, /agent-memory\.md|memory files/i);
 });
 
 test('Agent saves use the projected revision and preserve a draft on concurrent edit conflict', async () => {
@@ -7217,7 +7202,7 @@ test('an OAuth callback return opens the profile Connections tab with a status-o
   assert.doesNotMatch(harness.app.innerHTML, /Test the connection to discover tools/);
   assert.match(
     harness.app.innerHTML,
-    /data-action="profile-tab" data-tab="connections"[^>]*>Connectors<span class="ptab-count">1<\/span>/,
+    /data-action="profile-tab" data-tab="connections"[^>]*>Connections<span class="ptab-count">1<\/span>/,
   );
   assert.match(harness.app.innerHTML, /id="ptab-panel-connections" role="tabpanel" aria-labelledby="ptab-connections">/);
   assert.ok(harness.historyReplaces.includes('/admin/agents/agent_conn'));
@@ -8362,10 +8347,6 @@ test('Home opens the canonical Agent and keeps Agent and owner-memory draft guar
 
   const memoryHarness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
   await flushAsync();
-  memoryHarness.listeners.click?.({
-    target: actionTarget({ 'data-action': 'owner-memory-file', 'data-file': 'mem_release' }),
-  });
-  await flushAsync();
   memoryHarness.listeners.input?.({
     target: inputTarget({ 'data-action': 'owner-memory-body' }, 'Unsaved Agent memory.'),
   });
@@ -8906,6 +8887,37 @@ test('the left rail keeps one coherent section switcher and section-specific nav
   assert.match(harness.app.innerHTML, /class="chan-item active" data-action="settings-section" data-section="github"/);
   assert.match(harness.app.innerHTML, /data-settings-panel="providers" hidden>/);
   assert.match(harness.app.innerHTML, /data-settings-panel="github"><section/);
+});
+
+test('Settings includes a secondary connection inventory while Agent pages remain the management surface', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/settings/connections' });
+  await flushAsync();
+
+  assert.equal(harness.locationPath(), '/admin/settings/connections');
+  assert.match(harness.app.innerHTML, /class="chan-item active" data-action="settings-section" data-section="connections"/);
+  assert.match(harness.app.innerHTML, /A secondary inventory of Team connections and your personal accounts/);
+  assert.match(harness.app.innerHTML, /Support Zendesk/);
+  assert.match(harness.app.innerHTML, /Customer support/);
+  assert.match(harness.app.innerHTML, /data-action="edit-profile" data-agent="agent_release">Release Profile<\/button>/);
+  assert.match(harness.app.innerHTML, /Add connections and choose access from an Agent/);
+  assert.doesNotMatch(harness.app.innerHTML, /Connect and add|connection-account-create/);
+});
+
+test('shared Slack settings expose a direct authorization recovery without reopening setup', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/slack',
+    slackConnection: {
+      ...connectedSlackFixture(),
+      transportMode: 'gateway',
+      credentials: { botToken: 'gateway', signingSecret: 'gateway', botUserId: 'gateway' },
+    },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Reconnect the shared Slack app/);
+  assert.match(harness.app.innerHTML, /href="\/admin\/slack-gateway\/reconnect"/);
+  assert.match(harness.app.innerHTML, /Reconnect with Slack/);
+  assert.match(harness.app.innerHTML, /without changing Agents, Channel grants, or saved settings/);
 });
 
 test('leaving Slack settings starts the GitHub, sandbox, and outbound settings loads', async () => {

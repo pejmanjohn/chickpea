@@ -1148,6 +1148,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       : getSlackCredentialResolutionDependencies(c.env as PlatformEnv | undefined);
   const memory = (c: Context) =>
     options.memory ?? getMemoryStateStore(c.env as PlatformEnv | undefined);
+  const ensureAgentMemoryOwners = async (
+    c: Context,
+    agentIds: readonly string[],
+  ): Promise<void> => {
+    const organization = await identity(c).getOrganization();
+    if (!organization?.slackTeamId) return;
+    const state = memory(c);
+    const workspaceId = organization.slackTeamId;
+    await Promise.all(agentIds.map((agentId) => state.ensureOwner({
+      workspaceId,
+      ownerKind: 'agent',
+      ownerId: agentId,
+    })));
+  };
+  const repairAgentMemoryOwners = async (
+    c: Context,
+    agentIds: readonly string[],
+  ): Promise<void> => {
+    try {
+      await ensureAgentMemoryOwners(c, agentIds);
+    } catch {
+      // Agent configuration remains usable if memory storage is temporarily
+      // unavailable. The next Agent detail request repairs the missing owner.
+      console.error('[chickpea] Agent memory owner bootstrap unavailable');
+    }
+  };
   const routines = (c: Context) =>
     options.routines ?? getRoutineStore(c.env as PlatformEnv | undefined);
   const usage = (c: Context) =>
@@ -3422,6 +3448,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         editableIds.has(agent.id) || discoverableIds.has(agent.id)
       );
     }
+    await repairAgentMemoryOwners(c, rawAgents.map(({ id }) => id));
     const agents = await Promise.all(
       rawAgents.map((agent) =>
         withApiConnectionSources(agent, platformEnv, settingsStore),
@@ -4179,13 +4206,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           settings(c),
         ),
       };
-      return c.json(
-        {
-          agent: await configStore.createAgent(agent),
-          ...providerWarnings(agent.model, providerIds()),
-        },
-        201,
-      );
+      const created = await configStore.createAgent(agent);
+      await repairAgentMemoryOwners(c, [created.id]);
+      return c.json({
+        agent: created,
+        ...providerWarnings(agent.model, providerIds()),
+      }, 201);
     } catch (err) {
       if (err instanceof AgentExistsError) {
         return c.json({ error: 'agent_exists' }, 409);
@@ -4662,6 +4688,44 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json({ ok: true });
   });
 
+  app.get('/admin/api/connections', async (c) => {
+    const workspaceId = c.req.query('workspaceId')?.trim();
+    if (!workspaceId || !/^[A-Z0-9_]{2,32}$/.test(workspaceId)) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const organization = await identity(c).getOrganization();
+      if (organization?.slackTeamId !== workspaceId) throw new AuthorizationError();
+      const [views, agents] = await Promise.all([
+        connectionAccounts(c).listViews(workspaceId),
+        store(c).listAgents(),
+      ]);
+      const visibleAccounts = views.filter(
+        (account) => account.ownerKind === 'team' ||
+          account.ownerMembershipId === principal.membershipId,
+      );
+      const visibleAgents = agents.filter((agent) => canEditAgent(principal, agent));
+      const bindings = await Promise.all(
+        visibleAgents.map(async (agent) => ({
+          agent,
+          bindings: await store(c).listAgentConnectionBindings(agent.id),
+        })),
+      );
+      return c.json({
+        accounts: visibleAccounts.map((account) => ({
+          account,
+          agents: bindings.flatMap(({ agent, bindings: agentBindings }) =>
+            agentBindings.some((binding) => binding.connectionAccountId === account.id && binding.enabled)
+              ? [{ id: agent.id, name: agent.name }]
+              : []),
+        })),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      return internalError(c, error);
+    }
+  });
+
   app.get('/admin/api/agents/:id/connections', async (c) => {
     const workspaceId = c.req.query('workspaceId')?.trim();
     if (!workspaceId || !/^[A-Z0-9_]{2,32}$/.test(workspaceId)) return invalidRequest(c);
@@ -4967,6 +5031,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         if (!discoverable) return c.json({ error: 'not_found' }, 404);
       }
+      await repairAgentMemoryOwners(c, [agent.id]);
       const enriched = await withApiConnectionSources(
         agent,
         c.env as PlatformEnv | undefined,
@@ -6682,7 +6747,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({
         credentials,
         connected: identityConnected && (directConnected || gatewayConnected),
-        teamId: teamInfo.teamId ?? null,
+        teamId: installation?.workspaceId ?? connectedTeamId ?? null,
         teamName: teamInfo.teamName ?? null,
         transportMode: installation?.transportMode ?? 'direct',
         health: installation?.health ?? defaultIdentity.health,
@@ -6804,7 +6869,50 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return internalError(c, err);
     }
     if (!botToken) {
-      return c.json({ error: 'slack_not_configured' }, 409);
+      const installation = (await store(c).listWorkspaceInstallations()).find(
+        (candidate) => candidate.transportMode === 'gateway' &&
+          Boolean(candidate.gatewayBindingId) && candidate.health !== 'revoked',
+      );
+      if (!installation?.botUserId) {
+        return c.json({ error: 'slack_not_configured' }, 409);
+      }
+      try {
+        const bot = await (await agentSlackTransport(c, installation.workspaceId))
+          .lookupMember(installation.botUserId);
+        if (
+          bot.id !== installation.botUserId ||
+          (bot.teamId !== undefined && bot.teamId !== installation.workspaceId) ||
+          bot.deleted
+        ) {
+          return c.json({
+            error: 'slack_auth_failed',
+            detail: 'gateway_identity_mismatch',
+          }, 422);
+        }
+        if (installation.health !== 'healthy' || installation.healthDetail) {
+          await store(c).updateWorkspaceInstallation(installation.workspaceId, {
+            health: 'healthy',
+            healthDetail: null,
+          }, installation.revision);
+        }
+        const teamInfo = await readStoredSlackTeamInfo(
+          c.env as PlatformEnv | undefined,
+          settings(c),
+          slackCredentialResolutionDependencies(c),
+        );
+        return c.json({
+          ok: true,
+          teamId: installation.workspaceId,
+          teamName: teamInfo.teamName ?? null,
+          botName: bot.displayName ?? bot.name ?? null,
+          botUserId: bot.id,
+          transportMode: 'gateway',
+        });
+      } catch (error) {
+        const detail = error instanceof SlackTransportError ? error.code : 'gateway_unreachable';
+        console.error('[chickpea] shared Slack connection test failed:', detail);
+        return c.json({ error: 'slack_gateway_unreachable', detail }, 502);
+      }
     }
 
     let auth;
@@ -6834,6 +6942,65 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       botName: auth.botName ?? null,
       botUserId: auth.botUserId ?? null,
     });
+  });
+
+  // A shared-app grant can be revoked independently of the deployment. Let an
+  // authenticated Admin replace that grant without reopening first-run setup
+  // or recreating Agents and Channel grants.
+  app.get('/admin/slack-gateway/reconnect', async (c) => {
+    try {
+      const claim = await createGatewayDeploymentClient(
+        c.env as PlatformEnv | undefined,
+      ).beginClaim(`${requestOrigin(c)}/admin/slack-gateway/reconnect/finish`);
+      return c.redirect(claim.authorizationUrl, 303);
+    } catch (error) {
+      console.error(
+        '[chickpea] shared Slack reconnect failed to start:',
+        error instanceof SlackTransportError ? error.code :
+          error instanceof Error ? error.message : String(error),
+      );
+      return c.redirect('/admin/settings/slack?slack_reconnect=failed', 303);
+    }
+  });
+
+  app.post('/admin/slack-gateway/reconnect', async (c) => {
+    if (!validAuthFormPost(c, requestOrigin(c))) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    try {
+      const claim = await createGatewayDeploymentClient(
+        c.env as PlatformEnv | undefined,
+      ).beginClaim(`${requestOrigin(c)}/admin/slack-gateway/reconnect/finish`);
+      return c.redirect(claim.authorizationUrl, 303);
+    } catch (error) {
+      console.error(
+        '[chickpea] shared Slack reconnect failed to start:',
+        error instanceof SlackTransportError ? error.code :
+          error instanceof Error ? error.message : String(error),
+      );
+      return c.redirect('/admin/settings/slack?slack_reconnect=failed', 303);
+    }
+  });
+
+  app.get('/admin/slack-gateway/reconnect/finish', async (c) => {
+    try {
+      const result = await createGatewayDeploymentClient(
+        c.env as PlatformEnv | undefined,
+      ).refreshClaim();
+      if (result.state !== 'bound') {
+        return c.redirect('/admin/settings/slack?slack_reconnect=pending', 303);
+      }
+      startNodeGatewaySession(c.env as PlatformEnv | undefined);
+      await restartCloudflareGatewaySession(c.env);
+      return c.redirect('/admin/settings/slack?slack_reconnect=connected', 303);
+    } catch (error) {
+      console.error(
+        '[chickpea] shared Slack reconnect could not finish:',
+        error instanceof SlackTransportError ? error.code :
+          error instanceof Error ? error.message : String(error),
+      );
+      return c.redirect('/admin/settings/slack?slack_reconnect=failed', 303);
+    }
   });
 
   // Disconnect is a LOCAL credential removal, not a Slack uninstall/revoke.
@@ -7399,6 +7566,16 @@ function requestOrigin(c: Context): string {
   const proto = forwardedProto || url.protocol.replace(/:$/, '');
   const host = forwardedHost || c.req.header('host') || url.host;
   return `${proto}://${host}`;
+}
+
+async function restartCloudflareGatewaySession(rawEnv: unknown): Promise<void> {
+  const env = (rawEnv ?? {}) as Record<string, unknown>;
+  const namespace = env.SLACK_GATEWAY_SESSION as {
+    idFromName(name: string): unknown;
+    get(id: unknown): { restart(): Promise<void> };
+  } | undefined;
+  if (!namespace) return;
+  await namespace.get(namespace.idFromName('deployment')).restart();
 }
 
 function safeHttpsUrl(candidate: string | undefined): string | null {

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import {
+  agentAppHomeStarterMessage,
   agentDirectoryAppHome,
   parseAgentAppHomeSelection,
   START_AGENT_ACTION_ID,
@@ -48,4 +49,11 @@ test('only the exact App Home Agent action produces a trusted selection', () => 
     ...payload,
     actions: [{ type: 'button', action_id: START_AGENT_ACTION_ID, value: '../support' }],
   } as never), undefined);
+});
+
+test('App Home starts a base-app thread that separates the handle from the Agent name', () => {
+  assert.equal(
+    agentAppHomeStarterMessage('Sprout', 'sprout'),
+    'Start a thread with @sprout. Reply in this thread to work with Sprout.',
+  );
 });

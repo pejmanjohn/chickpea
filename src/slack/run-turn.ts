@@ -443,14 +443,15 @@ export async function runTurn(
   const statusTurn = registerSlackStatusTurn(statusInstanceId, presenter, {
     generation: statusGeneration,
   });
-  const finishStatus = (): void => {
+  const finishStatus = async (): Promise<void> => {
     // Close the sink first. Agent observations are relayed best-effort from a
     // different Cloudflare isolate and may still arrive after settlement
     // resolves; removing this generation makes its late relays no-ops even if
     // another turn has already registered under the same conversation key.
-    // Clearing is deliberately non-blocking: if the active Slack request lands
-    // after the first clear, the registry issues a second clear once it settles.
-    statusTurn.finish(() => presenter.clearStatus());
+    // The normal clear is awaited so it reaches Slack before the Worker turn
+    // settles. If an active status write lands after it, the registry issues a
+    // second best-effort clear without blocking the final response.
+    await statusTurn.finish(() => presenter.clearStatus());
   };
   let usedCloudflareSandbox = false;
   let usageRecorder: InteractiveUsageRecorder | undefined;
@@ -884,7 +885,6 @@ export async function runTurn(
         });
         await usageRecorder?.recordFailure();
         const recoveredText = await options.beforeDelivery?.();
-        finishStatus();
         if (recoveredText) {
           await preparedMemory?.confirmInjection();
           await presenter.deliverFinal(
@@ -893,10 +893,12 @@ export async function runTurn(
               : recoveredText,
             'markdown',
           );
+          await finishStatus();
           await finishDelivery();
           return;
         }
         await presenter.deliverFinal(agentFailureText(err), 'plain_text', 'error');
+        await finishStatus();
         await finishDelivery();
         return;
       }
@@ -917,8 +919,11 @@ export async function runTurn(
     if (identityContext) {
       text = renderSlackSelfMention(text, identityContext.botUserId);
     }
-    finishStatus();
     await presenter.deliverFinal(text, 'markdown');
+    // Clear after the final reaches Slack. A custom Agent persona does not
+    // reliably trigger Slack's automatic app-status cleanup, and clearing
+    // before delivery can leave the custom status visible after the reply.
+    await finishStatus();
     await finishDelivery();
   } catch (err) {
     if (!(err instanceof ContinuityNoticeDeliveryError) &&
@@ -934,7 +939,7 @@ export async function runTurn(
         workChecklistHeartbeat.cancel();
         workChecklistHeartbeat = undefined;
       }
-      finishStatus();
+      await finishStatus();
       await removeWorkAcknowledgment();
     } finally {
       // The Sandbox DO lives in a different isolate from the agent factory;

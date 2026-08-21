@@ -355,6 +355,10 @@ test('a divergent terminal answer corrects the exact stream instead of posting a
 test('thread titles are deterministic, bounded, and reject credential-shaped input', async () => {
   assert.equal(deriveSlackThreadTitle('  <@U123> **Review** the release  '), 'Review the release');
   assert.equal(
+    deriveSlackThreadTitle('<!subteam^S0BRSUAUTUL> hey bud'),
+    'hey bud',
+  );
+  assert.equal(
     deriveSlackThreadTitle('OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456'),
     'New request',
   );

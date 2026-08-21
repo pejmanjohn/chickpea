@@ -625,7 +625,8 @@ test('wrong-account login clears callback authority and returns a non-disclosing
     assert.match(html, /Try another Slack account/);
     assert.match(html, /connected Slack workspace \(TACME\)/);
     assert.match(html, /name="destination" value="\/admin"/);
-    assert.match(html, /assigned Slack channels/);
+    assert.match(html, /First interact with a Chickpea Agent/);
+    assert.match(html, /ask an Owner to restore it/);
     assert.doesNotMatch(html, /expected user|invited user|email|password|attacker/i);
   } finally {
     identity.close();
@@ -740,7 +741,8 @@ test('revoked or expired invitation callback is terminal, non-disclosing, and cl
     assert.match(callback.headers.get('set-cookie') ?? '', /Max-Age=0/i);
     const html = await callback.text();
     assert.match(html, /data-invitation-state="unavailable"/);
-    assert.match(html, /create a fresh invitation/);
+    assert.match(html, /use a Chickpea Agent in Slack/i);
+    assert.doesNotMatch(html, /create a fresh invitation/i);
     assert.doesNotMatch(html, /terminal-locator|UREVOKED|Invited Admin/i);
     const client = await app.request(`${ORIGIN}/auth/slack/invite/client.js`);
     assert.match(await client.text(), /state === "unavailable"[\s\S]*sessionStorage\.removeItem/);

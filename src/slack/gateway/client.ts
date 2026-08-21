@@ -368,8 +368,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       });
     }
     const current = await this.dependencies.config.getWorkspaceInstallation(binding.workspaceId);
-    if (!current) {
-      await this.dependencies.config.ensureWorkspaceInstallation({
+    const retained = current ?? await this.dependencies.config.ensureWorkspaceInstallation({
         workspaceId: binding.workspaceId,
         transportMode: 'gateway',
         teamId: binding.workspaceId,
@@ -377,16 +376,15 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
         botUserId: binding.botUserId,
         gatewayBindingId: binding.bindingId,
       });
-    } else {
-      await this.dependencies.config.updateWorkspaceInstallation(binding.workspaceId, {
-        transportMode: 'gateway',
-        appId: binding.appId,
-        botUserId: binding.botUserId,
-        gatewayBindingId: binding.bindingId,
-        health: 'healthy',
-        healthDetail: null,
-      }, current.revision);
-    }
+    await this.dependencies.config.updateWorkspaceInstallation(binding.workspaceId, {
+      transportMode: 'gateway',
+      teamId: binding.workspaceId,
+      appId: binding.appId,
+      botUserId: binding.botUserId,
+      gatewayBindingId: binding.bindingId,
+      health: 'healthy',
+      healthDetail: null,
+    }, retained.revision);
     const defaultIdentity = await this.dependencies.config.getSlackIdentity(
       WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     );
