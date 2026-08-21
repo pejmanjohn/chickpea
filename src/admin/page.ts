@@ -3389,7 +3389,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   // team name for the workspace Chickpea is installed in, else the raw workspace id
   // (multiple workspaces can be grouped; only the connected one has a name).
   function railGroupLabel(workspaceId) {
-    if (isSlackConnected() && workspaceId === connectedTeamId() && state.slack.teamName) return state.slack.teamName;
+    if (isSlackConnected() && workspaceId === connectedTeamId()) return connectedTeamName();
     return workspaceId || "Workspace";
   }
 

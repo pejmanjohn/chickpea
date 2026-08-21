@@ -75,6 +75,10 @@ class FakeTransport implements SlackTransport {
   memberAllowed = true;
   createError?: Error;
 
+  async getWorkspaceInfo(): Promise<{ teamId: string; teamName?: string }> {
+    return { teamId: 'T_TEST', teamName: 'Acme Inc' };
+  }
+
   async lookupMember(userId: string): Promise<SlackMember> {
     return {
       id: userId, deleted: false, bot: false, restricted: false, ultraRestricted: false,
@@ -121,6 +125,34 @@ class FakeTransport implements SlackTransport {
     return this.groups[index]!;
   }
 }
+
+test('shared Slack connection backfills and persists the workspace display name', async () => {
+  const fixture = harness();
+  try {
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST',
+      teamId: 'T_TEST',
+      transportMode: 'gateway',
+      appId: 'A_TEST',
+      botUserId: 'U_BOT',
+      gatewayBindingId: 'binding_test',
+    });
+
+    const response = await fixture.app.request('http://localhost/admin/api/slack-connection', {
+      headers: auth(),
+    });
+
+    assert.equal(response.status, 200);
+    const body = await response.json() as { connected: boolean; teamId: string; teamName: string };
+    assert.equal(body.connected, true);
+    assert.equal(body.teamId, 'T_TEST');
+    assert.equal(body.teamName, 'Acme Inc');
+    assert.equal(await fixture.settings.getSetting('slack.teamName'), 'Acme Inc');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
 
 function harness(transport = new FakeTransport()) {
   const store = new SqliteConfigStore(':memory:');

@@ -1255,32 +1255,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       limiterSecret: environment.secret,
     };
   };
-  const slackWorkspaceDescriptor = async (c: Context): Promise<{
-    teamId: string;
-    teamName?: string;
-  } | undefined> => {
-    const organization = await identity(c).getOrganization();
-    if (!organization?.slackTeamId) return undefined;
-    if (options.slackAdmissionService && !options.slackCredentials) {
-      return { teamId: organization.slackTeamId };
-    }
-    const credentials = slackCredentialDependencies(c);
-    if (!credentials) return { teamId: organization.slackTeamId };
-    try {
-      const resolved = await resolveSlackInstallationCredentials(
-        WORKSPACE_SLACK_INSTALLATION_ID,
-        c.env as PlatformEnv | undefined,
-        credentials,
-      );
-      if (!resolved.botToken) return { teamId: organization.slackTeamId };
-      const live = await slackAuthTest(resolved.botToken);
-      return live.ok && live.teamId === organization.slackTeamId && live.teamName
-        ? { teamId: organization.slackTeamId, teamName: live.teamName }
-        : { teamId: organization.slackTeamId };
-    } catch {
-      return { teamId: organization.slackTeamId };
-    }
-  };
   const agentSlackTransport = async (
     c: Context,
     workspaceId: string,
@@ -1313,6 +1287,56 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       );
     }
     return createDirectSlackTransport(credentials.botToken);
+  };
+  const slackWorkspaceDescriptor = async (c: Context): Promise<{
+    teamId: string;
+    teamName?: string;
+  } | undefined> => {
+    const organization = await identity(c).getOrganization();
+    if (!organization?.slackTeamId) return undefined;
+    const teamId = organization.slackTeamId;
+    if (options.slackAdmissionService && !options.slackCredentials && !options.slackTransport) {
+      return { teamId };
+    }
+    const settingsStore = settings(c);
+    const storedTeamName = (await settingsStore.getSetting(SLACK_SETTING_KEYS.teamName))?.trim();
+    if (storedTeamName) return { teamId, teamName: storedTeamName };
+
+    const installation = await store(c).getWorkspaceInstallation(teamId);
+    if (installation || options.slackTransport) {
+      try {
+        const transport = await agentSlackTransport(c, teamId);
+        const live = await transport.getWorkspaceInfo?.();
+        if (live?.teamId === teamId && live.teamName?.trim()) {
+          const teamName = live.teamName.trim().slice(0, 120);
+          await settingsStore.setSetting(SLACK_SETTING_KEYS.teamName, teamName);
+          return { teamId, teamName };
+        }
+      } catch {
+        // Workspace metadata is presentation-only. Keep the connected install
+        // usable when Slack or the private gateway cannot answer this backfill.
+      }
+    }
+
+    const credentials = slackCredentialDependencies(c);
+    if (!credentials) return { teamId };
+    try {
+      const resolved = await resolveSlackInstallationCredentials(
+        WORKSPACE_SLACK_INSTALLATION_ID,
+        c.env as PlatformEnv | undefined,
+        credentials,
+      );
+      if (!resolved.botToken) return { teamId };
+      const live = await slackAuthTest(resolved.botToken);
+      if (live.ok && live.teamId === teamId && live.teamName?.trim()) {
+        const teamName = live.teamName.trim().slice(0, 120);
+        await settingsStore.setSetting(SLACK_SETTING_KEYS.teamName, teamName);
+        return { teamId, teamName };
+      }
+      return { teamId };
+    } catch {
+      return { teamId };
+    }
   };
   const discoverSlackChannels = async (
     c: Context,
@@ -5472,10 +5496,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         installation.health !== 'revoked' && Boolean(installation.gatewayBindingId),
     );
     if (gatewayInstallation) {
+      const descriptor = await slackWorkspaceDescriptor(c);
       return {
         connected: true,
         teamId: gatewayInstallation.teamId ?? gatewayInstallation.workspaceId,
-        teamName: await settingsStore.getSetting(SLACK_SETTING_KEYS.teamName) ?? undefined,
+        teamName: descriptor?.teamName ??
+          await settingsStore.getSetting(SLACK_SETTING_KEYS.teamName) ?? undefined,
       };
     }
     const [credentials, teamInfo, installations] = await Promise.all([
@@ -5900,10 +5926,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         settingsStore,
         slackCredentialResolutionDependencies(c),
       );
-      // STORED-only (no network on admin load): the connected workspace name is
-      // populated by the wizard save for new installs, and by the first
-      // channels-list / assignment backfill for pre-existing ones.
-      const teamInfo = await readStoredSlackTeamInfo(
+      // Prefer stored metadata. Shared-app installs that predate workspace-name
+      // persistence do one best-effort gateway lookup, then cache the result.
+      let teamInfo = await readStoredSlackTeamInfo(
         c.env as PlatformEnv | undefined,
         settingsStore,
         slackCredentialResolutionDependencies(c),
@@ -5919,6 +5944,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         installation?.transportMode === 'gateway' &&
         Boolean(installation.gatewayBindingId) &&
         installation.health !== 'revoked';
+      if (gatewayConnected && !teamInfo.teamName) {
+        const descriptor = await slackWorkspaceDescriptor(c);
+        if (descriptor && (!teamInfo.teamId || descriptor.teamId === teamInfo.teamId)) {
+          teamInfo = {
+            teamId: teamInfo.teamId ?? descriptor.teamId,
+            teamName: descriptor.teamName,
+          };
+        }
+      }
       const requestUrl = `${requestOrigin(c)}/channels/slack/events`;
       return c.json({
         credentials,

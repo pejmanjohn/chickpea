@@ -188,6 +188,22 @@ test('gateway transport follows Slack cursors for Channels and membership', asyn
   ]);
 });
 
+test('gateway transport reads the connected Slack workspace identity', async () => {
+  const transport = createGatewaySlackTransport({
+    workspaceId: 'T123',
+    async call(operation, input) {
+      assert.equal(operation, 'auth.test');
+      assert.deepEqual(input, {});
+      return { team_id: 'T123', team: 'Acme Inc', user_id: 'UBOT' };
+    },
+  });
+
+  assert.deepEqual(await transport.getWorkspaceInfo?.(), {
+    teamId: 'T123',
+    teamName: 'Acme Inc',
+  });
+});
+
 test('direct transport follows Slack cursors for Channels and membership', async () => {
   const calls: RecordedCall[] = [];
   const client = fakeClient(calls);

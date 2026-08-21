@@ -9,12 +9,20 @@ import {
   type SlackMessageReference,
   type SlackTransport,
   type SlackUserGroup,
+  type SlackWorkspaceInfo,
 } from './types.ts';
 
 /** Shared-app adapter. The deployment never receives a Slack token. */
 export function createGatewaySlackTransport(client: GatewayOperationClient): SlackTransport {
   return {
     mode: 'gateway',
+
+    async getWorkspaceInfo(): Promise<SlackWorkspaceInfo> {
+      const result = await client.call('auth.test', {});
+      const teamId = requiredString(result.team_id, 'auth.test');
+      const teamName = stringValue(result.team).trim();
+      return { teamId, ...(teamName ? { teamName } : {}) };
+    },
 
     async lookupMember(userId): Promise<SlackMember> {
       const result = await client.call('users.info', { user: userId });

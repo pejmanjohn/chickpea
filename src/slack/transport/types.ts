@@ -65,6 +65,11 @@ export interface SlackAppHomeReference {
   hash?: string;
 }
 
+export interface SlackWorkspaceInfo {
+  teamId: string;
+  teamName?: string;
+}
+
 /**
  * The complete Slack capability surface used by Agent product code. It exposes
  * neither an SDK client nor token-bearing request options, so the same runtime
@@ -72,6 +77,8 @@ export interface SlackAppHomeReference {
  */
 export interface SlackTransport {
   readonly mode: SlackTransportMode;
+  /** Live workspace identity when the backing transport can verify it. */
+  getWorkspaceInfo?(): Promise<SlackWorkspaceInfo>;
   lookupMember(userId: string): Promise<SlackMember>;
   lookupChannel(channelId: string): Promise<SlackChannel>;
   listChannels(): Promise<SlackChannelList>;
