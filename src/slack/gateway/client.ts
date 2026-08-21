@@ -110,7 +110,11 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
   async beginClaim(
     returnUrl?: string,
     setup?: { setupId: string; setupRevision: number },
+    options?: { reconnect: boolean },
   ): Promise<GatewayClaimCreateResponse> {
+    const reconnectBindingId = options?.reconnect
+      ? await this.reconnectBindingId()
+      : undefined;
     let identity: GatewayDeploymentIdentity;
     try {
       identity = await this.identity();
@@ -136,7 +140,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       this.binding = undefined;
       // Another reconnect may already have replaced the same stale identity.
       // In that case, retain its winning value instead of deleting it.
-      if (!cleared) return this.beginClaim(returnUrl, setup);
+      if (!cleared) return this.beginClaim(returnUrl, setup, options);
       identity = await this.identity();
     }
     const safeReturnUrl = returnUrl ? requireReturnUrl(returnUrl) : undefined;
@@ -149,6 +153,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       nonce: requestId('nonce'),
       publicKey: identity.publicKey,
       ...(safeReturnUrl ? { returnUrl: safeReturnUrl } : {}),
+      ...(reconnectBindingId ? { reconnectBindingId } : {}),
     } satisfies Omit<GatewayClaimCreateRequest, 'signature'>;
     const request = await signGatewayRequest(identity, unsigned);
     const response = parseGatewayClaimCreateResponse(await this.requestJson(
@@ -513,6 +518,22 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
   private async claim(): Promise<GatewayClaimState | undefined> {
     const raw = await this.dependencies.settings.getSetting(GATEWAY_CLAIM_SETTING);
     return raw ? parseClaimState(raw) : undefined;
+  }
+
+  private async reconnectBindingId(): Promise<string | undefined> {
+    const raw = await this.dependencies.settings.getSetting(GATEWAY_BINDING_SETTING);
+    if (raw) {
+      try {
+        return parseStoredBinding(raw).bindingId;
+      } catch {
+        // The durable workspace-installation record below is the recovery
+        // source when the cached binding is missing or malformed.
+      }
+    }
+    const installations = await this.dependencies.config.listWorkspaceInstallations();
+    const candidates = installations.filter((installation) =>
+      installation.transportMode === 'gateway' && installation.gatewayBindingId);
+    return candidates.length === 1 ? candidates[0]!.gatewayBindingId : undefined;
   }
 
   private requireBaseUrl(): URL {

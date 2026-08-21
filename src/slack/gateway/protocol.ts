@@ -59,6 +59,7 @@ export interface GatewayClaimCreateRequest extends GatewaySignedRequest {
   kind: 'claim.create';
   publicKey: GatewayPublicKey;
   returnUrl?: string;
+  reconnectBindingId?: string;
 }
 
 export interface GatewayClaimCreateResponse {

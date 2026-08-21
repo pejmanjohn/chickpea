@@ -121,9 +121,13 @@ test('gateway reconnect replaces only an unreadable deployment identity', async 
     const original = JSON.parse(
       (await settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING))!,
     ) as { deploymentId: string };
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'TGATEWAY',
+      transportMode: 'gateway',
+      gatewayBindingId: 'binding_recovery',
+    });
     await settings.applySettingsPatch({
       set: [
-        { key: GATEWAY_BINDING_SETTING, value: '{"stale":true}' },
         { key: GATEWAY_SESSION_SETTING, value: '{"health":"offline"}' },
       ],
     });
@@ -136,13 +140,14 @@ test('gateway reconnect replaces only an unreadable deployment identity', async 
       fetch: gateway.fetch,
       now: () => NOW,
     });
-    const claim = await replacement.beginClaim();
+    const claim = await replacement.beginClaim(undefined, undefined, { reconnect: true });
     const recovered = JSON.parse(
       (await settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING))!,
     ) as { deploymentId: string };
 
     assert.equal(claim.claimId, 'claim_test');
     assert.notEqual(recovered.deploymentId, original.deploymentId);
+    assert.equal(gateway.requests.at(-1)?.body.reconnectBindingId, 'binding_recovery');
     assert.equal(await settings.getSetting(GATEWAY_BINDING_SETTING), undefined);
     assert.equal(await settings.getSetting(GATEWAY_SESSION_SETTING), undefined);
   } finally {

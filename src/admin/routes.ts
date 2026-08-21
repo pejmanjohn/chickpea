@@ -6024,7 +6024,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const claim = await createGatewayDeploymentClient(
         c.env as PlatformEnv | undefined,
-      ).beginClaim(`${requestOrigin(c)}/admin/slack-gateway/reconnect/finish`);
+      ).beginClaim(
+        `${requestOrigin(c)}/admin/slack-gateway/reconnect/finish`,
+        undefined,
+        { reconnect: true },
+      );
       return c.redirect(claim.authorizationUrl, 303);
     } catch (error) {
       console.error(
@@ -6043,7 +6047,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const claim = await createGatewayDeploymentClient(
         c.env as PlatformEnv | undefined,
-      ).beginClaim(`${requestOrigin(c)}/admin/slack-gateway/reconnect/finish`);
+      ).beginClaim(
+        `${requestOrigin(c)}/admin/slack-gateway/reconnect/finish`,
+        undefined,
+        { reconnect: true },
+      );
       return c.redirect(claim.authorizationUrl, 303);
     } catch (error) {
       console.error(
