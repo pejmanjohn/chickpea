@@ -351,6 +351,8 @@ function runAdminPageHarness(
       error: string;
       message?: string;
     };
+    agentArchiveConflicts?: number;
+    slackGatewayRefreshResult?: { authorizationUrl: string };
     mcpSecretPutFailures?: number;
     mcpSecretDeleteFailures?: number;
     apiConnectionSecretPutFailures?: number;
@@ -378,6 +380,7 @@ function runAdminPageHarness(
     usageAdminUi?: boolean;
     usageApiError?: boolean;
     usageCoverage?: { pricedOperationCount: number; meteredOperationCount: number };
+    usageAgentLabel?: string | null;
     usageClassifierOnly?: boolean;
     usageNextCursor?: string | null;
   } = {},
@@ -523,6 +526,7 @@ function runAdminPageHarness(
   let slackBehaviorGets = 0;
   let slackTestCalls = 0;
   let slackDisconnectCalls = 0;
+  const slackGatewayRefreshResult = options.slackGatewayRefreshResult;
   const channelListCalls: string[] = [];
   const usageApiCalls: string[] = [];
   const scheduledApiCalls: string[] = [];
@@ -628,6 +632,7 @@ function runAdminPageHarness(
   const openAiModelsAfterMethodSwitch = options.openAiModelsAfterMethodSwitch;
   const effectiveError = options.effectiveError;
   const agentWriteError = options.agentWriteError;
+  let agentArchiveConflicts = options.agentArchiveConflicts ?? 0;
   let mcpSecretPutFailures = options.mcpSecretPutFailures ?? 0;
   let mcpSecretDeleteFailures = options.mcpSecretDeleteFailures ?? 0;
   let apiConnectionSecretPutFailures = options.apiConnectionSecretPutFailures ?? 0;
@@ -954,7 +959,10 @@ function runAdminPageHarness(
     operation: {
       operationId: 'op_usage_fixture', operationKind: 'interactive_turn', sourceId: 'source_usage', status: 'completed',
       startedAt: usageNow - 60_000, finishedAt: usageNow - 55_000, installationId: 'chickpea', workspaceId: 'T_DESIGN',
-      agentId: 'agent_release', agentLabel: 'Release <script>alert(1)</script>', channelId: 'D_PRIVATE', channelLabel: null,
+      agentId: 'agent_release', agentLabel: options.usageAgentLabel === undefined
+        ? 'Release <script>alert(1)</script>'
+        : options.usageAgentLabel,
+      channelId: 'D_PRIVATE', channelLabel: null,
       conversationKind: 'direct_message', routineId: null, routineLabel: null, routineRunId: null,
       requestedProvider: 'openai', requestedModel: 'gpt-4.1-mini', credentialRefId: 'cred_openai_environment', credentialVersion: 1,
       coverage: 'aggregate_only', telemetrySchemaVersion: 1, createdAt: usageNow - 60_000, updatedAt: usageNow - 55_000,
@@ -1189,6 +1197,11 @@ function runAdminPageHarness(
       agentArchivePosts.push({ id, body });
       const existing = agentsList.find((agent) => agent.id === id);
       if (!existing) return Promise.resolve(jsonResponse({ error: 'not_found' }, 404));
+      if (agentArchiveConflicts > 0) {
+        agentArchiveConflicts -= 1;
+        existing.revision = Number(existing.revision ?? 1) + 1;
+        return Promise.resolve(jsonResponse({ error: 'agent_revision_conflict' }, 409));
+      }
       const replacementId = String(body.replacementDefaultAgentId || '');
       if (existing.isWorkspaceDefault && !replacementId) {
         return Promise.resolve(jsonResponse({ error: 'replacement_default_agent_required' }, 409));
@@ -1201,6 +1214,7 @@ function runAdminPageHarness(
         enabled: false,
         revision: Number(existing.revision ?? 1) + 1,
         isWorkspaceDefault: false,
+        whereItWorks: { channels: [] },
       });
       return Promise.resolve(jsonResponse({ agent: existing }));
     }
@@ -1937,6 +1951,11 @@ function runAdminPageHarness(
       return Promise.resolve(
         jsonResponse({ ok: true, teamId: 'T_DESIGN', teamName: 'Acme Inc', botName: 'tag', botUserId: 'UBOT' }),
       );
+    }
+    if (path === '/admin/slack-gateway/refresh' && method === 'POST') {
+      return Promise.resolve(jsonResponse(slackGatewayRefreshResult ?? {
+        authorizationUrl: 'https://gateway.example/install/claim_refresh',
+      }));
     }
     if (path === '/admin/api/slack-connection' && method === 'DELETE') {
       slackDisconnectCalls += 1;
@@ -3150,6 +3169,27 @@ test('archiving the workspace Default Agent transfers private routing explicitly
   }]);
   assert.match(harness.app.innerHTML, /agent-status-chip disabled[\s\S]*?Archived/);
   assert.doesNotMatch(harness.app.innerHTML, /Default Agent after archive/);
+  assert.match(harness.app.innerHTML, /No Channels yet/);
+  assert.doesNotMatch(harness.app.innerHTML, /#eng-releases/);
+});
+
+test('Agent archive refreshes and retries once after background presence advances its revision', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_ops',
+    agentArchiveConflicts: 1,
+  });
+  await flushAsync();
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'agent-overflow-toggle' }) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'archive-profile' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.agentArchivePosts, [
+    { id: 'agent_ops', body: { expectedRevision: 1 } },
+    { id: 'agent_ops', body: { expectedRevision: 2 } },
+  ]);
+  assert.match(harness.app.innerHTML, /agent-status-chip disabled[\s\S]*?Archived/);
+  assert.doesNotMatch(harness.app.innerHTML, /agent_revision_conflict/);
 });
 
 test('agent-first Admin lands on the Default Agent with Channels in lower navigation', async () => {
@@ -8348,10 +8388,17 @@ test('shared Slack settings expose a direct authorization recovery without reope
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /Reconnect the shared Slack app/);
-  assert.match(harness.app.innerHTML, /method="post" action="\/admin\/slack-gateway\/reconnect"/);
+  assert.match(harness.app.innerHTML, /data-action="slack-gateway-refresh"/);
+  assert.doesNotMatch(harness.app.innerHTML, /method="post" action="\/admin\/slack-gateway\/refresh"/);
   assert.doesNotMatch(harness.app.innerHTML, /href="\/admin\/slack-gateway\/reconnect"/);
   assert.match(harness.app.innerHTML, /Reconnect with Slack/);
   assert.match(harness.app.innerHTML, /without changing Agents, Channel grants, or saved settings/);
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'slack-gateway-refresh' }) });
+  await flushAsync();
+  assert.deepEqual(harness.assignedUrls, ['https://gateway.example/install/claim_refresh']);
 });
 
 test('leaving Slack settings starts the GitHub, sandbox, and outbound settings loads', async () => {
@@ -9210,6 +9257,18 @@ test('Usage shows concise spend, expanded token columns, and non-interactive act
   assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
   assert.match(html, /Release &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(html, /authorization: Bearer|apiKey|clientSecret/i);
+});
+
+test('Usage resolves a redacted private operation to the local Agent name', async () => {
+  const harness = runAdminPageHarness({
+    usageAdminUi: true,
+    initialPath: '/admin/usage',
+    usageAgentLabel: null,
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, />Release Profile<\/td>/);
+  assert.doesNotMatch(harness.app.innerHTML, />agent_release<\/td>/);
 });
 
 test('Usage preserves pagination when a page contains only hidden classifier work', async () => {

@@ -6029,21 +6029,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // authenticated Admin replace that grant without reopening first-run setup
   // or recreating Agents and Channel grants. This is deliberately POST-only:
   // opening or prefetching an Admin page must never create a replacement claim.
-  app.get('/admin/slack-gateway/reconnect', (c) =>
-    c.json({ error: 'method_not_allowed' }, 405)
-  );
-  app.post('/admin/slack-gateway/reconnect', async (c) => {
-    if (!validAuthFormPost(c, requestOrigin(c))) {
-      return c.json({ error: 'forbidden' }, 403);
-    }
+  const beginSlackGatewayRefresh = async (c: Context): Promise<Response> => {
     try {
       const claim = await createGatewayDeploymentClient(
         c.env as PlatformEnv | undefined,
       ).beginClaim(
-        `${requestOrigin(c)}/admin/slack-gateway/reconnect/finish`,
+        `${requestOrigin(c)}/admin/slack-gateway/refresh/finish`,
         undefined,
         { reconnect: true },
       );
+      if ((c.req.header('accept') ?? '').includes('application/json')) {
+        return c.json({ authorizationUrl: claim.authorizationUrl });
+      }
       return c.redirect(claim.authorizationUrl, 303);
     } catch (error) {
       console.error(
@@ -6051,11 +6048,24 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         error instanceof SlackTransportError ? error.code :
           error instanceof Error ? error.message : String(error),
       );
+      if ((c.req.header('accept') ?? '').includes('application/json')) {
+        return c.json({ error: 'slack_reconnect_start_failed' }, 502);
+      }
       return c.redirect('/admin/settings/slack?slack_reconnect=failed', 303);
     }
-  });
+  };
+  // Keep the original endpoint as a compatibility alias for bookmarks and
+  // already-rendered Admin tabs; the attached UI uses the neutral refresh URL.
+  app.get('/admin/slack-gateway/reconnect', (c) =>
+    c.json({ error: 'method_not_allowed' }, 405)
+  );
+  app.post('/admin/slack-gateway/reconnect', beginSlackGatewayRefresh);
+  app.get('/admin/slack-gateway/refresh', (c) =>
+    c.json({ error: 'method_not_allowed' }, 405)
+  );
+  app.post('/admin/slack-gateway/refresh', beginSlackGatewayRefresh);
 
-  app.get('/admin/slack-gateway/reconnect/finish', async (c) => {
+  const finishSlackGatewayRefresh = async (c: Context): Promise<Response> => {
     try {
       const result = await createGatewayDeploymentClient(
         c.env as PlatformEnv | undefined,
@@ -6074,7 +6084,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       );
       return c.redirect('/admin/settings/slack?slack_reconnect=failed', 303);
     }
-  });
+  };
+  app.get('/admin/slack-gateway/reconnect/finish', finishSlackGatewayRefresh);
+  app.get('/admin/slack-gateway/refresh/finish', finishSlackGatewayRefresh);
 
   // Disconnect is a LOCAL credential removal, not a Slack uninstall/revoke.
   // Environment-managed credentials cannot be removed from a browser, and a

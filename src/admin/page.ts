@@ -2591,6 +2591,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // booleans below still drive their specific labels, while this value keeps
     // test, credential replacement, disconnect, and navigation from racing.
     slackConnectionBusy: "",
+    slackReconnectError: "",
     slackTestBusy: false,
     slackTestStatus: null,
     slackDisconnectConfirm: false,
@@ -3988,8 +3989,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       var cached = usageOperationCachedTokens(detail);
       var output = usageOperationTokens(detail, "outputTokens");
       var total = usageOperationTokens(detail, "totalTokens");
+      var localAgent = agentById(operation.agentId);
+      var agentLabel = operation.agentLabel || (localAgent && localAgent.name) || operation.agentId || "Unknown";
       return '<tr><td><strong class="usage-work-label">' + esc(usageWorkLabel(operation)) + '</strong><div class="hint">' + esc(new Date(operation.startedAt).toLocaleString()) + '</div></td>' +
-        '<td>' + esc(operation.agentLabel || operation.agentId || "Unknown") + '</td><td>' + esc(usageOperationProvider(detail)) + '</td><td>' + esc(usageOperationModel(detail)) + '</td>' +
+        '<td>' + esc(agentLabel) + '</td><td>' + esc(usageOperationProvider(detail)) + '</td><td>' + esc(usageOperationModel(detail)) + '</td>' +
         '<td>' + usageStatusBadge(operation.status) + '</td><td class="number">' + usageTokenTotalHtml(input, cached, output, total) + '</td><td class="number">' + usageMoney(usageOperationAmount(detail), "USD") + '</td></tr>';
     }).join("");
     return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Channel or routine</th><th>Agent</th><th>Provider</th><th>Model</th><th>Status</th><th class="number">Tokens</th><th class="number">Spend</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
@@ -4467,9 +4470,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       slackConnectionStatusHtml() + '</div>' +
       (!mutable ? '<div class="action-well"><div class="danger-copy"><span class="danger-title">Reconnect the shared Slack app</span>' +
       '<span class="hint">Refresh Slack authorization without changing Agents, Channel grants, or saved settings.</span></div>' +
-      '<form method="post" action="/admin/slack-gateway/reconnect">' +
-      '<button type="submit" class="btn btn-soft i-lead"' +
-      (connectionBusy ? ' disabled' : '') + '>' + icon("arrow-path") + 'Reconnect with Slack</button></form></div>' : '') +
+      '<button type="button" class="btn btn-soft i-lead" data-action="slack-gateway-refresh"' +
+      (connectionBusy ? ' disabled' : '') + '>' + (state.slackConnectionBusy === "refresh" ? '<span class="spinner"></span>Opening Slack&hellip;' : icon("arrow-path") + 'Reconnect with Slack') + '</button>' +
+      (state.slackReconnectError ? '<span class="inline-status error" role="alert">' + esc(state.slackReconnectError) + '</span>' : '') + '</div>' : '') +
       '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect this workspace</span>' +
       '<span class="hint">Stops Chickpea from answering. Agents and Channel configuration stay saved so you can reconnect later. This does not uninstall the Slack app.</span>' +
       (!mutable ? '<span class="hint">This connection is managed by the environment and is read-only here.</span>' : "") +
@@ -5084,10 +5087,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function channelGrantsForAgent(agentId) {
     var agent = agentById(agentId);
-    var projected = agent && agent.whereItWorks && Array.isArray(agent.whereItWorks.channels)
-      ? agent.whereItWorks.channels
-      : [];
-    if (projected.length) {
+    var hasProjection = !!(agent && agent.whereItWorks && Array.isArray(agent.whereItWorks.channels));
+    var projected = hasProjection ? agent.whereItWorks.channels : [];
+    // An authoritative empty projection means the Agent has no Channel reach.
+    // Falling back to the pre-mutation grant cache here briefly resurrected
+    // archived placements until the next full page reload.
+    if (hasProjection) {
       return projected.map(function (grant) {
         return {
           workspaceId: grant.workspaceId,
@@ -6937,6 +6942,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '<button type="button" class="link-btn agent-roster-back" style="align-self:flex-start;" data-action="profiles-back">&larr; All Agents</button>' +
       '<header class="agent-profile-header"><div class="agent-profile-heading"><span class="agent-kicker">Agent</span>' + titleRow + '<p class="agent-replies-as"><span class="agent-replies-slack slack-logo-image" role="img" aria-label="Slack"></span>Mention as <span class="mono">' + esc(replyIdentityLabel) + '</span></p></div>' + agentLifecycleHtml(draft) + '</header>' +
       '<p class="agent-profile-intro" title="' + esc(introduction) + '" aria-label="' + esc(introduction) + '">' + esc(introduction) + '</p>' +
+      profileGenericErrorHtml() +
       disableConfirmHtml(draft) +
       agentPresenceFieldsHtml(draft) +
       profileTabsHtml(draft) +
@@ -6945,7 +6951,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       agentAdvancedHtml(draft) +
       '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + (saveBarCueActive() ? " cue" : "") + '">' +
       '<div class="save-bar-inner">' +
-      '<p class="save-note">&#9679; Unsaved changes &mdash; applies to new threads</p>' + profileGenericErrorHtml() +
+      '<p class="save-note">&#9679; Unsaved changes &mdash; applies to new threads</p>' +
       '<button type="button" class="btn btn-ghost" data-action="discard-profile">Discard</button>' +
       '<button type="button" class="btn btn-primary" data-action="save-profile">Save changes</button>' +
       '</div></div>' +
@@ -10065,6 +10071,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
     if (state.slackConnectionBusy && (
       action === "slack-test" ||
+      action === "slack-gateway-refresh" ||
       action === "slack-disconnect-open"
     )) return;
 
@@ -10191,6 +10198,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "refresh-channels") { loadSlackChannels(true); }
     if (action === "slack-behavior-retry") { loadSlackBehavior(); }
     if (action === "slack-test") { testSlackConnection(); }
+    if (action === "slack-gateway-refresh") { refreshSlackGatewayAuthorization(); }
     if (action === "slack-disconnect-open" && slackConnectionMutable()) {
       state.slackDisconnectConfirm = true;
       state.slackDisconnectError = "";
@@ -11510,6 +11518,30 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         state.slack.healthDetail = "gateway_not_connected";
       }
       state.slackTestStatus = { ok: false, message: slackErrorText(error.message, error.detail, error.serverMessage, error.payload) };
+      render();
+    });
+  }
+
+  function refreshSlackGatewayAuthorization() {
+    if (state.slackConnectionBusy) return;
+    state.slackConnectionBusy = "refresh";
+    state.slackReconnectError = "";
+    render();
+    api("/admin/slack-gateway/refresh", {
+      method: "POST",
+      headers: {
+        "accept": "application/json",
+        "content-type": "application/json"
+      },
+      body: "{}"
+    }).then(function (body) {
+      var authorizationUrl;
+      try { authorizationUrl = new URL(String(body && body.authorizationUrl || "")); } catch (error) { throw new Error("Slack authorization returned an invalid URL."); }
+      if (authorizationUrl.protocol !== "https:") throw new Error("Slack authorization must use https.");
+      location.assign(authorizationUrl.href);
+    }).catch(function (error) {
+      state.slackConnectionBusy = "";
+      state.slackReconnectError = (error && (error.serverMessage || error.message)) || "Could not open Slack authorization.";
       render();
     });
   }
@@ -13194,6 +13226,34 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }).catch(function (error) { state.profileError = deleteProfileErrorText(error); render(); });
   }
 
+  function postProfileLifecycleMutation(draft, action, body, mutation, attempt) {
+    var path = "/admin/api/agents/" + encodeURIComponent(draft.id) + "/" + action;
+    return postJson(path, "POST", body).catch(function (error) {
+      var conflict = error && error.payload && error.payload.error === "agent_revision_conflict";
+      if (!conflict || attempt > 0 || !profilePresenceMutationIsCurrent(mutation)) throw error;
+      // Presence reconciliation can advance the Agent revision while this page
+      // is open. Refresh only the authoritative projection and retry once so a
+      // lifecycle action never fails merely because Chickpea updated its own
+      // Slack health in the background. Unsaved form fields remain untouched.
+      return api("/admin/api/agents/" + encodeURIComponent(draft.id), { cache: "no-store" }).then(function (latestBody) {
+        if (!profilePresenceMutationIsCurrent(mutation)) throw error;
+        var latest = latestBody && latestBody.agent;
+        if (!latest) throw new Error("Agent response was missing.");
+        applyAgentMutation(latest, [
+          "lifecycle", "enabled", "slackPresence", "slackPresenceRecovery",
+          "isWorkspaceDefault", "defaultForWorkspaces", "whereItWorks"
+        ]);
+        return postProfileLifecycleMutation(
+          draft,
+          action,
+          Object.assign({}, body, { expectedRevision: latest.revision }),
+          mutation,
+          attempt + 1
+        );
+      });
+    });
+  }
+
   function archiveProfile() {
     var draft = state.profileDraft;
     if (!draft || !draft.id || state.profilePresenceMutation) return;
@@ -13201,12 +13261,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.profileError = "";
     var mutation = beginProfilePresenceMutation("archive", draft.id);
     if (!mutation) return;
-    postJson("/admin/api/agents/" + encodeURIComponent(draft.id) + "/archive", "POST", {
+    postProfileLifecycleMutation(draft, "archive", {
       expectedRevision: draft.revision,
       replacementDefaultAgentId: draft.isWorkspaceDefault
         ? (state.profileReplacementDefaultAgentId || undefined)
         : undefined
-    }).then(function (body) {
+    }, mutation, 0).then(function (body) {
       if (!profilePresenceMutationIsCurrent(mutation)) return;
       var updated = body && body.agent;
       if (!updated) throw new Error("Agent response was missing.");
@@ -13222,6 +13282,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.profileReplacementDefaultAgentId = "";
     }).catch(function (error) {
       if (!profilePresenceMutationIsCurrent(mutation)) return;
+      var payload = error && error.payload;
+      if (payload && payload.agent) {
+        applyAgentMutation(payload.agent, [
+          "lifecycle", "enabled", "slackPresence", "slackPresenceRecovery",
+          "isWorkspaceDefault", "defaultForWorkspaces", "whereItWorks"
+        ]);
+      }
       state.profileError = error && error.message === "replacement_default_agent_required"
         ? "Choose another default Agent before archiving this one."
         : ((error && (error.serverMessage || error.message)) || "Could not archive the Agent.");
@@ -13235,10 +13302,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.profileError = "";
     var mutation = beginProfilePresenceMutation("restore", draft.id);
     if (!mutation) return;
-    postJson("/admin/api/agents/" + encodeURIComponent(draft.id) + "/restore", "POST", {
+    postProfileLifecycleMutation(draft, "restore", {
       expectedRevision: draft.revision,
       workspaceId: connectedTeamId() || undefined
-    }).then(function (body) {
+    }, mutation, 0).then(function (body) {
       if (!profilePresenceMutationIsCurrent(mutation)) return;
       var updated = body && body.agent;
       if (!updated) throw new Error("Agent response was missing.");
@@ -13248,6 +13315,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       ]);
     }).catch(function (error) {
       if (!profilePresenceMutationIsCurrent(mutation)) return;
+      var payload = error && error.payload;
+      if (payload && payload.agent) {
+        applyAgentMutation(payload.agent, [
+          "lifecycle", "enabled", "slackPresence", "slackPresenceRecovery",
+          "isWorkspaceDefault", "defaultForWorkspaces", "whereItWorks"
+        ]);
+      }
       state.profileError = (error && (error.serverMessage || error.message)) || "Could not restore the Agent.";
     }).finally(function () { finishProfilePresenceMutation(mutation); });
   }
