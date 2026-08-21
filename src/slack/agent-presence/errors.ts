@@ -58,6 +58,7 @@ const INVALID_HANDLE_ERRORS = new Set([
   'invalid_arguments',
 ]);
 const RECONNECT_ERRORS = new Set([
+  'binding_mismatch',
   'binding_reconnect_required',
   'gateway_binding_missing',
   'gateway_binding_mismatch',

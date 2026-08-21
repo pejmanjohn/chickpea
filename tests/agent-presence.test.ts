@@ -156,16 +156,18 @@ test('Slack policy denial saves needs-attention state with the exact role recove
   }
 });
 
-test('revoked shared-app installer authority gives a reconnect action, not generic Retry advice', () => {
-  const classified = classifyAgentPresenceError(
-    new SlackTransportError('usergroups.update', 'binding_reconnect_required'),
-  );
-  assert.equal(classified.code, 'slack_reconnect_required');
-  const recovery = agentPresenceRecovery(classified, 'support');
-  assert.equal(recovery.actionLabel, 'Reconnect Slack');
-  assert.equal(recovery.actionKind, 'reconnect');
-  assert.match(recovery.explanation, /current Slack Owner or Admin/);
-  assert.match(recovery.note ?? '', /encrypted Slack authorization/);
+test('revoked or displaced shared-app authority gives reconnect, not generic Retry advice', () => {
+  for (const slackCode of ['binding_reconnect_required', 'binding_mismatch']) {
+    const classified = classifyAgentPresenceError(
+      new SlackTransportError('usergroups.update', slackCode),
+    );
+    assert.equal(classified.code, 'slack_reconnect_required');
+    const recovery = agentPresenceRecovery(classified, 'support');
+    assert.equal(recovery.actionLabel, 'Reconnect Slack');
+    assert.equal(recovery.actionKind, 'reconnect');
+    assert.match(recovery.explanation, /current Slack Owner or Admin/);
+    assert.match(recovery.note ?? '', /encrypted Slack authorization/);
+  }
 });
 
 test('retry adopts an exact group after an ambiguous create and never creates a duplicate', async () => {
