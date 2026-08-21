@@ -3067,6 +3067,37 @@ test('Agent lifecycle overflow is the sole truthful control and restores keyboar
   assert.equal(harness.focusedAction(), 'agent-overflow-toggle');
 });
 
+test('a discoverable Agent can be duplicated without copying authority', async () => {
+  const source = {
+    ...releaseAgent,
+    skills: [{ name: 'release-notes', description: 'Summarize releases', instructions: 'Read the changelog.', enabled: true }],
+    mcpServers: [{ id: 'zendesk', name: 'Zendesk', url: 'https://example.zendesk.com/mcp', enabled: true }],
+    apiConnections: [{ id: 'status-api', name: 'Status API', baseUrl: 'https://status.example.com', enabled: true }],
+    repositories: [{ repositoryId: 42, fullName: 'acme/private', enabled: true }],
+  };
+  const harness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release', agents: [source, opsAgent] });
+  await flushAsync();
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'agent-overflow-toggle' }) });
+  assert.match(harness.app.innerHTML, /data-action="duplicate-profile"[^>]*>Duplicate Agent<\/button>/);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'duplicate-profile', 'data-agent': source.id }) });
+
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">New Agent<\/h1>/);
+  assert.match(harness.app.innerHTML, /Copied from Release Profile/);
+  assert.match(harness.app.innerHTML, /value="Release Profile copy"/);
+  assert.match(harness.app.innerHTML, /value="release-profile-copy"/);
+  assert.match(harness.app.innerHTML, /Channel access, connections, repositories, memory, and schedules stay separate/);
+  assert.doesNotMatch(harness.app.innerHTML, /example\.zendesk\.com|status\.example\.com|acme\/private/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPostBodies.length, 1);
+  assert.deepEqual(harness.agentPostBodies[0]?.mcpServers, []);
+  assert.deepEqual(harness.agentPostBodies[0]?.apiConnections, []);
+  assert.deepEqual(harness.agentPostBodies[0]?.repositories, []);
+  assert.deepEqual(harness.agentPostBodies[0]?.skills, source.skills);
+});
+
 test('archiving the workspace Default Agent transfers private routing explicitly', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin' });
   await flushAsync();

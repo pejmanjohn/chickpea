@@ -3013,6 +3013,43 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     render();
   }
 
+  function openDuplicateProfile(selected) {
+    var baseName = String(selected.name || "Agent").trim() + " copy";
+    var name = baseName;
+    var suffix = 2;
+    var occupiedIds = new Set(state.agents.map(function (agent) { return agent.id; }));
+    while (occupiedIds.has(slugId(name))) {
+      name = baseName + " " + suffix;
+      suffix += 1;
+    }
+    var draft = newProfileDraft();
+    draft.name = name;
+    draft.description = selected.description || "";
+    draft.handle = handleFromAgentName(name);
+    draft.instructions = selected.instructions || "";
+    draft.model = selected.model || "";
+    draft.skills = (selected.skills || []).map(function (skill) {
+      var copy = {
+        name: skill.name,
+        description: skill.description,
+        instructions: skill.instructions,
+        enabled: skill.enabled
+      };
+      if (skill.suggestedSkillId !== undefined) copy.suggestedSkillId = skill.suggestedSkillId;
+      return copy;
+    });
+    draft.duplicateSourceName = selected.name || "Agent";
+    state.mobileAgentRosterOpen = false;
+    state.view = "profiles";
+    state.profileScreen = "create";
+    state.profileDraft = draft;
+    state.editingAgentId = null;
+    resetProfileTransientState();
+    state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], loading: false, error: "", notice: "" };
+    state.agentSchedules = { agentId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
+    render();
+  }
+
   // ---- URL routing ----------------------------------------------------------
   // The address bar mirrors the main-panel destination. render() pushes the
   // canonical path when it changes; popstate and the initial deep link apply
@@ -6766,10 +6803,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function profileCreateHtml() {
     var draft = state.profileDraft || newProfileDraft();
+    var duplicateNote = draft.duplicateSourceName
+      ? '<div class="callout"><div><p class="field-label">Copied from ' + esc(draft.duplicateSourceName) + '</p><p class="hint">Behavior and skills are copied. Channel access, connections, repositories, memory, and schedules stay separate until you grant them.</p></div></div>'
+      : '';
     return '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Agents</button>' +
       '<span class="agent-kicker">Agent</span><h1 class="page-title">New Agent</h1>' +
-      '<p class="hint">Define reusable behavior first. After saving, add this Agent to a Channel and try it in Slack.</p></div>' +
+      '<p class="hint">Define reusable behavior first. After saving, add this Agent to a Channel and try it in Slack.</p></div>' + duplicateNote +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Details</h2></div></div>' +
       '<div class="form-grid">' +
       profileNameFieldHtml(draft) +
@@ -6852,6 +6892,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       ? '<div class="agent-overflow-menu" role="menu" aria-label="Agent lifecycle actions">' +
         replacement +
         '<button type="button" class="agent-overflow-menuitem' + (archived ? "" : " danger") + '" role="menuitem" data-action="' + lifecycleAction + '"' + (!archived && draft.isWorkspaceDefault && !replacementCandidates.length ? " disabled" : "") + '>' + lifecycleLabel + '</button>' +
+        '<button type="button" class="agent-overflow-menuitem" role="menuitem" data-action="duplicate-profile" data-agent="' + esc(draft.id) + '">Duplicate Agent</button>' +
         '<p class="agent-overflow-guidance">' + (archived
           ? "Restoring re-enables the same Slack handle. Add Channel access again as needed."
           : "Archiving disables the Slack handle, removes Channel access, and pauses schedules. It can be restored later.") + '</p></div>'
@@ -9989,7 +10030,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (state.ownerMemory.dirty && (
       action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back" ||
-      action === "edit-profile" || action === "new-profile" || action === "open-channel-from-profile" ||
+      action === "edit-profile" || action === "new-profile" || action === "duplicate-profile" || action === "open-channel-from-profile" ||
       action === "open-channel-index" || action === "select-channel" || action === "channel-back"
     )) {
       state.ownerMemory.error = "Save or discard this memory draft before navigating away.";
@@ -10138,6 +10179,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "toggle-swap") { state.swapOpen = !state.swapOpen; render(); }
     // Profiles master-detail navigation + form actions.
     if (action === "new-profile") { openNewProfile(); }
+    if (action === "duplicate-profile") {
+      var duplicateSource = agentById(target.getAttribute("data-agent") || "");
+      if (duplicateSource) openDuplicateProfile(duplicateSource);
+    }
     if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) openProfileEditor(selected); }
     if (action === "profiles-back") { state.profileScreen = "list"; state.profileDraft = null; state.editingAgentId = null; resetProfileTransientState(); render(); }
     // Capability tab switch. The keystroke mirrors keep the draft in sync, so
@@ -12729,7 +12774,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function isEditLeaveAction(action) {
     return action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back" ||
-      action === "edit-profile" || action === "new-profile" || action === "open-channel-from-profile";
+      action === "edit-profile" || action === "new-profile" || action === "duplicate-profile" || action === "open-channel-from-profile";
   }
 
   function isChannelLeaveAction(action) {
@@ -12785,6 +12830,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       else enterProfiles(state.profileLastAgentId || ((state.agents[0] && state.agents[0].id) || ""));
     } else if (action === "new-profile") {
       openNewProfile();
+    } else if (action === "duplicate-profile") {
+      var duplicateSource = agentById((pending && pending.agent) || "");
+      if (duplicateSource) openDuplicateProfile(duplicateSource);
     } else if (action === "open-profiles") {
       enterProfiles((pending && pending.agent) || null);
     } else {
