@@ -315,6 +315,7 @@ function runAdminPageHarness(
     slackDisconnectError?: { status: number; error: string };
     initialPath?: string;
     slackChannels?: SlackChannelsFixture;
+    slackChannelsFetch?: (path: string) => Promise<FakeResponse>;
     channelIndex?: Array<Record<string, unknown>>;
     channelIndexError?: { status: number; error: string; message?: string };
     onboarding?: OnboardingFixture | null;
@@ -461,6 +462,8 @@ function runAdminPageHarness(
   gallerySearchSelections: Array<[number, number]>;
   resolveOpsEffective(): void;
   resolveAgentPatch(): void;
+  mainScrollTop(): number;
+  setMainScrollTop(value: number): void;
 } {
   const makeRegion = (): FakeRegion => ({
     inert: false,
@@ -481,6 +484,7 @@ function runAdminPageHarness(
   };
   const topbarRegion = makeRegion();
   const bodyRegion = makeRegion();
+  let mainRegion = { scrollTop: 0, scrollLeft: 0 };
   let appHtml = '';
   const renderHistory: string[] = [];
   let renderGeneration = 0;
@@ -512,6 +516,9 @@ function runAdminPageHarness(
       activeElement = null;
       resetRegion(topbarRegion);
       resetRegion(bodyRegion);
+      // Replacing #app also replaces the real .main scrolling element.
+      // A fresh element begins at the top unless production restores it.
+      mainRegion = { scrollTop: 0, scrollLeft: 0 };
     },
   };
   const modalRoot: FakeElement = { innerHTML: '' };
@@ -617,6 +624,7 @@ function runAdminPageHarness(
   let slackBehaviorGetFailures = options.slackBehaviorGetFailures ?? 0;
   const slackBehaviorPutError = options.slackBehaviorPutError;
   const slackChannels = options.slackChannels;
+  const slackChannelsFetch = options.slackChannelsFetch;
   let onboarding = options.onboarding ?? null;
   const putIsMember = options.putIsMember;
   const putAssignmentError = options.putAssignmentError;
@@ -863,6 +871,7 @@ function runAdminPageHarness(
     querySelector(selector: string) {
       if (selector === '.topbar') return topbarRegion;
       if (selector === '.body') return bodyRegion;
+      if (selector === '.main') return mainRegion;
       if (selector === '.import-browse-host' && options.skillBrowseDom && appHtml.includes('import-browse-host')) {
         return {
           get innerHTML() {
@@ -1611,6 +1620,7 @@ function runAdminPageHarness(
     }
     if (path === '/admin/api/slack-channels' || path.startsWith('/admin/api/slack-channels?')) {
       channelListCalls.push(path);
+      if (slackChannelsFetch) return slackChannelsFetch(path);
       if (slackChannelFailures > 0) {
         slackChannelFailures -= 1;
         return Promise.resolve(jsonResponse({ error: 'slack_list_failed', detail: 'missing_scope' }, 502));
@@ -2144,6 +2154,10 @@ function runAdminPageHarness(
       assert.ok(resolveAgentPatch, 'expected agent PATCH request to be pending');
       resolveAgentPatch();
     },
+    mainScrollTop: () => mainRegion.scrollTop,
+    setMainScrollTop(value: number) {
+      mainRegion.scrollTop = value;
+    },
   };
 }
 
@@ -2592,7 +2606,7 @@ test('admin page renders channel labels, profile secondary text, and singular ch
   // links directly to the Channel detail.
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
   assert.match(harness.app.innerHTML, /class="[^"]*agent-placement-card[^"]*"[\s\S]*?<h2>Where it works<\/h2>/);
-  assert.match(harness.app.innerHTML, /data-action="open-channel-from-profile"[^>]*># eng-releases/);
+  assert.match(harness.app.innerHTML, /data-action="open-channel-from-profile"[^>]*>[\s\S]*?class="where-channel-name">eng-releases/);
 });
 
 test('Where it works can remove an Agent Channel grant', async () => {
@@ -2621,7 +2635,7 @@ test('Where it works can remove an Agent Channel grant', async () => {
     channelId: 'C0EXR3L9T',
   }]);
   assert.match(harness.app.innerHTML, /Agent removed from #eng-releases/);
-  assert.match(harness.app.innerHTML, /No Channels yet/);
+  assert.match(harness.app.innerHTML, /Make Release Profile mentionable/);
 });
 
 test('the profile editor presents reversible archive semantics for an assigned Agent', async () => {
@@ -2721,7 +2735,6 @@ test('Agent Slack presence owns its editable handle, avatar, and edit policy', a
   assert.match(harness.app.innerHTML, /data-action="profile-avatar-upload"/);
   assert.match(harness.app.innerHTML, /data-action="profile-handle"/);
   assert.match(harness.app.innerHTML, /data-action="profile-edit-policy"/);
-  assert.match(harness.app.innerHTML, /Workspace default for @Chickpea DMs and App Home/);
   assert.doesNotMatch(harness.app.innerHTML, /@Finance|profile-slack-identity|Slack identity/);
   input({ target: inputTarget({ 'data-action': 'profile-handle' }, 'release-help') });
   change({ target: valueTarget({ 'data-action': 'profile-edit-policy' }, 'all_workspace_members') });
@@ -2969,6 +2982,80 @@ test('Add to channels reports when every available channel already uses the prof
   assert.match(harness.app.innerHTML, /Add a new Channel with this Agent/);
 });
 
+test('Add to channels preserves the Agent panel scroll when no candidates remain', async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C0EXR3L9T', name: 'eng-releases' }]),
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  await flushAsync();
+
+  harness.setMainScrollTop(486);
+  click({ target: actionTarget({ 'data-action': 'attach-open' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /All available Slack Channels already use this Agent\./);
+  assert.equal(harness.mainScrollTop(), 486);
+});
+
+test('Add to channels preserves scroll when a catalog request finishes after the picker closes', async () => {
+  let resolveSlackChannels: ((response: FakeResponse) => void) | undefined;
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    slackConnection: connectedSlackFixture(),
+    slackChannelsFetch: () => new Promise((resolve) => { resolveSlackChannels = resolve; }),
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  await flushAsync();
+
+  harness.setMainScrollTop(486);
+  click({ target: actionTarget({ 'data-action': 'attach-open' }) });
+  click({ target: actionTarget({ 'data-action': 'attach-cancel' }) });
+  assert.equal(harness.mainScrollTop(), 486);
+
+  assert.ok(resolveSlackChannels);
+  resolveSlackChannels(jsonResponse({
+    channels: [{ id: 'C_NEW', name: 'new-channel', isPrivate: false, isMember: true }],
+    teamId: 'T_DESIGN',
+    teamName: 'Acme Inc',
+    truncated: false,
+  }));
+  await flushAsync();
+
+  assert.equal(harness.mainScrollTop(), 486);
+});
+
+test('Add to channels preserves scroll across a catalog error and retry', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
+    slackChannelFailures: 1,
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  await flushAsync();
+
+  harness.setMainScrollTop(486);
+  click({ target: actionTarget({ 'data-action': 'attach-open' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Slack permissions are out of date/);
+  assert.equal(harness.mainScrollTop(), 486);
+
+  click({ target: actionTarget({ 'data-action': 'refresh-channels' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /new-channel/);
+  assert.equal(harness.mainScrollTop(), 486);
+});
+
 test('Add to channels escapes catalog values and offers the truncated-list fallback', async () => {
   const harness = runAdminPageHarness({
     slackConnection: connectedSlackFixture(),
@@ -3200,7 +3287,9 @@ test('archiving the workspace Default Agent transfers private routing explicitly
   }]);
   assert.match(harness.app.innerHTML, /agent-status-chip disabled[\s\S]*?Archived/);
   assert.doesNotMatch(harness.app.innerHTML, /Default Agent after archive/);
-  assert.match(harness.app.innerHTML, /No Channels yet/);
+  assert.match(harness.app.innerHTML, /Release Profile is archived/);
+  assert.match(harness.app.innerHTML, /Restore this Agent before adding it to Channels\./);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="attach-open"/);
   assert.doesNotMatch(harness.app.innerHTML, /#eng-releases/);
 });
 
@@ -3266,8 +3355,9 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
     );
   }
   assert.match(harness.app.innerHTML, /class="[^"]*agent-placement-card[^"]*"[\s\S]*?class="agent-card-icon semantic-icon tone-channel"[\s\S]*?<h2>Where it works<\/h2>/);
-  assert.match(harness.app.innerHTML, /<h3[^>]*>Channels<\/h3>[\s\S]*?# eng-releases/);
-  assert.match(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>/);
+  assert.match(harness.app.innerHTML, /<h3[^>]*>Channels<\/h3>[\s\S]*?1 channel/);
+  assert.match(harness.app.innerHTML, /class="where-channel-row"[\s\S]*?#<\/span>[\s\S]*?eng-releases/);
+  assert.doesNotMatch(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>|workspace Default Agent for private messages/);
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
   assert.match(harness.app.innerHTML, /class="[^"]*agent-model-card[^"]*"[\s\S]*?class="agent-card-icon semantic-icon tone-model"[\s\S]*?<h2>Model<\/h2>/);
   assert.match(harness.app.innerHTML, /<h2 class="section-title">Slack presence<\/h2>[\s\S]*?class="advanced agent-advanced-card"[\s\S]*?Coding sandbox/);
@@ -3290,31 +3380,25 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(page, /\.semantic-icon\.tone-model\s*\{[^}]*background:\s*var\(--semantic-model-bg\);[^}]*color:\s*var\(--semantic-model-fg\);/s);
   assert.match(page, /\.semantic-icon\.tone-slack\s*\{[^}]*background:\s*var\(--semantic-slack-bg\);[^}]*border-color:\s*var\(--semantic-slack-line\);/s);
   assert.match(page, /\.channel-hash\s*\{[^}]*background:\s*var\(--semantic-channel-bg\);[^}]*color:\s*var\(--semantic-channel-fg\);/s);
-  assert.match(page, /\.agent-placement-card > \.bundle-row, \.agent-placement-card > \.callout\s*\{[^}]*grid-column:\s*1 \/ -1;/s);
   assert.match(page, /@container \(max-width: 750px\)[\s\S]*?\.agent-profile-header[^{]*\{[^}]*align-items:\s*flex-start;[^}]*flex-direction:\s*column;/s);
   assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.agent-profile-page \.ptabs\s*\{[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\);[^}]*overflow:\s*visible;/s);
   assert.match(page, /@media \(max-width: 480px\)[\s\S]*?\.agent-profile-page \.ptabs\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/s);
 });
 
-test('Where it works keeps Channel grants and renders the workspace Default Agent for private messages', async () => {
+test('Where it works uses full-width Channel rows and guided first-Channel activation', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_release',
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /data-action="open-channel-from-profile"[^>]*># eng-releases/);
+  assert.match(harness.app.innerHTML, /data-action="open-channel-from-profile"[^>]*>[\s\S]*?class="where-channel-name">eng-releases/);
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
 
-  const dmHeadingAt = harness.app.innerHTML.indexOf('<h3>Direct messages</h3>');
-  const addActionAt = harness.app.innerHTML.indexOf('data-action="attach-open"', dmHeadingAt);
-  assert.notEqual(dmHeadingAt, -1);
-  assert.notEqual(addActionAt, -1);
-  const addButtonAt = harness.app.innerHTML.lastIndexOf('<button', addActionAt);
-  const dmSection = harness.app.innerHTML.slice(dmHeadingAt, addButtonAt);
-  assert.match(dmSection, /class="agent-dm-status">Workspace default for @Chickpea DMs and App Home<\/p>/);
-  assert.doesNotMatch(dmSection, /identity-bound|<button|data-action=/);
+  assert.match(harness.app.innerHTML, /class="where-list"[\s\S]*?class="where-entry"[\s\S]*?eng-releases/);
+  assert.match(harness.app.innerHTML, /<span class="agent-placement-count">1 channel<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>|Workspace default for @Chickpea DMs and App Home/);
 
-  const noDmHarness = runAdminPageHarness({
+  const noChannelsHarness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_release',
     assignments: [],
     agents: [{
@@ -3325,13 +3409,12 @@ test('Where it works keeps Channel grants and renders the workspace Default Agen
   });
   await flushAsync();
 
-  assert.match(noDmHarness.app.innerHTML, /<h3[^>]*>Channels<\/h3>[\s\S]*?No Channels yet/);
-  assert.match(
-    noDmHarness.app.innerHTML,
-    /<h3[^>]*>Direct messages<\/h3>[\s\S]*?Private messages use the workspace Default Agent\./,
-  );
-  assert.match(noDmHarness.app.innerHTML, /data-action="attach-open">Add to channels/);
-  assert.doesNotMatch(noDmHarness.app.innerHTML, /Slack identity|@Launch|@Finance/);
+  assert.match(noChannelsHarness.app.innerHTML, /Make Release Profile mentionable/);
+  assert.match(noChannelsHarness.app.innerHTML, /Choose its first Slack Channel\./);
+  assert.match(noChannelsHarness.app.innerHTML, /data-action="attach-open">Choose first channel/);
+  assert.doesNotMatch(noChannelsHarness.app.innerHTML, />Add to channels<\/button>/);
+  assert.doesNotMatch(noChannelsHarness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>|Private messages use the workspace Default Agent\./);
+  assert.doesNotMatch(noChannelsHarness.app.innerHTML, /Slack identity|@Launch|@Finance/);
 });
 
 test('Agent placements prefer the projected Slack Channel name over a raw Channel ID', async () => {
@@ -3361,8 +3444,8 @@ test('Agent placements prefer the projected Slack Channel name over a raw Channe
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /data-action="open-channel-from-profile"[^>]*># eng-releases/);
-  assert.doesNotMatch(harness.app.innerHTML, /># C0EXR3L9T/);
+  assert.match(harness.app.innerHTML, /data-action="open-channel-from-profile"[^>]*>[\s\S]*?class="where-channel-name">eng-releases/);
+  assert.doesNotMatch(harness.app.innerHTML, /class="where-channel-name">C0EXR3L9T/);
 });
 
 test('Channel detail prefers the projected Slack Channel name over a raw Channel ID', async () => {
@@ -8220,8 +8303,8 @@ test('onboarding carries the saved Slack channel name into the immediate Agent h
     target: actionTarget({ 'data-action': 'open-profiles', 'data-agent': 'agent_default' }),
   });
 
-  assert.match(harness.app.innerHTML, /># new-channel <span aria-hidden="true">&nearr;<\/span><\/button>/);
-  assert.doesNotMatch(harness.app.innerHTML, /># C_NEW <span aria-hidden="true">&nearr;<\/span><\/button>/);
+  assert.match(harness.app.innerHTML, /class="where-channel-name">new-channel<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /class="where-channel-name">C_NEW<\/span>/);
 });
 
 test('completed onboarding confirms the reply and hands off to the canonical Agent', async () => {
