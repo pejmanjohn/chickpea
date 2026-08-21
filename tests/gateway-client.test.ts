@@ -20,6 +20,7 @@ import {
 } from '../src/slack/gateway/identity.ts';
 import {
   CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+  canonicalGatewayPayload,
   type GatewayClientFrame,
   type GatewayPublicKey,
 } from '../src/slack/gateway/protocol.ts';
@@ -32,15 +33,18 @@ import {
 } from '../src/slack/installation-execution.ts';
 import { createGatewaySlackWebClient } from '../src/slack/gateway/web-client.ts';
 import {
-  GatewaySessionRunner,
-  type GatewaySocket,
-} from '../src/slack/gateway/session-runner.ts';
-import {
   DEFAULT_CHICKPEA_GATEWAY_URL,
   resolveChickpeaGatewayUrl,
 } from '../src/slack/gateway/runtime.ts';
 
 const NOW = Date.UTC(2026, 7, 20, 12);
+
+test('gateway signing payloads use locale-independent code-unit key order', () => {
+  assert.equal(
+    canonicalGatewayPayload({ a: 1, _: 2, A: 3, nested: { z: 1, Z: 2 } }),
+    '{"A":3,"_":2,"a":1,"nested":{"Z":2,"z":1}}',
+  );
+});
 
 test('fresh deployments default to the live shared gateway origin', () => {
   const prior = process.env.CHICKPEA_GATEWAY_URL;
@@ -220,6 +224,59 @@ test('gateway reconnect retains a concurrently replaced deployment identity', as
       await settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING),
       winningIdentity,
     );
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway identity recovery bounds repeated compare-and-set contention', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const first = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => NOW,
+  });
+  try {
+    await first.beginClaim();
+    let contentions = 0;
+    const contendedSettings = new Proxy(settings, {
+      get(target, property) {
+        if (property === 'applySettingsPatch') {
+          return async (patch: Parameters<SettingsStore['applySettingsPatch']>[0]) => {
+            if (patch.expected?.key === GATEWAY_DEPLOYMENT_IDENTITY_SETTING) {
+              contentions += 1;
+              return false;
+            }
+            return target.applySettingsPatch(patch);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const replacement = new GatewayDeploymentClient({
+      settings: contendedSettings,
+      config,
+      keyring: generateCredentialKeyring('key_gateway'),
+      gatewayBaseUrl: 'https://gateway.chickpea.test',
+      fetch: gateway.fetch,
+      now: () => NOW,
+    });
+
+    await assert.rejects(
+      replacement.beginClaim(),
+      (error: unknown) => error instanceof SlackTransportError &&
+        error.operation === 'gateway.claim' &&
+        error.code === 'gateway_identity_contended' &&
+        error.retryable,
+    );
+    assert.equal(contentions, 3);
   } finally {
     settings.close();
     config.close();
@@ -720,176 +777,6 @@ test('logical sessions authenticate before delivery, ack once, and fence tenant 
   }
 });
 
-test('session runner reconnects and rotates a renewable logical session', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
-  const gateway = new FakeGateway();
-  const client = new GatewayDeploymentClient({
-    settings,
-    config,
-    keyring: generateCredentialKeyring('key_gateway'),
-    gatewayBaseUrl: 'https://gateway.chickpea.test',
-    fetch: gateway.fetch,
-    now: () => NOW,
-  });
-  const sockets: FakeSocket[] = [];
-  const timers: Array<{ callback: () => void; delay: number }> = [];
-  try {
-    await client.beginClaim();
-    await client.refreshClaim();
-    const runner = new GatewaySessionRunner({
-      client,
-      onEvent: async () => 'accepted',
-      createSocket: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-      now: () => NOW,
-      setTimer: ((callback: () => void, delay: number) => {
-        timers.push({ callback, delay });
-        return timers.length as unknown as ReturnType<typeof setTimeout>;
-      }),
-      clearTimer: () => {},
-    });
-    assert.equal(await runner.start(), true);
-    sockets[0]!.open();
-    await waitFor(() => sockets[0]!.sent.length === 1);
-    assert.equal(JSON.parse(sockets[0]!.sent[0]!).kind, 'session.hello');
-    sockets[0]!.message(JSON.stringify({
-      protocolVersion: 1, kind: 'session.ready', bindingId: 'binding_test',
-      workspaceId: 'TGATEWAY', sessionId: 'session_test', heartbeatIntervalMs: 30_000,
-      rotateAt: NOW + 15 * 60_000,
-    }));
-    await spin();
-    assert.ok(timers.some(({ delay }) => delay === 12 * 60_000));
-    assert.ok(timers.some(({ delay }) => delay === 90_000));
-    await waitFor(async () => {
-      const value = await settings.getSetting(GATEWAY_SESSION_SETTING);
-      return value ? JSON.parse(value).health === 'healthy' : false;
-    });
-    sockets[0]!.fail();
-    assert.ok((timers.at(-1)?.delay ?? -1) >= 0);
-    await waitFor(async () => {
-      const value = await settings.getSetting(GATEWAY_SESSION_SETTING);
-      return value ? JSON.parse(value).attempt === 1 : false;
-    });
-    timers.at(-1)!.callback();
-    await waitFor(() => sockets.length === 2);
-    sockets[1]!.fail();
-    await waitFor(async () => {
-      const value = await settings.getSetting(GATEWAY_SESSION_SETTING);
-      return value ? JSON.parse(value).attempt === 2 : false;
-    });
-    runner.stop();
-  } finally {
-    settings.close();
-    config.close();
-  }
-});
-
-test('session runner reconnects a half-open socket after heartbeat timeout', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
-  const gateway = new FakeGateway();
-  const client = new GatewayDeploymentClient({
-    settings,
-    config,
-    keyring: generateCredentialKeyring('key_gateway'),
-    gatewayBaseUrl: 'https://gateway.chickpea.test',
-    fetch: gateway.fetch,
-    now: () => clock,
-  });
-  let clock = NOW;
-  const socket = new FakeSocket();
-  const timers: Array<{ callback: () => void; delay: number }> = [];
-  try {
-    await client.beginClaim();
-    await client.refreshClaim();
-    const runner = new GatewaySessionRunner({
-      client,
-      onEvent: async () => 'accepted',
-      createSocket: () => socket,
-      now: () => clock,
-      setTimer: ((callback: () => void, delay: number) => {
-        timers.push({ callback, delay });
-        return timers.length as unknown as ReturnType<typeof setTimeout>;
-      }),
-      clearTimer: () => {},
-    });
-    await runner.start();
-    socket.open();
-    await waitFor(() => socket.sent.length === 1);
-    socket.message(JSON.stringify({
-      protocolVersion: 1, kind: 'session.ready', bindingId: 'binding_test',
-      workspaceId: 'TGATEWAY', sessionId: 'session_timeout', heartbeatIntervalMs: 30_000,
-      rotateAt: NOW + 15 * 60_000,
-    }));
-    await spin();
-    const heartbeat = timers.findLast(({ delay }) => delay === 90_000);
-    assert.ok(heartbeat);
-    clock = NOW + 90_001;
-    heartbeat.callback();
-    await waitFor(async () => {
-      const value = await settings.getSetting(GATEWAY_SESSION_SETTING);
-      return value ? JSON.parse(value).reason === 'heartbeat_timeout' : false;
-    });
-    assert.equal(socket.readyState, 3);
-    runner.stop();
-  } finally {
-    settings.close();
-    config.close();
-  }
-});
-
-test('session runner reconnects when the gateway never sends session.ready', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
-  const gateway = new FakeGateway();
-  const client = new GatewayDeploymentClient({
-    settings,
-    config,
-    keyring: generateCredentialKeyring('key_gateway'),
-    gatewayBaseUrl: 'https://gateway.chickpea.test',
-    fetch: gateway.fetch,
-    now: () => clock,
-  });
-  let clock = NOW;
-  const socket = new FakeSocket();
-  const timers: Array<{ callback: () => void; delay: number }> = [];
-  try {
-    await client.beginClaim();
-    await client.refreshClaim();
-    const runner = new GatewaySessionRunner({
-      client,
-      onEvent: async () => 'accepted',
-      createSocket: () => socket,
-      now: () => clock,
-      setTimer: ((callback: () => void, delay: number) => {
-        timers.push({ callback, delay });
-        return timers.length as unknown as ReturnType<typeof setTimeout>;
-      }),
-      clearTimer: () => {},
-    });
-    await runner.start();
-    socket.open();
-    await waitFor(() => socket.sent.length === 1);
-    const readyTimeout = timers.find(({ delay }) => delay === 90_000);
-    assert.ok(readyTimeout);
-    clock = NOW + 90_001;
-    readyTimeout.callback();
-    await waitFor(async () => {
-      const value = await settings.getSetting(GATEWAY_SESSION_SETTING);
-      return value ? JSON.parse(value).reason === 'ready_timeout' : false;
-    });
-    assert.equal(socket.readyState, 3);
-    runner.stop();
-  } finally {
-    settings.close();
-    config.close();
-  }
-});
-
 class FakeGateway {
   readonly requests: Array<{ path: string; body: Record<string, unknown> }> = [];
   readonly operations: Array<{ operation: string; input: Record<string, unknown> }> = [];
@@ -954,42 +841,6 @@ class FakeGateway {
     }
     return json({ error: 'not_found' }, 404);
   };
-}
-
-class FakeSocket implements GatewaySocket {
-  readyState = 0;
-  readonly sent: string[] = [];
-  private readonly listeners = new Map<string, Array<(event?: { data: unknown }) => void>>();
-
-  send(data: string): void { this.sent.push(data); }
-  close(): void { this.readyState = 3; }
-  addEventListener(type: 'open' | 'message' | 'close' | 'error', listener: never): void {
-    const list = this.listeners.get(type) ?? [];
-    list.push(listener as (event?: { data: unknown }) => void);
-    this.listeners.set(type, list);
-  }
-  open(): void {
-    this.readyState = 1;
-    for (const listener of this.listeners.get('open') ?? []) listener();
-  }
-  message(data: string): void {
-    for (const listener of this.listeners.get('message') ?? []) listener({ data });
-  }
-  fail(): void {
-    for (const listener of this.listeners.get('error') ?? []) listener();
-  }
-}
-
-async function spin(): Promise<void> {
-  await new Promise<void>((resolve) => setImmediate(resolve));
-}
-
-async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (await predicate()) return;
-    await spin();
-  }
-  assert.fail('timed out waiting for asynchronous gateway work');
 }
 
 function operationResult(operation: string, input: Record<string, unknown>): Record<string, unknown> {

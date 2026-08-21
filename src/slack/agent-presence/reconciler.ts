@@ -121,7 +121,7 @@ export class AgentPresenceReconciler {
   }
 
   /** Reconcile one Agent's desired Slack alias; safe to invoke after ambiguity. */
-  async reconcile(agentId: string): Promise<CustomAgentConfig> {
+  async reconcile(agentId: string, attempt = 0): Promise<CustomAgentConfig> {
     const { config, transport } = this.dependencies;
     let agent = await config.getAgent(agentId);
     if (agent.lifecycle === 'archived') {
@@ -236,7 +236,14 @@ export class AgentPresenceReconciler {
         },
         current.revision,
       );
-      return this.reconcile(current.id);
+      if (attempt >= 4) {
+        throw new AgentPresenceError(
+          'slack_operation_failed',
+          'Agent settings kept changing during Slack reconciliation. Retry after edits settle.',
+          { retryable: true },
+        );
+      }
+      return this.reconcile(current.id, attempt + 1);
     }
     return config.updateAgent(
       current.id,
@@ -331,7 +338,20 @@ export class AgentPresenceReconciler {
     const { config, transport } = this.dependencies;
     let agent = await config.getAgent(agentId);
     agent = await config.restoreAgent(agent.id, agent.revision);
-    const presence = requiredPresence(agent);
+    let presence = requiredPresence(agent);
+    agent = await config.updateAgent(
+      agent.id,
+      {
+        slackPresence: {
+          ...withoutPresenceErrors(presence),
+          desiredState: 'active',
+          health: presence.userGroupId ? 'pending' : 'unpublished',
+          observedAt: this.now(),
+        },
+      },
+      agent.revision,
+    );
+    presence = requiredPresence(agent);
     if (!presence.userGroupId) return agent;
     try {
       await transport.enableUserGroup(presence.userGroupId);

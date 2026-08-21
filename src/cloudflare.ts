@@ -1808,23 +1808,28 @@ async function runWorkMaintenance(
     throw new Error(`Work maintenance failed: ${result.error.message}`);
   }
   const platformEnv = rawEnv as PlatformEnv;
-  await repairPendingOAuthContinuationResumes({
-    settings: getSettingsStore(platformEnv),
-    onReady: async (continuation) => {
-      if (!(await isOAuthContinuationActorActive({
-        continuation,
-        identity: getIdentityStore(platformEnv),
-      }))) {
-        throw new Error('OAuth continuation member is no longer active.');
-      }
-      const resumed = await getSlackStateStore(platformEnv).resumeTurnAfterOAuth?.(
-        continuation.taskId,
-        continuation.id,
-      );
-      if (!resumed) throw new Error('OAuth continuation task is unavailable.');
-    },
-  });
-  await wakeCloudflareGatewaySession(rawEnv);
+  try {
+    await repairPendingOAuthContinuationResumes({
+      settings: getSettingsStore(platformEnv),
+      onReady: async (continuation) => {
+        if (!(await isOAuthContinuationActorActive({
+          continuation,
+          identity: getIdentityStore(platformEnv),
+        }))) {
+          throw new Error('OAuth continuation member is no longer active.');
+        }
+        const resumed = await getSlackStateStore(platformEnv).resumeTurnAfterOAuth?.(
+          continuation.taskId,
+          continuation.id,
+        );
+        if (!resumed) throw new Error('OAuth continuation task is unavailable.');
+      },
+    });
+  } finally {
+    // The gateway session is the ingress lifeline for the shared Slack lane.
+    // OAuth repair failures must never suppress its periodic wake.
+    await wakeCloudflareGatewaySession(rawEnv);
+  }
 }
 
 export { SlackGatewaySession };

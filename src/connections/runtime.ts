@@ -30,6 +30,37 @@ export async function resolveEffectiveConnectionAccounts(input: {
     input.config.listConnectionAccounts(input.workspaceId),
     input.config.listAgentConnectionBindings(input.agentId),
   ]);
+  return projectEffectiveConnectionAccounts(accounts, bindings, input.actorMembershipId);
+}
+
+export async function resolveConnectionAccountContext(input: {
+  config: Pick<ConfigStore, 'listConnectionAccounts' | 'listAgentConnectionBindings'>;
+  workspaceId: string;
+  agentId: string;
+  actorMembershipId: string;
+}): Promise<{
+  effective: EffectiveConnectionAccount[];
+  authorizations: PersonalConnectionAuthorizationOption[];
+}> {
+  const [accounts, bindings] = await Promise.all([
+    input.config.listConnectionAccounts(input.workspaceId),
+    input.config.listAgentConnectionBindings(input.agentId),
+  ]);
+  return {
+    effective: projectEffectiveConnectionAccounts(accounts, bindings, input.actorMembershipId),
+    authorizations: projectPersonalConnectionAuthorizationOptions(
+      accounts,
+      bindings,
+      input.actorMembershipId,
+    ),
+  };
+}
+
+function projectEffectiveConnectionAccounts(
+  accounts: ConnectionAccount[],
+  bindings: AgentConnectionBinding[],
+  actorMembershipId: string,
+): EffectiveConnectionAccount[] {
   const byId = new Map(accounts.map((account) => [account.id, account]));
   const resolved = bindings.flatMap((binding) => {
     const bound = byId.get(binding.connectionAccountId);
@@ -38,14 +69,19 @@ export async function resolveEffectiveConnectionAccounts(input: {
       ? [bound]
       : accounts.filter((account) =>
           account.ownerKind === 'member' &&
-          account.ownerMembershipId === input.actorMembershipId &&
+          account.ownerMembershipId === actorMembershipId &&
           account.providerId === bound.providerId &&
           compatiblePersonalPolicy(bound.policy, account.policy)
         );
     return candidates.flatMap((account) => account.lifecycle === 'ready' ? [{
       account,
       binding,
-      policy: applyCapabilityCeiling(account.policy, binding),
+      policy: applyCapabilityCeiling(
+        bound.ownerKind === 'member'
+          ? applyPersonalTemplateCeiling(bound.policy, account.policy)
+          : account.policy,
+        binding,
+      ),
       scope: account.ownerKind === 'member' ? 'personal' as const : 'team' as const,
     }] : []);
   });
@@ -67,6 +103,18 @@ export async function resolvePersonalConnectionAuthorizationOptions(input: {
     input.config.listConnectionAccounts(input.workspaceId),
     input.config.listAgentConnectionBindings(input.agentId),
   ]);
+  return projectPersonalConnectionAuthorizationOptions(
+    accounts,
+    bindings,
+    input.actorMembershipId,
+  );
+}
+
+function projectPersonalConnectionAuthorizationOptions(
+  accounts: ConnectionAccount[],
+  bindings: AgentConnectionBinding[],
+  actorMembershipId: string,
+): PersonalConnectionAuthorizationOption[] {
   const byId = new Map(accounts.map((account) => [account.id, account]));
   const options = bindings.flatMap((binding) => {
     const template = byId.get(binding.connectionAccountId);
@@ -74,7 +122,7 @@ export async function resolvePersonalConnectionAuthorizationOptions(input: {
         template.providerId !== binding.providerId) return [];
     const actorAccounts = accounts.filter((account) =>
       account.ownerKind === 'member' &&
-      account.ownerMembershipId === input.actorMembershipId &&
+      account.ownerMembershipId === actorMembershipId &&
       account.providerId === template.providerId &&
       account.lifecycle !== 'revoked' &&
       compatiblePersonalPolicy(template.policy, account.policy)
@@ -216,7 +264,8 @@ export async function resolveConnectionSecretForInvocation(input: {
     | 'getOrganization'
     | 'getMembership'
     | 'getMembershipAccessOverlay'
-    | 'listExternalIdentities'
+    | 'getUser'
+    | 'resolveSlackIdentity'
   >;
 }): Promise<string> {
   if (!(await isActiveConnectionActor({
@@ -244,29 +293,38 @@ export async function isActiveConnectionActor(input: {
     | 'getOrganization'
     | 'getMembership'
     | 'getMembershipAccessOverlay'
-    | 'listExternalIdentities'
+    | 'getUser'
+    | 'resolveSlackIdentity'
   >;
   workspaceId: string;
   actorMembershipId: string;
 }): Promise<boolean> {
-  const [organization, membership, overlay, bindings] = await Promise.all([
+  const [organization, membership, overlay] = await Promise.all([
     input.identity.getOrganization(),
     input.identity.getMembership(input.actorMembershipId),
     input.identity.getMembershipAccessOverlay(input.actorMembershipId),
-    input.identity.listExternalIdentities(),
   ]);
+  if (
+    !organization || organization.slackTeamId !== input.workspaceId ||
+    !membership || membership.organizationId !== organization.id ||
+    membership.status !== 'active' ||
+    (overlay && (
+      overlay.organizationId !== organization.id || overlay.accessStatus !== 'active'
+    ))
+  ) return false;
+
+  const user = await input.identity.getUser(membership.userId);
+  if (!user || user.slackTeamId !== input.workspaceId) return false;
+  const resolution = await input.identity.resolveSlackIdentity(
+    input.workspaceId,
+    user.slackUserId,
+    organization.id,
+  );
   return Boolean(
-    organization && organization.slackTeamId === input.workspaceId &&
-    membership && membership.organizationId === organization.id &&
-    membership.status === 'active' &&
-    bindings.some((binding) =>
-      binding.membershipId === input.actorMembershipId &&
-      binding.organizationId === organization.id &&
-      binding.slackTeamId === input.workspaceId
-    ) &&
-    (!overlay || (
-      overlay.organizationId === organization.id && overlay.accessStatus === 'active'
-    )),
+    resolution &&
+    resolution.user.id === membership.userId &&
+    resolution.membership.id === input.actorMembershipId &&
+    resolution.binding.membershipId === input.actorMembershipId,
   );
 }
 
@@ -295,6 +353,53 @@ function applyCapabilityCeiling(
     return { ...policy, oauthScopes: (policy.oauthScopes ?? []).filter((scope) => allowed.has(scope)) };
   }
   return { ...policy, allowedMethods: policy.allowedMethods.filter((method) => allowed.has(method)) };
+}
+
+/**
+ * A personal account supplies the invoking member's credential and identity,
+ * but the Agent-bound template remains the authority ceiling. This prevents a
+ * same-provider account with broader hosts, paths, methods, scopes, or tools
+ * from silently widening what the Agent may do.
+ */
+function applyPersonalTemplateCeiling(
+  template: ConnectionAccountPolicy,
+  candidate: ConnectionAccountPolicy,
+): ConnectionAccountPolicy {
+  if (template.kind === 'api' && candidate.kind === 'api') {
+    return {
+      ...candidate,
+      allowedHosts: intersectExact(template.allowedHosts, candidate.allowedHosts),
+      pathPrefixes: intersectPathPrefixes(template.pathPrefixes, candidate.pathPrefixes),
+      allowedMethods: intersectExact(template.allowedMethods, candidate.allowedMethods),
+      ...(candidate.authMode === 'oauth'
+        ? { oauthScopes: intersectExact(template.oauthScopes ?? [], candidate.oauthScopes ?? []) }
+        : {}),
+    };
+  }
+  if (template.kind === 'mcp' && candidate.kind === 'mcp') {
+    const allowedTools = intersectExact(template.allowedTools, candidate.allowedTools);
+    return {
+      ...candidate,
+      headerNames: intersectExact(template.headerNames, candidate.headerNames),
+      allowedTools,
+      discoveredTools: candidate.discoveredTools.filter(({ name }) => allowedTools.includes(name)),
+    };
+  }
+  return candidate;
+}
+
+function intersectExact(left: readonly string[], right: readonly string[]): string[] {
+  const allowed = new Set(right);
+  return [...new Set(left.filter((value) => allowed.has(value)))];
+}
+
+function intersectPathPrefixes(left: readonly string[], right: readonly string[]): string[] {
+  const intersections = left.flatMap((leftPrefix) => right.flatMap((rightPrefix) => {
+    if (leftPrefix.startsWith(rightPrefix)) return [leftPrefix];
+    if (rightPrefix.startsWith(leftPrefix)) return [rightPrefix];
+    return [];
+  }));
+  return [...new Set(intersections)];
 }
 
 function compatiblePersonalPolicy(

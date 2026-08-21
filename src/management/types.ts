@@ -1,5 +1,6 @@
 import type { ConfigAgentPatch } from '../config/store.ts';
 import type {
+  AgentEditPolicy,
   AgentChannelGrantStatus,
   AgentCreateInput,
   ChannelConfig,
@@ -47,11 +48,31 @@ interface ManagementOperationBase {
   dependsOn?: string[];
 }
 
+/** Public Agent draft accepted by workspace management adapters. */
+export type ManagementAgentCreateInput = Omit<
+  AgentCreateInput,
+  | 'revision'
+  | 'creatorMembershipId'
+  | 'configurationGeneration'
+  | 'slackPresence'
+  | 'archivedAt'
+  | 'lifecycle'
+> & {
+  description?: string;
+  requestedHandle?: string;
+  editPolicy?: AgentEditPolicy;
+};
+
+/** Presentation-aware patch; requestedHandle is projected into Slack presence. */
+export type ManagementAgentPatch = ConfigAgentPatch & {
+  requestedHandle?: string;
+};
+
 export type ManagementOperation =
   | (ManagementOperationBase & {
       kind: 'create_agent';
       clientRef?: string;
-      agent: AgentCreateInput;
+      agent: ManagementAgentCreateInput;
     })
   | (ManagementOperationBase & {
       kind: 'update_agent';
@@ -59,10 +80,21 @@ export type ManagementOperation =
       expectedRevision: number;
       /** Forces confirmation when a portable recipe replaces the Agent definition. */
       confirmationReason?: 'recipe_overwrite';
-      patch: ConfigAgentPatch;
+      patch: ManagementAgentPatch;
     })
   | (ManagementOperationBase & {
       kind: 'delete_agent';
+      agentId: string;
+      expectedRevision: number;
+    })
+  | (ManagementOperationBase & {
+      kind: 'archive_agent';
+      agentId: string;
+      expectedRevision: number;
+      replacementDefaultAgentId?: string;
+    })
+  | (ManagementOperationBase & {
+      kind: 'restore_agent';
       agentId: string;
       expectedRevision: number;
     })

@@ -7,9 +7,10 @@ import {
   saveAutonomousMemory,
 } from '../src/memory/autonomous.ts';
 import { parseMemoryCommand } from '../src/memory/commands.ts';
-import { SqliteMemoryStateStore } from '../src/memory/store.ts';
+import { MemoryStoreLogic, SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { MemoryStateError } from '../src/memory/types.ts';
 import { renderMemoryContent } from '../src/memory/validation.ts';
+import { openStateDb } from '../src/state/node-state-db.ts';
 
 const coordinates = {
   surface: 'channel_thread' as const,
@@ -121,6 +122,28 @@ test('Agent memory retries are idempotent and reject key reuse for another write
     );
   } finally {
     store.close();
+  }
+});
+
+test('Agent memory bounds retained idempotency receipts per Agent', () => {
+  const db = openStateDb(':memory:');
+  const store = new MemoryStoreLogic(db);
+  try {
+    for (let revision = 0; revision < 1_030; revision += 1) {
+      store.putAgentMemory({
+        agentId: 'agent_support',
+        body: `Revision ${revision + 1}`,
+        expectedRevision: revision,
+        idempotencyKey: `slack-memory:Ev${revision}`,
+        idempotencyDigest: `digest-${revision}`,
+      });
+    }
+    assert.equal(Number(db.get(
+      'SELECT COUNT(*) AS count FROM agent_memory_mutation_receipts WHERE agent_id = ?',
+      'agent_support',
+    )?.count), 1_024);
+  } finally {
+    db.close();
   }
 });
 

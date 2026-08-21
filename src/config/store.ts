@@ -46,6 +46,15 @@ const DEFAULT_SEED: ConfigSeed = {
 
 const SEED_META_KEY = 'config_seeded_v1';
 const SCHEMA_VERSION_KEY = 'schema_version';
+const SCHEMA_MARKER_KEY = 'schema_marker';
+
+/**
+ * Config state deliberately has no upgrade path from the pre-Agent ledger.
+ * Keep both an exact version and an unambiguous marker so a legacy numeric
+ * version can never be mistaken for this clean-slate schema.
+ */
+export const CONFIG_SCHEMA_VERSION = 12;
+export const CONFIG_SCHEMA_MARKER = 'agent-first-v1';
 
 interface AgentRow {
   id: string;
@@ -146,6 +155,13 @@ interface AgentScheduleReferenceRow {
   revision: number;
   created_at: number;
   updated_at: number;
+}
+
+interface AgentArchiveSnapshotRow {
+  agent_id: string;
+  channel_grants_json: string;
+  paused_schedule_ids_json: string;
+  created_at: number;
 }
 
 interface ChannelRow {
@@ -261,15 +277,7 @@ export class ConfigStoreLogic {
     private readonly db: StateDb,
     seed: ConfigSeed = DEFAULT_SEED,
   ) {
-    // One statement per exec: DO SQLite rejects multi-statement strings.
-    db.exec(
-      `CREATE TABLE IF NOT EXISTS config_meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      )`,
-    );
-    this.runMigrations();
-    this.installAgentPlatformSchema();
+    this.installConfigSchema();
     this.seedOnce(seed);
   }
 
@@ -386,6 +394,9 @@ export class ConfigStoreLogic {
     options: { replacementDefaultAgentId?: string; expectedRevision?: number } = {},
   ): CustomAgentConfig {
     const current = this.getAgent(agentId);
+    // Archive is an idempotent desired-state operation. In particular, never
+    // replace the original snapshot with an empty one on a delivery retry.
+    if (current.lifecycle === 'archived') return current;
     const requiredRevision = options.expectedRevision ?? current.revision;
     if (requiredRevision !== current.revision) {
       throw new AgentRevisionConflictError(agentId, requiredRevision, current.revision);
@@ -408,6 +419,29 @@ export class ConfigStoreLogic {
         );
       }
       const now = Date.now();
+      const channelGrants = this.db.all(
+        `SELECT * FROM config_agent_channel_grants
+         WHERE agent_id = ?
+         ORDER BY workspace_id, channel_id, agent_id`,
+        agentId,
+      ) as unknown as AgentChannelGrantRow[];
+      const pausedScheduleIds = this.db
+        .all(
+          `SELECT schedule_id FROM config_agent_schedule_references
+           WHERE agent_id = ? AND state = 'active'
+           ORDER BY schedule_id`,
+          agentId,
+        )
+        .map((row) => String(row.schedule_id));
+      this.db.run(
+        `INSERT INTO config_agent_archive_snapshots (
+          agent_id, channel_grants_json, paused_schedule_ids_json, created_at
+        ) VALUES (?, ?, ?, ?)`,
+        agentId,
+        JSON.stringify(channelGrants),
+        JSON.stringify(pausedScheduleIds),
+        now,
+      );
       const updated = this.db.run(
         `UPDATE config_agents
          SET lifecycle = 'archived', enabled = 0, archived_at = ?,
@@ -435,21 +469,68 @@ export class ConfigStoreLogic {
 
   restoreAgent(agentId: string, expectedRevision?: number): CustomAgentConfig {
     const current = this.getAgent(agentId);
+    // Restoring an already-active Agent is also idempotent and must not bump
+    // its configuration generation on a retry.
+    if (current.lifecycle !== 'archived') return current;
     const requiredRevision = expectedRevision ?? current.revision;
     if (requiredRevision !== current.revision) {
       throw new AgentRevisionConflictError(agentId, requiredRevision, current.revision);
     }
-    const updated = this.db.run(
-      `UPDATE config_agents
-       SET lifecycle = 'active', enabled = 1, archived_at = NULL,
-           configuration_generation = configuration_generation + 1,
-           revision = revision + 1
-       WHERE id = ? AND revision = ?`,
-      agentId,
-      current.revision,
-    );
-    if (updated.changes !== 1) throw new Error(`Agent ${agentId} changed`);
-    return this.getAgent(agentId);
+    return this.db.transaction(() => {
+      const snapshot = this.db.get(
+        'SELECT * FROM config_agent_archive_snapshots WHERE agent_id = ?',
+        agentId,
+      ) as unknown as AgentArchiveSnapshotRow | undefined;
+      if (!snapshot) {
+        throw new Error(
+          `Agent ${agentId} has no archive snapshot; use a fresh Agent-first deployment`,
+        );
+      }
+      const channelGrants = parseArchiveChannelGrants(snapshot.channel_grants_json, agentId);
+      const pausedScheduleIds = parseArchiveScheduleIds(snapshot.paused_schedule_ids_json, agentId);
+      const updated = this.db.run(
+        `UPDATE config_agents
+         SET lifecycle = 'active', enabled = 1, archived_at = NULL,
+             configuration_generation = configuration_generation + 1,
+             revision = revision + 1
+         WHERE id = ? AND revision = ?`,
+        agentId,
+        current.revision,
+      );
+      if (updated.changes !== 1) throw new Error(`Agent ${agentId} changed`);
+      for (const grant of channelGrants) {
+        this.db.run(
+          `INSERT INTO config_agent_channel_grants (
+            workspace_id, channel_id, agent_id, revision, status,
+            created_by_membership_id, channel_label, channel_is_private,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          grant.workspace_id,
+          grant.channel_id,
+          grant.agent_id,
+          grant.revision,
+          grant.status,
+          grant.created_by_membership_id,
+          grant.channel_label,
+          grant.channel_is_private,
+          grant.created_at,
+          grant.updated_at,
+        );
+      }
+      const now = Date.now();
+      for (const scheduleId of pausedScheduleIds) {
+        this.db.run(
+          `UPDATE config_agent_schedule_references
+           SET state = 'active', revision = revision + 1, updated_at = ?
+           WHERE schedule_id = ? AND agent_id = ? AND state = 'paused'`,
+          now,
+          scheduleId,
+          agentId,
+        );
+      }
+      this.db.run('DELETE FROM config_agent_archive_snapshots WHERE agent_id = ?', agentId);
+      return this.getAgent(agentId);
+    });
   }
 
   listAgentChannelGrants(workspaceId?: string, channelId?: string): AgentChannelGrant[] {
@@ -1170,6 +1251,15 @@ export class ConfigStoreLogic {
     this.db.exec(
       'CREATE INDEX IF NOT EXISTS config_agent_schedule_references_agent_idx ON config_agent_schedule_references(agent_id)',
     );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS config_agent_archive_snapshots (
+        agent_id TEXT PRIMARY KEY,
+        channel_grants_json TEXT NOT NULL,
+        paused_schedule_ids_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (agent_id) REFERENCES config_agents(id) ON DELETE CASCADE
+      )`,
+    );
   }
 
   private requireFirstActiveAgent(): CustomAgentConfig {
@@ -1246,14 +1336,47 @@ export class ConfigStoreLogic {
     );
   }
 
-  private runMigrations(): void {
-    const row = this.db.get('SELECT value FROM config_meta WHERE key = ?', SCHEMA_VERSION_KEY) as
-      | { value: string }
-      | undefined;
-    if (Number(row?.value ?? 0) >= 1) return;
+  private installConfigSchema(): void {
+    // Check and install under the same write transaction. Besides making the
+    // marker atomic with every table, this closes the two-process bootstrap
+    // race: the process that acquires the lock second observes the first one's
+    // completed marker instead of attempting a duplicate CREATE.
+    this.db.transaction(() => {
+      const metaExists = Boolean(this.db.get(
+        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'config_meta'",
+      ));
+      const existingConfigTables = this.db.all(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'table' AND name LIKE 'config_%'
+         ORDER BY name`,
+      );
+      if (metaExists) {
+        const version = this.db.get(
+          'SELECT value FROM config_meta WHERE key = ?',
+          SCHEMA_VERSION_KEY,
+        )?.value;
+        const marker = this.db.get(
+          'SELECT value FROM config_meta WHERE key = ?',
+          SCHEMA_MARKER_KEY,
+        )?.value;
+        if (
+          String(version ?? '') !== String(CONFIG_SCHEMA_VERSION) ||
+          marker !== CONFIG_SCHEMA_MARKER
+        ) {
+          throw incompatibleConfigSchemaError();
+        }
+        return;
+      }
+      if (existingConfigTables.length > 0) throw incompatibleConfigSchemaError();
 
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS config_agents (
+      this.db.exec(
+        `CREATE TABLE config_meta (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        )`,
+      );
+      this.db.exec(
+        `CREATE TABLE config_agents (
         id TEXT PRIMARY KEY,
         revision INTEGER NOT NULL,
         name TEXT NOT NULL,
@@ -1271,32 +1394,72 @@ export class ConfigStoreLogic {
         mcp_servers_json TEXT NOT NULL,
         api_connections_json TEXT NOT NULL,
         repositories_json TEXT NOT NULL
-      )`,
-    );
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS config_channels (
+        )`,
+      );
+      this.db.exec(
+        `CREATE TABLE config_channels (
         workspace_id TEXT NOT NULL,
         channel_id TEXT NOT NULL,
         revision INTEGER NOT NULL,
         label TEXT,
         lifecycle TEXT NOT NULL,
         PRIMARY KEY (workspace_id, channel_id)
-      )`,
-    );
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS config_agent_deletion_receipts (
+        )`,
+      );
+      this.db.exec(
+        `CREATE TABLE config_agent_deletion_receipts (
         idempotency_key TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         agent_id TEXT NOT NULL,
         deleted_at INTEGER NOT NULL
-      )`,
-    );
-    this.db.run(
-      'INSERT INTO config_meta (key, value) VALUES (?, ?)',
-      SCHEMA_VERSION_KEY,
-      '1',
-    );
+        )`,
+      );
+      this.installAgentPlatformSchema();
+      this.db.run(
+        'INSERT INTO config_meta (key, value) VALUES (?, ?)',
+        SCHEMA_VERSION_KEY,
+        String(CONFIG_SCHEMA_VERSION),
+      );
+      this.db.run(
+        'INSERT INTO config_meta (key, value) VALUES (?, ?)',
+        SCHEMA_MARKER_KEY,
+        CONFIG_SCHEMA_MARKER,
+      );
+    });
   }
+}
+
+function incompatibleConfigSchemaError(): Error {
+  return new Error(
+    'TAG_STATE contains incompatible pre-Agent config state; use a fresh deployment.',
+  );
+}
+
+function parseArchiveChannelGrants(value: string, agentId: string): AgentChannelGrantRow[] {
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed)) throw invalidArchiveSnapshotError(agentId);
+  for (const grant of parsed) {
+    if (
+      !grant ||
+      typeof grant !== 'object' ||
+      (grant as { agent_id?: unknown }).agent_id !== agentId
+    ) {
+      throw invalidArchiveSnapshotError(agentId);
+    }
+  }
+  return parsed as AgentChannelGrantRow[];
+}
+
+function parseArchiveScheduleIds(value: string, agentId: string): string[] {
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== 'string')) {
+    throw invalidArchiveSnapshotError(agentId);
+  }
+  return parsed;
+}
+
+function invalidArchiveSnapshotError(agentId: string): Error {
+  return new Error(`Agent ${agentId} has an invalid archive snapshot`);
 }
 
 /**

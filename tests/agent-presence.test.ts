@@ -277,6 +277,39 @@ test('archive disables the alias and removes grants; restore enables the same al
   }
 });
 
+test('failed Slack restore stays retryable with an active desired state', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport });
+    await reconciler.publish({
+      workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
+    });
+    await reconciler.archive('agent_support');
+    transport.enableError = new SlackTransportError(
+      'usergroups.enable',
+      'slack_unreachable',
+      { retryable: true },
+    );
+
+    await assert.rejects(() => reconciler.restore('agent_support'), AgentPresenceError);
+    const failed = await config.getAgent('agent_support');
+    assert.equal(failed.lifecycle, 'needs_attention');
+    assert.equal(failed.slackPresence?.desiredState, 'active');
+    assert.equal(failed.slackPresence?.health, 'needs_attention');
+
+    transport.enableError = undefined;
+    const recovered = await reconciler.retry('agent_support');
+    assert.equal(recovered.lifecycle, 'active');
+    assert.equal(recovered.slackPresence?.desiredState, 'active');
+    assert.equal(transport.groups[0]?.disabled, false);
+  } finally {
+    config.close();
+  }
+});
+
 test('Retry never resurrects an archived Agent or its Slack user group', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();
@@ -502,6 +535,7 @@ class FakeSlackTransport implements SlackTransport {
   joinCalls = 0;
   createCalls = 0;
   createError: Error | undefined;
+  enableError: Error | undefined;
   ambiguousCreate = false;
   ambiguousCreatePersistsGroup = true;
   onCreate?: () => Promise<void>;
@@ -545,6 +579,7 @@ class FakeSlackTransport implements SlackTransport {
     const group = this.requiredGroup(id); group.disabled = true; return { ...group };
   }
   async enableUserGroup(id: string) {
+    if (this.enableError) throw this.enableError;
     const group = this.requiredGroup(id); group.disabled = false; return { ...group };
   }
   async publishAppHome(): Promise<never> { throw new Error('unused'); }

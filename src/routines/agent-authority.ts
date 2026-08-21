@@ -200,24 +200,34 @@ async function requireActiveMembership(
   membershipId: string,
   workspaceId: string,
 ): Promise<string> {
-  const [organization, membership, overlay, bindings] = await Promise.all([
+  const [organization, membership, overlay] = await Promise.all([
     identity.getOrganization(),
     identity.getMembership(membershipId),
     identity.getMembershipAccessOverlay(membershipId),
-    identity.listExternalIdentities(),
   ]);
-  const binding = bindings.find((candidate) =>
-    candidate.membershipId === membershipId && candidate.slackTeamId === workspaceId
-  );
-  const user = binding ? await identity.getUser(binding.userId) : undefined;
   if (
     !organization || organization.slackTeamId !== workspaceId ||
     !membership || membership.organizationId !== organization.id || membership.status !== 'active' ||
-    !binding || binding.organizationId !== organization.id ||
-    !user || user.slackTeamId !== workspaceId || user.slackUserId !== binding.slackUserId ||
     (overlay && (
       overlay.organizationId !== organization.id || overlay.accessStatus !== 'active'
     ))
+  ) {
+    throw new RoutineAuthorityError('creator_ineligible', 'The schedule Runs as member is no longer active.');
+  }
+  const user = await identity.getUser(membership.userId);
+  if (!user || user.slackTeamId !== workspaceId) {
+    throw new RoutineAuthorityError('creator_ineligible', 'The schedule Runs as member is no longer active.');
+  }
+  const resolution = await identity.resolveSlackIdentity(
+    workspaceId,
+    user.slackUserId,
+    organization.id,
+  );
+  if (
+    !resolution ||
+    resolution.user.id !== membership.userId ||
+    resolution.membership.id !== membershipId ||
+    resolution.binding.membershipId !== membershipId
   ) {
     throw new RoutineAuthorityError('creator_ineligible', 'The schedule Runs as member is no longer active.');
   }

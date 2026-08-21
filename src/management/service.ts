@@ -1,5 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
+import { canEditAgent } from '../auth/permissions.ts';
+import type { AuthPrincipal } from '../auth/types.ts';
 import {
   AgentExistsError,
   AgentRevisionConflictError,
@@ -10,6 +12,7 @@ import {
 import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
 import {
   type AgentChannelGrant,
+  type AgentCreateInput,
   type ChannelConfig,
   type CustomAgentConfig,
   type ResolvedAssignment,
@@ -27,6 +30,8 @@ import { RoutineService } from '../routines/service.ts';
 import { bindRoutineAgentAuthority } from '../routines/agent-authority.ts';
 import type { RoutineDefinition, RoutineStore } from '../routines/types.ts';
 import type { WorkStore } from '../work/types.ts';
+import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import {
   canonicalJson,
   effectiveConfigurationRevision,
@@ -52,6 +57,8 @@ import {
   type ManagementApplyResult,
   type ManagementItemOutcome,
   type ManagementMemorySnapshot,
+  type ManagementAgentCreateInput,
+  type ManagementAgentPatch,
   type ManagementObjectRef,
   type ManagementOperation,
   type ManagementOperationResult,
@@ -91,6 +98,10 @@ export interface WorkspaceManagementServiceInput {
     | 'createAgent'
     | 'updateAgent'
     | 'deleteAgent'
+    | 'archiveAgent'
+    | 'restoreAgent'
+    | 'getWorkspaceInstallation'
+    | 'listWorkspaceInstallations'
     | 'listChannels'
     | 'getChannel'
     | 'putChannel'
@@ -126,8 +137,39 @@ export interface WorkspaceManagementServiceInput {
     agent: CustomAgentConfig,
     patch: ConfigAgentPatch,
   ) => Promise<void>;
-  discoverSlackChannels?: (refresh: boolean) => Promise<unknown>;
+  reconcileAgentUpdate?: (input: {
+    actor: LiveManagementActor;
+    previous: CustomAgentConfig;
+    agent: CustomAgentConfig;
+    patch: ConfigAgentPatch;
+  }) => Promise<CustomAgentConfig>;
+  discoverSlackChannels?: (
+    refresh: boolean,
+    actor: LiveManagementActor,
+  ) => Promise<unknown>;
   testMcpConnection?: (agentId: string, connectionId: string) => Promise<unknown>;
+  publishAgentChannel?: (input: {
+    actor: LiveManagementActor;
+    workspaceId: string;
+    channelId: string;
+    agentId: string;
+  }) => Promise<{ agent: CustomAgentConfig; grant: AgentChannelGrant }>;
+  assertAgentChannelMembership?: (input: {
+    actor: LiveManagementActor;
+    workspaceId: string;
+    channelId: string;
+  }) => Promise<void>;
+  archiveAgent?: (input: {
+    actor: LiveManagementActor;
+    agentId: string;
+    expectedRevision: number;
+    replacementDefaultAgentId?: string;
+  }) => Promise<CustomAgentConfig>;
+  restoreAgent?: (input: {
+    actor: LiveManagementActor;
+    agentId: string;
+    expectedRevision: number;
+  }) => Promise<CustomAgentConfig>;
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
@@ -160,18 +202,18 @@ export class WorkspaceManagementService {
     context: ApplyWorkspaceChangesInput['context'],
   ): Promise<ManagementWorkspaceSnapshot> {
     const actor = await this.requireLiveActor(context);
-    return this.snapshot(context.organizationId, actor.role === 'owner');
+    return this.snapshot(actor);
   }
 
   async discoverSlackChannels(
     context: ApplyWorkspaceChangesInput['context'],
     refresh = false,
   ): Promise<unknown> {
-    await this.requireLiveActor(context);
+    const actor = await this.requireLiveActor(context);
     if (!this.stores.discoverSlackChannels) {
       throw new ManagementError('invalid_request', 'Slack Channel discovery is unavailable.');
     }
-    return this.stores.discoverSlackChannels(refresh);
+    return this.stores.discoverSlackChannels(refresh, actor);
   }
 
   async testMcpConnection(
@@ -179,7 +221,8 @@ export class WorkspaceManagementService {
     agentId: string,
     connectionId: string,
   ): Promise<unknown> {
-    await this.requireLiveActor(context);
+    const actor = await this.requireLiveActor(context);
+    await this.requireEditableAgent(actor, agentId);
     if (!this.stores.testMcpConnection) {
       throw new ManagementError('invalid_request', 'MCP connection testing is unavailable.');
     }
@@ -190,7 +233,8 @@ export class WorkspaceManagementService {
     context: ApplyWorkspaceChangesInput['context'],
     agentId: string,
   ): Promise<ManagementMemorySnapshot> {
-    await this.requireLiveActor(context);
+    const actor = await this.requireLiveActor(context);
+    await this.requireEditableAgent(actor, agentId);
     await this.requireAgentMemory(agentId);
     return this.stores.memory!.getAgentMemory(agentId);
   }
@@ -206,6 +250,16 @@ export class WorkspaceManagementService {
     }
     let routines = await this.stores.routines.listRoutines(input.workspaceId, input.channelId);
     if (input.routineId) routines = routines.filter(({ id }) => id === input.routineId);
+    if (actor.role === 'member') {
+      const visible: typeof routines = [];
+      for (const routine of routines) {
+        const reference = await this.stores.config.getAgentScheduleReference(routine.id);
+        if (!reference) continue;
+        const agent = await optionalAgent(this.stores.config, reference.agentId);
+        if (agent && this.actorCanEditAgent(actor, agent)) visible.push(routine);
+      }
+      routines = visible;
+    }
     return {
       routines: await Promise.all(routines.map(async (routine) => {
         const contentAccess = await routineContentAccess(this.stores.work, routine);
@@ -236,18 +290,22 @@ export class WorkspaceManagementService {
     context: ApplyWorkspaceChangesInput['context'],
     input: { agentIds?: string[] | undefined },
   ): Promise<WorkspaceRecipe> {
-    await this.requireLiveActor(context);
-    return exportWorkspaceRecipe(this.stores.config, input);
+    const actor = await this.requireLiveActor(context);
+    const editable = await this.editableAgents(actor);
+    return exportWorkspaceRecipe({ listAgents: async () => editable }, input);
   }
 
   async previewRecipe(
     context: ApplyWorkspaceChangesInput['context'],
     input: PreviewWorkspaceRecipeInput,
   ): Promise<WorkspaceRecipePreview> {
-    await this.requireLiveActor(context);
+    const actor = await this.requireLiveActor(context);
+    const editable = await this.editableAgents(actor);
     const preview = await previewWorkspaceRecipe(
-      this.stores.config,
-      async (providerId) => this.stores.providerCredentialSource?.(providerId) ?? 'missing',
+      { listAgents: async () => editable },
+      actor.role === 'member'
+        ? async () => 'missing'
+        : async (providerId) => this.stores.providerCredentialSource?.(providerId) ?? 'missing',
       input,
     );
     emitManagementMetric('recipe.preview', {
@@ -425,7 +483,7 @@ export class WorkspaceManagementService {
     }
     if (existing?.status === 'applying') {
       await this.assertProposalStillAllowed(actor, existing);
-      const reconciled = await this.reconcileConfirmed(existing);
+      const reconciled = await this.reconcileConfirmed(actor, existing);
       if (reconciled) {
         const resumed = await this.resumeConfirmedRequest(actor, input.context, existing, reconciled);
         await this.stores.management.completeProposal(
@@ -811,11 +869,30 @@ export class WorkspaceManagementService {
           overlay.accessStatus !== 'active'))) {
       throw new ManagementError('forbidden', 'Workspace management is not available.');
     }
-    if (membership.role !== 'admin' && membership.role !== 'owner') {
-      throw new ManagementError('forbidden', 'Workspace management requires an Admin or Owner.');
-    }
     await this.stores.management.cleanupRetention(this.now(), 100).catch(() => 0);
     return { ...context, role: membership.role };
+  }
+
+  private actorCanEditAgent(actor: LiveManagementActor, agent: CustomAgentConfig): boolean {
+    return canEditAgent(actorPrincipal(actor), agent);
+  }
+
+  private async requireEditableAgent(
+    actor: LiveManagementActor,
+    agentId: string,
+  ): Promise<CustomAgentConfig> {
+    const agent = await optionalAgent(this.stores.config, agentId);
+    if (!agent || !this.actorCanEditAgent(actor, agent)) {
+      throw new ManagementError('forbidden', 'The Agent is not available to this member.');
+    }
+    return agent;
+  }
+
+  private async editableAgents(actor: LiveManagementActor): Promise<CustomAgentConfig[]> {
+    const agents = await this.stores.config.listAgents();
+    return actor.role === 'member'
+      ? agents.filter((agent) => this.actorCanEditAgent(actor, agent))
+      : agents;
   }
 
   private assertProposalBinding(
@@ -849,19 +926,23 @@ export class WorkspaceManagementService {
     }
   }
 
-  private async snapshot(
-    organizationId = '',
-    includeTeam = false,
-  ): Promise<ManagementWorkspaceSnapshot> {
-    const [agents, channels, grants, providerSources] = await Promise.all([
+  private async snapshot(actor: LiveManagementActor): Promise<ManagementWorkspaceSnapshot> {
+    const [allAgents, channels, allGrants, providerSources] = await Promise.all([
       this.stores.config.listAgents(),
       this.stores.config.listChannels(),
       this.stores.config.listAgentChannelGrants(),
-      Promise.all(MANAGED_PROVIDER_IDS.map(async (id) => [
-        id,
-        await this.stores.providerCredentialSource?.(id) ?? 'missing',
-      ] as const)),
+      actor.role === 'member'
+        ? Promise.resolve([] as Array<readonly [ManagedProviderId, ManagedProviderSource]>)
+        : Promise.all(MANAGED_PROVIDER_IDS.map(async (id) => [
+            id,
+            await this.stores.providerCredentialSource?.(id) ?? 'missing',
+          ] as const)),
     ]);
+    const agents = actor.role === 'member'
+      ? allAgents.filter((agent) => this.actorCanEditAgent(actor, agent))
+      : allAgents;
+    const visibleAgentIds = new Set(agents.map(({ id }) => id));
+    const grants = allGrants.filter((grant) => visibleAgentIds.has(grant.agentId));
     const grantsByChannel = new Map<string, Array<{ agentId: string; status: typeof grants[number]['status'] }>>();
     for (const grant of grants) {
       const key = channelKey(grant.workspaceId, grant.channelId);
@@ -869,9 +950,15 @@ export class WorkspaceManagementService {
       entries.push({ agentId: grant.agentId, status: grant.status });
       grantsByChannel.set(key, entries);
     }
+    const visibleChannels = actor.role === 'member'
+      ? channels.filter((channel) => grantsByChannel.has(channelKey(
+          channel.workspaceId,
+          channel.channelId,
+        )))
+      : channels;
     const refs: ManagementObjectRef[] = [
       ...agents.map((agent) => ({ kind: 'agent' as const, id: agent.id, revision: agent.revision })),
-      ...channels.map((channel) => ({
+      ...visibleChannels.map((channel) => ({
         kind: 'channel' as const,
         id: channelKey(channel.workspaceId, channel.channelId),
         revision: channel.revision ?? 1,
@@ -882,9 +969,11 @@ export class WorkspaceManagementService {
         revision: grant.revision,
       })),
     ];
-    const team = includeTeam ? await this.teamSnapshot(organizationId) : undefined;
+    const team = actor.role === 'owner'
+      ? await this.teamSnapshot(actor.organizationId)
+      : undefined;
     return {
-      organizationId,
+      organizationId: actor.organizationId,
       agents: agents.map(({
         id,
         revision,
@@ -931,7 +1020,7 @@ export class WorkspaceManagementService {
         apiConnections,
         repositories,
       })),
-      channels: channels.map((channel) => ({
+      channels: visibleChannels.map((channel) => ({
         workspaceId: channel.workspaceId,
         channelId: channel.channelId,
         revision: channel.revision ?? 1,
@@ -1038,6 +1127,9 @@ export class WorkspaceManagementService {
           'The schedule Agent is not active in this Channel.',
         );
       }
+      if (!this.actorCanEditAgent(actor, agent)) {
+        throw new ManagementError('forbidden', 'The schedule Agent is not available to this member.');
+      }
     }
     if (operation.kind === 'save_routine' && !operation.routineId) {
       if (operation.expectedVersion !== undefined) {
@@ -1052,6 +1144,11 @@ export class WorkspaceManagementService {
         routine.channelId !== operation.channelId || routine.version !== operation.expectedVersion) {
       throw new ManagementError('revision_conflict', 'The routine changed.');
     }
+    const reference = await this.stores.config.getAgentScheduleReference(routineId);
+    if (!reference) {
+      throw new ManagementError('invalid_request', 'The schedule Agent binding was not found.');
+    }
+    await this.requireEditableAgent(actor, reference.agentId);
   }
 
   private async resultFor(
@@ -1100,20 +1197,22 @@ export class WorkspaceManagementService {
     requestOperations: ManagementOperation[],
     clientRefs: Map<string, string>,
   ) {
-    if (operation.kind === 'update_member') return { actor, operation };
+    if (operation.kind === 'update_member') return { actor, operation, adminRequired: true };
     if (operation.kind === 'update_agent_memory') {
+      const agent = await this.requireEditableAgent(actor, operation.agentId);
       const memory = await this.requireAgentMemory(operation.agentId);
       if (memory.revision !== operation.expectedRevision) {
         throw new ManagementError('revision_conflict', 'The Agent memory changed.');
       }
-      return { actor, operation };
+      return { actor, operation, currentAgent: agent, agentEditable: true };
     }
     if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
         operation.kind === 'delete_routine') {
       await this.requireRoutineMutation(actor, operation);
-      return { actor, operation };
+      return { actor, operation, agentEditable: true };
     }
     if (operation.kind === 'remove_provider_credential') {
+      if (actor.role === 'member') return { actor, operation, adminRequired: true };
       const source = await this.stores.providerCredentialSource?.(operation.providerId) ?? 'missing';
       if (source === 'env') {
         throw new ManagementError('invalid_request', 'Deployment-provided credentials are read-only.');
@@ -1121,18 +1220,30 @@ export class WorkspaceManagementService {
       if (source !== 'stored') {
         throw new ManagementError('invalid_request', 'No stored provider credential is available to remove.');
       }
-      return { actor, operation };
+      return { actor, operation, adminRequired: true };
     }
     if (operation.kind === 'request_setup') {
+      if (operation.target.kind === 'provider_credential' && actor.role === 'member') {
+        return { actor, operation, adminRequired: true };
+      }
+      if (operation.target.kind !== 'provider_credential') {
+        if (!operation.target.agentId) {
+          throw new ManagementError('invalid_request', 'The setup Agent could not be resolved.');
+        }
+        await this.requireEditableAgent(actor, operation.target.agentId);
+      }
       const setup = await this.resolveSetupTarget(operation.target);
       return {
         actor,
         operation,
         credentialReplacement: setup.target.replacement,
+        ...(operation.target.kind === 'provider_credential'
+          ? { adminRequired: true }
+          : { agentEditable: true }),
       };
     }
     if (operation.kind === 'update_agent') {
-      const currentAgent = await this.stores.config.getAgent(operation.agentId);
+      const currentAgent = await this.requireEditableAgent(actor, operation.agentId);
       const agentReferences = await this.stores.config.getAgentReferences(operation.agentId);
       return {
         actor,
@@ -1140,14 +1251,17 @@ export class WorkspaceManagementService {
         currentAgent,
         agentReferences,
         capabilityScopeExpanded: capabilityScopeExpanded(currentAgent, operation.patch),
+        agentEditable: true,
       };
     }
-    if (operation.kind === 'delete_agent') {
+    if (operation.kind === 'delete_agent' || operation.kind === 'archive_agent' ||
+        operation.kind === 'restore_agent') {
       return {
         actor,
         operation,
-        currentAgent: await this.stores.config.getAgent(operation.agentId),
+        currentAgent: await this.requireEditableAgent(actor, operation.agentId),
         agentReferences: await this.stores.config.getAgentReferences(operation.agentId),
+        agentEditable: true,
       };
     }
     if (operation.kind === 'put_channel') {
@@ -1158,15 +1272,18 @@ export class WorkspaceManagementService {
       return {
         actor,
         operation,
+        ...(operation.channel.lifecycle === 'archived' ? { adminRequired: true } : {}),
         ...(currentChannelLifecycle ? { currentChannelLifecycle } : {}),
       };
     }
-    if (operation.kind === 'grant_agent_channel') {
-      const initialAgentBundle = Boolean(operation.agentClientRef &&
+    if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
+      await this.requireEditableAgent(actor, operation.agentId!);
+      const initialAgentBundle = operation.kind === 'grant_agent_channel' && Boolean(
+        operation.agentClientRef &&
         clientRefs.has(operation.agentClientRef) &&
         requestOperations.some((candidate) =>
           candidate.kind === 'create_agent' && candidate.clientRef === operation.agentClientRef));
-      return { actor, operation, initialAgentBundle };
+      return { actor, operation, initialAgentBundle, agentEditable: true };
     }
     return { actor, operation };
   }
@@ -1340,7 +1457,7 @@ export class WorkspaceManagementService {
   ): Promise<ImmediateMutation> {
     const prepared = progress.prepared?.itemId === operation.itemId
       ? progress.prepared
-      : await this.prepareItem(operation);
+      : await this.prepareItem(actor, operation);
     if (!progress.prepared) {
       await this.stores.management.saveRequestProgress(
         requestId,
@@ -1348,14 +1465,20 @@ export class WorkspaceManagementService {
         this.now(),
       );
     }
-    const reconciled = await this.reconcilePrepared(prepared);
+    const reconciled = await this.reconcilePrepared(actor, prepared);
     return reconciled ?? await this.executeImmediate(actor, requestId, operation, prepared);
   }
 
-  private async prepareItem(operation: ManagementOperation): Promise<ManagementPreparedItem> {
+  private async prepareItem(
+    actor: LiveManagementActor,
+    operation: ManagementOperation,
+  ): Promise<ManagementPreparedItem> {
     switch (operation.kind) {
       case 'create_agent': {
-        const intendedAfter = { ...operation.agent, revision: 1 } satisfies CustomAgentConfig;
+        const intendedAfter = {
+          ...materializeManagedAgent(actor, operation.agent),
+          revision: 1,
+        } satisfies CustomAgentConfig;
         return {
           itemId: operation.itemId,
           operation,
@@ -1371,11 +1494,12 @@ export class WorkspaceManagementService {
       case 'update_agent': {
         const before = await this.stores.config.getAgent(operation.agentId);
         requireExpectedRevision(operation.expectedRevision, before.revision);
+        const patch = projectManagementAgentPatch(before, operation.patch);
         return {
           itemId: operation.itemId,
           operation,
           before,
-          intendedAfter: applyAgentPatch(before, operation.patch),
+          intendedAfter: applyAgentPatch(before, patch),
           inverse: {
             itemId: `undo_${operation.itemId}`,
             kind: 'update_agent',
@@ -1499,18 +1623,29 @@ export class WorkspaceManagementService {
   ): Promise<ImmediateMutation> {
     switch (operation.kind) {
       case 'create_agent': {
-        const agent = await this.stores.config.createAgent(operation.agent);
+        const agent = await this.stores.config.createAgent(
+          materializeManagedAgent(actor, operation.agent),
+        );
         return mutationForAgent(agent, prepared.inverse);
       }
       case 'update_agent': {
+        const current = await this.stores.config.getAgent(operation.agentId);
         const agent = await this.updateAgent(
+          actor,
           operation.agentId,
-          operation.patch,
+          projectManagementAgentPatch(current, operation.patch),
           operation.expectedRevision,
         );
         return mutationForAgent(agent, prepared.inverse);
       }
       case 'put_channel': {
+        if (operation.channel.lifecycle === 'active') {
+          await this.stores.assertAgentChannelMembership?.({
+            actor,
+            workspaceId: operation.channel.workspaceId,
+            channelId: operation.channel.channelId,
+          });
+        }
         const channel = await this.stores.config.putChannel(
           operation.channel,
           operation.expectedRevision,
@@ -1518,6 +1653,28 @@ export class WorkspaceManagementService {
         return mutationForChannel(channel, prepared.inverse);
       }
       case 'grant_agent_channel': {
+        const current = (await this.stores.config.listAgentChannelGrants(
+          operation.workspaceId,
+          operation.channelId,
+        )).find((grant) => grant.agentId === operation.agentId);
+        const resumablePending = current?.status === 'pending' &&
+          current.createdByMembershipId === actor.membershipId &&
+          operation.expectedRevision === 0;
+        if (!resumablePending) {
+          requireExpectedRevision(operation.expectedRevision, current?.revision ?? 0);
+        }
+        if (this.stores.publishAgentChannel) {
+          const published = await this.stores.publishAgentChannel({
+            actor,
+            workspaceId: operation.workspaceId,
+            channelId: operation.channelId,
+            agentId: operation.agentId!,
+          });
+          return mutationForGrant(
+            published.grant,
+            grantInverseAtRevision(prepared.inverse, published.grant.revision),
+          );
+        }
         const channel = await this.stores.config.getChannel(operation.workspaceId, operation.channelId);
         if (!channel) throw new ManagementError('revision_conflict', 'The Channel does not exist.');
         const grant = await this.stores.config.putAgentChannelGrant({
@@ -1538,6 +1695,11 @@ export class WorkspaceManagementService {
         if (!current || current.revision !== operation.expectedRevision) {
           throw new ManagementError('revision_conflict', 'The Channel grant changed.');
         }
+        await this.stores.assertAgentChannelMembership?.({
+          actor,
+          workspaceId: operation.workspaceId,
+          channelId: operation.channelId,
+        });
         await this.stores.config.deleteAgentChannelGrant(
           operation.workspaceId,
           operation.channelId,
@@ -1555,11 +1717,22 @@ export class WorkspaceManagementService {
     }
   }
 
-  private async reconcilePrepared(prepared: ManagementPreparedItem): Promise<ImmediateMutation | undefined> {
+  private async reconcilePrepared(
+    actor: LiveManagementActor,
+    prepared: ManagementPreparedItem,
+  ): Promise<ImmediateMutation | undefined> {
     const operation = prepared.operation;
     if (!prepared.intendedAfter) return undefined;
-    if (operation.kind === 'create_agent' || operation.kind === 'update_agent') {
-      const agentId = operation.kind === 'create_agent' ? operation.agent.id : operation.agentId;
+    if (operation.kind === 'update_agent') {
+      const current = await optionalAgent(this.stores.config, operation.agentId);
+      if (current && current.revision >= operation.expectedRevision + 1 &&
+          agentPatchMatches(current, operation.patch)) {
+        return mutationForAgent(current, prepared.inverse);
+      }
+      return undefined;
+    }
+    if (operation.kind === 'create_agent') {
+      const agentId = operation.agent.id;
       const current = await optionalAgent(this.stores.config, agentId);
       if (current && canonicalJson(current) === canonicalJson(prepared.intendedAfter)) {
         return mutationForAgent(current, prepared.inverse);
@@ -1589,8 +1762,13 @@ export class WorkspaceManagementService {
         operation.channelId,
       )).find((candidate) => candidate.agentId === operation.agentId);
       const intended = prepared.intendedAfter as Pick<AgentChannelGrant, 'revision' | 'status'>;
-      if (grant?.revision === intended.revision && grant.status === intended.status) {
-        return mutationForGrant(grant, prepared.inverse);
+      if (grant && grant.status === intended.status &&
+          grant.revision >= intended.revision &&
+          grant.createdByMembershipId === actor.membershipId) {
+        return mutationForGrant(
+          grant,
+          grantInverseAtRevision(prepared.inverse, grant.revision),
+        );
       }
     }
     if (operation.kind === 'revoke_agent_channel') {
@@ -1610,6 +1788,40 @@ export class WorkspaceManagementService {
     operation: ManagementOperation,
     proposalId: string,
   ): Promise<ImmediateMutation> {
+    if (operation.kind === 'archive_agent' || operation.kind === 'restore_agent') {
+      const current = await this.stores.config.getAgent(operation.agentId);
+      let agent: CustomAgentConfig;
+      if (operation.kind === 'archive_agent') {
+        if (this.stores.archiveAgent) {
+          agent = await this.stores.archiveAgent({
+            actor,
+            agentId: operation.agentId,
+            expectedRevision: operation.expectedRevision,
+            ...(operation.replacementDefaultAgentId
+              ? { replacementDefaultAgentId: operation.replacementDefaultAgentId }
+              : {}),
+          });
+        } else {
+          requireExpectedRevision(operation.expectedRevision, current.revision);
+          agent = await this.stores.config.archiveAgent(operation.agentId, {
+            expectedRevision: operation.expectedRevision,
+            ...(operation.replacementDefaultAgentId
+              ? { replacementDefaultAgentId: operation.replacementDefaultAgentId }
+              : {}),
+          });
+        }
+      } else if (this.stores.restoreAgent) {
+        agent = await this.stores.restoreAgent({
+          actor,
+          agentId: operation.agentId,
+          expectedRevision: operation.expectedRevision,
+        });
+      } else {
+        requireExpectedRevision(operation.expectedRevision, current.revision);
+        agent = await this.stores.config.restoreAgent(operation.agentId, operation.expectedRevision);
+      }
+      return mutationForAgent(agent);
+    }
     if (operation.kind === 'delete_agent') {
       const agent = await this.stores.config.getAgent(operation.agentId);
       const references = await this.stores.config.getAgentReferences(operation.agentId);
@@ -1722,8 +1934,12 @@ export class WorkspaceManagementService {
         });
       }
       const agent = await this.updateAgent(
+        actor,
         operation.agentId,
-        operation.patch,
+        projectManagementAgentPatch(
+          await this.stores.config.getAgent(operation.agentId),
+          operation.patch,
+        ),
         operation.expectedRevision,
       );
       changed.push({ kind: 'agent', id: agent.id, revision: agent.revision });
@@ -1733,7 +1949,7 @@ export class WorkspaceManagementService {
           [objectRevisionKey(ref), ref.revision ?? 0])),
       };
     }
-    const prepared = await this.prepareItem(operation);
+    const prepared = await this.prepareItem(actor, operation);
     return this.executeImmediate(actor, proposalId, operation, prepared);
   }
 
@@ -1759,9 +1975,11 @@ export class WorkspaceManagementService {
         ? { [setup.target.targetId]: setup.target.expectedRevision }
         : { [`agent:${setup.target.agentId}`]: setup.target.expectedRevision };
     }
-    if (operation.kind === 'update_agent' || operation.kind === 'delete_agent') {
+    if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
+        operation.kind === 'archive_agent' || operation.kind === 'restore_agent') {
       const target: Record<string, number> = { [`agent:${operation.agentId}`]: operation.expectedRevision };
-      if (operation.kind === 'delete_agent' || operation.patch.enabled === false) {
+      if (operation.kind === 'delete_agent' || operation.kind === 'archive_agent' ||
+          (operation.kind === 'update_agent' && operation.patch.enabled === false)) {
         const references = await this.stores.config.getAgentReferences(operation.agentId);
         for (const grant of references.channelGrants) {
           const current = (await this.stores.config.listAgentChannelGrants(
@@ -1786,6 +2004,9 @@ export class WorkspaceManagementService {
         )}`]: operation.expectedRevision,
       };
     }
+    if (operation.kind !== 'update_member') {
+      throw new ManagementError('invalid_request', 'Unknown management revision target.');
+    }
     const membership = await this.stores.identity.getMembership(operation.membershipId);
     return {
       [`membership:${operation.membershipId}`]: membership ? membershipRevision(membership) : 0,
@@ -1794,7 +2015,7 @@ export class WorkspaceManagementService {
 
   private async assertTargetRevisions(proposal: ManagementProposalRecord): Promise<void> {
     await this.assertRevisionMap(proposal.targetRevisions);
-    if (proposal.operation.kind === 'delete_agent' ||
+    if (proposal.operation.kind === 'delete_agent' || proposal.operation.kind === 'archive_agent' ||
         (proposal.operation.kind === 'update_agent' && proposal.operation.patch.enabled === false)) {
       const agentId = proposal.operation.agentId;
       const references = await this.stores.config.getAgentReferences(agentId);
@@ -1864,6 +2085,7 @@ export class WorkspaceManagementService {
   }
 
   private async updateAgent(
+    actor: LiveManagementActor,
     agentId: string,
     patch: ConfigAgentPatch,
     expectedRevision: number,
@@ -1873,10 +2095,12 @@ export class WorkspaceManagementService {
       throw new AgentRevisionConflictError(agentId, expectedRevision, current.revision);
     }
     await this.stores.prepareAgentUpdate?.(current, patch);
-    return this.stores.config.updateAgent(agentId, patch, expectedRevision);
+    const agent = await this.stores.config.updateAgent(agentId, patch, expectedRevision);
+    return this.stores.reconcileAgentUpdate?.({ actor, previous: current, agent, patch }) ?? agent;
   }
 
   private async reconcileConfirmed(
+    actor: LiveManagementActor,
     proposal: ManagementProposalRecord,
   ): Promise<ManagementApplyResult | undefined> {
     const operation = proposal.operation;
@@ -1884,6 +2108,52 @@ export class WorkspaceManagementService {
     if (operation.kind === 'delete_agent') {
       const current = await optionalAgent(this.stores.config, operation.agentId);
       if (!current) changed = [{ kind: 'agent', id: operation.agentId }];
+    } else if (operation.kind === 'archive_agent') {
+      const current = await optionalAgent(this.stores.config, operation.agentId);
+      if (current?.lifecycle === 'archived') {
+        changed = [{ kind: 'agent', id: current.id, revision: current.revision }];
+      } else if (current) {
+        changed = (await this.executeConfirmed(actor, operation, proposal.proposalId)).changed;
+      }
+    } else if (operation.kind === 'restore_agent') {
+      const current = await optionalAgent(this.stores.config, operation.agentId);
+      const presenceSettled = current?.slackPresence?.desiredState === 'active' &&
+        (current.slackPresence.health === 'healthy' || current.slackPresence.health === 'unpublished');
+      if (current && current.lifecycle !== 'archived' && presenceSettled) {
+        changed = [{ kind: 'agent', id: current.id, revision: current.revision }];
+      } else if (current) {
+        changed = (await this.executeConfirmed(actor, operation, proposal.proposalId)).changed;
+      }
+    } else if (operation.kind === 'grant_agent_channel') {
+      const current = (await this.stores.config.listAgentChannelGrants(
+        operation.workspaceId,
+        operation.channelId,
+      )).find((grant) => grant.agentId === operation.agentId);
+      if (current?.status === 'active' && current.createdByMembershipId === actor.membershipId) {
+        changed = mutationForGrant(current).changed;
+      } else {
+        changed = (await this.executeImmediate(actor, proposal.proposalId, operation, {
+          itemId: operation.itemId,
+          operation,
+        })).changed;
+      }
+    } else if (operation.kind === 'revoke_agent_channel') {
+      const current = (await this.stores.config.listAgentChannelGrants(
+        operation.workspaceId,
+        operation.channelId,
+      )).find((grant) => grant.agentId === operation.agentId);
+      if (!current) {
+        changed = [{
+          kind: 'channel_grant',
+          id: grantKey(operation.workspaceId, operation.channelId, operation.agentId),
+          revision: 0,
+        }];
+      } else {
+        changed = (await this.executeImmediate(actor, proposal.proposalId, operation, {
+          itemId: operation.itemId,
+          operation,
+        })).changed;
+      }
     } else if (operation.kind === 'update_member') {
       const membership = await this.stores.identity.getMembership(operation.membershipId);
       if (membership && (!operation.role || membership.role === operation.role) &&
@@ -1931,6 +2201,19 @@ function appendOutcome(
   outcome: ManagementItemOutcome,
 ): ManagementRequestProgress {
   return { nextIndex: index + 1, outcomes: [...progress.outcomes, outcome] };
+}
+
+function actorPrincipal(actor: LiveManagementActor): AuthPrincipal {
+  return {
+    userId: actor.userId,
+    membershipId: actor.membershipId,
+    organizationId: actor.organizationId,
+    role: actor.role,
+    authenticatorKind: actor.origin.kind,
+    credentialId: `management:${actor.membershipId}`,
+    correlationId: managementOriginKey(actor.origin),
+    machine: false,
+  };
 }
 
 function emitOperationOutcomes(
@@ -1991,11 +2274,71 @@ function applyAgentPatch(agent: CustomAgentConfig, patch: ConfigAgentPatch): Cus
   return next as CustomAgentConfig;
 }
 
+function materializeManagedAgent(
+  actor: LiveManagementActor,
+  input: ManagementAgentCreateInput,
+): AgentCreateInput {
+  const { requestedHandle, ...agent } = input;
+  const handle = requestedHandle ?? input.name;
+  const normalizedHandle = normalizeAgentHandle(handle);
+  return {
+    ...agent,
+    lifecycle: 'draft',
+    creatorMembershipId: actor.membershipId,
+    editPolicy: input.editPolicy ?? 'creator_and_admins',
+    configurationGeneration: 1,
+    slackPresence: {
+      requestedHandle: handle,
+      normalizedHandle,
+      desiredState: 'unpublished',
+      health: 'unpublished',
+      avatar: {
+        kind: 'generated',
+        revision: 1,
+        seed: input.id,
+      },
+    },
+  };
+}
+
+function projectManagementAgentPatch(
+  agent: CustomAgentConfig,
+  patch: ManagementAgentPatch,
+): ConfigAgentPatch {
+  const { requestedHandle, ...configPatch } = patch;
+  if (requestedHandle === undefined) return configPatch;
+  const presence = agent.slackPresence ?? {
+    requestedHandle: normalizeAgentHandle(agent.name || agent.id),
+    normalizedHandle: normalizeAgentHandle(agent.name || agent.id),
+    desiredState: 'unpublished' as const,
+    health: 'unpublished' as const,
+    avatar: { kind: 'generated' as const, revision: 1, seed: agent.id },
+  };
+  return {
+    ...configPatch,
+    slackPresence: {
+      ...presence,
+      requestedHandle,
+      normalizedHandle: normalizeAgentHandle(requestedHandle),
+      health: presence.desiredState === 'active' ? 'pending' : presence.health,
+    },
+  };
+}
+
 function fullAgentPatch(agent: CustomAgentConfig): ConfigAgentPatch {
   return {
     name: agent.name,
+    ...(agent.description !== undefined ? { description: agent.description } : {}),
     instructions: agent.instructions,
     enabled: agent.enabled,
+    ...(agent.lifecycle ? { lifecycle: agent.lifecycle } : {}),
+    ...(agent.creatorMembershipId ? { creatorMembershipId: agent.creatorMembershipId } : {}),
+    ...(agent.editPolicy ? { editPolicy: agent.editPolicy } : {}),
+    ...(agent.configurationGeneration !== undefined
+      ? { configurationGeneration: agent.configurationGeneration }
+      : {}),
+    ...(agent.slackPresence ? { slackPresence: { ...agent.slackPresence } } : {}),
+    ...(agent.archivedAt !== undefined ? { archivedAt: agent.archivedAt } : {}),
     model: agent.model ?? null,
     skills: agent.skills,
     mcpServers: agent.mcpServers,
@@ -2044,6 +2387,17 @@ function mutationForGrant(
   };
 }
 
+function grantInverseAtRevision(
+  inverse: ManagementOperation | undefined,
+  revision: number,
+): ManagementOperation | undefined {
+  if (!inverse ||
+      (inverse.kind !== 'grant_agent_channel' && inverse.kind !== 'revoke_agent_channel')) {
+    return inverse;
+  }
+  return { ...inverse, expectedRevision: revision };
+}
+
 async function optionalAgent(
   config: Pick<ConfigStore, 'getAgent'>,
   agentId: string,
@@ -2056,7 +2410,7 @@ async function optionalAgent(
   }
 }
 
-function capabilityScopeExpanded(agent: CustomAgentConfig, patch: ConfigAgentPatch): boolean {
+function capabilityScopeExpanded(agent: CustomAgentConfig, patch: ManagementAgentPatch): boolean {
   if (patch.repositories && containsExpandedRepositories(agent.repositories, patch.repositories)) return true;
   if (patch.mcpServers && containsExpandedMcp(agent.mcpServers, patch.mcpServers)) return true;
   if (patch.apiConnections && containsExpandedApi(agent.apiConnections, patch.apiConnections)) return true;
@@ -2120,8 +2474,9 @@ function scopeTokens(scope?: string): string[] {
   return scope?.trim().split(/\s+/).filter(Boolean) ?? [];
 }
 
-function agentPatchMatches(agent: CustomAgentConfig, patch: ConfigAgentPatch): boolean {
-  const expected = applyAgentPatch({ ...agent, revision: agent.revision - 1 }, patch);
+function agentPatchMatches(agent: CustomAgentConfig, patch: ManagementAgentPatch): boolean {
+  const before = { ...agent, revision: agent.revision - 1 };
+  const expected = applyAgentPatch(before, projectManagementAgentPatch(before, patch));
   return canonicalJson(agent) === canonicalJson(expected);
 }
 
@@ -2270,6 +2625,7 @@ function membershipRevision(membership: Membership): number {
 
 function isExpectedMutationError(error: unknown): boolean {
   return error instanceof ManagementError ||
+    error instanceof AgentPresenceError ||
     error instanceof UnknownAgentError ||
     error instanceof AgentExistsError ||
     error instanceof AgentRevisionConflictError ||
@@ -2279,6 +2635,7 @@ function isExpectedMutationError(error: unknown): boolean {
 
 function mutationErrorCode(error: unknown): string {
   if (error instanceof ManagementError) return error.code;
+  if (error instanceof AgentPresenceError) return error.code;
   if (error instanceof AgentRevisionConflictError || error instanceof ChannelRevisionConflictError) {
     return 'revision_conflict';
   }

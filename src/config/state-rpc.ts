@@ -456,6 +456,15 @@ export interface TagStateNamespace {
  */
 export const TAG_STATE_INSTANCE = 'singleton';
 
+export function tagStateInstanceName(env: Record<string, unknown> | undefined): string {
+  const configured = env?.TAG_STATE_INSTANCE_NAME;
+  if (configured === undefined) return TAG_STATE_INSTANCE;
+  if (typeof configured !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(configured)) {
+    throw new Error('TAG_STATE_INSTANCE_NAME must be a bounded Durable Object name.');
+  }
+  return configured;
+}
+
 /** Resolve the singleton state-DO stub from the worker/agent platform env. */
 export function tagStateStub(env: Record<string, unknown> | undefined): TagStateRpc {
   if (!env) {
@@ -470,5 +479,5 @@ export function tagStateStub(env: Record<string, unknown> | undefined): TagState
       'TAG_STATE Durable Object binding is missing — check wrangler.jsonc durable_objects.bindings',
     );
   }
-  return namespace.getByName(TAG_STATE_INSTANCE);
+  return namespace.getByName(tagStateInstanceName(env));
 }

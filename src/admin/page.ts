@@ -2497,6 +2497,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     profileDraft: null,
     profileError: "",
     profileConflict: false,
+    profilePresenceMutation: null,
     // Active capability tab on the profile edit screen. Panels stay mounted
     // ([hidden]) across switches, so no draft state lives here — just which
     // panel is visible.
@@ -2547,7 +2548,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // view deliberately exposes Team vs My account without ever receiving a
     // credential or secret reference from the server.
     agentConnections: { agentId: "", workspaceId: "", attached: [], available: [], loading: false, error: "", notice: "" },
-    agentSchedules: { agentId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" },
+    agentSchedules: { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" },
     connectionAccountsSupported: null,
     connectionAccountForm: null,
     // Non-null only while the gallery's single Custom connection flow is open.
@@ -2963,6 +2964,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function resetProfileTransientState() {
     state.profileError = "";
     state.profileConflict = false;
+    state.profilePresenceMutation = null;
     state.profileDirty = false;
     state.disableConfirm = false;
     state.profileOverflowOpen = false;
@@ -3011,7 +3013,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.editingAgentId = null;
     resetProfileTransientState();
     state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], loading: false, error: "", notice: "" };
-    state.agentSchedules = { agentId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
+    state.agentSchedules = { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
     render();
   }
 
@@ -3048,7 +3050,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     state.editingAgentId = null;
     resetProfileTransientState();
     state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], loading: false, error: "", notice: "" };
-    state.agentSchedules = { agentId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
+    state.agentSchedules = { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
     render();
   }
 
@@ -4465,8 +4467,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       slackConnectionStatusHtml() + '</div>' +
       (!mutable ? '<div class="action-well"><div class="danger-copy"><span class="danger-title">Reconnect the shared Slack app</span>' +
       '<span class="hint">Refresh Slack authorization without changing Agents, Channel grants, or saved settings.</span></div>' +
-      '<a href="/admin/slack-gateway/reconnect" class="btn btn-soft i-lead"' +
-      (connectionBusy ? ' aria-disabled="true"' : '') + '>' + icon("arrow-path") + 'Reconnect with Slack</a></div>' : '') +
+      '<form method="post" action="/admin/slack-gateway/reconnect">' +
+      '<button type="submit" class="btn btn-soft i-lead"' +
+      (connectionBusy ? ' disabled' : '') + '>' + icon("arrow-path") + 'Reconnect with Slack</button></form></div>' : '') +
       '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect this workspace</span>' +
       '<span class="hint">Stops Chickpea from answering. Agents and Channel configuration stay saved so you can reconnect later. This does not uninstall the Slack app.</span>' +
       (!mutable ? '<span class="hint">This connection is managed by the environment and is read-only here.</span>' : "") +
@@ -4629,7 +4632,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       render();
       return Promise.resolve();
     }
-    state.agentConnections = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], loading: true, error: "", notice: "" };
+    var requestState = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], loading: true, error: "", notice: "" };
+    state.agentConnections = requestState;
     render();
     if (!workspaceId) {
       state.agentConnections.loading = false;
@@ -4638,7 +4642,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       return Promise.resolve();
     }
     return api("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections?workspaceId=" + encodeURIComponent(workspaceId)).then(function (body) {
-      if (state.agentConnections.agentId !== agentId) return;
+      if (state.agentConnections !== requestState) return;
       state.agentConnections.attached = body.attached || [];
       state.agentConnections.available = body.available || [];
       state.agentConnections.loading = false;
@@ -4646,7 +4650,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.connectionAccountsSupported = true;
       render();
     }).catch(function (error) {
-      if (state.agentConnections.agentId !== agentId) return;
+      if (state.agentConnections !== requestState) return;
       state.agentConnections.loading = false;
       state.agentConnections.legacyFallback = !!(error && error.status === 404);
       if (state.agentConnections.legacyFallback) state.connectionAccountsSupported = false;
@@ -4656,17 +4660,19 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function loadAgentSchedules(agentId) {
-    state.agentSchedules = { agentId: agentId, schedules: [], members: [], loading: true, busy: "", error: "", notice: "" };
+    var requestState = { agentId: agentId, viewerMembershipId: "", schedules: [], members: [], loading: true, busy: "", error: "", notice: "" };
+    state.agentSchedules = requestState;
     render();
     return api("/admin/api/agents/" + encodeURIComponent(agentId) + "/schedules", { cache: "no-store" }).then(function (body) {
-      if (state.agentSchedules.agentId !== agentId) return;
+      if (state.agentSchedules !== requestState) return;
       state.agentSchedules.schedules = body.schedules || [];
       state.agentSchedules.members = body.members || [];
+      state.agentSchedules.viewerMembershipId = body.viewerMembershipId || "";
       state.agentSchedules.loading = false;
       state.agentSchedules.error = "";
       render();
     }).catch(function (error) {
-      if (state.agentSchedules.agentId !== agentId) return;
+      if (state.agentSchedules !== requestState) return;
       state.agentSchedules.loading = false;
       state.agentSchedules.error = (error && (error.serverMessage || error.message)) || "Could not load schedules.";
       render();
@@ -4675,8 +4681,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function reassignAgentSchedule(scheduleId, expectedRevision) {
     var schedules = state.agentSchedules;
-    var select = document.getElementById("schedule-runs-as-" + scheduleId);
-    var membershipId = select && select.value ? select.value : "";
+    var membershipId = schedules.viewerMembershipId || "";
     if (!membershipId || schedules.busy) return;
     schedules.busy = scheduleId;
     schedules.error = "";
@@ -5439,11 +5444,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       var routine = entry.routine || {};
       var runsAs = entry.runsAs || {};
       var needsAttention = reference.state === "needs_attention" || routine.state === "paused";
-      var memberOptions = (schedules.members || []).map(function (member) {
-        var selected = member.membershipId === reference.runsAsMembershipId;
-        var label = member.displayName || member.contactEmail || member.membershipId;
-        return '<option value="' + esc(member.membershipId) + '"' + (selected ? ' selected' : '') + '>' + esc(label) + '</option>';
-      }).join("");
+      var canTakeOver = !!schedules.viewerMembershipId && schedules.viewerMembershipId !== reference.runsAsMembershipId;
       return '<article class="connection-account-row"><div class="connection-account-copy"><div><strong>' + esc(routine.name || reference.scheduleId) + '</strong> ' +
         '<span class="badge ' + (needsAttention ? 'badge-off' : 'badge-on') + '">' + esc(needsAttention ? "Needs attention" : (routine.state || reference.state || "active")) + '</span></div>' +
         '<p class="hint">' + esc(routine.description || "Scheduled Agent work") + '</p>' +
@@ -5451,9 +5452,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         ' &middot; <strong>Destination:</strong> ' + esc(reference.channelId || "") +
         ' &middot; <strong>Connections:</strong> ' + Number((reference.requiredConnectionAccountIds || []).length) + '</p>' +
         (routine.pausedReason ? '<p class="error">Paused: ' + esc(routine.pausedReason) + '</p>' : '') + '</div>' +
-        '<div class="connection-account-actions"><label class="field-label" for="schedule-runs-as-' + esc(reference.scheduleId) + '">Runs as</label>' +
-        '<select class="select" id="schedule-runs-as-' + esc(reference.scheduleId) + '">' + memberOptions + '</select>' +
-        '<button type="button" class="btn btn-soft btn-sm" data-action="agent-schedule-reassign" data-schedule-id="' + esc(reference.scheduleId) + '" data-revision="' + Number(reference.revision || 0) + '"' + (schedules.busy ? ' disabled' : '') + '>Save authority</button></div></article>';
+        '<div class="connection-account-actions">' + (canTakeOver
+          ? '<button type="button" class="btn btn-soft btn-sm" data-action="agent-schedule-reassign" data-schedule-id="' + esc(reference.scheduleId) + '" data-revision="' + Number(reference.revision || 0) + '"' + (schedules.busy ? ' disabled' : '') + '>Take over future runs</button>'
+          : '<span class="hint">' + (schedules.viewerMembershipId ? 'Runs as you' : 'Runs as authority unavailable') + '</span>') + '</div></article>';
     }).join("");
     return status + '<p class="hint ptab-hint">Each schedule uses this Agent\\'s instructions and memory. Team connections are shared; personal connections always resolve as the named member.</p><div class="connection-account-list">' + rows + '</div>';
   }
@@ -6773,7 +6774,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '<div><p class="field-label">' + esc(recovery.title) + '</p><p class="hint">' + esc(recovery.explanation) + '</p>' +
       (steps ? '<ol style="margin:12px 0 0; padding-left:20px;">' + steps + '</ol>' : '') +
       (recovery.note ? '<p class="hint" style="margin-top:10px;">' + esc(recovery.note) + '</p>' : '') +
-      '<div style="display:flex; gap:8px; margin-top:12px;"><button type="button" class="btn btn-soft btn-sm" data-action="agent-presence-retry">Retry</button>' +
+      '<div style="display:flex; gap:8px; margin-top:12px;"><button type="button" class="btn btn-soft btn-sm" data-action="agent-presence-retry"' + (state.profilePresenceMutation ? ' disabled' : '') + '>Retry</button>' +
       (recovery.adminUrl ? '<a class="btn btn-ghost btn-sm" href="' + esc(recovery.adminUrl) + '" target="_blank" rel="noopener noreferrer">Open Slack admin</a>' : '') +
       '</div></div></div>';
   }
@@ -6785,7 +6786,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       ? '<img src="' + esc(avatarUrl) + '" alt="" style="width:64px;height:64px;border-radius:16px;object-fit:cover;">'
       : '<span aria-hidden="true" style="width:64px;height:64px;border-radius:16px;display:grid;place-items:center;background:var(--well);font-size:30px;">&#127793;</span>';
     var upload = draft.id
-      ? '<label class="btn btn-soft btn-sm" style="cursor:pointer;">Upload image<input type="file" accept="image/png,image/jpeg,image/webp" data-action="profile-avatar-upload" style="display:none;"></label>'
+      ? (state.profilePresenceMutation
+        ? '<button type="button" class="btn btn-soft btn-sm" disabled>Upload image</button>'
+        : '<label class="btn btn-soft btn-sm" style="cursor:pointer;">Upload image<input type="file" accept="image/png,image/jpeg,image/webp" data-action="profile-avatar-upload" style="display:none;"></label>')
       : '<span class="hint">A distinct Chickpea avatar is generated when you create the Agent.</span>';
     return '<section class="section"><div class="section-head"><div><h2 class="section-title">Slack presence</h2>' +
       '<p class="hint">This Agent owns its mention handle and avatar. You can change either at any time.</p></div></div>' +
@@ -6909,10 +6912,10 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var menu = open
       ? '<div class="agent-overflow-menu" role="menu" aria-label="Agent lifecycle actions">' +
         replacement +
-        '<button type="button" class="agent-overflow-menuitem' + (archived ? "" : " danger") + '" role="menuitem" data-action="' + lifecycleAction + '"' + (!archived && draft.isWorkspaceDefault && !replacementCandidates.length ? " disabled" : "") + '>' + lifecycleLabel + '</button>' +
+        '<button type="button" class="agent-overflow-menuitem' + (archived ? "" : " danger") + '" role="menuitem" data-action="' + lifecycleAction + '"' + (state.profilePresenceMutation || (!archived && draft.isWorkspaceDefault && !replacementCandidates.length) ? " disabled" : "") + '>' + lifecycleLabel + '</button>' +
         '<button type="button" class="agent-overflow-menuitem" role="menuitem" data-action="duplicate-profile" data-agent="' + esc(draft.id) + '">Duplicate Agent</button>' +
         '<p class="agent-overflow-guidance">' + (archived
-          ? "Restoring re-enables the same Slack handle. Add Channel access again as needed."
+          ? "Restoring re-enables the same Slack handle, Channel access, and schedules paused by the archive."
           : "Archiving disables the Slack handle, removes Channel access, and pauses schedules. It can be restored later.") + '</p></div>'
       : "";
     return '<div class="agent-profile-header-actions">' +
@@ -11407,6 +11410,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.profileLastAgentId = target.id;
       state.profileDraft = cloneAgent(target);
       loadAgentConnections(target.id);
+      loadAgentSchedules(target.id);
       loadOwnerMemory("agent", connectedTeamId(), target.id);
     } else {
       state.profileScreen = "list";
@@ -13097,50 +13101,75 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     });
   }
 
+  function beginProfilePresenceMutation(kind, agentId) {
+    if (state.profilePresenceMutation) return null;
+    var token = { kind: kind, agentId: agentId };
+    state.profilePresenceMutation = token;
+    render();
+    return token;
+  }
+
+  function profilePresenceMutationIsCurrent(token) {
+    return state.profilePresenceMutation === token &&
+      !!state.profileDraft && state.profileDraft.id === token.agentId;
+  }
+
+  function finishProfilePresenceMutation(token) {
+    if (state.profilePresenceMutation !== token) return;
+    state.profilePresenceMutation = null;
+    render();
+  }
+
   function uploadProfileAvatar(file) {
     var draft = state.profileDraft;
-    if (!draft || !draft.id || !file) return;
+    if (!draft || !draft.id || !file || state.profilePresenceMutation) return;
     state.profileError = "";
     if (file.size > 512 * 1024) {
       state.profileError = "Avatar images must be 512 KB or smaller.";
       render();
       return;
     }
+    var mutation = beginProfilePresenceMutation("avatar", draft.id);
+    if (!mutation) return;
     Promise.resolve(file.arrayBuffer()).then(function (buffer) {
       return postJson("/admin/api/agents/" + encodeURIComponent(draft.id) + "/avatar", "PUT", {
         contentType: file.type,
         base64: base64FromArrayBuffer(buffer)
       });
     }).then(function (body) {
+      if (!profilePresenceMutationIsCurrent(mutation)) return;
       var updated = body && body.agent;
       if (!updated) throw new Error("Agent response was missing.");
       applyAgentMutation(updated, ["slackPresence", "slackPresenceRecovery"]);
       render();
     }).catch(function (error) {
+      if (!profilePresenceMutationIsCurrent(mutation)) return;
       state.profileError = (error && (error.serverMessage || error.message)) || "Could not upload the avatar.";
-      render();
-    });
+    }).finally(function () { finishProfilePresenceMutation(mutation); });
   }
 
   function retryAgentPresence() {
     var draft = state.profileDraft;
-    if (!draft || !draft.id) return;
+    if (!draft || !draft.id || state.profilePresenceMutation) return;
     state.profileError = "";
+    var mutation = beginProfilePresenceMutation("retry", draft.id);
+    if (!mutation) return;
     postJson("/admin/api/agents/" + encodeURIComponent(draft.id) + "/slack/retry", "POST", {
       workspaceId: connectedTeamId() || undefined
     }).then(function (body) {
+      if (!profilePresenceMutationIsCurrent(mutation)) return;
       var updated = body && body.agent;
       if (!updated) throw new Error("Agent response was missing.");
       applyAgentMutation(updated, ["slackPresence", "slackPresenceRecovery"]);
       render();
     }).catch(function (error) {
+      if (!profilePresenceMutationIsCurrent(mutation)) return;
       var payload = error && error.payload;
       if (payload && payload.agent) {
         applyAgentMutation(payload.agent, ["slackPresence", "slackPresenceRecovery"]);
       }
       state.profileError = (error && (error.serverMessage || error.message)) || "Slack could not finish this Agent handle.";
-      render();
-    });
+    }).finally(function () { finishProfilePresenceMutation(mutation); });
   }
 
   function deleteProfileErrorText(error) {
@@ -13167,15 +13196,18 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function archiveProfile() {
     var draft = state.profileDraft;
-    if (!draft || !draft.id) return;
+    if (!draft || !draft.id || state.profilePresenceMutation) return;
     state.profileOverflowOpen = false;
     state.profileError = "";
+    var mutation = beginProfilePresenceMutation("archive", draft.id);
+    if (!mutation) return;
     postJson("/admin/api/agents/" + encodeURIComponent(draft.id) + "/archive", "POST", {
       expectedRevision: draft.revision,
       replacementDefaultAgentId: draft.isWorkspaceDefault
         ? (state.profileReplacementDefaultAgentId || undefined)
         : undefined
     }).then(function (body) {
+      if (!profilePresenceMutationIsCurrent(mutation)) return;
       var updated = body && body.agent;
       if (!updated) throw new Error("Agent response was missing.");
       applyAgentMutation(updated, [
@@ -13188,35 +13220,36 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         });
       }
       state.profileReplacementDefaultAgentId = "";
-      render();
     }).catch(function (error) {
+      if (!profilePresenceMutationIsCurrent(mutation)) return;
       state.profileError = error && error.message === "replacement_default_agent_required"
         ? "Choose another default Agent before archiving this one."
         : ((error && (error.serverMessage || error.message)) || "Could not archive the Agent.");
-      render();
-    });
+    }).finally(function () { finishProfilePresenceMutation(mutation); });
   }
 
   function restoreProfile() {
     var draft = state.profileDraft;
-    if (!draft || !draft.id) return;
+    if (!draft || !draft.id || state.profilePresenceMutation) return;
     state.profileOverflowOpen = false;
     state.profileError = "";
+    var mutation = beginProfilePresenceMutation("restore", draft.id);
+    if (!mutation) return;
     postJson("/admin/api/agents/" + encodeURIComponent(draft.id) + "/restore", "POST", {
       expectedRevision: draft.revision,
       workspaceId: connectedTeamId() || undefined
     }).then(function (body) {
+      if (!profilePresenceMutationIsCurrent(mutation)) return;
       var updated = body && body.agent;
       if (!updated) throw new Error("Agent response was missing.");
       applyAgentMutation(updated, [
         "lifecycle", "enabled", "slackPresence", "slackPresenceRecovery",
         "isWorkspaceDefault", "defaultForWorkspaces", "whereItWorks"
       ]);
-      render();
     }).catch(function (error) {
+      if (!profilePresenceMutationIsCurrent(mutation)) return;
       state.profileError = (error && (error.serverMessage || error.message)) || "Could not restore the Agent.";
-      render();
-    });
+    }).finally(function () { finishProfilePresenceMutation(mutation); });
   }
 
   // Publish this Agent into a Channel. The server verifies that the acting

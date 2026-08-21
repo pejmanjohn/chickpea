@@ -4774,6 +4774,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ));
       const users = new Map(userRows.flatMap((user) => user ? [[user.id, user] as const] : []));
       return c.json({
+        viewerMembershipId: principal.membershipId,
         members: [...memberships.values()].filter((membership) => membership.status === 'active')
           .map((membership) => ({
             membershipId: membership.id,
@@ -4831,6 +4832,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!current || current.agentId !== agent.id) return c.json({ error: 'not_found' }, 404);
       if (current.revision !== parsed.output.expectedAuthorityRevision) {
         return c.json({ error: 'schedule_authority_conflict', currentRevision: current.revision }, 409);
+      }
+      // A Runs as grant is durable personal authority. An editor may take over
+      // their own schedule, but cannot silently grant another member's identity
+      // or personal connections. A future delegation flow must require that
+      // target member's explicit acceptance.
+      if (parsed.output.runsAsMembershipId !== principal.membershipId) {
+        throw new AuthorizationError('forbidden');
       }
       const [membership, organization] = await Promise.all([
         identity(c).getMembership(parsed.output.runsAsMembershipId),
@@ -6019,27 +6027,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   // A shared-app grant can be revoked independently of the deployment. Let an
   // authenticated Admin replace that grant without reopening first-run setup
-  // or recreating Agents and Channel grants.
-  app.get('/admin/slack-gateway/reconnect', async (c) => {
-    try {
-      const claim = await createGatewayDeploymentClient(
-        c.env as PlatformEnv | undefined,
-      ).beginClaim(
-        `${requestOrigin(c)}/admin/slack-gateway/reconnect/finish`,
-        undefined,
-        { reconnect: true },
-      );
-      return c.redirect(claim.authorizationUrl, 303);
-    } catch (error) {
-      console.error(
-        '[chickpea] shared Slack reconnect failed to start:',
-        error instanceof SlackTransportError ? error.code :
-          error instanceof Error ? error.message : String(error),
-      );
-      return c.redirect('/admin/settings/slack?slack_reconnect=failed', 303);
-    }
-  });
-
+  // or recreating Agents and Channel grants. This is deliberately POST-only:
+  // opening or prefetching an Admin page must never create a replacement claim.
+  app.get('/admin/slack-gateway/reconnect', (c) =>
+    c.json({ error: 'method_not_allowed' }, 405)
+  );
   app.post('/admin/slack-gateway/reconnect', async (c) => {
     if (!validAuthFormPost(c, requestOrigin(c))) {
       return c.json({ error: 'forbidden' }, 403);

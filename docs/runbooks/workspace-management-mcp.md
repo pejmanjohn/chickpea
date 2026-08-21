@@ -14,6 +14,8 @@ The compact tool surface is:
 - `confirm_workspace_change` and `undo_workspace_change`
 - `get_operation` and `revoke_setup_link`
 
+The server advertises contract version `2.0.0`; the versioned operation inventory is available at `chickpea://schema/operations/v2`.
+
 `apply_workspace_changes` accepts at most 25 ordered typed operations. `dependsOn` gives a progressive batch explicit prerequisites; a failed prerequisite skips only its dependents. `clientRef` lets later operations address an Agent created earlier in the same request. A batch is not globally atomic, and every item returns its own durable disposition.
 
 ## Connect a coding agent
@@ -30,7 +32,7 @@ Dynamic Client Registration is an intentionally bounded compatibility window for
 |---|---:|---:|---:|---:|
 | Owner | Yes | Yes | Yes | Yes, when a Channel allows it |
 | Admin | Yes | Yes | No | Yes, when a Channel allows it |
-| Member | No | No | No | Yes, when a Channel allows it |
+| Member | Editable Agents only | Create and edit permitted Agents | No | Yes, with live Slack membership proof |
 | Unbound Slack participant | No | No | No | Only ordinary assigned-Channel interaction |
 
 Slack workspace roles are not Chickpea roles. Every call re-resolves the live Chickpea membership and access overlay. Tool arguments cannot select a user, organization, membership, Slack requester, or credential scope.
@@ -42,6 +44,7 @@ Safe creation and ordinary reversible edits apply immediately. Chickpea returns 
 - removing or replacing credentials;
 - expanding capability scope;
 - disabling an Agent that is published to a Channel; or
+- archiving or restoring an Agent, or granting or revoking Channel reach; or
 - overwriting an existing Agent from a recipe.
 
 The same live requester must confirm from the same MCP client or Slack thread before the proposal expires. A target revision change invalidates it. Preview again instead of retrying a stale proposal.
@@ -61,6 +64,9 @@ A coding agent or the Chickpea Slack agent can translate a short request such as
       "agent": {
         "id": "agent_research",
         "name": "Research",
+        "description": "Synthesizes research for the team.",
+        "requestedHandle": "research",
+        "editPolicy": "creator_and_admins",
         "instructions": "Synthesize evidence and cite sources.",
         "enabled": true,
         "model": "openai/gpt-5.6-terra",
@@ -74,7 +80,7 @@ A coding agent or the Chickpea Slack agent can translate a short request such as
 }
 ```
 
-The adapter, not the model, supplies requester authority. Use IDs and current revisions returned by `inspect_workspace`; do not guess them. Reuse the idempotency key only for byte-equivalent intent. If the same key is sent with a different digest, Chickpea rejects it. Channel publication is deliberately separate: publish the Agent from its Channels tab, which verifies that the acting Slack member belongs to the target Channel and adds an additive Agent grant rather than replacing another Agent.
+The adapter, not the model, supplies requester authority. The acting membership is always recorded as the Agent creator; tool arguments cannot forge it. Use IDs and current revisions returned by `inspect_workspace`; do not guess them. Reuse the idempotency key only for byte-equivalent intent. If the same key is sent with a different digest, Chickpea rejects it. Channel publication remains a separate, confirmation-gated operation: `put_channel` records the Slack Channel and `grant_agent_channel` performs live Slack membership, bot-membership, and Agent-presence reconciliation before activating the additive grant. `revoke_agent_channel` also rechecks the acting Slack member before removing reach.
 
 Successful configuration is active on the next newly admitted Slack event, including a reply in an existing thread. An already admitted response and all of its retries keep their frozen runtime plan.
 
@@ -94,9 +100,9 @@ The receipt may include the target, scopes, initiator, operation ID, and a provi
 
 ## Memory, routines, and team
 
-Agent memory uses the Agent owner scope and expected version. Inspection returns active entry bodies only to an authorized operator; forgetting is irreversible and confirmation-gated. Channels do not own instructions or memory. Routine inspection preserves content authority, and routine save/control/delete use the existing schedule and version contracts.
+Agent memory uses the Agent owner scope and expected version. Inspection returns active entry bodies only to a member who can edit that Agent; forgetting is irreversible and confirmation-gated. Channels do not own instructions or memory. Routine inspection and mutation are filtered through the same Agent edit policy and preserve content authority, while routine save/control/delete retain the existing schedule and version contracts.
 
-Eligible full Slack members are provisioned automatically the first time they interact with an Agent. Guests and Slack Connect users are not provisioned. Only Owners can inspect team authority or change an existing membership's role/status. Provider inspection returns availability and affected Agents, never a key or environment-secret value. Deployment-provided credentials are visibly read-only.
+Eligible full Slack members are provisioned automatically the first time they interact with an Agent. Guests and Slack Connect users are not provisioned. A full member can create an Agent and inspect or mutate only Agents allowed by that Agent's edit policy. Only Owners can inspect team authority or change an existing membership's role/status. Provider inspection and provider mutations remain Admin/Owner-only; provider results expose availability and affected Agents, never a key or environment-secret value. Deployment-provided credentials are visibly read-only.
 
 ## Portable recipes
 

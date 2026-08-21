@@ -160,7 +160,8 @@ export async function isOAuthContinuationActorActive(input: {
     | 'getOrganization'
     | 'getMembership'
     | 'getMembershipAccessOverlay'
-    | 'listExternalIdentities'
+    | 'getUser'
+    | 'resolveSlackIdentity'
   >;
 }): Promise<boolean> {
   return isActiveConnectionActor({
@@ -282,13 +283,19 @@ export async function repairPendingOAuthContinuationResumes(input: {
         pruned += 1;
         continue;
       }
-      await input.onReady(continuation);
-      await claimOAuthContinuationResume({
-        settings: input.settings,
-        continuationId: continuation.id,
-        now,
-      });
-      resumed += 1;
+      try {
+        await input.onReady(continuation);
+        await claimOAuthContinuationResume({
+          settings: input.settings,
+          continuationId: continuation.id,
+          now,
+        });
+        resumed += 1;
+      } catch {
+        // Keep the authorized continuation indexed for the next repair pass,
+        // but never let one unavailable turn starve later entries in the batch.
+        pending += 1;
+      }
       continue;
     }
     if (continuation.status === 'pending') {

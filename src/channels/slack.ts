@@ -461,11 +461,10 @@ interface ResolvedAgentRoutingActor {
   principal?: AuthPrincipal;
 }
 
-async function resolveAgentRoutingActor(input: {
+export async function resolveAgentRoutingActor(input: {
   workspaceId: string;
   userId: string;
   channelId?: string;
-  channelMembershipProven?: boolean;
   includeDiscoverableAgents?: boolean;
   botUserId: string;
   transport: SlackTransport;
@@ -509,8 +508,7 @@ async function resolveAgentRoutingActor(input: {
     };
   }
   const channelMember = input.channelId && slackInteractionMayUseGrantedChannel(provisioned)
-    ? input.channelMembershipProven === true ||
-      await input.transport.channelHasMember(input.channelId, input.userId)
+    ? await input.transport.channelHasMember(input.channelId, input.userId)
     : false;
   let discoverableAgentIds: ReadonlySet<string> | undefined;
   if (fullMember && input.includeDiscoverableAgents !== false) {
@@ -921,7 +919,6 @@ async function processSlackEvent(
         workspaceId: turn.workspaceId,
         userId: turn.userId,
         ...(surface === 'channel' ? { channelId: turn.channelId } : {}),
-        channelMembershipProven: surface === 'channel',
         includeDiscoverableAgents: surface !== 'channel',
         botUserId: resolvedBotUserId,
         transport: runtimeTransport,

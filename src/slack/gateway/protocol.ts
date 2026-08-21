@@ -353,7 +353,10 @@ function canonicalize(value: unknown): unknown {
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>)
       .filter(([, child]) => child !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right))
+      // Signatures must not depend on ICU locale data. Compare JavaScript
+      // strings by code units so Node, workerd, and the private gateway produce
+      // byte-identical payloads for every accepted key.
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
       .map(([key, child]) => [key, canonicalize(child)]));
   }
   throw new GatewayProtocolError('non_canonical_value');

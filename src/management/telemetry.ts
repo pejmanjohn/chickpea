@@ -35,7 +35,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'mcp_credentials', 'provider_credential', 'repository_access', 'snapshot',
   ]),
   operation: new Set([
-    'create_agent', 'update_agent', 'delete_agent', 'put_channel',
+    'create_agent', 'update_agent', 'delete_agent', 'archive_agent', 'restore_agent', 'put_channel',
     'grant_agent_channel', 'revoke_agent_channel',
     'update_member', 'remove_provider_credential',
     'update_agent_memory', 'save_routine', 'control_routine', 'delete_routine',
@@ -52,7 +52,8 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
   ]),
   surface: new Set(['admin', 'mcp', 'service', 'setup', 'slack', 'unknown']),
   tool: new Set([
-    'inspect_workspace', 'inspect_memory', 'inspect_routines',
+    'inspect_workspace', 'discover_slack_channels', 'test_mcp_connection',
+    'inspect_memory', 'inspect_routines',
     'export_workspace_recipe', 'preview_workspace_recipe',
     'apply_workspace_changes', 'confirm_workspace_change',
     'undo_workspace_change', 'get_operation', 'revoke_setup_link',
@@ -64,10 +65,15 @@ const REASON_TOKENS = new Set([
   'forbidden', 'idempotency_conflict', 'insufficient_scope', 'invalid_request',
   'invalid_state', 'invalid_token', 'live_access_denied', 'management_error',
   'missing_token', 'operation_in_progress', 'operation_not_found', 'other',
-  'owner_required', 'proposal_binding_mismatch', 'proposal_expired',
+  'operational_access_required', 'owner_required', 'proposal_binding_mismatch', 'proposal_expired',
   'proposal_not_found', 'proposal_stale', 'revision_conflict', 'setup_expired',
   'setup_failed', 'setup_not_found', 'setup_session_mismatch', 'setup_unavailable',
   'target_changed', 'undo_unavailable', 'validation_failed',
+  'archive_agent_reach', 'restore_agent_reach',
+  'paid_plan_required', 'user_group_policy_denied', 'two_factor_required',
+  'handle_collision', 'invalid_handle', 'channel_membership_required',
+  'private_channel_invite_required', 'rate_limited', 'user_group_create_ambiguous',
+  'slack_unavailable', 'slack_operation_failed',
 ]);
 
 export interface ManagementTelemetrySink {

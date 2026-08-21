@@ -8348,7 +8348,8 @@ test('shared Slack settings expose a direct authorization recovery without reope
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /Reconnect the shared Slack app/);
-  assert.match(harness.app.innerHTML, /href="\/admin\/slack-gateway\/reconnect"/);
+  assert.match(harness.app.innerHTML, /method="post" action="\/admin\/slack-gateway\/reconnect"/);
+  assert.doesNotMatch(harness.app.innerHTML, /href="\/admin\/slack-gateway\/reconnect"/);
   assert.match(harness.app.innerHTML, /Reconnect with Slack/);
   assert.match(harness.app.innerHTML, /without changing Agents, Channel grants, or saved settings/);
 });

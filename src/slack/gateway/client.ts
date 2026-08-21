@@ -42,6 +42,7 @@ export const GATEWAY_CLAIM_SETTING = 'slack.gateway.claim.v1';
 export const GATEWAY_BINDING_SETTING = 'slack.gateway.binding.v1';
 export const GATEWAY_SESSION_SETTING = 'slack.gateway.session.v1';
 const GATEWAY_REQUEST_TIMEOUT_MS = 15_000;
+const GATEWAY_IDENTITY_RECOVERY_CONTENTION_LIMIT = 3;
 
 export interface GatewayClaimState {
   claimId: string;
@@ -112,6 +113,15 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     setup?: { setupId: string; setupRevision: number },
     options?: { reconnect: boolean },
   ): Promise<GatewayClaimCreateResponse> {
+    return this.beginClaimWithIdentityRecovery(returnUrl, setup, options, 0);
+  }
+
+  private async beginClaimWithIdentityRecovery(
+    returnUrl: string | undefined,
+    setup: { setupId: string; setupRevision: number } | undefined,
+    options: { reconnect: boolean } | undefined,
+    contentionCount: number,
+  ): Promise<GatewayClaimCreateResponse> {
     const reconnectBindingId = options?.reconnect
       ? await this.reconnectBindingId()
       : undefined;
@@ -140,7 +150,21 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       this.binding = undefined;
       // Another reconnect may already have replaced the same stale identity.
       // In that case, retain its winning value instead of deleting it.
-      if (!cleared) return this.beginClaim(returnUrl, setup, options);
+      if (!cleared) {
+        if (contentionCount + 1 >= GATEWAY_IDENTITY_RECOVERY_CONTENTION_LIMIT) {
+          throw new SlackTransportError(
+            'gateway.claim',
+            'gateway_identity_contended',
+            { retryable: true },
+          );
+        }
+        return this.beginClaimWithIdentityRecovery(
+          returnUrl,
+          setup,
+          options,
+          contentionCount + 1,
+        );
+      }
       identity = await this.identity();
     }
     const safeReturnUrl = returnUrl ? requireReturnUrl(returnUrl) : undefined;

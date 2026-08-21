@@ -10,6 +10,8 @@ export interface ManagementPolicyFacts {
   initialAgentBundle?: boolean;
   capabilityScopeExpanded?: boolean;
   credentialReplacement?: boolean;
+  agentEditable?: boolean;
+  adminRequired?: boolean;
 }
 
 export type ManagementPolicyDecision =
@@ -20,7 +22,10 @@ export function classifyManagementOperation(
   facts: ManagementPolicyFacts,
 ): ManagementPolicyDecision {
   const { actor, operation } = facts;
-  if (actor.role !== 'admin' && actor.role !== 'owner') {
+  if (facts.adminRequired && actor.role !== 'admin' && actor.role !== 'owner') {
+    return { allowed: false, reason: 'operational_access_required' };
+  }
+  if (facts.agentEditable === false) {
     return { allowed: false, reason: 'operational_access_required' };
   }
   if (operation.kind === 'update_member') {
@@ -39,6 +44,12 @@ export function classifyManagementOperation(
   }
   if (operation.kind === 'delete_agent') {
     return { allowed: true, posture: 'confirmation', reason: 'agent_deletion' };
+  }
+  if (operation.kind === 'archive_agent') {
+    return { allowed: true, posture: 'confirmation', reason: 'archive_agent_reach' };
+  }
+  if (operation.kind === 'restore_agent') {
+    return { allowed: true, posture: 'confirmation', reason: 'restore_agent_reach' };
   }
   if (operation.kind === 'request_setup' && facts.credentialReplacement) {
     return { allowed: true, posture: 'confirmation', reason: 'credential_replacement' };

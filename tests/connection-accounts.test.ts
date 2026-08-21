@@ -13,8 +13,10 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { ConnectionAccountService } from '../src/connections/store.ts';
 import {
   externalActionAuthorityInstructions,
+  resolveConnectionAccountContext,
   resolveConnectionSecretForInvocation,
   resolveEffectiveConnectionAccounts,
+  isActiveConnectionActor,
   resolvePersonalConnectionAuthorizationOptions,
   selectConnectionAccount,
   selectConnectionsForRequest,
@@ -77,6 +79,38 @@ function gmailPolicy() {
 }
 
 function activeConnectionIdentity(membershipId: string) {
+  const user = {
+    id: `user_${membershipId}`,
+    slackTeamId: 'T_CONNECTIONS',
+    slackUserId: 'U_TEST',
+    displayName: 'Connection Tester',
+    contactEmail: null,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const membership = {
+    id: membershipId,
+    userId: user.id,
+    organizationId: 'organization_test',
+    role: 'member' as const,
+    status: 'active' as const,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const binding = {
+    id: `binding_${membershipId}`,
+    provider: 'slack' as const,
+    userId: user.id,
+    membershipId,
+    organizationId: 'organization_test',
+    slackTeamId: 'T_CONNECTIONS',
+    slackUserId: user.slackUserId,
+    betterAuthUserId: null,
+    betterAuthMembershipId: null,
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
   return {
     getOrganization: async () => ({
       id: 'organization_test',
@@ -87,32 +121,62 @@ function activeConnectionIdentity(membershipId: string) {
       createdAt: 1,
       updatedAt: 1,
     }),
-    getMembership: async () => ({
-      id: membershipId,
-      userId: `user_${membershipId}`,
-      organizationId: 'organization_test',
-      role: 'member' as const,
-      status: 'active' as const,
-      createdAt: 1,
-      updatedAt: 1,
-    }),
+    getMembership: async () => membership,
     getMembershipAccessOverlay: async () => undefined,
-    listExternalIdentities: async () => [{
-      id: `binding_${membershipId}`,
-      provider: 'slack' as const,
-      userId: `user_${membershipId}`,
-      membershipId,
-      organizationId: 'organization_test',
-      slackTeamId: 'T_CONNECTIONS',
-      slackUserId: 'U_TEST',
-      betterAuthUserId: null,
-      betterAuthMembershipId: null,
-      revision: 1,
-      createdAt: 1,
-      updatedAt: 1,
-    }],
+    getUser: async () => user,
+    resolveSlackIdentity: async () => ({ user, membership, binding }),
   };
 }
+
+test('active connection actor uses exact identity lookups', async () => {
+  const identity = activeConnectionIdentity('membership_alice');
+  assert.equal(await isActiveConnectionActor({
+    identity,
+    workspaceId: 'T_CONNECTIONS',
+    actorMembershipId: 'membership_alice',
+  }), true);
+});
+
+test('active connection actor rejects stale workspace, access, and exact identity bindings', async () => {
+  const identity = activeConnectionIdentity('membership_alice');
+  const input = {
+    workspaceId: 'T_CONNECTIONS',
+    actorMembershipId: 'membership_alice',
+  };
+
+  assert.equal(await isActiveConnectionActor({
+    ...input,
+    identity,
+    workspaceId: 'T_OTHER',
+  }), false);
+  assert.equal(await isActiveConnectionActor({
+    ...input,
+    identity: {
+      ...identity,
+      getMembershipAccessOverlay: async () => ({
+        membershipId: 'membership_alice',
+        organizationId: 'organization_test',
+        accessStatus: 'suspended' as const,
+        membershipVersion: 2,
+        createdAt: 1,
+        updatedAt: 2,
+      }),
+    },
+  }), false);
+  assert.equal(await isActiveConnectionActor({
+    ...input,
+    identity: {
+      ...identity,
+      resolveSlackIdentity: async () => {
+        const resolved = await identity.resolveSlackIdentity();
+        return {
+          ...resolved,
+          membership: { ...resolved.membership, id: 'membership_other' },
+        };
+      },
+    },
+  }), false);
+});
 
 test('one team account binds to two Agents without copying its credential', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
@@ -309,7 +373,17 @@ test('a member-owned binding grants a provider capability without exposing anoth
     const bobWork = await service.create({
       principal: principal('membership_bob'), workspaceId: 'T_CONNECTIONS', ownerKind: 'member',
       providerId: 'google', label: 'Work', identity: { accountName: 'bob@acme.test' },
-      policy: gmailPolicy(), credential: 'bob-token',
+      policy: {
+        ...gmailPolicy(),
+        allowedHosts: ['gmail.googleapis.com', 'evil.example.test'],
+        pathPrefixes: ['/'],
+        allowedMethods: ['GET', 'POST', 'DELETE'],
+        oauthScopes: [
+          ...gmailPolicy().oauthScopes,
+          'https://www.googleapis.com/auth/drive',
+        ],
+      },
+      credential: 'bob-token',
     });
     await service.attach({
       principal: principal('membership_alice'), agentId: 'agent_mail',
@@ -321,7 +395,9 @@ test('a member-owned binding grants a provider capability without exposing anoth
       actorMembershipId: 'membership_bob',
     });
     assert.deepEqual(effective.map(({ account }) => account.id), [bobWork.id]);
+    assert.deepEqual(effective[0]?.policy, gmailPolicy());
     assert.doesNotMatch(JSON.stringify(effective), /alice@acme|alice-token/i);
+    assert.doesNotMatch(JSON.stringify(effective[0]?.policy), /evil\.example|\/auth\/drive/);
 
     const authorization = await resolvePersonalConnectionAuthorizationOptions({
       config, workspaceId: 'T_CONNECTIONS', agentId: 'agent_mail',
@@ -335,6 +411,28 @@ test('a member-owned binding grants a provider capability without exposing anoth
       lifecycle: 'ready',
     }]);
     assert.doesNotMatch(JSON.stringify(authorization), /Alice private Gmail|alice@acme/i);
+
+    let accountReads = 0;
+    let bindingReads = 0;
+    const combined = await resolveConnectionAccountContext({
+      config: {
+        listConnectionAccounts: async (workspaceId) => {
+          accountReads += 1;
+          return config.listConnectionAccounts(workspaceId);
+        },
+        listAgentConnectionBindings: async (agentId) => {
+          bindingReads += 1;
+          return config.listAgentConnectionBindings(agentId);
+        },
+      },
+      workspaceId: 'T_CONNECTIONS',
+      agentId: 'agent_mail',
+      actorMembershipId: 'membership_bob',
+    });
+    assert.equal(accountReads, 1);
+    assert.equal(bindingReads, 1);
+    assert.deepEqual(combined.effective, effective);
+    assert.deepEqual(combined.authorizations, authorization);
   } finally {
     config.close();
     settings.close();
@@ -445,7 +543,7 @@ test('provider OAuth state authorizes only its linked Slack continuation and con
   }
 });
 
-test('authorized OAuth continuations survive a failed resume and repair exactly once', async () => {
+test('authorized OAuth continuations survive a failed resume without starving later repairs', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   try {
     const created = await createOAuthContinuation({
@@ -459,19 +557,29 @@ test('authorized OAuth continuations survive a failed resume and repair exactly 
       state: created.state,
       now: () => 101,
     });
+    const later = await createOAuthContinuation({
+      settings, workspaceId: 'T_CONNECTIONS', actorMembershipId: 'membership_bob',
+      agentId: 'agent_mail', channelId: 'D_BOB', threadTs: '3.000', taskId: 'task_later',
+      providerId: 'google', accountId: 'connection_google_bob', now: () => 100,
+      randomId: (() => { let id = 0; return () => `later${++id}`; })(),
+    });
+    const laterAuthorized = await authorizeOAuthContinuationFromProvider({
+      settings,
+      state: later.state,
+      now: () => 101,
+    });
     let deliveries = 0;
-    await assert.rejects(
-      repairPendingOAuthContinuationResumes({
-        settings,
-        now: () => 102,
-        onReady: async () => {
-          deliveries += 1;
-          throw new Error('queue temporarily unavailable');
-        },
-      }),
-      /temporarily unavailable/,
-    );
-    assert.equal(deliveries, 1);
+    const firstPass = await repairPendingOAuthContinuationResumes({
+      settings,
+      now: () => 102,
+      onReady: async (continuation) => {
+        deliveries += 1;
+        if (continuation.id === authorized.id) throw new Error('queue temporarily unavailable');
+        assert.equal(continuation.id, laterAuthorized.id);
+      },
+    });
+    assert.deepEqual(firstPass, { resumed: 1, pending: 1, pruned: 0 });
+    assert.equal(deliveries, 2);
     const repaired = await repairPendingOAuthContinuationResumes({
       settings,
       now: () => 103,
@@ -481,7 +589,7 @@ test('authorized OAuth continuations survive a failed resume and repair exactly 
       },
     });
     assert.deepEqual(repaired, { resumed: 1, pending: 0, pruned: 0 });
-    assert.equal(deliveries, 2);
+    assert.equal(deliveries, 3);
     assert.deepEqual(await repairPendingOAuthContinuationResumes({
       settings,
       now: () => 104,

@@ -31,6 +31,7 @@ export class GatewaySessionRunner {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
   private stopped = true;
+  private generation = 0;
   private readonly now: () => number;
   private readonly setTimer: NonNullable<GatewaySessionRunnerOptions['setTimer']>;
   private readonly clearTimer: NonNullable<GatewaySessionRunnerOptions['clearTimer']>;
@@ -42,42 +43,58 @@ export class GatewaySessionRunner {
   }
 
   async start(): Promise<boolean> {
+    const generation = ++this.generation;
     this.stopped = false;
+    this.clearScheduled();
+    this.clearHeartbeat();
+    this.retireCurrentSocket('restart');
     const [binding, prior] = await Promise.all([
       this.options.client.loadBinding(),
       this.options.client.loadSessionCheckpoint(),
     ]);
+    if (!this.current(generation)) return false;
     if (!binding) {
       this.stopped = true;
       return false;
     }
     const connecting = { health: 'connecting' as const, attempt: prior?.attempt ?? 0 };
     await this.options.client.recordSessionCheckpoint(connecting);
-    this.clearScheduled();
-    this.clearHeartbeat();
+    if (!this.current(generation)) return false;
     let socket: GatewaySocket | undefined;
     const session = await this.options.client.createSession(
       (frame) => {
-        if (this.socket === socket && socket?.readyState === 1) {
+        if (this.current(generation) && this.socket === socket && socket?.readyState === 1) {
           socket.send(JSON.stringify(frame));
         }
       },
       this.options.onEvent,
       connecting,
     );
+    if (!this.current(generation)) return false;
     const connectedSocket = (this.options.createSocket ?? defaultSocket)(binding.sessionUrl);
+    if (!this.current(generation)) {
+      this.closeSocket(connectedSocket, 1000, 'superseded');
+      return false;
+    }
     socket = connectedSocket;
     this.socket = connectedSocket;
     this.session = session;
+    let messageChain = Promise.resolve();
     connectedSocket.addEventListener('open', () => {
-      if (this.socket !== connectedSocket || this.stopped) return;
+      if (!this.current(generation) || this.socket !== connectedSocket) return;
       void session.hello().catch(() => this.reconnect(connectedSocket, 'hello_failed'));
     });
     connectedSocket.addEventListener('message', (event) => {
-      if (this.socket !== connectedSocket || this.stopped) return;
+      if (!this.current(generation) || this.socket !== connectedSocket) return;
       const raw = typeof event.data === 'string' ? event.data : '';
-      void session.handle(raw).then(() => {
-        void this.options.client.recordSessionCheckpoint(session.state());
+      // WebSocket message callbacks are synchronous, while handling an event
+      // is async. Preserve gateway delivery order so two same-thread events
+      // cannot execute and acknowledge out of order on one logical session.
+      messageChain = messageChain.then(async () => {
+        if (!this.current(generation) || this.socket !== connectedSocket) return;
+        await session.handle(raw);
+        if (!this.current(generation) || this.socket !== connectedSocket) return;
+        await this.options.client.recordSessionCheckpoint(session.state());
         const rotateAt = session.state().rotateAt;
         if (rotateAt) this.schedule(() => connectedSocket.close(1000, 'rotate'), rotateAt - this.now());
         this.scheduleHeartbeat(connectedSocket, session);
@@ -97,12 +114,11 @@ export class GatewaySessionRunner {
   }
 
   stop(): void {
+    this.generation += 1;
     this.stopped = true;
     this.clearScheduled();
     this.clearHeartbeat();
-    this.socket?.close(1000, 'shutdown');
-    this.socket = undefined;
-    this.session = undefined;
+    this.retireCurrentSocket('shutdown');
   }
 
   state(): ReturnType<GatewayLogicalSession['state']> | undefined {
@@ -123,6 +139,25 @@ export class GatewaySessionRunner {
     this.session = undefined;
     const delay = Math.max(0, (checkpoint?.retryAt ?? this.now() + 1_000) - this.now());
     this.schedule(() => void this.start().catch(() => this.scheduleRetry()), delay);
+  }
+
+  private current(generation: number): boolean {
+    return !this.stopped && this.generation === generation;
+  }
+
+  private retireCurrentSocket(reason: string): void {
+    const socket = this.socket;
+    this.socket = undefined;
+    this.session = undefined;
+    if (socket) this.closeSocket(socket, 1000, reason);
+  }
+
+  private closeSocket(socket: GatewaySocket, code: number, reason: string): void {
+    try {
+      socket.close(code, reason);
+    } catch {
+      // The socket may already be closed or may reject a duplicate close.
+    }
   }
 
   private scheduleRetry(): void {

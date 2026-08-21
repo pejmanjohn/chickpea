@@ -147,6 +147,102 @@ test('the designated default Agent cannot be archived without a replacement', as
   }
 });
 
+test('archive and restore round-trip grants and only schedules paused by that archive', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  try {
+    await store.createAgent(agent('agent_support', 'Support'));
+    const activeGrant = await store.putAgentChannelGrant({
+      workspaceId: 'T_PLATFORM',
+      channelId: 'C_SUPPORT',
+      agentId: 'agent_support',
+      status: 'active',
+      createdByMembershipId: 'membership_owner',
+      channelLabel: 'support',
+      channelIsPrivate: false,
+    });
+    const attentionGrant = await store.putAgentChannelGrant({
+      workspaceId: 'T_PLATFORM',
+      channelId: 'C_ESCALATIONS',
+      agentId: 'agent_support',
+      status: 'needs_attention',
+      createdByMembershipId: 'membership_admin',
+      channelLabel: 'private-escalations',
+      channelIsPrivate: true,
+    });
+    const activeSchedule = await store.putAgentScheduleReference({
+      scheduleId: 'schedule_active',
+      agentId: 'agent_support',
+      workspaceId: 'T_PLATFORM',
+      channelId: 'C_SUPPORT',
+      createdByMembershipId: 'membership_owner',
+      runsAsMembershipId: 'membership_owner',
+      authorityReceiptId: 'receipt_active',
+      requiredConnectionAccountIds: [],
+      state: 'active',
+    });
+    const alreadyPausedSchedule = await store.putAgentScheduleReference({
+      scheduleId: 'schedule_already_paused',
+      agentId: 'agent_support',
+      workspaceId: 'T_PLATFORM',
+      channelId: 'C_SUPPORT',
+      createdByMembershipId: 'membership_owner',
+      runsAsMembershipId: 'membership_owner',
+      authorityReceiptId: 'receipt_paused',
+      requiredConnectionAccountIds: [],
+      state: 'paused',
+    });
+
+    const archived = await store.archiveAgent('agent_support');
+    assert.equal(archived.lifecycle, 'archived');
+    assert.deepEqual(await store.listAgentChannelGrants('T_PLATFORM'), []);
+    assert.deepEqual(
+      (await store.listAgentScheduleReferences('agent_support')).map((schedule) => ({
+        id: schedule.scheduleId,
+        state: schedule.state,
+        revision: schedule.revision,
+      })),
+      [
+        { id: 'schedule_active', state: 'paused', revision: activeSchedule.revision + 1 },
+        {
+          id: 'schedule_already_paused',
+          state: 'paused',
+          revision: alreadyPausedSchedule.revision,
+        },
+      ],
+    );
+
+    const archiveRetry = await store.archiveAgent('agent_support');
+    assert.equal(archiveRetry.revision, archived.revision);
+
+    const restored = await store.restoreAgent('agent_support');
+    assert.equal(restored.lifecycle, 'active');
+    assert.deepEqual(
+      await store.listAgentChannelGrants('T_PLATFORM'),
+      [attentionGrant, activeGrant],
+    );
+    assert.deepEqual(
+      (await store.listAgentScheduleReferences('agent_support')).map((schedule) => ({
+        id: schedule.scheduleId,
+        state: schedule.state,
+        revision: schedule.revision,
+      })),
+      [
+        { id: 'schedule_active', state: 'active', revision: activeSchedule.revision + 2 },
+        {
+          id: 'schedule_already_paused',
+          state: 'paused',
+          revision: alreadyPausedSchedule.revision,
+        },
+      ],
+    );
+
+    const restoreRetry = await store.restoreAgent('agent_support');
+    assert.equal(restoreRetry.revision, restored.revision);
+  } finally {
+    store.close();
+  }
+});
+
 test('connection accounts bind once and schedule references retain creator authority', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [] });
   try {
@@ -273,6 +369,17 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
     configGetAgentThreadRoute: () => ok(route),
     configListConnectionAccounts: () => ok([account]),
     configListAgentScheduleReferences: () => ok([schedule]),
+    configArchiveAgent: () => ok({
+      ...agent('agent_support', 'Support'),
+      revision: 2,
+      lifecycle: 'archived' as const,
+      enabled: false,
+    }),
+    configRestoreAgent: () => ok({
+      ...agent('agent_support', 'Support'),
+      revision: 3,
+      lifecycle: 'active' as const,
+    }),
   } as unknown as TagStateRpc;
   const store = new CfConfigStore(stub);
 
@@ -294,4 +401,6 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
   );
   assert.deepEqual(await store.listConnectionAccounts('T_PLATFORM'), [account]);
   assert.deepEqual(await store.listAgentScheduleReferences('agent_support'), [schedule]);
+  assert.equal((await store.archiveAgent('agent_support')).lifecycle, 'archived');
+  assert.equal((await store.restoreAgent('agent_support')).lifecycle, 'active');
 });

@@ -5,6 +5,11 @@ export const MANAGEMENT_OPERATION_KINDS = [
   'create_agent',
   'update_agent',
   'delete_agent',
+  'archive_agent',
+  'restore_agent',
+  'put_channel',
+  'grant_agent_channel',
+  'revoke_agent_channel',
   'update_member',
   'remove_provider_credential',
   'update_agent_memory',
@@ -79,6 +84,9 @@ const zRepository = z.strictObject({
 });
 const zAgentFields = {
   name: zText(240),
+  description: zOptionalText(500).optional(),
+  requestedHandle: zText(120).optional(),
+  editPolicy: z.enum(['creator_and_admins', 'all_workspace_members']).optional(),
   instructions: zOptionalText(100_000),
   enabled: z.boolean(),
   model: zText(500).optional(),
@@ -90,6 +98,9 @@ const zAgentFields = {
 const zAgent = z.strictObject({ id: zId, ...zAgentFields });
 const zAgentPatch = z.strictObject({
   name: zAgentFields.name.optional(),
+  description: zAgentFields.description,
+  requestedHandle: zAgentFields.requestedHandle,
+  editPolicy: zAgentFields.editPolicy,
   instructions: zAgentFields.instructions.optional(),
   enabled: zAgentFields.enabled.optional(),
   model: zText(500).nullable().optional(),
@@ -97,6 +108,13 @@ const zAgentPatch = z.strictObject({
   mcpServers: zAgentFields.mcpServers.optional(),
   apiConnections: zAgentFields.apiConnections.optional(),
   repositories: zAgentFields.repositories.optional(),
+});
+const zChannel = z.strictObject({
+  workspaceId: zId,
+  channelId: zId,
+  revision: zRevision.optional(),
+  label: zOptionalText(240).optional(),
+  lifecycle: z.enum(['active', 'archived']),
 });
 const zOperationBase = {
   itemId: zId,
@@ -143,6 +161,42 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
     patch: zAgentPatch,
   }),
   z.strictObject({ ...zOperationBase, kind: z.literal('delete_agent'), agentId: zId, expectedRevision: zRevision }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('archive_agent'),
+    agentId: zId,
+    expectedRevision: zRevision,
+    replacementDefaultAgentId: zId.optional(),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('restore_agent'),
+    agentId: zId,
+    expectedRevision: zRevision,
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('put_channel'),
+    channel: zChannel,
+    expectedRevision: zRevision,
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('grant_agent_channel'),
+    workspaceId: zId,
+    channelId: zId,
+    expectedRevision: zRevision,
+    agentId: zId.optional(),
+    agentClientRef: zId.optional(),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('revoke_agent_channel'),
+    workspaceId: zId,
+    channelId: zId,
+    agentId: zId,
+    expectedRevision: zRevision,
+  }),
   z.strictObject({
     ...zOperationBase,
     kind: z.literal('update_member'),
@@ -300,6 +354,9 @@ const vRepository = v.strictObject({
 });
 const vAgentFields = {
   name: vt(240),
+  description: v.optional(vot(500)),
+  requestedHandle: v.optional(vt(120)),
+  editPolicy: v.optional(v.picklist(['creator_and_admins', 'all_workspace_members'])),
   instructions: vot(100_000),
   enabled: v.boolean(),
   model: v.optional(vt(500)),
@@ -311,6 +368,9 @@ const vAgentFields = {
 const vAgent = v.strictObject({ id: vid, ...vAgentFields });
 const vAgentPatch = v.strictObject({
   name: v.optional(vAgentFields.name),
+  description: vAgentFields.description,
+  requestedHandle: vAgentFields.requestedHandle,
+  editPolicy: vAgentFields.editPolicy,
   instructions: v.optional(vAgentFields.instructions),
   enabled: v.optional(vAgentFields.enabled),
   model: v.optional(v.nullable(vt(500))),
@@ -318,6 +378,13 @@ const vAgentPatch = v.strictObject({
   mcpServers: v.optional(vAgentFields.mcpServers),
   apiConnections: v.optional(vAgentFields.apiConnections),
   repositories: v.optional(vAgentFields.repositories),
+});
+const vChannel = v.strictObject({
+  workspaceId: vid,
+  channelId: vid,
+  revision: v.optional(vr),
+  label: v.optional(vot(240)),
+  lifecycle: v.picklist(['active', 'archived']),
 });
 const vOperationBase = { itemId: vid, dependsOn: v.optional(va(vid, 25)) };
 const vRoutineSchedule = v.variant('kind', [
@@ -361,6 +428,42 @@ export const managementOperationValibotSchema = v.variant('kind', [
     patch: vAgentPatch,
   }),
   v.strictObject({ ...vOperationBase, kind: v.literal('delete_agent'), agentId: vid, expectedRevision: vr }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('archive_agent'),
+    agentId: vid,
+    expectedRevision: vr,
+    replacementDefaultAgentId: v.optional(vid),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('restore_agent'),
+    agentId: vid,
+    expectedRevision: vr,
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('put_channel'),
+    channel: vChannel,
+    expectedRevision: vr,
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('grant_agent_channel'),
+    workspaceId: vid,
+    channelId: vid,
+    expectedRevision: vr,
+    agentId: v.optional(vid),
+    agentClientRef: v.optional(vid),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('revoke_agent_channel'),
+    workspaceId: vid,
+    channelId: vid,
+    agentId: vid,
+    expectedRevision: vr,
+  }),
   v.strictObject({
     ...vOperationBase,
     kind: v.literal('update_member'),

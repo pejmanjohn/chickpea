@@ -105,8 +105,7 @@ import {
 import { createSlackWebClient } from './web-client.ts';
 import {
   externalActionAuthorityInstructions,
-  resolveEffectiveConnectionAccounts,
-  resolvePersonalConnectionAuthorizationOptions,
+  resolveConnectionAccountContext,
   selectConnectionsForRequest,
 } from '../connections/runtime.ts';
 
@@ -1222,12 +1221,11 @@ async function freezeRuntimePlanForTurn(input: {
         actorMembershipId: input.turn.actorMembershipId,
       }
     : undefined;
-  const [allEffectiveConnections, connectionAuthorizations] = actorConnectionContext
-    ? await Promise.all([
-        resolveEffectiveConnectionAccounts(actorConnectionContext),
-        resolvePersonalConnectionAuthorizationOptions(actorConnectionContext),
-      ])
-    : [[], undefined];
+  const connectionContext = actorConnectionContext
+    ? await resolveConnectionAccountContext(actorConnectionContext)
+    : undefined;
+  const allEffectiveConnections = connectionContext?.effective ?? [];
+  const connectionAuthorizations = connectionContext?.authorizations;
   const connectionResolution = selectConnectionsForRequest({
     connections: allEffectiveConnections,
     requestText: input.turn.text,

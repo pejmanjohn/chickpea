@@ -5,10 +5,57 @@ import {
   provisionSlackInteractionMember,
   slackInteractionMayUseGrantedChannel,
 } from '../src/auth/slack-admission.ts';
+import { resolveAgentRoutingActor } from '../src/channels/slack.ts';
+import type { AppStores } from '../src/config/state-backend.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import type { SlackTransport } from '../src/slack/transport/types.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const NOW = 1_787_000_000_000;
+
+test('every Channel turn rechecks the invoking Slack member against the Channel', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await createSlackOwner(identity, { now: NOW });
+  let membershipChecks = 0;
+  try {
+    const actor = await resolveAgentRoutingActor({
+      workspaceId: owner.binding.slackTeamId,
+      userId: owner.user.slackUserId,
+      channelId: 'C_RESTRICTED',
+      includeDiscoverableAgents: false,
+      botUserId: 'UBOT',
+      transport: {
+        async lookupMember() {
+          return {
+            id: owner.user.slackUserId,
+            teamId: owner.binding.slackTeamId,
+            displayName: owner.user.displayName,
+            email: owner.user.contactEmail ?? undefined,
+            deleted: false,
+            bot: false,
+            appUser: false,
+            restricted: false,
+            ultraRestricted: false,
+            stranger: false,
+          };
+        },
+        async channelHasMember(channelId: string, userId: string) {
+          membershipChecks += 1;
+          assert.equal(channelId, 'C_RESTRICTED');
+          assert.equal(userId, owner.user.slackUserId);
+          return false;
+        },
+      } as unknown as SlackTransport,
+      stores: { identity } as unknown as AppStores,
+    });
+
+    assert.equal(membershipChecks, 1);
+    assert.equal(actor.routing.fullMember, true);
+    assert.equal(actor.routing.channelMember, false);
+  } finally {
+    identity.close();
+  }
+});
 
 test('first eligible Slack interaction provisions one exact active member and refreshes contact data', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });

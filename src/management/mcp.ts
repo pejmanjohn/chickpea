@@ -30,7 +30,12 @@ import {
 } from './tool-adapter.ts';
 import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
-const SERVER_INFO = { name: 'chickpea-workspace', version: '1.0.0' } as const;
+export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
+  name: 'chickpea-workspace',
+  version: '2.0.0',
+} as const;
+export const WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI =
+  'chickpea://schema/operations/v2' as const;
 export interface WorkspaceManagementMcpServerInput {
   principal: McpAuthenticatedPrincipal;
   service: WorkspaceManagementService;
@@ -54,7 +59,7 @@ export function createWorkspaceManagementMcpHandler(
 export function createWorkspaceManagementMcpServer(
   input: WorkspaceManagementMcpServerInput,
 ): McpServer {
-  const server = new McpServer(SERVER_INFO);
+  const server = new McpServer(WORKSPACE_MANAGEMENT_SERVER_INFO);
   const adapter = {
     service: input.service,
     resolveContext: async () => mcpActorContext(input.principal),
@@ -211,7 +216,7 @@ export function createWorkspaceManagementMcpServer(
     }],
   }));
 
-  server.registerResource('operation-schema', 'chickpea://schema/operations', {
+  server.registerResource('operation-schema', WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, {
     title: 'Chickpea management operation inventory',
     description: 'Stable operation and tool names supported by this management contract.',
     mimeType: 'application/json',
@@ -220,7 +225,7 @@ export function createWorkspaceManagementMcpServer(
       uri: uri.href,
       mimeType: 'application/json',
       text: JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         tools: WORKSPACE_MANAGEMENT_TOOL_NAMES,
         operationKinds: MANAGEMENT_OPERATION_KINDS,
         activation: 'next_turn',
