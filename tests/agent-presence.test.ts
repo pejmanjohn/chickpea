@@ -7,7 +7,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import {
   agentAvatarUrl,
-  generatedAgentAvatarSvg,
+  generatedAgentAvatarPng,
   readAgentAvatarAsset,
   uploadAgentAvatar,
 } from '../src/slack/agent-presence/avatar-assets.ts';
@@ -38,7 +38,7 @@ test('Agent handles normalize predictably and suggest collision-free alternative
 });
 
 test('publishing verifies actor membership, joins a public Channel, and creates one alias', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support Triage', 'support'));
@@ -63,7 +63,7 @@ test('publishing verifies actor membership, joins a public Channel, and creates 
 });
 
 test('publication fails closed when the actor is not a member or Chickpea needs a private invite', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
     const notMember = new FakeSlackTransport();
@@ -97,7 +97,7 @@ test('publication fails closed when the actor is not a member or Chickpea needs 
 });
 
 test('Slack policy denial saves needs-attention state with the exact role recovery path', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();
   transport.createError = new SlackTransportError('usergroups.create', 'permission_denied');
   try {
@@ -130,7 +130,7 @@ test('Slack policy denial saves needs-attention state with the exact role recove
 });
 
 test('retry adopts an exact group after an ambiguous create and never creates a duplicate', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();
   transport.ambiguousCreate = true;
   try {
@@ -160,7 +160,7 @@ test('retry adopts an exact group after an ambiguous create and never creates a 
 });
 
 test('retry never adopts a foreign same-handle group after an ambiguous create', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();
   transport.ambiguousCreate = true;
   transport.ambiguousCreatePersistsGroup = false;
@@ -198,7 +198,7 @@ test('retry never adopts a foreign same-handle group after an ambiguous create',
 });
 
 test('a handle edit racing Slack creation converges on one updated user group', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -227,7 +227,7 @@ test('a handle edit racing Slack creation converges on one updated user group', 
 });
 
 test('archive disables the alias and removes grants; restore enables the same alias', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -252,7 +252,7 @@ test('archive disables the alias and removes grants; restore enables the same al
 });
 
 test('uploaded avatars create immutable revisions while generated avatars vary by seed', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -272,7 +272,16 @@ test('uploaded avatars create immutable revisions while generated avatars vary b
     assert.equal(stored?.contentType, 'image/png');
     assert.notDeepEqual(stored?.bytes, png);
     assert.doesNotMatch(new TextDecoder().decode(stored?.bytes), /private-location/);
-    assert.notEqual(generatedAgentAvatarSvg('agent-a'), generatedAgentAvatarSvg('agent-b'));
+    const generatedA = await generatedAgentAvatarPng('agent-a');
+    const generatedB = await generatedAgentAvatarPng('agent-b');
+    assert.deepEqual(Array.from(generatedA.slice(0, 8)), [137, 80, 78, 71, 13, 10, 26, 10]);
+    assert.notDeepEqual(generatedA, generatedB);
+    const directGenerated = await readAgentAvatarAsset({
+      settings, agentId: 'agent_support', revision: 1,
+    });
+    assert.equal(directGenerated?.contentType, 'image/png');
+    assert.deepEqual(Array.from(directGenerated?.bytes.slice(0, 8) ?? []),
+      [137, 80, 78, 71, 13, 10, 26, 10]);
   } finally {
     config.close();
     settings.close?.();
@@ -280,7 +289,7 @@ test('uploaded avatars create immutable revisions while generated avatars vary b
 });
 
 test('uploaded avatars can publish through shared gateway storage before saving their public URL', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -319,7 +328,7 @@ test('uploaded avatars can publish through shared gateway storage before saving 
 });
 
 test('concurrent avatar uploads reserve distinct immutable URLs', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
@@ -349,7 +358,7 @@ test('concurrent avatar uploads reserve distinct immutable URLs', async () => {
 });
 
 test('avatar upload rejects raster signatures that do not decode', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));

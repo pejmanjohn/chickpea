@@ -1,9 +1,10 @@
 import type { PlatformEnv } from '../config/state-backend.ts';
+import type { WebClient } from '@slack/web-api';
 import { getRoutineStore } from '../config/state-backend.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
-import type { SlackIdentityExecutionContext } from '../slack/identity-execution.ts';
+import type { SlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { resolveSlackCredentials, slackUsersInfo } from '../slack/credentials.ts';
 import {
   createRoutineRunId,
@@ -73,6 +74,7 @@ interface RoutineCommandExecutionContext {
   now: () => number;
   canManageChannel: typeof canManageRoutineChannel;
   botToken?: string;
+  slackClient?: WebClient;
   assignment?: ResolvedAssignment;
   bindAuthority: typeof bindRoutineAgentAuthority;
   resolveAuthority: typeof resolveRoutineAgentAuthority;
@@ -108,7 +110,7 @@ export function parseRoutineCommand(rawText: string): RoutineCommand | undefined
 export type RoutineResponseVisibility = 'channel' | 'requester';
 
 /**
- * A current-channel routine list is channel-owned and safe to show there. A
+ * A current-channel routine list is Agent-owned and safe to show there. A
  * cross-channel list (including its non-disclosing failure) is visible only to
  * the requester in the invoking channel, matching Slack's requester-only
  * `chat.postEphemeral` surface.
@@ -135,11 +137,12 @@ export async function handleRoutineSlackRequest(
       turn: NormalizedSlackTurn,
       env: PlatformEnv | undefined,
       botToken?: string,
+      slackClient?: WebClient,
     ) => Promise<string>;
     now?: () => number;
     capability?: RoutineCapability;
     canManageChannel?: typeof canManageRoutineChannel;
-    identityContext?: SlackIdentityExecutionContext;
+    installationContext?: SlackInstallationExecutionContext;
     assignment?: ResolvedAssignment;
     /** Test seam; production always uses the canonical Agent authority binder. */
     bindAuthority?: typeof bindRoutineAgentAuthority;
@@ -151,12 +154,14 @@ export async function handleRoutineSlackRequest(
   const now = dependencies.now ?? Date.now;
   const capability = dependencies.capability ?? routineCapability();
   const canManageChannel = dependencies.canManageChannel ?? canManageRoutineChannel;
-  const botToken = dependencies.identityContext?.botToken;
+  const botToken = dependencies.installationContext?.botToken;
+  const slackClient = dependencies.installationContext?.client;
   const commandContext: RoutineCommandExecutionContext = {
     turn, store, env, capability, now, canManageChannel,
     bindAuthority: dependencies.bindAuthority ?? bindRoutineAgentAuthority,
     resolveAuthority: dependencies.resolveAuthority ?? resolveRoutineAgentAuthority,
     ...(botToken ? { botToken } : {}),
+    ...(slackClient ? { slackClient } : {}),
     ...(dependencies.assignment ? { assignment: dependencies.assignment } : {}),
   };
   const command = parseRoutineCommand(turn.text);
@@ -168,7 +173,9 @@ export async function handleRoutineSlackRequest(
     }
   }
   if (!isRoutineIntentCandidate(turn.text)) return undefined;
-  if (!(await canManageChannel(turn.workspaceId, turn.channelId, turn.userId, env, botToken))) {
+  if (!(await canManageChannel(
+    turn.workspaceId, turn.channelId, turn.userId, env, botToken, slackClient,
+  ))) {
     return notFoundText();
   }
   const explicitMutation = isExplicitRoutineMutationRequest(turn.text);
@@ -180,6 +187,7 @@ export async function handleRoutineSlackRequest(
         turn,
         env,
         botToken,
+        slackClient,
       )
     : 'UTC';
   let intent: RoutineIntent | undefined;
@@ -216,6 +224,7 @@ export async function handleRoutineSlackRequest(
         defaultTimezone,
         env,
         botToken,
+        slackClient,
         dependencies.assignment,
         dependencies.bindAuthority ?? bindRoutineAgentAuthority,
       );
@@ -234,7 +243,7 @@ async function executeRoutineCommand(
   context: RoutineCommandExecutionContext,
 ): Promise<string> {
   const {
-    turn, store, env, capability, now, canManageChannel, botToken, assignment,
+    turn, store, env, capability, now, canManageChannel, botToken, slackClient, assignment,
     bindAuthority, resolveAuthority,
   } = context;
   const service = new RoutineService(store, { now });
@@ -247,7 +256,9 @@ async function executeRoutineCommand(
     const channelId = mentionedId ?? turn.channelId;
     if (
       channelId !== turn.channelId &&
-      !(await canManageChannel(turn.workspaceId, channelId, turn.userId, env, botToken))
+      !(await canManageChannel(
+        turn.workspaceId, channelId, turn.userId, env, botToken, slackClient,
+      ))
     ) {
       return notFoundText();
     }
@@ -262,6 +273,7 @@ async function executeRoutineCommand(
     turn.userId,
     env,
     botToken,
+    slackClient,
   ))) {
     return notFoundText();
   }
@@ -380,6 +392,7 @@ async function executeRoutineCommand(
         turn.channelId,
         env,
         botToken,
+        slackClient,
       ),
     }, `routine:slack:${turn.eventId}:clone:${routine.id}`);
     await bindSavedRoutineAuthority(created, assignment, turn, env, service, bindAuthority);
@@ -404,6 +417,7 @@ async function saveRoutineIntent(
   defaultTimezone?: string,
   env?: PlatformEnv,
   botToken?: string,
+  slackClient?: WebClient,
   assignment?: ResolvedAssignment,
   bindAuthority: typeof bindRoutineAgentAuthority = bindRoutineAgentAuthority,
 ): Promise<string> {
@@ -461,6 +475,7 @@ async function saveRoutineIntent(
       turn.channelId,
       env,
       botToken,
+      slackClient,
     ),
     provenance: {
       sourceKind: 'slack_request' as const,
@@ -651,8 +666,16 @@ async function resolveRoutineDefaultTimezone(
   turn: NormalizedSlackTurn,
   env: PlatformEnv | undefined,
   admittedBotToken?: string,
+  admittedClient?: WebClient,
 ): Promise<string> {
   try {
+    if (admittedClient && !admittedBotToken) {
+      const result = await admittedClient.users.info({ user: turn.userId });
+      const timezone = result.ok && result.user && typeof result.user.tz === 'string'
+        ? result.user.tz
+        : undefined;
+      return timezone && isIanaTimeZone(timezone) ? timezone : 'UTC';
+    }
     const botToken = admittedBotToken ?? (await resolveSlackCredentials(env)).botToken;
     if (!botToken) return 'UTC';
     const result = await slackUsersInfo(botToken, turn.userId);

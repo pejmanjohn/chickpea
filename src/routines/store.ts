@@ -2077,13 +2077,15 @@ export class RoutineStoreLogic {
 
   private tryAdmitCanonicalOccurrence(run: RoutineRun, routine: RoutineDefinition): void {
     if (!routine.workId || !routine.bindingId) return;
-    const assignmentRow = this.config.find(routine.workspaceId, routine.channelId, {
-      surface: 'channel',
-    });
-    if (!assignmentRow) return;
+    const reference = this.config.getAgentScheduleReference(routine.id);
+    if (!reference || reference.workspaceId !== routine.workspaceId ||
+        reference.channelId !== routine.channelId || reference.state !== 'active') return;
+    const grant = this.config.listAgentChannelGrants(routine.workspaceId, routine.channelId)
+      .find((candidate) => candidate.agentId === reference.agentId && candidate.status === 'active');
+    if (!grant) return;
     let assignment: ResolvedAssignment;
     try {
-      const agent = this.config.getAgent(assignmentRow.agentId);
+      const agent = this.config.getAgent(reference.agentId);
       if (!agent.enabled) return;
       const channel = this.config.getChannel(routine.workspaceId, routine.channelId);
       if (channel?.lifecycle === 'archived') return;

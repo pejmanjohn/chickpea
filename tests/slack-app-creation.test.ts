@@ -9,10 +9,10 @@ import {
   SLACK_SETUP_TTL_MS,
 } from '../src/slack/app-creation.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
-import { buildSlackAppManifest } from '../src/slack/identity-manifest.ts';
-import { resolveSlackControlPlaneAppCredentials } from '../src/slack/identity-credentials.ts';
+import { buildSlackAppManifest } from '../src/slack/app-manifest.ts';
+import { resolveSlackControlPlaneAppCredentials } from '../src/slack/installation-credentials.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 
 const NOW = 1_786_000_000_000;
 const ORIGIN = 'https://chickpea.example';
@@ -84,7 +84,7 @@ test('replacement capability invalidates the prior locator while retaining unamb
       setupId: setup.id,
       expectedRevision: setup.revision,
       configurationToken: CONFIG_TOKEN,
-      manifest: buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN }),
+      manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
     });
     assert.equal(setup.state, 'app_created');
     assert.equal(setup.appId, 'A12345678');
@@ -142,7 +142,7 @@ test('programmatic creation persists pending before Slack and atomically records
       setupId: setup.id,
       expectedRevision: setup.revision,
       configurationToken: CONFIG_TOKEN,
-      manifest: buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN }),
+      manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
     });
     assert.deepEqual(observedStates, ['app_creation_pending']);
     assert.equal(created.state, 'app_created');
@@ -150,7 +150,7 @@ test('programmatic creation persists pending before Slack and atomically records
     assert.ok(created.credentialRevision);
     assert.doesNotMatch(JSON.stringify(created), /client-secret|signing-secret|configuration-token/);
 
-    const active = await store.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+    const active = await store.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID);
     assert.equal(active?.revision, created.credentialRevision);
     const decrypted = await resolveSlackControlPlaneAppCredentials(credentials);
     assert.equal(decrypted.clientId, '123.456');
@@ -181,7 +181,7 @@ test('network ambiguity is durable, redacted, and never auto-retried', async () 
         setupId: setup.id,
         expectedRevision: setup.revision,
         configurationToken: CONFIG_TOKEN,
-        manifest: buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN }),
+        manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
       }),
       (error: unknown) => error instanceof SlackAppCreationError &&
         error.code === 'ambiguous_external_effect' && !error.message.includes(CONFIG_TOKEN),
@@ -193,7 +193,7 @@ test('network ambiguity is durable, redacted, and never auto-retried', async () 
         setupId: setup.id,
         expectedRevision: ambiguous!.revision,
         configurationToken: CONFIG_TOKEN,
-        manifest: buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN }),
+        manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
       }),
       /inspect.*adopt.*restart/i,
     );
@@ -227,7 +227,7 @@ test('a chunked oversized Slack response is cancelled at the byte bound and rema
         setupId: setup.id,
         expectedRevision: setup.revision,
         configurationToken: CONFIG_TOKEN,
-        manifest: buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN }),
+        manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
       }),
       (error: unknown) => error instanceof SlackAppCreationError &&
         error.code === 'ambiguous_external_effect',
@@ -262,7 +262,7 @@ test('duplicate-tab creation acquires exactly one pending transition', async () 
       setupId: setup.id,
       expectedRevision: setup.revision,
       configurationToken: CONFIG_TOKEN,
-      manifest: buildSlackAppManifest({ kind: 'control_plane' as const, origin: ORIGIN }),
+      manifest: buildSlackAppManifest({ kind: 'workspace_app' as const, origin: ORIGIN }),
     };
     const first = service.create(input);
     await new Promise((resolve) => setImmediate(resolve));
@@ -283,7 +283,7 @@ test('manual adoption validates exact configuration and converges at app_created
     const service = new SlackAppCreationService({
       identity: store, credentials, now: () => NOW, fetch: successfulCreateFetch(),
     });
-    const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN });
+    const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
     const wrong = structuredClone(manifest);
     wrong.oauth_config.redirect_urls![0] = 'https://wrong.example/callback';
     await assert.rejects(
@@ -324,7 +324,7 @@ test('approval checkpoint survives restart and resume returns to app_created for
       setupId: initial.id,
       expectedRevision: initial.revision,
       configurationToken: CONFIG_TOKEN,
-      manifest: buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN }),
+      manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
     });
     const pending = await store.markSlackSetupApprovalPending({
       setupId: setup.id,

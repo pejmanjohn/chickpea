@@ -10,11 +10,11 @@ import {
   renderSlackSignInPage,
 } from '../src/admin/page.ts';
 import type { SlackSetupTransaction } from '../src/identity/types.ts';
-import { buildSlackAppManifest, slackManifestPrefillUrl } from '../src/slack/identity-manifest.ts';
+import { buildSlackAppManifest, slackManifestPrefillUrl } from '../src/slack/app-manifest.ts';
 
 const ORIGIN = 'https://chickpea.example';
 const DESTINATION = '/admin/channels';
-const MANIFEST = buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN });
+const MANIFEST = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
 
 function setup(state: SlackSetupTransaction['state']): SlackSetupTransaction {
   return {

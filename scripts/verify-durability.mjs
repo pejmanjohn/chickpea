@@ -328,7 +328,7 @@ try {
     );
   }
 
-  // --- Memory state: additive upgrade, restart, compatibility open, scrub. ---
+  // --- One-body Agent memory: restart, compatibility open, and scrub. ---
   {
     const memoryPath = `${dbA}.state`;
     const memorySentinel = 'MEMORY_DURABILITY_SENTINEL_ALPHA';
@@ -337,63 +337,43 @@ try {
     let memoryStore;
     try {
       memoryStore = new SqliteMemoryStateStore(memoryPath);
-      const publicStore = await memoryStore.ensurePublicStore('TDEMO');
-      await memoryStore.observeChannelScope({
-        workspaceId: 'TDEMO',
-        channelId: EXEC_CHANNEL,
-        privacy: 'public',
-        displayName: 'exec',
-        observedAt: Date.now(),
-      });
-      await memoryStore.createEntry({
-        entryId: 'mem_durability_sentinel',
-        storeId: publicStore.storeId,
-        workspaceId: 'TDEMO',
-        sourceChannelId: EXEC_CHANNEL,
-        slug: 'durability-sentinel',
-        description: 'Restart durability proof.',
-        type: 'fact',
+      await memoryStore.putAgentMemory({
+        agentId: 'agent_default',
         body: memorySentinel,
-        actorId: 'U_ALICE',
-        actorClass: 'member',
-        idempotencyKey: 'memory:durability:create',
+        expectedRevision: 0,
       });
       memoryStore.close();
       memoryStore = undefined;
 
       // A config-only open stands in for rollback code that knows nothing about
       // the additive memory tables: it must boot and leave them untouched.
-      const configOnly = new SqliteConfigStore(memoryPath, { agents: [], assignments: [] });
+      const configOnly = new SqliteConfigStore(memoryPath, { agents: [], grants: [] });
       await configOnly.listAgents();
       configOnly.close();
 
       memoryStore = new SqliteMemoryStateStore(memoryPath);
-      const restarted = await memoryStore.getEntry('mem_durability_sentinel');
+      const restarted = await memoryStore.getAgentMemory('agent_default');
       record(
-        'MEMORY DURABILITY: create survives close/restart and legacy false is inert',
-        restarted?.body === memorySentinel && restarted.version === 1,
-        `status=${String(restarted?.status)} version=${String(restarted?.version)}`,
+        'MEMORY DURABILITY: Agent body survives close/restart and legacy false is inert',
+        restarted.body === memorySentinel && restarted.revision === 1,
+        `revision=${String(restarted.revision)}`,
       );
-      await memoryStore.forgetEntry({
-        entryId: 'mem_durability_sentinel',
-        expectedVersion: 1,
-        actorId: 'operator',
-        actorClass: 'operator',
-        idempotencyKey: 'memory:durability:forget',
+      await memoryStore.putAgentMemory({
+        agentId: 'agent_default',
+        body: '',
+        expectedRevision: 1,
       });
       memoryStore.close();
       memoryStore = undefined;
 
       memoryStore = new SqliteMemoryStateStore(memoryPath);
-      const forgotten = await memoryStore.getEntry('mem_durability_sentinel');
-      const revisions = await memoryStore.listRevisions('mem_durability_sentinel');
+      const forgotten = await memoryStore.getAgentMemory('agent_default');
       memoryStore.close();
       memoryStore = undefined;
       record(
-        'MEMORY DURABILITY: forget survives restart and removes recoverable revision content',
-        forgotten?.status === 'forgotten' && forgotten.body === '' && forgotten.description === '' &&
-          revisions.every((revision) => revision.body === null && revision.description === null),
-        `status=${String(forgotten?.status)} revisions=${revisions.length}`,
+        'MEMORY DURABILITY: clearing the Agent body survives restart without history',
+        forgotten.body === '' && forgotten.revision === 2,
+        `revision=${String(forgotten.revision)}`,
       );
       record(
         'MEMORY DURABILITY: deleted sentinel is absent from the raw state file',

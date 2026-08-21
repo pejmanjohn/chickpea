@@ -3,7 +3,6 @@ import { test } from 'node:test';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
@@ -25,9 +24,9 @@ import { gatewayReconnectAt, gatewaySessionHealthy } from '../src/slack/gateway/
 import { createGatewaySlackTransport } from '../src/slack/transport/gateway.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import {
-  resolveSlackIdentityExecutionContext,
-  verifySlackIdentityTurnAccess,
-} from '../src/slack/identity-execution.ts';
+  resolveSlackInstallationExecutionContext,
+  verifySlackInstallationTurnAccess,
+} from '../src/slack/installation-execution.ts';
 import { createGatewaySlackWebClient } from '../src/slack/gateway/web-client.ts';
 import {
   GatewaySessionRunner,
@@ -213,9 +212,6 @@ test('shared-app claim binds one workspace without storing Slack credentials', a
     assert.equal(installation?.botUserId, 'UBOT');
     assert.equal(installation?.teamId, 'TGATEWAY');
     assert.equal(installation?.health, 'healthy');
-    const defaultIdentity = await config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-    assert.equal(defaultIdentity.teamId, 'TGATEWAY');
-    assert.equal(defaultIdentity.botUserId, 'UBOT');
     const installedSetup = await identity.getSlackSetupTransaction(setup.id);
     assert.equal(installedSetup?.state, 'bot_installed');
     assert.equal(installedSetup?.installerSlackUserId, 'UINSTALLER');
@@ -371,17 +367,17 @@ test('gateway execution uses the shared app without resolving or storing a bot t
   try {
     await client.beginClaim();
     await client.refreshClaim();
-    const execution = await resolveSlackIdentityExecutionContext(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    const execution = await resolveSlackInstallationExecutionContext(
+      'TGATEWAY',
       undefined,
       { config, settings, gatewayClient: client },
     );
     assert.equal(execution.transportMode, 'gateway');
     assert.equal(execution.botToken, undefined);
-    assert.equal(execution.teamId, 'TGATEWAY');
-    await verifySlackIdentityTurnAccess(execution, {
+    assert.equal(execution.workspaceId, 'TGATEWAY');
+    await verifySlackInstallationTurnAccess(execution, {
       workspaceId: 'TGATEWAY', channelId: 'C_SUPPORT', eventId: 'Ev_access',
-      slackIdentityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID, text: 'hello', userId: 'U_MEMBER',
+      text: 'hello', userId: 'U_MEMBER',
       messageTs: '1.2', threadTs: '1.2', source: 'app_mention', contextMode: 'thread',
     });
     const facade = createGatewaySlackWebClient(client);
@@ -814,7 +810,6 @@ function configStore(): SqliteConfigStore {
       id: 'agent_default', name: 'Chickpea', instructions: 'Help.', enabled: true,
       lifecycle: 'active', skills: [], mcpServers: [], apiConnections: [], repositories: [],
     }],
-    assignments: [],
   });
 }
 

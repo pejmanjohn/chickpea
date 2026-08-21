@@ -25,8 +25,8 @@ export const IDENTITY_SCHEMA_V1_STATEMENTS = [
   )`,
   `CREATE TABLE identity_slack_credential_revisions (
     identity_id TEXT NOT NULL,
-    identity_class TEXT NOT NULL CHECK (identity_class IN ('workspace_default', 'dedicated_bot')),
-    purpose TEXT NOT NULL CHECK (purpose IN ('app_credentials', 'connected_credentials', 'bot_credentials')),
+    identity_class TEXT NOT NULL CHECK (identity_class = 'workspace_installation'),
+    purpose TEXT NOT NULL CHECK (purpose IN ('app_credentials', 'connected_credentials')),
     revision TEXT NOT NULL, base_revision TEXT,
     status TEXT NOT NULL CHECK (status IN ('candidate', 'active', 'tombstoned')),
     app_id TEXT NOT NULL, team_id TEXT, bot_user_id TEXT,

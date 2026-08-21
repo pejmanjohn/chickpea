@@ -76,7 +76,7 @@ function gmailPolicy() {
 }
 
 test('one team account binds to two Agents without copying its credential', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
   const service = new ConnectionAccountService({
@@ -135,7 +135,7 @@ test('one team account binds to two Agents without copying its credential', asyn
 });
 
 test('personal accounts resolve only for their owner and language selects a unique label', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
   const service = new ConnectionAccountService({ config, settings, randomId: () => `id${++nextId}` });
@@ -229,7 +229,7 @@ test('personal accounts resolve only for their owner and language selects a uniq
 });
 
 test('a member-owned binding grants a provider capability without exposing another member account', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
   const service = new ConnectionAccountService({ config, settings, randomId: () => `id${++nextId}` });
@@ -279,7 +279,7 @@ test('a member-owned binding grants a provider capability without exposing anoth
 });
 
 test('revocation tombstones the secret and pauses dependent schedules before final state', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
   const service = new ConnectionAccountService({ config, settings, randomId: () => `id${++nextId}` });
@@ -383,7 +383,7 @@ test('provider OAuth state authorizes only its linked Slack continuation and con
 });
 
 test('missing actor account starts one account-owned OAuth flow from the Agent provider capability', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
   const service = new ConnectionAccountService({ config, settings, randomId: () => `seed${++nextId}` });

@@ -145,10 +145,9 @@ export class WebClientPresenter {
       await this.client.assistant.threads.setStatus({
         channel_id: this.target.channelId,
         thread_ts: this.target.threadTs,
-        status: slackStatusText(update),
-        loading_messages: slackLoadingMessages(update),
-        ...this.persona(),
-      } as unknown as Parameters<WebClient['assistant']['threads']['setStatus']>[0]);
+        status: slackStatusText(update, this.target.agentName),
+        loading_messages: slackLoadingMessages(update, this.target.agentName),
+      });
       this.statusWasSet = true;
       return true;
     } catch {

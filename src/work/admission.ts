@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 
 import { resolveAgentModel } from '../config/model-policy.ts';
 import type { AgentSnapshot, ResolvedAssignment } from '../config/types.ts';
-import { effectiveSlackIdentityId } from '../slack/identity-admission.ts';
 import type {
   SafeEffectiveConfigInput,
   SourceVisibility,
@@ -44,7 +43,6 @@ export function safeConfigForAssignment(
   return {
     schemaVersion: 1,
     profileId: assignment.agentId,
-    slackIdentityId: effectiveSlackIdentityId(assignment),
     configuredModel,
     snapshotDigest,
     capabilityDigest,

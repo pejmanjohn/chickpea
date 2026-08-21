@@ -1,10 +1,10 @@
 import { DisabledAgentError, NoAssignmentError } from './errors.ts';
 import {
-  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-  type ChannelAssignment,
+  type AgentChannelGrant,
   type ChannelConfig,
   type CustomAgentConfig,
   type ResolvedAssignment,
+  type WorkspaceInstallation,
 } from './types.ts';
 
 // Store readers are async — the Cloudflare backend answers over Durable
@@ -42,17 +42,17 @@ export function surfaceForChannelId(channelId: string): AssignmentSurface {
   return channelId.startsWith('D') ? 'direct' : 'channel';
 }
 
-export interface AssignmentReader {
-  find(
-    workspaceId: string,
-    channelId: string,
-    options?: AssignmentLookupOptions,
-  ): Promise<ChannelAssignment | undefined>;
+export interface GrantReader {
+  listAgentChannelGrants(
+    workspaceId?: string,
+    channelId?: string,
+  ): Promise<AgentChannelGrant[]>;
+  getWorkspaceInstallation(workspaceId: string): Promise<WorkspaceInstallation | undefined>;
 }
 
 export interface ConfigStores {
   agents: AgentReader;
-  assignments: AssignmentReader;
+  grants: GrantReader;
   channels?: ChannelReader;
 }
 
@@ -64,19 +64,29 @@ export async function resolveAssignment(
   workspaceId: string,
   channelId: string,
   stores: ConfigStores,
-  options: AssignmentLookupOptions = {},
+  options: AssignmentLookupOptions & { agentId?: string } = {},
 ): Promise<ResolvedAssignment> {
-  const assignment = await stores.assignments.find(workspaceId, channelId, options);
-  if (!assignment) {
-    throw new NoAssignmentError(`No enabled agent assignment for ${workspaceId}/${channelId}`);
+  const surface = options.surface ?? surfaceForChannelId(channelId);
+  const installation = await stores.grants.getWorkspaceInstallation(workspaceId);
+  const activeGrants = surface === 'channel'
+    ? (await stores.grants.listAgentChannelGrants(workspaceId, channelId))
+      .filter(({ status }) => status === 'active')
+    : [];
+  const agentId = options.agentId ?? (
+    surface === 'direct'
+      ? installation?.defaultAgentId
+      : activeGrants.length === 1 ? activeGrants[0]?.agentId : undefined
+  );
+  if (!agentId || (surface === 'channel' && !activeGrants.some((grant) => grant.agentId === agentId))) {
+    throw new NoAssignmentError(`No active Agent grant for ${workspaceId}/${channelId}`);
   }
 
-  const agent = await stores.agents.getAgent(assignment.agentId);
+  const agent = await stores.agents.getAgent(agentId);
   if (!agent.enabled) {
     throw new DisabledAgentError(agent.id);
   }
 
-  const channelReader = stores.channels ?? channelReaderFromAssignments(stores.assignments);
+  const channelReader = stores.channels ?? channelReaderFromGrants(stores.grants);
   const channel = channelReader ? await channelReader.getChannel(workspaceId, channelId) : undefined;
   if (channel?.lifecycle === 'archived') {
     throw new NoAssignmentError(`Channel ${workspaceId}/${channelId} is archived`);
@@ -86,14 +96,13 @@ export async function resolveAssignment(
     workspaceId,
     channelId,
     agentId: agent.id,
-    slackIdentityId: agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     ...(channel?.label ? { channelLabel: channel.label } : {}),
     ...(channel?.revision ? { channelRevision: channel.revision } : {}),
     agent,
   };
 }
 
-function channelReaderFromAssignments(assignments: AssignmentReader): ChannelReader | undefined {
-  const candidate = assignments as AssignmentReader & Partial<ChannelReader>;
+function channelReaderFromGrants(grants: GrantReader): ChannelReader | undefined {
+  const candidate = grants as GrantReader & Partial<ChannelReader>;
   return typeof candidate.getChannel === 'function' ? candidate as ChannelReader : undefined;
 }

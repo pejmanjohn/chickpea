@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import {
   applyGatewaySlackUserChange,
   applySlackUserChange,
@@ -17,8 +18,8 @@ test('revision-bound user_change suspends the exact active member and is replay 
     expectedRotationEpoch: (await identity.ensureSlackCredentialControl({ currentKeyId: 'key_v1' })).rotationEpoch,
     expectedActiveRevision: null,
     revision: 'revision_connected',
-    identityId: 'slack_identity_default',
-    identityClass: 'workspace_default',
+    identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+    identityClass: 'workspace_installation',
     purpose: 'connected_credentials',
     appId: 'A12345678',
     teamId: 'T12345678',

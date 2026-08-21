@@ -125,9 +125,9 @@ export interface SlackEventFixture {
 
 export type SlackTurnSource =
   | 'app_mention'
+  | 'agent_mention'
   | 'implicit_thread_reply'
   | 'dm_message'
-  | 'ambient_channel_message'
   | 'reaction_added';
 export type SlackContextMode = 'thread' | 'channel_history' | 'dm_history';
 export type SlackTurnIgnoreReason =
@@ -142,14 +142,13 @@ export type SlackTurnIgnoreReason =
   | 'empty_text'
   | 'missing_thread_metadata'
   | 'unsupported_channel_type'
+  | 'unaddressed_channel_message'
   | 'unsupported_reaction_item';
 
 export interface NormalizedSlackTurn {
   workspaceId: string;
   channelId: string;
   eventId: string;
-  /** Internal identity attached after verification; missing on legacy persisted/synthetic turns. */
-  slackIdentityId?: string;
   text: string;
   userId: string;
   /** Product membership resolved from verified Slack truth before admission. */

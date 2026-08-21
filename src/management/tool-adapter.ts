@@ -5,7 +5,6 @@ import {
   type ManagementOperation,
   type ManagementRoutineInspectionInput,
 } from './types.ts';
-import type { MemoryOwnerRef } from '../memory/types.ts';
 import type { PreviewWorkspaceRecipeInput } from './recipes.ts';
 import { emitManagementMetric } from './telemetry.ts';
 
@@ -30,7 +29,7 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority.',
   discover_slack_channels: 'Discover Channels in the connected Slack workspace before publishing a Chickpea Agent.',
   test_mcp_connection: 'Test one saved Agent MCP connection with its write-only credentials and return a sanitized result plus discovered tools.',
-  inspect_memory: 'Inspect one Agent memory and its versioned entries.',
+  inspect_memory: 'Inspect the single durable memory body owned by one Agent.',
   inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, or routine.',
   export_workspace_recipe: 'Export selected Agents and their connection requirements as a versioned, secret-free portable recipe.',
   preview_workspace_recipe: 'Preview a portable recipe against live workspace state and compile chosen outcomes into ordinary typed changes.',
@@ -49,7 +48,7 @@ export type WorkspaceManagementToolArguments = {
   inspect_workspace: Record<never, never>;
   discover_slack_channels: { refresh?: boolean | undefined };
   test_mcp_connection: { agentId: string; connectionId: string };
-  inspect_memory: MemoryOwnerRef & { ownerKind: 'agent' };
+  inspect_memory: { agentId: string };
   inspect_routines: ManagementRoutineInspectionInput;
   export_workspace_recipe: { agentIds?: string[] | undefined };
   preview_workspace_recipe: PreviewWorkspaceRecipeInput;
@@ -120,7 +119,7 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
       }
       case 'inspect_memory': {
         const value = args as WorkspaceManagementToolArguments['inspect_memory'];
-        return service.inspectMemory(context, value);
+        return service.inspectMemory(context, value.agentId);
       }
       case 'inspect_routines': {
         const value = args as WorkspaceManagementToolArguments['inspect_routines'];

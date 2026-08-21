@@ -2,18 +2,18 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 
 import { digestSetupCapability } from '../auth/setup-capability.mjs';
 import { safeSetupDestination } from '../auth/setup-handoff.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import type { IdentityStore, SlackSetupTransaction } from '../identity/types.ts';
 import {
   prepareSlackCredentialBundle,
   type SlackCredentialDependencies,
-} from './identity-credentials.ts';
+} from './installation-credentials.ts';
 import {
   slackManifestFingerprint,
   validateSlackAppManifest,
   type SlackAppManifest,
-} from './identity-manifest.ts';
+} from './app-manifest.ts';
 
 export const SLACK_SETUP_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 export const SLACK_APP_CREATION_INTERRUPT_GRACE_MS = 60_000;
@@ -230,11 +230,11 @@ export class SlackAppCreationService {
     created: CreatedSlackApp,
   ): Promise<SlackSetupTransaction> {
     const active = await this.dependencies.identity.getActiveSlackCredentialRevision(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      WORKSPACE_SLACK_INSTALLATION_ID,
     );
     const credential = await prepareSlackCredentialBundle(this.dependencies.credentials, {
-      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      identityClass: 'workspace_default',
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+      identityClass: 'workspace_installation',
       purpose: 'app_credentials',
       expectedActiveRevision: active?.revision ?? null,
       appId: created.appId,

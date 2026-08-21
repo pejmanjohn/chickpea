@@ -5,8 +5,8 @@
  *   2. establish an exact Slack-bound Owner and authenticate as that principal,
  *   3. create two Agents and publish both to one Channel through the additive grant API,
  *   4. prove the Channel inventory exposes both grants without one replacing the other,
- *   5. seed Agent memory and prove Channel memory is forbidden while Agent-owned
- *      conflict, history, and irreversible-delete contracts remain available.
+ *   5. prove the one-body Agent memory contract and optimistic edits while the
+ *      retired Channel/file/history memory surfaces remain unavailable.
  */
 import {
   assertNodeVersion,
@@ -22,7 +22,6 @@ const CHANNEL_ID = 'C_ADMIN_UI';
 const CHANNEL_LABEL = 'eng-releases';
 const AGENT_ID = 'agent_admin_ui';
 const MODEL_SPECIFIER = 'local-stub/admin-ui-model';
-const MEMORY_ENTRY_ID = 'mem_admin_ui_release';
 const ROUTINE_ID = 'routine_admin_ui_release';
 
 const results = [];
@@ -79,7 +78,7 @@ try {
   const { SqliteWorkStore } = await loadTsModule('src/work/store.ts');
   const { SqliteIdentityStore } = await loadTsModule('src/identity/store.ts');
   const statePath = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-ui-')), 'state.db');
-  store = new SqliteConfigStore(statePath, { agents: [], assignments: [] });
+  store = new SqliteConfigStore(statePath, { agents: [], grants: [] });
   settings = new SqliteSettingsStore(statePath);
   memory = new SqliteMemoryStateStore(statePath);
   routines = new SqliteRoutineStore(statePath);
@@ -188,31 +187,6 @@ try {
     estimateCurrency: 'USD',
     priceVersionId: 'openai_2026-07-28',
     priceUnknownReason: null,
-  });
-  const agentMemory = await memory.ensureOwner({
-    workspaceId: WORKSPACE_ID,
-    ownerKind: 'agent',
-    ownerId: AGENT_ID,
-  });
-  await memory.createOwnerEntry({
-    entryId: MEMORY_ENTRY_ID,
-    storeId: agentMemory.storeId,
-    workspaceId: WORKSPACE_ID,
-    slug: 'release-principles',
-    description: 'Reusable release principles.',
-    type: 'preference',
-    body: 'Prefer small, reversible releases.',
-    actorId: 'U_ADMIN_UI_MEMBER',
-    actorClass: 'member',
-    writeOrigin: { kind: 'admin' },
-    idempotencyKey: 'admin-ui-agent-memory-create',
-  });
-  await memory.observeChannelScope({
-    workspaceId: WORKSPACE_ID,
-    channelId: CHANNEL_ID,
-    privacy: 'public',
-    displayName: CHANNEL_LABEL,
-    observedAt: Date.now(),
   });
   const routineService = new RoutineService(routines, {
     now: Date.now,
@@ -465,80 +439,45 @@ try {
     `create=${secondCreated.status} publish=${secondPublished.status} grants=${String(verifiedChannel?.grants?.length)}`,
   );
 
-  const owners = await adminJson(app, `/admin/api/audit/memory/owners?workspaceId=${WORKSPACE_ID}`);
+  const initialMemory = await adminBody(app, 'PUT', `/admin/api/agents/${AGENT_ID}/memory`, {
+    expectedRevision: 0,
+    body: 'Prefer small, reversible releases.',
+  });
+  const agentMemory = await adminJson(app, `/admin/api/agents/${AGENT_ID}/memory`);
+  const retiredOwners = await adminJson(app, `/admin/api/audit/memory/owners?workspaceId=${WORKSPACE_ID}`);
   const channelFiles = await adminJson(
     app,
     `/admin/api/audit/memory/owners/channel/${WORKSPACE_ID}/${CHANNEL_ID}/files`,
   );
-  const agentFiles = await adminJson(
-    app,
-    `/admin/api/audit/memory/owners/agent/${WORKSPACE_ID}/${AGENT_ID}/files`,
-  );
   record(
-    'Memory is Agent-owned and exact-Channel memory is forbidden',
-    owners.status === 200 &&
-      owners.body?.owners?.some((owner) => owner.ownerKind === 'agent' && owner.ownerId === AGENT_ID) &&
-      !owners.body?.owners?.some((owner) => owner.ownerKind === 'channel') &&
-      channelFiles.status === 403 &&
-      agentFiles.status === 200 &&
-      agentFiles.body?.files?.[1]?.name === 'release-principles.md',
-    `owners=${owners.status} channel=${channelFiles.status} agent=${agentFiles.status}`,
+    'Memory is one Agent-owned body and retired Channel/file indexes are unavailable',
+    initialMemory.status === 200 && initialMemory.body?.memory?.revision === 1 &&
+      agentMemory.status === 200 &&
+      agentMemory.body?.memory?.agentId === AGENT_ID &&
+      agentMemory.body?.memory?.body === 'Prefer small, reversible releases.' &&
+      retiredOwners.status === 404 && channelFiles.status === 403,
+    `put=${initialMemory.status} get=${agentMemory.status} owners=${retiredOwners.status} channel=${channelFiles.status}`,
   );
-
-  const agentEntryPath =
-    `/admin/api/audit/memory/owners/agent/${WORKSPACE_ID}/${AGENT_ID}/entries/${MEMORY_ENTRY_ID}`;
 
   const editBody = JSON.stringify({
-    expectedVersion: 1,
-    description: 'Use the full release checklist.',
-    type: 'project',
+    expectedRevision: 1,
     body: 'Run focused tests and the durability gate before release.',
   });
-  const edit = await adminJson(app, agentEntryPath, {
+  const edit = await adminJson(app, `/admin/api/agents/${AGENT_ID}/memory`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-edit' },
+    headers: { 'content-type': 'application/json' },
     body: editBody,
   });
-  const conflict = await adminJson(app, agentEntryPath, {
+  const conflict = await adminJson(app, `/admin/api/agents/${AGENT_ID}/memory`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-conflict' },
+    headers: { 'content-type': 'application/json' },
     body: editBody,
   });
   record(
     'Memory edit is versioned and a stale draft receives 409 without overwrite',
-    edit.status === 200 && edit.body?.entry?.version === 2 &&
+    edit.status === 200 && edit.body?.memory?.revision === 2 &&
       conflict.status === 409 && conflict.body?.currentVersion === 2,
     `edit=${edit.status} conflict=${conflict.status}`,
-  );
-
-  const history = await adminJson(app, `${agentEntryPath}/history`);
-  record(
-    'Agent memory history stays under the Agent owner route',
-    history.status === 200 && history.body?.revisions?.length === 2,
-    `status=${history.status} revisions=${String(history.body?.revisions?.length)}`,
-  );
-
-  const unacknowledgedDelete = await adminJson(
-    app,
-    agentEntryPath,
-    {
-      method: 'DELETE',
-      headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-delete-rejected' },
-      body: JSON.stringify({ expectedVersion: 2, acknowledgeIrreversible: false }),
-    },
-  );
-  const deleted = await adminJson(app, agentEntryPath, {
-    method: 'DELETE',
-    headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-memory-delete' },
-    body: JSON.stringify({ expectedVersion: 2, acknowledgeIrreversible: true }),
-  });
-  const deletedEntry = await memory.getOwnerEntry(MEMORY_ENTRY_ID);
-  record(
-    'Memory delete requires explicit acknowledgement and scrubs canonical content',
-    unacknowledgedDelete.status === 400 && deleted.status === 200 &&
-      deletedEntry?.status === 'forgotten' && deletedEntry.body === '' &&
-      deletedEntry.description === '' && deletedEntry.contentHash === null,
-    `unacknowledged=${unacknowledgedDelete.status} deleted=${deleted.status}`,
   );
 } catch (error) {
   record('verification harness', false, error instanceof Error ? error.message : String(error));

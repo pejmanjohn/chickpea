@@ -30,12 +30,11 @@ test('Slack ingress normalizes to one credential-free transport envelope', () =>
   });
 });
 
-test('Slack turn normalization classifies mentions, thread replies, DMs, and ambient top-level messages', () => {
-  const options = { slackIdentityId: 'slack_identity_default', botUserId: 'UBOT' };
+test('Slack turn normalization classifies mentions, owned-thread replies, and DMs while ignoring ambient roots', () => {
+  const options = { botUserId: 'UBOT' };
   const mention = normalizeSlackTurn(fixture(), options);
   assert.ok(mention.status === 'runnable');
   assert.equal(mention.turn.source, 'app_mention');
-  assert.equal(mention.turn.slackIdentityId, 'slack_identity_default');
   assert.equal(mention.turn.contextMode, 'channel_history');
   assert.equal(slackThreadKey(mention.turn), 'TDEMO:C_EXEC:1782770400.000100');
 
@@ -59,9 +58,9 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and amb
     event_id: 'Ev_MSG_PRIVATE_TOP_LEVEL',
   });
   delete privateChannelTopLevel.event.thread_ts;
-  const ambientPrivateChannelTopLevel = normalizeSlackTurn(privateChannelTopLevel, options);
-  assert.ok(ambientPrivateChannelTopLevel.status === 'runnable');
-  assert.equal(ambientPrivateChannelTopLevel.turn.source, 'ambient_channel_message');
+  assert.deepEqual(normalizeSlackTurn(privateChannelTopLevel, options), {
+    status: 'ignored', reason: 'unaddressed_channel_message',
+  });
 
   const dm = normalizeSlackTurn(dmMessage(), options);
   assert.ok(dm.status === 'runnable');
@@ -79,13 +78,9 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and amb
   }
 
   const topLevel = normalizeSlackTurn(topLevelChannelMessage(), options);
-  assert.ok(topLevel.status === 'runnable');
-  assert.equal(topLevel.turn.source, 'ambient_channel_message');
-  assert.equal(topLevel.turn.contextMode, 'channel_history');
+  assert.deepEqual(topLevel, { status: 'ignored', reason: 'unaddressed_channel_message' });
 
-  const missingBotUserId = normalizeSlackTurn(channelThreadMessage(), {
-    slackIdentityId: 'slack_identity_default',
-  });
+  const missingBotUserId = normalizeSlackTurn(channelThreadMessage(), {});
   assert.ok(missingBotUserId.status === 'ignored');
   assert.equal(missingBotUserId.reason, 'missing_bot_user_id');
 
@@ -105,7 +100,7 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and amb
 });
 
 test('Agent View message context is stripped before ordinary DM normalization', () => {
-  const options = { slackIdentityId: 'slack_identity_default', botUserId: 'UBOT' };
+  const options = { botUserId: 'UBOT' };
   const absent = dmMessage();
   const empty = dmMessage();
   Object.assign(empty.event, { app_context: {} });
@@ -132,7 +127,6 @@ test('a suggested prompt click remains an ordinary user-rooted DM turn', () => {
     event: { text: 'Help me plan this task:' },
   });
   const normalized = normalizeSlackTurn(payload, {
-    slackIdentityId: 'slack_identity_default',
     botUserId: 'UBOT',
   });
 
@@ -161,7 +155,6 @@ test('human message reactions are candidates and the bot cannot react itself int
     },
   };
   const normalized = normalizeSlackTurn(payload, {
-    slackIdentityId: 'slack_identity_finance',
     botUserId: 'UBOT',
   });
   assert.ok(normalized.status === 'runnable');
@@ -170,7 +163,7 @@ test('human message reactions are candidates and the bot cannot react itself int
 
   const self = normalizeSlackTurn(
     { ...payload, event: { ...payload.event, user: 'UBOT' } },
-    { slackIdentityId: 'slack_identity_finance', botUserId: 'UBOT' },
+    { botUserId: 'UBOT' },
   );
   assert.deepEqual(self, { status: 'ignored', reason: 'self_message' });
 });
@@ -211,7 +204,7 @@ test('natural-language channel history windows do not match adjacent words', () 
 // and this app's reply can mention it back, which is an unbounded two-bot loop
 // with a model call on every hop.
 test('app-authored mentions are ignored on the same terms as app-authored messages', () => {
-  const options = { slackIdentityId: 'slack_identity_default', botUserId: 'U_BOT' };
+  const options = { botUserId: 'U_BOT' };
 
   for (const authorship of [
     { bot_id: 'B_OTHER' },
@@ -236,7 +229,7 @@ test('app-authored mentions are ignored on the same terms as app-authored messag
 });
 
 test('a mention with no author is ignored rather than run as the empty user', () => {
-  const options = { slackIdentityId: 'slack_identity_default', botUserId: 'U_BOT' };
+  const options = { botUserId: 'U_BOT' };
   const anonymous = normalizeSlackTurn(fixture({ event: { user: '' } }), options);
   assert.equal(anonymous.status, 'ignored');
   assert.equal(

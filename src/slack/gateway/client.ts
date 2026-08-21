@@ -1,6 +1,5 @@
 import type { ConfigStore } from '../../config/store.ts';
 import type { SettingsStore } from '../../config/settings-store.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../../config/types.ts';
 import type { IdentityStore } from '../../identity/types.ts';
 import { primeStoredSlackPublicUrl, SLACK_SETTING_KEYS } from '../credentials.ts';
 import type { CredentialKeyring } from '../secret-envelope.ts';
@@ -385,23 +384,6 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       health: 'healthy',
       healthDetail: null,
     }, retained.revision);
-    const defaultIdentity = await this.dependencies.config.getSlackIdentity(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-    );
-    await this.dependencies.config.updateSlackIdentity(
-      defaultIdentity.id,
-      defaultIdentity.connectionRevision,
-      {
-        lifecycle: 'connected',
-        teamId: binding.workspaceId,
-        appId: binding.appId,
-        botUserId: binding.botUserId,
-        credentialProvenance: 'workspace_default',
-        observedAt: this.now(),
-        health: 'healthy',
-        healthDetail: null,
-      },
-    );
     await this.dependencies.settings.applySettingsPatch({
       set: [{ key: GATEWAY_BINDING_SETTING, value: JSON.stringify(binding) }],
       delete: [GATEWAY_CLAIM_SETTING],

@@ -50,13 +50,12 @@ import { registerSlackStatusTurn } from './status-registry.ts';
 import type { SlackTurnContext } from './thread-context.ts';
 import { slackThreadKey } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
-import { effectiveSlackIdentityId } from './identity-admission.ts';
 import {
-  effectiveTurnSlackIdentityId,
-  resolveSlackIdentityExecutionContext,
-  SlackIdentityUnavailableError,
-  type SlackIdentityExecutionContext,
-} from './identity-execution.ts';
+  effectiveTurnSlackInstallationId,
+  resolveSlackInstallationExecutionContext,
+  SlackInstallationUnavailableError,
+  type SlackInstallationExecutionContext,
+} from './installation-execution.ts';
 import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
@@ -151,7 +150,7 @@ export interface RunTurnOptions {
    */
   client?: WebClient;
   /** Current non-secret identity execution context resolved by the relay. */
-  identityContext?: SlackIdentityExecutionContext;
+  installationContext?: SlackInstallationExecutionContext;
   /** Focused-test override for proving replay and delivery lifecycle behavior. */
   agentPrompt?: typeof promptSlackThreadAgent;
   /** Adapter-owned dispatch/read checkpoints restored by the relay. */
@@ -246,21 +245,18 @@ export async function runTurn(
   platformEnv: PlatformEnv | undefined,
   options: RunTurnOptions = {},
 ): Promise<void> {
-  const turnIdentityId = effectiveTurnSlackIdentityId(turn);
-  if (effectiveSlackIdentityId(assignment) !== turnIdentityId) {
-    throw new SlackIdentityUnavailableError(turnIdentityId, 'assignment_identity_mismatch');
-  }
-  const identityContext = options.identityContext ?? (
+  const turnWorkspaceId = effectiveTurnSlackInstallationId(turn);
+  const installationContext = options.installationContext ?? (
     options.client
       ? undefined
-      : await resolveSlackIdentityExecutionContext(turnIdentityId, platformEnv, {
+      : await resolveSlackInstallationExecutionContext(turnWorkspaceId, platformEnv, {
           ...(options.settingsStore ? { settings: options.settingsStore } : {}),
         })
   );
-  if (identityContext && identityContext.identityId !== turnIdentityId) {
-    throw new SlackIdentityUnavailableError(turnIdentityId, 'execution_identity_mismatch');
+  if (installationContext && installationContext.workspaceId !== turnWorkspaceId) {
+    throw new SlackInstallationUnavailableError(turnWorkspaceId, 'execution_workspace_mismatch');
   }
-  const client = identityContext?.client ?? options.client ?? (await getClient(platformEnv));
+  const client = installationContext?.client ?? options.client ?? (await getClient(platformEnv));
   // A frozen assignment (from a thread snapshot) carries its model; otherwise
   // resolve it from the agent via policy.
   const resolvedModel = assignment.model ?? tryResolveAgentModel(assignment.agent);
@@ -275,7 +271,7 @@ export async function runTurn(
   // explicit Routine commands are kept off this lane at admission.
   if (!ledgerAuthority && isRoutineSlackTurn(turn)) {
     const routineText = await handleRoutineSlackRequest(turn, platformEnv, {
-      ...(identityContext ? { identityContext } : {}),
+      ...(installationContext ? { installationContext } : {}),
       assignment,
     });
     if (routineText !== undefined) {
@@ -335,7 +331,7 @@ export async function runTurn(
     });
   }
   // Delivery-only recovery replays the exact persisted answer. It must not
-  // re-resolve current Agent/Channel memory (which could both block recovery
+  // re-resolve current Agent memory (which could both block recovery
   // on a changed lease and unnecessarily touch live state).
   const preparedMemory = memoryCommand || options.replayText !== undefined
     ? undefined
@@ -344,8 +340,8 @@ export async function runTurn(
         assignment,
         platformEnv,
         client,
-        ...(identityContext
-          ? { botToken: identityContext.botToken, botUserId: identityContext.botUserId }
+        ...(installationContext
+          ? { botToken: installationContext.botToken, botUserId: installationContext.botUserId }
           : {}),
       });
   const conversationKey = preparedMemory?.conversationKey ?? slackThreadKey(turn);
@@ -590,8 +586,8 @@ export async function runTurn(
         platformEnv,
         client,
         presenter,
-        ...(identityContext
-          ? { botToken: identityContext.botToken, botUserId: identityContext.botUserId }
+        ...(installationContext
+          ? { botToken: installationContext.botToken, botUserId: installationContext.botUserId }
           : {}),
       });
       if (handled) {
@@ -725,12 +721,12 @@ export async function runTurn(
     const prompt = assembleSlackPrompt(turn, context, {
       ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
-      ...(identityContext
+      ...(installationContext
         ? {
-            slackIdentity: {
-              botUserId: identityContext.botUserId,
-              ...(identityContext.displayName
-                ? { displayName: identityContext.displayName }
+            slackApp: {
+              botUserId: installationContext.botUserId,
+              ...(installationContext.displayName
+                ? { displayName: installationContext.displayName }
                 : {}),
             },
           }
@@ -888,8 +884,8 @@ export async function runTurn(
         if (recoveredText) {
           await preparedMemory?.confirmInjection();
           await presenter.deliverFinal(
-            identityContext
-              ? renderSlackSelfMention(recoveredText, identityContext.botUserId)
+            installationContext
+              ? renderSlackSelfMention(recoveredText, installationContext.botUserId)
               : recoveredText,
             'markdown',
           );
@@ -916,8 +912,8 @@ export async function runTurn(
       recoveredText,
       leaseValid,
     );
-    if (identityContext) {
-      text = renderSlackSelfMention(text, identityContext.botUserId);
+    if (installationContext) {
+      text = renderSlackSelfMention(text, installationContext.botUserId);
     }
     await presenter.deliverFinal(text, 'markdown');
     // Clear after the final reaches Slack. A custom Agent persona does not
@@ -1276,7 +1272,7 @@ async function resolveRuntimePlanSandboxSelection(
 }
 
 export const MEMORY_CHANGED_RETRY_TEXT =
-  'Channel memory or Slack access changed while I was answering, so I withheld the draft. Before trying again, check whether any requested external action already completed.';
+  'Agent memory or Slack access changed while I was answering, so I withheld the draft. Before trying again, check whether any requested external action already completed.';
 
 export function resolveMemoryDeliveryText(
   draft: string,

@@ -18,7 +18,7 @@ const WORKSPACE = 'T_AUTHORITY';
 const CHANNEL = 'C_SUPPORT';
 
 test('Agent schedules capture one Runs as authority and safely reassign future runs', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const identity = new SqliteIdentityStore(':memory:');
   try {
     const owner = await createSlackOwner(identity, {

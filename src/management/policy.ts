@@ -34,19 +34,6 @@ export function classifyManagementOperation(
   if (operation.kind === 'remove_provider_credential') {
     return { allowed: true, posture: 'confirmation', reason: 'provider_credential_removal' };
   }
-  if (operation.kind === 'retire_slack_identity' ||
-      operation.kind === 'cancel_slack_identity_setup') {
-    return {
-      allowed: true,
-      posture: 'confirmation',
-      reason: operation.kind === 'retire_slack_identity'
-        ? 'slack_identity_retirement'
-        : 'slack_identity_setup_cancellation',
-    };
-  }
-  if (operation.kind === 'forget_memory_entry') {
-    return { allowed: true, posture: 'confirmation', reason: 'irreversible_memory_forget' };
-  }
   if (operation.kind === 'delete_routine') {
     return { allowed: true, posture: 'confirmation', reason: 'irreversible_routine_delete' };
   }
@@ -62,8 +49,7 @@ export function classifyManagementOperation(
     }
     const disablingActive = facts.currentAgent?.enabled === true &&
       operation.patch.enabled === false &&
-      Boolean(facts.agentReferences?.channelAssignments.length ||
-        facts.agentReferences?.dmIdentityIds.length);
+      Boolean(facts.agentReferences?.channelGrants.length);
     if (disablingActive) {
       return { allowed: true, posture: 'confirmation', reason: 'disable_active_agent' };
     }
@@ -75,15 +61,17 @@ export function classifyManagementOperation(
       facts.currentChannelLifecycle === 'active' && operation.channel.lifecycle === 'archived') {
     return { allowed: true, posture: 'confirmation', reason: 'archive_channel' };
   }
-  if (operation.kind === 'place_agent') {
-    const removing = operation.agentId === null;
-    if (removing || !facts.initialAgentBundle) {
+  if (operation.kind === 'grant_agent_channel') {
+    if (!facts.initialAgentBundle) {
       return {
         allowed: true,
         posture: 'confirmation',
-        reason: removing ? 'remove_channel_placement' : 'expand_channel_placement',
+        reason: 'expand_channel_reach',
       };
     }
+  }
+  if (operation.kind === 'revoke_agent_channel') {
+    return { allowed: true, posture: 'confirmation', reason: 'revoke_channel_reach' };
   }
   return { allowed: true, posture: 'immediate', reason: 'safe_reversible_change' };
 }

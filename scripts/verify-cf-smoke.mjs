@@ -539,9 +539,9 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
   const preInstall = await postSignedEvent(eventsUrl, mentionEvent('Ev_SMOKE_PRE_INSTALL'));
   await backend.quiesce();
   check(
-    preInstall.status === 401 && backend.providerCalls().length === providerCallsBeforeInstall &&
+    preInstall.status === 200 && backend.providerCalls().length === providerCallsBeforeInstall &&
       backend.finals().length === 0,
-    'app-stage signing rejects agent work before bot OAuth',
+    'app-stage signing acknowledges Slack but rejects Agent work before bot OAuth',
     `HTTP ${preInstall.status}`,
   );
 
@@ -1456,46 +1456,41 @@ async function main() {
     );
     const memoryFinals = await waitForFinalCount(backend, 2, 90_000);
     check(
-      memoryFinals.length === 2 && Boolean(memoryFinals[1]?.text.includes('Saved Agent memory `release-guidance`')),
+      memoryFinals.length === 2 && Boolean(memoryFinals[1]?.text.includes('Saved Agent memory (revision 1).')),
       'explicit Memory command persisted to the Agent memory and returned a receipt',
       memoryFinals[1]?.text ?? 'no memory receipt',
     );
-    const memoryOwnerPath = `/admin/api/audit/memory/owners/agent/${encodeURIComponent(WORKSPACE)}/agent_default`;
-    const memoryFiles = await adminFetch(baseUrl, `${memoryOwnerPath}/files`);
-    const smokeMemoryFile = memoryFiles.body?.files?.find((file) => file.name === 'release-guidance.md');
+    const memoryPath = '/admin/api/agents/agent_default/memory';
+    const agentMemory = await adminFetch(baseUrl, memoryPath);
     check(
-      memoryFiles.status === 200 && memoryFiles.body?.owner?.ownerKind === 'agent' &&
-        memoryFiles.body?.owner?.ownerId === 'agent_default' && memoryFiles.body?.files?.[0]?.name === 'MEMORY.md' &&
-        Boolean(smokeMemoryFile?.entryId),
-      'workerd Admin Memory API exposes the Agent owner, generated index, and saved file',
-      `files=${memoryFiles.status}`,
+      agentMemory.status === 200 && agentMemory.body?.memory?.agentId === 'agent_default' &&
+        agentMemory.body?.memory?.revision === 1 &&
+        String(agentMemory.body?.memory?.body ?? '').includes('Use the release checklist.'),
+      'workerd Admin Memory API exposes the one Agent-owned body',
+      `memory=${agentMemory.status} revision=${String(agentMemory.body?.memory?.revision)}`,
     );
     const memoryEditBody = JSON.stringify({
-      expectedVersion: 1,
-      description: 'Use the full release checklist.',
-      type: 'fact',
+      expectedRevision: 1,
       body: 'Run focused tests and the workerd smoke before release.',
     });
     const memoryEdit = await adminFetch(
       baseUrl,
-      `${memoryOwnerPath}/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
+      memoryPath,
       {
         method: 'PUT',
-        headers: { 'idempotency-key': 'cf-smoke-memory-edit' },
         body: memoryEditBody,
       },
     );
     const memoryConflict = await adminFetch(
       baseUrl,
-      `${memoryOwnerPath}/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
+      memoryPath,
       {
         method: 'PUT',
-        headers: { 'idempotency-key': 'cf-smoke-memory-conflict' },
         body: memoryEditBody,
       },
     );
     check(
-      memoryEdit.status === 200 && memoryEdit.body?.entry?.version === 2 &&
+      memoryEdit.status === 200 && memoryEdit.body?.memory?.revision === 2 &&
         memoryConflict.status === 409 && memoryConflict.body?.currentVersion === 2,
       'workerd Memory edit is optimistic and conflict-safe',
       `edit=${memoryEdit.status} conflict=${memoryConflict.status}`,
@@ -1521,15 +1516,12 @@ async function main() {
       'a fresh post-restart Slack OIDC session resolves the same live Owner authority',
       `HTTP ${freshSession.status} role=${String(freshSession.body?.viewer?.role)}`,
     );
-    const restartMemory = await adminFetch(
-      baseUrl,
-      `${memoryOwnerPath}/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
-    );
+    const restartMemory = await adminFetch(baseUrl, memoryPath);
     check(
-      restartMemory.status === 200 && restartMemory.body?.entry?.version === 2 &&
-        restartMemory.body?.entry?.body === 'Run focused tests and the workerd smoke before release.',
-      'Memory entry and version survived the workerd restart',
-      `HTTP ${restartMemory.status} version=${String(restartMemory.body?.entry?.version)}`,
+      restartMemory.status === 200 && restartMemory.body?.memory?.revision === 2 &&
+        restartMemory.body?.memory?.body === 'Run focused tests and the workerd smoke before release.',
+      'Agent memory and revision survived the workerd restart',
+      `HTTP ${restartMemory.status} revision=${String(restartMemory.body?.memory?.revision)}`,
     );
 
     const postRestartRedelivery = await postSignedEvent(eventsUrl, mentionEvent());

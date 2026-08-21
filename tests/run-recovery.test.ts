@@ -11,7 +11,7 @@ import {
   type LedgerSlackTurnExecutor,
 } from '../src/slack/ledger-turn-driver.ts';
 import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
-import { SlackIdentityUnavailableError } from '../src/slack/identity-execution.ts';
+import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import {
   SlackRunPresentationStoreLogic,
@@ -331,7 +331,7 @@ test('a pre-submit executor failure is safely requeued instead of quarantined', 
   }
 });
 
-test('a transient ledger identity preflight requeues without quarantining its TurnJob', async () => {
+test('a transient ledger installation preflight requeues without quarantining its TurnJob', async () => {
   let clock = NOW;
   const db = openStateDb(':memory:');
   try {
@@ -346,12 +346,12 @@ test('a transient ledger identity preflight requeues without quarantining its Tu
     const handler = createLedgerSlackRunHandler({
       work: work as unknown as WorkStore,
       turns,
-      resolveIdentity: async () => {
-        throw new SlackIdentityUnavailableError('slack_identity_default', 'ratelimited', {
+      resolveInstallation: async () => {
+        throw new SlackInstallationUnavailableError('T_canary', 'ratelimited', {
           retryAfterMs: 3_000,
         });
       },
-      verifyIdentityAccess: async () => undefined,
+      verifyInstallationAccess: async () => undefined,
       executeTurn: (async () => { executions += 1; }) as LedgerSlackTurnExecutor,
       now: () => ++clock,
     });
@@ -359,12 +359,12 @@ test('a transient ledger identity preflight requeues without quarantining its Tu
     const captured = await captureSlackIdentityOperationalEvents(() => handler(claim));
     assert.deepEqual(captured.result, {
       kind: 'requeue',
-      reasonCode: 'slack_identity_temporarily_unavailable',
+      reasonCode: 'slack_installation_temporarily_unavailable',
       retryAfterMs: 3_000,
     });
     assert.deepEqual(captured.events, [{
       operation: 'egress_unavailable',
-      identityId: 'slack_identity_default',
+      workspaceId: 'T_canary',
       outcome: 'retry',
       failureClass: 'ratelimited',
       fallbackPrevented: true,

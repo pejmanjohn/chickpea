@@ -3,7 +3,7 @@
 import { pathToFileURL } from 'node:url';
 
 import { decodeRecoverySecret } from '../src/auth/recovery-secret.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 
 const USAGE = `Usage:
@@ -24,7 +24,7 @@ export async function inspectSlackRecoveryReadiness(options) {
     try {
       const [control, active] = await Promise.all([
         identity.getAuthControl(),
-        identity.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID),
+        identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID),
       ]);
       if (!active || active.purpose !== 'connected_credentials' || !active.teamId) {
         throw new Error('No connected workspace-default Slack installation is available to repair.');

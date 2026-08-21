@@ -167,7 +167,9 @@ test('Agent create owns its handle, generated avatar, edit policy, and creator',
 
     const avatar = await fixture.app.request(agent.slackPresence.avatar.url);
     assert.equal(avatar.status, 200);
-    assert.equal(avatar.headers.get('content-type'), 'image/svg+xml');
+    assert.equal(avatar.headers.get('content-type'), 'image/png');
+    const avatarBytes = new Uint8Array(await avatar.arrayBuffer());
+    assert.deepEqual([...avatarBytes.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
     assert.match(avatar.headers.get('cache-control') ?? '', /immutable/);
   } finally {
     fixture.store.close();

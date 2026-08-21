@@ -1,11 +1,10 @@
 export const SLACK_SECRET_ENVELOPE_VERSION = 1 as const;
 export const SLACK_SECRET_ENVELOPE_ALGORITHM = 'AES-GCM-256' as const;
 
-export type SlackCredentialIdentityClass = 'workspace_default' | 'dedicated_bot';
+export type SlackCredentialIdentityClass = 'workspace_installation';
 export type SlackCredentialPurpose =
   | 'app_credentials'
   | 'connected_credentials'
-  | 'bot_credentials'
   | 'gateway_deployment_key';
 
 export interface CredentialKeyring {

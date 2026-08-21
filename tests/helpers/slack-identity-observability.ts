@@ -10,7 +10,7 @@ export async function captureSlackIdentityOperationalEvents<T>(
   const lines: string[] = [];
   const previousInfo = console.info;
   console.info = (...args: unknown[]) => {
-    if (args[0] === '[chickpea] slack_identity_operational') {
+    if (args[0] === '[chickpea] slack_installation_operational') {
       lines.push(String(args[1]));
     }
   };

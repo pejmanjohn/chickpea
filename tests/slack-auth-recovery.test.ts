@@ -4,7 +4,7 @@ import { test } from 'node:test';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import {
   SlackCredentialRecoveryError,
@@ -14,11 +14,11 @@ import {
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import {
   promoteSlackCredentialBundle,
-  resolveSlackIdentityCredentials,
+  resolveSlackInstallationCredentials,
   stageSlackCredentialBundle,
-} from '../src/slack/identity-credentials.ts';
-import { recordPendingSlackChallenge } from '../src/slack/identity-handshake.ts';
-import { buildSlackAppManifest, slackManifestFingerprint } from '../src/slack/identity-manifest.ts';
+} from '../src/slack/installation-credentials.ts';
+import { recordPendingSlackChallenge } from '../src/slack/installation-handshake.ts';
+import { buildSlackAppManifest, slackManifestFingerprint } from '../src/slack/app-manifest.ts';
 import { REQUIRED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 
 const NOW = 1_786_000_000_000;
@@ -66,14 +66,14 @@ test('repair stages only the unchanged app/team and promotes after confidential 
       () => fixture.service.stageAppCredentials({
         ...authority, appId: 'AOTHER', teamId: 'TACME', clientId: '123.456',
         clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret',
-        manifest: buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN }),
+        manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
       }),
       (error: unknown) => error instanceof SlackCredentialRecoveryError && error.code === 'app_mismatch',
     );
     const staged = await fixture.service.stageAppCredentials({
       ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456',
       clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret',
-      manifest: buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN }),
+      manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
     });
     const recoveryCandidate = await fixture.identity.getSlackRecoverySession(begun.recoveryId);
     assert.equal(recoveryCandidate?.status, 'credentials_staged');
@@ -81,7 +81,7 @@ test('repair stages only the unchanged app/team and promotes after confidential 
     assert.ok(recoveryCandidate?.appCredentialEnvelope?.ciphertext);
     assert.doesNotMatch(JSON.stringify(recoveryCandidate), /replacement-client-secret/);
     assert.equal(
-      (await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID))?.revision,
+      (await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID))?.revision,
       fixture.activeRevision,
     );
 
@@ -98,7 +98,7 @@ test('repair stages only the unchanged app/team and promotes after confidential 
     assert.equal(fixture.exchangeForm?.get('client_secret'), 'replacement-client-secret');
     assert.equal(fixture.exchangeForm?.has('code_verifier'), false);
     assert.equal(
-      (await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID))?.revision,
+      (await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID))?.revision,
       fixture.activeRevision,
     );
 
@@ -107,8 +107,8 @@ test('repair stages only the unchanged app/team and promotes after confidential 
     assert.equal(completed.status, 'repaired');
     assert.equal((await fixture.identity.getSlackRecoverySession(begun.recoveryId))?.status, 'consumed');
     assert.deepEqual(
-      await resolveSlackIdentityCredentials(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID, undefined, fixture.credentials,
+      await resolveSlackInstallationCredentials(
+        WORKSPACE_SLACK_INSTALLATION_ID, undefined, fixture.credentials,
       ),
       {
         botToken: 'xoxb-replacement-token',
@@ -139,7 +139,7 @@ test('lost encryption root stays recovery-only until same-app bot reauthorizatio
     await fixture.service.stageAppCredentials({
       ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456',
       clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret',
-      manifest: buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN }),
+      manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
     });
     const started = await fixture.service.startBotOAuth({ ...authority, redirectUri: REDIRECT });
     const waiting = await fixture.service.callback({
@@ -147,12 +147,12 @@ test('lost encryption root stays recovery-only until same-app bot reauthorizatio
     });
     assert.equal((await fixture.identity.getAuthControl())?.healthGate, 'recovery_only');
     assert.equal(
-      await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID),
+      await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID),
       undefined,
     );
     assert.equal(
       (await fixture.identity.getSlackCredentialRevision(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID, waiting.candidateRevision,
+        WORKSPACE_SLACK_INSTALLATION_ID, waiting.candidateRevision,
       ))?.status,
       'candidate',
     );
@@ -160,7 +160,7 @@ test('lost encryption root stays recovery-only until same-app bot reauthorizatio
     await fixture.service.finalize(authority);
     assert.equal((await fixture.identity.getAuthControl())?.healthGate, 'normal');
     assert.equal(
-      (await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID))?.revision,
+      (await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID))?.revision,
       waiting.candidateRevision,
     );
   } finally { fixture.close(); }
@@ -172,7 +172,7 @@ test('URL repair accepts only the unchanged app contract and never persists its 
   try {
     const begun = await fixture.service.begin({ recoveryToken: TOKEN, browserBinding: BROWSER });
     const authority = { ...begun, browserBinding: BROWSER };
-    const expected = buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN });
+    const expected = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
     const broader = structuredClone(expected);
     broader.oauth_config.scopes.bot.push('commands');
     await assert.rejects(
@@ -206,7 +206,7 @@ test('URL repair accepts only the unchanged app contract and never persists its 
     await fixture.recordChallenge('replacement-signing-secret');
     assert.deepEqual(await fixture.service.finalize(authority), { status: 'repaired' });
     const active = await fixture.identity.getActiveSlackCredentialRevision(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      WORKSPACE_SLACK_INSTALLATION_ID,
     );
     assert.equal(active?.revision, waiting.candidateRevision);
     assert.equal(active?.manifestFingerprint, slackManifestFingerprint(expected));
@@ -227,21 +227,21 @@ async function recoveryFixture(options: {
   const settings = new SqliteSettingsStore(':memory:');
   const credentials = { state: identity, keyring: generateCredentialKeyring('key_v1') };
   const manifest = buildSlackAppManifest({
-    kind: 'control_plane', origin: options.initialOrigin ?? ORIGIN,
+    kind: 'workspace_app', origin: options.initialOrigin ?? ORIGIN,
   });
   const app = await stageSlackCredentialBundle(credentials, {
-    identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-    identityClass: 'workspace_default', purpose: 'app_credentials', expectedActiveRevision: null,
+    identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+    identityClass: 'workspace_installation', purpose: 'app_credentials', expectedActiveRevision: null,
     appId: 'A12345678', manifestFingerprint: slackManifestFingerprint(manifest),
     secrets: { clientId: '123.456', clientSecret: 'old-client-secret', signingSecret: 'old-signing-secret' },
   });
   await promoteSlackCredentialBundle(credentials, {
-    identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    identityId: WORKSPACE_SLACK_INSTALLATION_ID,
     candidateRevision: app.revision, expectedActiveRevision: null,
   });
   const connected = await stageSlackCredentialBundle(credentials, {
-    identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-    identityClass: 'workspace_default', purpose: 'connected_credentials',
+    identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+    identityClass: 'workspace_installation', purpose: 'connected_credentials',
     expectedActiveRevision: app.revision, appId: 'A12345678', teamId: 'TACME', botUserId: 'UBOT',
     grantedScopes: [...REQUIRED_SLACK_BOT_SCOPES], validatedAt: NOW,
     manifestFingerprint: slackManifestFingerprint(manifest),
@@ -251,7 +251,7 @@ async function recoveryFixture(options: {
     },
   });
   await promoteSlackCredentialBundle(credentials, {
-    identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    identityId: WORKSPACE_SLACK_INSTALLATION_ID,
     candidateRevision: connected.revision, expectedActiveRevision: app.revision,
   });
   let counter = 0;
@@ -272,7 +272,7 @@ async function recoveryFixture(options: {
         return Response.json({
           ok: true,
           manifest: manifestUpdated
-            ? buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN })
+            ? buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN })
             : manifest,
         });
       }
@@ -289,7 +289,7 @@ async function recoveryFixture(options: {
         team: { id: 'TACME' }, authed_user: { id: 'UINSTALLER' },
       });
     },
-    bootstrap: {
+    verification: {
       now: () => NOW,
       authTest: async () => ({
         ok: true, error: undefined, teamId: 'TACME', teamName: 'Acme', appId: 'A12345678',
@@ -313,16 +313,11 @@ async function recoveryFixture(options: {
     get exchangeCalls() { return exchangeCalls; },
     get exchangeForm() { return exchangeForm; },
     async recordChallenge(signingSecret: string) {
-      const slackIdentity = await config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-      await config.updateSlackIdentity(slackIdentity.id, slackIdentity.connectionRevision, {
-        lifecycle: 'credentials_pending', appId: 'A12345678', teamId: 'TACME', botUserId: 'UBOT',
-        credentialProvenance: 'stored', observedAt: NOW, health: 'healthy', healthDetail: null,
-      });
       const rawBody = JSON.stringify({
         type: 'url_verification', challenge: 'recovery-proof', api_app_id: 'A12345678', team_id: 'TACME',
       });
       const timestamp = String(Math.floor(NOW / 1_000));
-      await recordPendingSlackChallenge(settings, await config.getSlackIdentity(slackIdentity.id), {
+      await recordPendingSlackChallenge(settings, {
         rawBody, timestamp,
         signature: `v0=${createHmac('sha256', signingSecret)
           .update(`v0:${timestamp}:${rawBody}`).digest('hex')}`,

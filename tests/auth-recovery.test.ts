@@ -5,11 +5,11 @@ import { createBetterAuthRuntimeRoutes } from '../src/auth/better-auth-runtime.t
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
-import { promoteSlackCredentialBundle, stageSlackCredentialBundle } from '../src/slack/identity-credentials.ts';
-import { buildSlackAppManifest, slackManifestFingerprint } from '../src/slack/identity-manifest.ts';
+import { promoteSlackCredentialBundle, stageSlackCredentialBundle } from '../src/slack/installation-credentials.ts';
+import { buildSlackAppManifest, slackManifestFingerprint } from '../src/slack/app-manifest.ts';
 import { REQUIRED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 
 test('recovery-only health gate admits no normal session or Slack auth route', async () => {
@@ -35,20 +35,20 @@ test('hidden recovery route mints only an operational repair session and keeps n
   const credentials = { state: identity, keyring: generateCredentialKeyring('key_v1') };
   const token = 'a'.repeat(64);
   try {
-    const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: 'https://app.example' });
+    const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: 'https://app.example' });
     const appRevision = await stageSlackCredentialBundle(credentials, {
-      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      identityClass: 'workspace_default', purpose: 'app_credentials', expectedActiveRevision: null,
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+      identityClass: 'workspace_installation', purpose: 'app_credentials', expectedActiveRevision: null,
       appId: 'A12345678', manifestFingerprint: slackManifestFingerprint(manifest),
       secrets: { clientId: '123.456', clientSecret: 'client-secret', signingSecret: 'signing-secret' },
     });
     await promoteSlackCredentialBundle(credentials, {
-      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
       candidateRevision: appRevision.revision, expectedActiveRevision: null,
     });
     const connected = await stageSlackCredentialBundle(credentials, {
-      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      identityClass: 'workspace_default', purpose: 'connected_credentials',
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+      identityClass: 'workspace_installation', purpose: 'connected_credentials',
       expectedActiveRevision: appRevision.revision, appId: 'A12345678', teamId: 'TACME', botUserId: 'UBOT',
       grantedScopes: [...REQUIRED_SLACK_BOT_SCOPES], manifestFingerprint: slackManifestFingerprint(manifest),
       secrets: {
@@ -56,7 +56,7 @@ test('hidden recovery route mints only an operational repair session and keeps n
       },
     });
     await promoteSlackCredentialBundle(credentials, {
-      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
       candidateRevision: connected.revision, expectedActiveRevision: appRevision.revision,
     });
     const control = await identity.ensureAuthControl({ healthGate: 'recovery_only' });

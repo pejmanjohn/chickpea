@@ -31,16 +31,16 @@ import type {
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { slackThreadKey } from './thread-key.ts';
 import {
-  cacheSlackIdentityExecutionContexts,
-  effectiveTurnSlackIdentityId,
-  normalizeSlackIdentityExecutionError,
-  resolveSlackIdentityExecutionContext,
-  verifySlackIdentityTurnAccess,
-  type SlackIdentityAccessVerifier,
-  type SlackIdentityExecutionContext,
-  type SlackIdentityExecutionResolver,
-} from './identity-execution.ts';
-import { recordSlackIdentityUnavailable } from './identity-observability.ts';
+  cacheSlackInstallationExecutionContexts,
+  effectiveTurnSlackInstallationId,
+  normalizeSlackInstallationExecutionError,
+  resolveSlackInstallationExecutionContext,
+  verifySlackInstallationTurnAccess,
+  type SlackInstallationAccessVerifier,
+  type SlackInstallationExecutionContext,
+  type SlackInstallationExecutionResolver,
+} from './installation-execution.ts';
+import { recordSlackInstallationUnavailable } from './installation-observability.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
 import type { SlackContinuityNoticeProgress } from '../config/state-rpc.ts';
@@ -100,8 +100,8 @@ export interface LedgerSlackRunHandlerOptions {
   work: WorkStore;
   turns: LedgerSlackTurnStore;
   client?: WebClient;
-  resolveIdentity?: SlackIdentityExecutionResolver;
-  verifyIdentityAccess?: SlackIdentityAccessVerifier;
+  resolveInstallation?: SlackInstallationExecutionResolver;
+  verifyInstallationAccess?: SlackInstallationAccessVerifier;
   platformEnv?: PlatformEnv;
   settingsStore?: SettingsStore;
   usageStore?: UsageStore;
@@ -120,16 +120,16 @@ export function createLedgerSlackRunHandler(
 ): (claim: InteractiveRunClaim) => Promise<RunDriverHandlerResult> {
   const now = options.now ?? Date.now;
   const executeTurn = options.executeTurn ?? runTurn;
-  const shouldResolveIdentity = Boolean(options.resolveIdentity) ||
+  const shouldResolveIdentity = Boolean(options.resolveInstallation) ||
     (!options.client && !options.executeTurn);
-  const resolveIdentity = options.resolveIdentity ??
-    ((identityId: string) => resolveSlackIdentityExecutionContext(
-      identityId,
+  const resolveInstallation = options.resolveInstallation ??
+    ((workspaceId: string) => resolveSlackInstallationExecutionContext(
+      workspaceId,
       options.platformEnv,
       { ...(options.settingsStore ? { settings: options.settingsStore } : {}) },
     ));
-  const verifyIdentityAccess = options.verifyIdentityAccess ?? verifySlackIdentityTurnAccess;
-  const identityFor = cacheSlackIdentityExecutionContexts(resolveIdentity);
+  const verifyInstallationAccess = options.verifyInstallationAccess ?? verifySlackInstallationTurnAccess;
+  const installationFor = cacheSlackInstallationExecutionContexts(resolveInstallation);
   return async (claim) => {
     const job = await options.turns.getPendingByRunId(claim.run.id);
     if (!job || job.executionAuthority !== 'ledger') {
@@ -144,38 +144,38 @@ export function createLedgerSlackRunHandler(
     if (!job.turn.interactionIntent && job.progress.interactionIntent) {
       job.turn.interactionIntent = job.progress.interactionIntent;
     }
-    let identityContext: SlackIdentityExecutionContext | undefined;
+    let installationContext: SlackInstallationExecutionContext | undefined;
     if (shouldResolveIdentity) {
       try {
-        const identityId = effectiveTurnSlackIdentityId(job.turn);
-        identityContext = await identityFor(identityId);
-        await verifyIdentityAccess(identityContext, job.turn);
+        const workspaceId = effectiveTurnSlackInstallationId(job.turn);
+        installationContext = await installationFor(workspaceId);
+        await verifyInstallationAccess(installationContext, job.turn);
       } catch (error) {
-        const unavailable = normalizeSlackIdentityExecutionError(
+        const unavailable = normalizeSlackInstallationExecutionError(
           error,
-          effectiveTurnSlackIdentityId(job.turn),
+          effectiveTurnSlackInstallationId(job.turn),
         );
-        recordSlackIdentityUnavailable(unavailable);
+        recordSlackInstallationUnavailable(unavailable);
         if (unavailable.retryable) {
           return {
             kind: 'requeue',
-            reasonCode: 'slack_identity_temporarily_unavailable',
+            reasonCode: 'slack_installation_temporarily_unavailable',
             ...(unavailable.retryAfterMs === undefined
               ? {}
               : { retryAfterMs: unavailable.retryAfterMs }),
           };
         }
-        await options.turns.markRecoveryRequired(job.id, 'slack_identity_unavailable');
+        await options.turns.markRecoveryRequired(job.id, 'slack_installation_unavailable');
         await clearActiveWork(options, job);
-        return { kind: 'recovery_required', reasonCode: 'slack_identity_unavailable' };
+        return { kind: 'recovery_required', reasonCode: 'slack_installation_unavailable' };
       }
     }
     await options.turns.recordAttempt(job.id, attempt);
-    const client = identityContext?.client ?? options.client;
+    const client = installationContext?.client ?? options.client;
     if (!client) {
-      await options.turns.markRecoveryRequired(job.id, 'slack_identity_unavailable');
+      await options.turns.markRecoveryRequired(job.id, 'slack_installation_unavailable');
       await clearActiveWork(options, job);
-      return { kind: 'recovery_required', reasonCode: 'slack_identity_unavailable' };
+      return { kind: 'recovery_required', reasonCode: 'slack_installation_unavailable' };
     }
     if (claim.phase === 'delivery') {
       return deliverPersistedResponse(options, claim, job, client, attempt, now);
@@ -191,7 +191,7 @@ export function createLedgerSlackRunHandler(
     try {
       await executeTurn(job.turn, job.assignment, options.platformEnv, {
         client,
-        ...(identityContext ? { identityContext } : {}),
+        ...(installationContext ? { installationContext } : {}),
         turnId: job.id,
         usageExecutionId: `exec:${job.id}:flue`,
         runId: claim.run.id,

@@ -29,7 +29,7 @@ export async function createManagementAdapterFixture(suffix: string) {
     betterAuthUserId: `ba_user_${suffix}_admin`,
     betterAuthMembershipId: `ba_member_${suffix}_admin`,
   });
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const service = new WorkspaceManagementService({
     identity,

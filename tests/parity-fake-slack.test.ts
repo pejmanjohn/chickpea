@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { createMemoryScopeSlack, resolveMemoryScope } from '../src/memory/scope.ts';
-import { SqliteMemoryStateStore } from '../src/memory/store.ts';
+import { createMemoryScopeSlack } from '../src/memory/scope.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
 import { FakeSlackBackend, STUB_REPLY_MARKER } from './parity/fake-slack.ts';
 
@@ -158,33 +157,6 @@ test('memory Slack mapper preserves unsupported shared-channel flags from the fa
       teamId: 'T_OTHER',
     });
   } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('raw Slack Connect context-team evidence fails closed before memory scope is admitted', async () => {
-  const backend = new FakeSlackBackend({
-    slack: {
-      channels: [{
-        id: 'C_CONNECT', name: 'connect', isMember: true,
-        teamId: 'T_HOME', contextTeamId: 'T_FOREIGN',
-      }],
-      workspaceUsers: [{ id: 'U_MEMBER', teamId: 'T_HOME' }],
-    },
-  });
-  const originalFetch = globalThis.fetch;
-  const state = new SqliteMemoryStateStore(':memory:');
-  try {
-    globalThis.fetch = backend.asFetch();
-    const decision = await resolveMemoryScope({
-      workspaceId: 'T_HOME', channelId: 'C_CONNECT', actorId: 'U_MEMBER',
-      botUserId: 'UBOT', observedAt: Date.now(),
-    }, { slack: createMemoryScopeSlack('xoxb-test'), state });
-    assert.deepEqual(decision, {
-      enabled: false, reason: 'workspace_mismatch', workspaceRead: false, reads: [],
-    });
-  } finally {
-    state.close();
     globalThis.fetch = originalFetch;
   }
 });

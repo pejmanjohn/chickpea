@@ -205,20 +205,19 @@ test('a plain_text final with a footer keeps its content literal (not markdown-p
   assert.equal(footer?.type, 'context');
 });
 
-test('Channel onboarding discloses mention guarantee, ambient judgment, bounded retention, and Configure', () => {
+test('Channel onboarding explains explicit Agent routing, owned threads, and Configure', () => {
   const linked = renderChannelOnboarding({
     botUserId: 'UBOT',
     channelId: 'C_ENG',
     publicUrl: 'https://demo.example',
   });
-  assert.match(linked, /Mention <@UBOT> to guarantee a response\./);
-  assert.match(linked, /join an unmentioned conversation/);
-  assert.match(linked, /does not build a persistent workspace-message index/);
-  assert.match(linked, /human replies continue without another mention/);
-  assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_ENG\|Configure> this Channel's Agent/);
+  assert.match(linked, /Mention an Agent handle or <@UBOT> to start a thread/);
+  assert.match(linked, /never joins unmentioned Channel conversations/);
+  assert.match(linked, /Channel members can continue without repeating the mention/);
+  assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_ENG\|Configure> the Agents available in this Channel/);
 
   const unlinked = renderChannelOnboarding({ botUserId: 'UBOT', channelId: 'C_ENG', publicUrl: undefined });
-  assert.match(unlinked, /(^|\s)Configure this Channel's Agent/);
+  assert.match(unlinked, /(^|\s)Configure the Agents available in this Channel/);
   assert.doesNotMatch(unlinked, /\|Configure>/);
 });
 
@@ -228,16 +227,16 @@ test('unassigned-Channel hint names the bot, explains the silence, and links Con
     channelId: 'C_NEW',
     publicUrl: 'https://demo.example',
   });
-  assert.match(linked, /No Agent is assigned to this Channel yet/);
+  assert.match(linked, /No Agent is available in this Channel yet/);
   assert.match(linked, /<@UBOT> cannot reply here\./);
-  assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_NEW\|Configure> this Channel's Agent/);
+  assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_NEW\|Configure> the Agents available in this Channel/);
 
   const unlinked = renderUnassignedChannelHint({
     botUserId: 'UBOT',
     channelId: 'C_NEW',
     publicUrl: undefined,
   });
-  assert.match(unlinked, /(^|\s)Configure this Channel's Agent/);
+  assert.match(unlinked, /(^|\s)Configure the Agents available in this Channel/);
   assert.doesNotMatch(unlinked, /\|Configure>/);
 });
 
@@ -255,6 +254,14 @@ test('thinking status does not add a redundant loading message', () => {
   assert.deepEqual(slackLoadingMessages({ text: 'is thinking...' }), [
     'is thinking...',
   ]);
+  assert.equal(
+    slackStatusText({ text: 'is thinking...' }, 'Sprout'),
+    'Sprout is thinking...',
+  );
+  assert.deepEqual(
+    slackLoadingMessages({ text: 'is searching the workspace' }, 'Sprout'),
+    ['Sprout is thinking...', 'Sprout is searching the workspace'],
+  );
 });
 
 test('toolStatus hides raw MCP identifiers when no registered activity context is available', () => {

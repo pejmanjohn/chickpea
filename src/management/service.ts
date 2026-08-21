@@ -4,38 +4,26 @@ import {
   AgentExistsError,
   AgentRevisionConflictError,
   AgentStillReferencedError,
-  ChannelAssignmentConflictError,
   ChannelRevisionConflictError,
-  SlackIdentityExistsError,
-  SlackIdentityLifecycleError,
-  SlackIdentityRevisionConflictError,
-  SlackIdentityStillReferencedError,
   UnknownAgentError,
-  UnknownSlackIdentityError,
-  WorkspaceDefaultSlackIdentityProtectedError,
 } from '../config/errors.ts';
-import { generateSlackIdentityIngressKey, type ConfigAgentPatch, type ConfigStore } from '../config/store.ts';
+import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
 import {
+  type AgentChannelGrant,
   type ChannelConfig,
   type CustomAgentConfig,
-  type SlackIdentity,
 } from '../config/types.ts';
-import type { SlackIdentityAuditEventType } from '../audit/types.ts';
 import type { IdentityStore, Membership } from '../identity/types.ts';
-import { ownerMemoryStoreId } from '../memory/ids.ts';
 import type {
-  MemoryOwnerRef,
+  AgentMemory,
   MemoryStateStore,
-  OwnerMemoryEntry,
 } from '../memory/types.ts';
-import { validateMemoryContent } from '../memory/validation.ts';
 import {
   normalizeOneTimeSchedule,
   normalizeRoutineSchedule,
 } from '../routines/schedule.ts';
 import { RoutineService } from '../routines/service.ts';
 import type { RoutineDefinition, RoutineStore } from '../routines/types.ts';
-import { REQUIRED_SLACK_BOT_SCOPES } from '../slack/scopes.ts';
 import type { WorkStore } from '../work/types.ts';
 import {
   canonicalJson,
@@ -105,28 +93,15 @@ export interface WorkspaceManagementServiceInput {
     | 'getChannel'
     | 'putChannel'
     | 'listAgentChannelGrants'
-    | 'putChannelPlacement'
-    | 'getAssignment'
-    | 'listAssignments'
+    | 'putAgentChannelGrant'
+    | 'deleteAgentChannelGrant'
     | 'getAgentReferences'
-    | 'listSlackIdentities'
-    | 'getSlackIdentity'
-    | 'getSlackIdentityReferences'
-    | 'createSlackIdentity'
-    | 'updateSlackIdentity'
-    | 'setSlackIdentityDmBinding'
-    | 'retireSlackIdentity'
-    | 'appendSlackIdentityAudit'
   >;
   management: ManagementStore;
   memory?: Pick<
     MemoryStateStore,
-    | 'getOwner'
-    | 'listOwnerEntries'
-    | 'getOwnerEntry'
-    | 'createOwnerEntry'
-    | 'updateOwnerEntry'
-    | 'forgetOwnerEntry'
+    | 'getAgentMemory'
+    | 'putAgentMemory'
   >;
   routines?: RoutineStore;
   work?: Pick<WorkStore, 'getWork' | 'getBinding'>;
@@ -147,12 +122,6 @@ export interface WorkspaceManagementServiceInput {
   ) => Promise<void>;
   discoverSlackChannels?: (refresh: boolean) => Promise<unknown>;
   testMcpConnection?: (agentId: string, connectionId: string) => Promise<unknown>;
-  countPendingSlackIdentityDeliveries?: (identityId: string) => Promise<number>;
-  clearSlackIdentityCredentials?: (identityId: string) => Promise<void>;
-  cancelSlackIdentitySetup?: (
-    identityId: string,
-    expectedRevision: number,
-  ) => Promise<SlackIdentity>;
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
@@ -213,25 +182,11 @@ export class WorkspaceManagementService {
 
   async inspectMemory(
     context: ApplyWorkspaceChangesInput['context'],
-    ownerRef: MemoryOwnerRef,
+    agentId: string,
   ): Promise<ManagementMemorySnapshot> {
-    const actor = await this.requireLiveActor(context);
-    const owner = await this.requireMemoryOwner(actor, ownerRef);
-    const entries = await this.stores.memory!.listOwnerEntries(ownerRef);
-    return {
-      owner: {
-        workspaceId: owner.workspaceId,
-        ownerKind: owner.ownerKind,
-        ownerId: owner.ownerId,
-        storeId: owner.storeId,
-        lifecycle: owner.lifecycle,
-        resetEpoch: owner.resetEpoch,
-      },
-      entries: entries.map((entry) => ({
-        ...entry,
-        body: entry.status === 'forgotten' ? null : entry.body,
-      })),
-    };
+    await this.requireLiveActor(context);
+    await this.requireAgentMemory(agentId);
+    return this.stores.memory!.getAgentMemory(agentId);
   }
 
   async inspectRoutines(
@@ -466,7 +421,6 @@ export class WorkspaceManagementService {
       await this.assertProposalStillAllowed(actor, existing);
       const reconciled = await this.reconcileConfirmed(existing);
       if (reconciled) {
-        await this.auditConfirmedSlackIdentityMutation(actor, existing, undefined);
         const resumed = await this.resumeConfirmedRequest(actor, input.context, existing, reconciled);
         await this.stores.management.completeProposal(
           existing.proposalId,
@@ -514,12 +468,7 @@ export class WorkspaceManagementService {
       return emitOperationOutcomes(actor.origin.kind, resumed);
     }
 
-    const identityBefore = proposal.operation.kind === 'retire_slack_identity' ||
-        proposal.operation.kind === 'cancel_slack_identity_setup'
-      ? await this.stores.config.getSlackIdentity(proposal.operation.identityId)
-      : undefined;
     const mutation = await this.executeConfirmed(actor, proposal.operation, proposal.proposalId);
-    await this.auditConfirmedSlackIdentityMutation(actor, proposal, identityBefore);
     const result = await this.resultFor(
       proposal.proposalId,
       `confirmation:${proposal.proposalId}`,
@@ -584,25 +533,6 @@ export class WorkspaceManagementService {
       outcomes: resumed.outcomes.map((outcome) =>
         outcome.itemId === confirmedOutcome.itemId ? confirmedOutcome : outcome),
     };
-  }
-
-  private async auditConfirmedSlackIdentityMutation(
-    actor: LiveManagementActor,
-    proposal: ManagementProposalRecord,
-    before: SlackIdentity | undefined,
-  ): Promise<void> {
-    if (proposal.operation.kind !== 'retire_slack_identity' &&
-        proposal.operation.kind !== 'cancel_slack_identity_setup') return;
-    const after = await this.stores.config.getSlackIdentity(proposal.operation.identityId);
-    await this.appendSlackIdentityAudit(
-      actor,
-      proposal.proposalId,
-      proposal.operation.kind === 'retire_slack_identity'
-        ? 'slack_identity.retired'
-        : 'slack_identity.setup_canceled',
-      before ?? after,
-      after,
-    );
   }
 
   async undoWorkspaceChange(input: UndoWorkspaceChangeInput): Promise<ManagementApplyResult> {
@@ -787,31 +717,6 @@ export class WorkspaceManagementService {
           formFields: ['apiKey'],
         },
         scopes: [`models:${request.providerId}`],
-      };
-    }
-
-    if (request.kind === 'slack_identity') {
-      const identity = await this.stores.config.getSlackIdentity(request.identityId);
-      if (identity.kind !== 'dedicated' || identity.lifecycle === 'retired') {
-        throw new ManagementError('invalid_request', 'This Slack identity cannot be connected.');
-      }
-      const replacement = identity.lifecycle === 'connected' || identity.lifecycle === 'degraded';
-      return {
-        action: 'slack_identity',
-        target: {
-          kind: request.kind,
-          provider: 'slack',
-          targetId: `slack_identity:${identity.id}`,
-          targetLabel: identity.observedDisplayName ??
-            identity.setupIntent?.displayName ??
-            identity.setupIntent?.appName ??
-            'Slack identity',
-          expectedRevision: identity.connectionRevision,
-          identityId: identity.id,
-          replacement,
-          formFields: ['botToken', 'signingSecret'],
-        },
-        scopes: [...REQUIRED_SLACK_BOT_SCOPES],
       };
     }
 
@@ -1046,26 +951,13 @@ export class WorkspaceManagementService {
     };
   }
 
-  private async requireMemoryOwner(
-    actor: LiveManagementActor,
-    ownerRef: MemoryOwnerRef,
-    writable = false,
-  ) {
+  private async requireAgentMemory(agentId: string): Promise<AgentMemory> {
     if (!this.stores.memory) {
       throw new ManagementError('invalid_request', 'Memory management is unavailable.');
     }
-    const organization = await this.stores.identity.getOrganization();
-    if (!organization || organization.id !== actor.organizationId ||
-        organization.slackTeamId !== ownerRef.workspaceId) {
-      throw new ManagementError('invalid_request', 'The memory owner was not found.');
-    }
-    const owner = await this.stores.memory.getOwner(ownerMemoryStoreId(ownerRef));
-    if (!owner || owner.workspaceId !== ownerRef.workspaceId ||
-        owner.ownerKind !== ownerRef.ownerKind || owner.ownerId !== ownerRef.ownerId ||
-        (writable && owner.lifecycle !== 'active')) {
-      throw new ManagementError('invalid_request', 'The memory owner was not found.');
-    }
-    return owner;
+    const agent = await optionalAgent(this.stores.config, agentId);
+    if (!agent) throw new ManagementError('invalid_request', 'The Agent was not found.');
+    return this.stores.memory.getAgentMemory(agentId);
   }
 
   private async requireWorkspaceScope(
@@ -1116,21 +1008,6 @@ export class WorkspaceManagementService {
     }
   }
 
-  private async requireMemoryEntry(
-    actor: LiveManagementActor,
-    ownerRef: MemoryOwnerRef,
-    entryId: string,
-    writable = false,
-  ): Promise<OwnerMemoryEntry> {
-    const owner = await this.requireMemoryOwner(actor, ownerRef, writable);
-    const entry = await this.stores.memory!.getOwnerEntry(entryId);
-    if (!entry || entry.storeId !== owner.storeId || entry.workspaceId !== owner.workspaceId ||
-        entry.ownerKind !== owner.ownerKind || entry.ownerId !== owner.ownerId) {
-      throw new ManagementError('invalid_request', 'The memory entry was not found.');
-    }
-    return entry;
-  }
-
   private async resultFor(
     operationId: string,
     idempotencyKey: string,
@@ -1151,10 +1028,9 @@ export class WorkspaceManagementService {
   }
 
   private async effectiveRevision(): Promise<string> {
-    const [agents, channels, slackIdentities] = await Promise.all([
+    const [agents, channels] = await Promise.all([
       this.stores.config.listAgents(),
       this.stores.config.listChannels(),
-      this.stores.config.listSlackIdentities(),
     ]);
     return effectiveConfigurationRevision([
       ...agents.map(({ id, revision }) => ({ kind: 'agent' as const, id, revision })),
@@ -1162,11 +1038,6 @@ export class WorkspaceManagementService {
         kind: 'channel' as const,
         id: channelKey(workspaceId, channelId),
         revision: revision ?? 1,
-      })),
-      ...slackIdentities.map(({ id, connectionRevision }) => ({
-        kind: 'slack_identity' as const,
-        id,
-        revision: connectionRevision,
       })),
     ]);
   }
@@ -1178,14 +1049,10 @@ export class WorkspaceManagementService {
     clientRefs: Map<string, string>,
   ) {
     if (operation.kind === 'update_member') return { actor, operation };
-    if (operation.kind === 'create_memory_entry') {
-      await this.requireMemoryOwner(actor, operation.owner, true);
-      return { actor, operation };
-    }
-    if (operation.kind === 'update_memory_entry' || operation.kind === 'forget_memory_entry') {
-      const entry = await this.requireMemoryEntry(actor, operation.owner, operation.entryId, true);
-      if (entry.version !== operation.expectedVersion || entry.status === 'forgotten') {
-        throw new ManagementError('revision_conflict', 'The memory entry changed.');
+    if (operation.kind === 'update_agent_memory') {
+      const memory = await this.requireAgentMemory(operation.agentId);
+      if (memory.revision !== operation.expectedRevision) {
+        throw new ManagementError('revision_conflict', 'The Agent memory changed.');
       }
       return { actor, operation };
     }
@@ -1201,22 +1068,6 @@ export class WorkspaceManagementService {
       }
       if (source !== 'stored') {
         throw new ManagementError('invalid_request', 'No stored provider credential is available to remove.');
-      }
-      return { actor, operation };
-    }
-    if (operation.kind === 'create_slack_identity') {
-      const dmAgent = await this.stores.config.getAgent(operation.initialDmAgentId);
-      if (!dmAgent.enabled) {
-        throw new ManagementError('invalid_request', 'Choose an enabled Agent to handle DMs.');
-      }
-      return { actor, operation };
-    }
-    if (operation.kind === 'set_slack_identity_dms' ||
-        operation.kind === 'retire_slack_identity' ||
-        operation.kind === 'cancel_slack_identity_setup') {
-      const identity = await this.stores.config.getSlackIdentity(operation.identityId);
-      if (identity.connectionRevision !== operation.expectedRevision) {
-        throw new ManagementError('revision_conflict', 'The Slack identity changed.');
       }
       return { actor, operation };
     }
@@ -1258,7 +1109,7 @@ export class WorkspaceManagementService {
         ...(currentChannelLifecycle ? { currentChannelLifecycle } : {}),
       };
     }
-    if (operation.kind === 'place_agent') {
+    if (operation.kind === 'grant_agent_channel') {
       const initialAgentBundle = Boolean(operation.agentClientRef &&
         clientRefs.has(operation.agentClientRef) &&
         requestOperations.some((candidate) =>
@@ -1310,48 +1161,19 @@ export class WorkspaceManagementService {
   }
 
   private async executeMemoryMutation(
-    actor: LiveManagementActor,
-    mutationId: string,
-    operation: Extract<ManagementOperation, {
-      kind: 'create_memory_entry' | 'update_memory_entry';
-    }>,
+    operation: Extract<ManagementOperation, { kind: 'update_agent_memory' }>,
   ): Promise<ImmediateMutation> {
     try {
-      if (operation.kind === 'create_memory_entry') {
-        const owner = await this.requireMemoryOwner(actor, operation.owner, true);
-        const content = validateMemoryContent(operation.entry);
-        const idempotencyKey = `management:memory:create:${mutationId}:${operation.itemId}`;
-        const entryId = `mem_${createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32)}`;
-        const entry = await this.stores.memory!.createOwnerEntry({
-          entryId,
-          storeId: owner.storeId,
-          workspaceId: owner.workspaceId,
-          slug: operation.entry.slug,
-          slugSeed: operation.entry.slug,
-          ...content,
-          actorId: actor.userId,
-          actorClass: 'operator',
-          writeOrigin: actor.origin.kind === 'slack'
-            ? { kind: 'slack_channel', channelId: actor.origin.channelId }
-            : { kind: 'admin' },
-          idempotencyKey,
-        });
-        return memoryMutation(entry);
-      }
-      await this.requireMemoryEntry(actor, operation.owner, operation.entryId, true);
-      const content = validateMemoryContent(operation);
-      const entry = await this.stores.memory!.updateOwnerEntry({
-        entryId: operation.entryId,
-        expectedVersion: operation.expectedVersion,
-        ...content,
-        actorId: actor.userId,
-        actorClass: 'operator',
-        idempotencyKey: `management:memory:update:${mutationId}:${operation.itemId}`,
+      await this.requireAgentMemory(operation.agentId);
+      const memory = await this.stores.memory!.putAgentMemory({
+        agentId: operation.agentId,
+        expectedRevision: operation.expectedRevision,
+        body: operation.body,
       });
-      return memoryMutation(entry);
+      return memoryMutation(memory);
     } catch (error) {
       if (error instanceof ManagementError) throw error;
-      throw new ManagementError('revision_conflict', 'The memory mutation could not be applied.');
+      throw new ManagementError('revision_conflict', 'The Agent memory changed.');
     }
   }
 
@@ -1442,70 +1264,7 @@ export class WorkspaceManagementService {
       );
     }
     const reconciled = await this.reconcilePrepared(prepared);
-    const mutation = reconciled ?? await this.executeImmediate(actor, requestId, operation, prepared);
-    await this.auditProgressiveSlackIdentityMutation(
-      actor,
-      requestId,
-      operation,
-      prepared,
-    );
-    return mutation;
-  }
-
-  private async auditProgressiveSlackIdentityMutation(
-    actor: LiveManagementActor,
-    requestId: string,
-    operation: ManagementOperation,
-    prepared: ManagementPreparedItem,
-  ): Promise<void> {
-    if (operation.kind !== 'create_slack_identity' &&
-        operation.kind !== 'set_slack_identity_dms') return;
-    const after = await this.stores.config.getSlackIdentity(operation.identityId);
-    const before = operation.kind === 'set_slack_identity_dms' && prepared.before
-      ? prepared.before as SlackIdentity
-      : after;
-    await this.appendSlackIdentityAudit(
-      actor,
-      requestId,
-      operation.kind === 'create_slack_identity'
-        ? 'slack_identity.setup_started'
-        : 'slack_identity.dm_binding_changed',
-      before,
-      after,
-    );
-  }
-
-  private async appendSlackIdentityAudit(
-    actor: LiveManagementActor,
-    requestId: string,
-    eventType: SlackIdentityAuditEventType,
-    before: SlackIdentity,
-    after: SlackIdentity,
-  ): Promise<void> {
-    const operation = eventType.slice('slack_identity.'.length);
-    await this.stores.config.appendSlackIdentityAudit({
-      eventId: `audit_${createHash('sha256')
-        .update(`${requestId}:${after.id}:${operation}:${after.connectionRevision}`)
-        .digest('hex')
-        .slice(0, 32)}`,
-      domain: 'slack_identity',
-      eventType,
-      outcome: 'success',
-      actorClass: 'chickpea_user',
-      actorId: actor.userId,
-      workspaceId: after.teamId ?? before.teamId ?? null,
-      subjectId: after.id,
-      subjectVersion: after.connectionRevision,
-      createdAt: this.now(),
-      metadataJson: JSON.stringify({
-        operation,
-        priorLifecycle: before.lifecycle,
-        newLifecycle: after.lifecycle,
-        requestId,
-      }),
-      idempotencyKey:
-        `slack_identity:${after.id}:${operation}:${after.connectionRevision}:${requestId}:success`,
-    });
+    return reconciled ?? await this.executeImmediate(actor, requestId, operation, prepared);
   }
 
   private async prepareItem(operation: ManagementOperation): Promise<ManagementPreparedItem> {
@@ -1522,36 +1281,6 @@ export class WorkspaceManagementService {
             agentId: operation.agent.id,
             expectedRevision: 1,
           },
-        };
-      }
-      case 'create_slack_identity': {
-        const dmAgent = await this.stores.config.getAgent(operation.initialDmAgentId);
-        if (!dmAgent.enabled) {
-          throw new ManagementError('invalid_request', 'Choose an enabled Agent to handle DMs.');
-        }
-        const at = this.now();
-        return {
-          itemId: operation.itemId,
-          operation,
-          intendedAfter: {
-            id: operation.identityId,
-            ingressKey: generateSlackIdentityIngressKey(),
-            kind: 'dedicated',
-            lifecycle: 'setup_incomplete',
-            dmState: 'on',
-            dmAgentId: dmAgent.id,
-            credentialProvenance: 'none',
-            connectionRevision: 0,
-            health: 'unknown',
-            createdAt: at,
-            updatedAt: at,
-            setupIntent: {
-              appName: operation.appName,
-              displayName: operation.displayName,
-              sourceAgentId: dmAgent.id,
-              sourceAgentSlackIdentityId: null,
-            },
-          } satisfies SlackIdentity,
         };
       }
       case 'update_agent': {
@@ -1596,67 +1325,80 @@ export class WorkspaceManagementService {
           } : {}),
         };
       }
-      case 'place_agent': {
-        const [beforeChannel, assignment] = await Promise.all([
+      case 'grant_agent_channel': {
+        const [beforeChannel, grants] = await Promise.all([
           this.stores.config.getChannel(operation.workspaceId, operation.channelId),
-          this.stores.config.getAssignment(operation.workspaceId, operation.channelId),
+          this.stores.config.listAgentChannelGrants(operation.workspaceId, operation.channelId),
         ]);
         if (!beforeChannel) {
           throw new ManagementError('revision_conflict', 'The Channel does not exist.');
         }
-        requireExpectedRevision(operation.expectedRevision, beforeChannel.revision ?? 1);
-        if ((assignment?.agentId ?? null) !== operation.expectedAgentId) {
-          throw new ChannelAssignmentConflictError(
-            operation.workspaceId,
-            operation.channelId,
-            operation.expectedAgentId,
-            assignment?.agentId ?? null,
-          );
-        }
+        const current = grants.find((grant) => grant.agentId === operation.agentId);
+        requireExpectedRevision(operation.expectedRevision, current?.revision ?? 0);
         const intendedAfter = {
-          channel: { ...beforeChannel, revision: (beforeChannel.revision ?? 1) + 1 },
-          agentId: operation.agentId ?? null,
+          workspaceId: operation.workspaceId,
+          channelId: operation.channelId,
+          agentId: operation.agentId!,
+          revision: (current?.revision ?? 0) + 1,
+          status: 'active' as const,
         };
         return {
           itemId: operation.itemId,
           operation,
-          before: { channel: beforeChannel, agentId: assignment?.agentId ?? null },
+          ...(current ? { before: current } : {}),
           intendedAfter,
           inverse: {
             itemId: `undo_${operation.itemId}`,
-            kind: 'place_agent',
+            kind: current ? 'grant_agent_channel' : 'revoke_agent_channel',
             workspaceId: operation.workspaceId,
             channelId: operation.channelId,
-            expectedRevision: intendedAfter.channel.revision,
-            expectedAgentId: intendedAfter.agentId,
-            agentId: assignment?.agentId ?? null,
+            agentId: operation.agentId!,
+            expectedRevision: intendedAfter.revision,
+          } satisfies ManagementOperation,
+        };
+      }
+      case 'revoke_agent_channel': {
+        const current = (await this.stores.config.listAgentChannelGrants(
+          operation.workspaceId,
+          operation.channelId,
+        )).find((grant) => grant.agentId === operation.agentId);
+        if (!current) throw new ManagementError('revision_conflict', 'The Channel grant does not exist.');
+        requireExpectedRevision(operation.expectedRevision, current.revision);
+        return {
+          itemId: operation.itemId,
+          operation,
+          before: current,
+          intendedAfter: null,
+          inverse: {
+            itemId: `undo_${operation.itemId}`,
+            kind: 'grant_agent_channel',
+            workspaceId: operation.workspaceId,
+            channelId: operation.channelId,
+            agentId: operation.agentId,
+            expectedRevision: 0,
           },
         };
       }
-      case 'set_slack_identity_dms': {
-        const before = await this.stores.config.getSlackIdentity(operation.identityId);
-        requireExpectedRevision(operation.expectedRevision, before.connectionRevision);
+      case 'update_agent_memory': {
+        const before = await this.requireAgentMemory(operation.agentId);
+        requireExpectedRevision(operation.expectedRevision, before.revision);
+        const intendedAfter = {
+          agentId: operation.agentId,
+          body: operation.body,
+          revision: before.revision + 1,
+        };
         return {
           itemId: operation.itemId,
           operation,
           before,
-          intendedAfter: {
-            ...before,
-            dmState: operation.dmState,
-            ...(operation.dmAgentId ? { dmAgentId: operation.dmAgentId } : {}),
-            ...(!operation.dmAgentId ? { dmAgentId: undefined } : {}),
-            connectionRevision: before.connectionRevision + 1,
+          intendedAfter,
+          inverse: {
+            itemId: `undo_${operation.itemId}`,
+            kind: 'update_agent_memory',
+            agentId: operation.agentId,
+            expectedRevision: intendedAfter.revision,
+            body: before.body,
           },
-          ...(before.dmState !== 'needs_setup' ? {
-            inverse: {
-              itemId: `undo_${operation.itemId}`,
-              kind: 'set_slack_identity_dms',
-              identityId: before.id,
-              expectedRevision: before.connectionRevision + 1,
-              dmState: before.dmState,
-              ...(before.dmAgentId ? { dmAgentId: before.dmAgentId } : {}),
-            } satisfies ManagementOperation,
-          } : {}),
         };
       }
       default:
@@ -1690,35 +1432,36 @@ export class WorkspaceManagementService {
         );
         return mutationForChannel(channel, prepared.inverse);
       }
-      case 'place_agent': {
-        const current = await this.stores.config.getChannel(operation.workspaceId, operation.channelId);
-        if (!current) throw new ManagementError('revision_conflict', 'The Channel does not exist.');
-        const placed = await this.stores.config.putChannelPlacement({
-          channel: current,
-          agentId: operation.agentId ?? null,
-          expectedAgentId: operation.expectedAgentId,
-          expectedRevision: operation.expectedRevision,
-        });
-        return mutationForChannel(placed.channel, prepared.inverse);
+      case 'grant_agent_channel': {
+        const channel = await this.stores.config.getChannel(operation.workspaceId, operation.channelId);
+        if (!channel) throw new ManagementError('revision_conflict', 'The Channel does not exist.');
+        const grant = await this.stores.config.putAgentChannelGrant({
+          workspaceId: operation.workspaceId,
+          channelId: operation.channelId,
+          agentId: operation.agentId!,
+          status: 'active',
+          createdByMembershipId: actor.membershipId,
+          ...(channel.label ? { channelLabel: channel.label } : {}),
+        }, operation.expectedRevision);
+        return mutationForGrant(grant, prepared.inverse);
       }
-      case 'create_slack_identity': {
-        const identity = await this.stores.config.createSlackIdentity(
-          prepared.intendedAfter as SlackIdentity,
+      case 'revoke_agent_channel': {
+        const current = (await this.stores.config.listAgentChannelGrants(
+          operation.workspaceId,
+          operation.channelId,
+        )).find((grant) => grant.agentId === operation.agentId);
+        if (!current || current.revision !== operation.expectedRevision) {
+          throw new ManagementError('revision_conflict', 'The Channel grant changed.');
+        }
+        await this.stores.config.deleteAgentChannelGrant(
+          operation.workspaceId,
+          operation.channelId,
+          operation.agentId,
         );
-        return mutationForSlackIdentity(identity);
+        return mutationForGrant(current, prepared.inverse, true);
       }
-      case 'set_slack_identity_dms': {
-        const identity = await this.stores.config.setSlackIdentityDmBinding(
-          operation.identityId,
-          operation.expectedRevision,
-          operation.dmState,
-          operation.dmAgentId,
-        );
-        return mutationForSlackIdentity(identity, prepared.inverse);
-      }
-      case 'create_memory_entry':
-      case 'update_memory_entry':
-        return this.executeMemoryMutation(actor, mutationId, operation);
+      case 'update_agent_memory':
+        return this.executeMemoryMutation(operation);
       case 'save_routine':
       case 'control_routine':
         return this.executeRoutineMutation(actor, mutationId, operation);
@@ -1738,13 +1481,6 @@ export class WorkspaceManagementService {
       }
       return undefined;
     }
-    if (operation.kind === 'create_slack_identity') {
-      const identity = await optionalSlackIdentity(this.stores.config, operation.identityId);
-      if (identity && canonicalJson(identity) === canonicalJson(prepared.intendedAfter)) {
-        return mutationForSlackIdentity(identity);
-      }
-      return undefined;
-    }
     if (operation.kind === 'put_channel') {
       const current = await this.stores.config.getChannel(
         operation.channel.workspaceId,
@@ -1755,23 +1491,30 @@ export class WorkspaceManagementService {
       }
       return undefined;
     }
-    if (operation.kind === 'place_agent') {
-      const [channel, assignment] = await Promise.all([
-        this.stores.config.getChannel(operation.workspaceId, operation.channelId),
-        this.stores.config.getAssignment(operation.workspaceId, operation.channelId),
-      ]);
-      const intended = prepared.intendedAfter as { channel: ChannelConfig; agentId: string | null };
-      if (channel && canonicalJson(channel) === canonicalJson(intended.channel) &&
-          (assignment?.agentId ?? null) === intended.agentId) {
-        return mutationForChannel(channel, prepared.inverse);
+    if (operation.kind === 'update_agent_memory') {
+      const current = await this.requireAgentMemory(operation.agentId);
+      if (canonicalJson(current) === canonicalJson(prepared.intendedAfter)) {
+        return memoryMutation(current, prepared.inverse);
+      }
+      return undefined;
+    }
+    if (operation.kind === 'grant_agent_channel') {
+      const grant = (await this.stores.config.listAgentChannelGrants(
+        operation.workspaceId,
+        operation.channelId,
+      )).find((candidate) => candidate.agentId === operation.agentId);
+      const intended = prepared.intendedAfter as Pick<AgentChannelGrant, 'revision' | 'status'>;
+      if (grant?.revision === intended.revision && grant.status === intended.status) {
+        return mutationForGrant(grant, prepared.inverse);
       }
     }
-    if (operation.kind === 'set_slack_identity_dms') {
-      const identity = await optionalSlackIdentity(this.stores.config, operation.identityId);
-      if (identity && identity.connectionRevision === operation.expectedRevision + 1 &&
-          identity.dmState === operation.dmState &&
-          (identity.dmAgentId ?? undefined) === operation.dmAgentId) {
-        return mutationForSlackIdentity(identity, prepared.inverse);
+    if (operation.kind === 'revoke_agent_channel') {
+      const grant = (await this.stores.config.listAgentChannelGrants(
+        operation.workspaceId,
+        operation.channelId,
+      )).find((candidate) => candidate.agentId === operation.agentId);
+      if (!grant) {
+        return mutationForGrant(prepared.before as AgentChannelGrant, prepared.inverse, true);
       }
     }
     return undefined;
@@ -1784,26 +1527,17 @@ export class WorkspaceManagementService {
   ): Promise<ImmediateMutation> {
     if (operation.kind === 'delete_agent') {
       const references = await this.stores.config.getAgentReferences(operation.agentId);
-      if (references.dmIdentityIds.length || references.identityReferenceIds.length) {
-        throw new AgentStillReferencedError(
-          operation.agentId,
-          [...references.dmIdentityIds, ...references.identityReferenceIds].join(', '),
-        );
-      }
       const changed: ManagementObjectRef[] = [];
-      for (const placement of references.channelAssignments) {
-        const channel = await this.stores.config.getChannel(placement.workspaceId, placement.channelId);
-        if (!channel) throw new ManagementError('proposal_stale', 'A placed Channel changed.');
-        const result = await this.stores.config.putChannelPlacement({
-          channel,
-          agentId: null,
-          expectedAgentId: operation.agentId,
-          expectedRevision: channel.revision ?? 1,
-        });
+      for (const grant of references.channelGrants) {
+        await this.stores.config.deleteAgentChannelGrant(
+          grant.workspaceId,
+          grant.channelId,
+          operation.agentId,
+        );
         changed.push({
-          kind: 'channel',
-          id: channelKey(placement.workspaceId, placement.channelId),
-          revision: result.channel.revision ?? 1,
+          kind: 'channel_grant',
+          id: grantKey(grant.workspaceId, grant.channelId, operation.agentId),
+          revision: 0,
         });
       }
       await this.stores.config.deleteAgent(operation.agentId, operation.expectedRevision);
@@ -1849,57 +1583,6 @@ export class WorkspaceManagementService {
         resultingRevisions: { [`provider:${operation.providerId}`]: providerRevision(source) },
       };
     }
-    if (operation.kind === 'retire_slack_identity') {
-      const before = await this.stores.config.getSlackIdentity(operation.identityId);
-      const pendingDeliveries = await this.stores.countPendingSlackIdentityDeliveries?.(
-        operation.identityId,
-      ) ?? 0;
-      if (pendingDeliveries > 0) {
-        throw new ManagementError('proposal_stale', 'The Slack identity has pending deliveries.');
-      }
-      if (before.credentialProvenance === 'stored' && !this.stores.clearSlackIdentityCredentials) {
-        throw new ManagementError('invalid_request', 'Slack credential retirement is unavailable.');
-      }
-      let retired = await this.stores.config.retireSlackIdentity(
-        operation.identityId,
-        operation.expectedRevision,
-      );
-      if (before.credentialProvenance === 'stored') {
-        await this.stores.clearSlackIdentityCredentials!(operation.identityId);
-        retired = await this.stores.config.updateSlackIdentity(
-          operation.identityId,
-          retired.connectionRevision,
-          { credentialProvenance: 'none' },
-        );
-      }
-      return mutationForSlackIdentity(retired);
-    }
-    if (operation.kind === 'cancel_slack_identity_setup') {
-      if (!this.stores.cancelSlackIdentitySetup) {
-        throw new ManagementError('invalid_request', 'Slack identity setup cancellation is unavailable.');
-      }
-      return mutationForSlackIdentity(await this.stores.cancelSlackIdentitySetup(
-        operation.identityId,
-        operation.expectedRevision,
-      ));
-    }
-    if (operation.kind === 'forget_memory_entry') {
-      await this.requireMemoryEntry(actor, operation.owner, operation.entryId, true);
-      try {
-        const entry = await this.stores.memory!.forgetOwnerEntry({
-          entryId: operation.entryId,
-          expectedVersion: operation.expectedVersion,
-          actorId: actor.userId,
-          actorClass: 'operator',
-          reasonCode: 'admin_delete',
-          idempotencyKey: `management:memory:forget:${proposalId}:${operation.itemId}`,
-        });
-        return memoryMutation(entry);
-      } catch (error) {
-        if (error instanceof ManagementError) throw error;
-        throw new ManagementError('revision_conflict', 'The memory entry changed.');
-      }
-    }
     if (operation.kind === 'delete_routine') {
       await this.requireRoutineMutation(actor, operation);
       const seed = createHash('sha256').update(proposalId).digest('hex');
@@ -1932,28 +1615,18 @@ export class WorkspaceManagementService {
       }
     }
     if (operation.kind === 'update_agent' && operation.patch.enabled === false) {
-      const current = await this.stores.config.getAgent(operation.agentId);
       const references = await this.stores.config.getAgentReferences(operation.agentId);
-      if (current.enabled && (references.dmIdentityIds.length || references.identityReferenceIds.length)) {
-        throw new AgentStillReferencedError(
-          operation.agentId,
-          [...references.dmIdentityIds, ...references.identityReferenceIds].join(', '),
-        );
-      }
       const changed: ManagementObjectRef[] = [];
-      for (const placement of references.channelAssignments) {
-        const channel = await this.stores.config.getChannel(placement.workspaceId, placement.channelId);
-        if (!channel) throw new ManagementError('proposal_stale', 'A placed Channel changed.');
-        const result = await this.stores.config.putChannelPlacement({
-          channel,
-          agentId: null,
-          expectedAgentId: operation.agentId,
-          expectedRevision: channel.revision ?? 1,
-        });
+      for (const grant of references.channelGrants) {
+        await this.stores.config.deleteAgentChannelGrant(
+          grant.workspaceId,
+          grant.channelId,
+          operation.agentId,
+        );
         changed.push({
-          kind: 'channel',
-          id: channelKey(placement.workspaceId, placement.channelId),
-          revision: result.channel.revision ?? 1,
+          kind: 'channel_grant',
+          id: grantKey(grant.workspaceId, grant.channelId, operation.agentId),
+          revision: 0,
         });
       }
       const agent = await this.updateAgent(
@@ -1973,11 +1646,10 @@ export class WorkspaceManagementService {
   }
 
   private async targetRevisions(operation: ManagementOperation): Promise<Record<string, number>> {
-    if (operation.kind === 'create_agent' || operation.kind === 'create_slack_identity') return {};
-    if (operation.kind === 'create_memory_entry') return {};
-    if (operation.kind === 'update_memory_entry' || operation.kind === 'forget_memory_entry') {
-      const entry = await this.stores.memory?.getOwnerEntry(operation.entryId);
-      return { [`memory:${operation.entryId}`]: entry?.version ?? 0 };
+    if (operation.kind === 'create_agent') return {};
+    if (operation.kind === 'update_agent_memory') {
+      const memory = await this.stores.memory?.getAgentMemory(operation.agentId);
+      return { [`memory:${operation.agentId}`]: memory?.revision ?? 0 };
     }
     if (operation.kind === 'save_routine' && !operation.routineId) return {};
     if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
@@ -1993,22 +1665,19 @@ export class WorkspaceManagementService {
       const setup = await this.resolveSetupTarget(operation.target);
       return setup.target.kind === 'provider_credential'
         ? { [setup.target.targetId]: setup.target.expectedRevision }
-        : setup.target.kind === 'slack_identity'
-          ? { [`slack_identity:${setup.target.identityId}`]: setup.target.expectedRevision }
-          : { [`agent:${setup.target.agentId}`]: setup.target.expectedRevision };
-    }
-    if (operation.kind === 'set_slack_identity_dms' ||
-        operation.kind === 'retire_slack_identity' ||
-        operation.kind === 'cancel_slack_identity_setup') {
-      return { [`slack_identity:${operation.identityId}`]: operation.expectedRevision };
+        : { [`agent:${setup.target.agentId}`]: setup.target.expectedRevision };
     }
     if (operation.kind === 'update_agent' || operation.kind === 'delete_agent') {
       const target: Record<string, number> = { [`agent:${operation.agentId}`]: operation.expectedRevision };
       if (operation.kind === 'delete_agent' || operation.patch.enabled === false) {
         const references = await this.stores.config.getAgentReferences(operation.agentId);
-        for (const placement of references.channelAssignments) {
-          const channel = await this.stores.config.getChannel(placement.workspaceId, placement.channelId);
-          target[`channel:${channelKey(placement.workspaceId, placement.channelId)}`] = channel?.revision ?? 0;
+        for (const grant of references.channelGrants) {
+          const current = (await this.stores.config.listAgentChannelGrants(
+            grant.workspaceId,
+            grant.channelId,
+          )).find((candidate) => candidate.agentId === operation.agentId);
+          target[`channel_grant:${grantKey(grant.workspaceId, grant.channelId, operation.agentId)}`] =
+            current?.revision ?? 0;
         }
       }
       return target;
@@ -2016,8 +1685,14 @@ export class WorkspaceManagementService {
     if (operation.kind === 'put_channel') {
       return { [`channel:${channelKey(operation.channel.workspaceId, operation.channel.channelId)}`]: operation.expectedRevision };
     }
-    if (operation.kind === 'place_agent') {
-      return { [`channel:${channelKey(operation.workspaceId, operation.channelId)}`]: operation.expectedRevision };
+    if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
+      return {
+        [`channel_grant:${grantKey(
+          operation.workspaceId,
+          operation.channelId,
+          operation.agentId!,
+        )}`]: operation.expectedRevision,
+      };
     }
     const membership = await this.stores.identity.getMembership(operation.membershipId);
     return {
@@ -2029,14 +1704,19 @@ export class WorkspaceManagementService {
     await this.assertRevisionMap(proposal.targetRevisions);
     if (proposal.operation.kind === 'delete_agent' ||
         (proposal.operation.kind === 'update_agent' && proposal.operation.patch.enabled === false)) {
-      const references = await this.stores.config.getAgentReferences(proposal.operation.agentId);
+      const agentId = proposal.operation.agentId;
+      const references = await this.stores.config.getAgentReferences(agentId);
       const expectedChannelKeys = Object.keys(proposal.targetRevisions)
-        .filter((key) => key.startsWith('channel:')).sort();
-      const actualChannelKeys = references.channelAssignments
-        .map((placement) => `channel:${channelKey(placement.workspaceId, placement.channelId)}`)
+        .filter((key) => key.startsWith('channel_grant:')).sort();
+      const actualChannelKeys = references.channelGrants
+        .map((grant) => `channel_grant:${grantKey(
+          grant.workspaceId,
+          grant.channelId,
+          agentId,
+        )}`)
         .sort();
       if (canonicalJson(expectedChannelKeys) !== canonicalJson(actualChannelKeys)) {
-        throw new ManagementError('proposal_stale', 'The Agent placements changed.');
+        throw new ManagementError('proposal_stale', 'The Agent Channel grants changed.');
       }
     }
   }
@@ -2058,6 +1738,11 @@ export class WorkspaceManagementService {
       const [workspaceId, channelId] = parseChannelKey(key.slice('channel:'.length));
       return (await this.stores.config.getChannel(workspaceId, channelId))?.revision ?? 0;
     }
+    if (key.startsWith('channel_grant:')) {
+      const [workspaceId, channelId, agentId] = parseGrantKey(key.slice('channel_grant:'.length));
+      return (await this.stores.config.listAgentChannelGrants(workspaceId, channelId))
+        .find((grant) => grant.agentId === agentId)?.revision ?? 0;
+    }
     if (key.startsWith('membership:')) {
       const membership = await this.stores.identity.getMembership(key.slice('membership:'.length));
       return membership ? membershipRevision(membership) : 0;
@@ -2069,14 +1754,8 @@ export class WorkspaceManagementService {
       }
       return this.providerRevision(providerId as ManagedProviderId);
     }
-    if (key.startsWith('slack_identity:')) {
-      return (await optionalSlackIdentity(
-        this.stores.config,
-        key.slice('slack_identity:'.length),
-      ))?.connectionRevision ?? 0;
-    }
     if (key.startsWith('memory:')) {
-      return (await this.stores.memory?.getOwnerEntry(key.slice('memory:'.length)))?.version ?? 0;
+      return (await this.stores.memory?.getAgentMemory(key.slice('memory:'.length)))?.revision ?? 0;
     }
     if (key.startsWith('routine:')) {
       return (await this.stores.routines?.getRoutine(key.slice('routine:'.length)))?.version ?? 0;
@@ -2127,31 +1806,6 @@ export class WorkspaceManagementService {
       const source = await this.stores.providerCredentialSource?.(operation.providerId) ?? 'missing';
       if (source === 'missing') {
         changed = [{ kind: 'provider', id: operation.providerId, revision: providerRevision(source) }];
-      }
-    } else if (operation.kind === 'retire_slack_identity') {
-      const identity = await optionalSlackIdentity(this.stores.config, operation.identityId);
-      if (identity?.lifecycle === 'retired' && identity.credentialProvenance !== 'stored') {
-        changed = [{
-          kind: 'slack_identity',
-          id: identity.id,
-          revision: identity.connectionRevision,
-        }];
-      }
-    } else if (operation.kind === 'cancel_slack_identity_setup') {
-      const identity = await optionalSlackIdentity(this.stores.config, operation.identityId);
-      if (identity?.lifecycle === 'setup_incomplete' &&
-          identity.credentialProvenance === 'none' &&
-          identity.connectionRevision > operation.expectedRevision) {
-        changed = [{
-          kind: 'slack_identity',
-          id: identity.id,
-          revision: identity.connectionRevision,
-        }];
-      }
-    } else if (operation.kind === 'forget_memory_entry') {
-      const entry = await this.stores.memory?.getOwnerEntry(operation.entryId);
-      if (entry?.status === 'forgotten') {
-        changed = [{ kind: 'memory', id: entry.entryId, revision: entry.version }];
       }
     } else if (operation.kind === 'delete_routine') {
       const routine = await this.stores.routines?.getRoutine(operation.routineId);
@@ -2213,7 +1867,7 @@ function resolveClientReferences(
   operation: ManagementOperation,
   clientRefs: Map<string, string>,
 ): ManagementOperation {
-  if (operation.kind === 'place_agent' && operation.agentClientRef) {
+  if (operation.kind === 'grant_agent_channel' && operation.agentClientRef) {
     const agentId = clientRefs.get(operation.agentClientRef);
     if (!agentId) throw new ManagementError('invalid_request', 'The Agent clientRef was not found.');
     return { ...operation, agentId };
@@ -2270,23 +1924,6 @@ function mutationForAgent(
   };
 }
 
-function mutationForSlackIdentity(
-  identity: SlackIdentity,
-  inverse?: ManagementOperation,
-): ImmediateMutation {
-  return {
-    changed: [{
-      kind: 'slack_identity',
-      id: identity.id,
-      revision: identity.connectionRevision,
-    }],
-    resultingRevisions: {
-      [`slack_identity:${identity.id}`]: identity.connectionRevision,
-    },
-    ...(inverse ? { inverse } : {}),
-  };
-}
-
 function mutationForChannel(
   channel: ChannelConfig,
   inverse?: ManagementOperation,
@@ -2301,6 +1938,20 @@ function mutationForChannel(
   };
 }
 
+function mutationForGrant(
+  grant: AgentChannelGrant,
+  inverse?: ManagementOperation,
+  deleted = false,
+): ImmediateMutation {
+  const id = grantKey(grant.workspaceId, grant.channelId, grant.agentId);
+  const revision = deleted ? 0 : grant.revision;
+  return {
+    changed: [{ kind: 'channel_grant', id, revision }],
+    ...(inverse ? { inverse } : {}),
+    resultingRevisions: { [`channel_grant:${id}`]: revision },
+  };
+}
+
 async function optionalAgent(
   config: Pick<ConfigStore, 'getAgent'>,
   agentId: string,
@@ -2309,18 +1960,6 @@ async function optionalAgent(
     return await config.getAgent(agentId);
   } catch (error) {
     if (error instanceof UnknownAgentError) return undefined;
-    throw error;
-  }
-}
-
-async function optionalSlackIdentity(
-  config: Pick<ConfigStore, 'getSlackIdentity'>,
-  identityId: string,
-): Promise<SlackIdentity | undefined> {
-  try {
-    return await config.getSlackIdentity(identityId);
-  } catch (error) {
-    if (error instanceof UnknownSlackIdentityError) return undefined;
     throw error;
   }
 }
@@ -2399,30 +2038,21 @@ function proposalSummary(operation: ManagementOperation, reason: string): string
     ? operation.membershipId
     : operation.kind === 'remove_provider_credential'
       ? `provider:${operation.providerId}`
-    : operation.kind === 'create_slack_identity' ||
-        operation.kind === 'set_slack_identity_dms' ||
-        operation.kind === 'retire_slack_identity' ||
-        operation.kind === 'cancel_slack_identity_setup'
-      ? operation.identityId
-    : operation.kind === 'create_memory_entry'
-      ? `memory-owner:${operation.owner.ownerKind}:${operation.owner.ownerId}`
-    : operation.kind === 'update_memory_entry' || operation.kind === 'forget_memory_entry'
-      ? `memory:${operation.entryId}`
+    : operation.kind === 'update_agent_memory'
+      ? `memory:${operation.agentId}`
     : operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
         operation.kind === 'delete_routine'
       ? `routine:${operation.routineId ?? operation.channelId}`
     : operation.kind === 'put_channel'
       ? channelKey(operation.channel.workspaceId, operation.channel.channelId)
-      : operation.kind === 'place_agent'
-        ? channelKey(operation.workspaceId, operation.channelId)
+      : operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel'
+        ? grantKey(operation.workspaceId, operation.channelId, operation.agentId!)
         : operation.kind === 'create_agent'
           ? operation.agent.id
           : operation.kind === 'request_setup'
             ? operation.target.kind === 'provider_credential'
               ? `provider:${operation.target.providerId}`
-              : operation.target.kind === 'slack_identity'
-                ? operation.target.identityId
-                : operation.target.agentId ?? operation.target.agentClientRef ?? 'agent'
+              : operation.target.agentId ?? operation.target.agentClientRef ?? 'agent'
             : operation.agentId;
   return `${reason}:${operation.kind}:${target}`;
 }
@@ -2443,10 +2073,11 @@ function providerRevision(source: ManagedProviderSource): number {
   return 0;
 }
 
-function memoryMutation(entry: OwnerMemoryEntry): ImmediateMutation {
+function memoryMutation(memory: AgentMemory, inverse?: ManagementOperation): ImmediateMutation {
   return {
-    changed: [{ kind: 'memory', id: entry.entryId, revision: entry.version }],
-    resultingRevisions: { [`memory:${entry.entryId}`]: entry.version },
+    changed: [{ kind: 'memory', id: memory.agentId, revision: memory.revision }],
+    ...(inverse ? { inverse } : {}),
+    resultingRevisions: { [`memory:${memory.agentId}`]: memory.revision },
   };
 }
 
@@ -2512,6 +2143,18 @@ function channelKey(workspaceId: string, channelId: string): string {
   return `${workspaceId}/${channelId}`;
 }
 
+function grantKey(workspaceId: string, channelId: string, agentId: string): string {
+  return `${workspaceId}/${channelId}/${agentId}`;
+}
+
+function parseGrantKey(key: string): [string, string, string] {
+  const parts = key.split('/');
+  if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
+    throw new ManagementError('invalid_request', 'Invalid Channel grant revision target.');
+  }
+  return parts as [string, string, string];
+}
+
 function parseChannelKey(key: string): [string, string] {
   const separator = key.indexOf('/');
   if (separator <= 0 || separator === key.length - 1) {
@@ -2539,28 +2182,16 @@ function isExpectedMutationError(error: unknown): boolean {
     error instanceof AgentExistsError ||
     error instanceof AgentRevisionConflictError ||
     error instanceof ChannelRevisionConflictError ||
-    error instanceof ChannelAssignmentConflictError ||
-    error instanceof AgentStillReferencedError ||
-    error instanceof UnknownSlackIdentityError ||
-    error instanceof SlackIdentityExistsError ||
-    error instanceof SlackIdentityRevisionConflictError ||
-    error instanceof SlackIdentityStillReferencedError ||
-    error instanceof SlackIdentityLifecycleError ||
-    error instanceof WorkspaceDefaultSlackIdentityProtectedError;
+    error instanceof AgentStillReferencedError;
 }
 
 function mutationErrorCode(error: unknown): string {
   if (error instanceof ManagementError) return error.code;
-  if (error instanceof AgentRevisionConflictError || error instanceof ChannelRevisionConflictError ||
-      error instanceof ChannelAssignmentConflictError) return 'revision_conflict';
+  if (error instanceof AgentRevisionConflictError || error instanceof ChannelRevisionConflictError) {
+    return 'revision_conflict';
+  }
   if (error instanceof UnknownAgentError) return 'not_found';
   if (error instanceof AgentExistsError) return 'already_exists';
   if (error instanceof AgentStillReferencedError) return 'still_referenced';
-  if (error instanceof SlackIdentityRevisionConflictError) return 'revision_conflict';
-  if (error instanceof UnknownSlackIdentityError) return 'not_found';
-  if (error instanceof SlackIdentityExistsError) return 'already_exists';
-  if (error instanceof SlackIdentityStillReferencedError) return 'still_referenced';
-  if (error instanceof SlackIdentityLifecycleError ||
-      error instanceof WorkspaceDefaultSlackIdentityProtectedError) return 'invalid_state';
   return 'mutation_failed';
 }

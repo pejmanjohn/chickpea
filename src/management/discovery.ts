@@ -5,10 +5,10 @@ import { discoverMcpTools } from '../config/mcp-test.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { listSlackChannels } from '../slack/channels.ts';
-import { resolveSlackIdentityCredentials } from '../slack/identity-credentials.ts';
+import { resolveSlackInstallationCredentials } from '../slack/installation-credentials.ts';
 import { ManagementError } from './types.ts';
 
 export async function discoverManagedSlackChannels(
@@ -71,8 +71,8 @@ export async function testManagedMcpConnection(input: {
 
 async function managedSlackCredentials(env: PlatformEnv | undefined, identity: IdentityStore) {
   try {
-    return await resolveSlackIdentityCredentials(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    return await resolveSlackInstallationCredentials(
+      WORKSPACE_SLACK_INSTALLATION_ID,
       env,
       { state: identity, ...(env ? { env } : {}) },
     );

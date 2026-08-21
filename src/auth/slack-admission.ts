@@ -1,6 +1,6 @@
 import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
 
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import type {
   AuthOperation,
   IdentityStore,
@@ -11,7 +11,7 @@ import { IdentityStateError } from '../identity/errors.ts';
 import {
   resolveSlackControlPlaneAppCredentials,
   type SlackCredentialDependencies,
-} from '../slack/identity-credentials.ts';
+} from '../slack/installation-credentials.ts';
 import { safeSetupDestination, safeSlackLoginDestination } from './setup-handoff.ts';
 import {
   createBetterAuth,
@@ -66,6 +66,16 @@ export interface SlackAdmissionCallbackResult {
 export type SlackInteractionMemberResult =
   | { outcome: 'provisioned' | 'active' | 'deactivated'; resolution: Awaited<ReturnType<IdentityStore['resolveSlackIdentity']>> }
   | { outcome: 'conversational_only' | 'denied'; resolution?: undefined };
+
+/** Guests may converse through an explicit Channel grant, but a deactivated
+ * full member must not regain Agent use merely because Slack still delivers
+ * their Channel message. */
+export function slackInteractionMayUseGrantedChannel(
+  result: SlackInteractionMemberResult,
+): boolean {
+  return result.outcome === 'provisioned' || result.outcome === 'active' ||
+    result.outcome === 'conversational_only';
+}
 
 /** Provision product authority from Slack truth without making email an identity key. */
 export async function provisionSlackInteractionMember(input: {
@@ -702,7 +712,7 @@ export class SlackAdmissionService {
       }
       const credentials = await resolveSlackControlPlaneAppCredentials(
         this.dependencies.credentials,
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        WORKSPACE_SLACK_INSTALLATION_ID,
       );
       if (!credentials.teamId) throw new Error();
       return credentials;

@@ -9,7 +9,7 @@ import {
   RoutineRuntimeError,
 } from '../src/routines/runtime.ts';
 import type { RoutineDefinition, RoutineRun } from '../src/routines/types.ts';
-import { SlackIdentityUnavailableError } from '../src/slack/identity-execution.ts';
+import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
 
 const config: EffectiveSlackConfig = {
   workspaceId: 'T_TEST',
@@ -97,42 +97,44 @@ test('runtime access resolves current channel membership and hashes only non-sec
 });
 
 test('runtime access resolves the one workspace Slack installation', async () => {
-  const identityIds: string[] = [];
+  const workspaceIds: string[] = [];
+  const client = {} as WebClient;
   const dedicatedConfig = { ...config };
   const access = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
     config: async () => dedicatedConfig,
-    identityCredentials: async (identityId: string) => {
-      identityIds.push(identityId);
+    installationExecution: async (workspaceId: string) => {
+      workspaceIds.push(workspaceId);
       return {
+        workspaceId,
+        transportMode: 'direct',
         botToken: 'xoxb-finance',
-        signingSecret: undefined,
         botUserId: 'UBOT',
-        connectionRevision: 'rev-finance',
+        client,
       };
     },
   }));
   const changed = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
     config: async () => ({ ...dedicatedConfig }),
-    identityCredentials: async () => ({
-      botToken: 'xoxb-legal', signingSecret: undefined, botUserId: 'UBOT',
-      connectionRevision: 'rev-legal',
+    installationExecution: async (workspaceId: string) => ({
+      workspaceId,
+      transportMode: 'direct',
+      botToken: 'xoxb-legal', botUserId: 'UBOT', client,
     }),
   }));
 
-  assert.deepEqual(identityIds, ['slack_identity_default']);
-  assert.equal(access.slackIdentityId, 'slack_identity_default');
+  assert.deepEqual(workspaceIds, ['T_TEST']);
   assert.equal(access.botToken, 'xoxb-finance');
   assert.equal(access.accessHash, changed.accessHash);
 });
 
-test('production routine access shares the lifecycle-gated identity client', async () => {
+test('production routine access shares the lifecycle-gated installation client', async () => {
   const client = {} as WebClient;
   const access = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
-    identityExecution: async (identityId: string) => ({
-      identityId,
+    installationExecution: async (workspaceId: string) => ({
+      workspaceId,
+      transportMode: 'direct',
       botToken: 'xoxb-current-finance',
       botUserId: 'UBOT',
-      teamId: 'T_TEST',
       client,
     }),
   }));
@@ -141,13 +143,45 @@ test('production routine access shares the lifecycle-gated identity client', asy
 
   await assert.rejects(
     () => resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
-      identityExecution: async () => {
-        throw new SlackIdentityUnavailableError('slack_identity_default', 'identity_retired');
+      installationExecution: async () => {
+        throw new SlackInstallationUnavailableError('T_TEST', 'installation_revoked');
       },
     })),
     (error: unknown) => error instanceof RoutineRuntimeError &&
       error.failureClass === 'credential_unavailable',
   );
+});
+
+test('shared-gateway routine access needs no local Slack token', async () => {
+  const client = {
+    conversations: {
+      info: async () => ({
+        ok: true,
+        channel: {
+          id: 'C_TEST', name: 'test', team_id: 'T_TEST', is_member: true,
+          is_private: false, is_archived: false, is_frozen: false,
+          is_shared: false, is_ext_shared: false, is_org_shared: false,
+          is_pending_ext_shared: false, is_im: false, is_mpim: false,
+        },
+      }),
+      members: async () => ({
+        ok: true,
+        members: ['U_CREATOR', 'UBOT'],
+        response_metadata: { next_cursor: '' },
+      }),
+    },
+  } as unknown as WebClient;
+  const access = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
+    installationExecution: async (workspaceId: string) => ({
+      workspaceId,
+      transportMode: 'gateway',
+      botUserId: 'UBOT',
+      client,
+    }),
+  }));
+  assert.equal(access.botToken, undefined);
+  assert.equal(access.client, client);
+  assert.equal(access.botUserId, 'UBOT');
 });
 
 test('runtime access fails closed for creator removal, bot removal, and assignment removal', async () => {

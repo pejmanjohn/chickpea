@@ -23,9 +23,6 @@ const SHARED_BOT_EVENTS = Object.freeze([
 const CONTROL_PLANE_EVENTS = Object.freeze([
   ...SHARED_BOT_EVENTS, 'app_uninstalled', 'tokens_revoked', 'user_change',
 ] as const);
-const DEDICATED_BOT_EVENTS = Object.freeze([
-  ...SHARED_BOT_EVENTS, 'app_uninstalled', 'tokens_revoked',
-] as const);
 
 export interface SlackAppManifest {
   display_information: { name: string; description: string; background_color: string };
@@ -55,38 +52,15 @@ export interface SlackAppManifest {
   };
 }
 
-export type SlackAppManifestIntent =
-  | { kind: 'control_plane'; origin: string; appName?: string; botDisplayName?: string }
-  | {
-      kind: 'dedicated_bot';
-      appName: string;
-      botDisplayName: string;
-      requestUrl: string;
-    };
-
-export interface SlackIdentityManifestIntent {
-  appName: string;
-  botDisplayName: string;
-  requestUrl: string;
+export interface SlackAppManifestIntent {
+  kind: 'workspace_app';
+  origin: string;
+  appName?: string;
+  botDisplayName?: string;
 }
-export type SlackIdentityManifest = SlackAppManifest;
 
-/** Sole typed builder for both the control-plane app and dedicated bot apps. */
+/** Sole typed builder for the one native Slack app installed per workspace. */
 export function buildSlackAppManifest(intent: SlackAppManifestIntent): SlackAppManifest {
-  if (intent.kind === 'dedicated_bot') {
-    return manifestCore({
-      appName: requiredName(intent.appName, 'Slack app name', SLACK_APP_NAME_MAX_LENGTH),
-      botDisplayName: requiredName(
-        intent.botDisplayName, 'Slack bot display name', SLACK_BOT_DISPLAY_NAME_MAX_LENGTH,
-      ),
-      description: 'A dedicated Chickpea identity for Slack.',
-      requestUrl: safeHttpsUrl(intent.requestUrl, 'Slack Request URL'),
-      interactionUrl: dedicatedInteractionUrl(intent.requestUrl),
-      botEvents: [...DEDICATED_BOT_EVENTS],
-      includeOidc: false,
-    });
-  }
-
   const origin = safeOrigin(intent.origin);
   return manifestCore({
     appName: requiredName(
@@ -109,16 +83,8 @@ export function buildSlackAppManifest(intent: SlackAppManifestIntent): SlackAppM
   });
 }
 
-/** Backwards-compatible name for existing dedicated-identity callers. */
-export function buildSlackIdentityManifest(
-  _source: unknown,
-  intent: SlackIdentityManifestIntent,
-): SlackIdentityManifest {
-  return buildSlackAppManifest({ kind: 'dedicated_bot', ...intent });
-}
-
 export function canonicalSlackAppManifest(): SlackAppManifest {
-  return buildSlackAppManifest({ kind: 'control_plane', origin: SLACK_REFERENCE_ORIGIN });
+  return buildSlackAppManifest({ kind: 'workspace_app', origin: SLACK_REFERENCE_ORIGIN });
 }
 
 export function canonicalSlackAppManifestJson(): string {
@@ -246,16 +212,6 @@ function manifestContract(value: unknown): unknown {
     interactivityUrl: stringValue(interactivity.request_url),
     pkceEnabled: oauth.pkce_enabled ?? null,
   };
-}
-
-function dedicatedInteractionUrl(eventsUrl: string): string {
-  const parsed = new URL(safeHttpsUrl(eventsUrl, 'Slack Request URL'));
-  parsed.pathname = parsed.pathname.endsWith('/events')
-    ? `${parsed.pathname.slice(0, -'/events'.length)}/interactions`
-    : `${parsed.pathname.replace(/\/+$/, '')}/interactions`;
-  parsed.search = '';
-  parsed.hash = '';
-  return parsed.toString();
 }
 
 function record(value: unknown): Record<string, unknown> {

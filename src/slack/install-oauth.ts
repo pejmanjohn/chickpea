@@ -2,22 +2,22 @@ import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
 
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import { safeSetupDestination } from '../auth/setup-handoff.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import type { IdentityStore, SlackOAuthAttempt, SlackSetupTransaction } from '../identity/types.ts';
 import {
-  invalidateSlackIdentityCredentialCache,
+  invalidateSlackInstallationCredentialCache,
   prepareSlackCredentialBundle,
   resolveSlackControlPlaneAppCredentials,
   type SlackCredentialDependencies,
-} from './identity-credentials.ts';
+} from './installation-credentials.ts';
 import {
-  SlackIdentityBootstrapError,
-  validateSlackIdentityBotInstallation,
-  type SlackIdentityBootstrapDeps,
-} from './identity-bootstrap.ts';
-import { purgePendingSlackChallenge, verifyPendingSlackChallenge } from './identity-handshake.ts';
+  SlackInstallationVerificationError,
+  validateSlackBotInstallation,
+  type SlackInstallationVerificationDeps,
+} from './installation-verification.ts';
+import { purgePendingSlackChallenge, verifyPendingSlackChallenge } from './installation-handshake.ts';
 import {
   missingRequiredSlackBotScopes,
   REQUIRED_SLACK_BOT_SCOPES,
@@ -70,7 +70,7 @@ export interface SlackInstallOAuthDependencies {
   apiBaseUrl?: string;
   now?: () => number;
   randomBytes?: (length: number) => Uint8Array;
-  bootstrap?: SlackIdentityBootstrapDeps;
+  verification?: SlackInstallationVerificationDeps;
 }
 
 export interface SlackInstallOAuthStartInput {
@@ -248,9 +248,7 @@ export class SlackInstallOAuthService {
 
     let validated;
     try {
-      validated = await validateSlackIdentityBotInstallation({
-        config: this.dependencies.config,
-        identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      validated = await validateSlackBotInstallation({
         expectedTeamId: grant.teamId,
         expectedAppId: attempt.appId,
         expectedBotUserId: grant.botUserId,
@@ -258,7 +256,7 @@ export class SlackInstallOAuthService {
         requireScopeEvidence: true,
         requireDirectoryList: true,
         requireChannelList: true,
-      }, this.dependencies.bootstrap);
+      }, this.dependencies.verification);
     } catch (error) {
       await this.failAttempt(attempt, bootstrapResultCode(error));
       throw mapBootstrapError(error);
@@ -270,7 +268,7 @@ export class SlackInstallOAuthService {
     }
 
     const active = await this.dependencies.identity.getActiveSlackCredentialRevision(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      WORKSPACE_SLACK_INSTALLATION_ID,
     );
     if (!active || active.revision !== attempt.baseRevision ||
         active.manifestFingerprint === null) {
@@ -278,8 +276,8 @@ export class SlackInstallOAuthService {
       throw new SlackInstallOAuthError('stale_revision');
     }
     const credential = await prepareSlackCredentialBundle(this.dependencies.credentials, {
-      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      identityClass: 'workspace_default',
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+      identityClass: 'workspace_installation',
       purpose: 'connected_credentials',
       expectedActiveRevision: attempt.baseRevision,
       appId: grant.appId,
@@ -303,14 +301,17 @@ export class SlackInstallOAuthService {
       botUserId: grant.botUserId,
       credential,
     });
-    await this.syncPresentation(waiting, 'credentials_pending', validated.observedAt);
+    await this.syncWorkspaceInstallation(
+      waiting,
+      'needs_attention',
+      'events_verification_pending',
+    );
     return this.finalizeWaitingInstallation(waiting.id);
   }
 
   async finalizeWaitingInstallation(setupId: string): Promise<SlackInstallOAuthResult> {
     const setup = await this.requiredSetup(setupId);
     if (setup.state === 'bot_installed') {
-      await this.syncPresentation(setup, 'connected', this.now());
       await this.syncWorkspaceInstallation(setup);
       return setupResult('bot_installed', setup);
     }
@@ -330,7 +331,6 @@ export class SlackInstallOAuthService {
     if (!proof) {
       const verification = await verifyPendingSlackChallenge(
         this.dependencies.settings,
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
         appCredentials.signingSecret,
         { now: this.now(), expectedAppId: setup.appId, expectedTeamId: setup.slackTeamId },
       );
@@ -345,7 +345,7 @@ export class SlackInstallOAuthService {
       proof = await this.dependencies.identity.recordSlackEventsProof({
         setupId: setup.id,
         candidateRevision: setup.botCredentialRevision,
-        identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        identityId: WORKSPACE_SLACK_INSTALLATION_ID,
         appId: setup.appId,
         teamId: setup.slackTeamId,
         baseRevision: setup.credentialRevision,
@@ -373,15 +373,13 @@ export class SlackInstallOAuthService {
       await this.failWaiting(setup, 'stale_revision');
       throw new SlackInstallOAuthError('stale_revision');
     }
-    invalidateSlackIdentityCredentialCache(this.dependencies.identity);
+    invalidateSlackInstallationCredentialCache(this.dependencies.identity);
     if (purgeReceipt) {
       await purgePendingSlackChallenge(
         this.dependencies.settings,
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
         purgeReceipt,
       );
     }
-    await this.syncPresentation(installed, 'connected', this.now());
     await this.syncWorkspaceInstallation(installed);
     return setupResult('bot_installed', installed);
   }
@@ -487,32 +485,11 @@ export class SlackInstallOAuthService {
     }
   }
 
-  private async syncPresentation(
+  private async syncWorkspaceInstallation(
     setup: SlackSetupTransaction,
-    lifecycle: 'credentials_pending' | 'connected',
-    observedAt: number,
+    health: 'healthy' | 'needs_attention' = 'healthy',
+    healthDetail?: string,
   ): Promise<void> {
-    if (!setup.appId || !setup.slackTeamId || !setup.botUserId) return;
-    const identity = await this.dependencies.config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-    if (identity.lifecycle === lifecycle && identity.appId === setup.appId &&
-        identity.teamId === setup.slackTeamId && identity.botUserId === setup.botUserId) return;
-    await this.dependencies.config.updateSlackIdentity(
-      identity.id,
-      identity.connectionRevision,
-      {
-        lifecycle,
-        appId: setup.appId,
-        teamId: setup.slackTeamId,
-        botUserId: setup.botUserId,
-        credentialProvenance: 'stored',
-        observedAt,
-        health: 'healthy',
-        healthDetail: null,
-      },
-    );
-  }
-
-  private async syncWorkspaceInstallation(setup: SlackSetupTransaction): Promise<void> {
     if (!setup.appId || !setup.slackTeamId || !setup.botUserId) return;
     let installation = await this.dependencies.config.getWorkspaceInstallation(
       setup.slackTeamId,
@@ -531,8 +508,8 @@ export class SlackInstallOAuthService {
       installation.teamId === setup.slackTeamId &&
       installation.appId === setup.appId &&
       installation.botUserId === setup.botUserId &&
-      installation.health === 'healthy' &&
-      installation.healthDetail === undefined
+      installation.health === health &&
+      installation.healthDetail === healthDetail
     ) return;
     await this.dependencies.config.updateWorkspaceInstallation(
       setup.slackTeamId,
@@ -542,8 +519,8 @@ export class SlackInstallOAuthService {
         appId: setup.appId,
         botUserId: setup.botUserId,
         gatewayBindingId: null,
-        health: 'healthy',
-        healthDetail: null,
+        health,
+        healthDetail: healthDetail ?? null,
       },
       installation.revision,
     );
@@ -703,11 +680,11 @@ function isApprovalPending(error: string): boolean {
 }
 
 function bootstrapResultCode(error: unknown): string {
-  return error instanceof SlackIdentityBootstrapError ? error.code : 'bootstrap_failed';
+  return error instanceof SlackInstallationVerificationError ? error.code : 'verification_failed';
 }
 
 function mapBootstrapError(error: unknown): SlackInstallOAuthError {
-  if (!(error instanceof SlackIdentityBootstrapError)) {
+  if (!(error instanceof SlackInstallationVerificationError)) {
     return new SlackInstallOAuthError('invalid_response');
   }
   if (['slack_missing_scopes', 'slack_scope_unverified'].includes(error.code)) {

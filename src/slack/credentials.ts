@@ -7,12 +7,12 @@ import {
 } from '../config/state-backend.ts';
 import { readSlackIdentityProfile } from './identity-profile.ts';
 import {
-  invalidateSlackIdentityCredentialCache,
+  invalidateSlackInstallationCredentialCache,
   readActiveSlackCredentialMetadata,
-  resolveSlackIdentityCredentials,
+  resolveSlackInstallationCredentials,
   type SlackCredentialResolutionDependencies,
-} from './identity-credentials.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
+} from './installation-credentials.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import { parseSlackGrantedScopes } from './scopes.ts';
 
 /**
@@ -94,8 +94,8 @@ export async function resolveSlackCredentials(
   store?: SettingsStore,
   credentialDependencies?: SlackCredentialResolutionDependencies,
 ): Promise<ResolvedSlackCredentials> {
-  const resolved = await resolveSlackIdentityCredentials(
-    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  const resolved = await resolveSlackInstallationCredentials(
+    WORKSPACE_SLACK_INSTALLATION_ID,
     env,
     credentialDependencies ?? store,
   );
@@ -112,8 +112,8 @@ export async function describeSlackCredentialSources(
   store?: SettingsStore,
   credentialDependencies?: SlackCredentialResolutionDependencies,
 ): Promise<SlackCredentialSources> {
-  const resolved = await resolveSlackIdentityCredentials(
-    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  const resolved = await resolveSlackInstallationCredentials(
+    WORKSPACE_SLACK_INSTALLATION_ID,
     env,
     credentialDependencies ?? store,
   );
@@ -137,14 +137,14 @@ export function primeStoredSlackCredentials(
   revision: SlackConnectionRevision = null,
 ): void {
   // Retained only as a source-compatible no-op for pre-U2 test harnesses.
-  // Promotion primes the encrypted revision cache inside identity-credentials.
+  // Promotion primes the encrypted revision cache inside installation-credentials.
   void values;
   void revision;
 }
 
 /** Drop the cached stored triple (tests; never needed in production flow). */
 export function invalidateStoredSlackCredentials(): void {
-  invalidateSlackIdentityCredentialCache();
+  invalidateSlackInstallationCredentialCache();
 }
 
 /** Clone-safe revision value used by connection compare-and-swap writes. */
@@ -152,8 +152,8 @@ export async function readSlackConnectionRevision(
   store: SettingsStore,
   credentialDependencies?: SlackCredentialResolutionDependencies,
 ): Promise<SlackConnectionRevision> {
-  return (await resolveSlackIdentityCredentials(
-    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  return (await resolveSlackInstallationCredentials(
+    WORKSPACE_SLACK_INSTALLATION_ID,
     undefined,
     credentialDependencies ?? store,
   )).connectionRevision;
@@ -997,7 +997,7 @@ export async function readStoredSlackTeamInfo(
   const settings = store ?? getSettingsStore(env);
   const [active, teamName] = await Promise.all([
     readActiveSlackCredentialMetadata(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      WORKSPACE_SLACK_INSTALLATION_ID,
       env,
       credentialDependencies ?? store,
     ),

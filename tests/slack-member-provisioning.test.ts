@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { provisionSlackInteractionMember } from '../src/auth/slack-admission.ts';
+import {
+  provisionSlackInteractionMember,
+  slackInteractionMayUseGrantedChannel,
+} from '../src/auth/slack-admission.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
@@ -27,6 +30,7 @@ test('first eligible Slack interaction provisions one exact active member and re
     assert.equal(first.resolution?.membership.status, 'active');
     assert.equal(first.resolution?.binding.betterAuthUserId, null);
     assert.equal(first.resolution?.user.contactEmail, 'first@example.com');
+    assert.equal(slackInteractionMayUseGrantedChannel(first), true);
 
     const replay = await provisionSlackInteractionMember({
       identity,
@@ -97,6 +101,7 @@ test('Slack activity never reactivates a deactivated member', async () => {
     });
     assert.equal(replay.outcome, 'deactivated');
     assert.equal(replay.resolution?.membership.status, 'removed');
+    assert.equal(slackInteractionMayUseGrantedChannel(replay), false);
   } finally {
     identity.close();
   }
@@ -121,6 +126,7 @@ test('guests and Slack Connect actors stay conversational-only and receive no me
       });
       assert.equal(result.outcome, 'conversational_only');
       assert.equal(result.resolution, undefined);
+      assert.equal(slackInteractionMayUseGrantedChannel(result), true);
     }
     assert.equal((await identity.listMemberships()).length, 1);
   } finally {

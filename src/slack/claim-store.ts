@@ -85,8 +85,6 @@ export interface SlackThreadRegistry {
   start(key: string): Promise<void>;
   /** True if a mention/DM already started this thread. */
   has(key: string): Promise<boolean>;
-  getParticipation(key: string): Promise<'ambient' | 'mention_only'>;
-  setParticipation(key: string, mode: 'ambient' | 'mention_only'): Promise<void>;
   isActiveWork(key: string): Promise<boolean>;
   setActiveWork(key: string, generation: string, active: boolean): Promise<void>;
 }
@@ -103,7 +101,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   ): Promise<SlackAgentBinding>;
   getAgentBinding(continuityKey: string): Promise<SlackAgentBinding | undefined>;
   runtimeDrainCounts(): Promise<SlackRuntimeDrainCounts>;
-  countPendingDeliveriesForSlackIdentity(identityId: string): Promise<number>;
+  countPendingDeliveriesForWorkspace(workspaceId: string): Promise<number>;
   /** Node-only durable legacy relay operations; Cloudflare owns these in its DO alarm. */
   listPendingTurns?(): Promise<PendingTurnJob[]>;
   getPendingTurnByRunId?(runId: string): Promise<PendingTurnJob | undefined>;
@@ -145,7 +143,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   markTurnError?(id: string): Promise<void>;
   markTurnRecoveryRequired?(id: string, reason: string): Promise<void>;
   listTurnRecoveryRequired?(limit?: number): Promise<SlackTurnRecoveryItem[]>;
-  retrySlackIdentityRecovery?(identityId: string): Promise<number>;
+  retrySlackInstallationRecovery?(workspaceId: string): Promise<number>;
   resolveTurnRecoveryRequired?(id: string): Promise<boolean>;
   getRunPresentation?(runId: string): Promise<SlackRunPresentationV1 | undefined>;
   transitionRunPresentation?(
@@ -197,9 +195,6 @@ export class SlackStateLogic {
       'CREATE TABLE IF NOT EXISTS slack_threads (key TEXT PRIMARY KEY, started_at INTEGER NOT NULL)',
     );
     db.exec(
-      "CREATE TABLE IF NOT EXISTS slack_thread_participation (key TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at INTEGER NOT NULL)",
-    );
-    db.exec(
       'CREATE TABLE IF NOT EXISTS slack_active_work (key TEXT NOT NULL, generation TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (key, generation))',
     );
   }
@@ -229,24 +224,6 @@ export class SlackStateLogic {
       this.now() - THREAD_TTL_MS,
     );
     return row !== undefined;
-  }
-
-  getParticipation(key: string): 'ambient' | 'mention_only' {
-    const row = this.db.get(
-      'SELECT mode FROM slack_thread_participation WHERE key = ? AND updated_at >= ?',
-      key,
-      this.now() - THREAD_TTL_MS,
-    );
-    return row?.mode === 'mention_only' ? 'mention_only' : 'ambient';
-  }
-
-  setParticipation(key: string, mode: 'ambient' | 'mention_only'): void {
-    this.db.run(
-      'INSERT OR REPLACE INTO slack_thread_participation (key, mode, updated_at) VALUES (?, ?, ?)',
-      key,
-      mode,
-      this.now(),
-    );
   }
 
   isActiveWork(key: string): boolean {
@@ -359,10 +336,6 @@ export class SlackStateLogic {
     }
     this.db.run('DELETE FROM slack_threads WHERE started_at < ?', this.now() - THREAD_TTL_MS);
     this.db.run(
-      'DELETE FROM slack_thread_participation WHERE updated_at < ?',
-      this.now() - THREAD_TTL_MS,
-    );
-    this.db.run(
       'DELETE FROM slack_active_work WHERE updated_at < ?',
       this.now() - ACTIVE_WORK_TTL_MS,
     );
@@ -408,14 +381,6 @@ export class SqliteSlackStateStore implements SlackStateStore {
     return this.logic.has(key);
   }
 
-  async getParticipation(key: string) {
-    return this.logic.getParticipation(key);
-  }
-
-  async setParticipation(key: string, mode: 'ambient' | 'mention_only') {
-    this.logic.setParticipation(key, mode);
-  }
-
   async isActiveWork(key: string) {
     return this.logic.isActiveWork(key);
   }
@@ -448,8 +413,8 @@ export class SqliteSlackStateStore implements SlackStateStore {
     return this.turnJobs.runtimeDrainCounts();
   }
 
-  async countPendingDeliveriesForSlackIdentity(identityId: string) {
-    return this.turnJobs.countPendingDeliveriesForSlackIdentity(identityId);
+  async countPendingDeliveriesForWorkspace(workspaceId: string) {
+    return this.turnJobs.countPendingDeliveriesForWorkspace(workspaceId);
   }
 
   async listPendingTurns() {
@@ -524,8 +489,8 @@ export class SqliteSlackStateStore implements SlackStateStore {
     return this.turnJobs.listRecoveryRequired(limit);
   }
 
-  async retrySlackIdentityRecovery(identityId: string) {
-    return this.turnJobs.retrySlackIdentityRecovery(identityId);
+  async retrySlackInstallationRecovery(workspaceId: string) {
+    return this.turnJobs.retrySlackInstallationRecovery(workspaceId);
   }
 
   async resolveTurnRecoveryRequired(id: string) {

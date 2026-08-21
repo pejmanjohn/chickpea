@@ -44,7 +44,7 @@ test('fresh Agent platform state designates one normal default Agent', async () 
 });
 
 test('Agent grants are many-to-many and thread routes retain their coordinate', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const store = new SqliteConfigStore(':memory:', { agents: [] });
   try {
     await store.createAgent(agent('agent_support', 'Support'));
     await store.createAgent(agent('agent_sales', 'Sales'));
@@ -125,7 +125,7 @@ test('the designated default Agent cannot be archived without a replacement', as
 });
 
 test('connection accounts bind once and schedule references retain creator authority', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const store = new SqliteConfigStore(':memory:', { agents: [] });
   try {
     await store.createAgent(agent('agent_support', 'Support'));
     const account = await store.putConnectionAccount({

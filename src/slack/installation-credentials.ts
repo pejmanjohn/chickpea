@@ -2,7 +2,7 @@ import * as sqliteIdentityStoreModule from '../identity/store.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import { getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import type {
   IdentityStore,
   SlackCredentialRevision,
@@ -18,7 +18,7 @@ import {
   type SlackSecretEnvelopeContext,
 } from './secret-envelope.ts';
 
-export interface ResolvedSlackIdentityCredentials {
+export interface ResolvedSlackInstallationCredentials {
   botToken: string | undefined;
   signingSecret: string | undefined;
   botUserId: string | undefined;
@@ -46,7 +46,7 @@ export interface ActiveSlackCredentialMetadata {
   manifestFingerprint: string | null;
 }
 
-export interface SlackIdentityCredentialWrite {
+export interface SlackInstallationCredentialWrite {
   botToken: string;
   signingSecret: string;
   botUserId?: string;
@@ -58,36 +58,6 @@ export interface SlackIdentityCredentialWrite {
   /** U3 supplies this pair; without it, the bundle cannot authorize OIDC. */
   clientId?: string;
   clientSecret?: string;
-}
-
-/** Public pending-handshake metadata is the only per-identity settings seam. */
-export function slackIdentityPendingMetadataSettingKey(identityId: string): string {
-  if (!/^[a-z0-9][a-z0-9_-]{0,127}$/.test(identityId) ||
-      identityId === WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) {
-    throw new Error('Invalid dedicated Slack identity id');
-  }
-  return `slack.identity.${identityId}.pendingEnvelope`;
-}
-
-/**
- * @deprecated Compile-only U2 removal marker for pre-U2 tests. The returned
- * object contains only public pending metadata; removed plaintext locators are
- * typed `never` and do not exist at runtime.
- */
-export function slackIdentityCredentialSettingKeys(identityId: string): {
-  pendingEnvelope: string;
-  connectionRevision: never;
-  botToken: never;
-  signingSecret: never;
-  botUserId: never;
-} {
-  return { pendingEnvelope: slackIdentityPendingMetadataSettingKey(identityId) } as {
-    pendingEnvelope: string;
-    connectionRevision: never;
-    botToken: never;
-    signingSecret: never;
-    botUserId: never;
-  };
 }
 
 export interface SlackCredentialDependencies {
@@ -141,10 +111,10 @@ export interface RecoverMissingSlackCredentialBundleInput {
 
 export type StageMissingSlackCredentialBundleInput = RecoverMissingSlackCredentialBundleInput;
 
-export class SlackIdentityCredentialRevisionError extends Error {
-  constructor(readonly identityId: string, message = `Slack identity ${identityId} credentials changed`) {
+export class SlackInstallationCredentialRevisionError extends Error {
+  constructor(readonly identityId: string, message = `Slack installation ${identityId} credentials changed`) {
     super(message);
-    this.name = 'SlackIdentityCredentialRevisionError';
+    this.name = 'SlackInstallationCredentialRevisionError';
   }
 }
 
@@ -193,7 +163,7 @@ export async function prepareSlackCredentialBundle(
     currentKeyId: dependencies.keyring.currentKeyId,
   });
   if (control.currentKeyId !== dependencies.keyring.currentKeyId) {
-    throw new SlackIdentityCredentialRevisionError(
+    throw new SlackInstallationCredentialRevisionError(
       input.identityId,
       'Slack credential encryption epoch changed.',
     );
@@ -231,7 +201,7 @@ export async function promoteSlackCredentialBundle(
     input.candidateRevision,
   );
   if (!candidate?.envelope || candidate.status !== 'candidate') {
-    throw new SlackIdentityCredentialRevisionError(input.identityId);
+    throw new SlackInstallationCredentialRevisionError(input.identityId);
   }
   const secrets = await decryptRevisionOrRecover(dependencies, control.deploymentId, candidate);
   try {
@@ -259,11 +229,11 @@ export async function promoteSlackCredentialBundle(
  * never an execution source; setup must import a complete bundle into this
  * encrypted store before Slack traffic or control-plane auth can use it.
  */
-export async function resolveSlackIdentityCredentials(
+export async function resolveSlackInstallationCredentials(
   identityId: string,
   env?: PlatformEnv,
   explicit?: SettingsStore | SlackCredentialResolutionDependencies,
-): Promise<ResolvedSlackIdentityCredentials> {
+): Promise<ResolvedSlackInstallationCredentials> {
   const state = isStateDependencies(explicit)
     ? explicit.state
     : explicit ? compatibilityDependencies(explicit).state : getIdentityStore(env);
@@ -340,14 +310,12 @@ export async function readActiveSlackCredentialMetadata(
 
 export async function resolveSlackControlPlaneAppCredentials(
   dependencies: SlackCredentialDependencies,
-  identityId = WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  identityId = WORKSPACE_SLACK_INSTALLATION_ID,
 ): Promise<ResolvedSlackControlPlaneAppCredentials> {
-  if (identityId !== WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) {
-    throw new Error('Dedicated Slack identities cannot supply control-plane OIDC credentials.');
-  }
+  if (identityId !== WORKSPACE_SLACK_INSTALLATION_ID) throw new Error('Unknown Slack installation.');
   const control = await requiredCredentialControl(dependencies.state);
   const active = await dependencies.state.getActiveSlackCredentialRevision(identityId);
-  if (!active?.envelope || active.identityClass !== 'workspace_default' ||
+  if (!active?.envelope || active.identityClass !== 'workspace_installation' ||
       !['app_credentials', 'connected_credentials'].includes(active.purpose)) {
     throw new Error('Control-plane Slack app credentials are unavailable.');
   }
@@ -368,20 +336,20 @@ export async function resolveSlackControlPlaneAppCredentials(
 }
 
 /** Revision-fenced replacement retained for existing bot connection callers. */
-export async function writeSlackIdentityCredentials(
+export async function writeSlackInstallationCredentials(
   target: SettingsStore | SlackCredentialDependencies,
   identityId: string,
   expectedRevision: string | null,
-  values: SlackIdentityCredentialWrite,
+  values: SlackInstallationCredentialWrite,
 ): Promise<string> {
+  if (identityId !== WORKSPACE_SLACK_INSTALLATION_ID) throw new Error('Unknown Slack installation.');
   if (!values.botToken.trim() || !values.signingSecret.trim()) {
-    throw new Error('Slack identity bot token and signing secret are required');
+    throw new Error('Slack installation bot token and signing secret are required');
   }
   if ((values.clientId && !values.clientSecret) || (!values.clientId && values.clientSecret)) {
     throw new Error('Slack app client credentials must be supplied as one complete pair');
   }
   const dependencies = isDependencies(target) ? target : compatibilityDependencies(target);
-  const workspaceDefault = identityId === WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
   const secrets = {
     ...(values.clientId ? { clientId: values.clientId, clientSecret: values.clientSecret! } : {}),
     signingSecret: values.signingSecret,
@@ -389,11 +357,11 @@ export async function writeSlackIdentityCredentials(
   };
   const candidate = await stageSlackCredentialBundle(dependencies, {
     identityId,
-    identityClass: workspaceDefault ? 'workspace_default' : 'dedicated_bot',
-    purpose: workspaceDefault ? 'connected_credentials' : 'bot_credentials',
+    identityClass: 'workspace_installation',
+    purpose: 'connected_credentials',
     expectedActiveRevision: expectedRevision,
-    appId: values.appId ?? (workspaceDefault ? 'AWORKSPACEDEFAULT' : syntheticSlackAppId(identityId)),
-    teamId: values.teamId ?? (workspaceDefault ? 'TWORKSPACEDEFAULT' : null),
+    appId: values.appId ?? 'AWORKSPACEDEFAULT',
+    teamId: values.teamId ?? 'TWORKSPACEDEFAULT',
     botUserId: values.botUserId ?? null,
     grantedScopes: values.grantedScopes ?? [],
     validatedAt: values.validatedAt ?? null,
@@ -409,7 +377,7 @@ export async function writeSlackIdentityCredentials(
 }
 
 /** Tombstone and scrub ciphertext; never restore an earlier active revision. */
-export async function clearSlackIdentityCredentials(
+export async function clearSlackInstallationCredentials(
   target: SettingsStore | SlackCredentialDependencies,
   identityId: string,
   expectedRevision: string | null,
@@ -421,7 +389,7 @@ export async function clearSlackIdentityCredentials(
     dependencies.state.getActiveSlackCredentialRevision(identityId),
   ]);
   if ((active?.revision ?? null) !== expectedRevision) {
-    throw new SlackIdentityCredentialRevisionError(identityId);
+    throw new SlackInstallationCredentialRevisionError(identityId);
   }
   if (active && control) {
     try {
@@ -467,8 +435,8 @@ export async function rotateSlackCredentialEncryption(
     });
   } else if (!(control.rotationEpoch === input.expectedEpoch + 1 &&
                control.currentKeyId === dependencies.keyring.currentKeyId)) {
-    throw new SlackIdentityCredentialRevisionError(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    throw new SlackInstallationCredentialRevisionError(
+      WORKSPACE_SLACK_INSTALLATION_ID,
       'Slack credential encryption epoch changed.',
     );
   }
@@ -511,7 +479,7 @@ export async function recoverMissingSlackCredentialBundle(
 ): Promise<SlackCredentialRevision> {
   const candidate = await stageMissingSlackCredentialBundle(dependencies, input);
   const promoted = await promoteSlackCredentialBundle(dependencies, {
-    identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    identityId: WORKSPACE_SLACK_INSTALLATION_ID,
     candidateRevision: candidate.revision,
     expectedActiveRevision: null,
   });
@@ -540,19 +508,19 @@ export async function stageMissingSlackCredentialBundle(
   }
   let control = await requiredCredentialControl(dependencies.state);
   const active = await dependencies.state.getActiveSlackCredentialRevision(
-    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    WORKSPACE_SLACK_INSTALLATION_ID,
   );
   const prior = active?.revision === input.expectedRevision
     ? active
     : await dependencies.state.getSlackCredentialRevision(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        WORKSPACE_SLACK_INSTALLATION_ID,
         input.expectedRevision,
       );
-  if (!prior || prior.identityClass !== 'workspace_default' ||
+  if (!prior || prior.identityClass !== 'workspace_installation' ||
       prior.purpose !== 'connected_credentials' ||
       prior.appId !== input.expectedAppId || prior.teamId !== input.expectedTeamId) {
-    throw new SlackIdentityCredentialRevisionError(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    throw new SlackInstallationCredentialRevisionError(
+      WORKSPACE_SLACK_INSTALLATION_ID,
       'Slack credential recovery must preserve the connected app and workspace.',
     );
   }
@@ -561,27 +529,24 @@ export async function stageMissingSlackCredentialBundle(
   // a new versioned slot so the epoch transition and old-key zero count remain
   // explicit and auditable.
   if (control.currentKeyId === dependencies.keyring.currentKeyId) {
-    throw new SlackIdentityCredentialRevisionError(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    throw new SlackInstallationCredentialRevisionError(
+      WORKSPACE_SLACK_INSTALLATION_ID,
       'Slack credential recovery requires a new encryption key version.',
     );
   }
   if (control.currentKeyId !== dependencies.keyring.currentKeyId) {
     const live = await dependencies.state.listLiveSlackCredentialRevisions();
-    // Lost-root recovery is scoped to the workspace-default realm. A
-    // dedicated live revision may still sit on any prior key after a partially
-    // completed rotation; never mark the deployment healthy while that
-    // isolated identity would remain undecryptable or outside the new root.
+    // This clean-slate store contains only the one workspace installation.
     if (live.some((revision) =>
-      revision.identityId !== WORKSPACE_DEFAULT_SLACK_IDENTITY_ID
+      revision.identityId !== WORKSPACE_SLACK_INSTALLATION_ID
     )) {
-      throw new SlackIdentityCredentialRevisionError(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-        'Restore the prior key before repairing isolated dedicated Slack identities.',
+      throw new SlackInstallationCredentialRevisionError(
+        WORKSPACE_SLACK_INSTALLATION_ID,
+        'Restore the prior key before repairing this Slack installation.',
       );
     }
     for (const revision of live) {
-      if (revision.identityId !== WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) continue;
+      if (revision.identityId !== WORKSPACE_SLACK_INSTALLATION_ID) continue;
       await dependencies.state.tombstoneSlackCredentialRevision({
         identityId: revision.identityId,
         revision: revision.revision,
@@ -595,11 +560,11 @@ export async function stageMissingSlackCredentialBundle(
     });
   }
   if (control.currentKeyId !== dependencies.keyring.currentKeyId) {
-    throw new SlackIdentityCredentialRevisionError(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+    throw new SlackInstallationCredentialRevisionError(WORKSPACE_SLACK_INSTALLATION_ID);
   }
   return stageSlackCredentialBundle(dependencies, {
-    identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-    identityClass: 'workspace_default',
+    identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+    identityClass: 'workspace_installation',
     purpose: 'connected_credentials',
     expectedActiveRevision: null,
     appId: prior.appId,
@@ -612,7 +577,7 @@ export async function stageMissingSlackCredentialBundle(
   });
 }
 
-export function invalidateSlackIdentityCredentialCache(
+export function invalidateSlackInstallationCredentialCache(
   state?: IdentityStore | SettingsStore,
   identityId?: string,
 ): void {
@@ -656,7 +621,7 @@ function isIdentityStore(value: IdentityStore | SettingsStore): value is Identit
   return 'getSlackCredentialControl' in value;
 }
 
-function missingCredentials(): ResolvedSlackIdentityCredentials {
+function missingCredentials(): ResolvedSlackInstallationCredentials {
   return { botToken: undefined, signingSecret: undefined, botUserId: undefined, connectionRevision: null };
 }
 
@@ -681,9 +646,8 @@ function validateBundleShape(
   if (new TextEncoder().encode(JSON.stringify(secrets)).byteLength > 32_768) {
     throw new Error('Slack credential bundle is too large.');
   }
-  const allowed = identityClass === 'dedicated_bot'
-    ? purpose === 'bot_credentials'
-    : purpose === 'app_credentials' || purpose === 'connected_credentials';
+  const allowed = identityClass === 'workspace_installation' &&
+    (purpose === 'app_credentials' || purpose === 'connected_credentials');
   if (!allowed) throw new Error('Slack credential purpose does not match its identity class.');
   const hasApp = names.includes('clientId') && names.includes('clientSecret');
   const partialApp = names.includes('clientId') !== names.includes('clientSecret');
@@ -695,9 +659,6 @@ function validateBundleShape(
   }
   if (purpose !== 'app_credentials' && !names.includes('botToken')) {
     throw new Error('Slack bot credential bundle is incomplete.');
-  }
-  if (identityClass === 'dedicated_bot' && hasApp) {
-    throw new Error('Dedicated Slack identities cannot store control-plane app credentials.');
   }
 }
 
@@ -845,12 +806,12 @@ function credentialEnvelopeContextFingerprint(
 }
 
 function credentialRevisionError(identityId: string, error: unknown): Error {
-  if (error instanceof SlackIdentityCredentialRevisionError) return error;
+  if (error instanceof SlackInstallationCredentialRevisionError) return error;
   const message = error instanceof Error ? error.message : '';
   if (/credential encryption epoch changed/i.test(message)) {
-    return new SlackIdentityCredentialRevisionError(identityId, 'Slack credential encryption epoch changed.');
+    return new SlackInstallationCredentialRevisionError(identityId, 'Slack credential encryption epoch changed.');
   }
-  return new SlackIdentityCredentialRevisionError(identityId);
+  return new SlackInstallationCredentialRevisionError(identityId);
 }
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -861,9 +822,4 @@ function generateCredentialRevision(): string {
   const bytes = new Uint8Array(18);
   globalThis.crypto.getRandomValues(bytes);
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function syntheticSlackAppId(identityId: string): string {
-  const suffix = identityId.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 62);
-  return `A${suffix || 'DEDICATED'}`;
 }

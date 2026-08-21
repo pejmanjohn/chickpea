@@ -8,7 +8,7 @@ import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 function turn(patch: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn {
   return {
     workspaceId: 'T1', channelId: 'C1', eventId: 'Ev1', text: '<!subteam^SSUPPORT|@support> help',
-    userId: 'U1', messageTs: '100.1', threadTs: '100.1', source: 'ambient_channel_message',
+    userId: 'U1', messageTs: '100.1', threadTs: '100.1', source: 'agent_mention',
     channelType: 'channel', contextMode: 'channel_history', ...patch,
   };
 }

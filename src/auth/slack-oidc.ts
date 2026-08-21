@@ -7,13 +7,13 @@ import {
   type JWTVerifyGetKey,
 } from 'jose';
 
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import type { SlackOidcAttempt } from '../identity/types.ts';
 import {
   resolveSlackControlPlaneAppCredentials,
-  resolveSlackIdentityCredentials,
+  resolveSlackInstallationCredentials,
   type SlackCredentialDependencies,
-} from '../slack/identity-credentials.ts';
+} from '../slack/installation-credentials.ts';
 import { classifySlackUserForAdmission } from '../slack/user-classification.ts';
 
 export const SLACK_OIDC_ISSUER = 'https://slack.com';
@@ -127,8 +127,8 @@ export class SlackOidcGateway implements SlackOidcProvider {
     }
     const [appCredentials, botCredentials] = await Promise.all([
       resolveSlackControlPlaneAppCredentials(this.dependencies.credentials),
-      resolveSlackIdentityCredentials(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      resolveSlackInstallationCredentials(
+        WORKSPACE_SLACK_INSTALLATION_ID,
         undefined,
         this.dependencies.credentials,
       ),

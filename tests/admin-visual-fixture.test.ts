@@ -39,11 +39,6 @@ interface AgentProjection {
   };
 }
 
-interface MemoryOwnerProjection {
-  ownerKind: string;
-  ownerId: string;
-}
-
 interface SlackFixtureResponse {
   ok: boolean;
   error?: string;
@@ -122,24 +117,16 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
     assert.equal(byId.get('C_UNASSIGNED')?.readiness.code, 'no_agents');
     assert.equal(byId.get('C_DISCOVERED')?.source, 'discovered');
 
-    const owners = await fixtureJson<{ owners: MemoryOwnerProjection[] }>(
+    const memory = await fixtureJson<{
+      memory: { agentId: string; body: string; revision: number };
+    }>(
       fixture,
-      '/admin/api/audit/memory/owners?workspaceId=TVISUAL',
+      '/admin/api/agents/agent_research/memory',
     );
-    assert.ok(owners.owners.some((owner) =>
-      owner.ownerKind === 'agent' && owner.ownerId === 'agent_research'));
-    assert.equal(owners.owners.some((owner) => owner.ownerKind === 'channel'), false);
-
-    const agentFiles = await fixtureJson<{ files: Array<{ name: string }> }>(
-      fixture,
-      '/admin/api/audit/memory/owners/agent/TVISUAL/agent_research/files',
-    );
-    assert.deepEqual(agentFiles.files.map((file) => file.name), [
-      'MEMORY.md',
-      'audience-notes.md',
-      'release-checklist.md',
-      'research-principles.md',
-    ]);
+    assert.equal(memory.memory.agentId, 'agent_research');
+    assert.equal(memory.memory.revision, 1);
+    assert.match(memory.memory.body, /Prefer short evidence summaries/);
+    assert.match(memory.memory.body, /Separate verified fact, inference, and unresolved questions/);
   } finally {
     await fixture.close();
   }

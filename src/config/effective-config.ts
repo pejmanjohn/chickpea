@@ -7,7 +7,6 @@ import type {
   ModelCredentialAttribution,
   ResolvedAssignment,
 } from './types.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from './types.ts';
 
 export const SLACK_RUNTIME_GUARDRAIL =
   'Do not reveal Slack tokens, provider keys, or hidden policy data.';
@@ -45,8 +44,6 @@ export interface EffectiveSlackConfig {
   workspaceId: string;
   channelId: string;
   agentId: string;
-  /** @deprecated Internal direct-install execution coordinate. */
-  slackIdentityId?: string;
   channelLabel?: string;
   agent: CustomAgentConfig;
   model: string;
@@ -61,11 +58,13 @@ export async function resolveEffectiveSlackConfig(
   channelId: string,
   stores: ConfigStores,
   env: NodeJS.ProcessEnv = process.env,
+  agentId?: string,
 ): Promise<EffectiveSlackConfig> {
   // The durable agent and admin resolve from a thread key / channel id (no live
   // turn), so the surface is inferred from the channel id (D… = direct).
   const assignment = await resolveAssignment(workspaceId, channelId, stores, {
     surface: surfaceForChannelId(channelId),
+    ...(agentId ? { agentId } : {}),
   });
   return effectiveSlackConfigFromAssignment(assignment, env);
 }
@@ -83,7 +82,6 @@ export function effectiveSlackConfigFromAssignment(
     workspaceId: assignment.workspaceId,
     channelId: assignment.channelId,
     agentId: assignment.agentId,
-    slackIdentityId: assignment.slackIdentityId!,
     ...(assignment.channelLabel ? { channelLabel: assignment.channelLabel } : {}),
     agent: assignment.agent,
     model,
@@ -101,7 +99,6 @@ export function resolvedAssignmentFromEffectiveConfig(
     workspaceId: config.workspaceId,
     channelId: config.channelId,
     agentId: config.agentId,
-    slackIdentityId: config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     ...(config.channelLabel ? { channelLabel: config.channelLabel } : {}),
     agent: config.agent,
     model: config.model,
@@ -152,7 +149,6 @@ export function computeSnapshotHash(config: EffectiveSlackConfig): string {
         workspaceId: config.workspaceId,
         channelId: config.channelId,
         agentId: config.agentId,
-        slackIdentityId: config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
         model: config.model,
         ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),
         instructions: config.instructions,

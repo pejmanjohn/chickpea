@@ -1,6 +1,6 @@
 import * as v from 'valibot';
 
-import { MemoryStateError, type MemoryEntryType } from './types.ts';
+import { MemoryStateError } from './types.ts';
 import {
   hasCredentialLikeContent,
   hasDisallowedControlCharacter,
@@ -25,7 +25,7 @@ const MemoryContentSchema = v.object({
 export interface ValidMemoryContent {
   description: string;
   body: string;
-  type: MemoryEntryType;
+  type: typeof MEMORY_ENTRY_TYPES[number];
 }
 
 export function validateMemoryContent(input: unknown): ValidMemoryContent {
@@ -54,6 +54,13 @@ export function validateMemoryContent(input: unknown): ValidMemoryContent {
     );
   }
   return { description, body, type: parsed.output.type };
+}
+
+/** Preserve both parts of the Slack/tool contract without duplicating one-line memories. */
+export function renderMemoryContent(content: Pick<ValidMemoryContent, 'description' | 'body'>): string {
+  return content.description === content.body
+    ? content.body
+    : `${content.description}\n\n${content.body}`;
 }
 
 function assertByteLength(label: string, value: string, maximum: number): void {

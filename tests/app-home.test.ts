@@ -51,9 +51,9 @@ test('only the exact App Home Agent action produces a trusted selection', () => 
   } as never), undefined);
 });
 
-test('App Home starts a base-app thread that separates the handle from the Agent name', () => {
+test('App Home starts a native Agent thread without leaking the routing handle into the message', () => {
   assert.equal(
-    agentAppHomeStarterMessage('Sprout', 'sprout'),
-    'Start a thread with @sprout. Reply in this thread to work with Sprout.',
+    agentAppHomeStarterMessage('Sprout'),
+    'Sprout is ready. Reply in this thread to start.',
   );
 });

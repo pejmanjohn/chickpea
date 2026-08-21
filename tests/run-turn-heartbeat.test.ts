@@ -7,7 +7,6 @@ import { after, before, test } from 'node:test';
 import type { WebClient } from '@slack/web-api';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { SlackInteractionProgressPatch } from '../src/config/state-rpc.ts';
 import {
@@ -69,18 +68,18 @@ let previousStatePath: string | undefined;
 before(async () => {
   previousStatePath = process.env.SLACK_STATE_DB_PATH;
   process.env.SLACK_STATE_DB_PATH = heartbeatStatePath;
-  const store = new SqliteConfigStore(heartbeatStatePath, { agents: [], assignments: [] });
+  const store = new SqliteConfigStore(heartbeatStatePath, { agents: [] });
   await store.createAgent(assignment.agent);
-  const identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-  await store.updateSlackIdentity(identity.id, identity.connectionRevision, {
-    lifecycle: 'connected',
+  const installation = await store.ensureWorkspaceInstallation({
+    workspaceId: assignment.workspaceId,
+    transportMode: 'direct',
+    defaultAgentId: assignment.agentId,
     teamId: assignment.workspaceId,
     botUserId: 'U_CHICKPEA',
-    dmState: 'on',
-    dmAgentId: assignment.agentId,
-    credentialProvenance: 'stored',
-    health: 'healthy',
   });
+  await store.updateWorkspaceInstallation(assignment.workspaceId, {
+    health: 'healthy',
+  }, installation.revision);
   store.close();
 });
 
@@ -340,12 +339,11 @@ test('runTurn resolves the authenticated self-mention placeholder before Slack d
   };
 
   await runTurn(turn, assignment, undefined, {
-    identityContext: {
+    installationContext: {
+      workspaceId: assignment.workspaceId,
       transportMode: 'direct',
-      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
       botToken: 'xoxb-test',
       botUserId: 'U_CHICKPEA',
-      teamId: assignment.workspaceId,
       displayName: 'Chickpea Renamed',
       client,
     },

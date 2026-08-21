@@ -1,15 +1,10 @@
-import { createHash } from 'node:crypto';
-
 import * as v from 'valibot';
 
-import { bindAuthorizedMemoryScope } from './scope.ts';
-import { MemoryService } from './service.ts';
 import {
   MemoryStateError,
-  type MemoryEntryType,
   type MemoryStateStore,
-  type OwnerMemoryEntry,
 } from './types.ts';
+import { renderMemoryContent, validateMemoryContent } from './validation.ts';
 
 const AutonomousMemoryInputSchema = v.strictObject({
   name: v.pipe(v.string(), v.minLength(1), v.maxLength(80)),
@@ -27,7 +22,6 @@ export const AutonomousMemoryResultSchema = v.strictObject({
 
 export type AutonomousMemoryInput = v.InferOutput<typeof AutonomousMemoryInputSchema>;
 export type AutonomousMemoryResult = v.InferOutput<typeof AutonomousMemoryResultSchema>;
-export type AutonomousMemoryTarget = 'agent' | 'channel';
 
 export interface AutonomousMemoryCoordinates {
   surface: 'direct_message' | 'channel_thread';
@@ -45,7 +39,7 @@ interface AutonomousMemoryDependencies {
   id?: (prefix: string) => string;
 }
 
-export function autonomousMemoryInstruction(_target: AutonomousMemoryTarget): string {
+export function autonomousMemoryInstruction(): string {
   const destination = 'Agent memory, which follows this Agent wherever it works';
   return [
     `Use remember_memory to save to ${destination}.`,
@@ -61,7 +55,6 @@ export function autonomousMemoryInstruction(_target: AutonomousMemoryTarget): st
 }
 
 export function createAutonomousAgentMemoryTool(
-  _target: AutonomousMemoryTarget,
   save: (input: AutonomousMemoryInput) => Promise<{ slug: string; version: number }>,
   options: {
     finishDenied?: (result: AutonomousMemoryResult) => void;
@@ -122,48 +115,26 @@ export async function saveAutonomousMemory(
   coordinates: AutonomousMemoryCoordinates,
   input: AutonomousMemoryInput,
   dependencies: AutonomousMemoryDependencies,
-): Promise<{ entry: OwnerMemoryEntry }> {
+): Promise<{ entry: { slug: 'memory'; version: number } }> {
   if (!(await dependencies.authorize(coordinates))) {
     throw new MemoryStateError(
       'memory_actor_forbidden',
       'Only an active workspace member currently permitted to use this Agent can change its memory.',
     );
   }
-  const agentOwner = await dependencies.state.ensureOwner({
-    workspaceId: coordinates.workspaceId,
-    ownerKind: 'agent',
-    ownerId: coordinates.agentId,
+  const validated = validateMemoryContent(input);
+  const current = await dependencies.state.getAgentMemory(coordinates.agentId);
+  const addition = [
+    `## ${input.name.trim()}`,
+    renderMemoryContent(validated),
+  ].join('\n');
+  const body = current.body.trim()
+    ? `${current.body.trim()}\n\n${addition}`
+    : addition;
+  const saved = await dependencies.state.putAgentMemory({
+    agentId: coordinates.agentId,
+    body,
+    expectedRevision: current.revision,
   });
-  const scope = bindAuthorizedMemoryScope({
-    surface: coordinates.surface === 'direct_message' ? 'dm' : 'channel',
-    workspaceId: coordinates.workspaceId,
-    agentOwner,
-    writeOwner: agentOwner,
-  });
-  const digest = createHash('sha256').update(JSON.stringify([
-    coordinates.surface,
-    coordinates.workspaceId,
-    coordinates.channelId,
-    coordinates.messageTs,
-    coordinates.agentId,
-    coordinates.slackUserId,
-  ])).digest('hex');
-  const service = new MemoryService(
-    dependencies.state,
-    dependencies.id ? { id: dependencies.id } : {},
-  );
-  return service.remember({
-    scope,
-    workspaceId: coordinates.workspaceId,
-    actorId: coordinates.slackUserId,
-    actorClass: 'system',
-    eventId: `autonomous_${digest.slice(0, 32)}`,
-    threadTs: coordinates.threadTs,
-    messageTs: coordinates.messageTs,
-    name: input.name,
-    description: input.description,
-    type: input.type as MemoryEntryType,
-    body: input.body,
-    idempotencyKey: `memory:autonomous:${digest}`,
-  });
+  return { entry: { slug: 'memory', version: saved.revision } };
 }

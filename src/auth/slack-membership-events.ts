@@ -1,6 +1,6 @@
 import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
 import type { IdentityStore } from '../identity/types.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import type { SlackUserChangeEvent } from '../slack/types.ts';
 
 const SLACK_ID = /^[A-Z][A-Z0-9]{1,63}$/;
@@ -41,7 +41,7 @@ export async function applySlackUserChange(
     return { outcome: 'ignored' };
   }
   const active = await input.identity.getActiveSlackCredentialRevision(
-    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    WORKSPACE_SLACK_INSTALLATION_ID,
   );
   if (!active || active.status !== 'active' || active.purpose !== 'connected_credentials' ||
       active.revision !== input.credentialRevision || active.appId !== input.apiAppId ||

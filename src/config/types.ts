@@ -100,70 +100,8 @@ export interface RepositoryGrant {
 
 export type OpenAiAuthMethod = 'api_key' | 'subscription';
 
-/** Internal coordinate for the one customer-owned Slack installation. */
-export const WORKSPACE_DEFAULT_SLACK_IDENTITY_ID = 'slack_identity_default';
-
-export type SlackIdentityKind = 'workspace_default' | 'dedicated';
-export type SlackIdentityLifecycle =
-  | 'setup_incomplete'
-  | 'credentials_pending'
-  | 'connected'
-  | 'degraded'
-  | 'retired';
-export type SlackIdentityDmState = 'on' | 'off' | 'needs_setup';
-export type SlackIdentityCredentialProvenance = 'workspace_default' | 'stored' | 'none';
-export type SlackIdentityHealth =
-  | 'unknown'
-  | 'healthy'
-  | 'degraded'
-  | 'disconnected'
-  | 'uninstalled'
-  | 'unauthorized';
-
-export interface SlackIdentitySetupIntent {
-  appName?: string;
-  displayName?: string;
-  sourceAgentId?: string;
-  /** Agent identity binding captured when Agent-origin setup began. */
-  sourceAgentSlackIdentityId?: string | null;
-  /** True after an established identity starts credential replacement. */
-  reconnecting?: boolean;
-}
-
-/**
- * Non-secret Slack app policy and observed metadata. Bot tokens and signing
- * secrets never enter this record; they are addressed by `id` in SettingsStore.
- * `ingressKey` is sensitive routing material and must stay out of non-Admin
- * responses and logs even though request signatures remain the auth boundary.
- */
-export interface SlackIdentity {
-  id: string;
-  ingressKey: string;
-  kind: SlackIdentityKind;
-  lifecycle: SlackIdentityLifecycle;
-  teamId?: string;
-  appId?: string;
-  botUserId?: string;
-  dmState: SlackIdentityDmState;
-  dmAgentId?: string;
-  credentialProvenance: SlackIdentityCredentialProvenance;
-  connectionRevision: number;
-  observedDisplayName?: string;
-  observedAvatarUrl?: string;
-  observedAt?: number;
-  health: SlackIdentityHealth;
-  healthDetail?: string;
-  createdAt: number;
-  updatedAt: number;
-  retiredAt?: number;
-  setupIntent?: SlackIdentitySetupIntent;
-}
-
-export interface SlackIdentityReferenceSummary {
-  identityId: string;
-  agentIds: string[];
-  dmAgentId?: string;
-}
+/** Internal credential-store coordinate for the single customer-owned Slack app. */
+export const WORKSPACE_SLACK_INSTALLATION_ID = 'workspace_slack_installation';
 
 export interface AgentChannelReference {
   workspaceId: string;
@@ -172,9 +110,7 @@ export interface AgentChannelReference {
 
 export interface AgentReferenceSummary {
   agentId: string;
-  channelAssignments: AgentChannelReference[];
-  dmIdentityIds: string[];
-  identityReferenceIds: string[];
+  channelGrants: AgentChannelReference[];
 }
 
 export type AgentLifecycle = 'draft' | 'active' | 'needs_attention' | 'archived';
@@ -240,8 +176,6 @@ export interface CustomAgentConfig {
   mcpServers: McpConnectionConfig[];
   apiConnections: ApiConnectionConfig[];
   repositories: RepositoryGrant[];
-  /** @deprecated Internal compatibility only; Agents do not expose Slack identities. */
-  slackIdentityId?: string;
 }
 
 export type SlackTransportMode = 'direct' | 'gateway';
@@ -418,25 +352,6 @@ export type AgentScheduleReferenceInput = Omit<
 /** Create/seed input. Persistence assigns revision 1 regardless of caller input. */
 export type AgentCreateInput = Omit<CustomAgentConfig, 'revision'> & { revision?: number };
 
-export interface ChannelAssignment {
-  workspaceId: string;
-  channelId: string;
-  agentId: string;
-}
-
-export interface ChannelPlacementMutation {
-  channel: ChannelConfig;
-  agentId: string | null;
-  expectedAgentId: string | null;
-  /** Management callers provide this to fence both content and placement. */
-  expectedRevision?: number;
-}
-
-export interface ChannelPlacementResult {
-  channel: ChannelConfig;
-  assignment: ChannelAssignment | null;
-}
-
 export type ChannelLifecycle = 'active' | 'archived';
 
 /** Reach-only Slack Channel inventory. Agent behavior lives on the Agent. */
@@ -467,10 +382,8 @@ export interface ResolvedAssignment {
   workspaceId: string;
   channelId: string;
   agentId: string;
-  /** @deprecated Internal direct-install execution coordinate. */
-  slackIdentityId?: string;
   channelLabel?: string;
-  /** Live Channel CAS revision; missing on DMs and legacy snapshots. */
+  /** Live Channel inventory revision; missing on direct conversations. */
   channelRevision?: number;
   agent: CustomAgentConfig;
   // Optional pre-resolved model label. Set only when the assignment is served

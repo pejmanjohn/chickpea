@@ -180,7 +180,7 @@ function envelopeContext(deploymentId: string) {
   return {
     deploymentId,
     identityId: 'gateway_deployment',
-    identityClass: 'workspace_default' as const,
+    identityClass: 'workspace_installation' as const,
     appId: 'chickpea_shared_gateway',
     teamId: null,
     purpose: 'gateway_deployment_key' as const,

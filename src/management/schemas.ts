@@ -7,9 +7,7 @@ export const MANAGEMENT_OPERATION_KINDS = [
   'delete_agent',
   'update_member',
   'remove_provider_credential',
-  'create_memory_entry',
-  'update_memory_entry',
-  'forget_memory_entry',
+  'update_agent_memory',
   'save_routine',
   'control_routine',
   'delete_routine',
@@ -104,12 +102,6 @@ const zOperationBase = {
   itemId: zId,
   dependsOn: z.array(zId).max(25).optional(),
 };
-const zMemoryOwner = z.strictObject({
-  workspaceId: zId,
-  ownerKind: z.literal('agent'),
-  ownerId: zId,
-});
-const zMemoryType = z.enum(['fact', 'decision', 'project', 'feedback', 'preference']);
 const zRoutineSchedule = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('cron'), expression: zText(200) }),
   z.strictObject({ kind: z.literal('once'), localDateTime: zText(64) }),
@@ -165,31 +157,10 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({
     ...zOperationBase,
-    kind: z.literal('create_memory_entry'),
-    owner: zMemoryOwner,
-    entry: z.strictObject({
-      slug: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/),
-      description: z.string().max(2_000),
-      type: zMemoryType,
-      body: z.string().max(100_000),
-    }),
-  }),
-  z.strictObject({
-    ...zOperationBase,
-    kind: z.literal('update_memory_entry'),
-    owner: zMemoryOwner,
-    entryId: zId,
-    expectedVersion: z.number().int().positive(),
-    description: z.string().max(2_000),
-    type: zMemoryType,
-    body: z.string().max(100_000),
-  }),
-  z.strictObject({
-    ...zOperationBase,
-    kind: z.literal('forget_memory_entry'),
-    owner: zMemoryOwner,
-    entryId: zId,
-    expectedVersion: z.number().int().positive(),
+    kind: z.literal('update_agent_memory'),
+    agentId: zId,
+    expectedRevision: zRevision,
+    body: z.string().max(65_536),
   }),
   z.strictObject({
     ...zOperationBase,
@@ -251,7 +222,7 @@ export const testMcpConnectionZodSchema = z.strictObject({
   agentId: zId,
   connectionId: zId,
 });
-export const inspectMemoryZodSchema = zMemoryOwner;
+export const inspectMemoryZodSchema = z.strictObject({ agentId: zId });
 export const inspectRoutinesZodSchema = z.strictObject({
   workspaceId: zId,
   channelId: zId.optional(),
@@ -348,12 +319,6 @@ const vAgentPatch = v.strictObject({
   repositories: v.optional(vAgentFields.repositories),
 });
 const vOperationBase = { itemId: vid, dependsOn: v.optional(va(vid, 25)) };
-const vMemoryOwner = v.strictObject({
-  workspaceId: vid,
-  ownerKind: v.literal('agent'),
-  ownerId: vid,
-});
-const vMemoryType = v.picklist(['fact', 'decision', 'project', 'feedback', 'preference']);
 const vRoutineSchedule = v.variant('kind', [
   v.strictObject({ kind: v.literal('cron'), expression: vt(200) }),
   v.strictObject({ kind: v.literal('once'), localDateTime: vt(64) }),
@@ -409,31 +374,10 @@ export const managementOperationValibotSchema = v.variant('kind', [
   }),
   v.strictObject({
     ...vOperationBase,
-    kind: v.literal('create_memory_entry'),
-    owner: vMemoryOwner,
-    entry: v.strictObject({
-      slug: v.pipe(v.string(), v.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/)),
-      description: vot(2_000),
-      type: vMemoryType,
-      body: vot(100_000),
-    }),
-  }),
-  v.strictObject({
-    ...vOperationBase,
-    kind: v.literal('update_memory_entry'),
-    owner: vMemoryOwner,
-    entryId: vid,
-    expectedVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
-    description: vot(2_000),
-    type: vMemoryType,
-    body: vot(100_000),
-  }),
-  v.strictObject({
-    ...vOperationBase,
-    kind: v.literal('forget_memory_entry'),
-    owner: vMemoryOwner,
-    entryId: vid,
-    expectedVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
+    kind: v.literal('update_agent_memory'),
+    agentId: vid,
+    expectedRevision: vr,
+    body: vot(65_536),
   }),
   v.strictObject({
     ...vOperationBase,
@@ -495,7 +439,7 @@ export const testMcpConnectionValibotSchema = v.strictObject({
   agentId: vid,
   connectionId: vid,
 });
-export const inspectMemoryValibotSchema = vMemoryOwner;
+export const inspectMemoryValibotSchema = v.strictObject({ agentId: vid });
 export const inspectRoutinesValibotSchema = v.strictObject({
   workspaceId: vid,
   channelId: v.optional(vid),

@@ -8,7 +8,7 @@ import {
 } from '../config/suggested-skills.ts';
 import { AUTH_BRAND_HTML } from '../auth/brand.ts';
 import type { SlackSetupTransaction } from '../identity/types.ts';
-import type { SlackAppManifest } from '../slack/identity-manifest.ts';
+import type { SlackAppManifest } from '../slack/app-manifest.ts';
 
 const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">`;
 const SLACK_LOGO_DATA_URL =
@@ -2440,7 +2440,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   var ONBOARDING_PROMPT = "@Chickpea Give me three useful ways you can help this channel, each with an example prompt I could try next.";
   var state = {
     agents: [],
-    assignments: [],
+    grants: [],
     models: { providers: [] },
     active: null,
     effective: null,
@@ -2504,7 +2504,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     // open it carries { prev } so Escape (or an emptied field) can revert.
     profileRenaming: null,
     // "Add to channels" picker in the profile footer. Candidates come from the
-    // Slack workspace catalog; assignments only label or exclude them.
+    // Slack workspace catalog; active grants only exclude existing Agent reach.
     attachPicker: false,
     attachChannelSelected: "",
     attachError: "",
@@ -2700,39 +2700,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     channelScheduledLoading: false,
     channelScheduledError: "",
     channelScheduledKey: "",
-    // The Memory draft mirrors editable entry fields so a conflict or retry
-    // never erases operator work.
-    memoryScopes: null,
-    memoryScopesLoading: false,
-    memoryScopesError: "",
-    memorySelection: { storeId: "", channelId: "", entryId: "" },
-    memoryFiles: null,
-    memoryFilesLoading: false,
-    memoryFilesError: "",
-    memoryFilesRequestId: 0,
-    memorySelectedFile: "",
-    memoryDetail: null,
-    memoryHistory: [],
-    memoryEntryRequestId: 0,
-    memoryDraft: null,
-    memoryDirty: false,
-    memoryBusy: "",
-    memoryError: "",
-    memoryNotice: "",
-    memoryIdempotencyKey: "",
-    memoryConflict: null,
-    memoryDeleteConfirm: false,
-    // The Agent and Channel detail surfaces share this owner-bound file editor.
-    // The route adapter derives every owner segment from the selected surface;
-    // no free-form field can widen memory access.
+    // Every Agent owns one durable memory body. It follows the Agent into
+    // direct messages and every Channel where the Agent has reach.
     ownerMemory: {
       ownerKind: "",
       workspaceId: "",
       ownerId: "",
-      files: null,
-      selectedFile: "",
       detail: null,
-      history: [],
       draft: null,
       dirty: false,
       loading: false,
@@ -2740,8 +2714,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       error: "",
       notice: "",
       conflict: null,
-      deleteConfirm: false,
-      createDraft: null,
       requestId: 0
     }
   };
@@ -2889,7 +2861,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
           // A provider rejection carries the upstream HTTP status (e.g. 401) so
           // the Settings paste flow can echo it verbatim in the .raw-error block.
           if (body && body.status != null) err.providerStatus = body.status;
-          // The assignment validators return a ready-to-show message (naming
+          // Channel-grant validation returns a ready-to-show message (naming
           // the connected workspace, or explaining a channel_not_found); keep it.
           if (body && body.message) err.serverMessage = body.message;
           err.payload = body;
@@ -2921,19 +2893,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     });
   }
 
-  function concreteAssignments() {
-    return state.assignments.filter(function (assignment) {
-      return assignment.workspaceId !== "*" && assignment.channelId !== "*";
-    });
-  }
-
-  function activeAssignment() {
-    if (!state.active) return null;
-    return state.assignments.find(function (assignment) {
-      return assignment.workspaceId === state.active.workspaceId && assignment.channelId === state.active.channelId;
-    }) || null;
-  }
-
   function activeChannelProjection() {
     if (!state.active) return null;
     return (state.channelIndex || []).find(function (channel) {
@@ -2941,16 +2900,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }) || null;
   }
 
-  function firstWorkspaceAssignment() {
-    return state.assignments.find(function (assignment) {
-      return assignment.workspaceId !== "*";
-    }) || null;
+  function firstWorkspaceGrant() {
+    return state.grants[0] || null;
   }
 
   function defaultChannelFormWorkspaceId() {
     if (state.active && state.active.workspaceId) return state.active.workspaceId;
-    var assignment = firstWorkspaceAssignment();
-    return assignment ? assignment.workspaceId : "";
+    var grant = firstWorkspaceGrant();
+    return connectedTeamId() || (grant ? grant.workspaceId : "");
   }
 
   function syncChannelFormWorkspacePrefill() {
@@ -2976,17 +2933,8 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return count + " " + (count === 1 ? "channel" : "channels");
   }
 
-  // Every assignment for the agent, wildcards included — matches the server's
-  // delete guard so the modal's "Used in N" count is honest and each blocking
-  // row (including the seeded '*'/'*' catch-all) has a Remove affordance.
-  function allAssignmentsForAgent(agentId) {
-    return state.assignments.filter(function (assignment) { return assignment.agentId === agentId; });
-  }
-
-  function assignmentByKey(workspaceId, channelId) {
-    return state.assignments.find(function (assignment) {
-      return assignment.workspaceId === workspaceId && assignment.channelId === channelId;
-    }) || null;
+  function allGrantsForAgent(agentId) {
+    return state.grants.filter(function (grant) { return grant.agentId === agentId; });
   }
 
   function defaultAgent() {
@@ -3165,7 +3113,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function render() {
     var app = document.getElementById("app");
     if (app.removeAttribute) app.removeAttribute("aria-busy");
-    var overlays = teamConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + memoryDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
+    var overlays = teamConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
     if (state.view === "onboarding") {
       app.className = "frame onboarding-frame";
       app.innerHTML = onboardingShellHtml() + overlays;
@@ -3243,15 +3191,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
           ? document.querySelector('[data-role="sandbox-confirm-error"]')
           : document.querySelector('[data-action="sandbox-confirm-cancel"]');
       if (sandboxConfirmFocus && sandboxConfirmFocus.focus) sandboxConfirmFocus.focus();
-    }
-    if (state.memoryDeleteConfirm) {
-      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
-        if (!region) return;
-        region.inert = true;
-        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
-      });
-      var memoryDeleteCancel = document.querySelector('[data-action="memory-delete-cancel"]');
-      if (memoryDeleteCancel && memoryDeleteCancel.focus) memoryDeleteCancel.focus();
     }
     if (state.scheduledSelection && !state.scheduledInspector && !state.scheduledDeleteConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
@@ -3345,7 +3284,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function agentPlacementMeta(agent) {
-    var channelCount = concreteAssignmentsForAgent(agent.id).length;
+    var channelCount = channelGrantsForAgent(agent.id).length;
     return channelCountLabel(channelCount) + (agentHasDmDefault(agent.id) ? " + Direct messages" : "");
   }
 
@@ -3446,11 +3385,14 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         html += '<div class="ws-row">' + icon("chevron-down") + esc(railGroupLabel(group.workspaceId)) + '</div>';
         group.channels.forEach(function (channel) {
           var active = state.channelScreen === "detail" && state.active && state.active.workspaceId === channel.workspaceId && state.active.channelId === channel.channelId;
-          var assignment = channel.assignment;
-          var railAgent = assignment && agentById(assignment.agentId);
+          var grants = Array.isArray(channel.grants) ? channel.grants : [];
+          var names = grants.map(function (grant) {
+            var agent = agentById(grant.agentId);
+            return grant.agentName || (agent && agent.name) || grant.agentId;
+          });
           html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-channel" data-workspace="' + esc(channel.workspaceId) + '" data-channel="' + esc(channel.channelId) + '">' +
             '<span class="chan-name">#' + esc(normalizeChannelLabel(channel.channelName)) + '</span>' +
-            '<span class="chan-meta">' + esc(railAgent ? railAgent.name : assignment && assignment.agentName || "No Agent assigned") + '</span></button>';
+            '<span class="chan-meta">' + esc(names.length ? names.join(", ") : "No Agents published") + '</span></button>';
         });
       });
     }
@@ -4468,7 +4410,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '<div class="workspace-card"><div class="workspace-ident"><span class="workspace-icon"><span class="platform-logo slack-logo-image" aria-hidden="true"></span></span>' +
       '<div style="min-width:0;"><div class="workspace-name">' + esc(connectedTeamName()) + '</div><div class="workspace-meta mono">Team ID ' + esc(connectedTeamId() || "Unknown") + '</div></div></div>' +
       '<span class="badge badge-on"><span class="dot"></span>Connected</span>' +
-      '<span class="hint">' + esc(count + " assigned " + (count === 1 ? "channel" : "channels")) + '</span>' +
+      '<span class="hint">' + esc(count + " configured " + (count === 1 ? "channel" : "channels")) + '</span>' +
       '<span class="hint">' + esc(slackCredentialSummary()) + '</span></div></section>';
     var behavior = '<section class="section"><div class="section-head"><div><h2 class="section-title">Slack behavior</h2>' +
       '<p class="hint">Control how Chickpea behaves across this Slack workspace.</p></div></div>' + slackBehaviorHtml() + '</section>';
@@ -5063,7 +5005,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function channelTryHtml(assignment) {
     var deepLink = "https://app.slack.com/client/" + encodeURIComponent(assignment.workspaceId) + "/" + encodeURIComponent(assignment.channelId);
     var noticeClass = state.channelTryError ? " error" : "";
-    return '<section class="section channel-try-section"><div class="channel-try-card"><div class="channel-try-copy"><span class="agent-kicker">Try it in Slack</span><p class="channel-try-prompt">' + esc(ONBOARDING_PROMPT) + '</p><span class="hint">A real Slack reply is the proof that this placement is ready.</span><span class="channel-try-status' + noticeClass + '" role="status">' + esc(state.channelTryNotice) + '</span></div>' +
+    return '<section class="section channel-try-section"><div class="channel-try-card"><div class="channel-try-copy"><span class="agent-kicker">Try it in Slack</span><p class="channel-try-prompt">' + esc(ONBOARDING_PROMPT) + '</p><span class="hint">A real Slack reply is the proof that these Channel grants are ready.</span><span class="channel-try-status' + noticeClass + '" role="status">' + esc(state.channelTryNotice) + '</span></div>' +
       '<div class="channel-try-actions"><button type="button" class="btn btn-soft" data-action="copy-channel-prompt">Copy prompt</button><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Open ' + esc(channelLabel(assignment)) + '</a></div></div></section>';
   }
 
@@ -5080,7 +5022,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     return !!(agent && agent.isWorkspaceDefault);
   }
 
-  function concreteAssignmentsForAgent(agentId) {
+  function channelGrantsForAgent(agentId) {
     var agent = agentById(agentId);
     var projected = agent && agent.whereItWorks && Array.isArray(agent.whereItWorks.channels)
       ? agent.whereItWorks.channels
@@ -5095,18 +5037,18 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         };
       });
     }
-    return state.assignments.filter(function (assignment) {
-      return assignment.agentId === agentId && assignment.workspaceId !== "*" && assignment.channelId !== "*";
-    }).map(function (assignment) {
-      if (normalizeChannelLabel(assignment.channelLabel)) return assignment;
+    return state.grants.filter(function (grant) {
+      return grant.agentId === agentId;
+    }).map(function (grant) {
+      if (normalizeChannelLabel(grant.channelLabel)) return grant;
       var channel = (state.channelIndex || []).find(function (candidate) {
-        return candidate.workspaceId === assignment.workspaceId && candidate.channelId === assignment.channelId;
+        return candidate.workspaceId === grant.workspaceId && candidate.channelId === grant.channelId;
       }) || projected.find(function (candidate) {
-        return candidate.workspaceId === assignment.workspaceId && candidate.channelId === assignment.channelId;
+        return candidate.workspaceId === grant.workspaceId && candidate.channelId === grant.channelId;
       });
       return channel && channel.channelName
-        ? Object.assign({}, assignment, { channelLabel: channel.channelName })
-        : assignment;
+        ? Object.assign({}, grant, { channelLabel: channel.channelName })
+        : grant;
     });
   }
 
@@ -5116,7 +5058,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var cards = state.agents.map(profileCardHtml).join("");
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<span class="agent-kicker">Workspace teammates</span><h1 class="page-title">Agents</h1>' +
-      '<p class="hint" style="max-width:58ch;">Agents hold reusable instructions, models, capabilities, identity, placements, and memory.</p>' +
+      '<p class="hint" style="max-width:58ch;">Agents hold reusable instructions, models, capabilities, Slack presence, Channel reach, and memory.</p>' +
       '</div><button type="button" class="btn btn-primary" style="flex-shrink:0;" data-action="new-profile">New Agent</button></div>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Your Agents</h2><p class="hint">Everything Chickpea can be in this workspace.</p></div></div>' +
       (cards || '<div class="empty"><p class="field-label">No Agents yet</p><p class="hint">Create one, then add it to a Channel.</p></div>') +
@@ -5125,7 +5067,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function profileCardHtml(agent) {
     var dm = agentHasDmDefault(agent.id);
-    var concrete = concreteAssignmentsForAgent(agent.id);
+    var concrete = channelGrantsForAgent(agent.id);
     var roleBadge = dm ? '<span class="badge badge-role"><span class="dot"></span>DM default</span>' : "";
     var stateBadge = agent.enabled
       ? '<span class="badge badge-on"><span class="dot"></span>Enabled</span>'
@@ -5391,15 +5333,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function ownerMemoryPanelHtml(ownerKind, ownerId, ownerLabel, assignedAgentName) {
-    var workspaceId = connectedTeamId();
+    var workspaceId = connectedTeamId() || "workspace";
     var memory = state.ownerMemory;
     var ownerName = ownerLabel || "this Agent";
     var reach = "One shared memory follows " + ownerName + " everywhere it works, including Channels and direct messages.";
     if (!ownerId) {
       return '<div class="empty"><p class="field-label">Save this Agent to add memory</p><p class="hint">Memory belongs to the durable Agent.</p></div>';
-    }
-    if (!workspaceId) {
-      return '<div class="empty"><p class="field-label">Connect Slack to use memory</p><p class="hint">Memory ownership is scoped to the connected workspace.</p></div>';
     }
     if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) {
       return '<div class="empty"><p class="field-label">Loading memory&hellip;</p><p class="hint">' + esc(reach) + '</p></div>';
@@ -5407,17 +5346,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var status = memory.error
       ? '<p class="owner-memory-status error" role="alert">' + esc(memory.error) + '</p>'
       : '<p class="owner-memory-status" role="status" aria-live="polite">' + esc(memory.notice || (memory.dirty ? "Unsaved memory changes" : "")) + '</p>';
-    if (memory.loading && !memory.files) {
+    if (memory.loading && !memory.detail) {
       return '<div class="empty"><p class="field-label">Loading memory&hellip;</p><p class="hint">' + esc(reach) + '</p></div>' + status;
     }
-    if (!memory.files) {
+    if (!memory.detail || !memory.draft) {
       return '<div class="empty"><p class="field-label">Memory is unavailable</p><p class="hint">' + esc(reach) + '</p><button type="button" class="btn btn-soft btn-sm" data-action="owner-memory-retry">Retry</button></div>' + status;
-    }
-    var selected = memory.files.find(function (file) {
-      return !file.generated && file.status !== "forgotten" && file.entryId === memory.selectedFile;
-    }) || memory.files.find(function (file) { return !file.generated && file.status !== "forgotten"; }) || null;
-    if (selected && (!memory.detail || memory.detail.entry.entryId !== selected.entryId)) {
-      return '<div class="empty"><p class="field-label">Loading memory&hellip;</p><p class="hint">' + esc(reach) + '</p></div>' + status;
     }
     var entry = memory.detail ? memory.detail.entry : null;
     var draft = memory.draft || {
@@ -5427,7 +5360,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     };
     return '<div class="owner-memory-intro"><p class="hint">' + esc(reach) + '</p></div>' +
       '<section class="owner-memory-editor"><div class="owner-memory-form">' +
-      '<div class="field"><label class="field-label" for="owner-memory-body">Memory</label><textarea class="textarea" id="owner-memory-body" rows="14" placeholder="What should this Agent remember?" data-action="owner-memory-body">' + esc(draft.body) + '</textarea><p class="hint">Keep durable context here. The Agent may also update this memory while it works.</p></div>' +
+      '<div class="field"><label class="field-label" for="owner-memory-body">Memory</label><textarea class="textarea" id="owner-memory-body" rows="14" placeholder="What should this Agent remember?" data-action="owner-memory-body">' + esc(draft.body) + '</textarea><p class="hint">This is the Agent’s complete durable memory. It follows the Agent into DMs and every granted Channel, and the Agent may update it while it works.</p></div>' +
       (memory.conflict ? '<div class="callout"><span>Your draft is preserved because this memory changed elsewhere.</span><button type="button" class="btn btn-soft btn-sm" data-action="owner-memory-use-latest">Load latest</button></div>' : '') +
       '<div class="owner-memory-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-discard"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>Discard</button><button type="button" class="btn btn-primary btn-sm" data-action="owner-memory-save"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>' + (memory.busy === "save" || memory.busy === "create" ? "Saving&hellip;" : "Save memory") + '</button></div></div></section>' + status;
   }
@@ -6872,7 +6805,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   function profileDeletionState(draft) {
     var dm = agentHasDmDefault(draft.id);
-    var concrete = concreteAssignmentsForAgent(draft.id);
+    var concrete = channelGrantsForAgent(draft.id);
     var liveRoots = draft.deletion && Array.isArray(draft.deletion.liveSnapshotRoots) ? draft.deletion.liveSnapshotRoots.length : 0;
     var projectedBlocked = !!(draft.deletion && draft.deletion.blocked);
     var blocked = dm || concrete.length > 0 || projectedBlocked;
@@ -6965,7 +6898,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function usedInHtml(draft) {
-    var concrete = concreteAssignmentsForAgent(draft.id);
+    var concrete = channelGrantsForAgent(draft.id);
     var channelRows = '<div class="where-list">';
     concrete.forEach(function (assignment) {
       var label = normalizeChannelLabel(assignment.channelLabel) || assignment.channelId;
@@ -7009,19 +6942,13 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var workspaceId = connectedTeamId();
     var channels = (state.slackChannels && state.slackChannels.channels) || [];
     if (!workspaceId) return [];
-    var assignmentsByChannel = new Map();
-    state.assignments.forEach(function (assignment) {
-      if (assignment.workspaceId === workspaceId) assignmentsByChannel.set(assignment.channelId, assignment);
-    });
-    var granted = new Set(concreteAssignmentsForAgent(agentId).filter(function (grant) {
+    var granted = new Set(channelGrantsForAgent(agentId).filter(function (grant) {
       return grant.workspaceId === workspaceId;
     }).map(function (grant) { return grant.channelId; }));
     return channels.map(function (channel) {
-      var assignment = assignmentsByChannel.get(channel.id) || null;
       return {
         channelId: channel.id,
-        channelLabel: channel.name,
-        assignment: assignment
+        channelLabel: channel.name
       };
     }).filter(function (candidate) {
       return !granted.has(candidate.channelId);
@@ -7054,13 +6981,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         '<button type="button" class="btn btn-soft btn-sm" data-action="attach-new-channel" data-agent="' + esc(draft.id) + '">Add a new Channel with this Agent</button>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Close</button></div>';
     }
-    var agentsById = new Map();
-    state.agents.forEach(function (agent) { agentsById.set(agent.id, agent); });
     var options = candidates.map(function (candidate) {
-      var current = candidate.assignment ? agentsById.get(candidate.assignment.agentId) : null;
       return '<option value="' + esc(candidate.channelId) + '"' +
-        (candidate.channelId === state.attachChannelSelected ? " selected" : "") + '>' + esc(channelLabel(candidate)) +
-        (current ? ' &mdash; currently ' + esc(current.name) : "") + '</option>';
+        (candidate.channelId === state.attachChannelSelected ? " selected" : "") + '>' + esc(channelLabel(candidate)) + '</option>';
     }).join("");
     var truncated = state.slackChannels.truncated
       ? '<span class="hint">Showing the first workspace channels.</span>' +
@@ -7076,7 +6999,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function disableConfirmHtml(draft) {
     if (!state.disableConfirm) return "";
     var dm = agentHasDmDefault(draft.id);
-    var concrete = concreteAssignmentsForAgent(draft.id);
+    var concrete = channelGrantsForAgent(draft.id);
     var scope;
     if (concrete.length && dm) {
       scope = "It stops answering in " + joinChannelNames(concrete, false) + " and in direct messages right away.";
@@ -7192,32 +7115,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
 
   // ---- Audit Logs > Memory -------------------------------------------------
 
-  function memoryScopes() { return state.memoryScopes || []; }
-
-  function memoryScopeForChannel(workspaceId, channelId) {
-    var matches = memoryScopes().filter(function (scope) {
-      return scope.workspaceId === workspaceId && scope.channelId === channelId;
-    });
-    return matches.find(function (scope) { return scope.lifecycle === "active"; }) || matches[0] || null;
-  }
-
   function channelAuditSectionHtml(assignment) {
-    var scope = memoryScopeForChannel(assignment.workspaceId, assignment.channelId);
-    var count = scope ? Number(scope.entryCount || 0) : 0;
-    var countText = state.memoryScopes === null
-      ? (state.memoryScopesError ? "Memory count unavailable" : "Loading memory&hellip;")
-      : count + " saved " + (count === 1 ? "memory" : "memories");
-    var note = count > 0
-      ? "Review what Chickpea remembers and correct anything outdated."
-      : "Nothing saved yet. Ask Chickpea to remember something in Slack.";
-    var accessibleCount = state.memoryScopes === null
-      ? "saved memories"
-      : count + " saved " + (count === 1 ? "memory" : "memories");
-    var memoryRow = '<div class="bundle-row channel-memory-row"><div class="channel-memory-summary">' +
-      '<span class="channel-memory-total">' + countText + '</span><span class="channel-memory-note">' + esc(note) + '</span></div>' +
-      '<span class="spacer"></span><button type="button" class="btn btn-soft btn-sm" data-action="open-channel-memory"' +
-      ' data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '"' +
-      ' data-store="' + esc(scope && scope.storeId || "") + '" aria-label="Review ' + esc(accessibleCount) + ' for ' + esc(channelLabel(assignment)) + '">Review memory</button></div>';
     var currentKey = assignment.workspaceId + ":" + assignment.channelId;
     var scheduledCurrent = state.channelScheduledKey === currentKey;
     var scheduled = scheduledCurrent && state.channelScheduledRoutines ? state.channelScheduledRoutines : [];
@@ -7246,67 +7144,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       '<span class="spacer"></span><button type="button" class="btn btn-soft btn-sm" data-action="open-channel-scheduled"' +
       ' data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '"' +
       ' aria-label="Review scheduled work for ' + esc(channelLabel(assignment)) + '">Review scheduled work</button></div>';
-    return '<section class="section channel-audit-section"><div class="section-head"><div><h2 class="section-title">Audit</h2>' +
-      '<p class="hint">Review this channel\\'s saved memory and scheduled work.</p></div></div>' +
-      '<div class="channel-audit-rows">' + memoryRow + scheduledRow + '</div></section>';
-  }
-
-  function selectedMemoryScope() {
-    var exact = memoryScopes().find(function (scope) {
-      return scope.storeId === state.memorySelection.storeId && scope.channelId === state.memorySelection.channelId;
-    });
-    if (exact) return exact;
-    if (!state.memorySelection.storeId && state.memorySelection.channelId) {
-      var matches = memoryScopes().filter(function (scope) { return scope.channelId === state.memorySelection.channelId; });
-      return matches.find(function (scope) { return scope.lifecycle === "active"; }) || matches[0] || null;
-    }
-    return null;
-  }
-
-  function selectedMemoryAssignment() {
-    if (!state.memorySelection.channelId) return null;
-    return state.assignments.find(function (assignment) {
-      return assignment.workspaceId !== "*" && assignment.channelId === state.memorySelection.channelId;
-    }) || null;
-  }
-
-  function auditRailHtml() {
-    var scopes = memoryScopes();
-    var html = '<nav class="rail audit-rail" aria-label="Memory scopes"><div class="rail-context">' +
-      '<div class="rail-head"><span class="section-eyebrow">Audit logs</span></div>' +
-      '<div class="platform-row active"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack</div>';
-    if (state.memoryScopesLoading && !state.memoryScopes) {
-      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="hint">Loading memory scopes&hellip;</p></div></div>' + sectionSwitcherHtml() + '</nav>';
-    }
-    if (state.memoryScopesError) {
-      return html + '<div class="empty" style="margin:8px; padding:12px;"><p class="field-error">' + esc(state.memoryScopesError) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="memory-retry-scopes">Retry</button></div></div>' + sectionSwitcherHtml() + '</nav>';
-    }
-    if (!scopes.length) {
-      return html + '<div class="ws-row">Workspace</div><div class="empty" style="margin:8px; padding:12px;"><p class="hint">No channel memories yet</p></div></div>' + sectionSwitcherHtml() + '</nav>';
-    }
-    var workspaces = [];
-    scopes.forEach(function (scope) {
-      var workspace = workspaces.find(function (candidate) { return candidate.id === scope.workspaceId; });
-      if (!workspace) { workspace = { id: scope.workspaceId, scopes: [] }; workspaces.push(workspace); }
-      workspace.scopes.push(scope);
-    });
-    workspaces.forEach(function (workspace) {
-      html += '<div class="ws-row">' + icon("chevron-down") + esc(railGroupLabel(workspace.id)) + '</div>';
-      workspace.scopes.forEach(function (scope) {
-        var active = scope.storeId === state.memorySelection.storeId && scope.channelId === state.memorySelection.channelId;
-        var privacy = scope.privacy === "private" ? "Private" : "Workspace shared";
-        if (scope.lifecycle !== "active") privacy += " · " + scope.lifecycle;
-        html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-memory-scope" data-store="' + esc(scope.storeId) + '" data-channel="' + esc(scope.channelId) + '">' +
-          '<span class="chan-name audit-channel-name">' + auditChannelMarkerHtml(scope.privacy) + '<span>' + esc(scope.displayName || scope.channelId) + '</span></span>' +
-          '<span class="chan-meta">' + esc(privacy) + ' · ' + Number(scope.entryCount || 0) + '</span></button>';
-      });
-    });
-    return html + '</div>' + sectionSwitcherHtml() + '</nav>';
-  }
-
-  function auditChannelMarkerHtml(privacy) {
-    if (privacy !== "private") return '<span class="audit-channel-marker" aria-hidden="true">#</span>';
-    return '<span class="audit-channel-marker" aria-hidden="true"><svg class="ic" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5.25 7V4.75a2.75 2.75 0 0 1 5.5 0V7m-6.5 0h7.5A1.25 1.25 0 0 1 13 8.25v5a1.25 1.25 0 0 1-1.25 1.25h-7.5A1.25 1.25 0 0 1 3 13.25v-5A1.25 1.25 0 0 1 4.25 7Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
+    return '<section class="section channel-audit-section"><div class="section-head"><div><h2 class="section-title">Scheduled work</h2>' +
+      '<p class="hint">Review routines that run in this Channel.</p></div></div>' +
+      '<div class="channel-audit-rows">' + scheduledRow + '</div></section>';
   }
 
   function auditTabsHtml() {
@@ -7676,95 +7516,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     })[timezone] || String(timezone || "UTC");
   }
 
-  function auditMemoryMainHtml() {
-    var scope = selectedMemoryScope();
-    var head = '<div class="audit-main-head"><h1 class="page-title">Audit logs</h1></div>' + auditTabsHtml();
-    if (state.memoryScopesLoading && !state.memoryScopes) return head + '<div class="empty"><p class="hint">Loading memory&hellip;</p></div>';
-    if (state.memoryScopesError) return head + '<div class="empty"><p class="field-error">' + esc(state.memoryScopesError) + '</p><button type="button" class="btn btn-ghost" data-action="memory-retry-scopes">Retry</button></div>';
-    if (!scope) {
-      var requestedAssignment = selectedMemoryAssignment();
-      var emptyTitle = requestedAssignment
-        ? "No memories saved in " + channelLabel(requestedAssignment)
-        : "No memory selected";
-      var emptyCopy = requestedAssignment
-        ? "Saved memories for this channel will appear here after a member asks Chickpea to remember something in Slack."
-        : "Choose a channel scope to review its generated index and saved Markdown files.";
-      return head + '<div class="empty"><h2 class="section-title">' + esc(emptyTitle) + '</h2><p class="hint">' + esc(emptyCopy) + '</p></div>';
-    }
-    var sourceLabel = "#" + (scope.displayName || scope.channelId);
-    var banner = scope.privacy === "public"
-      ? '<div class="memory-banner">Memories saved in ' + esc(sourceLabel) + ' can help Chickpea respond across this workspace. In Slack, they can only be changed from ' + esc(sourceLabel) + '.</div>'
-      : '<div class="memory-banner">Memories saved in this private channel are used only here. They are never shared with other channels.</div>';
-    return head + banner +
-      '<div class="memory-layout"><section class="memory-pane" aria-label="Memory files"><div class="memory-pane-title">Files</div>' + memoryFilesHtml() + '</section>' +
-      '<section class="memory-pane memory-editor" aria-label="Memory editor">' + memoryEditorHtml() + '</section></div>' +
-      '<div class="memory-live" role="status" aria-live="polite">' + esc(state.memoryNotice || state.memoryError) + '</div>';
-  }
-
-  function memoryFilesHtml() {
-    if (state.memoryFilesLoading) return '<p class="hint">Loading files&hellip;</p>';
-    if (state.memoryFilesError) return '<p class="field-error">' + esc(state.memoryFilesError) + '</p><button type="button" class="btn btn-ghost btn-sm" data-action="memory-retry-files">Retry</button>';
-    var files = state.memoryFiles || [];
-    if (!files.length) return '<p class="hint">No projected files are available.</p>';
-    return '<div class="memory-file-list">' + files.map(function (file) {
-      var key = file.generated ? "MEMORY.md" : file.entryId;
-      var active = state.memorySelectedFile === key;
-      return '<button type="button" class="memory-file' + (active ? " active" : "") + '" data-action="select-memory-file" data-file="' + esc(key) + '">' +
-        '<span class="memory-file-name">' + esc(file.name) + '</span>' +
-        '<span class="memory-file-meta">' + (file.generated ? "Generated · read-only" : esc(file.status || "active") + " · v" + Number(file.version || 0)) + '</span></button>';
-    }).join("") + '</div>';
-  }
-
-  function memoryEditorHtml() {
-    if (state.memoryFilesLoading || state.memoryBusy === "load") return '<p class="hint">Loading selection&hellip;</p>';
-    if (state.memorySelectedFile === "MEMORY.md") {
-      var index = (state.memoryFiles || []).find(function (file) { return file.generated; });
-      return '<div class="memory-editor-head"><div><div class="memory-editor-title">MEMORY.md</div><p class="hint">Generated index · changes are made through individual files.</p></div><span class="badge badge-off">Read-only</span></div>' +
-        '<pre class="memory-source">' + esc(index && index.content || '# Channel Memory Index\\n\\n') + '</pre>';
-    }
-    if (!state.memorySelectedFile) return '<div class="empty"><p class="hint">Select a file to view, edit, or delete it.</p></div>';
-    if (!state.memoryDetail || !state.memoryDraft) return '<p class="hint">Loading entry&hellip;</p>';
-    var entry = state.memoryDetail.entry;
-    var review = state.memoryDetail.unresolvedReview;
-    var reviewHtml = review ? '<div class="memory-review"><strong>Review requested</strong><span>' + esc(review.reasonCode || "Needs operator review") + '</span><span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="memory-resolve-review">Mark reviewed</button></div>' : '';
-    var status = entry.status === "forgotten" ? '<span class="badge badge-off">Forgotten</span>' : '<span class="badge badge-on"><span class="dot"></span>' + esc(entry.status) + '</span>';
-    var editor = entry.status === "forgotten" ? '<p class="hint">Content was irreversibly removed. Tombstone metadata and body-free history remain for audit integrity.</p>' :
-      '<div class="form-grid"><label class="field"><span class="field-label">Name</span><input class="input mono" value="' + esc(entry.slug) + '" readonly aria-readonly="true"></label>' +
-      '<label class="field"><span class="field-label">Type</span><span class="select-wrap"><select class="input" data-action="memory-type">' + ["fact", "decision", "project", "feedback", "preference"].map(function (type) { return '<option value="' + type + '"' + (state.memoryDraft.type === type ? " selected" : "") + '>' + type + '</option>'; }).join("") + '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label>' +
-      '<label class="field full"><span class="field-label">Description</span><input class="input" data-action="memory-description" value="' + esc(state.memoryDraft.description) + '"></label>' +
-      '<label class="field full"><span class="field-label">Markdown body</span><textarea class="textarea mono" data-action="memory-body" rows="12">' + esc(state.memoryDraft.body) + '</textarea></label></div>' +
-      '<div class="memory-editor-actions"><button type="button" class="btn btn-primary" data-action="memory-save"' + (!state.memoryDirty || state.memoryBusy ? " disabled" : "") + '>' + (state.memoryBusy === "save" ? "Saving&hellip;" : "Save changes") + '</button>' +
-      '<button type="button" class="btn btn-ghost" data-action="memory-discard"' + (!state.memoryDirty || state.memoryBusy ? " disabled" : "") + '>Discard</button>' +
-      '<button type="button" class="btn btn-danger" data-action="memory-delete-open"' + (state.memoryBusy ? " disabled" : "") + '>Delete memory</button></div>' + memoryConflictHtml();
-    return '<div class="memory-editor-head"><div><div class="memory-editor-title">' + esc(entry.slug) + '.md</div><p class="hint">Version ' + Number(entry.version) + ' · modified ' + esc(formatMemoryDate(entry.modifiedAt)) + '</p></div>' + status + '</div>' + reviewHtml + editor + memoryHistoryHtml() +
-      (entry.status !== "forgotten" ? '<details><summary class="field-label">Projected Markdown</summary><pre class="memory-source">' + esc(state.memoryDetail.projected || "") + '</pre></details>' : '');
-  }
-
-  function memoryHistoryHtml() {
-    var history = state.memoryHistory || [];
-    if (!history.length) return '';
-    return '<details><summary class="field-label">Revision history (' + history.length + ')</summary><div class="memory-history">' + history.slice().reverse().map(function (revision) {
-      return '<div class="memory-history-row"><span class="mono">v' + Number(revision.version) + '</span><strong>' + esc(revision.operation) + '</strong><span class="spacer"></span><span class="hint">' + esc(formatMemoryDate(revision.createdAt)) + '</span></div>';
-    }).join("") + '</div></details>';
-  }
-
-  function memoryConflictHtml() {
-    var conflict = state.memoryConflict;
-    if (!conflict) return '';
-    var latest = conflict.latest;
-    return '<div class="memory-review"><div><strong>Newer version available</strong><p class="hint">Your draft is preserved. Compare it with version ' + Number(latest.version) + ' before deciding.</p>' +
-      '<details><summary class="field-label">View latest saved content</summary><pre class="memory-source">Type: ' + esc(latest.type) + '\\nDescription: ' + esc(latest.description) + '\\n\\n' + esc(latest.body) + '</pre></details></div><span class="spacer"></span>' +
-      '<button type="button" class="btn btn-ghost btn-sm" data-action="memory-use-latest">Use latest and discard draft</button></div>';
-  }
-
-  function memoryDeleteModalHtml() {
-    if (!state.memoryDeleteConfirm || !state.memoryDetail) return '';
-    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Delete memory">' +
-      '<h2 class="modal-title">Delete ' + esc(state.memoryDetail.entry.slug) + '?</h2>' +
-      '<p class="modal-body">This permanently removes the canonical memory body and the content from every stored revision in Chickpea. Body-free audit tombstones and revision metadata remain. Prior exports, Slack or provider logs, backups, and Flue transcripts may still retain copies; Chickpea cannot retract them.</p>' +
-      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="memory-delete-cancel">Cancel</button><span class="spacer"></span><button type="button" class="btn btn-danger" data-action="memory-delete-confirm">Delete permanently</button></div></div></div>';
-  }
-
   function scheduledDeleteModalHtml() {
     if (!state.scheduledDeleteConfirm || !state.scheduledDetail) return '';
     var routine = state.scheduledDetail.routine;
@@ -7973,13 +7724,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     });
   }
 
-  function ownerMemoryBase(ownerKind, workspaceId, ownerId) {
-    return "/admin/api/audit/memory/owners/" + encodeURIComponent(ownerKind) + "/" +
-      encodeURIComponent(workspaceId) + "/" + encodeURIComponent(ownerId);
-  }
-
   function loadOwnerMemory(ownerKind, workspaceId, ownerId, keepSelection) {
-    if (!ownerKind || !workspaceId || !ownerId) return Promise.resolve();
+    workspaceId = workspaceId || "workspace";
+    if (!ownerKind || !ownerId) return Promise.resolve();
     var memory = state.ownerMemory;
     var sameOwner = ownerMemoryMatches(ownerKind, workspaceId, ownerId);
     if (sameOwner && memory.dirty) return Promise.resolve();
@@ -7988,10 +7735,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       ownerKind: ownerKind,
       workspaceId: workspaceId,
       ownerId: ownerId,
-      files: sameOwner ? memory.files : null,
-      selectedFile: sameOwner && keepSelection ? memory.selectedFile : "",
       detail: null,
-      history: [],
       draft: null,
       dirty: false,
       loading: true,
@@ -7999,24 +7743,26 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       error: "",
       notice: sameOwner && keepSelection ? memory.notice : "",
       conflict: null,
-      deleteConfirm: false,
-      createDraft: null,
       requestId: requestId
     };
     render();
-    return api(ownerMemoryBase(ownerKind, workspaceId, ownerId) + "/files", { cache: "no-store" }).then(function (body) {
+    return api("/admin/api/agents/" + encodeURIComponent(ownerId) + "/memory", { cache: "no-store" }).then(function (body) {
       var current = state.ownerMemory;
       if (current.requestId !== requestId || !ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
-      current.files = body.files || [];
+      var saved = body.memory || { agentId: ownerId, body: "", revision: 0 };
+      var entry = {
+        entryId: "memory",
+        description: "Current Agent memory",
+        type: "project",
+        body: saved.body || "",
+        version: Number(saved.revision || 0),
+        status: "active"
+      };
+      current.detail = { entry: entry };
+      current.draft = { description: entry.description, type: entry.type, body: entry.body };
       current.loading = false;
       current.busy = "";
-      var selected = current.files.find(function (file) {
-        return !file.generated && file.status !== "forgotten" && file.entryId === current.selectedFile;
-      }) || current.files.find(function (file) { return !file.generated && file.status !== "forgotten"; });
-      current.selectedFile = selected ? selected.entryId : "";
-      if (!selected) current.draft = { description: "Current Agent memory", type: "project", body: "" };
       render();
-      if (current.selectedFile) return loadOwnerMemoryEntry(current.selectedFile);
     }).catch(function (error) {
       var current = state.ownerMemory;
       if (current.requestId !== requestId || !ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
@@ -8027,61 +7773,12 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     });
   }
 
-  function selectOwnerMemoryFile(entryId) {
-    var memory = state.ownerMemory;
-    if (memory.dirty) { memory.error = "Save or discard this draft before opening another file."; render(); return; }
-    if (memory.busy) return;
-    memory.selectedFile = entryId || "MEMORY.md";
-    memory.detail = null;
-    memory.history = [];
-    memory.draft = null;
-    memory.error = "";
-    memory.notice = "";
-    memory.conflict = null;
-    memory.deleteConfirm = false;
-    render();
-    if (memory.selectedFile !== "MEMORY.md") loadOwnerMemoryEntry(memory.selectedFile);
-  }
-
-  function loadOwnerMemoryEntry(entryId) {
-    var memory = state.ownerMemory;
-    if (!entryId || !memory.ownerKind) return Promise.resolve();
-    var requestId = ++memory.requestId;
-    var base = ownerMemoryBase(memory.ownerKind, memory.workspaceId, memory.ownerId) + "/entries/" + encodeURIComponent(entryId);
-    memory.busy = "load";
-    memory.error = "";
-    render();
-    return api(base, { cache: "no-store" }).then(function (body) {
-      var current = state.ownerMemory;
-      if (current.requestId !== requestId || current.selectedFile !== entryId) return;
-      current.detail = body;
-      current.history = [];
-      current.draft = {
-        description: body.entry.description || "Current Agent memory",
-        type: body.entry.type || "project",
-        body: body.entry.body || ""
-      };
-      current.dirty = false;
-      current.busy = "";
-      current.conflict = null;
-      current.deleteConfirm = false;
-      render();
-    }).catch(function (error) {
-      var current = state.ownerMemory;
-      if (current.requestId !== requestId || current.selectedFile !== entryId) return;
-      current.busy = "";
-      current.error = error.serverMessage || error.message || "Could not load this memory file.";
-      render();
-    });
-  }
-
   function markOwnerMemoryDirty() {
     var memory = state.ownerMemory;
     memory.dirty = true;
     memory.error = "";
     memory.notice = "";
     memory.conflict = null;
-    memory.deleteConfirm = false;
     var save = document.querySelector('[data-action="owner-memory-save"]');
     var discard = document.querySelector('[data-action="owner-memory-discard"]');
     if (save) save.disabled = false;
@@ -8091,27 +7788,27 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   function saveOwnerMemoryEntry() {
     var memory = state.ownerMemory;
     if (!memory.draft || !memory.dirty || memory.busy) return;
-    if (!memory.detail) return createOwnerMemoryBody();
+    if (!memory.detail) return;
     var entry = memory.detail.entry;
-    var base = ownerMemoryBase(memory.ownerKind, memory.workspaceId, memory.ownerId);
     var ownerKey = memory.ownerKind + ":" + memory.workspaceId + ":" + memory.ownerId;
     memory.busy = "save";
     memory.error = "";
     memory.notice = "";
     render();
-    return api(base + "/entries/" + encodeURIComponent(entry.entryId), {
+    return api("/admin/api/agents/" + encodeURIComponent(memory.ownerId) + "/memory", {
       method: "PUT",
-      headers: { "content-type": "application/json", "idempotency-key": "admin-ui:owner-memory:" + Date.now() + ":" + Math.random().toString(36).slice(2) },
-      body: JSON.stringify({ expectedVersion: entry.version, description: memory.draft.description, type: memory.draft.type, body: memory.draft.body })
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision: entry.version, body: memory.draft.body })
     }).then(function (body) {
       var current = state.ownerMemory;
       if (ownerKey !== current.ownerKind + ":" + current.workspaceId + ":" + current.ownerId) return;
-      current.detail = { entry: body.entry, projected: body.projected, owner: current.detail.owner };
-      current.draft = { description: body.entry.description || "", type: body.entry.type || "fact", body: body.entry.body || "" };
+      var saved = body.memory;
+      current.detail = { entry: { entryId: "memory", description: "Current Agent memory", type: "project", body: saved.body || "", version: saved.revision, status: "active" } };
+      current.draft = { description: "Current Agent memory", type: "project", body: saved.body || "" };
       current.dirty = false;
       current.busy = "";
       current.notice = "Memory saved.";
-      return loadOwnerMemory(current.ownerKind, current.workspaceId, current.ownerId, true);
+      render();
     }).catch(function (error) {
       var current = state.ownerMemory;
       if (ownerKey !== current.ownerKind + ":" + current.workspaceId + ":" + current.ownerId) return;
@@ -8141,404 +7838,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     render();
   }
 
-  function createOwnerMemoryBody() {
-    var memory = state.ownerMemory;
-    if (!memory.draft || !memory.dirty || memory.busy) return;
-    var ownerKind = memory.ownerKind;
-    var workspaceId = memory.workspaceId;
-    var ownerId = memory.ownerId;
-    memory.busy = "create";
-    memory.error = "";
-    memory.notice = "";
-    render();
-    return api(ownerMemoryBase(ownerKind, workspaceId, ownerId) + "/entries", {
-      method: "POST",
-      headers: { "content-type": "application/json", "idempotency-key": "admin-ui:owner-memory:" + Date.now() + ":" + Math.random().toString(36).slice(2) },
-      body: JSON.stringify({ slug: "agent-memory", description: "Current Agent memory", type: "project", body: memory.draft.body })
-    }).then(function (body) {
-      var current = state.ownerMemory;
-      if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
-      current.busy = "";
-      current.dirty = false;
-      current.selectedFile = body.entry.entryId;
-      current.notice = "Memory saved.";
-      return loadOwnerMemory(ownerKind, workspaceId, ownerId, true);
-    }).catch(function (error) {
-      var current = state.ownerMemory;
-      if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
-      current.busy = "";
-      current.error = error.serverMessage || error.message || "Could not save memory.";
-      render();
-    });
-  }
-
-  function openOwnerMemoryCreate() {
-    var memory = state.ownerMemory;
-    if (!memory.ownerKind || memory.busy || memory.dirty) return;
-    memory.createDraft = { slug: "", description: "", type: "fact", body: "" };
-    memory.dirty = true;
-    memory.error = "";
-    memory.notice = "";
-    render();
-  }
-
-  function cancelOwnerMemoryCreate() {
-    var memory = state.ownerMemory;
-    if (!memory.createDraft || memory.busy) return;
-    memory.createDraft = null;
-    memory.dirty = false;
-    memory.error = "";
-    memory.notice = "Draft discarded.";
-    render();
-  }
-
-  function createOwnerMemoryEntry() {
-    var memory = state.ownerMemory;
-    if (!memory.createDraft || memory.busy) return;
-    var draft = memory.createDraft;
-    var slug = String(draft.slug || "").trim().replace(/\.md$/i, "");
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(slug)) {
-      memory.error = "Filename must start with a letter or number and use only letters, numbers, hyphens, or underscores.";
-      render();
-      return;
-    }
-    if (!String(draft.description || "").trim()) {
-      memory.error = "Description is required.";
-      render();
-      return;
-    }
-    var ownerKind = memory.ownerKind;
-    var workspaceId = memory.workspaceId;
-    var ownerId = memory.ownerId;
-    memory.busy = "create";
-    memory.error = "";
-    render();
-    return api(ownerMemoryBase(ownerKind, workspaceId, ownerId) + "/entries", {
-      method: "POST",
-      headers: { "content-type": "application/json", "idempotency-key": "admin-ui:owner-memory-create:" + Date.now() + ":" + Math.random().toString(36).slice(2) },
-      body: JSON.stringify({ slug: slug, description: String(draft.description).trim(), type: draft.type, body: draft.body })
-    }).then(function (body) {
-      var current = state.ownerMemory;
-      if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
-      current.busy = "";
-      current.dirty = false;
-      current.createDraft = null;
-      current.selectedFile = body.entry.entryId;
-      current.notice = "Memory file created.";
-      return loadOwnerMemory(ownerKind, workspaceId, ownerId, true);
-    }).catch(function (error) {
-      var current = state.ownerMemory;
-      if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
-      current.busy = "";
-      current.error = error.serverMessage || error.message || "Could not create this memory file.";
-      render();
-    });
-  }
-
-  function deleteOwnerMemoryEntry() {
-    var memory = state.ownerMemory;
-    if (!memory.detail || memory.dirty || memory.busy) return;
-    var entry = memory.detail.entry;
-    var ownerKind = memory.ownerKind;
-    var workspaceId = memory.workspaceId;
-    var ownerId = memory.ownerId;
-    memory.busy = "delete";
-    memory.error = "";
-    render();
-    return api(ownerMemoryBase(ownerKind, workspaceId, ownerId) + "/entries/" + encodeURIComponent(entry.entryId), {
-      method: "DELETE",
-      headers: { "content-type": "application/json", "idempotency-key": "admin-ui:owner-memory-delete:" + Date.now() + ":" + Math.random().toString(36).slice(2) },
-      body: JSON.stringify({ expectedVersion: entry.version, acknowledgeIrreversible: true })
-    }).then(function () {
-      var current = state.ownerMemory;
-      if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
-      current.busy = "";
-      current.deleteConfirm = false;
-      current.selectedFile = "MEMORY.md";
-      current.notice = "Memory file forgotten.";
-      return loadOwnerMemory(ownerKind, workspaceId, ownerId, true);
-    }).catch(function (error) {
-      var current = state.ownerMemory;
-      if (!ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
-      current.busy = "";
-      current.deleteConfirm = false;
-      current.error = error.status === 409
-        ? "This file changed elsewhere. Reload it before forgetting it."
-        : error.serverMessage || error.message || "Could not forget this memory file.";
-      render();
-    });
-  }
-
-  function resolveOwnerMemoryReview() {
-    var memory = state.ownerMemory;
-    if (!memory.detail || !memory.detail.unresolvedReview || memory.busy) return;
-    var entry = memory.detail.entry;
-    var review = memory.detail.unresolvedReview;
-    memory.busy = "review";
-    memory.error = "";
-    render();
-    return api("/admin/api/audit/memory/entries/" + encodeURIComponent(entry.entryId) + "/reviews/" + encodeURIComponent(review.eventId) + "/resolve", {
-      method: "POST",
-      headers: { "content-type": "application/json", "idempotency-key": "admin-ui:owner-memory-review:" + Date.now() + ":" + Math.random().toString(36).slice(2) },
-      body: JSON.stringify({ expectedVersion: entry.version, resolution: "confirmed" })
-    }).then(function () {
-      memory.busy = "";
-      memory.notice = "Review resolved.";
-      return loadOwnerMemoryEntry(entry.entryId);
-    }).catch(function (error) {
-      memory.busy = "";
-      memory.error = error.serverMessage || error.message || "Could not resolve this review.";
-      render();
-    });
-  }
-
   function openAuditLogs(storeId, channelId, entryId) {
     openScheduledWork("");
   }
-
-  function loadMemoryScopes() {
-    if (state.memoryScopesLoading) return Promise.resolve();
-    state.memoryScopesLoading = true;
-    state.memoryScopesError = "";
-    render();
-    return api("/admin/api/audit/memory/scopes").then(function (body) {
-      state.memoryScopes = body.scopes || [];
-      state.memoryScopesLoading = false;
-      var selected = selectedMemoryScope();
-      if (!selected && state.memoryScopes.length && !state.memorySelection.channelId) {
-        selected = state.memoryScopes[0];
-      }
-      if (selected) state.memorySelection = { storeId: selected.storeId, channelId: selected.channelId, entryId: state.memorySelection.entryId || "" };
-      render();
-      if (selected) return loadMemoryFiles();
-    }).catch(function (error) {
-      state.memoryScopesLoading = false;
-      state.memoryScopesError = error.serverMessage || error.message || "Could not load memory scopes.";
-      render();
-    });
-  }
-
-  function selectMemoryScope(storeId, channelId) {
-    if (state.memoryDirty) { state.memoryError = "Save or discard the current draft before changing channels."; render(); return; }
-    if (state.memoryBusy && state.memoryBusy !== "load") { state.memoryError = "Wait for the current memory action to finish before changing channels."; render(); return; }
-    state.memorySelection = { storeId: storeId, channelId: channelId, entryId: "" };
-    state.memoryFilesRequestId += 1;
-    state.memoryEntryRequestId += 1;
-    state.memorySelectedFile = "";
-    state.memoryDetail = null;
-    state.memoryDraft = null;
-    state.memoryHistory = [];
-    state.memoryConflict = null;
-    state.memoryNotice = "";
-    state.memoryError = "";
-    render();
-    loadMemoryFiles();
-  }
-
-  function loadMemoryFiles() {
-    var scope = selectedMemoryScope();
-    if (!scope) return Promise.resolve();
-    var requestId = ++state.memoryFilesRequestId;
-    var storeId = scope.storeId;
-    var channelId = scope.channelId;
-    state.memoryFilesLoading = true;
-    state.memoryFilesError = "";
-    render();
-    return api("/admin/api/audit/memory/stores/" + encodeURIComponent(scope.storeId) + "/files?sourceChannelId=" + encodeURIComponent(scope.channelId)).then(function (body) {
-      if (requestId !== state.memoryFilesRequestId || state.memorySelection.storeId !== storeId || state.memorySelection.channelId !== channelId) return;
-      state.memoryFiles = body.files || [];
-      state.memoryFilesLoading = false;
-      var requested = state.memorySelection.entryId;
-      var hasRequested = requested && state.memoryFiles.some(function (file) { return file.entryId === requested; });
-      state.memorySelectedFile = hasRequested ? requested : "MEMORY.md";
-      state.memorySelection.entryId = hasRequested ? requested : "";
-      render();
-      if (hasRequested) return loadMemoryEntry(requested);
-    }).catch(function (error) {
-      if (requestId !== state.memoryFilesRequestId || state.memorySelection.storeId !== storeId || state.memorySelection.channelId !== channelId) return;
-      state.memoryFilesLoading = false;
-      state.memoryFilesError = error.serverMessage || error.message || "Could not load memory files.";
-      render();
-    });
-  }
-
-  function selectMemoryFile(key) {
-    if (state.memoryDirty) { state.memoryError = "Save or discard the current draft before opening another file."; render(); return; }
-    if (state.memoryBusy && state.memoryBusy !== "load") { state.memoryError = "Wait for the current memory action to finish before opening another file."; render(); return; }
-    state.memoryEntryRequestId += 1;
-    state.memorySelectedFile = key;
-    state.memorySelection.entryId = key === "MEMORY.md" ? "" : key;
-    state.memoryDetail = null;
-    state.memoryDraft = null;
-    state.memoryHistory = [];
-    state.memoryConflict = null;
-    state.memoryError = "";
-    state.memoryNotice = "";
-    render();
-    if (key !== "MEMORY.md") loadMemoryEntry(key);
-  }
-
-  function loadMemoryEntry(entryId) {
-    var requestId = ++state.memoryEntryRequestId;
-    state.memoryBusy = "load";
-    render();
-    return Promise.all([
-      api("/admin/api/audit/memory/entries/" + encodeURIComponent(entryId)),
-      api("/admin/api/audit/memory/entries/" + encodeURIComponent(entryId) + "/history")
-    ]).then(function (parts) {
-      if (requestId !== state.memoryEntryRequestId || state.memorySelectedFile !== entryId) return;
-      state.memoryDetail = parts[0];
-      state.memoryHistory = parts[1].revisions || [];
-      state.memoryDraft = {
-        description: parts[0].entry.description || "",
-        type: parts[0].entry.type || "fact",
-        body: parts[0].entry.body || ""
-      };
-      state.memoryDirty = false;
-      state.memoryBusy = "";
-      state.memoryIdempotencyKey = "";
-      state.memoryConflict = null;
-      render();
-    }).catch(function (error) {
-      if (requestId !== state.memoryEntryRequestId || state.memorySelectedFile !== entryId) return;
-      state.memoryBusy = "";
-      state.memoryError = error.serverMessage || error.message || "Could not load this memory.";
-      render();
-    });
-  }
-
-  function memoryMutationKey(prefix) {
-    if (!state.memoryIdempotencyKey) state.memoryIdempotencyKey = prefix + "-" + Date.now() + "-" + Math.random().toString(36).slice(2);
-    return state.memoryIdempotencyKey;
-  }
-
-  function markMemoryDirty() {
-    state.memoryDirty = true;
-    state.memoryError = "";
-    state.memoryNotice = "";
-    state.memoryIdempotencyKey = "";
-    state.memoryConflict = null;
-    var save = document.querySelector('[data-action="memory-save"]');
-    var discard = document.querySelector('[data-action="memory-discard"]');
-    if (save) save.disabled = false;
-    if (discard) discard.disabled = false;
-  }
-
-  function saveMemoryEntry() {
-    if (!state.memoryDetail || !state.memoryDraft || !state.memoryDirty || state.memoryBusy) return;
-    var entry = state.memoryDetail.entry;
-    state.memoryBusy = "save";
-    state.memoryError = "";
-    state.memoryNotice = "";
-    render();
-    return api("/admin/api/audit/memory/entries/" + encodeURIComponent(entry.entryId), {
-      method: "PUT",
-      headers: { "content-type": "application/json", "idempotency-key": memoryMutationKey("edit") },
-      body: JSON.stringify({ expectedVersion: entry.version, description: state.memoryDraft.description, type: state.memoryDraft.type, body: state.memoryDraft.body })
-    }).then(function (body) {
-      state.memoryDetail.entry = body.entry;
-      state.memoryDetail.projected = body.projected;
-      state.memoryDraft = { description: body.entry.description, type: body.entry.type, body: body.entry.body };
-      state.memoryDirty = false;
-      state.memoryBusy = "";
-      state.memoryIdempotencyKey = "";
-      state.memoryNotice = "Memory saved.";
-      // loadMemoryFiles already reloads the selected entry. A second explicit
-      // load raced the operator's next keystroke and could repaint their draft.
-      return loadMemoryFiles();
-    }).catch(function (error) {
-      state.memoryBusy = "";
-      if (error.payload && error.payload.error === "memory_version_conflict") {
-        state.memoryError = "This memory changed elsewhere (now version " + Number(error.payload.currentVersion) + "). Your draft is preserved; reload before saving again.";
-        state.memoryIdempotencyKey = "";
-        api("/admin/api/audit/memory/entries/" + encodeURIComponent(entry.entryId)).then(function (body) {
-          state.memoryConflict = { latest: body.entry };
-          render();
-        }).catch(function () { render(); });
-      } else {
-        state.memoryError = error.serverMessage || error.message || "Could not save memory. Retry will reuse the same request key.";
-      }
-      render();
-    });
-  }
-
-  function discardMemoryDraft() {
-    if (!state.memoryDetail) return;
-    var entry = state.memoryDetail.entry;
-    state.memoryDraft = { description: entry.description || "", type: entry.type || "fact", body: entry.body || "" };
-    state.memoryDirty = false;
-    state.memoryIdempotencyKey = "";
-    state.memoryError = "";
-    state.memoryConflict = null;
-    render();
-  }
-
-  function useLatestMemoryEntry() {
-    if (!state.memoryConflict || !state.memoryConflict.latest) return;
-    var latest = state.memoryConflict.latest;
-    state.memoryDetail.entry = latest;
-    state.memoryDraft = { description: latest.description || "", type: latest.type || "fact", body: latest.body || "" };
-    state.memoryDirty = false;
-    state.memoryIdempotencyKey = "";
-    state.memoryConflict = null;
-    state.memoryError = "";
-    state.memoryNotice = "Loaded the latest saved version.";
-    render();
-    loadMemoryEntry(latest.entryId);
-  }
-
-  function deleteMemoryEntry() {
-    if (!state.memoryDetail || state.memoryBusy) return;
-    var entry = state.memoryDetail.entry;
-    state.memoryDeleteConfirm = false;
-    state.memoryBusy = "delete";
-    state.memoryError = "";
-    render();
-    api("/admin/api/audit/memory/entries/" + encodeURIComponent(entry.entryId), {
-      method: "DELETE",
-      headers: { "content-type": "application/json", "idempotency-key": memoryMutationKey("delete") },
-      body: JSON.stringify({ expectedVersion: entry.version, acknowledgeIrreversible: true })
-    }).then(function () {
-      state.memoryBusy = "";
-      state.memoryDirty = false;
-      state.memoryIdempotencyKey = "";
-      state.memoryNotice = "Memory deleted from Chickpea. Its canonical body and revision content were removed; body-free audit records remain, and prior exports, Slack or provider logs, backups, and Flue transcripts may still retain copies.";
-      return loadMemoryFiles();
-    }).catch(function (error) {
-      state.memoryBusy = "";
-      state.memoryError = error.serverMessage || error.message || "Could not delete memory.";
-      render();
-    });
-  }
-
-  function resolveMemoryReview() {
-    if (!state.memoryDetail || !state.memoryDetail.unresolvedReview || state.memoryBusy) return;
-    var entry = state.memoryDetail.entry;
-    var review = state.memoryDetail.unresolvedReview;
-    state.memoryBusy = "review";
-    state.memoryError = "";
-    render();
-    api("/admin/api/audit/memory/entries/" + encodeURIComponent(entry.entryId) + "/reviews/" + encodeURIComponent(review.eventId) + "/resolve", {
-      method: "POST",
-      headers: { "content-type": "application/json", "idempotency-key": memoryMutationKey("review") },
-      body: JSON.stringify({ expectedVersion: entry.version, resolution: "confirmed" })
-    }).then(function () {
-      state.memoryBusy = "";
-      state.memoryNotice = "Review resolved.";
-      return loadMemoryEntry(entry.entryId);
-    }).catch(function (error) {
-      state.memoryBusy = "";
-      state.memoryError = error.serverMessage || error.message || "Could not resolve review.";
-      render();
-    });
-  }
-
-  function formatMemoryDate(value) {
-    var date = new Date(Number(value));
-    return Number.isFinite(date.getTime()) ? date.toLocaleString() : "Unknown time";
-  }
-
-  // ---- Settings: model providers (cards 13-14) -----------------------------
 
   var STAR_PATH = "M8 1.75a.75.75 0 0 1 .692.462l1.41 3.393 3.664.293a.75.75 0 0 1 .428 1.317l-2.791 2.39.853 3.575a.75.75 0 0 1-1.117.812L8 11.799l-3.139 1.905a.75.75 0 0 1-1.117-.812l.853-3.575-2.791-2.39a.75.75 0 0 1 .428-1.317l3.664-.293 1.41-3.393A.75.75 0 0 1 8 1.75Z";
 
@@ -10484,7 +9786,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       })
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
-      state.assignments = [];
+      state.grants = [];
       state.models = parts[1];
       state.slack = parts[2];
       state.slackBehavior = parts[3].body;
@@ -10493,6 +9795,15 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.onboarding = parts[4].body;
       state.onboardingError = parts[4].error;
       state.channelIndex = parts[5].channels;
+      state.channelIndex.forEach(function (channel) {
+        (channel.grants || []).forEach(function (grant) {
+          state.grants.push(Object.assign({}, grant, {
+            workspaceId: channel.workspaceId,
+            channelId: channel.channelId,
+            channelLabel: channel.channelName || channel.channelId
+          }));
+        });
+      });
       state.channelIndexError = parts[5].error;
       syncChannelFormWorkspacePrefill();
       render();
@@ -10653,15 +9964,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       return;
     }
 
-    if (state.memoryDeleteConfirm) {
-      if (action === "memory-delete-cancel") {
-        state.memoryDeleteConfirm = false;
-        render();
-      } else if (action === "memory-delete-confirm") {
-        deleteMemoryEntry();
-      }
-      return;
-    }
     if (state.scheduledDeleteConfirm) {
       if (action === "scheduled-delete-cancel") {
         if (state.scheduledBusy) return;
@@ -10681,14 +9983,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "mobile-agents-close") {
       state.mobileAgentRosterOpen = false;
       state.mobileAgentRosterFocus = "trigger";
-      render();
-      return;
-    }
-    if (state.view === "audit" && state.memoryDirty && (
-      action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
-      action === "open-audit" || action === "open-usage" || action === "go-home" || action === "audit-tab-scheduled"
-    )) {
-      state.memoryError = "Save or discard the current memory draft before navigating away.";
       render();
       return;
     }
@@ -10827,9 +10121,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (action === "copy-onboarding-prompt") { copyOnboardingPrompt(); }
     if (action === "copy-channel-prompt") { copyChannelPrompt(); }
     if (action === "select-channel") { state.view = "channels"; state.channelScreen = "detail"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
-    if (action === "open-channel-memory") {
-      openAuditLogs(target.getAttribute("data-store") || "", target.getAttribute("data-channel") || "", "");
-    }
     if (action === "open-channel-scheduled") {
       openChannelScheduledWork(target.getAttribute("data-workspace") || "", target.getAttribute("data-channel") || "");
     }
@@ -10952,32 +10243,20 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }
     if (action === "scheduled-control") { controlScheduledRoutine(target.getAttribute("data-control") || ""); }
     if (action === "scheduled-delete-open" && state.scheduledDetail) { state.scheduledDeleteConfirm = true; render(); }
-    if (action === "memory-retry-scopes") { loadMemoryScopes(); }
-    if (action === "select-memory-scope") { selectMemoryScope(target.getAttribute("data-store") || "", target.getAttribute("data-channel") || ""); }
-    if (action === "memory-retry-files") { loadMemoryFiles(); }
-    if (action === "select-memory-file") { selectMemoryFile(target.getAttribute("data-file") || "MEMORY.md"); }
-    if (action === "memory-save") { saveMemoryEntry(); }
-    if (action === "memory-discard") { discardMemoryDraft(); }
-    if (action === "memory-use-latest") { useLatestMemoryEntry(); }
-    if (action === "memory-delete-open" && state.memoryDetail) { state.memoryDeleteConfirm = true; render(); }
-    if (action === "memory-resolve-review") { resolveMemoryReview(); }
     if (action === "owner-memory-retry") {
       loadOwnerMemory(state.ownerMemory.ownerKind, state.ownerMemory.workspaceId, state.ownerMemory.ownerId, true);
     }
-    if (action === "owner-memory-file") { selectOwnerMemoryFile(target.getAttribute("data-file") || "MEMORY.md"); }
     if (action === "owner-memory-save") { saveOwnerMemoryEntry(); }
     if (action === "owner-memory-discard") { discardOwnerMemoryDraft(); }
-    if (action === "owner-memory-create-open") { openOwnerMemoryCreate(); }
-    if (action === "owner-memory-create-cancel") { cancelOwnerMemoryCreate(); }
-    if (action === "owner-memory-create-confirm") { createOwnerMemoryEntry(); }
-    if (action === "owner-memory-delete-open" && state.ownerMemory.detail && !state.ownerMemory.dirty) { state.ownerMemory.deleteConfirm = true; render(); }
-    if (action === "owner-memory-delete-cancel") { state.ownerMemory.deleteConfirm = false; render(); }
-    if (action === "owner-memory-delete-confirm") { deleteOwnerMemoryEntry(); }
-    if (action === "owner-memory-resolve-review") { resolveOwnerMemoryReview(); }
     if (action === "owner-memory-use-latest") {
       state.ownerMemory.dirty = false;
       state.ownerMemory.conflict = null;
-      loadOwnerMemoryEntry(state.ownerMemory.selectedFile);
+      loadOwnerMemory(
+        state.ownerMemory.ownerKind,
+        state.ownerMemory.workspaceId,
+        state.ownerMemory.ownerId,
+        true
+      );
     }
     if (state.githubBusy && action.indexOf("github-") === 0) return;
     if (action === "github-manifest-open") {
@@ -11098,7 +10377,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     }
     if (action === "agent-lifecycle-disable" && state.profileDraft) {
       state.profileOverflowOpen = false;
-      if (allAssignmentsForAgent(state.profileDraft.id).length > 0) state.disableConfirm = true;
+      if (allGrantsForAgent(state.profileDraft.id).length > 0) state.disableConfirm = true;
       else { state.profileDraft.enabled = false; markProfileDirty(); }
       render();
       focusAction("agent-overflow-toggle");
@@ -11440,18 +10719,9 @@ button.where-pill, button.capability-pill { cursor: pointer; }
         try { search.setSelectionRange(channelQueryCaret, channelQueryCaret); } catch (error) { /* ignore */ }
       }
     }
-    if (state.memoryDraft) {
-      if (action === "memory-description") { state.memoryDraft.description = target.value; markMemoryDirty(); }
-      if (action === "memory-body") { state.memoryDraft.body = target.value; markMemoryDirty(); }
-    }
     if (state.ownerMemory.draft) {
       if (action === "owner-memory-description") { state.ownerMemory.draft.description = target.value; markOwnerMemoryDirty(); }
       if (action === "owner-memory-body") { state.ownerMemory.draft.body = target.value; markOwnerMemoryDirty(); }
-    }
-    if (state.ownerMemory.createDraft) {
-      if (action === "owner-memory-create-slug") { state.ownerMemory.createDraft.slug = target.value; state.ownerMemory.error = ""; }
-      if (action === "owner-memory-create-description") { state.ownerMemory.createDraft.description = target.value; state.ownerMemory.error = ""; }
-      if (action === "owner-memory-create-body") { state.ownerMemory.createDraft.body = target.value; state.ownerMemory.error = ""; }
     }
     // Preserve a half-typed manual channel id across re-renders.
     if (action === "manual-channel-input") { state.channelFormDraft.channelId = target.value; }
@@ -11631,21 +10901,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       state.usageOperationFilter = null;
       syncUsageQueryUrl();
       loadUsage(true);
-    }
-    if (action === "memory-type" && state.memoryDraft) {
-      state.memoryDraft.type = target.value;
-      markMemoryDirty();
-      render();
-    }
-    if (action === "owner-memory-type" && state.ownerMemory.draft) {
-      state.ownerMemory.draft.type = target.value;
-      markOwnerMemoryDirty();
-      render();
-    }
-    if (action === "owner-memory-create-type" && state.ownerMemory.createDraft) {
-      state.ownerMemory.createDraft.type = target.value;
-      state.ownerMemory.error = "";
-      render();
     }
     if (action === "scheduled-filter-scope") {
       var scopeParts = String(target.value || "").split("|");
@@ -11857,8 +11112,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
       if (state.ownerMemory.dirty) {
         event.preventDefault();
-        if (state.ownerMemory.createDraft) createOwnerMemoryEntry();
-        else saveOwnerMemoryEntry();
+        saveOwnerMemoryEntry();
         return;
       }
       if (state.profileScreen === "edit" && state.profileDirty) { event.preventDefault(); saveProfile(); return; }
@@ -11896,14 +11150,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (state.scheduledSelection && !state.scheduledInspector && (event.key === "Escape" || event.key === "Esc")) {
       event.preventDefault();
       closeScheduledSummary();
-      return;
-    }
-    if (state.memoryDeleteConfirm && (event.key === "Escape" || event.key === "Esc")) {
-      event.preventDefault();
-      state.memoryDeleteConfirm = false;
-      render();
-      var restoreMemoryDelete = document.querySelector('[data-action="memory-delete-open"]');
-      if (restoreMemoryDelete && restoreMemoryDelete.focus) restoreMemoryDelete.focus();
       return;
     }
     if (state.githubDisconnectConfirm && event.key === "Tab") {
@@ -12023,7 +11269,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       if (
         (state.profileScreen === "edit" && state.profileDirty) ||
         (state.view === "channels" && state.channelScreen === "detail" && state.dirty) ||
-        state.memoryDirty ||
         state.ownerMemory.dirty ||
         state.slackConnectionBusy === "disconnect" ||
         state.githubBusy === "disconnect"
@@ -12062,12 +11307,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
       if (state.ownerMemory.dirty && targetPath !== canonicalPath()) {
         history.pushState(null, "", canonicalPath());
         state.ownerMemory.error = "Save or discard this memory draft before navigating away.";
-        render();
-        return;
-      }
-      if (state.memoryDirty && targetPath !== canonicalPath()) {
-        history.pushState(null, "", canonicalPath());
-        state.memoryError = "Save or discard the current memory draft before navigating away.";
         render();
         return;
       }
@@ -12315,7 +11554,7 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     if (message === "channel_not_found") return "Slack could not find that channel in the connected workspace. Check the ID, and invite the connected Slack app if it is private.";
     if (message === "workspace_mismatch") return "That channel belongs to a different workspace than the one Chickpea is connected to.";
     if (message === "unknown_agent") return "The Agent no longer exists. Reload and try again.";
-    if (message === "channel_assignment_changed") return "This Channel's assigned Agent changed elsewhere. Reload the Channel, review the latest Agent, then try again.";
+    if (message === "channel_grant_changed") return "This Agent's Channel grant changed elsewhere. Reload the Agent and try again.";
     return message || "Could not add the channel.";
   }
 
@@ -13834,19 +13073,11 @@ button.where-pill, button.capability-pill { cursor: pointer; }
   }
 
   function deleteProfileErrorText(error) {
-    // The delete button is disabled while assigned, but the server is the guard
-    // of record (409 agent_still_assigned) — surface it honestly if it ever races.
-    if (error && error.message === "agent_still_assigned") {
-      return "This Agent is still attached to a Channel. Detach it everywhere first.";
-    }
     if (error && error.payload && error.payload.error === "agent_still_referenced") {
       return "This Agent still has a Channel grant or is the workspace Default Agent. Remove every reference before deleting it.";
     }
     if (error && error.payload && error.payload.error === "agent_live_snapshot_roots") {
       return "This Agent still has live Slack threads. Wait for those conversations to expire before deleting it.";
-    }
-    if (error && error.payload && error.payload.error === "agent_slack_dm_handler") {
-      return "Choose another workspace Default Agent before deleting this one.";
     }
     return (error && error.message) || "Could not delete the Agent.";
   }
@@ -13855,7 +13086,6 @@ button.where-pill, button.capability-pill { cursor: pointer; }
     var draft = state.profileDraft;
     if (!draft || !draft.id) return;
     api("/admin/api/agents/" + encodeURIComponent(draft.id), { method: "DELETE" }).then(function () {
-      if (state.active && activeAssignment() && activeAssignment().agentId === draft.id) state.active = null;
       state.profileScreen = "list";
       state.profileDraft = null;
       state.editingAgentId = null;

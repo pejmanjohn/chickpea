@@ -21,11 +21,6 @@ import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { WorkspaceManagementService, type WorkspaceManagementServiceInput } from './service.ts';
 import {
-  cancelManagedSlackIdentitySetup,
-  clearManagedSlackIdentityCredentials,
-  countManagedSlackIdentityDeliveries,
-} from './slack-identity-lifecycle.ts';
-import {
   discoverManagedSlackChannels,
   testManagedMcpConnection,
 } from './discovery.ts';
@@ -80,12 +75,6 @@ export function createLiveWorkspaceManagementService(
       config,
       settings,
     }),
-    countPendingSlackIdentityDeliveries: (identityId) =>
-      countManagedSlackIdentityDeliveries(identityId, env),
-    clearSlackIdentityCredentials: (identityId) =>
-      clearManagedSlackIdentityCredentials(identityId, env),
-    cancelSlackIdentitySetup: (identityId, expectedRevision) =>
-      cancelManagedSlackIdentitySetup(identityId, expectedRevision, env),
     ...overrides,
   });
 }

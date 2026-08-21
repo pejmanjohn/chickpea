@@ -71,7 +71,7 @@ function DeniedMemoryProbe() {
   const finishDenied = useDataWriter(AUTONOMOUS_MEMORY_RESULT_DATA_NAME, {
     schema: AutonomousMemoryResultSchema,
   });
-  useTool(createAutonomousAgentMemoryTool('agent', async () => {
+  useTool(createAutonomousAgentMemoryTool(async () => {
     throw new MemoryStateError(
       'memory_actor_forbidden',
       'Only an active workspace member currently permitted to use this Agent can change its memory.',

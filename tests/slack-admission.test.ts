@@ -8,11 +8,11 @@ import type { SlackOidcGateway, SlackOidcProof } from '../src/auth/slack-oidc.ts
 import { mintSetupCapability } from '../src/auth/setup-capability.mjs';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { SlackAppCreationService, openSlackSetupTransaction } from '../src/slack/app-creation.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
-import { buildSlackAppManifest } from '../src/slack/identity-manifest.ts';
+import { buildSlackAppManifest } from '../src/slack/app-manifest.ts';
 import { SlackInstallOAuthService } from '../src/slack/install-oauth.ts';
 import { REQUIRED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 
@@ -545,7 +545,7 @@ async function installedFixture() {
   }).create({
     setupId: opened.id, expectedRevision: opened.revision,
     configurationToken: 'xoxe.xoxp-fixture-token',
-    manifest: buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN }),
+    manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
   });
   const install = new SlackInstallOAuthService({
     identity, credentials, config, settings, now,
@@ -555,7 +555,7 @@ async function installedFixture() {
       scope: REQUIRED_SLACK_BOT_SCOPES.join(','), bot_user_id: 'UBOT', app_id: 'A12345678',
       team: { id: 'TACME', name: 'Acme' }, authed_user: { id: 'UINSTALLER' },
     })) as typeof fetch,
-    bootstrap: {
+    verification: {
       now,
       authTest: async () => ({
         ok: true, error: undefined, appId: 'A12345678', teamId: 'TACME', teamName: 'Acme',
@@ -582,7 +582,7 @@ async function installedFixture() {
   const pending = (await identity.getSlackSetupTransaction(app.id))!;
   await identity.recordSlackEventsProof({
     setupId: pending.id, candidateRevision: pending.botCredentialRevision!,
-    identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID, appId: 'A12345678', teamId: 'TACME',
+    identityId: WORKSPACE_SLACK_INSTALLATION_ID, appId: 'A12345678', teamId: 'TACME',
     baseRevision: pending.credentialRevision!, verifiedAt: clock.now,
   });
   const installed = await install.finalizeWaitingInstallation(app.id);

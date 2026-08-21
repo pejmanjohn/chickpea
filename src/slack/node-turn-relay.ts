@@ -29,16 +29,16 @@ import { ContinuityNoticeDeliveryError } from './continuity-notice.ts';
 import { AgentPromptFailure } from './flue-dispatch.ts';
 import { slackThreadKey } from './thread-key.ts';
 import {
-  cacheSlackIdentityExecutionContexts,
-  effectiveTurnSlackIdentityId,
-  normalizeSlackIdentityExecutionError,
-  resolveSlackIdentityExecutionContext,
-  verifySlackIdentityTurnAccess,
-  type SlackIdentityAccessVerifier,
-  type SlackIdentityExecutionContext,
-  type SlackIdentityExecutionResolver,
-} from './identity-execution.ts';
-import { recordSlackIdentityUnavailable } from './identity-observability.ts';
+  cacheSlackInstallationExecutionContexts,
+  effectiveTurnSlackInstallationId,
+  normalizeSlackInstallationExecutionError,
+  resolveSlackInstallationExecutionContext,
+  verifySlackInstallationTurnAccess,
+  type SlackInstallationAccessVerifier,
+  type SlackInstallationExecutionContext,
+  type SlackInstallationExecutionResolver,
+} from './installation-execution.ts';
+import { recordSlackInstallationUnavailable } from './installation-observability.ts';
 import { MAX_POST_DISPATCH_ATTEMPTS } from './turn-jobs.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 
@@ -127,8 +127,8 @@ export interface NodeTurnRelayDrainOptions {
   work?: WorkStore;
   client?: WebClient;
   /** Focused seam for proving identity isolation and rotation. */
-  resolveIdentity?: SlackIdentityExecutionResolver;
-  verifyIdentityAccess?: SlackIdentityAccessVerifier;
+  resolveInstallation?: SlackInstallationExecutionResolver;
+  verifyInstallationAccess?: SlackInstallationAccessVerifier;
   executeTurn?: LedgerSlackTurnExecutor;
 }
 
@@ -138,12 +138,12 @@ export async function drainNodeTurnRelayOnce(
   const env = options.env;
   const state = options.state ?? getSlackStateStore(env);
   const executeTurn = options.executeTurn ?? runTurn;
-  const shouldResolveIdentity = Boolean(options.resolveIdentity) ||
+  const shouldResolveIdentity = Boolean(options.resolveInstallation) ||
     (!options.client && !options.executeTurn);
-  const resolveIdentity = options.resolveIdentity ??
-    ((identityId: string) => resolveSlackIdentityExecutionContext(identityId, env));
-  const verifyIdentityAccess = options.verifyIdentityAccess ?? verifySlackIdentityTurnAccess;
-  const identityFor = cacheSlackIdentityExecutionContexts(resolveIdentity);
+  const resolveInstallation = options.resolveInstallation ??
+    ((workspaceId: string) => resolveSlackInstallationExecutionContext(workspaceId, env));
+  const verifyInstallationAccess = options.verifyInstallationAccess ?? verifySlackInstallationTurnAccess;
+  const installationFor = cacheSlackInstallationExecutionContexts(resolveInstallation);
   if (
     state.listPendingTurns &&
     state.freezeRuntimePlan &&
@@ -179,27 +179,27 @@ export async function drainNodeTurnRelayOnce(
       if (!job.turn.interactionIntent && job.progress.interactionIntent) {
         job.turn.interactionIntent = job.progress.interactionIntent;
       }
-      let identityContext: SlackIdentityExecutionContext | undefined;
+      let installationContext: SlackInstallationExecutionContext | undefined;
       if (shouldResolveIdentity) {
         try {
-          identityContext = await identityFor(effectiveTurnSlackIdentityId(job.turn));
-          await verifyIdentityAccess(identityContext, job.turn);
+          installationContext = await installationFor(effectiveTurnSlackInstallationId(job.turn));
+          await verifyInstallationAccess(installationContext, job.turn);
         } catch (error) {
-          const unavailable = normalizeSlackIdentityExecutionError(
+          const unavailable = normalizeSlackInstallationExecutionError(
             error,
-            effectiveTurnSlackIdentityId(job.turn),
+            effectiveTurnSlackInstallationId(job.turn),
           );
-          recordSlackIdentityUnavailable(unavailable);
+          recordSlackInstallationUnavailable(unavailable);
           if (unavailable.retryable) {
             if (!options.state) {
               scheduleNodeTurnRelayRetry(env, unavailable.retryAfterMs);
             }
             console.warn(
-              `[chickpea] Slack identity preflight will retry (${unavailable.reasonCode})`,
+              `[chickpea] Slack installation preflight will retry (${unavailable.reasonCode})`,
             );
             return false;
           }
-          await markTurnRecoveryRequired(job.id, 'slack_identity_unavailable');
+          await markTurnRecoveryRequired(job.id, 'slack_installation_unavailable');
           if (job.turn.interactionIntent?.disposition === 'work') {
             await state.setActiveWork(slackThreadKey(job.turn), job.id, false);
           }
@@ -236,8 +236,8 @@ export async function drainNodeTurnRelayOnce(
             }
           : undefined;
         await executeTurn(job.turn, job.assignment, env, {
-          ...(identityContext
-            ? { client: identityContext.client, identityContext }
+          ...(installationContext
+            ? { client: installationContext.client, installationContext }
             : options.client
               ? { client: options.client }
               : {}),
@@ -326,15 +326,15 @@ export async function drainNodeTurnRelayOnce(
     work: options.work ?? getWorkStore(env),
     executeTurn,
     ...(options.client ? { client: options.client } : {}),
-    ...(shouldResolveIdentity ? { resolveIdentity: identityFor, verifyIdentityAccess } : {}),
+    ...(shouldResolveIdentity ? { resolveInstallation: installationFor, verifyInstallationAccess } : {}),
     ...(env ? { env } : {}),
   });
   await drainSlackInteractionCleanups(
     state,
     options.client,
     env,
-    shouldResolveIdentity ? identityFor : undefined,
-    verifyIdentityAccess,
+    shouldResolveIdentity ? installationFor : undefined,
+    verifyInstallationAccess,
   );
   await state.maintainRunPresentations?.(100);
   if (!options.state) {
@@ -350,8 +350,8 @@ async function drainSlackInteractionCleanups(
   state: SlackStateStore,
   client: WebClient | undefined,
   env: PlatformEnv | undefined,
-  resolveIdentity?: SlackIdentityExecutionResolver,
-  verifyIdentityAccess: SlackIdentityAccessVerifier = verifySlackIdentityTurnAccess,
+  resolveInstallation?: SlackInstallationExecutionResolver,
+  verifyInstallationAccess: SlackInstallationAccessVerifier = verifySlackInstallationTurnAccess,
 ): Promise<void> {
   if (!state.listPendingSlackInteractionCleanups || !state.recordSlackInteractionProgress) {
     return;
@@ -361,11 +361,11 @@ async function drainSlackInteractionCleanups(
   for (const job of jobs) {
     if (!job.progress.slackInteraction) continue;
     try {
-      const identityContext = client || !resolveIdentity
+      const installationContext = client || !resolveInstallation
         ? undefined
-        : await resolveIdentity(effectiveTurnSlackIdentityId(job.turn));
-      if (identityContext) await verifyIdentityAccess(identityContext, job.turn);
-      const slack = client ?? identityContext?.client ?? await getClient(env);
+        : await resolveInstallation(effectiveTurnSlackInstallationId(job.turn));
+      if (installationContext) await verifyInstallationAccess(installationContext, job.turn);
+      const slack = client ?? installationContext?.client ?? await getClient(env);
       await repairSlackInteractionProgress(
         job.turn,
         job.assignment,
@@ -384,8 +384,8 @@ async function drainLedgerRuns(input: {
   work: WorkStore;
   executeTurn: LedgerSlackTurnExecutor;
   client?: WebClient;
-  resolveIdentity?: SlackIdentityExecutionResolver;
-  verifyIdentityAccess?: SlackIdentityAccessVerifier;
+  resolveInstallation?: SlackInstallationExecutionResolver;
+  verifyInstallationAccess?: SlackInstallationAccessVerifier;
   env?: PlatformEnv;
 }): Promise<void> {
   const { state, work } = input;
@@ -436,9 +436,9 @@ async function drainLedgerRuns(input: {
       setActiveWork: (key, generation, active) =>
         state.setActiveWork(key, generation, active),
       ...(input.client ? { client: input.client } : {}),
-      ...(input.resolveIdentity ? { resolveIdentity: input.resolveIdentity } : {}),
-      ...(input.verifyIdentityAccess
-        ? { verifyIdentityAccess: input.verifyIdentityAccess }
+      ...(input.resolveInstallation ? { resolveInstallation: input.resolveInstallation } : {}),
+      ...(input.verifyInstallationAccess
+        ? { verifyInstallationAccess: input.verifyInstallationAccess }
         : {}),
       ...(input.env ? { platformEnv: input.env } : {}),
     }),

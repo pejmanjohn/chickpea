@@ -139,7 +139,7 @@ test('membership updates delegate to the shared management service', async () =>
     slackUserId: 'UMANAGED1',
     displayName: 'Managed Member',
   });
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   let sequence = 0;
   const service = new WorkspaceManagementService({

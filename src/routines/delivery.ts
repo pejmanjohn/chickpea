@@ -34,7 +34,7 @@ export async function deliverRoutineResult(
     workLifecycle?: ShadowWorkLifecycle;
     now?: () => number;
   },
-  client: WebClient = createRoutineSlackClient(input.access.botToken),
+  client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
 ): Promise<RoutineDeliveryReceipt> {
   return deliverRoutineSlackMessage(
     { ...input, approvedOutput: input.message },
@@ -53,7 +53,7 @@ export async function deliverRoutineFailureNotice(
     workLifecycle?: ShadowWorkLifecycle;
     now?: () => number;
   },
-  client: WebClient = createRoutineSlackClient(input.access.botToken),
+  client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
 ): Promise<RoutineDeliveryReceipt> {
   const text = [
     `⚠️ **Routine needs attention**`,
@@ -283,6 +283,14 @@ function createRoutineSlackClient(botToken: string): WebClient {
     },
     ...(slackApiUrl ? { slackApiUrl } : {}),
   });
+}
+
+function requiredRoutineBotToken(access: RoutineRuntimeAccess): string {
+  if (!access.botToken) throw new RoutineRuntimeError(
+    'credential_unavailable',
+    'The Slack connection is unavailable for this routine.',
+  );
+  return access.botToken;
 }
 
 async function recordFailedDelivery(

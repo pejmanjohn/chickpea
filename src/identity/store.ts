@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { AuditStoreLogic } from '../audit/store.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
@@ -607,7 +607,7 @@ export class IdentityStoreLogic {
 
   createSlackRecoverySession(input: CreateSlackRecoverySessionInput): SlackRecoverySession {
     const control = this.requiredSlackCredentialControl(DEFAULT_INSTALLATION_ID);
-    const active = this.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+    const active = this.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID);
     const now = this.now();
     if (control.deploymentId !== strictText(input.deploymentId, 'deployment ID', 256) ||
         !active || active.purpose !== 'connected_credentials' ||
@@ -779,7 +779,7 @@ export class IdentityStoreLogic {
         throw identityError('auth_operation_conflict', 'Slack recovery callback lease changed.');
       }
       const candidate = this.requiredSlackCredentialRevision(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID, input.candidateRevision,
+        WORKSPACE_SLACK_INSTALLATION_ID, input.candidateRevision,
       );
       if (candidate.manifestFingerprint !== session.manifestFingerprint) {
         if (session.resultCode !== 'urls_repaired') {
@@ -794,7 +794,7 @@ export class IdentityStoreLogic {
       const auth = this.getAuthControl();
       const lostRootCandidate = auth?.healthGate === 'recovery_only' &&
         candidate.baseRevision === null &&
-        !this.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+        !this.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID);
       if (candidate.status !== 'candidate' || candidate.purpose !== 'connected_credentials' ||
           candidate.appId !== session.expectedAppId || candidate.teamId !== session.expectedTeamId ||
           (candidate.baseRevision !== session.baseRevision && !lostRootCandidate)) {
@@ -822,14 +822,14 @@ export class IdentityStoreLogic {
         throw identityError('auth_operation_conflict', 'Slack recovery is not waiting for this candidate.');
       }
       const candidate = this.requiredSlackCredentialRevision(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID, input.candidateRevision,
+        WORKSPACE_SLACK_INSTALLATION_ID, input.candidateRevision,
       );
       if (candidate.baseRevision !== input.expectedActiveRevision ||
           candidate.appId !== session.expectedAppId || candidate.teamId !== session.expectedTeamId) {
         throw identityError('credential_revision_conflict', 'Slack recovery promotion changed its identity boundary.');
       }
       this.promoteSlackCredentialRevisionInTransaction({
-        identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        identityId: WORKSPACE_SLACK_INSTALLATION_ID,
         candidateRevision: input.candidateRevision,
         expectedActiveRevision: input.expectedActiveRevision,
         expectedRotationEpoch: input.expectedRotationEpoch,
@@ -974,7 +974,7 @@ export class IdentityStoreLogic {
     const appId = slackId(input.appId, 'Slack app ID');
     const fingerprint = strictText(input.manifestFingerprint, 'manifest fingerprint', 256);
     if (input.credential.appId !== appId || input.credential.purpose !== 'app_credentials' ||
-        input.credential.identityClass !== 'workspace_default' ||
+        input.credential.identityClass !== 'workspace_installation' ||
         input.credential.manifestFingerprint !== fingerprint) {
       throw identityError('identity_invalid', 'Slack app credentials do not match setup metadata.');
     }
@@ -1045,7 +1045,7 @@ export class IdentityStoreLogic {
         input.setupRevision,
         ['app_created'],
       );
-      const active = this.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+      const active = this.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID);
       if (!active || active.revision !== input.credentialRevision ||
           active.revision !== input.baseRevision || active.purpose !== 'app_credentials' ||
           active.appId !== input.appId || setup.appId !== input.appId ||
@@ -1223,8 +1223,8 @@ export class IdentityStoreLogic {
         throw identityError('auth_operation_conflict', 'Slack OAuth installer does not match the requester.');
       }
       if (setup.appId !== attempt.appId || setup.credentialRevision !== attempt.credentialRevision ||
-          input.credential.identityId !== WORKSPACE_DEFAULT_SLACK_IDENTITY_ID ||
-          input.credential.identityClass !== 'workspace_default' ||
+          input.credential.identityId !== WORKSPACE_SLACK_INSTALLATION_ID ||
+          input.credential.identityClass !== 'workspace_installation' ||
           input.credential.purpose !== 'connected_credentials' ||
           input.credential.expectedActiveRevision !== attempt.baseRevision ||
           input.credential.appId !== attempt.appId || input.credential.teamId !== teamId ||
@@ -1384,7 +1384,7 @@ export class IdentityStoreLogic {
         throw identityError('auth_operation_conflict', 'Slack installation is not waiting for verification.');
       }
       const candidate = this.requiredSlackCredentialRevision(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        WORKSPACE_SLACK_INSTALLATION_ID,
         input.candidateRevision,
       );
       if (candidate.status === 'candidate') {
@@ -2939,9 +2939,8 @@ function validateOperationInput(input: CreateAuthOperationInput): void {
 }
 
 function validateCredentialRevisionInput(input: StageSlackCredentialRevisionInput): void {
-  const allowedPurpose = input.identityClass === 'workspace_default'
-    ? input.purpose === 'app_credentials' || input.purpose === 'connected_credentials'
-    : input.purpose === 'bot_credentials';
+  const allowedPurpose = input.identityClass === 'workspace_installation' &&
+    (input.purpose === 'app_credentials' || input.purpose === 'connected_credentials');
   if (!allowedPurpose) {
     throw identityError('identity_invalid', 'Slack credential purpose does not match its identity class.');
   }

@@ -65,6 +65,8 @@ Agent handles are Slack user groups. Publishing or editing a handle reconciles t
 3. Add Members and save.
 4. Return to the Agent and choose **Retry**.
 
+On Enterprise Grid, an Org Owner changes the equivalent permission under **Organization settings → Roles & permissions**.
+
 Reconnecting Slack cannot repair that policy, so Chickpea does not recommend it for this error.
 
 ### Channels and threads

@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { WebClient } from '@slack/web-api';
 
 import {
   canManageRoutineChannel,
   isRoutineSlackTurn,
   parseSlackChannelMention,
+  resolveRoutineSourceVisibility,
 } from '../src/routines/slack-context.ts';
 
 test('channel mentions parse exactly', () => {
@@ -114,4 +116,34 @@ test('routine channel authorization uses an explicitly admitted identity token',
     if (priorApi === undefined) delete process.env.SLACK_API_URL;
     else process.env.SLACK_API_URL = priorApi;
   }
+});
+
+test('shared-gateway routine authorization uses its credential-free Slack client', async () => {
+  const client = {
+    auth: { test: async () => ({ ok: true, team_id: 'T_TEST', user_id: 'UBOT' }) },
+    conversations: {
+      info: async () => ({
+        ok: true,
+        channel: {
+          id: 'C_TEST', name: 'test', team_id: 'T_TEST', is_member: true,
+          is_private: true, is_archived: false, is_frozen: false,
+          is_shared: false, is_ext_shared: false, is_org_shared: false,
+          is_pending_ext_shared: false, is_im: false, is_mpim: false,
+        },
+      }),
+      members: async () => ({
+        ok: true,
+        members: ['U_MEMBER', 'UBOT'],
+        response_metadata: { next_cursor: '' },
+      }),
+    },
+  } as unknown as WebClient;
+  assert.equal(
+    await canManageRoutineChannel('T_TEST', 'C_TEST', 'U_MEMBER', undefined, undefined, client),
+    true,
+  );
+  assert.equal(
+    await resolveRoutineSourceVisibility('T_TEST', 'C_TEST', undefined, undefined, client),
+    'private',
+  );
 });

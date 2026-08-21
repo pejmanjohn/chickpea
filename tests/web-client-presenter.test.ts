@@ -18,7 +18,7 @@ function presenterWith(client: unknown): WebClientPresenter {
   });
 }
 
-test('setStatus keeps composer liveness generic while activity loading detail changes', async () => {
+test('setStatus uses the Agent name in native Slack status text without unsupported persona fields', async () => {
   const calls: unknown[] = [];
   const presenter = presenterWith({
     assistant: {
@@ -38,18 +38,14 @@ test('setStatus keeps composer liveness generic while activity loading detail ch
     {
       channel_id: 'C_BOUND',
       thread_ts: '1782770400.000100',
-      status: 'is thinking...',
-      loading_messages: ['is thinking...'],
-      username: 'Test agent',
-      icon_url: 'https://chickpea.example/assets/agents/test/avatar/1',
+      status: 'Test agent is thinking...',
+      loading_messages: ['Test agent is thinking...'],
     },
     {
       channel_id: 'C_BOUND',
       thread_ts: '1782770400.000100',
-      status: 'is thinking...',
-      loading_messages: ['is thinking...', 'Searching the workspace'],
-      username: 'Test agent',
-      icon_url: 'https://chickpea.example/assets/agents/test/avatar/1',
+      status: 'Test agent is thinking...',
+      loading_messages: ['Test agent is thinking...', 'Test agent is searching the workspace'],
     },
   ]);
 });

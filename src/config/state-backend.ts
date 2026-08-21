@@ -32,7 +32,7 @@ import { loadCredentialKeyring } from '../slack/credential-keyring.ts';
 import type {
   SlackCredentialDependencies,
   SlackCredentialResolutionDependencies,
-} from '../slack/identity-credentials.ts';
+} from '../slack/installation-credentials.ts';
 import { SqliteManagementStore, type ManagementStore } from '../management/store.ts';
 
 export { isCloudflareTarget } from './runtime-target.ts';

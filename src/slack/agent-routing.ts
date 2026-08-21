@@ -2,7 +2,6 @@ import { canEditAgent } from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import type { ConfigStore } from '../config/store.ts';
 import {
-  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type AgentChannelGrant,
   type AgentThreadRoute,
   type CustomAgentConfig,
@@ -14,7 +13,7 @@ export type AgentRouteSurface = 'channel' | 'direct';
 export type AgentRouteSource =
   | 'agent_handle'
   | 'thread_owner'
-  | 'workspace_default'
+  | 'default_agent'
   | 'app_home';
 
 export type AgentRoutingDenialReason =
@@ -131,7 +130,7 @@ export async function resolveAgentRoute(
     source = 'thread_owner';
     selected = agentsById.get(currentRoute.agentId);
   } else if (surface === 'direct' || turn.source === 'app_mention') {
-    source = 'workspace_default';
+    source = 'default_agent';
     selected = agentsById.get(installation.defaultAgentId);
   } else {
     return { kind: 'ignore' };
@@ -250,8 +249,6 @@ function assignmentForAgent(
     workspaceId: turn.workspaceId,
     channelId: turn.channelId,
     agentId: agent.id,
-    // Internal transport coordinate only; Slack presentation belongs to Agent.
-    slackIdentityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     ...(grant?.channelLabel ? { channelLabel: grant.channelLabel } : {}),
     agent,
   };

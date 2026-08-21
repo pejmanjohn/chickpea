@@ -35,44 +35,27 @@ export function loadFake() {
 
 export async function seedOfflineDemoChannelConfig(stateDbPath, options = {}) {
   const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
-  const { seededAgents, seededAssignments, demoChannelAssignments } =
+  const { seededAgents, demoAgentChannelGrants } =
     await loadTsModule('src/config/seed.ts');
 
-  const demoAssignments = options.workspaceId && options.channelId
+  const demoGrants = options.workspaceId && options.channelId
     ? [{
-        ...demoChannelAssignments.find((assignment) => assignment.channelId === 'C_EXEC'),
+        ...demoAgentChannelGrants.find((grant) => grant.channelId === 'C_EXEC'),
         workspaceId: options.workspaceId,
         channelId: options.channelId,
       }]
-    : demoChannelAssignments;
-  const assignments = [...demoAssignments, ...seededAssignments];
+    : demoAgentChannelGrants;
 
   const store = new SqliteConfigStore(stateDbPath, {
     agents: seededAgents,
-    // The TDEMO fixtures are no longer part of the install seed; the offline
-    // harnesses opt back into them here, on top of the real seed (the '*/*'
-    // DM wildcard), from the single fixture source in src/config/seed.ts.
-    assignments,
+    grants: demoGrants,
   });
-  // The compatibility assignments still feed old parity assertions, while
-  // the Agent-first runtime authorizes Channels exclusively through active
-  // reach grants. Seed both views from the same fixture rows so the packaged
-  // app smoke exercises production routing and memory authorization.
-  for (const assignment of demoAssignments) {
+  for (const grant of demoGrants) {
     await store.ensureWorkspaceInstallation({
-      workspaceId: assignment.workspaceId,
+      workspaceId: grant.workspaceId,
       transportMode: 'direct',
-      defaultAgentId: assignment.agentId,
-      teamId: assignment.workspaceId,
-    });
-    await store.putAgentChannelGrant({
-      workspaceId: assignment.workspaceId,
-      channelId: assignment.channelId,
-      agentId: assignment.agentId,
-      status: 'active',
-      createdByMembershipId: 'membership_offline_verifier',
-      ...(assignment.channelLabel ? { channelLabel: assignment.channelLabel } : {}),
-      channelIsPrivate: assignment.channelId.startsWith('G'),
+      defaultAgentId: grant.agentId,
+      teamId: grant.workspaceId,
     });
   }
   store.close();
@@ -100,7 +83,8 @@ export async function seedOfflineSlackAuthority({
   const { PersonalTokenService } = await loadTsModule('src/auth/personal-token.ts');
   const ownerModule = await loadTsModule('tests/helpers/slack-owner.ts');
   const keyringModule = await loadTsModule('src/slack/credential-keyring.ts');
-  const credentialsModule = await loadTsModule('src/slack/identity-credentials.ts');
+  const credentialsModule = await loadTsModule('src/slack/installation-credentials.ts');
+  const { WORKSPACE_SLACK_INSTALLATION_ID } = await loadTsModule('src/config/types.ts');
   const scopesModule = await loadTsModule('src/slack/scopes.ts');
   const identity = new SqliteIdentityStore(stateDbPath);
   try {
@@ -118,21 +102,21 @@ export async function seedOfflineSlackAuthority({
     const keyring = keyringModule.loadOrCreateNodeCredentialKeyring({ path: keyringPath });
     const dependencies = { state: identity, keyring };
     const app = await credentialsModule.stageSlackCredentialBundle(dependencies, {
-      identityId: 'slack_identity_default',
-      identityClass: 'workspace_default',
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+      identityClass: 'workspace_installation',
       purpose: 'app_credentials',
       expectedActiveRevision: null,
       appId,
       secrets: { clientId: 'offline.client', clientSecret: 'offline-client-secret', signingSecret },
     });
     await credentialsModule.promoteSlackCredentialBundle(dependencies, {
-      identityId: 'slack_identity_default',
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
       candidateRevision: app.revision,
       expectedActiveRevision: null,
     });
     const connected = await credentialsModule.stageSlackCredentialBundle(dependencies, {
-      identityId: 'slack_identity_default',
-      identityClass: 'workspace_default',
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+      identityClass: 'workspace_installation',
       purpose: 'connected_credentials',
       expectedActiveRevision: app.revision,
       appId,
@@ -145,21 +129,22 @@ export async function seedOfflineSlackAuthority({
       },
     });
     await credentialsModule.promoteSlackCredentialBundle(dependencies, {
-      identityId: 'slack_identity_default',
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
       candidateRevision: connected.revision,
       expectedActiveRevision: app.revision,
     });
     const config = new SqliteConfigStore(stateDbPath);
     try {
-      const slackIdentity = await config.getSlackIdentity('slack_identity_default');
-      await config.updateSlackIdentity(slackIdentity.id, slackIdentity.connectionRevision, {
-        lifecycle: 'connected',
+      const installation = await config.ensureWorkspaceInstallation({
+        workspaceId: teamId,
+        transportMode: 'direct',
         teamId,
         appId,
         botUserId,
-        credentialProvenance: 'stored',
-        health: 'healthy',
       });
+      await config.updateWorkspaceInstallation(teamId, {
+        health: 'healthy',
+      }, installation.revision);
     } finally {
       config.close();
     }

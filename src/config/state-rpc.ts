@@ -1,9 +1,7 @@
-import type { AssignmentLookupOptions } from './resolver.ts';
 import type { SettingsPatch } from './settings-store.ts';
 import type {
   ConfigAgentPatch,
   OAuthReauthorizationTarget,
-  SlackIdentityPatch,
 } from './store.ts';
 import type {
   AgentCreateInput,
@@ -18,17 +16,11 @@ import type {
   AgentReferenceSummary,
   AgentThreadRoute,
   AgentThreadRouteInput,
-  ChannelAssignment,
   ChannelConfig,
-  ChannelPlacementMutation,
-  ChannelPlacementResult,
   CustomAgentConfig,
   ConnectionAccount,
   ConnectionAccountInput,
   EnsureWorkspaceInstallationInput,
-  SlackIdentity,
-  SlackIdentityDmState,
-  SlackIdentityReferenceSummary,
   WorkspaceInstallation,
   WorkspaceInstallationPatch,
 } from './types.ts';
@@ -60,7 +52,6 @@ import type {
   SlackRunPresentationV1,
   SlackPresentationSummary,
 } from '../slack/run-presentations.ts';
-import type { AppendAuditEvent, AuditEvent, AuditEventFilter } from '../audit/types.ts';
 
 export type { TurnJob } from '../slack/turn-job-types.ts';
 
@@ -90,16 +81,7 @@ export type StateRpcErrorCode =
   | 'agent_revision_conflict'
   | 'agent_still_assigned'
   | 'agent_still_referenced'
-  | 'agent_slack_dm_handler'
-  | 'agent_slack_identity_conflict'
-  | 'channel_assignment_conflict'
   | 'channel_revision_conflict'
-  | 'unknown_slack_identity'
-  | 'slack_identity_exists'
-  | 'slack_identity_still_referenced'
-  | 'slack_identity_revision_conflict'
-  | 'slack_identity_lifecycle'
-  | 'workspace_default_slack_identity_protected'
   | 'identity'
   | 'management'
   | 'memory'
@@ -314,87 +296,7 @@ export interface TagStateRpc {
     channel: ChannelConfig,
     expectedRevision?: number,
   ): Promise<StateRpcResult<ChannelConfig>>;
-  configPutChannelPlacement(
-    input: ChannelPlacementMutation,
-  ): Promise<StateRpcResult<ChannelPlacementResult>>;
-  // -- config: assignments -------------------------------------------------
-  configListAssignments(): Promise<StateRpcResult<ChannelAssignment[]>>;
-  configGetAssignment(
-    workspaceId: string,
-    channelId: string,
-  ): Promise<StateRpcResult<ChannelAssignment | null>>;
-  configListAssignmentsForAgent(agentId: string): Promise<StateRpcResult<ChannelAssignment[]>>;
-  configPutAssignment(assignment: ChannelAssignment): Promise<StateRpcResult<ChannelAssignment>>;
-  configDeleteAssignment(
-    workspaceId: string,
-    channelId: string,
-  ): Promise<StateRpcResult<boolean>>;
-  configFind(
-    workspaceId: string,
-    channelId: string,
-    options?: AssignmentLookupOptions,
-  ): Promise<StateRpcResult<ChannelAssignment | null>>;
   configGetAgentReferences(agentId: string): Promise<StateRpcResult<AgentReferenceSummary>>;
-  // -- config: Slack identities -------------------------------------------
-  configListSlackIdentities(): Promise<StateRpcResult<SlackIdentity[]>>;
-  configGetSlackIdentity(identityId: string): Promise<StateRpcResult<SlackIdentity>>;
-  configGetSlackIdentityByIngressKey(
-    ingressKey: string,
-  ): Promise<StateRpcResult<SlackIdentity | null>>;
-  configCreateSlackIdentity(identity: SlackIdentity): Promise<StateRpcResult<SlackIdentity>>;
-  configUpdateSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-    patch: SlackIdentityPatch,
-  ): Promise<StateRpcResult<SlackIdentity>>;
-  configListSlackIdentitiesForAgent(
-    agentId: string,
-  ): Promise<StateRpcResult<SlackIdentity[]>>;
-  configListAgentsForSlackIdentity(
-    identityId: string,
-  ): Promise<StateRpcResult<CustomAgentConfig[]>>;
-  configResolveSlackIdentityForAgent(agentId: string): Promise<StateRpcResult<SlackIdentity>>;
-  configGetSlackIdentityReferences(
-    identityId: string,
-  ): Promise<StateRpcResult<SlackIdentityReferenceSummary>>;
-  configSetSlackIdentityDmBinding(
-    identityId: string,
-    expectedRevision: number,
-    dmState: SlackIdentityDmState,
-    dmAgentId?: string,
-  ): Promise<StateRpcResult<SlackIdentity>>;
-  configCompleteSlackIdentitySetup(
-    identityId: string,
-    expectedRevision: number,
-    agentId?: string,
-    expectedAgentIdentityId?: string | null,
-  ): Promise<StateRpcResult<SlackIdentity>>;
-  configAttachAgentToSlackIdentity(
-    agentId: string,
-    identityId: string,
-    expectedIdentityRevision: number,
-    expectedAgentIdentityId: string | null,
-  ): Promise<StateRpcResult<CustomAgentConfig>>;
-  configRetireSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-  ): Promise<StateRpcResult<SlackIdentity>>;
-  configDeleteIncompleteSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-    credentialsErased: boolean,
-  ): Promise<StateRpcResult<boolean>>;
-  configPurgeRetiredSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-    credentialsErased: boolean,
-  ): Promise<StateRpcResult<boolean>>;
-  configAppendSlackIdentityAudit(
-    input: AppendAuditEvent,
-  ): Promise<StateRpcResult<AuditEvent>>;
-  configListSlackIdentityAuditEvents(
-    filter?: AuditEventFilter,
-  ): Promise<StateRpcResult<AuditEvent[]>>;
   // -- agent snapshots -----------------------------------------------------
   snapshotGet(threadKey: string): Promise<StateRpcResult<AgentSnapshot | null>>;
   snapshotPutIfAbsent(
@@ -413,11 +315,6 @@ export interface TagStateRpc {
   release(key: string): Promise<StateRpcResult<null>>;
   threadStart(key: string): Promise<StateRpcResult<null>>;
   threadHas(key: string): Promise<StateRpcResult<boolean>>;
-  threadParticipationGet(key: string): Promise<StateRpcResult<'ambient' | 'mention_only'>>;
-  threadParticipationSet(
-    key: string,
-    mode: 'ambient' | 'mention_only',
-  ): Promise<StateRpcResult<null>>;
   threadActiveWorkGet(key: string): Promise<StateRpcResult<boolean>>;
   threadActiveWorkSet(
     key: string,
@@ -461,9 +358,9 @@ export interface TagStateRpc {
   ): Promise<StateRpcResult<null>>;
   slackTurnRecoveryRequired(id: string, reason: string): Promise<StateRpcResult<null>>;
   slackTurnRecoveryList(limit: number): Promise<StateRpcResult<SlackTurnRecoveryItem[]>>;
-  slackIdentityRecoveryRetry(identityId: string): Promise<StateRpcResult<number>>;
+  slackInstallationRecoveryRetry(workspaceId: string): Promise<StateRpcResult<number>>;
   slackTurnRecoveryResolve(id: string): Promise<StateRpcResult<boolean>>;
-  slackIdentityPendingDeliveryCount(identityId: string): Promise<StateRpcResult<number>>;
+  slackInstallationPendingDeliveryCount(workspaceId: string): Promise<StateRpcResult<number>>;
   slackInteractionProgressRecord(
     id: string,
     patch: SlackInteractionProgressPatch,

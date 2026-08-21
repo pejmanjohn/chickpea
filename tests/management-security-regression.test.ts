@@ -46,7 +46,7 @@ test('tool discovery and portable recipe exports exclude secret and authority co
     assert.doesNotMatch(JSON.stringify(descriptions), new RegExp(value));
   }
 
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   try {
     await config.createAgent({
       id: 'agent_secure',

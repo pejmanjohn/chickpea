@@ -81,7 +81,6 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import {
-  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type ApiConnectionConfig,
   type CustomAgentConfig,
   type RepositoryGrant,
@@ -146,7 +145,7 @@ import {
 } from '../memory/runtime.ts';
 import { createMemoryScopeSlackFromWebClient, verifyMemoryMutationMembership } from '../memory/scope.ts';
 import { parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
-import { resolveSlackIdentityExecutionContext } from '../slack/identity-execution.ts';
+import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
 import { useWorkspaceManagementSlackTools } from '../management/slack-tools.ts';
@@ -603,7 +602,7 @@ export async function createSlackAgentRuntime(
   const env = input.platformEnv ?? (await resolveAgentPlatformEnv());
   const store = getConfigStore(env);
   const settingsStore = getSettingsStore(env);
-  const stores = { agents: store, assignments: store };
+  const stores = { agents: store, grants: store };
   const adapterContext = await resolveSlackAgentAdapterContext(input, env);
   const { workspaceId, channelId } = adapterContext;
   const effectiveConnectionAccounts = input.actorMembershipId
@@ -617,7 +616,13 @@ export async function createSlackAgentRuntime(
   const artifactThreadTs = input.artifactThreadTs === null
     ? undefined
     : (input.artifactThreadTs ?? adapterContext.threadTs);
-  const resolve = () => resolveEffectiveSlackConfig(workspaceId, channelId, stores);
+  const resolve = () => resolveEffectiveSlackConfig(
+    workspaceId,
+    channelId,
+    stores,
+    process.env,
+    input.liveConfig?.agentId ?? input.id,
+  );
 
   // Channel threads are frozen (the channel handler wrote the snapshot at the
   // first turn; getOrCreateSnapshot serves that row). Direct conversations
@@ -911,15 +916,15 @@ export async function createSlackAgentRuntime(
       threadTs: artifactThreadTs,
       postArtifact: async (input) => {
         presenter ??= Promise.all([
-          resolveSlackIdentityExecutionContext(
-            WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+          resolveSlackInstallationExecutionContext(
+            workspaceId,
             env,
             { settings: settingsStore },
           ),
           resolveSlackPublicUrl(env, settingsStore).catch(() => undefined),
-        ]).then(([identity, publicUrl]) => {
+        ]).then(([installation, publicUrl]) => {
           const agentAvatarUrl = agentAvatarUrlForPresentation(config.agent, publicUrl);
-          return new WebClientPresenter(identity.client, {
+          return new WebClientPresenter(installation.client, {
             channelId,
             threadTs: artifactThreadTs,
             agentName: config.agent.name,
@@ -1045,13 +1050,11 @@ export function useRuntimePlanAgent(
     useChickpeaResponseMetadata(options.responseMetadataModel);
   }
   if (options.autonomousMemoryRequest) {
-    const memoryTarget = 'agent';
     const finishDeniedMemory = useDataWriter(AUTONOMOUS_MEMORY_RESULT_DATA_NAME, {
       schema: AutonomousMemoryResultSchema,
     });
-    useInstruction(autonomousMemoryInstruction(memoryTarget));
+    useInstruction(autonomousMemoryInstruction());
     useTool(createAutonomousAgentMemoryTool(
-      memoryTarget,
       (input) =>
         saveRuntimePlanAutonomousMemory(plan, options.autonomousMemoryRequest!, input)
           .then(({ entry }) => ({ slug: entry.slug, version: entry.version })),
@@ -1119,13 +1122,13 @@ async function saveRuntimePlanAutonomousMemory(
           plan.conversation.workspaceId,
           plan.conversation.channelId,
         ),
-        resolveSlackIdentityExecutionContext(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID, env, {
+        resolveSlackInstallationExecutionContext(plan.conversation.workspaceId, env, {
           config,
           settings: getSettingsStore(env),
         }),
       ]);
       if (!grants.some((grant) => grant.agentId === plan.agentId && grant.status === 'active') ||
-          execution.teamId !== plan.conversation.workspaceId) return false;
+          execution.workspaceId !== plan.conversation.workspaceId) return false;
       return verifyMemoryMutationMembership(
         plan.conversation.channelId,
         slackUserId,
@@ -1283,17 +1286,17 @@ function createRuntimePlanArtifactTool(plan: RuntimePlanV2) {
       presenter ??= (async () => {
         const env = await resolveAgentPlatformEnv();
         const config = getConfigStore(env);
-        const [profile, identity, publicUrl] = await Promise.all([
+        const [profile, installation, publicUrl] = await Promise.all([
           config.getAgent(plan.agentId),
-          resolveSlackIdentityExecutionContext(
-            WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+          resolveSlackInstallationExecutionContext(
+            plan.conversation.workspaceId,
             env,
             { config, settings: getSettingsStore(env) },
           ),
           resolveSlackPublicUrl(env).catch(() => undefined),
         ]);
         const agentAvatarUrl = agentAvatarUrlForPresentation(profile, publicUrl);
-        return new WebClientPresenter(identity.client, {
+        return new WebClientPresenter(installation.client, {
           channelId: plan.conversation.channelId,
           threadTs: plan.conversation.threadTs,
           agentName: profile.name,
