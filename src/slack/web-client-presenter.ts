@@ -186,20 +186,6 @@ export class WebClientPresenter {
     });
   }
 
-  /** Governed one-time notice before the first reply from a rotated DM agent. */
-  async postContinuityNotice(text: string): Promise<string> {
-    const response = await this.client.chat.postMessage({
-      channel: this.target.channelId,
-      thread_ts: this.target.threadTs,
-      text,
-      ...this.persona(),
-    });
-    if (typeof response.ts !== 'string' || !response.ts) {
-      throw new Error('Slack continuity notice receipt is incomplete.');
-    }
-    return response.ts;
-  }
-
   /** Best-effort work acknowledgment. The receipt records whether this run
    * created the reaction so terminal cleanup never removes a pre-existing eye. */
   async addSemanticReaction(

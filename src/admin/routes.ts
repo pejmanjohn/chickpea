@@ -377,6 +377,14 @@ import { decodeRecoverySecret } from '../auth/recovery-secret.ts';
 import type { ManagementStore } from '../management/store.ts';
 import { createLiveWorkspaceManagementService } from '../management/live-service.ts';
 
+const GATEWAY_RECONNECT_REQUIRED_DETAILS = new Set([
+  'binding_mismatch',
+  'binding_reconnect_required',
+  'gateway_binding_missing',
+  'gateway_binding_mismatch',
+  'gateway_not_connected',
+]);
+
 interface BetterAuthContext {
   environment: BetterAuthEnvironment;
   directory: BetterAuthDirectory;
@@ -3305,11 +3313,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         try {
           const actor = await agentActor(c);
           const transport = await agentSlackTransport(c, actor.slackTeamId);
+          const memberChannels = await transport.listMemberChannels(actor.slackUserId);
           discoverableIds = new Set((await discoverableAgents({
             config: configStore,
             workspaceId: actor.slackTeamId,
             principal,
-            channelMember: (channelId) => transport.channelHasMember(channelId, actor.slackUserId),
+            channelMember: async (channelId) => memberChannels.has(channelId),
           })).map((agent) => agent.id));
         } catch {
           // Slack membership is the authority for non-editors. If it cannot be
@@ -3346,6 +3355,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           grants: grants.filter(({ agentId }) => agentId === agent.id),
           installations,
           snapshotRoots: roots[index]!,
+        }, {
+          canEdit: principal ? canEditAgent(principal, agent) : true,
         })
       )),
     });
@@ -4882,16 +4893,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const agent = await store(c).getAgent(c.req.param('id'));
       const principal = principalByContext.get(c);
-      if (principal && !canEditAgent(principal, agent)) {
+      const canEdit = principal ? canEditAgent(principal, agent) : true;
+      if (!canEdit) {
         let discoverable = false;
         try {
           const actor = await agentActor(c);
           const transport = await agentSlackTransport(c, actor.slackTeamId);
+          const memberChannels = await transport.listMemberChannels(actor.slackUserId);
           discoverable = (await discoverableAgents({
             config: store(c),
             workspaceId: actor.slackTeamId,
-            principal,
-            channelMember: (channelId) => transport.channelHasMember(channelId, actor.slackUserId),
+            principal: principal!,
+            channelMember: async (channelId) => memberChannels.has(channelId),
           })).some((candidate) => candidate.id === agent.id);
         } catch {
           // An Agent detail lookup must not widen directory visibility when
@@ -4904,7 +4917,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         c.env as PlatformEnv | undefined,
         settings(c),
       );
-      return c.json({ agent: await agentAdminProjection(enriched, store(c), snapshots(c)) });
+      return c.json({
+        agent: await agentAdminProjection(
+          enriched,
+          store(c),
+          snapshots(c),
+          undefined,
+          { canEdit },
+        ),
+      });
     } catch (err) {
       if (err instanceof UnknownAgentError) {
         return c.json({ error: 'not_found' }, 404);
@@ -5974,7 +5995,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         });
       } catch (error) {
         const detail = error instanceof SlackTransportError ? error.code : 'gateway_unreachable';
-        if (detail === 'gateway_not_connected') {
+        if (GATEWAY_RECONNECT_REQUIRED_DETAILS.has(detail)) {
           try {
             const current = await store(c).getWorkspaceInstallation(installation.workspaceId);
             if (current && current.healthDetail !== detail) {
@@ -7588,6 +7609,7 @@ async function agentAdminProjection(
     installations: WorkspaceInstallation[];
     snapshotRoots: Awaited<ReturnType<AgentSnapshotStore['listLiveRootsByAgent']>>;
   },
+  access: { canEdit: boolean } = { canEdit: true },
 ): Promise<object> {
   const projectionData = preloaded ?? await (async () => {
     const [references, grants, installations, snapshotRoots] = await Promise.all([
@@ -7607,6 +7629,7 @@ async function agentAdminProjection(
   const workspaceId = grants[0]?.workspaceId ?? installations[0]?.workspaceId;
   return {
     ...agent,
+    canEdit: access.canEdit,
     slackPresenceRecovery: agent.slackPresence?.health === 'needs_attention' &&
         agent.slackPresence.errorCode
       ? agentPresenceRecovery(

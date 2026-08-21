@@ -8,6 +8,7 @@ export const GATEWAY_SLACK_OPERATIONS = [
   'auth.test',
   'users.info',
   'users.list',
+  'users.conversations',
   'conversations.info',
   'conversations.list',
   'conversations.members',

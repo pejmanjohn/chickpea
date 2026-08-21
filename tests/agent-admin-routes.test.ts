@@ -8,7 +8,10 @@ import { createAdminRoutes } from '../src/admin/routes.ts';
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
+import type { AuthPrincipal } from '../src/auth/types.ts';
+import { provisionSlackInteractionMember } from '../src/auth/slack-admission.ts';
 import type {
   SlackAppHomeReference,
   SlackChannel,
@@ -19,6 +22,7 @@ import type {
 } from '../src/slack/transport/types.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const TOKEN = 'agent-admin-token';
 
@@ -79,6 +83,9 @@ class FakeTransport implements SlackTransport {
   }
   async lookupChannel(): Promise<SlackChannel> { return this.channel; }
   async listChannels() { return { channels: [this.channel], truncated: false }; }
+  async listMemberChannels(): Promise<ReadonlySet<string>> {
+    return new Set(this.memberAllowed ? [this.channel.id] : []);
+  }
   async channelHasMember(): Promise<boolean> { return this.memberAllowed; }
   async openDirectConversation(): Promise<SlackChannel> {
     return { id: 'D_OWNER', private: true, member: true, archived: false };
@@ -174,6 +181,66 @@ test('Agent create owns its handle, generated avatar, edit policy, and creator',
   } finally {
     fixture.store.close();
     fixture.settings.close();
+  }
+});
+
+test('Channel discovery projects a non-editor Agent as explicitly read-only', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const identities = new SqliteIdentityStore(':memory:');
+  const transport = new FakeTransport();
+  try {
+    const owner = await createSlackOwner(identities, {
+      teamId: 'T_TEST', userId: 'U_OWNER', suffix: 'readonly-owner',
+    });
+    const member = await provisionSlackInteractionMember({
+      identity: identities,
+      slackTeamId: 'T_TEST',
+      botUserId: 'U_BOT',
+      user: {
+        id: 'U_MEMBER', teamId: 'T_TEST', displayName: 'Member',
+        email: 'member@example.test', deleted: false, bot: false, appUser: false,
+        restricted: false, ultraRestricted: false, stranger: false,
+      },
+    });
+    assert.ok(member.resolution);
+    await store.createAgent({
+      id: 'agent_readonly', name: 'Readonly', description: 'Visible in Support',
+      instructions: 'Help.', enabled: true, lifecycle: 'active',
+      creatorMembershipId: owner.membership.id, editPolicy: 'creator_and_admins',
+      model: 'local-stub/readonly', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await store.putAgentChannelGrant({
+      workspaceId: 'T_TEST', channelId: 'C_SUPPORT', agentId: 'agent_readonly',
+      status: 'active', createdByMembershipId: owner.membership.id,
+      channelLabel: 'support', channelIsPrivate: false,
+    });
+    const principal: AuthPrincipal = {
+      userId: member.resolution.user.id,
+      membershipId: member.resolution.membership.id,
+      organizationId: member.resolution.membership.organizationId,
+      role: 'member', authenticatorKind: 'test_slack_session',
+      credentialId: 'session_readonly', correlationId: 'request_readonly', machine: false,
+    };
+    const app = new Hono();
+    app.route('/', createAdminRoutes({
+      store, settings, slackTransport: transport,
+      knownProviders: new Set(['local-stub']),
+      ...testAdminAuthority(TOKEN, undefined, identities, principal),
+    }));
+
+    const list = await app.request('http://localhost/admin/api/agents', { headers: auth() });
+    assert.equal(list.status, 200, await list.clone().text());
+    const listed = (await list.json() as Record<string, any>).agents;
+    assert.equal(listed.find((agent: Record<string, any>) => agent.id === 'agent_readonly')?.canEdit, false);
+
+    const detail = await app.request('http://localhost/admin/api/agents/agent_readonly', { headers: auth() });
+    assert.equal(detail.status, 200, await detail.clone().text());
+    assert.equal((await detail.json() as Record<string, any>).agent.canEdit, false);
+  } finally {
+    identities.close();
+    settings.close();
+    store.close();
   }
 });
 

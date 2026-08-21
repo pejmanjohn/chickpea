@@ -10,6 +10,7 @@ export type AgentPresenceErrorCode =
   | 'private_channel_invite_required'
   | 'rate_limited'
   | 'user_group_create_ambiguous'
+  | 'slack_reconnect_required'
   | 'slack_unavailable'
   | 'slack_operation_failed';
 
@@ -56,6 +57,12 @@ const INVALID_HANDLE_ERRORS = new Set([
   'invalid_name',
   'invalid_arguments',
 ]);
+const RECONNECT_ERRORS = new Set([
+  'binding_reconnect_required',
+  'gateway_binding_missing',
+  'gateway_binding_mismatch',
+  'gateway_not_connected',
+]);
 
 export function classifyAgentPresenceError(error: unknown): AgentPresenceError {
   if (error instanceof AgentPresenceError) return error;
@@ -67,6 +74,13 @@ export function classifyAgentPresenceError(error: unknown): AgentPresenceError {
     );
   }
   const common = { slackCode: error.code };
+  if (RECONNECT_ERRORS.has(error.code)) {
+    return new AgentPresenceError(
+      'slack_reconnect_required',
+      'Chickpea no longer has a valid Slack authorization for this workspace.',
+      common,
+    );
+  }
   if (PAID_PLAN_ERRORS.has(error.code)) {
     return new AgentPresenceError(
       'paid_plan_required',
@@ -122,7 +136,8 @@ export interface AgentPresenceRecovery {
   title: string;
   explanation: string;
   steps: string[];
-  actionLabel: 'Retry';
+  actionLabel: 'Retry' | 'Reconnect Slack';
+  actionKind?: 'retry' | 'reconnect';
   adminUrl?: string;
   note?: string;
 }
@@ -163,6 +178,19 @@ export function agentPresenceRecovery(
       steps: ['Complete two-factor authentication in Slack.', 'Come back here and select Retry.'],
       actionLabel: 'Retry',
       adminUrl: 'https://slack.com/account/settings',
+    };
+  }
+  if (error.code === 'slack_reconnect_required') {
+    return {
+      title: 'Reconnect Slack to manage Agent handles',
+      explanation: `The Agent is saved, but Chickpea cannot create or update @${handle} until a current Slack Owner or Admin reconnects the workspace.`,
+      steps: [
+        'Select Reconnect Slack and approve the Chickpea app as a current Slack Workspace Owner or Admin.',
+        'Return to this Agent and select Retry.',
+      ],
+      actionLabel: 'Reconnect Slack',
+      actionKind: 'reconnect',
+      note: 'The shared app keeps the approving member’s encrypted Slack authorization only for managing Agent user groups.',
     };
   }
   if (error.code === 'handle_collision') {

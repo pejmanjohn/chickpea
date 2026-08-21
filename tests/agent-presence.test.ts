@@ -14,6 +14,7 @@ import {
 import {
   AgentPresenceError,
   agentPresenceRecovery,
+  classifyAgentPresenceError,
 } from '../src/slack/agent-presence/errors.ts';
 import {
   alternativeAgentHandles,
@@ -153,6 +154,18 @@ test('Slack policy denial saves needs-attention state with the exact role recove
   } finally {
     config.close();
   }
+});
+
+test('revoked shared-app installer authority gives a reconnect action, not generic Retry advice', () => {
+  const classified = classifyAgentPresenceError(
+    new SlackTransportError('usergroups.update', 'binding_reconnect_required'),
+  );
+  assert.equal(classified.code, 'slack_reconnect_required');
+  const recovery = agentPresenceRecovery(classified, 'support');
+  assert.equal(recovery.actionLabel, 'Reconnect Slack');
+  assert.equal(recovery.actionKind, 'reconnect');
+  assert.match(recovery.explanation, /current Slack Owner or Admin/);
+  assert.match(recovery.note ?? '', /encrypted Slack authorization/);
 });
 
 test('retry adopts an exact group after an ambiguous create and never creates a duplicate', async () => {
@@ -545,6 +558,9 @@ class FakeSlackTransport implements SlackTransport {
   async lookupMember(): Promise<never> { throw new Error('unused'); }
   async lookupChannel() { return { ...this.channel }; }
   async listChannels() { return { channels: [{ ...this.channel }], truncated: false }; }
+  async listMemberChannels(): Promise<ReadonlySet<string>> {
+    return new Set(this.actorIsMember ? [this.channel.id] : []);
+  }
   async channelHasMember() { return this.actorIsMember; }
   async openDirectConversation() {
     return { id: 'D_ACTOR', private: true, member: true, archived: false };

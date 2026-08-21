@@ -49,6 +49,7 @@ test('direct transport maps Slack operations without exposing credentials or a r
     }],
     truncated: false,
   });
+  assert.deepEqual([...(await transport.listMemberChannels('U123'))], ['C123']);
   assert.equal(await transport.channelHasMember('C123', 'U123'), true);
   assert.equal((await transport.openDirectConversation('U123')).id, 'D123');
   assert.deepEqual(await transport.joinPublicChannel('C123'), {
@@ -91,6 +92,7 @@ test('direct transport maps Slack operations without exposing credentials or a r
     'users.info',
     'conversations.info',
     'conversations.list',
+    'users.conversations',
     'conversations.members',
     'conversations.open',
     'conversations.join',
@@ -117,6 +119,7 @@ test('direct transport maps Slack operations without exposing credentials or a r
     'enableUserGroup',
     'joinPublicChannel',
     'listChannels',
+    'listMemberChannels',
     'listUserGroups',
     'lookupChannel',
     'lookupMember',
@@ -151,6 +154,17 @@ test('gateway transport follows Slack cursors for Channels and membership', asyn
           ? { members: ['U_TARGET'], response_metadata: { next_cursor: '' } }
           : { members: ['U_OTHER'], response_metadata: { next_cursor: 'members-next' } };
       }
+      if (operation === 'users.conversations') {
+        return input.cursor === 'user-channels-next'
+          ? {
+              channels: [{ id: 'C2' }],
+              response_metadata: { next_cursor: '' },
+            }
+          : {
+              channels: [{ id: 'C1' }],
+              response_metadata: { next_cursor: 'user-channels-next' },
+            };
+      }
       throw new Error(`Unexpected ${operation}`);
     },
   });
@@ -162,10 +176,13 @@ test('gateway transport follows Slack cursors for Channels and membership', asyn
     ],
     truncated: false,
   });
+  assert.deepEqual([...(await transport.listMemberChannels('U_TARGET'))], ['C1', 'C2']);
   assert.equal(await transport.channelHasMember('C1', 'U_TARGET'), true);
   assert.deepEqual(calls.map(({ input }) => input.cursor ?? null), [
     null,
     'channels-next',
+    null,
+    'user-channels-next',
     null,
     'members-next',
   ]);
@@ -194,6 +211,20 @@ test('direct transport follows Slack cursors for Channels and membership', async
       ? { ok: true, members: ['U_TARGET'], response_metadata: { next_cursor: '' } }
       : { ok: true, members: ['U_OTHER'], response_metadata: { next_cursor: 'members-next' } };
   };
+  client.users.conversations = async (input) => {
+    calls.push({ method: 'users.conversations', input });
+    return input?.cursor === 'user-channels-next'
+      ? {
+          ok: true,
+          channels: [{ id: 'C2' }],
+          response_metadata: { next_cursor: '' },
+        }
+      : {
+          ok: true,
+          channels: [{ id: 'C1' }],
+          response_metadata: { next_cursor: 'user-channels-next' },
+        };
+  };
   const transport = createDirectSlackTransportFromClient(client);
 
   assert.deepEqual(await transport.listChannels(), {
@@ -203,10 +234,13 @@ test('direct transport follows Slack cursors for Channels and membership', async
     ],
     truncated: false,
   });
+  assert.deepEqual([...(await transport.listMemberChannels('U_TARGET'))], ['C1', 'C2']);
   assert.equal(await transport.channelHasMember('C1', 'U_TARGET'), true);
   assert.deepEqual(calls.map(({ input }) => input?.cursor ?? null), [
     null,
     'channels-next',
+    null,
+    'user-channels-next',
     null,
     'members-next',
   ]);
@@ -289,6 +323,11 @@ function fakeClient(
           profile: { display_name: 'Ada Lovelace', email: 'ada@example.com' },
         },
       }),
+      conversations: (input) => call('users.conversations', input, {
+        ok: true,
+        channels: [channel],
+        response_metadata: { next_cursor: '' },
+      }),
     },
     conversations: {
       info: (input) => call('conversations.info', input, { ok: true, channel }),
@@ -341,6 +380,7 @@ function stubTransport(mode: 'direct' | 'gateway'): SlackTransport {
     lookupMember: unsupported,
     lookupChannel: unsupported,
     listChannels: unsupported,
+    listMemberChannels: unsupported,
     channelHasMember: unsupported,
     openDirectConversation: unsupported,
     joinPublicChannel: unsupported,

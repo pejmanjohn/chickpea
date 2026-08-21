@@ -57,6 +57,46 @@ test('every Channel turn rechecks the invoking Slack member against the Channel'
   }
 });
 
+test('a delivered Channel event is fresh membership evidence and skips directory pagination', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await createSlackOwner(identity, { now: NOW });
+  let membershipChecks = 0;
+  try {
+    const actor = await resolveAgentRoutingActor({
+      workspaceId: owner.binding.slackTeamId,
+      userId: owner.user.slackUserId,
+      channelId: 'C_SOURCE',
+      sourceChannelMembership: true,
+      includeDiscoverableAgents: false,
+      botUserId: 'UBOT',
+      transport: {
+        async lookupMember() {
+          return {
+            id: owner.user.slackUserId,
+            teamId: owner.binding.slackTeamId,
+            deleted: false,
+            bot: false,
+            appUser: false,
+            restricted: false,
+            ultraRestricted: false,
+            stranger: false,
+          };
+        },
+        async channelHasMember() {
+          membershipChecks += 1;
+          return false;
+        },
+      } as unknown as SlackTransport,
+      stores: { identity } as unknown as AppStores,
+    });
+
+    assert.equal(actor.routing.channelMember, true);
+    assert.equal(membershipChecks, 0);
+  } finally {
+    identity.close();
+  }
+});
+
 test('first eligible Slack interaction provisions one exact active member and refreshes contact data', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const owner = await createSlackOwner(identity, { now: NOW });

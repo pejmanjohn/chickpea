@@ -465,6 +465,9 @@ export async function resolveAgentRoutingActor(input: {
   workspaceId: string;
   userId: string;
   channelId?: string;
+  /** A Slack message/reaction event is current proof that its author belongs
+   * to the exact source Channel at event time. */
+  sourceChannelMembership?: boolean;
   includeDiscoverableAgents?: boolean;
   botUserId: string;
   transport: SlackTransport;
@@ -508,15 +511,17 @@ export async function resolveAgentRoutingActor(input: {
     };
   }
   const channelMember = input.channelId && slackInteractionMayUseGrantedChannel(provisioned)
-    ? await input.transport.channelHasMember(input.channelId, input.userId)
+    ? input.sourceChannelMembership === true ||
+      await input.transport.channelHasMember(input.channelId, input.userId)
     : false;
   let discoverableAgentIds: ReadonlySet<string> | undefined;
   if (fullMember && input.includeDiscoverableAgents !== false) {
+    const memberChannels = await input.transport.listMemberChannels(input.userId);
     const agents = await discoverableAgents({
       config: input.stores.config,
       workspaceId: input.workspaceId,
       ...(principal ? { principal } : {}),
-      channelMember: (channelId) => input.transport.channelHasMember(channelId, input.userId),
+      channelMember: async (channelId) => memberChannels.has(channelId),
     });
     discoverableAgentIds = new Set(agents.map((agent) => agent.id));
   }
@@ -919,6 +924,7 @@ async function processSlackEvent(
         workspaceId: turn.workspaceId,
         userId: turn.userId,
         ...(surface === 'channel' ? { channelId: turn.channelId } : {}),
+        ...(surface === 'channel' ? { sourceChannelMembership: true } : {}),
         includeDiscoverableAgents: surface !== 'channel',
         botUserId: resolvedBotUserId,
         transport: runtimeTransport,

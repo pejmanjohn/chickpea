@@ -3146,6 +3146,35 @@ test('a discoverable Agent can be duplicated without copying authority', async (
   assert.deepEqual(harness.agentPostBodies[0]?.skills, source.skills);
 });
 
+test('a discoverable non-editor sees a truthful read-only Agent instead of a failing editor', async () => {
+  const source = {
+    ...releaseAgent,
+    canEdit: false,
+    handle: 'release',
+    editPolicy: 'creator_and_admins',
+  };
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agents: [source, opsAgent],
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Read-only Agent/);
+  assert.match(harness.app.innerHTML, /Only Agent editors can replace this image/);
+  assert.match(harness.app.innerHTML, /data-action="profile-handle" readonly/);
+  assert.match(harness.app.innerHTML, /data-action="profile-edit-policy" disabled/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="profile-rename"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="save-profile"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="attach-open"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="detach-channel"/);
+  assert.deepEqual(harness.ownerMemoryGetCaches, []);
+  assert.deepEqual(harness.scheduledApiCalls, []);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'agent-overflow-toggle' }) });
+  assert.match(harness.app.innerHTML, /data-action="duplicate-profile"[^>]*>Duplicate Agent<\/button>/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="archive-profile"|data-action="restore-profile"/);
+});
+
 test('archiving the workspace Default Agent transfers private routing explicitly', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin' });
   await flushAsync();
@@ -8393,6 +8422,8 @@ test('shared Slack settings expose a direct authorization recovery without reope
   assert.doesNotMatch(harness.app.innerHTML, /href="\/admin\/slack-gateway\/reconnect"/);
   assert.match(harness.app.innerHTML, /Reconnect with Slack/);
   assert.match(harness.app.innerHTML, /without changing Agents, Channel grants, or saved settings/);
+  assert.match(harness.app.innerHTML, /encrypted access only for managing Agent user groups/);
+  assert.match(harness.app.innerHTML, /reconnect as another current Owner or Admin/);
 
   const click = harness.listeners.click;
   assert.ok(click);

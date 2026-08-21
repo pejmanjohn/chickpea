@@ -14,7 +14,6 @@ import { getConfigStore, getSettingsStore, getUsageStore, getWorkStore } from '.
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type {
-  SlackContinuityNoticeProgress,
   SlackInteractionProgress,
   SlackInteractionProgressPatch,
 } from '../config/state-rpc.ts';
@@ -39,10 +38,6 @@ import {
   type AgentDispatchResult,
   type SlackFlueDispatchState,
 } from './flue-dispatch.ts';
-import {
-  ContinuityNoticeDeliveryError,
-  ensureContinuityNotice,
-} from './continuity-notice.ts';
 import { resolveSlackCredentials, resolveSlackPublicUrl } from './credentials.ts';
 import { agentAvatarUrlForPresentation } from './agent-presence/avatar-assets.ts';
 import type { SlackStatusUpdate } from './replies.ts';
@@ -154,11 +149,6 @@ export interface RunTurnOptions {
   agentPrompt?: typeof promptSlackThreadAgent;
   /** Adapter-owned dispatch/read checkpoints restored by the relay. */
   flueDispatch?: SlackFlueDispatchState;
-  /** Restored exactly-once DM continuity-notice checkpoint. */
-  continuityNoticeProgress?: SlackContinuityNoticeProgress;
-  onContinuityNoticeProgress?: (
-    notice: SlackContinuityNoticeProgress,
-  ) => void | Promise<void>;
   /** Durable turn key forwarded to the sandbox for cap/idempotency state. */
   turnId?: string;
   /** Recorded result from an earlier attempt; skips the agent entirely. */
@@ -422,16 +412,6 @@ export async function runTurn(
   }, workLifecycle, {
     deliverySafety: ledgerAuthority ? 'ledger' : 'legacy',
     ...(agentViewPresentation ? { agentViewPresentation } : {}),
-  });
-  let continuityNoticeProgress = options.continuityNoticeProgress;
-  const ensureRequiredContinuityNotice = (): Promise<void> => ensureContinuityNotice({
-    required: runtimePlanDecision?.continuityNoticeRequired ?? false,
-    ...(continuityNoticeProgress ? { progress: continuityNoticeProgress } : {}),
-    post: (text) => presenter.postContinuityNotice(text),
-    record: async (notice) => {
-      continuityNoticeProgress = notice;
-      await options.onContinuityNoticeProgress?.(notice);
-    },
   });
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
   const statusInstanceId = runtimePlanDecision?.instanceId ?? agentConversationKey;
@@ -777,29 +757,13 @@ export async function runTurn(
           options.runId &&
           runtimePlanDecision
         ) {
-          let continuityReady = !runtimePlanDecision.continuityNoticeRequired ||
-            continuityNoticeProgress?.status === 'delivered';
-          let eligibility = decideProgressiveEligibility({
+          const frozenEligibility = decideProgressiveEligibility({
             runtimePlan: runtimePlanDecision.runtimePlan,
             memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
-            continuityReady,
             recoveryRequired: false,
             concurrentAttributionProven: options.progressiveAttributionProven === true,
             replacementCapable: options.beforeDelivery !== undefined,
           });
-          if (eligibility.reason === 'continuity') {
-            await ensureRequiredContinuityNotice();
-            continuityReady = continuityNoticeProgress?.status === 'delivered';
-            eligibility = decideProgressiveEligibility({
-              runtimePlan: runtimePlanDecision.runtimePlan,
-              memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
-              continuityReady,
-              recoveryRequired: false,
-              concurrentAttributionProven: options.progressiveAttributionProven === true,
-              replacementCapable: options.beforeDelivery !== undefined,
-            });
-          }
-          const frozenEligibility = eligibility;
           prepareProgressiveRelay = ({ instanceId, receipt }) =>
             progressiveRelayFactory({
               runId: options.runId!,
@@ -829,7 +793,6 @@ export async function runTurn(
                 },
               }
             : {}),
-          beforeResult: ensureRequiredContinuityNotice,
           ...(prepareProgressiveRelay ? { prepareProgressiveRelay } : {}),
         });
         text = sandboxUnavailableFallback
@@ -848,27 +811,6 @@ export async function runTurn(
         // failure. Its TurnJob already entered recovery_required and must not
         // emit a Slack final or reach an onDelivered tombstone.
         if (err instanceof AgentPromptFailure && (err.recoveryRequired || err.retryable)) {
-          throw err;
-        }
-        if (err instanceof ContinuityNoticeDeliveryError) {
-          const settlement = options.flueDispatch?.flueSettlement;
-          if (settlement?.outcome === 'completed') {
-            await workLifecycle?.settleExecution({
-              outcome: 'succeeded',
-              rawStatus: 'flue_succeeded',
-              ...(settlement.result.flueSubmissionRef
-                ? { flueSubmissionRef: settlement.result.flueSubmissionRef }
-                : {}),
-            });
-            await usageRecorder?.recordSuccess(settlement.result);
-          } else if (settlement) {
-            await workLifecycle?.settleExecution({
-              outcome: 'failed',
-              rawStatus: `flue_${settlement.outcome}`,
-              safeFailureCode: settlement.failureKind,
-            });
-            await usageRecorder?.recordFailure();
-          }
           throw err;
         }
         console.error('[chickpea] agent run failed:', sanitizeError(err));
@@ -921,8 +863,7 @@ export async function runTurn(
     await finishStatus();
     await finishDelivery();
   } catch (err) {
-    if (!(err instanceof ContinuityNoticeDeliveryError) &&
-        !(err instanceof AgentPromptFailure && err.retryable)) {
+    if (!(err instanceof AgentPromptFailure && err.retryable)) {
       await usageRecorder?.recordFailure();
     }
     throw err;
@@ -1242,10 +1183,9 @@ async function freezeRuntimePlanForTurn(input: {
   });
   const decision = input.persist
     ? await input.persist(candidate)
-    : {
+      : {
         runtimePlan: candidate,
         instanceId: deriveRuntimePlanInstanceId(candidate),
-        continuityNoticeRequired: false,
       };
   if (
     decision.runtimePlan.conversation.continuityKey !==

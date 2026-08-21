@@ -1,5 +1,4 @@
 import type {
-  SlackContinuityNoticeProgress,
   SlackInteractionProgressPatch,
   TurnProgress,
   TurnPullRequestProgress,
@@ -78,7 +77,6 @@ export interface PendingTurnJob {
   progress: TurnProgress;
   runtimePlan?: RuntimePlanV2;
   agentInstanceId?: string;
-  continuityNoticeRequired?: boolean;
   dispatchEnvelope?: FlueDispatchEnvelopeV1;
   dispatchReceipt?: FlueDispatchReceiptV1;
   flueSettlement?: FlueSettlementCheckpointV1;
@@ -98,7 +96,6 @@ interface TurnJobRow {
   progress_json: string;
   runtime_plan_json?: string | null;
   agent_instance_id?: string | null;
-  continuity_notice_required?: number | null;
   dispatch_envelope_json?: string | null;
   dispatch_receipt_json?: string | null;
   flue_settlement_json?: string | null;
@@ -110,7 +107,7 @@ interface TurnJobRow {
 
 const TURN_JOB_SELECT_COLUMNS = `id, evt_key, msg_key, turn_json, assignment_json, run_id,
   execution_authority, attempts, progress_json, runtime_plan_json,
-  agent_instance_id, continuity_notice_required, dispatch_envelope_json,
+  agent_instance_id, dispatch_envelope_json,
   dispatch_receipt_json, flue_settlement_json, dispatch_started_at,
   submission_id, observation_json, recovery_reason`;
 
@@ -134,7 +131,6 @@ export class TurnJobStoreLogic {
         progress_json TEXT NOT NULL DEFAULT '{}',
         runtime_plan_json TEXT,
         agent_instance_id TEXT,
-        continuity_notice_required INTEGER,
         dispatch_envelope_json TEXT,
         dispatch_receipt_json TEXT,
         flue_settlement_json TEXT,
@@ -160,9 +156,6 @@ export class TurnJobStoreLogic {
     }
     if (!columns.some((column) => column.name === 'agent_instance_id')) {
       db.exec('ALTER TABLE turn_jobs ADD COLUMN agent_instance_id TEXT');
-    }
-    if (!columns.some((column) => column.name === 'continuity_notice_required')) {
-      db.exec('ALTER TABLE turn_jobs ADD COLUMN continuity_notice_required INTEGER');
     }
     if (!columns.some((column) => column.name === 'dispatch_envelope_json')) {
       db.exec('ALTER TABLE turn_jobs ADD COLUMN dispatch_envelope_json TEXT');
@@ -310,17 +303,12 @@ export class TurnJobStoreLogic {
       const current = this.getFrozenRuntimePlan(id);
       if (current) return current;
       const instanceId = deriveRuntimePlanInstanceId(plan);
-      // Every new Slack event rehydrates bounded Slack context into its prompt.
-      // A harness rotation therefore preserves the visible conversation and
-      // must not post the old, misleading "fresh conversation" notice.
-      const continuityNoticeRequired = false;
       const updated = this.db.run(
         `UPDATE turn_jobs
-         SET runtime_plan_json = ?, agent_instance_id = ?, continuity_notice_required = ?
+         SET runtime_plan_json = ?, agent_instance_id = ?
          WHERE id = ? AND runtime_plan_json IS NULL`,
         JSON.stringify(plan),
         instanceId,
-        continuityNoticeRequired ? 1 : 0,
         id,
       );
       if (updated.changes !== 1) {
@@ -328,13 +316,13 @@ export class TurnJobStoreLogic {
         if (winner) return winner;
         throw new Error('TurnJob is unavailable for RuntimePlanV2 freeze.');
       }
-      return { runtimePlan: plan, instanceId, continuityNoticeRequired };
+      return { runtimePlan: plan, instanceId };
     });
   }
 
   getFrozenRuntimePlan(id: string): FrozenRuntimePlanDecision | undefined {
     const row = this.db.get(
-      `SELECT runtime_plan_json, agent_instance_id, continuity_notice_required
+      `SELECT runtime_plan_json, agent_instance_id
        FROM turn_jobs WHERE id = ?`,
       id,
     );
@@ -344,7 +332,6 @@ export class TurnJobStoreLogic {
     return {
       runtimePlan,
       instanceId,
-      continuityNoticeRequired: Number(row.continuity_notice_required) === 1,
     };
   }
 
@@ -888,25 +875,6 @@ export class TurnJobStoreLogic {
     });
   }
 
-  recordContinuityNotice(
-    id: string,
-    notice: SlackContinuityNoticeProgress,
-  ): TurnProgress | undefined {
-    const parsed = parseContinuityNotice(notice);
-    return this.db.transaction(() => {
-      const current = this.getProgress(id);
-      if (!current) return undefined;
-      if (current.continuityNotice?.status === 'delivered') return current;
-      const progress: TurnProgress = { ...current, continuityNotice: parsed };
-      this.db.run(
-        'UPDATE turn_jobs SET progress_json = ? WHERE id = ?',
-        JSON.stringify(progress),
-        id,
-      );
-      return progress;
-    });
-  }
-
   /** Merge adapter progress so a relay retry reuses the same Slack artifacts
    * and post-delivery cleanup remains recoverable after the job tombstone. */
   recordSlackInteractionProgress(
@@ -1043,9 +1011,6 @@ export class TurnJobStoreLogic {
         ? { runtimePlan: parseRuntimePlanV2(JSON.parse(row.runtime_plan_json)) }
         : {}),
       ...(row.agent_instance_id ? { agentInstanceId: row.agent_instance_id } : {}),
-      ...(row.continuity_notice_required === null || row.continuity_notice_required === undefined
-        ? {}
-        : { continuityNoticeRequired: Number(row.continuity_notice_required) === 1 }),
       ...(row.dispatch_envelope_json
         ? { dispatchEnvelope: parseFlueDispatchEnvelope(JSON.parse(row.dispatch_envelope_json)) }
         : {}),
@@ -1476,9 +1441,6 @@ function parseTurnProgress(raw: string): TurnProgress {
           : {}),
       };
     }
-    if (parsed?.continuityNotice) {
-      progress.continuityNotice = parseContinuityNotice(parsed.continuityNotice);
-    }
     const pullRequest = parsed?.pullRequest;
     if (
       pullRequest &&
@@ -1509,30 +1471,6 @@ function parseTurnProgress(raw: string): TurnProgress {
   return {};
 }
 
-function parseContinuityNotice(value: unknown): SlackContinuityNoticeProgress {
-  if (!value || typeof value !== 'object') {
-    throw new Error('Slack continuity notice progress is invalid.');
-  }
-  const candidate = value as Record<string, unknown>;
-  if (
-    candidate.status !== 'retryable' &&
-    candidate.status !== 'posting' &&
-    candidate.status !== 'delivered' &&
-    candidate.status !== 'unknown'
-  ) {
-    throw new Error('Slack continuity notice status is invalid.');
-  }
-  if (candidate.messageTs !== undefined && typeof candidate.messageTs !== 'string') {
-    throw new Error('Slack continuity notice coordinate is invalid.');
-  }
-  if (candidate.status === 'delivered' && !candidate.messageTs) {
-    throw new Error('Delivered Slack continuity notice requires a coordinate.');
-  }
-  return {
-    status: candidate.status,
-    ...(typeof candidate.messageTs === 'string' ? { messageTs: candidate.messageTs } : {}),
-  };
-}
 
 function isValidAcknowledgmentProgress(
   value: unknown,

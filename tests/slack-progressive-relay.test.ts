@@ -243,7 +243,6 @@ test('progressive eligibility closes every replacement and external-effect path'
     decideProgressiveEligibility({
       runtimePlan: basePlan,
       memorySelected: false,
-      continuityReady: true,
       recoveryRequired: false,
       concurrentAttributionProven: true,
       replacementCapable: false,
@@ -252,9 +251,6 @@ test('progressive eligibility closes every replacement and external-effect path'
 
   assert.deepEqual(decide(), { allowed: true, reason: 'safe_early_release' });
   assert.deepEqual(decide({ memorySelected: true }), { allowed: false, reason: 'memory' });
-  assert.deepEqual(decide({ continuityReady: false }), {
-    allowed: false, reason: 'continuity',
-  });
   assert.deepEqual(decide({ recoveryRequired: true }), {
     allowed: false, reason: 'recovery',
   });

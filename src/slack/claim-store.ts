@@ -3,7 +3,6 @@ import type { StateDb } from '../state/state-db.ts';
 import { WorkStoreLogic } from '../work/store.ts';
 import type { AdmitShadowRunInput, ShadowRunAdmission } from '../work/types.ts';
 import type {
-  SlackContinuityNoticeProgress,
   SlackInteractionProgressPatch,
   SlackRuntimeDrainCounts,
   SlackTurnRecoveryItem,
@@ -129,10 +128,6 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   ): Promise<FlueObservationTarget | undefined>;
   recordTurnAttempt?(id: string, attempts: number): Promise<void>;
   recordInteractionIntent?(id: string, intent: SlackInteractionIntent): Promise<void>;
-  recordContinuityNotice?(
-    id: string,
-    notice: SlackContinuityNoticeProgress,
-  ): Promise<void>;
   recordSlackInteractionProgress?(
     id: string,
     patch: SlackInteractionProgressPatch,
@@ -455,10 +450,6 @@ export class SqliteSlackStateStore implements SlackStateStore {
 
   async recordInteractionIntent(id: string, intent: SlackInteractionIntent) {
     this.turnJobs.recordInteractionIntent(id, intent);
-  }
-
-  async recordContinuityNotice(id: string, notice: SlackContinuityNoticeProgress) {
-    this.turnJobs.recordContinuityNotice(id, notice);
   }
 
   async recordSlackInteractionProgress(id: string, patch: SlackInteractionProgressPatch) {

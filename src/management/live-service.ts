@@ -140,13 +140,10 @@ export function createLiveWorkspaceManagementService(
         const transport = await slackTransport(organization.slackTeamId);
         const result = await transport.listChannels();
         const actorUser = await actorSlackUser(actor, organization.slackTeamId);
-        const visibleChannels = (await Promise.all(result.channels
-          .filter(({ archived }) => !archived)
-          .map(async (channel) => ({
-            channel,
-            visible: await transport.channelHasMember(channel.id, actorUser.slackUserId)
-              .catch(() => false),
-          })))).filter(({ visible }) => visible).map(({ channel }) => channel);
+        const memberChannels = await transport.listMemberChannels(actorUser.slackUserId);
+        const visibleChannels = result.channels.filter(
+          ({ id, archived }) => !archived && memberChannels.has(id),
+        );
         return {
           teamId: organization.slackTeamId,
           truncated: result.truncated,

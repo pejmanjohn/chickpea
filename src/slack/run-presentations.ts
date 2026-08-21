@@ -16,7 +16,6 @@ export type SlackProgressiveEligibilityReason =
   | 'memory'
   | 'sandbox'
   | 'recovery'
-  | 'continuity'
   | 'effect_capable'
   | 'concurrent_join'
   | 'other';

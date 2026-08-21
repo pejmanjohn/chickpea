@@ -25,7 +25,6 @@ import {
   runTurn,
   sanitizeError,
 } from './run-turn.ts';
-import { ContinuityNoticeDeliveryError } from './continuity-notice.ts';
 import { AgentPromptFailure } from './flue-dispatch.ts';
 import { slackThreadKey } from './thread-key.ts';
 import {
@@ -151,7 +150,6 @@ export async function drainNodeTurnRelayOnce(
     state.reconcileFlueExistingInstance &&
     state.recordFlueReceipt &&
     state.recordFlueSettlement &&
-    state.recordContinuityNotice &&
     state.matchFlueObservation &&
     state.markTurnRecoveryRequired &&
     state.recordTurnAttempt &&
@@ -166,7 +164,6 @@ export async function drainNodeTurnRelayOnce(
     const reconcileFlueExistingInstance = state.reconcileFlueExistingInstance.bind(state);
     const recordFlueReceipt = state.recordFlueReceipt.bind(state);
     const recordFlueSettlement = state.recordFlueSettlement.bind(state);
-    const recordContinuityNotice = state.recordContinuityNotice.bind(state);
     const markTurnRecoveryRequired = state.markTurnRecoveryRequired.bind(state);
     const recordTurnAttempt = state.recordTurnAttempt.bind(state);
     const recordInteractionIntent = state.recordInteractionIntent.bind(state);
@@ -227,12 +224,10 @@ export async function drainNodeTurnRelayOnce(
           markTurnRecoveryRequired(job.id, reason),
       };
       try {
-        const runtimePlanDecision = job.runtimePlan && job.agentInstanceId &&
-            job.continuityNoticeRequired !== undefined
+        const runtimePlanDecision = job.runtimePlan && job.agentInstanceId
           ? {
               runtimePlan: job.runtimePlan,
               instanceId: job.agentInstanceId,
-              continuityNoticeRequired: job.continuityNoticeRequired,
             }
           : undefined;
         await executeTurn(job.turn, job.assignment, env, {
@@ -250,11 +245,6 @@ export async function drainNodeTurnRelayOnce(
           ...(presentationState
             ? { presentationState, progressiveAttributionProven: true }
             : {}),
-          ...(job.progress.continuityNotice
-            ? { continuityNoticeProgress: job.progress.continuityNotice }
-            : {}),
-          onContinuityNoticeProgress: (notice) =>
-            recordContinuityNotice(job.id, notice),
           onInteractionIntent: async (intent) => {
             await recordInteractionIntent(job.id, intent);
             if (intent.disposition !== 'work') return;
@@ -271,13 +261,6 @@ export async function drainNodeTurnRelayOnce(
         if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
         return true;
       } catch (error) {
-        if (error instanceof ContinuityNoticeDeliveryError) {
-          if (error.recoveryRequired) {
-            await markTurnRecoveryRequired(job.id, 'continuity_notice_delivery_unknown');
-          }
-          if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
-          return false;
-        }
         if (flueDispatch.dispatchEnvelope) {
           // The row now owns the only legal redrive: replay the same keyed
           // admission, re-read its receipt, or replay its saved settlement.
@@ -396,7 +379,6 @@ async function drainLedgerRuns(input: {
     !state.reconcileFlueExistingInstance ||
     !state.recordFlueReceipt ||
     !state.recordFlueSettlement ||
-    !state.recordContinuityNotice ||
     !state.markTurnRecoveryRequired ||
     !state.recordTurnAttempt ||
     !state.recordInteractionIntent ||
@@ -419,7 +401,6 @@ async function drainLedgerRuns(input: {
         reconcileFlueExistingInstance: state.reconcileFlueExistingInstance.bind(state),
         recordFlueReceipt: state.recordFlueReceipt.bind(state),
         recordFlueSettlement: state.recordFlueSettlement.bind(state),
-        recordContinuityNotice: state.recordContinuityNotice.bind(state),
         markRecoveryRequired: state.markTurnRecoveryRequired.bind(state),
         recordAttempt: state.recordTurnAttempt.bind(state),
         recordInteractionIntent: state.recordInteractionIntent.bind(state),

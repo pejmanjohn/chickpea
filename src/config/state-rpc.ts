@@ -174,15 +174,9 @@ export interface SlackInteractionProgress {
 
 export type SlackInteractionProgressPatch = Partial<SlackInteractionProgress>;
 
-export interface SlackContinuityNoticeProgress {
-  status: 'retryable' | 'posting' | 'delivered' | 'unknown';
-  messageTs?: string;
-}
-
 export interface TurnProgress {
   interactionIntent?: SlackInteractionIntent;
   slackInteraction?: SlackInteractionProgress;
-  continuityNotice?: SlackContinuityNoticeProgress;
   pullRequest?: TurnPullRequestProgress;
   usageTelemetry?: {
     executionId: string;
@@ -352,10 +346,6 @@ export interface TagStateRpc {
     instanceId: string,
     submissionId?: string,
   ): Promise<StateRpcResult<FlueObservationTarget | null>>;
-  slackContinuityNoticeRecord(
-    id: string,
-    notice: SlackContinuityNoticeProgress,
-  ): Promise<StateRpcResult<null>>;
   slackTurnRecoveryRequired(id: string, reason: string): Promise<StateRpcResult<null>>;
   slackTurnRecoveryList(limit: number): Promise<StateRpcResult<SlackTurnRecoveryItem[]>>;
   slackInstallationRecoveryRetry(workspaceId: string): Promise<StateRpcResult<number>>;

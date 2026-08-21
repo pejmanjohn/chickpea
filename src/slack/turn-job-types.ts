@@ -120,8 +120,6 @@ export interface TurnJob {
   /** First-write-wins harness and target decision, populated before dispatch. */
   runtimePlan?: RuntimePlanV2;
   agentInstanceId?: string;
-  /** Decision only; Slack delivery and its receipt are owned by the U4 envelope. */
-  continuityNoticeRequired?: boolean;
 }
 
 /** The only long-lived app-owned binding to a Flue conversation incarnation. */
@@ -140,5 +138,4 @@ export interface SlackAgentBindingExpectation {
 export interface FrozenRuntimePlanDecision {
   runtimePlan: RuntimePlanV2;
   instanceId: string;
-  continuityNoticeRequired: boolean;
 }

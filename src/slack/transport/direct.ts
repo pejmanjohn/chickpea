@@ -17,7 +17,7 @@ type SlackApiMethod = (input?: SlackApiInput) => Promise<unknown>;
 
 /** Narrow SDK seam used for direct-adapter tests and alternative runtimes. */
 export interface DirectSlackApiClient {
-  users: { info: SlackApiMethod };
+  users: { info: SlackApiMethod; conversations: SlackApiMethod };
   conversations: {
     info: SlackApiMethod;
     join: SlackApiMethod;
@@ -71,6 +71,29 @@ export function createDirectSlackTransportFromClient(
         limit: CHANNEL_PAGE_LIMIT,
         ...(cursor ? { cursor } : {}),
       }));
+    },
+
+    async listMemberChannels(userId): Promise<ReadonlySet<string>> {
+      const channels = new Set<string>();
+      let cursor: string | undefined;
+      for (let page = 0; page < 100; page += 1) {
+        const result = await call(client.users.conversations, 'users.conversations', {
+          user: userId,
+          types: 'public_channel,private_channel',
+          exclude_archived: true,
+          limit: 200,
+          ...(cursor ? { cursor } : {}),
+        });
+        for (const channel of Array.isArray(result.channels) ? result.channels : []) {
+          const id = stringValue(record(channel).id);
+          if (id) channels.add(id);
+        }
+        cursor = stringValue(record(result.response_metadata).next_cursor).trim() || undefined;
+        if (!cursor) return channels;
+      }
+      throw new SlackTransportError('users.conversations', 'pagination_limit', {
+        retryable: true,
+      });
     },
 
     async channelHasMember(channelId, userId): Promise<boolean> {

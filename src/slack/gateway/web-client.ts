@@ -12,6 +12,7 @@ const NAMESPACED_OPERATIONS = new Set<GatewaySlackOperation>([
   'auth.test',
   'users.info',
   'users.list',
+  'users.conversations',
   'conversations.info',
   'conversations.list',
   'conversations.members',

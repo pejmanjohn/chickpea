@@ -548,5 +548,12 @@ test('work checklist posts once and updates the same message coordinate', async 
   assert.equal(ts, '1782770400.001000');
   await presenter.updateWorkChecklist(ts!, ['PR link', 'Verification result'], true);
   assert.deepEqual(calls.map((call) => call.method), ['post', 'update']);
+  assert.equal((calls[0]?.input as { username?: string }).username, 'Test agent');
+  assert.equal(
+    (calls[0]?.input as { icon_url?: string }).icon_url,
+    'https://chickpea.example/assets/agents/test/avatar/1',
+  );
   assert.equal((calls[1]?.input as { ts: string }).ts, ts);
+  assert.equal((calls[1]?.input as { username?: string }).username, undefined);
+  assert.equal((calls[1]?.input as { icon_url?: string }).icon_url, undefined);
 });

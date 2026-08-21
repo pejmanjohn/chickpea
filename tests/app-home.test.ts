@@ -33,6 +33,15 @@ test('App Home is a sparse directory with one private-message action per visible
     JSON.stringify(block).includes(START_AGENT_ACTION_ID)).length, 2);
 });
 
+test('App Home explains when the Slack view shows only the first 24 Agents', () => {
+  const agents = Array.from({ length: 26 }, (_, index) =>
+    agent(`agent_${index}`, `Agent ${index}`));
+  const view = agentDirectoryAppHome(agents);
+  const blocks = view.blocks as Array<Record<string, any>>;
+  assert.equal(blocks.filter((block) => block.type === 'section').length, 24);
+  assert.match(JSON.stringify(blocks.at(-1)), /Showing 24 of 26 available Agents/);
+});
+
 test('only the exact App Home Agent action produces a trusted selection', () => {
   const payload: Record<string, any> = {
     type: 'block_actions',

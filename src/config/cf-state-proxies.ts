@@ -1283,13 +1283,6 @@ export class CfSlackStateStore implements SlackStateStore {
     );
   }
 
-  async recordContinuityNotice(
-    id: string,
-    notice: Parameters<TagStateRpc['slackContinuityNoticeRecord']>[1],
-  ): Promise<void> {
-    unwrap(await this.stub.slackContinuityNoticeRecord(id, notice));
-  }
-
   async markTurnRecoveryRequired(id: string, reason: string): Promise<void> {
     unwrap(await this.stub.slackTurnRecoveryRequired(id, reason));
   }

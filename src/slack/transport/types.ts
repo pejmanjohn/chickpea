@@ -75,6 +75,9 @@ export interface SlackTransport {
   lookupMember(userId: string): Promise<SlackMember>;
   lookupChannel(channelId: string): Promise<SlackChannel>;
   listChannels(): Promise<SlackChannelList>;
+  /** Channels the bot shares with one Slack user. Used for directory discovery
+   * so one user-scoped listing replaces a full member scan per Channel. */
+  listMemberChannels(userId: string): Promise<ReadonlySet<string>>;
   channelHasMember(channelId: string, userId: string): Promise<boolean>;
   openDirectConversation(userId: string): Promise<SlackChannel>;
   joinPublicChannel(channelId: string): Promise<SlackChannel>;

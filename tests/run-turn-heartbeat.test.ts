@@ -544,7 +544,6 @@ test('runTurn freezes eligibility before exposing the receipt-scoped relay facto
     runtimePlanDecision: {
       runtimePlan,
       instanceId: deriveRuntimePlanInstanceId(runtimePlan),
-      continuityNoticeRequired: false,
     },
     progressiveAttributionProven: true,
     prepareProgressiveRelay: async (input) => {
@@ -661,7 +660,6 @@ test('a frozen Cloudflare plan narrows unsettled dispatches when its live bindin
         runtimePlanDecision: {
           runtimePlan,
           instanceId: deriveRuntimePlanInstanceId(runtimePlan),
-          continuityNoticeRequired: false,
         },
         flueDispatch,
         usageRecordingEnabled: false,

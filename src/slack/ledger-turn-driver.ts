@@ -43,8 +43,6 @@ import {
 import { recordSlackInstallationUnavailable } from './installation-observability.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
-import type { SlackContinuityNoticeProgress } from '../config/state-rpc.ts';
-import { ContinuityNoticeDeliveryError } from './continuity-notice.ts';
 import { AgentPromptFailure } from './flue-dispatch.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 import type {
@@ -74,10 +72,6 @@ export interface LedgerSlackTurnStore {
     id: string,
     settlement: FlueSettlementCheckpointV1,
   ): MaybePromise<FlueSettlementCheckpointV1>;
-  recordContinuityNotice(
-    id: string,
-    notice: SlackContinuityNoticeProgress,
-  ): MaybePromise<unknown>;
   markRecoveryRequired(id: string, reason: string): MaybePromise<void>;
   recordAttempt(id: string, attempts: number): MaybePromise<void>;
   recordInteractionIntent(id: string, intent: SlackInteractionIntent): MaybePromise<unknown>;
@@ -180,12 +174,10 @@ export function createLedgerSlackRunHandler(
     if (claim.phase === 'delivery') {
       return deliverPersistedResponse(options, claim, job, client, attempt, now);
     }
-    const runtimePlanDecision = job.runtimePlan && job.agentInstanceId &&
-        job.continuityNoticeRequired !== undefined
+    const runtimePlanDecision = job.runtimePlan && job.agentInstanceId
       ? {
           runtimePlan: job.runtimePlan,
           instanceId: job.agentInstanceId,
-          continuityNoticeRequired: job.continuityNoticeRequired,
         }
       : undefined;
     try {
@@ -213,12 +205,6 @@ export function createLedgerSlackRunHandler(
             options.turns.recordFlueSettlement(job.id, settlement),
           markRecoveryRequired: (reason) =>
             options.turns.markRecoveryRequired(job.id, reason),
-        },
-        ...(job.progress.continuityNotice
-          ? { continuityNoticeProgress: job.progress.continuityNotice }
-          : {}),
-        onContinuityNoticeProgress: async (notice) => {
-          await options.turns.recordContinuityNotice(job.id, notice);
         },
         workStore: options.work,
         ...(options.presentationState
@@ -264,17 +250,6 @@ export function createLedgerSlackRunHandler(
           return { kind: 'recovery_required', reasonCode: 'post_dispatch_attempts_exhausted' };
         }
         return { kind: 'requeue', reasonCode: 'flue_reattachment_interrupted' };
-      }
-      if (error instanceof ContinuityNoticeDeliveryError) {
-        if (error.recoveryRequired) {
-          await options.turns.markRecoveryRequired(
-            job.id,
-            'continuity_notice_delivery_unknown',
-          );
-          await clearActiveWork(options, job);
-          return { kind: 'recovery_required', reasonCode: 'continuity_notice_delivery_unknown' };
-        }
-        return { kind: 'requeue', reasonCode: 'continuity_notice_delivery_failed' };
       }
       return classifyExecutionFailure(options, claim, job, attempt, now);
     }

@@ -53,6 +53,15 @@ export function agentDirectoryAppHome(agents: readonly CustomAgentConfig[]): Vie
         },
       });
     }
+    if (agents.length > 24) {
+      blocks.push({
+        type: 'context',
+        elements: [{
+          type: 'mrkdwn',
+          text: `Showing 24 of ${agents.length} available Agents. Open Chickpea Admin to browse the full directory.`,
+        }],
+      });
+    }
   }
   return { type: 'home', blocks } as unknown as View;
 }

@@ -119,7 +119,6 @@ import {
   runTurn,
   sanitizeError,
 } from './slack/run-turn.ts';
-import { ContinuityNoticeDeliveryError } from './slack/continuity-notice.ts';
 import { AgentPromptFailure } from './slack/flue-dispatch.ts';
 import type {
   FlueDispatchReceiptV1,
@@ -932,16 +931,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     );
   }
 
-  async slackContinuityNoticeRecord(
-    id: string,
-    notice: Parameters<TagStateRpc['slackContinuityNoticeRecord']>[1],
-  ): Promise<StateRpcResult<null>> {
-    return this.call((stores) => {
-      stores.turnJobs.recordContinuityNotice(id, notice);
-      return null;
-    });
-  }
-
   async slackTurnRecoveryRequired(
     id: string,
     reason: string,
@@ -1302,12 +1291,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         };
       const replayText =
           replayTextForTurnProgress(job.progress) ?? (await persistSandboxProgress());
-        const runtimePlanDecision = job.runtimePlan && job.agentInstanceId &&
-            job.continuityNoticeRequired !== undefined
+        const runtimePlanDecision = job.runtimePlan && job.agentInstanceId
           ? {
               runtimePlan: job.runtimePlan,
               instanceId: job.agentInstanceId,
-              continuityNoticeRequired: job.continuityNoticeRequired,
             }
           : undefined;
         await runTurn(job.turn, job.assignment, this.env as PlatformEnv, {
@@ -1324,12 +1311,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           flueDispatch,
           presentationState: localSlackPresentationState(stores),
           progressiveAttributionProven: true,
-          ...(job.progress.continuityNotice
-            ? { continuityNoticeProgress: job.progress.continuityNotice }
-            : {}),
-          onContinuityNoticeProgress: (notice) => {
-            stores.turnJobs.recordContinuityNotice(job.id, notice);
-          },
           onUsagePersistence: (event) => {
             stores.turnJobs.recordUsagePersistence(job.id, event);
           },
@@ -1363,19 +1344,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         if (err instanceof AgentPromptFailure && err.recoveryRequired) {
           if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
           console.error('[chickpea] Flue turn requires operator reconciliation');
-          return false;
-        }
-        if (err instanceof ContinuityNoticeDeliveryError) {
-          if (err.recoveryRequired) {
-            stores.turnJobs.markRecoveryRequired(
-              job.id,
-              'continuity_notice_delivery_unknown',
-            );
-            console.error('[chickpea] continuity notice delivery requires reconciliation');
-          } else {
-            needsRetry = true;
-          }
-          if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
           return false;
         }
         // Any failure after the terminal presentation boundary is cleanup,
