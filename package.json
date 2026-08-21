@@ -20,6 +20,7 @@
     "docs/authentication.md",
     "docs/runbooks/auth-db-deployment.md",
     "docs/runbooks/coding-sandbox-deployment.md",
+    "docs/runbooks/agent-first-acceptance-2026-08-21.md",
     "docs/runbooks/slack-auth-recovery.md",
     "docs/runbooks/workspace-management-mcp.md",
     "fixtures",
