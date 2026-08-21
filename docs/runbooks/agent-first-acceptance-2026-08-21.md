@@ -6,7 +6,7 @@ This report records the independent Fable review, the resulting remediations, an
 
 ## Reviewed revisions
 
-- Main runtime implementation: `fdbe4e8d0c0027096644a8ac4085a6f697ec28f9`
+- Main runtime implementation after follow-up re-audit: `7e24e0fffb3a9cf3f0a2dadda465bcb53eec5feb`
 - Main pull request: <https://github.com/pejmanjohn/chickpea/pull/5>
 - Disposable Worker: <https://chickpea-agent-first-disposable.pejmanjohn.workers.dev>
 - Disposable Worker version: `76665bf7-895e-4078-9133-4677dbe83563` at 100%
@@ -37,11 +37,13 @@ Fable did identify implementation and operability gaps around the completed mode
 | Gateway operating limits were undocumented | The runbook now records installer recovery, binding transfer, rate limits, offline suppression, and the private-beta global-control ceiling. |
 | Acceptance screenshots were local-only | This tracked report now carries the durable result and ships in the OSS export. |
 
+Fable's follow-up re-audit independently re-ran both repositories and reproduced the live gateway probes. It confirmed all thirteen original findings were fixed and found one low-severity residual: the Agent-presence classifier handled gateway-specific binding mismatch codes but not the gateway's raw `binding_mismatch` response. Revision `7e24e0f` adds that response to the reconnect classifier and covers both revoked and displaced shared-app authority with the same explicit `Reconnect Slack` recovery.
+
 The global gateway control Durable Object remains a documented private-beta scaling ceiling. It is sufficient for the current beta and must be sharded before broad multi-tenant scale; this is an explicit capacity boundary, not a hidden correctness gap.
 
 ## Automated acceptance
 
-Main repository at `fdbe4e8`:
+Main repository at `7e24e0f`:
 
 - `npm test`: 1,465 passed, 0 failed.
 - `npm run build`: passed and validated the generated Cloudflare artifact.
