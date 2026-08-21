@@ -384,6 +384,8 @@ function runAdminPageHarness(
     usageAgentLabel?: string | null;
     usageClassifierOnly?: boolean;
     usageNextCursor?: string | null;
+    resetDocumentScrollOnRender?: boolean;
+    modelFocusScrollTop?: number;
   } = {},
 ): {
   app: FakeElement;
@@ -464,6 +466,10 @@ function runAdminPageHarness(
   resolveAgentPatch(): void;
   mainScrollTop(): number;
   setMainScrollTop(value: number): void;
+  documentScrollTop(): number;
+  setDocumentScrollTop(value: number): void;
+  focusModelInput(caret?: number): void;
+  modelSelectionRanges: Array<[number, number]>;
 } {
   const makeRegion = (): FakeRegion => ({
     inert: false,
@@ -490,11 +496,17 @@ function runAdminPageHarness(
   let renderGeneration = 0;
   let sandboxBuildVariableSelectedAttached = false;
   let focusedAction: string | null = null;
-  let activeElement: { focus(): void } | null = null;
-  const focusElements: Record<string, { focus(): void }> = {};
+  let activeElement: {
+    id?: string;
+    selectionStart?: number;
+    focus(): void;
+    setSelectionRange?(start: number, end: number): void;
+  } | null = null;
+  const focusElements: Record<string, { id: string; focus(): void }> = {};
   const focusElement = (name: string) => {
     if (!focusElements[name]) {
       const element = {
+        id: name,
         focus() {
           focusedAction = name;
           activeElement = element;
@@ -503,6 +515,39 @@ function runAdminPageHarness(
       focusElements[name] = element;
     }
     return focusElements[name];
+  };
+  let modelInputGeneration = -1;
+  let modelDomEnabled = false;
+  let modelSelectionStart = 0;
+  const modelSelectionRanges: Array<[number, number]> = [];
+  let modelInputElement: {
+    id: string;
+    selectionStart: number;
+    focus(): void;
+    setSelectionRange(start: number, end: number): void;
+  } | null = null;
+  const currentModelInput = () => {
+    if (modelInputGeneration !== renderGeneration || !modelInputElement) {
+      modelInputGeneration = renderGeneration;
+      const element = {
+        id: 'p-model',
+        selectionStart: modelSelectionStart,
+        focus() {
+          focusedAction = 'p-model';
+          activeElement = element;
+          if (options.modelFocusScrollTop !== undefined) {
+            documentScrollTop = options.modelFocusScrollTop;
+          }
+        },
+        setSelectionRange(start: number, end: number) {
+          modelSelectionStart = start;
+          element.selectionStart = start;
+          modelSelectionRanges.push([start, end]);
+        },
+      };
+      modelInputElement = element;
+    }
+    return modelInputElement;
   };
   const app: FakeElement = {
     get innerHTML() {
@@ -519,6 +564,13 @@ function runAdminPageHarness(
       // Replacing #app also replaces the real .main scrolling element.
       // A fresh element begins at the top unless production restores it.
       mainRegion = { scrollTop: 0, scrollLeft: 0 };
+      // Browsers normally retain document position when only #app is replaced.
+      // A targeted test may inject a pre-restore reset to model layout
+      // clamping. Model-input focus can separately inject post-restore movement.
+      if (options.resetDocumentScrollOnRender) {
+        documentScrollLeft = 0;
+        documentScrollTop = 0;
+      }
     },
   };
   const modalRoot: FakeElement = { innerHTML: '' };
@@ -737,9 +789,19 @@ function runAdminPageHarness(
     },
   };
   const windowListeners: Record<string, (event: Record<string, unknown>) => void> = {};
+  let documentScrollLeft = 0;
+  let documentScrollTop = 0;
   const window = {
+    get scrollX() { return documentScrollLeft; },
+    get scrollY() { return documentScrollTop; },
+    get pageXOffset() { return documentScrollLeft; },
+    get pageYOffset() { return documentScrollTop; },
     addEventListener(type: string, listener: (event: Record<string, unknown>) => void) {
       windowListeners[type] = listener;
+    },
+    scrollTo(left: number, top: number) {
+      documentScrollLeft = Number(left) || 0;
+      documentScrollTop = Number(top) || 0;
     },
     open() {
       return {
@@ -827,6 +889,7 @@ function runAdminPageHarness(
     getElementById(id: string) {
       if (id === 'app') return app;
       if (id === 'modal-root') return modalRoot;
+      if (modelDomEnabled && id === 'p-model' && appHtml.includes('id="p-model"')) return currentModelInput();
       if ((id === 'slack-permission-heading' || id === 'onboarding-connected-heading' || id === 'onboarding-channel-heading') && appHtml.includes(`id="${id}"`)) {
         return focusElement(id);
       }
@@ -2158,6 +2221,18 @@ function runAdminPageHarness(
     setMainScrollTop(value: number) {
       mainRegion.scrollTop = value;
     },
+    documentScrollTop: () => documentScrollTop,
+    setDocumentScrollTop(value: number) {
+      documentScrollTop = value;
+    },
+    focusModelInput(caret = 0) {
+      modelDomEnabled = true;
+      modelSelectionStart = caret;
+      const input = currentModelInput();
+      input.selectionStart = caret;
+      input.focus();
+    },
+    modelSelectionRanges,
   };
 }
 
@@ -2986,6 +3061,7 @@ test('Add to channels preserves the Agent panel scroll when no candidates remain
   const harness = runAdminPageHarness({
     slackConnection: connectedSlackFixture(),
     slackChannels: channelsFixture([{ id: 'C0EXR3L9T', name: 'eng-releases' }]),
+    resetDocumentScrollOnRender: true,
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -2994,11 +3070,13 @@ test('Add to channels preserves the Agent panel scroll when no candidates remain
   await flushAsync();
 
   harness.setMainScrollTop(486);
+  harness.setDocumentScrollTop(486);
   click({ target: actionTarget({ 'data-action': 'attach-open' }) });
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /All available Slack Channels already use this Agent\./);
   assert.equal(harness.mainScrollTop(), 486);
+  assert.equal(harness.documentScrollTop(), 486);
 });
 
 test('Add to channels preserves scroll when a catalog request finishes after the picker closes', async () => {
@@ -3007,6 +3085,7 @@ test('Add to channels preserves scroll when a catalog request finishes after the
     initialPath: '/admin/agents/agent_release',
     slackConnection: connectedSlackFixture(),
     slackChannelsFetch: () => new Promise((resolve) => { resolveSlackChannels = resolve; }),
+    resetDocumentScrollOnRender: true,
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -3015,9 +3094,11 @@ test('Add to channels preserves scroll when a catalog request finishes after the
   await flushAsync();
 
   harness.setMainScrollTop(486);
+  harness.setDocumentScrollTop(486);
   click({ target: actionTarget({ 'data-action': 'attach-open' }) });
   click({ target: actionTarget({ 'data-action': 'attach-cancel' }) });
   assert.equal(harness.mainScrollTop(), 486);
+  assert.equal(harness.documentScrollTop(), 486);
 
   assert.ok(resolveSlackChannels);
   resolveSlackChannels(jsonResponse({
@@ -3029,6 +3110,7 @@ test('Add to channels preserves scroll when a catalog request finishes after the
   await flushAsync();
 
   assert.equal(harness.mainScrollTop(), 486);
+  assert.equal(harness.documentScrollTop(), 486);
 });
 
 test('Add to channels preserves scroll across a catalog error and retry', async () => {
@@ -3037,6 +3119,7 @@ test('Add to channels preserves scroll across a catalog error and retry', async 
     slackConnection: connectedSlackFixture(),
     slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
     slackChannelFailures: 1,
+    resetDocumentScrollOnRender: true,
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -3045,15 +3128,18 @@ test('Add to channels preserves scroll across a catalog error and retry', async 
   await flushAsync();
 
   harness.setMainScrollTop(486);
+  harness.setDocumentScrollTop(486);
   click({ target: actionTarget({ 'data-action': 'attach-open' }) });
   await flushAsync();
   assert.match(harness.app.innerHTML, /Slack permissions are out of date/);
   assert.equal(harness.mainScrollTop(), 486);
+  assert.equal(harness.documentScrollTop(), 486);
 
   click({ target: actionTarget({ 'data-action': 'refresh-channels' }) });
   await flushAsync();
   assert.match(harness.app.innerHTML, /new-channel/);
   assert.equal(harness.mainScrollTop(), 486);
+  assert.equal(harness.documentScrollTop(), 486);
 });
 
 test('Add to channels escapes catalog values and offers the truncated-list fallback', async () => {
@@ -8591,17 +8677,61 @@ test('leaving Settings while its shared loads are pending ignores their stale co
   assert.match(harness.app.innerHTML, /class="chan-item active" data-action="settings-section" data-section="slack"/);
 });
 
-test('the unified primary shell centers a capped white paper panel within the post-sidebar canvas and collapses on mobile', () => {
+test('the unified primary shell lets its white paper grow with content and collapses on mobile', () => {
   const page = renderAdminPage();
-  assert.match(page, /\.primary-admin-shell\s*\{[^}]*background:\s*var\(--admin-visual-canvas\);[^}]*max-width:\s*none;/s);
+  assert.match(page, /\.primary-admin-shell\s*\{[^}]*background:\s*var\(--admin-visual-canvas\);[^}]*height:\s*auto;[^}]*min-height:\s*100dvh;[^}]*overflow:\s*visible;[^}]*max-width:\s*none;/s);
   assert.match(page, /\.primary-admin-shell > \.topbar\s*\{[^}]*display:\s*none;/s);
-  assert.match(page, /\.primary-admin-shell \.body\s*\{[^}]*gap:\s*24px;[^}]*padding:\s*0 24px 0 0;/s);
-  assert.match(page, /\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*border-radius:\s*0;[^}]*box-shadow:\s*none;[^}]*width:\s*292px;/s);
-  assert.match(page, /\.primary-admin-shell \.main\s*\{[^}]*background:\s*var\(--admin-visual-paper\);[^}]*height:\s*calc\(100% - 44px\);[^}]*margin:\s*22px auto;[^}]*max-width:\s*1440px;[^}]*width:\s*100%;/s);
+  assert.match(page, /\.primary-admin-shell \.body\s*\{[^}]*align-items:\s*flex-start;[^}]*gap:\s*24px;[^}]*overflow:\s*visible;[^}]*padding:\s*0 24px 0 0;/s);
+  assert.match(page, /\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*border-radius:\s*0;[^}]*box-shadow:\s*none;[^}]*height:\s*100dvh;[^}]*max-height:\s*100dvh;[^}]*overflow:\s*hidden;[^}]*position:\s*sticky;[^}]*width:\s*292px;/s);
+  assert.match(page, /\.primary-admin-shell \.main\s*\{[^}]*background:\s*var\(--admin-visual-paper\);[^}]*height:\s*auto;[^}]*margin:\s*22px auto;[^}]*max-height:\s*none;[^}]*min-height:\s*calc\(100dvh - 44px\);[^}]*overflow:\s*visible;[^}]*max-width:\s*1440px;[^}]*width:\s*100%;/s);
   assert.match(page, /\.team-main\s*\{[^}]*max-width:\s*760px;/s);
   assert.match(page, /\.usage-main\s*\{[^}]*max-width:\s*1100px;/s);
   assert.match(page, /@media \(max-width: 1000px\)[\s\S]*?\.primary-admin-shell \.body\s*\{[^}]*gap:\s*15px;[^}]*padding-right:\s*15px;[^}]*\}[\s\S]*?\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*width:\s*228px;/s);
   assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.primary-admin-shell > \.topbar\s*\{[^}]*display:\s*flex;[^}]*\}[\s\S]*?\.primary-admin-shell \.body\s*\{[^}]*gap:\s*0;[^}]*padding-right:\s*0;[^}]*\}[\s\S]*?\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*display:\s*none;/s);
+});
+
+test('primary-shell navigation starts each destination at the top of the document', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  harness.setDocumentScrollTop(1600);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  assert.equal(harness.locationPath(), '/admin/settings/providers');
+  assert.equal(harness.documentScrollTop(), 0);
+});
+
+test('initial deep-link routing leaves browser-restored document position intact', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
+  harness.setDocumentScrollTop(900);
+
+  await flushAsync();
+
+  assert.equal(harness.locationPath(), '/admin/agents/agent_release');
+  assert.equal(harness.documentScrollTop(), 900);
+});
+
+test('deep-linked Scheduled Work summaries preserve the underlying list position', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/audit-logs/scheduled-work' });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  harness.setDocumentScrollTop(900);
+  click({
+    target: actionTarget({
+      'data-action': 'select-scheduled-routine',
+      'data-routine': 'routine_release_digest',
+    }),
+  });
+  await flushAsync();
+  assert.equal(harness.locationPath(), '/admin/audit-logs/scheduled-work/routine_release_digest');
+  assert.equal(harness.documentScrollTop(), 900);
+
+  click({ target: actionTarget({ 'data-action': 'scheduled-summary-close' }) });
+  assert.equal(harness.locationPath(), '/admin/audit-logs/scheduled-work');
+  assert.equal(harness.documentScrollTop(), 900);
 });
 
 test('the server first paint uses the modern attached shell while Admin data loads', () => {
@@ -10051,6 +10181,92 @@ test('the profile Model picker shows the node-unpinned pick-a-model prompt with 
   assert.match(html, /set <span class="mono"[^>]*>SLACK_TAG_MODEL<\/span>/);
   assert.match(html, /as an offline\/dev fallback so an unpinned Agent still replies/);
   assert.match(html, /data-action="open-settings">Manage providers &amp; models in Settings &nearr;<\/button>/);
+});
+
+test('the profile Model picker preserves the Agent page position across open, load, filter, and close renders', async () => {
+  const harness = runAdminPageHarness({
+    modelProviders: [
+      {
+        id: 'anthropic',
+        configured: true,
+        source: 'registered in src/app.ts',
+        suggestions: ['anthropic/claude-sonnet-5'],
+      },
+    ],
+    anthropicModels: [{ id: 'claude-opus-5' }, { id: 'claude-sonnet-5' }],
+    resetDocumentScrollOnRender: true,
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const keydown = harness.listeners.keydown;
+  assert.ok(click && input && keydown);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  await flushAsync();
+
+  harness.setMainScrollTop(486);
+  harness.setDocumentScrollTop(486);
+  click({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+  assert.equal(harness.mainScrollTop(), 486);
+  assert.equal(harness.documentScrollTop(), 486);
+
+  input({ target: inputTarget({ 'data-action': 'profile-model' }, 'opus') });
+  await flushAsync();
+  assert.equal(harness.mainScrollTop(), 486);
+  assert.equal(harness.documentScrollTop(), 486);
+
+  keydown({
+    key: 'Escape',
+    target: actionTarget({ 'data-action': 'profile-model' }),
+    preventDefault() {},
+  });
+  assert.equal(harness.mainScrollTop(), 486);
+  assert.equal(harness.documentScrollTop(), 486);
+});
+
+test('a failed async Model load preserves page position, focus, and caret', async () => {
+  let resolveModels: ((response: FakeResponse) => void) | undefined;
+  const harness = runAdminPageHarness({
+    modelProviders: [{
+      id: 'anthropic',
+      configured: true,
+      source: 'registered in src/app.ts',
+      suggestions: ['anthropic/claude-sonnet-5'],
+    }],
+    resetDocumentScrollOnRender: true,
+    modelFocusScrollTop: 120,
+    settingsLoadFetch(path, method) {
+      if (path !== '/admin/api/providers/anthropic/models' || method !== 'GET') return undefined;
+      return new Promise<FakeResponse>((resolve) => { resolveModels = resolve; });
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  await flushAsync();
+
+  harness.focusModelInput(5);
+  harness.setMainScrollTop(486);
+  harness.setDocumentScrollTop(486);
+  click({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  input({
+    target: Object.assign(inputTarget({ 'data-action': 'profile-model' }, 'opus'), {
+      selectionStart: 5,
+    }),
+  });
+  assert.equal(harness.focusedAction(), 'p-model');
+
+  assert.ok(resolveModels);
+  resolveModels(jsonResponse({ error: 'provider_models_unavailable' }, 502));
+  await flushAsync();
+
+  assert.equal(harness.mainScrollTop(), 486);
+  assert.equal(harness.documentScrollTop(), 486);
+  assert.equal(harness.focusedAction(), 'p-model');
+  assert.deepEqual(harness.modelSelectionRanges.at(-1), [5, 5]);
 });
 
 test('the profile Model picker labels Cloudflare binding suggestions as workers-ai', async () => {

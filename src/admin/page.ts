@@ -1297,16 +1297,25 @@ details[open].advanced summary::before {
   --admin-visual-paper: #fffdf7;
   --admin-visual-line: #e8deca;
   background: var(--admin-visual-canvas);
+  height: auto;
+  min-height: 100dvh;
+  overflow: visible;
   max-width: none;
 }
 .primary-admin-shell > .topbar { display: none; }
-.primary-admin-shell .body { gap: 24px; padding: 0 24px 0 0; }
+.primary-admin-shell .body { align-items: flex-start; gap: 24px; overflow: visible; padding: 0 24px 0 0; }
 .primary-admin-shell .primary-shell-sidebar {
+  align-self: flex-start;
   background: rgba(255, 253, 247, .74);
   border-radius: 0;
   border-right: 1px solid rgba(130, 105, 58, .12);
   box-shadow: none;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
   padding: 27px 22px 22px;
+  position: sticky;
+  top: 0;
   width: 292px;
 }
 .primary-admin-shell .primary-shell-brand {
@@ -1321,11 +1330,14 @@ details[open].advanced summary::before {
 .primary-admin-shell .primary-shell-sidebar .rail-head { padding-left: 3px; padding-right: 3px; }
 .primary-admin-shell .primary-shell-sidebar .section-switcher { border-color: var(--admin-visual-line); }
 .primary-admin-shell .main {
-  align-self: center;
+  align-self: flex-start;
   background: var(--admin-visual-paper);
   border: 1px solid rgba(118, 94, 51, .08);
-  height: calc(100% - 44px);
+  height: auto;
   margin: 22px auto;
+  max-height: none;
+  min-height: calc(100dvh - 44px);
+  overflow: visible;
   max-width: 1440px;
   width: 100%;
 }
@@ -1422,15 +1434,12 @@ details[open].advanced summary::before {
 }
 
 @media (max-width: 740px) {
-  .primary-admin-shell { height: auto; overflow: visible; }
   .primary-admin-shell > .topbar { display: flex; }
-  .primary-admin-shell .body { flex-direction: column; gap: 0; overflow: visible; padding-right: 0; }
+  .primary-admin-shell .body { flex-direction: column; gap: 0; padding-right: 0; }
   .primary-admin-shell .primary-shell-sidebar { display: none; }
   .primary-admin-shell .main {
     align-self: auto;
-    height: auto;
     margin: 10px;
-    max-height: none;
     padding: 26px 20px;
     width: calc(100% - 20px);
   }
@@ -2739,6 +2748,7 @@ button.capability-pill { cursor: pointer; }
       requestId: 0
     }
   };
+  var lastRenderedPath = "";
   var egressDraft = { mode: "allowlist", domains: [""] };
   var sandboxDraft = {
     allowedHosts: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"],
@@ -3120,6 +3130,14 @@ button.capability-pill { cursor: pointer; }
     return "/admin/channels";
   }
 
+  // Some deep-linkable UI state (currently the Scheduled Work summary modal)
+  // is not a new page. Keep it out of the scroll-reset identity so opening and
+  // closing an overlay never loses the underlying list position.
+  function pagePositionKey() {
+    if (state.view === "audit") return "/admin/audit-logs/scheduled-work";
+    return canonicalPath();
+  }
+
   function syncUrl(replace) {
     if (!canNavigate || !routeReady) return;
     var canonical = canonicalPath();
@@ -3186,6 +3204,9 @@ button.capability-pill { cursor: pointer; }
   }
 
   function render() {
+    var renderedPath = pagePositionKey();
+    var resetPagePosition = routeReady && !!lastRenderedPath && renderedPath !== lastRenderedPath;
+    lastRenderedPath = renderedPath;
     var app = document.getElementById("app");
     if (app.removeAttribute) app.removeAttribute("aria-busy");
     var overlays = teamConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
@@ -3286,21 +3307,54 @@ button.capability-pill { cursor: pointer; }
       if (routineDeleteCancel && routineDeleteCancel.focus) routineDeleteCancel.focus();
     }
     syncUrl();
+    // Replacing the old nested .main scroller used to make every destination
+    // start at the top. Document scrolling keeps its offset across innerHTML
+    // replacement, so preserve that navigation contract explicitly while
+    // leaving same-page status and picker renders in place.
+    if (resetPagePosition && typeof window !== "undefined" && typeof window.scrollTo === "function") {
+      window.scrollTo(0, 0);
+    }
     syncOnboardingActivity();
   }
 
-  // The Agent's inline Channel picker lives below the fold inside .main.
-  // Rendering replaces that scrolling element, so preserve its position for
-  // picker state changes while leaving normal navigation behavior alone.
-  function renderPreservingMainScroll() {
+  // Inline Agent controls can re-render the whole shell below the fold.
+  // Preserve both the legacy nested .main position and the document position:
+  // the primary shell now grows naturally, while other Admin surfaces may
+  // still use the inner scroller.
+  function renderPreservingPagePosition() {
     var currentMain = document.querySelector(".main");
     var scrollTop = currentMain ? currentMain.scrollTop : 0;
     var scrollLeft = currentMain ? currentMain.scrollLeft : 0;
+    var pageX = typeof window !== "undefined" ? (window.scrollX || window.pageXOffset || 0) : 0;
+    var pageY = typeof window !== "undefined" ? (window.scrollY || window.pageYOffset || 0) : 0;
+    var active = document.activeElement;
+    var activeId = active && active.id ? active.id : "";
+    var caret = null;
+    if (activeId) {
+      try { caret = active.selectionStart; } catch (error) { caret = null; }
+    }
     render();
     var nextMain = document.querySelector(".main");
-    if (!nextMain) return;
-    nextMain.scrollTop = scrollTop;
-    nextMain.scrollLeft = scrollLeft;
+    if (nextMain) {
+      if (nextMain.scrollTop !== scrollTop) nextMain.scrollTop = scrollTop;
+      if (nextMain.scrollLeft !== scrollLeft) nextMain.scrollLeft = scrollLeft;
+    }
+    if (activeId) {
+      var nextActive = document.getElementById(activeId);
+      if (nextActive && nextActive.focus) {
+        try { nextActive.focus({ preventScroll: true }); } catch (error) { nextActive.focus(); }
+        if (caret != null && nextActive.setSelectionRange) {
+          try { nextActive.setSelectionRange(caret, caret); } catch (error) { /* ignore */ }
+        }
+      }
+    }
+    // Focus restoration can itself scroll an off-screen input into view in
+    // browsers that ignore preventScroll. Make page position the final state.
+    if (typeof window !== "undefined" && typeof window.scrollTo === "function") {
+      var nextPageX = window.scrollX || window.pageXOffset || 0;
+      var nextPageY = window.scrollY || window.pageYOffset || 0;
+      if (nextPageX !== pageX || nextPageY !== pageY) window.scrollTo(pageX, pageY);
+    }
   }
 
   function renderSlackChannelCatalogState(preserveAgentId) {
@@ -3310,7 +3364,7 @@ button.capability-pill { cursor: pointer; }
       state.profileScreen === "edit" &&
       (state.attachPicker || (preserveAgentId && activeAgentId === preserveAgentId))
     ) {
-      renderPreservingMainScroll();
+      renderPreservingPagePosition();
       return;
     }
     render();
@@ -9208,6 +9262,7 @@ button.capability-pill { cursor: pointer; }
     return api("/admin/api/providers/" + encodeURIComponent(id) + "/favorites").then(function (body) {
       state.favorites[id] = body.favorites || [];
       if (state.view === "settings") render();
+      else if (state.modelPickerOpen) renderPreservingPagePosition();
     }).catch(function () { /* keep prior favorites on failure */ });
   }
 
@@ -9223,14 +9278,16 @@ button.capability-pill { cursor: pointer; }
       state.providerModels[id] = body.models || [];
       state.providerModelsError[id] = false;
       favUiFor(id).error = "";
-      if (state.view === "settings" || state.modelPickerOpen) render();
+      if (state.view === "settings") render();
+      else if (state.modelPickerOpen) renderPreservingPagePosition();
     }).catch(function (error) {
       // Mark the fetch failed so the picker falls back to the provider's static
       // suggestions for this provider (offline), and the Settings manager shows
       // its own error string.
       state.providerModelsError[id] = true;
       favUiFor(id).error = favModelsErrorText(id, error);
-      if (state.view === "settings" || state.modelPickerOpen) render();
+      if (state.view === "settings") render();
+      else if (state.modelPickerOpen) renderPreservingPagePosition();
     });
   }
 
@@ -9311,36 +9368,26 @@ button.capability-pill { cursor: pointer; }
         if (state.favorites[adminId] == null) loadFavorites(adminId);
       }
     });
-    render();
+    renderPreservingPagePosition();
   }
 
   function closeModelPicker() {
     if (!state.modelPickerOpen) return;
     state.modelPickerOpen = false;
     state.modelPickerFilter = "";
-    render();
+    renderPreservingPagePosition();
   }
 
   // A keystroke in the Model input both pins the free-text value (draft) and
   // narrows the open picker to matching specifiers (F6 filter). Typing opens the
-  // picker if it was closed. A full re-render rebuilds the popover, so restore
-  // focus + caret to the input afterward (a no-op in the test harness, which
-  // does not track the input element).
+  // picker if it was closed. The shared in-place renderer preserves the input's
+  // focus and caret across both this render and later async model-list renders.
   function filterModelPicker(target) {
     state.profileDraft.model = target.value;
     state.modelPickerFilter = target.value;
     markProfileDirty();
     if (!state.modelPickerOpen) { openModelPicker(); return; }
-    var caret = null;
-    try { caret = target.selectionStart; } catch (error) { caret = null; }
-    render();
-    var input = document.getElementById("p-model");
-    if (input && input.focus) {
-      input.focus();
-      if (caret != null && input.setSelectionRange) {
-        try { input.setSelectionRange(caret, caret); } catch (error) { /* ignore */ }
-      }
-    }
+    renderPreservingPagePosition();
   }
 
   function openProviderPaste(id, mode) {
@@ -10352,7 +10399,7 @@ button.capability-pill { cursor: pointer; }
     // Footer "Add to channels" picker.
     if (action === "attach-open" && state.profileDraft) { openProfileAttachPicker(); }
     if (action === "attach-new-channel") { state.attachPicker = false; state.attachChannelSelected = ""; state.attachError = ""; openAddChannel(target.getAttribute("data-agent") || ""); }
-    if (action === "attach-cancel") { state.attachPicker = false; state.attachChannelSelected = ""; state.attachError = ""; renderPreservingMainScroll(); }
+    if (action === "attach-cancel") { state.attachPicker = false; state.attachChannelSelected = ""; state.attachError = ""; renderPreservingPagePosition(); }
     if (action === "attach-channel-confirm" && state.profileDraft) { attachProfileToChannel(); }
     if (action === "detach-channel" && state.profileDraft) {
       detachProfileFromChannel(
@@ -11670,7 +11717,7 @@ button.capability-pill { cursor: pointer; }
     state.attachChannelSelected = "";
     state.attachError = "";
     state.attachNotice = "";
-    if (!ensureSlackChannelsLoaded()) renderPreservingMainScroll();
+    if (!ensureSlackChannelsLoaded()) renderPreservingPagePosition();
   }
 
   // Returns true when loadSlackChannels owns the next render. Both channel
@@ -13445,7 +13492,7 @@ button.capability-pill { cursor: pointer; }
       state.attachChannelSelected = "";
       state.attachError = "";
       state.attachNotice = "Agent added to #" + normalizeChannelLabel(channel.name || channel.id) + ".";
-      return refreshData(renderPreservingMainScroll);
+      return refreshData(renderPreservingPagePosition);
     }).catch(function (error) {
       var payload = error && error.payload;
       if (payload && payload.agent) {
@@ -13454,7 +13501,7 @@ button.capability-pill { cursor: pointer; }
         state.profileDraft = cloneAgent(payload.agent);
       }
       state.attachError = (error && (error.serverMessage || error.message)) || "Could not add this Agent to the Channel.";
-      renderPreservingMainScroll();
+      renderPreservingPagePosition();
     });
   }
 
@@ -13467,7 +13514,7 @@ button.capability-pill { cursor: pointer; }
       method: "DELETE"
     }).then(function () {
       state.attachNotice = "Agent removed from #" + normalizeChannelLabel(label) + ".";
-      return refreshData(renderPreservingMainScroll);
+      return refreshData(renderPreservingPagePosition);
     }).catch(function (error) {
       state.profileError = (error && (error.serverMessage || error.message)) || "Could not remove this Agent from the Channel.";
       render();
