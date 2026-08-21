@@ -5950,7 +5950,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         });
       } catch (error) {
         const detail = error instanceof SlackTransportError ? error.code : 'gateway_unreachable';
-        console.error('[chickpea] shared Slack connection test failed:', detail);
+        const diagnostic = error instanceof Error
+          ? error.message.replace(/[A-Za-z0-9_-]{32,}/g, '[redacted]').slice(0, 240)
+          : 'unknown';
+        console.error('[chickpea] shared Slack connection test failed:', detail, diagnostic);
         return c.json({ error: 'slack_gateway_unreachable', detail }, 502);
       }
     }

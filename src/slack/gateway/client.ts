@@ -5,6 +5,8 @@ import { primeStoredSlackPublicUrl, SLACK_SETTING_KEYS } from '../credentials.ts
 import type { CredentialKeyring } from '../secret-envelope.ts';
 import { SlackTransportError } from '../transport/types.ts';
 import {
+  GatewayDeploymentIdentityUnavailableError,
+  GATEWAY_DEPLOYMENT_IDENTITY_SETTING,
   loadOrCreateGatewayDeploymentIdentity,
   signGatewayRequest,
   type GatewayDeploymentIdentity,
@@ -109,7 +111,34 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     returnUrl?: string,
     setup?: { setupId: string; setupRevision: number },
   ): Promise<GatewayClaimCreateResponse> {
-    const identity = await this.identity();
+    let identity: GatewayDeploymentIdentity;
+    try {
+      identity = await this.identity();
+    } catch (error) {
+      if (!(error instanceof GatewayDeploymentIdentityUnavailableError)) throw error;
+      // Reconnect is the recovery boundary for a lost Worker encryption key.
+      // Only the unreadable deployment link is discarded; Agents, Channel
+      // grants, and the workspace installation record remain intact and are
+      // rebound after the fresh Slack authorization completes.
+      const cleared = await this.dependencies.settings.applySettingsPatch({
+        expected: {
+          key: GATEWAY_DEPLOYMENT_IDENTITY_SETTING,
+          value: error.storedValue,
+        },
+        delete: [
+          GATEWAY_DEPLOYMENT_IDENTITY_SETTING,
+          GATEWAY_BINDING_SETTING,
+          GATEWAY_CLAIM_SETTING,
+          GATEWAY_SESSION_SETTING,
+        ],
+      });
+      this.identityPromise = undefined;
+      this.binding = undefined;
+      // Another reconnect may already have replaced the same stale identity.
+      // In that case, retain its winning value instead of deleting it.
+      if (!cleared) return this.beginClaim(returnUrl, setup);
+      identity = await this.identity();
+    }
     const safeReturnUrl = returnUrl ? requireReturnUrl(returnUrl) : undefined;
     const unsigned = {
       protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,

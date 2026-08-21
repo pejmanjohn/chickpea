@@ -18,6 +18,7 @@ import {
   type SlackCredentialResolutionDependencies,
 } from './installation-credentials.ts';
 import { createSlackWebClient } from './web-client.ts';
+import { SlackTransportError } from './transport/types.ts';
 import { GatewayDeploymentClient } from './gateway/client.ts';
 import { loadCredentialKeyring } from './credential-keyring.ts';
 import { resolveChickpeaGatewayUrl } from './gateway/runtime.ts';
@@ -225,10 +226,14 @@ async function resolveGatewayExecutionContext(
   let auth: Awaited<ReturnType<typeof client.auth.test>>;
   try {
     auth = await client.auth.test();
-  } catch {
+  } catch (error) {
+    const reasonCode = error instanceof SlackTransportError
+      ? error.code
+      : 'gateway_unreachable';
+    console.error('[chickpea] shared Slack auth.test failed:', reasonCode);
     throw new SlackInstallationUnavailableError(
       installation.workspaceId,
-      'gateway_unreachable',
+      reasonCode,
       { retryable: true },
     );
   }

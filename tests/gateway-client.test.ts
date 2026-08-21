@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import {
+  SqliteSettingsStore,
+  type SettingsStore,
+} from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
@@ -95,6 +98,123 @@ test('gateway deployment identity retries after a transient settings failure', a
     await assert.rejects(client.beginClaim(), /temporarily unavailable/);
     const claim = await client.beginClaim();
     assert.equal(claim.claimId, 'claim_test');
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway reconnect replaces only an unreadable deployment identity', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const first = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => NOW,
+  });
+  try {
+    await first.beginClaim();
+    const original = JSON.parse(
+      (await settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING))!,
+    ) as { deploymentId: string };
+    await settings.applySettingsPatch({
+      set: [
+        { key: GATEWAY_BINDING_SETTING, value: '{"stale":true}' },
+        { key: GATEWAY_SESSION_SETTING, value: '{"health":"offline"}' },
+      ],
+    });
+
+    const replacement = new GatewayDeploymentClient({
+      settings,
+      config,
+      keyring: generateCredentialKeyring('key_gateway'),
+      gatewayBaseUrl: 'https://gateway.chickpea.test',
+      fetch: gateway.fetch,
+      now: () => NOW,
+    });
+    const claim = await replacement.beginClaim();
+    const recovered = JSON.parse(
+      (await settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING))!,
+    ) as { deploymentId: string };
+
+    assert.equal(claim.claimId, 'claim_test');
+    assert.notEqual(recovered.deploymentId, original.deploymentId);
+    assert.equal(await settings.getSetting(GATEWAY_BINDING_SETTING), undefined);
+    assert.equal(await settings.getSetting(GATEWAY_SESSION_SETTING), undefined);
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway reconnect retains a concurrently replaced deployment identity', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const firstKeyring = generateCredentialKeyring('key_gateway');
+  const replacementKeyring = generateCredentialKeyring('key_gateway');
+  const first = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: firstKeyring,
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => NOW,
+  });
+  try {
+    await first.beginClaim();
+    const replacementSettings = new SqliteSettingsStore(':memory:', () => NOW);
+    const replacementConfig = configStore();
+    const replacementClient = new GatewayDeploymentClient({
+      settings: replacementSettings,
+      config: replacementConfig,
+      keyring: replacementKeyring,
+      gatewayBaseUrl: 'https://gateway.chickpea.test',
+      fetch: gateway.fetch,
+      now: () => NOW,
+    });
+    await replacementClient.beginClaim();
+    const winningIdentity = (await replacementSettings.getSetting(
+      GATEWAY_DEPLOYMENT_IDENTITY_SETTING,
+    ))!;
+    replacementSettings.close();
+    replacementConfig.close();
+
+    let raced = false;
+    const racingSettings = new Proxy(settings, {
+      get(target, property) {
+        if (property === 'applySettingsPatch') {
+          return async (patch: Parameters<SettingsStore['applySettingsPatch']>[0]) => {
+            if (!raced && patch.expected?.key === GATEWAY_DEPLOYMENT_IDENTITY_SETTING) {
+              raced = true;
+              await target.setSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING, winningIdentity);
+            }
+            return target.applySettingsPatch(patch);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const client = new GatewayDeploymentClient({
+      settings: racingSettings,
+      config,
+      keyring: replacementKeyring,
+      gatewayBaseUrl: 'https://gateway.chickpea.test',
+      fetch: gateway.fetch,
+      now: () => NOW,
+    });
+
+    const claim = await client.beginClaim();
+    assert.equal(claim.claimId, 'claim_test');
+    assert.equal(
+      await settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING),
+      winningIdentity,
+    );
   } finally {
     settings.close();
     config.close();

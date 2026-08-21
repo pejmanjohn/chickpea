@@ -15,6 +15,13 @@ import {
 
 export const GATEWAY_DEPLOYMENT_IDENTITY_SETTING = 'slack.gateway.deploymentIdentity.v1';
 
+export class GatewayDeploymentIdentityUnavailableError extends Error {
+  constructor(readonly storedValue: string) {
+    super('Gateway deployment identity is unavailable.');
+    this.name = 'GatewayDeploymentIdentityUnavailableError';
+  }
+}
+
 export interface GatewayDeploymentIdentity {
   deploymentId: string;
   publicKey: GatewayPublicKey;
@@ -38,7 +45,13 @@ export async function loadOrCreateGatewayDeploymentIdentity(input: {
   now?: () => number;
 }): Promise<GatewayDeploymentIdentity> {
   const current = await input.settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING);
-  if (current) return openStoredIdentity(current, input.keyring);
+  if (current) {
+    try {
+      return await openStoredIdentity(current, input.keyring);
+    } catch {
+      throw new GatewayDeploymentIdentityUnavailableError(current);
+    }
+  }
 
   const createdAt = (input.now ?? Date.now)();
   const keyPair = await globalThis.crypto.subtle.generateKey(
@@ -68,12 +81,15 @@ export async function loadOrCreateGatewayDeploymentIdentity(input: {
     expected: { key: GATEWAY_DEPLOYMENT_IDENTITY_SETTING, value: null },
     set: [{ key: GATEWAY_DEPLOYMENT_IDENTITY_SETTING, value: JSON.stringify(stored) }],
   });
-  return written
-    ? { deploymentId, publicKey, privateKey, createdAt }
-    : openStoredIdentity(
-        requiredStoredValue(await input.settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING)),
-        input.keyring,
-      );
+  if (written) return { deploymentId, publicKey, privateKey, createdAt };
+  const winningValue = requiredStoredValue(
+    await input.settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING),
+  );
+  try {
+    return await openStoredIdentity(winningValue, input.keyring);
+  } catch {
+    throw new GatewayDeploymentIdentityUnavailableError(winningValue);
+  }
 }
 
 export async function signGatewayRequest<T extends Omit<GatewaySignedRequest, 'signature'>>(
