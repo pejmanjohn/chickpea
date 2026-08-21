@@ -52,6 +52,7 @@ export interface SlackPresenterTarget {
   channelId: string;
   threadTs: string;
   agentName: string;
+  agentAvatarUrl?: string;
   agentId: string;
   modelLabel?: string | undefined;
   publicUrl?: string | undefined;
@@ -144,8 +145,8 @@ export class WebClientPresenter {
       await this.client.assistant.threads.setStatus({
         channel_id: this.target.channelId,
         thread_ts: this.target.threadTs,
-        status: slackStatusText(update),
-        loading_messages: slackLoadingMessages(update),
+        status: slackStatusText(update, this.target.agentName),
+        loading_messages: slackLoadingMessages(update, this.target.agentName),
       });
       this.statusWasSet = true;
       return true;
@@ -181,20 +182,8 @@ export class WebClientPresenter {
       channel: this.target.channelId,
       thread_ts: this.target.threadTs,
       text,
+      ...this.persona(),
     });
-  }
-
-  /** Governed one-time notice before the first reply from a rotated DM agent. */
-  async postContinuityNotice(text: string): Promise<string> {
-    const response = await this.client.chat.postMessage({
-      channel: this.target.channelId,
-      thread_ts: this.target.threadTs,
-      text,
-    });
-    if (typeof response.ts !== 'string' || !response.ts) {
-      throw new Error('Slack continuity notice receipt is incomplete.');
-    }
-    return response.ts;
   }
 
   /** Best-effort work acknowledgment. The receipt records whether this run
@@ -250,6 +239,7 @@ export class WebClientPresenter {
           channel: this.target.channelId,
           thread_ts: this.target.threadTs,
           text: payload.fallbackText,
+          ...this.persona(),
         });
         await this.observeAfterDelivery({
           attemptId,
@@ -286,6 +276,7 @@ export class WebClientPresenter {
       thread_ts: this.target.threadTs,
       text: rendered.text,
       blocks: rendered.blocks,
+      ...this.persona(),
     });
     return typeof response.ts === 'string' && response.ts ? response.ts : undefined;
   }
@@ -324,7 +315,8 @@ export class WebClientPresenter {
         file: Buffer.from(input.bytes.buffer, input.bytes.byteOffset, input.bytes.byteLength),
         filename: input.filename,
         ...(input.title === undefined ? {} : { title: input.title }),
-      });
+        ...this.persona(),
+      } as unknown as Parameters<WebClient['files']['uploadV2']>[0]);
       return { uploaded: true };
     } catch (err) {
       if (isMissingFilesScopeError(err)) {
@@ -374,7 +366,8 @@ export class WebClientPresenter {
         recipient_user_id: this.target.userId,
         recipient_team_id: this.target.workspaceId,
         markdown_text: displayText,
-      };
+        ...this.persona(),
+      } as unknown as Parameters<WebClient['chat']['startStream']>[0];
       const stopBlocks = [renderSlackReplyFooterBlock(footer)];
       const attemptId = await this.observeBeforeDelivery({
         method: 'slack_chat_stream',
@@ -432,6 +425,7 @@ export class WebClientPresenter {
       channel: this.target.channelId,
       thread_ts: this.target.threadTs,
       ...rendered,
+      ...this.persona(),
     };
     const attemptId = await this.observeBeforeDelivery({
       method: 'slack_chat_post_message',
@@ -479,6 +473,7 @@ export class WebClientPresenter {
       channel: this.target.channelId,
       user: this.target.userId,
       ...rendered,
+      ...this.persona(),
     };
     const attemptId = await this.observeBeforeDelivery({
       method: 'slack_chat_post_ephemeral',
@@ -541,6 +536,13 @@ export class WebClientPresenter {
       agentId: this.target.agentId,
       publicUrl: this.target.publicUrl,
       memoryItems: this.target.memoryFooterItems,
+    };
+  }
+
+  private persona(): { username: string; icon_url?: string } {
+    return {
+      username: this.target.agentName,
+      ...(this.target.agentAvatarUrl ? { icon_url: this.target.agentAvatarUrl } : {}),
     };
   }
 }

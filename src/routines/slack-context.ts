@@ -12,7 +12,11 @@ const MAX_MEMBER_PAGES = 5;
 
 /** Routine controls and natural-language requests work in mentions and their channel threads. */
 export function isRoutineSlackTurn(turn: NormalizedSlackTurn): boolean {
-  return (turn.source === 'app_mention' || turn.source === 'implicit_thread_reply') &&
+  return (
+    turn.source === 'app_mention' ||
+    turn.source === 'agent_mention' ||
+    turn.source === 'implicit_thread_reply'
+  ) &&
     turn.channelType !== 'im' &&
     turn.channelType !== 'mpim';
 }
@@ -24,8 +28,36 @@ export async function canManageRoutineChannel(
   actorId: string,
   env: PlatformEnv | undefined,
   admittedBotToken?: string,
+  admittedClient?: WebClient,
 ): Promise<boolean> {
   try {
+    if (admittedClient && !admittedBotToken) {
+      const [auth, conversation] = await Promise.all([
+        admittedClient.auth.test(),
+        admittedClient.conversations.info({ channel: channelId }),
+      ]);
+      const channel = conversation.channel as Record<string, unknown> | undefined;
+      if (
+        !auth.ok || auth.team_id !== workspaceId || !conversation.ok || !channel ||
+        channel.id !== channelId ||
+        (typeof channel.team_id === 'string' && channel.team_id !== workspaceId) ||
+        channel.is_member !== true || channel.is_archived === true || channel.is_frozen === true ||
+        channel.is_im === true || channel.is_mpim === true
+      ) return false;
+      let cursor: string | undefined;
+      for (let page = 0; page < MAX_MEMBER_PAGES; page += 1) {
+        const response = await admittedClient.conversations.members({
+          channel: channelId,
+          limit: 200,
+          ...(cursor ? { cursor } : {}),
+        });
+        if (!response.ok || !Array.isArray(response.members)) return false;
+        if (response.members.includes(actorId)) return true;
+        cursor = response.response_metadata?.next_cursor || undefined;
+        if (!cursor) return false;
+      }
+      return false;
+    }
     const botToken = admittedBotToken ?? (await resolveSlackCredentials(env)).botToken;
     if (!botToken) return false;
     const [auth, conversation] = await Promise.all([
@@ -74,8 +106,20 @@ export async function resolveRoutineSourceVisibility(
   channelId: string,
   env: PlatformEnv | undefined,
   admittedBotToken?: string,
+  admittedClient?: WebClient,
 ): Promise<SourceVisibility> {
   try {
+    if (admittedClient && !admittedBotToken) {
+      const response = await admittedClient.conversations.info({ channel: channelId });
+      const channel = response.channel as Record<string, unknown> | undefined;
+      if (
+        !response.ok || !channel || channel.id !== channelId || channel.team_id !== workspaceId ||
+        channel.is_member !== true || channel.is_archived === true || channel.is_frozen === true ||
+        channel.is_shared === true || channel.is_ext_shared === true || channel.is_org_shared === true ||
+        channel.is_pending_ext_shared === true || channel.is_im === true || channel.is_mpim === true
+      ) return 'unknown';
+      return channel.is_private === true ? 'private' : 'public';
+    }
     const botToken = admittedBotToken ?? (await resolveSlackCredentials(env)).botToken;
     if (!botToken) return 'unknown';
     const conversation = await slackConversationsInfo(botToken, channelId);
@@ -107,3 +151,4 @@ export function parseSlackChannelMention(value: string): string | undefined {
   const match = value.match(/^<#([A-Za-z0-9_-]{1,200})(?:\|[^>]{0,200})?>$/);
   return match?.[1];
 }
+import type { WebClient } from '@slack/web-api';

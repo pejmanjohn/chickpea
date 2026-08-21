@@ -93,7 +93,7 @@ async function seedActiveRoutine(store: SqliteRoutineStore, routineId: string, n
 test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and controllable', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-routine-')), 'state.db');
   const routines = new SqliteRoutineStore(path);
-  const config = new SqliteConfigStore(path, { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(path, { agents: [] });
   const settings = new SqliteSettingsStore(path);
   const work = new SqliteWorkStore(path);
   try {
@@ -114,13 +114,14 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
       workspaceId: 'T_TEST',
       channelId: 'C_TEST',
       label: 'routine-admin-lab',
-      participationMode: 'ambient',
       lifecycle: 'active',
     });
-    await config.putAssignment({
+    await config.putAgentChannelGrant({
       workspaceId: 'T_TEST',
       channelId: 'C_TEST',
       agentId: 'agent_routine_admin',
+      status: 'active',
+      createdByMembershipId: 'membership_owner',
     });
     await routines.createOccurrence({
       runId: 'rrun_admin', idempotencyKey: 'run-admin', routineId: routine.id,
@@ -182,7 +183,7 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
       `Every weekday, ${definition().taskText}`,
     );
     assert.equal(detailBody.runs[0].id, 'rrun_admin');
-    assert.match(detailBody.runs[0].canonicalRunId, /^run_/);
+    assert.equal(detailBody.runs[0].canonicalRunId, null);
     assert.equal(Object.hasOwn(detailBody.runs[0], 'sessionDeepLink'), false);
     assert.ok(detailBody.events.some((event: Record<string, unknown>) =>
       event.eventType === 'routine.occurrence_created'));

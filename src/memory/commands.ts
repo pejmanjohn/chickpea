@@ -1,22 +1,10 @@
-export type MemoryReportReason = 'stale' | 'incorrect' | 'unsafe' | 'unclear';
-
 export type MemoryCommand =
   | { kind: 'list' }
   | { kind: 'help' }
   | { kind: 'show'; target: string }
   | { kind: 'remember'; name: string; description: string; body: string }
   | { kind: 'update'; target: string; description: string; body: string }
-  | {
-      kind: 'merge';
-      targets: string[];
-      name: string;
-      description: string;
-      body: string;
-    }
-  | { kind: 'forget_request'; target: string }
-  | { kind: 'forget_confirm'; token: string }
-  | { kind: 'owner_write_confirm'; token: string }
-  | { kind: 'report'; target: string; reason: MemoryReportReason }
+  | { kind: 'clear_request' }
   | { kind: 'invalid'; hint: string };
 
 export type ParsedMemoryCommand = MemoryCommand | { kind: 'candidate' };
@@ -42,13 +30,12 @@ export function parseMemoryCommand(
   const text = stripLeadingMentions(rawText, resolvedBotUserId).trim().replace(/\r\n?/g, '\n');
   if (!text) return undefined;
 
-  if (/^!memory(?:\s+list)?\s*$/i.test(text) || /^what do you remember about this channel\??$/i.test(text)) {
+  if (/^!memory(?:\s+list)?\s*$/i.test(text) || /^what do you remember\??$/i.test(text)) {
     return { kind: 'list' };
   }
   if (/^!memory\s+help\s*$/i.test(text)) return { kind: 'help' };
 
-  let match = text.match(/^!memory\s+confirm\s+([A-Za-z0-9._-]{4,512})\s*$/i);
-  if (match) return { kind: 'owner_write_confirm', token: match[1]! };
+  let match: RegExpMatchArray | null;
 
   match = text.match(new RegExp(`^!memory\\s+show\\s+(${TARGET})\\s*$`, 'i'));
   if (match) return { kind: 'show', target: match[1]!.toLowerCase() };
@@ -88,43 +75,8 @@ export function parseMemoryCommand(
     return { kind: 'update', target: match[1]!.toLowerCase(), description: content, body: content };
   }
 
-  match = text.match(
-    /^!memory\s+merge\s+(.+?)\s+as\s+(.+?)\s+(?:—|-)\s+([^\n]+)\n([\s\S]+)$/i,
-  );
-  if (match) {
-    const targets = match[1]!
-      .trim()
-      .split(/\s+/)
-      .map((target) => target.toLowerCase());
-    if (targets.length < 2 || targets.some((target) => !new RegExp(`^${TARGET}$`).test(target))) {
-      return invalid('Use `!memory merge <slug-a> <slug-b> as <new-name> — <description>` followed by a body.');
-    }
-    return {
-      kind: 'merge',
-      targets,
-      name: match[2]!.trim(),
-      description: match[3]!.trim(),
-      body: match[4]!.trim(),
-    };
-  }
-
-  match = text.match(/^!forget\s+confirm\s+([A-Za-z0-9._-]{4,512})\s*$/i);
-  if (match) return { kind: 'forget_confirm', token: match[1]! };
-  match = text.match(new RegExp(`^!forget\\s+(${TARGET})\\s*$`, 'i'));
-  if (!match) {
-    match = text.match(new RegExp(`^forget memory\\s+[\u0060]?(${TARGET})[\u0060]?\\.?$`, 'i'));
-  }
-  if (match) return { kind: 'forget_request', target: match[1]!.toLowerCase() };
-
-  match = text.match(
-    new RegExp(`^!memory\\s+report\\s+(${TARGET})\\s+(stale|incorrect|unsafe|unclear)\\s*$`, 'i'),
-  );
-  if (match) {
-    return {
-      kind: 'report',
-      target: match[1]!.toLowerCase(),
-      reason: match[2]!.toLowerCase() as MemoryReportReason,
-    };
+  if (/^!forget\s+memory\s*$/i.test(text) || /^forget (?:the )?(?:agent )?memory\.?$/i.test(text)) {
+    return { kind: 'clear_request' };
   }
 
   if (/^!(?:memory|remember|forget)\b/i.test(text) || /^(?:update memory|forget memory)\b/i.test(text)) {

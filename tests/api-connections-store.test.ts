@@ -30,6 +30,16 @@ function agent(apiConnections: ApiConnectionConfig[]): CustomAgentConfig {
     name: 'API Connections',
     instructions: 'Exercise API connection persistence.',
     enabled: true,
+    lifecycle: 'active',
+    editPolicy: 'creator_and_admins',
+    configurationGeneration: 1,
+    slackPresence: {
+      requestedHandle: 'api-connections',
+      normalizedHandle: 'api-connections',
+      desiredState: 'unpublished',
+      health: 'unpublished',
+      avatar: { kind: 'generated', revision: 1, seed: 'agent_api_connections' },
+    },
     model: 'local-stub/api-connections',
     skills: [],
     mcpServers: [],
@@ -39,7 +49,7 @@ function agent(apiConnections: ApiConnectionConfig[]): CustomAgentConfig {
 }
 
 test('SqliteConfigStore round-trips every apiConnection field through create and update', async () => {
-  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const store = new SqliteConfigStore(':memory:', { agents: [] });
   try {
     const createdConnection = connection();
     const created = agent([createdConnection]);
@@ -72,7 +82,7 @@ test('SqliteConfigStore defaults invalid api_connections_json to an empty list',
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-api-connections-'));
   const path = join(dir, 'state.db');
   try {
-    const first = new SqliteConfigStore(path, { agents: [], assignments: [] });
+    const first = new SqliteConfigStore(path, { agents: [] });
     const created = agent([connection()]);
     await first.createAgent(created);
     first.close();
@@ -84,7 +94,7 @@ test('SqliteConfigStore defaults invalid api_connections_json to an empty list',
     );
     db.close();
 
-    const second = new SqliteConfigStore(path, { agents: [], assignments: [] });
+    const second = new SqliteConfigStore(path, { agents: [] });
     assert.deepEqual((await second.getAgent(created.id)).apiConnections, []);
     second.close();
   } finally {

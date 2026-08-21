@@ -1,6 +1,6 @@
 import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
 
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import type {
   AuthOperation,
   IdentityStore,
@@ -11,7 +11,7 @@ import { IdentityStateError } from '../identity/errors.ts';
 import {
   resolveSlackControlPlaneAppCredentials,
   type SlackCredentialDependencies,
-} from '../slack/identity-credentials.ts';
+} from '../slack/installation-credentials.ts';
 import { safeSetupDestination, safeSlackLoginDestination } from './setup-handoff.ts';
 import {
   createBetterAuth,
@@ -22,8 +22,11 @@ import type { BetterAuthEnvironment } from './better-auth-environment.ts';
 import {
   SlackOidcError,
   SlackOidcGateway,
+  type SlackOidcProvider,
   type SlackOidcGatewayDependencies,
 } from './slack-oidc.ts';
+import type { SlackUserFacts } from '../slack/credentials.ts';
+import { classifySlackUserForAdmission } from '../slack/user-classification.ts';
 
 export const SLACK_OIDC_ATTEMPT_TTL_MS = 15 * 60_000;
 export const SLACK_OIDC_PROCESSING_LEASE_MS = 10 * 60_000;
@@ -32,7 +35,13 @@ export interface SlackAdmissionDependencies {
   identity: IdentityStore;
   credentials: SlackCredentialDependencies;
   environment: BetterAuthEnvironment;
-  gateway?: SlackOidcGateway;
+  gateway?: SlackOidcProvider;
+  credentialProvider?: () => Promise<{
+    appId: string;
+    clientId: string;
+    teamId: string;
+    connectionRevision: string;
+  }>;
   fetch?: typeof fetch;
   slackApiBaseUrl?: string;
   jwks?: SlackOidcGatewayDependencies['jwks'];
@@ -54,10 +63,44 @@ export interface SlackAdmissionCallbackResult {
   sessionResponse: Response;
 }
 
+export type SlackInteractionMemberResult =
+  | { outcome: 'provisioned' | 'active' | 'deactivated'; resolution: Awaited<ReturnType<IdentityStore['resolveSlackIdentity']>> }
+  | { outcome: 'conversational_only' | 'denied'; resolution?: undefined };
+
+/** Guests may converse through an explicit Channel grant, but a deactivated
+ * full member must not regain Agent use merely because Slack still delivers
+ * their Channel message. */
+export function slackInteractionMayUseGrantedChannel(
+  result: SlackInteractionMemberResult,
+): boolean {
+  return result.outcome === 'provisioned' || result.outcome === 'active' ||
+    result.outcome === 'conversational_only';
+}
+
+/** Provision product authority from Slack truth without making email an identity key. */
+export async function provisionSlackInteractionMember(input: {
+  identity: IdentityStore;
+  slackTeamId: string;
+  botUserId: string;
+  user: SlackUserFacts;
+}): Promise<SlackInteractionMemberResult> {
+  const actorClass = classifySlackUserForAdmission(input.user, input.slackTeamId, input.botUserId);
+  if (actorClass === 'guest' || actorClass === 'foreign') {
+    return { outcome: 'conversational_only' };
+  }
+  if (actorClass !== 'eligible_human') return { outcome: 'denied' };
+  return input.identity.provisionSlackMember({
+    slackTeamId: input.slackTeamId,
+    slackUserId: input.user.id,
+    ...(input.user.displayName === undefined ? {} : { displayName: input.user.displayName }),
+    ...(input.user.email === undefined ? {} : { contactEmail: input.user.email }),
+  });
+}
+
 export class SlackAdmissionService {
   private readonly now: () => number;
   private readonly randomBytes: (length: number) => Uint8Array;
-  private readonly gateway: SlackOidcGateway;
+  private readonly gateway: SlackOidcProvider;
 
   constructor(private readonly dependencies: SlackAdmissionDependencies) {
     this.now = dependencies.now ?? Date.now;
@@ -249,13 +292,14 @@ export class SlackAdmissionService {
       throw new SlackOidcError('user_mismatch');
     }
     if (attempt.purpose === 'login') {
-      await this.dependencies.identity.settleSlackOidcAttempt({
-        attemptId: attempt.id,
-        expectedLeaseGeneration: attempt.leaseGeneration,
-        status: 'succeeded',
-        resultCode: 'identity_active',
+      return this.completeLoginAdmission({
+        attempt,
+        operation,
+        capabilitySecret: input.state,
+        displayName: proof.displayName,
+        ...(proof.contactEmail === undefined ? {} : { contactEmail: proof.contactEmail }),
+        request: input.request,
       });
-      return this.issueSession(operation.id, attempt.destination, input.request);
     }
 
     if (attempt.purpose === 'invitation') {
@@ -393,7 +437,7 @@ export class SlackAdmissionService {
       state,
       nonce,
       expiresAt: input.expiresAt,
-      authorizationUrl: this.gateway.authorizationUrl({
+      authorizationUrl: await this.gateway.authorizationUrl({
         clientId: input.clientId,
         redirectUri: input.redirectUri,
         state,
@@ -435,13 +479,15 @@ export class SlackAdmissionService {
       throw new SlackOidcError('invalid_state');
     }
     if (attempt.purpose === 'login') {
-      await this.dependencies.identity.settleSlackOidcAttempt({
-        attemptId: attempt.id,
-        expectedLeaseGeneration: attempt.leaseGeneration,
-        status: 'succeeded',
-        resultCode: 'identity_active',
+      const operation = await this.dependencies.identity.getAuthOperation(attempt.operationId);
+      if (!operation) throw new SlackOidcError('invalid_state');
+      return this.completeLoginAdmission({
+        attempt,
+        operation,
+        capabilitySecret,
+        displayName: 'Slack member',
+        request,
       });
-      return this.issueSession(attempt.operationId, attempt.destination, request);
     }
     if (attempt.purpose === 'invitation') {
       if (!attempt.invitationId) throw new SlackOidcError('invalid_state');
@@ -560,6 +606,62 @@ export class SlackAdmissionService {
       : this.issueSession(attempt.operationId, attempt.destination, request);
   }
 
+  private async completeLoginAdmission(input: {
+    attempt: SlackOidcAttempt;
+    operation: AuthOperation;
+    capabilitySecret: string;
+    displayName: string;
+    contactEmail?: string;
+    request: Request;
+  }): Promise<SlackAdmissionCallbackResult> {
+    let operation = input.operation;
+    if (operation.status !== 'active') {
+      if (operation.status !== 'reserved' || operation.chickpeaRole !== 'member' ||
+          !operation.organizationId || !input.attempt.admittedTeamId ||
+          !input.attempt.admittedSlackUserId) {
+        throw new SlackOidcError('invalid_state');
+      }
+      const [organization, control] = await Promise.all([
+        this.dependencies.identity.getOrganization(),
+        this.dependencies.identity.getAuthControl(),
+      ]);
+      if (!organization || organization.id !== operation.organizationId ||
+          !control?.betterAuthOrganizationId) {
+        throw new SlackOidcError('invalid_state');
+      }
+      const reconciled = await this.createAuth().chickpea.reconcileSlackIdentity({
+        slackTeamId: input.attempt.admittedTeamId,
+        slackUserId: input.attempt.admittedSlackUserId,
+        displayName: input.displayName,
+        organization: {
+          id: control.betterAuthOrganizationId,
+          name: organization.displayName,
+          slug: `chickpea-${input.attempt.admittedTeamId.toLowerCase()}`,
+        },
+      });
+      await this.dependencies.identity.bindSlackMemberBrowserIdentity({
+        attemptId: input.attempt.id,
+        expectedOidcLeaseGeneration: input.attempt.leaseGeneration,
+        operationId: operation.id,
+        capabilityHash: hashSecret(input.capabilitySecret),
+        slackTeamId: input.attempt.admittedTeamId,
+        slackUserId: input.attempt.admittedSlackUserId,
+        betterAuthUserId: reconciled.userId,
+        betterAuthOrganizationId: reconciled.organizationId,
+        betterAuthMembershipId: reconciled.membershipId,
+        ...(input.contactEmail === undefined ? {} : { contactEmail: input.contactEmail }),
+      });
+      operation = (await this.dependencies.identity.getAuthOperation(operation.id))!;
+    }
+    await this.dependencies.identity.settleSlackOidcAttempt({
+      attemptId: input.attempt.id,
+      expectedLeaseGeneration: input.attempt.leaseGeneration,
+      status: 'succeeded',
+      resultCode: 'identity_active',
+    });
+    return this.issueSession(operation.id, input.attempt.destination, input.request);
+  }
+
   private async issueFirstOwnerSession(
     operationId: string,
     destination: string,
@@ -605,9 +707,12 @@ export class SlackAdmissionService {
 
   private async requiredCredentials() {
     try {
+      if (this.dependencies.credentialProvider) {
+        return await this.dependencies.credentialProvider();
+      }
       const credentials = await resolveSlackControlPlaneAppCredentials(
         this.dependencies.credentials,
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        WORKSPACE_SLACK_INSTALLATION_ID,
       );
       if (!credentials.teamId) throw new Error();
       return credentials;

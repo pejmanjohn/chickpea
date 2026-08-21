@@ -49,30 +49,16 @@ import {
   getIdentityStore,
   getManagementStore,
   getSettingsStore,
-  getSlackCredentialDependencies,
   getUsageStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
-import type { SlackIdentityAuditEventType } from '../audit/types.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
-  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type CustomAgentConfig,
   type McpConnectionConfig,
-  type SlackIdentity,
 } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
-import {
-  beginSlackIdentityConnection,
-  completeSlackIdentityConnection,
-  type SlackIdentityBootstrapDeps,
-} from '../slack/identity-bootstrap.ts';
-import type { SlackCredentialDependencies } from '../slack/identity-credentials.ts';
-import {
-  buildSlackAppManifest,
-  slackManifestPrefillUrl,
-} from '../slack/identity-manifest.ts';
 import type { UsageStore } from '../usage/types.ts';
 import {
   completeManagementSetupReceipt,
@@ -99,8 +85,6 @@ export interface ManagementSetupRoutesOptions {
   randomCapability?: () => string;
   validateProviderKey?: typeof validateProviderApiKey;
   deliverReceipt?: typeof deliverManagementReceiptToSlack;
-  slackCredentials?: SlackCredentialDependencies;
-  slackIdentityBootstrap?: SlackIdentityBootstrapDeps;
 }
 
 export function createManagementSetupRoutes(
@@ -131,7 +115,7 @@ export function createManagementSetupRoutes(
     if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
       return terminalPage(c, setup);
     }
-    return c.html(await renderSetupSummary(c, setup, dependencies));
+    return c.html(await renderSetupSummary(setup));
   });
 
   app.post('/setup/:setupOperationId/exchange', async (c) => {
@@ -174,7 +158,7 @@ export function createManagementSetupRoutes(
     const setup = await requireBrowserSetup(c, dependencies.management, setupId, now());
     if (!setup) return genericDenied(c);
     const fields = await readFormFields(c);
-    if (!fields) return formFailure(c, setup, dependencies, 'invalid_form');
+    if (!fields) return formFailure(c, setup, 'invalid_form');
     try {
       await dependencies.management.authorizeSetup({
         setupOperationId: setupId,
@@ -187,7 +171,7 @@ export function createManagementSetupRoutes(
       return c.redirect(`/setup/${encodeURIComponent(setupId)}`, 303);
     } catch (error) {
       await markSetupFailure(setup, c, dependencies.management, safeFailureCode(error), now());
-      return formFailure(c, setup, dependencies, safeFailureCode(error));
+      return formFailure(c, setup, safeFailureCode(error));
     }
   });
 
@@ -198,7 +182,7 @@ export function createManagementSetupRoutes(
     const setup = await requireBrowserSetup(c, dependencies.management, setupId, now());
     if (!setup) return genericDenied(c);
     const fields = await readFormFields(c);
-    if (!fields) return formFailure(c, setup, dependencies, 'invalid_form');
+    if (!fields) return formFailure(c, setup, 'invalid_form');
     const browserSessionDigest = digest(setupSession(c, setupId)!);
     try {
       await dependencies.management.authorizeSetup({
@@ -236,7 +220,7 @@ export function createManagementSetupRoutes(
       throw new Error('wrong_action');
     } catch (error) {
       await markSetupFailure(setup, c, dependencies.management, safeFailureCode(error), now());
-      return formFailure(c, setup, dependencies, safeFailureCode(error));
+      return formFailure(c, setup, safeFailureCode(error));
     }
   });
 
@@ -403,7 +387,6 @@ interface SetupDependencies {
   identity: Pick<IdentityStore, 'getUser' | 'listExternalIdentities'>;
   usage: UsageStore;
   platformEnv?: PlatformEnv;
-  slackCredentials?: SlackCredentialDependencies;
 }
 
 function setupDependencies(c: Context, options: ManagementSetupRoutesOptions): SetupDependencies {
@@ -415,18 +398,7 @@ function setupDependencies(c: Context, options: ManagementSetupRoutesOptions): S
     identity: options.identity ?? getIdentityStore(platformEnv),
     usage: options.usage ?? getUsageStore(platformEnv),
     ...(platformEnv ? { platformEnv } : {}),
-    ...(options.slackCredentials
-      ? { slackCredentials: options.slackCredentials }
-      : !options.settings
-        ? { slackCredentials: getSlackCredentialDependencies(platformEnv) }
-        : {}),
   };
-}
-
-function slackCredentialDependencies(
-  dependencies: SetupDependencies,
-): SlackCredentialDependencies | undefined {
-  return dependencies.slackCredentials;
 }
 
 async function completeFormAction(
@@ -534,111 +506,7 @@ async function completeFormAction(
       ...(accountLabel ? { accountLabel } : {}),
     };
   }
-  if (setup.action === 'slack_identity') {
-    if (!setup.target.identityId) throw new Error('target_changed');
-    const credentialDependencies = slackCredentialDependencies(dependencies);
-    let identity = await dependencies.config.getSlackIdentity(setup.target.identityId);
-    if (identity.lifecycle !== 'credentials_pending') {
-      const before = identity;
-      const base = await dependencies.config.getSlackIdentity(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      );
-      if (!base.teamId) throw new Error('workspace_unverified');
-      const botToken = requiredField(fields, 'botToken', 16_384);
-      const signingSecret = requiredField(fields, 'signingSecret', 4_096);
-      identity = await beginSlackIdentityConnection({
-        config: dependencies.config,
-        settings: dependencies.settings,
-        identityId: identity.id,
-        expectedRevision: identity.connectionRevision,
-        expectedTeamId: base.teamId,
-        botToken,
-        signingSecret,
-        ...(credentialDependencies
-          ? { credentialDependencies }
-          : {}),
-      }, options.slackIdentityBootstrap);
-      await appendSetupSlackIdentityAudit(
-        dependencies.config,
-        setup,
-        setup.target.replacement
-          ? 'slack_identity.credentials_rotated'
-          : 'slack_identity.credentials_connected',
-        before,
-        identity,
-        at,
-      );
-    } else {
-      await appendSetupSlackIdentityAudit(
-        dependencies.config,
-        setup,
-        setup.target.replacement
-          ? 'slack_identity.credentials_rotated'
-          : 'slack_identity.credentials_connected',
-        identity,
-        identity,
-        at,
-      );
-    }
-    const pending = identity;
-    identity = await completeSlackIdentityConnection({
-      config: dependencies.config,
-      settings: dependencies.settings,
-      identityId: identity.id,
-      expectedRevision: identity.connectionRevision,
-      ...(credentialDependencies
-        ? { credentialDependencies }
-        : {}),
-    });
-    await appendSetupSlackIdentityAudit(
-      dependencies.config,
-      setup,
-      'slack_identity.setup_verified',
-      pending,
-      identity,
-      at,
-    );
-    const accountLabel = identity.observedDisplayName ?? identity.teamId;
-    return {
-      connector: 'Slack',
-      ...(accountLabel ? { accountLabel } : {}),
-    };
-  }
   throw new Error(`wrong_action:${setup.action}:${at}`);
-}
-
-async function appendSetupSlackIdentityAudit(
-  config: ConfigStore,
-  setup: ManagementSetupRecord,
-  eventType: SlackIdentityAuditEventType,
-  before: SlackIdentity,
-  after: SlackIdentity,
-  at: number,
-): Promise<void> {
-  const operation = eventType.slice('slack_identity.'.length);
-  await config.appendSlackIdentityAudit({
-    eventId: `audit_${createHash('sha256')
-      .update(`${setup.setupOperationId}:${after.id}:${operation}:${after.connectionRevision}`)
-      .digest('hex')
-      .slice(0, 32)}`,
-    domain: 'slack_identity',
-    eventType,
-    outcome: 'success',
-    actorClass: 'chickpea_user',
-    actorId: setup.actorUserId,
-    workspaceId: after.teamId ?? before.teamId ?? null,
-    subjectId: after.id,
-    subjectVersion: after.connectionRevision,
-    createdAt: at,
-    metadataJson: JSON.stringify({
-      operation,
-      priorLifecycle: before.lifecycle,
-      newLifecycle: after.lifecycle,
-      requestId: setup.setupOperationId,
-    }),
-    idempotencyKey:
-      `slack_identity:${after.id}:${operation}:${after.connectionRevision}:${setup.setupOperationId}:success`,
-  });
 }
 
 async function finishSetup(
@@ -726,20 +594,6 @@ async function assertExactTarget(
     const revision = (await storedCredentialMetadata(providerId, dependencies.settings))?.version ?? 0;
     if (source === 'env' || revision !== setup.target.expectedRevision ||
         (setup.target.replacement ? source !== 'stored' : source !== 'missing')) {
-      throw new Error('target_changed');
-    }
-    return;
-  }
-  if (setup.target.kind === 'slack_identity') {
-    if (!setup.target.identityId) throw new Error('target_changed');
-    const identity = await dependencies.config.getSlackIdentity(setup.target.identityId);
-    const initial = identity.connectionRevision === setup.target.expectedRevision &&
-      ['setup_incomplete', 'connected', 'degraded', 'credentials_pending'].includes(
-        identity.lifecycle,
-      );
-    const pending = identity.connectionRevision === setup.target.expectedRevision + 1 &&
-      identity.lifecycle === 'credentials_pending';
-    if (identity.kind !== 'dedicated' || (!initial && !pending)) {
       throw new Error('target_changed');
     }
     return;
@@ -940,30 +794,16 @@ function renderClaimPage(setupId: string): string {
 }
 
 async function renderSetupSummary(
-  c: Context,
   setup: ManagementSetupRecord,
-  dependencies: SetupDependencies,
   failureCode?: string,
 ): Promise<string> {
   const action = setup.action === 'api_oauth' || setup.action === 'mcp_oauth' ||
       setup.action === 'repository_access'
     ? 'authorize'
     : 'complete';
-  const slackSetup = setup.action === 'slack_identity'
-    ? await slackIdentityBrowserSetup(c, setup, dependencies)
-    : undefined;
   const fields = setup.action === 'repository_access'
     ? '<label>GitHub organization (optional)<input name="organization" autocomplete="organization"></label>'
-    : slackSetup?.credentialsPending
-      ? ''
-      : (setup.target.formFields ?? []).map((field) => setupField(field)).join('');
-  const slackInstructions = slackSetup
-    ? `<section class="setup-step"><h2>1. Create the Slack app</h2>${
-        slackSetup.manifestUrl
-          ? `<p><a href="${escapeHtml(slackSetup.manifestUrl)}" target="_blank" rel="noopener noreferrer">Open the prefilled Slack app setup</a>, install it in your workspace, then return here.</p>`
-          : '<p>Open this page from Chickpea\'s public HTTPS URL to create the Slack app.</p>'
-      }<h2>2. Connect it to Chickpea</h2></section>`
-    : '';
+    : (setup.target.formFields ?? []).map((field) => setupField(field)).join('');
   return pageShell(`Connect ${setup.target.targetLabel}`, `
     <main><p class="eyebrow">Chickpea delegated setup</p>
     <h1>Connect ${escapeHtml(setup.target.targetLabel)}</h1>
@@ -972,37 +812,9 @@ async function renderSetupSummary(
     <div><dt>Requested access</dt><dd>${escapeHtml(setup.scopes.join(', ') || 'Provider default')}</dd></div></dl>
     ${setup.target.replacement ? '<p class="warning">This will replace the currently connected credential.</p>' : ''}
     ${failureCode || setup.status === 'failed' ? '<p class="error">Setup did not complete. Secret fields were cleared; follow the steps and try again.</p>' : ''}
-    ${slackInstructions}
     <form method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/${action}" autocomplete="off">
-      ${fields}<button type="submit">${slackSetup?.credentialsPending ? 'Verify Slack connection' : 'Continue'}</button>
+      ${fields}<button type="submit">Continue</button>
     </form></main>`);
-}
-
-async function slackIdentityBrowserSetup(
-  c: Context,
-  setup: ManagementSetupRecord,
-  dependencies: SetupDependencies,
-): Promise<{ manifestUrl?: string; credentialsPending: boolean }> {
-  if (!setup.target.identityId) throw new Error('target_changed');
-  const identity = await dependencies.config.getSlackIdentity(setup.target.identityId);
-  const origin = requestOrigin(c);
-  let manifestUrl: string | undefined;
-  if (new URL(origin).protocol === 'https:') {
-    const appName = identity.setupIntent?.appName ??
-      identity.setupIntent?.displayName ??
-      'Chickpea identity';
-    const botDisplayName = identity.setupIntent?.displayName ?? appName;
-    manifestUrl = slackManifestPrefillUrl(buildSlackAppManifest({
-      kind: 'dedicated_bot',
-      appName,
-      botDisplayName,
-      requestUrl: `${origin}/channels/slack/events/${identity.ingressKey}`,
-    }));
-  }
-  return {
-    ...(manifestUrl ? { manifestUrl } : {}),
-    credentialsPending: identity.lifecycle === 'credentials_pending',
-  };
 }
 
 function terminalPage(c: Context, setup: ManagementSetupRecord): Response {
@@ -1019,10 +831,9 @@ function unavailablePage(c: Context): Response {
 async function formFailure(
   c: Context,
   setup: ManagementSetupRecord,
-  dependencies: SetupDependencies,
   code: string,
 ): Promise<Response> {
-  return c.html(await renderSetupSummary(c, setup, dependencies, code), 422);
+  return c.html(await renderSetupSummary(setup, code), 422);
 }
 
 function pageShell(title: string, content: string): string {

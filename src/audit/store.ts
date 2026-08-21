@@ -201,9 +201,6 @@ function validateSafeMetadata(input: AppendAuditEvent, raw: string): void {
   if (input.domain === 'work') {
     validateWorkMetadata(input.eventType, parsed as Record<string, unknown>);
   }
-  if (input.domain === 'slack_identity') {
-    validateSlackIdentityMetadata(input.eventType, parsed as Record<string, unknown>);
-  }
   if (input.domain === 'management') {
     validateManagementMetadata(input.eventType, parsed as Record<string, unknown>);
   }
@@ -288,42 +285,6 @@ function actionMetadataKeys(): readonly string[] {
     'status',
     'targetKind',
   ];
-}
-
-const SLACK_IDENTITY_EVENT_OPERATIONS: Record<string, string> = {
-  'slack_identity.setup_started': 'setup_started',
-  'slack_identity.credentials_connected': 'credentials_connected',
-  'slack_identity.credentials_rotated': 'credentials_rotated',
-  'slack_identity.credentials_disconnected': 'credentials_disconnected',
-  'slack_identity.setup_verified': 'setup_verified',
-  'slack_identity.refreshed': 'refreshed',
-  'slack_identity.profile_attached': 'profile_attached',
-  'slack_identity.dm_binding_changed': 'dm_binding_changed',
-  'slack_identity.setup_canceled': 'setup_canceled',
-  'slack_identity.retired': 'retired',
-};
-
-function validateSlackIdentityMetadata(
-  eventType: string,
-  metadata: Record<string, unknown>,
-): void {
-  const operation = SLACK_IDENTITY_EVENT_OPERATIONS[eventType];
-  if (!operation) throw new Error('Slack identity audit event type is not allowlisted');
-  const expectedKeys = ['newLifecycle', 'operation', 'priorLifecycle', 'requestId'];
-  if (JSON.stringify(Object.keys(metadata).sort()) !== JSON.stringify(expectedKeys)) {
-    throw new Error('Slack identity audit metadata shape is invalid');
-  }
-  if (metadata.operation !== operation) {
-    throw new Error('Slack identity audit operation does not match its event type');
-  }
-  for (const [key, value] of Object.entries(metadata)) {
-    if (
-      typeof value !== 'string' ||
-      !SAFE_AUDIT_METADATA_VALUE.test(value)
-    ) {
-      throw new Error(`Slack identity audit metadata ${key} is invalid`);
-    }
-  }
 }
 
 function validateManagementMetadata(

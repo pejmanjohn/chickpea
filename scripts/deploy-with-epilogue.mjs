@@ -322,6 +322,10 @@ function validateFlue2CutoverArtifact(artifact) {
   if (!authGuardRetirement || !sameMembers(authGuardRetirement.deleted_classes ?? [], RETIRED_AUTH_CLASSES)) {
     failures.push('v8 AuthGuard retirement');
   }
+  const gatewaySessionMigration = migrations.find((migration) => migration.tag === 'v9');
+  if (!gatewaySessionMigration || !sameMembers(gatewaySessionMigration.new_sqlite_classes ?? [], ['SlackGatewaySession'])) {
+    failures.push('v9 SlackGatewaySession SQLite class');
+  }
 
   const bindings = config.durable_objects?.bindings ?? [];
   const hasBinding = (name, className) => bindings.some(
@@ -355,6 +359,9 @@ function validateFlue2CutoverArtifact(artifact) {
     config.compatibility_date < '2026-04-01'
   ) {
     failures.push('compatibility_date at or above 2026-04-01');
+  }
+  if (!(config.compatibility_flags ?? []).includes('global_fetch_strictly_public')) {
+    failures.push('global_fetch_strictly_public for the shared Slack gateway');
   }
   if (failures.length) {
     throw new Error(`Flue 2 cutover preflight failed; missing or unsafe ${failures.join(', ')}.`);

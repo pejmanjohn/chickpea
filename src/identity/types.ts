@@ -5,7 +5,7 @@ import type {
   SlackSecretEnvelope,
 } from '../slack/secret-envelope.ts';
 
-export type OrganizationRole = 'owner' | 'admin';
+export type OrganizationRole = 'owner' | 'admin' | 'member';
 export type MembershipStatus = 'active' | 'suspended' | 'removed';
 export type AuthMode = 'unconfigured' | 'slack_active';
 export type AuthHealthGate = 'normal' | 'recovery_only';
@@ -25,6 +25,8 @@ export interface User {
   slackTeamId: string;
   slackUserId: string;
   displayName: string | null;
+  /** Mutable Slack profile contact data. Never used as an identity key. */
+  contactEmail: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -38,8 +40,8 @@ export interface SlackIdentityBinding {
   userId: string;
   organizationId: string;
   membershipId: string;
-  betterAuthUserId: string;
-  betterAuthMembershipId: string;
+  betterAuthUserId: string | null;
+  betterAuthMembershipId: string | null;
   revision: number;
   createdAt: number;
   updatedAt: number;
@@ -394,6 +396,15 @@ export interface MarkSlackSetupApprovalPendingInput extends SlackSetupTransition
   appId: string;
 }
 
+export interface RecordSharedSlackInstallationInput extends SlackSetupTransitionInput {
+  appId: string;
+  clientId: string;
+  bindingId: string;
+  slackTeamId: string;
+  installerSlackUserId: string;
+  botUserId: string;
+}
+
 export type SlackOAuthAttemptKind = 'slack_bot_install';
 export type SlackOAuthAttemptPurpose = 'setup_bot_install';
 export type SlackOAuthAttemptStatus =
@@ -653,6 +664,33 @@ export interface IdentityResolution {
   membership: Membership;
 }
 
+export interface ProvisionSlackMemberInput {
+  slackTeamId: string;
+  slackUserId: string;
+  displayName?: string | null;
+  contactEmail?: string | null;
+  at?: number;
+}
+
+export interface SlackMemberProvisioningResult {
+  outcome: 'provisioned' | 'active' | 'deactivated';
+  resolution: IdentityResolution;
+}
+
+export interface BindSlackMemberBrowserIdentityInput {
+  attemptId: string;
+  expectedOidcLeaseGeneration: number;
+  operationId: string;
+  capabilityHash: string;
+  slackTeamId: string;
+  slackUserId: string;
+  betterAuthUserId: string;
+  betterAuthOrganizationId: string;
+  betterAuthMembershipId: string;
+  contactEmail?: string | null;
+  at?: number;
+}
+
 export interface EnsureOrganizationInput {
   displayName: string;
   slackTeamId?: string | null;
@@ -883,6 +921,9 @@ export interface IdentityStore extends HumanIdentityDirectory {
   restartSlackAppCreation(input: SlackSetupTransitionInput): Promise<SlackSetupTransaction>;
   markSlackSetupApprovalPending(input: MarkSlackSetupApprovalPendingInput): Promise<SlackSetupTransaction>;
   resumeSlackSetupAfterApproval(input: SlackSetupTransitionInput): Promise<SlackSetupTransaction>;
+  recordSharedSlackInstallation(
+    input: RecordSharedSlackInstallationInput,
+  ): Promise<SlackSetupTransaction>;
   createSlackOAuthAttempt(input: CreateSlackOAuthAttemptInput): Promise<SlackOAuthAttempt>;
   getSlackOAuthAttempt(attemptId: string): Promise<SlackOAuthAttempt | undefined>;
   acquireSlackOAuthAttempt(input: AcquireSlackOAuthAttemptInput): Promise<SlackOAuthAttempt>;
@@ -915,6 +956,8 @@ export interface IdentityStore extends HumanIdentityDirectory {
   claimOwner(input: ClaimOwnerInput): Promise<IdentityResolution>;
   activateFirstOwner(input: ActivateFirstOwnerInput): Promise<IdentityResolution>;
   activateInvitation(input: ActivateInvitationInput): Promise<IdentityResolution>;
+  provisionSlackMember(input: ProvisionSlackMemberInput): Promise<SlackMemberProvisioningResult>;
+  bindSlackMemberBrowserIdentity(input: BindSlackMemberBrowserIdentityInput): Promise<IdentityResolution>;
   resolveSlackIdentity(slackTeamId: string, slackUserId: string, organizationId?: string): Promise<IdentityResolution | undefined>;
   resolveBetterAuthIdentity(
     betterAuthUserId: string,
@@ -984,6 +1027,7 @@ export type IdentityRpcRequest =
   | { kind: 'restart_slack_app_creation'; input: SlackSetupTransitionInput }
   | { kind: 'mark_slack_setup_approval_pending'; input: MarkSlackSetupApprovalPendingInput }
   | { kind: 'resume_slack_setup_after_approval'; input: SlackSetupTransitionInput }
+  | { kind: 'record_shared_slack_installation'; input: RecordSharedSlackInstallationInput }
   | { kind: 'create_slack_oauth_attempt'; input: CreateSlackOAuthAttemptInput }
   | { kind: 'get_slack_oauth_attempt'; attemptId: string }
   | { kind: 'acquire_slack_oauth_attempt'; input: AcquireSlackOAuthAttemptInput }
@@ -1016,6 +1060,8 @@ export type IdentityRpcRequest =
   | { kind: 'claim_owner'; input: ClaimOwnerInput }
   | { kind: 'activate_first_owner'; input: ActivateFirstOwnerInput }
   | { kind: 'activate_invitation'; input: ActivateInvitationInput }
+  | { kind: 'provision_slack_member'; input: ProvisionSlackMemberInput }
+  | { kind: 'bind_slack_member_browser_identity'; input: BindSlackMemberBrowserIdentityInput }
   | { kind: 'resolve_slack_identity'; slackTeamId: string; slackUserId: string; organizationId?: string }
   | { kind: 'resolve_better_auth_identity'; betterAuthUserId: string; organizationId?: string }
   | { kind: 'list_external_identities' }
@@ -1067,6 +1113,7 @@ export type IdentityRpcResponse =
   | { kind: 'organization'; organization: Organization | null }
   | { kind: 'owner_claim'; ownerClaim: OwnerClaim | null }
   | { kind: 'identity_resolution'; resolution: IdentityResolution | null }
+  | { kind: 'slack_member_provisioning'; result: SlackMemberProvisioningResult }
   | { kind: 'external_identities'; externalIdentities: SlackIdentityBinding[] }
   | { kind: 'memberships'; memberships: Membership[] }
   | { kind: 'user'; user: User | null }

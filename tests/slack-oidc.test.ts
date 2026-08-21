@@ -13,13 +13,13 @@ import {
   SLACK_OIDC_USERINFO_URL,
   SlackOidcGateway,
 } from '../src/auth/slack-oidc.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import {
   promoteSlackCredentialBundle,
   stageSlackCredentialBundle,
-} from '../src/slack/identity-credentials.ts';
+} from '../src/slack/installation-credentials.ts';
 
 test('Slack OIDC uses only the pinned confidential Sign in with Slack endpoints and scopes', () => {
   assert.equal(SLACK_OIDC_ISSUER, 'https://slack.com');
@@ -27,7 +27,7 @@ test('Slack OIDC uses only the pinned confidential Sign in with Slack endpoints 
   assert.equal(SLACK_OIDC_TOKEN_URL, 'https://slack.com/api/openid.connect.token');
   assert.equal(SLACK_OIDC_USERINFO_URL, 'https://slack.com/api/openid.connect.userInfo');
   assert.equal(SLACK_OIDC_JWKS_URL, 'https://slack.com/openid/connect/keys');
-  assert.deepEqual(SLACK_OIDC_SCOPES, ['openid', 'profile']);
+  assert.deepEqual(SLACK_OIDC_SCOPES, ['openid', 'profile', 'email']);
 });
 
 test('confidential Slack OIDC validates pinned JWT, userinfo, and active human membership', async () => {
@@ -39,8 +39,8 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
   Object.assign(jwk, { kid: 'slack-key-1', alg: 'RS256', use: 'sig' });
   try {
     const candidate = await stageSlackCredentialBundle(credentials, {
-      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      identityClass: 'workspace_default',
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+      identityClass: 'workspace_installation',
       purpose: 'connected_credentials',
       expectedActiveRevision: null,
       appId: 'A12345678',
@@ -52,7 +52,7 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
       },
     });
     const active = await promoteSlackCredentialBundle(credentials, {
-      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
       candidateRevision: candidate.revision,
       expectedActiveRevision: null,
     });

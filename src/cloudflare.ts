@@ -10,39 +10,27 @@ import { createCloudflareTracing } from '@flue/runtime/cloudflare';
 
 import {
   AgentRevisionConflictError,
-  AgentSlackIdentityConflictError,
   AgentExistsError,
   AgentStillAssignedError,
-  AgentStillSlackDmHandlerError,
   AgentStillReferencedError,
-  ChannelAssignmentConflictError,
   ChannelRevisionConflictError,
-  SlackIdentityExistsError,
-  SlackIdentityLifecycleError,
-  SlackIdentityRevisionConflictError,
-  SlackIdentityStillReferencedError,
   UnknownAgentError,
-  UnknownSlackIdentityError,
-  WorkspaceDefaultSlackIdentityProtectedError,
 } from './config/errors.ts';
 import {
   getCachedInstallationToken,
   getGithubConnection,
 } from './config/github-app.ts';
-import { surfaceForChannelId } from './config/resolver.ts';
 import { slackThreadKey } from './slack/thread-key.ts';
-import { resolveSlackIdentityDmAssignment } from './slack/identity-admission.ts';
 import {
-  cacheSlackIdentityExecutionContexts,
-  effectiveTurnSlackIdentityId,
-  normalizeSlackIdentityExecutionError,
-  resolveSlackIdentityExecutionContext,
-  verifySlackIdentityTurnAccess,
-  type SlackIdentityExecutionContext,
-  type SlackIdentityExecutionResolver,
-} from './slack/identity-execution.ts';
-import { recordSlackIdentityUnavailable } from './slack/identity-observability.ts';
-import type { AssignmentLookupOptions } from './config/resolver.ts';
+  cacheSlackInstallationExecutionContexts,
+  effectiveTurnSlackInstallationId,
+  normalizeSlackInstallationExecutionError,
+  resolveSlackInstallationExecutionContext,
+  verifySlackInstallationTurnAccess,
+  type SlackInstallationExecutionContext,
+  type SlackInstallationExecutionResolver,
+} from './slack/installation-execution.ts';
+import { recordSlackInstallationUnavailable } from './slack/installation-observability.ts';
 import {
   parseSandboxAllowedHosts,
   SANDBOX_PACKAGE_REGISTRY_HOSTS,
@@ -61,29 +49,43 @@ import type {
   RuntimeDrainStatus,
 } from './config/state-rpc.ts';
 import { buildRuntimeDrainStatus, tagStateStub } from './config/state-rpc.ts';
-import type { PlatformEnv } from './config/state-backend.ts';
-import { getRoutineStore, getSettingsStore } from './config/state-backend.ts';
+import {
+  getIdentityStore,
+  getRoutineStore,
+  getSettingsStore,
+  getSlackStateStore,
+  type PlatformEnv,
+} from './config/state-backend.ts';
+import {
+  isOAuthContinuationActorActive,
+  repairPendingOAuthContinuationResumes,
+} from './connections/oauth-continuation.ts';
 import {
   ConfigStoreLogic,
   type ConfigAgentPatch,
   type OAuthReauthorizationTarget,
-  type SlackIdentityPatch,
 } from './config/store.ts';
 import type { AgentCreateInput } from './config/types.ts';
 import type {
+  AgentChannelGrant,
+  AgentChannelGrantInput,
+  AgentConnectionBinding,
+  AgentConnectionBindingInput,
+  AgentScheduleReference,
+  AgentScheduleReferenceInput,
   AgentSnapshot,
   AgentSnapshotRootReference,
   AgentReferenceSummary,
-  ChannelAssignment,
+  AgentThreadRoute,
+  AgentThreadRouteInput,
   ChannelConfig,
-  ChannelPlacementMutation,
-  ChannelPlacementResult,
   CustomAgentConfig,
-  SlackIdentity,
-  SlackIdentityDmState,
-  SlackIdentityReferenceSummary,
+  ConnectionAccount,
+  ConnectionAccountInput,
+  EnsureWorkspaceInstallationInput,
+  WorkspaceInstallation,
+  WorkspaceInstallationPatch,
 } from './config/types.ts';
-import type { AppendAuditEvent, AuditEvent, AuditEventFilter } from './audit/types.ts';
 import {
   decideSandboxEgress,
   REPOSITORY_PERMISSIONS,
@@ -117,7 +119,6 @@ import {
   runTurn,
   sanitizeError,
 } from './slack/run-turn.ts';
-import { ContinuityNoticeDeliveryError } from './slack/continuity-notice.ts';
 import { AgentPromptFailure } from './slack/flue-dispatch.ts';
 import type {
   FlueDispatchReceiptV1,
@@ -142,6 +143,10 @@ import {
   type RoutineRpcResponse,
 } from './routines/types.ts';
 import { createRoutineScheduledHandler } from './routines/scheduler-adapter.ts';
+import {
+  SlackGatewaySession,
+  wakeCloudflareGatewaySession,
+} from './slack/gateway/cloudflare-session.ts';
 import { UsageStoreLogic } from './usage/store.ts';
 import { UsageStateError } from './usage/store-error.ts';
 import type { UsageRpcRequest, UsageRpcResponse, UsageStore } from './usage/types.ts';
@@ -157,7 +162,6 @@ import {
   type ManagementRpcRequest,
   type ManagementRpcResponse,
 } from './management/types.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from './config/types.ts';
 import {
   DurableRunDriver,
   runDriverRetryDelayMs,
@@ -650,6 +654,141 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     ));
   }
 
+  async configArchiveAgent(
+    agentId: string,
+    options?: { replacementDefaultAgentId?: string; expectedRevision?: number },
+  ): Promise<StateRpcResult<CustomAgentConfig>> {
+    return this.call((stores) => stores.config.archiveAgent(agentId, options));
+  }
+
+  async configRestoreAgent(
+    agentId: string,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<CustomAgentConfig>> {
+    return this.call((stores) => stores.config.restoreAgent(agentId, expectedRevision));
+  }
+
+  async configEnsureWorkspaceInstallation(
+    input: EnsureWorkspaceInstallationInput,
+  ): Promise<StateRpcResult<WorkspaceInstallation>> {
+    return this.call((stores) => stores.config.ensureWorkspaceInstallation(input));
+  }
+
+  async configGetWorkspaceInstallation(
+    workspaceId: string,
+  ): Promise<StateRpcResult<WorkspaceInstallation | null>> {
+    return this.call((stores) => stores.config.getWorkspaceInstallation(workspaceId) ?? null);
+  }
+
+  async configListWorkspaceInstallations(): Promise<StateRpcResult<WorkspaceInstallation[]>> {
+    return this.call((stores) => stores.config.listWorkspaceInstallations());
+  }
+
+  async configUpdateWorkspaceInstallation(
+    workspaceId: string,
+    patch: WorkspaceInstallationPatch,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<WorkspaceInstallation>> {
+    return this.call((stores) =>
+      stores.config.updateWorkspaceInstallation(workspaceId, patch, expectedRevision),
+    );
+  }
+
+  async configSetWorkspaceDefaultAgent(
+    workspaceId: string,
+    agentId: string,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<WorkspaceInstallation>> {
+    return this.call((stores) =>
+      stores.config.setWorkspaceDefaultAgent(workspaceId, agentId, expectedRevision),
+    );
+  }
+
+  async configListAgentChannelGrants(
+    workspaceId?: string,
+    channelId?: string,
+  ): Promise<StateRpcResult<AgentChannelGrant[]>> {
+    return this.call((stores) => stores.config.listAgentChannelGrants(workspaceId, channelId));
+  }
+
+  async configPutAgentChannelGrant(
+    input: AgentChannelGrantInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<AgentChannelGrant>> {
+    return this.call((stores) => stores.config.putAgentChannelGrant(input, expectedRevision));
+  }
+
+  async configDeleteAgentChannelGrant(
+    workspaceId: string,
+    channelId: string,
+    agentId: string,
+  ): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) =>
+      stores.config.deleteAgentChannelGrant(workspaceId, channelId, agentId),
+    );
+  }
+
+  async configGetAgentThreadRoute(
+    workspaceId: string,
+    channelId: string,
+    threadTs: string,
+  ): Promise<StateRpcResult<AgentThreadRoute | null>> {
+    return this.call(
+      (stores) => stores.config.getAgentThreadRoute(workspaceId, channelId, threadTs) ?? null,
+    );
+  }
+
+  async configPutAgentThreadRoute(
+    input: AgentThreadRouteInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<AgentThreadRoute>> {
+    return this.call((stores) => stores.config.putAgentThreadRoute(input, expectedRevision));
+  }
+
+  async configListConnectionAccounts(
+    workspaceId: string,
+  ): Promise<StateRpcResult<ConnectionAccount[]>> {
+    return this.call((stores) => stores.config.listConnectionAccounts(workspaceId));
+  }
+
+  async configPutConnectionAccount(
+    input: ConnectionAccountInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<ConnectionAccount>> {
+    return this.call((stores) => stores.config.putConnectionAccount(input, expectedRevision));
+  }
+
+  async configListAgentConnectionBindings(
+    agentId: string,
+  ): Promise<StateRpcResult<AgentConnectionBinding[]>> {
+    return this.call((stores) => stores.config.listAgentConnectionBindings(agentId));
+  }
+
+  async configPutAgentConnectionBinding(
+    input: AgentConnectionBindingInput,
+  ): Promise<StateRpcResult<AgentConnectionBinding>> {
+    return this.call((stores) => stores.config.putAgentConnectionBinding(input));
+  }
+
+  async configListAgentScheduleReferences(
+    agentId: string,
+  ): Promise<StateRpcResult<AgentScheduleReference[]>> {
+    return this.call((stores) => stores.config.listAgentScheduleReferences(agentId));
+  }
+
+  async configGetAgentScheduleReference(
+    scheduleId: string,
+  ): Promise<StateRpcResult<AgentScheduleReference | null>> {
+    return this.call((stores) => stores.config.getAgentScheduleReference(scheduleId) ?? null);
+  }
+
+  async configPutAgentScheduleReference(
+    input: AgentScheduleReferenceInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<AgentScheduleReference>> {
+    return this.call((stores) => stores.config.putAgentScheduleReference(input, expectedRevision));
+  }
+
   async configListChannels(): Promise<StateRpcResult<ChannelConfig[]>> {
     return this.call((stores) => stores.config.listChannels());
   }
@@ -668,51 +807,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.config.putChannel(channel, expectedRevision));
   }
 
-  async configPutChannelPlacement(
-    input: ChannelPlacementMutation,
-  ): Promise<StateRpcResult<ChannelPlacementResult>> {
-    return this.call((stores) => stores.config.putChannelPlacement(input));
-  }
-
   // ── config: assignments ──────────────────────────────────────────────────
-
-  async configListAssignments(): Promise<StateRpcResult<ChannelAssignment[]>> {
-    return this.call((stores) => stores.config.listAssignments());
-  }
-
-  async configGetAssignment(
-    workspaceId: string,
-    channelId: string,
-  ): Promise<StateRpcResult<ChannelAssignment | null>> {
-    return this.call((stores) => stores.config.getAssignment(workspaceId, channelId) ?? null);
-  }
-
-  async configListAssignmentsForAgent(
-    agentId: string,
-  ): Promise<StateRpcResult<ChannelAssignment[]>> {
-    return this.call((stores) => stores.config.listAssignmentsForAgent(agentId));
-  }
-
-  async configPutAssignment(
-    assignment: ChannelAssignment,
-  ): Promise<StateRpcResult<ChannelAssignment>> {
-    return this.call((stores) => stores.config.putAssignment(assignment));
-  }
-
-  async configDeleteAssignment(
-    workspaceId: string,
-    channelId: string,
-  ): Promise<StateRpcResult<boolean>> {
-    return this.call((stores) => stores.config.deleteAssignment(workspaceId, channelId));
-  }
-
-  async configFind(
-    workspaceId: string,
-    channelId: string,
-    options?: AssignmentLookupOptions,
-  ): Promise<StateRpcResult<ChannelAssignment | null>> {
-    return this.call((stores) => stores.config.find(workspaceId, channelId, options) ?? null);
-  }
 
   async configGetAgentReferences(
     agentId: string,
@@ -720,158 +815,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.config.getAgentReferences(agentId));
   }
 
-  // ── config: Slack identities ────────────────────────────────────────────
-
-  async configListSlackIdentities(): Promise<StateRpcResult<SlackIdentity[]>> {
-    return this.call((stores) => stores.config.listSlackIdentities());
-  }
-
-  async configGetSlackIdentity(
-    identityId: string,
-  ): Promise<StateRpcResult<SlackIdentity>> {
-    return this.call((stores) => stores.config.getSlackIdentity(identityId));
-  }
-
-  async configGetSlackIdentityByIngressKey(
-    ingressKey: string,
-  ): Promise<StateRpcResult<SlackIdentity | null>> {
-    return this.call(
-      (stores) => stores.config.getSlackIdentityByIngressKey(ingressKey) ?? null,
-    );
-  }
-
-  async configCreateSlackIdentity(
-    identity: SlackIdentity,
-  ): Promise<StateRpcResult<SlackIdentity>> {
-    return this.call((stores) => stores.config.createSlackIdentity(identity));
-  }
-
-  async configUpdateSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-    patch: SlackIdentityPatch,
-  ): Promise<StateRpcResult<SlackIdentity>> {
-    return this.call((stores) =>
-      stores.config.updateSlackIdentity(identityId, expectedRevision, patch),
-    );
-  }
-
-  async configListSlackIdentitiesForAgent(
-    agentId: string,
-  ): Promise<StateRpcResult<SlackIdentity[]>> {
-    return this.call((stores) => stores.config.listSlackIdentitiesForAgent(agentId));
-  }
-
-  async configListAgentsForSlackIdentity(
-    identityId: string,
-  ): Promise<StateRpcResult<CustomAgentConfig[]>> {
-    return this.call((stores) => stores.config.listAgentsForSlackIdentity(identityId));
-  }
-
-  async configResolveSlackIdentityForAgent(
-    agentId: string,
-  ): Promise<StateRpcResult<SlackIdentity>> {
-    return this.call((stores) => stores.config.resolveSlackIdentityForAgent(agentId));
-  }
-
-  async configGetSlackIdentityReferences(
-    identityId: string,
-  ): Promise<StateRpcResult<SlackIdentityReferenceSummary>> {
-    return this.call((stores) => stores.config.getSlackIdentityReferences(identityId));
-  }
-
-  async configSetSlackIdentityDmBinding(
-    identityId: string,
-    expectedRevision: number,
-    dmState: SlackIdentityDmState,
-    dmAgentId?: string,
-  ): Promise<StateRpcResult<SlackIdentity>> {
-    return this.call((stores) =>
-      stores.config.setSlackIdentityDmBinding(
-        identityId,
-        expectedRevision,
-        dmState,
-        dmAgentId,
-      ),
-    );
-  }
-
-  async configCompleteSlackIdentitySetup(
-    identityId: string,
-    expectedRevision: number,
-    agentId?: string,
-    expectedAgentIdentityId?: string | null,
-  ): Promise<StateRpcResult<SlackIdentity>> {
-    return this.call((stores) => stores.config.completeSlackIdentitySetup(
-      identityId,
-      expectedRevision,
-      agentId,
-      expectedAgentIdentityId,
-    ));
-  }
-
-  async configAttachAgentToSlackIdentity(
-    agentId: string,
-    identityId: string,
-    expectedIdentityRevision: number,
-    expectedAgentIdentityId: string | null,
-  ): Promise<StateRpcResult<CustomAgentConfig>> {
-    return this.call((stores) => stores.config.attachAgentToSlackIdentity(
-      agentId,
-      identityId,
-      expectedIdentityRevision,
-      expectedAgentIdentityId,
-    ));
-  }
-
-  async configRetireSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-  ): Promise<StateRpcResult<SlackIdentity>> {
-    return this.call((stores) => stores.config.retireSlackIdentity(identityId, expectedRevision));
-  }
-
-  async configDeleteIncompleteSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-    credentialsErased: boolean,
-  ): Promise<StateRpcResult<boolean>> {
-    return this.call((stores) =>
-      stores.config.deleteIncompleteSlackIdentity(
-        identityId,
-        expectedRevision,
-        credentialsErased,
-      ),
-    );
-  }
-
-  async configPurgeRetiredSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-    credentialsErased: boolean,
-  ): Promise<StateRpcResult<boolean>> {
-    return this.call((stores) =>
-      stores.config.purgeRetiredSlackIdentity(
-        identityId,
-        expectedRevision,
-        credentialsErased,
-      ),
-    );
-  }
-
-  async configAppendSlackIdentityAudit(
-    input: AppendAuditEvent,
-  ): Promise<StateRpcResult<AuditEvent>> {
-    return this.call((stores) => stores.config.appendSlackIdentityAudit(input));
-  }
-
-  async configListSlackIdentityAuditEvents(
-    filter: AuditEventFilter = {},
-  ): Promise<StateRpcResult<AuditEvent[]>> {
-    return this.call((stores) => stores.config.listSlackIdentityAuditEvents(filter));
-  }
-
-  // ── agent snapshots ──────────────────────────────────────────────────────
+  // ── config: Agent thread snapshots ──────────────────────────────────────
 
   async snapshotGet(threadKey: string): Promise<StateRpcResult<AgentSnapshot | null>> {
     return this.call((stores) => stores.snapshots.get(threadKey) ?? null);
@@ -882,6 +826,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     snapshot: AgentSnapshot,
   ): Promise<StateRpcResult<AgentSnapshot>> {
     return this.call((stores) => stores.snapshots.putIfAbsent(threadKey, snapshot));
+  }
+
+  async snapshotReplace(
+    threadKey: string,
+    snapshot: AgentSnapshot,
+  ): Promise<StateRpcResult<AgentSnapshot>> {
+    return this.call((stores) => stores.snapshots.replace(threadKey, snapshot));
   }
 
   async snapshotListLiveRootsByAgent(
@@ -912,22 +863,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 
   async threadHas(key: string): Promise<StateRpcResult<boolean>> {
     return this.call((stores) => stores.slack.has(key));
-  }
-
-  async threadParticipationGet(
-    key: string,
-  ): Promise<StateRpcResult<'ambient' | 'mention_only'>> {
-    return this.call((stores) => stores.slack.getParticipation(key));
-  }
-
-  async threadParticipationSet(
-    key: string,
-    mode: 'ambient' | 'mention_only',
-  ): Promise<StateRpcResult<null>> {
-    return this.call((stores) => {
-      stores.slack.setParticipation(key, mode);
-      return null;
-    });
   }
 
   async threadActiveWorkGet(key: string): Promise<StateRpcResult<boolean>> {
@@ -996,16 +931,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     );
   }
 
-  async slackContinuityNoticeRecord(
-    id: string,
-    notice: Parameters<TagStateRpc['slackContinuityNoticeRecord']>[1],
-  ): Promise<StateRpcResult<null>> {
-    return this.call((stores) => {
-      stores.turnJobs.recordContinuityNotice(id, notice);
-      return null;
-    });
-  }
-
   async slackTurnRecoveryRequired(
     id: string,
     reason: string,
@@ -1020,9 +945,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.turnJobs.listRecoveryRequired(limit));
   }
 
-  async slackIdentityRecoveryRetry(identityId: string) {
+  async slackInstallationRecoveryRetry(workspaceId: string) {
     const result = this.call((stores) =>
-      stores.turnJobs.retrySlackIdentityRecovery(identityId),
+      stores.turnJobs.retrySlackInstallationRecovery(workspaceId),
     );
     if (result.ok && result.value > 0 && (await this.ctx.storage.getAlarm()) === null) {
       await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
@@ -1034,9 +959,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.turnJobs.resolveRecoveryRequired(id));
   }
 
-  async slackIdentityPendingDeliveryCount(identityId: string) {
+  async slackInstallationPendingDeliveryCount(workspaceId: string) {
     return this.call((stores) =>
-      stores.turnJobs.countPendingDeliveriesForSlackIdentity(identityId),
+      stores.turnJobs.countPendingDeliveriesForWorkspace(workspaceId),
     );
   }
 
@@ -1194,6 +1119,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return result;
   }
 
+  async resumeTurnAfterOAuth(
+    originalTaskId: string,
+    continuationId: string,
+  ): Promise<StateRpcResult<boolean>> {
+    const result = this.call((stores) =>
+      stores.turnJobs.resumeAfterOAuth(originalTaskId, continuationId)
+    );
+    if (result.ok && result.value && (await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
+    }
+    return result;
+  }
+
   /**
    * Cross-isolate activity narration (see src/slack/status-relay.ts): the agent
    * DO observes safe lifecycle/tool summaries and relays them here, where the alarm
@@ -1238,16 +1176,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const pending = stores.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
     if (pending.length === 0) {
       const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
-      const resolveIdentity = this.createAlarmIdentityResolver(stores);
+      const resolveInstallation = this.createAlarmIdentityResolver(stores);
       const ledgerDrain = await drainLedgerRuns(
         stores,
         this.env as PlatformEnv,
-        resolveIdentity,
+        resolveInstallation,
       );
       if (cleanupPending) {
-        await drainSlackInteractionCleanups(stores, resolveIdentity);
+        await drainSlackInteractionCleanups(stores, resolveInstallation);
       }
-      await drainCloudflareManagementReceipts(stores, resolveIdentity);
+      await drainCloudflareManagementReceipts(stores, resolveInstallation);
       const turnRetry = stores.turnJobs.hasPending('ledger') ||
         stores.turnJobs.hasPendingSlackInteractionCleanup()
         ? Date.now() + runDriverRetryDelayMs(ledgerDrain, RELAY_RETRY_BACKOFF_MS)
@@ -1260,7 +1198,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // Resolve current credentials once per identity referenced by this bounded
     // batch. The map is discarded after the alarm, so the next retry observes
     // credential rotation without ever falling back to another identity.
-    const resolveIdentity = this.createAlarmIdentityResolver(stores);
+    const resolveInstallation = this.createAlarmIdentityResolver(stores);
     const usageStore = localUsageStore(stores);
     let needsRetry = false;
     let identityRetryDelayMs = RELAY_RETRY_BACKOFF_MS;
@@ -1268,16 +1206,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (!job.turn.interactionIntent && job.progress.interactionIntent) {
         job.turn.interactionIntent = job.progress.interactionIntent;
       }
-      let identityContext: SlackIdentityExecutionContext;
+      let installationContext: SlackInstallationExecutionContext;
       try {
-        identityContext = await resolveIdentity(effectiveTurnSlackIdentityId(job.turn));
-        await verifySlackIdentityTurnAccess(identityContext, job.turn);
+        installationContext = await resolveInstallation(effectiveTurnSlackInstallationId(job.turn));
+        await verifySlackInstallationTurnAccess(installationContext, job.turn);
       } catch (error) {
-        const unavailable = normalizeSlackIdentityExecutionError(
+        const unavailable = normalizeSlackInstallationExecutionError(
           error,
-          effectiveTurnSlackIdentityId(job.turn),
+          effectiveTurnSlackInstallationId(job.turn),
         );
-        recordSlackIdentityUnavailable(unavailable);
+        recordSlackInstallationUnavailable(unavailable);
         if (unavailable.retryable) {
           needsRetry = true;
           identityRetryDelayMs = Math.max(
@@ -1285,47 +1223,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
             unavailable.retryAfterMs ?? 0,
           );
           console.warn(
-            `[chickpea] Slack identity preflight will retry (${unavailable.reasonCode})`,
+            `[chickpea] Slack installation preflight will retry (${unavailable.reasonCode})`,
           );
           return false;
         }
-        stores.turnJobs.markRecoveryRequired(job.id, 'slack_identity_unavailable');
+        stores.turnJobs.markRecoveryRequired(job.id, 'slack_installation_unavailable');
         if (job.turn.interactionIntent?.disposition === 'work') {
           stores.slack.setActiveWork(slackThreadKey(job.turn), job.id, false);
         }
         return false;
       }
-      const client = identityContext.client;
-      // DM turns resolve their profile live at agent time, so a profile
-      // disabled in the enqueue->alarm gap would otherwise surface as a fake
-      // "provider failed" final. Re-check here and fail closed exactly like
-      // the admit path: silent, claims released, job tombstoned.
-      if (surfaceForChannelId(job.turn.channelId) === 'direct') {
-        try {
-          const identity = stores.config.getSlackIdentity(identityContext.identityId);
-          const liveAssignment = await resolveSlackIdentityDmAssignment(
-            identity,
-            job.turn.workspaceId,
-            job.turn.channelId,
-            stores.config,
-          );
-          if (!liveAssignment) {
-            stores.slack.release(job.evtKey);
-            stores.slack.release(job.msgKey);
-            stores.slack.release(`decision:${job.msgKey}`);
-            if (job.turn.interactionIntent?.disposition === 'work') {
-              stores.slack.setActiveWork(slackThreadKey(job.turn), job.id, false);
-            }
-            stores.turnJobs.markDelivered(job.id);
-            return true;
-          }
-        } catch {
-          // A transient policy-store read must not widen authority by falling
-          // through to model work. A later alarm rechecks the same identity.
-          needsRetry = true;
-          return false;
-        }
-      }
+      const client = installationContext.client;
       const attempt = job.attempts + 1;
       let delivered = false;
       let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
@@ -1383,17 +1291,15 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         };
       const replayText =
           replayTextForTurnProgress(job.progress) ?? (await persistSandboxProgress());
-        const runtimePlanDecision = job.runtimePlan && job.agentInstanceId &&
-            job.continuityNoticeRequired !== undefined
+        const runtimePlanDecision = job.runtimePlan && job.agentInstanceId
           ? {
               runtimePlan: job.runtimePlan,
               instanceId: job.agentInstanceId,
-              continuityNoticeRequired: job.continuityNoticeRequired,
             }
           : undefined;
         await runTurn(job.turn, job.assignment, this.env as PlatformEnv, {
           client,
-          identityContext,
+          installationContext,
           turnId: job.id,
           usageExecutionId: `exec:${job.id}:flue`,
           ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
@@ -1405,12 +1311,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           flueDispatch,
           presentationState: localSlackPresentationState(stores),
           progressiveAttributionProven: true,
-          ...(job.progress.continuityNotice
-            ? { continuityNoticeProgress: job.progress.continuityNotice }
-            : {}),
-          onContinuityNoticeProgress: (notice) => {
-            stores.turnJobs.recordContinuityNotice(job.id, notice);
-          },
           onUsagePersistence: (event) => {
             stores.turnJobs.recordUsagePersistence(job.id, event);
           },
@@ -1444,19 +1344,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         if (err instanceof AgentPromptFailure && err.recoveryRequired) {
           if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
           console.error('[chickpea] Flue turn requires operator reconciliation');
-          return false;
-        }
-        if (err instanceof ContinuityNoticeDeliveryError) {
-          if (err.recoveryRequired) {
-            stores.turnJobs.markRecoveryRequired(
-              job.id,
-              'continuity_notice_delivery_unknown',
-            );
-            console.error('[chickpea] continuity notice delivery requires reconciliation');
-          } else {
-            needsRetry = true;
-          }
-          if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
           return false;
         }
         // Any failure after the terminal presentation boundary is cleanup,
@@ -1543,11 +1430,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const ledgerDrain = await drainLedgerRuns(
       stores,
       this.env as PlatformEnv,
-      resolveIdentity,
+      resolveInstallation,
     );
     identityRetryDelayMs = runDriverRetryDelayMs(ledgerDrain, identityRetryDelayMs);
-    await drainSlackInteractionCleanups(stores, resolveIdentity);
-    await drainCloudflareManagementReceipts(stores, resolveIdentity);
+    await drainSlackInteractionCleanups(stores, resolveInstallation);
+    await drainCloudflareManagementReceipts(stores, resolveInstallation);
     needsRetry ||= stores.turnJobs.hasPending('legacy') ||
       stores.turnJobs.hasPending('ledger') ||
       stores.turnJobs.hasPendingSlackInteractionCleanup();
@@ -1567,16 +1454,24 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     if (existing === null || at < existing) await this.ctx.storage.setAlarm(at);
   }
 
-  private createAlarmIdentityResolver(stores: TagStateStores): SlackIdentityExecutionResolver {
-    return cacheSlackIdentityExecutionContexts(
-      (identityId) => resolveSlackIdentityExecutionContext(
-          identityId,
+  private createAlarmIdentityResolver(stores: TagStateStores): SlackInstallationExecutionResolver {
+    return cacheSlackInstallationExecutionContexts(
+      (workspaceId) => resolveSlackInstallationExecutionContext(
+          workspaceId,
           this.env as PlatformEnv,
           {
             config: {
-              getSlackIdentity: async (id) => stores.config.getSlackIdentity(id),
-              updateSlackIdentity: async (id, expectedRevision, patch) =>
-                stores.config.updateSlackIdentity(id, expectedRevision, patch),
+              getWorkspaceInstallation: async (workspaceId) =>
+                stores.config.getWorkspaceInstallation(workspaceId),
+            },
+            settings: {
+              getSetting: async (key) => stores.settings.getSetting(key),
+              getSettings: async (keys) => stores.settings.getSettings(keys),
+              setSetting: async (key, value) => stores.settings.setSetting(key, value),
+              deleteSetting: async (key) => stores.settings.deleteSetting(key),
+              applySettingsPatch: async (patch) => stores.settings.applySettingsPatch(patch),
+              mergeSettingStringSet: async (key, values) =>
+                stores.settings.mergeSettingStringSet(key, values),
             },
             credentialDependencies: {
               // The alarm is already executing inside TAG_STATE; using the
@@ -1632,31 +1527,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           keys: err.keys,
         });
       }
-      if (err instanceof AgentStillSlackDmHandlerError) {
-        return rpcError('agent_slack_dm_handler', err.message, {
-          agentId: err.agentId,
-          identityIds: err.identityIds,
-        });
-      }
       if (err instanceof AgentStillReferencedError) {
         return rpcError('agent_still_referenced', err.message, {
           agentId: err.agentId,
           references: err.references,
-        });
-      }
-      if (err instanceof AgentSlackIdentityConflictError) {
-        return rpcError('agent_slack_identity_conflict', err.message, {
-          agentId: err.agentId,
-          expectedIdentityId: err.expectedIdentityId ?? '',
-          actualIdentityId: err.actualIdentityId ?? '',
-        });
-      }
-      if (err instanceof ChannelAssignmentConflictError) {
-        return rpcError('channel_assignment_conflict', err.message, {
-          workspaceId: err.workspaceId,
-          channelId: err.channelId,
-          expectedAgentId: err.expectedAgentId ?? '',
-          actualAgentId: err.actualAgentId ?? '',
         });
       }
       if (err instanceof ChannelRevisionConflictError) {
@@ -1665,42 +1539,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           channelId: err.channelId,
           expectedRevision: String(err.expectedRevision),
           actualRevision: String(err.actualRevision),
-        });
-      }
-      if (err instanceof UnknownSlackIdentityError) {
-        return rpcError('unknown_slack_identity', err.message, {
-          identityId: err.identityId,
-        });
-      }
-      if (err instanceof SlackIdentityExistsError) {
-        return rpcError('slack_identity_exists', err.message, {
-          identityId: err.identityId,
-        });
-      }
-      if (err instanceof SlackIdentityStillReferencedError) {
-        return rpcError('slack_identity_still_referenced', err.message, {
-          identityId: err.identityId,
-          agentIds: err.agentIds,
-          dmAgentId: err.dmAgentId,
-        });
-      }
-      if (err instanceof SlackIdentityRevisionConflictError) {
-        return rpcError('slack_identity_revision_conflict', err.message, {
-          identityId: err.identityId,
-          expectedRevision: String(err.expectedRevision),
-          actualRevision: String(err.actualRevision),
-        });
-      }
-      if (err instanceof SlackIdentityLifecycleError) {
-        return rpcError('slack_identity_lifecycle', err.message, {
-          identityId: err.identityId,
-          action: err.action,
-          lifecycle: err.lifecycle,
-        });
-      }
-      if (err instanceof WorkspaceDefaultSlackIdentityProtectedError) {
-        return rpcError('workspace_default_slack_identity_protected', err.message, {
-          action: err.action,
         });
       }
       if (err instanceof IdentityStateError) {
@@ -1752,19 +1590,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
 
 async function drainSlackInteractionCleanups(
   stores: TagStateStores,
-  resolveIdentity: SlackIdentityExecutionResolver,
+  resolveInstallation: SlackInstallationExecutionResolver,
 ): Promise<void> {
   for (const job of stores.turnJobs.listPendingSlackInteractionCleanups(MAX_TURN_DRAIN_BATCH)) {
     const progress = job.progress.slackInteraction;
     if (!progress) continue;
     try {
-      const identityContext = await resolveIdentity(effectiveTurnSlackIdentityId(job.turn));
-      await verifySlackIdentityTurnAccess(identityContext, job.turn);
+      const installationContext = await resolveInstallation(effectiveTurnSlackInstallationId(job.turn));
+      await verifySlackInstallationTurnAccess(installationContext, job.turn);
       await repairSlackInteractionProgress(
         job.turn,
         job.assignment,
         progress,
-        identityContext.client,
+        installationContext.client,
         (patch) => {
           stores.turnJobs.recordSlackInteractionProgress(job.id, patch);
         },
@@ -1777,37 +1615,31 @@ async function drainSlackInteractionCleanups(
 
 async function drainCloudflareManagementReceipts(
   stores: TagStateStores,
-  resolveIdentity: SlackIdentityExecutionResolver,
+  resolveInstallation: SlackInstallationExecutionResolver,
 ): Promise<void> {
   const at = Date.now();
   const claimed = stores.management.claimDueOutbox(at, 10, at + 30_000);
   if (claimed.length === 0) return;
-  let execution: Awaited<ReturnType<SlackIdentityExecutionResolver>>;
-  try {
-    execution = await resolveIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-  } catch {
-    for (const record of claimed) settleCloudflareReceiptRetry(stores, record);
-    return;
-  }
   for (const record of claimed) {
     try {
       let channel: string;
       let threadTs: string | undefined;
+      let workspaceId: string;
       if (record.destination.kind === 'thread') {
-        if (record.destination.workspaceId !== execution.teamId) {
-          throw new Error('Receipt workspace mismatch.');
-        }
+        workspaceId = record.destination.workspaceId;
         channel = record.destination.channelId;
         threadTs = record.destination.threadTs;
       } else {
         const destination = record.destination;
         const binding = stores.identity.listExternalIdentities().find((candidate) =>
           candidate.organizationId === destination.organizationId &&
-          candidate.userId === destination.userId &&
-          candidate.slackTeamId === execution.teamId);
+          candidate.userId === destination.userId);
         if (!binding) throw new Error('Receipt identity unavailable.');
+        workspaceId = binding.slackTeamId;
         channel = binding.slackUserId;
       }
+      const execution = await resolveInstallation(workspaceId);
+      if (execution.workspaceId !== workspaceId) throw new Error('Receipt workspace mismatch.');
       const response = await execution.client.chat.postMessage({
         channel,
         ...(threadTs ? { thread_ts: threadTs } : {}),
@@ -1849,7 +1681,7 @@ function settleCloudflareReceiptRetry(
 async function drainLedgerRuns(
   stores: TagStateStores,
   platformEnv: PlatformEnv,
-  resolveIdentity: SlackIdentityExecutionResolver,
+  resolveInstallation: SlackInstallationExecutionResolver,
 ): Promise<RunDriverDrainResult> {
   return new DurableRunDriver(stores.work, {
     ownerId: 'cloudflare_ledger_run_driver',
@@ -1863,8 +1695,8 @@ async function drainLedgerRuns(
       // handler contract without a self-RPC through CfWorkStore.
       work: stores.work as unknown as WorkStore,
       turns: stores.turnJobs,
-      resolveIdentity,
-      verifyIdentityAccess: verifySlackIdentityTurnAccess,
+      resolveInstallation,
+      verifyInstallationAccess: verifySlackInstallationTurnAccess,
       platformEnv,
       settingsStore: localSettingsStore(stores),
       usageStore: localUsageStore(stores),
@@ -1943,7 +1775,32 @@ async function runWorkMaintenance(
   if (!result.ok) {
     throw new Error(`Work maintenance failed: ${result.error.message}`);
   }
+  const platformEnv = rawEnv as PlatformEnv;
+  try {
+    await repairPendingOAuthContinuationResumes({
+      settings: getSettingsStore(platformEnv),
+      onReady: async (continuation) => {
+        if (!(await isOAuthContinuationActorActive({
+          continuation,
+          identity: getIdentityStore(platformEnv),
+        }))) {
+          throw new Error('OAuth continuation member is no longer active.');
+        }
+        const resumed = await getSlackStateStore(platformEnv).resumeTurnAfterOAuth?.(
+          continuation.taskId,
+          continuation.id,
+        );
+        if (!resumed) throw new Error('OAuth continuation task is unavailable.');
+      },
+    });
+  } finally {
+    // The gateway session is the ingress lifeline for the shared Slack lane.
+    // OAuth repair failures must never suppress its periodic wake.
+    await wakeCloudflareGatewaySession(rawEnv);
+  }
 }
+
+export { SlackGatewaySession };
 
 async function runRoutineHeartbeat(
   scheduledTime: number,

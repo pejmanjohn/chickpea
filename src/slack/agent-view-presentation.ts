@@ -736,6 +736,7 @@ export function deriveSlackThreadTitle(message: string, workLabel?: string): str
   }
   const sanitized = source
     .replace(/<@[^>]+>/g, '')
+    .replace(/<!subteam\^[^>|]+(?:\|[^>]+)?>/g, '')
     .replace(/[`*_~#[\]()>]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -761,7 +762,10 @@ function streamStartPayload(
       ? { markdown_text: input.markdownText! }
       : { chunks }),
     ...(presentation.plan ? { task_display_mode: presentation.plan.displayMode } : {}),
-  };
+    ...(presentation.persona
+      ? { username: presentation.persona.name, icon_url: presentation.persona.avatarUrl }
+      : {}),
+  } as unknown as Parameters<WebClient['chat']['startStream']>[0];
 }
 
 function taskChunks(presentation: SlackRunPresentationV1): AnyChunk[] {

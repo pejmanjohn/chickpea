@@ -25,8 +25,8 @@ export const IDENTITY_SCHEMA_V1_STATEMENTS = [
   )`,
   `CREATE TABLE identity_slack_credential_revisions (
     identity_id TEXT NOT NULL,
-    identity_class TEXT NOT NULL CHECK (identity_class IN ('workspace_default', 'dedicated_bot')),
-    purpose TEXT NOT NULL CHECK (purpose IN ('app_credentials', 'connected_credentials', 'bot_credentials')),
+    identity_class TEXT NOT NULL CHECK (identity_class = 'workspace_installation'),
+    purpose TEXT NOT NULL CHECK (purpose IN ('app_credentials', 'connected_credentials')),
     revision TEXT NOT NULL, base_revision TEXT,
     status TEXT NOT NULL CHECK (status IN ('candidate', 'active', 'tombstoned')),
     app_id TEXT NOT NULL, team_id TEXT, bot_user_id TEXT,
@@ -132,14 +132,14 @@ export const IDENTITY_SCHEMA_V1_STATEMENTS = [
   )`,
   `CREATE TABLE identity_users (
     user_id TEXT PRIMARY KEY, slack_team_id TEXT NOT NULL, slack_user_id TEXT NOT NULL,
-    display_name TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    display_name TEXT, contact_email TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
     UNIQUE (slack_team_id, slack_user_id)
   )`,
   `CREATE TABLE identity_memberships (
     membership_id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES identity_organizations(organization_id),
     user_id TEXT NOT NULL REFERENCES identity_users(user_id),
-    role TEXT NOT NULL CHECK (role IN ('owner', 'admin')),
+    role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
     status TEXT NOT NULL CHECK (status IN ('active', 'suspended', 'removed')),
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE (organization_id, user_id)
   )`,
@@ -148,7 +148,7 @@ export const IDENTITY_SCHEMA_V1_STATEMENTS = [
     user_id TEXT NOT NULL UNIQUE REFERENCES identity_users(user_id),
     organization_id TEXT NOT NULL REFERENCES identity_organizations(organization_id),
     membership_id TEXT NOT NULL UNIQUE REFERENCES identity_memberships(membership_id),
-    better_auth_user_id TEXT NOT NULL UNIQUE, better_auth_membership_id TEXT NOT NULL UNIQUE,
+    better_auth_user_id TEXT UNIQUE, better_auth_membership_id TEXT UNIQUE,
     revision INTEGER NOT NULL CHECK (revision > 0), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
     UNIQUE (slack_team_id, slack_user_id)
   )`,
@@ -179,7 +179,7 @@ export const IDENTITY_SCHEMA_V1_STATEMENTS = [
     kind TEXT NOT NULL CHECK (kind IN ('first_owner_claim', 'invitation_admission', 'login')),
     organization_id TEXT REFERENCES identity_organizations(organization_id),
     expected_slack_team_id TEXT NOT NULL, expected_slack_user_id TEXT NOT NULL,
-    chickpea_role TEXT CHECK (chickpea_role IN ('owner', 'admin')),
+    chickpea_role TEXT CHECK (chickpea_role IN ('owner', 'admin', 'member')),
     capability_hash TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL CHECK (status IN ('reserved', 'reconciling', 'active', 'tombstoned', 'expired')),
     step INTEGER NOT NULL CHECK (step >= 0), better_auth_user_id TEXT,

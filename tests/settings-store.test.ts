@@ -169,7 +169,7 @@ test('settings share the state DB file with the other app stores without clashin
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-settings-shared-'));
   const path = join(dir, 'state.db');
   const { SqliteConfigStore } = await import('../src/config/store.ts');
-  const config = new SqliteConfigStore(path, { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(path, { agents: [] });
   const settings = new SqliteSettingsStore(path);
   try {
     await settings.setSetting('slack.botToken', 'xoxb-shared');

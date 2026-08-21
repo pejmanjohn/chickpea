@@ -13,6 +13,7 @@ import { ROUTINE_LIMITS } from './limits.ts';
 import { RoutineRuntimeError, type RoutineRuntimeAccess } from './runtime.ts';
 import type { RoutineDefinition, RoutineRun, RoutineStore } from './types.ts';
 import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
+import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 
 const ROUTINE_SLACK_TIMEOUT_MS = 10_000;
 
@@ -33,7 +34,7 @@ export async function deliverRoutineResult(
     workLifecycle?: ShadowWorkLifecycle;
     now?: () => number;
   },
-  client: WebClient = createRoutineSlackClient(input.access.botToken),
+  client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
 ): Promise<RoutineDeliveryReceipt> {
   return deliverRoutineSlackMessage(
     { ...input, approvedOutput: input.message },
@@ -52,7 +53,7 @@ export async function deliverRoutineFailureNotice(
     workLifecycle?: ShadowWorkLifecycle;
     now?: () => number;
   },
-  client: WebClient = createRoutineSlackClient(input.access.botToken),
+  client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
 ): Promise<RoutineDeliveryReceipt> {
   const text = [
     `⚠️ **Routine needs attention**`,
@@ -108,9 +109,17 @@ async function deliverRoutineSlackMessage(
     );
   }
 
+  const agentAvatarUrl = agentAvatarUrlForPresentation(
+    input.access.config.agent,
+    input.access.publicUrl,
+  );
   const payload = {
     channel: input.routine.channelId,
     ...(typeof message === 'string' ? { text: message } : message),
+    username: input.access.config.agent.name,
+    ...(agentAvatarUrl
+      ? { icon_url: agentAvatarUrl }
+      : {}),
     unfurl_links: false,
     unfurl_media: false,
   };
@@ -274,6 +283,14 @@ function createRoutineSlackClient(botToken: string): WebClient {
     },
     ...(slackApiUrl ? { slackApiUrl } : {}),
   });
+}
+
+function requiredRoutineBotToken(access: RoutineRuntimeAccess): string {
+  if (!access.botToken) throw new RoutineRuntimeError(
+    'credential_unavailable',
+    'The Slack connection is unavailable for this routine.',
+  );
+  return access.botToken;
 }
 
 async function recordFailedDelivery(

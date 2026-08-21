@@ -5,20 +5,7 @@ export type AuditDomain =
   | 'network_event'
   | 'usage'
   | 'work'
-  | 'slack_identity'
   | 'management';
-
-export type SlackIdentityAuditEventType =
-  | 'slack_identity.setup_started'
-  | 'slack_identity.credentials_connected'
-  | 'slack_identity.credentials_rotated'
-  | 'slack_identity.credentials_disconnected'
-  | 'slack_identity.setup_verified'
-  | 'slack_identity.refreshed'
-  | 'slack_identity.profile_attached'
-  | 'slack_identity.dm_binding_changed'
-  | 'slack_identity.setup_canceled'
-  | 'slack_identity.retired';
 
 export type WorkAuditEventType =
   | 'work.run_admitted'

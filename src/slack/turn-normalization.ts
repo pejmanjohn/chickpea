@@ -9,15 +9,32 @@ import {
   type SlackTurnNormalization,
   type SlackTurnSource,
 } from './types.ts';
+import type { SlackInboundEnvelope } from './transport/types.ts';
 
 export interface SlackTurnNormalizationOptions {
-  slackIdentityId: string;
   botUserId?: string;
+}
+
+/** Strip Slack's transport wrapper into the credential-free runtime envelope. */
+export function normalizeSlackInboundEnvelope(
+  payload: SlackEventFixture,
+): SlackInboundEnvelope | undefined {
+  if (
+    payload.type !== 'event_callback' ||
+    !payload.team_id ||
+    !payload.event_id ||
+    !Number.isFinite(payload.event_time)
+  ) return undefined;
+  return {
+    workspaceId: payload.team_id,
+    eventId: payload.event_id,
+    eventTime: payload.event_time,
+    event: payload.event,
+  };
 }
 
 interface RunnableTurnInput {
   payload: SlackEventFixture;
-  slackIdentityId: string;
   channelId: string;
   text: string;
   userId: string;
@@ -36,7 +53,7 @@ export function normalizeSlackTurn(
   options: SlackTurnNormalizationOptions,
 ): SlackTurnNormalization {
   payload = stripSlackMessageAppContext(payload);
-  if (payload.type !== 'event_callback') {
+  if (!normalizeSlackInboundEnvelope(payload)) {
     return { status: 'ignored', reason: 'non_event_callback' };
   }
 
@@ -64,7 +81,6 @@ export function normalizeSlackTurn(
 
     return runnableTurn({
       payload,
-      slackIdentityId: options.slackIdentityId,
       channelId: payload.event.channel,
       text: payload.event.text,
       userId: payload.event.user,
@@ -91,7 +107,6 @@ export function normalizeSlackTurn(
     }
     return runnableTurn({
       payload,
-      slackIdentityId: options.slackIdentityId,
       channelId: event.item.channel,
       text: `Reacted :${event.reaction}: to the Slack message at ${event.item.ts}.`,
       userId: event.user,
@@ -134,7 +149,6 @@ export function normalizeSlackTurn(
   if (options.botUserId && event.text.includes(`<@${options.botUserId}>`)) {
     return runnableTurn({
       payload,
-      slackIdentityId: options.slackIdentityId,
       channelId: event.channel,
       text: event.text,
       userId: event.user,
@@ -153,7 +167,6 @@ export function normalizeSlackTurn(
 
     return runnableTurn({
       payload,
-      slackIdentityId: options.slackIdentityId,
       channelId: event.channel,
       text: event.text,
       userId: event.user,
@@ -169,19 +182,21 @@ export function normalizeSlackTurn(
   if (!isChannelConversation(event)) {
     return { status: 'ignored', reason: 'unsupported_channel_type' };
   }
-  if (!event.thread_ts) {
+  if (!event.thread_ts && /<!subteam\^[A-Z0-9]+(?:\|[^>]+)?>/i.test(event.text)) {
     return runnableTurn({
       payload,
-      slackIdentityId: options.slackIdentityId,
       channelId: event.channel,
       text: event.text,
       userId: event.user,
       messageTs: event.ts,
       threadTs: event.ts,
-      source: 'ambient_channel_message',
+      source: 'agent_mention',
       ...(event.channel_type ? { channelType: event.channel_type } : {}),
       contextMode: 'channel_history',
     });
+  }
+  if (!event.thread_ts) {
+    return { status: 'ignored', reason: 'unaddressed_channel_message' };
   }
   if (!options.botUserId) {
     return { status: 'ignored', reason: 'missing_bot_user_id' };
@@ -189,7 +204,6 @@ export function normalizeSlackTurn(
 
   return runnableTurn({
     payload,
-    slackIdentityId: options.slackIdentityId,
     channelId: event.channel,
     text: event.text,
     userId: event.user,
@@ -206,7 +220,6 @@ function runnableTurn(input: RunnableTurnInput): SlackTurnNormalization {
     workspaceId: input.payload.team_id,
     channelId: input.channelId,
     eventId: input.payload.event_id,
-    slackIdentityId: input.slackIdentityId,
     text: input.text,
     userId: input.userId,
     messageTs: input.messageTs,

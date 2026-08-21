@@ -35,6 +35,7 @@ export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
     path: '/admin/channels/TVISUAL/C_RELEASES',
     actions: Object.freeze(['Advanced']),
   }),
+  team: Object.freeze({ path: '/admin/team', actions: Object.freeze([]) }),
 });
 
 export const CANONICAL_SLACK_AUTH_VISUAL_STATES = Object.freeze({
@@ -90,6 +91,56 @@ async function seedVisualSlackOwner(identity) {
     betterAuthUserId: 'ba_user_visual',
     betterAuthMembershipId: 'ba_member_visual',
   });
+}
+
+async function seedVisualTeam(identity, provisionSlackInteractionMember, owner) {
+  const fixtures = [
+    { slackUserId: 'UVISUALADMIN', displayName: 'Alex Admin', role: 'admin', status: 'active' },
+    { slackUserId: 'UVISUALMEMBER', displayName: 'Maya Member', role: 'member', status: 'active' },
+    { slackUserId: 'UVISUALOWNER2', displayName: 'Olive Owner', role: 'owner', status: 'active' },
+    { slackUserId: 'UVISUALSUSPENDED', displayName: 'Sam Suspended', role: 'member', status: 'suspended' },
+    { slackUserId: 'UVISUALREMOVED', displayName: 'Rae Removed', role: 'member', status: 'removed' },
+  ];
+  for (const fixture of fixtures) {
+    const provisioned = await provisionSlackInteractionMember({
+      identity,
+      slackTeamId: WORKSPACE_ID,
+      botUserId: LOCAL_SLACK_BOT_ID,
+      user: {
+        id: fixture.slackUserId,
+        teamId: WORKSPACE_ID,
+        displayName: fixture.displayName,
+        deleted: false,
+        bot: false,
+        appUser: false,
+        restricted: false,
+        ultraRestricted: false,
+        stranger: false,
+      },
+    });
+    const membership = provisioned.resolution?.membership;
+    if (!membership) throw new Error(`Could not seed visual member ${fixture.slackUserId}.`);
+    if (fixture.role !== membership.role) {
+      await identity.updateMembershipAuthority({
+        membershipId: membership.id,
+        role: fixture.role,
+        actorMembershipId: owner.membership.id,
+        authenticationSurface: 'better_auth',
+        correlationId: `visual-role-${fixture.slackUserId}`,
+        reasonCode: 'owner_changed_member_role',
+      });
+    }
+    if (fixture.status !== 'active') {
+      await identity.updateMembershipAuthority({
+        membershipId: membership.id,
+        status: fixture.status,
+        actorMembershipId: owner.membership.id,
+        authenticationSurface: 'better_auth',
+        correlationId: `visual-status-${fixture.slackUserId}`,
+        reasonCode: 'admin_deactivated_member',
+      });
+    }
+  }
 }
 
 function assertLoopbackHost(host) {
@@ -182,8 +233,6 @@ async function seedConfig(store) {
       workspaceId: WORKSPACE_ID,
       channelId: 'C_RELEASES',
       label: 'release-room',
-      additionalInstructions: 'Lead with launch blockers and reversible next steps.',
-      participationMode: 'ambient',
       lifecycle: 'active',
       agentId: 'agent_release',
     },
@@ -191,8 +240,6 @@ async function seedConfig(store) {
       workspaceId: WORKSPACE_ID,
       channelId: 'C_SUPPORT',
       label: 'customer-support',
-      additionalInstructions: 'Escalate urgent support patterns.',
-      participationMode: 'mention_only',
       lifecycle: 'active',
       agentId: 'agent_research',
     },
@@ -200,15 +247,13 @@ async function seedConfig(store) {
       workspaceId: WORKSPACE_ID,
       channelId: 'C_CUSTOMER',
       label: 'customer-insights',
-      participationMode: 'ambient',
       lifecycle: 'active',
-      agentId: 'agent_customer',
+      agentId: null,
     },
     {
       workspaceId: WORKSPACE_ID,
       channelId: 'C_UNASSIGNED',
       label: 'product-feedback',
-      participationMode: 'ambient',
       lifecycle: 'active',
       agentId: null,
     },
@@ -216,7 +261,6 @@ async function seedConfig(store) {
       workspaceId: WORKSPACE_ID,
       channelId: 'C_ARCHIVED',
       label: 'research-archive',
-      participationMode: 'mention_only',
       lifecycle: 'archived',
       agentId: 'agent_research',
     },
@@ -224,26 +268,27 @@ async function seedConfig(store) {
   for (const { agentId, ...channel } of channels) {
     await store.putChannel(channel);
     if (agentId) {
-      await store.putAssignment({
+      await store.putAgentChannelGrant({
         workspaceId: channel.workspaceId,
         channelId: channel.channelId,
         agentId,
+        status: 'active',
+        createdByMembershipId: 'membership_visual_owner',
+        channelLabel: channel.label,
       });
     }
   }
-  await store.putAssignment({ workspaceId: '*', channelId: '*', agentId: 'agent_research' });
-
-  const defaultIdentity = await store.getSlackIdentity('slack_identity_default');
-  await store.updateSlackIdentity(defaultIdentity.id, defaultIdentity.connectionRevision, {
-    lifecycle: 'connected',
+  const installation = await store.ensureWorkspaceInstallation({
+    workspaceId: WORKSPACE_ID,
+    transportMode: 'direct',
+    defaultAgentId: 'agent_research',
     teamId: WORKSPACE_ID,
     appId: 'AVISUAL',
     botUserId: LOCAL_SLACK_BOT_ID,
-    credentialProvenance: 'workspace_default',
-    observedDisplayName: 'Chickpea',
-    observedAt: Date.now(),
-    health: 'healthy',
   });
+  await store.updateWorkspaceInstallation(WORKSPACE_ID, {
+    health: 'healthy',
+  }, installation.revision);
 }
 
 async function seedSettings(settings) {
@@ -251,60 +296,14 @@ async function seedSettings(settings) {
 }
 
 async function seedMemory(memory) {
-  const agentOwner = await memory.ensureOwner({
-    workspaceId: WORKSPACE_ID,
-    ownerKind: 'agent',
-    ownerId: 'agent_research',
-  });
-  const channelOwner = await memory.ensureOwner({
-    workspaceId: WORKSPACE_ID,
-    ownerKind: 'channel',
-    ownerId: 'C_RELEASES',
-  });
-  const entries = [
-    {
-      entryId: 'mem_visual_audience',
-      storeId: agentOwner.storeId,
-      slug: 'audience-notes',
-      description: 'Who reads research updates.',
-      type: 'preference',
-      body: 'Prefer short evidence summaries for product and engineering leads.',
-      writeOrigin: { kind: 'admin' },
-    },
-    {
-      entryId: 'mem_visual_principles',
-      storeId: agentOwner.storeId,
-      slug: 'research-principles',
-      description: 'Durable research guidance.',
-      type: 'fact',
-      body: 'Separate verified fact, inference, and unresolved questions.',
-      writeOrigin: { kind: 'admin' },
-    },
-    {
-      entryId: 'mem_visual_release',
-      storeId: channelOwner.storeId,
-      slug: 'release-checklist',
-      description: 'Exact-Channel launch checklist.',
-      type: 'project',
-      body: 'Check focused tests, rollout risk, owner, and rollback before launch.',
-      writeOrigin: { kind: 'slack_channel', channelId: 'C_RELEASES' },
-    },
-  ];
-  for (const entry of entries) {
-    await memory.createOwnerEntry({
-      ...entry,
-      workspaceId: WORKSPACE_ID,
-      actorId: 'U_VISUAL_OWNER',
-      actorClass: 'owner',
-      idempotencyKey: `admin-visual-${entry.entryId}`,
-    });
-  }
-  await memory.observeChannelScope({
-    workspaceId: WORKSPACE_ID,
-    channelId: 'C_RELEASES',
-    privacy: 'public',
-    displayName: 'release-room',
-    observedAt: Date.now(),
+  await memory.putAgentMemory({
+    agentId: 'agent_research',
+    expectedRevision: 0,
+    body: [
+      'Prefer short evidence summaries for product and engineering leads.',
+      'Separate verified fact, inference, and unresolved questions.',
+      'Check focused tests, rollout risk, owner, and rollback before launch.',
+    ].join('\n'),
   });
 }
 
@@ -446,7 +445,7 @@ export async function startAdminVisualFixture(options = {}) {
     const {
       buildSlackAppManifest,
       slackManifestPrefillUrl,
-    } = await loadTsModule('src/slack/identity-manifest.ts');
+    } = await loadTsModule('src/slack/app-manifest.ts');
     const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
     const { SqliteSettingsStore } = await loadTsModule('src/config/settings-store.ts');
     const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
@@ -456,8 +455,10 @@ export async function startAdminVisualFixture(options = {}) {
     const { SqliteSlackStateStore } = await loadTsModule('src/slack/claim-store.ts');
     const { SqliteAgentSnapshotStore } = await loadTsModule('src/config/snapshot-store.ts');
     const { SqliteIdentityStore } = await loadTsModule('src/identity/store.ts');
+    const { provisionSlackInteractionMember } = await loadTsModule('src/auth/slack-admission.ts');
     const { generateCredentialKeyring } = await loadTsModule('src/slack/credential-keyring.ts');
-    const { writeSlackIdentityCredentials } = await loadTsModule('src/slack/identity-credentials.ts');
+    const { writeSlackInstallationCredentials } = await loadTsModule('src/slack/installation-credentials.ts');
+    const { WORKSPACE_SLACK_INSTALLATION_ID } = await loadTsModule('src/config/types.ts');
     const {
       invalidateSlackChannelsCache,
     } = await loadTsModule('src/slack/channels.ts');
@@ -470,7 +471,7 @@ export async function startAdminVisualFixture(options = {}) {
 
     const store = new SqliteConfigStore(stateDbPath, {
       agents: visualAgents(),
-      assignments: [],
+      grants: [],
     });
     const settings = new SqliteSettingsStore(stateDbPath);
     const memory = new SqliteMemoryStateStore(stateDbPath);
@@ -488,9 +489,9 @@ export async function startAdminVisualFixture(options = {}) {
       state: identity,
       keyring: generateCredentialKeyring(),
     };
-    await writeSlackIdentityCredentials(
+    await writeSlackInstallationCredentials(
       slackCredentials,
-      'slack_identity_default',
+      WORKSPACE_SLACK_INSTALLATION_ID,
       null,
       {
         botToken: LOCAL_SLACK_TOKEN,
@@ -502,11 +503,12 @@ export async function startAdminVisualFixture(options = {}) {
     );
     await seedMemory(memory);
     const owner = await seedVisualSlackOwner(identity);
+    await seedVisualTeam(identity, provisionSlackInteractionMember, owner);
 
     const adminToken = `visual-${randomBytes(18).toString('base64url')}`;
     const app = new Hono();
     const authManifest = buildSlackAppManifest({
-      kind: 'control_plane', origin: 'https://chickpea.example',
+      kind: 'workspace_app', origin: 'https://chickpea.example',
     });
     const authSetup = (state) => ({
       id: 'setup_visual', state, revision: 4, destination: '/admin/channels',

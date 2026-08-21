@@ -25,6 +25,8 @@ import {
 } from '../activity/status.ts';
 import {
   ApiOAuthError,
+  connectionAccountIdFromOAuthRef,
+  connectionAccountOAuthRef,
   resolveApiOAuthAccessToken,
   type ApiOAuthProvider,
   type ApiOAuthRef,
@@ -34,6 +36,8 @@ import {
   isValidApiOAuthConnectionPolicy,
 } from '../config/api-oauth-policy.ts';
 import { resolveConnectorCredential } from '../config/connector-secrets.ts';
+import type { SettingsStore } from '../config/settings-store.ts';
+import type { ConfigStore } from '../config/store.ts';
 import { connectorSkillsForConnections } from '../config/connector-skills.ts';
 import {
   buildEgressPlan,
@@ -58,6 +62,7 @@ import {
   resolveRuntimePlanMcpConnections,
   resolveProfileMcpTools,
 } from '../config/profile-mcp.ts';
+import { resolveMcpOAuthAccessToken } from '../config/mcp-oauth.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
 import {
   resolveRuntimeModel,
@@ -71,17 +76,19 @@ import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
 import {
   getAgentSnapshotStore,
   getConfigStore,
+  getIdentityStore,
   getMemoryStateStore,
   getSettingsStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import {
-  WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
   type ApiConnectionConfig,
   type CustomAgentConfig,
   type RepositoryGrant,
   type SkillConfig,
 } from '../config/types.ts';
+import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
+import { resolveSlackPublicUrl } from '../slack/credentials.ts';
 import {
   isDeniedRepositoryEndpoint,
   matchesGrantedCodeSearch,
@@ -90,6 +97,14 @@ import {
   validEnabledRepositoryGrants,
 } from '../sandbox/egress-handler.ts';
 import { githubAuthorizationHeader } from '../sandbox/github-auth.ts';
+import {
+  projectEffectiveApiConnections,
+  projectEffectiveMcpConnections,
+  resolveConnectionSecretForInvocation,
+  resolveEffectiveConnectionAccounts,
+  isActiveConnectionActor,
+} from '../connections/runtime.ts';
+import { usePersonalConnectionAuthorizationSlackTool } from '../connections/slack-authorization.ts';
 
 import type {
   SandboxCredentialMode,
@@ -127,10 +142,12 @@ import {
   saveAutonomousMemory,
   type AutonomousMemoryInput,
 } from '../memory/autonomous.ts';
-import { resolveAuthorizedAgentMemoryActor } from '../memory/runtime.ts';
-import { createMemoryScopeSlack, verifyMemoryMutationMembership } from '../memory/scope.ts';
+import {
+  isAuthorizedAgentMemoryMember,
+} from '../memory/runtime.ts';
+import { createMemoryScopeSlackFromWebClient, verifyMemoryMutationMembership } from '../memory/scope.ts';
 import { parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
-import { resolveSlackIdentityExecutionContext } from '../slack/identity-execution.ts';
+import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
 import { useWorkspaceManagementSlackTools } from '../management/slack-tools.ts';
@@ -138,7 +155,6 @@ import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
 import {
   parseRuntimePlanV2,
-  type RuntimePlanApiConnectionV2,
   type RuntimePlanRepositoryV2,
   type RuntimePlanV2,
 } from './runtime-plan.ts';
@@ -215,6 +231,12 @@ export interface ApiConnectionResolutionDependencies {
     ref: ApiOAuthRef;
     provider: ApiOAuthProvider;
   }) => Promise<string>;
+  accountContext?: {
+    config: Pick<ConfigStore, 'listConnectionAccounts' | 'listAgentConnectionBindings'>;
+    settings?: SettingsStore;
+    workspaceId: string;
+    actorMembershipId: string;
+  };
 }
 
 /**
@@ -475,6 +497,12 @@ export async function resolveApiConnectionsForTurn(
       },
     });
   });
+  const accountContext = dependencies.accountContext;
+  if (accountContext && !(await isActiveConnectionActor({
+    identity: getIdentityStore(env),
+    workspaceId: accountContext.workspaceId,
+    actorMembershipId: accountContext.actorMembershipId,
+  }))) return [];
   const resolved = await Promise.all(
     connections
       .filter((connection) => connection.enabled)
@@ -489,10 +517,30 @@ export async function resolveApiConnectionsForTurn(
             return undefined;
           }
           try {
-            credential = await resolveOAuthToken({
-              ref: { agentId, connectionId: connection.id },
+            const oauthInput = {
+              ref: accountContext
+                ? connectionAccountOAuthRef(connection.id)
+                : { agentId, connectionId: connection.id },
               provider: connection.oauthProvider,
-            });
+            };
+            credential = accountContext && !dependencies.resolveOAuthToken
+              ? await resolveApiOAuthAccessToken(oauthInput, {
+                  settings: accountContext.settings ?? getSettingsStore(env),
+                  validateConnection: async (ref, provider) => {
+                    const current = await resolveEffectiveConnectionAccounts({
+                      config: accountContext.config,
+                      workspaceId: accountContext.workspaceId,
+                      agentId,
+                      actorMembershipId: accountContext.actorMembershipId,
+                    });
+                    const account = current.find(({ account }) => account.id === ref.agentId)?.account;
+                    return ref.connectionId === 'account' &&
+                      account?.providerId === provider &&
+                      account.policy.kind === 'api' &&
+                      account.policy.authMode === 'oauth';
+                  },
+                })
+              : await resolveOAuthToken(oauthInput);
           } catch (error) {
             console.warn(
               `[chickpea] API OAuth unavailable (${connection.id}): ` +
@@ -501,10 +549,17 @@ export async function resolveApiConnectionsForTurn(
             return undefined;
           }
         } else {
-          credential = await resolveCredential(
-            { agentId, connectionId: connection.id },
-            env,
-          );
+          credential = accountContext
+            ? await resolveConnectionSecretForInvocation({
+                config: accountContext.config,
+                ...(accountContext.settings ? { settings: accountContext.settings } : {}),
+                ...(env ? { env } : {}),
+                workspaceId: accountContext.workspaceId,
+                agentId,
+                actorMembershipId: accountContext.actorMembershipId,
+                connectionAccountId: connection.id,
+              })
+            : await resolveCredential({ agentId, connectionId: connection.id }, env);
         }
         if (!credential) return undefined;
 
@@ -539,6 +594,7 @@ export interface SlackAgentRuntimeInput {
   freezeChannel?: boolean;
   artifactThreadTs?: string | null;
   threadTs?: string;
+  actorMembershipId?: string;
   declarationsOwnedByHooks?: boolean;
   forcedSandbox?: SandboxSelection;
   sandboxConversationKey?: string;
@@ -552,13 +608,27 @@ export async function createSlackAgentRuntime(
   const env = input.platformEnv ?? (await resolveAgentPlatformEnv());
   const store = getConfigStore(env);
   const settingsStore = getSettingsStore(env);
-  const stores = { agents: store, assignments: store };
+  const stores = { agents: store, grants: store };
   const adapterContext = await resolveSlackAgentAdapterContext(input, env);
   const { workspaceId, channelId } = adapterContext;
+  const effectiveConnectionAccounts = input.actorMembershipId
+    ? await resolveEffectiveConnectionAccounts({
+        config: store,
+        workspaceId,
+        agentId: input.liveConfig?.agentId ?? input.id,
+        actorMembershipId: input.actorMembershipId,
+      })
+    : [];
   const artifactThreadTs = input.artifactThreadTs === null
     ? undefined
     : (input.artifactThreadTs ?? adapterContext.threadTs);
-  const resolve = () => resolveEffectiveSlackConfig(workspaceId, channelId, stores);
+  const resolve = () => resolveEffectiveSlackConfig(
+    workspaceId,
+    channelId,
+    stores,
+    process.env,
+    input.liveConfig?.agentId ?? input.id,
+  );
 
   // Channel threads are frozen (the channel handler wrote the snapshot at the
   // first turn; getOrCreateSnapshot serves that row). Direct conversations
@@ -609,7 +679,21 @@ export async function createSlackAgentRuntime(
   ] =
     await Promise.all([
       resolveEgressPolicy(env),
-      resolveApiConnectionsForTurn(config.agent.id, config.agent.apiConnections ?? [], env),
+      resolveApiConnectionsForTurn(
+        config.agent.id,
+        projectEffectiveApiConnections(effectiveConnectionAccounts),
+        env,
+        input.actorMembershipId
+          ? {
+              accountContext: {
+                config: store,
+                settings: settingsStore,
+                workspaceId,
+                actorMembershipId: input.actorMembershipId,
+              },
+            }
+          : {},
+      ),
       resolveSandboxSettings(settingsStore),
       getGithubConnection(settingsStore).then(
         (connection) => connection.mode === 'app',
@@ -715,7 +799,7 @@ export async function createSlackAgentRuntime(
   ];
   registerActivityContext(id, {
     skills: skills.map((skill) => ({ name: skill.name })),
-    mcpConnections: (config.agent.mcpServers ?? [])
+    mcpConnections: projectEffectiveMcpConnections(effectiveConnectionAccounts)
       .filter(isProfileMcpServerEligible)
       .map(({ id: connectionId, displayName }) => ({ id: connectionId, displayName })),
     apiConnections: apiConnectionActivities,
@@ -728,10 +812,54 @@ export async function createSlackAgentRuntime(
   // name collides with a built-in or skill (a duplicate name kills the turn).
   const mcpTools = input.declarationsOwnedByHooks
     ? []
-    : await resolveProfileMcpTools(config.agent.mcpServers, {
+    : await resolveProfileMcpTools(
+        projectEffectiveMcpConnections(effectiveConnectionAccounts),
+      {
         agentId: config.agent.id,
         env,
         existingToolNames: skills.map((s) => s.name),
+        ...(input.actorMembershipId
+          ? {
+              resolveBearerCredential: (connectionAccountId: string) =>
+                resolveConnectionSecretForInvocation({
+                  config: store,
+                  settings: settingsStore,
+                  ...(env ? { env } : {}),
+                  workspaceId,
+                  agentId: config.agent.id,
+                  actorMembershipId: input.actorMembershipId!,
+                  connectionAccountId,
+                }),
+              resolveOAuthAccessToken: async (oauthInput) => {
+                if (!(await isActiveConnectionActor({
+                  identity: getIdentityStore(env),
+                  workspaceId,
+                  actorMembershipId: input.actorMembershipId!,
+                }))) throw new Error('Connection account is not available to this actor');
+                return resolveMcpOAuthAccessToken(
+                  {
+                    ...oauthInput,
+                    ref: connectionAccountOAuthRef(oauthInput.ref.connectionId),
+                  },
+                  {
+                    settings: settingsStore,
+                    validateConnection: async (ref, serverUrl) => {
+                      const current = await resolveEffectiveConnectionAccounts({
+                        config: store,
+                        workspaceId,
+                        agentId: config.agent.id,
+                        actorMembershipId: input.actorMembershipId!,
+                      });
+                      const accountId = connectionAccountIdFromOAuthRef(ref);
+                      const account = current.find(({ account }) => account.id === accountId)?.account;
+                      return !!accountId && account?.policy.kind === 'mcp' &&
+                        account.policy.authMode === 'oauth' && account.policy.url === serverUrl;
+                    },
+                  },
+                );
+              },
+            }
+          : {}),
         onConnectionStart: ({ displayName }) => {
           publishActivityStatus(id, connectingActivityStatus(displayName), env);
         },
@@ -794,20 +922,26 @@ export async function createSlackAgentRuntime(
       channel: channelId,
       threadTs: artifactThreadTs,
       postArtifact: async (input) => {
-        presenter ??= resolveSlackIdentityExecutionContext(
-          config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-          env,
-          { settings: settingsStore },
-        ).then(
-          (identity) =>
-            new WebClientPresenter(identity.client, {
-              channelId,
-              threadTs: artifactThreadTs,
-              agentName: config.agent.name,
-              agentId: config.agent.id,
-              workspaceId,
-            }),
-        );
+        presenter ??= Promise.all([
+          resolveSlackInstallationExecutionContext(
+            workspaceId,
+            env,
+            { settings: settingsStore },
+          ),
+          resolveSlackPublicUrl(env, settingsStore).catch(() => undefined),
+        ]).then(([installation, publicUrl]) => {
+          const agentAvatarUrl = agentAvatarUrlForPresentation(config.agent, publicUrl);
+          return new WebClientPresenter(installation.client, {
+            channelId,
+            threadTs: artifactThreadTs,
+            agentName: config.agent.name,
+            ...(agentAvatarUrl
+              ? { agentAvatarUrl }
+              : {}),
+            agentId: config.agent.id,
+            workspaceId,
+          });
+        });
         return (await presenter).postArtifact(input);
       },
     });
@@ -902,6 +1036,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
       : {}),
   });
   useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv);
+  usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
   return plan.instructions;
 }
 
@@ -922,13 +1057,11 @@ export function useRuntimePlanAgent(
     useChickpeaResponseMetadata(options.responseMetadataModel);
   }
   if (options.autonomousMemoryRequest) {
-    const memoryTarget = plan.conversation.surface === 'direct_message' ? 'agent' : 'channel';
     const finishDeniedMemory = useDataWriter(AUTONOMOUS_MEMORY_RESULT_DATA_NAME, {
       schema: AutonomousMemoryResultSchema,
     });
-    useInstruction(autonomousMemoryInstruction(memoryTarget));
+    useInstruction(autonomousMemoryInstruction());
     useTool(createAutonomousAgentMemoryTool(
-      memoryTarget,
       (input) =>
         saveRuntimePlanAutonomousMemory(plan, options.autonomousMemoryRequest!, input)
           .then(({ entry }) => ({ slug: entry.slug, version: entry.version })),
@@ -941,14 +1074,16 @@ export function useRuntimePlanAgent(
   )) {
     useSkill(skill);
   }
-  for (const connection of resolveRuntimePlanMcpConnections(
-    plan.agentId,
-    plan.mcpConnections,
-    ({ displayName }) => {
-      publishActivityStatus(id, connectingActivityStatus(displayName));
-    },
-  )) {
-    useMcpConnection(connection);
+  if (!plan.actorMembershipId) {
+    for (const connection of resolveRuntimePlanMcpConnections(
+      plan.agentId,
+      plan.mcpConnections,
+      ({ displayName }) => {
+        publishActivityStatus(id, connectingActivityStatus(displayName));
+      },
+    )) {
+      useMcpConnection(connection);
+    }
   }
   useSandbox(createRuntimePlanSandbox(plan, options.sandboxConversationKey));
   if (plan.sandbox.mode === 'cloudflare') {
@@ -964,7 +1099,6 @@ async function saveRuntimePlanAutonomousMemory(
   const { slackUserId, messageTs } = request;
   const env = await resolveAgentPlatformEnv();
   const config = getConfigStore(env);
-  const identityId = plan.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
   return saveAutonomousMemory({
     surface: plan.conversation.surface,
     workspaceId: plan.conversation.workspaceId,
@@ -976,36 +1110,36 @@ async function saveRuntimePlanAutonomousMemory(
   }, input, {
     state: getMemoryStateStore(env),
     authorize: async () => {
-      const [agent, identity] = await Promise.all([
+      const [agent, installation] = await Promise.all([
         config.getAgent(plan.agentId),
-        config.getSlackIdentity(identityId),
+        config.getWorkspaceInstallation(plan.conversation.workspaceId),
       ]);
-      const liveIdentityIsValid = agent.enabled &&
-        (agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) === identityId &&
-        identity.teamId === plan.conversation.workspaceId &&
-        (identity.lifecycle === 'connected' || identity.lifecycle === 'degraded');
-      if (!liveIdentityIsValid) return false;
+      const installationIsValid = agent.enabled && agent.lifecycle !== 'archived' &&
+        installation?.workspaceId === plan.conversation.workspaceId &&
+        installation.health !== 'revoked';
+      if (!installationIsValid) return false;
       if (plan.conversation.surface === 'direct_message') {
-        if (identity.dmState !== 'on' || identity.dmAgentId !== plan.agentId) return false;
-        return Boolean(await resolveAuthorizedAgentMemoryActor({
+        return isAuthorizedAgentMemoryMember({
           workspaceId: plan.conversation.workspaceId,
           userId: slackUserId,
-        }, env));
+        }, env);
       }
-      const [channel, assignment, execution] = await Promise.all([
-        config.getChannel(plan.conversation.workspaceId, plan.conversation.channelId),
-        config.getAssignment(plan.conversation.workspaceId, plan.conversation.channelId),
-        resolveSlackIdentityExecutionContext(identityId, env, {
+      const [grants, execution] = await Promise.all([
+        config.listAgentChannelGrants(
+          plan.conversation.workspaceId,
+          plan.conversation.channelId,
+        ),
+        resolveSlackInstallationExecutionContext(plan.conversation.workspaceId, env, {
           config,
           settings: getSettingsStore(env),
         }),
       ]);
-      if (!channel || channel.lifecycle !== 'active' || assignment?.agentId !== plan.agentId ||
-          execution.teamId !== plan.conversation.workspaceId) return false;
+      if (!grants.some((grant) => grant.agentId === plan.agentId && grant.status === 'active') ||
+          execution.workspaceId !== plan.conversation.workspaceId) return false;
       return verifyMemoryMutationMembership(
         plan.conversation.channelId,
         slackUserId,
-        createMemoryScopeSlack(execution.botToken, plan.conversation.workspaceId),
+        createMemoryScopeSlackFromWebClient(execution.client, plan.conversation.workspaceId),
       );
     },
   });
@@ -1049,8 +1183,9 @@ function createRuntimePlanSandbox(
         },
         freezeChannel: false,
         artifactThreadTs: null,
-        declarationsOwnedByHooks: true,
+        declarationsOwnedByHooks: !plan.actorMembershipId,
         forcedSandbox: plan.sandbox.mode,
+        ...(plan.actorMembershipId ? { actorMembershipId: plan.actorMembershipId } : {}),
         ...(sandboxConversationKey ? { sandboxConversationKey } : {}),
       });
       if (!runtime.sandbox) throw new Error('RuntimePlanV2 sandbox is unavailable.');
@@ -1066,13 +1201,7 @@ function projectRuntimePlanAgent(
   if (current.id !== plan.agentId || !current.enabled) {
     throw new SealedAgentThreadError(plan.agentId);
   }
-  const apiConnections = plan.apiConnections.map((declaration) => {
-    const live = current.apiConnections.find((candidate) =>
-      candidate.id === declaration.id && runtimeApiConnectionMatches(candidate, declaration)
-    );
-    if (!live) throw new Error('RuntimePlanV2 API connection policy changed.');
-    return live;
-  });
+  const apiConnections: CustomAgentConfig['apiConnections'] = [];
   const repositories = plan.repositories.map((declaration) => {
     const live = current.repositories.find((candidate) =>
       candidate.id === declaration.id && runtimeRepositoryMatches(candidate, declaration)
@@ -1080,18 +1209,7 @@ function projectRuntimePlanAgent(
     if (!live) throw new Error('RuntimePlanV2 repository policy changed.');
     return live;
   });
-  const mcpServers = plan.mcpConnections.flatMap((declaration) => {
-    const live = current.mcpServers.find((candidate) =>
-      candidate.id === declaration.id &&
-      candidate.enabled &&
-      candidate.lifecycleStatus === 'ready' &&
-      candidate.url === declaration.url &&
-      candidate.transport === declaration.transport &&
-      candidate.authMode === declaration.authMode &&
-      declaration.allowedTools.every((tool) => candidate.allowedTools.includes(tool))
-    );
-    return live ? [live] : [];
-  });
+  const mcpServers: CustomAgentConfig['mcpServers'] = [];
   return {
     id: current.id,
     revision: current.revision,
@@ -1120,22 +1238,6 @@ async function requireLiveFrozenAgent(
   }
 }
 
-function runtimeApiConnectionMatches(
-  current: ApiConnectionConfig,
-  planned: RuntimePlanApiConnectionV2,
-): boolean {
-  return current.enabled &&
-    (current.lifecycleStatus === undefined || current.lifecycleStatus === 'ready') &&
-    sameStringSet(current.allowedHosts.map((host) => host.toLowerCase()), planned.allowedHosts) &&
-    sameStringSet(current.pathPrefixes, planned.pathPrefixes) &&
-    sameStringSet(current.allowedMethods.map((method) => method.toUpperCase()), planned.allowedMethods) &&
-    current.headerName.toLowerCase() === planned.headerName &&
-    (current.headerValuePrefix ?? undefined) === planned.headerValuePrefix &&
-    (current.authMode ?? 'credential') === planned.authMode &&
-    current.oauthProvider === planned.oauthProvider &&
-    sameStringSet(current.oauthScopes ?? [], planned.oauthScopes ?? []);
-}
-
 function runtimeRepositoryMatches(
   current: RepositoryGrant,
   planned: RuntimePlanRepositoryV2,
@@ -1143,10 +1245,6 @@ function runtimeRepositoryMatches(
   return current.enabled &&
     current.fullName.toLowerCase() === planned.fullName.toLowerCase() &&
     Boolean(current.allRepos) === Boolean(planned.allRepos);
-}
-
-function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
-  return JSON.stringify([...new Set(left)].sort()) === JSON.stringify([...new Set(right)].sort());
 }
 
 function createRuntimePlanArtifactTool(plan: RuntimePlanV2) {
@@ -1158,18 +1256,23 @@ function createRuntimePlanArtifactTool(plan: RuntimePlanV2) {
       presenter ??= (async () => {
         const env = await resolveAgentPlatformEnv();
         const config = getConfigStore(env);
-        const [profile, identity] = await Promise.all([
+        const [profile, installation, publicUrl] = await Promise.all([
           config.getAgent(plan.agentId),
-          resolveSlackIdentityExecutionContext(
-            plan.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+          resolveSlackInstallationExecutionContext(
+            plan.conversation.workspaceId,
             env,
             { config, settings: getSettingsStore(env) },
           ),
+          resolveSlackPublicUrl(env).catch(() => undefined),
         ]);
-        return new WebClientPresenter(identity.client, {
+        const agentAvatarUrl = agentAvatarUrlForPresentation(profile, publicUrl);
+        return new WebClientPresenter(installation.client, {
           channelId: plan.conversation.channelId,
           threadTs: plan.conversation.threadTs,
           agentName: profile.name,
+          ...(agentAvatarUrl
+            ? { agentAvatarUrl }
+            : {}),
           agentId: plan.agentId,
           workspaceId: plan.conversation.workspaceId,
         });

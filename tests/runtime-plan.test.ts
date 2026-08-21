@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import {
@@ -8,9 +7,9 @@ import {
   parseRuntimePlanV2,
   runtimePlanConversationKey,
   runtimePlanSandboxConversationKey,
-  type RuntimePlanV2,
 } from '../src/agents/runtime-plan.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
+import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
 import { sandboxThreadKey } from '../src/sandbox/thread-key.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
@@ -76,6 +75,53 @@ const AGENT: CustomAgentConfig = {
   ],
 };
 
+const EFFECTIVE_CONNECTIONS: EffectiveConnectionAccount[] = [
+  {
+    account: {
+      id: 'notion', workspaceId: 'T_RUNTIME', revision: 1, ownerKind: 'team',
+      createdByMembershipId: 'membership_owner', providerId: 'notion', label: 'Notion',
+      policy: {
+        kind: 'mcp', url: 'https://mcp.example.com/notion', transport: 'streamable-http',
+        authMode: 'oauth', headerNames: ['x-secret-header'],
+        discoveredTools: [{ name: 'search' }, { name: 'read' }], allowedTools: ['search'],
+      },
+      secretRefId: 'secret_notion', lifecycle: 'ready', createdAt: 1, updatedAt: 1,
+    },
+    binding: {
+      agentId: 'agent_runtime', connectionAccountId: 'notion', providerId: 'notion',
+      allowedCapabilities: ['search'], enabled: true, createdAt: 1, updatedAt: 1,
+    },
+    policy: {
+      kind: 'mcp', url: 'https://mcp.example.com/notion', transport: 'streamable-http',
+      authMode: 'oauth', headerNames: ['x-secret-header'],
+      discoveredTools: [{ name: 'search' }, { name: 'read' }], allowedTools: ['search'],
+    },
+    scope: 'team',
+  },
+  {
+    account: {
+      id: 'crm', workspaceId: 'T_RUNTIME', revision: 1, ownerKind: 'team',
+      createdByMembershipId: 'membership_owner', providerId: 'crm', label: 'CRM',
+      policy: {
+        kind: 'api', allowedHosts: ['api.example.com'], pathPrefixes: ['/v1/accounts'],
+        headerName: 'authorization', headerValuePrefix: 'Bearer ', allowedMethods: ['GET'],
+        authMode: 'credential',
+      },
+      secretRefId: 'secret_crm', lifecycle: 'ready', createdAt: 1, updatedAt: 1,
+    },
+    binding: {
+      agentId: 'agent_runtime', connectionAccountId: 'crm', providerId: 'crm',
+      allowedCapabilities: ['GET'], enabled: true, createdAt: 1, updatedAt: 1,
+    },
+    policy: {
+      kind: 'api', allowedHosts: ['api.example.com'], pathPrefixes: ['/v1/accounts'],
+      headerName: 'authorization', headerValuePrefix: 'Bearer ', allowedMethods: ['GET'],
+      authMode: 'credential',
+    },
+    scope: 'team',
+  },
+];
+
 function turn(overrides: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn {
   return {
     workspaceId: 'T_RUNTIME',
@@ -109,6 +155,7 @@ function compile(overrides: Partial<Parameters<typeof compileRuntimePlanV2>[0]> 
     instructions: 'Complete instructions. A legitimate value is sk-live-looking-but-not-secret.',
     memoryEpoch: 3,
     sandboxMode: 'cloudflare',
+    effectiveConnections: structuredClone(EFFECTIVE_CONNECTIONS),
     ...overrides,
   });
 }
@@ -161,7 +208,6 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
 
   assert.equal(plan.schemaVersion, 2);
   assert.equal(plan.agentId, 'agent_runtime');
-  assert.equal(plan.slackIdentityId, 'slack_identity_default');
   assert.equal(plan.conversation.workspaceId, 'T_RUNTIME');
   assert.equal(plan.conversation.threadTs, '1783000000.000100');
   assert.equal(plan.conversation.surface, 'channel_thread');
@@ -202,20 +248,60 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
   assert.equal(parseRuntimePlanV2(structuredClone(plan)).harnessRevision, plan.harnessRevision);
 });
 
-test('Slack identity rotates new plans while legacy plans remain readable', () => {
-  const baseline = compile();
-  const dedicated = compile({
-    assignment: assignment({ slackIdentityId: 'slack_identity_finance' }),
+test('personal authorization choices freeze labels and lifecycle without credential policy', () => {
+  const plan = compile({
+    turn: turn({ actorMembershipId: 'membership_alice' }),
+    connectionAuthorizations: [{
+      providerId: 'google',
+      templateAccountId: 'connection_template',
+      policy: {
+        kind: 'api',
+        allowedHosts: ['gmail.googleapis.com'],
+        pathPrefixes: ['/gmail/v1/users/me'],
+        headerName: 'authorization',
+        headerValuePrefix: 'Bearer ',
+        allowedMethods: ['GET'],
+        authMode: 'oauth',
+        oauthProvider: 'google',
+        oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+      },
+      allowedCapabilities: ['GET'],
+      accounts: [{
+        id: 'connection_work',
+        label: 'Work',
+        purpose: 'Company mail',
+        lifecycle: 'needs_attention',
+      }],
+    }],
+    connectionChoices: [{
+      providerId: 'google',
+      choices: [
+        { label: 'Work', purpose: 'Company mail', scope: 'personal' },
+        { label: 'Personal', scope: 'personal' },
+      ],
+    }],
   });
-  assert.equal(dedicated.slackIdentityId, 'slack_identity_finance');
-  assert.notEqual(dedicated.harnessRevision, baseline.harnessRevision);
 
-  const legacy = structuredClone(baseline);
-  delete legacy.slackIdentityId;
-  legacy.harnessRevision = legacyHarnessRevision(legacy);
-  const parsed = parseRuntimePlanV2(legacy);
-  assert.equal(parsed.slackIdentityId, undefined);
-  assert.equal(parsed.harnessRevision, legacy.harnessRevision);
+  assert.deepEqual(plan.connectionAuthorizations, [{
+    providerId: 'google',
+    templateAccountId: 'connection_template',
+    accounts: [{
+      id: 'connection_work',
+      label: 'Work',
+      purpose: 'Company mail',
+      lifecycle: 'needs_attention',
+    }],
+  }]);
+  assert.deepEqual(plan.connectionChoices?.[0]?.choices.map(({ label }) => label), [
+    'Work',
+    'Personal',
+  ]);
+  const serialized = JSON.stringify({
+    authorizations: plan.connectionAuthorizations,
+    choices: plan.connectionChoices,
+  });
+  assert.doesNotMatch(serialized, /gmail\.googleapis|gmail\.readonly|secretRef|clientSecret|Bearer/i);
+  assert.equal(parseRuntimePlanV2(structuredClone(plan)).harnessRevision, plan.harnessRevision);
 });
 
 test('semantic-memory runtime policy rotates new plans while v2 plans remain readable', () => {
@@ -231,40 +317,6 @@ test('semantic-memory runtime policy rotates new plans while v2 plans remain rea
   );
 });
 
-function legacyHarnessRevision(plan: RuntimePlanV2): string {
-  return createHash('sha256')
-    .update(canonicalJson({
-      schemaVersion: plan.schemaVersion,
-      continuityPolicy: plan.continuityPolicy,
-      agentId: plan.agentId,
-      ...(plan.configurationRevision
-        ? { configurationRevision: plan.configurationRevision }
-        : {}),
-      model: plan.model,
-      instructions: plan.instructions,
-      memoryEpoch: plan.memoryEpoch,
-      skills: plan.skills,
-      mcpConnections: plan.mcpConnections,
-      apiConnections: plan.apiConnections,
-      repositories: plan.repositories,
-      sandbox: plan.sandbox,
-      artifactDestinationKind: plan.artifactDestination.kind,
-    }))
-    .digest('hex');
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
 test('equivalent key and set ordering produces one revision and instance id', () => {
   const first = compile();
   const reorderedAgent = structuredClone(AGENT);
@@ -276,6 +328,7 @@ test('equivalent key and set ordering produces one revision and instance id', ()
     instructions: first.instructions,
     assignment: assignment({ agent: reorderedAgent }),
     turn: turn(),
+    effectiveConnections: structuredClone(EFFECTIVE_CONNECTIONS),
   };
   const reordered = compileRuntimePlanV2(reorderedInput);
 
@@ -293,14 +346,7 @@ test('harness policy changes rotate while credential attribution does not', () =
         agent: { ...structuredClone(AGENT), skills: [{ ...AGENT.skills[0]!, instructions: 'Changed.' }] },
       }),
     }),
-    compile({
-      assignment: assignment({
-        agent: {
-          ...structuredClone(AGENT),
-          mcpServers: [{ ...AGENT.mcpServers[0]!, allowedTools: ['read'] }],
-        },
-      }),
-    }),
+    compile({ effectiveConnections: withMcpPolicy({ allowedTools: ['read'] }) }),
     compile({ sandboxMode: 'bash' }),
     compile({ memoryEpoch: 4 }),
     compile({ continuityPolicy: 'slack-runtime-v4' }),
@@ -331,19 +377,34 @@ test('harness policy changes rotate while credential attribution does not', () =
   assert.equal(credentialRotated.harnessRevision, baseline.harnessRevision);
   assert.equal(deriveRuntimePlanInstanceId(credentialRotated), deriveRuntimePlanInstanceId(baseline));
 
-  const mcpCredentialPolicyRotated = structuredClone(AGENT);
-  mcpCredentialPolicyRotated.mcpServers[0] = {
-    ...mcpCredentialPolicyRotated.mcpServers[0]!,
-    authMode: 'bearer',
-    headerNames: ['x-new-secret-reference'],
-    statusText: 'Credential rotated',
-  };
   const liveResolverChange = compile({
-    assignment: assignment({ agent: mcpCredentialPolicyRotated }),
+    effectiveConnections: withMcpPolicy({
+      authMode: 'bearer',
+      headerNames: ['x-new-secret-reference'],
+    }),
   });
   assert.notEqual(liveResolverChange.harnessRevision, baseline.harnessRevision);
   assert.notEqual(deriveRuntimePlanInstanceId(liveResolverChange), deriveRuntimePlanInstanceId(baseline));
 });
+
+test('legacy Agent-scoped connector rows never enter a runtime plan', () => {
+  const plan = compile({ effectiveConnections: [] });
+  assert.deepEqual(plan.mcpConnections, []);
+  assert.deepEqual(plan.apiConnections, []);
+});
+
+function withMcpPolicy(
+  patch: Partial<Extract<EffectiveConnectionAccount['policy'], { kind: 'mcp' }>>,
+): EffectiveConnectionAccount[] {
+  const connections = structuredClone(EFFECTIVE_CONNECTIONS);
+  const current = connections[0]!;
+  if (current.policy.kind !== 'mcp' || current.account.policy.kind !== 'mcp') {
+    throw new Error('MCP fixture is invalid.');
+  }
+  current.policy = { ...current.policy, ...patch };
+  current.account.policy = { ...current.account.policy, ...patch };
+  return connections;
+}
 
 test('strict parsing rejects unknown and explicit auth fields without token heuristics', () => {
   const plan = compile();

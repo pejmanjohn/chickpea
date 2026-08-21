@@ -1,14 +1,11 @@
-import type { ChannelAssignment, CustomAgentConfig } from './types.ts';
+import type { AgentChannelGrantInput, CustomAgentConfig } from './types.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 
 export const SEED_CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-5.2';
 export const SEED_CLOUDFLARE_MODEL_PIN = `cloudflare/${SEED_CLOUDFLARE_MODEL_ID}`;
 
 export type SeedTarget = 'cloudflare' | 'node';
-export type SeedChannelAssignment = ChannelAssignment & {
-  enabled: boolean;
-  channelLabel?: string;
-};
+export type SeedChannelGrant = AgentChannelGrantInput;
 
 export function createSeededAgents(
   options: { target?: SeedTarget } = {},
@@ -41,19 +38,8 @@ export function createSeededAgents(
 
 export const seededAgents: CustomAgentConfig[] = createSeededAgents();
 
-export const seededAssignments: SeedChannelAssignment[] = [
-  {
-    // The global '*,*' wildcard is the DIRECT-conversation default (DMs, App
-    // Home) — NOT a channel catch-all. The config resolver excludes it for
-    // channel turns, so a fresh install is fail-closed in channels: the bot
-    // answers a channel only where a profile is explicitly assigned, but a
-    // teammate can still DM it out of the box. See surfaceForChannelId.
-    workspaceId: '*',
-    channelId: '*',
-    agentId: 'agent_default',
-    enabled: true,
-  },
-];
+/** Fresh workspaces have no Channel reach until an Agent is published. */
+export const seededAgentChannelGrants: SeedChannelGrant[] = [];
 
 // TDEMO channel-assignment FIXTURES for the offline harnesses (parity
 // scenarios, verify scripts, unit tests). These are intentionally NOT part of
@@ -62,23 +48,25 @@ export const seededAssignments: SeedChannelAssignment[] = [
 // seed TDEMO channels with the same agent list the install ships. A scenario
 // that needs two DISTINCT profiles builds them in its own setup (see S29 in
 // tests/parity/scenarios.ts), not from these fixtures.
-export const demoEngChannelAssignment: SeedChannelAssignment = {
+export const demoEngChannelGrant: SeedChannelGrant = {
   workspaceId: 'TDEMO',
   channelId: 'C_ENG',
   agentId: 'agent_default',
-  enabled: true,
+  status: 'active',
+  createdByMembershipId: 'member_demo',
   channelLabel: 'eng-releases',
 };
 
-export const demoExecChannelAssignment: SeedChannelAssignment = {
+export const demoExecChannelGrant: SeedChannelGrant = {
   workspaceId: 'TDEMO',
   channelId: 'C_EXEC',
   agentId: 'agent_default',
-  enabled: true,
+  status: 'active',
+  createdByMembershipId: 'member_demo',
   channelLabel: 'exec-briefing',
 };
 
-export const demoChannelAssignments: SeedChannelAssignment[] = [
-  demoEngChannelAssignment,
-  demoExecChannelAssignment,
+export const demoAgentChannelGrants: SeedChannelGrant[] = [
+  demoEngChannelGrant,
+  demoExecChannelGrant,
 ];

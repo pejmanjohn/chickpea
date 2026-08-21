@@ -7,7 +7,6 @@ import { after, before, test } from 'node:test';
 import type { WebClient } from '@slack/web-api';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { SlackInteractionProgressPatch } from '../src/config/state-rpc.ts';
 import {
@@ -69,18 +68,18 @@ let previousStatePath: string | undefined;
 before(async () => {
   previousStatePath = process.env.SLACK_STATE_DB_PATH;
   process.env.SLACK_STATE_DB_PATH = heartbeatStatePath;
-  const store = new SqliteConfigStore(heartbeatStatePath, { agents: [], assignments: [] });
+  const store = new SqliteConfigStore(heartbeatStatePath, { agents: [] });
   await store.createAgent(assignment.agent);
-  const identity = await store.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-  await store.updateSlackIdentity(identity.id, identity.connectionRevision, {
-    lifecycle: 'connected',
+  const installation = await store.ensureWorkspaceInstallation({
+    workspaceId: assignment.workspaceId,
+    transportMode: 'direct',
+    defaultAgentId: assignment.agentId,
     teamId: assignment.workspaceId,
     botUserId: 'U_CHICKPEA',
-    dmState: 'on',
-    dmAgentId: assignment.agentId,
-    credentialProvenance: 'stored',
-    health: 'healthy',
   });
+  await store.updateWorkspaceInstallation(assignment.workspaceId, {
+    health: 'healthy',
+  }, installation.revision);
   store.close();
 });
 
@@ -340,11 +339,11 @@ test('runTurn resolves the authenticated self-mention placeholder before Slack d
   };
 
   await runTurn(turn, assignment, undefined, {
-    identityContext: {
-      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    installationContext: {
+      workspaceId: assignment.workspaceId,
+      transportMode: 'direct',
       botToken: 'xoxb-test',
       botUserId: 'U_CHICKPEA',
-      teamId: assignment.workspaceId,
       displayName: 'Chickpea Renamed',
       client,
     },
@@ -437,6 +436,7 @@ test('a stalled detail status does not delay agent start or final delivery', asy
   const agentStarted = deferred<void>();
   const finalAttempted = deferred<void>();
   const lateClear = deferred<void>();
+  const lifecycle: string[] = [];
   let nonEmptyStatusCalls = 0;
   let clearCalls = 0;
   const client = {
@@ -445,6 +445,7 @@ test('a stalled detail status does not delay agent start or final delivery', asy
         async setStatus(input: { status?: string }) {
           if (input.status === '') {
             clearCalls += 1;
+            lifecycle.push('clear');
             if (clearCalls === 2) lateClear.resolve(undefined);
             return { ok: true };
           }
@@ -461,6 +462,7 @@ test('a stalled detail status does not delay agent start or final delivery', asy
     },
     chat: {
       startStream: async () => {
+        lifecycle.push('final');
         finalAttempted.resolve(undefined);
         return { ok: true, ts: 'final-ts' };
       },
@@ -492,6 +494,11 @@ test('a stalled detail status does not delay agent start or final delivery', asy
   await finalAttempted.promise;
   assert.equal(await Promise.race([outcome, delay(100, 'timeout' as const)]), 'resolved');
   assert.equal(clearCalls, 1, 'final delivery should trigger an immediate clear');
+  assert.deepEqual(
+    lifecycle.slice(0, 2),
+    ['final', 'clear'],
+    'the final must be posted before the status is cleared',
+  );
 
   detailWrite.resolve(undefined);
   await lateClear.promise;
@@ -537,7 +544,6 @@ test('runTurn freezes eligibility before exposing the receipt-scoped relay facto
     runtimePlanDecision: {
       runtimePlan,
       instanceId: deriveRuntimePlanInstanceId(runtimePlan),
-      continuityNoticeRequired: false,
     },
     progressiveAttributionProven: true,
     prepareProgressiveRelay: async (input) => {
@@ -654,7 +660,6 @@ test('a frozen Cloudflare plan narrows unsettled dispatches when its live bindin
         runtimePlanDecision: {
           runtimePlan,
           instanceId: deriveRuntimePlanInstanceId(runtimePlan),
-          continuityNoticeRequired: false,
         },
         flueDispatch,
         usageRecordingEnabled: false,

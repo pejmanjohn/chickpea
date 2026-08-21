@@ -5,19 +5,14 @@ export const MANAGEMENT_OPERATION_KINDS = [
   'create_agent',
   'update_agent',
   'delete_agent',
+  'archive_agent',
+  'restore_agent',
   'put_channel',
-  'place_agent',
+  'grant_agent_channel',
+  'revoke_agent_channel',
   'update_member',
   'remove_provider_credential',
-  'create_slack_identity',
-  'set_slack_identity_dms',
-  'retire_slack_identity',
-  'cancel_slack_identity_setup',
-  'invite_member',
-  'revoke_invitation',
-  'create_memory_entry',
-  'update_memory_entry',
-  'forget_memory_entry',
+  'update_agent_memory',
   'save_routine',
   'control_routine',
   'delete_routine',
@@ -28,7 +23,6 @@ const zText = (max: number) => z.string().min(1).max(max);
 const zOptionalText = (max: number) => z.string().max(max);
 const zId = zText(128);
 const zRevision = z.number().int().nonnegative();
-const zSlackIdentityId = z.string().regex(/^slack_identity_[a-z0-9_-]{1,96}$/);
 
 const zSkill = z.strictObject({
   name: zText(64),
@@ -90,6 +84,9 @@ const zRepository = z.strictObject({
 });
 const zAgentFields = {
   name: zText(240),
+  description: zOptionalText(500).optional(),
+  requestedHandle: zText(120).optional(),
+  editPolicy: z.enum(['creator_and_admins', 'all_workspace_members']).optional(),
   instructions: zOptionalText(100_000),
   enabled: z.boolean(),
   model: zText(500).optional(),
@@ -97,11 +94,13 @@ const zAgentFields = {
   mcpServers: z.array(zMcpConnection).max(50),
   apiConnections: z.array(zApiConnection).max(50),
   repositories: z.array(zRepository).max(100),
-  slackIdentityId: zId.optional(),
 };
 const zAgent = z.strictObject({ id: zId, ...zAgentFields });
 const zAgentPatch = z.strictObject({
   name: zAgentFields.name.optional(),
+  description: zAgentFields.description,
+  requestedHandle: zAgentFields.requestedHandle,
+  editPolicy: zAgentFields.editPolicy,
   instructions: zAgentFields.instructions.optional(),
   enabled: zAgentFields.enabled.optional(),
   model: zText(500).nullable().optional(),
@@ -109,27 +108,18 @@ const zAgentPatch = z.strictObject({
   mcpServers: zAgentFields.mcpServers.optional(),
   apiConnections: zAgentFields.apiConnections.optional(),
   repositories: zAgentFields.repositories.optional(),
-  slackIdentityId: zId.nullable().optional(),
 });
 const zChannel = z.strictObject({
   workspaceId: zId,
   channelId: zId,
-  revision: z.number().int().positive().optional(),
+  revision: zRevision.optional(),
   label: zOptionalText(240).optional(),
-  additionalInstructions: zOptionalText(100_000).optional(),
-  participationMode: z.enum(['ambient', 'mention_only']),
   lifecycle: z.enum(['active', 'archived']),
 });
 const zOperationBase = {
   itemId: zId,
   dependsOn: z.array(zId).max(25).optional(),
 };
-const zMemoryOwner = z.strictObject({
-  workspaceId: zId,
-  ownerKind: z.enum(['agent', 'channel']),
-  ownerId: zId,
-});
-const zMemoryType = z.enum(['fact', 'decision', 'project', 'feedback', 'preference']);
 const zRoutineSchedule = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('cron'), expression: zText(200) }),
   z.strictObject({ kind: z.literal('once'), localDateTime: zText(64) }),
@@ -158,10 +148,6 @@ const zSetupTarget = z.discriminatedUnion('kind', [
     kind: z.literal('provider_credential'),
     providerId: z.enum(['anthropic', 'openai', 'openrouter']),
   }),
-  z.strictObject({
-    kind: z.literal('slack_identity'),
-    identityId: zSlackIdentityId,
-  }),
 ]);
 
 export const managementOperationZodSchema = z.discriminatedUnion('kind', [
@@ -175,22 +161,47 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
     patch: zAgentPatch,
   }),
   z.strictObject({ ...zOperationBase, kind: z.literal('delete_agent'), agentId: zId, expectedRevision: zRevision }),
-  z.strictObject({ ...zOperationBase, kind: z.literal('put_channel'), channel: zChannel, expectedRevision: zRevision }),
   z.strictObject({
     ...zOperationBase,
-    kind: z.literal('place_agent'),
+    kind: z.literal('archive_agent'),
+    agentId: zId,
+    expectedRevision: zRevision,
+    replacementDefaultAgentId: zId.optional(),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('restore_agent'),
+    agentId: zId,
+    expectedRevision: zRevision,
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('put_channel'),
+    channel: zChannel,
+    expectedRevision: zRevision,
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('grant_agent_channel'),
     workspaceId: zId,
     channelId: zId,
     expectedRevision: zRevision,
-    expectedAgentId: zId.nullable(),
-    agentId: zId.nullable().optional(),
+    agentId: zId.optional(),
     agentClientRef: zId.optional(),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('revoke_agent_channel'),
+    workspaceId: zId,
+    channelId: zId,
+    agentId: zId,
+    expectedRevision: zRevision,
   }),
   z.strictObject({
     ...zOperationBase,
     kind: z.literal('update_member'),
     membershipId: zId,
-    role: z.enum(['owner', 'admin']).optional(),
+    role: z.enum(['owner', 'admin', 'member']).optional(),
     status: z.enum(['active', 'suspended', 'removed']).optional(),
   }),
   z.strictObject({
@@ -200,74 +211,15 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({
     ...zOperationBase,
-    kind: z.literal('create_slack_identity'),
-    identityId: zSlackIdentityId,
-    initialDmAgentId: zId,
-    appName: zText(35),
-    displayName: zText(80),
-  }),
-  z.strictObject({
-    ...zOperationBase,
-    kind: z.literal('set_slack_identity_dms'),
-    identityId: zSlackIdentityId,
+    kind: z.literal('update_agent_memory'),
+    agentId: zId,
     expectedRevision: zRevision,
-    dmState: z.enum(['on', 'off']),
-    dmAgentId: zId.optional(),
-  }),
-  z.strictObject({
-    ...zOperationBase,
-    kind: z.literal('retire_slack_identity'),
-    identityId: zSlackIdentityId,
-    expectedRevision: zRevision,
-  }),
-  z.strictObject({
-    ...zOperationBase,
-    kind: z.literal('cancel_slack_identity_setup'),
-    identityId: zSlackIdentityId,
-    expectedRevision: zRevision,
-  }),
-  z.strictObject({
-    ...zOperationBase,
-    kind: z.literal('invite_member'),
-    slackUserId: z.string().regex(/^[A-Z][A-Z0-9]{1,63}$/),
-  }),
-  z.strictObject({
-    ...zOperationBase,
-    kind: z.literal('revoke_invitation'),
-    invitationId: zId,
-    expectedRevision: zRevision,
-  }),
-  z.strictObject({
-    ...zOperationBase,
-    kind: z.literal('create_memory_entry'),
-    owner: zMemoryOwner,
-    entry: z.strictObject({
-      slug: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/),
-      description: z.string().max(2_000),
-      type: zMemoryType,
-      body: z.string().max(100_000),
-    }),
-  }),
-  z.strictObject({
-    ...zOperationBase,
-    kind: z.literal('update_memory_entry'),
-    owner: zMemoryOwner,
-    entryId: zId,
-    expectedVersion: z.number().int().positive(),
-    description: z.string().max(2_000),
-    type: zMemoryType,
-    body: z.string().max(100_000),
-  }),
-  z.strictObject({
-    ...zOperationBase,
-    kind: z.literal('forget_memory_entry'),
-    owner: zMemoryOwner,
-    entryId: zId,
-    expectedVersion: z.number().int().positive(),
+    body: z.string().max(65_536),
   }),
   z.strictObject({
     ...zOperationBase,
     kind: z.literal('save_routine'),
+    agentId: zId,
     workspaceId: zId,
     channelId: zId,
     routineId: zId.optional(),
@@ -321,14 +273,11 @@ export const inspectWorkspaceZodSchema = z.strictObject({});
 export const discoverSlackChannelsZodSchema = z.strictObject({
   refresh: z.boolean().optional(),
 });
-export const inspectSlackMemberDirectoryZodSchema = z.strictObject({
-  cursor: z.string().max(512).optional(),
-});
 export const testMcpConnectionZodSchema = z.strictObject({
   agentId: zId,
   connectionId: zId,
 });
-export const inspectMemoryZodSchema = zMemoryOwner;
+export const inspectMemoryZodSchema = z.strictObject({ agentId: zId });
 export const inspectRoutinesZodSchema = z.strictObject({
   workspaceId: zId,
   channelId: zId.optional(),
@@ -340,20 +289,12 @@ export const exportRecipeZodSchema = z.strictObject({
 export const previewRecipeZodSchema = z.strictObject({
   recipe: z.unknown(),
   agentStrategy: z.enum(['clone', 'update', 'skip']).optional(),
-  channelTargets: z.array(z.strictObject({
-    symbol: zId,
-    workspaceId: zId,
-    channelId: zId,
-    expectedRevision: zRevision,
-    expectedAgentId: zId.nullable(),
-  })).max(100).optional(),
 });
 
 const vt = (max: number) => v.pipe(v.string(), v.minLength(1), v.maxLength(max));
 const vot = (max: number) => v.pipe(v.string(), v.maxLength(max));
 const vid = vt(128);
 const vr = v.pipe(v.number(), v.integer(), v.minValue(0));
-const vSlackIdentityId = v.pipe(v.string(), v.regex(/^slack_identity_[a-z0-9_-]{1,96}$/));
 const va = <TItem extends v.BaseSchema<unknown, unknown, v.BaseIssue<unknown>>>(
   item: TItem,
   max: number,
@@ -413,6 +354,9 @@ const vRepository = v.strictObject({
 });
 const vAgentFields = {
   name: vt(240),
+  description: v.optional(vot(500)),
+  requestedHandle: v.optional(vt(120)),
+  editPolicy: v.optional(v.picklist(['creator_and_admins', 'all_workspace_members'])),
   instructions: vot(100_000),
   enabled: v.boolean(),
   model: v.optional(vt(500)),
@@ -420,11 +364,13 @@ const vAgentFields = {
   mcpServers: va(vMcpConnection, 50),
   apiConnections: va(vApiConnection, 50),
   repositories: va(vRepository, 100),
-  slackIdentityId: v.optional(vid),
 };
 const vAgent = v.strictObject({ id: vid, ...vAgentFields });
 const vAgentPatch = v.strictObject({
   name: v.optional(vAgentFields.name),
+  description: vAgentFields.description,
+  requestedHandle: vAgentFields.requestedHandle,
+  editPolicy: vAgentFields.editPolicy,
   instructions: v.optional(vAgentFields.instructions),
   enabled: v.optional(vAgentFields.enabled),
   model: v.optional(v.nullable(vt(500))),
@@ -432,24 +378,15 @@ const vAgentPatch = v.strictObject({
   mcpServers: v.optional(vAgentFields.mcpServers),
   apiConnections: v.optional(vAgentFields.apiConnections),
   repositories: v.optional(vAgentFields.repositories),
-  slackIdentityId: v.optional(v.nullable(vid)),
 });
 const vChannel = v.strictObject({
   workspaceId: vid,
   channelId: vid,
-  revision: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+  revision: v.optional(vr),
   label: v.optional(vot(240)),
-  additionalInstructions: v.optional(vot(100_000)),
-  participationMode: v.picklist(['ambient', 'mention_only']),
   lifecycle: v.picklist(['active', 'archived']),
 });
 const vOperationBase = { itemId: vid, dependsOn: v.optional(va(vid, 25)) };
-const vMemoryOwner = v.strictObject({
-  workspaceId: vid,
-  ownerKind: v.picklist(['agent', 'channel']),
-  ownerId: vid,
-});
-const vMemoryType = v.picklist(['fact', 'decision', 'project', 'feedback', 'preference']);
 const vRoutineSchedule = v.variant('kind', [
   v.strictObject({ kind: v.literal('cron'), expression: vt(200) }),
   v.strictObject({ kind: v.literal('once'), localDateTime: vt(64) }),
@@ -478,10 +415,6 @@ const vSetupTarget = v.variant('kind', [
     kind: v.literal('provider_credential'),
     providerId: v.picklist(['anthropic', 'openai', 'openrouter']),
   }),
-  v.strictObject({
-    kind: v.literal('slack_identity'),
-    identityId: vSlackIdentityId,
-  }),
 ]);
 
 export const managementOperationValibotSchema = v.variant('kind', [
@@ -495,22 +428,47 @@ export const managementOperationValibotSchema = v.variant('kind', [
     patch: vAgentPatch,
   }),
   v.strictObject({ ...vOperationBase, kind: v.literal('delete_agent'), agentId: vid, expectedRevision: vr }),
-  v.strictObject({ ...vOperationBase, kind: v.literal('put_channel'), channel: vChannel, expectedRevision: vr }),
   v.strictObject({
     ...vOperationBase,
-    kind: v.literal('place_agent'),
+    kind: v.literal('archive_agent'),
+    agentId: vid,
+    expectedRevision: vr,
+    replacementDefaultAgentId: v.optional(vid),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('restore_agent'),
+    agentId: vid,
+    expectedRevision: vr,
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('put_channel'),
+    channel: vChannel,
+    expectedRevision: vr,
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('grant_agent_channel'),
     workspaceId: vid,
     channelId: vid,
     expectedRevision: vr,
-    expectedAgentId: v.nullable(vid),
-    agentId: v.optional(v.nullable(vid)),
+    agentId: v.optional(vid),
     agentClientRef: v.optional(vid),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('revoke_agent_channel'),
+    workspaceId: vid,
+    channelId: vid,
+    agentId: vid,
+    expectedRevision: vr,
   }),
   v.strictObject({
     ...vOperationBase,
     kind: v.literal('update_member'),
     membershipId: vid,
-    role: v.optional(v.picklist(['owner', 'admin'])),
+    role: v.optional(v.picklist(['owner', 'admin', 'member'])),
     status: v.optional(v.picklist(['active', 'suspended', 'removed'])),
   }),
   v.strictObject({
@@ -520,74 +478,15 @@ export const managementOperationValibotSchema = v.variant('kind', [
   }),
   v.strictObject({
     ...vOperationBase,
-    kind: v.literal('create_slack_identity'),
-    identityId: vSlackIdentityId,
-    initialDmAgentId: vid,
-    appName: vt(35),
-    displayName: vt(80),
-  }),
-  v.strictObject({
-    ...vOperationBase,
-    kind: v.literal('set_slack_identity_dms'),
-    identityId: vSlackIdentityId,
+    kind: v.literal('update_agent_memory'),
+    agentId: vid,
     expectedRevision: vr,
-    dmState: v.picklist(['on', 'off']),
-    dmAgentId: v.optional(vid),
-  }),
-  v.strictObject({
-    ...vOperationBase,
-    kind: v.literal('retire_slack_identity'),
-    identityId: vSlackIdentityId,
-    expectedRevision: vr,
-  }),
-  v.strictObject({
-    ...vOperationBase,
-    kind: v.literal('cancel_slack_identity_setup'),
-    identityId: vSlackIdentityId,
-    expectedRevision: vr,
-  }),
-  v.strictObject({
-    ...vOperationBase,
-    kind: v.literal('invite_member'),
-    slackUserId: v.pipe(v.string(), v.regex(/^[A-Z][A-Z0-9]{1,63}$/)),
-  }),
-  v.strictObject({
-    ...vOperationBase,
-    kind: v.literal('revoke_invitation'),
-    invitationId: vid,
-    expectedRevision: vr,
-  }),
-  v.strictObject({
-    ...vOperationBase,
-    kind: v.literal('create_memory_entry'),
-    owner: vMemoryOwner,
-    entry: v.strictObject({
-      slug: v.pipe(v.string(), v.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/)),
-      description: vot(2_000),
-      type: vMemoryType,
-      body: vot(100_000),
-    }),
-  }),
-  v.strictObject({
-    ...vOperationBase,
-    kind: v.literal('update_memory_entry'),
-    owner: vMemoryOwner,
-    entryId: vid,
-    expectedVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
-    description: vot(2_000),
-    type: vMemoryType,
-    body: vot(100_000),
-  }),
-  v.strictObject({
-    ...vOperationBase,
-    kind: v.literal('forget_memory_entry'),
-    owner: vMemoryOwner,
-    entryId: vid,
-    expectedVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
+    body: vot(65_536),
   }),
   v.strictObject({
     ...vOperationBase,
     kind: v.literal('save_routine'),
+    agentId: vid,
     workspaceId: vid,
     channelId: vid,
     routineId: v.optional(vid),
@@ -641,14 +540,11 @@ export const inspectWorkspaceValibotSchema = v.strictObject({});
 export const discoverSlackChannelsValibotSchema = v.strictObject({
   refresh: v.optional(v.boolean()),
 });
-export const inspectSlackMemberDirectoryValibotSchema = v.strictObject({
-  cursor: v.optional(v.pipe(v.string(), v.maxLength(512))),
-});
 export const testMcpConnectionValibotSchema = v.strictObject({
   agentId: vid,
   connectionId: vid,
 });
-export const inspectMemoryValibotSchema = vMemoryOwner;
+export const inspectMemoryValibotSchema = v.strictObject({ agentId: vid });
 export const inspectRoutinesValibotSchema = v.strictObject({
   workspaceId: vid,
   channelId: v.optional(vid),
@@ -660,11 +556,4 @@ export const exportRecipeValibotSchema = v.strictObject({
 export const previewRecipeValibotSchema = v.strictObject({
   recipe: v.unknown(),
   agentStrategy: v.optional(v.picklist(['clone', 'update', 'skip'])),
-  channelTargets: v.optional(va(v.strictObject({
-    symbol: vid,
-    workspaceId: vid,
-    channelId: vid,
-    expectedRevision: vr,
-    expectedAgentId: v.nullable(vid),
-  }), 100)),
 });

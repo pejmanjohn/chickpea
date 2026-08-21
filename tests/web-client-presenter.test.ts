@@ -13,11 +13,12 @@ function presenterWith(client: unknown): WebClientPresenter {
     channelId: 'C_BOUND',
     threadTs: '1782770400.000100',
     agentName: 'Test agent',
+    agentAvatarUrl: 'https://chickpea.example/assets/agents/test/avatar/1',
     agentId: 'agent_test',
   });
 }
 
-test('setStatus keeps composer liveness generic while activity loading detail changes', async () => {
+test('setStatus uses the Agent name in native Slack status text without unsupported persona fields', async () => {
   const calls: unknown[] = [];
   const presenter = presenterWith({
     assistant: {
@@ -37,16 +38,39 @@ test('setStatus keeps composer liveness generic while activity loading detail ch
     {
       channel_id: 'C_BOUND',
       thread_ts: '1782770400.000100',
-      status: 'is thinking...',
-      loading_messages: ['is thinking...'],
+      status: 'Test agent is thinking...',
+      loading_messages: ['Test agent is thinking...'],
     },
     {
       channel_id: 'C_BOUND',
       thread_ts: '1782770400.000100',
-      status: 'is thinking...',
-      loading_messages: ['is thinking...', 'Searching the workspace'],
+      status: 'Test agent is thinking...',
+      loading_messages: ['Test agent is thinking...', 'Test agent is searching the workspace'],
     },
   ]);
+});
+
+test('clearStatus clears the thread without re-sending Agent display fields', async () => {
+  const calls: unknown[] = [];
+  const presenter = presenterWith({
+    assistant: {
+      threads: {
+        async setStatus(input: unknown) {
+          calls.push(input);
+          return { ok: true };
+        },
+      },
+    },
+  });
+
+  await presenter.setStatus({ text: 'is thinking...' });
+  await presenter.clearStatus();
+
+  assert.deepEqual(calls.at(-1), {
+    channel_id: 'C_BOUND',
+    thread_ts: '1782770400.000100',
+    status: '',
+  });
 });
 
 test('postArtifact sends bytes to files.uploadV2 in the requested thread', async () => {
@@ -76,6 +100,8 @@ test('postArtifact sends bytes to files.uploadV2 in the requested thread', async
     file: Buffer.from([137, 80, 78, 71]),
     filename: 'proof.png',
     title: 'Browser proof',
+    username: 'Test agent',
+    icon_url: 'https://chickpea.example/assets/agents/test/avatar/1',
   });
 });
 
@@ -189,10 +215,14 @@ test('deliverRequesterOnly posts an ephemeral response to the requesting member'
     user?: string;
     thread_ts?: string;
     text?: string;
+    username?: string;
+    icon_url?: string;
   };
   assert.equal(call.channel, 'C_INVOKING');
   assert.equal(call.user, 'U_REQUESTER');
   assert.equal(call.thread_ts, undefined);
+  assert.equal(call.username, 'Test agent');
+  assert.equal(call.icon_url, undefined);
   assert.doesNotMatch(call.text ?? '', /\*\*https:\/\//);
 });
 
@@ -518,5 +548,12 @@ test('work checklist posts once and updates the same message coordinate', async 
   assert.equal(ts, '1782770400.001000');
   await presenter.updateWorkChecklist(ts!, ['PR link', 'Verification result'], true);
   assert.deepEqual(calls.map((call) => call.method), ['post', 'update']);
+  assert.equal((calls[0]?.input as { username?: string }).username, 'Test agent');
+  assert.equal(
+    (calls[0]?.input as { icon_url?: string }).icon_url,
+    'https://chickpea.example/assets/agents/test/avatar/1',
+  );
   assert.equal((calls[1]?.input as { ts: string }).ts, ts);
+  assert.equal((calls[1]?.input as { username?: string }).username, undefined);
+  assert.equal((calls[1]?.input as { icon_url?: string }).icon_url, undefined);
 });

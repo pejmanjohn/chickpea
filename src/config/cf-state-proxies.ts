@@ -1,43 +1,40 @@
 import {
   AgentRevisionConflictError,
-  AgentSlackIdentityConflictError,
   AgentExistsError,
   AgentStillAssignedError,
-  AgentStillSlackDmHandlerError,
   AgentStillReferencedError,
-  ChannelAssignmentConflictError,
   ChannelRevisionConflictError,
-  SlackIdentityExistsError,
-  SlackIdentityLifecycleError,
-  SlackIdentityRevisionConflictError,
-  SlackIdentityStillReferencedError,
   UnknownAgentError,
-  UnknownSlackIdentityError,
-  WorkspaceDefaultSlackIdentityProtectedError,
 } from './errors.ts';
-import type { AssignmentLookupOptions } from './resolver.ts';
 import type { SettingsPatch, SettingsStore } from './settings-store.ts';
 import type { AgentSnapshotStore } from './snapshot-store.ts';
+import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import type { StateRpcResult, TagStateRpc } from './state-rpc.ts';
 import type {
   ConfigAgentPatch,
   ConfigStore,
   OAuthReauthorizationTarget,
-  SlackIdentityPatch,
 } from './store.ts';
 import type {
   AgentCreateInput,
+  AgentChannelGrant,
+  AgentChannelGrantInput,
+  AgentConnectionBinding,
+  AgentConnectionBindingInput,
+  AgentScheduleReference,
+  AgentScheduleReferenceInput,
   AgentSnapshot,
   AgentSnapshotRootReference,
   AgentReferenceSummary,
-  ChannelAssignment,
+  AgentThreadRoute,
+  AgentThreadRouteInput,
   ChannelConfig,
-  ChannelPlacementMutation,
-  ChannelPlacementResult,
   CustomAgentConfig,
-  SlackIdentity,
-  SlackIdentityDmState,
-  SlackIdentityReferenceSummary,
+  ConnectionAccount,
+  ConnectionAccountInput,
+  EnsureWorkspaceInstallationInput,
+  WorkspaceInstallation,
+  WorkspaceInstallationPatch,
 } from './types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import { ManagementError, type ManagementRpcRequest, type ManagementRpcResponse } from '../management/types.ts';
@@ -49,6 +46,7 @@ import type {
   AdmitSlackOidcAttemptInput,
   BeginSlackAppCreationInput,
   BeginSlackCredentialRotationInput,
+  BindSlackMemberBrowserIdentityInput,
   AuthOperationKind,
   ClaimOwnerInput,
   ConsumeAuthOperationInput,
@@ -82,9 +80,11 @@ import type {
   MarkSlackSetupApprovalPendingInput,
   MarkSlackOAuthApprovalPendingInput,
   RecordSlackBotInstallationCandidateInput,
+  RecordSharedSlackInstallationInput,
   RecordSlackEventsProofInput,
   RecordSlackRecoveryCandidateInput,
   PromoteSlackBotInstallationInput,
+  ProvisionSlackMemberInput,
   FailSlackBotInstallationInput,
   SettleSlackOAuthAttemptInput,
   SettleSlackOidcAttemptInput,
@@ -141,52 +141,12 @@ import {
 } from '../work/types.ts';
 import {
   MemoryStateError,
-  MemoryRateLimitError,
-  MemoryVersionConflictError,
-  type ApplyMemoryImportInput,
-  type ApplyOwnerMemoryImportInput,
-  type CreateMemoryEntryInput,
-  type CreateForgetChallengeInput,
-  type ConfirmMemoryConversationContextInput,
-  type CreateOwnerMemoryEntryInput,
-  type CreateOwnerMemoryWriteChallengeInput,
-  type ForgetMemoryEntryInput,
-  type ForgetOwnerMemoryEntryInput,
-  type MemoryConversationContext,
-  type MemoryChannelScopeState,
-  type MemoryEntry,
-  type MemoryEntryFilter,
-  type MemoryEntryScopeSummary,
-  type MemoryForgetChallenge,
-  type MergeMemoryEntriesInput,
-  type MergeOwnerMemoryEntriesInput,
-  type MemoryMutationCounts,
-  type MemoryRevision,
+  type AgentMemory,
   type MemoryRpcRequest,
   type MemoryRpcResponse,
   type MemoryStateStore,
-  type MemoryStoreDescriptor,
-  type MemoryOwnerDescriptor,
-  type MemoryOwnerRef,
-  type OwnerMemoryEntry,
-  type OwnerMemoryWriteChallenge,
-  type OwnerMemoryLifecycleInput,
-  type ObserveMemoryChannelScopeInput,
-  type RecordMemoryReviewInput,
-  type RecordOwnerMemoryReviewInput,
-  type RecordMemoryAdminViewInput,
-  type RecordMemoryAdminEventInput,
-  type ReplayMemoryImportInput,
-  type ReplayOwnerMemoryImportInput,
-  type RetainMemoryChannelScopeInput,
-  type ResolveMemoryConversationContextInput,
-  type TransitionMemoryEntryInput,
-  type TransitionOwnerMemoryEntryInput,
-  type UpdateMemoryEntryInput,
-  type UpdateOwnerMemoryEntryInput,
-  type SealMemoryOwnerInput,
+  type PutAgentMemoryInput,
 } from '../memory/types.ts';
-import type { AppendAuditEvent, AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import {
   UsageStateError,
   type AdmitUsageOperationInput,
@@ -271,28 +231,10 @@ function unwrap<T>(result: StateRpcResult<T>): T {
       );
     case 'agent_still_assigned':
       throw new AgentStillAssignedError(details?.agentId ?? 'unknown', details?.keys ?? '');
-    case 'agent_slack_dm_handler':
-      throw new AgentStillSlackDmHandlerError(
-        details?.agentId ?? 'unknown',
-        details?.identityIds ?? '',
-      );
     case 'agent_still_referenced':
       throw new AgentStillReferencedError(
         details?.agentId ?? 'unknown',
         details?.references ?? '',
-      );
-    case 'agent_slack_identity_conflict':
-      throw new AgentSlackIdentityConflictError(
-        details?.agentId ?? 'unknown',
-        details?.expectedIdentityId || null,
-        details?.actualIdentityId || null,
-      );
-    case 'channel_assignment_conflict':
-      throw new ChannelAssignmentConflictError(
-        details?.workspaceId ?? 'unknown',
-        details?.channelId ?? 'unknown',
-        details?.expectedAgentId || null,
-        details?.actualAgentId || null,
       );
     case 'channel_revision_conflict':
       throw new ChannelRevisionConflictError(
@@ -301,30 +243,6 @@ function unwrap<T>(result: StateRpcResult<T>): T {
         Number(details?.expectedRevision ?? 0),
         Number(details?.actualRevision ?? 0),
       );
-    case 'unknown_slack_identity':
-      throw new UnknownSlackIdentityError(details?.identityId ?? 'unknown');
-    case 'slack_identity_exists':
-      throw new SlackIdentityExistsError(details?.identityId ?? 'unknown');
-    case 'slack_identity_still_referenced':
-      throw new SlackIdentityStillReferencedError(
-        details?.identityId ?? 'unknown',
-        details?.agentIds ?? '',
-        details?.dmAgentId ?? '',
-      );
-    case 'slack_identity_revision_conflict':
-      throw new SlackIdentityRevisionConflictError(
-        details?.identityId ?? 'unknown',
-        Number(details?.expectedRevision ?? 0),
-        Number(details?.actualRevision ?? 0),
-      );
-    case 'slack_identity_lifecycle':
-      throw new SlackIdentityLifecycleError(
-        details?.identityId ?? 'unknown',
-        details?.action ?? 'change',
-        details?.lifecycle ?? 'unknown',
-      );
-    case 'workspace_default_slack_identity_protected':
-      throw new WorkspaceDefaultSlackIdentityProtectedError(details?.action ?? 'change');
     case 'identity': {
       const identityDetails = { ...(details ?? {}) };
       const identityCode = identityDetails.identityCode ?? 'identity_invalid';
@@ -344,18 +262,6 @@ function unwrap<T>(result: StateRpcResult<T>): T {
     }
     case 'memory': {
       const memoryCode = details?.memoryCode ?? 'memory_state_error';
-      if (memoryCode === 'memory_version_conflict') {
-        throw new MemoryVersionConflictError(
-          details?.entryId ?? 'unknown',
-          Number(details?.currentVersion ?? 0),
-        );
-      }
-      if (memoryCode === 'memory_rate_limited') {
-        const retryAt = Number(details?.retryAt);
-        if (Number.isSafeInteger(retryAt) && retryAt > 0) {
-          throw new MemoryRateLimitError(retryAt);
-        }
-      }
       const memoryDetails = { ...(details ?? {}) };
       delete memoryDetails.memoryCode;
       throw new MemoryStateError(memoryCode, message, memoryDetails);
@@ -621,6 +527,13 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
     return response.transaction;
   }
+  async recordSharedSlackInstallation(input: RecordSharedSlackInstallationInput) {
+    const response = await this.execute({ kind: 'record_shared_slack_installation', input });
+    if (response.kind !== 'slack_setup_transaction' || !response.transaction) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.transaction;
+  }
   async failSlackBotInstallation(input: FailSlackBotInstallationInput) {
     const response = await this.execute({ kind: 'fail_slack_bot_installation', input });
     if (response.kind !== 'slack_setup_transaction' || !response.transaction) throw unexpectedIdentityResponse();
@@ -742,6 +655,18 @@ export class CfIdentityStore implements IdentityStore {
   async activateInvitation(input: ActivateInvitationInput) {
     const response = await this.execute({ kind: 'activate_invitation', input });
     if (response.kind !== 'identity_resolution' || !response.resolution) throw unexpectedIdentityResponse();
+    return response.resolution;
+  }
+  async provisionSlackMember(input: ProvisionSlackMemberInput) {
+    const response = await this.execute({ kind: 'provision_slack_member', input });
+    if (response.kind !== 'slack_member_provisioning') throw unexpectedIdentityResponse();
+    return response.result;
+  }
+  async bindSlackMemberBrowserIdentity(input: BindSlackMemberBrowserIdentityInput) {
+    const response = await this.execute({ kind: 'bind_slack_member_browser_identity', input });
+    if (response.kind !== 'identity_resolution' || !response.resolution) {
+      throw unexpectedIdentityResponse();
+    }
     return response.resolution;
   }
   async resolveSlackIdentity(slackTeamId: string, slackUserId: string, organizationId?: string) {
@@ -1123,6 +1048,126 @@ export class CfConfigStore implements ConfigStore {
     return unwrap(await this.stub.configDeleteAgentWithMemory(agentId, idempotencyKey));
   }
 
+  async archiveAgent(
+    agentId: string,
+    options?: { replacementDefaultAgentId?: string; expectedRevision?: number },
+  ): Promise<CustomAgentConfig> {
+    return unwrap(await this.stub.configArchiveAgent(agentId, options));
+  }
+
+  async restoreAgent(agentId: string, expectedRevision?: number): Promise<CustomAgentConfig> {
+    return unwrap(await this.stub.configRestoreAgent(agentId, expectedRevision));
+  }
+
+  async ensureWorkspaceInstallation(
+    input: EnsureWorkspaceInstallationInput,
+  ): Promise<WorkspaceInstallation> {
+    return unwrap(await this.stub.configEnsureWorkspaceInstallation(input));
+  }
+
+  async getWorkspaceInstallation(workspaceId: string): Promise<WorkspaceInstallation | undefined> {
+    return orUndefined(unwrap(await this.stub.configGetWorkspaceInstallation(workspaceId)));
+  }
+
+  async listWorkspaceInstallations(): Promise<WorkspaceInstallation[]> {
+    return unwrap(await this.stub.configListWorkspaceInstallations());
+  }
+
+  async updateWorkspaceInstallation(
+    workspaceId: string,
+    patch: WorkspaceInstallationPatch,
+    expectedRevision?: number,
+  ): Promise<WorkspaceInstallation> {
+    return unwrap(
+      await this.stub.configUpdateWorkspaceInstallation(workspaceId, patch, expectedRevision),
+    );
+  }
+
+  async setWorkspaceDefaultAgent(
+    workspaceId: string,
+    agentId: string,
+    expectedRevision?: number,
+  ): Promise<WorkspaceInstallation> {
+    return unwrap(
+      await this.stub.configSetWorkspaceDefaultAgent(workspaceId, agentId, expectedRevision),
+    );
+  }
+
+  async listAgentChannelGrants(
+    workspaceId?: string,
+    channelId?: string,
+  ): Promise<AgentChannelGrant[]> {
+    return unwrap(await this.stub.configListAgentChannelGrants(workspaceId, channelId));
+  }
+
+  async putAgentChannelGrant(
+    input: AgentChannelGrantInput,
+    expectedRevision?: number,
+  ): Promise<AgentChannelGrant> {
+    return unwrap(await this.stub.configPutAgentChannelGrant(input, expectedRevision));
+  }
+
+  async deleteAgentChannelGrant(
+    workspaceId: string,
+    channelId: string,
+    agentId: string,
+  ): Promise<boolean> {
+    return unwrap(await this.stub.configDeleteAgentChannelGrant(workspaceId, channelId, agentId));
+  }
+
+  async getAgentThreadRoute(
+    workspaceId: string,
+    channelId: string,
+    threadTs: string,
+  ): Promise<AgentThreadRoute | undefined> {
+    return orUndefined(
+      unwrap(await this.stub.configGetAgentThreadRoute(workspaceId, channelId, threadTs)),
+    );
+  }
+
+  async putAgentThreadRoute(
+    input: AgentThreadRouteInput,
+    expectedRevision?: number,
+  ): Promise<AgentThreadRoute> {
+    return unwrap(await this.stub.configPutAgentThreadRoute(input, expectedRevision));
+  }
+
+  async listConnectionAccounts(workspaceId: string): Promise<ConnectionAccount[]> {
+    return unwrap(await this.stub.configListConnectionAccounts(workspaceId));
+  }
+
+  async putConnectionAccount(
+    input: ConnectionAccountInput,
+    expectedRevision?: number,
+  ): Promise<ConnectionAccount> {
+    return unwrap(await this.stub.configPutConnectionAccount(input, expectedRevision));
+  }
+
+  async listAgentConnectionBindings(agentId: string): Promise<AgentConnectionBinding[]> {
+    return unwrap(await this.stub.configListAgentConnectionBindings(agentId));
+  }
+
+  async putAgentConnectionBinding(
+    input: AgentConnectionBindingInput,
+  ): Promise<AgentConnectionBinding> {
+    return unwrap(await this.stub.configPutAgentConnectionBinding(input));
+  }
+
+  async listAgentScheduleReferences(agentId: string): Promise<AgentScheduleReference[]> {
+    return unwrap(await this.stub.configListAgentScheduleReferences(agentId));
+  }
+
+  async getAgentScheduleReference(scheduleId: string): Promise<AgentScheduleReference | undefined> {
+    return orUndefined(unwrap(await this.stub.configGetAgentScheduleReference(scheduleId)));
+  }
+
+  async putAgentScheduleReference(
+    input: AgentScheduleReferenceInput,
+    expectedRevision?: number,
+  ): Promise<AgentScheduleReference> {
+    return unwrap(await this.stub.configPutAgentScheduleReference(input, expectedRevision));
+  }
+
   async listChannels(): Promise<ChannelConfig[]> {
     return unwrap(await this.stub.configListChannels());
   }
@@ -1135,176 +1180,8 @@ export class CfConfigStore implements ConfigStore {
     return unwrap(await this.stub.configPutChannel(channel, expectedRevision));
   }
 
-  async putChannelPlacement(input: ChannelPlacementMutation): Promise<ChannelPlacementResult> {
-    return unwrap(await this.stub.configPutChannelPlacement(input));
-  }
-
-  async listAssignments(): Promise<ChannelAssignment[]> {
-    return unwrap(await this.stub.configListAssignments());
-  }
-
-  async getAssignment(
-    workspaceId: string,
-    channelId: string,
-  ): Promise<ChannelAssignment | undefined> {
-    return orUndefined(unwrap(await this.stub.configGetAssignment(workspaceId, channelId)));
-  }
-
-  async listAssignmentsForAgent(agentId: string): Promise<ChannelAssignment[]> {
-    return unwrap(await this.stub.configListAssignmentsForAgent(agentId));
-  }
-
-  async putAssignment(assignment: ChannelAssignment): Promise<ChannelAssignment> {
-    return unwrap(await this.stub.configPutAssignment(assignment));
-  }
-
-  async deleteAssignment(workspaceId: string, channelId: string): Promise<boolean> {
-    return unwrap(await this.stub.configDeleteAssignment(workspaceId, channelId));
-  }
-
-  async find(
-    workspaceId: string,
-    channelId: string,
-    options: AssignmentLookupOptions = {},
-  ): Promise<ChannelAssignment | undefined> {
-    return orUndefined(unwrap(await this.stub.configFind(workspaceId, channelId, options)));
-  }
-
   async getAgentReferences(agentId: string): Promise<AgentReferenceSummary> {
     return unwrap(await this.stub.configGetAgentReferences(agentId));
-  }
-
-  async listSlackIdentities(): Promise<SlackIdentity[]> {
-    return unwrap(await this.stub.configListSlackIdentities());
-  }
-
-  async getSlackIdentity(identityId: string): Promise<SlackIdentity> {
-    return unwrap(await this.stub.configGetSlackIdentity(identityId));
-  }
-
-  async getSlackIdentityByIngressKey(ingressKey: string): Promise<SlackIdentity | undefined> {
-    return orUndefined(unwrap(await this.stub.configGetSlackIdentityByIngressKey(ingressKey)));
-  }
-
-  async createSlackIdentity(identity: SlackIdentity): Promise<SlackIdentity> {
-    return unwrap(await this.stub.configCreateSlackIdentity(identity));
-  }
-
-  async updateSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-    patch: SlackIdentityPatch,
-  ): Promise<SlackIdentity> {
-    return unwrap(
-      await this.stub.configUpdateSlackIdentity(identityId, expectedRevision, patch),
-    );
-  }
-
-  async listSlackIdentitiesForAgent(agentId: string): Promise<SlackIdentity[]> {
-    return unwrap(await this.stub.configListSlackIdentitiesForAgent(agentId));
-  }
-
-  async listAgentsForSlackIdentity(identityId: string): Promise<CustomAgentConfig[]> {
-    return unwrap(await this.stub.configListAgentsForSlackIdentity(identityId));
-  }
-
-  async resolveSlackIdentityForAgent(agentId: string): Promise<SlackIdentity> {
-    return unwrap(await this.stub.configResolveSlackIdentityForAgent(agentId));
-  }
-
-  async getSlackIdentityReferences(
-    identityId: string,
-  ): Promise<SlackIdentityReferenceSummary> {
-    return unwrap(await this.stub.configGetSlackIdentityReferences(identityId));
-  }
-
-  async setSlackIdentityDmBinding(
-    identityId: string,
-    expectedRevision: number,
-    dmState: SlackIdentityDmState,
-    dmAgentId?: string,
-  ): Promise<SlackIdentity> {
-    return unwrap(
-      await this.stub.configSetSlackIdentityDmBinding(
-        identityId,
-        expectedRevision,
-        dmState,
-        dmAgentId,
-      ),
-    );
-  }
-
-  async completeSlackIdentitySetup(
-    identityId: string,
-    expectedRevision: number,
-    agentId?: string,
-    expectedAgentIdentityId?: string | null,
-  ): Promise<SlackIdentity> {
-    return unwrap(await this.stub.configCompleteSlackIdentitySetup(
-      identityId,
-      expectedRevision,
-      agentId,
-      expectedAgentIdentityId,
-    ));
-  }
-
-  async attachAgentToSlackIdentity(
-    agentId: string,
-    identityId: string,
-    expectedIdentityRevision: number,
-    expectedAgentIdentityId: string | null,
-  ): Promise<CustomAgentConfig> {
-    return unwrap(await this.stub.configAttachAgentToSlackIdentity(
-      agentId,
-      identityId,
-      expectedIdentityRevision,
-      expectedAgentIdentityId,
-    ));
-  }
-
-  async retireSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-  ): Promise<SlackIdentity> {
-    return unwrap(await this.stub.configRetireSlackIdentity(identityId, expectedRevision));
-  }
-
-  async deleteIncompleteSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-    credentialsErased: boolean,
-  ): Promise<boolean> {
-    return unwrap(
-      await this.stub.configDeleteIncompleteSlackIdentity(
-        identityId,
-        expectedRevision,
-        credentialsErased,
-      ),
-    );
-  }
-
-  async purgeRetiredSlackIdentity(
-    identityId: string,
-    expectedRevision: number,
-    credentialsErased: boolean,
-  ): Promise<boolean> {
-    return unwrap(
-      await this.stub.configPurgeRetiredSlackIdentity(
-        identityId,
-        expectedRevision,
-        credentialsErased,
-      ),
-    );
-  }
-
-  async appendSlackIdentityAudit(input: AppendAuditEvent): Promise<AuditEvent> {
-    return unwrap(await this.stub.configAppendSlackIdentityAudit(input));
-  }
-
-  async listSlackIdentityAuditEvents(
-    filter: AuditEventFilter = {},
-  ): Promise<AuditEvent[]> {
-    return unwrap(await this.stub.configListSlackIdentityAuditEvents(filter));
   }
 }
 
@@ -1317,6 +1194,10 @@ export class CfAgentSnapshotStore implements AgentSnapshotStore {
 
   async putIfAbsent(threadKey: string, snapshot: AgentSnapshot): Promise<AgentSnapshot> {
     return unwrap(await this.stub.snapshotPutIfAbsent(threadKey, snapshot));
+  }
+
+  async replace(threadKey: string, snapshot: AgentSnapshot): Promise<AgentSnapshot> {
+    return unwrap(await this.stub.snapshotReplace(threadKey, snapshot));
   }
 
   async listLiveRootsByAgent(agentId: string): Promise<AgentSnapshotRootReference[]> {
@@ -1343,14 +1224,6 @@ export class CfSlackStateStore implements SlackStateStore {
     return unwrap(await this.stub.threadHas(key));
   }
 
-  async getParticipation(key: string) {
-    return unwrap(await this.stub.threadParticipationGet(key));
-  }
-
-  async setParticipation(key: string, mode: 'ambient' | 'mention_only') {
-    unwrap(await this.stub.threadParticipationSet(key, mode));
-  }
-
   async isActiveWork(key: string) {
     return unwrap(await this.stub.threadActiveWorkGet(key));
   }
@@ -1361,6 +1234,10 @@ export class CfSlackStateStore implements SlackStateStore {
 
   async admitCanonical(input: SlackCanonicalAdmissionInput) {
     return unwrap(await this.stub.admitSlackTurn(input));
+  }
+
+  async resumeTurnAfterOAuth(originalTaskId: string, continuationId: string) {
+    return unwrap(await this.stub.resumeTurnAfterOAuth(originalTaskId, continuationId));
   }
 
   async pinAgentBinding(
@@ -1406,13 +1283,6 @@ export class CfSlackStateStore implements SlackStateStore {
     );
   }
 
-  async recordContinuityNotice(
-    id: string,
-    notice: Parameters<TagStateRpc['slackContinuityNoticeRecord']>[1],
-  ): Promise<void> {
-    unwrap(await this.stub.slackContinuityNoticeRecord(id, notice));
-  }
-
   async markTurnRecoveryRequired(id: string, reason: string): Promise<void> {
     unwrap(await this.stub.slackTurnRecoveryRequired(id, reason));
   }
@@ -1421,8 +1291,8 @@ export class CfSlackStateStore implements SlackStateStore {
     return unwrap(await this.stub.slackTurnRecoveryList(limit));
   }
 
-  async retrySlackIdentityRecovery(identityId: string) {
-    return unwrap(await this.stub.slackIdentityRecoveryRetry(identityId));
+  async retrySlackInstallationRecovery(workspaceId: string) {
+    return unwrap(await this.stub.slackInstallationRecoveryRetry(workspaceId));
   }
 
   async resolveTurnRecoveryRequired(id: string) {
@@ -1439,8 +1309,8 @@ export class CfSlackStateStore implements SlackStateStore {
     };
   }
 
-  async countPendingDeliveriesForSlackIdentity(identityId: string) {
-    return unwrap(await this.stub.slackIdentityPendingDeliveryCount(identityId));
+  async countPendingDeliveriesForWorkspace(workspaceId: string) {
+    return unwrap(await this.stub.slackInstallationPendingDeliveryCount(workspaceId));
   }
 
   async recordSlackInteractionProgress(
@@ -1510,354 +1380,18 @@ export class CfSettingsStore implements SettingsStore {
 export class CfMemoryStateStore implements MemoryStateStore {
   constructor(private readonly stub: TagStateRpc) {}
 
-  async ensureOwner(owner: MemoryOwnerRef): Promise<MemoryOwnerDescriptor> {
-    const response = await this.execute({ kind: 'ensure_owner', owner });
-    if (response.kind !== 'owner' || !response.owner) throw unexpectedMemoryResponse();
-    return response.owner;
+  async getAgentMemory(agentId: string): Promise<AgentMemory> {
+    const response = await this.execute({ kind: 'get_agent_memory', agentId });
+    return response.memory;
   }
 
-  async getOwner(storeId: string): Promise<MemoryOwnerDescriptor | undefined> {
-    const response = await this.execute({ kind: 'get_owner', storeId });
-    if (response.kind !== 'owner') throw unexpectedMemoryResponse();
-    return orUndefined(response.owner);
-  }
-
-  async listOwners(workspaceId?: string): Promise<MemoryOwnerDescriptor[]> {
-    const response = await this.execute({ kind: 'list_owners', ...(workspaceId ? { workspaceId } : {}) });
-    if (response.kind !== 'owners') throw unexpectedMemoryResponse();
-    return response.owners;
-  }
-
-  async createOwnerEntry(input: CreateOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
-    const response = await this.execute({ kind: 'create_owner_entry', input });
-    if (response.kind !== 'owner_entry' || !response.entry) throw unexpectedMemoryResponse();
-    return response.entry;
-  }
-
-  async getOwnerEntry(entryId: string): Promise<OwnerMemoryEntry | undefined> {
-    const response = await this.execute({ kind: 'get_owner_entry', entryId });
-    if (response.kind !== 'owner_entry') throw unexpectedMemoryResponse();
-    return orUndefined(response.entry);
-  }
-
-  async updateOwnerEntry(input: UpdateOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
-    const response = await this.execute({ kind: 'update_owner_entry', input });
-    if (response.kind !== 'owner_entry' || !response.entry) throw unexpectedMemoryResponse();
-    return response.entry;
-  }
-
-  async forgetOwnerEntry(input: ForgetOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
-    const response = await this.execute({ kind: 'forget_owner_entry', input });
-    if (response.kind !== 'owner_entry' || !response.entry) throw unexpectedMemoryResponse();
-    return response.entry;
-  }
-
-  async transitionOwnerEntry(input: TransitionOwnerMemoryEntryInput): Promise<OwnerMemoryEntry> {
-    const response = await this.execute({ kind: 'transition_owner_entry', input });
-    if (response.kind !== 'owner_entry' || !response.entry) throw unexpectedMemoryResponse();
-    return response.entry;
-  }
-
-  async mergeOwnerEntries(input: MergeOwnerMemoryEntriesInput): Promise<OwnerMemoryEntry> {
-    const response = await this.execute({ kind: 'merge_owner_entries', input });
-    if (response.kind !== 'owner_entry' || !response.entry) throw unexpectedMemoryResponse();
-    return response.entry;
-  }
-
-  async recordOwnerReview(input: RecordOwnerMemoryReviewInput): Promise<void> {
-    const response = await this.execute({ kind: 'record_owner_review', input });
-    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
-  }
-
-  async createOwnerForgetChallenge(input: CreateForgetChallengeInput): Promise<void> {
-    const response = await this.execute({ kind: 'create_owner_forget_challenge', input });
-    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
-  }
-
-  async createOwnerWriteChallenge(input: CreateOwnerMemoryWriteChallengeInput): Promise<void> {
-    const response = await this.execute({ kind: 'create_owner_write_challenge', input });
-    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
-  }
-
-  async getOwnerWriteChallenge(tokenHash: string, slackUserId: string): Promise<OwnerMemoryWriteChallenge | undefined> {
-    const response = await this.execute({ kind: 'get_owner_write_challenge', tokenHash, slackUserId });
-    if (response.kind !== 'owner_write_challenge') throw unexpectedMemoryResponse();
-    return orUndefined(response.challenge);
-  }
-
-  async consumeOwnerWriteChallenge(tokenHash: string, slackUserId: string, consumedAt: number): Promise<OwnerMemoryWriteChallenge | undefined> {
-    const response = await this.execute({ kind: 'consume_owner_write_challenge', tokenHash, slackUserId, consumedAt });
-    if (response.kind !== 'owner_write_challenge') throw unexpectedMemoryResponse();
-    return orUndefined(response.challenge);
-  }
-
-  async replayOwnerImport(input: ReplayOwnerMemoryImportInput): Promise<OwnerMemoryEntry[] | undefined> {
-    const response = await this.execute({ kind: 'replay_owner_import', input });
-    if (response.kind !== 'owner_import_replay') throw unexpectedMemoryResponse();
-    return response.entries ?? undefined;
-  }
-
-  async applyOwnerImport(input: ApplyOwnerMemoryImportInput): Promise<OwnerMemoryEntry[]> {
-    const response = await this.execute({ kind: 'apply_owner_import', input });
-    if (response.kind !== 'owner_entries') throw unexpectedMemoryResponse();
-    return response.entries;
-  }
-
-  async listOwnerEntries(
-    owner: MemoryOwnerRef,
-    filter?: { readableAt?: number },
-  ): Promise<OwnerMemoryEntry[]> {
-    const response = await this.execute({
-      kind: 'list_owner_entries',
-      owner,
-      ...(filter?.readableAt === undefined ? {} : { readableAt: filter.readableAt }),
-    });
-    if (response.kind !== 'owner_entries') throw unexpectedMemoryResponse();
-    return response.entries;
-  }
-
-  async listOwnerRevisions(entryId: string): Promise<MemoryRevision[]> {
-    const response = await this.execute({ kind: 'list_owner_revisions', entryId });
-    if (response.kind !== 'revisions') throw unexpectedMemoryResponse();
-    return response.revisions;
-  }
-
-  async resetOwner(owner: MemoryOwnerRef, input: OwnerMemoryLifecycleInput): Promise<MemoryOwnerDescriptor> {
-    const response = await this.execute({ kind: 'reset_owner', owner, input });
-    if (response.kind !== 'owner' || !response.owner) throw unexpectedMemoryResponse();
-    return response.owner;
-  }
-
-  async sealOwner(owner: MemoryOwnerRef, input: SealMemoryOwnerInput): Promise<MemoryOwnerDescriptor> {
-    const response = await this.execute({ kind: 'seal_owner', owner, input });
-    if (response.kind !== 'owner' || !response.owner) throw unexpectedMemoryResponse();
-    return response.owner;
-  }
-
-  async ensurePublicStore(workspaceId: string): Promise<MemoryStoreDescriptor> {
-    const response = await this.execute({ kind: 'ensure_public_store', workspaceId });
-    if (response.kind !== 'store' || !response.store) throw unexpectedMemoryResponse();
-    return response.store;
-  }
-
-  async ensurePrivateStore(
-    workspaceId: string,
-    channelId: string,
-    generation: number,
-  ): Promise<MemoryStoreDescriptor> {
-    const response = await this.execute({
-      kind: 'ensure_private_store',
-      workspaceId,
-      channelId,
-      generation,
-    });
-    if (response.kind !== 'store' || !response.store) throw unexpectedMemoryResponse();
-    return response.store;
-  }
-
-  async getStore(storeId: string): Promise<MemoryStoreDescriptor | undefined> {
-    const response = await this.execute({ kind: 'get_store', storeId });
-    if (response.kind !== 'store') throw unexpectedMemoryResponse();
-    return orUndefined(response.store);
-  }
-
-  async listStores(workspaceId?: string): Promise<MemoryStoreDescriptor[]> {
-    const response = await this.execute({
-      kind: 'list_stores',
-      ...(workspaceId ? { workspaceId } : {}),
-    });
-    if (response.kind !== 'stores') throw unexpectedMemoryResponse();
-    return response.stores;
-  }
-
-  async createEntry(input: CreateMemoryEntryInput): Promise<MemoryEntry> {
-    return this.requiredEntry(await this.execute({ kind: 'create_entry', input }));
-  }
-
-  async getEntry(entryId: string): Promise<MemoryEntry | undefined> {
-    const response = await this.execute({ kind: 'get_entry', entryId });
-    if (response.kind !== 'entry') throw unexpectedMemoryResponse();
-    return orUndefined(response.entry);
-  }
-
-  async listEntries(filter: MemoryEntryFilter = {}): Promise<MemoryEntry[]> {
-    const response = await this.execute({ kind: 'list_entries', filter });
-    if (response.kind !== 'entries') throw unexpectedMemoryResponse();
-    return response.entries;
-  }
-
-  async listEntryScopeSummaries(workspaceId?: string): Promise<MemoryEntryScopeSummary[]> {
-    const response = await this.execute({
-      kind: 'list_entry_scope_summaries',
-      ...(workspaceId ? { workspaceId } : {}),
-    });
-    if (response.kind !== 'entry_scope_summaries') throw unexpectedMemoryResponse();
-    return response.summaries;
-  }
-
-  async replayImport(input: ReplayMemoryImportInput): Promise<MemoryEntry[] | undefined> {
-    const response = await this.execute({ kind: 'replay_import', input });
-    if (response.kind !== 'import_replay') throw unexpectedMemoryResponse();
-    return orUndefined(response.entries);
-  }
-
-  async applyImport(input: ApplyMemoryImportInput): Promise<MemoryEntry[]> {
-    const response = await this.execute({ kind: 'apply_import', input });
-    if (response.kind !== 'entries') throw unexpectedMemoryResponse();
-    return response.entries;
-  }
-
-  async recordAdminView(input: RecordMemoryAdminViewInput): Promise<void> {
-    const response = await this.execute({ kind: 'record_admin_view', input });
-    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
-  }
-
-  async recordAdminEvent(input: RecordMemoryAdminEventInput): Promise<void> {
-    const response = await this.execute({ kind: 'record_admin_event', input });
-    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
-  }
-
-  async updateEntry(input: UpdateMemoryEntryInput): Promise<MemoryEntry> {
-    return this.requiredEntry(await this.execute({ kind: 'update_entry', input }));
-  }
-
-  async forgetEntry(input: ForgetMemoryEntryInput): Promise<MemoryEntry> {
-    return this.requiredEntry(await this.execute({ kind: 'forget_entry', input }));
-  }
-
-  async transitionEntry(input: TransitionMemoryEntryInput): Promise<MemoryEntry> {
-    return this.requiredEntry(await this.execute({ kind: 'transition_entry', input }));
-  }
-
-  async mergeEntries(input: MergeMemoryEntriesInput): Promise<MemoryEntry> {
-    return this.requiredEntry(await this.execute({ kind: 'merge_entries', input }));
-  }
-
-  async recordReview(input: RecordMemoryReviewInput): Promise<void> {
-    const response = await this.execute({ kind: 'record_review', input });
-    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
-  }
-
-  async createForgetChallenge(input: CreateForgetChallengeInput): Promise<void> {
-    const response = await this.execute({ kind: 'create_forget_challenge', input });
-    if (response.kind !== 'ok') throw unexpectedMemoryResponse();
-  }
-
-  async getForgetChallenge(
-    tokenHash: string,
-    actorId: string,
-  ): Promise<MemoryForgetChallenge | undefined> {
-    const response = await this.execute({ kind: 'get_forget_challenge', tokenHash, actorId });
-    if (response.kind !== 'forget_challenge') throw unexpectedMemoryResponse();
-    return orUndefined(response.challenge);
-  }
-
-  async listRevisions(entryId: string): Promise<MemoryRevision[]> {
-    const response = await this.execute({ kind: 'list_revisions', entryId });
-    if (response.kind !== 'revisions') throw unexpectedMemoryResponse();
-    return response.revisions;
-  }
-
-  async listAuditEvents(filter: AuditEventFilter = {}): Promise<AuditEvent[]> {
-    const response = await this.execute({ kind: 'list_audit_events', filter });
-    if (response.kind !== 'audit_events') throw unexpectedMemoryResponse();
-    return response.events;
-  }
-
-  async getMutationCounts(
-    workspaceId: string,
-    channelId: string,
-    actorId: string,
-  ): Promise<MemoryMutationCounts> {
-    const response = await this.execute({
-      kind: 'get_mutation_counts',
-      workspaceId,
-      channelId,
-      actorId,
-    });
-    if (response.kind !== 'mutation_counts') throw unexpectedMemoryResponse();
-    return response.counts;
-  }
-
-  async resolveConversationContext(
-    input: ResolveMemoryConversationContextInput,
-  ): Promise<MemoryConversationContext> {
-    const response = await this.execute({ kind: 'resolve_conversation_context', input });
-    if (response.kind !== 'conversation_context') throw unexpectedMemoryResponse();
-    return response.context;
-  }
-
-  async confirmConversationContext(
-    input: ConfirmMemoryConversationContextInput,
-  ): Promise<boolean> {
-    const response = await this.execute({ kind: 'confirm_conversation_context', input });
-    if (response.kind !== 'conversation_context_confirmed') {
-      throw unexpectedMemoryResponse();
-    }
-    return response.confirmed;
-  }
-
-  async observeChannelScope(
-    input: ObserveMemoryChannelScopeInput,
-  ): Promise<MemoryChannelScopeState> {
-    const response = await this.execute({ kind: 'observe_channel_scope', input });
-    if (response.kind !== 'channel_scope' || !response.state) {
-      throw unexpectedMemoryResponse();
-    }
-    return response.state;
-  }
-
-  async retainChannelScope(
-    input: RetainMemoryChannelScopeInput,
-  ): Promise<MemoryChannelScopeState> {
-    const response = await this.execute({ kind: 'retain_channel_scope', input });
-    if (response.kind !== 'channel_scope' || !response.state) {
-      throw unexpectedMemoryResponse();
-    }
-    return response.state;
-  }
-
-  async getChannelScope(
-    workspaceId: string,
-    channelId: string,
-  ): Promise<MemoryChannelScopeState | undefined> {
-    const response = await this.execute({ kind: 'get_channel_scope', workspaceId, channelId });
-    if (response.kind !== 'channel_scope') throw unexpectedMemoryResponse();
-    return orUndefined(response.state);
-  }
-
-  async listChannelScopes(workspaceId?: string): Promise<MemoryChannelScopeState[]> {
-    const response = await this.execute({
-      kind: 'list_channel_scopes',
-      ...(workspaceId ? { workspaceId } : {}),
-    });
-    if (response.kind !== 'channel_scopes') throw unexpectedMemoryResponse();
-    return response.states;
-  }
-
-  async cleanupRetention(): Promise<{
-    actorIdsCleared: number;
-    rateWindowsDeleted: number;
-    contextsDeleted: number;
-    forgetChallengesDeleted: number;
-  }> {
-    const response = await this.execute({ kind: 'cleanup_retention' });
-    if (response.kind !== 'cleanup') throw unexpectedMemoryResponse();
-    return {
-      actorIdsCleared: response.actorIdsCleared,
-      rateWindowsDeleted: response.rateWindowsDeleted,
-      contextsDeleted: response.contextsDeleted,
-      forgetChallengesDeleted: response.forgetChallengesDeleted,
-    };
+  async putAgentMemory(input: PutAgentMemoryInput): Promise<AgentMemory> {
+    const response = await this.execute({ kind: 'put_agent_memory', input });
+    return response.memory;
   }
 
   private async execute(request: MemoryRpcRequest): Promise<MemoryRpcResponse> {
     return unwrap(await this.stub.memoryExecute(request));
-  }
-
-  private requiredEntry(response: MemoryRpcResponse): MemoryEntry {
-    if (response.kind !== 'entry' || !response.entry) throw unexpectedMemoryResponse();
-    return response.entry;
   }
 }
 
@@ -2350,10 +1884,6 @@ export class CfWorkStore implements WorkStore {
   private async execute(request: WorkRpcRequest): Promise<WorkRpcResponse> {
     return unwrap(await this.stub.workExecute(request));
   }
-}
-
-function unexpectedMemoryResponse(): Error {
-  return new Error('Unexpected memory state response');
 }
 
 function unexpectedManagementResponse(): Error {

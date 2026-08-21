@@ -30,7 +30,7 @@ function profile(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig 
 }
 
 test('a legacy Subscription selection is normalized to the Platform API-key route', async () => {
-  const agents = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const agents = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const applied: string[] = [];
   let subscriptionBinds = 0;
@@ -57,7 +57,7 @@ test('a legacy Subscription selection is normalized to the Platform API-key rout
 });
 
 test('API-key routing preserves the canonical provider and never binds Subscription', async () => {
-  const agents = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const agents = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const applied: string[] = [];
   let subscriptionBinds = 0;
@@ -102,7 +102,7 @@ test('invalid legacy installation method state is normalized to the API-key lane
 });
 
 test('a frozen OpenAI model stays on API-key routing after a legacy Subscription write', async () => {
-  const agents = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const agents = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const events: string[] = [];
   try {
@@ -123,7 +123,7 @@ test('a frozen OpenAI model stays on API-key routing after a legacy Subscription
 });
 
 test('retired Subscription callbacks cannot intercept OpenAI API-key routing', async () => {
-  const agents = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const agents = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const applied: string[] = [];
   let binds = 0;
@@ -159,7 +159,7 @@ test('retired Subscription callbacks cannot intercept OpenAI API-key routing', a
 });
 
 test('non-OpenAI models bind only their selected key-backed provider', async () => {
-  const agents = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const agents = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const applied: string[] = [];
   try {

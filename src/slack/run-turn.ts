@@ -10,11 +10,10 @@ import { resolveAgentModel } from '../config/model-policy.ts';
 import { getGithubConnection } from '../config/github-app.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
-import { getSettingsStore, getUsageStore, getWorkStore } from '../config/state-backend.ts';
+import { getConfigStore, getSettingsStore, getUsageStore, getWorkStore } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type {
-  SlackContinuityNoticeProgress,
   SlackInteractionProgress,
   SlackInteractionProgressPatch,
 } from '../config/state-rpc.ts';
@@ -39,23 +38,19 @@ import {
   type AgentDispatchResult,
   type SlackFlueDispatchState,
 } from './flue-dispatch.ts';
-import {
-  ContinuityNoticeDeliveryError,
-  ensureContinuityNotice,
-} from './continuity-notice.ts';
 import { resolveSlackCredentials, resolveSlackPublicUrl } from './credentials.ts';
+import { agentAvatarUrlForPresentation } from './agent-presence/avatar-assets.ts';
 import type { SlackStatusUpdate } from './replies.ts';
 import { registerSlackStatusTurn } from './status-registry.ts';
 import type { SlackTurnContext } from './thread-context.ts';
 import { slackThreadKey } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
-import { effectiveSlackIdentityId } from './identity-admission.ts';
 import {
-  effectiveTurnSlackIdentityId,
-  resolveSlackIdentityExecutionContext,
-  SlackIdentityUnavailableError,
-  type SlackIdentityExecutionContext,
-} from './identity-execution.ts';
+  effectiveTurnSlackInstallationId,
+  resolveSlackInstallationExecutionContext,
+  SlackInstallationUnavailableError,
+  type SlackInstallationExecutionContext,
+} from './installation-execution.ts';
 import type { FrozenRuntimePlanDecision } from './turn-job-types.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
@@ -103,6 +98,11 @@ import {
   type SlackPresentationStatePort,
 } from './agent-view-presentation.ts';
 import { createSlackWebClient } from './web-client.ts';
+import {
+  externalActionAuthorityInstructions,
+  resolveConnectionAccountContext,
+  selectConnectionsForRequest,
+} from '../connections/runtime.ts';
 
 export { createSlackWebClient } from './web-client.ts';
 
@@ -144,16 +144,11 @@ export interface RunTurnOptions {
    */
   client?: WebClient;
   /** Current non-secret identity execution context resolved by the relay. */
-  identityContext?: SlackIdentityExecutionContext;
+  installationContext?: SlackInstallationExecutionContext;
   /** Focused-test override for proving replay and delivery lifecycle behavior. */
   agentPrompt?: typeof promptSlackThreadAgent;
   /** Adapter-owned dispatch/read checkpoints restored by the relay. */
   flueDispatch?: SlackFlueDispatchState;
-  /** Restored exactly-once DM continuity-notice checkpoint. */
-  continuityNoticeProgress?: SlackContinuityNoticeProgress;
-  onContinuityNoticeProgress?: (
-    notice: SlackContinuityNoticeProgress,
-  ) => void | Promise<void>;
   /** Durable turn key forwarded to the sandbox for cap/idempotency state. */
   turnId?: string;
   /** Recorded result from an earlier attempt; skips the agent entirely. */
@@ -239,21 +234,18 @@ export async function runTurn(
   platformEnv: PlatformEnv | undefined,
   options: RunTurnOptions = {},
 ): Promise<void> {
-  const turnIdentityId = effectiveTurnSlackIdentityId(turn);
-  if (effectiveSlackIdentityId(assignment) !== turnIdentityId) {
-    throw new SlackIdentityUnavailableError(turnIdentityId, 'assignment_identity_mismatch');
-  }
-  const identityContext = options.identityContext ?? (
+  const turnWorkspaceId = effectiveTurnSlackInstallationId(turn);
+  const installationContext = options.installationContext ?? (
     options.client
       ? undefined
-      : await resolveSlackIdentityExecutionContext(turnIdentityId, platformEnv, {
+      : await resolveSlackInstallationExecutionContext(turnWorkspaceId, platformEnv, {
           ...(options.settingsStore ? { settings: options.settingsStore } : {}),
         })
   );
-  if (identityContext && identityContext.identityId !== turnIdentityId) {
-    throw new SlackIdentityUnavailableError(turnIdentityId, 'execution_identity_mismatch');
+  if (installationContext && installationContext.workspaceId !== turnWorkspaceId) {
+    throw new SlackInstallationUnavailableError(turnWorkspaceId, 'execution_workspace_mismatch');
   }
-  const client = identityContext?.client ?? options.client ?? (await getClient(platformEnv));
+  const client = installationContext?.client ?? options.client ?? (await getClient(platformEnv));
   // A frozen assignment (from a thread snapshot) carries its model; otherwise
   // resolve it from the agent via policy.
   const resolvedModel = assignment.model ?? tryResolveAgentModel(assignment.agent);
@@ -262,18 +254,23 @@ export async function runTurn(
   // pinned): on a button deploy nobody sets the env var, so without the stored
   // fallback the footer's "Configure" link would be dead.
   const publicUrl = await resolveSlackPublicUrl(platformEnv);
+  const agentAvatarUrl = agentAvatarUrlForPresentation(assignment.agent, publicUrl);
   // Natural-language Routine intent runs through a fresh, tool-less v2 agent.
   // A selected ledger canary deliberately skips that pre-parser;
   // explicit Routine commands are kept off this lane at admission.
   if (!ledgerAuthority && isRoutineSlackTurn(turn)) {
     const routineText = await handleRoutineSlackRequest(turn, platformEnv, {
-      ...(identityContext ? { identityContext } : {}),
+      ...(installationContext ? { installationContext } : {}),
+      assignment,
     });
     if (routineText !== undefined) {
       const routinePresenter = new WebClientPresenter(client, {
         channelId: turn.channelId,
         threadTs: turn.threadTs,
         agentName: assignment.agent.name,
+        ...(agentAvatarUrl
+          ? { agentAvatarUrl }
+          : {}),
         agentId: assignment.agent.id,
         modelLabel: resolvedModel,
         publicUrl,
@@ -308,9 +305,6 @@ export async function runTurn(
         'instructions' in assignment && typeof assignment.instructions === 'string'
           ? assignment.instructions
           : assignment.agent.instructions,
-      ...(assignment.channelPromptAddendum
-        ? { channelInstructions: assignment.channelPromptAddendum }
-        : {}),
       requestedModel: resolvedModel ?? null,
     }, platformEnv);
     interactionIntent = classification.intent;
@@ -326,7 +320,7 @@ export async function runTurn(
     });
   }
   // Delivery-only recovery replays the exact persisted answer. It must not
-  // re-resolve current Agent/Channel memory (which could both block recovery
+  // re-resolve current Agent memory (which could both block recovery
   // on a changed lease and unnecessarily touch live state).
   const preparedMemory = memoryCommand || options.replayText !== undefined
     ? undefined
@@ -335,8 +329,8 @@ export async function runTurn(
         assignment,
         platformEnv,
         client,
-        ...(identityContext
-          ? { botToken: identityContext.botToken, botUserId: identityContext.botUserId }
+        ...(installationContext
+          ? { botToken: installationContext.botToken, botUserId: installationContext.botUserId }
           : {}),
       });
   const conversationKey = preparedMemory?.conversationKey ?? slackThreadKey(turn);
@@ -406,6 +400,9 @@ export async function runTurn(
     channelId: turn.channelId,
     threadTs: turn.threadTs,
     agentName: assignment.agent.name,
+    ...(agentAvatarUrl
+      ? { agentAvatarUrl }
+      : {}),
     agentId: assignment.agent.id,
     modelLabel: resolvedModel,
     publicUrl,
@@ -416,29 +413,20 @@ export async function runTurn(
     deliverySafety: ledgerAuthority ? 'ledger' : 'legacy',
     ...(agentViewPresentation ? { agentViewPresentation } : {}),
   });
-  let continuityNoticeProgress = options.continuityNoticeProgress;
-  const ensureRequiredContinuityNotice = (): Promise<void> => ensureContinuityNotice({
-    required: runtimePlanDecision?.continuityNoticeRequired ?? false,
-    ...(continuityNoticeProgress ? { progress: continuityNoticeProgress } : {}),
-    post: (text) => presenter.postContinuityNotice(text),
-    record: async (notice) => {
-      continuityNoticeProgress = notice;
-      await options.onContinuityNoticeProgress?.(notice);
-    },
-  });
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
   const statusInstanceId = runtimePlanDecision?.instanceId ?? agentConversationKey;
   const statusTurn = registerSlackStatusTurn(statusInstanceId, presenter, {
     generation: statusGeneration,
   });
-  const finishStatus = (): void => {
+  const finishStatus = async (): Promise<void> => {
     // Close the sink first. Agent observations are relayed best-effort from a
     // different Cloudflare isolate and may still arrive after settlement
     // resolves; removing this generation makes its late relays no-ops even if
     // another turn has already registered under the same conversation key.
-    // Clearing is deliberately non-blocking: if the active Slack request lands
-    // after the first clear, the registry issues a second clear once it settles.
-    statusTurn.finish(() => presenter.clearStatus());
+    // The normal clear is awaited so it reaches Slack before the Worker turn
+    // settles. If an active status write lands after it, the registry issues a
+    // second best-effort clear without blocking the final response.
+    await statusTurn.finish(() => presenter.clearStatus());
   };
   let usedCloudflareSandbox = false;
   let usageRecorder: InteractiveUsageRecorder | undefined;
@@ -577,8 +565,8 @@ export async function runTurn(
         platformEnv,
         client,
         presenter,
-        ...(identityContext
-          ? { botToken: identityContext.botToken, botUserId: identityContext.botUserId }
+        ...(installationContext
+          ? { botToken: installationContext.botToken, botUserId: installationContext.botUserId }
           : {}),
       });
       if (handled) {
@@ -712,12 +700,12 @@ export async function runTurn(
     const prompt = assembleSlackPrompt(turn, context, {
       ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
-      ...(identityContext
+      ...(installationContext
         ? {
-            slackIdentity: {
-              botUserId: identityContext.botUserId,
-              ...(identityContext.displayName
-                ? { displayName: identityContext.displayName }
+            slackApp: {
+              botUserId: installationContext.botUserId,
+              ...(installationContext.displayName
+                ? { displayName: installationContext.displayName }
                 : {}),
             },
           }
@@ -769,29 +757,13 @@ export async function runTurn(
           options.runId &&
           runtimePlanDecision
         ) {
-          let continuityReady = !runtimePlanDecision.continuityNoticeRequired ||
-            continuityNoticeProgress?.status === 'delivered';
-          let eligibility = decideProgressiveEligibility({
+          const frozenEligibility = decideProgressiveEligibility({
             runtimePlan: runtimePlanDecision.runtimePlan,
             memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
-            continuityReady,
             recoveryRequired: false,
             concurrentAttributionProven: options.progressiveAttributionProven === true,
             replacementCapable: options.beforeDelivery !== undefined,
           });
-          if (eligibility.reason === 'continuity') {
-            await ensureRequiredContinuityNotice();
-            continuityReady = continuityNoticeProgress?.status === 'delivered';
-            eligibility = decideProgressiveEligibility({
-              runtimePlan: runtimePlanDecision.runtimePlan,
-              memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
-              continuityReady,
-              recoveryRequired: false,
-              concurrentAttributionProven: options.progressiveAttributionProven === true,
-              replacementCapable: options.beforeDelivery !== undefined,
-            });
-          }
-          const frozenEligibility = eligibility;
           prepareProgressiveRelay = ({ instanceId, receipt }) =>
             progressiveRelayFactory({
               runId: options.runId!,
@@ -821,7 +793,6 @@ export async function runTurn(
                 },
               }
             : {}),
-          beforeResult: ensureRequiredContinuityNotice,
           ...(prepareProgressiveRelay ? { prepareProgressiveRelay } : {}),
         });
         text = sandboxUnavailableFallback
@@ -842,27 +813,6 @@ export async function runTurn(
         if (err instanceof AgentPromptFailure && (err.recoveryRequired || err.retryable)) {
           throw err;
         }
-        if (err instanceof ContinuityNoticeDeliveryError) {
-          const settlement = options.flueDispatch?.flueSettlement;
-          if (settlement?.outcome === 'completed') {
-            await workLifecycle?.settleExecution({
-              outcome: 'succeeded',
-              rawStatus: 'flue_succeeded',
-              ...(settlement.result.flueSubmissionRef
-                ? { flueSubmissionRef: settlement.result.flueSubmissionRef }
-                : {}),
-            });
-            await usageRecorder?.recordSuccess(settlement.result);
-          } else if (settlement) {
-            await workLifecycle?.settleExecution({
-              outcome: 'failed',
-              rawStatus: `flue_${settlement.outcome}`,
-              safeFailureCode: settlement.failureKind,
-            });
-            await usageRecorder?.recordFailure();
-          }
-          throw err;
-        }
         console.error('[chickpea] agent run failed:', sanitizeError(err));
         const modelNotInvoked = agentFailureBeforeModelInvocation(err);
         await workLifecycle?.settleExecution({
@@ -872,19 +822,20 @@ export async function runTurn(
         });
         await usageRecorder?.recordFailure();
         const recoveredText = await options.beforeDelivery?.();
-        finishStatus();
         if (recoveredText) {
           await preparedMemory?.confirmInjection();
           await presenter.deliverFinal(
-            identityContext
-              ? renderSlackSelfMention(recoveredText, identityContext.botUserId)
+            installationContext
+              ? renderSlackSelfMention(recoveredText, installationContext.botUserId)
               : recoveredText,
             'markdown',
           );
+          await finishStatus();
           await finishDelivery();
           return;
         }
         await presenter.deliverFinal(agentFailureText(err), 'plain_text', 'error');
+        await finishStatus();
         await finishDelivery();
         return;
       }
@@ -902,15 +853,17 @@ export async function runTurn(
       recoveredText,
       leaseValid,
     );
-    if (identityContext) {
-      text = renderSlackSelfMention(text, identityContext.botUserId);
+    if (installationContext) {
+      text = renderSlackSelfMention(text, installationContext.botUserId);
     }
-    finishStatus();
     await presenter.deliverFinal(text, 'markdown');
+    // Clear after the final reaches Slack. A custom Agent persona does not
+    // reliably trigger Slack's automatic app-status cleanup, and clearing
+    // before delivery can leave the custom status visible after the reply.
+    await finishStatus();
     await finishDelivery();
   } catch (err) {
-    if (!(err instanceof ContinuityNoticeDeliveryError) &&
-        !(err instanceof AgentPromptFailure && err.retryable)) {
+    if (!(err instanceof AgentPromptFailure && err.retryable)) {
       await usageRecorder?.recordFailure();
     }
     throw err;
@@ -922,7 +875,7 @@ export async function runTurn(
         workChecklistHeartbeat.cancel();
         workChecklistHeartbeat = undefined;
       }
-      finishStatus();
+      await finishStatus();
       await removeWorkAcknowledgment();
     } finally {
       // The Sandbox DO lives in a different isolate from the agent factory;
@@ -950,6 +903,9 @@ export async function repairSlackInteractionProgress(
     channelId: turn.channelId,
     threadTs: turn.threadTs,
     agentName: assignment.agent.name,
+    ...(assignment.agent.slackPresence?.avatar.url
+      ? { agentAvatarUrl: assignment.agent.slackPresence.avatar.url }
+      : {}),
     agentId: assignment.agent.id,
     modelLabel: assignment.model ?? tryResolveAgentModel(assignment.agent),
     userId: turn.userId,
@@ -1190,23 +1146,46 @@ async function freezeRuntimePlanForTurn(input: {
     input.platformEnv,
     input.settingsStore,
   );
-  const instructions =
+  const baseInstructions =
     'instructions' in input.assignment && typeof input.assignment.instructions === 'string'
       ? input.assignment.instructions
       : effectiveSlackInstructions(input.assignment);
+  const instructions = [
+    baseInstructions,
+    externalActionAuthorityInstructions(input.assignment.agent.instructions),
+  ].join('\n');
+  const actorConnectionContext = input.turn.actorMembershipId
+    ? {
+        config: getConfigStore(input.platformEnv),
+        workspaceId: input.turn.workspaceId,
+        agentId: input.assignment.agentId,
+        actorMembershipId: input.turn.actorMembershipId,
+      }
+    : undefined;
+  const connectionContext = actorConnectionContext
+    ? await resolveConnectionAccountContext(actorConnectionContext)
+    : undefined;
+  const allEffectiveConnections = connectionContext?.effective ?? [];
+  const connectionAuthorizations = connectionContext?.authorizations;
+  const connectionResolution = selectConnectionsForRequest({
+    connections: allEffectiveConnections,
+    requestText: input.turn.text,
+  });
   const candidate = compileRuntimePlanV2({
     turn: input.turn,
     assignment: input.assignment,
     instructions,
     memoryEpoch: input.memoryEpoch,
     sandboxMode: sandboxDecision.selection,
+    effectiveConnections: connectionResolution.selected,
+    ...(connectionAuthorizations ? { connectionAuthorizations } : {}),
+    connectionChoices: connectionResolution.ambiguous,
   });
   const decision = input.persist
     ? await input.persist(candidate)
-    : {
+      : {
         runtimePlan: candidate,
         instanceId: deriveRuntimePlanInstanceId(candidate),
-        continuityNoticeRequired: false,
       };
   if (
     decision.runtimePlan.conversation.continuityKey !==
@@ -1229,7 +1208,7 @@ async function resolveRuntimePlanSandboxSelection(
 }
 
 export const MEMORY_CHANGED_RETRY_TEXT =
-  'Channel memory or Slack access changed while I was answering, so I withheld the draft. Before trying again, check whether any requested external action already completed.';
+  'Agent memory or Slack access changed while I was answering, so I withheld the draft. Before trying again, check whether any requested external action already completed.';
 
 export function resolveMemoryDeliveryText(
   draft: string,
@@ -1255,10 +1234,14 @@ export async function deliverAgentFailureFinal(
 ): Promise<void> {
   const resolvedModel = assignment.model ?? tryResolveAgentModel(assignment.agent);
   const publicUrl = await resolveSlackPublicUrl(platformEnv);
+  const agentAvatarUrl = agentAvatarUrlForPresentation(assignment.agent, publicUrl);
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,
     agentName: assignment.agent.name,
+    ...(agentAvatarUrl
+      ? { agentAvatarUrl }
+      : {}),
     agentId: assignment.agent.id,
     modelLabel: resolvedModel,
     publicUrl,

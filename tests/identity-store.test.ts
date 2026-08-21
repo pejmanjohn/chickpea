@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { IdentityStateError } from '../src/identity/errors.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 
 const NOW = 1_786_000_000_000;
 const TEAM = 'T12345678';
@@ -400,8 +400,8 @@ function credentialRevisionInput(overrides: {
   manifestFingerprint?: string;
 }) {
   return {
-    identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-    identityClass: 'workspace_default' as const,
+    identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+    identityClass: 'workspace_installation' as const,
     purpose: overrides.purpose,
     revision: overrides.revision,
     expectedRotationEpoch: overrides.expectedRotationEpoch,

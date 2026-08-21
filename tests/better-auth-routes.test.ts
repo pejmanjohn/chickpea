@@ -118,6 +118,7 @@ test('the unauthenticated auth routes cap the request body before buffering it',
 
 test('runtime DCR rate limits persist across fresh per-request handlers', async () => {
   const identity = new SqliteIdentityStore(':memory:');
+  const backend = new NodeBetterAuthBackend(':memory:');
   try {
     await createSlackOwner(identity, { suffix: 'runtime-dcr' });
     const control = await identity.getAuthControl();
@@ -126,7 +127,14 @@ test('runtime DCR rate limits persist across fresh per-request handlers', async 
       expectedRevision: control.revision,
       canonicalAdminOrigin: ORIGIN,
     });
-    const app = createBetterAuthRuntimeRoutes({ identity, authSecret: SECRET });
+    const app = createBetterAuthRuntimeRoutes({
+      identity,
+      environment: {
+        backend,
+        baseURL: ORIGIN,
+        secret: SECRET,
+      },
+    });
     const registration = {
       application_type: 'native',
       client_name: 'Codex',
@@ -150,6 +158,7 @@ test('runtime DCR rate limits persist across fresh per-request handlers', async 
     assert.equal(limited.status, 429);
     assert.deepEqual(await limited.json(), { error: 'registration_rate_limited' });
   } finally {
+    backend.close();
     identity.close();
   }
 });

@@ -3,19 +3,18 @@ import { test } from 'node:test';
 import type { WebClient } from '@slack/web-api';
 
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
-import { NoAssignmentError } from '../src/config/errors.ts';
+import { RoutineAuthorityError } from '../src/routines/agent-authority.ts';
 import {
   resolveRoutineRuntimeAccess,
   RoutineRuntimeError,
 } from '../src/routines/runtime.ts';
 import type { RoutineDefinition, RoutineRun } from '../src/routines/types.ts';
-import { SlackIdentityUnavailableError } from '../src/slack/identity-execution.ts';
+import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
 
 const config: EffectiveSlackConfig = {
   workspaceId: 'T_TEST',
   channelId: 'C_TEST',
   agentId: 'agent_default',
-  slackIdentityId: 'slack_identity_default',
   agent: {
     id: 'agent_default', revision: 1, name: 'Chickpea', instructions: 'Be useful.', enabled: true,
     model: 'anthropic/claude-sonnet-4-6', skills: [], mcpServers: [], apiConnections: [], repositories: [],
@@ -43,7 +42,8 @@ const run = {
   scheduledFor: 1, triggerSource: 'schedule', requestedBy: null, status: 'admitting',
   failureClass: null, publicError: null, admissionOwner: 'heartbeat', admissionLeaseUntil: 2,
   flueRunId: 'run_test', queuedAt: 1, admittedAt: 1, startedAt: null, finishedAt: null,
-  resolvedAccessHash: null, resolvedAgentId: null, model: null, inputTokens: null,
+  resolvedAccessHash: null, resolvedAgentId: null, resolvedAuthorityReceiptId: null,
+  resolvedRunsAsMembershipId: null, model: null, inputTokens: null,
   providerAuthRoute: null,
   outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costEstimate: null,
   costUnit: null, deadlineAt: 9999999999999, sandboxSessionId: null, toolCallCount: 0,
@@ -96,46 +96,45 @@ test('runtime access resolves current channel membership and hashes only non-sec
   assert.notEqual(changed.accessHash, access.accessHash);
 });
 
-test('runtime access resolves the live Agent identity and includes it in the access hash', async () => {
-  const identityIds: string[] = [];
-  const dedicatedConfig = {
-    ...config,
-    slackIdentityId: 'slack_identity_finance',
-  };
+test('runtime access resolves the one workspace Slack installation', async () => {
+  const workspaceIds: string[] = [];
+  const client = {} as WebClient;
+  const dedicatedConfig = { ...config };
   const access = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
     config: async () => dedicatedConfig,
-    identityCredentials: async (identityId: string) => {
-      identityIds.push(identityId);
+    installationExecution: async (workspaceId: string) => {
+      workspaceIds.push(workspaceId);
       return {
+        workspaceId,
+        transportMode: 'direct',
         botToken: 'xoxb-finance',
-        signingSecret: undefined,
         botUserId: 'UBOT',
-        connectionRevision: 'rev-finance',
+        client,
       };
     },
   }));
   const changed = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
-    config: async () => ({ ...dedicatedConfig, slackIdentityId: 'slack_identity_legal' }),
-    identityCredentials: async () => ({
-      botToken: 'xoxb-legal', signingSecret: undefined, botUserId: 'UBOT',
-      connectionRevision: 'rev-legal',
+    config: async () => ({ ...dedicatedConfig }),
+    installationExecution: async (workspaceId: string) => ({
+      workspaceId,
+      transportMode: 'direct',
+      botToken: 'xoxb-legal', botUserId: 'UBOT', client,
     }),
   }));
 
-  assert.deepEqual(identityIds, ['slack_identity_finance']);
-  assert.equal(access.slackIdentityId, 'slack_identity_finance');
+  assert.deepEqual(workspaceIds, ['T_TEST']);
   assert.equal(access.botToken, 'xoxb-finance');
-  assert.notEqual(access.accessHash, changed.accessHash);
+  assert.equal(access.accessHash, changed.accessHash);
 });
 
-test('production routine access shares the lifecycle-gated identity client', async () => {
+test('production routine access shares the lifecycle-gated installation client', async () => {
   const client = {} as WebClient;
   const access = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
-    identityExecution: async (identityId: string) => ({
-      identityId,
+    installationExecution: async (workspaceId: string) => ({
+      workspaceId,
+      transportMode: 'direct',
       botToken: 'xoxb-current-finance',
       botUserId: 'UBOT',
-      teamId: 'T_TEST',
       client,
     }),
   }));
@@ -144,13 +143,45 @@ test('production routine access shares the lifecycle-gated identity client', asy
 
   await assert.rejects(
     () => resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
-      identityExecution: async () => {
-        throw new SlackIdentityUnavailableError('slack_identity_default', 'identity_retired');
+      installationExecution: async () => {
+        throw new SlackInstallationUnavailableError('T_TEST', 'installation_revoked');
       },
     })),
     (error: unknown) => error instanceof RoutineRuntimeError &&
       error.failureClass === 'credential_unavailable',
   );
+});
+
+test('shared-gateway routine access needs no local Slack token', async () => {
+  const client = {
+    conversations: {
+      info: async () => ({
+        ok: true,
+        channel: {
+          id: 'C_TEST', name: 'test', team_id: 'T_TEST', is_member: true,
+          is_private: false, is_archived: false, is_frozen: false,
+          is_shared: false, is_ext_shared: false, is_org_shared: false,
+          is_pending_ext_shared: false, is_im: false, is_mpim: false,
+        },
+      }),
+      members: async () => ({
+        ok: true,
+        members: ['U_CREATOR', 'UBOT'],
+        response_metadata: { next_cursor: '' },
+      }),
+    },
+  } as unknown as WebClient;
+  const access = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
+    installationExecution: async (workspaceId: string) => ({
+      workspaceId,
+      transportMode: 'gateway',
+      botUserId: 'UBOT',
+      client,
+    }),
+  }));
+  assert.equal(access.botToken, undefined);
+  assert.equal(access.client, client);
+  assert.equal(access.botUserId, 'UBOT');
 });
 
 test('runtime access fails closed for creator removal, bot removal, and assignment removal', async () => {
@@ -178,7 +209,9 @@ test('runtime access fails closed for creator removal, bot removal, and assignme
   );
   await assert.rejects(
     () => resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
-      config: async () => { throw new NoAssignmentError('gone'); },
+      authority: async () => {
+        throw new RoutineAuthorityError('schedule_authority_missing', 'gone');
+      },
     })),
     (error: unknown) => error instanceof RoutineRuntimeError && error.failureClass === 'assignment_missing',
   );

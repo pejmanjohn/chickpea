@@ -9,6 +9,7 @@ import type { AgentInstanceHandle } from '@flue/runtime';
 import { createRoutineAdminApi } from '../src/admin/routines-api.ts';
 import { ROUTINE_RESULT_DATA_NAME } from '../src/agents/routine-execution.ts';
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
+import type { AgentScheduleReference, ResolvedAssignment } from '../src/config/types.ts';
 import { RoutineAdmissionController } from '../src/routines/admission.ts';
 import { handleRoutineSlackRequest } from '../src/routines/commands.ts';
 import { executeRoutineOccurrence } from '../src/routines/execution.ts';
@@ -31,10 +32,17 @@ const config: EffectiveSlackConfig = {
   model: 'anthropic/claude-haiku-4-5', provider: 'anthropic',
   instructions: 'Use current channel authority.', instructionLayers: [],
 };
+const assignment: ResolvedAssignment = {
+  workspaceId: config.workspaceId,
+  channelId: config.channelId,
+  agentId: config.agentId,
+  agent: config.agent,
+};
 
 function turn(text: string, eventId: string): NormalizedSlackTurn {
   return {
     workspaceId: 'T_ACCEPT', channelId: 'C_ACCEPT', userId: 'U_CREATOR', eventId, text,
+    actorMembershipId: 'membership_creator',
     messageTs: '1785100000.000100', threadTs: '1785100000.000100',
     source: 'app_mention', contextMode: 'channel_history',
   };
@@ -99,6 +107,22 @@ test('scheduled work crosses creation, v2 receipt, restart, reattached read, and
       undefined,
       {
         store, capability: enabled, now: () => now, canManageChannel: async () => true,
+        isActiveActor: async () => true,
+        assignment,
+        bindAuthority: async ({ routine }): Promise<AgentScheduleReference> => ({
+          scheduleId: routine.id,
+          agentId: assignment.agentId,
+          workspaceId: routine.workspaceId,
+          channelId: routine.channelId,
+          createdByMembershipId: 'membership_creator',
+          runsAsMembershipId: 'membership_creator',
+          authorityReceiptId: 'receipt_acceptance',
+          requiredConnectionAccountIds: [],
+          state: 'active',
+          revision: 1,
+          createdAt: now,
+          updatedAt: now,
+        }),
         parseIntent: async () => ({
           action: 'create', name: 'Blocker steward', description: '',
           taskText: 'inspect unresolved blockers and report only when needed.',

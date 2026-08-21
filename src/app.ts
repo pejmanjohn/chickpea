@@ -3,7 +3,18 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from './admin/routes.ts';
 import { CHICKPEA_SLACK_AGENT_NAME } from './agents/names.ts';
-import { getIdentityStore, type PlatformEnv } from './config/state-backend.ts';
+import {
+  getIdentityStore,
+  getSettingsStore,
+  getSlackStateStore,
+  type PlatformEnv,
+} from './config/state-backend.ts';
+import { isCloudflareTarget } from './config/runtime-target.ts';
+import {
+  isOAuthContinuationActorActive,
+  repairPendingOAuthContinuationResumes,
+} from './connections/oauth-continuation.ts';
+import type { OAuthContinuation } from './connections/types.ts';
 import { createBetterAuthRuntimeRoutes } from './auth/better-auth-runtime.ts';
 import { createMcpOAuthRuntimeRoutes } from './auth/mcp-oauth-routes.ts';
 import { createManagementSetupRoutes } from './management/setup-routes.ts';
@@ -17,7 +28,8 @@ import {
   observeMemoryToolPolicy,
 } from './memory/tool-policy.ts';
 import { publishActivityStatus } from './slack/activity-publisher.ts';
-import { startNodeTurnRelay } from './slack/node-turn-relay.ts';
+import { startNodeTurnRelay, wakeNodeTurnRelay } from './slack/node-turn-relay.ts';
+import { startNodeGatewaySession } from './slack/gateway/node-runtime.ts';
 import { workModelInvocationInterceptor } from './work/model-invocation.ts';
 import {
   observeResponseMetadata,
@@ -103,10 +115,57 @@ app.use('*', async (c, next) => {
 // and ledger-authoritative interactive Runs. Ledger admission stays default-off
 // and exact-channel scoped by SLACK_TAG_LEDGER_CANARY_CHANNELS.
 startNodeTurnRelay();
+startNodeGatewaySession();
+
+async function resumeOAuthContinuation(
+  continuation: OAuthContinuation,
+  env?: PlatformEnv,
+): Promise<void> {
+  if (!(await isOAuthContinuationActorActive({
+    continuation,
+    identity: getIdentityStore(env),
+  }))) {
+    throw new Error('The Slack member who authorized this connection is no longer active.');
+  }
+  const resumed = await getSlackStateStore(env).resumeTurnAfterOAuth?.(
+    continuation.taskId,
+    continuation.id,
+  );
+  if (!resumed) throw new Error('The interrupted Slack task is no longer available.');
+  await wakeNodeTurnRelay(env);
+}
+
+async function repairOAuthResumes(env?: PlatformEnv): Promise<void> {
+  await repairPendingOAuthContinuationResumes({
+    settings: getSettingsStore(env),
+    onReady: (continuation) => resumeOAuthContinuation(continuation, env),
+  });
+}
+
+if (!isCloudflareTarget()) {
+  let oauthRepairInFlight: Promise<void> | undefined;
+  const runOAuthRepair = () => {
+    if (oauthRepairInFlight) return oauthRepairInFlight;
+    oauthRepairInFlight = repairOAuthResumes()
+      .catch(() => undefined)
+      .finally(() => {
+        oauthRepairInFlight = undefined;
+      });
+    return oauthRepairInFlight;
+  };
+  queueMicrotask(() => void runOAuthRepair());
+  const oauthRepairTimer = setInterval(
+    () => void runOAuthRepair(),
+    60_000,
+  );
+  oauthRepairTimer.unref();
+}
 app.route('/', createBetterAuthRuntimeRoutes());
 app.route('/', createMcpOAuthRuntimeRoutes());
 app.route('/', createManagementSetupRoutes());
-app.route('/', createAdminRoutes());
+app.route('/', createAdminRoutes({
+  onOAuthContinuationReady: resumeOAuthContinuation,
+}));
 app.route('/channels/slack', channel.route());
 
 export default app;

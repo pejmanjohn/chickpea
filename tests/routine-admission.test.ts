@@ -63,6 +63,8 @@ class FakeAdapter implements RoutineExecutionAdapter {
       envelope,
       resolvedAccessHash: 'a'.repeat(64),
       resolvedAgentId: 'agent_test',
+      resolvedAuthorityReceiptId: 'schedule_authority_test',
+      resolvedRunsAsMembershipId: 'membership_test',
       model: 'anthropic/test',
       traceId: run.id,
     });
@@ -99,6 +101,8 @@ test('a repeated controller reattaches one stable attempt and never creates a se
     assert.equal(admissions.length, 1);
     assert.equal(adapter.attempts[0], adapter.attempts[1]);
     assert.equal((await store.getRun(run.id))?.flueRunId, null);
+    assert.equal((await store.getRun(run.id))?.resolvedAuthorityReceiptId, 'schedule_authority_test');
+    assert.equal((await store.getRun(run.id))?.resolvedRunsAsMembershipId, 'membership_test');
     assert.equal(admissions[0]?.flueAgentReceipt?.submissionId.startsWith('submission_'), true);
   } finally {
     store.close();
@@ -123,6 +127,8 @@ test('a lost dispatch acknowledgement repeats the exact frozen envelope and idem
     assert.deepEqual(resumed, frozen);
     assert.equal(resumed?.idempotencyKey, resumed?.attemptId);
     assert.equal((await store.listAdmissions(run.id)).length, 1);
+    assert.equal((await store.getRun(run.id))?.resolvedAuthorityReceiptId, 'schedule_authority_test');
+    assert.equal((await store.getRun(run.id))?.resolvedRunsAsMembershipId, 'membership_test');
   } finally {
     store.close();
   }

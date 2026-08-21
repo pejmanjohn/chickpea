@@ -3,13 +3,17 @@ import { test } from 'node:test';
 
 import {
   clearConnectorCredential,
+  connectionAccountSecretEnvVar,
+  connectionAccountSecretSettingKey,
   connectorCredentialEnvVar,
   connectorCredentialSettingKey,
   connectorSecretCleanupMarkerKey,
   describeConnectorCredentialSource,
   finishConnectorSecretCleanup,
+  resolveConnectionAccountSecret,
   resolveConnectorCredential,
   saveConnectorCredential,
+  saveConnectionAccountSecret,
   stageConnectorSecretCleanup,
 } from '../src/config/connector-secrets.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
@@ -21,6 +25,27 @@ function newStore(): SqliteSettingsStore {
 
 const TEST_AGENT_ID = 'agent_test';
 const TEST_CONNECTION_ID = 'linear-api';
+
+test('connection-account credentials are reusable and independent from Agent ids', async () => {
+  const store = newStore();
+  try {
+    await saveConnectionAccountSecret('secret_shared', 'shared-value', undefined, store);
+    assert.equal(
+      connectionAccountSecretSettingKey('secret_shared'),
+      'connection-account.secret_shared.credential',
+    );
+    assert.equal(
+      connectionAccountSecretEnvVar('secret_shared'),
+      'CONNECTION_ACCOUNT_SECRET_5FSHARED_CREDENTIAL',
+    );
+    assert.equal(
+      await resolveConnectionAccountSecret({ secretRefId: 'secret_shared' }, undefined, store),
+      'shared-value',
+    );
+  } finally {
+    store.close();
+  }
+});
 
 test('connector credential keys and collision-safe environment names include both scopes', () => {
   assert.equal(

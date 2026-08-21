@@ -20,7 +20,6 @@ const baseContext = {
   source: 'app_mention' as const,
   guaranteed: true,
   profileInstructions: 'Answer as a teammate.',
-  channelInstructions: '',
 };
 
 test('validated interaction dispositions enforce guaranteed and substantive-turn rules', () => {
@@ -140,7 +139,7 @@ test('invalid classifier output falls back by source without retaining model pro
   );
 });
 
-test('classifier failures use quiet ambient and written guaranteed fallbacks', async () => {
+test('classifier failures use quiet owned-thread and written guaranteed fallbacks', async () => {
   assert.deepEqual(
     await resolveSlackInteractionIntent(baseContext, undefined, async () => {
       throw new Error('provider body must not escape');
@@ -149,7 +148,7 @@ test('classifier failures use quiet ambient and written guaranteed fallbacks', a
   );
   assert.deepEqual(
     await resolveSlackInteractionIntent(
-      { ...baseContext, source: 'ambient_channel_message', guaranteed: false },
+      { ...baseContext, source: 'implicit_thread_reply', guaranteed: false },
       undefined,
       async () => { throw new Error('provider body must not escape'); },
     ),
@@ -169,7 +168,7 @@ test('classifier failures use quiet ambient and written guaranteed fallbacks', a
     await resolveSlackInteractionIntent(
       {
         ...baseContext,
-        source: 'ambient_channel_message',
+        source: 'implicit_thread_reply',
         guaranteed: false,
         text: 'Please review the latest rollout evidence.',
       },
@@ -177,7 +176,7 @@ test('classifier failures use quiet ambient and written guaranteed fallbacks', a
       async () => { throw new Error('provider unavailable'); },
     ),
     {
-      disposition: 'work', reason: 'useful_ambient',
+      disposition: 'work', reason: 'substantive_request',
       checklist: ['Findings', 'Supporting evidence'],
     },
   );
@@ -280,14 +279,14 @@ test('high-confidence explicit work requests cannot collapse into ordinary repli
       {
         ...baseContext,
         guaranteed: false,
-        source: 'ambient_channel_message',
+        source: 'implicit_thread_reply',
         text: 'Please review the latest rollout evidence.',
       },
       undefined,
       async () => JSON.stringify({ disposition: 'ignore', reason: 'social_chatter' }),
     )).intent,
     {
-      disposition: 'work', reason: 'useful_ambient',
+      disposition: 'work', reason: 'substantive_request',
       checklist: ['Findings', 'Supporting evidence'],
     },
   );
@@ -330,22 +329,22 @@ test('every Agent receives shared Slack teammate defaults before voice overrides
       model: 'local-stub/interaction-test',
       skills: [], mcpServers: [], apiConnections: [], repositories: [],
     }],
-    assignments: [{
-      workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: 'agent_custom', enabled: true,
-      channelPromptAddendum: 'Keep replies compact.',
+    grants: [{
+      workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: 'agent_custom',
+      status: 'active', createdByMembershipId: 'membership_test',
     }],
   });
   const config = await resolveEffectiveSlackConfig('T_TEST', 'C_TEST', {
     agents: store,
-    assignments: store,
+    grants: store,
   });
   assert.deepEqual(config.instructionLayers.map((layer) => layer.source), [
-    'interaction_defaults', 'agent', 'channel', 'runtime', 'guardrail',
+    'interaction_defaults', 'agent', 'runtime', 'guardrail',
   ]);
   assert.match(config.instructions, /Lead with the outcome/);
   assert.match(config.instructions, /Current Slack user text may express task intent/);
   assert.match(config.instructions, /Use a playful voice/);
-  assert.ok(config.instructions.indexOf('Use a playful voice.') < config.instructions.indexOf('Keep replies compact.'));
-  assert.ok(config.instructions.indexOf('Keep replies compact.') < config.instructions.indexOf('Do not reveal Slack tokens'));
+  assert.doesNotMatch(config.instructions, /Keep replies compact\./);
+  assert.ok(config.instructions.indexOf('Use a playful voice.') < config.instructions.indexOf('Do not reveal Slack tokens'));
   store.close();
 });

@@ -23,9 +23,9 @@
  *      (iii) an implicit (mention-free) thread reply IS admitted and answered —
  *      the joined thread survived the restart. Negative control on DB_B: the
  *      same implicit reply produces nothing (thread never started there).
- *   5. Run the focused snapshot helper: edit profile config after a thread's
- *      first turn, restart, and prove that thread keeps its frozen config while
- *      future threads see the edit.
+ *   5. Run the focused live-Agent helper: edit Agent config after a thread's
+ *      first turn, restart, and prove the next reply uses the current Agent
+ *      config. Agent edits intentionally apply everywhere on the next message.
  *
  * Run with Node >= 22.19:
  *   node scripts/verify-durability.mjs
@@ -135,7 +135,7 @@ async function runServerTurn({ serverEntry, fakeUrl, dbPath, netGuardLog, payloa
     await stopChild(child);
     throw error;
   }
-  return { child, eventsUrl };
+  return { child, eventsUrl, getOutput };
 }
 
 // Load every TypeScript dependency before the restart probes begin. Registering
@@ -211,7 +211,7 @@ try {
   // --- Turn 2 on DB_A: fresh process, same DB. Marker must replay. ---
   backend.reset();
   {
-    const { child } = await runServerTurn({
+    const { child, getOutput } = await runServerTurn({
       serverEntry,
       fakeUrl: fake.url,
       dbPath: dbA,
@@ -220,6 +220,7 @@ try {
     });
     const finals = await waitForFinals(backend, 1, 15_000);
     const t2Final = finals.at(-1);
+    if (finals.length === 0) log(`T2 server output:\n${getOutput()}`);
 
     const providerCalls = backend.providerCalls();
     const providerReplaysMarker = providerCalls.some((call) =>
@@ -266,7 +267,7 @@ try {
   // --- Durable claims + registry: yet another fresh process on DB_A. ---
   backend.reset();
   {
-    const { child, eventsUrl } = await runServerTurn({
+    const { child, eventsUrl, getOutput } = await runServerTurn({
       serverEntry,
       fakeUrl: fake.url,
       dbPath: dbA,
@@ -298,6 +299,7 @@ try {
       threadReply({ eventId: 'Ev_DUR_IMPL', ts: '1782770700.000100', threadTs: ROOT_TS }),
     );
     const implicitFinals = await waitForFinals(backend, 1, 15_000);
+    if (implicitFinals.length === 0) log(`registry server output:\n${getOutput()}`);
     await stopChild(child);
     record(
       'DURABLE REGISTRY: implicit thread reply IS admitted after restart (one final)',
@@ -326,7 +328,7 @@ try {
     );
   }
 
-  // --- Memory state: additive upgrade, restart, compatibility open, scrub. ---
+  // --- One-body Agent memory: restart, compatibility open, and scrub. ---
   {
     const memoryPath = `${dbA}.state`;
     const memorySentinel = 'MEMORY_DURABILITY_SENTINEL_ALPHA';
@@ -335,63 +337,43 @@ try {
     let memoryStore;
     try {
       memoryStore = new SqliteMemoryStateStore(memoryPath);
-      const publicStore = await memoryStore.ensurePublicStore('TDEMO');
-      await memoryStore.observeChannelScope({
-        workspaceId: 'TDEMO',
-        channelId: EXEC_CHANNEL,
-        privacy: 'public',
-        displayName: 'exec',
-        observedAt: Date.now(),
-      });
-      await memoryStore.createEntry({
-        entryId: 'mem_durability_sentinel',
-        storeId: publicStore.storeId,
-        workspaceId: 'TDEMO',
-        sourceChannelId: EXEC_CHANNEL,
-        slug: 'durability-sentinel',
-        description: 'Restart durability proof.',
-        type: 'fact',
+      await memoryStore.putAgentMemory({
+        agentId: 'agent_default',
         body: memorySentinel,
-        actorId: 'U_ALICE',
-        actorClass: 'member',
-        idempotencyKey: 'memory:durability:create',
+        expectedRevision: 0,
       });
       memoryStore.close();
       memoryStore = undefined;
 
       // A config-only open stands in for rollback code that knows nothing about
       // the additive memory tables: it must boot and leave them untouched.
-      const configOnly = new SqliteConfigStore(memoryPath, { agents: [], assignments: [] });
+      const configOnly = new SqliteConfigStore(memoryPath, { agents: [], grants: [] });
       await configOnly.listAgents();
       configOnly.close();
 
       memoryStore = new SqliteMemoryStateStore(memoryPath);
-      const restarted = await memoryStore.getEntry('mem_durability_sentinel');
+      const restarted = await memoryStore.getAgentMemory('agent_default');
       record(
-        'MEMORY DURABILITY: create survives close/restart and legacy false is inert',
-        restarted?.body === memorySentinel && restarted.version === 1,
-        `status=${String(restarted?.status)} version=${String(restarted?.version)}`,
+        'MEMORY DURABILITY: Agent body survives close/restart and legacy false is inert',
+        restarted.body === memorySentinel && restarted.revision === 1,
+        `revision=${String(restarted.revision)}`,
       );
-      await memoryStore.forgetEntry({
-        entryId: 'mem_durability_sentinel',
-        expectedVersion: 1,
-        actorId: 'operator',
-        actorClass: 'operator',
-        idempotencyKey: 'memory:durability:forget',
+      await memoryStore.putAgentMemory({
+        agentId: 'agent_default',
+        body: '',
+        expectedRevision: 1,
       });
       memoryStore.close();
       memoryStore = undefined;
 
       memoryStore = new SqliteMemoryStateStore(memoryPath);
-      const forgotten = await memoryStore.getEntry('mem_durability_sentinel');
-      const revisions = await memoryStore.listRevisions('mem_durability_sentinel');
+      const forgotten = await memoryStore.getAgentMemory('agent_default');
       memoryStore.close();
       memoryStore = undefined;
       record(
-        'MEMORY DURABILITY: forget survives restart and removes recoverable revision content',
-        forgotten?.status === 'forgotten' && forgotten.body === '' && forgotten.description === '' &&
-          revisions.every((revision) => revision.body === null && revision.description === null),
-        `status=${String(forgotten?.status)} revisions=${revisions.length}`,
+        'MEMORY DURABILITY: clearing the Agent body survives restart without history',
+        forgotten.body === '' && forgotten.revision === 2,
+        `revision=${String(forgotten.revision)}`,
       );
       record(
         'MEMORY DURABILITY: deleted sentinel is absent from the raw state file',
@@ -489,7 +471,7 @@ try {
   await backend.close();
 }
 
-log('\nRunning snapshot-freeze restart verification...');
+log('\nRunning live-Agent config restart verification...');
 const snapshotRun = spawnSync(
   process.execPath,
   [join(REPO_ROOT, 'scripts', 'verify-snapshot-durability.mjs')],
@@ -500,7 +482,7 @@ const snapshotRun = spawnSync(
   },
 );
 record(
-  'SNAPSHOT DURABILITY: frozen thread config survives a process restart',
+  'LIVE AGENT CONFIG: edited instructions survive restart and reach the same thread',
   snapshotRun.status === 0,
   snapshotRun.error
     ? snapshotRun.error.message

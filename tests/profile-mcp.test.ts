@@ -17,7 +17,11 @@ import {
 } from '../src/config/profile-mcp.ts';
 import { mcpOAuthSettingKeys } from '../src/config/mcp-oauth.ts';
 import { mcpBearerEnvVar, mcpHeaderEnvVar } from '../src/config/mcp-secrets.ts';
-import { getConfigStore, getSettingsStore } from '../src/config/state-backend.ts';
+import {
+  closeNodeStateStores,
+  getConfigStore,
+  getSettingsStore,
+} from '../src/config/state-backend.ts';
 import type { McpConnectionConfig } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -531,8 +535,7 @@ test('runtime-plan OAuth auth reuses its live policy read for a fresh token', as
       }
     });
   } finally {
-    getConfigStore();
-    getSettingsStore();
+    closeNodeStateStores();
     rmSync(directory, { recursive: true, force: true });
   }
 });

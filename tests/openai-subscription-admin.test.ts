@@ -63,7 +63,7 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
       accountId: 'provider-account-secret',
     }),
   };
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
   const app = new Hono();
@@ -183,7 +183,7 @@ test('OpenAI subscription admin routes keep authorization capability browser-loc
 });
 
 test('an upgraded Subscription selection is normalized and cannot reactivate the hidden lane', async (t) => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
   await settings.setSetting(MODEL_CATALOG_SETTING_KEYS.mode, 'bundled');
@@ -250,7 +250,7 @@ test('an upgraded Subscription selection is normalized and cannot reactivate the
 });
 
 test('OpenAI subscription admin routes map safe failure codes to stable HTTP statuses', async (t) => {
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
   let startError: unknown = new Error('unexpected provider detail');

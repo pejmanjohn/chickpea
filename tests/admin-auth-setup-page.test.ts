@@ -10,11 +10,11 @@ import {
   renderSlackSignInPage,
 } from '../src/admin/page.ts';
 import type { SlackSetupTransaction } from '../src/identity/types.ts';
-import { buildSlackAppManifest, slackManifestPrefillUrl } from '../src/slack/identity-manifest.ts';
+import { buildSlackAppManifest, slackManifestPrefillUrl } from '../src/slack/app-manifest.ts';
 
 const ORIGIN = 'https://chickpea.example';
 const DESTINATION = '/admin/channels';
-const MANIFEST = buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN });
+const MANIFEST = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
 
 function setup(state: SlackSetupTransaction['state']): SlackSetupTransaction {
   return {
@@ -31,8 +31,9 @@ test('Slack sign-in is the only visible login path and preserves a safe Admin de
   assert.match(html, /data-slack-auth-surface="sign-in"/);
   assert.match(html, /Sign in with Slack/);
   assert.match(html, /name="destination" value="\/admin\/channels"/);
-  assert.match(html, /Control-plane access is invitation-only/);
-  assert.match(html, /assigned channels without signing in here/);
+  assert.match(html, /Full Slack members get access after their first Agent interaction/);
+  assert.match(html, /Guests and Slack Connect participants remain Slack-only/);
+  assert.doesNotMatch(html, /invitation-only|invited to manage/i);
   assert.match(html, /<main[^>]*aria-labelledby="auth-title"/);
   assert.match(html, /role="status" aria-live="polite"/);
   assert.match(html, /autofocus/);
@@ -40,20 +41,21 @@ test('Slack sign-in is the only visible login path and preserves a safe Admin de
   assert.doesNotMatch(html, /password|forgot|sign up|cloudflare access|admin token|migrate/i);
 });
 
-test('setup presents Compact C and sends manual setup to its separate journey', () => {
+test('setup leads with Add to Slack and keeps the customer-owned app as a fallback', () => {
   const render = (state: SlackSetupTransaction['state']) => renderSlackSetupPage({
     setup: setup(state), destination: DESTINATION, manifest: MANIFEST,
   });
   const creation = render('awaiting_app_creation');
-  assert.match(creation, /Create the Slack app/);
-  assert.match(creation, /data-primary-action="create-app"/);
-  assert.match(creation, /<details[^>]*data-secondary-action="manual-adoption"/);
-  assert.match(creation, /First, generate an App Configuration token in Slack/);
+  assert.match(creation, /Add Chickpea to Slack/);
+  assert.match(creation, /data-primary-action="gateway-install"/);
+  assert.match(creation, /No app configuration token or Slack credentials to copy/);
+  assert.match(creation, /<details[^>]*data-secondary-action="customer-owned-app"/);
+  assert.match(creation, /Use your own Slack app instead/);
+  assert.match(creation, /Generate an App Configuration token in Slack/);
   assert.match(creation, /https:\/\/api\.slack\.com\/apps#:~:text=Your%20App%20Configuration%20Tokens/);
   assert.match(creation, /class="[^\"]*slack-logo-image/);
   assert.match(creation, /xoxe\.xoxp-/);
   assert.match(creation, /refresh token beginning xoxe-/i);
-  assert.match(creation, /Can&#39;t create an app configuration token\?/);
   assert.match(creation, /href="\/admin\/setup\/manual"/);
   assert.doesNotMatch(creation, /href="\/admin\/setup\/manual"[^>]*target="_blank"/);
   assert.doesNotMatch(creation, /name="(?:appId|clientId|clientSecret|signingSecret|observedManifest)"/);
@@ -125,25 +127,40 @@ test('setup refresh auto-resumes privately while rejected submissions stay user-
   assert.match(rejected, /role="alert"[^>]*tabindex="-1"/);
 });
 
-test('wrong-account and uninvited denial is safe and gives a Slack retry without implying basic access', () => {
+test('shared gateway failures explain safety, retry, and the customer-owned fallback', () => {
+  for (const error of ['gateway_not_configured', 'gateway_unreachable'] as const) {
+    const html = renderSlackSetupPage({
+      setup: setup('awaiting_app_creation'),
+      destination: DESTINATION,
+      manifest: MANIFEST,
+      error,
+    });
+    assert.match(html, /Your deployment and setup link are safe/);
+    assert.match(html, /data-primary-action="gateway-install"/);
+    assert.match(html, /Use your own Slack app instead/);
+    assert.match(html, /role="alert"/);
+  }
+});
+
+test('wrong-account denial explains automatic provisioning and gives a Slack retry', () => {
   const html = renderSlackAccessDeniedPage({
     purpose: 'login', destination: DESTINATION, reason: 'user_mismatch',
     workspace: { teamId: 'TACME', teamName: 'Acme' },
   });
   assert.match(html, /Try another Slack account/);
   assert.match(html, /Acme \(TACME\)/);
-  assert.match(html, /You can still use Chickpea agents in assigned Slack channels/);
+  assert.match(html, /First interact with a Chickpea Agent/);
+  assert.match(html, /If access was suspended or removed, ask an Owner to restore it/);
   assert.match(html, /name="purpose" value="login"/);
   assert.match(html, /name="destination" value="\/admin\/channels"/);
   assert.doesNotMatch(html, /invited user|expected user|email|password/i);
 });
 
-test('first-Owner completion warns about redundancy and returns to the exact safe view', () => {
+test('first-Owner completion returns directly to the exact safe view', () => {
   const html = renderSlackOwnerCompletePage(DESTINATION);
   assert.match(html, /data-slack-auth-surface="owner-complete"/);
   assert.match(html, /You’re the first Owner/);
-  assert.match(html, /add a second Owner/i);
-  assert.match(html, /destructive fresh reset/i);
+  assert.doesNotMatch(html, /add a second Owner|destructive fresh reset|invite an Admin/i);
   assert.match(html, /href="\/admin\/channels"/);
   assert.doesNotMatch(html, /password|admin token|cloudflare access/i);
 });

@@ -17,7 +17,6 @@ import {
   getOperationValibotSchema,
   inspectWorkspaceValibotSchema,
   discoverSlackChannelsValibotSchema,
-  inspectSlackMemberDirectoryValibotSchema,
   testMcpConnectionValibotSchema,
   inspectMemoryValibotSchema,
   inspectRoutinesValibotSchema,
@@ -89,16 +88,6 @@ export function useWorkspaceManagementSlackTools(
     async run({ data }) {
       return slackToolOutput(await invokeLiveSlackTool(
         signal, resolvePlatformEnv, 'discover_slack_channels', data,
-      ));
-    },
-  });
-  useTool({
-    name: 'inspect_slack_member_directory',
-    description: workspaceManagementToolDescription('inspect_slack_member_directory'),
-    input: inspectSlackMemberDirectoryValibotSchema,
-    async run({ data }) {
-      return slackToolOutput(await invokeLiveSlackTool(
-        signal, resolvePlatformEnv, 'inspect_slack_member_directory', data,
       ));
     },
   });

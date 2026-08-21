@@ -44,47 +44,10 @@ export class AgentStillAssignedError extends Error {
   }
 }
 
-export class AgentStillSlackDmHandlerError extends Error {
-  constructor(
-    readonly agentId: string,
-    readonly identityIds: string,
-  ) {
-    super(`Agent ${agentId} handles Slack DMs for ${identityIds}`);
-    this.name = 'AgentStillSlackDmHandlerError';
-  }
-}
-
 export class AgentStillReferencedError extends Error {
   constructor(readonly agentId: string, readonly references: string) {
     super(`Agent ${agentId} is still referenced by ${references}`);
     this.name = 'AgentStillReferencedError';
-  }
-}
-
-export class AgentSlackIdentityConflictError extends Error {
-  constructor(
-    readonly agentId: string,
-    readonly expectedIdentityId: string | null,
-    readonly actualIdentityId: string | null,
-  ) {
-    super(
-      `Agent ${agentId} changed Slack identity (expected ${expectedIdentityId ?? 'workspace default'}, actual ${actualIdentityId ?? 'workspace default'})`,
-    );
-    this.name = 'AgentSlackIdentityConflictError';
-  }
-}
-
-export class ChannelAssignmentConflictError extends Error {
-  constructor(
-    readonly workspaceId: string,
-    readonly channelId: string,
-    readonly expectedAgentId: string | null,
-    readonly actualAgentId: string | null,
-  ) {
-    super(
-      `Channel ${workspaceId}/${channelId} changed assignment (expected ${expectedAgentId ?? 'unassigned'}, actual ${actualAgentId ?? 'unassigned'})`,
-    );
-    this.name = 'ChannelAssignmentConflictError';
   }
 }
 
@@ -99,68 +62,6 @@ export class ChannelRevisionConflictError extends Error {
       `Channel ${workspaceId}/${channelId} changed (expected revision ${expectedRevision}, actual ${actualRevision})`,
     );
     this.name = 'ChannelRevisionConflictError';
-  }
-}
-
-export class UnknownSlackIdentityError extends Error {
-  constructor(readonly identityId: string) {
-    super(`Unknown Slack identity ${identityId}`);
-    this.name = 'UnknownSlackIdentityError';
-  }
-}
-
-export class SlackIdentityExistsError extends Error {
-  constructor(readonly identityId: string) {
-    super(`Slack identity ${identityId} already exists`);
-    this.name = 'SlackIdentityExistsError';
-  }
-}
-
-export class SlackIdentityStillReferencedError extends Error {
-  constructor(
-    readonly identityId: string,
-    readonly agentIds: string,
-    readonly dmAgentId: string,
-  ) {
-    const references = [
-      agentIds ? `Agents ${agentIds}` : '',
-      dmAgentId ? `DM Agent ${dmAgentId}` : '',
-    ].filter(Boolean);
-    super(
-      `Slack identity ${identityId} is still referenced${references.length ? ` by ${references.join(' and ')}` : ''}`,
-    );
-    this.name = 'SlackIdentityStillReferencedError';
-  }
-}
-
-export class SlackIdentityRevisionConflictError extends Error {
-  constructor(
-    readonly identityId: string,
-    readonly expectedRevision: number,
-    readonly actualRevision: number,
-  ) {
-    super(
-      `Slack identity ${identityId} changed (expected revision ${expectedRevision}, actual ${actualRevision})`,
-    );
-    this.name = 'SlackIdentityRevisionConflictError';
-  }
-}
-
-export class SlackIdentityLifecycleError extends Error {
-  constructor(
-    readonly identityId: string,
-    readonly action: string,
-    readonly lifecycle: string,
-  ) {
-    super(`Cannot ${action} Slack identity ${identityId} while it is ${lifecycle}`);
-    this.name = 'SlackIdentityLifecycleError';
-  }
-}
-
-export class WorkspaceDefaultSlackIdentityProtectedError extends Error {
-  constructor(readonly action: string) {
-    super(`Cannot ${action} the workspace-default Slack identity`);
-    this.name = 'WorkspaceDefaultSlackIdentityProtectedError';
   }
 }
 

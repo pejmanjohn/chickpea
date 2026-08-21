@@ -19,12 +19,24 @@ import {
   renderSlackSetupPage,
   renderSlackSignInPage,
 } from './page.ts';
-import { createMemoryAdminApi } from './memory-api.ts';
 import { onboardingAssetBytes } from './onboarding-assets.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
+import { ConnectionAccountService } from '../connections/store.ts';
+import {
+  authorizeOAuthContinuationFromProvider,
+  cancelOAuthContinuationFromProvider,
+  claimOAuthContinuationResume,
+  createOAuthContinuation,
+  inspectOAuthContinuationFromProvider,
+  isOAuthContinuationActorActive,
+  linkOAuthProviderState,
+  OAuthContinuationError,
+  takeOAuthContinuationForProviderState,
+} from '../connections/oauth-continuation.ts';
+import type { OAuthContinuation } from '../connections/types.ts';
 import {
   safeSetupDestination,
   safeSlackLoginDestination,
@@ -42,6 +54,8 @@ import {
 import slackAppManifest from '../../slack-app-manifest.json' with { type: 'json' };
 import {
   apiOAuthSettingKeys,
+  connectionAccountIdFromOAuthRef,
+  connectionAccountOAuthRef,
   apiOAuthReturnRefFromState,
   ApiOAuthError,
   cancelApiOAuthAuthorization,
@@ -79,21 +93,12 @@ import {
 } from '../config/effective-config.ts';
 import {
   AgentRevisionConflictError,
-  AgentSlackIdentityConflictError,
   AgentExistsError,
   AgentStillAssignedError,
-  AgentStillSlackDmHandlerError,
   AgentStillReferencedError,
-  ChannelAssignmentConflictError,
   ModelResolutionError,
   NoAssignmentError,
-  SlackIdentityExistsError,
-  SlackIdentityLifecycleError,
-  SlackIdentityRevisionConflictError,
-  SlackIdentityStillReferencedError,
   UnknownAgentError,
-  UnknownSlackIdentityError,
-  WorkspaceDefaultSlackIdentityProtectedError,
 } from '../config/errors.ts';
 import {
   EGRESS_SETTING_KEY,
@@ -216,10 +221,15 @@ import {
 } from '../config/state-backend.ts';
 import type { AgentSnapshotStore } from '../config/snapshot-store.ts';
 import type { RuntimeDrainStatus } from '../config/state-rpc.ts';
-import { generateSlackIdentityIngressKey, type ConfigStore } from '../config/store.ts';
+import type { ConfigStore } from '../config/store.ts';
 import type { AgentCreateInput } from '../config/types.ts';
-import type { MemoryStateStore } from '../memory/types.ts';
+import { MemoryStateError, type MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
+import { RoutineService } from '../routines/service.ts';
+import {
+  reassignRoutineAgentAuthority,
+  RoutineAuthorityError,
+} from '../routines/agent-authority.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
@@ -254,15 +264,15 @@ import {
   type RefreshModelCatalogOptions,
 } from '../model-catalog/index.ts';
 import type {
+  AgentChannelGrant,
   AgentReferenceSummary,
-  ChannelAssignment,
-  ChannelConfig,
+  ConnectionAccount,
   CustomAgentConfig,
   McpConnectionConfig,
   McpConnectionIdentity,
-  SlackIdentity,
+  WorkspaceInstallation,
 } from '../config/types.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import {
   envManagedSlackBehaviorKeys,
   resolveSlackBehaviorSettings,
@@ -278,29 +288,18 @@ import {
   resolveSlackTeamInfo,
   primeStoredSlackPublicUrl,
   slackAuthTest,
-  slackIdentityAuthTest,
-  slackBotIdentityInfo,
   slackConversationsInfo,
-  slackConversationsJoin,
   SLACK_SETTING_KEYS,
-  type SlackCredentialSources,
+  type SlackChannelSummary,
   type SlackTeamInfo,
 } from '../slack/credentials.ts';
 import {
-  beginSlackIdentityConnection,
-  cancelSlackIdentityConnection,
-  completeSlackIdentityConnection,
-  completeWorkspaceDefaultSlackConnectionIfVerified,
-  refreshSlackIdentityHealth,
-  slackIdentityConsoleUrl,
-  SlackIdentityBootstrapError,
-  type SlackIdentityBootstrapDeps,
-} from '../slack/identity-bootstrap.ts';
+  type SlackInstallationVerificationDeps,
+} from '../slack/installation-verification.ts';
 import {
   buildSlackAppManifest,
-  buildSlackIdentityManifest,
   slackManifestPrefillUrl,
-} from '../slack/identity-manifest.ts';
+} from '../slack/app-manifest.ts';
 import {
   openSlackSetupTransaction,
   SlackAppCreationError,
@@ -308,19 +307,42 @@ import {
 } from '../slack/app-creation.ts';
 import { missingRequiredSlackBotScopes } from '../slack/scopes.ts';
 import {
-  clearSlackIdentityCredentials,
-  resolveSlackIdentityCredentials,
-  SlackIdentityCredentialRevisionError,
+  clearSlackInstallationCredentials,
+  resolveSlackInstallationCredentials,
+  SlackInstallationCredentialRevisionError,
   type SlackCredentialDependencies,
   type SlackCredentialResolutionDependencies,
-} from '../slack/identity-credentials.ts';
-import { slackIdentityPendingEnvelopeSettingKey } from '../slack/identity-handshake.ts';
+} from '../slack/installation-credentials.ts';
+import {
+  AgentAvatarError,
+  agentAvatarUrl,
+  readAgentAvatarAsset,
+  uploadAgentAvatar,
+} from '../slack/agent-presence/avatar-assets.ts';
+import {
+  AgentPresenceError,
+  agentPresenceRecovery,
+  classifyAgentPresenceError,
+} from '../slack/agent-presence/errors.ts';
+import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
+import { discoverableAgents } from '../slack/agent-routing.ts';
+import { createDirectSlackTransport } from '../slack/transport/direct.ts';
+import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
+import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
+import {
+  GATEWAY_BINDING_SETTING,
+  GATEWAY_CLAIM_SETTING,
+} from '../slack/gateway/client.ts';
+import { startNodeGatewaySession } from '../slack/gateway/node-runtime.ts';
+import { GatewaySlackOidcProvider } from '../auth/gateway-slack-oidc.ts';
+import { SlackTransportError, type SlackTransport } from '../slack/transport/types.ts';
+import { SLACK_PENDING_ENVELOPE_SETTING } from '../slack/installation-handshake.ts';
 import {
   SlackInstallOAuthError,
   SlackInstallOAuthService,
   type SlackInstallOAuthResult,
 } from '../slack/install-oauth.ts';
-import type { SlackIdentityAuditEventType } from '../audit/types.ts';
 import { setCookieValues } from '../auth/cookies.ts';
 import { AuthDeniedError, AuthService, setRequestPrincipal } from '../auth/service.ts';
 import {
@@ -335,7 +357,13 @@ import {
 import { SlackAdmissionService } from '../auth/slack-admission.ts';
 import { SlackOidcError } from '../auth/slack-oidc.ts';
 import { createBetterAuthEnvironmentPublicHandler } from '../auth/better-auth-runtime.ts';
-import { AuthorizationError, requirePermission, type Permission } from '../auth/permissions.ts';
+import {
+  AuthorizationError,
+  canEditAgent,
+  requireAgentEdit,
+  requirePermission,
+  type Permission,
+} from '../auth/permissions.ts';
 import { validateMutationProvenance } from '../auth/request-provenance.ts';
 import { AuthRateLimitError, AuthRateLimiter } from '../auth/rate-limit.ts';
 import { requestAuthSourceKey } from '../auth/source-key.ts';
@@ -348,6 +376,14 @@ import type { AdminAuthenticationService, AuthPrincipal } from '../auth/types.ts
 import { decodeRecoverySecret } from '../auth/recovery-secret.ts';
 import type { ManagementStore } from '../management/store.ts';
 import { createLiveWorkspaceManagementService } from '../management/live-service.ts';
+
+const GATEWAY_RECONNECT_REQUIRED_DETAILS = new Set([
+  'binding_mismatch',
+  'binding_reconnect_required',
+  'gateway_binding_missing',
+  'gateway_binding_mismatch',
+  'gateway_not_connected',
+]);
 
 interface BetterAuthContext {
   environment: BetterAuthEnvironment;
@@ -425,6 +461,11 @@ interface AdminRoutesOptions {
     state: string,
     dependencies: ApiOAuthDependencies,
   ) => ReturnType<typeof cancelApiOAuthAuthorization>) | undefined;
+  /** Delivery seam for resuming the exact Slack task after OAuth succeeds. */
+  onOAuthContinuationReady?: ((
+    continuation: OAuthContinuation,
+    env: PlatformEnv | undefined,
+  ) => Promise<void>) | undefined;
   openAiSubscriptionProtocol?: OpenAiSubscriptionAuthorizationProtocol | undefined;
   openAiSubscriptionNow?: (() => number) | undefined;
   openAiSubscriptionRandomBytes?: ((length: number) => Uint8Array) | undefined;
@@ -438,16 +479,18 @@ interface AdminRoutesOptions {
   modelCatalogOwnerId?: (() => string) | undefined;
   modelCatalogFetch?: typeof fetch | undefined;
   modelCatalogTimeoutMs?: number | undefined;
-  slackIdentityBootstrap?: SlackIdentityBootstrapDeps | undefined;
+  slackInstallationVerification?: SlackInstallationVerificationDeps | undefined;
   slackConversationsInfo?: typeof slackConversationsInfo | undefined;
   slackAppCreationFetch?: typeof fetch | undefined;
   slackAppCreationNow?: (() => number) | undefined;
   slackInstallFetch?: typeof fetch | undefined;
   slackInstallNow?: (() => number) | undefined;
   slackInstallRandomBytes?: ((length: number) => Uint8Array) | undefined;
+  /** Agent-facing Slack capability seam. Production resolves the direct app token. */
+  slackTransport?: SlackTransport | ((workspaceId: string) => Promise<SlackTransport>) | undefined;
 }
 
-const MAX_SLACK_IDENTITY_ADMIN_BODY_BYTES = 64 * 1_024;
+const MAX_SLACK_INSTALLATION_ADMIN_BODY_BYTES = 64 * 1_024;
 const MAX_AUTH_SETUP_BODY_BYTES = 8_192;
 const SLACK_INSTALL_BROWSER_COOKIE = '__Secure-chickpea_slack_install';
 const SLACK_OIDC_BROWSER_COOKIE = '__Secure-chickpea_slack_oidc';
@@ -706,6 +749,37 @@ const apiConnectionsSchema = v.pipe(
   ),
 );
 
+const connectionAccountCreateSchema = v.pipe(
+  v.object({
+    workspaceId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9_]{2,32}$/)),
+    ownerKind: v.picklist(['team', 'member']),
+    providerId: v.pipe(v.string(), v.trim(), v.regex(/^[a-z0-9][a-z0-9_-]{0,127}$/)),
+    label: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(160)),
+    purpose: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(500))),
+    credential: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(32_768))),
+    api: v.optional(apiConnectionSchema),
+    mcp: v.optional(mcpServerSchema),
+    allowedCapabilities: v.optional(v.pipe(
+      v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(256))),
+      v.maxLength(128),
+    )),
+  }),
+  v.check((input) => Number(Boolean(input.api)) + Number(Boolean(input.mcp)) === 1,
+    'exactly one connection policy is required'),
+);
+
+const connectionAccountAttachSchema = v.object({
+  allowedCapabilities: v.optional(v.pipe(
+    v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(256))),
+    v.maxLength(128),
+  )),
+});
+
+const scheduleAuthorityReassignSchema = v.strictObject({
+  runsAsMembershipId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9_-]{1,200}$/)),
+  expectedAuthorityRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+});
+
 const repositoryGrantSchema = v.pipe(
   v.object({
     id: v.pipe(v.string(), v.regex(AGENT_ID_PATTERN)),
@@ -740,6 +814,9 @@ const repositoriesSchema = v.pipe(
 const agentSchema = v.object({
   id: agentIdSchema,
   name: nonEmptyString,
+  description: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(500))),
+  handle: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120))),
+  editPolicy: v.optional(v.picklist(['creator_and_admins', 'all_workspace_members'])),
   instructions: nonEmptyString,
   enabled: v.boolean(),
   model: v.optional(modelSpecifier),
@@ -752,6 +829,9 @@ const agentSchema = v.object({
 const agentPatchSchema = v.object({
   expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
   name: v.optional(nonEmptyString),
+  description: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(500))),
+  handle: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120))),
+  editPolicy: v.optional(v.picklist(['creator_and_admins', 'all_workspace_members'])),
   instructions: v.optional(nonEmptyString),
   enabled: v.optional(v.boolean()),
   model: v.optional(v.nullable(modelSpecifier)),
@@ -759,6 +839,31 @@ const agentPatchSchema = v.object({
   mcpServers: v.optional(mcpServersSchema),
   apiConnections: v.optional(apiConnectionsSchema),
   repositories: v.optional(repositoriesSchema),
+});
+
+const agentMemorySchema = v.strictObject({
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(0)),
+  body: v.pipe(v.string(), v.maxLength(64 * 1_024)),
+});
+
+const publishAgentSchema = v.strictObject({
+  workspaceId: nonEmptyString,
+  channelId: nonEmptyString,
+});
+const retryAgentPresenceSchema = v.strictObject({
+  workspaceId: v.optional(nonEmptyString),
+});
+const archiveAgentSchema = v.strictObject({
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  replacementDefaultAgentId: v.optional(agentIdSchema),
+});
+const restoreAgentSchema = v.strictObject({
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  workspaceId: v.optional(nonEmptyString),
+});
+const agentAvatarUploadSchema = v.strictObject({
+  contentType: v.picklist(['image/png', 'image/jpeg', 'image/webp']),
+  base64: v.pipe(v.string(), v.minLength(4), v.maxLength(750_000)),
 });
 
 const githubOrgSchema = v.pipe(
@@ -846,15 +951,13 @@ const apiOAuthClientSchema = v.object({
   clientSecret: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(2_048)),
 });
 
-const assignmentSchema = v.object({
-  workspaceId: nonEmptyString,
-  channelId: nonEmptyString,
-  agentId: nonEmptyString,
-  enabled: v.boolean(),
-  expectedAgentId: v.optional(v.nullable(agentIdSchema)),
-  channelLabel: v.optional(v.string()),
-  channelPromptAddendum: v.optional(v.string()),
-  participationMode: v.optional(v.picklist(['ambient', 'mention_only'])),
+const connectionAccountOAuthStartSchema = v.object({
+  continuation: v.optional(v.object({
+    workspaceId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9_]{2,32}$/)),
+    channelId: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128)),
+    threadTs: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(64)),
+    taskId: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(160)),
+  })),
 });
 
 const onboardingTrySchema = v.strictObject({
@@ -866,46 +969,6 @@ const onboardingTrySchema = v.strictObject({
 
 const onboardingCompleteSchema = v.strictObject({
   expectedRevision: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
-});
-
-const slackIdentityRevisionSchema = v.pipe(v.number(), v.integer(), v.minValue(0));
-const slackIdentityCreateSchema = v.strictObject({
-  source: v.picklist(['agent', 'settings']),
-  initialDmAgentId: agentIdSchema,
-  appName: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(35))),
-  displayName: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(80))),
-});
-const slackIdentitySetupIntentSchema = v.strictObject({
-  expectedRevision: slackIdentityRevisionSchema,
-  appName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(35)),
-  displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
-});
-const slackIdentityConnectSchema = v.strictObject({
-  expectedRevision: slackIdentityRevisionSchema,
-  botToken: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(16_384)),
-  signingSecret: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4_096)),
-});
-const slackIdentityRevisionOnlySchema = v.strictObject({
-  expectedRevision: slackIdentityRevisionSchema,
-});
-const slackIdentityVerifySchema = v.strictObject({
-  expectedRevision: slackIdentityRevisionSchema,
-  expectedAgentIdentityId: v.optional(v.nullable(v.pipe(v.string(), v.regex(AGENT_ID_PATTERN)))),
-});
-const slackIdentityDmSchema = v.strictObject({
-  expectedRevision: slackIdentityRevisionSchema,
-  dmState: v.picklist(['on', 'off', 'needs_setup']),
-  dmAgentId: v.optional(agentIdSchema),
-});
-const slackIdentityAttachAgentSchema = v.strictObject({
-  expectedRevision: slackIdentityRevisionSchema,
-  expectedAgentIdentityId: v.nullable(v.pipe(v.string(), v.regex(AGENT_ID_PATTERN))),
-  acknowledgeUnenumeratedChannels: v.optional(v.boolean(), false),
-  preflightOnly: v.optional(v.boolean(), false),
-});
-const slackIdentityCancelSchema = v.strictObject({
-  expectedRevision: slackIdentityRevisionSchema,
-  deleteDraft: v.optional(v.boolean(), false),
 });
 
 const egressDomain = v.pipe(
@@ -982,10 +1045,8 @@ async function sandboxStatus(
 const slackBehaviorPatchSchema = v.pipe(
   v.partial(
     v.strictObject({
-      allowDms: v.boolean(),
       unassignedHint: v.boolean(),
       welcomeOnJoin: v.boolean(),
-      ambientParticipation: v.boolean(),
       progressiveStreaming: v.boolean(),
       nativeTasks: v.boolean(),
     }),
@@ -1051,30 +1112,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         routines: routines(c),
         work: work(c),
         setupBaseUrl: requestOrigin(c),
-        countPendingSlackIdentityDeliveries: (identityId) =>
-          slackState(c).countPendingDeliveriesForSlackIdentity(identityId),
-        clearSlackIdentityCredentials: async (identityId) => {
-          const current = await resolveSlackIdentityCredentials(
-            identityId,
-            env,
-            slackCredentialResolutionDependencies(c) ?? settingsStore,
-          );
-          await clearSlackIdentityCredentials(
-            slackCredentialWriteTarget(c),
-            identityId,
-            current.connectionRevision,
-          );
-        },
-        cancelSlackIdentitySetup: (identityId, expectedRevision) =>
-          cancelSlackIdentityConnection({
-            config: store(c),
-            settings: settingsStore,
-            identityId,
-            expectedRevision,
-            ...(slackCredentialDependencies(c)
-              ? { credentialDependencies: slackCredentialDependencies(c) }
-              : {}),
-          }),
       },
     });
   };
@@ -1131,7 +1168,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ...(options.slackInstallFetch ? { fetch: options.slackInstallFetch } : {}),
       ...(options.slackInstallNow ? { now: options.slackInstallNow } : {}),
       ...(options.slackInstallRandomBytes ? { randomBytes: options.slackInstallRandomBytes } : {}),
-      ...(options.slackIdentityBootstrap ? { bootstrap: options.slackIdentityBootstrap } : {}),
+      ...(options.slackInstallationVerification
+        ? { verification: options.slackInstallationVerification }
+        : {}),
     });
   };
   const slackRecoveryService = (c: Context): SlackCredentialRecoveryService | undefined => {
@@ -1147,7 +1186,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ...(options.slackInstallFetch ? { fetch: options.slackInstallFetch } : {}),
       ...(options.slackInstallNow ? { now: options.slackInstallNow } : {}),
       ...(options.slackInstallRandomBytes ? { randomBytes: options.slackInstallRandomBytes } : {}),
-      ...(options.slackIdentityBootstrap ? { bootstrap: options.slackIdentityBootstrap } : {}),
+      ...(options.slackInstallationVerification
+        ? { verification: options.slackInstallationVerification }
+        : {}),
     });
   };
   const slackAdmissionContext = async (c: Context): Promise<{
@@ -1183,6 +1224,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     );
     if (!environment || environment.baseURL !== requestOrigin(c)) return undefined;
     const apiBaseUrl = slackApiBaseUrl(c);
+    const gatewayInstallation = (await store(c).listWorkspaceInstallations()).find(
+      (installation) => installation.transportMode === 'gateway',
+    );
+    const gatewayClient = gatewayInstallation
+      ? createGatewayDeploymentClient(c.env as PlatformEnv | undefined)
+      : undefined;
+    const gatewayBinding = gatewayClient ? await gatewayClient.loadBinding() : undefined;
     return {
       service: new SlackAdmissionService({
         identity: identityStore,
@@ -1191,6 +1239,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         onFirstOwnerActivated: async () => {
           await beginOnboardingJourney(settings(c));
         },
+        ...(gatewayClient && gatewayBinding
+          ? {
+              gateway: new GatewaySlackOidcProvider(gatewayClient),
+              credentialProvider: async () => ({
+                appId: gatewayBinding.appId,
+                clientId: gatewayBinding.clientId,
+                teamId: gatewayBinding.workspaceId,
+                connectionRevision: gatewayBinding.bindingId,
+              }),
+            }
+          : {}),
         ...(apiBaseUrl ? { slackApiBaseUrl: apiBaseUrl } : {}),
       }),
       limiterSecret: environment.secret,
@@ -1208,8 +1267,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const credentials = slackCredentialDependencies(c);
     if (!credentials) return { teamId: organization.slackTeamId };
     try {
-      const resolved = await resolveSlackIdentityCredentials(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      const resolved = await resolveSlackInstallationCredentials(
+        WORKSPACE_SLACK_INSTALLATION_ID,
         c.env as PlatformEnv | undefined,
         credentials,
       );
@@ -1221,6 +1280,166 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch {
       return { teamId: organization.slackTeamId };
     }
+  };
+  const agentSlackTransport = async (
+    c: Context,
+    workspaceId: string,
+  ): Promise<SlackTransport> => {
+    if (typeof options.slackTransport === 'function') {
+      return options.slackTransport(workspaceId);
+    }
+    if (options.slackTransport) return options.slackTransport;
+    const installation = await store(c).getWorkspaceInstallation(workspaceId);
+    if (!installation) {
+      throw new AgentPresenceError(
+        'slack_operation_failed',
+        'Connect Chickpea to this Slack workspace before publishing an Agent.',
+      );
+    }
+    if (installation.transportMode === 'gateway') {
+      return createGatewaySlackTransport(
+        createGatewayDeploymentClient(c.env as PlatformEnv | undefined),
+      );
+    }
+    const credentials = await resolveSlackInstallationCredentials(
+      WORKSPACE_SLACK_INSTALLATION_ID,
+      c.env as PlatformEnv | undefined,
+      slackCredentialResolutionDependencies(c) ?? settings(c),
+    );
+    if (!credentials.botToken) {
+      throw new AgentPresenceError(
+        'slack_operation_failed',
+        'Connect Chickpea to Slack before publishing an Agent.',
+      );
+    }
+    return createDirectSlackTransport(credentials.botToken);
+  };
+  const discoverSlackChannels = async (
+    c: Context,
+  ): Promise<{
+    channels: SlackChannelSummary[];
+    truncated: boolean;
+    connected: boolean;
+    teamInfo: SlackTeamInfo;
+  }> => {
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const settingsStore = settings(c);
+    const [installations, credentials] = await Promise.all([
+      store(c).listWorkspaceInstallations(),
+      resolveSlackCredentials(
+        platformEnv,
+        settingsStore,
+        slackCredentialResolutionDependencies(c),
+      ),
+    ]);
+    let descriptor: { teamId: string; teamName?: string } | undefined;
+    try {
+      descriptor = await slackWorkspaceDescriptor(c);
+    } catch {
+      // Token-authenticated fixtures can predate organization metadata.
+    }
+    const installation = installations.find(({ workspaceId, health }) =>
+      health !== 'revoked' && (!descriptor || workspaceId === descriptor.teamId)
+    );
+    const workspaceId = descriptor?.teamId ?? installation?.workspaceId;
+    const connected = Boolean(
+      (options.slackTransport && workspaceId) || installation || credentials.botToken,
+    );
+
+    if (workspaceId && (options.slackTransport || installation)) {
+      try {
+        const listed = await (await agentSlackTransport(c, workspaceId)).listChannels();
+        return {
+          channels: listed.channels
+            .filter(({ archived }) => !archived)
+            .map((channel) => ({
+              id: channel.id,
+              name: channel.name ?? channel.id,
+              isPrivate: channel.private,
+              isMember: channel.member,
+            })),
+          truncated: listed.truncated,
+          connected,
+          teamInfo: { teamId: workspaceId, teamName: descriptor?.teamName },
+        };
+      } catch (error) {
+        // A legacy direct install can have a valid token before it has a
+        // WorkspaceInstallation record. Keep that narrow fallback operational.
+        if (!credentials.botToken) throw error;
+      }
+    }
+
+    if (credentials.botToken) {
+      const listed = await listSlackChannels(credentials.botToken, {
+        refresh: c.req.query('refresh') === '1',
+      });
+      const teamInfo = await resolveTeamInfoSafely(
+        platformEnv,
+        settingsStore,
+        slackCredentialResolutionDependencies(c),
+      );
+      return { ...listed, connected: true, teamInfo };
+    }
+    return {
+      channels: [],
+      truncated: false,
+      connected,
+      teamInfo: { teamId: workspaceId, teamName: descriptor?.teamName },
+    };
+  };
+  const agentActor = async (c: Context): Promise<{
+    principal: AuthPrincipal;
+    slackUserId: string;
+    slackTeamId: string;
+  }> => {
+    const principal = principalByContext.get(c);
+    if (!principal) throw new AuthorizationError('principal_required');
+    const membership = await identity(c).getMembership(principal.membershipId);
+    const user = membership ? await identity(c).getUser(membership.userId) : undefined;
+    if (!membership || membership.status !== 'active' || !user) throw new AuthorizationError();
+    return { principal, slackUserId: user.slackUserId, slackTeamId: user.slackTeamId };
+  };
+  const connectionAccounts = (c: Context): ConnectionAccountService =>
+    new ConnectionAccountService({ config: store(c), settings: settings(c) });
+  const managedConnectionAccount = async (
+    c: Context,
+    agentId: string,
+    connectionAccountId: string,
+  ): Promise<{ principal: AuthPrincipal; account: ConnectionAccount }> => {
+    const principal = principalByContext.get(c);
+    if (!principal) throw new AuthorizationError('principal_required');
+    const agent = await store(c).getAgent(agentId);
+    requireAgentEdit(principal, agent);
+    const account = await connectionAccounts(c).getForManagement(principal, connectionAccountId);
+    const binding = (await store(c).listAgentConnectionBindings(agentId)).find(
+      (candidate) => candidate.connectionAccountId === account.id && candidate.enabled,
+    );
+    if (!binding) throw new AuthorizationError();
+    const organization = await identity(c).getOrganization();
+    if (organization?.slackTeamId !== account.workspaceId) throw new AuthorizationError();
+    return { principal, account };
+  };
+  const agentPresenceFailureResponse = async (
+    c: Context,
+    agentId: string,
+    error: unknown,
+  ): Promise<Response> => {
+    const classified = classifyAgentPresenceError(error);
+    const agent = await store(c).getAgent(agentId);
+    const handle = agent.slackPresence?.normalizedHandle ?? normalizeAgentHandle(agent.name);
+    const status = classified.code === 'rate_limited'
+      ? 429
+      : classified.code === 'slack_unavailable'
+      ? 503
+      : 409;
+    return c.json({
+      error: classified.code,
+      message: classified.message,
+      retryable: classified.retryable,
+      suggestions: classified.suggestions,
+      recovery: agentPresenceRecovery(classified, handle),
+      agent: await agentAdminProjection(agent, store(c), snapshots(c)),
+    }, status);
   };
   const authRateLimiter = (c: Context, token: string): AuthRateLimiter =>
     options.authRateLimiter ?? new AuthRateLimiter(identity(c), { pepper: token });
@@ -1308,28 +1527,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ? listRuntimeModelProviders({ registeredProviders: options.knownProviders })
       : listRuntimeModelProviders();
   const providerIds = () => options.knownProviders ?? knownProviderIds();
-  const safeSlackIdentityResponse = async (
-    c: Context,
-    identity: SlackIdentity,
-  ) => {
-    const behavior = await resolveSlackBehaviorSettings(
-      c.env as PlatformEnv | undefined,
-      settings(c),
-    );
-    return slackIdentityAdminResponse(
-      identity,
-      store(c),
-      behavior.allowDms.value,
-      slackState(c),
-      identity.kind === 'workspace_default'
-        ? await describeSlackCredentialSources(
-            c.env as PlatformEnv | undefined,
-            settings(c),
-            slackCredentialResolutionDependencies(c),
-          )
-        : undefined,
-    );
-  };
   // Default to the shared connect+discover routine; tests inject a mock so no
   // real network connect is attempted (same seam idea as the store/settings).
   const discoverMcp = (input: McpConnectInput): Promise<McpDiscoveryResult> =>
@@ -1363,6 +1560,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     validateConnection: (ref, provider) =>
       isCurrentApiOAuthConnection(store(c), ref, provider),
     onReauthorizationRequired: async (ref, provider) => {
+      const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+      if (connectionAccountId) {
+        const account = await findConnectionAccount(store(c), connectionAccountId);
+        if (!account || !isApiOAuthAccount(account, provider)) return;
+        await store(c).putConnectionAccount(
+          { ...account, lifecycle: 'needs_attention' },
+          account.revision,
+        );
+        return;
+      }
       await store(c).markOAuthReauthorizationRequired({
         lane: 'api',
         ...ref,
@@ -1406,8 +1613,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       };
     }
   };
-  const slackIdentityAdminBodyLimit = bodyLimit({
-    maxSize: MAX_SLACK_IDENTITY_ADMIN_BODY_BYTES,
+  const slackInstallationAdminBodyLimit = bodyLimit({
+    maxSize: MAX_SLACK_INSTALLATION_ADMIN_BODY_BYTES,
     onError: (c) => c.json({ error: 'payload_too_large' }, 413),
   });
   const authSetupBodyLimit = bodyLimit({
@@ -1418,6 +1625,36 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     maxSize: MAX_ADMIN_MUTATION_BODY_BYTES,
     onError: (c) => c.json({ error: 'request_too_large' }, 413),
   });
+  const enforceAgentMutationAuthority = async (
+    c: Context,
+    principal: AuthPrincipal,
+  ): Promise<void> => {
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) return;
+    const match = c.req.path.match(/^\/admin\/api\/agents\/([^/]+)/);
+    if (!match) return;
+    const agentId = decodeURIComponent(match[1]!);
+    try {
+      requireAgentEdit(principal, await store(c).getAgent(agentId));
+    } catch (error) {
+      // Preserve each route's stable 404 response for a missing Agent. Every
+      // existing Agent, including nested connector routes, is fenced here.
+      if (!(error instanceof UnknownAgentError)) throw error;
+    }
+  };
+  const enforceAgentMemoryAuthority = async (
+    c: Context,
+    principal: AuthPrincipal,
+  ): Promise<void> => {
+    const match = c.req.path.match(
+      /^\/admin\/api\/audit\/memory\/owners\/([^/]+)\/[^/]+\/([^/]+)(?:\/|$)/,
+    );
+    if (!match) return;
+    const ownerKind = decodeURIComponent(match[1]!);
+    if (ownerKind !== 'agent') {
+      throw new AuthorizationError();
+    }
+    requireAgentEdit(principal, await store(c).getAgent(decodeURIComponent(match[2]!)));
+  };
 
   const adminGate = async (c: Context, next: Next) => {
     let authService: AdminAuthenticationService | undefined;
@@ -1440,6 +1677,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         try {
           if (principal.machine && !machinePrincipalAllowed(c)) throw new AuthorizationError();
           requirePermission(principal, permission);
+          await enforceAgentMutationAuthority(c, principal);
+          await enforceAgentMemoryAuthority(c, principal);
           await identity(c).recordAuthAudit({
             event: 'authorization',
             outcome: 'success',
@@ -1950,7 +2189,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!capability) return c.notFound();
     c.header('Cache-Control', 'no-store');
     c.header('Referrer-Policy', 'no-referrer');
-    const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
+    const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
     return c.html(renderSlackManualSetupPage({
       destination: safeSetupDestination(c.req.query('destination') ?? '/admin/onboarding'),
       manifest,
@@ -1986,7 +2225,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         limiter.assertAllowed(`slack_manual_setup_operation_${action}`, setup.id),
         limiter.assertAllowed('slack_setup_deployment', 'deployment'),
       ]);
-      const manifest = buildSlackAppManifest({ kind: 'control_plane', origin });
+      const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin });
       if (action === 'adopt') {
         const credentials = slackCredentialDependencies(c);
         if (!credentials) return c.json({ error: 'slack_setup_unavailable' }, 503);
@@ -2034,7 +2273,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const status = error instanceof AuthRateLimitError ? 429
         : code === 'setup_expired' ? 410
           : code === 'setup_conflict' ? 409 : 400;
-      const manifest = buildSlackAppManifest({ kind: 'control_plane', origin });
+      const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin });
       return c.html(renderSlackManualSetupPage({
         ...(setup ? { setup } : {}),
         destination: setup?.destination ?? '/admin/onboarding',
@@ -2052,11 +2291,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c.header('Cache-Control', 'no-store');
     c.header('Referrer-Policy', 'no-referrer');
     const installStatus = safeSlackInstallStatus(c.req.query('slack_install'));
-    const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
+    let gatewayState: 'disconnected' | 'pending' | 'connected' | 'error' = 'disconnected';
+    try {
+      if (await settings(c).getSetting(GATEWAY_BINDING_SETTING)) {
+        gatewayState = 'connected';
+      } else if (await settings(c).getSetting(GATEWAY_CLAIM_SETTING)) {
+        if (c.req.query('gateway_return') === '1') {
+          const result = await createGatewayDeploymentClient(
+            c.env as PlatformEnv | undefined,
+          ).refreshClaim();
+          gatewayState = result.state === 'bound' ? 'connected' : 'pending';
+          if (gatewayState === 'connected') {
+            startNodeGatewaySession(c.env as PlatformEnv | undefined);
+          }
+        } else {
+          gatewayState = 'pending';
+        }
+      }
+    } catch {
+      gatewayState = 'error';
+    }
+    const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
     return c.html(renderSlackSetupPage({
       destination: safeSetupDestination(c.req.query('destination') ?? '/admin/onboarding'),
       manifest,
       autoResume: true,
+      gatewayState,
       ...(installStatus ? { notice: installStatus } : {}),
     }));
   });
@@ -2098,8 +2358,27 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(options.slackAppCreationFetch ? { fetch: options.slackAppCreationFetch } : {}),
         ...(options.slackAppCreationNow ? { now: options.slackAppCreationNow } : {}),
       });
-      const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
-      if (action === 'create') {
+      const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
+      if (action === 'gateway_begin') {
+        const claim = await createGatewayDeploymentClient(
+          c.env as PlatformEnv | undefined,
+        ).beginClaim(
+          `${requestOrigin(c)}/admin/setup?gateway_return=1`,
+          { setupId: setup.id, setupRevision: setup.revision },
+        );
+        await Promise.all([
+          limiter.recordSuccess('slack_setup_source', source),
+          limiter.recordSuccess(`slack_setup_operation_${action}`, setup.id),
+          limiter.recordSuccess('slack_setup_deployment', 'deployment'),
+        ]);
+        return c.redirect(claim.authorizationUrl, 303);
+      } else if (action === 'gateway_refresh') {
+        const result = await createGatewayDeploymentClient(
+          c.env as PlatformEnv | undefined,
+        ).refreshClaim();
+        if (result.state === 'bound') startNodeGatewaySession(c.env as PlatformEnv | undefined);
+        return c.redirect('/admin/setup', 303);
+      } else if (action === 'create') {
         setup = await service.create({
           setupId: setup.id, expectedRevision: setup.revision,
           configurationToken: boundedSetupField(rawForm.configurationToken, 512), manifest,
@@ -2131,9 +2410,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(notice ? { notice } : {}),
       }));
     } catch (error) {
+      if (action === 'gateway_begin' || action === 'gateway_refresh') {
+        const detail = error instanceof SlackTransportError
+          ? `${error.operation}:${error.code}`
+          : error instanceof Error
+            ? error.message.replace(/[A-Za-z0-9_-]{32,}/g, '[redacted]').slice(0, 240)
+            : 'unknown';
+        console.error('[chickpea] shared Slack gateway setup failed:', detail);
+      }
       if (error instanceof AuthRateLimitError) {
         c.header('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))));
-        const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
+        const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
         return c.html(renderSlackSetupPage({
           ...(setup ? { setup } : {}),
           destination: setup?.destination ?? '/admin/onboarding',
@@ -2146,12 +2433,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         limiter.recordFailure(`slack_setup_operation_${action}`, setup.id),
         limiter.recordFailure('slack_setup_deployment', 'deployment'),
       ]);
-      const code = error instanceof SlackAppCreationError ? error.code : 'setup_invalid';
+      const code = (action === 'gateway_begin' || action === 'gateway_refresh')
+        && error instanceof SlackTransportError
+        ? slackGatewaySetupPageError(error.code)
+        : error instanceof SlackAppCreationError ? error.code : 'setup_invalid';
       const status = code === 'ambiguous_external_effect' ? 409
         : code === 'setup_expired' ? 410
         : code === 'setup_conflict' ? 409
+        : code === 'gateway_not_configured' || code === 'gateway_unreachable' ? 503
+        : code === 'gateway_redirect_rejected' || code === 'gateway_rejected' ? 502
         : 400;
-      const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
+      const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
       return c.html(renderSlackSetupPage({
         ...(setup ? { setup } : {}),
         destination: setup?.destination ?? '/admin/onboarding',
@@ -2188,7 +2480,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const authority = recoveryAuthority(c);
     if (!authority) {
       const active = await identity(c).getActiveSlackCredentialRevision(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        WORKSPACE_SLACK_INSTALLATION_ID,
       );
       if (!active || active.purpose !== 'connected_credentials' || !active.teamId) return c.notFound();
       return c.html(renderSlackRecoveryPage());
@@ -2213,7 +2505,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!service || !token) return c.notFound();
     if (!recoveryAuthority(c)) {
       const active = await identity(c).getActiveSlackCredentialRevision(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+        WORKSPACE_SLACK_INSTALLATION_ID,
       );
       if (!active || active.purpose !== 'connected_credentials' || !active.teamId) return c.notFound();
     }
@@ -2248,7 +2540,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const authority = recoveryAuthority(c);
       if (!authority) throw new SlackCredentialRecoveryError('invalid_session');
       if (action === 'stage') {
-        const manifest = buildSlackAppManifest({ kind: 'control_plane', origin: requestOrigin(c) });
+        const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
         if (typeof form.configurationToken === 'string' && form.configurationToken.trim()) {
           await service.repairUrls({
             ...authority,
@@ -2451,6 +2743,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       if (providerError) {
         const cancelled = await cancelApiOAuth(state, apiOAuthDependencies(c));
+        const continuationState = await takeOAuthContinuationForProviderState({
+          settings: settings(c),
+          providerState: state,
+        });
+        if (continuationState) {
+          await cancelOAuthContinuationFromProvider({
+            settings: settings(c),
+            state: continuationState,
+          });
+        }
         const status = providerError === 'access_denied' ? 'cancelled' : 'failed';
         return c.redirect(apiOAuthAdminRedirect(status, cancelled.ref), 303);
       }
@@ -2459,6 +2761,23 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         apiOAuthDependencies(c),
       );
       ref = completed.ref;
+      const continuationState = await takeOAuthContinuationForProviderState({
+        settings: settings(c),
+        providerState: state,
+      });
+      if (continuationState) {
+        const pendingContinuation = await inspectOAuthContinuationFromProvider({
+          settings: settings(c),
+          state: continuationState,
+        });
+        if (!(await isOAuthContinuationActorActive({
+          continuation: pendingContinuation,
+          identity: identity(c),
+        }))) {
+          await deleteApiOAuthSettings(completed.ref, settings(c));
+          throw new OAuthContinuationError('wrong_actor');
+        }
+      }
       try {
         await replaceReadyApiOAuthConnection(
           store(c),
@@ -2474,6 +2793,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           await deleteApiOAuthSettings(completed.ref, settings(c));
         }
         throw error;
+      }
+      if (continuationState) {
+        const continuation = await authorizeOAuthContinuationFromProvider({
+          settings: settings(c),
+          state: continuationState,
+        });
+        if (options.onOAuthContinuationReady) {
+          await options.onOAuthContinuationReady(
+            continuation,
+            c.env as PlatformEnv | undefined,
+          );
+          await claimOAuthContinuationResume({
+            settings: settings(c),
+            continuationId: continuation.id,
+          });
+        }
       }
       return c.redirect(apiOAuthAdminRedirect('connected', completed.ref), 303);
     } catch (error) {
@@ -2493,6 +2828,28 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       } catch {
         return c.redirect('/admin?oauth=failed&lane=api', 303);
       }
+    }
+  });
+
+  // Slack fetches persona images without a Chickpea browser session. Revisions
+  // are immutable, so public caching cannot make a later upload appear stale.
+  app.get('/assets/agents/:agentId/avatar/:revision', async (c) => {
+    const agentId = c.req.param('agentId');
+    const revision = Number(c.req.param('revision'));
+    if (!AGENT_ID_PATTERN.test(agentId) || !Number.isSafeInteger(revision) || revision < 1) {
+      return c.notFound();
+    }
+    try {
+      await store(c).getAgent(agentId);
+      const asset = await readAgentAvatarAsset({ settings: settings(c), agentId, revision });
+      if (!asset) return c.notFound();
+      c.header('Content-Type', asset.contentType);
+      c.header('Cache-Control', 'public, max-age=31536000, immutable');
+      c.header('X-Content-Type-Options', 'nosniff');
+      return c.body(new Uint8Array(asset.bytes).buffer);
+    } catch (error) {
+      if (error instanceof UnknownAgentError) return c.notFound();
+      return internalError(c, error);
     }
   });
 
@@ -2553,15 +2910,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     return next();
   });
-  const limitSlackIdentityMutation = (c: Context, next: Next) =>
+  const limitSlackInstallationMutation = (c: Context, next: Next) =>
     c.req.method === 'GET' || c.req.method === 'HEAD'
       ? next()
-      : slackIdentityAdminBodyLimit(c, next);
-  app.use('/admin/api/slack-identities', limitSlackIdentityMutation);
-  app.use('/admin/api/slack-identities/*', limitSlackIdentityMutation);
-  // The workspace-default connection lifecycle is an identity mutation too.
-  // Give its operational replace/disconnect surface the same byte ceiling.
-  app.use('/admin/api/slack-connection', limitSlackIdentityMutation);
+      : slackInstallationAdminBodyLimit(c, next);
+  app.use('/admin/api/slack-connection', limitSlackInstallationMutation);
 
   app.post('/admin/api/agents/:agentId/mcp/oauth/:connectionId/start', async (c) => {
     c.header('Cache-Control', 'no-store');
@@ -2716,6 +3069,101 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  app.put('/admin/api/agents/:agentId/connections/:connectionAccountId/oauth/api/client', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const agentId = c.req.param('agentId');
+    const connectionAccountId = c.req.param('connectionAccountId');
+    if (!AGENT_ID_PATTERN.test(agentId) || !/^connection_[A-Za-z0-9_-]{1,180}$/.test(connectionAccountId)) {
+      return invalidRequest(c);
+    }
+    const parsed = v.safeParse(apiOAuthClientSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const { account } = await managedConnectionAccount(c, agentId, connectionAccountId);
+      if (!isApiOAuthAccount(account, parsed.output.provider)) {
+        return c.json({ error: 'oauth_not_enabled' }, 409);
+      }
+      const ref = connectionAccountOAuthRef(account.id);
+      await deleteApiOAuthSettings(ref, settings(c));
+      await saveApiOAuthClient(ref, parsed.output, settings(c));
+      if (!(await isCurrentApiOAuthConnection(store(c), ref, parsed.output.provider))) {
+        await deleteApiOAuthSettings(ref, settings(c));
+        return c.json({ error: 'connection_changed' }, 409);
+      }
+      await replacePendingApiOAuthConnection(store(c), ref, parsed.output.provider);
+      return c.json({ source: 'stored' });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:agentId/connections/:connectionAccountId/oauth/api/start', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const agentId = c.req.param('agentId');
+    const connectionAccountId = c.req.param('connectionAccountId');
+    if (!AGENT_ID_PATTERN.test(agentId) || !/^connection_[A-Za-z0-9_-]{1,180}$/.test(connectionAccountId)) {
+      return invalidRequest(c);
+    }
+    const parsed = v.safeParse(connectionAccountOAuthStartSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const { principal, account } = await managedConnectionAccount(c, agentId, connectionAccountId);
+      if (!isApiOAuthAccount(account, 'google') || account.policy.kind !== 'api') {
+        return c.json({ error: 'oauth_not_enabled' }, 409);
+      }
+      if (parsed.output.continuation?.workspaceId !== undefined &&
+          parsed.output.continuation.workspaceId !== account.workspaceId) {
+        throw new AuthorizationError();
+      }
+      const ref = connectionAccountOAuthRef(account.id);
+      const result = await startApiOAuth(
+        {
+          ref,
+          provider: 'google',
+          callbackUrl: `${requestOrigin(c)}/oauth/api/callback`,
+          scopes: account.policy.oauthScopes!,
+        },
+        apiOAuthDependencies(c),
+      );
+      let continuationId: string | undefined;
+      if (parsed.output.continuation) {
+        const issued = await createOAuthContinuation({
+          settings: settings(c),
+          workspaceId: account.workspaceId,
+          actorMembershipId: principal.membershipId,
+          agentId,
+          channelId: parsed.output.continuation.channelId,
+          threadTs: parsed.output.continuation.threadTs,
+          taskId: parsed.output.continuation.taskId,
+          providerId: account.providerId,
+          accountId: account.id,
+        });
+        await linkOAuthProviderState({
+          settings: settings(c),
+          providerState: result.state,
+          continuationState: issued.state,
+        });
+        continuationId = issued.continuation.id;
+      }
+      return c.json({
+        authorizationUrl: result.authorizationUrl.href,
+        ...(continuationId ? { continuationId } : {}),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof ApiOAuthError && error.code === 'client_missing') {
+        return c.json({ error: 'oauth_client_missing' }, 409);
+      }
+      if (error instanceof ApiOAuthError && error.code === 'connection_missing') {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      return internalError(c, error);
+    }
+  });
+
   const adminPage = (c: Context): Response => {
     // The shell contains the full inline application. Never let a browser keep
     // an older deployment's JavaScript after the Worker has been updated.
@@ -2745,11 +3193,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.route('/admin/api', createTeamAdminApi({
     store: identity,
-    resolveCredentials: (c) => resolveSlackIdentityCredentials(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      c.env as PlatformEnv | undefined,
-      slackCredentialResolutionDependencies(c),
-    ),
     revokeBetterAuthSessions: async (c, betterAuthUserId) => {
       const context = await betterAuthContext(c);
       return context?.environment.backend.deleteSessionsForUser(betterAuthUserId) ?? 0;
@@ -2762,10 +3205,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     ...(sharedManagementEnabled
       ? { management: managementService }
       : {}),
-  }));
-  app.route('/admin/api', createMemoryAdminApi({
-    store: memory,
-    adminSecret: async (c) => (await betterAuthContext(c))?.environment.secret ?? options.authSecret ?? '',
   }));
   app.route('/admin/api', createRoutineAdminApi({ store: routines, usage, work }));
   app.route('/admin/api', createUsageAdminApi({ store: usage, work }));
@@ -2857,12 +3296,39 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
     const configStore = store(c);
-    const [rawAgents, assignments, identities, channels] = await Promise.all([
+    const [allAgents, grants, installations] = await Promise.all([
       configStore.listAgents(),
-      configStore.listAssignments(),
-      configStore.listSlackIdentities(),
-      configStore.listChannels(),
+      configStore.listAgentChannelGrants(),
+      configStore.listWorkspaceInstallations(),
     ]);
+    const principal = principalByContext.get(c);
+    let rawAgents = allAgents;
+    if (principal) {
+      const editableIds = new Set(
+        allAgents.filter((agent) => canEditAgent(principal, agent)).map((agent) => agent.id),
+      );
+      const needsSlackVisibility = allAgents.some((agent) => !editableIds.has(agent.id));
+      let discoverableIds = new Set<string>();
+      if (needsSlackVisibility) {
+        try {
+          const actor = await agentActor(c);
+          const transport = await agentSlackTransport(c, actor.slackTeamId);
+          const memberChannels = await transport.listMemberChannels(actor.slackUserId);
+          discoverableIds = new Set((await discoverableAgents({
+            config: configStore,
+            workspaceId: actor.slackTeamId,
+            principal,
+            channelMember: async (channelId) => memberChannels.has(channelId),
+          })).map((agent) => agent.id));
+        } catch {
+          // Slack membership is the authority for non-editors. If it cannot be
+          // proven, keep the directory private while retaining editable Agents.
+        }
+      }
+      rawAgents = allAgents.filter((agent) =>
+        editableIds.has(agent.id) || discoverableIds.has(agent.id)
+      );
+    }
     const agents = await Promise.all(
       rawAgents.map((agent) =>
         withApiConnectionSources(agent, platformEnv, settingsStore),
@@ -2874,25 +3340,23 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json({
       agents: await Promise.all(agents.map((agent, index) =>
         agentAdminProjection(agent, configStore, snapshots(c), {
-          assignments: assignments.filter(({ agentId }) => agentId === agent.id),
-          identities: identities.filter((identity) =>
-            identity.id === (agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) ||
-            identity.dmAgentId === agent.id
-          ),
           references: {
             agentId: agent.id,
-            channelAssignments: assignments
-              .filter(({ agentId }) => agentId === agent.id)
-              .map(({ workspaceId, channelId }) => ({ workspaceId, channelId })),
-            dmIdentityIds: identities
-              .filter(({ dmAgentId }) => dmAgentId === agent.id)
-              .map(({ id }) => id),
-            identityReferenceIds: identities
-              .filter(({ setupIntent }) => setupIntent?.sourceAgentId === agent.id)
-              .map(({ id }) => id),
+            channelGrants: [...new Map(
+              grants
+                .filter(({ agentId }) => agentId === agent.id)
+                .map(({ workspaceId, channelId }) => ({ workspaceId, channelId }))
+                .map((reference) => [
+                `${reference.workspaceId}\u0000${reference.channelId}`,
+                reference,
+              ]),
+            ).values()],
           },
-          channels,
+          grants: grants.filter(({ agentId }) => agentId === agent.id),
+          installations,
           snapshotRoots: roots[index]!,
+        }, {
+          canEdit: principal ? canEditAgent(principal, agent) : true,
         })
       )),
     });
@@ -3572,7 +4036,27 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) {
       return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
-    let agent = toAgentConfig(parsed.output);
+    const requestedHandle = parsed.output.handle ?? parsed.output.name;
+    const principal = principalByContext.get(c);
+    let agent: AgentCreateInput = {
+      ...toAgentConfig(parsed.output),
+      lifecycle: 'draft',
+      ...(principal ? { creatorMembershipId: principal.membershipId } : {}),
+      editPolicy: parsed.output.editPolicy ?? 'creator_and_admins',
+      configurationGeneration: 1,
+      slackPresence: {
+        requestedHandle,
+        normalizedHandle: normalizeAgentHandle(requestedHandle),
+        desiredState: 'unpublished',
+        health: 'unpublished',
+        avatar: {
+          kind: 'generated',
+          revision: 1,
+          seed: randomUUID(),
+          url: agentAvatarUrl(requestOrigin(c), parsed.output.id, 1),
+        },
+      },
+    };
     await loadModelCatalog(settings(c));
     const modelCompatibilityError = activeCatalogCompatibilityError(
       agent.model,
@@ -3594,13 +4078,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           settings(c),
         ),
       };
-      return c.json(
-        {
-          agent: await configStore.createAgent(agent),
-          ...providerWarnings(agent.model, providerIds()),
-        },
-        201,
-      );
+      const created = await configStore.createAgent(agent);
+      return c.json({
+        agent: created,
+        ...providerWarnings(agent.model, providerIds()),
+      }, 201);
     } catch (err) {
       if (err instanceof AgentExistsError) {
         return c.json({ error: 'agent_exists' }, 409);
@@ -4077,20 +4559,415 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json({ ok: true });
   });
 
+  app.get('/admin/api/connections', async (c) => {
+    const workspaceId = c.req.query('workspaceId')?.trim();
+    if (!workspaceId || !/^[A-Z0-9_]{2,32}$/.test(workspaceId)) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const organization = await identity(c).getOrganization();
+      if (organization?.slackTeamId !== workspaceId) throw new AuthorizationError();
+      const [views, agents] = await Promise.all([
+        connectionAccounts(c).listViews(workspaceId),
+        store(c).listAgents(),
+      ]);
+      const visibleAccounts = views.filter(
+        (account) => account.ownerKind === 'team' ||
+          account.ownerMembershipId === principal.membershipId,
+      );
+      const visibleAgents = agents.filter((agent) => canEditAgent(principal, agent));
+      const bindings = await Promise.all(
+        visibleAgents.map(async (agent) => ({
+          agent,
+          bindings: await store(c).listAgentConnectionBindings(agent.id),
+        })),
+      );
+      return c.json({
+        accounts: visibleAccounts.map((account) => ({
+          account,
+          agents: bindings.flatMap(({ agent, bindings: agentBindings }) =>
+            agentBindings.some((binding) => binding.connectionAccountId === account.id && binding.enabled)
+              ? [{ id: agent.id, name: agent.name }]
+              : []),
+        })),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      return internalError(c, error);
+    }
+  });
+
+  app.get('/admin/api/agents/:id/connections', async (c) => {
+    const workspaceId = c.req.query('workspaceId')?.trim();
+    if (!workspaceId || !/^[A-Z0-9_]{2,32}$/.test(workspaceId)) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const agent = await store(c).getAgent(c.req.param('id'));
+      if (!canEditAgent(principal, agent)) throw new AuthorizationError();
+      const organization = await identity(c).getOrganization();
+      if (organization?.slackTeamId !== workspaceId) throw new AuthorizationError();
+      const [views, bindings] = await Promise.all([
+        connectionAccounts(c).listViews(workspaceId),
+        store(c).listAgentConnectionBindings(agent.id),
+      ]);
+      const visible = views.filter(
+        (account) => account.ownerKind === 'team' ||
+          account.ownerMembershipId === principal.membershipId,
+      );
+      const byId = new Map(bindings.map((binding) => [binding.connectionAccountId, binding]));
+      return c.json({
+        attached: visible.flatMap((account) => {
+          const binding = byId.get(account.id);
+          return binding?.enabled ? [{ account, binding }] : [];
+        }),
+        available: visible.filter((account) => !byId.get(account.id)?.enabled),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/connections', async (c) => {
+    const parsed = v.safeParse(connectionAccountCreateSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const organization = await identity(c).getOrganization();
+      if (organization?.slackTeamId !== parsed.output.workspaceId) throw new AuthorizationError();
+      const configStore = store(c);
+      const agent = await configStore.getAgent(c.req.param('id'));
+      requireAgentEdit(principal, agent);
+      const source = parsed.output.api ?? parsed.output.mcp!;
+      const policy = parsed.output.api
+        ? {
+            kind: 'api' as const,
+            allowedHosts: [...parsed.output.api.allowedHosts],
+            pathPrefixes: [...parsed.output.api.pathPrefixes],
+            headerName: parsed.output.api.headerName,
+            ...(parsed.output.api.headerValuePrefix
+              ? { headerValuePrefix: parsed.output.api.headerValuePrefix }
+              : {}),
+            allowedMethods: [...parsed.output.api.allowedMethods],
+            authMode: parsed.output.api.authMode ?? 'credential' as const,
+            ...(parsed.output.api.oauthProvider
+              ? { oauthProvider: parsed.output.api.oauthProvider }
+              : {}),
+            ...(parsed.output.api.oauthScopes
+              ? { oauthScopes: [...parsed.output.api.oauthScopes] }
+              : {}),
+            ...(parsed.output.api.oauthAppType
+              ? { oauthAppType: parsed.output.api.oauthAppType }
+              : {}),
+            ...(parsed.output.api.presetId ? { presetId: parsed.output.api.presetId } : {}),
+          }
+        : {
+            kind: 'mcp' as const,
+            url: parsed.output.mcp!.url,
+            transport: parsed.output.mcp!.transport,
+            authMode: parsed.output.mcp!.authMode,
+            headerNames: [...parsed.output.mcp!.headerNames],
+            discoveredTools: parsed.output.mcp!.discoveredTools.map((tool) => ({
+              name: tool.name,
+              ...(tool.title ? { title: tool.title } : {}),
+              ...(tool.description ? { description: tool.description } : {}),
+            })),
+            allowedTools: [...parsed.output.mcp!.allowedTools],
+            ...(parsed.output.mcp!.oauthScope ? { oauthScope: parsed.output.mcp!.oauthScope } : {}),
+            ...(parsed.output.mcp!.presetId ? { presetId: parsed.output.mcp!.presetId } : {}),
+          };
+      const service = connectionAccounts(c);
+      const account = await service.create({
+        principal,
+        workspaceId: parsed.output.workspaceId,
+        ownerKind: parsed.output.ownerKind,
+        providerId: parsed.output.providerId,
+        label: parsed.output.label,
+        ...(parsed.output.purpose ? { purpose: parsed.output.purpose } : {}),
+        ...(source.identity ? {
+          identity: {
+            ...(source.identity.workspaceName
+              ? { workspaceName: source.identity.workspaceName }
+              : {}),
+            ...(source.identity.accountName
+              ? { accountName: source.identity.accountName }
+              : {}),
+          },
+        } : {}),
+        policy,
+        ...(parsed.output.credential ? { credential: parsed.output.credential } : {}),
+      });
+      const binding = await service.attach({
+        principal,
+        agentId: agent.id,
+        connectionAccountId: account.id,
+        allowedCapabilities: parsed.output.allowedCapabilities ?? [],
+      });
+      const { secretRefId: _secretRefId, ...safeAccount } = account;
+      return c.json({ account: safeAccount, binding }, 201);
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/connections/:connectionAccountId/attach', async (c) => {
+    const parsed = v.safeParse(connectionAccountAttachSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const binding = await connectionAccounts(c).attach({
+        principal,
+        agentId: c.req.param('id'),
+        connectionAccountId: c.req.param('connectionAccountId'),
+        allowedCapabilities: parsed.output.allowedCapabilities ?? [],
+      });
+      return c.json({ binding }, 201);
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.delete('/admin/api/agents/:id/connections/:connectionAccountId', async (c) => {
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const binding = await connectionAccounts(c).detach({
+        principal,
+        agentId: c.req.param('id'),
+        connectionAccountId: c.req.param('connectionAccountId'),
+      });
+      return c.json({ binding });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/connections/:connectionAccountId/revoke', async (c) => {
+    const body = await readJson(c.req);
+    if (!isRecord(body) || Object.keys(body).length > 0) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const account = await connectionAccounts(c).revoke({
+        principal,
+        connectionAccountId: c.req.param('connectionAccountId'),
+      });
+      const { secretRefId: _secretRefId, ...safeAccount } = account;
+      return c.json({ account: safeAccount });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      return internalError(c, error);
+    }
+  });
+
+  app.get('/admin/api/agents/:id/schedules', async (c) => {
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const agent = await store(c).getAgent(c.req.param('id'));
+      requireAgentEdit(principal, agent);
+      const references = await store(c).listAgentScheduleReferences(agent.id);
+      const memberships = new Map(
+        (await identity(c).listMemberships()).map((membership) => [membership.id, membership]),
+      );
+      const userRows = await Promise.all([...memberships.values()].map((membership) =>
+        identity(c).getUser(membership.userId)
+      ));
+      const users = new Map(userRows.flatMap((user) => user ? [[user.id, user] as const] : []));
+      return c.json({
+        viewerMembershipId: principal.membershipId,
+        members: [...memberships.values()].filter((membership) => membership.status === 'active')
+          .map((membership) => ({
+            membershipId: membership.id,
+            role: membership.role,
+            displayName: users.get(membership.userId)?.displayName ?? null,
+            contactEmail: users.get(membership.userId)?.contactEmail ?? null,
+          })),
+        schedules: await Promise.all(references.map(async (reference) => {
+          const routine = await routines(c).getRoutine(reference.scheduleId);
+          const membership = memberships.get(reference.runsAsMembershipId);
+          const user = membership ? users.get(membership.userId) : undefined;
+          return {
+            reference,
+            routine: routine
+              ? {
+                  id: routine.id,
+                  name: routine.name,
+                  description: routine.description,
+                  state: routine.state,
+                  version: routine.version,
+                  nextRunAt: routine.nextRunAt,
+                  lastFinishedAt: routine.lastFinishedAt,
+                  pausedReason: routine.pausedReason,
+                }
+              : null,
+            runsAs: membership
+              ? {
+                  membershipId: membership.id,
+                  role: membership.role,
+                  status: membership.status,
+                  displayName: user?.displayName ?? null,
+                  contactEmail: user?.contactEmail ?? null,
+                }
+              : null,
+          };
+        })),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/schedules/:scheduleId/reassign', async (c) => {
+    const parsed = v.safeParse(scheduleAuthorityReassignSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const config = store(c);
+      const agent = await config.getAgent(c.req.param('id'));
+      requireAgentEdit(principal, agent);
+      const current = await config.getAgentScheduleReference(c.req.param('scheduleId'));
+      if (!current || current.agentId !== agent.id) return c.json({ error: 'not_found' }, 404);
+      if (current.revision !== parsed.output.expectedAuthorityRevision) {
+        return c.json({ error: 'schedule_authority_conflict', currentRevision: current.revision }, 409);
+      }
+      // A Runs as grant is durable personal authority. An editor may take over
+      // their own schedule, but cannot silently grant another member's identity
+      // or personal connections. A future delegation flow must require that
+      // target member's explicit acceptance.
+      if (parsed.output.runsAsMembershipId !== principal.membershipId) {
+        throw new AuthorizationError('forbidden');
+      }
+      const [membership, organization] = await Promise.all([
+        identity(c).getMembership(parsed.output.runsAsMembershipId),
+        identity(c).getOrganization(),
+      ]);
+      if (!membership || membership.status !== 'active' ||
+          membership.organizationId !== organization?.id ||
+          organization.slackTeamId !== current.workspaceId) {
+        return c.json({ error: 'runs_as_unavailable' }, 409);
+      }
+      const reference = await reassignRoutineAgentAuthority({
+        scheduleId: current.scheduleId,
+        runsAsMembershipId: membership.id,
+        config,
+        identity: identity(c),
+      });
+      const routine = await routines(c).getRoutine(current.scheduleId);
+      const resumed = routine?.state === 'paused'
+        ? await new RoutineService(routines(c)).control({
+            routineId: routine.id,
+            expectedVersion: routine.version,
+            action: 'resume',
+            actorId: principal.membershipId,
+            actorClass: 'operator',
+            reasonCode: 'authority_reassigned',
+            idempotencyKey: `admin:schedule-reassign:${reference.authorityReceiptId}`,
+          })
+        : routine;
+      return c.json({ reference, routine: resumed ?? null });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof RoutineAuthorityError) {
+        return c.json({ error: 'runs_as_unavailable' }, 409);
+      }
+      return internalError(c, error);
+    }
+  });
+
   app.get('/admin/api/agents/:id', async (c) => {
     try {
       const agent = await store(c).getAgent(c.req.param('id'));
+      const principal = principalByContext.get(c);
+      const canEdit = principal ? canEditAgent(principal, agent) : true;
+      if (!canEdit) {
+        let discoverable = false;
+        try {
+          const actor = await agentActor(c);
+          const transport = await agentSlackTransport(c, actor.slackTeamId);
+          const memberChannels = await transport.listMemberChannels(actor.slackUserId);
+          discoverable = (await discoverableAgents({
+            config: store(c),
+            workspaceId: actor.slackTeamId,
+            principal: principal!,
+            channelMember: async (channelId) => memberChannels.has(channelId),
+          })).some((candidate) => candidate.id === agent.id);
+        } catch {
+          // An Agent detail lookup must not widen directory visibility when
+          // Slack membership cannot be proven.
+        }
+        if (!discoverable) return c.json({ error: 'not_found' }, 404);
+      }
       const enriched = await withApiConnectionSources(
         agent,
         c.env as PlatformEnv | undefined,
         settings(c),
       );
-      return c.json({ agent: await agentAdminProjection(enriched, store(c), snapshots(c)) });
+      return c.json({
+        agent: await agentAdminProjection(
+          enriched,
+          store(c),
+          snapshots(c),
+          undefined,
+          { canEdit },
+        ),
+      });
     } catch (err) {
       if (err instanceof UnknownAgentError) {
         return c.json({ error: 'not_found' }, 404);
       }
       return internalError(c, err);
+    }
+  });
+
+  app.get('/admin/api/agents/:id/memory', async (c) => {
+    try {
+      const agent = await store(c).getAgent(c.req.param('id'));
+      const principal = principalByContext.get(c);
+      if (principal) requireAgentEdit(principal, agent);
+      return c.json({ memory: await memory(c).getAgentMemory(agent.id) });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.put('/admin/api/agents/:id/memory', async (c) => {
+    const parsed = v.safeParse(agentMemorySchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const agent = await store(c).getAgent(c.req.param('id'));
+      const principal = principalByContext.get(c);
+      if (principal) requireAgentEdit(principal, agent);
+      const saved = await memory(c).putAgentMemory({
+        agentId: agent.id,
+        body: parsed.output.body,
+        expectedRevision: parsed.output.expectedRevision,
+      });
+      return c.json({ memory: saved });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof MemoryStateError && error.code === 'memory_version_conflict') {
+        const current = await memory(c).getAgentMemory(c.req.param('id'));
+        return c.json({ error: error.code, currentVersion: current.revision }, 409);
+      }
+      return internalError(c, error);
     }
   });
 
@@ -4104,6 +4981,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const configStore = store(c);
       const agentId = c.req.param('id');
       const current = await configStore.getAgent(agentId);
+      const principal = principalByContext.get(c);
+      if (principal) requireAgentEdit(principal, current);
       if (current.revision !== parsed.output.expectedRevision) {
         throw new AgentRevisionConflictError(
           agentId,
@@ -4112,6 +4991,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         );
       }
       const patch = toAgentPatch(parsed.output);
+      if (parsed.output.handle !== undefined) {
+        const requestedHandle = parsed.output.handle;
+        const presence = current.slackPresence;
+        if (!presence) throw new Error(`Agent ${agentId} has no Slack presence`);
+        patch.slackPresence = {
+          ...presence,
+          requestedHandle,
+          normalizedHandle: normalizeAgentHandle(requestedHandle),
+          health: presence.desiredState === 'active' ? 'pending' : presence.health,
+        };
+      }
       if (patch.apiConnections) {
         patch.apiConnections = await normalizeApiOAuthPatch(
           agentId,
@@ -4152,16 +5042,41 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(c.env ? { env: c.env as PlatformEnv } : {}),
         settings: settings(c),
       });
-      const updated = await configStore.updateAgent(
+      let updated = await configStore.updateAgent(
         agentId,
         patch,
         parsed.output.expectedRevision,
       );
+      let presenceRecovery = null;
+      const reconcilePresence = updated.slackPresence?.desiredState === 'active' && (
+        parsed.output.handle !== undefined ||
+        parsed.output.name !== undefined ||
+        parsed.output.description !== undefined
+      );
+      if (reconcilePresence) {
+        try {
+          const actor = await agentActor(c);
+          const transport = await agentSlackTransport(c, actor.slackTeamId);
+          updated = await new AgentPresenceReconciler({
+            config: configStore,
+            transport,
+          }).retry(agentId);
+        } catch (error) {
+          const classified = classifyAgentPresenceError(error);
+          updated = await configStore.getAgent(agentId);
+          presenceRecovery = agentPresenceRecovery(
+            classified,
+            updated.slackPresence?.normalizedHandle ?? normalizeAgentHandle(updated.name),
+          );
+        }
+      }
       return c.json({
         agent: await agentAdminProjection(updated, configStore, snapshots(c)),
+        presenceRecovery,
         ...providerWarnings(next.model, providerIds()),
       });
     } catch (err) {
+      if (err instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (err instanceof UnknownAgentError) {
         return c.json({ error: 'not_found' }, 404);
       }
@@ -4173,17 +5088,254 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           actualRevision: err.actualRevision,
         }, 409);
       }
-      if (err instanceof AgentStillSlackDmHandlerError) {
-        return c.json({
-          error: 'agent_slack_dm_handler',
-          agentId: err.agentId,
-          identityIds: err.identityIds.split(', ').filter(Boolean),
-        }, 409);
-      }
       if (err instanceof AgentStillReferencedError) {
         return agentStillReferenced(c, err);
       }
       return internalError(c, err);
+    }
+  });
+
+  app.put('/admin/api/agents/:id/avatar', async (c) => {
+    const parsed = v.safeParse(agentAvatarUploadSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const agentId = c.req.param('id');
+    try {
+      const current = await store(c).getAgent(agentId);
+      requireAgentEdit(principalByContext.get(c), current);
+      let bytes: Uint8Array;
+      try {
+        const binary = atob(parsed.output.base64);
+        bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      } catch {
+        return invalidRequest(c, 'The avatar data is not valid base64.');
+      }
+      const gatewayInstallation = (await store(c).listWorkspaceInstallations()).find(
+        (installation) => installation.transportMode === 'gateway',
+      );
+      const gatewayClient = gatewayInstallation
+        ? createGatewayDeploymentClient(c.env as PlatformEnv | undefined)
+        : undefined;
+      const updated = await uploadAgentAvatar({
+        config: store(c),
+        settings: settings(c),
+        agentId,
+        bytes,
+        contentType: parsed.output.contentType,
+        publicOrigin: requestOrigin(c),
+        ...(gatewayClient && gatewayInstallation
+          ? {
+              publish: (avatar) => gatewayClient.publishAvatar({
+                workspaceId: gatewayInstallation.workspaceId,
+                ...avatar,
+              }),
+            }
+          : {}),
+      });
+      return c.json({
+        agent: await agentAdminProjection(updated, store(c), snapshots(c)),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof AgentAvatarError) {
+        return c.json({ error: error.code }, error.code === 'too_large' ? 413 : 400);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/channels', async (c) => {
+    const parsed = v.safeParse(publishAgentSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const agentId = c.req.param('id');
+    try {
+      const actor = await agentActor(c);
+      if (actor.slackTeamId !== parsed.output.workspaceId) throw new AuthorizationError();
+      let current = await store(c).getAgent(agentId);
+      requireAgentEdit(actor.principal, current);
+      const installation = await store(c).getWorkspaceInstallation(parsed.output.workspaceId);
+      if (installation?.transportMode === 'gateway' &&
+          current.slackPresence?.avatar.kind === 'generated') {
+        const avatar = current.slackPresence.avatar;
+        const url = await createGatewayDeploymentClient(
+          c.env as PlatformEnv | undefined,
+        ).generateAvatar({
+          workspaceId: installation.workspaceId,
+          agentId,
+          revision: avatar.revision,
+          seed: avatar.seed ?? agentId,
+        });
+        if (avatar.url !== url) {
+          current = await store(c).updateAgent(agentId, {
+            slackPresence: {
+              ...current.slackPresence,
+              avatar: { ...avatar, url },
+            },
+          }, current.revision);
+        }
+      }
+      const reconciler = new AgentPresenceReconciler({
+        config: store(c),
+        transport: await agentSlackTransport(c, parsed.output.workspaceId),
+      });
+      const result = await reconciler.publish({
+        workspaceId: parsed.output.workspaceId,
+        agentId,
+        channelId: parsed.output.channelId,
+        actorMembershipId: actor.principal.membershipId,
+        actorSlackUserId: actor.slackUserId,
+      });
+      return c.json({
+        grant: result.grant,
+        agent: await agentAdminProjection(result.agent, store(c), snapshots(c)),
+      }, 201);
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return agentPresenceFailureResponse(c, agentId, error);
+    }
+  });
+
+  app.delete('/admin/api/agents/:id/channels/:workspaceId/:channelId', async (c) => {
+    const agentId = c.req.param('id');
+    try {
+      const actor = await agentActor(c);
+      if (actor.slackTeamId !== c.req.param('workspaceId')) throw new AuthorizationError();
+      const current = await store(c).getAgent(agentId);
+      requireAgentEdit(actor.principal, current);
+      const removed = await store(c).deleteAgentChannelGrant(
+        c.req.param('workspaceId'),
+        c.req.param('channelId'),
+        agentId,
+      );
+      return c.json({ removed });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/slack/retry', async (c) => {
+    const parsed = v.safeParse(retryAgentPresenceSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const agentId = c.req.param('id');
+    try {
+      const actor = await agentActor(c);
+      const workspaceId = parsed.output.workspaceId ?? actor.slackTeamId;
+      if (actor.slackTeamId !== workspaceId) throw new AuthorizationError();
+      const current = await store(c).getAgent(agentId);
+      requireAgentEdit(actor.principal, current);
+      const reconciler = new AgentPresenceReconciler({
+        config: store(c),
+        transport: await agentSlackTransport(c, workspaceId),
+      });
+      const pendingGrants = (await store(c).listAgentChannelGrants()).filter(
+        (grant) => grant.agentId === agentId && grant.workspaceId === workspaceId &&
+          grant.status !== 'active',
+      );
+      let updated = current;
+      if (pendingGrants.length > 0) {
+        for (const pendingGrant of pendingGrants) {
+          updated = (await reconciler.publish({
+            workspaceId,
+            agentId,
+            channelId: pendingGrant.channelId,
+            actorMembershipId: actor.principal.membershipId,
+            actorSlackUserId: actor.slackUserId,
+          })).agent;
+        }
+      } else {
+        updated = await reconciler.retry(agentId);
+      }
+      return c.json({
+        agent: await agentAdminProjection(updated, store(c), snapshots(c)),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return agentPresenceFailureResponse(c, agentId, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/archive', async (c) => {
+    const parsed = v.safeParse(archiveAgentSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const agentId = c.req.param('id');
+    try {
+      const actor = await agentActor(c);
+      const current = await store(c).getAgent(agentId);
+      requireAgentEdit(actor.principal, current);
+      if (current.revision !== parsed.output.expectedRevision) {
+        throw new AgentRevisionConflictError(
+          agentId,
+          parsed.output.expectedRevision,
+          current.revision,
+        );
+      }
+      const isWorkspaceDefault = (await store(c).listWorkspaceInstallations()).some(
+        (installation) => installation.defaultAgentId === agentId,
+      );
+      if (isWorkspaceDefault && !parsed.output.replacementDefaultAgentId) {
+        return c.json({ error: 'replacement_default_agent_required' }, 409);
+      }
+      const archiveOptions = parsed.output.replacementDefaultAgentId
+        ? { replacementDefaultAgentId: parsed.output.replacementDefaultAgentId }
+        : {};
+      const updated = current.slackPresence?.userGroupId
+        ? await new AgentPresenceReconciler({
+            config: store(c),
+            transport: await agentSlackTransport(c, actor.slackTeamId),
+          }).archive(agentId, archiveOptions)
+        : await store(c).archiveAgent(agentId, {
+            expectedRevision: current.revision,
+            ...archiveOptions,
+          });
+      return c.json({ agent: await agentAdminProjection(updated, store(c), snapshots(c)) });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof AgentRevisionConflictError) {
+        return c.json({ error: 'agent_revision_conflict' }, 409);
+      }
+      if (error instanceof AgentPresenceError) {
+        return agentPresenceFailureResponse(c, agentId, error);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/restore', async (c) => {
+    const parsed = v.safeParse(restoreAgentSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const agentId = c.req.param('id');
+    try {
+      const actor = await agentActor(c);
+      const current = await store(c).getAgent(agentId);
+      requireAgentEdit(actor.principal, current);
+      if (current.revision !== parsed.output.expectedRevision) {
+        throw new AgentRevisionConflictError(
+          agentId,
+          parsed.output.expectedRevision,
+          current.revision,
+        );
+      }
+      const workspaceId = parsed.output.workspaceId ?? actor.slackTeamId;
+      if (workspaceId !== actor.slackTeamId) throw new AuthorizationError();
+      const updated = current.slackPresence?.userGroupId
+        ? await new AgentPresenceReconciler({
+            config: store(c),
+            transport: await agentSlackTransport(c, workspaceId),
+          }).restore(agentId)
+        : await store(c).restoreAgent(agentId, current.revision);
+      return c.json({ agent: await agentAdminProjection(updated, store(c), snapshots(c)) });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof AgentRevisionConflictError) {
+        return c.json({ error: 'agent_revision_conflict' }, 409);
+      }
+      return agentPresenceFailureResponse(c, agentId, error);
     }
   });
 
@@ -4294,13 +5446,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (err instanceof AgentStillAssignedError) {
         return c.json({ error: 'agent_still_assigned' }, 409);
       }
-      if (err instanceof AgentStillSlackDmHandlerError) {
-        return c.json({
-          error: 'agent_slack_dm_handler',
-          agentId: err.agentId,
-          identityIds: err.identityIds.split(', ').filter(Boolean),
-        }, 409);
-      }
       if (err instanceof AgentStillReferencedError) {
         return agentStillReferenced(c, err);
       }
@@ -4322,15 +5467,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   const onboardingSlackContext = async (c: Context) => {
     const settingsStore = settings(c);
-    await completeWorkspaceDefaultSlackConnectionIfVerified({
-      config: store(c),
-      settings: settingsStore,
-      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      ...(slackCredentialDependencies(c)
-        ? { credentialDependencies: slackCredentialDependencies(c) }
-        : {}),
-    });
-    const [credentials, teamInfo, defaultIdentity] = await Promise.all([
+    const gatewayInstallation = (await store(c).listWorkspaceInstallations()).find(
+      (installation) => installation.transportMode === 'gateway' &&
+        installation.health !== 'revoked' && Boolean(installation.gatewayBindingId),
+    );
+    if (gatewayInstallation) {
+      return {
+        connected: true,
+        teamId: gatewayInstallation.teamId ?? gatewayInstallation.workspaceId,
+        teamName: await settingsStore.getSetting(SLACK_SETTING_KEYS.teamName) ?? undefined,
+      };
+    }
+    const [credentials, teamInfo, installations] = await Promise.all([
       describeSlackCredentialSources(
         c.env as PlatformEnv | undefined,
         settingsStore,
@@ -4341,15 +5489,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         settingsStore,
         slackCredentialResolutionDependencies(c),
       ),
-      store(c).getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID),
+      store(c).listWorkspaceInstallations(),
     ]);
+    const installation = teamInfo.teamId
+      ? installations.find((candidate) => candidate.workspaceId === teamInfo.teamId)
+      : installations.find((candidate) => candidate.transportMode === 'direct');
     const connected =
-      (defaultIdentity.lifecycle === 'connected' || defaultIdentity.lifecycle === 'degraded') &&
+      Boolean(installation) && installation?.health !== 'revoked' &&
       credentials.botToken !== 'missing' &&
       credentials.signingSecret !== 'missing';
     return {
       connected,
-      teamId: teamInfo.teamId ?? defaultIdentity.teamId,
+      teamId: teamInfo.teamId ?? installation?.workspaceId,
       teamName: teamInfo.teamName,
     };
   };
@@ -4467,41 +5618,62 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (slack.teamId !== parsed.output.workspaceId) {
         return c.json({ error: 'workspace_mismatch' }, 400);
       }
-      const assignment = await store(c).getAssignment(
+      const installation = await store(c).getWorkspaceInstallation(parsed.output.workspaceId);
+      const defaultAgentId = installation?.defaultAgentId ?? 'agent_default';
+      const grant = (await store(c).listAgentChannelGrants(
         parsed.output.workspaceId,
         parsed.output.channelId,
+      )).find((candidate) =>
+        candidate.agentId === defaultAgentId && candidate.status === 'active'
       );
-      if (!assignment || assignment.agentId !== 'agent_default') {
-        return c.json({ error: 'onboarding_assignment_missing' }, 409);
+      if (!grant) {
+        return c.json({ error: 'onboarding_grant_missing' }, 409);
       }
-      const { botToken } = await resolveSlackCredentials(
-        c.env as PlatformEnv | undefined,
-        settings(c),
-        slackCredentialResolutionDependencies(c),
-      );
-      if (!botToken) return c.json({ error: 'slack_not_connected' }, 409);
-      let membership: Awaited<ReturnType<typeof slackConversationsInfo>>;
-      try {
-        membership = await (options.slackConversationsInfo ?? slackConversationsInfo)(
-          botToken,
-          parsed.output.channelId,
+      if (installation?.transportMode === 'gateway') {
+        try {
+          const channel = await (await agentSlackTransport(
+            c,
+            parsed.output.workspaceId,
+          )).lookupChannel(parsed.output.channelId);
+          if (channel.member !== true) {
+            return c.json({ error: 'slack_channel_membership_required' }, 409);
+          }
+        } catch (error) {
+          if (error instanceof SlackTransportError && error.code === 'channel_not_found') {
+            return c.json({ error: 'channel_not_found' }, 400);
+          }
+          return c.json({ error: 'slack_channel_check_failed' }, 502);
+        }
+      } else {
+        const { botToken } = await resolveSlackCredentials(
+          c.env as PlatformEnv | undefined,
+          settings(c),
+          slackCredentialResolutionDependencies(c),
         );
-      } catch {
-        return c.json({ error: 'slack_channel_check_failed' }, 502);
-      }
-      if (!membership.ok || !membership.channel) {
-        return c.json({
-          error: membership.error === 'channel_not_found'
-            ? 'channel_not_found'
-            : 'slack_channel_check_failed',
-        }, membership.error === 'channel_not_found' ? 400 : 502);
-      }
-      if (membership.channel.isMember !== true) {
-        return c.json({ error: 'slack_channel_membership_required' }, 409);
+        if (!botToken) return c.json({ error: 'slack_not_connected' }, 409);
+        let membership: Awaited<ReturnType<typeof slackConversationsInfo>>;
+        try {
+          membership = await (options.slackConversationsInfo ?? slackConversationsInfo)(
+            botToken,
+            parsed.output.channelId,
+          );
+        } catch {
+          return c.json({ error: 'slack_channel_check_failed' }, 502);
+        }
+        if (!membership.ok || !membership.channel) {
+          return c.json({
+            error: membership.error === 'channel_not_found'
+              ? 'channel_not_found'
+              : 'slack_channel_check_failed',
+          }, membership.error === 'channel_not_found' ? 400 : 502);
+        }
+        if (membership.channel.isMember !== true) {
+          return c.json({ error: 'slack_channel_membership_required' }, 409);
+        }
       }
       const started = await startOnboardingTry(settings(c), {
         expectedRevision: snapshot.revision,
-        agentId: assignment.agentId,
+        agentId: defaultAgentId,
         workspaceId: parsed.output.workspaceId,
         channelId: parsed.output.channelId,
         channelName:
@@ -4536,76 +5708,39 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.get('/admin/api/assignments', async (c) => {
-    if (!c.req.query('workspaceId') && !c.req.query('channelId')) {
-      const configStore = store(c);
-      const [assignments, channels] = await Promise.all([
-        configStore.listAssignments(),
-        configStore.listChannels(),
-      ]);
-      const channelsByKey = new Map(
-        channels.map((channel) => [
-          `${channel.workspaceId}\u0000${channel.channelId}`,
-          channel,
-        ]),
-      );
-      return c.json({
-        assignments: assignments.map((assignment) => toAdminAssignment(
-          assignment,
-          channelsByKey.get(`${assignment.workspaceId}\u0000${assignment.channelId}`),
-        )),
-      });
-    }
-    const key = assignmentKey(c);
-    if (!key) {
-      return invalidRequest(c);
-    }
-    const configStore = store(c);
-    const [assignment, channel] = await Promise.all([
-      configStore.getAssignment(key.workspaceId, key.channelId),
-      configStore.getChannel(key.workspaceId, key.channelId),
-    ]);
-    return assignment
-      ? c.json({ assignment: toAdminAssignment(assignment, channel) })
-      : c.json({ error: 'not_found' }, 404);
-  });
-
   app.get('/admin/api/channels', async (c) => {
     const configStore = store(c);
-    const [configuredChannels, assignments, agents, credentials] = await Promise.all([
+    const [configuredChannels, grants, agents] = await Promise.all([
       configStore.listChannels(),
-      configStore.listAssignments(),
+      configStore.listAgentChannelGrants(),
       configStore.listAgents(),
-      resolveSlackCredentials(
-        c.env as PlatformEnv | undefined,
-        settings(c),
-        slackCredentialResolutionDependencies(c),
-      ),
     ]);
     let discoveredChannels: Awaited<ReturnType<typeof listSlackChannels>>['channels'] = [];
     let discoveryError: string | null = null;
-    if (credentials.botToken) {
-      try {
-        discoveredChannels = (await listSlackChannels(credentials.botToken, {
-          refresh: c.req.query('refresh') === '1',
-        })).channels;
-      } catch (error) {
-        discoveryError = error instanceof SlackChannelsError
-          ? error.slackError
+    let discoveryConnected = false;
+    let teamInfo: SlackTeamInfo = { teamId: undefined, teamName: undefined };
+    try {
+      const discovery = await discoverSlackChannels(c);
+      discoveredChannels = discovery.channels;
+      discoveryConnected = discovery.connected;
+      teamInfo = discovery.teamInfo;
+    } catch (error) {
+      discoveryConnected = true;
+      discoveryError = error instanceof SlackChannelsError
+        ? error.slackError
+        : error instanceof SlackTransportError
+          ? error.code
           : 'slack_list_failed';
-      }
     }
-    const teamInfo = await resolveTeamInfoSafely(
-      c.env as PlatformEnv | undefined,
-      settings(c),
-      slackCredentialResolutionDependencies(c),
+    const discoveredChannelsById = new Map(
+      discoveredChannels.map((channel) => [channel.id, channel]),
     );
     const channelsByKey = new Map(
       configuredChannels.map((channel) => [
         `${channel.workspaceId}\u0000${channel.channelId}`,
         {
           channel,
-          discovered: discoveredChannels.find(({ id }) => id === channel.channelId),
+          discovered: discoveredChannelsById.get(channel.channelId),
         },
       ]),
     );
@@ -4618,7 +5753,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               workspaceId: teamInfo.teamId,
               channelId: discovered.id,
               label: discovered.name,
-              participationMode: 'ambient',
               lifecycle: 'active',
             },
             discovered,
@@ -4626,199 +5760,80 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
       }
     }
-    const assignmentsByChannel = new Map(
-      assignments.map((assignment) => [
-        `${assignment.workspaceId}\u0000${assignment.channelId}`,
-        assignment,
-      ]),
-    );
+    for (const grant of grants) {
+      const key = `${grant.workspaceId}\u0000${grant.channelId}`;
+      if (!channelsByKey.has(key)) {
+        channelsByKey.set(key, {
+          channel: {
+            workspaceId: grant.workspaceId,
+            channelId: grant.channelId,
+            ...(grant.channelLabel ? { label: grant.channelLabel } : {}),
+            lifecycle: 'active',
+          },
+          discovered: discoveredChannelsById.get(grant.channelId),
+        });
+      }
+    }
+    const grantsByChannel = new Map<string, AgentChannelGrant[]>();
+    for (const grant of grants) {
+      const key = `${grant.workspaceId}\u0000${grant.channelId}`;
+      const current = grantsByChannel.get(key) ?? [];
+      current.push(grant);
+      grantsByChannel.set(key, current);
+    }
     const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
     return c.json({
       channels: [...channelsByKey.values()].map(({ channel, discovered }) => {
-        const assignment = assignmentsByChannel.get(
+        const channelGrants = grantsByChannel.get(
           `${channel.workspaceId}\u0000${channel.channelId}`,
-        );
-        const assignedAgent = assignment ? agentsById.get(assignment.agentId) : undefined;
+        ) ?? [];
+        const projectedGrants = channelGrants.map((grant) => {
+          const agent = agentsById.get(grant.agentId);
+          return {
+            agentId: grant.agentId,
+            agentName: agent?.name ?? null,
+            agentEnabled: agent?.enabled ?? false,
+            agentLifecycle: agent?.lifecycle ?? null,
+            status: grant.status,
+          };
+        });
         const readiness = channel.lifecycle === 'archived'
           ? { ready: false, code: 'channel_archived', reasons: ['Channel is archived.'] }
-          : !assignment
-            ? { ready: false, code: 'unassigned', reasons: ['Choose an Agent.'] }
-            : !assignedAgent
-              ? { ready: false, code: 'agent_missing', reasons: ['Assigned Agent no longer exists.'] }
-              : !assignedAgent.enabled
-                ? { ready: false, code: 'agent_disabled', reasons: ['Assigned Agent is disabled.'] }
-                : discovered?.isMember === false
-                  ? { ready: false, code: 'membership_required', reasons: ['Invite Chickpea to this channel.'] }
-                  : { ready: true, code: 'ready', reasons: [] };
+          : channelGrants.length === 0
+            ? { ready: false, code: 'no_agents', reasons: ['No Agents are active in this Channel.'] }
+            : projectedGrants.some(({ agentName }) => agentName === null)
+              ? { ready: false, code: 'agent_missing', reasons: ['A granted Agent no longer exists.'] }
+              : projectedGrants.some(({ agentEnabled, agentLifecycle }) =>
+                  !agentEnabled || agentLifecycle === 'archived')
+                ? { ready: false, code: 'agent_unavailable', reasons: ['A granted Agent is unavailable.'] }
+                : channelGrants.some(({ status }) => status !== 'active')
+                  ? { ready: false, code: 'grant_needs_attention', reasons: ['An Agent grant needs attention.'] }
+                  : discovered?.isMember === false
+                    ? { ready: false, code: 'membership_required', reasons: ['Invite Chickpea to this Channel.'] }
+                    : { ready: true, code: 'ready', reasons: [] };
         return {
           workspaceId: channel.workspaceId,
           channelId: channel.channelId,
           channelName: channel.label ?? channel.channelId,
           source: discovered
-            ? (configuredChannels.some((candidate) =>
-                candidate.workspaceId === channel.workspaceId &&
-                candidate.channelId === channel.channelId)
-              ? 'configured_and_discovered'
+            ? (channelGrants.length > 0
+              ? 'granted_and_discovered'
               : 'discovered')
-            : 'configured',
+            : 'granted',
           isPrivate: discovered?.isPrivate ?? null,
           isMember: discovered?.isMember ?? null,
-          assignment: assignment
-            ? {
-                agentId: assignment.agentId,
-                agentName: assignedAgent?.name ?? null,
-                agentEnabled: assignedAgent?.enabled ?? false,
-              }
-            : null,
-          behavior: {
-            participationMode: channel.participationMode,
-            hasAdditionalInstructions: Boolean(channel.additionalInstructions?.trim()),
-            lifecycle: channel.lifecycle,
-          },
+          grants: projectedGrants,
           readiness,
           links: {
             channel: `/admin/channels/${encodeURIComponent(channel.workspaceId)}/${encodeURIComponent(channel.channelId)}`,
-            agent: assignment
-              ? `/admin/agents/${encodeURIComponent(assignment.agentId)}`
-              : null,
           },
         };
       }),
       discovery: {
-        connected: Boolean(credentials.botToken),
+        connected: discoveryConnected,
         error: discoveryError,
       },
     });
-  });
-
-  app.put('/admin/api/assignments', async (c) => {
-    const body = await readJson(c.req);
-    const parsed = v.safeParse(assignmentSchema, body);
-    if (!parsed.success) {
-      return invalidRequest(c);
-    }
-    const input = parsed.output;
-    const platformEnv = c.env as PlatformEnv | undefined;
-    const settingsStore = settings(c);
-
-    // Slack validation guards EVERY assignment path (this API is the one choke
-    // point), but only when a bot token is resolvable AND the target is a
-    // concrete workspace+channel. Wildcards ('*') are scope rules, not real
-    // channels, and a credential-less (offline/dev) install keeps the exact
-    // pre-validation behavior so those setups and tests never break.
-    const { botToken } = await resolveSlackCredentials(
-      platformEnv,
-      settingsStore,
-      slackCredentialResolutionDependencies(c),
-    );
-    const isWildcard = input.workspaceId === '*' || input.channelId === '*';
-
-    let isMember: boolean | undefined;
-    let joined: boolean | undefined;
-    let authoritativeLabel: string | undefined;
-    if (botToken && !isWildcard) {
-      const teamInfo = await resolveTeamInfoSafely(
-        platformEnv,
-        settingsStore,
-        slackCredentialResolutionDependencies(c),
-      );
-      // (a) The channel must live in the CONNECTED workspace. Without this
-      //     check, a channel id copied from another workspace could be accepted
-      //     even though the configured bot can never reach it.
-      if (teamInfo.teamId && input.workspaceId !== teamInfo.teamId) {
-        return c.json(
-          {
-            error: 'workspace_mismatch',
-            message: workspaceMismatchMessage(teamInfo, input.workspaceId),
-            connectedTeamId: teamInfo.teamId,
-            connectedTeamName: teamInfo.teamName ?? null,
-          },
-          400,
-        );
-      }
-      // (b) The channel must actually exist in that workspace. A typo, a
-      //     wrong-workspace id, or a private channel the bot was never invited
-      //     to all surface here as channel_not_found.
-      let info;
-      try {
-        info = await slackConversationsInfo(botToken, input.channelId);
-      } catch {
-        // Slack unreachable: do not hard-fail an operator edit on a transient
-        // outage — skip verification and save what we can.
-        info = undefined;
-      }
-      if (info && !info.ok && info.error === 'channel_not_found') {
-        return c.json(
-          {
-            error: 'channel_not_found',
-            message: channelNotFoundMessage(input.channelId, teamInfo),
-          },
-          400,
-        );
-      }
-      if (info?.ok && info.channel) {
-        // (c) Membership drives the UI's "invite @Chickpea or it never hears
-        //     mentions" reminder; Slack's authoritative name becomes the label.
-        isMember = info.channel.isMember;
-        if (info.channel.name) {
-          authoritativeLabel = info.channel.name;
-        }
-        // (d) A bot CAN self-join a PUBLIC channel it is not yet in (via the
-        //     channels:join scope) — do it now so the operator does not have to
-        //     switch to Slack and invite it. A PRIVATE channel cannot be
-        //     self-joined (Slack forbids it), so it keeps the invite reminder.
-        //     Any failure — missing_scope on installs that predate the scope, a
-        //     transient error — is graceful: the assignment still saves and the
-        //     invite reminder still shows. The join must never fail the save.
-        if (isMember === false && info.channel.isPrivate === false) {
-          try {
-            const join = await slackConversationsJoin(botToken, input.channelId);
-            if (join.ok) {
-              isMember = true;
-              joined = true;
-            }
-          } catch {
-            // Slack unreachable mid-join: leave isMember false so the invite
-            // reminder shows; the save proceeds regardless.
-          }
-        }
-      }
-    }
-
-    const assignment = toAssignment(input);
-    const channel = toChannel(input, authoritativeLabel);
-    try {
-      const current = await store(c).getAssignment(assignment.workspaceId, assignment.channelId);
-      const placement = await store(c).putChannelPlacement({
-        channel,
-        agentId: input.enabled ? assignment.agentId : null,
-        expectedAgentId: Object.prototype.hasOwnProperty.call(input, 'expectedAgentId')
-          ? input.expectedAgentId ?? null
-          : current?.agentId ?? null,
-      });
-      return c.json({
-        assignment: placement.assignment
-          ? toAdminAssignment(placement.assignment, placement.channel)
-          : null,
-        channel: placement.channel,
-        ...(isMember !== undefined ? { isMember } : {}),
-        ...(joined !== undefined ? { joined } : {}),
-      });
-    } catch (err) {
-      if (err instanceof ChannelAssignmentConflictError) {
-        return c.json({
-          error: 'channel_assignment_changed',
-          workspaceId: err.workspaceId,
-          channelId: err.channelId,
-          expectedAgentId: err.expectedAgentId,
-          actualAgentId: err.actualAgentId,
-        }, 409);
-      }
-      if (err instanceof UnknownAgentError) {
-        return c.json({ error: 'unknown_agent' }, 404);
-      }
-      return internalError(c, err);
-    }
   });
 
   // Server-side channel picker source for the Add-channel form: the browser
@@ -4826,25 +5841,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // channels.ts); ?refresh=1 bypasses after the operator invites the bot to a
   // new channel. Fails closed with a clear envelope when Slack is not connected.
   app.get('/admin/api/slack-channels', async (c) => {
-    const platformEnv = c.env as PlatformEnv | undefined;
-    const settingsStore = settings(c);
-    const { botToken } = await resolveSlackCredentials(
-      platformEnv,
-      settingsStore,
-      slackCredentialResolutionDependencies(c),
-    );
-    if (!botToken) {
-      return c.json({ error: 'slack_not_configured' }, 409);
-    }
-    const teamInfo = await resolveTeamInfoSafely(
-      platformEnv,
-      settingsStore,
-      slackCredentialResolutionDependencies(c),
-    );
     try {
-      const { channels, truncated } = await listSlackChannels(botToken, {
-        refresh: c.req.query('refresh') === '1',
-      });
+      const { channels, truncated, connected, teamInfo } = await discoverSlackChannels(c);
+      if (!connected) return c.json({ error: 'slack_not_configured' }, 409);
       return c.json({
         channels,
         teamId: teamInfo.teamId ?? null,
@@ -4857,21 +5856,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         // as a clear 502 envelope rather than a bare internal error.
         return c.json({ error: 'slack_list_failed', detail: err.slackError }, 502);
       }
+      if (err instanceof SlackTransportError) {
+        return c.json({ error: 'slack_list_failed', detail: err.code }, 502);
+      }
       return internalError(c, err);
     }
   });
 
-  app.delete('/admin/api/assignments', async (c) => {
-    const key = assignmentKey(c);
-    if (!key) {
-      return invalidRequest(c);
-    }
-    const deleted = await store(c).deleteAssignment(key.workspaceId, key.channelId);
-    return deleted ? c.body(null, 204) : c.json({ error: 'not_found' }, 404);
-  });
-
   app.get('/admin/api/effective-config', async (c) => {
-    const key = assignmentKey(c);
+    const key = channelKey(c);
     if (!key) {
       return invalidRequest(c);
     }
@@ -4881,8 +5874,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         config: effectiveConfigResponse(
           await resolveEffectiveSlackConfig(key.workspaceId, key.channelId, {
             agents: configStore,
-            assignments: configStore,
-          }),
+            grants: configStore,
+          }, process.env, c.req.query('agentId')),
         ),
       });
     } catch (err) {
@@ -4893,565 +5886,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return modelNotResolvable(c, err);
       }
       return internalError(c, err);
-    }
-  });
-
-  app.get('/admin/api/slack-identities', async (c) => {
-    try {
-      const configStore = store(c);
-      const identities = await configStore.listSlackIdentities();
-      const behavior = await resolveSlackBehaviorSettings(
-        c.env as PlatformEnv | undefined,
-        settings(c),
-      );
-      const responses = await Promise.all(
-        identities.map((identity) =>
-          slackIdentityAdminResponse(
-            identity,
-            configStore,
-            behavior.allowDms.value,
-            slackState(c),
-            identity.kind === 'workspace_default'
-              ? describeSlackCredentialSources(
-                  c.env as PlatformEnv | undefined,
-                  settings(c),
-                  slackCredentialResolutionDependencies(c),
-                )
-              : undefined,
-          ),
-        ),
-      );
-      c.header('Cache-Control', 'no-store');
-      return c.json({
-        identities: responses,
-        globalDmAllowed: behavior.allowDms.value,
-      });
-    } catch (error) {
-      return slackIdentityAdminError(c, error);
-    }
-  });
-
-  app.post('/admin/api/slack-identities', async (c) => {
-    const parsed = v.safeParse(slackIdentityCreateSchema, await readJson(c.req));
-    if (!parsed.success) return invalidRequest(c);
-    try {
-      const configStore = store(c);
-      const dmAgent = await configStore.getAgent(parsed.output.initialDmAgentId);
-      if (!dmAgent.enabled) {
-        return c.json({
-          error: 'slack_identity_dm_profile_disabled',
-          message: 'Choose an enabled Agent to handle DMs for this identity.',
-        }, 409);
-      }
-      const now = Date.now();
-      const identityId = `slack_identity_${randomUUID().replaceAll('-', '')}`;
-      const identity = await configStore.createSlackIdentity({
-        id: identityId,
-        ingressKey: generateSlackIdentityIngressKey(),
-        kind: 'dedicated',
-        lifecycle: 'setup_incomplete',
-        dmState: 'on',
-        dmAgentId: dmAgent.id,
-        credentialProvenance: 'none',
-        connectionRevision: 0,
-        health: 'unknown',
-        createdAt: now,
-        updatedAt: now,
-        setupIntent: {
-          appName:
-            parsed.output.appName ??
-            (parsed.output.displayName || 'Chickpea identity').slice(0, 35),
-          ...(parsed.output.displayName
-            ? { displayName: parsed.output.displayName }
-            : {}),
-          ...(parsed.output.source === 'agent'
-            ? {
-                sourceAgentId: dmAgent.id,
-                sourceAgentSlackIdentityId: dmAgent.slackIdentityId ?? null,
-              }
-            : {}),
-        },
-      });
-      await appendSlackIdentityAudit(
-        configStore,
-        c,
-        'slack_identity.setup_started',
-        identity,
-        identity,
-      );
-      const behavior = await resolveSlackBehaviorSettings(
-        c.env as PlatformEnv | undefined,
-        settings(c),
-      );
-      return c.json({
-        identity: await slackIdentityAdminResponse(
-          identity,
-          configStore,
-          behavior.allowDms.value,
-          slackState(c),
-        ),
-        setupUrl: slackIdentitySetupUrl(identity.id),
-        setup: dedicatedSlackIdentitySetup(identity, requestOrigin(c)),
-      }, 201);
-    } catch (error) {
-      return slackIdentityAdminError(c, error);
-    }
-  });
-
-  app.get('/admin/api/slack-identities/:identityId', async (c) => {
-    const identityId = c.req.param('identityId');
-    if (!isSlackIdentityId(identityId)) return invalidRequest(c);
-    try {
-      const configStore = store(c);
-      const identity = await configStore.getSlackIdentity(identityId);
-      c.header('Cache-Control', 'no-store');
-      return c.json({
-        identity: await safeSlackIdentityResponse(c, identity),
-        setup:
-          identity.kind === 'dedicated' &&
-          (identity.lifecycle === 'setup_incomplete' ||
-            identity.lifecycle === 'credentials_pending')
-            ? dedicatedSlackIdentitySetup(identity, requestOrigin(c))
-            : null,
-      });
-    } catch (error) {
-      return slackIdentityAdminError(c, error);
-    }
-  });
-
-  app.patch('/admin/api/slack-identities/:identityId/setup', async (c) => {
-    const identityId = c.req.param('identityId');
-    if (!isSlackIdentityId(identityId)) return invalidRequest(c);
-    const parsed = v.safeParse(
-      slackIdentitySetupIntentSchema,
-      await readJson(c.req),
-    );
-    if (!parsed.success) return invalidRequest(c);
-    try {
-      const configStore = store(c);
-      const before = await configStore.getSlackIdentity(identityId);
-      if (before.kind !== 'dedicated' || before.lifecycle !== 'setup_incomplete') {
-        throw new SlackIdentityLifecycleError(
-          identityId,
-          'edit setup names for',
-          before.lifecycle,
-        );
-      }
-      const identity = await configStore.updateSlackIdentity(
-        identityId,
-        parsed.output.expectedRevision,
-        {
-          setupIntent: {
-            ...before.setupIntent,
-            appName: parsed.output.appName,
-            displayName: parsed.output.displayName,
-          },
-        },
-      );
-      return c.json({
-        identity: await safeSlackIdentityResponse(c, identity),
-        setup: dedicatedSlackIdentitySetup(identity, requestOrigin(c)),
-      });
-    } catch (error) {
-      return slackIdentityAdminError(c, error);
-    }
-  });
-
-  app.post('/admin/api/slack-identities/:identityId/connect', async (c) => {
-    const identityId = c.req.param('identityId');
-    if (!isSlackIdentityId(identityId)) return invalidRequest(c);
-    const parsed = v.safeParse(slackIdentityConnectSchema, await readJson(c.req));
-    if (!parsed.success) return invalidRequest(c);
-    try {
-      const configStore = store(c);
-      const before = await configStore.getSlackIdentity(identityId);
-      const base = await configStore.getSlackIdentity(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      );
-      const teamInfo = await resolveTeamInfoSafely(
-        c.env as PlatformEnv | undefined,
-        settings(c),
-        slackCredentialResolutionDependencies(c),
-      );
-      const expectedTeamId = base.teamId ?? teamInfo.teamId;
-      if (!expectedTeamId) {
-        return c.json({
-          error: 'slack_workspace_unverified',
-          message: 'Connect the workspace-default Slack app before adding a dedicated identity.',
-        }, 409);
-      }
-      const identity = await beginSlackIdentityConnection(
-        {
-          config: configStore,
-          settings: settings(c),
-          identityId,
-          expectedRevision: parsed.output.expectedRevision,
-          expectedTeamId,
-          botToken: parsed.output.botToken,
-          signingSecret: parsed.output.signingSecret,
-          ...(slackCredentialDependencies(c)
-            ? { credentialDependencies: slackCredentialDependencies(c) }
-            : {}),
-        },
-        options.slackIdentityBootstrap,
-      );
-      await appendSlackIdentityAudit(
-        configStore,
-        c,
-        before.lifecycle === 'setup_incomplete'
-          ? 'slack_identity.credentials_connected'
-          : 'slack_identity.credentials_rotated',
-        before,
-        identity,
-      );
-      return c.json({ identity: await safeSlackIdentityResponse(c, identity) });
-    } catch (error) {
-      return slackIdentityAdminError(c, error);
-    }
-  });
-
-  app.post('/admin/api/slack-identities/:identityId/verify', async (c) => {
-    const identityId = c.req.param('identityId');
-    if (!isSlackIdentityId(identityId)) return invalidRequest(c);
-    const parsed = v.safeParse(slackIdentityVerifySchema, await readJson(c.req));
-    if (!parsed.success) return invalidRequest(c);
-    try {
-      const configStore = store(c);
-      const before = await configStore.getSlackIdentity(identityId);
-      const attachAgentId = before.setupIntent?.reconnecting
-        ? undefined
-        : before.setupIntent?.sourceAgentId;
-      const expectedAgentIdentityId = attachAgentId
-        ? Object.prototype.hasOwnProperty.call(
-            before.setupIntent ?? {},
-            'sourceAgentSlackIdentityId',
-          )
-          ? before.setupIntent?.sourceAgentSlackIdentityId ?? null
-          : parsed.output.expectedAgentIdentityId ?? null
-        : undefined;
-      const identity = await completeSlackIdentityConnection({
-        config: configStore,
-        settings: settings(c),
-        identityId,
-        expectedRevision: parsed.output.expectedRevision,
-        ...(attachAgentId ? { attachAgentId } : {}),
-        ...(attachAgentId
-          ? { expectedAgentIdentityId: expectedAgentIdentityId ?? null }
-          : {}),
-        ...(slackCredentialDependencies(c)
-          ? { credentialDependencies: slackCredentialDependencies(c) }
-          : {}),
-      });
-      await appendSlackIdentityAudit(
-        configStore,
-        c,
-        'slack_identity.setup_verified',
-        before,
-        identity,
-      );
-      if (attachAgentId) {
-        await appendSlackIdentityAudit(
-          configStore,
-          c,
-          'slack_identity.profile_attached',
-          before,
-          identity,
-        );
-      }
-      if (before.setupIntent?.reconnecting) {
-        const recoveryStore = slackState(c);
-        const retryRecovery = recoveryStore.retrySlackIdentityRecovery;
-        if (retryRecovery) {
-          const retried = await retryRecovery.call(recoveryStore, identity.id);
-          if (retried > 0) {
-            console.info(
-              `[chickpea] Requeued ${retried} Slack identity recovery turn(s) after reconnect`,
-            );
-          }
-        }
-      }
-      return c.json({
-        identity: await safeSlackIdentityResponse(c, identity),
-        attachedAgentId: attachAgentId ?? null,
-      });
-    } catch (error) {
-      return slackIdentityAdminError(c, error);
-    }
-  });
-
-  app.post('/admin/api/slack-identities/:identityId/refresh', async (c) => {
-    const identityId = c.req.param('identityId');
-    if (!isSlackIdentityId(identityId)) return invalidRequest(c);
-    const parsed = v.safeParse(slackIdentityRevisionOnlySchema, await readJson(c.req));
-    if (!parsed.success) return invalidRequest(c);
-    try {
-      const configStore = store(c);
-      const before = await configStore.getSlackIdentity(identityId);
-      const refreshed = await refreshSlackIdentityHealth(
-        {
-          config: configStore,
-          settings: settings(c),
-          identityId,
-          expectedRevision: parsed.output.expectedRevision,
-          ...(slackCredentialDependencies(c)
-            ? { credentialDependencies: slackCredentialDependencies(c) }
-            : {}),
-        },
-        options.slackIdentityBootstrap,
-      );
-      await appendSlackIdentityAudit(
-        configStore,
-        c,
-        'slack_identity.refreshed',
-        before,
-        refreshed.identity,
-      );
-      return c.json({
-        identity: await safeSlackIdentityResponse(c, refreshed.identity),
-      });
-    } catch (error) {
-      return slackIdentityAdminError(c, error);
-    }
-  });
-
-  app.patch('/admin/api/slack-identities/:identityId/dms', async (c) => {
-    const identityId = c.req.param('identityId');
-    if (!isSlackIdentityId(identityId)) return invalidRequest(c);
-    const parsed = v.safeParse(slackIdentityDmSchema, await readJson(c.req));
-    if (!parsed.success) return invalidRequest(c);
-    if (parsed.output.dmState === 'needs_setup') {
-      return c.json({
-        error: 'slack_identity_dm_state_invalid',
-        message: 'Choose a DM handler or turn DMs off.',
-      }, 400);
-    }
-    try {
-      const configStore = store(c);
-      const before = await configStore.getSlackIdentity(identityId);
-      const dmAgentId = parsed.output.dmAgentId ?? before.dmAgentId;
-      const identity = await configStore.setSlackIdentityDmBinding(
-        identityId,
-        parsed.output.expectedRevision,
-        parsed.output.dmState,
-        dmAgentId,
-      );
-      await appendSlackIdentityAudit(
-        configStore,
-        c,
-        'slack_identity.dm_binding_changed',
-        before,
-        identity,
-      );
-      return c.json({ identity: await safeSlackIdentityResponse(c, identity) });
-    } catch (error) {
-      return slackIdentityAdminError(c, error);
-    }
-  });
-
-  app.post(
-    '/admin/api/slack-identities/:identityId/agents/:agentId',
-    async (c) => {
-      const identityId = c.req.param('identityId');
-      const agentId = c.req.param('agentId');
-      if (!isSlackIdentityId(identityId) || !AGENT_ID_PATTERN.test(agentId)) {
-        return invalidRequest(c);
-      }
-      const parsed = v.safeParse(
-        slackIdentityAttachAgentSchema,
-        await readJson(c.req),
-      );
-      if (!parsed.success) return invalidRequest(c);
-      try {
-        const configStore = store(c);
-        const before = await configStore.getSlackIdentity(identityId);
-        if (parsed.output.preflightOnly) {
-          if (before.lifecycle !== 'connected' && before.lifecycle !== 'degraded') {
-            throw new SlackIdentityLifecycleError(
-              before.id,
-              'assign',
-              before.lifecycle,
-            );
-          }
-          if (before.connectionRevision !== parsed.output.expectedRevision) {
-            throw new SlackIdentityRevisionConflictError(
-              before.id,
-              parsed.output.expectedRevision,
-              before.connectionRevision,
-            );
-          }
-          const currentAgent = await configStore.getAgent(agentId);
-          const currentIdentityId = currentAgent.slackIdentityId ?? null;
-          if (currentIdentityId !== parsed.output.expectedAgentIdentityId) {
-            throw new AgentSlackIdentityConflictError(
-              agentId,
-              parsed.output.expectedAgentIdentityId,
-              currentIdentityId,
-            );
-          }
-        }
-        const readiness = await preflightSlackIdentityMembership({
-          config: configStore,
-          settings: settings(c),
-          ...((c.env as PlatformEnv | undefined) !== undefined
-            ? { env: c.env as PlatformEnv }
-            : {}),
-          ...(slackCredentialResolutionDependencies(c)
-            ? { credentialDependencies: slackCredentialResolutionDependencies(c) }
-            : {}),
-          identityId,
-          agentId,
-          acknowledgeUnenumeratedChannels:
-            parsed.output.acknowledgeUnenumeratedChannels,
-        });
-        if (!readiness.ready) return c.json(readiness, 409);
-        if (parsed.output.preflightOnly) {
-          return c.json({
-            agent: await configStore.getAgent(agentId),
-            identity: await safeSlackIdentityResponse(c, before),
-            membership: readiness,
-            preflightOnly: true,
-            newThreadsOnly: true,
-          });
-        }
-        const agent = await configStore.attachAgentToSlackIdentity(
-          agentId,
-          identityId,
-          parsed.output.expectedRevision,
-          parsed.output.expectedAgentIdentityId,
-        );
-        await appendSlackIdentityAudit(
-          configStore,
-          c,
-          'slack_identity.profile_attached',
-          before,
-          before,
-        );
-        return c.json({
-          agent,
-          identity: await safeSlackIdentityResponse(c, before),
-          membership: readiness,
-          newThreadsOnly: true,
-        });
-      } catch (error) {
-        return slackIdentityAdminError(c, error);
-      }
-    },
-  );
-
-  app.post('/admin/api/slack-identities/:identityId/cancel', async (c) => {
-    const identityId = c.req.param('identityId');
-    if (!isSlackIdentityId(identityId)) return invalidRequest(c);
-    const parsed = v.safeParse(slackIdentityCancelSchema, await readJson(c.req));
-    if (!parsed.success) return invalidRequest(c);
-    try {
-      const configStore = store(c);
-      const before = await configStore.getSlackIdentity(identityId);
-      if (before.setupIntent?.reconnecting) {
-        return c.json({
-          error: 'slack_identity_reconnect_cancel_unsupported',
-          message:
-            'Finish signed verification or replace the credentials again; an established identity cannot be deleted as a setup draft.',
-        }, 409);
-      }
-      const canceled = await cancelSlackIdentityConnection({
-        config: configStore,
-        settings: settings(c),
-        identityId,
-        expectedRevision: parsed.output.expectedRevision,
-        ...(slackCredentialDependencies(c)
-          ? { credentialDependencies: slackCredentialDependencies(c) }
-          : {}),
-      });
-      let deleted = false;
-      if (parsed.output.deleteDraft) {
-        deleted = await configStore.deleteIncompleteSlackIdentity(
-          identityId,
-          canceled.connectionRevision,
-          true,
-        );
-      }
-      await appendSlackIdentityAudit(
-        configStore,
-        c,
-        'slack_identity.setup_canceled',
-        before,
-        canceled,
-      );
-      return c.json({
-        ok: true,
-        deleted,
-        ...(deleted ? {} : { identity: await safeSlackIdentityResponse(c, canceled) }),
-      });
-    } catch (error) {
-      return slackIdentityAdminError(c, error);
-    }
-  });
-
-  app.post('/admin/api/slack-identities/:identityId/retire', async (c) => {
-    const identityId = c.req.param('identityId');
-    if (!isSlackIdentityId(identityId)) return invalidRequest(c);
-    const parsed = v.safeParse(slackIdentityRevisionOnlySchema, await readJson(c.req));
-    if (!parsed.success) return invalidRequest(c);
-    try {
-      const configStore = store(c);
-      const before = await configStore.getSlackIdentity(identityId);
-      const references = await configStore.getSlackIdentityReferences(identityId);
-      const pendingDeliveryCount = await countSlackIdentityPendingDeliveries(
-        slackState(c),
-        identityId,
-        true,
-      );
-      if (
-        references.agentIds.length > 0 ||
-        before.dmState !== 'off' ||
-        pendingDeliveryCount > 0
-      ) {
-        const agents = await Promise.all(
-          references.agentIds.map((agentId) => configStore.getAgent(agentId)),
-        );
-        return c.json({
-          error: 'slack_identity_retirement_blocked',
-          agents: agents.map(({ id, name }) => ({ id, name })),
-          dmState: before.dmState,
-          dmAgentId: before.dmAgentId ?? null,
-          pendingDeliveryCount,
-        }, 409);
-      }
-      const retired = await configStore.retireSlackIdentity(
-        identityId,
-        parsed.output.expectedRevision,
-      );
-      const credentials = await resolveSlackIdentityCredentials(
-        identityId,
-        c.env as PlatformEnv | undefined,
-        slackCredentialResolutionDependencies(c) ?? settings(c),
-      );
-      await clearSlackIdentityCredentials(
-        slackCredentialWriteTarget(c),
-        identityId,
-        credentials.connectionRevision,
-      );
-      const secretFree = await configStore.updateSlackIdentity(
-        identityId,
-        retired.connectionRevision,
-        { credentialProvenance: 'none' },
-      );
-      await appendSlackIdentityAudit(
-        configStore,
-        c,
-        'slack_identity.retired',
-        before,
-        secretFree,
-      );
-      return c.json({
-        identity: await safeSlackIdentityResponse(c, secretFree),
-        slackAppUninstalled: false,
-        slackAppRevoked: false,
-        message:
-          'Retired this Slack identity locally. The Slack app was not uninstalled or revoked.',
-      });
-    } catch (error) {
-      return slackIdentityAdminError(c, error);
     }
   });
 
@@ -5474,116 +5908,31 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         settingsStore,
         slackCredentialResolutionDependencies(c),
       );
-      const defaultIdentity = await store(c).getSlackIdentity(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      );
-      const requestUrl =
-        `${requestOrigin(c)}/channels/slack/events/${defaultIdentity.ingressKey}`;
+      const installations = await store(c).listWorkspaceInstallations();
+      const connectedTeamId = teamInfo.teamId;
+      const installation = connectedTeamId
+        ? installations.find((candidate) => candidate.workspaceId === connectedTeamId)
+        : installations[0];
+      const directConnected =
+        credentials.botToken !== 'missing' && credentials.signingSecret !== 'missing';
+      const gatewayConnected =
+        installation?.transportMode === 'gateway' &&
+        Boolean(installation.gatewayBindingId) &&
+        installation.health !== 'revoked';
+      const requestUrl = `${requestOrigin(c)}/channels/slack/events`;
       return c.json({
         credentials,
-        connected:
-          (defaultIdentity.lifecycle === 'connected' ||
-            defaultIdentity.lifecycle === 'degraded') &&
-          credentials.botToken !== 'missing' &&
-          credentials.signingSecret !== 'missing',
-        teamId: teamInfo.teamId ?? null,
+        connected: Boolean(installation) && (directConnected || gatewayConnected),
+        teamId: installation?.workspaceId ?? connectedTeamId ?? null,
         teamName: teamInfo.teamName ?? null,
+        transportMode: installation?.transportMode ?? 'direct',
+        health: installation?.health ?? 'pending',
+        healthDetail: installation?.healthDetail ?? null,
         requestUrl,
         manifestUrl: slackManifestUrl(requestUrl),
       });
     } catch (err) {
       return internalError(c, err);
-    }
-  });
-
-  // Slack owns the install-wide bot name and avatar. Read both live so the
-  // Channels admin shows what people actually see, then provide the exact app
-  // settings deep-link where an owner can change them. This is intentionally
-  // read-only: Slack's profile mutation API requires a user token, while this
-  // app stores only the least-privileged bot token used at runtime.
-  app.get('/admin/api/slack-identity', async (c) => {
-    let botToken: string | undefined;
-    let botUserId: string | undefined;
-    try {
-      const credentials = await resolveSlackCredentials(
-        c.env as PlatformEnv | undefined,
-        settings(c),
-        slackCredentialResolutionDependencies(c),
-      );
-      botToken = credentials.botToken;
-      botUserId = credentials.botUserId;
-    } catch (err) {
-      return internalError(c, err);
-    }
-    if (!botToken) {
-      return c.json({ error: 'slack_not_configured' }, 409);
-    }
-
-    try {
-      let auth: Awaited<ReturnType<typeof slackIdentityAuthTest>> | undefined;
-      // An empty bot user ID is intentional for the event lane: it prevents
-      // event-time auth.test discovery and keeps message-family events
-      // fail-closed. This operator-initiated presentation read is separate,
-      // however, and needs a live identity to show the connected installation.
-      if (!botUserId) {
-        auth = await slackIdentityAuthTest(botToken);
-        botUserId = auth.botUserId;
-      }
-      if (!botUserId || (auth && !auth.ok)) {
-        throw new Error('Slack could not resolve the bot user');
-      }
-
-      let identity = await slackBotIdentityInfo(botToken, botUserId);
-      // A bot id saved with this token should remain stable, but recover once
-      // through auth.test if Slack explicitly says that user no longer exists.
-      if (!identity.ok && identity.error === 'user_not_found' && !auth) {
-        auth = await slackIdentityAuthTest(botToken);
-        if (auth.ok && auth.botUserId && auth.botUserId !== botUserId) {
-          botUserId = auth.botUserId;
-          identity = await slackBotIdentityInfo(botToken, botUserId);
-        }
-      }
-      if (!identity.ok) {
-        throw new Error('Slack could not read the bot profile');
-      }
-
-      // A stored bot ID avoids auth.test on the usual path, but users.info
-      // does not always include profile.api_app_id. Probe only to recover the
-      // precise settings link; a failed secondary probe must not hide a valid
-      // live name/avatar card behind an error state.
-      if (!auth && !identity.appId) {
-        try {
-          const appIdentity = await slackIdentityAuthTest(botToken);
-          if (appIdentity.ok) auth = appIdentity;
-        } catch {
-          // The identity itself is already valid; retain the generic apps link.
-        }
-      }
-
-      const appIdCandidate = auth?.appId ?? identity.appId;
-      const appId = appIdCandidate && /^[A-Z0-9]+$/i.test(appIdCandidate)
-        ? appIdCandidate
-        : null;
-      const avatarUrl = safeHttpsUrl(identity.avatarUrl);
-      return c.json({
-        displayName:
-          identity.displayName || slackAppManifest.features.bot_user.display_name,
-        avatarUrl,
-        botUserId,
-        appId,
-        consoleUrl: appId
-          ? `https://api.slack.com/apps/${appId}/general`
-          : 'https://api.slack.com/apps',
-      });
-    } catch (err) {
-      console.error(
-        '[chickpea] Slack identity lookup failed:',
-        err instanceof Error ? err.message : String(err),
-      );
-      return c.json({
-        error: 'slack_identity_unavailable',
-        message: 'Slack identity could not be loaded.',
-      }, 502);
     }
   });
 
@@ -5605,7 +5954,67 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return internalError(c, err);
     }
     if (!botToken) {
-      return c.json({ error: 'slack_not_configured' }, 409);
+      const installation = (await store(c).listWorkspaceInstallations()).find(
+        (candidate) => candidate.transportMode === 'gateway' &&
+          Boolean(candidate.gatewayBindingId) && candidate.health !== 'revoked',
+      );
+      if (!installation?.botUserId) {
+        return c.json({ error: 'slack_not_configured' }, 409);
+      }
+      try {
+        const bot = await (await agentSlackTransport(c, installation.workspaceId))
+          .lookupMember(installation.botUserId);
+        if (
+          bot.id !== installation.botUserId ||
+          (bot.teamId !== undefined && bot.teamId !== installation.workspaceId) ||
+          bot.deleted
+        ) {
+          return c.json({
+            error: 'slack_auth_failed',
+            detail: 'gateway_identity_mismatch',
+          }, 422);
+        }
+        if (installation.health !== 'healthy' || installation.healthDetail) {
+          await store(c).updateWorkspaceInstallation(installation.workspaceId, {
+            health: 'healthy',
+            healthDetail: null,
+          }, installation.revision);
+        }
+        const teamInfo = await readStoredSlackTeamInfo(
+          c.env as PlatformEnv | undefined,
+          settings(c),
+          slackCredentialResolutionDependencies(c),
+        );
+        return c.json({
+          ok: true,
+          teamId: installation.workspaceId,
+          teamName: teamInfo.teamName ?? null,
+          botName: bot.displayName ?? bot.name ?? null,
+          botUserId: bot.id,
+          transportMode: 'gateway',
+        });
+      } catch (error) {
+        const detail = error instanceof SlackTransportError ? error.code : 'gateway_unreachable';
+        if (GATEWAY_RECONNECT_REQUIRED_DETAILS.has(detail)) {
+          try {
+            const current = await store(c).getWorkspaceInstallation(installation.workspaceId);
+            if (current && current.healthDetail !== detail) {
+              await store(c).updateWorkspaceInstallation(installation.workspaceId, {
+                health: 'needs_attention',
+                healthDetail: detail,
+              }, current.revision);
+            }
+          } catch {
+            // The diagnostic response is still authoritative for this request;
+            // a concurrent installation update will be reflected on reload.
+          }
+        }
+        const diagnostic = error instanceof Error
+          ? error.message.replace(/[A-Za-z0-9_-]{32,}/g, '[redacted]').slice(0, 240)
+          : 'unknown';
+        console.error('[chickpea] shared Slack connection test failed:', detail, diagnostic);
+        return c.json({ error: 'slack_gateway_unreachable', detail }, 502);
+      }
     }
 
     let auth;
@@ -5637,6 +6046,69 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     });
   });
 
+  // A shared-app grant can be revoked independently of the deployment. Let an
+  // authenticated Admin replace that grant without reopening first-run setup
+  // or recreating Agents and Channel grants. This is deliberately POST-only:
+  // opening or prefetching an Admin page must never create a replacement claim.
+  const beginSlackGatewayRefresh = async (c: Context): Promise<Response> => {
+    try {
+      const claim = await createGatewayDeploymentClient(
+        c.env as PlatformEnv | undefined,
+      ).beginClaim(
+        `${requestOrigin(c)}/admin/slack-gateway/refresh/finish`,
+        undefined,
+        { reconnect: true },
+      );
+      if ((c.req.header('accept') ?? '').includes('application/json')) {
+        return c.json({ authorizationUrl: claim.authorizationUrl });
+      }
+      return c.redirect(claim.authorizationUrl, 303);
+    } catch (error) {
+      console.error(
+        '[chickpea] shared Slack reconnect failed to start:',
+        error instanceof SlackTransportError ? error.code :
+          error instanceof Error ? error.message : String(error),
+      );
+      if ((c.req.header('accept') ?? '').includes('application/json')) {
+        return c.json({ error: 'slack_reconnect_start_failed' }, 502);
+      }
+      return c.redirect('/admin/settings/slack?slack_reconnect=failed', 303);
+    }
+  };
+  // Keep the original endpoint as a compatibility alias for bookmarks and
+  // already-rendered Admin tabs; the attached UI uses the neutral refresh URL.
+  app.get('/admin/slack-gateway/reconnect', (c) =>
+    c.json({ error: 'method_not_allowed' }, 405)
+  );
+  app.post('/admin/slack-gateway/reconnect', beginSlackGatewayRefresh);
+  app.get('/admin/slack-gateway/refresh', (c) =>
+    c.json({ error: 'method_not_allowed' }, 405)
+  );
+  app.post('/admin/slack-gateway/refresh', beginSlackGatewayRefresh);
+
+  const finishSlackGatewayRefresh = async (c: Context): Promise<Response> => {
+    try {
+      const result = await createGatewayDeploymentClient(
+        c.env as PlatformEnv | undefined,
+      ).refreshClaim();
+      if (result.state !== 'bound') {
+        return c.redirect('/admin/settings/slack?slack_reconnect=pending', 303);
+      }
+      startNodeGatewaySession(c.env as PlatformEnv | undefined);
+      await restartCloudflareGatewaySession(c.env);
+      return c.redirect('/admin/settings/slack?slack_reconnect=connected', 303);
+    } catch (error) {
+      console.error(
+        '[chickpea] shared Slack reconnect could not finish:',
+        error instanceof SlackTransportError ? error.code :
+          error instanceof Error ? error.message : String(error),
+      );
+      return c.redirect('/admin/settings/slack?slack_reconnect=failed', 303);
+    }
+  };
+  app.get('/admin/slack-gateway/reconnect/finish', finishSlackGatewayRefresh);
+  app.get('/admin/slack-gateway/refresh/finish', finishSlackGatewayRefresh);
+
   // Disconnect is a LOCAL credential removal, not a Slack uninstall/revoke.
   // Environment-managed credentials cannot be removed from a browser, and a
   // partial stored install is treated as read-only rather than implying the
@@ -5645,34 +6117,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const settingsStore = settings(c);
       const configStore = store(c);
-      const defaultIdentityBefore = await configStore.getSlackIdentity(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      );
-      const dedicatedWithCredentials: Array<{ id: string; name: string }> = [];
-      for (const identity of await configStore.listSlackIdentities()) {
-        if (identity.kind !== 'dedicated') continue;
-        const credentials = await resolveSlackIdentityCredentials(
-          identity.id,
-          c.env as PlatformEnv | undefined,
-          slackCredentialResolutionDependencies(c) ?? settingsStore,
-        );
-        if (credentials.botToken || credentials.signingSecret) {
-          dedicatedWithCredentials.push({
-            id: identity.id,
-            name: identity.observedDisplayName ??
-              identity.setupIntent?.displayName ??
-              identity.id,
-          });
-        }
-      }
-      if (dedicatedWithCredentials.length > 0) {
-        return c.json({
-          error: 'slack_dedicated_identities_connected',
-          message:
-            'Cancel or retire every credentialed dedicated Slack identity before disconnecting @Chickpea.',
-          identities: dedicatedWithCredentials,
-        }, 409);
-      }
       const expectedRevision = await readSlackConnectionRevision(
         settingsStore,
         slackCredentialResolutionDependencies(c),
@@ -5684,12 +6128,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       );
       const hasStoredCredentials =
         sources.botToken === 'stored' && sources.signingSecret === 'stored';
-      const resumesTombstonedDisconnect =
-        expectedRevision === null &&
-        ['credentials_pending', 'connected', 'degraded'].includes(
-          defaultIdentityBefore.lifecycle,
-        );
-      if (!hasStoredCredentials && !resumesTombstonedDisconnect) {
+      if (!hasStoredCredentials) {
         return c.json({ error: 'slack_connection_read_only' }, 409);
       }
 
@@ -5700,9 +6139,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const applied = await settingsStore.applySettingsPatch({
         delete: [
           SLACK_SETTING_KEYS.teamName,
-          slackIdentityPendingEnvelopeSettingKey(
-            WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-          ),
+          SLACK_PENDING_ENVELOPE_SETTING,
         ],
       });
       if (!applied) {
@@ -5715,37 +6152,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         );
       }
       if (hasStoredCredentials) {
-        await clearSlackIdentityCredentials(
+        await clearSlackInstallationCredentials(
           slackCredentialWriteTarget(c),
-          WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+          WORKSPACE_SLACK_INSTALLATION_ID,
           expectedRevision,
         );
       }
-      const defaultIdentityCurrent = await configStore.getSlackIdentity(
-        WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      );
-      const defaultIdentityAfter = await configStore.updateSlackIdentity(
-        defaultIdentityCurrent.id,
-        defaultIdentityCurrent.connectionRevision,
-        {
-          lifecycle: 'setup_incomplete',
-          teamId: null,
-          appId: null,
-          botUserId: null,
-          observedDisplayName: null,
-          observedAvatarUrl: null,
-          observedAt: null,
-          health: 'disconnected',
-          healthDetail: 'credentials_missing',
-        },
-      );
-      await appendSlackIdentityAudit(
-        configStore,
-        c,
-        'slack_identity.credentials_disconnected',
-        defaultIdentityBefore,
-        defaultIdentityAfter,
-      );
+      for (const installation of await configStore.listWorkspaceInstallations()) {
+        if (installation.transportMode !== 'direct') continue;
+        await configStore.updateWorkspaceInstallation(
+          installation.workspaceId,
+          { health: 'needs_attention', healthDetail: 'credentials_missing' },
+          installation.revision,
+        );
+      }
       return c.json({
         ok: true,
         connected: false,
@@ -5753,10 +6173,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         slackAppRevoked: false,
         configurationPreserved: true,
         message:
-          'Disconnected Chickpea locally. The Slack app was not uninstalled or revoked, and Agents, channel assignments, transcripts, and the public URL were preserved.',
+          'Disconnected Chickpea locally. The Slack app was not uninstalled or revoked, and Agents, Channel grants, transcripts, and the public URL were preserved.',
       });
     } catch (err) {
-      if (err instanceof SlackIdentityCredentialRevisionError) {
+      if (err instanceof SlackInstallationCredentialRevisionError) {
         return c.json(
           {
             error: 'slack_connection_changed',
@@ -5823,6 +6243,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   return app;
 }
 
+function slackGatewaySetupPageError(code: string): string {
+  switch (code) {
+    case 'gateway_not_configured':
+    case 'gateway_unreachable':
+    case 'gateway_redirect_rejected':
+    case 'gateway_rejected':
+      return code;
+    default:
+      return 'gateway_rejected';
+  }
+}
+
 function mcpOAuthAdminRedirect(
   status: 'connected' | 'cancelled' | 'failed' | 'verification_failed',
   ref: { agentId: string; connectionId: string },
@@ -5837,6 +6269,10 @@ function apiOAuthAdminRedirect(
   status: 'connected' | 'cancelled' | 'failed',
   ref: ApiOAuthRef,
 ): string {
+  const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+  if (connectionAccountId) {
+    return `/admin?oauth=${status}&connection=${encodeURIComponent(connectionAccountId)}&lane=api`;
+  }
   return (
     `/admin/agents/${encodeURIComponent(ref.agentId)}` +
     `?oauth=${status}&connection=${encodeURIComponent(ref.connectionId)}&lane=api`
@@ -5844,10 +6280,16 @@ function apiOAuthAdminRedirect(
 }
 
 async function isCurrentApiOAuthConnection(
-  configStore: Pick<ConfigStore, 'getAgent'>,
+  configStore: ConfigStore,
   ref: ApiOAuthRef,
   provider: ApiOAuthProvider,
 ): Promise<boolean> {
+  const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+  if (connectionAccountId) {
+    const account = await findConnectionAccount(configStore, connectionAccountId);
+    if (!account || account.lifecycle === 'revoked') return false;
+    return isApiOAuthAccount(account, provider);
+  }
   try {
     const connection = (await configStore.getAgent(ref.agentId)).apiConnections.find(
       (candidate) => candidate.id === ref.connectionId,
@@ -5868,6 +6310,19 @@ async function replaceReadyApiOAuthConnection(
   provider: ApiOAuthProvider,
   identity: { accountName?: string } | undefined,
 ): Promise<void> {
+  const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+  if (connectionAccountId) {
+    const account = await findConnectionAccount(configStore, connectionAccountId);
+    if (!account || !isApiOAuthAccount(account, provider)) {
+      throw new ApiOAuthError('connection_missing', 'OAuth connection no longer exists');
+    }
+    await configStore.putConnectionAccount({
+      ...account,
+      lifecycle: 'ready',
+      ...(identity ? { identity } : {}),
+    }, account.revision);
+    return;
+  }
   const agent = await configStore.getAgent(ref.agentId);
   const index = agent.apiConnections.findIndex(
     (connection) => connection.id === ref.connectionId &&
@@ -5894,6 +6349,19 @@ async function replacePendingApiOAuthConnection(
   ref: ApiOAuthRef,
   provider: ApiOAuthProvider,
 ): Promise<void> {
+  const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+  if (connectionAccountId) {
+    const account = await findConnectionAccount(configStore, connectionAccountId);
+    if (!account || !isApiOAuthAccount(account, provider)) {
+      throw new ApiOAuthError('connection_missing', 'OAuth connection no longer exists');
+    }
+    const { identity: _identity, ...withoutIdentity } = account;
+    await configStore.putConnectionAccount({
+      ...withoutIdentity,
+      lifecycle: 'pending',
+    }, account.revision);
+    return;
+  }
   const agent = await configStore.getAgent(ref.agentId);
   const index = agent.apiConnections.findIndex(
     (connection) => connection.id === ref.connectionId &&
@@ -5913,6 +6381,30 @@ async function replacePendingApiOAuthConnection(
     statusText: 'Not connected',
   };
   await configStore.updateAgent(ref.agentId, { apiConnections });
+}
+
+async function findConnectionAccount(
+  configStore: ConfigStore,
+  connectionAccountId: string,
+): Promise<ConnectionAccount | undefined> {
+  for (const installation of await configStore.listWorkspaceInstallations()) {
+    const account = (await configStore.listConnectionAccounts(installation.workspaceId)).find(
+      (candidate) => candidate.id === connectionAccountId,
+    );
+    if (account) return account;
+  }
+  return undefined;
+}
+
+function isApiOAuthAccount(
+  account: ConnectionAccount,
+  provider: ApiOAuthProvider,
+): boolean {
+  return account.policy.kind === 'api' &&
+    account.policy.authMode === 'oauth' &&
+    account.policy.oauthProvider === provider &&
+    Array.isArray(account.policy.oauthScopes) &&
+    account.policy.oauthScopes.length > 0;
 }
 
 async function normalizeApiOAuthPatch(
@@ -6130,13 +6622,14 @@ function requestOrigin(c: Context): string {
   return `${proto}://${host}`;
 }
 
-function safeHttpsUrl(candidate: string | undefined): string | null {
-  if (!candidate) return null;
-  try {
-    return new URL(candidate).protocol === 'https:' ? candidate : null;
-  } catch {
-    return null;
-  }
+async function restartCloudflareGatewaySession(rawEnv: unknown): Promise<void> {
+  const env = (rawEnv ?? {}) as Record<string, unknown>;
+  const namespace = env.SLACK_GATEWAY_SESSION as {
+    idFromName(name: string): unknown;
+    get(id: unknown): { restart(): Promise<void> };
+  } | undefined;
+  if (!namespace) return;
+  await namespace.get(namespace.idFromName('deployment')).restart();
 }
 
 function authResponseHeaders(c: Context): void {
@@ -6476,10 +6969,12 @@ function slackManifestUrl(requestUrl: string): string {
       encodeURIComponent(JSON.stringify(manifest))
     }`;
   }
-  return slackManifestPrefillUrl(buildSlackIdentityManifest(slackAppManifest, {
+  const origin = new URL(requestUrl).origin;
+  return slackManifestPrefillUrl(buildSlackAppManifest({
+    kind: 'workspace_app',
+    origin,
     appName: slackAppManifest.display_information.name,
     botDisplayName: slackAppManifest.features.bot_user.display_name,
-    requestUrl,
   }));
 }
 
@@ -6494,13 +6989,23 @@ function isAdminPageGet(c: Context): boolean {
   );
 }
 
-function permissionForAdminRequest(c: Context, principal: AuthPrincipal): Permission {
-  if ((principal.role as string) === 'member' && isAdminPageGet(c)) return 'admin.configure';
+function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permission {
+  if (isAdminPageGet(c)) return 'agent.create';
   if (c.req.path === '/admin/logout') return 'account.view';
   if (c.req.path === '/admin/team' ||
       (c.req.method === 'GET' && c.req.path === '/admin/api/team')) return 'team.view';
-  if (c.req.path.startsWith('/admin/api/team/invitations')) return 'team.invite';
   if (c.req.path.startsWith('/admin/api/team/memberships')) return 'team.manage_members';
+  if (c.req.path.startsWith('/admin/api/connections/')) return 'connection.create_team';
+  if (
+    c.req.path === '/admin/api/agents' ||
+    c.req.path.startsWith('/admin/api/agents/') ||
+    (c.req.method === 'GET' && [
+      '/admin/api/models',
+      '/admin/api/channels',
+      '/admin/api/slack-connection',
+      '/admin/api/slack-channels',
+    ].includes(c.req.path))
+  ) return 'agent.create';
   return 'admin.configure';
 }
 
@@ -6564,6 +7069,8 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): AgentCreateInp
   return {
     id: input.id,
     name: input.name,
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.editPolicy !== undefined ? { editPolicy: input.editPolicy } : {}),
     instructions: input.instructions,
     enabled: input.enabled,
     ...(input.model !== undefined ? { model: input.model } : {}),
@@ -6722,6 +7229,8 @@ type AgentPatch = Partial<Omit<CustomAgentConfig, 'id' | 'revision' | 'model'>> 
 function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch {
   const patch: AgentPatch = {};
   if (input.name !== undefined) patch.name = input.name;
+  if (input.description !== undefined) patch.description = input.description;
+  if (input.editPolicy !== undefined) patch.editPolicy = input.editPolicy;
   if (input.instructions !== undefined) patch.instructions = input.instructions;
   if (input.enabled !== undefined) patch.enabled = input.enabled;
   if (input.model !== undefined) patch.model = input.model;
@@ -6734,389 +7243,6 @@ function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch
     patch.repositories = toRepositories(input.repositories);
   }
   return patch;
-}
-
-async function slackIdentityAdminResponse(
-  identity: SlackIdentity,
-  configStore: ConfigStore,
-  globalDmAllowed: boolean,
-  slackStateStore: SlackStateStore,
-  workspaceCredentialSources?: SlackCredentialSources | Promise<SlackCredentialSources>,
-) {
-  const agents = await configStore.listAgentsForSlackIdentity(identity.id);
-  let dmAgent: CustomAgentConfig | undefined;
-  if (identity.dmAgentId) {
-    try {
-      dmAgent = await configStore.getAgent(identity.dmAgentId);
-    } catch (error) {
-      if (!(error instanceof UnknownAgentError)) throw error;
-    }
-  }
-  const pendingDeliveryCount = await countSlackIdentityPendingDeliveries(
-    slackStateStore,
-    identity.id,
-  );
-  const credentialSources = identity.kind === 'workspace_default'
-    ? await workspaceCredentialSources
-    : undefined;
-  const workspaceDefaultConnected = identity.kind === 'workspace_default'
-    ? credentialSources?.botToken !== 'missing' &&
-      credentialSources?.signingSecret !== 'missing'
-    : undefined;
-  return {
-    id: identity.id,
-    kind: identity.kind,
-    lifecycle: identity.kind === 'workspace_default'
-      ? (workspaceDefaultConnected ? 'connected' : 'setup_incomplete')
-      : identity.lifecycle,
-    teamId: identity.teamId ?? null,
-    appId: identity.appId ?? null,
-    botUserId: identity.botUserId ?? null,
-    dmState: identity.dmState,
-    effectiveDmState: globalDmAllowed ? identity.dmState : 'off',
-    globalDmAllowed,
-    dmAgentId: identity.dmAgentId ?? null,
-    dmAgent: dmAgent
-      ? { id: dmAgent.id, name: dmAgent.name, enabled: dmAgent.enabled }
-      : null,
-    credentialProvenance: identity.credentialProvenance,
-    // The workspace-default installation is rotated only by bot OAuth or the
-    // scoped recovery transaction. Browser paste-back is reserved for
-    // deliberately separate bot-only identities.
-    credentialsWritable: identity.kind === 'dedicated',
-    connectionRevision: identity.connectionRevision,
-    displayName: identity.observedDisplayName ??
-      identity.setupIntent?.displayName ??
-      (identity.kind === 'workspace_default' ? 'Chickpea' : null),
-    avatarUrl: safeHttpsUrl(identity.observedAvatarUrl),
-    observedAt: identity.observedAt ?? null,
-    health: identity.kind === 'workspace_default' && !workspaceDefaultConnected
-      ? 'disconnected'
-      : identity.health,
-    healthDetail: identity.healthDetail ?? null,
-    consoleUrl: slackIdentityConsoleUrl(identity.appId),
-    agents: agents.map(({ id, name, enabled }) => ({ id, name, enabled })),
-    pendingDeliveryCount,
-    setupSourceAgentId: identity.setupIntent?.sourceAgentId ?? null,
-    setupReconnecting: identity.setupIntent?.reconnecting === true,
-    createdAt: identity.createdAt,
-    updatedAt: identity.updatedAt,
-    retiredAt: identity.retiredAt ?? null,
-  };
-}
-
-async function countSlackIdentityPendingDeliveries(
-  slackStateStore: SlackStateStore,
-  identityId: string,
-  failClosed = false,
-): Promise<number> {
-  if (failClosed) {
-    return slackStateStore.countPendingDeliveriesForSlackIdentity(identityId);
-  }
-  try {
-    return await slackStateStore.countPendingDeliveriesForSlackIdentity(identityId);
-  } catch {
-    if (!slackStateStore.listPendingTurns) return 0;
-  }
-  try {
-    return (await slackStateStore.listPendingTurns()).filter(
-      ({ turn, assignment }) =>
-        (turn.slackIdentityId ?? assignment.slackIdentityId ??
-          WORKSPACE_DEFAULT_SLACK_IDENTITY_ID) === identityId,
-    ).length;
-  } catch {
-    // A missing or unavailable inventory must not make safe identity reads fail.
-    return 0;
-  }
-}
-
-type SlackIdentityMembershipReadiness =
-  | {
-      ready: true;
-      checkedChannels: Array<{ workspaceId: string; channelId: string; label: string }>;
-      joinedChannels: Array<{ workspaceId: string; channelId: string; label: string }>;
-      unenumeratedRules: Array<{ workspaceId: string; channelId: string }>;
-    }
-  | {
-      ready: false;
-      error: string;
-      message: string;
-      channels?: Array<{ workspaceId: string; channelId: string; label: string }>;
-      unenumeratedRules?: Array<{ workspaceId: string; channelId: string }>;
-    };
-
-async function preflightSlackIdentityMembership(input: {
-  config: ConfigStore;
-  settings: SettingsStore;
-  credentialDependencies?: SlackCredentialResolutionDependencies | undefined;
-  env?: PlatformEnv;
-  identityId: string;
-  agentId: string;
-  acknowledgeUnenumeratedChannels: boolean;
-}): Promise<SlackIdentityMembershipReadiness> {
-  const identity = await input.config.getSlackIdentity(input.identityId);
-  const assignments = await input.config.listAssignmentsForAgent(input.agentId);
-  const unenumeratedRules = assignments
-    .filter(({ workspaceId, channelId }) => workspaceId.includes('*') || channelId.includes('*'))
-    .map(({ workspaceId, channelId }) => ({ workspaceId, channelId }));
-  if (unenumeratedRules.length > 0 && !input.acknowledgeUnenumeratedChannels) {
-    return {
-      ready: false,
-      error: 'slack_identity_unenumerated_channels',
-      message:
-        'Some channel rules cannot be enumerated. Invite this Slack app wherever those rules match; missing membership will fail closed.',
-      unenumeratedRules,
-    };
-  }
-  const concrete = assignments.filter(
-    ({ workspaceId, channelId }) => !workspaceId.includes('*') && !channelId.includes('*'),
-  );
-  if (concrete.length === 0) {
-    return { ready: true, checkedChannels: [], joinedChannels: [], unenumeratedRules };
-  }
-  const credentials = await resolveSlackIdentityCredentials(
-    identity.id,
-    input.env,
-    input.credentialDependencies ?? input.settings,
-  );
-  if (!credentials.botToken) {
-    return {
-      ready: false,
-      error: 'slack_identity_credentials_missing',
-      message: 'Connect this Slack identity before assigning it to channels.',
-    };
-  }
-  const checkedChannels: Array<{ workspaceId: string; channelId: string; label: string }> = [];
-  const joinedChannels: Array<{ workspaceId: string; channelId: string; label: string }> = [];
-  const missingChannels: Array<{ workspaceId: string; channelId: string; label: string }> = [];
-  for (const assignment of concrete) {
-    const label =
-      (await input.config.getChannel(assignment.workspaceId, assignment.channelId))?.label ??
-      assignment.channelId;
-    const channel = {
-      workspaceId: assignment.workspaceId,
-      channelId: assignment.channelId,
-      label,
-    };
-    if (identity.teamId && identity.teamId !== assignment.workspaceId) {
-      missingChannels.push(channel);
-      continue;
-    }
-    let info;
-    try {
-      info = await slackConversationsInfo(credentials.botToken, assignment.channelId);
-    } catch {
-      return {
-        ready: false,
-        error: 'slack_identity_membership_unavailable',
-        message: 'Slack membership could not be verified. Try again before switching identities.',
-      };
-    }
-    if (!info?.ok || !info.channel) {
-      missingChannels.push(channel);
-      continue;
-    }
-    const authoritative = {
-      ...channel,
-      label: info.channel.name ?? label,
-    };
-    checkedChannels.push(authoritative);
-    if (info.channel.isMember) continue;
-    if (info.channel.isPrivate === false) {
-      try {
-        const joined = await slackConversationsJoin(
-          credentials.botToken,
-          assignment.channelId,
-        );
-        if (joined.ok) {
-          joinedChannels.push(authoritative);
-          continue;
-        }
-      } catch {
-        // The actionable invite blocker below is safer than pretending a join.
-      }
-    }
-    missingChannels.push(authoritative);
-  }
-  if (missingChannels.length > 0) {
-    return {
-      ready: false,
-      error: 'slack_identity_not_in_channels',
-      message: 'Invite this Slack app to every listed channel before switching identities.',
-      channels: missingChannels,
-      ...(unenumeratedRules.length > 0 ? { unenumeratedRules } : {}),
-    };
-  }
-  return { ready: true, checkedChannels, joinedChannels, unenumeratedRules };
-}
-
-async function appendSlackIdentityAudit(
-  configStore: ConfigStore,
-  c: Context,
-  eventType: SlackIdentityAuditEventType,
-  before: SlackIdentity,
-  after: SlackIdentity,
-): Promise<void> {
-  const operation = eventType.slice('slack_identity.'.length);
-  const suppliedRequestId = c.req.header('x-request-id')?.trim();
-  const requestId = suppliedRequestId && /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$/.test(suppliedRequestId)
-    ? suppliedRequestId
-    : randomUUID();
-  await configStore.appendSlackIdentityAudit({
-    eventId: randomUUID(),
-    domain: 'slack_identity',
-    eventType,
-    outcome: 'success',
-    actorClass: 'admin',
-    actorId: null,
-    workspaceId: after.teamId ?? before.teamId ?? null,
-    subjectId: after.id,
-    subjectVersion: after.connectionRevision,
-    createdAt: Date.now(),
-    metadataJson: JSON.stringify({
-      operation,
-      priorLifecycle: before.lifecycle,
-      newLifecycle: after.lifecycle,
-      requestId,
-    }),
-    idempotencyKey:
-      `slack_identity:${after.id}:${operation}:${after.connectionRevision}:${requestId}:success`,
-  });
-}
-
-function slackIdentityAdminError(c: Context, error: unknown) {
-  if (error instanceof UnknownSlackIdentityError || error instanceof UnknownAgentError) {
-    return c.json({ error: 'not_found' }, 404);
-  }
-  if (error instanceof SlackIdentityExistsError) {
-    return c.json({ error: 'slack_identity_exists' }, 409);
-  }
-  if (error instanceof SlackIdentityRevisionConflictError) {
-    return c.json({
-      error: 'slack_identity_changed',
-      expectedRevision: error.expectedRevision,
-      actualRevision: error.actualRevision,
-    }, 409);
-  }
-  if (error instanceof AgentSlackIdentityConflictError) {
-    return c.json({
-      error: 'agent_slack_identity_changed',
-      agentId: error.agentId,
-      expectedIdentityId: error.expectedIdentityId,
-      actualIdentityId: error.actualIdentityId,
-    }, 409);
-  }
-  if (error instanceof SlackIdentityStillReferencedError) {
-    return c.json({
-      error: 'slack_identity_still_referenced',
-      agentIds: error.agentIds ? error.agentIds.split(', ').filter(Boolean) : [],
-      dmAgentId: error.dmAgentId || null,
-    }, 409);
-  }
-  if (
-    error instanceof SlackIdentityLifecycleError ||
-    error instanceof WorkspaceDefaultSlackIdentityProtectedError
-  ) {
-    return c.json({ error: 'slack_identity_lifecycle', message: error.message }, 409);
-  }
-  if (error instanceof SlackIdentityCredentialRevisionError) {
-    return c.json({ error: 'slack_identity_credentials_changed' }, 409);
-  }
-  if (error instanceof SlackIdentityBootstrapError) {
-    const status = error.code === 'slack_unreachable' ||
-        error.code === 'slack_channel_list_failed' ? 502 :
-      error.code.endsWith('_missing') || error.code.endsWith('_expired') ? 409 : 422;
-    return c.json({
-      error: error.code,
-      message: error.message,
-      ...(error.detail ? { detail: error.detail } : {}),
-      ...(error.missingScopes ? { missingScopes: error.missingScopes } : {}),
-      ...(error.consoleUrl ? { consoleUrl: error.consoleUrl } : {}),
-    }, status);
-  }
-  return internalError(c, error);
-}
-
-function isSlackIdentityId(identityId: string): boolean {
-  return /^slack_identity_[a-z0-9_-]{1,96}$/.test(identityId);
-}
-
-function slackIdentitySetupUrl(identityId: string): string {
-  return `/admin/settings/slack/identities/${encodeURIComponent(identityId)}/setup`;
-}
-
-function dedicatedSlackIdentitySetup(identity: SlackIdentity, origin: string) {
-  const appName =
-    identity.setupIntent?.appName ??
-    identity.setupIntent?.displayName ??
-    'Chickpea identity';
-  const botDisplayName = identity.setupIntent?.displayName ?? appName;
-  if (!safeHttpsUrl(origin)) {
-    return {
-      appName,
-      botDisplayName,
-      manifestUrl: null,
-      manifestError:
-        'Open Chickpea at its public HTTPS Admin URL to create this Slack app.',
-    };
-  }
-  const requestUrl = `${origin}/channels/slack/events/${identity.ingressKey}`;
-  const manifest = buildSlackIdentityManifest(slackAppManifest, {
-    appName,
-    botDisplayName,
-    requestUrl,
-  });
-  return {
-    appName,
-    botDisplayName,
-    manifestUrl: slackManifestPrefillUrl(manifest),
-    manifestError: null,
-  };
-}
-
-function toAssignment(input: v.InferOutput<typeof assignmentSchema>): ChannelAssignment {
-  return {
-    workspaceId: input.workspaceId,
-    channelId: input.channelId,
-    agentId: input.agentId,
-  };
-}
-
-/**
- * The Admin editor owns Channel policy as well as the Agent placement. Keep
- * those fields in one projection so a reload cannot silently reset the draft
- * to disabled/empty values just because ConfigStore separates the two rows.
- */
-function toAdminAssignment(
-  assignment: ChannelAssignment,
-  channel: ChannelConfig | undefined,
-) {
-  return {
-    ...assignment,
-    enabled: true,
-    ...(channel?.label !== undefined ? { channelLabel: channel.label } : {}),
-    ...(channel?.additionalInstructions !== undefined
-      ? { channelPromptAddendum: channel.additionalInstructions }
-      : {}),
-    participationMode: channel?.participationMode ?? 'ambient',
-  };
-}
-
-function toChannel(
-  input: v.InferOutput<typeof assignmentSchema>,
-  authoritativeLabel?: string,
-): ChannelConfig {
-  const label = authoritativeLabel ?? input.channelLabel;
-  return {
-    workspaceId: input.workspaceId,
-    channelId: input.channelId,
-    ...(label !== undefined ? { label } : {}),
-    ...(input.channelPromptAddendum !== undefined
-      ? { additionalInstructions: input.channelPromptAddendum }
-      : {}),
-    participationMode: input.participationMode ?? 'ambient',
-    lifecycle: 'active',
-  };
 }
 
 // Team-identity resolution that never throws: a backfill auth.test that cannot
@@ -7132,27 +7258,6 @@ async function resolveTeamInfoSafely(
   } catch {
     return { teamId: undefined, teamName: undefined };
   }
-}
-
-function connectedWorkspaceLabel(team: SlackTeamInfo): string {
-  if (team.teamName && team.teamId) return `${team.teamName} (${team.teamId})`;
-  return team.teamName ?? team.teamId ?? 'the connected workspace';
-}
-
-function workspaceMismatchMessage(team: SlackTeamInfo, workspaceId: string): string {
-  return (
-    `Chickpea is connected to ${connectedWorkspaceLabel(team)}, but this channel belongs to a ` +
-    `different workspace (${workspaceId}). Add Chickpea to ${team.teamName ?? 'the connected workspace'} ` +
-    `in Slack, or connect Chickpea to that workspace instead.`
-  );
-}
-
-function channelNotFoundMessage(channelId: string, team: SlackTeamInfo): string {
-  const where = team.teamName ? ` in ${team.teamName}` : '';
-  return (
-    `Slack could not find channel ${channelId}${where}. Check for a typo, make sure the channel ` +
-    `is in the connected workspace, and if it is private invite @Chickpea to it first — then try again.`
-  );
 }
 
 function modelResolutionError(agent: ModelResolvableAgent): ModelResolutionError | undefined {
@@ -7182,7 +7287,7 @@ async function readJson(req: { json(): Promise<unknown> }): Promise<unknown> {
   }
 }
 
-function assignmentKey(c: { req: { query(name: string): string | undefined } }):
+function channelKey(c: { req: { query(name: string): string | undefined } }):
   | { workspaceId: string; channelId: string }
   | undefined {
   const workspaceId = c.req.query('workspaceId');
@@ -7450,9 +7555,7 @@ function internalError(
 }
 
 function agentReferenceCount(references: AgentReferenceSummary): number {
-  return references.channelAssignments.length +
-    references.dmIdentityIds.length +
-    references.identityReferenceIds.length;
+  return references.channelGrants.length;
 }
 
 function agentStillReferenced(c: Context, error: AgentStillReferencedError): Response {
@@ -7501,36 +7604,43 @@ async function agentAdminProjection(
   configStore: ConfigStore,
   snapshotStore: AgentSnapshotStore,
   preloaded?: {
-    assignments: ChannelAssignment[];
-    identities: SlackIdentity[];
     references: AgentReferenceSummary;
-    channels: ChannelConfig[];
+    grants: AgentChannelGrant[];
+    installations: WorkspaceInstallation[];
     snapshotRoots: Awaited<ReturnType<AgentSnapshotStore['listLiveRootsByAgent']>>;
   },
+  access: { canEdit: boolean } = { canEdit: true },
 ): Promise<object> {
   const projectionData = preloaded ?? await (async () => {
-    const [assignments, identities, references, channels, snapshotRoots] = await Promise.all([
-      configStore.listAssignmentsForAgent(agent.id),
-      configStore.listSlackIdentitiesForAgent(agent.id),
+    const [references, grants, installations, snapshotRoots] = await Promise.all([
       configStore.getAgentReferences(agent.id),
-      configStore.listChannels(),
+      configStore.listAgentChannelGrants(),
+      configStore.listWorkspaceInstallations(),
       snapshotStore.listLiveRootsByAgent(agent.id),
     ]);
-    return { assignments, identities, references, channels, snapshotRoots };
+    return {
+      references,
+      grants: grants.filter((grant) => grant.agentId === agent.id),
+      installations,
+      snapshotRoots,
+    };
   })();
-  const { assignments, identities, references, channels, snapshotRoots } = projectionData;
-  const channelsByKey = new Map(
-    channels.map((channel) => [
-      `${channel.workspaceId}\u0000${channel.channelId}`,
-      channel,
-    ]),
-  );
-  const workspaceId = assignments[0]?.workspaceId ??
-    identities.find((identity) => identity.dmAgentId === agent.id)?.teamId ??
-    identities.find((identity) => identity.teamId)?.teamId;
+  const { references, grants, installations, snapshotRoots } = projectionData;
+  const workspaceId = grants[0]?.workspaceId ?? installations[0]?.workspaceId;
   return {
     ...agent,
-    tabs: ['instructions', 'skills', 'connectors', 'repositories', 'memory'],
+    canEdit: access.canEdit,
+    slackPresenceRecovery: agent.slackPresence?.health === 'needs_attention' &&
+        agent.slackPresence.errorCode
+      ? agentPresenceRecovery(
+          {
+            code: agent.slackPresence.errorCode as AgentPresenceError['code'],
+            message: agent.slackPresence.errorDetail ?? 'Slack could not finish the change.',
+          },
+          agent.slackPresence.normalizedHandle,
+        )
+      : null,
+    tabs: ['instructions', 'skills', 'connectors', 'repositories', 'memory', 'schedules'],
     capabilityPreviews: {
       skills: agent.skills.map(({ name, description, enabled }) => ({ name, description, enabled })),
       connectors: [
@@ -7557,43 +7667,19 @@ async function agentAdminProjection(
         enabled,
       })),
     },
-    identity: (() => {
-      const selectedId = agent.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
-      const selected = identities.find(({ id }) => id === selectedId);
-      return selected
-        ? {
-            id: selected.id,
-            displayName: selected.observedDisplayName ??
-              selected.setupIntent?.displayName ??
-              (selected.kind === 'workspace_default' ? 'Chickpea' : selected.id),
-            lifecycle: selected.lifecycle,
-            health: selected.health,
-          }
-        : null;
-    })(),
+    isWorkspaceDefault: installations.some(({ defaultAgentId }) => defaultAgentId === agent.id),
+    defaultForWorkspaces: installations
+      .filter(({ defaultAgentId }) => defaultAgentId === agent.id)
+      .map(({ workspaceId: installedWorkspaceId }) => installedWorkspaceId),
     whereItWorks: {
-      channels: assignments.map((assignment) => {
-        const channel = channelsByKey.get(
-          `${assignment.workspaceId}\u0000${assignment.channelId}`,
-        );
-        return {
-          workspaceId: assignment.workspaceId,
-          channelId: assignment.channelId,
-          channelName: channel?.label ?? assignment.channelId,
-          participationMode: channel?.participationMode ?? 'ambient',
-          href: `/admin/channels/${encodeURIComponent(assignment.workspaceId)}/${encodeURIComponent(assignment.channelId)}`,
-        };
-      }),
-      directMessages: identities
-        .filter((identity) => identity.dmAgentId === agent.id)
-        .map((identity) => ({
-          identityId: identity.id,
-          identityName: identity.observedDisplayName ??
-            identity.setupIntent?.displayName ??
-            (identity.kind === 'workspace_default' ? 'Chickpea' : identity.id),
-          workspaceId: identity.teamId ?? null,
-          state: identity.dmState,
-        })),
+      channels: grants.map((grant) => ({
+        workspaceId: grant.workspaceId,
+        channelId: grant.channelId,
+        channelName: grant.channelLabel ?? grant.channelId,
+        status: grant.status,
+        channelIsPrivate: grant.channelIsPrivate ?? null,
+        href: `/admin/channels/${encodeURIComponent(grant.workspaceId)}/${encodeURIComponent(grant.channelId)}`,
+      })),
     },
     memoryOwner: workspaceId
       ? { ownerKind: 'agent', workspaceId, ownerId: agent.id }
@@ -7627,7 +7713,6 @@ function effectiveConfigResponse(config: EffectiveSlackConfig): object {
     workspaceId: config.workspaceId,
     channelId: config.channelId,
     agentId: config.agentId,
-    slackIdentityId: config.slackIdentityId ?? WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
     agent: {
       id: config.agent.id,
       name: config.agent.name,

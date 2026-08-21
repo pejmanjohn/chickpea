@@ -67,6 +67,8 @@ export interface ResolveProfileMcpToolsOptions {
   resolveOAuthAccessToken?: (
     input: ResolveMcpOAuthAccessInput,
   ) => Promise<string>;
+  /** U6 account seam; rechecks binding/actor before returning a bearer. */
+  resolveBearerCredential?: (connectionId: string) => Promise<string>;
   /** Best-effort policy-only lifecycle hook; never receives headers or secrets. */
   onConnectionStart?: (connection: { id: string; displayName: string }) => void;
 }
@@ -78,6 +80,7 @@ export interface ResolveProfileMcpConnectionsOptions {
   resolveOAuthAccessToken?: (
     input: ResolveMcpOAuthAccessInput,
   ) => Promise<string>;
+  resolveBearerCredential?: (connectionId: string) => Promise<string>;
   onConnectionStart?: (connection: { id: string; displayName: string }) => void;
   /** Test seam; production uses the SSRF-guarded fetch implementation. */
   createGuardedFetch?: typeof createMcpGuardedFetch;
@@ -308,14 +311,13 @@ async function resolveLiveMcpBearer(
       serverUrl: server.url,
     });
   }
+  if (opts.resolveBearerCredential) return opts.resolveBearerCredential(server.id);
   const secrets = await resolveMcpSecrets(
     { agentId: opts.agentId, connectionId: server.id },
     [],
     opts.env,
   );
-  if (!secrets.bearer) {
-    throw new Error('MCP bearer credential is unavailable.');
-  }
+  if (!secrets.bearer) throw new Error('MCP bearer credential is unavailable.');
   return secrets.bearer;
 }
 
@@ -325,11 +327,18 @@ async function resolveOneServer(
 ): Promise<ToolDefinition[]> {
   let debugHeaders: Readonly<Record<string, string>> = {};
   try {
-    const secrets = await resolveMcpSecrets(
-      { agentId: opts.agentId, connectionId: server.id },
-      server.headerNames,
-      opts.env,
-    );
+    const secrets = opts.resolveBearerCredential
+      ? {
+          ...(server.authMode === 'bearer'
+            ? { bearer: await opts.resolveBearerCredential(server.id) }
+            : {}),
+          headers: {},
+        }
+      : await resolveMcpSecrets(
+          { agentId: opts.agentId, connectionId: server.id },
+          server.headerNames,
+          opts.env,
+        );
     if (server.authMode === 'oauth') {
       secrets.bearer = await (
         opts.resolveOAuthAccessToken ??

@@ -27,7 +27,7 @@ test('a signed-out link holder claims one browser and completes an exact connect
   let sequence = 0;
   const identity = new SqliteIdentityStore(':memory:', { now: () => now });
   const owner = await createSlackOwner(identity, { now, suffix: 'delegated-setup' });
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -256,7 +256,7 @@ test('expired and revoked setup capabilities cannot be claimed or resumed', asyn
 
 test('public setup routes reject oversized streamed bodies before buffering', async () => {
   const management = new SqliteManagementStore(':memory:');
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     const app = createManagementSetupRoutes({ management, config, settings });
@@ -287,7 +287,7 @@ test('stored provider replacement requires confirmation and reissue invalidates 
   let capabilitySequence = 0;
   const identity = new SqliteIdentityStore(':memory:', { now: () => now });
   const owner = await createSlackOwner(identity, { now, suffix: 'provider-replacement' });
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   try {
     const service = new WorkspaceManagementService({
@@ -350,7 +350,7 @@ test('a provider key is validated in the browser lane and never enters MCP state
   let sequence = 0;
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'provider-add' });
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
@@ -431,7 +431,7 @@ test('an older provider setup link cannot overwrite a newer rotation', async () 
   let capability = 0;
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'provider-stale-link' });
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
@@ -506,7 +506,7 @@ test('invalid replacement input is cleared while the prior provider credential s
   let sequence = 0;
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'provider-invalid' });
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');

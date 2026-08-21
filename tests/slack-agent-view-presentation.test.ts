@@ -24,6 +24,7 @@ function harness(input: {
   progressive?: boolean;
   native?: boolean;
   onNativeStarted?: () => Promise<void>;
+  persona?: { name: string; avatarUrl: string; avatarRevision: number };
 } = {}) {
   let clock = 1_800_000_000_000;
   const db = openStateDb(':memory:');
@@ -40,6 +41,7 @@ function harness(input: {
       progressiveStreaming: input.progressive ?? true,
       nativeTasks: input.native ?? false,
     },
+    ...(input.persona ? { persona: input.persona } : {}),
     ...(input.tasks ? { taskLabels: input.tasks } : {}),
   });
   const calls: Array<{ method: string; input: Record<string, unknown> }> = [];
@@ -118,7 +120,13 @@ function observer(events: Array<Record<string, unknown>>): SlackPresentationDeli
 }
 
 test('ordinary eligible answers start once, append ordered suffixes, and stop once', async () => {
-  const h = harness();
+  const h = harness({
+    persona: {
+      name: 'Support Triage',
+      avatarUrl: 'https://chickpea.example/assets/agents/support/avatar/2',
+      avatarRevision: 2,
+    },
+  });
   try {
     const relay = await h.presentation.prepareReceipt({
       instanceId: 'instance_progressive',
@@ -158,6 +166,14 @@ test('ordinary eligible answers start once, append ordered suffixes, and stop on
     await h.presentation.markCanonicalFinalized();
 
     assert.equal(h.calls.filter((call) => call.method === 'chat.startStream').length, 1);
+    assert.equal(
+      h.calls.find((call) => call.method === 'chat.startStream')?.input.username,
+      'Support Triage',
+    );
+    assert.equal(
+      h.calls.find((call) => call.method === 'chat.startStream')?.input.icon_url,
+      'https://chickpea.example/assets/agents/support/avatar/2',
+    );
     assert.equal(
       Object.hasOwn(h.calls.find((call) => call.method === 'chat.startStream')!.input, 'is_stoppable'),
       false,
@@ -338,6 +354,10 @@ test('a divergent terminal answer corrects the exact stream instead of posting a
 
 test('thread titles are deterministic, bounded, and reject credential-shaped input', async () => {
   assert.equal(deriveSlackThreadTitle('  <@U123> **Review** the release  '), 'Review the release');
+  assert.equal(
+    deriveSlackThreadTitle('<!subteam^S0BRSUAUTUL> hey bud'),
+    'hey bud',
+  );
   assert.equal(
     deriveSlackThreadTitle('OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456'),
     'New request',

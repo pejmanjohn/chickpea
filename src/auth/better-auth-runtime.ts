@@ -17,6 +17,7 @@ import {
 interface BetterAuthRuntimeOptions {
   identity?: IdentityStore;
   authSecret?: string;
+  environment?: BetterAuthEnvironment;
 }
 
 /**
@@ -64,7 +65,7 @@ async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<
     return new Response('Not Found', { status: 404 });
   }
 
-  const environment = await resolveBetterAuthEnvironment({
+  const environment = options.environment ?? await resolveBetterAuthEnvironment({
     control,
     platformEnv,
     authSecret: options.authSecret,

@@ -1,5 +1,7 @@
 import type { ConfigAgentPatch } from '../config/store.ts';
 import type {
+  AgentEditPolicy,
+  AgentChannelGrantStatus,
   AgentCreateInput,
   ChannelConfig,
 } from '../config/types.ts';
@@ -7,11 +9,6 @@ import type {
   MembershipStatus,
   OrganizationRole,
 } from '../identity/types.ts';
-import type {
-  MemoryEntryType,
-  MemoryOwnerRef,
-  OwnerMemoryEntry,
-} from '../memory/types.ts';
 import type {
   RoutineDefinition,
   RoutineOutputPolicy,
@@ -51,11 +48,31 @@ interface ManagementOperationBase {
   dependsOn?: string[];
 }
 
+/** Public Agent draft accepted by workspace management adapters. */
+export type ManagementAgentCreateInput = Omit<
+  AgentCreateInput,
+  | 'revision'
+  | 'creatorMembershipId'
+  | 'configurationGeneration'
+  | 'slackPresence'
+  | 'archivedAt'
+  | 'lifecycle'
+> & {
+  description?: string;
+  requestedHandle?: string;
+  editPolicy?: AgentEditPolicy;
+};
+
+/** Presentation-aware patch; requestedHandle is projected into Slack presence. */
+export type ManagementAgentPatch = ConfigAgentPatch & {
+  requestedHandle?: string;
+};
+
 export type ManagementOperation =
   | (ManagementOperationBase & {
       kind: 'create_agent';
       clientRef?: string;
-      agent: AgentCreateInput;
+      agent: ManagementAgentCreateInput;
     })
   | (ManagementOperationBase & {
       kind: 'update_agent';
@@ -63,10 +80,21 @@ export type ManagementOperation =
       expectedRevision: number;
       /** Forces confirmation when a portable recipe replaces the Agent definition. */
       confirmationReason?: 'recipe_overwrite';
-      patch: ConfigAgentPatch;
+      patch: ManagementAgentPatch;
     })
   | (ManagementOperationBase & {
       kind: 'delete_agent';
+      agentId: string;
+      expectedRevision: number;
+    })
+  | (ManagementOperationBase & {
+      kind: 'archive_agent';
+      agentId: string;
+      expectedRevision: number;
+      replacementDefaultAgentId?: string;
+    })
+  | (ManagementOperationBase & {
+      kind: 'restore_agent';
       agentId: string;
       expectedRevision: number;
     })
@@ -76,13 +104,19 @@ export type ManagementOperation =
       expectedRevision: number;
     })
   | (ManagementOperationBase & {
-      kind: 'place_agent';
+      kind: 'grant_agent_channel';
       workspaceId: string;
       channelId: string;
       expectedRevision: number;
-      expectedAgentId: string | null;
-      agentId?: string | null;
+      agentId?: string;
       agentClientRef?: string;
+    })
+  | (ManagementOperationBase & {
+      kind: 'revoke_agent_channel';
+      workspaceId: string;
+      channelId: string;
+      agentId: string;
+      expectedRevision: number;
     })
   | (ManagementOperationBase & {
       kind: 'update_member';
@@ -95,65 +129,14 @@ export type ManagementOperation =
       providerId: 'anthropic' | 'openai' | 'openrouter';
     })
   | (ManagementOperationBase & {
-      kind: 'create_slack_identity';
-      identityId: string;
-      initialDmAgentId: string;
-      appName: string;
-      displayName: string;
-    })
-  | (ManagementOperationBase & {
-      kind: 'set_slack_identity_dms';
-      identityId: string;
+      kind: 'update_agent_memory';
+      agentId: string;
       expectedRevision: number;
-      dmState: 'on' | 'off';
-      dmAgentId?: string;
-    })
-  | (ManagementOperationBase & {
-      kind: 'retire_slack_identity';
-      identityId: string;
-      expectedRevision: number;
-    })
-  | (ManagementOperationBase & {
-      kind: 'cancel_slack_identity_setup';
-      identityId: string;
-      expectedRevision: number;
-    })
-  | (ManagementOperationBase & {
-      kind: 'invite_member';
-      slackUserId: string;
-    })
-  | (ManagementOperationBase & {
-      kind: 'revoke_invitation';
-      invitationId: string;
-      expectedRevision: number;
-    })
-  | (ManagementOperationBase & {
-      kind: 'create_memory_entry';
-      owner: MemoryOwnerRef;
-      entry: {
-        slug: string;
-        description: string;
-        type: MemoryEntryType;
-        body: string;
-      };
-    })
-  | (ManagementOperationBase & {
-      kind: 'update_memory_entry';
-      owner: MemoryOwnerRef;
-      entryId: string;
-      expectedVersion: number;
-      description: string;
-      type: MemoryEntryType;
       body: string;
     })
   | (ManagementOperationBase & {
-      kind: 'forget_memory_entry';
-      owner: MemoryOwnerRef;
-      entryId: string;
-      expectedVersion: number;
-    })
-  | (ManagementOperationBase & {
       kind: 'save_routine';
+      agentId: string;
       workspaceId: string;
       channelId: string;
       routineId?: string;
@@ -210,10 +193,7 @@ export type ManagementSetupRequestTarget =
       kind: 'provider_credential';
       providerId: 'anthropic' | 'openai' | 'openrouter';
     }
-  | {
-      kind: 'slack_identity';
-      identityId: string;
-    };
+  ;
 
 export type ManagementDisposition =
   | 'applied'
@@ -223,7 +203,7 @@ export type ManagementDisposition =
   | 'skipped';
 
 export interface ManagementObjectRef {
-  kind: 'agent' | 'channel' | 'membership' | 'provider' | 'invitation' | 'memory' | 'routine' | 'slack_identity';
+  kind: 'agent' | 'channel' | 'channel_grant' | 'membership' | 'provider' | 'memory' | 'routine';
   id: string;
   revision?: number;
 }
@@ -248,8 +228,7 @@ export type ManagementSetupAction =
   | 'mcp_oauth'
   | 'mcp_credentials'
   | 'repository_access'
-  | 'provider_credential'
-  | 'slack_identity';
+  | 'provider_credential';
 
 export type ManagementSetupStatus =
   | 'pending'
@@ -271,7 +250,6 @@ export interface ManagementSetupTarget {
   agentName?: string;
   connectionId?: string;
   repositoryId?: string;
-  identityId?: string;
   replacement: boolean;
   formFields?: string[];
 }
@@ -373,24 +351,34 @@ export interface ManagementWorkspaceSnapshot {
     id: string;
     revision: number;
     name: string;
+    description?: string;
     instructions: string;
     enabled: boolean;
+    lifecycle?: AgentCreateInput['lifecycle'];
+    creatorMembershipId?: string;
+    editPolicy?: AgentCreateInput['editPolicy'];
+    configurationGeneration?: number;
+    slackPresence?: {
+      requestedHandle: string;
+      normalizedHandle: string;
+      desiredState: NonNullable<AgentCreateInput['slackPresence']>['desiredState'];
+      health: NonNullable<AgentCreateInput['slackPresence']>['health'];
+      errorCode?: string;
+      avatar: NonNullable<AgentCreateInput['slackPresence']>['avatar'];
+    };
     model?: string;
     skills: AgentCreateInput['skills'];
     mcpServers: AgentCreateInput['mcpServers'];
     apiConnections: AgentCreateInput['apiConnections'];
     repositories: AgentCreateInput['repositories'];
-    slackIdentityId?: string;
   }>;
   channels: Array<{
     workspaceId: string;
     channelId: string;
     revision: number;
     label?: string;
-    additionalInstructions?: string;
-    participationMode: ChannelConfig['participationMode'];
     lifecycle: ChannelConfig['lifecycle'];
-    agentId?: string;
+    grants: Array<{ agentId: string; status: AgentChannelGrantStatus }>;
   }>;
   providers: Array<{
     id: 'anthropic' | 'openai' | 'openrouter';
@@ -398,23 +386,7 @@ export interface ManagementWorkspaceSnapshot {
     mutable: boolean;
     affectedAgents: Array<{ id: string; name: string }>;
   }>;
-  slackIdentities: Array<{
-    id: string;
-    kind: 'workspace_default' | 'dedicated';
-    lifecycle: 'setup_incomplete' | 'credentials_pending' | 'connected' | 'degraded' | 'retired';
-    teamId?: string;
-    appId?: string;
-    botUserId?: string;
-    dmState: 'on' | 'off' | 'needs_setup';
-    dmAgentId?: string;
-    credentialProvenance: 'workspace_default' | 'none' | 'stored';
-    connectionRevision: number;
-    observedDisplayName?: string;
-    health: 'unknown' | 'healthy' | 'degraded' | 'disconnected' | 'uninstalled' | 'unauthorized';
-    agentIds: string[];
-  }>;
   team?: {
-    soleOwnerWarning: boolean;
     members: Array<{
       id: string;
       userId: string;
@@ -425,27 +397,14 @@ export interface ManagementWorkspaceSnapshot {
       status: MembershipStatus;
       revision: number;
     }>;
-    invitations: Array<{
-      id: string;
-      slackTeamId: string;
-      slackUserId: string;
-      displayName: string | null;
-      role: OrganizationRole;
-      status: string;
-      expiresAt: number;
-      revision: number;
-    }>;
   };
   effectiveRevision: string;
 }
 
 export interface ManagementMemorySnapshot {
-  owner: MemoryOwnerRef & {
-    storeId: string;
-    lifecycle: 'active' | 'sealed';
-    resetEpoch: number;
-  };
-  entries: Array<Omit<OwnerMemoryEntry, 'body'> & { body: string | null }>;
+  agentId: string;
+  body: string;
+  revision: number;
 }
 
 export interface ManagementRoutineInspectionInput {

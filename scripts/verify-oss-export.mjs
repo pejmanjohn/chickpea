@@ -76,12 +76,15 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'assets', 'chickpea-mark.svg'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'styles.css'),
   exportPath('docs', 'plans', '2026-07-28-001-feat-openai-subscription-auth-plan.md'),
+  exportPath('docs', 'plans', '2026-08-19-2302-feat-agent-first-slack-platform-plan.md'),
   exportPath('docs', 'runbooks', 'auth-db-deployment.md'),
+  exportPath('docs', 'runbooks', 'agent-first-acceptance-2026-08-21.md'),
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
   exportPath('docs', 'runbooks', 'slack-auth-recovery.md'),
   exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
   exportPath('docs', 'runbooks', 'openai-subscription.md'),
   exportPath('docs', 'runbooks', 'slack-interaction-operations.md'),
+  exportPath('docs', 'runbooks', 'workspace-management-mcp.md'),
 ]);
 
 const forbiddenSourcePaths = new Set([
@@ -451,8 +454,10 @@ function verifyNpmPackManifest() {
     'scripts/recover-auth.mjs',
     'docs/authentication.md',
     'docs/runbooks/auth-db-deployment.md',
+    'docs/runbooks/agent-first-acceptance-2026-08-21.md',
     'docs/runbooks/coding-sandbox-deployment.md',
     'docs/runbooks/slack-auth-recovery.md',
+    'docs/runbooks/workspace-management-mcp.md',
     'migrations/better-auth/0001_better_auth.sql',
     'scripts/flue-build-cf.mjs',
     'slack-app-manifest.json',

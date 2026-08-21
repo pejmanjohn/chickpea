@@ -24,7 +24,7 @@ interface VisualFixtureModule {
 }
 
 interface ChannelProjection {
-  assignment: unknown;
+  grants: Array<{ agentId: string }>;
   channelId: string;
   readiness: { code: string };
   source: string;
@@ -37,11 +37,6 @@ interface AgentProjection {
     connectors: Array<{ name: string }>;
     repositories: Array<{ name: string }>;
   };
-}
-
-interface MemoryOwnerProjection {
-  ownerKind: string;
-  ownerId: string;
 }
 
 interface SlackFixtureResponse {
@@ -115,39 +110,23 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
     const byId = new Map<string, ChannelProjection>(
       channels.channels.map((channel: ChannelProjection) => [channel.channelId, channel]),
     );
-    assert.equal(byId.get('C_RELEASES')?.source, 'configured_and_discovered');
+    assert.equal(byId.get('C_RELEASES')?.source, 'granted_and_discovered');
     assert.equal(byId.get('C_RELEASES')?.readiness.code, 'ready');
     assert.equal(byId.get('C_SUPPORT')?.readiness.code, 'membership_required');
-    assert.equal(byId.get('C_UNASSIGNED')?.assignment, null);
-    assert.equal(byId.get('C_UNASSIGNED')?.readiness.code, 'unassigned');
+    assert.deepEqual(byId.get('C_UNASSIGNED')?.grants, []);
+    assert.equal(byId.get('C_UNASSIGNED')?.readiness.code, 'no_agents');
     assert.equal(byId.get('C_DISCOVERED')?.source, 'discovered');
 
-    const owners = await fixtureJson<{ owners: MemoryOwnerProjection[] }>(
+    const memory = await fixtureJson<{
+      memory: { agentId: string; body: string; revision: number };
+    }>(
       fixture,
-      '/admin/api/audit/memory/owners?workspaceId=TVISUAL',
+      '/admin/api/agents/agent_research/memory',
     );
-    assert.ok(owners.owners.some((owner) =>
-      owner.ownerKind === 'agent' && owner.ownerId === 'agent_research'));
-    assert.ok(owners.owners.some((owner) =>
-      owner.ownerKind === 'channel' && owner.ownerId === 'C_RELEASES'));
-
-    const agentFiles = await fixtureJson<{ files: Array<{ name: string }> }>(
-      fixture,
-      '/admin/api/audit/memory/owners/agent/TVISUAL/agent_research/files',
-    );
-    const channelFiles = await fixtureJson<{ files: Array<{ name: string }> }>(
-      fixture,
-      '/admin/api/audit/memory/owners/channel/TVISUAL/C_RELEASES/files',
-    );
-    assert.deepEqual(agentFiles.files.map((file) => file.name), [
-      'MEMORY.md',
-      'audience-notes.md',
-      'research-principles.md',
-    ]);
-    assert.deepEqual(channelFiles.files.map((file) => file.name), [
-      'MEMORY.md',
-      'release-checklist.md',
-    ]);
+    assert.equal(memory.memory.agentId, 'agent_research');
+    assert.equal(memory.memory.revision, 1);
+    assert.match(memory.memory.body, /Prefer short evidence summaries/);
+    assert.match(memory.memory.body, /Separate verified fact, inference, and unresolved questions/);
   } finally {
     await fixture.close();
   }
@@ -223,6 +202,7 @@ test('canonical visual states use authenticated production URLs and UI actions o
         path: '/admin/channels/TVISUAL/C_RELEASES',
         actions: ['Advanced'],
       },
+      team: { path: '/admin/team', actions: [] },
     });
 
     for (const state of Object.values(fixture.canonicalStates)) {
@@ -320,7 +300,7 @@ test('production Admin markup exposes the shared primary shell and scoped Agent 
   assert.match(html, /app\.className = "frame onboarding-frame"/);
   assert.match(html, /isPrimaryAdminSurface\(\) \? " primary-admin-shell"/);
   assert.match(html, /<nav class="rail' \+ \(primaryShell \? ' primary-shell-sidebar' : ''\) \+ '" aria-label="Settings">/);
-  assert.match(html, /<a class="section-nav-item" href="\/admin\/account">Account<\/a>/);
+  assert.doesNotMatch(html, /href="\/admin\/account"|>Account<\/a>/);
   assert.doesNotMatch(html, /fixtureState|fixtureCredential|agent_research|C_RELEASES|TVISUAL/);
   assert.doesNotMatch(html, /\.onboarding[^,{]*,\s*\.admin-surface|\.settings[^,{]*,\s*\.admin-surface/);
 });

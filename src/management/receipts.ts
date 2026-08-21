@@ -1,10 +1,9 @@
 import type { PlatformEnv } from '../config/state-backend.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import {
-  resolveSlackIdentityExecutionContext,
-  type SlackIdentityExecutionResolver,
-} from '../slack/identity-execution.ts';
+  resolveSlackInstallationExecutionContext,
+  type SlackInstallationExecutionResolver,
+} from '../slack/installation-execution.ts';
 import type { ManagementStore } from './store.ts';
 import type {
   ManagementReceiptDestination,
@@ -129,28 +128,30 @@ export async function deliverManagementReceiptToSlack(
   input: {
     identity: Pick<IdentityStore, 'listExternalIdentities'>;
     env?: PlatformEnv;
-    resolveIdentity?: SlackIdentityExecutionResolver;
+    resolveInstallation?: SlackInstallationExecutionResolver;
   },
 ): Promise<ManagementReceiptDeliveryResult> {
-  const execution = await (input.resolveIdentity
-    ? input.resolveIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID)
-    : resolveSlackIdentityExecutionContext(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID, input.env));
   let channel: string;
   let threadTs: string | undefined;
+  let workspaceId: string;
   if (record.destination.kind === 'thread') {
-    if (record.destination.workspaceId !== execution.teamId) {
-      throw new Error('Receipt workspace does not match the Slack identity.');
-    }
+    workspaceId = record.destination.workspaceId;
     channel = record.destination.channelId;
     threadTs = record.destination.threadTs;
   } else {
     const destination = record.destination;
     const binding = (await input.identity.listExternalIdentities()).find((candidate) =>
       candidate.organizationId === destination.organizationId &&
-      candidate.userId === destination.userId &&
-      candidate.slackTeamId === execution.teamId);
-    if (!binding) throw new Error('The initiating Slack identity is unavailable.');
+      candidate.userId === destination.userId);
+    if (!binding) throw new Error('The initiating Slack member is unavailable.');
+    workspaceId = binding.slackTeamId;
     channel = binding.slackUserId;
+  }
+  const execution = await (input.resolveInstallation
+    ? input.resolveInstallation(workspaceId)
+    : resolveSlackInstallationExecutionContext(workspaceId, input.env));
+  if (execution.workspaceId !== workspaceId) {
+    throw new Error('Receipt workspace does not match the Slack installation.');
   }
   const response = await execution.client.chat.postMessage({
     channel,

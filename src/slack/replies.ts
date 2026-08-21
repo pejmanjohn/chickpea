@@ -12,16 +12,22 @@ export function toolStatus(toolName: string, args?: unknown): SlackStatusUpdate 
 const FALLBACK_STATUS_TEXT = 'is working on the request';
 const SLACK_LIVENESS_STATUS_TEXT = 'is thinking...';
 
-export function slackStatusText(_stage: SlackStatusUpdate): string {
-  return SLACK_LIVENESS_STATUS_TEXT;
+export function slackStatusText(_stage: SlackStatusUpdate, agentName?: string): string {
+  return namedStatus(agentName, SLACK_LIVENESS_STATUS_TEXT);
 }
 
-export function slackLoadingMessages(stage: SlackStatusUpdate): string[] {
+export function slackLoadingMessages(stage: SlackStatusUpdate, agentName?: string): string[] {
   const activity = statusToLoadingMessage(activityStatusText(stage));
+  const liveness = boundedLoadingMessage(slackStatusText(stage, agentName));
   if (isThinkingActivity(activity)) {
-    return [SLACK_LIVENESS_STATUS_TEXT];
+    return [liveness];
   }
-  return [SLACK_LIVENESS_STATUS_TEXT, activity];
+  return [
+    liveness,
+    boundedLoadingMessage(
+      agentName?.trim() ? namedStatus(agentName, activityStatusText(stage)) : activity,
+    ),
+  ];
 }
 
 function activityStatusText(stage: SlackStatusUpdate): string {
@@ -40,6 +46,16 @@ function statusToLoadingMessage(status: string): string {
   if (message.length <= SLACK_LOADING_MESSAGE_MAX) {
     return message;
   }
+  return `${message.slice(0, SLACK_LOADING_MESSAGE_MAX - 1)}…`;
+}
+
+function namedStatus(agentName: string | undefined, status: string): string {
+  const name = agentName?.trim();
+  return name ? `${name} ${status}` : status;
+}
+
+function boundedLoadingMessage(message: string): string {
+  if (message.length <= SLACK_LOADING_MESSAGE_MAX) return message;
   return `${message.slice(0, SLACK_LOADING_MESSAGE_MAX - 1)}…`;
 }
 

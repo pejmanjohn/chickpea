@@ -43,7 +43,7 @@ function appWithProviderAdmin(): {
   // earlier test would mask this app's own credential/availability behavior.
   invalidateProviderModelCache();
   const app = new Hono();
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   app.route(
@@ -603,7 +603,7 @@ test('provider favorites seed Workers AI defaults and round-trip curated arrays'
 
 test('Workers AI can be disabled without deleting its selected models', async () => {
   const app = new Hono();
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   app.route('/', createAdminRoutes({
     store: config,
@@ -696,7 +696,7 @@ test('Workers AI can be disabled without deleting its selected models', async ()
 
 test('models endpoint applies stored provider keys before composing provider groups', async () => {
   const app = new Hono();
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   app.route('/', createAdminRoutes({
     store: config,

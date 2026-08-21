@@ -7,12 +7,12 @@ import {
 } from '../config/state-backend.ts';
 import { readSlackIdentityProfile } from './identity-profile.ts';
 import {
-  invalidateSlackIdentityCredentialCache,
+  invalidateSlackInstallationCredentialCache,
   readActiveSlackCredentialMetadata,
-  resolveSlackIdentityCredentials,
+  resolveSlackInstallationCredentials,
   type SlackCredentialResolutionDependencies,
-} from './identity-credentials.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
+} from './installation-credentials.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import { parseSlackGrantedScopes } from './scopes.ts';
 
 /**
@@ -94,8 +94,8 @@ export async function resolveSlackCredentials(
   store?: SettingsStore,
   credentialDependencies?: SlackCredentialResolutionDependencies,
 ): Promise<ResolvedSlackCredentials> {
-  const resolved = await resolveSlackIdentityCredentials(
-    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  const resolved = await resolveSlackInstallationCredentials(
+    WORKSPACE_SLACK_INSTALLATION_ID,
     env,
     credentialDependencies ?? store,
   );
@@ -112,8 +112,8 @@ export async function describeSlackCredentialSources(
   store?: SettingsStore,
   credentialDependencies?: SlackCredentialResolutionDependencies,
 ): Promise<SlackCredentialSources> {
-  const resolved = await resolveSlackIdentityCredentials(
-    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  const resolved = await resolveSlackInstallationCredentials(
+    WORKSPACE_SLACK_INSTALLATION_ID,
     env,
     credentialDependencies ?? store,
   );
@@ -137,14 +137,14 @@ export function primeStoredSlackCredentials(
   revision: SlackConnectionRevision = null,
 ): void {
   // Retained only as a source-compatible no-op for pre-U2 test harnesses.
-  // Promotion primes the encrypted revision cache inside identity-credentials.
+  // Promotion primes the encrypted revision cache inside installation-credentials.
   void values;
   void revision;
 }
 
 /** Drop the cached stored triple (tests; never needed in production flow). */
 export function invalidateStoredSlackCredentials(): void {
-  invalidateSlackIdentityCredentialCache();
+  invalidateSlackInstallationCredentialCache();
 }
 
 /** Clone-safe revision value used by connection compare-and-swap writes. */
@@ -152,8 +152,8 @@ export async function readSlackConnectionRevision(
   store: SettingsStore,
   credentialDependencies?: SlackCredentialResolutionDependencies,
 ): Promise<SlackConnectionRevision> {
-  return (await resolveSlackIdentityCredentials(
-    WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+  return (await resolveSlackInstallationCredentials(
+    WORKSPACE_SLACK_INSTALLATION_ID,
     undefined,
     credentialDependencies ?? store,
   )).connectionRevision;
@@ -170,8 +170,11 @@ export async function readSlackConnectionRevision(
 
 let publicUrlCache: { expiresAt: number; value: string | undefined } | undefined;
 
-function envPublicUrl(): string | undefined {
-  const raw = process.env.SLACK_TAG_PUBLIC_URL?.trim();
+function envPublicUrl(env?: PlatformEnv): string | undefined {
+  const platformValue = env?.SLACK_TAG_PUBLIC_URL;
+  const raw = (
+    typeof platformValue === 'string' ? platformValue : process.env.SLACK_TAG_PUBLIC_URL
+  )?.trim();
   return raw ? raw.replace(/\/+$/, '') : undefined;
 }
 
@@ -185,7 +188,7 @@ export async function resolveSlackPublicUrl(
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<string | undefined> {
-  const fromEnv = envPublicUrl();
+  const fromEnv = envPublicUrl(env);
   if (fromEnv) {
     return fromEnv;
   }
@@ -381,6 +384,8 @@ export interface SlackConversationFacts {
 export interface SlackUserFacts {
   id: string;
   teamId: string | undefined;
+  displayName?: string | undefined;
+  email?: string | undefined;
   timezone?: string | undefined;
   deleted: boolean;
   bot: boolean;
@@ -433,9 +438,19 @@ function toUserFacts(raw: unknown): SlackUserFacts | null {
   if (!raw || typeof raw !== 'object') return null;
   const user = raw as Record<string, unknown>;
   if (typeof user.id !== 'string') return null;
+  const profile = user.profile && typeof user.profile === 'object'
+    ? user.profile as Record<string, unknown>
+    : {};
+  const displayName = [profile.display_name, profile.real_name, user.real_name, user.name]
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  const email = typeof profile.email === 'string' && profile.email.trim()
+    ? profile.email.trim()
+    : undefined;
   return {
     id: user.id,
     teamId: typeof user.team_id === 'string' ? user.team_id : undefined,
+    ...(displayName ? { displayName } : {}),
+    ...(email ? { email } : {}),
     timezone: typeof user.tz === 'string' ? user.tz : undefined,
     deleted: user.deleted === true,
     bot: user.is_bot === true,
@@ -982,7 +997,7 @@ export async function readStoredSlackTeamInfo(
   const settings = store ?? getSettingsStore(env);
   const [active, teamName] = await Promise.all([
     readActiveSlackCredentialMetadata(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      WORKSPACE_SLACK_INSTALLATION_ID,
       env,
       credentialDependencies ?? store,
     ),

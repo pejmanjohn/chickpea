@@ -3,9 +3,10 @@
 	"name": "chickpea",
 	"workers_dev": true,
 	"preview_urls": false,
-	"compatibility_date": "2026-06-01",
+	"compatibility_date": "2026-08-20",
 	"compatibility_flags": [
-		"nodejs_compat"
+		"nodejs_compat",
+		"global_fetch_strictly_public"
 	],
 	// Without this, a fresh install captures NO logs at all — the sanitized
 	// Slack error is then the only trace of a provider failure (learned the
@@ -37,6 +38,10 @@
 			{
 				"name": "TAG_STATE",
 				"class_name": "TagStateStore"
+			},
+			{
+				"name": "SLACK_GATEWAY_SESSION",
+				"class_name": "SlackGatewaySession"
 			}
 		]
 	},
@@ -110,6 +115,12 @@
 			"tag": "v8",
 			"deleted_classes": [
 				"AuthGuard"
+			]
+		},
+		{
+			"tag": "v9",
+			"new_sqlite_classes": [
+				"SlackGatewaySession"
 			]
 		}
 	]

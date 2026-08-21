@@ -9,7 +9,9 @@ const LEASE_ATTEMPTS = 64;
 const FETCH_TIMEOUT_MS = 10_000;
 const IDENTITY_TEXT_MAX = 160;
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,127}$/;
-const CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+// Reusable connection-account ids include an underscore and carry a generated
+// suffix; legacy per-Agent ids remain a strict subset of this bounded shape.
+const CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,191}$/;
 
 const GOOGLE_AUTHORIZATION_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
@@ -30,6 +32,26 @@ export type ApiOAuthProvider = 'google';
 export interface ApiOAuthRef {
   agentId: string;
   connectionId: string;
+}
+
+/**
+ * Reusable connection-account OAuth is keyed to the account, never to an
+ * Agent binding. The existing ref shape is retained for the provider state
+ * codec, with an explicit sentinel keeping account credentials reusable
+ * across every Agent that is allowed to use the account.
+ */
+export function connectionAccountOAuthRef(connectionAccountId: string): ApiOAuthRef {
+  if (!CONNECTION_ID_PATTERN.test(connectionAccountId) ||
+      !connectionAccountId.startsWith('connection_')) {
+    throw new ApiOAuthError('connection_missing', 'Connection account id is invalid');
+  }
+  return { agentId: connectionAccountId, connectionId: 'account' };
+}
+
+export function connectionAccountIdFromOAuthRef(ref: ApiOAuthRef): string | undefined {
+  return ref.connectionId === 'account' && ref.agentId.startsWith('connection_')
+    ? ref.agentId
+    : undefined;
 }
 
 export interface ApiOAuthDependencies {
@@ -125,6 +147,16 @@ export async function saveApiOAuthClient(
     clientSecret: requiredBounded(input.clientSecret, 2_048),
   };
   await settings.setSetting(apiOAuthSettingKeys(ref)[0], JSON.stringify(client));
+}
+
+/** Copy only the deployment-owned OAuth client, never personal tokens. */
+export async function copyApiOAuthClient(
+  source: ApiOAuthRef,
+  target: ApiOAuthRef,
+  settings: SettingsStore,
+): Promise<void> {
+  const client = await readClient(source, settings);
+  await saveApiOAuthClient(target, client, settings);
 }
 
 export async function describeApiOAuthSources(

@@ -1,5 +1,4 @@
 import type {
-  SlackContinuityNoticeProgress,
   SlackInteractionProgressPatch,
   TurnProgress,
   TurnPullRequestProgress,
@@ -21,7 +20,6 @@ import type {
   TurnJob,
 } from './turn-job-types.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
 import type { StateDb } from '../state/state-db.ts';
 import type { SlackRuntimeDrainCounts } from '../config/state-rpc.ts';
 import type { SlackTurnRecoveryItem } from '../config/state-rpc.ts';
@@ -79,7 +77,6 @@ export interface PendingTurnJob {
   progress: TurnProgress;
   runtimePlan?: RuntimePlanV2;
   agentInstanceId?: string;
-  continuityNoticeRequired?: boolean;
   dispatchEnvelope?: FlueDispatchEnvelopeV1;
   dispatchReceipt?: FlueDispatchReceiptV1;
   flueSettlement?: FlueSettlementCheckpointV1;
@@ -99,7 +96,6 @@ interface TurnJobRow {
   progress_json: string;
   runtime_plan_json?: string | null;
   agent_instance_id?: string | null;
-  continuity_notice_required?: number | null;
   dispatch_envelope_json?: string | null;
   dispatch_receipt_json?: string | null;
   flue_settlement_json?: string | null;
@@ -111,7 +107,7 @@ interface TurnJobRow {
 
 const TURN_JOB_SELECT_COLUMNS = `id, evt_key, msg_key, turn_json, assignment_json, run_id,
   execution_authority, attempts, progress_json, runtime_plan_json,
-  agent_instance_id, continuity_notice_required, dispatch_envelope_json,
+  agent_instance_id, dispatch_envelope_json,
   dispatch_receipt_json, flue_settlement_json, dispatch_started_at,
   submission_id, observation_json, recovery_reason`;
 
@@ -135,7 +131,6 @@ export class TurnJobStoreLogic {
         progress_json TEXT NOT NULL DEFAULT '{}',
         runtime_plan_json TEXT,
         agent_instance_id TEXT,
-        continuity_notice_required INTEGER,
         dispatch_envelope_json TEXT,
         dispatch_receipt_json TEXT,
         flue_settlement_json TEXT,
@@ -161,9 +156,6 @@ export class TurnJobStoreLogic {
     }
     if (!columns.some((column) => column.name === 'agent_instance_id')) {
       db.exec('ALTER TABLE turn_jobs ADD COLUMN agent_instance_id TEXT');
-    }
-    if (!columns.some((column) => column.name === 'continuity_notice_required')) {
-      db.exec('ALTER TABLE turn_jobs ADD COLUMN continuity_notice_required INTEGER');
     }
     if (!columns.some((column) => column.name === 'dispatch_envelope_json')) {
       db.exec('ALTER TABLE turn_jobs ADD COLUMN dispatch_envelope_json TEXT');
@@ -226,6 +218,39 @@ export class TurnJobStoreLogic {
     return inserted.changes === 1;
   }
 
+  /**
+   * Continue an OAuth-suspended Slack task as a fresh delivery into the same
+   * Agent conversation. The original row may already be terminal (it posted
+   * the authorization link); the continuation id makes callback replay
+   * idempotent while the new plan resolves the newly-ready account live.
+   */
+  resumeAfterOAuth(originalTaskId: string, continuationId: string): boolean {
+    const id = `oauthresume:${continuationId}`;
+    const existing = this.db.get(
+      'SELECT id FROM turn_jobs WHERE id = ? LIMIT 1',
+      id,
+    ) as { id: string } | undefined;
+    if (existing) return true;
+    const row = this.db.get(
+      `SELECT ${TURN_JOB_SELECT_COLUMNS} FROM turn_jobs WHERE id = ? LIMIT 1`,
+      originalTaskId,
+    ) as unknown as TurnJobRow | undefined;
+    if (!row) return false;
+    const original = this.decodeRow(row);
+    return this.enqueue({
+      id,
+      evtKey: `evt:${id}`,
+      msgKey: id,
+      turn: {
+        ...original.turn,
+        eventId: id,
+        text: 'Personal connection authorization is complete. Continue the interrupted request now without repeating any action already completed.',
+      },
+      assignment: original.assignment,
+      executionAuthority: 'legacy',
+    });
+  }
+
   /** Undelivered jobs in enqueue order — the alarm's work list. */
   listPending(
     limit = 100,
@@ -245,7 +270,7 @@ export class TurnJobStoreLogic {
     return rows.map((row) => this.decodeRow(row));
   }
 
-  countPendingDeliveriesForSlackIdentity(identityId: string): number {
+  countPendingDeliveriesForWorkspace(workspaceId: string): number {
     const row = this.db.get(
       `SELECT COUNT(*) AS count
        FROM turn_jobs
@@ -253,13 +278,8 @@ export class TurnJobStoreLogic {
            delivered = 0
            OR (delivered = 1 AND progress_json LIKE '%"cleanup":"pending"%')
          )
-         AND COALESCE(
-           json_extract(turn_json, '$.slackIdentityId'),
-           json_extract(assignment_json, '$.slackIdentityId'),
-           ?
-         ) = ?`,
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      identityId,
+         AND json_extract(turn_json, '$.workspaceId') = ?`,
+      workspaceId,
     ) as { count?: number } | undefined;
     return Number(row?.count ?? 0);
   }
@@ -283,17 +303,12 @@ export class TurnJobStoreLogic {
       const current = this.getFrozenRuntimePlan(id);
       if (current) return current;
       const instanceId = deriveRuntimePlanInstanceId(plan);
-      // Every new Slack event rehydrates bounded Slack context into its prompt.
-      // A harness rotation therefore preserves the visible conversation and
-      // must not post the old, misleading "fresh conversation" notice.
-      const continuityNoticeRequired = false;
       const updated = this.db.run(
         `UPDATE turn_jobs
-         SET runtime_plan_json = ?, agent_instance_id = ?, continuity_notice_required = ?
+         SET runtime_plan_json = ?, agent_instance_id = ?
          WHERE id = ? AND runtime_plan_json IS NULL`,
         JSON.stringify(plan),
         instanceId,
-        continuityNoticeRequired ? 1 : 0,
         id,
       );
       if (updated.changes !== 1) {
@@ -301,13 +316,13 @@ export class TurnJobStoreLogic {
         if (winner) return winner;
         throw new Error('TurnJob is unavailable for RuntimePlanV2 freeze.');
       }
-      return { runtimePlan: plan, instanceId, continuityNoticeRequired };
+      return { runtimePlan: plan, instanceId };
     });
   }
 
   getFrozenRuntimePlan(id: string): FrozenRuntimePlanDecision | undefined {
     const row = this.db.get(
-      `SELECT runtime_plan_json, agent_instance_id, continuity_notice_required
+      `SELECT runtime_plan_json, agent_instance_id
        FROM turn_jobs WHERE id = ?`,
       id,
     );
@@ -317,7 +332,6 @@ export class TurnJobStoreLogic {
     return {
       runtimePlan,
       instanceId,
-      continuityNoticeRequired: Number(row.continuity_notice_required) === 1,
     };
   }
 
@@ -748,28 +762,23 @@ export class TurnJobStoreLogic {
 
   /**
    * Re-open only compatibility turns whose operator-recovery condition was the
-   * named Slack identity becoming unavailable. Reconnect proves fresh
+   * workspace Slack installation becoming unavailable. Reconnect proves fresh
    * credentials before calling this method; immutable dispatch/settlement
    * checkpoints and the attempt counter stay intact so the relay reattaches
    * instead of paying for a second model run. Ledger-owned turns keep their
    * Work recovery boundary until a coordinated Run + Turn recovery API exists.
    */
-  retrySlackIdentityRecovery(identityId: string): number {
-    validateBoundedString(identityId, 'Slack identity id', 160);
+  retrySlackInstallationRecovery(workspaceId: string): number {
+    validateBoundedString(workspaceId, 'Slack workspace id', 160);
     return this.db.run(
       `UPDATE turn_jobs
        SET status = 'pending', recovery_reason = NULL
        WHERE delivered = 0
          AND status = 'recovery_required'
-         AND recovery_reason = 'slack_identity_unavailable'
+         AND recovery_reason = 'slack_installation_unavailable'
          AND execution_authority = 'legacy'
-         AND COALESCE(
-           json_extract(turn_json, '$.slackIdentityId'),
-           json_extract(assignment_json, '$.slackIdentityId'),
-           ?
-         ) = ?`,
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      identityId,
+         AND json_extract(turn_json, '$.workspaceId') = ?`,
+      workspaceId,
     ).changes;
   }
 
@@ -857,25 +866,6 @@ export class TurnJobStoreLogic {
       const current = this.getProgress(id);
       if (!current || current.interactionIntent) return current;
       const progress: TurnProgress = { ...current, interactionIntent: intent };
-      this.db.run(
-        'UPDATE turn_jobs SET progress_json = ? WHERE id = ?',
-        JSON.stringify(progress),
-        id,
-      );
-      return progress;
-    });
-  }
-
-  recordContinuityNotice(
-    id: string,
-    notice: SlackContinuityNoticeProgress,
-  ): TurnProgress | undefined {
-    const parsed = parseContinuityNotice(notice);
-    return this.db.transaction(() => {
-      const current = this.getProgress(id);
-      if (!current) return undefined;
-      if (current.continuityNotice?.status === 'delivered') return current;
-      const progress: TurnProgress = { ...current, continuityNotice: parsed };
       this.db.run(
         'UPDATE turn_jobs SET progress_json = ? WHERE id = ?',
         JSON.stringify(progress),
@@ -1007,8 +997,6 @@ export class TurnJobStoreLogic {
   private decodeRow(row: TurnJobRow): PendingTurnJob {
     const turn = JSON.parse(row.turn_json) as NormalizedSlackTurn;
     const assignment = JSON.parse(row.assignment_json) as ResolvedAssignment;
-    turn.slackIdentityId ??= WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
-    assignment.slackIdentityId ??= WORKSPACE_DEFAULT_SLACK_IDENTITY_ID;
     return {
       id: row.id,
       evtKey: row.evt_key,
@@ -1023,9 +1011,6 @@ export class TurnJobStoreLogic {
         ? { runtimePlan: parseRuntimePlanV2(JSON.parse(row.runtime_plan_json)) }
         : {}),
       ...(row.agent_instance_id ? { agentInstanceId: row.agent_instance_id } : {}),
-      ...(row.continuity_notice_required === null || row.continuity_notice_required === undefined
-        ? {}
-        : { continuityNoticeRequired: Number(row.continuity_notice_required) === 1 }),
       ...(row.dispatch_envelope_json
         ? { dispatchEnvelope: parseFlueDispatchEnvelope(JSON.parse(row.dispatch_envelope_json)) }
         : {}),
@@ -1456,9 +1441,6 @@ function parseTurnProgress(raw: string): TurnProgress {
           : {}),
       };
     }
-    if (parsed?.continuityNotice) {
-      progress.continuityNotice = parseContinuityNotice(parsed.continuityNotice);
-    }
     const pullRequest = parsed?.pullRequest;
     if (
       pullRequest &&
@@ -1489,30 +1471,6 @@ function parseTurnProgress(raw: string): TurnProgress {
   return {};
 }
 
-function parseContinuityNotice(value: unknown): SlackContinuityNoticeProgress {
-  if (!value || typeof value !== 'object') {
-    throw new Error('Slack continuity notice progress is invalid.');
-  }
-  const candidate = value as Record<string, unknown>;
-  if (
-    candidate.status !== 'retryable' &&
-    candidate.status !== 'posting' &&
-    candidate.status !== 'delivered' &&
-    candidate.status !== 'unknown'
-  ) {
-    throw new Error('Slack continuity notice status is invalid.');
-  }
-  if (candidate.messageTs !== undefined && typeof candidate.messageTs !== 'string') {
-    throw new Error('Slack continuity notice coordinate is invalid.');
-  }
-  if (candidate.status === 'delivered' && !candidate.messageTs) {
-    throw new Error('Delivered Slack continuity notice requires a coordinate.');
-  }
-  return {
-    status: candidate.status,
-    ...(typeof candidate.messageTs === 'string' ? { messageTs: candidate.messageTs } : {}),
-  };
-}
 
 function isValidAcknowledgmentProgress(
   value: unknown,

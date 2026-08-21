@@ -10,11 +10,10 @@ import { SlackOidcError } from '../src/auth/slack-oidc.ts';
 import { mintSetupCapability } from '../src/auth/setup-capability.mjs';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
-import { recordPendingSlackChallenge } from '../src/slack/identity-handshake.ts';
-import { buildSlackAppManifest } from '../src/slack/identity-manifest.ts';
+import { recordPendingSlackChallenge } from '../src/slack/installation-handshake.ts';
+import { buildSlackAppManifest } from '../src/slack/app-manifest.ts';
 import { SLACK_INSTALL_PROCESSING_LEASE_MS } from '../src/slack/install-oauth.ts';
 import { REQUIRED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 
@@ -57,7 +56,10 @@ test('capability-gated Admin setup creates an app without reflecting or retainin
       action: 'open', capability: authority.capability, destination: '/admin/channels',
     });
     assert.equal(opened.status, 200);
-    assert.match(await opened.text(), /Create the Slack app/);
+    const openedHtml = await opened.text();
+    assert.match(openedHtml, /Add Chickpea to Slack/);
+    assert.match(openedHtml, /data-primary-action="gateway-install"/);
+    assert.match(openedHtml, /Use your own Slack app instead/);
 
     const created = await postSetup(app, env, {
       action: 'create', capability: authority.capability,
@@ -277,7 +279,7 @@ test('public bot-install routes use an independent narrow browser cookie and nev
           authed_user: { id: 'UINSTALLER' },
         }), { headers: { 'content-type': 'application/json' } });
       }) as typeof fetch,
-      slackIdentityBootstrap: {
+      slackInstallationVerification: {
         now: () => routeNow,
         authTest: async () => ({
           ok: true, error: undefined, appId: 'A12345678', teamId: 'TACME',
@@ -385,8 +387,6 @@ test('public bot-install routes use an independent narrow browser cookie and nev
     assert.match(callback.headers.get('set-cookie') ?? '', /Max-Age=0/i);
     assert.equal(exchangeCalls, 3);
 
-    const slackIdentity = await config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-    assert.equal(slackIdentity.lifecycle, 'credentials_pending');
     const eventBody = JSON.stringify({
       type: 'url_verification', challenge: 'route-events-proof',
       api_app_id: 'A12345678', team_id: 'TACME',
@@ -394,7 +394,7 @@ test('public bot-install routes use an independent narrow browser cookie and nev
     const timestamp = String(Math.floor(routeNow / 1_000));
     const signature = `v0=${createHmac('sha256', 'route-signing-secret')
       .update(`v0:${timestamp}:${eventBody}`).digest('hex')}`;
-    assert.equal((await recordPendingSlackChallenge(settings, slackIdentity, {
+    assert.equal((await recordPendingSlackChallenge(settings, {
       rawBody: eventBody, signature, timestamp,
     }, { now: routeNow })).accepted, true);
     const finalized = await app.request(`${ORIGIN}/auth/slack/install/finalize`, {
@@ -622,7 +622,8 @@ test('wrong-account login clears callback authority and returns a non-disclosing
     assert.match(html, /Try another Slack account/);
     assert.match(html, /connected Slack workspace \(TACME\)/);
     assert.match(html, /name="destination" value="\/admin"/);
-    assert.match(html, /assigned Slack channels/);
+    assert.match(html, /First interact with a Chickpea Agent/);
+    assert.match(html, /ask an Owner to restore it/);
     assert.doesNotMatch(html, /expected user|invited user|email|password|attacker/i);
   } finally {
     identity.close();
@@ -737,7 +738,8 @@ test('revoked or expired invitation callback is terminal, non-disclosing, and cl
     assert.match(callback.headers.get('set-cookie') ?? '', /Max-Age=0/i);
     const html = await callback.text();
     assert.match(html, /data-invitation-state="unavailable"/);
-    assert.match(html, /create a fresh invitation/);
+    assert.match(html, /use a Chickpea Agent in Slack/i);
+    assert.doesNotMatch(html, /create a fresh invitation/i);
     assert.doesNotMatch(html, /terminal-locator|UREVOKED|Invited Admin/i);
     const client = await app.request(`${ORIGIN}/auth/slack/invite/client.js`);
     assert.match(await client.text(), /state === "unavailable"[\s\S]*sessionStorage\.removeItem/);
@@ -800,7 +802,7 @@ function postManualSetup(
 }
 
 function buildExpectedManifest() {
-  return buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN });
+  return buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
 }
 
 function formHeaders(): Record<string, string> {

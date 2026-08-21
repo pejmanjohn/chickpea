@@ -10,13 +10,13 @@ import { Hono } from 'hono';
 import { mintSetupCapability } from '../src/auth/setup-capability.mjs';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../src/config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { SlackAppCreationService, openSlackSetupTransaction } from '../src/slack/app-creation.ts';
 import { generateCredentialKeyring, loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
-import type { SlackCredentialDependencies } from '../src/slack/identity-credentials.ts';
-import { recordPendingSlackChallenge } from '../src/slack/identity-handshake.ts';
-import { buildSlackAppManifest } from '../src/slack/identity-manifest.ts';
+import type { SlackCredentialDependencies } from '../src/slack/installation-credentials.ts';
+import { recordPendingSlackChallenge } from '../src/slack/installation-handshake.ts';
+import { buildSlackAppManifest } from '../src/slack/app-manifest.ts';
 import {
   SLACK_INSTALL_ATTEMPT_TTL_MS,
   SLACK_INSTALL_PROCESSING_LEASE_MS,
@@ -89,7 +89,7 @@ test('confidential callback validates the issued bot capabilities and waits for 
     const waitingSetup = await fixture.identity.getSlackSetupTransaction(fixture.setup.id);
     assert.equal(waitingSetup?.state, 'bot_install_pending');
     const inactiveCandidate = await fixture.identity.getSlackCredentialRevision(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      WORKSPACE_SLACK_INSTALLATION_ID,
       waitingSetup!.botCredentialRevision!,
     );
     assert.equal(inactiveCandidate?.status, 'candidate');
@@ -97,7 +97,7 @@ test('confidential callback validates the issued bot capabilities and waits for 
     assert.ok(inactiveCandidate?.envelope?.ciphertext);
     assert.doesNotMatch(JSON.stringify(inactiveCandidate), /xoxb-bot-token-secret/);
     assert.equal(
-      (await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID))?.purpose,
+      (await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID))?.purpose,
       'app_credentials',
     );
     assert.equal(fixture.exchangeCalls, 1);
@@ -116,7 +116,16 @@ test('confidential callback validates the issued bot capabilities and waits for 
     assert.equal(installed.status, 'bot_installed');
     assert.equal(installed.teamId, 'TACME');
     assert.equal(installed.installerUserId, 'UINSTALLER');
-    const active = await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
+    const workspaceInstallation = await fixture.config.getWorkspaceInstallation('TACME');
+    assert.equal(workspaceInstallation?.revision, 3);
+    assert.equal(workspaceInstallation?.transportMode, 'direct');
+    assert.equal(workspaceInstallation?.defaultAgentId, 'agent_default');
+    assert.equal(workspaceInstallation?.teamId, 'TACME');
+    assert.equal(workspaceInstallation?.appId, 'A12345678');
+    assert.equal(workspaceInstallation?.botUserId, 'UBOT');
+    assert.equal(workspaceInstallation?.health, 'healthy');
+    assert.equal(workspaceInstallation?.healthDetail, undefined);
+    const active = await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID);
     assert.equal(active?.purpose, 'connected_credentials');
     assert.equal(active?.teamId, 'TACME');
     assert.equal(active?.botUserId, 'UBOT');
@@ -190,14 +199,11 @@ test('the canonical signed Events URL automatically promotes its pending encrypt
         );
         assert.equal(
           (await fixture.identity.getActiveSlackCredentialRevision(
-            WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+            WORKSPACE_SLACK_INSTALLATION_ID,
           ))?.purpose,
           'connected_credentials',
         );
-        assert.equal(
-          (await fixture.config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID)).lifecycle,
-          'connected',
-        );
+        assert.equal((await fixture.config.getWorkspaceInstallation('TACME'))?.health, 'healthy');
       } finally {
         fixture.close();
       }
@@ -221,7 +227,7 @@ test('a retry after proof persistence reuses the original verified time before C
     const proofInput = {
       setupId: waiting.id,
       candidateRevision: waiting.botCredentialRevision!,
-      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
       appId: waiting.appId!,
       teamId: waiting.slackTeamId!,
       baseRevision: waiting.credentialRevision!,
@@ -387,7 +393,7 @@ test('retention deletes expired OAuth authority without blocking a later signed 
       'bot_installed',
     );
     const active = await fixture.identity.getActiveSlackCredentialRevision(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      WORKSPACE_SLACK_INSTALLATION_ID,
     );
     assert.ok(active);
     assert.ok(await fixture.identity.getSlackEventsProof(active.revision));
@@ -660,7 +666,7 @@ test('a late signed challenge cannot promote a candidate after its app credentia
     assert.equal(waiting.status, 'waiting_events');
     const control = await fixture.identity.getSlackCredentialControl();
     await fixture.identity.tombstoneSlackCredentialRevision({
-      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
       revision: fixture.setup.credentialRevision!,
       expectedRotationEpoch: control!.rotationEpoch,
     });
@@ -671,7 +677,7 @@ test('a late signed challenge cannot promote a candidate after its app credentia
     );
     const setup = await fixture.identity.getSlackSetupTransaction(fixture.setup.id);
     const candidate = await fixture.identity.getSlackCredentialRevision(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      WORKSPACE_SLACK_INSTALLATION_ID,
       setup!.botCredentialRevision!,
     );
     assert.equal(candidate?.status, 'tombstoned');
@@ -723,12 +729,6 @@ async function installFixture(options: FixtureOptions = {}) {
   const identity = new SqliteIdentityStore(databasePath, { now });
   const config = new SqliteConfigStore(databasePath);
   const settings = new SqliteSettingsStore(databasePath);
-  const workspaceIdentity = await config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-  await config.updateSlackIdentity(workspaceIdentity.id, workspaceIdentity.connectionRevision, {
-    lifecycle: 'setup_incomplete',
-    credentialProvenance: 'none',
-    health: 'unknown',
-  });
   const credentials: SlackCredentialDependencies = {
     state: identity,
     keyring: options.keyring ?? generateCredentialKeyring('key_v1'),
@@ -758,7 +758,7 @@ async function installFixture(options: FixtureOptions = {}) {
     setupId: initial.id,
     expectedRevision: initial.revision,
     configurationToken: 'xoxe.xoxp-install-fixture-token',
-    manifest: buildSlackAppManifest({ kind: 'control_plane', origin: ORIGIN }),
+    manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
   });
   let exchangeCalls = 0;
   let exchangeRequest: Request | undefined;
@@ -797,7 +797,7 @@ async function installFixture(options: FixtureOptions = {}) {
         authed_user: { id: options.installerUserId ?? 'UINSTALLER' },
       });
     }) as typeof fetch,
-    bootstrap: {
+    verification: {
       now,
       authTest: async () => ({
         ok: true, error: undefined, appId: options.authAppId ?? 'A12345678',
@@ -837,8 +837,6 @@ async function installFixture(options: FixtureOptions = {}) {
       destination: '/admin/channels',
     }),
     async recordChallenge() {
-      const slackIdentity = await config.getSlackIdentity(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID);
-      assert.equal(slackIdentity.lifecycle, 'credentials_pending');
       const body = JSON.stringify({
         type: 'url_verification', challenge: 'challenge-install',
         api_app_id: 'A12345678', team_id: 'TACME',
@@ -846,7 +844,7 @@ async function installFixture(options: FixtureOptions = {}) {
       const timestamp = String(Math.floor(now() / 1_000));
       const signature = `v0=${createHmac('sha256', 'signing-secret-value')
         .update(`v0:${timestamp}:${body}`).digest('hex')}`;
-      const recorded = await recordPendingSlackChallenge(settings, slackIdentity, {
+      const recorded = await recordPendingSlackChallenge(settings, {
         rawBody: body, signature, timestamp,
       }, { now: now() });
       assert.equal(recorded.accepted, true);

@@ -32,7 +32,7 @@ import { loadCredentialKeyring } from '../slack/credential-keyring.ts';
 import type {
   SlackCredentialDependencies,
   SlackCredentialResolutionDependencies,
-} from '../slack/identity-credentials.ts';
+} from '../slack/installation-credentials.ts';
 import { SqliteManagementStore, type ManagementStore } from '../management/store.ts';
 
 export { isCloudflareTarget } from './runtime-target.ts';
@@ -87,6 +87,31 @@ let cachedRoutineStore: CachedStore<SqliteRoutineStore> | undefined;
 let cachedUsageStore: CachedStore<SqliteUsageStore> | undefined;
 let cachedWorkStore: CachedStore<SqliteWorkStore> | undefined;
 let cachedManagementStore: CachedStore<SqliteManagementStore> | undefined;
+
+/** Close process-local Node stores without opening another database path. */
+export function closeNodeStateStores(): void {
+  if (isCloudflareTarget()) return;
+  cachedConfigStore?.store.close();
+  cachedIdentityStore?.store.close();
+  cachedSnapshotStore?.store.close();
+  cachedSlackStateStore?.store.close();
+  cachedSettingsStore?.store.close();
+  cachedMemoryStore?.store.close();
+  cachedRoutineStore?.store.close();
+  cachedUsageStore?.store.close();
+  cachedWorkStore?.store.close();
+  cachedManagementStore?.store.close();
+  cachedConfigStore = undefined;
+  cachedIdentityStore = undefined;
+  cachedSnapshotStore = undefined;
+  cachedSlackStateStore = undefined;
+  cachedSettingsStore = undefined;
+  cachedMemoryStore = undefined;
+  cachedRoutineStore = undefined;
+  cachedUsageStore = undefined;
+  cachedWorkStore = undefined;
+  cachedManagementStore = undefined;
+}
 
 function nodeCached<T extends { close(): void }>(
   cached: CachedStore<T> | undefined,

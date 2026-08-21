@@ -4,7 +4,7 @@ import type { AuthControl, IdentityStore, Organization } from '../../src/identit
 
 export const TEST_ADMIN_ORIGIN = 'http://localhost';
 
-const principal: AuthPrincipal = {
+const defaultPrincipal: AuthPrincipal = {
   userId: 'user_test_owner',
   membershipId: 'membership_test_owner',
   organizationId: 'org_oss',
@@ -24,6 +24,7 @@ export function testAdminAuthority(
   token: string,
   origin = TEST_ADMIN_ORIGIN,
   sourceIdentity?: IdentityStore,
+  principal: AuthPrincipal = defaultPrincipal,
 ): { identity: IdentityStore; authService: AdminAuthenticationService } {
   const control: AuthControl = {
     installationId: 'installation_test',

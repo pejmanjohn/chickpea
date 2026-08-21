@@ -20,7 +20,9 @@
     "docs/authentication.md",
     "docs/runbooks/auth-db-deployment.md",
     "docs/runbooks/coding-sandbox-deployment.md",
+    "docs/runbooks/agent-first-acceptance-2026-08-21.md",
     "docs/runbooks/slack-auth-recovery.md",
+    "docs/runbooks/workspace-management-mcp.md",
     "fixtures",
     "migrations",
     "scripts",
@@ -56,6 +58,7 @@
     "deploy:sandbox": "node scripts/cloudflare-deployment-profile.mjs sandbox deploy",
     "setup:link": "node scripts/create-setup-link.mjs",
     "verify:cf-smoke": "node scripts/verify-cf-smoke.mjs",
+    "verify:gateway-live": "node --import tsx scripts/verify-shared-gateway-live.mjs",
     "verify:run-foundation": "node scripts/verify-run-foundation.mjs",
     "verify:admin-ui": "node scripts/verify-admin-ui.mjs",
     "admin:visual-fixture": "node scripts/serve-admin-visual-fixture.mjs",
@@ -81,6 +84,7 @@
   },
   "dependencies": {
     "@better-auth/mcp": "1.7.1",
+    "@cf-wasm/photon": "0.4.0",
     "@cfworker/json-schema": "4.1.1",
     "@cloudflare/sandbox": "0.12.4",
     "@earendil-works/pi-ai": "0.83.0",
@@ -100,8 +104,8 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.51.1",
-    "@cloudflare/workers-types": "5.20260801.1",
+    "@cloudflare/vite-plugin": "1.53.0",
+    "@cloudflare/workers-types": "5.20260820.1",
     "@flue/cli": "2.0.0",
     "@flue/vite": "2.0.0",
     "@slack/socket-mode": "^2.0.7",
@@ -110,7 +114,7 @@
     "tsx": "^4.22.4",
     "typescript": "6.0.3",
     "vite": "^8.1.2",
-    "wrangler": "4.120.0"
+    "wrangler": "4.124.0"
   },
   "cloudflare": {
     "label": "Chickpea",

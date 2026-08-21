@@ -61,14 +61,14 @@ export function validateManagementOperations(
       if (clientRefs.has(operation.clientRef)) throw invalid('Agent clientRef values must be unique.');
       clientRefs.add(operation.clientRef);
     }
-    if (operation.kind === 'place_agent') {
+    if (operation.kind === 'grant_agent_channel') {
       const hasClientRef = operation.agentClientRef !== undefined;
       const hasAgentId = operation.agentId !== undefined;
       if (hasClientRef === hasAgentId) {
-        throw invalid('A placement must provide exactly one of agentId or agentClientRef.');
+        throw invalid('A Channel grant must provide exactly one of agentId or agentClientRef.');
       }
       if (operation.agentClientRef && !clientRefs.has(operation.agentClientRef)) {
-        throw invalid('A placement agentClientRef must reference an earlier Agent creation.');
+        throw invalid('A Channel grant agentClientRef must reference an earlier Agent creation.');
       }
     }
     if (operation.kind === 'request_setup' &&
@@ -85,10 +85,6 @@ export function validateManagementOperations(
       if (target.agentClientRef && !clientRefs.has(target.agentClientRef)) {
         throw invalid('A setup agentClientRef must reference an earlier Agent creation.');
       }
-    }
-    if (operation.kind === 'set_slack_identity_dms' &&
-        ((operation.dmState === 'on') !== (operation.dmAgentId !== undefined))) {
-      throw invalid('Slack identity DMs require an Agent when on and no Agent when off.');
     }
     seen.add(operation.itemId);
   }

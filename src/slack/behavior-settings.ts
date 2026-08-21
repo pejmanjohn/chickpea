@@ -2,10 +2,8 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 
 export const SLACK_BEHAVIOR_KEYS = [
-  'allowDms',
   'unassignedHint',
   'welcomeOnJoin',
-  'ambientParticipation',
   'progressiveStreaming',
   'nativeTasks',
 ] as const;
@@ -22,19 +20,15 @@ export type SlackBehaviorSettings = Record<SlackBehaviorKey, SlackBehaviorSettin
 export type SlackBehaviorPatch = Partial<Record<SlackBehaviorKey, boolean>>;
 
 export const SLACK_BEHAVIOR_SETTING_KEYS: Record<SlackBehaviorKey, string> = {
-  allowDms: 'slack.behavior.allowDms',
   unassignedHint: 'slack.behavior.unassignedHint',
   welcomeOnJoin: 'slack.behavior.welcomeOnJoin',
-  ambientParticipation: 'slack.behavior.ambientParticipation',
   progressiveStreaming: 'slack.behavior.progressiveStreaming',
   nativeTasks: 'slack.behavior.nativeTasks',
 };
 
 export const SLACK_BEHAVIOR_ENV_KEYS: Record<SlackBehaviorKey, string> = {
-  allowDms: 'SLACK_TAG_ALLOW_DMS',
   unassignedHint: 'SLACK_TAG_UNASSIGNED_HINT',
   welcomeOnJoin: 'SLACK_TAG_WELCOME_ON_JOIN',
-  ambientParticipation: 'SLACK_TAG_AMBIENT_PARTICIPATION',
   progressiveStreaming: 'SLACK_TAG_PROGRESSIVE_STREAMING',
   nativeTasks: 'SLACK_TAG_NATIVE_TASKS',
 };
@@ -85,12 +79,10 @@ export async function resolveSlackBehaviorSettings(
     SLACK_BEHAVIOR_KEYS.map((key) => SLACK_BEHAVIOR_SETTING_KEYS[key]),
   );
   return {
-    allowDms: fromSources('allowDms', stored[0]),
-    unassignedHint: fromSources('unassignedHint', stored[1]),
-    welcomeOnJoin: fromSources('welcomeOnJoin', stored[2]),
-    ambientParticipation: fromSources('ambientParticipation', stored[3]),
-    progressiveStreaming: fromSources('progressiveStreaming', stored[4]),
-    nativeTasks: fromSources('nativeTasks', stored[5]),
+    unassignedHint: fromSources('unassignedHint', stored[0]),
+    welcomeOnJoin: fromSources('welcomeOnJoin', stored[1]),
+    progressiveStreaming: fromSources('progressiveStreaming', stored[2]),
+    nativeTasks: fromSources('nativeTasks', stored[3]),
   };
 }
 

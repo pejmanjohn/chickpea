@@ -5,7 +5,12 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import { validatePublicMcpClientRegistration } from '../src/auth/mcp-oauth.ts';
-import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
+import {
+  createWorkspaceManagementMcpServer,
+  WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI,
+  WORKSPACE_MANAGEMENT_SERVER_INFO,
+} from '../src/management/mcp.ts';
+import { MANAGEMENT_OPERATION_KINDS } from '../src/management/schemas.ts';
 import { WORKSPACE_MANAGEMENT_TOOL_NAMES } from '../src/management/tool-adapter.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
@@ -19,7 +24,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
   const f = await createManagementAdapterFixture('client-matrix');
   try {
     const principal: McpAuthenticatedPrincipal = {
-      betterAuthUserId: f.admin.binding.betterAuthUserId,
+      betterAuthUserId: f.admin.binding.betterAuthUserId!,
       userId: f.admin.user.id,
       membershipId: f.admin.membership.id,
       organizationId: f.admin.membership.organizationId,
@@ -42,6 +47,17 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         token_endpoint_auth_method: 'none',
       }).ok, true, client.name);
 
+      if (client.protocol !== '2026-07-28') {
+        const initialized = await mcpCall(handler.fetch, client.protocol, 'initialize', {
+          protocolVersion: client.protocol,
+          capabilities: {},
+          clientInfo: { name: client.name, version: '1.0.0' },
+        });
+        assert.equal((initialized.result as {
+          serverInfo: { version: string };
+        }).serverInfo.version, WORKSPACE_MANAGEMENT_SERVER_INFO.version, client.name);
+      }
+
       const listed = await mcpCall(handler.fetch, client.protocol, 'tools/list', {});
       assert.deepEqual(
         (listed.result as { tools: Array<{ name: string }> }).tools.map(({ name }) => name),
@@ -56,10 +72,32 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         content: Array<{ text: string }>;
       }).content[0]!.text);
       assert.equal(inspectedResult.ok, true, client.name);
+
+      const operationSchema = await mcpCall(handler.fetch, client.protocol, 'resources/read', {
+        uri: WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI,
+      });
+      const resource = (operationSchema.result as {
+        contents: Array<{ uri: string; text: string }>;
+      }).contents[0]!;
+      assert.equal(resource.uri, WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI);
+      const contract = JSON.parse(resource.text) as {
+        schemaVersion: number;
+        operationKinds: string[];
+      };
+      assert.equal(contract.schemaVersion, 2);
+      assert.deepEqual(contract.operationKinds, MANAGEMENT_OPERATION_KINDS);
     }
   } finally {
     f.close();
   }
+});
+
+test('workspace management MCP publishes the version 2 server contract', () => {
+  assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
+    name: 'chickpea-workspace',
+    version: '2.0.0',
+  });
+  assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });
 
 async function mcpCall(
@@ -77,6 +115,9 @@ async function mcpCall(
       ...(protocol === '2026-07-28' ? { 'mcp-method': method } : {}),
       ...(protocol === '2026-07-28' && method === 'tools/call' && typeof params.name === 'string'
         ? { 'mcp-name': params.name }
+        : {}),
+      ...(protocol === '2026-07-28' && method === 'resources/read' && typeof params.uri === 'string'
+        ? { 'mcp-name': params.uri }
         : {}),
     },
     body: JSON.stringify({

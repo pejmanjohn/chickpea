@@ -2,27 +2,27 @@ import { createHash, randomBytes as nodeRandomBytes, timingSafeEqual } from 'nod
 
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import type { IdentityStore, SlackRecoverySession } from '../identity/types.ts';
 import {
-  invalidateSlackIdentityCredentialCache,
+  invalidateSlackInstallationCredentialCache,
   stageMissingSlackCredentialBundle,
   stageSlackCredentialBundle,
   type SlackCredentialDependencies,
-} from '../slack/identity-credentials.ts';
+} from '../slack/installation-credentials.ts';
 import {
-  SlackIdentityBootstrapError,
-  validateSlackIdentityBotInstallation,
-  type SlackIdentityBootstrapDeps,
-} from '../slack/identity-bootstrap.ts';
-import { purgePendingSlackChallenge, verifyPendingSlackChallenge } from '../slack/identity-handshake.ts';
+  SlackInstallationVerificationError,
+  validateSlackBotInstallation,
+  type SlackInstallationVerificationDeps,
+} from '../slack/installation-verification.ts';
+import { purgePendingSlackChallenge, verifyPendingSlackChallenge } from '../slack/installation-handshake.ts';
 import {
   slackManifestFingerprint,
   validateSlackAppManifest,
   validateSlackAppManifestUrlRepair,
   type SlackAppManifest,
-} from '../slack/identity-manifest.ts';
+} from '../slack/app-manifest.ts';
 import { missingRequiredSlackBotScopes, REQUIRED_SLACK_BOT_SCOPES } from '../slack/scopes.ts';
 import {
   decryptSlackSecretEnvelope,
@@ -82,7 +82,7 @@ export interface SlackCredentialRecoveryDependencies {
   fetch?: typeof fetch;
   now?: () => number;
   randomBytes?: (length: number) => Uint8Array;
-  bootstrap?: SlackIdentityBootstrapDeps;
+  verification?: SlackInstallationVerificationDeps;
 }
 
 export class SlackCredentialRecoveryService {
@@ -105,7 +105,7 @@ export class SlackCredentialRecoveryService {
     }
     const [control, active] = await Promise.all([
       this.dependencies.identity.getSlackCredentialControl(),
-      this.dependencies.identity.getActiveSlackCredentialRevision(WORKSPACE_DEFAULT_SLACK_IDENTITY_ID),
+      this.dependencies.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID),
     ]);
     if (!control || !active || active.purpose !== 'connected_credentials' ||
         !active.teamId || !active.manifestFingerprint) {
@@ -297,9 +297,7 @@ export class SlackCredentialRecoveryService {
     }
     let validated;
     try {
-      validated = await validateSlackIdentityBotInstallation({
-        config: this.dependencies.config,
-        identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      validated = await validateSlackBotInstallation({
         expectedTeamId: session.expectedTeamId,
         expectedAppId: session.expectedAppId,
         expectedBotUserId: grant.botUserId,
@@ -307,20 +305,20 @@ export class SlackCredentialRecoveryService {
         requireScopeEvidence: true,
         requireDirectoryList: true,
         requireChannelList: true,
-      }, this.dependencies.bootstrap);
+      }, this.dependencies.verification);
     } catch (error) {
       throw mapBootstrapError(error);
     }
     const active = await this.dependencies.identity.getActiveSlackCredentialRevision(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      WORKSPACE_SLACK_INSTALLATION_ID,
     );
     if (!active || active.revision !== session.baseRevision ||
         active.appId !== session.expectedAppId || active.teamId !== session.expectedTeamId) {
       throw new SlackCredentialRecoveryError('stale_revision');
     }
     const connectedInput = {
-      identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-      identityClass: 'workspace_default' as const,
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+      identityClass: 'workspace_installation' as const,
       purpose: 'connected_credentials' as const,
       expectedActiveRevision: session.baseRevision,
       appId: session.expectedAppId,
@@ -369,7 +367,6 @@ export class SlackCredentialRecoveryService {
     const appSecrets = await this.decryptStagedAppCredentials(session);
     const verification = await verifyPendingSlackChallenge(
       this.dependencies.settings,
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
       appSecrets.signingSecret,
       { now: this.now(), expectedAppId: session.expectedAppId, expectedTeamId: session.expectedTeamId },
     );
@@ -377,7 +374,7 @@ export class SlackCredentialRecoveryService {
     const control = await this.dependencies.identity.getSlackCredentialControl();
     if (!control) throw new SlackCredentialRecoveryError('stale_revision');
     const candidate = await this.dependencies.identity.getSlackCredentialRevision(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+      WORKSPACE_SLACK_INSTALLATION_ID,
       session.connectedCandidateRevision,
     );
     if (!candidate) throw new SlackCredentialRecoveryError('stale_revision');
@@ -389,10 +386,9 @@ export class SlackCredentialRecoveryService {
       expectedActiveRevision: candidate.baseRevision,
       expectedRotationEpoch: control.rotationEpoch,
     }).catch((error) => { throw mapStateError(error); });
-    invalidateSlackIdentityCredentialCache(this.dependencies.identity);
+    invalidateSlackInstallationCredentialCache(this.dependencies.identity);
     await purgePendingSlackChallenge(
       this.dependencies.settings,
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
       verification.purgeReceipt,
     );
     await this.audit('slack_recovery.promoted', session.id, 'success', 'same_app_team_repaired');
@@ -487,8 +483,8 @@ function recoveryEnvelopeContext(
 ): SlackSecretEnvelopeContext {
   return {
     deploymentId: session.deploymentId,
-    identityId: WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
-    identityClass: 'workspace_default',
+    identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+    identityClass: 'workspace_installation',
     appId: session.expectedAppId,
     teamId: session.expectedTeamId,
     purpose: 'app_credentials',
@@ -537,7 +533,7 @@ async function boundedJson(response: Response): Promise<unknown> {
 }
 
 function mapBootstrapError(error: unknown): SlackCredentialRecoveryError {
-  if (!(error instanceof SlackIdentityBootstrapError)) {
+  if (!(error instanceof SlackInstallationVerificationError)) {
     return new SlackCredentialRecoveryError('invalid_response');
   }
   if (['slack_missing_scopes', 'slack_scope_unverified'].includes(error.code)) {

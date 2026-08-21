@@ -183,8 +183,8 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
   const migrations = config.migrations ?? [];
   const tags = migrations.map((migration) => migration.tag);
   check(
-    sameArray(tags, ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8']),
-    'built wrangler.json migrations use the exact append-only v1 through v8 chain',
+    sameArray(tags, ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9']),
+    'built wrangler.json migrations use the exact append-only v1 through v9 chain',
     tags.join(','),
   );
   const sandboxMigration = migrations.find((migration) => migration.tag === 'v3');
@@ -209,6 +209,11 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
   check(
     sameArray(authGuardRetirement?.deleted_classes ?? [], RETIRED_AUTH_CLASSES),
     'v8 retires exactly the AuthGuard class',
+  );
+  const gatewaySessionMigration = migrations.find((migration) => migration.tag === 'v9');
+  check(
+    sameArray(gatewaySessionMigration?.new_sqlite_classes ?? [], ['SlackGatewaySession']),
+    'v9 adds exactly the outbound shared-app gateway session class',
   );
   if (expectedProfile === 'sandbox') {
     const sandboxContainer = (config.containers ?? []).find(
@@ -487,10 +492,12 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
   });
   const openedHtml = await opened.text();
   check(
-    opened.status === 200 && openedHtml.includes('Create Slack app') &&
-      openedHtml.includes('First, generate an App Configuration token in Slack') &&
+    opened.status === 200 && openedHtml.includes('data-primary-action="gateway-install"') &&
+      openedHtml.includes('Add to Slack') &&
+      openedHtml.includes('Use your own Slack app instead') &&
+      openedHtml.includes('Generate an App Configuration token in Slack') &&
       openedHtml.includes('href="/admin/setup/manual"'),
-    'deploy capability opens Compact C with the separate manual journey',
+    'deploy capability leads with Add to Slack and keeps both customer-owned fallbacks',
     `HTTP ${opened.status}`,
   );
 
@@ -532,9 +539,9 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
   const preInstall = await postSignedEvent(eventsUrl, mentionEvent('Ev_SMOKE_PRE_INSTALL'));
   await backend.quiesce();
   check(
-    preInstall.status === 401 && backend.providerCalls().length === providerCallsBeforeInstall &&
+    preInstall.status === 200 && backend.providerCalls().length === providerCallsBeforeInstall &&
       backend.finals().length === 0,
-    'app-stage signing rejects agent work before bot OAuth',
+    'app-stage signing acknowledges Slack but rejects Agent work before bot OAuth',
     `HTTP ${preInstall.status}`,
   );
 
@@ -1051,9 +1058,9 @@ async function main() {
 
     const team = await adminFetch(baseUrl, '/admin/api/team');
     check(
-      team.status === 200 && team.body?.soleOwnerWarning === true &&
+      team.status === 200 && !('soleOwnerWarning' in (team.body ?? {})) &&
         team.body?.members?.length === 1 && team.body?.members?.[0]?.slackUserId === OWNER_USER_ID,
-      'first OIDC admission creates one exact sole Owner and keeps the redundancy warning visible',
+      'first OIDC admission creates one exact Owner without obsolete enrollment state',
       `HTTP ${team.status} members=${String(team.body?.members?.length)}`,
     );
     const connectedAdmin = await renderAdminWithWorkerdState(baseUrl, '/admin/onboarding');
@@ -1283,31 +1290,31 @@ async function main() {
 
     // A channel whose workspace does NOT match the connected team is rejected
     // at the API — the exact miss that let a wrong-workspace channel through.
-    const mismatch = await adminFetch(baseUrl, '/admin/api/assignments', {
-      method: 'PUT',
+    const mismatch = await adminFetch(baseUrl, '/admin/api/agents/agent_default/channels', {
+      method: 'POST',
       body: JSON.stringify({
         workspaceId: 'T0WRONG',
         channelId: CHANNEL,
-        agentId: 'agent_default',
-        enabled: true,
       }),
     });
     check(
-      mismatch.status === 400 && mismatch.body?.error === 'workspace_mismatch',
-      'mismatched-workspace assignment rejected (400 workspace_mismatch)',
+      mismatch.status === 403 && mismatch.body?.error === 'forbidden',
+      'mismatched-workspace Agent publication is forbidden',
       `HTTP ${mismatch.status} ${mismatch.body?.error ?? ''}`,
     );
 
-    const put = await adminFetch(baseUrl, '/admin/api/assignments', {
-      method: 'PUT',
+    const put = await adminFetch(baseUrl, '/admin/api/agents/agent_default/channels', {
+      method: 'POST',
       body: JSON.stringify({
         workspaceId: WORKSPACE,
         channelId: CHANNEL,
-        agentId: 'agent_default',
-        enabled: true,
       }),
     });
-    check(put.status === 200, 'admin PUT created the channel assignment', `HTTP ${put.status}`);
+    check(
+      put.status === 201 && put.body?.grant?.status === 'active',
+      'Agent publication created the active Channel grant and Slack handle',
+      `HTTP ${put.status}`,
+    );
     const onboardingBeforeTry = await adminFetch(baseUrl, '/admin/api/onboarding');
     check(
       onboardingBeforeTry.status === 200 && onboardingBeforeTry.body?.stage === 'choose_channel',
@@ -1325,7 +1332,7 @@ async function main() {
     });
     check(
       onboardingTry.status === 200 && onboardingTry.body?.stage === 'try',
-      'one assigned channel advances onboarding to Try Chickpea',
+      'one Default Agent grant advances onboarding to Try Chickpea',
       `HTTP ${onboardingTry.status} stage=${String(onboardingTry.body?.stage)}`,
     );
 
@@ -1343,16 +1350,18 @@ async function main() {
     // built entry and its ambient env.AI registration. The smoke-only binding
     // rejects any non-undefined `gateway` option, so a removed or overwritten
     // `gateway:false` registration produces a provider-failure final instead.
-    const aiPut = await adminFetch(baseUrl, '/admin/api/assignments', {
-      method: 'PUT',
+    const aiPut = await adminFetch(baseUrl, '/admin/api/agents/agent_default/channels', {
+      method: 'POST',
       body: JSON.stringify({
         workspaceId: WORKSPACE,
         channelId: AI_CHANNEL,
-        agentId: 'agent_default',
-        enabled: true,
       }),
     });
-    check(aiPut.status === 200, 'admin PUT created the Workers AI smoke assignment', `HTTP ${aiPut.status}`);
+    check(
+      aiPut.status === 201 && aiPut.body?.grant?.status === 'active',
+      'Agent publication granted the Workers AI smoke Channel',
+      `HTTP ${aiPut.status}`,
+    );
     const aiAdmission = await postSignedEvent(eventsUrl, aiMentionEvent());
     check(
       aiAdmission.status === 200 || aiAdmission.status === 202,
@@ -1393,7 +1402,7 @@ async function main() {
     const patch = await adminFetch(baseUrl, '/admin/api/agents/agent_default', {
       method: 'PATCH',
       body: JSON.stringify({
-        expectedRevision: defaultAgent.revision,
+        expectedRevision: aiPut.body?.agent?.revision ?? defaultAgent.revision,
         model: 'local-stub/smoke-model',
       }),
     });
@@ -1447,46 +1456,41 @@ async function main() {
     );
     const memoryFinals = await waitForFinalCount(backend, 2, 90_000);
     check(
-      memoryFinals.length === 2 && Boolean(memoryFinals[1]?.text.includes('Saved Channel memory `release-guidance`')),
-      'explicit Memory command persisted to exact Channel memory and returned an attributed receipt',
+      memoryFinals.length === 2 && Boolean(memoryFinals[1]?.text.includes('Saved Agent memory (revision 1).')),
+      'explicit Memory command persisted to the Agent memory and returned a receipt',
       memoryFinals[1]?.text ?? 'no memory receipt',
     );
-    const memoryOwnerPath = `/admin/api/audit/memory/owners/channel/${encodeURIComponent(WORKSPACE)}/${encodeURIComponent(CHANNEL)}`;
-    const memoryFiles = await adminFetch(baseUrl, `${memoryOwnerPath}/files`);
-    const smokeMemoryFile = memoryFiles.body?.files?.find((file) => file.name === 'release-guidance.md');
+    const memoryPath = '/admin/api/agents/agent_default/memory';
+    const agentMemory = await adminFetch(baseUrl, memoryPath);
     check(
-      memoryFiles.status === 200 && memoryFiles.body?.owner?.ownerKind === 'channel' &&
-        memoryFiles.body?.owner?.ownerId === CHANNEL && memoryFiles.body?.files?.[0]?.name === 'MEMORY.md' &&
-        Boolean(smokeMemoryFile?.entryId),
-      'workerd Admin Memory API exposes exact Channel owner, generated index, and saved file',
-      `files=${memoryFiles.status}`,
+      agentMemory.status === 200 && agentMemory.body?.memory?.agentId === 'agent_default' &&
+        agentMemory.body?.memory?.revision === 1 &&
+        String(agentMemory.body?.memory?.body ?? '').includes('Use the release checklist.'),
+      'workerd Admin Memory API exposes the one Agent-owned body',
+      `memory=${agentMemory.status} revision=${String(agentMemory.body?.memory?.revision)}`,
     );
     const memoryEditBody = JSON.stringify({
-      expectedVersion: 1,
-      description: 'Use the full release checklist.',
-      type: 'fact',
+      expectedRevision: 1,
       body: 'Run focused tests and the workerd smoke before release.',
     });
     const memoryEdit = await adminFetch(
       baseUrl,
-      `${memoryOwnerPath}/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
+      memoryPath,
       {
         method: 'PUT',
-        headers: { 'idempotency-key': 'cf-smoke-memory-edit' },
         body: memoryEditBody,
       },
     );
     const memoryConflict = await adminFetch(
       baseUrl,
-      `${memoryOwnerPath}/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
+      memoryPath,
       {
         method: 'PUT',
-        headers: { 'idempotency-key': 'cf-smoke-memory-conflict' },
         body: memoryEditBody,
       },
     );
     check(
-      memoryEdit.status === 200 && memoryEdit.body?.entry?.version === 2 &&
+      memoryEdit.status === 200 && memoryEdit.body?.memory?.revision === 2 &&
         memoryConflict.status === 409 && memoryConflict.body?.currentVersion === 2,
       'workerd Memory edit is optimistic and conflict-safe',
       `edit=${memoryEdit.status} conflict=${memoryConflict.status}`,
@@ -1512,15 +1516,12 @@ async function main() {
       'a fresh post-restart Slack OIDC session resolves the same live Owner authority',
       `HTTP ${freshSession.status} role=${String(freshSession.body?.viewer?.role)}`,
     );
-    const restartMemory = await adminFetch(
-      baseUrl,
-      `${memoryOwnerPath}/entries/${encodeURIComponent(smokeMemoryFile?.entryId ?? '')}`,
-    );
+    const restartMemory = await adminFetch(baseUrl, memoryPath);
     check(
-      restartMemory.status === 200 && restartMemory.body?.entry?.version === 2 &&
-        restartMemory.body?.entry?.body === 'Run focused tests and the workerd smoke before release.',
-      'Memory entry and version survived the workerd restart',
-      `HTTP ${restartMemory.status} version=${String(restartMemory.body?.entry?.version)}`,
+      restartMemory.status === 200 && restartMemory.body?.memory?.revision === 2 &&
+        restartMemory.body?.memory?.body === 'Run focused tests and the workerd smoke before release.',
+      'Agent memory and revision survived the workerd restart',
+      `HTTP ${restartMemory.status} revision=${String(restartMemory.body?.memory?.revision)}`,
     );
 
     const postRestartRedelivery = await postSignedEvent(eventsUrl, mentionEvent());
@@ -1561,16 +1562,18 @@ async function main() {
     // long turn; the cancellation it replaces is doc/tail-log-backed.
     console.log(`• slow-turn case: provider will hold ${SLOW_TURN_DELAY_MS}ms before replying…`);
     backend.configure({ provider: { delayMs: SLOW_TURN_DELAY_MS } });
-    const slowAssign = await adminFetch(baseUrl, '/admin/api/assignments', {
-      method: 'PUT',
+    const slowGrant = await adminFetch(baseUrl, '/admin/api/agents/agent_default/channels', {
+      method: 'POST',
       body: JSON.stringify({
         workspaceId: WORKSPACE,
         channelId: SLOW_CHANNEL,
-        agentId: 'agent_default',
-        enabled: true,
       }),
     });
-    check(slowAssign.status === 200, 'admin PUT created the slow-turn assignment', `HTTP ${slowAssign.status}`);
+    check(
+      slowGrant.status === 201 && slowGrant.body?.grant?.status === 'active',
+      'Agent publication granted the slow-turn Channel',
+      `HTTP ${slowGrant.status}`,
+    );
 
     const finalsBeforeSlow = backend.finals().length;
     const slowStartedAt = Date.now();

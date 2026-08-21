@@ -5,15 +5,10 @@ import { discoverMcpTools } from '../config/mcp-test.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
-import { WORKSPACE_DEFAULT_SLACK_IDENTITY_ID } from '../config/types.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { listSlackChannels } from '../slack/channels.ts';
-import {
-  slackDirectoryUsersList,
-  type SlackDirectoryMember,
-} from '../slack/credentials.ts';
-import { resolveSlackIdentityCredentials } from '../slack/identity-credentials.ts';
-import { classifySlackUserForAdmission } from '../slack/user-classification.ts';
+import { resolveSlackInstallationCredentials } from '../slack/installation-credentials.ts';
 import { ManagementError } from './types.ts';
 
 export async function discoverManagedSlackChannels(
@@ -32,39 +27,6 @@ export async function discoverManagedSlackChannels(
   } catch {
     throw slackUnavailable();
   }
-}
-
-export async function discoverEligibleSlackMembers(
-  cursor: string | undefined,
-  env: PlatformEnv | undefined,
-  identity: IdentityStore,
-) {
-  const [organization, credentials] = await Promise.all([
-    identity.getOrganization(),
-    managedSlackCredentials(env, identity),
-  ]);
-  if (!organization?.slackTeamId || !credentials.botToken || !credentials.botUserId) {
-    throw slackUnavailable();
-  }
-  const teamId = organization.slackTeamId;
-  const page = await slackDirectoryUsersList(credentials.botToken, {
-    ...(cursor ? { cursor } : {}),
-    limit: 200,
-    timeoutMs: 10_000,
-  }).catch(() => undefined);
-  if (!page?.ok) throw slackUnavailable();
-  const unavailable = await unavailableSlackUserIds(identity, organization.id);
-  return {
-    members: page.members
-      .filter((member) => classifySlackUserForAdmission(
-        member,
-        teamId,
-        credentials.botUserId!,
-      ) === 'eligible_human')
-      .filter(({ id }) => !unavailable.has(id))
-      .map(safeDirectoryMember),
-    nextCursor: page.nextCursor ?? null,
-  };
 }
 
 export async function testManagedMcpConnection(input: {
@@ -109,55 +71,13 @@ export async function testManagedMcpConnection(input: {
 
 async function managedSlackCredentials(env: PlatformEnv | undefined, identity: IdentityStore) {
   try {
-    return await resolveSlackIdentityCredentials(
-      WORKSPACE_DEFAULT_SLACK_IDENTITY_ID,
+    return await resolveSlackInstallationCredentials(
+      WORKSPACE_SLACK_INSTALLATION_ID,
       env,
       { state: identity, ...(env ? { env } : {}) },
     );
   } catch {
     throw slackUnavailable();
-  }
-}
-
-async function unavailableSlackUserIds(
-  identity: IdentityStore,
-  organizationId: string,
-): Promise<Set<string>> {
-  const [bindings, memberships, invitations] = await Promise.all([
-    identity.listExternalIdentities(),
-    identity.listMemberships(),
-    identity.listInvitations(),
-  ]);
-  const membershipStatus = new Map(memberships.map(({ id, status }) => [id, status]));
-  return new Set([
-    ...bindings
-      .filter((binding) => binding.organizationId === organizationId &&
-        membershipStatus.get(binding.membershipId) !== 'removed')
-      .map(({ slackUserId }) => slackUserId),
-    ...invitations
-      .filter((invitation) => invitation.organizationId === organizationId &&
-        invitation.status === 'pending')
-      .map(({ slackUserId }) => slackUserId),
-  ]);
-}
-
-function safeDirectoryMember(member: SlackDirectoryMember) {
-  return {
-    slackUserId: member.id,
-    displayName: member.displayName,
-    realName: member.realName,
-    handle: member.handle,
-    avatarUrl: safeHttpsUrl(member.avatarUrl),
-  };
-}
-
-function safeHttpsUrl(value: string | undefined): string | null {
-  if (!value || value.length > 2_048) return null;
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' ? url.href : null;
-  } catch {
-    return null;
   }
 }
 

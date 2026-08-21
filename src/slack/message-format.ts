@@ -229,11 +229,10 @@ export function renderChannelOnboarding(params: {
 }): string {
   const configure = renderSlackConfigureLink(params.publicUrl, { channelId: params.channelId });
   return [
-    `Mention <@${params.botUserId}> to guarantee a response.`,
-    'In an assigned channel, Chickpea may also join an unmentioned conversation when it has something materially useful to add.',
-    'It evaluates bounded recent context per message and does not build a persistent workspace-message index.',
-    'Once Chickpea joins a thread, human replies continue without another mention.',
-    `${configure} this Channel's Agent in /admin.`,
+    'Chickpea is ready in this Channel.',
+    `Mention an Agent handle or <@${params.botUserId}> to start a thread; Chickpea never joins unmentioned Channel conversations.`,
+    'Once an Agent owns a thread, Channel members can continue without repeating the mention.',
+    `${configure} the Agents available in this Channel.`,
   ].join(' ');
 }
 
@@ -248,8 +247,8 @@ export function renderUnassignedChannelHint(params: {
 }): string {
   const configure = renderSlackConfigureLink(params.publicUrl, { channelId: params.channelId });
   return [
-    `No Agent is assigned to this Channel yet, so <@${params.botUserId}> cannot reply here.`,
-    `${configure} this Channel's Agent in /admin.`,
+    `No Agent is available in this Channel yet, so <@${params.botUserId}> cannot reply here.`,
+    `${configure} the Agents available in this Channel.`,
   ].join(' ');
 }
 

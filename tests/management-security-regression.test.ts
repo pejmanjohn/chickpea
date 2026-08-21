@@ -10,7 +10,7 @@ import {
 } from '../src/management/tool-adapter.ts';
 
 const SECRET_CORPUS = [
-  'pejman-private@magoosh.example',
+  'alex-private@northstar.example',
   'sk-proj-abcdefghijklmnopqrstuvwxyz123456',
   'oauth-code-private-123456',
   'PRIVATE_INSTRUCTION_SENTINEL',
@@ -24,7 +24,7 @@ test('management telemetry accepts only content-free dimensions', () => {
   emitManagementMetric('PRIVATE_MEMORY_SENTINEL', {
     surface: 'T_PRIVATE_WORKSPACE',
     tool: 'PRIVATE_INSTRUCTION_SENTINEL',
-    reason: 'pejman-private@magoosh.example',
+    reason: 'alex-private@northstar.example',
     outcome: 'oauth-code-private-123456',
     operationCount: 2,
     ignored: 'sk-proj-abcdefghijklmnopqrstuvwxyz123456',
@@ -46,7 +46,7 @@ test('tool discovery and portable recipe exports exclude secret and authority co
     assert.doesNotMatch(JSON.stringify(descriptions), new RegExp(value));
   }
 
-  const config = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
   try {
     await config.createAgent({
       id: 'agent_secure',
@@ -63,12 +63,12 @@ test('tool discovery and portable recipe exports exclude secret and authority co
       apiConnections: [],
       repositories: [{
         id: 'repo', installationId: 42, accountLogin: 'private-account',
-        fullName: 'magoosh/research', enabled: true,
+        fullName: 'northstar/research', enabled: true,
       }],
     });
     const recipe = await exportWorkspaceRecipe(config, { agentIds: ['agent_secure'] });
     const serialized = JSON.stringify(recipe);
-    assert.doesNotMatch(serialized, /pejman-private|installationId|accountLogin|slackIdentityId/);
+    assert.doesNotMatch(serialized, /alex-private|installationId|accountLogin|slackIdentityId/);
     assert.doesNotMatch(serialized, /identity|workspaceId|channelId|memory/i);
   } finally {
     config.close();
