@@ -26,6 +26,7 @@ const zOptionalText = (max: number) => z.string().max(max);
 const zId = zText(128);
 const zAgentId = z.string().regex(AGENT_ID_PATTERN);
 const zRevision = z.number().int().nonnegative();
+const zModelSpecifier = z.string().min(1).max(500).regex(/^[^/]+\/.+$/);
 
 const zSkill = z.strictObject({
   name: zText(64),
@@ -92,7 +93,7 @@ const zAgentFields = {
   editPolicy: z.enum(['creator_and_admins', 'all_workspace_members']).optional(),
   instructions: zOptionalText(100_000),
   enabled: z.boolean(),
-  model: zText(500).optional(),
+  model: zModelSpecifier.optional(),
   skills: z.array(zSkill).max(100),
   mcpServers: z.array(zMcpConnection).max(50),
   apiConnections: z.array(zApiConnection).max(50),
@@ -106,7 +107,7 @@ const zAgentPatch = z.strictObject({
   editPolicy: zAgentFields.editPolicy,
   instructions: zAgentFields.instructions.optional(),
   enabled: zAgentFields.enabled.optional(),
-  model: zText(500).nullable().optional(),
+  model: zModelSpecifier.nullable().optional(),
   skills: zAgentFields.skills.optional(),
   mcpServers: zAgentFields.mcpServers.optional(),
   apiConnections: zAgentFields.apiConnections.optional(),
@@ -279,7 +280,7 @@ export const prepareConnectorSetupZodSchema = z.strictObject({
   // this field only because routing supplies the Agent ID out of band.
   agentId: zAgentId,
   connector: zText(128),
-  ownerKind: z.enum(['team', 'member']).optional(),
+  ownerKind: z.enum(['team', 'member']),
 });
 export const discoverSlackChannelsZodSchema = z.strictObject({
   refresh: z.boolean().optional(),
@@ -307,6 +308,12 @@ const vot = (max: number) => v.pipe(v.string(), v.maxLength(max));
 const vid = vt(128);
 const vAgentId = v.pipe(v.string(), v.regex(AGENT_ID_PATTERN));
 const vr = v.pipe(v.number(), v.integer(), v.minValue(0));
+const vModelSpecifier = v.pipe(
+  v.string(),
+  v.minLength(1),
+  v.maxLength(500),
+  v.regex(/^[^/]+\/.+$/),
+);
 const va = <TItem extends v.BaseSchema<unknown, unknown, v.BaseIssue<unknown>>>(
   item: TItem,
   max: number,
@@ -371,7 +378,7 @@ const vAgentFields = {
   editPolicy: v.optional(v.picklist(['creator_and_admins', 'all_workspace_members'])),
   instructions: vot(100_000),
   enabled: v.boolean(),
-  model: v.optional(vt(500)),
+  model: v.optional(vModelSpecifier),
   skills: va(vSkill, 100),
   mcpServers: va(vMcpConnection, 50),
   apiConnections: va(vApiConnection, 50),
@@ -385,7 +392,7 @@ const vAgentPatch = v.strictObject({
   editPolicy: vAgentFields.editPolicy,
   instructions: v.optional(vAgentFields.instructions),
   enabled: v.optional(vAgentFields.enabled),
-  model: v.optional(v.nullable(vt(500))),
+  model: v.optional(v.nullable(vModelSpecifier)),
   skills: v.optional(vAgentFields.skills),
   mcpServers: v.optional(vAgentFields.mcpServers),
   apiConnections: v.optional(vAgentFields.apiConnections),
@@ -552,7 +559,7 @@ export const inspectWorkspaceValibotSchema = v.strictObject({});
 export const prepareConnectorSetupValibotSchema = v.strictObject({
   agentId: v.optional(vAgentId),
   connector: vt(128),
-  ownerKind: v.optional(v.picklist(['team', 'member'])),
+  ownerKind: v.picklist(['team', 'member']),
 });
 export const discoverSlackChannelsValibotSchema = v.strictObject({
   refresh: v.optional(v.boolean()),

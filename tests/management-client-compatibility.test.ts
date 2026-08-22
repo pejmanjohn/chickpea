@@ -86,6 +86,11 @@ test('supported coding clients share public PKCE registration and stateless MCP 
           ?.inputSchema?.required?.includes('agentId'),
         `${client.name} must require an explicit Agent for connector setup`,
       );
+      assert.ok(
+        listedTools.find(({ name }) => name === 'prepare_connector_setup')
+          ?.inputSchema?.required?.includes('ownerKind'),
+        `${client.name} must require an explicit personal or Team connection owner`,
+      );
       const inspected = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
         name: 'inspect_workspace',
         arguments: {},
@@ -115,7 +120,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
 
       const missingAgent = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
         name: 'prepare_connector_setup',
-        arguments: { connector: 'Gmail' },
+        arguments: { connector: 'Gmail', ownerKind: 'member' },
       });
       assert.equal((missingAgent.result as { isError?: boolean }).isError, true, client.name);
 

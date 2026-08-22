@@ -70,13 +70,13 @@ test('connector setup handoff resolves the current Slack Agent and opens its con
     } }).result.connectors.some(({ id, name, description }) =>
       id === 'gmail' && name === 'Gmail' && description.length > 0));
 
-    const defaultOwner = await invokeWorkspaceManagementTool({
+    const teamOwner = await invokeWorkspaceManagementTool({
       service: f.service,
       resolveContext: async () => context,
-    }, 'prepare_connector_setup', { connector: 'Linear' });
-    assert.equal(defaultOwner.ok, true);
+    }, 'prepare_connector_setup', { connector: 'Linear', ownerKind: 'team' });
+    assert.equal(teamOwner.ok, true);
     assert.equal(
-      new URL((defaultOwner as { ok: true; result: { handoffUrl: string } }).result.handoffUrl)
+      new URL((teamOwner as { ok: true; result: { handoffUrl: string } }).result.handoffUrl)
         .pathname,
       '/admin/agents/agent_support/connections/new/linear/team',
     );
@@ -84,7 +84,10 @@ test('connector setup handoff resolves the current Slack Agent and opens its con
     const unknown = await invokeWorkspaceManagementTool({
       service: f.service,
       resolveContext: async () => context,
-    }, 'prepare_connector_setup', { connector: 'Definitely Not A Connector' });
+    }, 'prepare_connector_setup', {
+      connector: 'Definitely Not A Connector',
+      ownerKind: 'team',
+    });
     assert.equal(unknown.ok, false);
     assert.equal((unknown as { ok: false; error: { code: string } }).error.code, 'invalid_request');
 
@@ -150,7 +153,7 @@ test('connector setup handoff enforces Agent edit policy', async () => {
     const result = await invokeWorkspaceManagementTool({
       service: f.service,
       resolveContext: async () => context,
-    }, 'prepare_connector_setup', { connector: 'Linear' });
+    }, 'prepare_connector_setup', { connector: 'Linear', ownerKind: 'team' });
     assert.deepEqual(result, {
       ok: false,
       error: { code: 'forbidden', message: 'The Agent is not available to this member.' },

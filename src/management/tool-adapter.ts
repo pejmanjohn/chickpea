@@ -30,7 +30,7 @@ export type WorkspaceManagementToolName = typeof WORKSPACE_MANAGEMENT_TOOL_NAMES
 
 const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority.',
-  prepare_connector_setup: 'Create a safe browser handoff URL for adding a catalog connector to an editable Agent. In a specific Agent Slack conversation, agentId may be omitted to target that Agent.',
+  prepare_connector_setup: 'Create a safe browser handoff URL for adding a catalog connector to an editable Agent. Set ownerKind to "member" for a personal connection or "team" for a shared connection. In a specific Agent Slack conversation, agentId may be omitted to target that Agent.',
   discover_slack_channels: 'Discover Channels in the connected Slack workspace before publishing a Chickpea Agent.',
   test_mcp_connection: 'Test one saved Agent MCP connection with its write-only credentials and return a sanitized result plus discovered tools.',
   inspect_memory: 'Inspect the single durable memory body owned by one Agent.',
@@ -50,9 +50,8 @@ export function workspaceManagementToolDescription(name: WorkspaceManagementTool
 
 export type WorkspaceManagementToolArguments = {
   inspect_workspace: Record<never, never>;
-  prepare_connector_setup: Omit<PrepareConnectorSetupInput, 'agentId' | 'ownerKind'> & {
+  prepare_connector_setup: Omit<PrepareConnectorSetupInput, 'agentId'> & {
     agentId?: string | undefined;
-    ownerKind?: PrepareConnectorSetupInput['ownerKind'] | undefined;
   };
   discover_slack_channels: { refresh?: boolean | undefined };
   test_mcp_connection: { agentId: string; connectionId: string };
@@ -152,7 +151,7 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
         return service.prepareConnectorSetup(context, {
           agentId,
           connector: value.connector,
-          ownerKind: value.ownerKind ?? 'team',
+          ownerKind: value.ownerKind,
         });
       }
       case 'discover_slack_channels': {

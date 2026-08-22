@@ -21,6 +21,7 @@ const agentInput = {
   editPolicy: 'creator_and_admins' as const,
   instructions: 'Triage support requests.',
   enabled: true,
+  model: 'anthropic/claude-haiku-4-5',
   skills: [],
   mcpServers: [],
   apiConnections: [],
@@ -87,6 +88,23 @@ test('management operation schemas expose Agent presence, Channel reach, and lif
       kind: 'create_agent' as const,
       agent: { ...agentInput, id: invalidId },
     };
+    assert.equal(managementOperationZodSchema.safeParse(operation).success, false);
+    assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, false);
+  }
+  for (const operation of [
+    {
+      itemId: 'invalid-create-model',
+      kind: 'create_agent' as const,
+      agent: { ...agentInput, model: 'claude-haiku-4-5' },
+    },
+    {
+      itemId: 'invalid-update-model',
+      kind: 'update_agent' as const,
+      agentId: 'agent_support',
+      expectedRevision: 1,
+      patch: { model: 'claude-haiku-4-5' },
+    },
+  ]) {
     assert.equal(managementOperationZodSchema.safeParse(operation).success, false);
     assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, false);
   }
