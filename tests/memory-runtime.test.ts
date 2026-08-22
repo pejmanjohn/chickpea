@@ -89,8 +89,20 @@ test('an explicit base-app management mention stays memoryless without a default
     assert.equal(await prepared.validateLease(), true);
 
     const { interactionMode: _interactionMode, ...ordinaryAssignment } = assignment;
+    const recovered = await prepareMemoryTurn({
+      turn,
+      assignment: ordinaryAssignment,
+      client,
+      botUserId: 'U_CHICKPEA',
+      platformEnv: undefined,
+    });
+    assert.equal(recovered.promptBlock, undefined);
+    assert.deepEqual(recovered.selection, { entries: [] });
+    assert.match(recovered.conversationKey, /:workspace-management$/);
+    assert.equal(await recovered.validateLease(), true);
+
     const ordinary = await prepareMemoryTurn({
-      turn: { ...turn, source: 'agent_mention' },
+      turn: { ...turn, text: 'synthetic work without a base-bot mention' },
       assignment: ordinaryAssignment,
       client,
       botUserId: 'U_CHICKPEA',

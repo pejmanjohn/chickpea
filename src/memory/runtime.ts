@@ -112,7 +112,7 @@ export async function prepareMemoryTurn(input: {
 }): Promise<PreparedMemoryTurn> {
   const baseKey = slackThreadKey(input.turn);
   try {
-    if (input.assignment.interactionMode === 'workspace_management') {
+    if (await isWorkspaceManagementTurn(input)) {
       return await prepareWorkspaceManagementTurn(input, baseKey);
     }
     const state = getMemoryStateStore(input.platformEnv);
@@ -175,6 +175,29 @@ export async function prepareMemoryTurn(input: {
       confirmInjection: async () => true,
     };
   }
+}
+
+async function isWorkspaceManagementTurn(input: {
+  turn: NormalizedSlackTurn;
+  platformEnv: PlatformEnv | undefined;
+  botUserId?: string;
+  assignment: ResolvedAssignment;
+}): Promise<boolean> {
+  if (input.assignment.interactionMode === 'workspace_management') return true;
+  if (input.turn.source !== 'app_mention') return false;
+
+  // Turns admitted before the workspace-management marker existed can still be
+  // waiting in a durable queue during a deployment. Recover only an explicit
+  // leading mention of this installation's base bot, routed to its default
+  // Agent. Ordinary Agent mentions and synthetic app-mention turns continue
+  // through the normal Channel-grant and memory lease checks.
+  const installation = await getConfigStore(input.platformEnv)
+    .getWorkspaceInstallation(input.turn.workspaceId);
+  if (!installation || installation.defaultAgentId !== input.assignment.agentId) return false;
+  const botUserId = input.botUserId ?? installation.botUserId;
+  if (!botUserId) return false;
+  const escapedBotUserId = botUserId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^\\s*<@${escapedBotUserId}(?:\\|[^>]*)?>`).test(input.turn.text);
 }
 
 async function prepareWorkspaceManagementTurn(
