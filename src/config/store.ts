@@ -273,11 +273,19 @@ export interface ConfigStore {
  * execute SQL synchronously — and the async public interface wraps them.
  */
 export class ConfigStoreLogic {
+  private readonly legacyChannelBehaviorColumns: boolean;
+
   constructor(
     private readonly db: StateDb,
     seed: ConfigSeed = DEFAULT_SEED,
   ) {
     this.installConfigSchema();
+    const channelTable = this.db.get(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'config_channels'",
+    );
+    const channelSql = String(channelTable?.sql ?? '');
+    this.legacyChannelBehaviorColumns = channelSql.includes('participation_mode') &&
+      channelSql.includes('additional_instructions');
     this.seedOnce(seed);
   }
 
@@ -1082,15 +1090,32 @@ export class ConfigStoreLogic {
           channel.workspaceId, channel.channelId, expectedRevision, 0,
         );
       }
-      this.db.run(
-        `INSERT INTO config_channels (
-          workspace_id, channel_id, revision, label, lifecycle
-        ) VALUES (?, ?, 1, ?, ?)`,
-        channel.workspaceId,
-        channel.channelId,
-        channel.label ?? null,
-        channel.lifecycle,
-      );
+      if (this.legacyChannelBehaviorColumns) {
+        // Prelaunch disposable deployments may have received the Agent-first
+        // marker just before Channel behavior columns were removed. Keep
+        // their now-inert NOT NULL column satisfied without reintroducing it
+        // to the current Channel model or fresh schema.
+        this.db.run(
+          `INSERT INTO config_channels (
+            workspace_id, channel_id, revision, label, additional_instructions,
+            participation_mode, lifecycle
+          ) VALUES (?, ?, 1, ?, NULL, 'mention_only', ?)`,
+          channel.workspaceId,
+          channel.channelId,
+          channel.label ?? null,
+          channel.lifecycle,
+        );
+      } else {
+        this.db.run(
+          `INSERT INTO config_channels (
+            workspace_id, channel_id, revision, label, lifecycle
+          ) VALUES (?, ?, 1, ?, ?)`,
+          channel.workspaceId,
+          channel.channelId,
+          channel.label ?? null,
+          channel.lifecycle,
+        );
+      }
       return;
     }
     const actualRevision = current.revision ?? 1;
@@ -1099,17 +1124,30 @@ export class ConfigStoreLogic {
         channel.workspaceId, channel.channelId, expectedRevision, actualRevision,
       );
     }
-    const updated = this.db.run(
-      `UPDATE config_channels
-       SET label = ?, lifecycle = ?,
-           revision = revision + 1
-       WHERE workspace_id = ? AND channel_id = ? AND revision = ?`,
-      channel.label ?? null,
-      channel.lifecycle,
-      channel.workspaceId,
-      channel.channelId,
-      actualRevision,
-    );
+    const updated = this.legacyChannelBehaviorColumns
+      ? this.db.run(
+          `UPDATE config_channels
+           SET label = ?, additional_instructions = NULL,
+               participation_mode = 'mention_only', lifecycle = ?,
+               revision = revision + 1
+           WHERE workspace_id = ? AND channel_id = ? AND revision = ?`,
+          channel.label ?? null,
+          channel.lifecycle,
+          channel.workspaceId,
+          channel.channelId,
+          actualRevision,
+        )
+      : this.db.run(
+          `UPDATE config_channels
+           SET label = ?, lifecycle = ?,
+               revision = revision + 1
+           WHERE workspace_id = ? AND channel_id = ? AND revision = ?`,
+          channel.label ?? null,
+          channel.lifecycle,
+          channel.workspaceId,
+          channel.channelId,
+          actualRevision,
+        );
     if (updated.changes !== 1) {
       const latest = this.getChannel(channel.workspaceId, channel.channelId)?.revision ?? 0;
       throw new ChannelRevisionConflictError(

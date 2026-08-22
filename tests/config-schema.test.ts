@@ -94,3 +94,62 @@ test('an exact numeric version without the Agent-first marker is never accepted'
     db.close();
   }
 });
+
+test('prelaunch marked state with inert Channel behavior columns remains writable', () => {
+  const db = openStateDb(':memory:');
+  try {
+    db.exec(`
+      CREATE TABLE config_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE config_channels (
+        workspace_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        label TEXT,
+        additional_instructions TEXT,
+        participation_mode TEXT NOT NULL,
+        lifecycle TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, channel_id)
+      );
+    `);
+    db.run(
+      'INSERT INTO config_meta (key, value) VALUES (?, ?)',
+      'schema_version',
+      String(CONFIG_SCHEMA_VERSION),
+    );
+    db.run(
+      'INSERT INTO config_meta (key, value) VALUES (?, ?)',
+      'schema_marker',
+      CONFIG_SCHEMA_MARKER,
+    );
+    db.run(
+      'INSERT INTO config_meta (key, value) VALUES (?, ?)',
+      'config_seeded_v1',
+      'already-seeded',
+    );
+
+    const store = new ConfigStoreLogic(db, { agents: [] });
+    assert.deepEqual(store.putChannel({
+      workspaceId: 'TACME',
+      channelId: 'CNEW',
+      label: 'new-channel',
+      lifecycle: 'active',
+    }, 0), {
+      workspaceId: 'TACME',
+      channelId: 'CNEW',
+      revision: 1,
+      label: 'new-channel',
+      lifecycle: 'active',
+    });
+    assert.deepEqual(
+      { ...db.get(
+        `SELECT additional_instructions, participation_mode
+         FROM config_channels WHERE workspace_id = ? AND channel_id = ?`,
+        'TACME',
+        'CNEW',
+      ) },
+      { additional_instructions: null, participation_mode: 'mention_only' },
+    );
+  } finally {
+    db.close();
+  }
+});
