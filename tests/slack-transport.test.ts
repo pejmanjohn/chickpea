@@ -27,8 +27,11 @@ test('direct transport maps Slack operations without exposing credentials or a r
     id: 'U123',
     teamId: 'T123',
     name: 'ada',
+    handle: 'ada',
     displayName: 'Ada Lovelace',
+    realName: 'Augusta Ada King',
     email: 'ada@example.com',
+    avatarUrl: 'https://avatars.slack-edge.com/ada.png',
     deleted: false,
     bot: false,
     appUser: false,
@@ -320,7 +323,10 @@ function fakeClient(
           id: 'U123', team_id: 'T123', name: 'ada', deleted: false, is_bot: false,
           is_app_user: false, is_stranger: false,
           is_restricted: false, is_ultra_restricted: false,
-          profile: { display_name: 'Ada Lovelace', email: 'ada@example.com' },
+          profile: {
+            display_name: 'Ada Lovelace', real_name: 'Augusta Ada King',
+            email: 'ada@example.com', image_192: 'https://avatars.slack-edge.com/ada.png',
+          },
         },
       }),
       conversations: (input) => call('users.conversations', input, {

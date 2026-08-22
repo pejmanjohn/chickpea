@@ -61,7 +61,10 @@ function teamFixture(viewerRole: 'owner' | 'admin' = 'owner') {
     },
     members: [
       {
-        id: 'membership_owner', userId: 'user_owner', displayName: 'Pejman Owner',
+        id: 'membership_owner', userId: 'user_owner', displayName: 'pejman.pourmoezzi',
+        realName: 'Pejman Pour-Moezzi', handle: 'pejman.pourmoezzi',
+        contactEmail: 'pejman@example.com',
+        avatarUrl: 'https://avatars.slack-edge.com/pejman.png',
         slackTeamId: 'TACME', slackUserId: 'UOWNER', role: 'owner', status: 'active',
       },
       {
@@ -108,20 +111,25 @@ async function createHarness(viewerRole: 'owner' | 'admin' = 'owner') {
   const document = {
     getElementById(id: string) { return id === 'app' ? app : null; },
     querySelector(selector: string) {
-      if (selector === '[data-action="team-role-action"]' && html.includes('data-action="team-role-action"')) {
-        return { focus() { focused = 'team-role-action'; } };
-      }
       if (selector === '[data-action="team-status-action"]' && html.includes('data-action="team-status-action"')) {
         return { focus() { focused = 'team-status-action'; } };
       }
       return null;
     },
     querySelectorAll(selector: string) {
-      if (selector !== '[data-action="team-actions-toggle"]') return [];
-      return team.members.filter((member) => member.status !== 'removed').map((member) => ({
-        getAttribute(name: string) { return name === 'data-membership' ? member.id : null; },
-        focus() { focused = `trigger:${member.id}`; },
-      }));
+      if (selector === '[data-action="team-actions-toggle"]') {
+        return team.members.filter((member) => member.status !== 'removed').map((member) => ({
+          getAttribute(name: string) { return name === 'data-membership' ? member.id : null; },
+          focus() { focused = `trigger:${member.id}`; },
+        }));
+      }
+      if (selector === '[data-action="team-role-select"]') {
+        return (team.viewer.role === 'owner' ? team.members.filter((member) => member.status === 'active') : []).map((member) => ({
+          getAttribute(name: string) { return name === 'data-membership' ? member.id : null; },
+          focus() { focused = `role:${member.id}`; },
+        }));
+      }
+      return [];
     },
     addEventListener(type: string, listener: Listener) { listeners[type] = listener; },
   };
@@ -162,31 +170,38 @@ async function createHarness(viewerRole: 'owner' | 'admin' = 'owner') {
 
 test('Team explains automatic provisioning and never loads invitation or Slack-directory UI', async () => {
   const harness = await createHarness();
+  const page = renderAdminPage();
   assert.match(harness.app.innerHTML, /join automatically the first time they interact with an Agent/i);
   assert.match(harness.app.innerHTML, /Guests and Slack Connect/i);
-  assert.match(harness.app.innerHTML, /6 members/);
+  assert.match(harness.app.innerHTML, /5 members/);
   assert.doesNotMatch(harness.app.innerHTML, /Invite from Slack|Invite administrator|Add a second Owner|Pending Slack invitations|Join links/i);
   assert.doesNotMatch(harness.app.innerHTML, /team-directory|team-invite|slack_directory_unavailable/i);
   assert.equal(harness.requests.some((request) =>
     request.path.includes('/team/directory') || request.path.includes('/team/invitations')), false);
+  assert.match(harness.app.innerHTML, /class="team-avatar"><img src="https:\/\/avatars\.slack-edge\.com\/pejman\.png"/);
+  assert.match(harness.app.innerHTML, /Pejman Pour-Moezzi/);
+  assert.match(harness.app.innerHTML, /@pejman\.pourmoezzi · pejman@example\.com/);
+  assert.ok(harness.app.innerHTML.indexOf('Pejman Pour-Moezzi') < harness.app.innerHTML.indexOf('Alex Admin'));
+  assert.doesNotMatch(harness.app.innerHTML, /Rae Removed|membership_removed/);
+  assert.match(harness.app.innerHTML, /class="team-column-guide"[^>]*><span>Member<\/span><span>Role<\/span>/);
+  assert.match(harness.app.innerHTML, /class="team-role-select"[^>]*data-membership="membership_owner"/);
+  assert.match(harness.app.innerHTML, /class="team-role-select"[^>]*data-membership="membership_admin"/);
+  assert.match(harness.app.innerHTML, /class="team-access-status active"[^>]*>Active/);
+  assert.match(page, /grid-template-columns: minmax\(0, 1fr\) 112px 38px/);
+  assert.match(page, /padding: 0 34px 0 12px/);
+  assert.match(page, /team-role-select-icon[^}]*right: 12px/);
+  assert.match(page, /\.team-card h2 \{[^}]*margin: 0 0 12px/);
+  assert.match(page, /\.team-card > \.hint \{ margin: 0 0 18px; \}/);
 });
 
-test('Owner changes ordinary roles directly from one member row menu', async () => {
+test('Owner changes ordinary roles directly from an inline role dropdown', async () => {
   const harness = await createHarness();
-  const click = harness.listeners.click!;
-  click({ target: actionTarget({
-    'data-action': 'team-actions-toggle', 'data-membership': 'membership_member',
-  }) });
-  assert.equal(harness.focused(), 'team-role-action');
-  assert.match(harness.app.innerHTML, /role="menu" aria-label="Actions for Maya Member"/);
-  assert.match(harness.app.innerHTML, /Make Admin/);
-  assert.match(harness.app.innerHTML, /Make Owner/);
-  assert.match(harness.app.innerHTML, /Suspend access/);
-  assert.match(harness.app.innerHTML, /Remove from Chickpea/);
-
-  click({ target: actionTarget({
-    'data-action': 'team-role-action', 'data-membership': 'membership_member', 'data-role': 'admin',
-  }, undefined, ['team-action-menu']) });
+  const change = harness.listeners.change!;
+  assert.match(harness.app.innerHTML, /aria-label="Change role for Maya Member"/);
+  assert.match(harness.app.innerHTML, /<option value="member" selected>Member<\/option>/);
+  change({ target: actionTarget({
+    'data-action': 'team-role-select', 'data-membership': 'membership_member',
+  }, 'admin') });
   await flush();
   assert.ok(harness.requests.some((request) =>
     request.path.endsWith('/membership_member') &&
@@ -197,13 +212,11 @@ test('Owner changes ordinary roles directly from one member row menu', async () 
 test('Owner transitions and destructive access changes require confirmation', async () => {
   const harness = await createHarness();
   const click = harness.listeners.click!;
+  const change = harness.listeners.change!;
 
-  click({ target: actionTarget({
-    'data-action': 'team-actions-toggle', 'data-membership': 'membership_member',
-  }) });
-  click({ target: actionTarget({
-    'data-action': 'team-role-action', 'data-membership': 'membership_member', 'data-role': 'owner',
-  }, undefined, ['team-action-menu']) });
+  change({ target: actionTarget({
+    'data-action': 'team-role-select', 'data-membership': 'membership_member',
+  }, 'owner') });
   assert.match(harness.app.innerHTML, /Make Maya Member an Owner\?/);
   assert.equal(harness.requests.some((request) => request.path.endsWith('/membership_member')), false);
   click({ target: actionTarget({ 'data-action': 'team-confirm-apply' }) });
@@ -212,14 +225,12 @@ test('Owner transitions and destructive access changes require confirmation', as
     request.path.endsWith('/membership_member') &&
     (request.body as { role?: string }).role === 'owner'));
 
-  click({ target: actionTarget({
-    'data-action': 'team-actions-toggle', 'data-membership': 'membership_other_owner',
-  }) });
-  click({ target: actionTarget({
-    'data-action': 'team-role-action', 'data-membership': 'membership_other_owner', 'data-role': 'admin',
-  }, undefined, ['team-action-menu']) });
+  change({ target: actionTarget({
+    'data-action': 'team-role-select', 'data-membership': 'membership_other_owner',
+  }, 'admin') });
   assert.match(harness.app.innerHTML, /Make Olive Owner an Admin\?/);
   click({ target: actionTarget({ 'data-action': 'team-confirm-cancel' }) });
+  assert.equal(harness.focused(), 'role:membership_other_owner');
 
   click({ target: actionTarget({
     'data-action': 'team-actions-toggle', 'data-membership': 'membership_admin',
@@ -227,7 +238,8 @@ test('Owner transitions and destructive access changes require confirmation', as
   click({ target: actionTarget({
     'data-action': 'team-status-action', 'data-membership': 'membership_admin', 'data-status': 'suspended',
   }, undefined, ['team-action-menu']) });
-  assert.match(harness.app.innerHTML, /Suspend access for Alex Admin\?/);
+  assert.match(harness.app.innerHTML, /Suspend Alex Admin&#39;s Chickpea access\?/);
+  assert.match(harness.app.innerHTML, /Scheduled work running as them will pause/);
   click({ target: actionTarget({ 'data-action': 'team-confirm-apply' }) });
   await flush();
   assert.ok(harness.requests.some((request) =>
@@ -235,14 +247,15 @@ test('Owner transitions and destructive access changes require confirmation', as
     (request.body as { status?: string }).status === 'suspended'));
 });
 
-test('restore is direct while removed, self, and non-Owner rows are read-only', async () => {
+test('restore is direct while removed, suspended, and non-Owner role fields stay read-only', async () => {
   const harness = await createHarness();
   const click = harness.listeners.click!;
   click({ target: actionTarget({
     'data-action': 'team-actions-toggle', 'data-membership': 'membership_suspended',
   }) });
-  assert.match(harness.app.innerHTML, /Restore access/);
-  assert.doesNotMatch(harness.app.innerHTML, /Make Admin|Make Owner|Suspend access/);
+  assert.match(harness.app.innerHTML, /Restore Chickpea access/);
+  assert.doesNotMatch(harness.app.innerHTML, /Change role for Sam Suspended|Suspend Chickpea access/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="team-role-select" data-membership="membership_suspended"/);
   click({ target: actionTarget({
     'data-action': 'team-status-action', 'data-membership': 'membership_suspended', 'data-status': 'active',
   }, undefined, ['team-action-menu']) });
@@ -253,10 +266,13 @@ test('restore is direct while removed, self, and non-Owner rows are read-only', 
 
   assert.doesNotMatch(harness.app.innerHTML, /data-membership="membership_removed"[^>]*aria-haspopup/);
   assert.doesNotMatch(harness.app.innerHTML, /data-membership="membership_owner"[^>]*aria-haspopup/);
+  assert.match(harness.app.innerHTML, /data-action="team-role-select" data-membership="membership_owner"/);
+  assert.match(harness.app.innerHTML, /data-action="team-role-select" data-membership="membership_suspended"/);
 
   const adminHarness = await createHarness('admin');
-  assert.match(adminHarness.app.innerHTML, /UOWNER/);
+  assert.match(adminHarness.app.innerHTML, /Pejman Pour-Moezzi/);
   assert.doesNotMatch(adminHarness.app.innerHTML, /data-action="team-actions-toggle"/);
+  assert.doesNotMatch(adminHarness.app.innerHTML, /data-action="team-role-select"/);
 });
 
 test('row menu closes on outside click and Escape', async () => {
@@ -266,6 +282,7 @@ test('row menu closes on outside click and Escape', async () => {
     'data-action': 'team-actions-toggle', 'data-membership': 'membership_member',
   }) });
   assert.match(harness.app.innerHTML, /role="menu"/);
+  assert.equal(harness.focused(), 'team-status-action');
   click({ target: actionTarget() });
   assert.doesNotMatch(harness.app.innerHTML, /role="menu"/);
 

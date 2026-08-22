@@ -18,8 +18,12 @@ export interface SlackMember {
   id: string;
   teamId?: string;
   name?: string;
+  /** Mutable Slack username. Presentation only; never an identity key. */
+  handle?: string;
   displayName?: string;
+  realName?: string;
   email?: string;
+  avatarUrl?: string;
   deleted: boolean;
   bot: boolean;
   appUser: boolean;

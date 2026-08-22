@@ -3193,6 +3193,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.route('/admin/api', createTeamAdminApi({
     store: identity,
+    memberProfile: async (c, slackTeamId, slackUserId) => {
+      try {
+        return await (await agentSlackTransport(c, slackTeamId)).lookupMember(slackUserId);
+      } catch {
+        return undefined;
+      }
+    },
     revokeBetterAuthSessions: async (c, betterAuthUserId) => {
       const context = await betterAuthContext(c);
       return context?.environment.backend.deleteSessionsForUser(betterAuthUserId) ?? 0;
@@ -6640,7 +6647,7 @@ function authResponseHeaders(c: Context): void {
   c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   c.header(
     'Content-Security-Policy',
-    "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data: https://*.slack-edge.com https://secure.gravatar.com; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   );
 }
 

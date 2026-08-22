@@ -29,7 +29,14 @@ function principal(owner: Awaited<ReturnType<typeof createSlackOwner>>, role: 'o
 
 async function harness(
   role: 'owner' | 'admin' = 'owner',
-  overrides: { revokeBetterAuthSessions?: (betterAuthUserId: string) => Promise<number> } = {},
+  overrides: {
+    revokeBetterAuthSessions?: (betterAuthUserId: string) => Promise<number>;
+    memberProfile?: (teamId: string, userId: string) => Promise<{
+      id: string; teamId: string; name: string; handle: string; displayName: string;
+      realName: string; email: string; avatarUrl: string; deleted: boolean; bot: boolean;
+      appUser: boolean; restricted: boolean; ultraRestricted: boolean; stranger: boolean;
+    } | undefined>;
+  } = {},
 ) {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const owner = await createSlackOwner(identity, { now: NOW });
@@ -45,6 +52,9 @@ async function harness(
   });
   app.route('/admin/api', createTeamAdminApi({
     store: () => identity,
+    ...(overrides.memberProfile
+      ? { memberProfile: (_c, teamId, userId) => overrides.memberProfile!(teamId, userId) }
+      : {}),
     ...(overrides.revokeBetterAuthSessions
       ? { revokeBetterAuthSessions: async (_c, userId) => overrides.revokeBetterAuthSessions!(userId) }
       : {}),
@@ -74,6 +84,78 @@ test('Team snapshot contains durable memberships only', async () => {
     ].sort((left, right) => left.slackUserId.localeCompare(right.slackUserId)));
     assert.equal('invitations' in body, false);
     assert.equal('soleOwnerWarning' in body, false);
+  } finally {
+    team.identity.close();
+  }
+});
+
+test('Team snapshot enriches durable members with current Slack presentation data', async () => {
+  const team = await harness('owner', {
+    memberProfile: async (teamId, userId) => userId === 'UMEMBER01' ? {
+      id: userId,
+      teamId,
+      name: 'maya',
+      handle: 'maya',
+      displayName: 'Maya',
+      realName: 'Maya Member',
+      email: 'maya@example.test',
+      avatarUrl: 'https://avatars.slack-edge.com/maya.png',
+      deleted: false,
+      bot: false,
+      appUser: false,
+      restricted: false,
+      ultraRestricted: false,
+      stranger: false,
+    } : undefined,
+  });
+  try {
+    const response = await team.app.request('https://app.example/admin/api/team');
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.json() as { members: Array<Record<string, unknown>> };
+    const member = body.members.find((candidate) => candidate.slackUserId === 'UMEMBER01');
+    assert.deepEqual(member, {
+      id: team.member.membership.id,
+      userId: team.member.user.id,
+      displayName: 'Maya',
+      realName: 'Maya Member',
+      handle: 'maya',
+      contactEmail: 'maya@example.test',
+      avatarUrl: 'https://avatars.slack-edge.com/maya.png',
+      slackTeamId: team.owner.binding.slackTeamId,
+      slackUserId: 'UMEMBER01',
+      role: 'member',
+      status: 'active',
+    });
+  } finally {
+    team.identity.close();
+  }
+});
+
+test('Team profile enrichment rejects untrusted avatar hosts without hiding the member', async () => {
+  const team = await harness('owner', {
+    memberProfile: async (teamId, userId) => ({
+      id: userId,
+      teamId,
+      name: 'member',
+      handle: 'member',
+      displayName: 'Member',
+      realName: 'Member Name',
+      email: 'member@example.test',
+      avatarUrl: 'https://example.test/not-a-slack-avatar.png',
+      deleted: false,
+      bot: false,
+      appUser: false,
+      restricted: false,
+      ultraRestricted: false,
+      stranger: false,
+    }),
+  });
+  try {
+    const response = await team.app.request('https://app.example/admin/api/team');
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.json() as { members: Array<Record<string, unknown>> };
+    assert.ok(body.members.length >= 2);
+    assert.ok(body.members.every((member) => member.avatarUrl === null));
   } finally {
     team.identity.close();
   }

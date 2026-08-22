@@ -11,6 +11,7 @@ import { IdentityStateError } from '../identity/errors.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import type { WorkspaceManagementService } from '../management/service.ts';
 import { ManagementError, type ManagementActorContext } from '../management/types.ts';
+import type { SlackMember } from '../slack/transport/types.ts';
 
 const MAX_TEAM_BODY_BYTES = 2_048;
 const opaqueId = v.pipe(v.string(), v.regex(/^[A-Za-z0-9_-]{1,200}$/));
@@ -24,6 +25,11 @@ const membershipPatchSchema = v.pipe(
 
 interface TeamAdminApiOptions {
   store: (c: Context) => IdentityStore;
+  memberProfile?: (
+    c: Context,
+    slackTeamId: string,
+    slackUserId: string,
+  ) => Promise<SlackMember | undefined>;
   revokeBetterAuthSessions?: (c: Context, betterAuthUserId: string) => Promise<number>;
   management?: (c: Context) => WorkspaceManagementService;
   rateLimiter?: (c: Context) => Promise<AuthRateLimiter | undefined>;
@@ -91,7 +97,11 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
   app.get('/team', async (c) => {
     const principal = requiredPrincipal(c, 'team.view');
     c.header('Cache-Control', 'no-store');
-    return c.json(await teamSnapshot(options.store(c), principal));
+    return c.json(await teamSnapshot(
+      options.store(c),
+      principal,
+      options.memberProfile ? (teamId, userId) => options.memberProfile!(c, teamId, userId) : undefined,
+    ));
   });
 
   app.patch('/team/memberships/:membershipId', async (c) => {
@@ -195,13 +205,39 @@ async function canonicalResolution(identity: IdentityStore, principal: AuthPrinc
     : undefined;
 }
 
-async function teamSnapshot(identity: IdentityStore, principal: AuthPrincipal) {
+async function teamSnapshot(
+  identity: IdentityStore,
+  principal: AuthPrincipal,
+  memberProfile?: (slackTeamId: string, slackUserId: string) => Promise<SlackMember | undefined>,
+) {
   const [organization, memberships, bindings] = await Promise.all([
     identity.getOrganization(), identity.listMemberships(), identity.listExternalIdentities(),
   ]);
   const users = await Promise.all(memberships.map((membership) => identity.getUser(membership.userId)));
   const usersById = new Map(users.filter(Boolean).map((user) => [user!.id, user!]));
   const bindingsByMembership = new Map(bindings.map((binding) => [binding.membershipId, binding]));
+  const profilesByMembership = new Map<string, SlackMember>();
+  if (memberProfile) {
+    // Team membership can grow far beyond the first screen. Keep live Slack
+    // profile enrichment bounded and fail-soft so presentation data can never
+    // make the durable access roster unavailable.
+    for (let offset = 0; offset < memberships.length; offset += 8) {
+      const batch = memberships.slice(offset, offset + 8);
+      await Promise.all(batch.map(async (membership) => {
+        const binding = bindingsByMembership.get(membership.id);
+        if (!binding) return;
+        try {
+          const profile = await memberProfile(binding.slackTeamId, binding.slackUserId);
+          if (profile?.id === binding.slackUserId &&
+              (!profile.teamId || profile.teamId === binding.slackTeamId)) {
+            profilesByMembership.set(membership.id, profile);
+          }
+        } catch {
+          // The saved name/email/Slack ID remain enough to manage access.
+        }
+      }));
+    }
+  }
   return {
     organization: organization
       ? { id: organization.id, displayName: organization.displayName, slackTeamId: organization.slackTeamId }
@@ -210,15 +246,34 @@ async function teamSnapshot(identity: IdentityStore, principal: AuthPrincipal) {
     members: memberships.map((membership) => {
       const binding = bindingsByMembership.get(membership.id);
       const user = usersById.get(membership.userId);
+      const profile = profilesByMembership.get(membership.id);
       return {
         id: membership.id, userId: membership.userId,
-        displayName: user?.displayName ?? null,
+        displayName: profile?.displayName ?? user?.displayName ?? null,
+        realName: profile?.realName ?? user?.displayName ?? null,
+        handle: profile?.handle ?? profile?.name ?? null,
+        contactEmail: profile?.email ?? user?.contactEmail ?? null,
+        avatarUrl: safeSlackAvatarUrl(profile?.avatarUrl),
         slackTeamId: binding?.slackTeamId ?? null,
         slackUserId: binding?.slackUserId ?? null,
         role: membership.role, status: membership.status,
       };
     }),
   };
+}
+
+function safeSlackAvatarUrl(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return url.protocol === 'https:' &&
+      (host === 'secure.gravatar.com' || host.endsWith('.slack-edge.com'))
+      ? url.toString()
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseId(value: string): string | undefined {

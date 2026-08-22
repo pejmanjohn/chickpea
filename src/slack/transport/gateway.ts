@@ -186,12 +186,20 @@ function sortChannels(channels: SlackChannel[]): SlackChannel[] {
 
 function mapMember(user: Record<string, unknown>): SlackMember {
   const profile = record(user.profile);
+  const handle = stringValue(user.name);
+  const realName = stringValue(profile.real_name) || stringValue(user.real_name);
+  const displayName = stringValue(profile.display_name) || realName || handle;
+  const avatarUrl = ['image_192', 'image_72', 'image_48']
+    .map((key) => stringValue(profile[key]))
+    .find(Boolean);
   return {
     id: requiredString(user.id, 'users.info'),
     ...(stringValue(user.team_id) ? { teamId: stringValue(user.team_id) } : {}),
-    ...(stringValue(user.name) ? { name: stringValue(user.name) } : {}),
-    ...(stringValue(profile.display_name) ? { displayName: stringValue(profile.display_name) } : {}),
+    ...(handle ? { name: handle, handle } : {}),
+    ...(displayName ? { displayName } : {}),
+    ...(realName ? { realName } : {}),
     ...(stringValue(profile.email) ? { email: stringValue(profile.email) } : {}),
+    ...(avatarUrl ? { avatarUrl } : {}),
     deleted: user.deleted === true,
     bot: user.is_bot === true,
     appUser: user.is_app_user === true,
