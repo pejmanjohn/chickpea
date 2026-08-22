@@ -158,14 +158,28 @@ function urlHost(address) {
 }
 
 function visualAgents() {
+  const slackPresence = (id, handle, avatarHash) => ({
+    requestedHandle: handle,
+    normalizedHandle: handle,
+    desiredState: 'active',
+    health: 'healthy',
+    avatar: {
+      kind: 'generated',
+      revision: 1,
+      seed: id,
+      url: `https://secure.gravatar.com/avatar/${avatarHash}?s=192&d=identicon`,
+    },
+  });
   return [
     {
       id: 'agent_customer',
       revision: 1,
       name: 'Customer Insights',
+      description: 'Turns customer feedback into clear themes and actionable evidence.',
       instructions: 'Summarize customer feedback and distinguish recurring evidence from anecdotes.',
       enabled: false,
       model: 'local-stub/visual-review',
+      slackPresence: slackPresence('agent_customer', 'customer-insights', 'b6a1f4b55c4c81e3da8a5f3c12f2ef7f'),
       skills: [],
       mcpServers: [],
       apiConnections: [],
@@ -175,9 +189,11 @@ function visualAgents() {
       id: 'agent_release',
       revision: 1,
       name: 'Release Scribe',
+      description: 'Keeps launches concise, decision-ready, and explicit about risk.',
       instructions: 'Turn release activity into concise, decision-ready updates with explicit risks.',
       enabled: true,
       model: 'local-stub/visual-review',
+      slackPresence: slackPresence('agent_release', 'release-scribe', '205e460b479e2e5b48aec07710c08d50'),
       skills: [{
         name: 'release-readiness',
         description: 'Review release readiness and launch risk.',
@@ -192,9 +208,11 @@ function visualAgents() {
       id: 'agent_research',
       revision: 1,
       name: 'Research Partner',
+      description: 'Investigates product questions with evidence and clearly marked uncertainty.',
       instructions: 'Investigate product questions, cite the available evidence, and call out uncertainty.',
       enabled: true,
       model: 'local-stub/visual-review',
+      slackPresence: slackPresence('agent_research', 'research-partner', 'f9879d71855b5ff21e4963273a886bfc'),
       skills: [{
         name: 'research-brief',
         description: 'Build a sourced research brief.',
