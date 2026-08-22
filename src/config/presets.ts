@@ -456,6 +456,24 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   },
 ];
 
+export type ReusableConnectorPreset = ConnectorPreset | GoogleWorkspaceServicePreset;
+
+/** Catalog entries users can attach to more than one Agent without reconnecting. */
+export const REUSABLE_CONNECTOR_PRESETS: ReusableConnectorPreset[] = [
+  ...CONNECTOR_PRESETS.filter(({ id }) => id !== 'google-workspace'),
+  ...GOOGLE_WORKSPACE_SERVICE_PRESETS,
+].sort((left, right) => left.name.localeCompare(right.name));
+
+export function resolveReusableConnectorPreset(
+  value: string,
+): ReusableConnectorPreset | undefined {
+  const normalized = normalizeConnectorLookup(value);
+  const matches = REUSABLE_CONNECTOR_PRESETS.filter(({ id, name }) =>
+    normalized === normalizeConnectorLookup(id) || normalized === normalizeConnectorLookup(name)
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 export function presetLanes(preset: ConnectorPreset): { mcp: boolean; api: boolean } {
   return {
     mcp: 'url' in preset && typeof preset.url === 'string',
@@ -465,4 +483,8 @@ export function presetLanes(preset: ConnectorPreset): { mcp: boolean; api: boole
 
 export function getConnectorPreset(id: string): ConnectorPreset | undefined {
   return CONNECTOR_PRESETS.find((preset) => preset.id === id);
+}
+
+function normalizeConnectorLookup(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }

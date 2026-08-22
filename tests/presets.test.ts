@@ -5,8 +5,10 @@ import { validateMcpUrl } from '../src/config/mcp-url.ts';
 import {
   CONNECTOR_PRESETS,
   GOOGLE_WORKSPACE_SERVICE_PRESETS,
+  REUSABLE_CONNECTOR_PRESETS,
   getConnectorPreset,
   presetLanes,
+  resolveReusableConnectorPreset,
   type ConnectorPreset,
 } from '../src/config/presets.ts';
 
@@ -363,4 +365,11 @@ test('getConnectorPreset looks up known ids', () => {
   assert.equal(getConnectorPreset('linear'), CONNECTOR_PRESETS[0]);
   assert.equal(getConnectorPreset('github'), undefined);
   assert.equal(getConnectorPreset('unknown'), undefined);
+});
+
+test('reusable connector catalog is the shared Agent-facing lookup', () => {
+  assert.equal(REUSABLE_CONNECTOR_PRESETS.some(({ id }) => id === 'google-workspace'), false);
+  assert.equal(resolveReusableConnectorPreset('Gmail')?.id, 'gmail');
+  assert.equal(resolveReusableConnectorPreset('google-calendar')?.name, 'Google Calendar');
+  assert.equal(resolveReusableConnectorPreset('unknown'), undefined);
 });

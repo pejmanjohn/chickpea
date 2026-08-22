@@ -1,6 +1,10 @@
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
-import { CONNECTOR_PRESETS, GOOGLE_WORKSPACE_SERVICE_PRESETS } from '../config/presets.ts';
+import {
+  CONNECTOR_PRESETS,
+  GOOGLE_WORKSPACE_SERVICE_PRESETS,
+  REUSABLE_CONNECTOR_PRESETS,
+} from '../config/presets.ts';
 import { GOOGLE_WORKSPACE_SCOPE_OPTIONS } from '../config/api-oauth-policy.ts';
 import {
   SUGGESTED_SKILL_CATEGORIES,
@@ -2505,6 +2509,7 @@ button.capability-pill { cursor: pointer; }
   var USAGE_ADMIN_UI = ${usageAdminUi};
   var CONNECTOR_PRESETS = ${JSON.stringify(CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = ${JSON.stringify(GOOGLE_WORKSPACE_SERVICE_PRESETS).replace(/</g, '\\u003c')};
+  var REUSABLE_CONNECTOR_PRESETS = ${JSON.stringify(REUSABLE_CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var CONNECTOR_LOGOS = ${JSON.stringify(CONNECTOR_LOGOS).replace(/</g, '\\u003c')};
   var SUGGESTED_SKILL_CATEGORIES = ${JSON.stringify(SUGGESTED_SKILL_CATEGORIES).replace(/</g, '\\u003c')};
   var SUGGESTED_SKILLS = ${JSON.stringify(SUGGESTED_SKILLS).replace(/</g, '\\u003c')};
@@ -6049,9 +6054,7 @@ button.capability-pill { cursor: pointer; }
     var googleConnection = googleWorkspaceConnection(draft);
     var googleAccess = googleAccessFromScopes(googleConnection ? googleConnection.oauthScopes : []);
     var q = String(state.connectorGallerySearch || "").trim().toLowerCase();
-    var catalog = (CONNECTOR_PRESETS || []).filter(function (preset) {
-      return preset.id !== "google-workspace";
-    }).concat(GOOGLE_WORKSPACE_SERVICE_PRESETS || []);
+    var catalog = REUSABLE_CONNECTOR_PRESETS || [];
     var shown = catalog.filter(function (preset) {
       var googleService = googleServicePresetById(preset.id);
       if (googleService) {
@@ -13879,6 +13882,21 @@ button.capability-pill { cursor: pointer; }
     return { status: status, connectionId: connectionId, lane: lane };
   }
 
+  function connectorSetupFromPath(pathname) {
+    var parts = String(pathname || "").split("/").filter(Boolean).map(function (part) {
+      try { return decodeURIComponent(part); } catch (_) { return ""; }
+    });
+    if (parts.length !== 7 || parts[0] !== "admin" || parts[1] !== "agents" ||
+        parts[3] !== "connections" || parts[4] !== "new") return null;
+    var connector = parts[5] || "";
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(connector)) return null;
+    if (parts[6] !== "team" && parts[6] !== "member") return null;
+    return {
+      connector: connector,
+      ownerKind: parts[6]
+    };
+  }
+
   var initialRoute = canNavigate ? location.pathname : "/admin";
   if (initialRoute === "/admin/onboarding") {
     state.view = "onboarding";
@@ -13890,8 +13908,20 @@ button.capability-pill { cursor: pointer; }
   }
   if (USAGE_ADMIN_UI && initialRoute === "/admin/usage") applyUsageQuery(location.search || "");
   state.oauthReturn = canNavigate ? oauthReturnFromSearch(location.search || "") : null;
+  var connectorSetup = canNavigate ? connectorSetupFromPath(location.pathname) : null;
+  var connectorSetupConsumed = false;
   refreshData().then(function () {
     applyRoute(initialRoute);
+    if (connectorSetup && state.profileDraft && state.profileScreen === "edit") {
+      state.profileTab = "connections";
+      newConnectionAccountFormFromPreset(connectorSetup.connector);
+      if (state.connectionAccountForm) {
+        state.connectionAccountForm.ownerKind = connectorSetup.ownerKind;
+        connectorSetupConsumed = true;
+        render();
+        history.replaceState(null, "", canonicalPath());
+      }
+    }
     if (state.oauthReturn && state.profileDraft && state.profileScreen === "edit") {
       state.oauthReturn.agentId = state.profileDraft.id;
       state.profileTab = "connections";
@@ -13922,7 +13952,9 @@ button.capability-pill { cursor: pointer; }
       history.replaceState(null, "", location.pathname);
     }
     routeReady = true;
-    syncUrl(true);
+    // A transient initial load failure must not erase a one-shot Slack
+    // connector handoff. Keep the original path so reloading can retry it.
+    if (!connectorSetup || connectorSetupConsumed) syncUrl(true);
   });
 })();
 </script>

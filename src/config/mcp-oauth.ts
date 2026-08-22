@@ -27,6 +27,7 @@ import {
 } from '@modelcontextprotocol/sdk/shared/auth.js';
 
 import { UnknownAgentError } from './errors.ts';
+import { AGENT_ID_PATTERN } from './agent-id.ts';
 import {
   stageMcpSecretCleanup,
   type McpSecretRef,
@@ -42,7 +43,6 @@ const LEASE_MAX_RETRY_MS = 400;
 const LEASE_ATTEMPTS = 64;
 const OAUTH_FETCH_TIMEOUT_MS = 8_000;
 const REFRESH_SKEW_MS = 60_000;
-const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 type McpOAuthErrorCode =

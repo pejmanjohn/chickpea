@@ -4,6 +4,7 @@ import type {
   AgentChannelGrantStatus,
   AgentCreateInput,
   ChannelConfig,
+  ConnectionAccountOwnerKind,
 } from '../config/types.ts';
 import type {
   MembershipStatus,
@@ -21,6 +22,8 @@ export type ManagementOrigin =
       workspaceId: string;
       channelId: string;
       threadTs: string;
+      /** Trusted Agent selected by Slack routing, never by model text. */
+      agentId?: string;
     }
   | {
       kind: 'mcp';
@@ -347,6 +350,14 @@ export interface ManagementApplyResult {
 
 export interface ManagementWorkspaceSnapshot {
   organizationId: string;
+  /** Present only when inspection is scoped by a trusted Slack Agent route. */
+  currentAgentId?: string;
+  /** Secret-free catalog of connector handoffs available to management agents. */
+  connectors: Array<{
+    id: string;
+    name: string;
+    description: string;
+  }>;
   agents: Array<{
     id: string;
     revision: number;
@@ -399,6 +410,19 @@ export interface ManagementWorkspaceSnapshot {
     }>;
   };
   effectiveRevision: string;
+}
+
+export interface PrepareConnectorSetupInput {
+  agentId: string;
+  connector: string;
+  ownerKind: ConnectionAccountOwnerKind;
+}
+
+export interface PrepareConnectorSetupResult {
+  agent: { id: string; name: string };
+  connector: { id: string; name: string };
+  ownerKind: ConnectionAccountOwnerKind;
+  handoffUrl: string;
 }
 
 export interface ManagementMemorySnapshot {

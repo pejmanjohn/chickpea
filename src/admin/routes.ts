@@ -52,6 +52,7 @@ import {
 // Slack app identity; the wizard deep-link below substitutes the request host
 // so users never hand-edit a request_url.
 import slackAppManifest from '../../slack-app-manifest.json' with { type: 'json' };
+import { AGENT_ID_PATTERN } from '../config/agent-id.ts';
 import {
   apiOAuthSettingKeys,
   connectionAccountIdFromOAuthRef,
@@ -502,7 +503,6 @@ const MAX_ADMIN_MUTATION_BODY_BYTES = 1024 * 1024;
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
 const modelSpecifier = v.pipe(v.string(), v.regex(/^[^/]+\/.+$/));
-const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const MCP_CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const agentIdSchema = v.pipe(v.string(), v.regex(AGENT_ID_PATTERN));
 const openAiSubscriptionAttemptSchema = v.object({

@@ -2,6 +2,11 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import { canEditAgent } from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
+import { isAgentId } from '../config/agent-id.ts';
+import {
+  REUSABLE_CONNECTOR_PRESETS,
+  resolveReusableConnectorPreset,
+} from '../config/presets.ts';
 import {
   AgentExistsError,
   AgentRevisionConflictError,
@@ -71,6 +76,8 @@ import {
   type ManagementSetupRecord,
   type ManagementSetupTarget,
   type ManagementWorkspaceSnapshot,
+  type PrepareConnectorSetupInput,
+  type PrepareConnectorSetupResult,
   type UndoWorkspaceChangeInput,
 } from './types.ts';
 
@@ -203,6 +210,38 @@ export class WorkspaceManagementService {
   ): Promise<ManagementWorkspaceSnapshot> {
     const actor = await this.requireLiveActor(context);
     return this.snapshot(actor);
+  }
+
+  async prepareConnectorSetup(
+    context: ApplyWorkspaceChangesInput['context'],
+    input: PrepareConnectorSetupInput,
+  ): Promise<PrepareConnectorSetupResult> {
+    const actor = await this.requireLiveActor(context, { cleanupRetention: false });
+    if (!isAgentId(input.agentId)) {
+      throw new ManagementError('invalid_request', 'Choose a valid Agent before preparing connector setup.');
+    }
+    const agent = await this.requireEditableAgent(actor, input.agentId);
+    const connector = resolveReusableConnectorPreset(input.connector);
+    if (!connector) {
+      throw new ManagementError(
+        'invalid_request',
+        `Unknown connector. Choose one of: ${REUSABLE_CONNECTOR_PRESETS.map(({ name }) => name).join(', ')}.`,
+      );
+    }
+    const baseUrl = await this.resolveSetupBaseUrl();
+    const url = new URL([
+      '/admin/agents',
+      encodeURIComponent(agent.id),
+      'connections/new',
+      encodeURIComponent(connector.id),
+      input.ownerKind,
+    ].join('/'), baseUrl);
+    return {
+      agent: { id: agent.id, name: agent.name },
+      connector: { id: connector.id, name: connector.name },
+      ownerKind: input.ownerKind,
+      handoffUrl: url.href,
+    };
   }
 
   async discoverSlackChannels(
@@ -856,6 +895,7 @@ export class WorkspaceManagementService {
 
   private async requireLiveActor(
     context: ApplyWorkspaceChangesInput['context'],
+    options: { cleanupRetention?: boolean } = {},
   ): Promise<LiveManagementActor> {
     const [membership, overlay] = await Promise.all([
       this.stores.identity.getMembership(context.membershipId),
@@ -869,7 +909,9 @@ export class WorkspaceManagementService {
           overlay.accessStatus !== 'active'))) {
       throw new ManagementError('forbidden', 'Workspace management is not available.');
     }
-    await this.stores.management.cleanupRetention(this.now(), 100).catch(() => 0);
+    if (options.cleanupRetention !== false) {
+      await this.stores.management.cleanupRetention(this.now(), 100).catch(() => 0);
+    }
     return { ...context, role: membership.role };
   }
 
@@ -974,6 +1016,14 @@ export class WorkspaceManagementService {
       : undefined;
     return {
       organizationId: actor.organizationId,
+      ...(actor.origin.kind === 'slack' && actor.origin.agentId
+        ? { currentAgentId: actor.origin.agentId }
+        : {}),
+      connectors: REUSABLE_CONNECTOR_PRESETS.map(({ id, name, description }) => ({
+        id,
+        name,
+        description,
+      })),
       agents: agents.map(({
         id,
         revision,

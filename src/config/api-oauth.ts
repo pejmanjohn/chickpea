@@ -1,4 +1,5 @@
 import type { SettingsStore } from './settings-store.ts';
+import { AGENT_ID_PATTERN } from './agent-id.ts';
 
 const PENDING_TTL_MS = 10 * 60_000;
 const REFRESH_SKEW_MS = 60_000;
@@ -8,7 +9,6 @@ const LEASE_MAX_RETRY_MS = 400;
 const LEASE_ATTEMPTS = 64;
 const FETCH_TIMEOUT_MS = 10_000;
 const IDENTITY_TEXT_MAX = 160;
-const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 // Reusable connection-account ids include an underscore and carry a generated
 // suffix; legacy per-Agent ids remain a strict subset of this bounded shape.
 const CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,191}$/;

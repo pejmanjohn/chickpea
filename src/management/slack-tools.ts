@@ -1,6 +1,7 @@
 import {
   type DeliveredMessage,
   useDelivery,
+  useInstruction,
   useTool,
 } from '@flue/runtime';
 
@@ -16,6 +17,7 @@ import {
   confirmWorkspaceChangeValibotSchema,
   getOperationValibotSchema,
   inspectWorkspaceValibotSchema,
+  prepareConnectorSetupValibotSchema,
   discoverSlackChannelsValibotSchema,
   testMcpConnectionValibotSchema,
   inspectMemoryValibotSchema,
@@ -52,6 +54,8 @@ const SIGNAL_ATTRIBUTE_KEYS = [
 ] as const;
 
 export interface SlackManagementSignal {
+  /** Trusted Agent selected by Slack routing, never by model text. */
+  agentId: string;
   workspaceId: string;
   channelId: string;
   threadTs: string;
@@ -71,6 +75,23 @@ export function useWorkspaceManagementSlackTools(
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   if (!signal) return;
 
+  useInstruction([
+    `This Slack conversation is routed to Chickpea Agent ID ${plan.agentId}.`,
+    'When the requester says “this Agent”, “you”, or asks the specifically mentioned Agent to edit itself, target that Agent ID.',
+    'When routed through the base Chickpea Agent, you may create Agents or edit any Agent the requester is authorized to edit; inspect the workspace first when you need names, IDs, or revisions.',
+    'For requests to add or connect a service, inspect_workspace lists the available connector catalog; call prepare_connector_setup and give the returned handoffUrl to the requester. Never ask for credentials in Slack.',
+  ].join(' '));
+
+  useTool({
+    name: 'prepare_connector_setup',
+    description: workspaceManagementToolDescription('prepare_connector_setup'),
+    input: prepareConnectorSetupValibotSchema,
+    async run({ data }) {
+      return slackToolOutput(await invokeLiveSlackTool(
+        signal, resolvePlatformEnv, 'prepare_connector_setup', data,
+      ));
+    },
+  });
   useTool({
     name: 'inspect_workspace',
     description: workspaceManagementToolDescription('inspect_workspace'),
@@ -207,14 +228,14 @@ export function parseSlackManagementSignal(
   const values = Object.fromEntries(SIGNAL_ATTRIBUTE_KEYS.map((key) => [
     key,
     boundedAttribute(delivery.attributes?.[key], key, key.endsWith('Ts') ? 80 : 256),
-  ])) as unknown as SlackManagementSignal;
+  ])) as unknown as Omit<SlackManagementSignal, 'agentId'>;
   if (Object.values(values).some((value) => !value)) return undefined;
   if (
     values.workspaceId !== plan.conversation.workspaceId ||
     values.channelId !== plan.conversation.channelId ||
     values.threadTs !== plan.conversation.threadTs
   ) return undefined;
-  return values;
+  return { ...values, agentId: plan.agentId };
 }
 
 export async function resolveSlackManagementActor(
@@ -239,6 +260,7 @@ export async function resolveSlackManagementActor(
       workspaceId: signal.workspaceId,
       channelId: signal.channelId,
       threadTs: signal.threadTs,
+      agentId: signal.agentId,
     },
   };
 }
@@ -272,7 +294,13 @@ async function invokeLiveSlackTool<TName extends WorkspaceManagementToolName>(
     settings,
     overrides: { setupBaseUrl: () => resolveSlackPublicUrl(env, settings) },
   });
-  return invokeSlackWorkspaceManagementTool({ signal, identity, service, name, args });
+  return invokeSlackWorkspaceManagementTool({
+    signal,
+    identity,
+    service,
+    name,
+    args,
+  });
 }
 
 function boundedAttribute(value: string | undefined, _name: string, max: number): string {

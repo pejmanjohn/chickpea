@@ -1,6 +1,8 @@
 import * as v from 'valibot';
 import { z } from 'zod';
 
+import { AGENT_ID_PATTERN } from '../config/agent-id.ts';
+
 export const MANAGEMENT_OPERATION_KINDS = [
   'create_agent',
   'update_agent',
@@ -22,6 +24,7 @@ export const MANAGEMENT_OPERATION_KINDS = [
 const zText = (max: number) => z.string().min(1).max(max);
 const zOptionalText = (max: number) => z.string().max(max);
 const zId = zText(128);
+const zAgentId = z.string().regex(AGENT_ID_PATTERN);
 const zRevision = z.number().int().nonnegative();
 
 const zSkill = z.strictObject({
@@ -95,7 +98,7 @@ const zAgentFields = {
   apiConnections: z.array(zApiConnection).max(50),
   repositories: z.array(zRepository).max(100),
 };
-const zAgent = z.strictObject({ id: zId, ...zAgentFields });
+const zAgent = z.strictObject({ id: zAgentId, ...zAgentFields });
 const zAgentPatch = z.strictObject({
   name: zAgentFields.name.optional(),
   description: zAgentFields.description,
@@ -125,7 +128,7 @@ const zRoutineSchedule = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('once'), localDateTime: zText(64) }),
 ]);
 const zSetupAgentTargetBase = {
-  agentId: zId.optional(),
+  agentId: zAgentId.optional(),
   agentClientRef: zId.optional(),
 };
 const zSetupTarget = z.discriminatedUnion('kind', [
@@ -155,23 +158,23 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     ...zOperationBase,
     kind: z.literal('update_agent'),
-    agentId: zId,
+    agentId: zAgentId,
     expectedRevision: zRevision,
     confirmationReason: z.literal('recipe_overwrite').optional(),
     patch: zAgentPatch,
   }),
-  z.strictObject({ ...zOperationBase, kind: z.literal('delete_agent'), agentId: zId, expectedRevision: zRevision }),
+  z.strictObject({ ...zOperationBase, kind: z.literal('delete_agent'), agentId: zAgentId, expectedRevision: zRevision }),
   z.strictObject({
     ...zOperationBase,
     kind: z.literal('archive_agent'),
-    agentId: zId,
+    agentId: zAgentId,
     expectedRevision: zRevision,
-    replacementDefaultAgentId: zId.optional(),
+    replacementDefaultAgentId: zAgentId.optional(),
   }),
   z.strictObject({
     ...zOperationBase,
     kind: z.literal('restore_agent'),
-    agentId: zId,
+    agentId: zAgentId,
     expectedRevision: zRevision,
   }),
   z.strictObject({
@@ -186,7 +189,7 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
     workspaceId: zId,
     channelId: zId,
     expectedRevision: zRevision,
-    agentId: zId.optional(),
+    agentId: zAgentId.optional(),
     agentClientRef: zId.optional(),
   }),
   z.strictObject({
@@ -194,7 +197,7 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
     kind: z.literal('revoke_agent_channel'),
     workspaceId: zId,
     channelId: zId,
-    agentId: zId,
+    agentId: zAgentId,
     expectedRevision: zRevision,
   }),
   z.strictObject({
@@ -212,14 +215,14 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     ...zOperationBase,
     kind: z.literal('update_agent_memory'),
-    agentId: zId,
+    agentId: zAgentId,
     expectedRevision: zRevision,
     body: z.string().max(65_536),
   }),
   z.strictObject({
     ...zOperationBase,
     kind: z.literal('save_routine'),
-    agentId: zId,
+    agentId: zAgentId,
     workspaceId: zId,
     channelId: zId,
     routineId: zId.optional(),
@@ -270,21 +273,29 @@ export const revokeSetupLinkZodSchema = z.strictObject({
   reissue: z.boolean().optional(),
 });
 export const inspectWorkspaceZodSchema = z.strictObject({});
+export const prepareConnectorSetupZodSchema = z.strictObject({
+  // External MCP clients have no trusted Slack route from which to infer the
+  // target Agent. The Slack adapter uses the Valibot schema below and may omit
+  // this field only because routing supplies the Agent ID out of band.
+  agentId: zAgentId,
+  connector: zText(128),
+  ownerKind: z.enum(['team', 'member']).optional(),
+});
 export const discoverSlackChannelsZodSchema = z.strictObject({
   refresh: z.boolean().optional(),
 });
 export const testMcpConnectionZodSchema = z.strictObject({
-  agentId: zId,
+  agentId: zAgentId,
   connectionId: zId,
 });
-export const inspectMemoryZodSchema = z.strictObject({ agentId: zId });
+export const inspectMemoryZodSchema = z.strictObject({ agentId: zAgentId });
 export const inspectRoutinesZodSchema = z.strictObject({
   workspaceId: zId,
   channelId: zId.optional(),
   routineId: zId.optional(),
 });
 export const exportRecipeZodSchema = z.strictObject({
-  agentIds: z.array(zId).max(100).optional(),
+  agentIds: z.array(zAgentId).max(100).optional(),
 });
 export const previewRecipeZodSchema = z.strictObject({
   recipe: z.unknown(),
@@ -294,6 +305,7 @@ export const previewRecipeZodSchema = z.strictObject({
 const vt = (max: number) => v.pipe(v.string(), v.minLength(1), v.maxLength(max));
 const vot = (max: number) => v.pipe(v.string(), v.maxLength(max));
 const vid = vt(128);
+const vAgentId = v.pipe(v.string(), v.regex(AGENT_ID_PATTERN));
 const vr = v.pipe(v.number(), v.integer(), v.minValue(0));
 const va = <TItem extends v.BaseSchema<unknown, unknown, v.BaseIssue<unknown>>>(
   item: TItem,
@@ -365,7 +377,7 @@ const vAgentFields = {
   apiConnections: va(vApiConnection, 50),
   repositories: va(vRepository, 100),
 };
-const vAgent = v.strictObject({ id: vid, ...vAgentFields });
+const vAgent = v.strictObject({ id: vAgentId, ...vAgentFields });
 const vAgentPatch = v.strictObject({
   name: v.optional(vAgentFields.name),
   description: vAgentFields.description,
@@ -392,7 +404,7 @@ const vRoutineSchedule = v.variant('kind', [
   v.strictObject({ kind: v.literal('once'), localDateTime: vt(64) }),
 ]);
 const vSetupAgentTargetBase = {
-  agentId: v.optional(vid),
+  agentId: v.optional(vAgentId),
   agentClientRef: v.optional(vid),
 };
 const vSetupTarget = v.variant('kind', [
@@ -422,23 +434,23 @@ export const managementOperationValibotSchema = v.variant('kind', [
   v.strictObject({
     ...vOperationBase,
     kind: v.literal('update_agent'),
-    agentId: vid,
+    agentId: vAgentId,
     expectedRevision: vr,
     confirmationReason: v.optional(v.literal('recipe_overwrite')),
     patch: vAgentPatch,
   }),
-  v.strictObject({ ...vOperationBase, kind: v.literal('delete_agent'), agentId: vid, expectedRevision: vr }),
+  v.strictObject({ ...vOperationBase, kind: v.literal('delete_agent'), agentId: vAgentId, expectedRevision: vr }),
   v.strictObject({
     ...vOperationBase,
     kind: v.literal('archive_agent'),
-    agentId: vid,
+    agentId: vAgentId,
     expectedRevision: vr,
-    replacementDefaultAgentId: v.optional(vid),
+    replacementDefaultAgentId: v.optional(vAgentId),
   }),
   v.strictObject({
     ...vOperationBase,
     kind: v.literal('restore_agent'),
-    agentId: vid,
+    agentId: vAgentId,
     expectedRevision: vr,
   }),
   v.strictObject({
@@ -453,7 +465,7 @@ export const managementOperationValibotSchema = v.variant('kind', [
     workspaceId: vid,
     channelId: vid,
     expectedRevision: vr,
-    agentId: v.optional(vid),
+    agentId: v.optional(vAgentId),
     agentClientRef: v.optional(vid),
   }),
   v.strictObject({
@@ -461,7 +473,7 @@ export const managementOperationValibotSchema = v.variant('kind', [
     kind: v.literal('revoke_agent_channel'),
     workspaceId: vid,
     channelId: vid,
-    agentId: vid,
+    agentId: vAgentId,
     expectedRevision: vr,
   }),
   v.strictObject({
@@ -479,14 +491,14 @@ export const managementOperationValibotSchema = v.variant('kind', [
   v.strictObject({
     ...vOperationBase,
     kind: v.literal('update_agent_memory'),
-    agentId: vid,
+    agentId: vAgentId,
     expectedRevision: vr,
     body: vot(65_536),
   }),
   v.strictObject({
     ...vOperationBase,
     kind: v.literal('save_routine'),
-    agentId: vid,
+    agentId: vAgentId,
     workspaceId: vid,
     channelId: vid,
     routineId: v.optional(vid),
@@ -537,21 +549,26 @@ export const revokeSetupLinkValibotSchema = v.strictObject({
   reissue: v.optional(v.boolean()),
 });
 export const inspectWorkspaceValibotSchema = v.strictObject({});
+export const prepareConnectorSetupValibotSchema = v.strictObject({
+  agentId: v.optional(vAgentId),
+  connector: vt(128),
+  ownerKind: v.optional(v.picklist(['team', 'member'])),
+});
 export const discoverSlackChannelsValibotSchema = v.strictObject({
   refresh: v.optional(v.boolean()),
 });
 export const testMcpConnectionValibotSchema = v.strictObject({
-  agentId: vid,
+  agentId: vAgentId,
   connectionId: vid,
 });
-export const inspectMemoryValibotSchema = v.strictObject({ agentId: vid });
+export const inspectMemoryValibotSchema = v.strictObject({ agentId: vAgentId });
 export const inspectRoutinesValibotSchema = v.strictObject({
   workspaceId: vid,
   channelId: v.optional(vid),
   routineId: v.optional(vid),
 });
 export const exportRecipeValibotSchema = v.strictObject({
-  agentIds: v.optional(va(vid, 100)),
+  agentIds: v.optional(va(vAgentId, 100)),
 });
 export const previewRecipeValibotSchema = v.strictObject({
   recipe: v.unknown(),

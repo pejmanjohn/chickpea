@@ -80,6 +80,15 @@ test('management operation schemas expose Agent presence, Channel reach, and lif
     assert.equal(managementOperationZodSchema.safeParse(operation).success, true, operation.kind);
     assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, true, operation.kind);
   }
+  for (const invalidId of ['.', '..']) {
+    const operation = {
+      itemId: `invalid-${invalidId.length}`,
+      kind: 'create_agent' as const,
+      agent: { ...agentInput, id: invalidId },
+    };
+    assert.equal(managementOperationZodSchema.safeParse(operation).success, false);
+    assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, false);
+  }
 });
 
 test('a full member creates an owned Agent and production publication seam owns the Channel grant', async () => {
@@ -127,6 +136,21 @@ test('a full member creates an owned Agent and production publication seam owns 
     },
   });
   try {
+    for (const invalidId of ['.', '..']) {
+      await assert.rejects(
+        service.applyWorkspaceChanges({
+          context,
+          idempotencyKey: `member-invalid-agent-${invalidId.length}`,
+          operations: [{
+            itemId: `invalid-agent-${invalidId.length}`,
+            kind: 'create_agent',
+            agent: { ...agentInput, id: invalidId },
+          }],
+        }),
+        (error: unknown) => error instanceof Error &&
+          error.message.includes('Agent IDs must start with a lowercase letter or digit'),
+      );
+    }
     const result = await service.applyWorkspaceChanges({
       context,
       idempotencyKey: 'member-create-publish',

@@ -31,6 +31,20 @@ test('supported coding clients share public PKCE registration and stateless MCP 
       role: 'admin',
       clientId: 'client_compatibility',
     };
+    const agent = await f.config.createAgent({
+      id: 'agent_mcp_connector',
+      name: 'MCP Connector Agent',
+      creatorMembershipId: f.admin.membership.id,
+      editPolicy: 'creator_and_admins',
+      lifecycle: 'active',
+      configurationGeneration: 1,
+      instructions: 'Use configured connectors.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
     const handler = createMcpHandler(
       () => createWorkspaceManagementMcpServer({ principal, service: f.service }),
       { legacy: 'stateless' },
@@ -59,10 +73,18 @@ test('supported coding clients share public PKCE registration and stateless MCP 
       }
 
       const listed = await mcpCall(handler.fetch, client.protocol, 'tools/list', {});
+      const listedTools = (listed.result as {
+        tools: Array<{ name: string; inputSchema?: { required?: string[] } }>;
+      }).tools;
       assert.deepEqual(
-        (listed.result as { tools: Array<{ name: string }> }).tools.map(({ name }) => name),
+        listedTools.map(({ name }) => name),
         WORKSPACE_MANAGEMENT_TOOL_NAMES,
         client.name,
+      );
+      assert.ok(
+        listedTools.find(({ name }) => name === 'prepare_connector_setup')
+          ?.inputSchema?.required?.includes('agentId'),
+        `${client.name} must require an explicit Agent for connector setup`,
       );
       const inspected = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
         name: 'inspect_workspace',
@@ -72,6 +94,30 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         content: Array<{ text: string }>;
       }).content[0]!.text);
       assert.equal(inspectedResult.ok, true, client.name);
+      assert.ok(
+        inspectedResult.result.connectors.some((connector: { id: string }) => connector.id === 'gmail'),
+        `${client.name} should discover the connector catalog`,
+      );
+
+      const connectorHandoff = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
+        name: 'prepare_connector_setup',
+        arguments: { agentId: agent.id, connector: 'Gmail', ownerKind: 'member' },
+      });
+      const connectorResult = JSON.parse((connectorHandoff.result as {
+        content: Array<{ text: string }>;
+      }).content[0]!.text) as { ok: boolean; result: { handoffUrl: string } };
+      assert.equal(connectorResult.ok, true, client.name);
+      assert.equal(
+        new URL(connectorResult.result.handoffUrl).pathname,
+        '/admin/agents/agent_mcp_connector/connections/new/gmail/member',
+        client.name,
+      );
+
+      const missingAgent = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
+        name: 'prepare_connector_setup',
+        arguments: { connector: 'Gmail' },
+      });
+      assert.equal((missingAgent.result as { isError?: boolean }).isError, true, client.name);
 
       const operationSchema = await mcpCall(handler.fetch, client.protocol, 'resources/read', {
         uri: WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI,

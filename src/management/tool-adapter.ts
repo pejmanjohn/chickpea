@@ -3,6 +3,7 @@ import {
   ManagementError,
   type ManagementActorContext,
   type ManagementOperation,
+  type PrepareConnectorSetupInput,
   type ManagementRoutineInspectionInput,
 } from './types.ts';
 import type { PreviewWorkspaceRecipeInput } from './recipes.ts';
@@ -10,6 +11,7 @@ import { emitManagementMetric } from './telemetry.ts';
 
 export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'inspect_workspace',
+  'prepare_connector_setup',
   'discover_slack_channels',
   'test_mcp_connection',
   'inspect_memory',
@@ -27,6 +29,7 @@ export type WorkspaceManagementToolName = typeof WORKSPACE_MANAGEMENT_TOOL_NAMES
 
 const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority.',
+  prepare_connector_setup: 'Create a safe browser handoff URL for adding a catalog connector to an editable Agent. In a specific Agent Slack conversation, agentId may be omitted to target that Agent.',
   discover_slack_channels: 'Discover Channels in the connected Slack workspace before publishing a Chickpea Agent.',
   test_mcp_connection: 'Test one saved Agent MCP connection with its write-only credentials and return a sanitized result plus discovered tools.',
   inspect_memory: 'Inspect the single durable memory body owned by one Agent.',
@@ -46,6 +49,10 @@ export function workspaceManagementToolDescription(name: WorkspaceManagementTool
 
 export type WorkspaceManagementToolArguments = {
   inspect_workspace: Record<never, never>;
+  prepare_connector_setup: Omit<PrepareConnectorSetupInput, 'agentId' | 'ownerKind'> & {
+    agentId?: string | undefined;
+    ownerKind?: PrepareConnectorSetupInput['ownerKind'] | undefined;
+  };
   discover_slack_channels: { refresh?: boolean | undefined };
   test_mcp_connection: { agentId: string; connectionId: string };
   inspect_memory: { agentId: string };
@@ -79,7 +86,12 @@ export async function invokeWorkspaceManagementTool<TName extends WorkspaceManag
   try {
     const context = await input.resolveContext();
     surface = context.origin.kind;
-    const result = await executeWorkspaceManagementTool(input.service, context, name, args);
+    const result = await executeWorkspaceManagementTool(
+      input.service,
+      context,
+      name,
+      args,
+    );
     emitManagementMetric('tool.call', {
       surface,
       tool: name,
@@ -109,6 +121,22 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
   switch (name) {
       case 'inspect_workspace':
         return service.inspectWorkspace(context);
+      case 'prepare_connector_setup': {
+        const value = args as WorkspaceManagementToolArguments['prepare_connector_setup'];
+        const agentId = value.agentId ??
+          (context.origin.kind === 'slack' ? context.origin.agentId : undefined);
+        if (!agentId) {
+          throw new ManagementError(
+            'invalid_request',
+            'Choose an Agent before preparing connector setup.',
+          );
+        }
+        return service.prepareConnectorSetup(context, {
+          agentId,
+          connector: value.connector,
+          ownerKind: value.ownerKind ?? 'team',
+        });
+      }
       case 'discover_slack_channels': {
         const value = args as WorkspaceManagementToolArguments['discover_slack_channels'];
         return service.discoverSlackChannels(context, value.refresh ?? false);

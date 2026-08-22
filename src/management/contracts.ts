@@ -4,6 +4,7 @@ import {
   hasCredentialLikeContent,
   hasDisallowedControlCharacter,
 } from '../security/content-validation.ts';
+import { isAgentId } from '../config/agent-id.ts';
 import {
   ManagementError,
   type ManagementActorContext,
@@ -61,6 +62,14 @@ export function validateManagementOperations(
       if (clientRefs.has(operation.clientRef)) throw invalid('Agent clientRef values must be unique.');
       clientRefs.add(operation.clientRef);
     }
+    if (operation.kind === 'create_agent' && !isAgentId(operation.agent.id)) {
+      throw invalid('Agent IDs must start with a lowercase letter or digit and contain only lowercase letters, digits, underscores, or hyphens.');
+    }
+    for (const agentId of operationAgentIds(operation)) {
+      if (!isAgentId(agentId)) {
+        throw invalid('Agent IDs must start with a lowercase letter or digit and contain only lowercase letters, digits, underscores, or hyphens.');
+      }
+    }
     if (operation.kind === 'grant_agent_channel') {
       const hasClientRef = operation.agentClientRef !== undefined;
       const hasAgentId = operation.agentId !== undefined;
@@ -89,6 +98,30 @@ export function validateManagementOperations(
     seen.add(operation.itemId);
   }
   return [...operations];
+}
+
+function operationAgentIds(operation: ManagementOperation): string[] {
+  switch (operation.kind) {
+    case 'update_agent':
+    case 'delete_agent':
+    case 'restore_agent':
+    case 'revoke_agent_channel':
+    case 'update_agent_memory':
+    case 'save_routine':
+      return [operation.agentId];
+    case 'archive_agent':
+      return [operation.agentId, ...(operation.replacementDefaultAgentId
+        ? [operation.replacementDefaultAgentId]
+        : [])];
+    case 'grant_agent_channel':
+      return operation.agentId ? [operation.agentId] : [];
+    case 'request_setup':
+      return 'agentId' in operation.target && operation.target.agentId
+        ? [operation.target.agentId]
+        : [];
+    default:
+      return [];
+  }
 }
 
 export function managementOperationDigest(operations: readonly ManagementOperation[]): string {

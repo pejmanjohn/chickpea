@@ -8,13 +8,15 @@ The deployment publishes an OAuth-protected MCP at `https://<chickpea-origin>/mc
 
 The compact tool surface is:
 
-- `inspect_workspace`, `discover_slack_channels`, `test_mcp_connection`, `inspect_memory`, and `inspect_routines`
+- `inspect_workspace`, `prepare_connector_setup`, `discover_slack_channels`, `test_mcp_connection`, `inspect_memory`, and `inspect_routines`
 - `export_workspace_recipe` and `preview_workspace_recipe`
 - `apply_workspace_changes`
 - `confirm_workspace_change` and `undo_workspace_change`
 - `get_operation` and `revoke_setup_link`
 
 The server advertises contract version `2.0.0`; the versioned operation inventory is available at `chickpea://schema/operations/v2`.
+
+`prepare_connector_setup` is the credential-safe connector entry point for MCP and Slack. Give it an editable Agent plus a connector catalog id or display name (for example `gmail` or `Gmail`). It returns an authenticated Admin handoff URL that opens the requested Agent's reusable connection form. In a Slack conversation routed through a specific Agent handle, the adapter supplies that current Agent as the default target; credentials must never be requested in Slack or model context.
 
 `apply_workspace_changes` accepts at most 25 ordered typed operations. `dependsOn` gives a progressive batch explicit prerequisites; a failed prerequisite skips only its dependents. `clientRef` lets later operations address an Agent created earlier in the same request. A batch is not globally atomic, and every item returns its own durable disposition.
 

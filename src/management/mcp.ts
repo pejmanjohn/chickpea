@@ -9,6 +9,7 @@ import {
   confirmWorkspaceChangeZodSchema,
   getOperationZodSchema,
   inspectWorkspaceZodSchema,
+  prepareConnectorSetupZodSchema,
   discoverSlackChannelsZodSchema,
   testMcpConnectionZodSchema,
   inspectMemoryZodSchema,
@@ -73,6 +74,17 @@ export function createWorkspaceManagementMcpServer(
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'inspect_workspace',
+    args,
+  )));
+
+  server.registerTool('prepare_connector_setup', {
+    title: 'Prepare Agent connector setup',
+    description: workspaceManagementToolDescription('prepare_connector_setup'),
+    inputSchema: prepareConnectorSetupZodSchema,
+    annotations: { readOnlyHint: true },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'prepare_connector_setup',
     args,
   )));
 

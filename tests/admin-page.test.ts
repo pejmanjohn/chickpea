@@ -4,7 +4,9 @@ import { test } from 'node:test';
 
 import { renderAdminPage } from '../src/admin/page.ts';
 import { connectorSkillsForConnections } from '../src/config/connector-skills.ts';
-import { CONNECTOR_PRESETS, GOOGLE_WORKSPACE_SERVICE_PRESETS } from '../src/config/presets.ts';
+import {
+  REUSABLE_CONNECTOR_PRESETS,
+} from '../src/config/presets.ts';
 import { seededAgents } from '../src/config/seed.ts';
 
 test('admin navigation omits the unimplemented account destination', () => {
@@ -325,6 +327,7 @@ function runAdminPageHarness(
     putAssignmentError?: { status: number; error: string; message?: string };
     cloudflare?: boolean;
     agents?: unknown[];
+    agentsGetError?: { status: number; error: string };
     providers?: ProviderSummaryFixture[];
     openrouterFavorites?: string[];
     openrouterModels?: Array<{ id: string; context_length?: number; pricing?: Record<string, string> }>;
@@ -939,6 +942,7 @@ function runAdminPageHarness(
       return null;
     },
     querySelector(selector: string) {
+      if (selector === '.main-inner') return app;
       if (selector === '.topbar') return topbarRegion;
       if (selector === '.body') return bodyRegion;
       if (selector === '.main') return mainRegion;
@@ -1242,6 +1246,12 @@ function runAdminPageHarness(
       }, 201));
     }
     if (path === '/admin/api/agents' && method === 'GET') {
+      if (harnessOptions.agentsGetError) {
+        return Promise.resolve(jsonResponse(
+          harnessOptions.agentsGetError,
+          harnessOptions.agentsGetError.status,
+        ));
+      }
       return Promise.resolve(jsonResponse({ agents: agentsList }));
     }
     const agentGetMatch = path.match(/^\/admin\/api\/agents\/([^/]+)$/);
@@ -5147,6 +5157,47 @@ test('reusable Agent connections retain the complete preset catalog', async () =
   );
 });
 
+test('connector handoff deep link opens the requested reusable account form', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_conn/connections/new/gmail/member',
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [] },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /<strong>Gmail<\/strong>/);
+  assert.match(harness.app.innerHTML, /value="member" selected>My connection<\/option>/);
+  assert.match(harness.app.innerHTML, /Gmail access/);
+  assert.ok(
+    harness.historyReplaces.some((path) => path === '/admin/agents/agent_conn'),
+    'one-shot connector path should be canonicalized after opening the form',
+  );
+});
+
+test('connector handoff rejects an unknown account owner instead of widening it to Team', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_conn/connections/new/gmail/everyone',
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [] },
+  });
+  await flushAsync();
+
+  assert.doesNotMatch(harness.app.innerHTML, /<strong>Gmail<\/strong>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Who uses this account\?/);
+});
+
+test('connector handoff survives a transient initial Agent load failure', async () => {
+  const handoffPath = '/admin/agents/agent_conn/connections/new/gmail/member';
+  const harness = runAdminPageHarness({
+    initialPath: handoffPath,
+    agentsGetError: { status: 503, error: 'temporarily_unavailable' },
+  });
+  await flushAsync();
+
+  assert.equal(harness.locationPath(), handoffPath);
+  assert.equal(harness.historyReplaces.length, 0);
+});
+
 test('legacy Google access does not hide reusable Google account presets', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent({
@@ -5198,9 +5249,7 @@ test('every catalog connector opens a reusable-account setup flow', async () => 
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
 
-  const presetIds = CONNECTOR_PRESETS.filter(({ id }) => id !== 'google-workspace')
-    .map(({ id }) => id)
-    .concat(GOOGLE_WORKSPACE_SERVICE_PRESETS.map(({ id }) => id));
+  const presetIds = REUSABLE_CONNECTOR_PRESETS.map(({ id }) => id);
   for (const presetId of presetIds) {
     click({ target: actionTarget({
       'data-action': 'connection-account-preset', 'data-preset': presetId,
