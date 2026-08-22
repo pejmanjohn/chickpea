@@ -492,7 +492,9 @@ test('gateway transport maps only allowlisted tenant-bound Slack operations', as
     await client.refreshClaim();
     const transport = createGatewaySlackTransport(client);
     assert.deepEqual(await transport.lookupMember('U_MEMBER'), {
-      id: 'U_MEMBER', teamId: 'TGATEWAY', displayName: 'Ada', email: 'ada@example.test',
+      id: 'U_MEMBER', teamId: 'TGATEWAY', name: 'ada', handle: 'ada', displayName: 'Ada',
+      realName: 'Ada Lovelace', email: 'ada@example.test',
+      avatarUrl: 'https://avatars.slack-edge.com/ada.png',
       deleted: false, bot: false, appUser: false, restricted: false,
       ultraRestricted: false, stranger: false,
     });
@@ -848,8 +850,9 @@ function operationResult(operation: string, input: Record<string, unknown>): Rec
     return {
       ok: true,
       user: {
-        id: input.user, team_id: 'TGATEWAY', profile: {
-          display_name: 'Ada', email: 'ada@example.test',
+        id: input.user, team_id: 'TGATEWAY', name: 'ada', profile: {
+          display_name: 'Ada', real_name: 'Ada Lovelace', email: 'ada@example.test',
+          image_192: 'https://avatars.slack-edge.com/ada.png',
         },
       },
     };

@@ -326,6 +326,31 @@ function fakeSlackResponse(pathname, body) {
     };
   }
   if (pathname.endsWith('/users.info')) {
+    const visualProfiles = {
+      UVISUALOWNER: ['Pejman Pour-Moezzi', 'pejman.pourmoezzi', 'pejman@example.com'],
+      UVISUALADMIN: ['Alex Admin', 'alex.admin', 'alex@example.com'],
+      UVISUALMEMBER: ['Maya Member', 'maya.member', 'maya@example.com'],
+      UVISUALOWNER2: ['Olive Owner', 'olive.owner', 'olive@example.com'],
+      UVISUALSUSPENDED: ['Sam Suspended', 'sam.suspended', 'sam@example.com'],
+      UVISUALREMOVED: ['Rae Removed', 'rae.removed', 'rae@example.com'],
+    };
+    const profile = visualProfiles[body.user];
+    if (profile) {
+      return {
+        ok: true,
+        user: {
+          id: body.user,
+          team_id: WORKSPACE_ID,
+          name: profile[1],
+          profile: {
+            display_name: profile[1],
+            real_name: profile[0],
+            email: profile[2],
+            image_192: 'https://secure.gravatar.com/avatar/205e460b479e2e5b48aec07710c08d50?s=192&d=identicon',
+          },
+        },
+      };
+    }
     if (body.user !== LOCAL_SLACK_BOT_ID) {
       return { ok: false, error: 'user_not_found' };
     }
@@ -539,6 +564,12 @@ export async function startAdminVisualFixture(options = {}) {
         stage: 'credentials', expectedAppId: 'AVISUAL', expectedTeamId: WORKSPACE_ID,
       }),
     };
+    app.get('/__admin_visual_fixture/login', (c) => {
+      if (c.req.query('token') !== adminToken) return c.text('Not found', 404);
+      c.header('Set-Cookie', `chickpea_visual_token=${adminToken}; Path=/; HttpOnly; SameSite=Lax`);
+      c.header('Cache-Control', 'no-store');
+      return c.redirect(c.req.query('destination') || '/admin/team');
+    });
     app.get('/__admin_visual_fixture/auth/:state', (c) => {
       const html = authPages[c.req.param('state')];
       if (!html) return c.notFound();
@@ -567,7 +598,9 @@ export async function startAdminVisualFixture(options = {}) {
       usageAdminUi: true,
       authService: {
         async authenticateRequest(request) {
-          if (request.headers.get('authorization') !== `Bearer ${adminToken}`) {
+          const cookies = request.headers.get('cookie') || '';
+          const cookieAuthenticated = cookies.split(';').some((part) => part.trim() === `chickpea_visual_token=${adminToken}`);
+          if (request.headers.get('authorization') !== `Bearer ${adminToken}` && !cookieAuthenticated) {
             throw new Error('Authentication unavailable.');
           }
           return {

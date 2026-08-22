@@ -2392,23 +2392,40 @@ button.capability-pill { cursor: pointer; }
 .team-hero { align-items: flex-start; display: flex; gap: 16px; justify-content: space-between; }
 .team-count { background: var(--ember-tint); border-radius: 999px; color: var(--ember-deep); font-size: .75rem; font-weight: 800; padding: 6px 10px; white-space: nowrap; }
 .team-card { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--card-shadow); padding: 18px; }
-.team-card h2 { color: var(--text); font-size: 1rem; margin: 0 0 5px; }
+.team-card h2 { color: var(--text); font-size: 1rem; margin: 0 0 12px; }
+.team-card > .hint { margin: 0 0 18px; }
 .team-auto-note { background: var(--ok-tint); border: 1px solid rgba(53,115,83,.18); border-radius: 12px; color: var(--text-2); font-size: .8125rem; line-height: 1.55; padding: 13px 14px; }
 .team-auto-note strong { color: var(--text); }
-.team-list { display: grid; gap: 10px; }
-.team-row { align-items: center; background: rgba(255,255,255,.48); border: 1px solid var(--line); border-radius: 12px; display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr) auto; padding: 14px; position: relative; }
+.team-column-guide { color: var(--text-3); display: grid; font-size: .625rem; font-weight: 850; gap: 14px; grid-template-columns: minmax(0, 1fr) 112px 38px; letter-spacing: .06875rem; padding: 0 18px 7px; text-transform: uppercase; }
+.team-column-guide span:nth-child(2) { text-align: center; }
+.team-list { border: 1px solid var(--line); border-radius: 16px; overflow: visible; }
+.team-row { align-items: center; background: #fffefa; display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) 112px 38px; min-height: 82px; padding: 14px 18px; position: relative; }
+.team-row + .team-row { border-top: 1px solid var(--line); }
+.team-row:first-child { border-radius: 15px 15px 0 0; }
+.team-row:last-child { border-radius: 0 0 15px 15px; }
+.team-row-identity { align-items: center; display: flex; gap: 13px; min-width: 0; }
+.team-avatar { align-items: center; background: var(--well); border: 1px solid var(--line); border-radius: 50%; color: var(--text-2); display: inline-flex; flex: 0 0 auto; font-size: .75rem; font-weight: 850; height: 46px; justify-content: center; overflow: hidden; width: 46px; }
+.team-avatar img { display: block; height: 100%; object-fit: cover; width: 100%; }
 .team-row-main { min-width: 0; }
-.team-row-title { color: var(--text); font-size: .875rem; font-weight: 800; overflow-wrap: anywhere; }
-.team-row-sub { color: var(--text-2); font-size: .75rem; line-height: 1.5; margin-top: 3px; overflow-wrap: anywhere; }
-.team-row-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
-.team-statuses { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.team-status { background: var(--well); border: 1px solid var(--line); border-radius: 999px; color: var(--text-2); font-size: .6875rem; font-weight: 800; padding: 4px 8px; }
-.team-status.active { background: var(--ok-tint); color: var(--ok); }
-.team-status.owner { background: var(--ember-tint); border-color: rgba(221,160,51,.34); color: var(--ember-deep); }
-.team-status.suspended { background: var(--ember-tint); color: var(--ember-deep); }
-.team-status.removed { color: var(--text-3); }
+.team-row-title { color: var(--text); font-size: 1rem; font-weight: 820; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-you { background: var(--well); border-radius: 6px; color: var(--text-2); font-size: .6875rem; font-weight: 800; margin-left: 7px; padding: 3px 6px; vertical-align: 2px; }
+.team-row-sub { align-items: center; color: var(--text-2); display: flex; font-size: .8125rem; gap: 7px; line-height: 1.45; margin-top: 4px; min-width: 0; }
+.team-row-sub-copy { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-row-sub-separator { color: #c6b999; }
+.team-row-actions { align-items: center; display: flex; justify-content: flex-end; width: 38px; }
+.team-role, .team-role-select { align-items: center; background: #fff; border: 1px solid #d9ceb8; border-radius: 10px; color: var(--text); display: inline-flex; font-family: inherit; font-size: .8125rem; font-weight: 800; height: 35px; justify-content: center; width: 112px; }
+.team-role { background: #fcfaf4; padding: 0 10px; }
+.team-role-select-wrap { align-items: center; display: inline-flex; justify-content: flex-end; position: relative; width: 112px; }
+.team-role-select { appearance: none; cursor: pointer; padding: 0 34px 0 12px; }
+.team-role-select:disabled { cursor: wait; opacity: .6; }
+.team-role-select:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.team-role-select-icon { align-items: center; color: var(--text-2); display: inline-flex; height: 16px; justify-content: center; pointer-events: none; position: absolute; right: 12px; width: 16px; }
+.team-role-select-icon svg { height: 14px; width: 14px; }
+.team-access-status { align-items: center; color: #6f7f64; display: inline-flex; flex: 0 0 auto; font-size: .6875rem; font-weight: 700; gap: 5px; white-space: nowrap; }
+.team-access-status::before { background: currentColor; border-radius: 50%; content: ""; height: 6px; width: 6px; }
+.team-access-status.suspended { color: var(--ember-deep); font-weight: 800; }
 .team-actions-wrap { position: relative; }
-.team-actions-trigger { align-items: center; background: transparent; border: 1px solid transparent; border-radius: 10px; color: var(--text-2); cursor: pointer; display: inline-flex; height: 34px; justify-content: center; padding: 0; width: 34px; }
+.team-actions-trigger { align-items: center; background: transparent; border: 1px solid transparent; border-radius: 10px; color: var(--text-2); cursor: pointer; display: inline-flex; height: 38px; justify-content: center; padding: 0; width: 38px; }
 .team-actions-trigger:hover, .team-actions-trigger[aria-expanded="true"] { background: var(--well); border-color: var(--line); color: var(--text); }
 .team-actions-trigger:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
 .team-action-menu { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 16px 36px rgba(58,43,22,.16); display: grid; min-width: 220px; padding: 6px; position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; }
@@ -2418,10 +2435,21 @@ button.capability-pill { cursor: pointer; }
 .team-action-divider { border-top: 1px solid var(--line); margin: 5px 4px; }
 .team-empty { color: var(--text-2); font-size: .8125rem; padding: 8px 0; }
 @media (max-width: 620px) {
-  .team-hero, .team-row { align-items: stretch; grid-template-columns: 1fr; }
+  .team-hero { align-items: stretch; }
   .team-hero { flex-direction: column; }
   .team-count { width: max-content; }
-  .team-row-actions { justify-content: flex-end; position: absolute; right: 10px; top: 10px; }
+  .team-column-guide { display: none; }
+  .team-row { gap: 10px; grid-template-columns: minmax(0, 1fr) 112px 38px; padding: 14px; }
+  .team-row-sub { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .team-row-sub-separator { display: none; }
+}
+@media (max-width: 480px) {
+  .team-row { grid-template-columns: minmax(0, 1fr) 38px; }
+  .team-row-identity { grid-column: 1 / -1; padding-right: 48px; }
+  .team-row-sub { align-items: center; flex-direction: row; gap: 7px; }
+  .team-row-sub-separator { display: inline; }
+  .team-role, .team-role-select-wrap { grid-column: 1; grid-row: 2; justify-self: end; }
+  .team-row-actions { grid-column: 2; grid-row: 2; }
 }
 
 </style>
@@ -3573,7 +3601,9 @@ button.capability-pill { cursor: pointer; }
   }
 
   function teamRailHtml() {
-    var members = state.team && state.team.members ? state.team.members : [];
+    var members = state.team && state.team.members
+      ? state.team.members.filter(function (member) { return member.status !== "removed"; })
+      : [];
     return '<nav class="rail primary-shell-sidebar" aria-label="Team">' + primaryShellBrandHtml() + '<div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Team</span></div>' +
       '<button type="button" class="chan-item active" data-action="open-team" aria-current="page"><span class="chan-name">Members</span><span class="chan-meta">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></button>' +
@@ -3588,14 +3618,22 @@ button.capability-pill { cursor: pointer; }
     if (!team) {
       return '<div class="empty"><h1 class="page-title">Team is unavailable</h1><p class="error">' + esc(state.teamError || "Could not load team access.") + '</p><button type="button" class="btn btn-soft" data-action="team-retry">Retry</button></div>';
     }
-    var members = team.members || [];
+    var members = (team.members || []).filter(function (member) { return member.status !== "removed"; });
+    if (team.viewer && team.viewer.membershipId) {
+      members.sort(function (left, right) {
+        if (left.id === team.viewer.membershipId) return -1;
+        if (right.id === team.viewer.membershipId) return 1;
+        return 0;
+      });
+    }
     var notice = state.teamError
       ? '<p class="error" role="alert">' + esc(state.teamError) + '</p>'
       : (state.teamNotice ? '<p class="hint" role="status">' + esc(state.teamNotice) + '</p>' : '');
     return '<div class="team-hero"><div><p class="section-eyebrow">People &amp; access</p><h1 class="page-title">Your team</h1><p class="hint">Manage the people who have interacted with Chickpea in Slack.</p></div><span class="team-count">' + members.length + ' member' + (members.length === 1 ? '' : 's') + '</span></div>' +
       '<div class="team-auto-note"><strong>Membership is automatic.</strong> Full Slack members join automatically the first time they interact with an Agent. Guests and Slack Connect users are not provisioned.</div>' +
       notice +
-      '<section class="team-card" aria-labelledby="members-heading"><h2 id="members-heading">Members</h2><p class="hint">Owners can change roles, suspend access, restore access, or permanently remove a member.</p><div class="team-list">' + (members.length ? members.map(teamMemberRowHtml).join("") : '<p class="team-empty">No one has interacted with an Agent yet.</p>') + '</div></section>';
+      '<section class="team-card" aria-labelledby="members-heading"><h2 id="members-heading">Members</h2><p class="hint">Owners can change roles, suspend access, restore access, or permanently remove a member.</p>' +
+      (members.length ? '<div class="team-column-guide" aria-hidden="true"><span>Member</span><span>Role</span><span></span></div><div class="team-list">' + members.map(teamMemberRowHtml).join("") + '</div>' : '<p class="team-empty">No one has interacted with an Agent yet.</p>') + '</section>';
   }
 
   function teamMembershipLabel(value) {
@@ -3604,24 +3642,31 @@ button.capability-pill { cursor: pointer; }
 
   function teamMemberRowHtml(member) {
     var viewer = state.team && state.team.viewer ? state.team.viewer : { role: "admin", membershipId: "" };
-    var canManage = viewer.role === "owner" && viewer.membershipId !== member.id && member.status !== "removed";
+    var canManageAccess = viewer.role === "owner" && viewer.membershipId !== member.id && member.status !== "removed";
     var busy = state.teamBusy === "member:" + member.id;
-    var label = member.displayName || member.slackUserId || "Slack member";
+    var label = member.realName || member.displayName || member.slackUserId || "Slack member";
     var menuOpen = state.teamActionMenuId === member.id;
-    var roleActions = member.status === "suspended" ? "" : ["member", "admin", "owner"]
-      .filter(function (role) { return role !== member.role; })
-      .map(function (role) {
-        return '<button type="button" role="menuitem" data-action="team-role-action" data-membership="' + esc(member.id) + '" data-role="' + esc(role) + '">Make ' + esc(teamMembershipLabel(role)) + '</button>';
-      }).join("");
     var accessActions = member.status === "suspended"
-      ? '<button type="button" role="menuitem" data-action="team-status-action" data-membership="' + esc(member.id) + '" data-status="active">Restore access</button><div class="team-action-divider" role="separator"></div><button type="button" role="menuitem" class="danger" data-action="team-status-action" data-membership="' + esc(member.id) + '" data-status="removed">Remove from Chickpea</button>'
-      : roleActions + '<div class="team-action-divider" role="separator"></div><button type="button" role="menuitem" data-action="team-status-action" data-membership="' + esc(member.id) + '" data-status="suspended">Suspend access</button><button type="button" role="menuitem" class="danger" data-action="team-status-action" data-membership="' + esc(member.id) + '" data-status="removed">Remove from Chickpea</button>';
-    var actions = canManage
+      ? '<button type="button" role="menuitem" data-action="team-status-action" data-membership="' + esc(member.id) + '" data-status="active">Restore Chickpea access</button><div class="team-action-divider" role="separator"></div><button type="button" role="menuitem" class="danger" data-action="team-status-action" data-membership="' + esc(member.id) + '" data-status="removed">Remove from Chickpea</button>'
+      : '<button type="button" role="menuitem" data-action="team-status-action" data-membership="' + esc(member.id) + '" data-status="suspended">Suspend Chickpea access</button><button type="button" role="menuitem" class="danger" data-action="team-status-action" data-membership="' + esc(member.id) + '" data-status="removed">Remove from Chickpea</button>';
+    var actions = canManageAccess
       ? '<div class="team-actions-wrap"><button type="button" class="team-actions-trigger" data-action="team-actions-toggle" data-membership="' + esc(member.id) + '" aria-haspopup="menu" aria-expanded="' + (menuOpen ? 'true' : 'false') + '" aria-label="Actions for ' + esc(label) + '"' + (busy ? ' disabled' : '') + '>' + icon("ellipsis") + '</button>' + (menuOpen ? '<div class="team-action-menu" role="menu" aria-label="Actions for ' + esc(label) + '">' + accessActions + '</div>' : '') + '</div>'
       : '';
     var roleLabel = teamMembershipLabel(member.role);
     var statusLabel = teamMembershipLabel(member.status);
-    return '<article class="team-row"><div class="team-row-main"><div class="team-row-title">' + esc(label) + (viewer.membershipId === member.id ? ' <span class="hint">(you)</span>' : '') + '</div><div class="team-row-sub">' + esc(member.slackUserId || "Slack identity unavailable") + '</div><div class="team-statuses"><span class="team-status ' + esc(member.role) + '">' + esc(roleLabel) + '</span><span class="team-status ' + esc(member.status) + '">' + esc(statusLabel) + '</span></div></div><div class="team-row-actions">' + actions + '</div></article>';
+    var canChangeRole = viewer.role === "owner" && member.status === "active";
+    var roleControl = canChangeRole
+      ? '<span class="team-role-select-wrap"><select class="team-role-select" data-action="team-role-select" data-membership="' + esc(member.id) + '" aria-label="Change role for ' + esc(label) + '"' + (busy ? ' disabled' : '') + '>' + ["member", "admin", "owner"].map(function (role) { return '<option value="' + role + '"' + (role === member.role ? ' selected' : '') + '>' + esc(teamMembershipLabel(role)) + '</option>'; }).join("") + '</select><span class="team-role-select-icon" aria-hidden="true">' + icon("chevron-down") + '</span></span>'
+      : '<span class="team-role" aria-label="Role: ' + esc(roleLabel) + '">' + esc(roleLabel) + '</span>';
+    var secondary = [];
+    if (member.handle) secondary.push("@" + member.handle);
+    if (member.contactEmail) secondary.push(member.contactEmail);
+    if (!secondary.length) secondary.push(member.slackUserId ? "Slack member · " + member.slackUserId : "Slack identity unavailable");
+    var initials = label.split(/\s+/).filter(Boolean).slice(0, 2).map(function (part) { return part.charAt(0); }).join("").toUpperCase() || "?";
+    var avatar = member.avatarUrl
+      ? '<span class="team-avatar"><img src="' + esc(member.avatarUrl) + '" alt=""></span>'
+      : '<span class="team-avatar" aria-hidden="true">' + esc(initials) + '</span>';
+    return '<article class="team-row"><div class="team-row-identity">' + avatar + '<div class="team-row-main"><div class="team-row-title">' + esc(label) + (viewer.membershipId === member.id ? ' <span class="team-you">You</span>' : '') + '</div><div class="team-row-sub"><span class="team-row-sub-copy">' + esc(secondary.join(" · ")) + '</span><span class="team-row-sub-separator" aria-hidden="true">·</span><span class="team-access-status ' + esc(member.status) + '" aria-label="Access: ' + esc(statusLabel) + '">' + esc(statusLabel) + '</span></div></div></div>' + roleControl + '<div class="team-row-actions">' + actions + '</div></article>';
   }
 
   function teamConfirmModalHtml() {
@@ -3878,7 +3923,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function confirmTeamRole(member, role) {
-    var label = member.displayName || member.slackUserId || "this member";
+    var label = member.realName || member.displayName || member.slackUserId || "this member";
     var roleLabel = teamMembershipLabel(role);
     var article = role === "member" ? "a" : "an";
     state.teamConfirm = {
@@ -3896,17 +3941,17 @@ button.capability-pill { cursor: pointer; }
   }
 
   function confirmTeamStatus(member, status) {
-    var label = member.displayName || member.slackUserId || "this member";
+    var label = member.realName || member.displayName || member.slackUserId || "this member";
     var removing = status === "removed";
     state.teamConfirm = {
       membershipId: member.id,
       field: "status",
       value: status,
-      title: removing ? "Remove " + label + " from Chickpea?" : "Suspend access for " + label + "?",
+      title: removing ? "Remove " + label + " from Chickpea?" : "Suspend " + label + "'s Chickpea access?",
       detail: removing
         ? "They will lose Chickpea access immediately. Removal is permanent."
-        : "They will lose Chickpea access immediately. An Owner can restore this membership later.",
-      confirmLabel: removing ? "Remove" : "Suspend access",
+        : "They will not be able to use Agents, sign in to Chickpea, or use their personal connections. Scheduled work running as them will pause. Their Agents and saved configuration will remain, and an Owner can restore access later.",
+      confirmLabel: removing ? "Remove" : "Suspend Chickpea access",
       danger: true
     };
     render();
@@ -4656,9 +4701,18 @@ button.capability-pill { cursor: pointer; }
   }
 
   function focusTeamActionMenu() {
-    var control = document.querySelector('[data-action="team-role-action"]') ||
-      document.querySelector('[data-action="team-status-action"]');
+    var control = document.querySelector('[data-action="team-status-action"]');
     if (control && control.focus) control.focus();
+  }
+
+  function focusTeamRoleControl(membershipId) {
+    var controls = document.querySelectorAll('[data-action="team-role-select"]');
+    for (var index = 0; index < controls.length; index += 1) {
+      if (controls[index].getAttribute("data-membership") === membershipId) {
+        if (controls[index].focus) controls[index].focus();
+        return;
+      }
+    }
   }
 
   function focusTeamActionTrigger(membershipId) {
@@ -10115,7 +10169,8 @@ button.capability-pill { cursor: pointer; }
         var cancelledTeamAction = state.teamConfirm;
         state.teamConfirm = null;
         render();
-        focusTeamActionTrigger(cancelledTeamAction.membershipId);
+        if (cancelledTeamAction.field === "role") focusTeamRoleControl(cancelledTeamAction.membershipId);
+        else focusTeamActionTrigger(cancelledTeamAction.membershipId);
       } else if (action === "team-confirm-apply") {
         var confirmedTeamAction = state.teamConfirm;
         state.teamConfirm = null;
@@ -10296,16 +10351,6 @@ button.capability-pill { cursor: pointer; }
       render();
       if (teamMenuOpening) focusTeamActionMenu();
       else focusTeamActionTrigger(toggleMembershipId);
-    }
-    if (action === "team-role-action" && !state.teamBusy) {
-      var roleMembershipId = target.getAttribute("data-membership") || "";
-      var roleMember = teamMemberById(roleMembershipId);
-      var nextRole = target.getAttribute("data-role") || "";
-      state.teamActionMenuId = "";
-      if (roleMember && ["member", "admin", "owner"].indexOf(nextRole) >= 0) {
-        if (roleMember.role === "owner" || nextRole === "owner") confirmTeamRole(roleMember, nextRole);
-        else updateTeamMembership(roleMember.id, "role", nextRole);
-      }
     }
     if (action === "team-status-action" && !state.teamBusy) {
       var statusMembershipId = target.getAttribute("data-membership") || "";
@@ -11057,6 +11102,15 @@ button.capability-pill { cursor: pointer; }
   document.addEventListener("change", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
+    if (action === "team-role-select" && !state.teamBusy) {
+      var roleMembershipId = target.getAttribute("data-membership") || "";
+      var roleMember = teamMemberById(roleMembershipId);
+      var nextRole = target.value || "";
+      if (roleMember && ["member", "admin", "owner"].indexOf(nextRole) >= 0 && nextRole !== roleMember.role) {
+        if (roleMember.role === "owner" || nextRole === "owner") confirmTeamRole(roleMember, nextRole);
+        else updateTeamMembership(roleMember.id, "role", nextRole);
+      }
+    }
     if (state.connectionAccountForm && action === "connection-account-owner") {
       state.connectionAccountForm.ownerKind = target.value === "member" ? "member" : "team";
       render();
