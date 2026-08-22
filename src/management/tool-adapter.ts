@@ -102,6 +102,13 @@ export async function invokeWorkspaceManagementTool<TName extends WorkspaceManag
     return success(result);
   } catch (error) {
     const result = failure(error);
+    if (!(error instanceof ManagementError) && !(error instanceof AgentPresenceError)) {
+      console.warn('[chickpea:management] unexpected tool failure', JSON.stringify({
+        tool: name,
+        errorName: error instanceof Error ? error.name : typeof error,
+        message: safeUnexpectedErrorMessage(error),
+      }));
+    }
     emitManagementMetric('tool.call', {
       surface,
       tool: name,
@@ -113,6 +120,14 @@ export async function invokeWorkspaceManagementTool<TName extends WorkspaceManag
     });
     return result;
   }
+}
+
+function safeUnexpectedErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : 'Unknown error';
+  return message
+    .replace(/[A-Za-z0-9_-]{32,}/g, '[redacted]')
+    .replace(/(?:xox[a-z]-|sk-|gh[opusr]_)[^\s"']+/gi, '[credential]')
+    .slice(0, 240);
 }
 
 async function executeWorkspaceManagementTool<TName extends WorkspaceManagementToolName>(
