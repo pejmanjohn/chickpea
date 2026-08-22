@@ -1595,6 +1595,7 @@ details[open].advanced summary::before {
 }
 .rename-btn:hover { background: rgba(59, 50, 32, 0.11); color: var(--text); }
 .rename-btn:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.rename-btn .ic { display: block; height: 16px; width: 16px; }
 .page-title-input { font-family: var(--display); font-size: 1.25rem; font-weight: 700; max-width: 32ch; }
 
 /* ---- profile capability tabs (Instructions / Skills / Connections / Repositories) ----
@@ -1678,7 +1679,7 @@ details[open].advanced summary::before {
 .agent-status-chip.disabled { background: var(--well); color: var(--text-3); }
 .agent-description-row { align-items: center; display: flex; gap: 8px; margin: -5px 0 15px; max-width: 78ch; min-width: 0; }
 .agent-profile-intro { color: var(--text-3); flex: 0 1 auto; font-size: .9375rem; margin: 0; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.agent-description-row.empty .agent-profile-intro { font-style: italic; }
+.agent-description-row.is-empty .agent-profile-intro { color: var(--text-3); }
 .agent-description-input { max-width: 78ch; }
 .agent-presence-card { align-items: stretch; gap: 18px; grid-template-columns: minmax(0, 1fr); }
 .agent-slack-card-icon { align-items: center; background: transparent; border: 1px solid var(--admin-visual-line); border-radius: 10px; display: inline-flex; justify-content: center; }
@@ -1708,6 +1709,7 @@ details[open].advanced summary::before {
 .agent-tab-head { align-items: flex-start; display: flex; gap: 12px; margin-bottom: 8px; }
 .agent-tab-icon, .agent-card-icon { flex: none; height: 34px; width: 34px; }
 .semantic-icon { align-items: center; border: 1px solid transparent; border-radius: 10px; display: inline-flex; flex: none; justify-content: center; }
+.agent-tab-icon .ic, .agent-card-icon .ic { display: block; height: 18px; width: 18px; }
 .semantic-icon.tone-instructions { background: var(--semantic-instructions-bg); border-color: var(--semantic-instructions-line); color: var(--semantic-instructions-fg); }
 .semantic-icon.tone-skill, .semantic-icon.tone-capability { background: var(--semantic-skill-bg); border-color: var(--semantic-skill-line); color: var(--semantic-skill-fg); }
 .semantic-icon.tone-connector { background: var(--semantic-connector-bg); border-color: var(--semantic-connector-line); color: var(--semantic-connector-fg); }
@@ -2902,7 +2904,10 @@ button.capability-pill { cursor: pointer; }
       "x-mark": "M2.22 2.22a.75.75 0 0 1 1.06 0L8 6.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L9.06 8l4.72 4.72a.75.75 0 1 1-1.06 1.06L8 9.06l-4.72 4.72a.75.75 0 0 1-1.06-1.06L6.94 8 2.22 3.28a.75.75 0 0 1 0-1.06Z",
       plus: "M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z",
       copy: "M5.25 1.5A2.25 2.25 0 0 0 3 3.75v6.5a.75.75 0 0 0 1.5 0v-6.5c0-.414.336-.75.75-.75h4.5a.75.75 0 0 0 0-1.5h-4.5Zm1 3A2.25 2.25 0 0 0 4 6.75v5.5a2.25 2.25 0 0 0 2.25 2.25h4.5A2.25 2.25 0 0 0 13 12.25v-5.5a2.25 2.25 0 0 0-2.25-2.25h-4.5Zm-.75 2.25c0-.414.336-.75.75-.75h4.5c.414 0 .75.336.75.75v5.5a.75.75 0 0 1-.75.75h-4.5a.75.75 0 0 1-.75-.75v-5.5Z",
-      pencil: "M13.488 2.513a1.75 1.75 0 0 0-2.475 0L6.75 6.774a2.75 2.75 0 0 0-.596.892l-.848 2.047a.75.75 0 0 0 .98.98l2.047-.848a2.75 2.75 0 0 0 .892-.596l4.263-4.262a1.75 1.75 0 0 0 0-2.474Z",
+      // Sharpened pencil: tapered nib, barrel, and a detached ferrule/eraser cap.
+      // The two subpaths make it read as a pencil rather than a diagonal wedge, and
+      // the ink box is symmetric about (8, 8) so it centres in any square treatment.
+      pencil: "M10.868 7.565 5.847 12.585 3.016 13.514A.42.42 0 0 1 2.486 12.984L3.415 10.153 8.435 5.132ZM11.645 6.787 13.272 5.161A.9.9 0 0 0 13.272 3.888L12.112 2.728A.9.9 0 0 0 10.839 2.728L9.213 4.355Z",
       "lock-closed": "M8 1a3.5 3.5 0 0 0-3.5 3.5V7A1.5 1.5 0 0 0 3 8.5v5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 11.5 7V4.5A3.5 3.5 0 0 0 8 1Zm2 6V4.5a2 2 0 1 0-4 0V7h4Z",
       repository: "M3 1.5A1.5 1.5 0 0 0 1.5 3v9.25A2.25 2.25 0 0 0 3.75 14.5H14a.75.75 0 0 0 .75-.75V3A1.5 1.5 0 0 0 13.25 1.5H3Zm0 1.5h10.25v8.5H3.75c-.263 0-.516.045-.75.128V3Zm.75 2.25A.75.75 0 0 1 6.5 4.5h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1-.75-.75Z",
       "arrow-path": "M13.836 2.477a.75.75 0 0 1 .75.75v3.182a.75.75 0 0 1-.75.75h-3.182a.75.75 0 0 1 0-1.5h1.37l-.84-.841a4.5 4.5 0 0 0-7.08.932.75.75 0 0 1-1.3-.75 6 6 0 0 1 9.44-1.242l.842.84V3.227a.75.75 0 0 1 .75-.75Zm-.911 7.5A.75.75 0 0 1 13.2 11a6 6 0 0 1-9.44 1.241l-.84-.84v1.372a.75.75 0 0 1-1.5 0V9.591a.75.75 0 0 1 .75-.75H5.35a.75.75 0 0 1 0 1.5H3.98l.841.84a4.5 4.5 0 0 0 7.08-.932.75.75 0 0 1 1.025-.272Z",
@@ -2911,7 +2916,7 @@ button.capability-pill { cursor: pointer; }
       clock: "M8 1.25a6.75 6.75 0 1 0 0 13.5 6.75 6.75 0 0 0 0-13.5Zm0 1.5A5.25 5.25 0 1 1 8 13.25 5.25 5.25 0 0 1 8 2.75Zm.75 1.5a.75.75 0 0 0-1.5 0V8c0 .2.08.39.22.53l2.5 2.5a.75.75 0 1 0 1.06-1.06L8.75 7.69V4.25Z",
       ellipsis: "M3.75 8a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Zm5.5 0a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Zm5.5 0a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Z",
       gear: "M8.75 1.25a.75.75 0 0 0-1.5 0v.58a6.2 6.2 0 0 0-1.38.57l-.41-.41A.75.75 0 0 0 4.4 3.05l.41.41c-.24.44-.43.9-.57 1.38h-.58a.75.75 0 0 0 0 1.5h.58c.14.48.33.94.57 1.38l-.41.41A.75.75 0 1 0 5.46 9.2l.41-.41c.44.24.9.43 1.38.57v.58a.75.75 0 0 0 1.5 0v-.58a6.2 6.2 0 0 0 1.38-.57l.41.41a.75.75 0 1 0 1.06-1.06l-.41-.41c.24-.44.43-.9.57-1.38h.58a.75.75 0 0 0 0-1.5h-.58a6.2 6.2 0 0 0-.57-1.38l.41-.41A.75.75 0 0 0 10.54 2l-.41.41a6.2 6.2 0 0 0-1.38-.57v-.59ZM8 7.5a1.9 1.9 0 1 1 0-3.8 1.9 1.9 0 0 1 0 3.8Z",
-      hash: "M5.9 2.14a.75.75 0 0 1 .71.97L6.08 4.8h3.4l.6-1.91a.75.75 0 1 1 1.43.44l-.46 1.47h1.7a.75.75 0 0 1 0 1.5h-2.17l-1 3.2h2.17a.75.75 0 0 1 0 1.5H9.11l-.6 1.91a.75.75 0 1 1-1.43-.44L7.54 11h-3.4l-.6 1.91a.75.75 0 1 1-1.43-.44L2.57 11H.75a.75.75 0 0 1 0-1.5h2.29l1-3.2H1.75a.75.75 0 0 1 0-1.5h2.76l.68-2.17a.75.75 0 0 1 .71-.52Zm-.29 4.16-1 3.2H8l1-3.2H5.61Z",
+      hash: "M5.25 1.5 4.75 4.5H2V6h2.5l-.667 4H1v1.5h2.583l-.5 3h1.521l.5-3h4l-.5 3h1.521l.5-3H13.5V10h-2.625l.667-4H14V4.5h-2.208l.5-3h-1.521l-.5 3h-4l.5-3H5.25ZM6.02 6h4l-.667 4h-4l.667-4Z",
       sparkle: "M8 1.25a.75.75 0 0 1 .72.54l.52 1.83a4.5 4.5 0 0 0 3.14 3.14l1.83.52a.75.75 0 0 1 0 1.44l-1.83.52a4.5 4.5 0 0 0-3.14 3.14l-.52 1.83a.75.75 0 0 1-1.44 0l-.52-1.83a4.5 4.5 0 0 0-3.14-3.14l-1.83-.52a.75.75 0 0 1 0-1.44l1.83-.52a4.5 4.5 0 0 0 3.14-3.14l.52-1.83A.75.75 0 0 1 8 1.25Z",
       "bars-3": "M2 4.75A.75.75 0 0 1 2.75 4h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 4.75Zm0 3.5A.75.75 0 0 1 2.75 7.5h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 8.25Zm0 3.5a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z"
     };
@@ -7140,7 +7145,7 @@ button.capability-pill { cursor: pointer; }
     var descriptionText = description || (readOnly ? "No description" : "Add a description");
     var descriptionRow = !readOnly && state.profileDescriptionEditing
       ? '<div class="agent-description-row"><input class="input agent-description-input" id="p-description" type="text" maxlength="500" value="' + esc(draft.description || "") + '" placeholder="What teammates should use this Agent for" aria-label="Agent description" data-action="profile-description"></div>'
-      : '<div class="agent-description-row' + (description ? "" : " empty") + '"><p class="agent-profile-intro" title="' + esc(descriptionText) + '" aria-label="' + esc(descriptionText) + '">' + esc(descriptionText) + '</p>' +
+      : '<div class="agent-description-row' + (description ? "" : " is-empty") + '"><p class="agent-profile-intro" title="' + esc(descriptionText) + '" aria-label="' + esc(descriptionText) + '">' + esc(descriptionText) + '</p>' +
         (readOnly ? "" : '<button type="button" class="rename-btn" data-action="profile-description-edit" aria-label="Edit Agent description">' + icon("pencil") + '</button>') + '</div>';
     return '<div class="agent-profile-page">' +
       '<button type="button" class="link-btn agent-roster-back" style="align-self:flex-start;" data-action="profiles-back">&larr; All Agents</button>' +

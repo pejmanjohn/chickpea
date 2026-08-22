@@ -28,6 +28,7 @@ const ENV_KEYS = [
 
 export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
   agentInstructions: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze([]) }),
+  agentBlankDescription: Object.freeze({ path: '/admin/agents/agent_customer', actions: Object.freeze([]) }),
   agentMemory: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze(['Memory']) }),
   channelsIndex: Object.freeze({ path: '/admin/channels', actions: Object.freeze([]) }),
   channelDetail: Object.freeze({ path: '/admin/channels/TVISUAL/C_RELEASES', actions: Object.freeze([]) }),
@@ -175,7 +176,7 @@ function visualAgents() {
       id: 'agent_customer',
       revision: 1,
       name: 'Customer Insights',
-      description: 'Turns customer feedback into clear themes and actionable evidence.',
+      description: '',
       instructions: 'Summarize customer feedback and distinguish recurring evidence from anecdotes.',
       enabled: false,
       model: 'local-stub/visual-review',

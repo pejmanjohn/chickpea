@@ -3301,7 +3301,48 @@ test('Agent description lives under the title and is edited with its pencil', as
     agents: [{ ...releaseAgent, id: 'agent_empty_intro', description: '' }],
   });
   await flushAsync();
-  assert.match(emptyHarness.app.innerHTML, /class="agent-description-row empty"[\s\S]*?Add a description/);
+  assert.match(emptyHarness.app.innerHTML, /class="agent-description-row is-empty"[\s\S]*?Add a description/);
+  assert.doesNotMatch(emptyHarness.app.innerHTML, /class="agent-description-row empty"/);
+});
+
+test('the pencil glyph reads as a pencil and stays balanced in both square treatments', () => {
+  const page = renderAdminPage();
+  const pencil = /\bpencil: "([^"]+)"/.exec(page)?.[1];
+  assert.ok(pencil, 'the shared icon set must still define a pencil');
+
+  // A tapered barrel plus a detached ferrule/eraser cap. A single subpath is the
+  // regression to guard: it renders as a diagonal wedge, not a recognisable pencil.
+  assert.equal((pencil.match(/Z/g) ?? []).length, 2, 'the pencil needs a barrel and a separate ferrule');
+
+  const points: Array<[number, number]> = [];
+  for (const segment of pencil.matchAll(/([MLA])([^A-Za-z]*)/g)) {
+    const args = (segment[2]?.match(/-?\d*\.?\d+/g) ?? []).map(Number);
+    // Arc segments carry rx ry rotation large-arc sweep before their endpoint.
+    const stride = segment[1] === 'A' ? 7 : 2;
+    for (let index = 0; index + stride <= args.length; index += stride) {
+      points.push([args[index + stride - 2] ?? NaN, args[index + stride - 1] ?? NaN]);
+    }
+  }
+  assert.ok(points.length >= 12, 'the pencil outline should expose every corner as an explicit point');
+
+  // The pencil lies on the square's anti-diagonal, so every point must have a
+  // partner mirrored across it. That is what keeps the glyph from leaning to one
+  // flank once it is centred in the 26px button and the 34px semantic tile.
+  const key = ([x, y]: [number, number]) => `${x.toFixed(3)},${y.toFixed(3)}`;
+  const seen = new Set(points.map(key));
+  for (const [x, y] of points) {
+    assert.ok(seen.has(key([16 - y, 16 - x])), `pencil point ${key([x, y])} has no mirrored partner`);
+  }
+
+  // Optical size: the ink keeps a margin on every side of the 16-unit viewBox.
+  for (const value of points.flat()) {
+    assert.ok(value >= 2 && value <= 14, `pencil coordinate ${value} escapes the icon's optical margin`);
+  }
+
+  // Both square treatments pin the glyph size, so the narrow-viewport `.ic` bump
+  // cannot swell a 16px pencil inside a 26px button.
+  assert.match(page, /\.rename-btn \.ic\s*\{[^}]*height:\s*16px;[^}]*width:\s*16px;/s);
+  assert.match(page, /\.agent-tab-icon \.ic, \.agent-card-icon \.ic\s*\{[^}]*height:\s*18px;[^}]*width:\s*18px;/s);
 });
 
 test('Agent lifecycle overflow is the sole truthful control and restores keyboard focus', async () => {
