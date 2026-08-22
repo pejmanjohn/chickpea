@@ -1589,7 +1589,11 @@ export class WorkspaceManagementService {
           this.stores.config.getChannel(operation.workspaceId, operation.channelId),
           this.stores.config.listAgentChannelGrants(operation.workspaceId, operation.channelId),
         ]);
-        if (!beforeChannel) {
+        // The production Slack publisher resolves the live Channel, verifies
+        // requester membership, and imports reach-only Channel inventory as
+        // part of the confirmed grant. Store-only adapters cannot establish
+        // those facts, so they must continue to require a persisted Channel.
+        if (!beforeChannel && !this.stores.publishAgentChannel) {
           throw new ManagementError('revision_conflict', 'The Channel does not exist.');
         }
         const current = grants.find((grant) => grant.agentId === operation.agentId);

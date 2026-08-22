@@ -194,6 +194,93 @@ test('a full member creates an owned Agent and production publication seam owns 
   }
 });
 
+test('confirmed publication may import a live Slack Channel that is not in Chickpea yet', async () => {
+  const f = await createManagementAdapterFixture('member-live-channel-import');
+  const provisioned = await f.identity.provisionSlackMember({
+    slackTeamId: f.owner.binding.slackTeamId,
+    slackUserId: 'UMEMBERLIVECHANNEL',
+    displayName: 'Live Channel Member',
+  });
+  const member = provisioned.resolution!;
+  const context: ManagementActorContext = {
+    userId: member.user.id,
+    membershipId: member.membership.id,
+    organizationId: member.membership.organizationId,
+    origin: {
+      kind: 'slack',
+      workspaceId: f.owner.binding.slackTeamId,
+      channelId: 'CNEWINSLACK',
+      threadTs: '1710000000.000001',
+    },
+  };
+  const { requestedHandle: _requestedHandle, ...storedAgent } = agentInput;
+  await f.config.createAgent({
+    ...storedAgent,
+    id: 'agent_live_channel',
+    creatorMembershipId: member.membership.id,
+    lifecycle: 'draft',
+    configurationGeneration: 1,
+  });
+  let sequence = 0;
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    randomId: () => `live_channel_import_${++sequence}`,
+    publishAgentChannel: async ({ actor, workspaceId, channelId, agentId }) => {
+      assert.equal(await f.config.getChannel(workspaceId, channelId), undefined);
+      await f.config.putChannel({
+        workspaceId,
+        channelId,
+        label: 'new-in-slack',
+        lifecycle: 'active',
+      }, 0);
+      const grant = await f.config.putAgentChannelGrant({
+        workspaceId,
+        channelId,
+        agentId,
+        status: 'active',
+        createdByMembershipId: actor.membershipId,
+        channelLabel: 'new-in-slack',
+      }, 0);
+      return { agent: await f.config.getAgent(agentId), grant };
+    },
+  });
+  try {
+    const proposed = await service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'live-channel-import-proposal',
+      operations: [{
+        itemId: 'grant',
+        kind: 'grant_agent_channel',
+        workspaceId: f.owner.binding.slackTeamId,
+        channelId: 'CNEWINSLACK',
+        agentId: 'agent_live_channel',
+        expectedRevision: 0,
+      }],
+    });
+    assert.equal(proposed.status, 'confirmation_required');
+    const confirmed = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.outcomes[0]!.proposalId!,
+    });
+    assert.equal(confirmed.status, 'completed');
+    assert.equal(
+      (await f.config.getChannel(f.owner.binding.slackTeamId, 'CNEWINSLACK'))?.label,
+      'new-in-slack',
+    );
+    assert.equal(
+      (await f.config.listAgentChannelGrants(
+        f.owner.binding.slackTeamId,
+        'CNEWINSLACK',
+      ))[0]?.status,
+      'active',
+    );
+  } finally {
+    f.close();
+  }
+});
+
 test('members inspect and mutate only Agents permitted by canEditAgent', async () => {
   const f = await createManagementAdapterFixture('member-agent-scope');
   const first = (await f.identity.provisionSlackMember({

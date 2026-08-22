@@ -94,6 +94,21 @@ export class AgentPresenceReconciler {
       await this.recordFailure(await config.getAgent(agent.id), classified);
       throw classified;
     }
+    const persistedChannel = await config.getChannel(input.workspaceId, input.channelId);
+    if (!persistedChannel) {
+      try {
+        await config.putChannel({
+          workspaceId: input.workspaceId,
+          channelId: input.channelId,
+          ...(channel.name ? { label: channel.name } : {}),
+          lifecycle: 'active',
+        }, 0);
+      } catch (error) {
+        // A concurrent publication may have imported the same live Channel.
+        // Accept only that proven race; otherwise preserve the original error.
+        if (!await config.getChannel(input.workspaceId, input.channelId)) throw error;
+      }
+    }
     const pendingGrant = await ensurePendingGrant();
     if (!channel.member) {
       try {

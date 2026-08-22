@@ -58,6 +58,13 @@ test('publishing verifies actor membership, joins a public Channel, and creates 
     assert.equal(result.agent.slackPresence?.health, 'healthy');
     assert.equal(result.agent.slackPresence?.userGroupId, 'S1');
     assert.equal(result.agent.slackPresence?.observedAt, NOW);
+    assert.deepEqual(await config.getChannel('TACME', 'C_SUPPORT'), {
+      workspaceId: 'TACME',
+      channelId: 'C_SUPPORT',
+      revision: 1,
+      label: 'support',
+      lifecycle: 'active',
+    });
   } finally {
     config.close();
   }
