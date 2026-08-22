@@ -126,10 +126,17 @@ export async function resolveAgentRoute(
   } else if (mentionedAgents[0]) {
     source = 'agent_handle';
     selected = mentionedAgents[0];
+  } else if (turn.source === 'app_mention') {
+    // The base app mention is the workspace-management entry point. It must
+    // remain available anywhere Chickpea has joined for another Agent, even
+    // when the default Agent itself has no grant in that Channel. An explicit
+    // @Chickpea also takes ownership from an existing Agent thread.
+    source = 'default_agent';
+    selected = agentsById.get(installation.defaultAgentId);
   } else if (currentRoute) {
     source = 'thread_owner';
     selected = agentsById.get(currentRoute.agentId);
-  } else if (surface === 'direct' || turn.source === 'app_mention') {
+  } else if (surface === 'direct') {
     source = 'default_agent';
     selected = agentsById.get(installation.defaultAgentId);
   } else {
@@ -142,7 +149,10 @@ export async function resolveAgentRoute(
 
   if (surface === 'channel') {
     const grant = activeGrants.find((candidate) => candidate.agentId === selected!.id);
-    if (!actor.channelMember || !grant) return denied('not_available', available);
+    const baseAppMention = source === 'default_agent' && turn.source === 'app_mention';
+    if (!actor.channelMember || (!baseAppMention && !grant)) {
+      return denied('not_available', available);
+    }
   } else {
     if (!actor.fullMember) return denied('member_required', []);
     const selectedFromDirectory = source === 'app_home' || source === 'agent_handle' ||

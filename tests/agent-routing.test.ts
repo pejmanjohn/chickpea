@@ -170,16 +170,21 @@ test('multiple Agent handles are ambiguous and root messages without an address 
 test('@Chickpea and direct-message roots use the normal workspace default Agent', async () => {
   const { store, first } = await fixture();
   try {
-    await store.putAgentChannelGrant({
-      workspaceId: 'T1', channelId: 'C1', agentId: first.id, status: 'active',
-      createdByMembershipId: 'membership_owner', channelLabel: 'support', channelIsPrivate: false,
-    });
     const base = await resolveAgentRoute({
       turn: turn({ text: '<@U_BOT> help', source: 'app_mention' }), surface: 'channel',
       actor: { channelMember: true, fullMember: true }, config: store,
     });
     assert.equal(base.kind, 'routed');
     if (base.kind === 'routed') assert.equal(base.assignment.agentId, first.id);
+
+    const outsider = await resolveAgentRoute({
+      turn: turn({
+        eventId: 'Ev-outsider', messageTs: '101.1', threadTs: '101.1',
+        text: '<@U_BOT> help', source: 'app_mention',
+      }),
+      surface: 'channel', actor: { channelMember: false, fullMember: true }, config: store,
+    });
+    assert.equal(outsider.kind, 'denied');
 
     const dm = await resolveAgentRoute({
       turn: turn({
@@ -190,6 +195,33 @@ test('@Chickpea and direct-message roots use the normal workspace default Agent'
     });
     assert.equal(dm.kind, 'routed');
     if (dm.kind === 'routed') assert.equal(dm.assignment.agentId, first.id);
+  } finally {
+    store.close();
+  }
+});
+
+test('an explicit @Chickpea mention takes over an Agent thread without a default-Agent grant', async () => {
+  const { store, first, support } = await fixture();
+  try {
+    const opened = await resolveAgentRoute({
+      turn: turn(), surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+    });
+    assert.equal(opened.kind, 'routed');
+    if (opened.kind !== 'routed') return;
+    assert.equal(opened.assignment.agentId, support.id);
+
+    const handedOff = await resolveAgentRoute({
+      turn: turn({
+        eventId: 'Ev2', messageTs: '100.2', text: '<@U_BOT> manage this workspace',
+        source: 'app_mention', contextMode: 'thread',
+      }),
+      surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+    });
+    assert.equal(handedOff.kind, 'routed');
+    if (handedOff.kind !== 'routed') return;
+    assert.equal(handedOff.assignment.agentId, first.id);
+    assert.equal(handedOff.source, 'default_agent');
+    assert.equal(handedOff.handoff, true);
   } finally {
     store.close();
   }
