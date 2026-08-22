@@ -1402,6 +1402,8 @@ details[open].advanced summary::before {
 }
 .agent-roster-icon.variant-1 { background: #e7f1e3; color: #5f8d58; }
 .agent-roster-icon.variant-2 { background: #efe6f4; color: #7d6091; }
+.agent-roster-icon.has-avatar { background: transparent; overflow: hidden; }
+.agent-roster-icon.has-avatar img { display: block; height: 100%; object-fit: cover; width: 100%; }
 .agent-roster-icon .ic { height: 18px; width: 18px; }
 .agent-roster-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
 .agent-roster-name {
@@ -1669,15 +1671,28 @@ details[open].advanced summary::before {
 .agent-profile-header { align-items: center; display: flex; gap: 24px; justify-content: space-between; }
 .agent-profile-heading { display: flex; flex: 1; flex-direction: column; gap: 7px; min-width: 0; }
 .agent-profile-heading .page-title { font-size: clamp(2rem, 3.4vw, 2.75rem); letter-spacing: -.04em; line-height: 1.06; }
-.agent-replies-as { align-items: center; color: var(--text-2); display: flex; font-size: .75rem; gap: 6px; line-height: 1.4; margin: -1px 0 0; }
-.agent-replies-slack { flex: none; height: 15px; width: 15px; }
-.agent-replies-as .mono { color: var(--text); font-weight: 700; }
 .agent-profile-header-actions { align-items: center; display: flex; flex: none; gap: 10px; }
 .agent-status-chip { align-items: center; border-radius: 999px; display: inline-flex; font-size: .75rem; font-weight: 750; gap: 7px; padding: 8px 12px; }
 .agent-status-chip > span { background: currentColor; border-radius: 50%; height: 7px; width: 7px; }
 .agent-status-chip.enabled { background: var(--ok-tint); color: var(--ok); }
 .agent-status-chip.disabled { background: var(--well); color: var(--text-3); }
-.agent-profile-intro { color: var(--text-3); font-size: .9375rem; margin: -5px 0 15px; max-width: 78ch; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.agent-description-row { align-items: center; display: flex; gap: 8px; margin: -5px 0 15px; max-width: 78ch; min-width: 0; }
+.agent-profile-intro { color: var(--text-3); flex: 0 1 auto; font-size: .9375rem; margin: 0; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.agent-description-row.empty .agent-profile-intro { font-style: italic; }
+.agent-description-input { max-width: 78ch; }
+.agent-presence-card { align-items: stretch; gap: 18px; grid-template-columns: minmax(0, 1fr); }
+.agent-slack-card-icon { align-items: center; background: transparent; border: 1px solid var(--admin-visual-line); border-radius: 10px; display: inline-flex; justify-content: center; }
+.agent-slack-card-mark { height: 19px; width: 19px; }
+.agent-presence-grid { align-items: start; display: grid; gap: 24px; grid-template-columns: minmax(250px, 1fr) minmax(240px, 1fr); }
+.agent-avatar-control { align-items: center; display: flex; gap: 14px; min-height: 64px; }
+.agent-avatar-image, .agent-avatar-fallback { border-radius: 16px; flex: none; height: 64px; width: 64px; }
+.agent-avatar-image { object-fit: cover; }
+.agent-avatar-fallback { align-items: center; background: var(--well); display: flex; font-size: 30px; justify-content: center; }
+.agent-avatar-actions { min-width: 0; }
+.agent-avatar-actions .hint { margin-top: 6px; }
+.agent-handle-control { position: relative; }
+.agent-handle-prefix { color: var(--text-3); font-family: var(--mono); left: 14px; pointer-events: none; position: absolute; top: 50%; transform: translateY(-50%); z-index: 1; }
+.agent-handle-control .input { min-width: 0; padding-left: 30px; }
 .agent-overflow { position: relative; }
 .agent-overflow-trigger { align-items: center; background: var(--bg); border: 1px solid var(--admin-visual-line); border-radius: 10px; color: var(--text); cursor: pointer; display: inline-flex; height: 38px; justify-content: center; width: 42px; }
 .agent-overflow-trigger:focus-visible, .agent-overflow-menu button:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
@@ -1742,6 +1757,7 @@ details[open].advanced summary::before {
 .agent-model-row .field { flex: 1; min-width: 0; }
 .agent-advanced-row + .agent-advanced-row { border-top: 1px solid var(--line); border-radius: 0; }
 .agent-advanced-row .btn { flex-shrink: 0; }
+.agent-advanced-select { flex: 0 1 320px !important; max-width: 320px; min-width: 250px !important; }
 .where-list { border: 1px solid var(--line); border-radius: 11px; display: grid; overflow: hidden; }
 .where-entry { align-items: stretch; background: var(--well); display: grid; grid-template-columns: minmax(0, 1fr) auto; min-width: 0; }
 .where-entry + .where-entry { border-top: 1px solid var(--line); }
@@ -1882,6 +1898,7 @@ button.capability-pill { cursor: pointer; }
   .agent-profile-header { align-items: flex-start; flex-direction: column; }
   .agent-profile-header-actions { width: 100%; }
   .agent-overflow { margin-left: auto; }
+  .agent-presence-grid { grid-template-columns: 1fr; }
   .agent-detail-card, .agent-placement-card, .agent-model-card { align-items: stretch; grid-template-columns: 1fr; }
   .agent-placement-head, .agent-channel-empty { align-items: start; grid-template-columns: 1fr; }
   .agent-placement-head > .btn, .agent-channel-empty > .btn { justify-self: start; }
@@ -1893,6 +1910,8 @@ button.capability-pill { cursor: pointer; }
   .owner-memory-actions .spacer { display: none; }
   .owner-memory-actions .btn { width: 100%; }
   .agent-model-row { align-items: stretch; flex-direction: column; }
+  .agent-advanced-policy-row { align-items: stretch; flex-direction: column; }
+  .agent-advanced-policy-row .agent-advanced-select { flex-basis: auto !important; max-width: none; min-width: 0 !important; width: 100%; }
   .channel-detail-header { flex-direction: column; gap: 14px; }
   .channel-detail-controls { justify-content: space-between; padding-top: 0; width: 100%; }
   .channel-agent-hero { align-items: flex-start; grid-template-columns: auto minmax(0, 1fr); }
@@ -2558,9 +2577,10 @@ button.capability-pill { cursor: pointer; }
     // panel is visible.
     profileTab: "instructions",
     suggestedSkillCategory: "featured",
-    // Inline title rename on the profile edit screen. null when closed; when
-    // open it carries { prev } so Escape (or an emptied field) can revert.
+    // Inline title and description editing on the profile edit screen. Each
+    // carries { prev } while open so Escape can restore the prior draft text.
     profileRenaming: null,
+    profileDescriptionEditing: null,
     // "Add to channels" picker in the profile footer. Candidates come from the
     // Slack workspace catalog; active grants only exclude existing Agent reach.
     attachPicker: false,
@@ -3029,6 +3049,7 @@ button.capability-pill { cursor: pointer; }
     state.profileTab = "instructions";
     state.suggestedSkillCategory = "featured";
     state.profileRenaming = null;
+    state.profileDescriptionEditing = null;
     state.attachPicker = false;
     state.attachChannelSelected = "";
     state.attachError = "";
@@ -3473,6 +3494,14 @@ button.capability-pill { cursor: pointer; }
     return channelCountLabel(channelCount) + (agentHasDmDefault(agent.id) ? " + Direct messages" : "");
   }
 
+  function agentRosterAvatarHtml(agent) {
+    var avatarUrl = agent.slackPresence && agent.slackPresence.avatar && agent.slackPresence.avatar.url;
+    if (avatarUrl) {
+      return '<span class="agent-roster-icon has-avatar" aria-hidden="true"><img src="' + esc(avatarUrl) + '" alt=""></span>';
+    }
+    return '<span class="agent-roster-icon variant-' + agentIconVariant(agent.id) + '" aria-hidden="true">' + icon("robot") + '</span>';
+  }
+
   function agentRosterItemsHtml() {
     var selectedAgentId = selectedAgentIdForRoster();
     return state.agents.map(function (agent) {
@@ -3480,7 +3509,7 @@ button.capability-pill { cursor: pointer; }
       var meta = agentPlacementMeta(agent);
       return '<button type="button" class="agent-roster-item' + (active ? ' active' : '') + '" data-action="edit-profile" data-agent="' + esc(agent.id) + '"' +
         (active ? ' aria-current="page"' : '') + ' aria-label="Open Agent ' + esc(agent.name) + ', ' + esc(meta) + '">' +
-        '<span class="agent-roster-icon variant-' + agentIconVariant(agent.id) + '" aria-hidden="true">' + icon("robot") + '</span>' +
+        agentRosterAvatarHtml(agent) +
         '<span class="agent-roster-copy"><span class="agent-roster-name" title="' + esc(agent.name) + '">' + esc(agent.name) + '</span>' +
         '<span class="agent-roster-meta" title="' + esc(meta) + '">' + esc(meta) + '</span></span></button>';
     }).join("");
@@ -6975,8 +7004,8 @@ button.capability-pill { cursor: pointer; }
     var presence = draft.slackPresence || {};
     var avatarUrl = presence.avatar && presence.avatar.url;
     var avatar = avatarUrl
-      ? '<img src="' + esc(avatarUrl) + '" alt="" style="width:64px;height:64px;border-radius:16px;object-fit:cover;">'
-      : '<span aria-hidden="true" style="width:64px;height:64px;border-radius:16px;display:grid;place-items:center;background:var(--well);font-size:30px;">&#127793;</span>';
+      ? '<img class="agent-avatar-image" src="' + esc(avatarUrl) + '" alt="">'
+      : '<span class="agent-avatar-fallback" aria-hidden="true">&#127793;</span>';
     var upload = readOnly
       ? '<span class="hint">Only Agent editors can replace this image.</span>'
       : draft.id
@@ -6984,17 +7013,14 @@ button.capability-pill { cursor: pointer; }
         ? '<button type="button" class="btn btn-soft btn-sm" disabled>Upload image</button>'
         : '<label class="btn btn-soft btn-sm" style="cursor:pointer;">Upload image<input type="file" accept="image/png,image/jpeg,image/webp" data-action="profile-avatar-upload" style="display:none;"></label>')
       : '<span class="hint">A distinct Chickpea avatar is generated when you create the Agent.</span>';
-    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Slack presence</h2>' +
-      '<p class="hint">This Agent owns its mention handle and avatar. You can change either at any time.</p></div></div>' +
-      '<div style="display:flex;gap:16px;align-items:center;margin-bottom:18px;">' + avatar + '<div>' + upload +
-      '<p class="hint" style="margin-top:6px;">PNG, JPEG, or WebP up to 512 KB. New Slack replies use the latest image.</p></div></div>' +
-      '<div class="form-grid"><div class="field"><label class="field-label" for="p-handle">Slack handle</label>' +
-      '<div style="display:flex;align-items:center;gap:6px;"><span class="mono">@</span><input class="input mono" id="p-handle" type="text" maxlength="80" value="' + esc(draft.handle || handleFromAgentName(draft.name)) + '" data-action="profile-handle"' + (readOnly ? " readonly" : "") + '></div>' +
-      '<p class="hint">Members mention this user-group handle in any Channel where the Agent is allowed.</p></div>' +
-      '<div class="field"><label class="field-label" for="p-edit-policy">Who can edit</label><span class="select-wrap"><select class="input" id="p-edit-policy" data-action="profile-edit-policy"' + (readOnly ? " disabled" : "") + '>' +
-      '<option value="creator_and_admins"' + (draft.editPolicy !== "all_workspace_members" ? " selected" : "") + '>Creator and workspace admins</option>' +
-      '<option value="all_workspace_members"' + (draft.editPolicy === "all_workspace_members" ? " selected" : "") + '>Any workspace member</option></select>' + icon("chevron-down", "select-caret") + '</span></div></div>' +
-      '<div class="field"><label class="field-label" for="p-description">Description</label><input class="input" id="p-description" type="text" maxlength="500" value="' + esc(draft.description || "") + '" placeholder="What teammates should use this Agent for" data-action="profile-description"' + (readOnly ? " readonly" : "") + '></div>' +
+    return '<section class="agent-detail-card agent-presence-card">' +
+      '<div class="agent-card-heading"><span class="agent-card-icon agent-slack-card-icon" role="img" aria-label="Slack"><span class="agent-slack-card-mark slack-logo-image" aria-hidden="true"></span></span><div><h2>In Slack</h2><p>How this Agent appears and is mentioned.</p></div></div>' +
+      '<div class="agent-presence-grid">' +
+      '<div class="field"><span class="field-label">Avatar</span><div class="agent-avatar-control">' + avatar + '<div class="agent-avatar-actions">' + upload +
+      '<p class="hint">PNG, JPEG, or WebP up to 512 KB.</p></div></div></div>' +
+      '<div class="field"><label class="field-label" for="p-handle">Handle</label>' +
+      '<div class="agent-handle-control"><span class="agent-handle-prefix" aria-hidden="true">@</span><input class="input mono" id="p-handle" type="text" maxlength="80" value="' + esc(draft.handle || handleFromAgentName(draft.name)) + '" data-action="profile-handle"' + (readOnly ? " readonly" : "") + '></div></div></div>' +
+      (draft.id ? "" : '<div class="field"><label class="field-label" for="p-description">Description</label><input class="input" id="p-description" type="text" maxlength="500" value="' + esc(draft.description || "") + '" placeholder="What teammates should use this Agent for" data-action="profile-description"' + (readOnly ? " readonly" : "") + '></div>') +
       (readOnly ? "" : agentPresenceRecoveryHtml(draft)) + '</section>';
   }
 
@@ -7039,24 +7065,6 @@ button.capability-pill { cursor: pointer; }
   }
 
   // ---- Edit (card 11) + edge states (card 12) ------------------------------
-
-  function agentIntroduction(instructions) {
-    var paragraph = String(instructions || "").replace(/\\r\\n?/g, "\\n").split(/\\n\\s*\\n/).map(function (value) {
-      return value.trim();
-    }).find(function (value) { return !!value; }) || "";
-    var plain = paragraph
-      .replace(/^\\s{0,3}#{1,6}\\s+/gm, "")
-      .replace(/^\\s{0,3}>\\s?/gm, "")
-      .replace(/^\\s{0,3}(?:[-*+] |\\d+[.)] )/gm, "")
-      .replace(/!\\[([^\\]]*)\\]\\([^)]*\\)/g, "$1")
-      .replace(/\\[([^\\]]+)\\]\\([^)]*\\)/g, "$1")
-      .replace(/<\\/?[^>]+>/g, "")
-      .replace(/[*_~]+/g, "")
-      .replace(new RegExp(String.fromCharCode(96), "g"), "")
-      .replace(/\\s+/g, " ")
-      .trim();
-    return plain || "Configure how this Agent thinks, what it can use, and where it works.";
-  }
 
   function profileDeletionState(draft) {
     var dm = agentHasDmDefault(draft.id);
@@ -7127,12 +7135,17 @@ button.capability-pill { cursor: pointer; }
       ? '<input class="input page-title-input" id="p-name" name="name" type="text" value="' + esc(draft.name) + '" aria-label="Agent name" data-action="profile-name">'
       : '<span class="title-row"><h1 class="page-title">' + esc(draft.name || "Agent") + '</h1>' +
         (readOnly ? "" : '<button type="button" class="rename-btn" data-action="profile-rename" aria-label="Rename Agent">' + icon("pencil") + '</button>') + '</span>';
-    var introduction = agentIntroduction(draft.instructions);
     var replyIdentityLabel = "@" + ((draft.slackPresence && draft.slackPresence.normalizedHandle) || draft.handle || handleFromAgentName(draft.name));
+    var description = String(draft.description || "").trim();
+    var descriptionText = description || (readOnly ? "No description" : "Add a description");
+    var descriptionRow = !readOnly && state.profileDescriptionEditing
+      ? '<div class="agent-description-row"><input class="input agent-description-input" id="p-description" type="text" maxlength="500" value="' + esc(draft.description || "") + '" placeholder="What teammates should use this Agent for" aria-label="Agent description" data-action="profile-description"></div>'
+      : '<div class="agent-description-row' + (description ? "" : " empty") + '"><p class="agent-profile-intro" title="' + esc(descriptionText) + '" aria-label="' + esc(descriptionText) + '">' + esc(descriptionText) + '</p>' +
+        (readOnly ? "" : '<button type="button" class="rename-btn" data-action="profile-description-edit" aria-label="Edit Agent description">' + icon("pencil") + '</button>') + '</div>';
     return '<div class="agent-profile-page">' +
       '<button type="button" class="link-btn agent-roster-back" style="align-self:flex-start;" data-action="profiles-back">&larr; All Agents</button>' +
-      '<header class="agent-profile-header"><div class="agent-profile-heading"><span class="agent-kicker">Agent</span>' + titleRow + '<p class="agent-replies-as"><span class="agent-replies-slack slack-logo-image" role="img" aria-label="Slack"></span>Mention as <span class="mono">' + esc(replyIdentityLabel) + '</span></p></div>' + agentLifecycleHtml(draft) + '</header>' +
-      '<p class="agent-profile-intro" title="' + esc(introduction) + '" aria-label="' + esc(introduction) + '">' + esc(introduction) + '</p>' +
+      '<header class="agent-profile-header"><div class="agent-profile-heading"><span class="agent-kicker">Agent</span>' + titleRow + '</div>' + agentLifecycleHtml(draft) + '</header>' +
+      descriptionRow +
       (readOnly ? '<div class="callout agent-readonly-note"><div><p class="field-label">Read-only Agent</p><p class="hint">You can use this Agent in its permitted Channels or duplicate it into your own editable Agent.</p></div></div>' : "") +
       profileGenericErrorHtml() +
       disableConfirmHtml(draft) +
@@ -7152,7 +7165,11 @@ button.capability-pill { cursor: pointer; }
 
   function agentAdvancedHtml(draft) {
     var sandboxReady = enabledRepositoryGrants(draft).length > 0;
+    var readOnly = draft.canEdit === false;
     return '<details class="advanced agent-advanced-card"><summary>' + icon("gear") + '<span>Advanced</span></summary><div class="channel-advanced-content">' +
+      '<div class="agent-advanced-row agent-advanced-policy-row"><span><strong id="p-edit-policy-label">Who can edit</strong><small class="hint">Choose who can change this Agent&rsquo;s behavior, access, and appearance.</small></span><span class="select-wrap agent-advanced-select"><select class="input" id="p-edit-policy" aria-labelledby="p-edit-policy-label" data-action="profile-edit-policy"' + (readOnly ? " disabled" : "") + '>' +
+      '<option value="creator_and_admins"' + (draft.editPolicy !== "all_workspace_members" ? " selected" : "") + '>Creator and workspace admins</option>' +
+      '<option value="all_workspace_members"' + (draft.editPolicy === "all_workspace_members" ? " selected" : "") + '>Any workspace member</option></select>' + icon("chevron-down", "select-caret") + '</span></div>' +
       '<div class="agent-advanced-row"><span><strong>Coding sandbox</strong><small class="hint">Run code and work with granted repositories in an isolated environment.</small></span><span class="badge ' + (sandboxReady ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (sandboxReady ? "Available" : "Needs repository") + '</span><button type="button" class="btn btn-soft btn-sm" data-action="open-settings" data-section="sandbox">Settings</button></div>' +
       '</div></details>';
   }
@@ -10441,6 +10458,12 @@ button.capability-pill { cursor: pointer; }
       var renameInput = document.getElementById("p-name");
       if (renameInput) { renameInput.focus(); renameInput.select(); }
     }
+    if (action === "profile-description-edit" && state.profileDraft) {
+      state.profileDescriptionEditing = { prev: state.profileDraft.description || "" };
+      render();
+      var descriptionInput = document.getElementById("p-description");
+      if (descriptionInput) { descriptionInput.focus(); descriptionInput.select(); }
+    }
     // Footer "Add to channels" picker.
     if (action === "attach-open" && state.profileDraft) { openProfileAttachPicker(); }
     if (action === "attach-new-channel") { state.attachPicker = false; state.attachChannelSelected = ""; state.attachError = ""; openAddChannel(target.getAttribute("data-agent") || ""); }
@@ -11350,6 +11373,9 @@ button.capability-pill { cursor: pointer; }
     if (action === "profile-name" && state.profileRenaming) {
       closeProfileRename(false);
     }
+    if (action === "profile-description" && state.profileDescriptionEditing) {
+      closeProfileDescriptionEdit(false);
+    }
   });
 
   document.addEventListener("submit", function (event) {
@@ -11373,6 +11399,13 @@ button.capability-pill { cursor: pointer; }
       state.profileDraft.name = prev;
     }
     state.profileRenaming = null;
+    render();
+  }
+
+  function closeProfileDescriptionEdit(revert) {
+    if (!state.profileDescriptionEditing || !state.profileDraft) return;
+    if (revert) state.profileDraft.description = state.profileDescriptionEditing.prev;
+    state.profileDescriptionEditing = null;
     render();
   }
 
@@ -11504,6 +11537,10 @@ button.capability-pill { cursor: pointer; }
     if (state.profileRenaming) {
       if (event.key === "Enter") { event.preventDefault(); closeProfileRename(false); return; }
       if (event.key === "Escape" || event.key === "Esc") { closeProfileRename(true); return; }
+    }
+    if (state.profileDescriptionEditing) {
+      if (event.key === "Enter") { event.preventDefault(); closeProfileDescriptionEdit(false); return; }
+      if (event.key === "Escape" || event.key === "Esc") { closeProfileDescriptionEdit(true); return; }
     }
     if (event.key === "Escape" || event.key === "Esc") {
       if (state.leavePrompt) { state.leavePrompt = null; render(); return; }
@@ -13273,6 +13310,8 @@ button.capability-pill { cursor: pointer; }
     state.profileConflict = false;
     state.profileDirty = false;
     state.disableConfirm = false;
+    state.profileRenaming = null;
+    state.profileDescriptionEditing = null;
     state.skillEditor = null;
     state.skillImport = null;
     clearCustomConnectionMode();

@@ -2806,10 +2806,18 @@ test('Agent Slack presence owns its editable handle, avatar, and edit policy', a
   assert.ok(click && input && change);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': releaseAgent.id }) });
-  assert.match(harness.app.innerHTML, /<h2 class="section-title">Slack presence<\/h2>/);
+  assert.match(harness.app.innerHTML, /class="agent-detail-card agent-presence-card"[\s\S]*?class="agent-card-icon agent-slack-card-icon"[\s\S]*?class="agent-slack-card-mark slack-logo-image"[\s\S]*?<h2>In Slack<\/h2>[\s\S]*?How this Agent appears and is mentioned\./);
+  assert.match(harness.app.innerHTML, /<span class="field-label">Avatar<\/span>/);
   assert.match(harness.app.innerHTML, /data-action="profile-avatar-upload"/);
-  assert.match(harness.app.innerHTML, /data-action="profile-handle"/);
-  assert.match(harness.app.innerHTML, /data-action="profile-edit-policy"/);
+  assert.match(harness.app.innerHTML, /<label class="field-label" for="p-handle">Handle<\/label>/);
+  assert.match(harness.app.innerHTML, /class="agent-presence-grid"[\s\S]*?Avatar[\s\S]*?Handle/);
+  assert.match(harness.app.innerHTML, /class="agent-handle-control"><span class="agent-handle-prefix" aria-hidden="true">@<\/span><input class="input mono" id="p-handle"/);
+  assert.doesNotMatch(harness.app.innerHTML, /Members mention this user-group handle/);
+  assert.match(harness.app.innerHTML, /class="advanced agent-advanced-card"[\s\S]*?data-action="profile-edit-policy"/);
+  assert.ok(
+    harness.app.innerHTML.indexOf('class="advanced agent-advanced-card"') < harness.app.innerHTML.indexOf('data-action="profile-edit-policy"'),
+    'Edit policy must live inside Advanced',
+  );
   assert.doesNotMatch(harness.app.innerHTML, /@Finance|profile-slack-identity|Slack identity/);
   input({ target: inputTarget({ 'data-action': 'profile-handle' }, 'release-help') });
   change({ target: valueTarget({ 'data-action': 'profile-edit-policy' }, 'all_workspace_members') });
@@ -2819,6 +2827,30 @@ test('Agent Slack presence owns its editable handle, avatar, and edit policy', a
   assert.equal(harness.agentPatchBodies[0]?.body.editPolicy, 'all_workspace_members');
 });
 
+test('Agent roster uses each Agent Slack avatar when one is available', async () => {
+  const avatarUrl = 'https://secure.gravatar.com/avatar/agent-release?s=192&d=identicon';
+  const harness = runAdminPageHarness({
+    agents: [{
+      ...releaseAgent,
+      slackPresence: {
+        requestedHandle: 'release',
+        normalizedHandle: 'release',
+        desiredState: 'active',
+        health: 'healthy',
+        avatar: { kind: 'uploaded', revision: 2, url: avatarUrl },
+      },
+    }],
+  });
+  await flushAsync();
+
+  const rosterHtml = harness.app.innerHTML.slice(
+    harness.app.innerHTML.indexOf('<nav class="agent-roster"'),
+    harness.app.innerHTML.indexOf('</nav>', harness.app.innerHTML.indexOf('<nav class="agent-roster"')),
+  );
+  assert.match(rosterHtml, /class="agent-roster-icon has-avatar"[^>]*><img src="https:\/\/secure\.gravatar\.com\/avatar\/agent-release\?s=192&amp;d=identicon"/);
+  assert.doesNotMatch(rosterHtml, /class="agent-roster-icon variant-[012]"/);
+});
+
 test('Agent editing no longer exposes a separate Slack identity control', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
@@ -2826,7 +2858,7 @@ test('Agent editing no longer exposes a separate Slack identity control', async 
   assert.ok(click);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': releaseAgent.id }) });
-  assert.match(harness.app.innerHTML, /This Agent owns its mention handle and avatar/);
+  assert.match(harness.app.innerHTML, /class="agent-presence-grid"[\s\S]*?Avatar[\s\S]*?Handle/);
   assert.doesNotMatch(harness.app.innerHTML, /profile-slack-identity|Manage @Chickpea|Manage @Finance/);
 });
 
@@ -3228,13 +3260,14 @@ test('profile capability tabs switch the visible panel on click', async () => {
   assert.equal((harness.app.innerHTML.match(/class="save-bar-sticky/g) ?? []).length, 1);
 });
 
-test('Agent introduction is a presentation-only first paragraph with a neutral fallback', async () => {
+test('Agent description lives under the title and is edited with its pencil', async () => {
   const richHarness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_intro',
     agents: [{
       ...releaseAgent,
       id: 'agent_intro',
       name: 'Introduction Agent',
+      description: 'Explains release readiness for the team.',
       instructions: '**Answer** [release questions](https://example.com/release) with `care` and _clarity_.\n\nKeep this second paragraph out.',
     }],
   });
@@ -3242,25 +3275,33 @@ test('Agent introduction is a presentation-only first paragraph with a neutral f
 
   assert.match(
     richHarness.app.innerHTML,
-    /class="agent-profile-intro"[^>]*aria-label="Answer release questions with care and clarity\."[^>]*>Answer release questions with care and clarity\.<\/p>/,
+    /class="agent-profile-intro"[^>]*aria-label="Explains release readiness for the team\."[^>]*>Explains release readiness for the team\.<\/p>/,
   );
+  assert.match(richHarness.app.innerHTML, /data-action="profile-description-edit" aria-label="Edit Agent description"/);
+  assert.doesNotMatch(richHarness.app.innerHTML, /Mention as/);
   assert.match(richHarness.app.innerHTML, /Keep this second paragraph out/);
+  richHarness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-description-edit' }) });
+  assert.match(richHarness.app.innerHTML, /id="p-description"[^>]*value="Explains release readiness for the team\."[^>]*data-action="profile-description"/);
   richHarness.listeners.input?.({
-    target: inputTarget({ 'data-action': 'profile-instructions' }, 'Edited instructions.'),
+    target: inputTarget({ 'data-action': 'profile-description' }, 'Edited description.'),
   });
+  richHarness.listeners.keydown?.({
+    target: inputTarget({ 'data-action': 'profile-description' }, 'Edited description.'),
+    key: 'Enter',
+    preventDefault() {},
+  });
+  assert.match(richHarness.app.innerHTML, /class="agent-profile-intro"[^>]*>Edited description\.<\/p>/);
   richHarness.listeners.click?.({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
+  assert.equal(richHarness.agentPatchBodies[0]?.body.description, 'Edited description.');
   assert.equal(Object.hasOwn(richHarness.agentPatchBodies[0]?.body ?? {}, 'introduction'), false);
 
   const emptyHarness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_empty_intro',
-    agents: [{ ...releaseAgent, id: 'agent_empty_intro', instructions: '   \n\n  ' }],
+    agents: [{ ...releaseAgent, id: 'agent_empty_intro', description: '' }],
   });
   await flushAsync();
-  assert.match(
-    emptyHarness.app.innerHTML,
-    /Configure how this Agent thinks, what it can use, and where it works\./,
-  );
+  assert.match(emptyHarness.app.innerHTML, /class="agent-description-row empty"[\s\S]*?Add a description/);
 });
 
 test('Agent lifecycle overflow is the sole truthful control and restores keyboard focus', async () => {
@@ -3339,6 +3380,7 @@ test('a discoverable non-editor sees a truthful read-only Agent instead of a fai
   assert.match(harness.app.innerHTML, /data-action="profile-handle" readonly/);
   assert.match(harness.app.innerHTML, /data-action="profile-edit-policy" disabled/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="profile-rename"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="profile-description-edit"/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="save-profile"/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="attach-open"/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="detach-channel"/);
@@ -3418,10 +3460,9 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
 
   assert.match(harness.app.innerHTML, /class="agent-profile-page"/);
   assert.match(harness.app.innerHTML, /<header class="agent-profile-header">[\s\S]*?<span class="agent-kicker">Agent<\/span>[\s\S]*?<h1 class="page-title">Release Profile<\/h1>/);
-  assert.match(
-    harness.app.innerHTML,
-    /class="agent-replies-as"><span class="agent-replies-slack slack-logo-image" role="img" aria-label="Slack"><\/span>Mention as <span class="mono">@release-profile<\/span>/,
-  );
+  assert.match(harness.app.innerHTML, /class="agent-profile-intro"[^>]*>Release readiness profile<\/p>/);
+  assert.match(harness.app.innerHTML, /data-action="profile-description-edit"/);
+  assert.doesNotMatch(harness.app.innerHTML, /Mention as|agent-replies-as/);
   assert.match(harness.app.innerHTML, /aria-label="Agent setup"/);
   for (const tab of ['Instructions', 'Skills', 'Connections', 'Repositories', 'Memory', 'Schedules']) {
     assert.match(harness.app.innerHTML, new RegExp(`role="tab"[^>]*>${tab}`));
@@ -3446,7 +3487,7 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.doesNotMatch(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>|workspace Default Agent for private messages/);
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
   assert.match(harness.app.innerHTML, /class="[^"]*agent-model-card[^"]*"[\s\S]*?class="agent-card-icon semantic-icon tone-model"[\s\S]*?<h2>Model<\/h2>/);
-  assert.match(harness.app.innerHTML, /<h2 class="section-title">Slack presence<\/h2>[\s\S]*?class="advanced agent-advanced-card"[\s\S]*?Coding sandbox/);
+  assert.match(harness.app.innerHTML, /<span class="field-label">Avatar<\/span>[\s\S]*?class="advanced agent-advanced-card"[\s\S]*?Who can edit[\s\S]*?Coding sandbox/);
   assert.doesNotMatch(harness.app.innerHTML, /<strong>Slack identity<\/strong>/);
   assert.ok(
     harness.app.innerHTML.indexOf('class="agent-model-card"') < harness.app.innerHTML.indexOf('class="advanced agent-advanced-card"'),
