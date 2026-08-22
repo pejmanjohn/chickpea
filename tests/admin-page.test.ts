@@ -4,6 +4,7 @@ import { test } from 'node:test';
 
 import { renderAdminPage } from '../src/admin/page.ts';
 import { connectorSkillsForConnections } from '../src/config/connector-skills.ts';
+import { CONNECTOR_PRESETS, GOOGLE_WORKSPACE_SERVICE_PRESETS } from '../src/config/presets.ts';
 import { seededAgents } from '../src/config/seed.ts';
 
 test('admin navigation omits the unimplemented account destination', () => {
@@ -376,6 +377,10 @@ function runAdminPageHarness(
     oauthStartError?: { status: number; error: string; message?: string };
     apiOAuthStartResult?: { authorizationUrl: string };
     apiOAuthStartError?: { status: number; error: string; message?: string };
+    connectionAccounts?: {
+      attached: Array<Record<string, unknown>>;
+      available: Array<Record<string, unknown>>;
+    };
     deferAgentPatch?: boolean;
     initialSearch?: string;
     usageAdminUi?: boolean;
@@ -445,7 +450,8 @@ function runAdminPageHarness(
   skillBrowseHostUpdates(): number;
   skillBrowseHtml(): string;
   skillBrowseScrollTop(): number;
-  mcpTestPosts: Array<Record<string, unknown>>;
+    mcpTestPosts: Array<Record<string, unknown>>;
+  connectionAccountPosts: Array<{ agentId: string; body: Record<string, unknown> }>;
   oauthStartPosts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
   apiOAuthStartPosts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
   apiOAuthClientPuts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
@@ -618,6 +624,7 @@ function runAdminPageHarness(
   const githubRepoCalls: string[] = [];
   const settingsGetCalls: string[] = [];
   const mcpTestPosts: Array<Record<string, unknown>> = [];
+  const connectionAccountPosts: Array<{ agentId: string; body: Record<string, unknown> }> = [];
   const oauthStartPosts: Array<{
     agentId: string;
     connectionId: string;
@@ -1203,6 +1210,37 @@ function runAdminPageHarness(
         }],
       }));
     }
+    const agentConnectionsMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/connections(?:\?workspaceId=([^&]+))?$/,
+    );
+    if (agentConnectionsMatch && method === 'GET' && harnessOptions.connectionAccounts) {
+      return Promise.resolve(jsonResponse(harnessOptions.connectionAccounts));
+    }
+    if (agentConnectionsMatch && method === 'POST') {
+      const agentId = decodeURIComponent(agentConnectionsMatch[1] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      connectionAccountPosts.push({ agentId, body });
+      return Promise.resolve(jsonResponse({
+        account: {
+          id: 'connection_created',
+          workspaceId: body.workspaceId,
+          ownerKind: body.ownerKind,
+          providerId: body.providerId,
+          label: body.label,
+          purpose: body.purpose,
+          policy: body.api ?? body.mcp,
+          lifecycle: body.credential ? 'ready' : 'needs_attention',
+          credentialConfigured: Boolean(body.credential),
+        },
+        binding: {
+          agentId,
+          connectionAccountId: 'connection_created',
+          providerId: body.providerId,
+          allowedCapabilities: body.allowedCapabilities ?? [],
+          enabled: true,
+        },
+      }, 201));
+    }
     if (path === '/admin/api/agents' && method === 'GET') {
       return Promise.resolve(jsonResponse({ agents: agentsList }));
     }
@@ -1427,6 +1465,40 @@ function runAdminPageHarness(
           },
         ),
       );
+    }
+    const accountMcpOAuthStartMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/connections\/([^/]+)\/oauth\/mcp\/start$/,
+    );
+    if (accountMcpOAuthStartMatch && method === 'POST') {
+      const agentId = decodeURIComponent(accountMcpOAuthStartMatch[1] as string);
+      const connectionId = decodeURIComponent(accountMcpOAuthStartMatch[2] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      oauthStartPosts.push({ agentId, connectionId, body });
+      return Promise.resolve(jsonResponse(
+        oauthStartResult ?? { authorizationUrl: 'https://auth.linear.example/authorize?state=opaque' },
+      ));
+    }
+    const accountApiOAuthClientMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/connections\/([^/]+)\/oauth\/api\/client$/,
+    );
+    if (accountApiOAuthClientMatch && method === 'PUT') {
+      const agentId = decodeURIComponent(accountApiOAuthClientMatch[1] as string);
+      const connectionId = decodeURIComponent(accountApiOAuthClientMatch[2] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      apiOAuthClientPuts.push({ agentId, connectionId, body });
+      return Promise.resolve(jsonResponse({ source: 'stored' }));
+    }
+    const accountApiOAuthStartMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/connections\/([^/]+)\/oauth\/api\/start$/,
+    );
+    if (accountApiOAuthStartMatch && method === 'POST') {
+      const agentId = decodeURIComponent(accountApiOAuthStartMatch[1] as string);
+      const connectionId = decodeURIComponent(accountApiOAuthStartMatch[2] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      apiOAuthStartPosts.push({ agentId, connectionId, body });
+      return Promise.resolve(jsonResponse(
+        apiOAuthStartResult ?? { authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=opaque' },
+      ));
     }
     const mcpSecretsMatch = path.match(
       /^\/admin\/api\/agents\/([^/]+)\/mcp\/secrets\/([^/]+)$/,
@@ -2188,6 +2260,7 @@ function runAdminPageHarness(
     skillBrowseHtml: () => skillBrowseHost.innerHTML,
     skillBrowseScrollTop: () => skillBrowseList.scrollTop,
     mcpTestPosts,
+    connectionAccountPosts,
     oauthStartPosts,
     apiOAuthStartPosts,
     apiOAuthClientPuts,
@@ -5045,6 +5118,367 @@ test('Agent connections expose reusable Team and personal accounts with Google O
   assert.match(page, /Every Agent using it will lose access and dependent schedules will pause/);
   assert.match(page, /\/connections\?workspaceId=/);
   assert.match(page, /\/oauth\/api\/start/);
+});
+
+test('reusable Agent connections retain the complete preset catalog', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [] },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  const panel = harness.app.innerHTML;
+  assert.match(panel, /Search connectors/);
+  assert.match(panel, /data-action="connection-account-preset" data-preset="linear"/);
+  assert.match(panel, /data-action="connection-account-preset" data-preset="zendesk"/);
+  assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
+  assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
+  assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
+  assert.equal(
+    (panel.match(/data-action="connection-account-preset"/g) ?? []).length,
+    26,
+  );
+});
+
+test('legacy Google access does not hide reusable Google account presets', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent({
+      apiConnections: [{
+        id: 'google-workspace',
+        displayName: 'Google Workspace',
+        allowedHosts: ['www.googleapis.com'],
+        pathPrefixes: ['/drive/v3'],
+        headerName: 'Authorization',
+        headerValuePrefix: 'Bearer ',
+        allowedMethods: ['GET', 'HEAD'],
+        enabled: true,
+        authMode: 'oauth',
+        oauthProvider: 'google',
+        oauthScopes: ['https://www.googleapis.com/auth/drive.readonly'],
+        lifecycleStatus: 'ready',
+        statusText: 'Connected',
+        presetId: 'google-workspace',
+      }],
+    })],
+    connectionAccounts: { attached: [], available: [] },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  const panel = harness.app.innerHTML;
+  assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
+  assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
+  assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
+  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 26);
+});
+
+test('every catalog connector opens a reusable-account setup flow', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  const presetIds = CONNECTOR_PRESETS.filter(({ id }) => id !== 'google-workspace')
+    .map(({ id }) => id)
+    .concat(GOOGLE_WORKSPACE_SERVICE_PRESETS.map(({ id }) => id));
+  for (const presetId of presetIds) {
+    click({ target: actionTarget({
+      'data-action': 'connection-account-preset', 'data-preset': presetId,
+    }) });
+    assert.match(
+      harness.app.innerHTML,
+      /data-action="connection-account-create"/,
+      `${presetId} should open a reusable-account form`,
+    );
+    click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
+  }
+  assert.equal(presetIds.length, 26);
+});
+
+test('reusable Sentry accounts preserve custom-header auth and discovered tool approval', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [] },
+    mcpTestResult: { ok: true, tools: [{ name: 'search_issues' }, { name: 'get_trace' }] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'sentry' }) });
+  assert.match(
+    harness.app.innerHTML,
+    /placeholder="User Auth Token"[^>]*data-action="connection-account-credential"/,
+  );
+  input({ target: inputTarget({ 'data-action': 'connection-account-credential' }, 'sentry-user-token') });
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  assert.equal(
+    (harness.mcpTestPosts[0]?.headers as Record<string, string>).Authorization,
+    'Sentry-Bearer sentry-user-token',
+  );
+  const created = harness.connectionAccountPosts[0]?.body;
+  assert.equal(created?.providerId, 'sentry');
+  assert.equal(created?.credential, 'sentry-user-token');
+  assert.deepEqual(created?.allowedCapabilities, ['search_issues', 'get_trace']);
+  assert.deepEqual(created?.mcp, {
+    id: 'sentry',
+    displayName: 'Sentry',
+    url: 'https://mcp.sentry.dev/mcp',
+    transport: 'streamable-http',
+    authMode: 'none',
+    headerNames: ['Authorization'],
+    enabled: true,
+    lifecycleStatus: 'pending',
+    statusText: '',
+    discoveredTools: [
+      { name: 'search_issues' },
+      { name: 'get_trace' },
+    ],
+    allowedTools: ['search_issues', 'get_trace'],
+    presetId: 'sentry',
+    credentialHeaderName: 'Authorization',
+    credentialValuePrefix: 'Sentry-Bearer ',
+  });
+});
+
+test('reusable Linear accounts create policy before starting account-scoped MCP OAuth', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'linear' }) });
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  const created = harness.connectionAccountPosts[0]?.body;
+  assert.equal((created?.mcp as Record<string, unknown>)?.authMode, 'oauth');
+  assert.equal((created?.mcp as Record<string, unknown>)?.oauthScope, 'read write');
+  assert.equal((created?.mcp as Record<string, unknown>)?.presetId, 'linear');
+  assert.deepEqual(harness.oauthStartPosts[0], {
+    agentId: 'agent_conn', connectionId: 'connection_created', body: {},
+  });
+  assert.deepEqual(harness.assignedUrls, ['https://auth.linear.example/authorize?state=opaque']);
+});
+
+test('reusable Google Drive accounts keep Drive-only policy and start API OAuth', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'google-drive' }) });
+  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-id' }, 'google-client') });
+  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-secret' }, 'google-secret') });
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  const created = harness.connectionAccountPosts[0]?.body;
+  const api = created?.api as Record<string, unknown>;
+  assert.equal(created?.providerId, 'google');
+  assert.deepEqual(api.allowedHosts, ['www.googleapis.com']);
+  assert.deepEqual(api.pathPrefixes, ['/drive/v3']);
+  assert.deepEqual(api.allowedMethods, ['GET', 'HEAD']);
+  assert.deepEqual(api.oauthScopes, ['https://www.googleapis.com/auth/drive.readonly']);
+  assert.equal(api.presetId, 'google-workspace');
+  assert.deepEqual(harness.apiOAuthClientPuts[0], {
+    agentId: 'agent_conn',
+    connectionId: 'connection_created',
+    body: { provider: 'google', clientId: 'google-client', clientSecret: 'google-secret' },
+  });
+  assert.deepEqual(harness.apiOAuthStartPosts[0], {
+    agentId: 'agent_conn', connectionId: 'connection_created', body: {},
+  });
+  assert.deepEqual(harness.assignedUrls, ['https://accounts.google.com/o/oauth2/v2/auth?state=opaque']);
+});
+
+test('reusable Google Drive accounts can explicitly request read-write policy', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'google-drive' }) });
+  click({ target: actionTarget({ 'data-action': 'connection-account-google-access', 'data-access': 'write' }) });
+  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-id' }, 'google-client') });
+  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-secret' }, 'google-secret') });
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  const api = harness.connectionAccountPosts[0]?.body.api as Record<string, unknown>;
+  assert.deepEqual(api.allowedMethods, ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
+  assert.deepEqual(api.oauthScopes, ['https://www.googleapis.com/auth/drive']);
+  assert.deepEqual(api.pathPrefixes, ['/drive/v3', '/upload/drive/v3']);
+});
+
+test('custom Google OAuth keeps the legacy Gmail read-only authority ceiling', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
+  change({ target: inputTarget({ 'data-action': 'connection-account-auth' }, 'google_oauth') });
+  input({ target: inputTarget({ 'data-action': 'connection-account-label' }, 'Work Gmail') });
+  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-id' }, 'google-client') });
+  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-secret' }, 'google-secret') });
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  const api = harness.connectionAccountPosts[0]?.body.api as Record<string, unknown>;
+  assert.deepEqual(api.allowedHosts, ['gmail.googleapis.com']);
+  assert.deepEqual(api.pathPrefixes, ['/gmail/v1/users/me']);
+  assert.deepEqual(api.allowedMethods, ['GET', 'HEAD']);
+  assert.deepEqual(api.oauthScopes, ['https://www.googleapis.com/auth/gmail.readonly']);
+});
+
+test('reusable Exa accounts support anonymous limits without an API key', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [] },
+    mcpTestResult: { ok: true, tools: [{ name: 'web_search_exa' }] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'exa' }) });
+  assert.match(harness.app.innerHTML, /Credential<span class="hint">\(optional\)<\/span>|Credential <span class="hint">\(optional\)<\/span>/);
+  assert.match(harness.app.innerHTML, /Leave blank to use the provider.s anonymous limits/);
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  assert.equal(harness.connectionAccountPosts.length, 1);
+  assert.equal(harness.connectionAccountPosts[0]?.body.credential, undefined);
+  assert.deepEqual(harness.connectionAccountPosts[0]?.body.allowedCapabilities, ['web_search_exa']);
+  assert.equal(
+    (harness.connectionAccountPosts[0]?.body.mcp as Record<string, unknown>).credentialOptional,
+    true,
+  );
+  const testedHeaders = harness.mcpTestPosts[0]?.headers as Record<string, string> | undefined;
+  assert.equal(testedHeaders?.['x-api-key'], undefined);
+});
+
+test('reusable Zendesk accounts validate and persist the workspace subdomain', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'zendesk' }) });
+  assert.match(harness.app.innerHTML, /Workspace subdomain/);
+
+  input({ target: inputTarget({ 'data-action': 'connection-account-credential' }, 'zendesk-token') });
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  assert.equal(harness.connectionAccountPosts.length, 0);
+  assert.match(harness.app.innerHTML, /Enter the workspace subdomain from your service URL/);
+
+  input({ target: inputTarget({ 'data-action': 'connection-account-subdomain' }, 'acme-support') });
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  const created = harness.connectionAccountPosts[0]?.body;
+  assert.equal(created?.credential, 'zendesk-token');
+  assert.deepEqual((created?.api as Record<string, unknown>).allowedHosts, ['acme-support.zendesk.com']);
+  assert.deepEqual((created?.api as Record<string, unknown>).pathPrefixes, ['/api/v2']);
+});
+
+test('reusable Supabase accounts scope OAuth to one project and default to read-only', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'supabase' }) });
+  assert.match(harness.app.innerHTML, /Database access/);
+  assert.match(harness.app.innerHTML, /data-access="read-only"/);
+  assert.match(harness.app.innerHTML, /data-access="read-write"/);
+
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  assert.equal(harness.connectionAccountPosts.length, 0);
+  assert.match(harness.app.innerHTML, /Enter a valid Supabase project reference/);
+
+  input({ target: inputTarget({ 'data-action': 'connection-account-supabase-ref' }, 'abcdefghijklmnopqrst') });
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  const mcp = harness.connectionAccountPosts[0]?.body.mcp as Record<string, unknown>;
+  assert.match(String(mcp.url), /project_ref=abcdefghijklmnopqrst/);
+  assert.match(String(mcp.url), /read_only=true/);
+  assert.deepEqual(harness.oauthStartPosts[0], {
+    agentId: 'agent_conn', connectionId: 'connection_created', body: {},
+  });
 });
 
 function connectionsAgent(overrides: Record<string, unknown> = {}): Record<string, unknown> {

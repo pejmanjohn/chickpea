@@ -46,6 +46,12 @@ export interface McpConnectionConfig {
   transport: 'streamable-http' | 'sse';
   authMode: 'none' | 'bearer' | 'oauth';
   headerNames: string[];
+  /** Reusable-account credential projection for one custom MCP header. */
+  credentialHeaderName?: string;
+  /** Safe, non-secret prefix prepended to the reusable account credential. */
+  credentialValuePrefix?: string;
+  /** The connector remains usable when no credential is stored. */
+  credentialOptional?: boolean;
   enabled: boolean;
   lifecycleStatus: 'pending' | 'ready' | 'failed';
   statusText: string;
@@ -265,6 +271,8 @@ export interface ConnectionAccountApiPolicy {
   oauthProvider?: 'google';
   oauthScopes?: string[];
   oauthAppType?: 'workspace-internal' | 'external';
+  /** Internal generation token for the currently authorized OAuth attempt. */
+  oauthAttemptId?: string;
   presetId?: string;
 }
 
@@ -275,9 +283,16 @@ export interface ConnectionAccountMcpPolicy {
   transport: 'streamable-http' | 'sse';
   authMode: 'none' | 'bearer' | 'oauth';
   headerNames: string[];
+  /** Header that receives this account's single write-only credential. */
+  credentialHeaderName?: string;
+  credentialValuePrefix?: string;
+  /** The connector remains usable when no credential is stored. */
+  credentialOptional?: boolean;
   discoveredTools: McpConnectionToolInfo[];
   allowedTools: string[];
   oauthScope?: string;
+  /** Internal generation token for the currently authorized OAuth attempt. */
+  oauthAttemptId?: string;
   presetId?: string;
 }
 

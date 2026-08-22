@@ -19,6 +19,7 @@ import type {
   EffectiveConnectionAccount,
   PersonalConnectionAuthorizationOption,
 } from './types.ts';
+import { ConnectionCredentialUnavailableError } from './errors.ts';
 
 export async function resolveEffectiveConnectionAccounts(input: {
   config: Pick<ConfigStore, 'listConnectionAccounts' | 'listAgentConnectionBindings'>;
@@ -172,14 +173,15 @@ export function selectConnectionsForRequest(input: {
 }): ConnectionRequestResolution {
   const byProvider = new Map<string, EffectiveConnectionAccount[]>();
   for (const connection of input.connections) {
-    const key = connection.account.providerId.toLowerCase();
+    const key = connectionSelectionGroupKey(connection);
     const group = byProvider.get(key) ?? [];
     group.push(connection);
     byProvider.set(key, group);
   }
   const selected: EffectiveConnectionAccount[] = [];
   const ambiguous: ConnectionRequestResolution['ambiguous'] = [];
-  for (const [providerId, choices] of byProvider) {
+  for (const [, choices] of byProvider) {
+    const providerId = choices[0]!.account.providerId;
     const decision = selectConnectionAccount({
       connections: choices,
       providerId,
@@ -201,6 +203,23 @@ export function selectConnectionsForRequest(input: {
     }
   }
   return { selected, ambiguous };
+}
+
+function connectionSelectionGroupKey(connection: EffectiveConnectionAccount): string {
+  const providerId = connection.account.providerId.toLowerCase();
+  if (providerId !== 'google' || connection.policy.kind !== 'api') return providerId;
+  const hosts = new Set(connection.policy.allowedHosts.map((host) => host.toLowerCase()));
+  const paths = connection.policy.pathPrefixes;
+  if (paths.length > 0 && paths.every((path) => path.startsWith('/calendar/'))) {
+    return 'google:calendar';
+  }
+  if (paths.length > 0 && paths.every(
+    (path) => path.startsWith('/drive/') || path.startsWith('/upload/drive/'),
+  )) {
+    return 'google:drive';
+  }
+  if (hosts.has('gmail.googleapis.com') && hosts.size === 1) return 'google:gmail';
+  return providerId;
 }
 
 export function projectEffectiveApiConnections(
@@ -236,6 +255,13 @@ export function projectEffectiveMcpConnections(
     transport: policy.transport,
     authMode: policy.authMode,
     headerNames: [...policy.headerNames],
+    ...(policy.credentialHeaderName
+      ? { credentialHeaderName: policy.credentialHeaderName }
+      : {}),
+    ...(policy.credentialValuePrefix
+      ? { credentialValuePrefix: policy.credentialValuePrefix }
+      : {}),
+    ...(policy.credentialOptional ? { credentialOptional: true } : {}),
     enabled: true,
     lifecycleStatus: 'ready' as const,
     statusText: account.purpose ?? `${account.label} is connected.`,
@@ -283,7 +309,7 @@ export async function resolveConnectionSecretForInvocation(input: {
     input.env,
     input.settings,
   );
-  if (!secret) throw new Error('Connection account authorization is unavailable');
+  if (!secret) throw new ConnectionCredentialUnavailableError();
   return secret;
 }
 
@@ -378,11 +404,24 @@ function applyPersonalTemplateCeiling(
   }
   if (template.kind === 'mcp' && candidate.kind === 'mcp') {
     const allowedTools = intersectExact(template.allowedTools, candidate.allowedTools);
+    const {
+      credentialHeaderName: _candidateCredentialHeaderName,
+      credentialValuePrefix: _candidateCredentialValuePrefix,
+      credentialOptional: _candidateCredentialOptional,
+      ...candidatePolicy
+    } = candidate;
     return {
-      ...candidate,
+      ...candidatePolicy,
       headerNames: intersectExact(template.headerNames, candidate.headerNames),
       allowedTools,
       discoveredTools: candidate.discoveredTools.filter(({ name }) => allowedTools.includes(name)),
+      ...(template.credentialHeaderName
+        ? { credentialHeaderName: template.credentialHeaderName }
+        : {}),
+      ...(template.credentialValuePrefix
+        ? { credentialValuePrefix: template.credentialValuePrefix }
+        : {}),
+      ...(template.credentialOptional ? { credentialOptional: true } : {}),
     };
   }
   return candidate;
@@ -415,18 +454,42 @@ function compatiblePersonalPolicy(
   if (template.kind === 'mcp' && candidate.kind === 'mcp') {
     return template.authMode === candidate.authMode &&
       template.url === candidate.url &&
+      template.credentialHeaderName === candidate.credentialHeaderName &&
+      template.credentialValuePrefix === candidate.credentialValuePrefix &&
+      Boolean(template.credentialOptional) === Boolean(candidate.credentialOptional) &&
       (template.presetId ?? '') === (candidate.presetId ?? '');
   }
   return false;
 }
 
 function accountLanguageKeys(account: ConnectionAccount): string[] {
+  const genericLabels = genericConnectionLabels(account);
   return [
     account.label,
     account.purpose,
     account.identity?.accountName,
     account.identity?.workspaceName,
-  ].flatMap((value) => value ? [normalized(value)] : []).filter((value) => value.length >= 2);
+  ].flatMap((value) => value ? [normalized(value)] : []).filter(
+    (value) => value.length >= 2 && !genericLabels.has(value),
+  );
+}
+
+function genericConnectionLabels(account: ConnectionAccount): Set<string> {
+  const labels = new Set([normalized(account.providerId)]);
+  if (account.providerId.toLowerCase() !== 'google' || account.policy.kind !== 'api') {
+    return labels;
+  }
+  const paths = account.policy.pathPrefixes;
+  if (paths.some((path) => path.startsWith('/gmail/'))) labels.add('gmail');
+  if (paths.some((path) => path.startsWith('/calendar/'))) {
+    labels.add('calendar');
+    labels.add('google calendar');
+  }
+  if (paths.some((path) => path.startsWith('/drive/') || path.startsWith('/upload/drive/'))) {
+    labels.add('drive');
+    labels.add('google drive');
+  }
+  return labels;
 }
 
 function containsPhrase(request: string, candidate: string): boolean {

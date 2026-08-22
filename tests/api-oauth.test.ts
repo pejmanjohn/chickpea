@@ -24,7 +24,11 @@ const SCOPES = [
   'https://www.googleapis.com/auth/drive.readonly',
 ];
 
-function fakeGoogle(options: { expiresIn?: number; refreshError?: string } = {}) {
+function fakeGoogle(options: {
+  exchangeError?: string;
+  expiresIn?: number;
+  refreshError?: string;
+} = {}) {
   let exchanges = 0;
   let refreshes = 0;
   const calls: Array<{ url: string; authorization: string | null }> = [];
@@ -40,6 +44,9 @@ function fakeGoogle(options: { expiresIn?: number; refreshError?: string } = {})
         assert.equal(body.get('code'), 'provider-code');
         assert.equal(body.get('redirect_uri'), CALLBACK_URL);
         assert.ok(body.get('code_verifier'));
+        if (options.exchangeError) {
+          return Response.json({ error: options.exchangeError }, { status: 400 });
+        }
         return Response.json({
           access_token: 'access-initial',
           refresh_token: 'refresh-initial',
@@ -98,7 +105,13 @@ test('Google BYO OAuth keeps client credentials write-only and starts PKCE with 
     });
 
     const started = await startApiOAuthAuthorization(
-      { ref: REF, provider: 'google', callbackUrl: CALLBACK_URL, scopes: SCOPES },
+      {
+        ref: REF,
+        provider: 'google',
+        callbackUrl: CALLBACK_URL,
+        scopes: SCOPES,
+        returnAgentId: 'agent_return',
+      },
       { settings, randomId: () => `nonce-${++nonce}` },
     );
     assert.equal(started.authorizationUrl.origin, 'https://accounts.google.com');
@@ -168,7 +181,13 @@ test('Google callback consumes state, stores tokens, and returns only bounded ac
       settings,
     );
     const started = await startApiOAuthAuthorization(
-      { ref: REF, provider: 'google', callbackUrl: CALLBACK_URL, scopes: SCOPES },
+      {
+        ref: REF,
+        provider: 'google',
+        callbackUrl: CALLBACK_URL,
+        scopes: SCOPES,
+        returnAgentId: 'agent_return',
+      },
       { settings, randomId: () => 'nonce' },
     );
     const completed = await completeApiOAuthAuthorization(
@@ -179,6 +198,7 @@ test('Google callback consumes state, stores tokens, and returns only bounded ac
       ref: REF,
       provider: 'google',
       identity: { accountName: 'operator@example.com' },
+      returnAgentId: 'agent_return',
     });
     assert.equal(google.counts.exchanges, 1);
     assert.deepEqual(await describeApiOAuthSources(REF, settings), {
@@ -194,6 +214,199 @@ test('Google callback consumes state, stores tokens, and returns only bounded ac
     );
     const stored = (await settings.getSettings(apiOAuthSettingKeys(REF))).join('\n');
     assert.doesNotMatch(stored, /provider-user-id|private-avatar|Operator Name/);
+  } finally {
+    settings.close();
+  }
+});
+
+test('failed Google exchange retains the initiating Agent callback context', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const google = fakeGoogle({ exchangeError: 'invalid_grant' });
+  try {
+    await saveApiOAuthClient(
+      REF,
+      { provider: 'google', clientId: 'google-client-id', clientSecret: 'google-client-secret' },
+      settings,
+    );
+    const started = await startApiOAuthAuthorization(
+      {
+        ref: REF,
+        provider: 'google',
+        callbackUrl: CALLBACK_URL,
+        scopes: SCOPES,
+        returnAgentId: 'agent_return',
+      },
+      { settings, randomId: () => 'nonce' },
+    );
+
+    await assert.rejects(
+      completeApiOAuthAuthorization(
+        { code: 'provider-code', state: started.state },
+        { settings, fetchFn: google.fetchFn },
+      ),
+      (error: unknown) =>
+        error instanceof ApiOAuthError &&
+        error.code === 'oauth_unavailable' &&
+        error.callbackContext?.ref.agentId === REF.agentId &&
+        error.callbackContext.returnAgentId === 'agent_return',
+    );
+  } finally {
+    settings.close();
+  }
+});
+
+test('a superseded reusable Google OAuth attempt cannot exchange or replace newer state', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const google = fakeGoogle();
+  let currentRevision = 1;
+  try {
+    await saveApiOAuthClient(
+      REF,
+      { provider: 'google', clientId: 'google-client-id', clientSecret: 'google-client-secret' },
+      settings,
+    );
+    const dependencies = {
+      settings,
+      fetchFn: google.fetchFn,
+      randomId: () => 'nonce',
+      validateConnection: (
+        _ref: typeof REF,
+        _provider: 'google',
+        accountRevision?: number,
+      ) => {
+        if (accountRevision !== currentRevision) {
+          throw new ApiOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+        }
+        return true;
+      },
+    };
+    const started = await startApiOAuthAuthorization(
+      {
+        ref: REF,
+        provider: 'google',
+        callbackUrl: CALLBACK_URL,
+        scopes: SCOPES,
+        accountRevision: 1,
+      },
+      dependencies,
+    );
+    currentRevision = 2;
+
+    await assert.rejects(
+      completeApiOAuthAuthorization(
+        { code: 'provider-code', state: started.state },
+        dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof ApiOAuthError && error.code === 'oauth_attempt_superseded',
+    );
+    assert.equal(google.counts.exchanges, 0);
+    assert.equal(await settings.getSetting(apiOAuthSettingKeys(REF)[2]), undefined);
+  } finally {
+    settings.close();
+  }
+});
+
+test('an older Google OAuth start cannot replace a newer pending authorization', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const olderAttemptId = '11111111-1111-4111-8111-111111111111';
+  const newerAttemptId = '22222222-2222-4222-8222-222222222222';
+  try {
+    await saveApiOAuthClient(
+      REF,
+      { provider: 'google', clientId: 'google-client-id', clientSecret: 'google-client-secret' },
+      settings,
+    );
+    await startApiOAuthAuthorization({
+      ref: REF,
+      provider: 'google',
+      callbackUrl: CALLBACK_URL,
+      scopes: SCOPES,
+      accountRevision: 2,
+      oauthAttemptId: newerAttemptId,
+    }, {
+      settings,
+      randomId: () => 'newer-nonce',
+      validateConnection: () => true,
+    });
+    const pendingKey = apiOAuthSettingKeys(REF)[1];
+    const newerPending = await settings.getSetting(pendingKey);
+
+    await assert.rejects(
+      startApiOAuthAuthorization({
+        ref: REF,
+        provider: 'google',
+        callbackUrl: CALLBACK_URL,
+        scopes: SCOPES,
+        accountRevision: 1,
+        oauthAttemptId: olderAttemptId,
+      }, {
+        settings,
+        randomId: () => 'older-nonce',
+        validateConnection: () => true,
+      }),
+      (error: unknown) =>
+        error instanceof ApiOAuthError && error.code === 'oauth_attempt_superseded',
+    );
+    assert.equal(await settings.getSetting(pendingKey), newerPending);
+  } finally {
+    settings.close();
+  }
+});
+
+test('a slower reusable Google OAuth callback cannot overwrite newer credentials', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const google = fakeGoogle();
+  const olderAttemptId = '11111111-1111-4111-8111-111111111111';
+  const newerAttemptId = '22222222-2222-4222-8222-222222222222';
+  try {
+    await saveApiOAuthClient(
+      REF,
+      { provider: 'google', clientId: 'google-client-id', clientSecret: 'google-client-secret' },
+      settings,
+    );
+    const older = await startApiOAuthAuthorization({
+      ref: REF,
+      provider: 'google',
+      callbackUrl: CALLBACK_URL,
+      scopes: SCOPES,
+      accountRevision: 1,
+      oauthAttemptId: olderAttemptId,
+    }, {
+      settings,
+      fetchFn: google.fetchFn,
+      randomId: () => 'older-nonce',
+      validateConnection: () => true,
+    });
+    const tokenKey = apiOAuthSettingKeys(REF)[2];
+    const newerRaw = JSON.stringify({
+      provider: 'google',
+      accessToken: 'access-winner',
+      tokenType: 'Bearer',
+      obtainedAt: Date.now(),
+      accountRevision: 2,
+      oauthAttemptId: newerAttemptId,
+    });
+    await settings.setSetting(tokenKey, newerRaw);
+
+    await assert.rejects(
+      completeApiOAuthAuthorization(
+        { code: 'provider-code', state: older.state },
+        { settings, fetchFn: google.fetchFn, validateConnection: () => true },
+      ),
+      (error: unknown) =>
+        error instanceof ApiOAuthError && error.code === 'oauth_attempt_superseded',
+    );
+    assert.equal(google.counts.exchanges, 1);
+    assert.equal(await settings.getSetting(tokenKey), newerRaw);
+    assert.equal(await resolveApiOAuthAccessToken(
+      { ref: REF, provider: 'google' },
+      {
+        settings,
+        validateConnection: (_ref, _provider, _revision, attemptId) =>
+          attemptId === undefined || attemptId === newerAttemptId,
+      },
+    ), 'access-winner');
   } finally {
     settings.close();
   }

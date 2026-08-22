@@ -202,6 +202,8 @@ button, input, textarea, select { font: inherit; }
 }
 .field-label { color: var(--text); display: block; font-size: 0.8125rem; font-weight: 700; }
 .hint { color: var(--text-3); font-size: 0.8125rem; text-wrap: pretty; }
+.empty-inline { display: grid; gap: 4px; }
+.empty-inline .hint { margin: 0; }
 .mono { font-family: var(--mono); font-size: 0.75rem; }
 .btn {
   align-items: center;
@@ -4916,6 +4918,11 @@ button.capability-pill { cursor: pointer; }
       ownerKind: "team",
       kind: "api",
       authMode: "credential",
+      presetId: "",
+      preset: null,
+      apiEditor: null,
+      mcpEditor: null,
+      apiSubdomain: "",
       providerId: "",
       label: "",
       purpose: "",
@@ -4927,6 +4934,67 @@ button.capability-pill { cursor: pointer; }
       busy: false,
       error: ""
     };
+    render();
+  }
+
+  function newConnectionAccountFormFromPreset(presetId) {
+    var googleService = googleServicePresetById(presetId);
+    var preset = googleService
+      ? presetById(googleService.connectionPresetId)
+      : presetById(presetId);
+    if (!preset) return;
+    var lanes = presetLanes(preset);
+    if (googleService || (lanes.api && !lanes.mcp)) {
+      var apiEditor = apiEditorFromPreset(preset);
+      if (googleService) {
+        apiEditor.googleAccess = googleAccessFromScopes([]);
+        apiEditor.googleAccess[googleService.service] = "read";
+        syncGoogleApiPolicy(apiEditor);
+      }
+      state.connectionAccountForm = {
+        ownerKind: "team",
+        kind: "api",
+        authMode: isGoogleWorkspaceEditor(apiEditor) ? "google_oauth" : "credential",
+        presetId: googleService ? googleService.id : preset.id,
+        preset: googleService || preset,
+        apiEditor: apiEditor,
+        mcpEditor: null,
+        apiSubdomain: apiConnectionSubdomain(apiEditor),
+        providerId: googleService ? "google" : preset.id,
+        label: googleService ? googleService.name : preset.name,
+        purpose: "",
+        url: "",
+        capabilities: "",
+        credential: "",
+        oauthClientId: "",
+        oauthClientSecret: "",
+        busy: false,
+        error: ""
+      };
+    } else {
+      var mcpEditor = editorFromPreset(preset);
+      state.connectionAccountForm = {
+        ownerKind: "team",
+        kind: "mcp",
+        authMode: mcpEditor.authMode,
+        presetId: preset.id,
+        preset: preset,
+        apiEditor: null,
+        mcpEditor: mcpEditor,
+        apiSubdomain: "",
+        providerId: preset.id,
+        label: preset.name,
+        purpose: "",
+        url: mcpEditor.url,
+        capabilities: "",
+        credential: "",
+        oauthClientId: "",
+        oauthClientSecret: "",
+        busy: false,
+        error: ""
+      };
+    }
+    state.connectorGallerySearch = "";
     render();
   }
 
@@ -4946,16 +5014,39 @@ button.capability-pill { cursor: pointer; }
     var label = String(form.label || "").trim();
     var rawUrl = String(form.url || "").trim();
     var googleOauth = form.kind === "api" && form.authMode === "google_oauth";
+    var mcpOauth = form.kind === "mcp" && form.authMode === "oauth";
+    var presetApi = form.kind === "api" && form.apiEditor;
+    var presetMcp = form.kind === "mcp" && form.mcpEditor;
+    var credentialOptional = !!(form.preset && form.preset.auth && form.preset.auth.optional === true);
+    var credentialRequired = !googleOauth && !credentialOptional && (
+      form.kind === "api" ||
+      (presetMcp && (presetMcp.authMode === "bearer" || (presetMcp.headerNames || []).length > 0))
+    );
     if (!providerId) form.error = "Provider is required.";
     else if (!label) form.error = "Account label is required.";
-    else if (!googleOauth && !rawUrl) form.error = form.kind === "mcp" ? "Server URL is required." : "API base URL is required.";
+    else if (!googleOauth && !presetApi && !rawUrl) form.error = form.kind === "mcp" ? "Server URL is required." : "API base URL is required.";
     else if (googleOauth && providerId !== "google") form.error = "Google OAuth connections must use the google provider.";
     else if (googleOauth && (!String(form.oauthClientId || "").trim() || !String(form.oauthClientSecret || "").trim())) form.error = "Google OAuth client ID and secret are required.";
+    else if (credentialRequired && !String(form.credential || "").trim()) form.error = "Enter the credential for this connection.";
+    else if (presetMcp && presetMcp.presetId === "supabase" && !validSupabaseProjectRef(presetMcp.supabaseProjectRef)) form.error = "Enter a valid Supabase project reference.";
     else form.error = "";
     var parsedUrl = null;
-    if (!form.error && !googleOauth) {
+    if (!form.error && !googleOauth && !presetApi) {
       try { parsedUrl = new URL(rawUrl); } catch (error) { form.error = "Enter a valid https URL."; }
       if (parsedUrl && parsedUrl.protocol !== "https:") form.error = "Connection URLs must use https.";
+    }
+    if (!form.error && presetApi && presetApi.hostTemplate) {
+      var subdomain = String(form.apiSubdomain || "").trim().toLowerCase();
+      if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(subdomain)) {
+        form.error = "Enter the workspace subdomain from your service URL.";
+      } else {
+        var templateParts = apiConnectionHostTemplateParts(presetApi);
+        if (!templateParts.valid) {
+          form.error = "This connector's workspace URL template is invalid.";
+        } else {
+          presetApi.allowedHosts = [templateParts.prefix + subdomain + templateParts.suffix];
+        }
+      }
     }
     if (form.error) { render(); return; }
     var capabilities = connectionAccountCapabilities(form);
@@ -4970,38 +5061,78 @@ button.capability-pill { cursor: pointer; }
       allowedCapabilities: capabilities
     };
     if (form.kind === "mcp") {
-      body.mcp = {
+      var sourceMcp = presetMcp || {
         id: connectionId,
         displayName: label,
         url: parsedUrl.toString(),
         transport: "streamable-http",
         authMode: body.credential ? "bearer" : "none",
         headerNames: [],
+        discoveredTools: [],
+        allowedTools: []
+      };
+      body.mcp = {
+        id: connectionId,
+        displayName: label,
+        url: sourceMcp.url,
+        transport: sourceMcp.transport,
+        authMode: sourceMcp.authMode,
+        headerNames: (sourceMcp.headerNames || []).slice(),
         enabled: true,
         lifecycleStatus: "pending",
         statusText: "",
-        discoveredTools: capabilities.map(function (name) { return { name: name }; }),
-        allowedTools: capabilities
+        discoveredTools: (sourceMcp.discoveredTools && sourceMcp.discoveredTools.length
+          ? sourceMcp.discoveredTools
+          : capabilities.map(function (name) { return { name: name }; })).slice(),
+        allowedTools: (sourceMcp.allowedTools && sourceMcp.allowedTools.length
+          ? sourceMcp.allowedTools
+          : capabilities).slice()
       };
+      if (sourceMcp.oauthScope) body.mcp.oauthScope = sourceMcp.oauthScope;
+      if (form.preset && !googleServicePresetById(form.presetId)) body.mcp.presetId = form.preset.id;
+      if (form.preset && form.preset.auth && form.preset.auth.kind === "header") {
+        body.mcp.credentialHeaderName = form.preset.auth.headerName;
+        if (form.preset.auth.valuePrefix) body.mcp.credentialValuePrefix = form.preset.auth.valuePrefix;
+        if (form.preset.auth.optional === true) body.mcp.credentialOptional = true;
+      }
     } else if (googleOauth) {
       body.providerId = "google";
       delete body.credential;
+      var googleEditor = form.apiEditor;
+      if (!googleEditor) {
+        googleEditor = apiEditorFromPreset(presetById("google-workspace"));
+        googleEditor.googleAccess = { gmail: "read", calendar: "off", drive: "off" };
+        syncGoogleApiPolicy(googleEditor);
+      }
       body.api = {
         id: "google-workspace",
         displayName: label,
-        allowedHosts: ["gmail.googleapis.com"],
-        pathPrefixes: ["/gmail/v1/users/me"],
-        headerName: "Authorization",
-        headerValuePrefix: "Bearer ",
-        allowedMethods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
+        allowedHosts: googleEditor.allowedHosts.slice(),
+        pathPrefixes: googleEditor.pathPrefixes.slice(),
+        headerName: googleEditor.headerName,
+        headerValuePrefix: googleEditor.headerValuePrefix,
+        allowedMethods: API_CONNECTION_METHODS.filter(function (_method, index) { return googleEditor.methodChecked[index]; }),
         enabled: true,
         authMode: "oauth",
         oauthProvider: "google",
-        oauthScopes: ["https://www.googleapis.com/auth/gmail.modify"],
+        oauthScopes: googleEditor.oauthScopes.slice(),
         oauthAppType: "external",
         lifecycleStatus: "pending",
         statusText: "Not connected",
         presetId: "google-workspace"
+      };
+    } else if (presetApi) {
+      body.api = {
+        id: connectionId,
+        displayName: label,
+        allowedHosts: presetApi.allowedHosts.slice(),
+        pathPrefixes: presetApi.pathPrefixes.slice(),
+        headerName: presetApi.headerName,
+        headerValuePrefix: presetApi.headerValuePrefix,
+        allowedMethods: API_CONNECTION_METHODS.filter(function (_method, index) { return presetApi.methodChecked[index]; }),
+        enabled: true,
+        authMode: "credential",
+        presetId: presetApi.presetId
       };
     } else {
       var path = parsedUrl.pathname || "/";
@@ -5020,7 +5151,23 @@ button.capability-pill { cursor: pointer; }
     }
     form.busy = true;
     render();
-    postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections", "POST", body).then(function (created) {
+    var prepare = Promise.resolve();
+    if (presetMcp && !mcpOauth) {
+      presetMcp.bearerToken = presetMcp.authMode === "bearer" ? body.credential || "" : "";
+      presetMcp.headerValues = (presetMcp.headerNames || []).map(function () { return body.credential || ""; });
+      prepare = postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/mcp/test", "POST", connectionTestBody(presetMcp)).then(function (tested) {
+        if (!tested || !tested.ok) throw new Error((tested && tested.message) || "Could not connect to this MCP server.");
+        var tools = (tested.tools || []).map(function (tool) {
+          return { name: tool.name, title: tool.title, description: tool.description };
+        });
+        body.mcp.discoveredTools = tools;
+        body.mcp.allowedTools = tools.map(function (tool) { return tool.name; });
+        body.allowedCapabilities = body.mcp.allowedTools.slice();
+      });
+    }
+    prepare.then(function () {
+      return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections", "POST", body);
+    }).then(function (created) {
       if (googleOauth) {
         var accountId = created && created.account && created.account.id;
         if (!accountId) throw new Error("Connection response was missing its account.");
@@ -5031,6 +5178,11 @@ button.capability-pill { cursor: pointer; }
         }).then(function () {
           return startConnectionAccountOAuth(accountId, true);
         });
+      }
+      if (mcpOauth) {
+        var mcpAccountId = created && created.account && created.account.id;
+        if (!mcpAccountId) throw new Error("Connection response was missing its account.");
+        return startConnectionAccountOAuth(mcpAccountId, true, "mcp");
       }
       state.connectionAccountForm = null;
       return loadAgentConnections(agentId);
@@ -5057,10 +5209,11 @@ button.capability-pill { cursor: pointer; }
     });
   }
 
-  function startConnectionAccountOAuth(accountId, fromCreate) {
+  function startConnectionAccountOAuth(accountId, fromCreate, lane) {
     var agentId = state.profileDraft && state.profileDraft.id;
     if (!agentId) return Promise.reject(new Error("Save the Agent before signing in."));
-    return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId) + "/oauth/api/start", "POST", {}).then(function (body) {
+    var oauthRoute = lane === "mcp" ? "/oauth/mcp/start" : "/oauth/api/start";
+    return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId) + oauthRoute, "POST", {}).then(function (body) {
       var authorizationUrl;
       try { authorizationUrl = new URL(String(body && body.authorizationUrl || "")); } catch (error) { throw new Error("OAuth start returned an invalid URL."); }
       if (authorizationUrl.protocol !== "https:") throw new Error("OAuth authorization must use https.");
@@ -5883,14 +6036,16 @@ button.capability-pill { cursor: pointer; }
     return '<span class="conn-logo conn-logo-mono" style="background:' + esc(preset.accent) + '">' + esc(connectorMonogram(preset.name)) + '</span>';
   }
 
-  function connectorGalleryHtml() {
-    // A preset already in use drops out of "Available" — its id seeds the
-    // connection id, and connection ids are unique, so a second Connect would
-    // fail on save anyway. Remove the existing connection to add it again.
+  function connectorGalleryHtml(accountMode) {
+    // Legacy Agent-owned connections use preset ids as unique connection ids,
+    // so only that lane hides presets already in use. Reusable accounts may
+    // intentionally connect the same provider more than once.
     var draft = state.profileDraft || {};
     var connectedPresetIds = {};
-    (draft.mcpServers || []).forEach(function (conn) { if (conn.presetId) connectedPresetIds[conn.presetId] = true; });
-    (draft.apiConnections || []).forEach(function (conn) { if (conn.presetId) connectedPresetIds[conn.presetId] = true; });
+    if (!accountMode) {
+      (draft.mcpServers || []).forEach(function (conn) { if (conn.presetId) connectedPresetIds[conn.presetId] = true; });
+      (draft.apiConnections || []).forEach(function (conn) { if (conn.presetId) connectedPresetIds[conn.presetId] = true; });
+    }
     var googleConnection = googleWorkspaceConnection(draft);
     var googleAccess = googleAccessFromScopes(googleConnection ? googleConnection.oauthScopes : []);
     var q = String(state.connectorGallerySearch || "").trim().toLowerCase();
@@ -5900,8 +6055,8 @@ button.capability-pill { cursor: pointer; }
     var shown = catalog.filter(function (preset) {
       var googleService = googleServicePresetById(preset.id);
       if (googleService) {
-        if (googleAccess[googleService.service] !== "off") return false;
-      } else if (connectedPresetIds[preset.id]) {
+        if (!accountMode && googleAccess[googleService.service] !== "off") return false;
+      } else if (!accountMode && connectedPresetIds[preset.id]) {
         return false;
       }
       var searchText = (preset.name + " " + (preset.description || "")).toLowerCase();
@@ -5916,13 +6071,13 @@ button.capability-pill { cursor: pointer; }
       var lanes = googleService ? { mcp: false, api: true } : presetLanes(preset);
       var laneLabel = [lanes.mcp ? "MCP" : "", lanes.api ? "API" : ""].filter(function (label) { return !!label; }).join(" ");
       var description = preset.description ? '<span class="gallery-row-desc">' + esc(preset.description) + '</span>' : "";
-      var actionLabel = googleService && googleConnection ? "Enable" : "Connect";
+      var actionLabel = googleService && googleConnection && !accountMode ? "Enable" : "Connect";
       var rowClass = description ? "gallery-row gallery-row-described" : "gallery-row";
       return '<div class="' + rowClass + '">' + connectorLogoHtml(preset) +
         '<span class="gallery-row-copy"><span class="gallery-row-name">' + esc(preset.name) + '</span>' + description + '</span>' +
         '<span class="gallery-lane">' + laneLabel + '</span>' +
         '<span class="gallery-row-spacer"></span>' +
-        '<button type="button" class="btn btn-soft btn-sm" data-action="conn-preset" data-preset="' + esc(preset.id) + '">' + actionLabel + '</button></div>';
+        '<button type="button" class="btn btn-soft btn-sm" data-action="' + (accountMode ? "connection-account-preset" : "conn-preset") + '" data-preset="' + esc(preset.id) + '">' + actionLabel + '</button></div>';
     }).join("");
     var list = shown.length
       ? '<div class="gallery-list">' + rows + '</div>'
@@ -5933,7 +6088,7 @@ button.capability-pill { cursor: pointer; }
       '<span class="conn-logo conn-logo-mono" style="background:var(--ember)">+</span>' +
       '<span class="gallery-row-name">Custom connection</span>' +
       '<span class="gallery-row-spacer"></span>' +
-      '<button type="button" class="btn btn-soft btn-sm" data-action="conn-custom">Connect</button></div>';
+      '<button type="button" class="btn btn-soft btn-sm" data-action="' + (accountMode ? "connection-account-new" : "conn-custom") + '">Connect</button></div>';
     return '<input class="input" id="conn-gallery-search-input" type="text" autocomplete="off" placeholder="Search connectors" value="' + esc(state.connectorGallerySearch || "") + '" data-action="conn-gallery-search" aria-label="Search connectors">' +
       '<div class="gallery-head"><span>Available</span><span class="gallery-head-count">' + shown.length + '</span></div>' +
       list + custom;
@@ -6263,8 +6418,8 @@ button.capability-pill { cursor: pointer; }
     var account = attached ? entry.account : entry;
     var identity = account.identity && (account.identity.accountName || account.identity.workspaceName);
     var statusClass = account.lifecycle === "ready" ? "badge-on" : "badge-off";
-    var oauthAction = account.policy && account.policy.kind === "api" && account.policy.authMode === "oauth" && account.lifecycle !== "ready"
-      ? '<button type="button" class="btn btn-primary btn-sm" data-action="connection-account-oauth-start" data-connection-id="' + esc(account.id) + '">Finish sign-in</button>'
+    var oauthAction = account.policy && account.policy.authMode === "oauth" && account.lifecycle !== "ready"
+      ? '<button type="button" class="btn btn-primary btn-sm" data-action="' + (account.policy.kind === "mcp" ? "connection-account-mcp-oauth-start" : "connection-account-oauth-start") + '" data-connection-id="' + esc(account.id) + '">Finish sign-in</button>'
       : '';
     var action = attached
       ? oauthAction + '<button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-detach" data-connection-id="' + esc(account.id) + '">Remove from Agent</button>'
@@ -6278,27 +6433,90 @@ button.capability-pill { cursor: pointer; }
       '<button type="button" class="link-btn" data-action="connection-account-revoke" data-connection-id="' + esc(account.id) + '">Disconnect account</button></div>';
   }
 
+  function connectionAccountEndpointHtml(form, preset, oauth) {
+    if (oauth) return '';
+    var hostTemplate = !!(form.apiEditor && form.apiEditor.hostTemplate);
+    var supabase = !!(form.mcpEditor && form.mcpEditor.presetId === "supabase");
+    if (preset && !hostTemplate && !supabase) return '';
+    var label = form.kind === "mcp"
+      ? (supabase ? "Project reference" : "Server URL")
+      : (hostTemplate ? "Workspace subdomain" : "API base URL");
+    var value = hostTemplate
+      ? form.apiSubdomain
+      : (supabase ? form.mcpEditor.supabaseProjectRef : form.url);
+    var placeholder = hostTemplate
+      ? "acme"
+      : (supabase ? "abcdefghijklmnopqrst" : "https://api.example.com/v1");
+    var action = hostTemplate
+      ? "connection-account-subdomain"
+      : (supabase ? "connection-account-supabase-ref" : "connection-account-url");
+    return '<div class="field"><label class="field-label">' + label + '</label><input class="input mono" value="' + esc(value) + '" placeholder="' + placeholder + '" data-action="' + action + '"></div>';
+  }
+
+  function connectionAccountCredentialHtml(form, preset, oauth, mcpOauth) {
+    if (oauth) {
+      return '<div class="form-grid"><div class="field"><label class="field-label">Google OAuth client ID</label><input class="input mono" value="' + esc(form.oauthClientId || "") + '" autocomplete="off" data-action="connection-account-oauth-client-id"></div><div class="field"><label class="field-label">Google OAuth client secret</label><input class="input mono" type="password" value="' + esc(form.oauthClientSecret || "") + '" autocomplete="off" data-action="connection-account-oauth-client-secret"></div></div><p class="hint">Use the OAuth client for this Chickpea deployment. The client secret is write-only.</p>';
+    }
+    if (mcpOauth) {
+      return '<p class="hint">You will sign in with ' + esc(preset ? preset.name : "the provider") + ' after adding this connection.</p>';
+    }
+    if (form.mcpEditor && form.mcpEditor.authMode === "none" && !(form.mcpEditor.headerNames || []).length) {
+      return '<p class="hint">This server does not require a credential.</p>';
+    }
+    var placeholder = form.apiEditor && form.apiEditor.credentialPlaceholder
+      ? form.apiEditor.credentialPlaceholder
+      : (preset && preset.auth && preset.auth.placeholder
+        ? preset.auth.placeholder
+        : "Paste a token");
+    var optional = !!(preset && preset.auth && preset.auth.optional === true);
+    return '<div class="field"><label class="field-label">Credential' + (optional ? ' <span class="hint">(optional)</span>' : '') + '</label><input class="input mono" type="password" autocomplete="off" value="' + esc(form.credential) + '" placeholder="' + esc(placeholder) + '" data-action="connection-account-credential"><p class="conn-security">' + (optional ? 'Leave blank to use the provider’s anonymous limits. ' : '') + 'Stored once outside the Agent record and never returned to this browser.</p></div>';
+  }
+
+  function connectionAccountAccessHtml(form) {
+    var googleService = googleServicePresetById(form.presetId);
+    if (googleService && form.apiEditor) {
+      var googleAccess = form.apiEditor.googleAccess[googleService.service] || "read";
+      return '<div class="field"><label class="field-label">Access</label><div class="seg" role="group" aria-label="' + esc(googleService.name) + ' access">' +
+        '<button type="button" class="' + (googleAccess === "read" ? "on" : "") + '" data-action="connection-account-google-access" data-access="read">Read-only</button>' +
+        '<button type="button" class="' + (googleAccess === "write" ? "on" : "") + '" data-action="connection-account-google-access" data-access="write">Read and write</button></div></div>';
+    }
+    if (form.mcpEditor && form.mcpEditor.presetId === "supabase") {
+      var readOnly = form.mcpEditor.supabaseReadOnly !== false;
+      return '<div class="field"><label class="field-label">Database access</label><div class="seg" role="group" aria-label="Supabase database access">' +
+        '<button type="button" class="' + (readOnly ? "on" : "") + '" data-action="connection-account-supabase-access" data-access="read-only">Read-only</button>' +
+        '<button type="button" class="' + (!readOnly ? "on" : "") + '" data-action="connection-account-supabase-access" data-access="read-write">Read and write</button></div>' +
+        '<p class="hint">Read-only is recommended. Enable writes only for a project where Chickpea may safely change schema and data.</p></div>';
+    }
+    return '';
+  }
+
   function connectionAccountFormHtml() {
     var form = state.connectionAccountForm;
-    if (!form) return '<button type="button" class="btn btn-soft btn-sm" data-action="connection-account-new">+ New connection</button>';
+    if (!form) return '';
     var busy = !!form.busy;
     var oauth = form.kind === "api" && form.authMode === "google_oauth";
-    var authHtml = form.kind === "api" ? '<div class="field"><label class="field-label">Authentication</label><span class="select-wrap"><select class="input" data-action="connection-account-auth"><option value="credential"' + (!oauth ? " selected" : "") + '>API token</option><option value="google_oauth"' + (oauth ? " selected" : "") + '>Google OAuth</option></select></span></div>' : '';
-    var endpointHtml = oauth ? '' : '<div class="field"><label class="field-label">' + (form.kind === "mcp" ? "Server URL" : "API base URL") + '</label><input class="input mono" value="' + esc(form.url) + '" placeholder="https://api.example.com/v1" data-action="connection-account-url"></div>';
-    var credentialHtml = oauth
-      ? '<div class="form-grid"><div class="field"><label class="field-label">Google OAuth client ID</label><input class="input mono" value="' + esc(form.oauthClientId || "") + '" autocomplete="off" data-action="connection-account-oauth-client-id"></div><div class="field"><label class="field-label">Google OAuth client secret</label><input class="input mono" type="password" value="' + esc(form.oauthClientSecret || "") + '" autocomplete="off" data-action="connection-account-oauth-client-secret"></div></div><p class="hint">Chickpea requests Gmail read and send access plus verified email identity. The client secret is write-only.</p>'
-      : '<div class="field"><label class="field-label">Credential</label><input class="input mono" type="password" autocomplete="off" value="' + esc(form.credential) + '" placeholder="Paste a token" data-action="connection-account-credential"><p class="conn-security">Stored once outside the Agent record and never returned to this browser.</p></div>';
+    var mcpOauth = form.kind === "mcp" && form.authMode === "oauth";
+    var preset = form.preset;
+    var authHtml = !preset && form.kind === "api" ? '<div class="field"><label class="field-label">Authentication</label><span class="select-wrap"><select class="input" data-action="connection-account-auth"><option value="credential"' + (!oauth ? " selected" : "") + '>API token</option><option value="google_oauth"' + (oauth ? " selected" : "") + '>Google OAuth</option></select></span></div>' : '';
+    var endpointHtml = connectionAccountEndpointHtml(form, preset, oauth);
+    var credentialHtml = connectionAccountCredentialHtml(form, preset, oauth, mcpOauth);
+    var accessHtml = connectionAccountAccessHtml(form);
+    var presetHead = preset ? '<div class="conn-title" style="margin-bottom:16px;">' + connectorLogoHtml(preset) + '<div><strong>' + esc(preset.name) + '</strong><p class="hint">' + esc(preset.description || "") + '</p></div></div>' : '';
+    var capabilitiesHtml = preset ? '' : '<div class="field"><label class="field-label">' + (form.kind === "mcp" ? "Allowed tools" : "Capabilities") + '</label><input class="input mono" value="' + esc(form.capabilities) + '" placeholder="tickets.read, tickets.update" data-action="connection-account-capabilities"><p class="hint">Comma-separated names. This becomes the Agent binding’s maximum authority.</p></div>';
     return '<div class="skill-form"><div class="form-grid"><div class="field"><label class="field-label">Who uses this account?</label><span class="select-wrap"><select class="input" data-action="connection-account-owner"><option value="team"' + (form.ownerKind === "team" ? " selected" : "") + '>Team connection</option><option value="member"' + (form.ownerKind === "member" ? " selected" : "") + '>My connection</option></select></span><p class="hint">Team connections can be reused by Agents across the workspace. Personal connections are available only when you invoke the Agent.</p></div>' +
-      '<div class="field"><label class="field-label">Connection type</label><span class="select-wrap"><select class="input" data-action="connection-account-kind"><option value="api"' + (form.kind === "api" ? " selected" : "") + '>REST API</option><option value="mcp"' + (form.kind === "mcp" ? " selected" : "") + '>MCP server</option></select></span></div></div>' +
+      (!preset ? '<div class="field"><label class="field-label">Connection type</label><span class="select-wrap"><select class="input" data-action="connection-account-kind"><option value="api"' + (form.kind === "api" ? " selected" : "") + '>REST API</option><option value="mcp"' + (form.kind === "mcp" ? " selected" : "") + '>MCP server</option></select></span></div>' : '<div></div>') + '</div>' +
+      presetHead +
       authHtml +
-      '<div class="form-grid"><div class="field"><label class="field-label">Provider</label><input class="input" value="' + esc(form.providerId) + '" placeholder="zendesk" data-action="connection-account-provider"></div>' +
+      '<div class="form-grid">' + (!preset ? '<div class="field"><label class="field-label">Provider</label><input class="input" value="' + esc(form.providerId) + '" placeholder="zendesk" data-action="connection-account-provider"></div>' : '') +
       '<div class="field"><label class="field-label">Account label</label><input class="input" value="' + esc(form.label) + '" placeholder="Work Zendesk" data-action="connection-account-label"><p class="hint">People can say “use my work account” to select this connection.</p></div></div>' +
       '<div class="field"><label class="field-label">Purpose</label><input class="input" value="' + esc(form.purpose) + '" placeholder="Support tickets for the Acme team" data-action="connection-account-purpose"></div>' +
       endpointHtml +
-      '<div class="field"><label class="field-label">' + (form.kind === "mcp" ? "Allowed tools" : "Capabilities") + '</label><input class="input mono" value="' + esc(form.capabilities) + '" placeholder="tickets.read, tickets.update" data-action="connection-account-capabilities"><p class="hint">Comma-separated names. This becomes the Agent binding’s maximum authority.</p></div>' +
+      accessHtml +
+      capabilitiesHtml +
       credentialHtml +
+      (preset && preset.tokenDocsUrl ? '<p class="hint"><a href="' + esc(preset.tokenDocsUrl) + '" target="_blank" rel="noopener noreferrer">Open setup instructions &#8599;</a>' + (preset.tokenDocsHint ? ' &middot; ' + esc(preset.tokenDocsHint) : '') + '</p>' : '') +
       (form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '') +
-      '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy ? " disabled" : "") + '>' + (busy ? "Connecting&hellip;" : "Connect and add") + '</button></div></div>';
+      '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy ? " disabled" : "") + '>' + (busy ? "Connecting&hellip;" : ((oauth || mcpOauth) ? "Continue to sign in" : "Connect and add")) + '</button></div></div>';
   }
 
   function connectionsPanelHtml(draft) {
@@ -6320,12 +6538,14 @@ button.capability-pill { cursor: pointer; }
     var available = accounts.available || [];
     var attachedHtml = attached.length
       ? '<div class="skill-list">' + attached.map(function (entry) { return connectionAccountRowHtml(entry, true); }).join("") + '</div>'
-      : '<div class="empty-inline"><strong>No connections yet</strong><span>Add a team service or one of your personal accounts.</span></div>';
+      : '<div class="empty-inline"><strong>No connections yet.</strong><p class="hint">Add a team service or one of your personal accounts.</p></div>';
     var availableHtml = available.length
       ? '<div class="section-head" style="margin-top:20px;"><div><h3>Available accounts</h3><p class="hint">Reuse a connection without signing in again.</p></div></div><div class="skill-list">' + available.map(function (account) { return connectionAccountRowHtml(account, false); }).join("") + '</div>'
       : '';
     var notice = accounts.notice ? '<div class="oauth-return ok" role="status">' + esc(accounts.notice) + '</div>' : '';
-    return oauthReturnNoticeHtml(draft) + notice + '<p class="hint ptab-hint">Connections are configured here on the Agent. Credentials are stored once and can be safely reused.</p>' + attachedHtml + availableHtml + '<div style="margin-top:16px;">' + connectionAccountFormHtml() + '</div>';
+    var create = connectionAccountFormHtml();
+    var gallery = state.connectionAccountForm ? '' : connectorGalleryHtml(true);
+    return oauthReturnNoticeHtml(draft) + notice + '<p class="hint ptab-hint">Connections are configured here on the Agent. Credentials are stored once and can be safely reused.</p>' + attachedHtml + availableHtml + '<div style="margin-top:16px;">' + create + gallery + '</div>';
   }
 
   function legacyConnectionsPanelHtml(draft) {
@@ -8405,7 +8625,7 @@ button.capability-pill { cursor: pointer; }
     var head = '<section class="section"><div class="section-head"><div><h2 class="section-title">Connections</h2><p class="hint">A secondary inventory of Team connections and your personal accounts. Add connections and choose access from an Agent.</p></div></div>';
     if (inventory.loading) return head + '<p class="hint">Loading connections&hellip;</p></section>';
     if (inventory.error) return head + '<div class="callout" role="alert"><span>' + esc(inventory.error) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="connection-inventory-retry">Retry</button></div></section>';
-    if (!inventory.accounts.length) return head + '<div class="empty-inline"><strong>No connections yet</strong><span>Open an Agent, choose Connections, and connect the service it needs.</span></div></section>';
+    if (!inventory.accounts.length) return head + '<div class="empty-inline"><strong>No connections yet.</strong><span>Open an Agent, choose Connections, and connect the service it needs.</span></div></section>';
     var rows = inventory.accounts.map(function (entry) {
       var account = entry.account || {};
       var agents = entry.agents || [];
@@ -10430,9 +10650,27 @@ button.capability-pill { cursor: pointer; }
     }
     if (action === "connection-account-retry" && state.profileDraft) { loadAgentConnections(state.profileDraft.id); }
     if (action === "connection-account-new") { newConnectionAccountForm(); }
+    if (action === "connection-account-preset") { newConnectionAccountFormFromPreset(target.getAttribute("data-preset") || ""); }
     if (action === "connection-account-cancel") { state.connectionAccountForm = null; render(); }
+    if (action === "connection-account-google-access" && state.connectionAccountForm && state.connectionAccountForm.apiEditor) {
+      var accountGoogleService = googleServicePresetById(state.connectionAccountForm.presetId);
+      if (accountGoogleService) {
+        state.connectionAccountForm.apiEditor.googleAccess[accountGoogleService.service] = target.getAttribute("data-access") === "write" ? "write" : "read";
+        syncGoogleApiPolicy(state.connectionAccountForm.apiEditor);
+        state.connectionAccountForm.error = "";
+        render();
+      }
+    }
+    if (action === "connection-account-supabase-access" && state.connectionAccountForm && state.connectionAccountForm.mcpEditor && state.connectionAccountForm.mcpEditor.presetId === "supabase") {
+      state.connectionAccountForm.mcpEditor.supabaseReadOnly = target.getAttribute("data-access") !== "read-write";
+      syncSupabaseUrl(state.connectionAccountForm.mcpEditor);
+      state.connectionAccountForm.url = state.connectionAccountForm.mcpEditor.url;
+      state.connectionAccountForm.error = "";
+      render();
+    }
     if (action === "connection-account-create") { createConnectionAccount(); }
     if (action === "connection-account-oauth-start") { startConnectionAccountOAuth(target.getAttribute("data-connection-id") || "", false); }
+    if (action === "connection-account-mcp-oauth-start") { startConnectionAccountOAuth(target.getAttribute("data-connection-id") || "", false, "mcp"); }
     if (action === "connection-account-attach") { attachConnectionAccount(target.getAttribute("data-connection-id") || ""); }
     if (action === "connection-account-detach") { detachConnectionAccount(target.getAttribute("data-connection-id") || ""); }
     if (action === "connection-account-revoke") { revokeConnectionAccount(target.getAttribute("data-connection-id") || ""); }
@@ -11032,6 +11270,13 @@ button.capability-pill { cursor: pointer; }
       if (action === "connection-account-label") { state.connectionAccountForm.label = target.value; state.connectionAccountForm.error = ""; }
       if (action === "connection-account-purpose") { state.connectionAccountForm.purpose = target.value; }
       if (action === "connection-account-url") { state.connectionAccountForm.url = target.value; state.connectionAccountForm.error = ""; }
+      if (action === "connection-account-subdomain") { state.connectionAccountForm.apiSubdomain = target.value; state.connectionAccountForm.error = ""; }
+      if (action === "connection-account-supabase-ref" && state.connectionAccountForm.mcpEditor) {
+        state.connectionAccountForm.mcpEditor.supabaseProjectRef = target.value;
+        syncSupabaseUrl(state.connectionAccountForm.mcpEditor);
+        state.connectionAccountForm.url = state.connectionAccountForm.mcpEditor.url;
+        state.connectionAccountForm.error = "";
+      }
       if (action === "connection-account-capabilities") { state.connectionAccountForm.capabilities = target.value; }
       if (action === "connection-account-credential") { state.connectionAccountForm.credential = target.value; }
       if (action === "connection-account-oauth-client-id") { state.connectionAccountForm.oauthClientId = target.value; state.connectionAccountForm.error = ""; }

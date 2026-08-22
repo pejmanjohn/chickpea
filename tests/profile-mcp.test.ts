@@ -15,6 +15,7 @@ import {
   resolveProfileMcpTools,
   resolveRuntimePlanMcpConnections,
 } from '../src/config/profile-mcp.ts';
+import { ConnectionCredentialUnavailableError } from '../src/connections/errors.ts';
 import { mcpOAuthSettingKeys } from '../src/config/mcp-oauth.ts';
 import { mcpBearerEnvVar, mcpHeaderEnvVar } from '../src/config/mcp-secrets.ts';
 import {
@@ -23,6 +24,8 @@ import {
   getSettingsStore,
 } from '../src/config/state-backend.ts';
 import type { McpConnectionConfig } from '../src/config/types.ts';
+import { projectEffectiveMcpConnections } from '../src/connections/runtime.ts';
+import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
 import { withEnv } from './helpers/env.ts';
 
 // --- fixtures -------------------------------------------------------------
@@ -213,6 +216,177 @@ test('runtime resolution uses the agent-scoped environment override for the same
   );
 
   assert.deepEqual(seen, ['Bearer alpha-token', 'Bearer beta-token']);
+});
+
+test('reusable account credentials populate preset-specific MCP headers at runtime', async () => {
+  const seen: Record<string, string> = {};
+  const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> => {
+    new Headers(options.headers).forEach((value, key) => { seen[key] = value; });
+    return fakeConnection([tool('mcp__srv__search')]);
+  };
+  const tools = await resolveProfileMcpTools([
+    server({
+      authMode: 'none',
+      headerNames: ['Authorization'],
+      credentialHeaderName: 'Authorization',
+      credentialValuePrefix: 'Sentry-Bearer ',
+      allowedTools: ['search'],
+    }),
+  ], {
+    agentId: 'agent_test',
+    env: noSecretsEnv,
+    existingToolNames: [],
+    connect,
+    resolveBearerCredential: async () => 'sentry-user-token',
+  });
+
+  assert.deepEqual(tools.map((entry) => entry.name), ['mcp__srv__search']);
+  assert.equal(seen.authorization, 'Sentry-Bearer sentry-user-token');
+});
+
+test('reusable account credential projection preserves custom headers without double-prefixing', async () => {
+  const effective: EffectiveConnectionAccount = {
+    account: {
+      id: 'connection_sentry',
+      workspaceId: 'T_TEST',
+      revision: 1,
+      ownerKind: 'team',
+      createdByMembershipId: 'membership_owner',
+      providerId: 'sentry',
+      label: 'Production Sentry',
+      policy: {
+        kind: 'mcp',
+        url: 'https://mcp.sentry.dev/mcp',
+        transport: 'streamable-http',
+        authMode: 'none',
+        headerNames: ['Authorization'],
+        credentialHeaderName: 'Authorization',
+        credentialValuePrefix: 'Sentry-Bearer ',
+        discoveredTools: [{ name: 'search_issues' }],
+        allowedTools: ['search_issues'],
+        presetId: 'sentry',
+      },
+      secretRefId: 'connection-account:connection_sentry',
+      lifecycle: 'ready',
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    binding: {
+      agentId: 'agent_test',
+      connectionAccountId: 'connection_sentry',
+      providerId: 'sentry',
+      allowedCapabilities: ['search_issues'],
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    policy: {
+      kind: 'mcp',
+      url: 'https://mcp.sentry.dev/mcp',
+      transport: 'streamable-http',
+      authMode: 'none',
+      headerNames: ['Authorization'],
+      credentialHeaderName: 'Authorization',
+      credentialValuePrefix: 'Sentry-Bearer ',
+      discoveredTools: [{ name: 'search_issues' }],
+      allowedTools: ['search_issues'],
+      presetId: 'sentry',
+    },
+    scope: 'team',
+  };
+  const projected = projectEffectiveMcpConnections([effective]);
+  const seen: Record<string, string> = {};
+
+  await resolveProfileMcpTools(projected, {
+    agentId: 'agent_test',
+    env: noSecretsEnv,
+    existingToolNames: [],
+    connect: async (_name, options) => {
+      new Headers(options.headers).forEach((value, key) => { seen[key] = value; });
+      return fakeConnection([tool('mcp__connection_sentry__search_issues')]);
+    },
+    resolveBearerCredential: async () => 'Sentry-Bearer stored-token',
+  });
+
+  assert.equal(projected[0]?.credentialHeaderName, 'Authorization');
+  assert.equal(projected[0]?.credentialValuePrefix, 'Sentry-Bearer ');
+  assert.equal(seen.authorization, 'Sentry-Bearer stored-token');
+});
+
+test('an optional reusable MCP credential falls back to anonymous access', async () => {
+  const seen: Array<Record<string, string>> = [];
+  const tools = await resolveProfileMcpTools([
+    server({
+      authMode: 'none',
+      headerNames: ['x-api-key'],
+      credentialHeaderName: 'x-api-key',
+      credentialOptional: true,
+      allowedTools: ['search'],
+    }),
+  ], {
+    agentId: 'agent_test',
+    env: noSecretsEnv,
+    existingToolNames: [],
+    resolveBearerCredential: async () => { throw new ConnectionCredentialUnavailableError(); },
+    connect: async (_name, options) => {
+      const headers: Record<string, string> = {};
+      new Headers(options.headers).forEach((value, key) => { headers[key] = value; });
+      seen.push(headers);
+      return fakeConnection([tool('mcp__srv__search')]);
+    },
+  });
+
+  assert.deepEqual(tools.map(({ name }) => name), ['mcp__srv__search']);
+  assert.deepEqual(seen, [{}]);
+});
+
+test('an optional reusable MCP credential still fails closed on authorization errors', async () => {
+  let connected = false;
+  const tools = await resolveProfileMcpTools([
+    server({
+      authMode: 'none',
+      headerNames: ['x-api-key'],
+      credentialHeaderName: 'x-api-key',
+      credentialOptional: true,
+      allowedTools: ['search'],
+    }),
+  ], {
+    agentId: 'agent_test',
+    env: noSecretsEnv,
+    existingToolNames: [],
+    resolveBearerCredential: async () => {
+      throw new Error('Connection account is not available to this actor');
+    },
+    connect: async () => {
+      connected = true;
+      return fakeConnection([tool('mcp__srv__search')]);
+    },
+  });
+
+  assert.deepEqual(tools, []);
+  assert.equal(connected, false);
+});
+
+test('a required reusable MCP credential never falls back to anonymous access', async () => {
+  let connected = false;
+  const tools = await resolveProfileMcpTools([
+    server({
+      authMode: 'bearer',
+      allowedTools: ['search'],
+    }),
+  ], {
+    agentId: 'agent_test',
+    env: noSecretsEnv,
+    existingToolNames: [],
+    resolveBearerCredential: async () => { throw new ConnectionCredentialUnavailableError(); },
+    connect: async () => {
+      connected = true;
+      return fakeConnection([tool('mcp__srv__search')]);
+    },
+  });
+
+  assert.deepEqual(tools, []);
+  assert.equal(connected, false);
 });
 
 test('runtime resolves OAuth at connection time and injects only the bearer header', async () => {
