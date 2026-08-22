@@ -5,6 +5,7 @@ import * as v from 'valibot';
 
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
+import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import {
   managementOperationValibotSchema,
   managementOperationZodSchema,
@@ -613,10 +614,16 @@ test('a confirmed Channel publication resumes an interrupted pending Slack recon
     });
     assert.equal(proposed.status, 'confirmation_required');
     const proposalId = proposed.outcomes[0]!.proposalId!;
-    await assert.rejects(
-      service.confirmWorkspaceChange({ context, proposalId }),
-      AgentPresenceError,
-    );
+    assert.deepEqual(await invokeWorkspaceManagementTool({
+      service,
+      resolveContext: async () => context,
+    }, 'confirm_workspace_change', { proposalId }), {
+      ok: false,
+      error: {
+        code: 'slack_unavailable',
+        message: 'Slack disconnected after the pending grant was saved.',
+      },
+    });
     assert.equal((await f.config.listAgentChannelGrants(
       f.owner.binding.slackTeamId,
       'CRESUME',

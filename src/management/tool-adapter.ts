@@ -1,4 +1,5 @@
 import type { WorkspaceManagementService } from './service.ts';
+import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import {
   ManagementError,
   type ManagementActorContext,
@@ -105,7 +106,9 @@ export async function invokeWorkspaceManagementTool<TName extends WorkspaceManag
       surface,
       tool: name,
       outcome: 'error',
-      reason: error instanceof ManagementError ? error.code : 'management_error',
+      reason: error instanceof ManagementError || error instanceof AgentPresenceError
+        ? error.code
+        : 'management_error',
       durationMs: Date.now() - startedAt,
     });
     return result;
@@ -194,7 +197,7 @@ function success(result: unknown): WorkspaceManagementToolResult {
 }
 
 function failure(error: unknown): WorkspaceManagementToolResult {
-  if (error instanceof ManagementError) {
+  if (error instanceof ManagementError || error instanceof AgentPresenceError) {
     return {
       ok: false,
       error: {
