@@ -137,27 +137,44 @@ export async function startPersonalConnectionAuthorization(input: {
       throw error;
     }
   }
-  if (account.lifecycle !== 'pending') {
-    account = await dependencies.config.putConnectionAccount(
-      { ...account, lifecycle: 'pending' },
-      account.revision,
-    );
-  }
+  account = await dependencies.config.putConnectionAccount(
+    {
+      ...account,
+      lifecycle: 'pending',
+      policy: { ...account.policy, oauthAttemptId: crypto.randomUUID() },
+    },
+    account.revision,
+  );
+  const accountRevision = account.revision;
+  const oauthAttemptId = account.policy.oauthAttemptId!;
   const oauth = await startApiOAuthAuthorization({
     ref: accountRef,
     provider: 'google',
     callbackUrl: `${(await dependencies.publicOrigin()).replace(/\/$/, '')}/oauth/api/callback`,
     scopes: option.policy.oauthScopes,
+    accountRevision,
+    oauthAttemptId,
   }, {
     settings: dependencies.settings,
     ...(dependencies.oauth ?? {}),
-    validateConnection: async (ref, provider) => {
+    validateConnection: async (ref, provider, expectedRevision, expectedAttemptId) => {
       const current = (await dependencies.config.listConnectionAccounts(input.workspaceId))
         .find((candidate) => candidate.id === account!.id);
-      return ref.agentId === account!.id && ref.connectionId === 'account' &&
+      const validConnection = ref.agentId === account!.id && ref.connectionId === 'account' &&
         provider === 'google' && current?.ownerKind === 'member' &&
         current.ownerMembershipId === input.actorMembershipId &&
         current.lifecycle !== 'revoked';
+      if (!validConnection) return false;
+      if (
+        (expectedRevision !== undefined && current.revision !== expectedRevision) ||
+        (expectedAttemptId !== undefined && current.policy.oauthAttemptId !== expectedAttemptId)
+      ) {
+        throw new ApiOAuthError(
+          'oauth_attempt_superseded',
+          'OAuth attempt was superseded',
+        );
+      }
+      return true;
     },
   });
   const continuation = await createOAuthContinuation({

@@ -450,6 +450,7 @@ interface AdminRoutesOptions {
       provider: ApiOAuthProvider;
       callbackUrl: string;
       scopes: readonly string[];
+      returnAgentId?: string;
     },
     dependencies: ApiOAuthDependencies,
   ) => ReturnType<typeof startApiOAuthAuthorization>) | undefined;
@@ -571,6 +572,11 @@ const mcpServerSchema = v.pipe(
     transport: v.picklist(['streamable-http', 'sse']),
     authMode: v.picklist(['none', 'bearer', 'oauth']),
     headerNames: v.array(v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/))),
+    credentialHeaderName: v.optional(
+      v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/)),
+    ),
+    credentialValuePrefix: v.optional(v.pipe(v.string(), v.maxLength(64))),
+    credentialOptional: v.optional(v.boolean()),
     enabled: v.boolean(),
     lifecycleStatus: v.picklist(['pending', 'ready', 'failed']),
     statusText: v.pipe(v.string(), v.maxLength(300)),
@@ -585,6 +591,11 @@ const mcpServerSchema = v.pipe(
     presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
   }),
   v.check((s) => validateMcpUrl(s.url).ok, 'URL not allowed'),
+  v.check(
+    (s) => s.credentialHeaderName === undefined ||
+      s.headerNames.some((name) => name.toLowerCase() === s.credentialHeaderName!.toLowerCase()),
+    'credential header must be declared in headerNames',
+  ),
 );
 
 // Reject duplicate connection ids at the write boundary — a per-profile id must
@@ -1568,9 +1579,35 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const oauthDependencies = (c: Context): McpOAuthDependencies => ({
     settings: settings(c),
     ...(options.oauthFetch ? { fetchFn: options.oauthFetch } : {}),
-    validateConnection: (ref, serverUrl) =>
-      isCurrentMcpOAuthConnection(store(c), ref, serverUrl),
+    validateConnection: async (ref, serverUrl, accountRevision, oauthAttemptId) => {
+      const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+      if (connectionAccountId) {
+        const account = await findConnectionAccount(store(c), connectionAccountId);
+        if (!account || account.lifecycle === 'revoked' || !isMcpOAuthAccount(account, serverUrl)) {
+          return false;
+        }
+        if (accountRevision !== undefined && account.revision !== accountRevision) {
+          throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+        }
+        if (oauthAttemptId !== undefined && account.policy.oauthAttemptId !== oauthAttemptId) {
+          throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+        }
+        return true;
+      }
+      return isCurrentMcpOAuthConnection(store(c), ref, serverUrl);
+    },
     onReauthorizationRequired: async (ref, serverUrl) => {
+      const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+      if (connectionAccountId) {
+        const account = await findConnectionAccount(store(c), connectionAccountId);
+        if (!account || account.lifecycle === 'revoked' ||
+            !isMcpOAuthAccount(account, serverUrl)) return;
+        await store(c).putConnectionAccount(
+          { ...account, lifecycle: 'needs_attention' },
+          account.revision,
+        );
+        return;
+      }
       await store(c).markOAuthReauthorizationRequired({
         lane: 'mcp',
         ...ref,
@@ -1581,13 +1618,29 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const apiOAuthDependencies = (c: Context): ApiOAuthDependencies => ({
     settings: settings(c),
     ...(options.oauthFetch ? { fetchFn: options.oauthFetch } : {}),
-    validateConnection: (ref, provider) =>
-      isCurrentApiOAuthConnection(store(c), ref, provider),
+    validateConnection: async (ref, provider, accountRevision, oauthAttemptId) => {
+      const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+      if (connectionAccountId) {
+        const account = await findConnectionAccount(store(c), connectionAccountId);
+        if (!account || account.lifecycle === 'revoked' || !isApiOAuthAccount(account, provider)) {
+          return false;
+        }
+        if (accountRevision !== undefined && account.revision !== accountRevision) {
+          throw new ApiOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+        }
+        if (oauthAttemptId !== undefined && account.policy.oauthAttemptId !== oauthAttemptId) {
+          throw new ApiOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+        }
+        return true;
+      }
+      return isCurrentApiOAuthConnection(store(c), ref, provider);
+    },
     onReauthorizationRequired: async (ref, provider) => {
       const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
       if (connectionAccountId) {
         const account = await findConnectionAccount(store(c), connectionAccountId);
-        if (!account || !isApiOAuthAccount(account, provider)) return;
+        if (!account || account.lifecycle === 'revoked' ||
+            !isApiOAuthAccount(account, provider)) return;
         await store(c).putConnectionAccount(
           { ...account, lifecycle: 'needs_attention' },
           account.revision,
@@ -2692,13 +2745,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c);
     }
     let ref: { agentId: string; connectionId: string };
+    let returnAgentId: string | undefined;
+    let accountRevision: number | undefined;
+    let oauthAttemptId: string | undefined;
     try {
       if (providerError) {
         const cancelled = await cancelMcpOAuth(state, oauthDependencies(c));
         const status = providerError === 'access_denied' ? 'cancelled' : 'failed';
-        return c.redirect(mcpOAuthAdminRedirect(status, cancelled.ref), 303);
+        return c.redirect(mcpOAuthAdminRedirect(status, cancelled.ref, cancelled.returnAgentId), 303);
       }
-      ({ ref } = await completeMcpOAuth(
+      ({ ref, returnAgentId, accountRevision, oauthAttemptId } = await completeMcpOAuth(
         { code: code!, state },
         oauthDependencies(c),
       ));
@@ -2710,6 +2766,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         '[chickpea] MCP OAuth callback failed:',
         error instanceof McpOAuthError ? error.code : 'internal_error',
       );
+      if (error instanceof McpOAuthError && error.callbackContext) {
+        return c.redirect(
+          mcpOAuthAdminRedirect(
+            'failed',
+            error.callbackContext.ref,
+            error.callbackContext.returnAgentId,
+          ),
+          303,
+        );
+      }
       try {
         // This decoded ref selects only the admin status destination; it does
         // not authorize or mutate anything. Malformed state falls through to
@@ -2734,14 +2800,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         identifyMcp,
         resolveMcpOAuthToken,
         oauthDependencies: oauthDependencies(c),
+        ...(accountRevision !== undefined ? { accountRevision } : {}),
+        ...(oauthAttemptId ? { oauthAttemptId } : {}),
       });
-      return c.redirect(mcpOAuthAdminRedirect('connected', ref), 303);
+      return c.redirect(mcpOAuthAdminRedirect('connected', ref, returnAgentId), 303);
     } catch (error) {
+      if (error instanceof McpOAuthError && error.code === 'connection_missing') {
+        await deleteMcpOAuthSettings(ref, settings(c)).catch(() => undefined);
+      }
       console.warn(
         `[chickpea] MCP OAuth verification failed (${ref.connectionId}): ` +
           mcpDebugText(error),
       );
-      return c.redirect(mcpOAuthAdminRedirect('verification_failed', ref), 303);
+      return c.redirect(mcpOAuthAdminRedirect('verification_failed', ref, returnAgentId), 303);
     }
   });
 
@@ -2764,6 +2835,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c);
     }
     let ref: ApiOAuthRef | undefined;
+    let returnAgentId: string | undefined;
     try {
       if (providerError) {
         const cancelled = await cancelApiOAuth(state, apiOAuthDependencies(c));
@@ -2778,13 +2850,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           });
         }
         const status = providerError === 'access_denied' ? 'cancelled' : 'failed';
-        return c.redirect(apiOAuthAdminRedirect(status, cancelled.ref), 303);
+        return c.redirect(apiOAuthAdminRedirect(status, cancelled.ref, cancelled.returnAgentId), 303);
       }
       const completed = await completeApiOAuth(
         { code: code!, state },
         apiOAuthDependencies(c),
       );
       ref = completed.ref;
+      returnAgentId = completed.returnAgentId;
       const continuationState = await takeOAuthContinuationForProviderState({
         settings: settings(c),
         providerState: state,
@@ -2808,6 +2881,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           completed.ref,
           completed.provider,
           completed.identity,
+          completed.accountRevision,
+          completed.oauthAttemptId,
         );
       } catch (error) {
         // Remove orphaned OAuth state only when the row truly disappeared or
@@ -2834,7 +2909,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           });
         }
       }
-      return c.redirect(apiOAuthAdminRedirect('connected', completed.ref), 303);
+      return c.redirect(apiOAuthAdminRedirect('connected', completed.ref, returnAgentId), 303);
     } catch (error) {
       if (error instanceof ApiOAuthError && error.code === 'invalid_state') {
         return invalidRequest(c);
@@ -2843,12 +2918,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         '[chickpea] API OAuth callback failed:',
         error instanceof ApiOAuthError ? error.code : 'internal_error',
       );
+      if (error instanceof ApiOAuthError && error.callbackContext) {
+        return c.redirect(
+          apiOAuthAdminRedirect(
+            'failed',
+            error.callbackContext.ref,
+            error.callbackContext.returnAgentId,
+          ),
+          303,
+        );
+      }
       if (ref) {
-        return c.redirect(apiOAuthAdminRedirect('failed', ref), 303);
+        return c.redirect(apiOAuthAdminRedirect('failed', ref, returnAgentId), 303);
       }
       try {
         ref = apiOAuthReturnRefFromState(state);
-        return c.redirect(apiOAuthAdminRedirect('failed', ref), 303);
+        return c.redirect(apiOAuthAdminRedirect('failed', ref, returnAgentId), 303);
       } catch {
         return c.redirect('/admin?oauth=failed&lane=api', 303);
       }
@@ -2986,6 +3071,51 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       console.error(
         '[chickpea] MCP OAuth start failed:',
+        error instanceof McpOAuthError ? error.code : 'internal_error',
+      );
+      return c.json({ error: 'oauth_unavailable' }, 502);
+    }
+  });
+
+  app.post('/admin/api/agents/:agentId/connections/:connectionAccountId/oauth/mcp/start', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const agentId = c.req.param('agentId');
+    const connectionAccountId = c.req.param('connectionAccountId');
+    if (!AGENT_ID_PATTERN.test(agentId) || !/^connection_[A-Za-z0-9_-]{1,180}$/.test(connectionAccountId)) {
+      return invalidRequest(c);
+    }
+    const parsed = v.safeParse(connectionAccountOAuthStartSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const { account } = await managedConnectionAccount(c, agentId, connectionAccountId);
+      if (account.policy.kind !== 'mcp' || account.policy.authMode !== 'oauth') {
+        return c.json({ error: 'oauth_not_enabled' }, 409);
+      }
+      const ref = connectionAccountOAuthRef(account.id);
+      const pendingAccount = await replacePendingMcpOAuthConnection(
+        store(c), ref, account.policy.url,
+      );
+      const result = await startMcpOAuth(
+        {
+          ref,
+          serverUrl: account.policy.url,
+          callbackUrl: `${requestOrigin(c)}/oauth/callback`,
+          ...(account.policy.oauthScope ? { scope: account.policy.oauthScope } : {}),
+          returnAgentId: agentId,
+          accountRevision: pendingAccount.revision,
+          oauthAttemptId: pendingAccount.policy.oauthAttemptId!,
+        },
+        oauthDependencies(c),
+      );
+      return c.json({ authorizationUrl: result.authorizationUrl.href });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof McpOAuthError && error.code === 'connection_missing') {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      console.error(
+        '[chickpea] Connection-account MCP OAuth start failed:',
         error instanceof McpOAuthError ? error.code : 'internal_error',
       );
       return c.json({ error: 'oauth_unavailable' }, 502);
@@ -3142,12 +3272,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         throw new AuthorizationError();
       }
       const ref = connectionAccountOAuthRef(account.id);
+      const pendingAccount = await replacePendingApiOAuthConnection(store(c), ref, 'google');
+      if (!pendingAccount) throw new ApiOAuthError(
+        'connection_missing', 'Reusable OAuth account is missing',
+      );
       const result = await startApiOAuth(
         {
           ref,
           provider: 'google',
           callbackUrl: `${requestOrigin(c)}/oauth/api/callback`,
           scopes: account.policy.oauthScopes!,
+          returnAgentId: agentId,
+          accountRevision: pendingAccount.revision,
+          oauthAttemptId: pendingAccount.policy.oauthAttemptId!,
         },
         apiOAuthDependencies(c),
       );
@@ -4701,6 +4838,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             transport: parsed.output.mcp!.transport,
             authMode: parsed.output.mcp!.authMode,
             headerNames: [...parsed.output.mcp!.headerNames],
+            ...(parsed.output.mcp!.credentialHeaderName
+              ? { credentialHeaderName: parsed.output.mcp!.credentialHeaderName }
+              : {}),
+            ...(parsed.output.mcp!.credentialValuePrefix
+              ? { credentialValuePrefix: parsed.output.mcp!.credentialValuePrefix }
+              : {}),
+            ...(parsed.output.mcp!.credentialOptional
+              ? { credentialOptional: true }
+              : {}),
             discoveredTools: parsed.output.mcp!.discoveredTools.map((tool) => ({
               name: tool.name,
               ...(tool.title ? { title: tool.title } : {}),
@@ -4793,6 +4939,29 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         principal,
         connectionAccountId: c.req.param('connectionAccountId'),
       });
+      const oauthRef = connectionAccountOAuthRef(account.id);
+      if (account.policy.kind === 'mcp' && account.policy.authMode === 'oauth') {
+        await stageMcpSecretCleanup(
+          oauthRef.agentId,
+          mcpOAuthSettingKeys(oauthRef),
+          settings(c),
+        );
+        await deleteMcpOAuthSettings(oauthRef, settings(c));
+        await finishMcpSecretCleanup(oauthRef.agentId, settings(c));
+      } else if (account.policy.kind === 'api' && account.policy.authMode === 'oauth') {
+        await stageConnectorSettingCleanup(
+          oauthRef.agentId,
+          apiOAuthSettingKeys(oauthRef),
+          c.env as PlatformEnv | undefined,
+          settings(c),
+        );
+        await deleteApiOAuthSettings(oauthRef, settings(c));
+        await finishConnectorSecretCleanup(
+          oauthRef.agentId,
+          c.env as PlatformEnv | undefined,
+          settings(c),
+        );
+      }
       const { secretRefId: _secretRefId, ...safeAccount } = account;
       return c.json({ account: safeAccount });
     } catch (error) {
@@ -6299,7 +6468,15 @@ function slackGatewaySetupPageError(code: string): string {
 function mcpOAuthAdminRedirect(
   status: 'connected' | 'cancelled' | 'failed' | 'verification_failed',
   ref: { agentId: string; connectionId: string },
+  returnAgentId?: string,
 ): string {
+  const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+  if (connectionAccountId) {
+    const destination = returnAgentId && AGENT_ID_PATTERN.test(returnAgentId)
+      ? `/admin/agents/${encodeURIComponent(returnAgentId)}`
+      : '/admin';
+    return `${destination}?oauth=${status}&connection=${encodeURIComponent(connectionAccountId)}&lane=mcp`;
+  }
   return (
     `/admin/agents/${encodeURIComponent(ref.agentId)}` +
     `?oauth=${status}&connection=${encodeURIComponent(ref.connectionId)}`
@@ -6309,10 +6486,14 @@ function mcpOAuthAdminRedirect(
 function apiOAuthAdminRedirect(
   status: 'connected' | 'cancelled' | 'failed',
   ref: ApiOAuthRef,
+  returnAgentId?: string,
 ): string {
   const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
   if (connectionAccountId) {
-    return `/admin?oauth=${status}&connection=${encodeURIComponent(connectionAccountId)}&lane=api`;
+    const destination = returnAgentId && AGENT_ID_PATTERN.test(returnAgentId)
+      ? `/admin/agents/${encodeURIComponent(returnAgentId)}`
+      : '/admin';
+    return `${destination}?oauth=${status}&connection=${encodeURIComponent(connectionAccountId)}&lane=api`;
   }
   return (
     `/admin/agents/${encodeURIComponent(ref.agentId)}` +
@@ -6350,11 +6531,22 @@ async function replaceReadyApiOAuthConnection(
   ref: ApiOAuthRef,
   provider: ApiOAuthProvider,
   identity: { accountName?: string } | undefined,
+  accountRevision?: number,
+  oauthAttemptId?: string,
 ): Promise<void> {
   const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
   if (connectionAccountId) {
     const account = await findConnectionAccount(configStore, connectionAccountId);
-    if (!account || !isApiOAuthAccount(account, provider)) {
+    if (!account || account.lifecycle !== 'pending' ||
+        (accountRevision !== undefined && account.revision !== accountRevision) ||
+        (oauthAttemptId !== undefined && account.policy.oauthAttemptId !== oauthAttemptId) ||
+        !isApiOAuthAccount(account, provider)) {
+      if (account && (
+        (accountRevision !== undefined && account.revision !== accountRevision) ||
+        (oauthAttemptId !== undefined && account.policy.oauthAttemptId !== oauthAttemptId)
+      )) {
+        throw new ApiOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+      }
       throw new ApiOAuthError('connection_missing', 'OAuth connection no longer exists');
     }
     await configStore.putConnectionAccount({
@@ -6389,19 +6581,19 @@ async function replacePendingApiOAuthConnection(
   configStore: ConfigStore,
   ref: ApiOAuthRef,
   provider: ApiOAuthProvider,
-): Promise<void> {
+): Promise<ConnectionAccount | undefined> {
   const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
   if (connectionAccountId) {
     const account = await findConnectionAccount(configStore, connectionAccountId);
-    if (!account || !isApiOAuthAccount(account, provider)) {
+    if (!account || account.lifecycle === 'revoked' || !isApiOAuthAccount(account, provider)) {
       throw new ApiOAuthError('connection_missing', 'OAuth connection no longer exists');
     }
     const { identity: _identity, ...withoutIdentity } = account;
-    await configStore.putConnectionAccount({
+    return configStore.putConnectionAccount({
       ...withoutIdentity,
       lifecycle: 'pending',
+      policy: { ...withoutIdentity.policy, oauthAttemptId: randomUUID() },
     }, account.revision);
-    return;
   }
   const agent = await configStore.getAgent(ref.agentId);
   const index = agent.apiConnections.findIndex(
@@ -6422,6 +6614,28 @@ async function replacePendingApiOAuthConnection(
     statusText: 'Not connected',
   };
   await configStore.updateAgent(ref.agentId, { apiConnections });
+  return undefined;
+}
+
+async function replacePendingMcpOAuthConnection(
+  configStore: ConfigStore,
+  ref: { agentId: string; connectionId: string },
+  serverUrl: string,
+): Promise<ConnectionAccount> {
+  const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+  if (!connectionAccountId) {
+    throw new McpOAuthError('connection_missing', 'Reusable OAuth account is missing');
+  }
+  const account = await findConnectionAccount(configStore, connectionAccountId);
+  if (!account || account.lifecycle === 'revoked' || !isMcpOAuthAccount(account, serverUrl)) {
+    throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
+  }
+  const { identity: _identity, ...withoutIdentity } = account;
+  return configStore.putConnectionAccount({
+    ...withoutIdentity,
+    lifecycle: 'pending',
+    policy: { ...withoutIdentity.policy, oauthAttemptId: randomUUID() },
+  }, account.revision);
 }
 
 async function findConnectionAccount(
@@ -6446,6 +6660,13 @@ function isApiOAuthAccount(
     account.policy.oauthProvider === provider &&
     Array.isArray(account.policy.oauthScopes) &&
     account.policy.oauthScopes.length > 0;
+}
+
+function isMcpOAuthAccount(account: ConnectionAccount, serverUrl?: string): boolean {
+  if (account.policy.kind !== 'mcp' || account.policy.authMode !== 'oauth') return false;
+  if (!serverUrl) return true;
+  const validated = validateMcpUrl(account.policy.url);
+  return validated.ok && validated.url === serverUrl;
 }
 
 async function normalizeApiOAuthPatch(
@@ -6510,15 +6731,40 @@ interface VerifyMcpOAuthConnectionInput {
     dependencies: McpOAuthDependencies,
   ) => Promise<string>;
   oauthDependencies: McpOAuthDependencies;
+  accountRevision?: number;
+  oauthAttemptId?: string;
 }
 
 async function verifyAndStoreMcpOAuthConnection(
   input: VerifyMcpOAuthConnectionInput,
 ): Promise<void> {
-  const agent = await input.configStore.getAgent(input.ref.agentId);
-  const connection = agent.mcpServers.find(
-    (entry) => entry.id === input.ref.connectionId,
-  );
+  const connectionAccountId = connectionAccountIdFromOAuthRef(input.ref);
+  let connection: McpConnectionConfig | undefined;
+  if (connectionAccountId) {
+    const account = await findConnectionAccount(input.configStore, connectionAccountId);
+    if (account?.policy.kind === 'mcp' && account.policy.authMode === 'oauth') {
+      connection = {
+        id: account.id,
+        displayName: account.label,
+        url: account.policy.url,
+        transport: account.policy.transport,
+        authMode: 'oauth',
+        headerNames: [...account.policy.headerNames],
+        enabled: true,
+        lifecycleStatus: 'pending',
+        statusText: '',
+        discoveredTools: [...account.policy.discoveredTools],
+        allowedTools: [...account.policy.allowedTools],
+        ...(account.policy.oauthScope ? { oauthScope: account.policy.oauthScope } : {}),
+        ...(account.policy.presetId ? { presetId: account.policy.presetId } : {}),
+      };
+    }
+  } else {
+    const agent = await input.configStore.getAgent(input.ref.agentId);
+    connection = agent.mcpServers.find(
+      (entry) => entry.id === input.ref.connectionId,
+    );
+  }
   if (!connection || connection.authMode !== 'oauth') {
     throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
   }
@@ -6567,13 +6813,13 @@ async function verifyAndStoreMcpOAuthConnection(
       discoveredTools: discovery.tools,
       lastCheckedAt: Date.now(),
       ...(identity ? { identity } : {}),
-    });
+    }, input.accountRevision, input.oauthAttemptId);
   } catch (error) {
     await replaceVerifiedMcpConnection(input.configStore, input.ref, connection, {
       lifecycleStatus: 'failed',
       statusText: safeMcpFailureText(error),
       lastCheckedAt: Date.now(),
-    }).catch(() => undefined);
+    }, input.accountRevision, input.oauthAttemptId).catch(() => undefined);
     throw error;
   }
 }
@@ -6611,7 +6857,41 @@ async function replaceVerifiedMcpConnection(
   ref: { agentId: string; connectionId: string },
   original: McpConnectionConfig,
   result: VerifiedMcpConnectionResult,
+  accountRevision?: number,
+  oauthAttemptId?: string,
 ): Promise<void> {
+  const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+  if (connectionAccountId) {
+    const account = await findConnectionAccount(configStore, connectionAccountId);
+    if (!account || account.lifecycle !== 'pending' ||
+        (accountRevision !== undefined && account.revision !== accountRevision) ||
+        (oauthAttemptId !== undefined && account.policy.oauthAttemptId !== oauthAttemptId) ||
+        account.policy.kind !== 'mcp' || account.policy.authMode !== 'oauth' ||
+        account.policy.url !== original.url) {
+      if (account && (
+        (accountRevision !== undefined && account.revision !== accountRevision) ||
+        (oauthAttemptId !== undefined && account.policy.oauthAttemptId !== oauthAttemptId)
+      )) {
+        throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+      }
+      throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
+    }
+    const discoveredTools = result.lifecycleStatus === 'ready'
+      ? result.discoveredTools
+      : account.policy.discoveredTools;
+    const allowedTools = result.lifecycleStatus === 'ready'
+      ? allowedToolsAfterMcpDiscovery(account.policy, discoveredTools)
+      : account.policy.allowedTools;
+    await configStore.putConnectionAccount({
+      ...account,
+      lifecycle: result.lifecycleStatus === 'ready' ? 'ready' : 'needs_attention',
+      policy: { ...account.policy, discoveredTools, allowedTools },
+      ...(result.lifecycleStatus === 'ready' && result.identity
+        ? { identity: result.identity }
+        : {}),
+    }, account.revision);
+    return;
+  }
   const latest = await configStore.getAgent(ref.agentId);
   const index = latest.mcpServers.findIndex(
     (entry) =>

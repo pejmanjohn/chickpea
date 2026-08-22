@@ -195,6 +195,7 @@ test('canonical visual states use authenticated production URLs and UI actions o
 
     assert.deepEqual(fixture.canonicalStates, {
       agentInstructions: { path: '/admin/agents/agent_research', actions: [] },
+      agentBlankDescription: { path: '/admin/agents/agent_customer', actions: [] },
       agentMemory: { path: '/admin/agents/agent_research', actions: ['Memory'] },
       channelsIndex: { path: '/admin/channels', actions: [] },
       channelDetail: { path: '/admin/channels/TVISUAL/C_RELEASES', actions: [] },

@@ -29,6 +29,7 @@ interface FakeOAuthServerOptions {
   clientSecretExpiresAt?: number;
   cimd?: boolean;
   codeChallengeMethods?: string[];
+  exchangeError?: string;
   initialExpiresIn?: number;
   issuer?: string;
   omitInitialRefreshToken?: boolean;
@@ -118,6 +119,12 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
         assert.equal(body?.get('redirect_uri'), CALLBACK_URL);
         assert.ok(body?.get('code_verifier'));
         assert.equal(body?.get('resource'), SERVER_URL);
+        if (options.exchangeError) {
+          return Response.json(
+            { error: options.exchangeError, error_description: 'exchange rejected' },
+            { status: 400 },
+          );
+        }
         return Response.json({
           access_token: 'access-initial',
           token_type: 'Bearer',
@@ -225,6 +232,7 @@ test('DCR is registered once, pending state is single-use, and callback stores t
           serverUrl: SERVER_URL,
           callbackUrl: CALLBACK_URL,
           scope: 'read write',
+          returnAgentId: 'agent_return',
         },
         dependencies,
       ),
@@ -234,6 +242,7 @@ test('DCR is registered once, pending state is single-use, and callback stores t
           serverUrl: SERVER_URL,
           callbackUrl: CALLBACK_URL,
           scope: 'read write',
+          returnAgentId: 'agent_return',
         },
         dependencies,
       ),
@@ -265,7 +274,7 @@ test('DCR is registered once, pending state is single-use, and callback stores t
       { code: 'provider-code', state: currentState },
       dependencies,
     );
-    assert.deepEqual(result, { ref: REF });
+    assert.deepEqual(result, { ref: REF, returnAgentId: 'agent_return' });
     assert.equal(oauth.counts.exchanges, 1);
 
     await assert.rejects(
@@ -289,6 +298,190 @@ test('DCR is registered once, pending state is single-use, and callback stores t
     const rawSettings = await settings.getSettings(mcpOAuthSettingKeys(REF));
     assert.equal(rawSettings.some((value) => value?.includes('access-initial')), true);
     assert.equal(rawSettings.some((value) => value?.includes('refresh-initial')), true);
+  } finally {
+    settings.close();
+  }
+});
+
+test('failed MCP exchange retains the initiating Agent callback context', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({ exchangeError: 'invalid_grant' });
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    randomId: () => 'nonce',
+  };
+  try {
+    const started = await startMcpOAuthAuthorization(
+      {
+        ref: REF,
+        serverUrl: SERVER_URL,
+        callbackUrl: CALLBACK_URL,
+        returnAgentId: 'agent_return',
+      },
+      dependencies,
+    );
+
+    await assert.rejects(
+      completeMcpOAuthAuthorization(
+        { code: 'provider-code', state: started.state },
+        dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError &&
+        error.code === 'oauth_unavailable' &&
+        error.callbackContext?.ref.agentId === REF.agentId &&
+        error.callbackContext.returnAgentId === 'agent_return',
+    );
+  } finally {
+    settings.close();
+  }
+});
+
+test('a superseded reusable MCP OAuth attempt cannot exchange or replace newer state', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer();
+  let currentRevision = 1;
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    randomId: () => 'nonce',
+    validateConnection: (
+      _ref: typeof REF,
+      _serverUrl: string,
+      accountRevision?: number,
+    ) => {
+      if (accountRevision !== currentRevision) {
+        throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+      }
+      return true;
+    },
+  };
+  try {
+    const started = await startMcpOAuthAuthorization(
+      {
+        ref: REF,
+        serverUrl: SERVER_URL,
+        callbackUrl: CALLBACK_URL,
+        accountRevision: 1,
+      },
+      dependencies,
+    );
+    currentRevision = 2;
+
+    await assert.rejects(
+      completeMcpOAuthAuthorization(
+        { code: 'provider-code', state: started.state },
+        dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'oauth_attempt_superseded',
+    );
+    assert.equal(oauth.counts.exchanges, 0);
+    assert.equal(await settings.getSetting(mcpOAuthSettingKeys(REF)[2]), undefined);
+  } finally {
+    settings.close();
+  }
+});
+
+test('an older MCP OAuth start cannot replace a newer pending authorization', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer();
+  const olderAttemptId = '11111111-1111-4111-8111-111111111111';
+  const newerAttemptId = '22222222-2222-4222-8222-222222222222';
+  try {
+    await startMcpOAuthAuthorization({
+      ref: REF,
+      serverUrl: SERVER_URL,
+      callbackUrl: CALLBACK_URL,
+      accountRevision: 2,
+      oauthAttemptId: newerAttemptId,
+    }, {
+      settings,
+      fetchFn: oauth.fetchFn,
+      randomId: () => 'newer-nonce',
+      validateConnection: () => true,
+    });
+    const pendingKey = mcpOAuthSettingKeys(REF)[1];
+    const newerPending = await settings.getSetting(pendingKey);
+
+    await assert.rejects(
+      startMcpOAuthAuthorization({
+        ref: REF,
+        serverUrl: SERVER_URL,
+        callbackUrl: CALLBACK_URL,
+        accountRevision: 1,
+        oauthAttemptId: olderAttemptId,
+      }, {
+        settings,
+        fetchFn: oauth.fetchFn,
+        randomId: () => 'older-nonce',
+        validateConnection: () => true,
+      }),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'oauth_attempt_superseded',
+    );
+    assert.equal(await settings.getSetting(pendingKey), newerPending);
+  } finally {
+    settings.close();
+  }
+});
+
+test('a slower reusable MCP OAuth callback cannot overwrite newer credentials', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer();
+  const olderAttemptId = '11111111-1111-4111-8111-111111111111';
+  const newerAttemptId = '22222222-2222-4222-8222-222222222222';
+  try {
+    const older = await startMcpOAuthAuthorization({
+      ref: REF,
+      serverUrl: SERVER_URL,
+      callbackUrl: CALLBACK_URL,
+      accountRevision: 1,
+      oauthAttemptId: olderAttemptId,
+    }, {
+      settings,
+      fetchFn: oauth.fetchFn,
+      randomId: () => 'older-nonce',
+      validateConnection: () => true,
+    });
+    const keys = mcpOAuthSettingKeys(REF);
+    const pending = JSON.parse((await settings.getSetting(keys[1]))!) as Record<string, unknown>;
+    const newerRaw = JSON.stringify({
+      serverUrl: pending.serverUrl,
+      authorizationServerUrl: pending.authorizationServerUrl,
+      metadata: pending.metadata,
+      resource: pending.resource,
+      clientInformation: pending.clientInformation,
+      tokens: {
+        access_token: 'access-winner',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      },
+      obtainedAt: Date.now(),
+      accountRevision: 2,
+      oauthAttemptId: newerAttemptId,
+    });
+    await settings.setSetting(keys[2], newerRaw);
+
+    await assert.rejects(
+      completeMcpOAuthAuthorization(
+        { code: 'provider-code', state: older.state },
+        { settings, fetchFn: oauth.fetchFn, validateConnection: () => true },
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'oauth_attempt_superseded',
+    );
+    assert.equal(oauth.counts.exchanges, 1);
+    assert.equal(await settings.getSetting(keys[2]), newerRaw);
+    assert.equal(await resolveMcpOAuthAccessToken(
+      { ref: REF, serverUrl: SERVER_URL },
+      {
+        settings,
+        validateConnection: (_ref, _serverUrl, _revision, attemptId) =>
+          attemptId === undefined || attemptId === newerAttemptId,
+      },
+    ), 'access-winner');
   } finally {
     settings.close();
   }

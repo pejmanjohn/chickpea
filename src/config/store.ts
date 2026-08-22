@@ -1638,6 +1638,11 @@ function validateConnectionAccountInput(input: ConnectionAccountInput): void {
   if (!input.label.trim() || input.label.length > 160) {
     throw new Error('Connection account label is invalid');
   }
+  if (input.policy.oauthAttemptId !== undefined &&
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+        .test(input.policy.oauthAttemptId)) {
+    throw new Error('Connection account OAuth attempt is invalid');
+  }
   if (input.policy.kind === 'api') {
     if (input.policy.allowedHosts.length === 0 || input.policy.allowedMethods.length === 0) {
       throw new Error('API connection account policy is incomplete');

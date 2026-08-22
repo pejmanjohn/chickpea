@@ -20,7 +20,14 @@ interface McpPresetLane {
     | { kind: 'none' }
     | { kind: 'oauth'; scope?: string }
     | { kind: 'bearer'; placeholder: string }
-    | { kind: 'header'; headerName: string; valuePrefix?: string; placeholder: string };
+    | {
+        kind: 'header';
+        headerName: string;
+        valuePrefix?: string;
+        placeholder: string;
+        /** The server also accepts anonymous requests, usually at lower limits. */
+        optional?: boolean;
+      };
 }
 
 interface ApiPresetLane {
@@ -276,7 +283,12 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     accent: '#1F40FF',
     url: 'https://mcp.exa.ai/mcp',
     transport: 'streamable-http',
-    auth: { kind: 'header', headerName: 'x-api-key', placeholder: 'Exa API key' },
+    auth: {
+      kind: 'header',
+      headerName: 'x-api-key',
+      placeholder: 'Exa API key',
+      optional: true,
+    },
     tokenDocsUrl: 'https://dashboard.exa.ai/api-keys',
     tokenDocsHint: 'Exa → Dashboard → API keys',
     notes: 'Also works without a key at lower limits.',

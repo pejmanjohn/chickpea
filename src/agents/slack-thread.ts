@@ -526,7 +526,7 @@ export async function resolveApiConnectionsForTurn(
             credential = accountContext && !dependencies.resolveOAuthToken
               ? await resolveApiOAuthAccessToken(oauthInput, {
                   settings: accountContext.settings ?? getSettingsStore(env),
-                  validateConnection: async (ref, provider) => {
+                  validateConnection: async (ref, provider, _accountRevision, oauthAttemptId) => {
                     const current = await resolveEffectiveConnectionAccounts({
                       config: accountContext.config,
                       workspaceId: accountContext.workspaceId,
@@ -537,7 +537,9 @@ export async function resolveApiConnectionsForTurn(
                     return ref.connectionId === 'account' &&
                       account?.providerId === provider &&
                       account.policy.kind === 'api' &&
-                      account.policy.authMode === 'oauth';
+                      account.policy.authMode === 'oauth' &&
+                      (oauthAttemptId === undefined ||
+                        account.policy.oauthAttemptId === oauthAttemptId);
                   },
                 })
               : await resolveOAuthToken(oauthInput);
@@ -843,7 +845,7 @@ export async function createSlackAgentRuntime(
                   },
                   {
                     settings: settingsStore,
-                    validateConnection: async (ref, serverUrl) => {
+                    validateConnection: async (ref, serverUrl, _accountRevision, oauthAttemptId) => {
                       const current = await resolveEffectiveConnectionAccounts({
                         config: store,
                         workspaceId,
@@ -853,7 +855,9 @@ export async function createSlackAgentRuntime(
                       const accountId = connectionAccountIdFromOAuthRef(ref);
                       const account = current.find(({ account }) => account.id === accountId)?.account;
                       return !!accountId && account?.policy.kind === 'mcp' &&
-                        account.policy.authMode === 'oauth' && account.policy.url === serverUrl;
+                        account.policy.authMode === 'oauth' && account.policy.url === serverUrl &&
+                        (oauthAttemptId === undefined ||
+                          account.policy.oauthAttemptId === oauthAttemptId);
                     },
                   },
                 );

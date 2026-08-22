@@ -4,6 +4,7 @@ import test from 'node:test';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { resolveConnectionAccountSecret } from '../src/config/connector-secrets.ts';
 import {
+  apiOAuthSettingKeys,
   connectionAccountOAuthRef,
   describeApiOAuthSources,
   saveApiOAuthClient,
@@ -32,6 +33,7 @@ import {
   takeOAuthContinuationForProviderState,
 } from '../src/connections/oauth-continuation.ts';
 import { startPersonalConnectionAuthorization } from '../src/connections/slack-authorization.ts';
+import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
 
 function agent(id: string, creatorMembershipId: string) {
   return {
@@ -75,6 +77,47 @@ function gmailPolicy() {
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/gmail.modify',
     ],
+  };
+}
+
+function effectiveGoogleService(
+  id: string,
+  label: string,
+  pathPrefixes: string[],
+): EffectiveConnectionAccount {
+  const policy = {
+    ...gmailPolicy(),
+    allowedHosts: pathPrefixes.every((path) => path.startsWith('/gmail/'))
+      ? ['gmail.googleapis.com']
+      : ['www.googleapis.com'],
+    pathPrefixes,
+  };
+  return {
+    account: {
+      id,
+      workspaceId: 'T_CONNECTIONS',
+      revision: 1,
+      ownerKind: 'team',
+      createdByMembershipId: 'membership_creator',
+      providerId: 'google',
+      label,
+      policy,
+      secretRefId: `secret_${id}`,
+      lifecycle: 'ready',
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    binding: {
+      agentId: 'agent_workspace',
+      connectionAccountId: id,
+      providerId: 'google',
+      allowedCapabilities: [],
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    policy,
+    scope: 'team',
   };
 }
 
@@ -355,6 +398,43 @@ test('personal accounts resolve only for their owner and language selects a uniq
   }
 });
 
+test('Google service accounts select independently while duplicate service accounts stay ambiguous', () => {
+  const gmail = effectiveGoogleService('connection_gmail', 'Gmail', ['/gmail/v1/users/me']);
+  const calendar = effectiveGoogleService(
+    'connection_calendar',
+    'Google Calendar',
+    ['/calendar/v3'],
+  );
+  const drive = effectiveGoogleService('connection_drive', 'Google Drive', ['/drive/v3']);
+  const services = selectConnectionsForRequest({
+    connections: [gmail, calendar, drive],
+    requestText: 'Review my calendar and related email',
+  });
+  assert.deepEqual(
+    services.selected.map(({ account }) => account.id),
+    ['connection_gmail', 'connection_calendar', 'connection_drive'],
+  );
+  assert.deepEqual(services.ambiguous, []);
+
+  const secondGmail = effectiveGoogleService(
+    'connection_gmail_personal',
+    'Personal Gmail',
+    ['/gmail/v1/users/me'],
+  );
+  const duplicate = selectConnectionsForRequest({
+    connections: [gmail, secondGmail, calendar],
+    requestText: 'Search Gmail',
+  });
+  assert.deepEqual(
+    duplicate.selected.map(({ account }) => account.id),
+    ['connection_calendar'],
+  );
+  assert.deepEqual(
+    duplicate.ambiguous[0]?.choices.map(({ label }) => label),
+    ['Gmail', 'Personal Gmail'],
+  );
+});
+
 test('a member-owned binding grants a provider capability without exposing another member account', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -433,6 +513,59 @@ test('a member-owned binding grants a provider capability without exposing anoth
     assert.equal(bindingReads, 1);
     assert.deepEqual(combined.effective, effective);
     assert.deepEqual(combined.authorizations, authorization);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('personal MCP accounts cannot substitute a different credential header policy', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let nextId = 0;
+  const service = new ConnectionAccountService({ config, settings, randomId: () => `header${++nextId}` });
+  const templatePolicy = {
+    kind: 'mcp' as const,
+    url: 'https://mcp.sentry.dev/mcp',
+    transport: 'streamable-http' as const,
+    authMode: 'none' as const,
+    headerNames: ['Authorization'],
+    credentialHeaderName: 'Authorization',
+    credentialValuePrefix: 'Sentry-Bearer ',
+    discoveredTools: [{ name: 'search_issues' }],
+    allowedTools: ['search_issues'],
+    presetId: 'sentry',
+  };
+  try {
+    await config.createAgent(agent('agent_errors', 'membership_alice'));
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_CONNECTIONS', transportMode: 'direct', defaultAgentId: 'agent_errors',
+    });
+    const template = await service.create({
+      principal: principal('membership_alice'), workspaceId: 'T_CONNECTIONS', ownerKind: 'member',
+      providerId: 'sentry', label: 'Alice Sentry', policy: templatePolicy, credential: 'alice-token',
+    });
+    await service.create({
+      principal: principal('membership_bob'), workspaceId: 'T_CONNECTIONS', ownerKind: 'member',
+      providerId: 'sentry', label: 'Bob altered Sentry',
+      policy: {
+        ...templatePolicy,
+        headerNames: ['X-Unsafe-Key'],
+        credentialHeaderName: 'X-Unsafe-Key',
+        credentialValuePrefix: 'Token ',
+      },
+      credential: 'bob-token',
+    });
+    await service.attach({
+      principal: principal('membership_alice'), agentId: 'agent_errors',
+      connectionAccountId: template.id,
+    });
+
+    const effective = await resolveEffectiveConnectionAccounts({
+      config, workspaceId: 'T_CONNECTIONS', agentId: 'agent_errors',
+      actorMembershipId: 'membership_bob',
+    });
+    assert.deepEqual(effective, []);
   } finally {
     config.close();
     settings.close();
@@ -672,6 +805,17 @@ test('missing actor account starts one account-owned OAuth flow from the Agent p
       .find((account) => account.id === 'connection_bobwork');
     assert.equal(actorAccount?.ownerMembershipId, 'membership_bob');
     assert.equal(actorAccount?.lifecycle, 'pending');
+    assert.match(
+      actorAccount?.policy.oauthAttemptId ?? '',
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    const pendingAuthorization = JSON.parse(
+      (await settings.getSetting(apiOAuthSettingKeys(
+        connectionAccountOAuthRef('connection_bobwork'),
+      )[1]))!,
+    ) as { accountRevision?: number; oauthAttemptId?: string };
+    assert.equal(pendingAuthorization.accountRevision, actorAccount?.revision);
+    assert.equal(pendingAuthorization.oauthAttemptId, actorAccount?.policy.oauthAttemptId);
     assert.deepEqual(
       await describeApiOAuthSources(connectionAccountOAuthRef('connection_bobwork'), settings),
       { client: 'stored', tokens: 'missing' },

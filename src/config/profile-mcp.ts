@@ -25,6 +25,7 @@ import {
 } from './state-backend.ts';
 import type { McpConnectionConfig } from './types.ts';
 import type { RuntimePlanMcpConnectionV2 } from '../agents/runtime-plan.ts';
+import { ConnectionCredentialUnavailableError } from '../connections/errors.ts';
 
 /**
  * Turn-time assembly of a profile's remote MCP tools, called from the
@@ -328,12 +329,7 @@ async function resolveOneServer(
   let debugHeaders: Readonly<Record<string, string>> = {};
   try {
     const secrets = opts.resolveBearerCredential
-      ? {
-          ...(server.authMode === 'bearer'
-            ? { bearer: await opts.resolveBearerCredential(server.id) }
-            : {}),
-          headers: {},
-        }
+      ? await resolveReusableAccountMcpSecrets(server, opts.resolveBearerCredential)
       : await resolveMcpSecrets(
           { agentId: opts.agentId, connectionId: server.id },
           server.headerNames,
@@ -406,6 +402,33 @@ async function resolveOneServer(
     );
     return [];
   }
+}
+
+async function resolveReusableAccountMcpSecrets(
+  server: McpConnectionConfig,
+  resolveCredential: (connectionId: string) => Promise<string>,
+): Promise<{ bearer?: string; headers: Record<string, string> }> {
+  const credentialNeeded = server.authMode === 'bearer' || !!server.credentialHeaderName;
+  let credential: string | undefined;
+  if (credentialNeeded) {
+    try {
+      credential = await resolveCredential(server.id);
+    } catch (error) {
+      if (!server.credentialOptional ||
+          !(error instanceof ConnectionCredentialUnavailableError)) throw error;
+    }
+  }
+  const prefix = server.credentialValuePrefix ?? '';
+  return {
+    ...(server.authMode === 'bearer' && credential ? { bearer: credential } : {}),
+    headers: server.credentialHeaderName && credential
+      ? {
+          [server.credentialHeaderName]: prefix && !credential.startsWith(prefix)
+            ? prefix + credential
+            : credential,
+        }
+      : {},
+  };
 }
 
 /**
