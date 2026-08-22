@@ -9,7 +9,12 @@ import type { ResolvedAssignment } from '../config/types.ts';
 import { currentHumanIdentityDirectory } from '../identity/current-directory.ts';
 import { resolveSlackCredentials } from '../slack/credentials.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
-import { memoryEpochThreadKey, memoryQuarantineThreadKey, slackThreadKey } from '../slack/thread-key.ts';
+import {
+  memoryEpochThreadKey,
+  memoryQuarantineThreadKey,
+  slackThreadKey,
+  workspaceManagementThreadKey,
+} from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { WebClientPresenter } from '../slack/web-client-presenter.ts';
 import { parseMemoryCommand, type MemoryCommand } from './commands.ts';
@@ -107,6 +112,9 @@ export async function prepareMemoryTurn(input: {
 }): Promise<PreparedMemoryTurn> {
   const baseKey = slackThreadKey(input.turn);
   try {
+    if (input.assignment.interactionMode === 'workspace_management') {
+      return await prepareWorkspaceManagementTurn(input, baseKey);
+    }
     const state = getMemoryStateStore(input.platformEnv);
     const runtime = await resolveAgentMemoryRuntime(
       input.turn,
@@ -166,6 +174,114 @@ export async function prepareMemoryTurn(input: {
       validateLease: async () => false,
       confirmInjection: async () => true,
     };
+  }
+}
+
+async function prepareWorkspaceManagementTurn(
+  input: {
+    turn: NormalizedSlackTurn;
+    platformEnv: PlatformEnv | undefined;
+    client: WebClient;
+    botUserId?: string;
+    assignment: ResolvedAssignment;
+  },
+  baseKey: string,
+): Promise<PreparedMemoryTurn> {
+  const { assignment, turn } = input;
+  if (
+    turn.source !== 'app_mention' ||
+    assignment.workspaceId !== turn.workspaceId ||
+    assignment.channelId !== turn.channelId ||
+    assignment.agentId !== assignment.agent.id ||
+    !assignment.agent.enabled
+  ) {
+    throw new MemoryStateError(
+      'memory_owner_invalid',
+      'The workspace management entry point is unavailable.',
+    );
+  }
+  const config = getConfigStore(input.platformEnv);
+  const [agent, installation] = await Promise.all([
+    config.getAgent(assignment.agentId),
+    config.getWorkspaceInstallation(turn.workspaceId),
+  ]);
+  if (
+    !agent.enabled ||
+    agent.lifecycle === 'archived' ||
+    !installation ||
+    installation.health === 'revoked' ||
+    installation.defaultAgentId !== assignment.agentId
+  ) {
+    throw new MemoryStateError(
+      'memory_owner_unavailable',
+      'The workspace management entry point is unavailable.',
+    );
+  }
+  let botUserId = input.botUserId ?? installation.botUserId;
+  if (!botUserId) {
+    const auth = await input.client.auth.test();
+    botUserId = typeof auth.user_id === 'string' ? auth.user_id : undefined;
+  }
+  if (!botUserId) {
+    throw new MemoryStateError('memory_slack_unavailable', 'Slack workspace management is unavailable.');
+  }
+  const slack = createMemoryScopeSlackFromWebClient(input.client, turn.workspaceId);
+  return {
+    conversationKey: workspaceManagementThreadKey(baseKey),
+    memoryEpoch: 1,
+    selection: { entries: [] },
+    footerItems: [],
+    visibilityBarrierAt: null,
+    ownerBound: true,
+    confirmInjection: async () => true,
+    validateLease: async () => {
+      const valid = await validateWorkspaceManagementLease(
+        turn,
+        assignment,
+        input.platformEnv,
+        slack,
+        botUserId,
+      );
+      emitMemoryMetric('delivery_lease', { outcome: valid ? 'valid' : 'rejected' });
+      return valid;
+    },
+  };
+}
+
+async function validateWorkspaceManagementLease(
+  turn: NormalizedSlackTurn,
+  assignment: ResolvedAssignment,
+  platformEnv: PlatformEnv | undefined,
+  slack: MemoryScopeSlack,
+  botUserId: string,
+): Promise<boolean> {
+  try {
+    const config = getConfigStore(platformEnv);
+    const [agent, installation, conversation, actor, members] = await Promise.all([
+      config.getAgent(assignment.agentId),
+      config.getWorkspaceInstallation(turn.workspaceId),
+      slack.conversation(turn.channelId),
+      slack.user(turn.userId),
+      slack.members(turn.channelId),
+    ]);
+    const facts = conversation.facts;
+    return Boolean(
+      turn.source === 'app_mention' &&
+      agent.enabled && agent.lifecycle !== 'archived' &&
+      installation && installation.health !== 'revoked' &&
+      installation.defaultAgentId === assignment.agentId &&
+      (!installation.botUserId || installation.botUserId === botUserId) &&
+      conversation.ok && facts && facts.id === turn.channelId &&
+      (!facts.teamId || facts.teamId === turn.workspaceId) && !facts.archived && !facts.frozen &&
+      !facts.im && !facts.mpim && facts.member && actor.ok && actor.user &&
+      (!actor.user.teamId || actor.user.teamId === turn.workspaceId) &&
+      !actor.user.deleted && !actor.user.bot && !actor.user.appUser &&
+      !actor.user.restricted && !actor.user.ultraRestricted && !actor.user.stranger &&
+      members.ok && !members.incomplete &&
+      members.ids.includes(turn.userId) && members.ids.includes(botUserId)
+    );
+  } catch {
+    return false;
   }
 }
 

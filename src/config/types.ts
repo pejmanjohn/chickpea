@@ -397,6 +397,8 @@ export interface ResolvedAssignment {
   workspaceId: string;
   channelId: string;
   agentId: string;
+  /** Explicit base-app channel mentions are a memoryless workspace-management entry point. */
+  interactionMode?: 'workspace_management';
   channelLabel?: string;
   /** Live Channel inventory revision; missing on direct conversations. */
   channelRevision?: number;

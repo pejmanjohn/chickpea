@@ -16,6 +16,10 @@ export function memoryQuarantineThreadKey(baseThreadKey: string, eventId: string
   return `${baseSlackThreadKey(baseThreadKey)}:memory-q-${safeEvent}`;
 }
 
+export function workspaceManagementThreadKey(baseThreadKey: string): string {
+  return `${baseSlackThreadKey(baseThreadKey)}:workspace-management`;
+}
+
 export function baseSlackThreadKey(threadKey: string): string {
   const { workspaceId, channelId, threadTs } = parseSlackThreadKey(threadKey);
   return `${workspaceId}:${channelId}:${threadTs}`;

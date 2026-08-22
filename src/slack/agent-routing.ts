@@ -178,7 +178,14 @@ export async function resolveAgentRoute(
   return {
     kind: 'routed',
     source,
-    assignment: assignmentForAgent(turn, selected, activeGrants),
+    assignment: assignmentForAgent(
+      turn,
+      selected,
+      activeGrants,
+      source === 'default_agent' && turn.source === 'app_mention'
+        ? 'workspace_management'
+        : undefined,
+    ),
     route,
     handoff: Boolean(currentRoute && currentRoute.agentId !== selected.id),
     routeChanged,
@@ -253,12 +260,14 @@ function assignmentForAgent(
   turn: NormalizedSlackTurn,
   agent: CustomAgentConfig,
   grants: AgentChannelGrant[],
+  interactionMode?: ResolvedAssignment['interactionMode'],
 ): ResolvedAssignment {
   const grant = grants.find((candidate) => candidate.agentId === agent.id);
   return {
     workspaceId: turn.workspaceId,
     channelId: turn.channelId,
     agentId: agent.id,
+    ...(interactionMode ? { interactionMode } : {}),
     ...(grant?.channelLabel ? { channelLabel: grant.channelLabel } : {}),
     agent,
   };

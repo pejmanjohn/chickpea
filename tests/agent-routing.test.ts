@@ -175,7 +175,10 @@ test('@Chickpea and direct-message roots use the normal workspace default Agent'
       actor: { channelMember: true, fullMember: true }, config: store,
     });
     assert.equal(base.kind, 'routed');
-    if (base.kind === 'routed') assert.equal(base.assignment.agentId, first.id);
+    if (base.kind === 'routed') {
+      assert.equal(base.assignment.agentId, first.id);
+      assert.equal(base.assignment.interactionMode, 'workspace_management');
+    }
 
     const outsider = await resolveAgentRoute({
       turn: turn({
@@ -194,7 +197,10 @@ test('@Chickpea and direct-message roots use the normal workspace default Agent'
       surface: 'direct', actor: { channelMember: false, fullMember: true }, config: store,
     });
     assert.equal(dm.kind, 'routed');
-    if (dm.kind === 'routed') assert.equal(dm.assignment.agentId, first.id);
+    if (dm.kind === 'routed') {
+      assert.equal(dm.assignment.agentId, first.id);
+      assert.equal(dm.assignment.interactionMode, undefined);
+    }
   } finally {
     store.close();
   }

@@ -955,7 +955,7 @@ async function processSlackEvent(
       } else {
         agentSourceVisibility = 'private';
       }
-    assignment = await getOrReplaceSnapshotForRoute(
+      const frozenAssignment = await getOrReplaceSnapshotForRoute(
         stores.snapshots,
         threadKey,
         routed.route,
@@ -969,7 +969,10 @@ async function processSlackEvent(
           );
           return { ...config, ...(modelCredential ? { modelCredential } : {}) };
         },
-    );
+      );
+      assignment = routed.assignment.interactionMode
+        ? { ...frozenAssignment, interactionMode: routed.assignment.interactionMode }
+        : frozenAssignment;
   } catch (err) {
     // A model that cannot resolve is NOT fail-closed: admit with a best-effort
     // assignment so the turn still delivers the sanitized provider-failure
