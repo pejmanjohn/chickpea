@@ -32,6 +32,7 @@ import type { RoutineDefinition, RoutineStore } from '../routines/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
+import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import {
   canonicalJson,
   effectiveConfigurationRevision,
@@ -1475,8 +1476,16 @@ export class WorkspaceManagementService {
   ): Promise<ManagementPreparedItem> {
     switch (operation.kind) {
       case 'create_agent': {
+        const existingGeneratedSeeds = (await this.stores.config.listAgents()).flatMap((agent) => {
+          const avatar = agent.slackPresence?.avatar;
+          return avatar?.kind === 'generated' ? [avatar.seed ?? agent.id] : [];
+        });
         const intendedAfter = {
-          ...materializeManagedAgent(actor, operation.agent),
+          ...materializeManagedAgent(
+            actor,
+            operation.agent,
+            nextDefaultAgentAvatarSeed(existingGeneratedSeeds, randomUUID()),
+          ),
           revision: 1,
         } satisfies CustomAgentConfig;
         return {
@@ -1623,9 +1632,9 @@ export class WorkspaceManagementService {
   ): Promise<ImmediateMutation> {
     switch (operation.kind) {
       case 'create_agent': {
-        const agent = await this.stores.config.createAgent(
-          materializeManagedAgent(actor, operation.agent),
-        );
+        const intended = prepared.intendedAfter as CustomAgentConfig;
+        const { revision: _revision, ...createInput } = intended;
+        const agent = await this.stores.config.createAgent(createInput);
         return mutationForAgent(agent, prepared.inverse);
       }
       case 'update_agent': {
@@ -2277,6 +2286,7 @@ function applyAgentPatch(agent: CustomAgentConfig, patch: ConfigAgentPatch): Cus
 function materializeManagedAgent(
   actor: LiveManagementActor,
   input: ManagementAgentCreateInput,
+  avatarSeed: string,
 ): AgentCreateInput {
   const { requestedHandle, ...agent } = input;
   const handle = requestedHandle ?? input.name;
@@ -2295,7 +2305,7 @@ function materializeManagedAgent(
       avatar: {
         kind: 'generated',
         revision: 1,
-        seed: input.id,
+        seed: avatarSeed,
       },
     },
   };

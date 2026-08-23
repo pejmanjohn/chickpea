@@ -164,7 +164,7 @@ test('a full member creates an owned Agent and production publication seam owns 
     assert.equal(agent.slackPresence?.requestedHandle, 'support');
     assert.equal(agent.slackPresence?.normalizedHandle, 'support');
     assert.equal(agent.slackPresence?.avatar.kind, 'generated');
-    assert.equal(agent.slackPresence?.avatar.seed, agent.id);
+    assert.match(agent.slackPresence?.avatar.seed ?? '', /^chickpea-avatar-v1:\d{2}:/);
   } finally {
     f.close();
   }

@@ -27,6 +27,7 @@ test('programmatic and manual control-plane manifests are identical and retain t
   const prefill = new URL(slackManifestPrefillUrl(manifest));
   const manual = JSON.parse(prefill.searchParams.get('manifest_json') ?? '{}');
   assert.deepEqual(manual, manifest);
+  assert.equal(manifest.display_information.background_color, '#bd5732');
 
   assert.ok(
     acceptedFixture.manifest.oauth_config.scopes.bot.every((scope) =>

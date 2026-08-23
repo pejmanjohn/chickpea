@@ -146,7 +146,7 @@ function manifestCore(input: {
     display_information: {
       name: input.appName,
       description: input.description,
-      background_color: '#fffdf6',
+      background_color: '#bd5732',
     },
     features: {
       app_home: {
