@@ -33,6 +33,7 @@ import type {
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
+import { defaultAgentAvatarPng } from '../src/slack/agent-presence/default-avatar-pool.ts';
 
 const TOKEN = 'agent-admin-token';
 
@@ -216,6 +217,7 @@ test('Agent create owns its handle, generated avatar, edit policy, and creator',
     assert.equal(agent.lifecycle, 'draft');
     assert.equal(agent.slackPresence.normalizedHandle, 'support');
     assert.equal(agent.slackPresence.avatar.kind, 'generated');
+    assert.match(agent.slackPresence.avatar.seed, /^chickpea-avatar-v1:\d{2}:/);
     assert.match(agent.slackPresence.avatar.url, /\/assets\/agents\/agent_support\/avatar\/1$/);
 
     const avatar = await fixture.app.request(agent.slackPresence.avatar.url);
@@ -223,6 +225,7 @@ test('Agent create owns its handle, generated avatar, edit policy, and creator',
     assert.equal(avatar.headers.get('content-type'), 'image/png');
     const avatarBytes = new Uint8Array(await avatar.arrayBuffer());
     assert.deepEqual([...avatarBytes.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+    assert.deepEqual(avatarBytes, defaultAgentAvatarPng(agent.slackPresence.avatar.seed));
     assert.match(avatar.headers.get('cache-control') ?? '', /immutable/);
   } finally {
     fixture.store.close();

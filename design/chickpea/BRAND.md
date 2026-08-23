@@ -17,6 +17,16 @@ guide records the design rules that should remain consistent as the UI evolves.
 - Never add the sprout leaf back; never put faces on more than one pea in a
   lockup. Secondary peas (marketing/illustration) are faceless.
 - Minimum sizes: mark alone ≥ 14px; with face ≥ 20px.
+- Slack avatars are one soft-clay family: a large matte Chickpea sits inside a
+  warm, moonless architectural portal. The square background runs to
+  every edge so Slack owns the corner treatment. The install-wide bot keeps
+  the canonical gold Chickpea ([`assets/bot-avatar.png`](../../assets/bot-avatar.png)).
+  New Agents cycle through twelve approved body colors, subtle shape changes,
+  and restrained expressions in
+  [`assets/chickpea-avatars/agent-defaults`](../../assets/chickpea-avatars/agent-defaults).
+  Gold is reserved for the install-wide identity. Keep the character large
+  enough to read at 40px, avoid glossy materials, eyebrows, half-smiles, and
+  symmetrical two-lobed silhouettes.
 
 ## Color
 

@@ -317,9 +317,11 @@ import {
 import {
   AgentAvatarError,
   agentAvatarUrl,
+  generatedAgentAvatarPng,
   readAgentAvatarAsset,
   uploadAgentAvatar,
 } from '../slack/agent-presence/avatar-assets.ts';
+import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import {
   AgentPresenceError,
   agentPresenceRecovery,
@@ -2949,8 +2951,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.notFound();
     }
     try {
-      await store(c).getAgent(agentId);
-      const asset = await readAgentAvatarAsset({ settings: settings(c), agentId, revision });
+      const agent = await store(c).getAgent(agentId);
+      const asset = await readAgentAvatarAsset({
+        settings: settings(c),
+        agentId,
+        revision,
+        ...(agent.slackPresence?.avatar.seed
+          ? { seed: agent.slackPresence.avatar.seed }
+          : {}),
+      });
       if (!asset) return c.notFound();
       c.header('Content-Type', asset.contentType);
       c.header('Cache-Control', 'public, max-age=31536000, immutable');
@@ -4237,8 +4246,23 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     try {
       const configStore = store(c);
+      const existingGeneratedSeeds = (await configStore.listAgents()).flatMap((existing) => {
+        const avatar = existing.slackPresence?.avatar;
+        return avatar?.kind === 'generated' ? [avatar.seed ?? existing.id] : [];
+      });
+      const currentPresence = agent.slackPresence!;
       agent = {
         ...agent,
+        slackPresence: {
+          ...currentPresence,
+          avatar: {
+            ...currentPresence.avatar,
+            seed: nextDefaultAgentAvatarSeed(
+              existingGeneratedSeeds,
+              currentPresence.avatar.seed ?? randomUUID(),
+            ),
+          },
+        },
         apiConnections: await normalizeApiOAuthPatch(
           agent.id,
           [],
@@ -5359,11 +5383,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         const avatar = current.slackPresence.avatar;
         const url = await createGatewayDeploymentClient(
           c.env as PlatformEnv | undefined,
-        ).generateAvatar({
+        ).publishAvatar({
           workspaceId: installation.workspaceId,
           agentId,
           revision: avatar.revision,
-          seed: avatar.seed ?? agentId,
+          contentType: 'image/png',
+          bytes: await generatedAgentAvatarPng(avatar.seed ?? agentId),
         });
         if (avatar.url !== url) {
           current = await store(c).updateAgent(agentId, {

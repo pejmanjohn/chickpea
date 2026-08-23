@@ -3,6 +3,10 @@ import { PhotonImage, SamplingFilter, resize } from '@cf-wasm/photon';
 import type { SettingsStore } from '../../config/settings-store.ts';
 import type { ConfigStore } from '../../config/store.ts';
 import type { CustomAgentConfig } from '../../config/types.ts';
+import {
+  defaultAgentAvatarPng,
+  isDefaultAgentAvatarSeed,
+} from './default-avatar-pool.ts';
 
 export const MAX_AGENT_AVATAR_BYTES = 512 * 1_024;
 export const MAX_AGENT_AVATAR_SOURCE_DIMENSION = 4_096;
@@ -94,6 +98,7 @@ export async function readAgentAvatarAsset(input: {
   settings: SettingsStore;
   agentId: string;
   revision: number;
+  seed?: string;
 }): Promise<{ contentType: string; bytes: Uint8Array } | undefined> {
   const stored = await input.settings.getSetting(avatarAssetKey(input.agentId, input.revision));
   if (stored) {
@@ -109,16 +114,26 @@ export async function readAgentAvatarAsset(input: {
       return undefined;
     }
   }
-  // Generated revisions are public, immutable PNGs so Slack can fetch them
-  // through the same raster persona path as uploaded avatars. The product
-  // uses a sprout family distinct from Atlas and varies the palette per Agent.
+  // Generated revisions are public, immutable PNGs so Slack can fetch the
+  // selected default through the same path as an uploaded replacement.
   return {
     contentType: 'image/png',
-    bytes: await generatedAgentAvatarPng(`${input.agentId}:${input.revision}`),
+    bytes: await generatedAgentAvatarPng(
+      input.seed && isDefaultAgentAvatarSeed(input.seed)
+        ? input.seed
+        : `${input.agentId}:${input.revision}`,
+    ),
   };
 }
 
 export async function generatedAgentAvatarPng(seed: string): Promise<Uint8Array> {
+  return isDefaultAgentAvatarSeed(seed)
+    ? defaultAgentAvatarPng(seed)
+    : legacyGeneratedAgentAvatarPng(seed);
+}
+
+/** Preserve bytes already published at immutable legacy revision URLs. */
+async function legacyGeneratedAgentAvatarPng(seed: string): Promise<Uint8Array> {
   const width = 128;
   const height = 128;
   const scanlines = new Uint8Array(height * (1 + width * 4));
