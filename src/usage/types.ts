@@ -1,6 +1,7 @@
 import type { AuditEvent } from '../audit/types.ts';
+import type { AgentModelSource } from '../config/types.ts';
 
-export const USAGE_TELEMETRY_SCHEMA_VERSION = 1;
+export const USAGE_TELEMETRY_SCHEMA_VERSION = 2;
 
 export const USAGE_OPERATION_KINDS = [
   'interactive_turn',
@@ -70,6 +71,11 @@ export interface AdmitUsageOperationInput {
   routineId?: string | null;
   routineLabel?: string | null;
   routineRunId?: string | null;
+  requesterMembershipId?: string | null;
+  executionPrincipalId?: string | null;
+  modelSource?: AgentModelSource | null;
+  workspaceDefaultRevision?: number | null;
+  catalogRevision?: string | null;
   requestedProvider: string | null;
   requestedModel: string | null;
   credentialRefId: string | null;
@@ -94,6 +100,11 @@ export interface UsageOperation {
   routineId: string | null;
   routineLabel: string | null;
   routineRunId: string | null;
+  requesterMembershipId: string | null;
+  executionPrincipalId: string | null;
+  modelSource: AgentModelSource | null;
+  workspaceDefaultRevision: number | null;
+  catalogRevision: string | null;
   requestedProvider: string | null;
   requestedModel: string | null;
   credentialRefId: string | null;

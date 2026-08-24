@@ -30,6 +30,7 @@ const config: EffectiveSlackConfig = {
     apiConnections: [], repositories: [],
   },
   model: 'anthropic/claude-haiku-4-5', provider: 'anthropic',
+  modelAttribution: { source: 'pinned', providerId: 'anthropic' },
   instructions: 'Use current channel authority.', instructionLayers: [],
 };
 const assignment: ResolvedAssignment = {

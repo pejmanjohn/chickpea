@@ -39,12 +39,18 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
     assert.ok(bob.resolution);
     const agent = await config.createAgent({
       id: 'agent_support', name: 'Support', instructions: 'Help customers.', enabled: true,
+      model: 'local-stub/routine-authority',
       lifecycle: 'active', creatorMembershipId: owner.membership.id,
       editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [],
     });
     await config.putAgentChannelGrant({
       workspaceId: WORKSPACE, channelId: CHANNEL, agentId: agent.id, status: 'active',
       createdByMembershipId: owner.membership.id,
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: WORKSPACE,
+      transportMode: 'direct',
+      defaultAgentId: agent.id,
     });
     const team = await putConnection(config, 'connection_team', 'team', owner.membership.id);
     const ownerPersonal = await putConnection(

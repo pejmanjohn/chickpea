@@ -17,6 +17,7 @@ const turn: NormalizedSlackTurn = {
   eventId: 'Ev_USAGE',
   text: 'content is deliberately not persisted',
   userId: 'U_USAGE',
+  actorMembershipId: 'membership_usage',
   messageTs: '1000.0001',
   threadTs: '1000.0001',
   source: 'app_mention',
@@ -29,6 +30,12 @@ const assignment: ResolvedAssignment = {
   channelLabel: 'usage-lab',
   agentId: 'agent_usage',
   model: 'openai/gpt-4.1-mini',
+  modelAttribution: {
+    source: 'workspace_default',
+    providerId: 'openai',
+    workspaceDefaultRevision: 9,
+    catalogRevision: 'catalog_2026_08',
+  },
   modelCredential: {
     credentialRefId: 'cred_openai_environment',
     version: 7,
@@ -92,6 +99,12 @@ test('interactive capture persists only bounded attribution and aggregate respon
     assert.equal(detail?.operation.channelLabel, 'usage-lab');
     assert.equal(detail?.operation.credentialVersion, 7);
     assert.equal(detail?.operation.runId, 'run_usage_interactive');
+    assert.equal(detail?.operation.requesterMembershipId, 'membership_usage');
+    assert.equal(detail?.operation.executionPrincipalId, 'agent_usage');
+    assert.equal(detail?.operation.modelSource, 'workspace_default');
+    assert.equal(detail?.operation.workspaceDefaultRevision, 9);
+    assert.equal(detail?.operation.catalogRevision, 'catalog_2026_08');
+    assert.equal(detail?.operation.telemetrySchemaVersion, 2);
     assert.equal(detail?.measurements[0]?.runExecutionId, 'execution_usage_interactive_1');
     assert.equal(detail?.measurements[0]?.cacheReadTokens, 20);
     assert.equal(detail?.measurements[0]?.cacheWriteTokens, 10);

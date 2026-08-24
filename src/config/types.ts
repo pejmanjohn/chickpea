@@ -452,6 +452,18 @@ export interface ModelCredentialAttribution {
   unknownRotation: boolean;
 }
 
+export type AgentModelSource = 'workspace_default' | 'pinned' | 'legacy_environment';
+
+/** Non-secret policy facts frozen when a message is admitted. */
+export interface AgentModelAttribution {
+  source: AgentModelSource;
+  providerId: string;
+  /** Present only when source is Workspace default. */
+  workspaceDefaultRevision?: number;
+  /** Active model-catalog revision when one governed this route. */
+  catalogRevision?: string;
+}
+
 export interface ResolvedAssignment {
   workspaceId: string;
   channelId: string;
@@ -461,19 +473,21 @@ export interface ResolvedAssignment {
   channelLabel?: string;
   /** Live Channel inventory revision; missing on direct conversations. */
   channelRevision?: number;
+  /** Persisted ownership epoch; later handoffs increment it. */
+  ownerIncarnation?: number;
   agent: CustomAgentConfig;
   // Optional pre-resolved model label. Set only when the assignment is served
   // from a frozen thread snapshot; undefined means resolve from the agent via
   // model policy at turn time.
   model?: string;
+  modelAttribution?: AgentModelAttribution;
   modelCredential?: ModelCredentialAttribution;
 }
 
 // A snapshot IS a resolved assignment frozen at a thread's first turn, plus the
 // resolved model/provider/instructions. Declaring the relation lets a
 // snapshot be used directly wherever a ResolvedAssignment is expected.
-export interface AgentSnapshot extends ResolvedAssignment {
-  schemaVersion: 2;
+interface AgentSnapshotBase extends ResolvedAssignment {
   model: string;
   providerId: string;
   instructions: string;
@@ -481,6 +495,18 @@ export interface AgentSnapshot extends ResolvedAssignment {
   snapshotHash: string;
   createdAt: number;
 }
+
+/** Read compatibility for work admitted before Workspace-default attribution existed. */
+export interface AgentSnapshotV2 extends AgentSnapshotBase {
+  schemaVersion: 2;
+}
+
+export interface AgentSnapshotV3 extends AgentSnapshotBase {
+  schemaVersion: 3;
+  modelAttribution: AgentModelAttribution;
+}
+
+export type AgentSnapshot = AgentSnapshotV2 | AgentSnapshotV3;
 
 export interface AgentSnapshotRootReference {
   threadKey: string;

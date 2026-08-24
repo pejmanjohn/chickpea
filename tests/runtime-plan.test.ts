@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import {
@@ -145,6 +146,11 @@ function assignment(overrides: Partial<ResolvedAssignment> = {}): ResolvedAssign
     agentId: AGENT.id,
     agent: structuredClone(AGENT),
     model: 'openai/gpt-5.4-mini',
+    modelAttribution: {
+      source: 'workspace_default',
+      providerId: 'openai',
+      workspaceDefaultRevision: 7,
+    },
     ...overrides,
   };
 }
@@ -207,13 +213,19 @@ test('owner-bound sandbox keys stay provider-safe at maximum runtime-plan bounds
 test('a complete first-turn plan contains policy descriptors but no auth material', () => {
   const plan = compile();
 
-  assert.equal(plan.schemaVersion, 2);
+  assert.equal(plan.schemaVersion, 3);
   assert.equal(plan.agentId, 'agent_runtime');
   assert.equal(plan.conversation.workspaceId, 'T_RUNTIME');
   assert.equal(plan.conversation.threadTs, '1783000000.000100');
   assert.equal(plan.conversation.surface, 'channel_thread');
   assert.match(plan.conversation.continuityKey, /^agent_[a-f0-9]{40}$/);
   assert.equal(plan.model, 'openai/gpt-5.4-mini');
+  assert.deepEqual(plan.modelAttribution, {
+    source: 'workspace_default',
+    providerId: 'openai',
+    workspaceDefaultRevision: 7,
+  });
+  assert.equal(plan.ownerIncarnation, 1);
   assert.equal(plan.memoryEpoch, 3);
   assert.deepEqual(plan.skills.map(({ name }) => name), ['research']);
   assert.deepEqual(plan.mcpConnections, [{
@@ -318,6 +330,33 @@ test('semantic-memory runtime policy rotates new plans while v2 plans remain rea
   );
 });
 
+test('persisted RuntimePlan V2 jobs remain readable without new attribution fields', () => {
+  const {
+    ownerIncarnation: _ownerIncarnation,
+    modelAttribution: _modelAttribution,
+    ...legacy
+  } = compile();
+  const v2 = { ...legacy, schemaVersion: 2 as const };
+  v2.harnessRevision = compatibilityHarnessRevision(v2);
+
+  const parsed = parseRuntimePlanV2(v2);
+  assert.equal(parsed.schemaVersion, 2);
+  assert.equal(parsed.model, 'openai/gpt-5.4-mini');
+  assert.equal(parsed.modelAttribution, undefined);
+  assert.equal(parsed.ownerIncarnation, undefined);
+});
+
+test('a pre-attribution persisted assignment keeps its model and is labeled legacy on retry', () => {
+  const legacyAssignment = assignment();
+  delete legacyAssignment.modelAttribution;
+  const plan = compile({ assignment: legacyAssignment });
+  assert.equal(plan.model, 'openai/gpt-5.4-mini');
+  assert.deepEqual(plan.modelAttribution, {
+    source: 'legacy_environment',
+    providerId: 'openai',
+  });
+});
+
 test('equivalent key and set ordering produces one revision and instance id', () => {
   const first = compile();
   const reorderedAgent = structuredClone(AGENT);
@@ -337,10 +376,13 @@ test('equivalent key and set ordering produces one revision and instance id', ()
   assert.equal(deriveRuntimePlanInstanceId(reordered), deriveRuntimePlanInstanceId(first));
 });
 
-test('harness policy changes rotate while credential attribution does not', () => {
+test('harness policy and frozen credential epochs rotate the runtime incarnation', () => {
   const baseline = compile();
   const cases = [
-    compile({ assignment: assignment({ model: 'anthropic/claude-haiku-4-5' }) }),
+    compile({ assignment: assignment({
+      model: 'anthropic/claude-haiku-4-5',
+      modelAttribution: { source: 'pinned', providerId: 'anthropic' },
+    }) }),
     compile({ instructions: 'Changed instructions.' }),
     compile({
       assignment: assignment({
@@ -375,8 +417,14 @@ test('harness policy changes rotate while credential attribution does not', () =
       },
     }),
   });
-  assert.equal(credentialRotated.harnessRevision, baseline.harnessRevision);
-  assert.equal(deriveRuntimePlanInstanceId(credentialRotated), deriveRuntimePlanInstanceId(baseline));
+  assert.deepEqual(credentialRotated.modelCredential, {
+    credentialRefId: 'credential_new',
+    version: 99,
+    providerId: 'openai',
+  });
+  assert.notEqual(credentialRotated.harnessRevision, baseline.harnessRevision);
+  assert.notEqual(deriveRuntimePlanInstanceId(credentialRotated), deriveRuntimePlanInstanceId(baseline));
+  assert.doesNotMatch(JSON.stringify(credentialRotated), /Rotated key/);
 
   const liveResolverChange = compile({
     effectiveConnections: withMcpPolicy({
@@ -454,3 +502,43 @@ test('direct plans use stable coordinates and normalize persisted App Home surfa
     'direct_message',
   );
 });
+
+function compatibilityHarnessRevision(plan: ReturnType<typeof compile>): string {
+  return createHash('sha256').update(canonicalJson({
+    schemaVersion: plan.schemaVersion,
+    continuityPolicy: plan.continuityPolicy,
+    agentId: plan.agentId,
+    ...(plan.actorMembershipId ? { actorMembershipId: plan.actorMembershipId } : {}),
+    ...(plan.connectionAccountIds !== undefined
+      ? { connectionAccountIds: plan.connectionAccountIds }
+      : {}),
+    ...(plan.connectionAuthorizations !== undefined
+      ? { connectionAuthorizations: plan.connectionAuthorizations }
+      : {}),
+    ...(plan.connectionChoices !== undefined
+      ? { connectionChoices: plan.connectionChoices }
+      : {}),
+    ...(plan.configurationRevision
+      ? { configurationRevision: plan.configurationRevision }
+      : {}),
+    model: plan.model,
+    instructions: plan.instructions,
+    memoryEpoch: plan.memoryEpoch,
+    skills: plan.skills,
+    mcpConnections: plan.mcpConnections,
+    apiConnections: plan.apiConnections,
+    repositories: plan.repositories,
+    sandbox: plan.sandbox,
+    artifactDestinationKind: plan.artifactDestination.kind,
+  })).digest('hex');
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}

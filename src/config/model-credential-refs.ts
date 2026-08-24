@@ -31,6 +31,18 @@ export interface StoredCredentialMetadata {
   activeFrom: number;
 }
 
+export class ModelCredentialRevisionError extends Error {
+  readonly repairPath = '/admin/settings#model-providers';
+
+  constructor(
+    readonly credentialRefId: string,
+    readonly expectedVersion: number,
+  ) {
+    super('The frozen model credential changed. Retry this request after provider setup is repaired.');
+    this.name = 'ModelCredentialRevisionError';
+  }
+}
+
 interface ResolveCredentialOptions {
   processEnv?: NodeJS.ProcessEnv;
   now?: () => number;
@@ -127,6 +139,30 @@ export async function resolveModelCredentialAttribution(
     unknownRotation: true,
     activeFrom: 0,
   });
+}
+
+/** A retry may use only the credential epoch frozen at original admission. */
+export async function revalidateModelCredentialAttribution(
+  modelSpecifier: string,
+  expected: Pick<ModelCredentialAttribution, 'credentialRefId' | 'version' | 'providerId'>,
+  platformEnv?: PlatformEnv,
+  settingsStore?: SettingsStore,
+  usageStore?: UsageStore,
+): Promise<void> {
+  const current = await resolveModelCredentialAttribution(
+    modelSpecifier,
+    platformEnv,
+    settingsStore,
+    usageStore,
+  );
+  if (
+    !current ||
+    current.credentialRefId !== expected.credentialRefId ||
+    current.version !== expected.version ||
+    current.providerId !== expected.providerId
+  ) {
+    throw new ModelCredentialRevisionError(expected.credentialRefId, expected.version);
+  }
 }
 
 export async function rotateStoredModelCredential(

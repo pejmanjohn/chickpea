@@ -25,6 +25,7 @@ import {
   type ProviderAuthRoute,
 } from '../config/runtime-model.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
+import type { EffectiveSlackConfig } from '../config/effective-config.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   getSettingsStore,
@@ -382,6 +383,14 @@ async function prepareExecution(
         settings: settingsStore,
         env: input.env,
       });
+  const modelCredential = access.config.modelCredential ?? await (
+    dependencies.resolveCredential ?? resolveModelCredentialAttribution
+  )(
+    access.config.model,
+    input.env,
+    settingsStore,
+    usageStore,
+  ).catch(() => null);
   const prompt = await (dependencies.preparePrompt ?? prepareRoutinePrompt)(
     input.run,
     input.routine,
@@ -417,6 +426,7 @@ async function prepareExecution(
       prompt,
       attemptId,
       runtimeModel: runtimeModel.model,
+      modelCredential,
       sandboxMode: sandboxDecision.selection,
     });
     sandboxUnavailableFallback = sandboxDecision.unavailableFallback;
@@ -447,14 +457,6 @@ async function prepareExecution(
   const run = await input.store.getRun(input.run.id);
   if (!run) throw new Error('Routine occurrence was not readable after admission.');
 
-  const modelCredential = access.config.modelCredential ?? await (
-    dependencies.resolveCredential ?? resolveModelCredentialAttribution
-  )(
-    access.config.model,
-    input.env,
-    settingsStore,
-    usageStore,
-  ).catch(() => null);
   const usageRecorder = (dependencies.usageRecordingEnabled ?? usageRuntimeRecordingEnabled(input.env))
     ? new RoutineUsageRecorder({
         operationId: run.id,
@@ -468,6 +470,9 @@ async function prepareExecution(
         routineId: input.routine.id,
         routineLabel: input.routine.name,
         requestedModel: access.config.model,
+        requesterMembershipId: access.actorMembershipId ?? null,
+        executionPrincipalId: access.config.agentId,
+        modelAttribution: access.config.modelAttribution,
         credentialRefId: modelCredential?.credentialRefId ?? null,
         credentialVersion: modelCredential?.version ?? null,
         store: usageStore,
@@ -534,6 +539,7 @@ function createEnvelope(input: {
   prompt: PreparedRoutinePrompt;
   attemptId: string;
   runtimeModel: string;
+  modelCredential: EffectiveSlackConfig['modelCredential'] | null;
   sandboxMode: 'bash' | 'cloudflare';
 }): RoutineAgentDispatchEnvelopeV1 {
   const runtimePlan = compileRuntimePlanV2({
@@ -544,6 +550,11 @@ function createEnvelope(input: {
       agentId: input.access.config.agentId,
       agent: input.access.config.agent,
       model: input.runtimeModel,
+      modelAttribution: input.access.config.modelAttribution,
+      ...(input.access.config.ownerIncarnation
+        ? { ownerIncarnation: input.access.config.ownerIncarnation }
+        : {}),
+      ...(input.modelCredential ? { modelCredential: input.modelCredential } : {}),
     },
     instructions: [
       input.access.config.instructions,

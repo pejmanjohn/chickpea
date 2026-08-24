@@ -21,6 +21,7 @@ const config: EffectiveSlackConfig = {
   },
   model: 'anthropic/claude-sonnet-4-6',
   provider: 'anthropic',
+  modelAttribution: { source: 'pinned', providerId: 'anthropic' },
   instructions: 'Be useful.\nRuntime guardrail.',
   instructionLayers: [],
 };

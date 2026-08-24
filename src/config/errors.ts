@@ -106,7 +106,14 @@ export class DisabledAgentError extends NoAssignmentError {
 }
 
 export class ModelResolutionError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly repair?: {
+      status: 'provider_setup_required' | 'unsupported';
+      providerId: string;
+      path: string;
+    },
+  ) {
     super(message);
     this.name = 'ModelResolutionError';
   }

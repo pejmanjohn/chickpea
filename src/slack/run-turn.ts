@@ -972,6 +972,11 @@ async function recordExplicitInteractionClassifierUsage(input: {
     agentId: input.assignment.agentId,
     agentLabel: input.assignment.agent.name,
     requestedModel: input.requestedModel,
+    requesterMembershipId: input.turn.actorMembershipId ?? null,
+    executionPrincipalId: input.assignment.agentId,
+    ...(input.assignment.modelAttribution
+      ? { modelAttribution: input.assignment.modelAttribution }
+      : {}),
     credentialRefId: input.assignment.modelCredential?.credentialRefId ?? null,
     credentialVersion: input.assignment.modelCredential?.version ?? null,
     store: input.options.usageStore ?? getUsageStore(input.platformEnv),

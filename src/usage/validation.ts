@@ -21,6 +21,7 @@ import {
   hasCredentialLikeContent,
   hasDisallowedControlCharacter,
 } from '../security/content-validation.ts';
+import type { AgentModelSource } from '../config/types.ts';
 
 const OPAQUE_ID = /^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,255}$/;
 const MAX_QUERY_RANGE_MS = 366 * 24 * 60 * 60 * 1_000;
@@ -55,6 +56,14 @@ export function normalizeAdmitUsageOperation(input: AdmitUsageOperationInput): A
     routineId: optionalId(input.routineId ?? null, 'routine ID'),
     routineLabel: optionalLabel(input.routineLabel ?? null, 'routine label'),
     routineRunId: optionalId(input.routineRunId ?? null, 'routine run ID'),
+    requesterMembershipId: optionalId(input.requesterMembershipId, 'requester membership ID'),
+    executionPrincipalId: optionalId(input.executionPrincipalId, 'execution principal ID'),
+    modelSource: optionalModelSource(input.modelSource),
+    workspaceDefaultRevision: optionalPositiveInteger(
+      input.workspaceDefaultRevision,
+      'Workspace default revision',
+    ),
+    catalogRevision: optionalId(input.catalogRevision, 'model catalog revision'),
     requestedProvider: optionalId(input.requestedProvider, 'requested provider'),
     requestedModel: optionalModel(input.requestedModel, 'requested model'),
     credentialRefId: optionalId(input.credentialRefId, 'credential reference'),
@@ -68,6 +77,18 @@ export function normalizeAdmitUsageOperation(input: AdmitUsageOperationInput): A
   }
   if ((normalized.credentialRefId === null) !== (normalized.credentialVersion === null)) {
     invalid('Credential reference and version must be recorded together.');
+  }
+  if (
+    normalized.modelSource === 'workspace_default' &&
+    normalized.workspaceDefaultRevision === null
+  ) {
+    invalid('Workspace-default usage requires its frozen revision.');
+  }
+  if (
+    normalized.modelSource !== 'workspace_default' &&
+    normalized.workspaceDefaultRevision !== null
+  ) {
+    invalid('Only Workspace-default usage may carry its revision.');
   }
   return normalized;
 }
@@ -270,6 +291,15 @@ function opaqueId(value: unknown, label: string, query = false): string {
 
 function optionalId(value: unknown, label: string): string | null {
   return value === null || value === undefined ? null : opaqueId(value, label);
+}
+
+function optionalModelSource(value: unknown): AgentModelSource | null {
+  if (value === null || value === undefined) return null;
+  return enumValue(value, [
+    'workspace_default',
+    'pinned',
+    'legacy_environment',
+  ] as const, 'model source');
 }
 
 function model(value: unknown, label: string, query = false): string {

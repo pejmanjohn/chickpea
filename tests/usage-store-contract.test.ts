@@ -26,6 +26,11 @@ function operation(
     channelId: 'C_USAGE',
     channelLabel: 'usage-lab',
     conversationKind: 'named_channel',
+    requesterMembershipId: 'membership_usage',
+    executionPrincipalId: 'agent_default',
+    modelSource: 'workspace_default',
+    workspaceDefaultRevision: 12,
+    catalogRevision: 'catalog_2026_08',
     requestedProvider: 'openai',
     requestedModel: 'gpt-4.1-mini',
     credentialRefId: 'cred_openai_environment',
@@ -70,6 +75,12 @@ test('usage admission and terminal recording are idempotent and immutable', asyn
   try {
     const admitted = await store.admitOperation(operation('op_1'));
     assert.equal(admitted.status, 'admitted');
+    assert.equal(admitted.requesterMembershipId, 'membership_usage');
+    assert.equal(admitted.executionPrincipalId, 'agent_default');
+    assert.equal(admitted.modelSource, 'workspace_default');
+    assert.equal(admitted.workspaceDefaultRevision, 12);
+    assert.equal(admitted.catalogRevision, 'catalog_2026_08');
+    assert.equal(admitted.telemetrySchemaVersion, 2);
     assert.deepEqual(await store.admitOperation(operation('op_1')), admitted);
 
     const recorded = await store.recordTerminal(terminal('op_1'));

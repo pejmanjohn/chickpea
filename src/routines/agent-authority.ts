@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import { getConfigStore, getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
+import { resolveModelPolicyForAssignment } from '../config/model-policy.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type {
   AgentScheduleReference,
@@ -32,6 +33,7 @@ export class RoutineAuthorityError extends Error {
 export interface ResolvedRoutineAuthority {
   reference: AgentScheduleReference;
   agent: CustomAgentConfig;
+  assignment: ResolvedAssignment & { model: string; modelAttribution: NonNullable<ResolvedAssignment['modelAttribution']> };
   actorSlackUserId: string;
   effectiveConnections: EffectiveConnectionAccount[];
 }
@@ -164,7 +166,13 @@ export async function resolveRoutineAgentAuthority(
   if (reference.requiredConnectionAccountIds.some((id) => !available.has(id))) {
     throw new RoutineAuthorityError('connection_unavailable', 'A required connection is no longer available to the Runs as member.');
   }
-  return { reference, agent, actorSlackUserId, effectiveConnections };
+  const assignment = await resolveModelPolicyForAssignment({
+    workspaceId: reference.workspaceId,
+    channelId: reference.channelId,
+    agentId: agent.id,
+    agent,
+  }, config);
+  return { reference, agent, assignment, actorSlackUserId, effectiveConnections };
 }
 
 export async function markRoutineAuthorityNeedsAttention(

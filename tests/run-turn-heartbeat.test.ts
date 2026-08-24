@@ -48,6 +48,7 @@ const assignment: ResolvedAssignment = {
   channelId: 'D_HEARTBEAT',
   agentId: 'agent_heartbeat',
   model: 'local-stub/heartbeat',
+  modelAttribution: { source: 'pinned', providerId: 'local-stub' },
   agent: {
     id: 'agent_heartbeat',
     kind: 'user',

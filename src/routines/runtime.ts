@@ -90,12 +90,7 @@ export async function resolveRoutineRuntimeAccess(
   if (!dependencies.config || dependencies.authority) {
     try {
       authority = await (dependencies.authority ?? resolveRoutineAgentAuthority)(routine, env);
-      config = effectiveSlackConfigFromAssignment({
-        workspaceId: routine.workspaceId,
-        channelId: routine.channelId,
-        agentId: authority.reference.agentId,
-        agent: authority.agent,
-      });
+      config = effectiveSlackConfigFromAssignment(authority.assignment);
     } catch (error) {
       if (error instanceof RoutineAuthorityError) {
         throw new RoutineRuntimeError(

@@ -29,6 +29,7 @@ const config = {
     model: 'anthropic/claude-sonnet-4-6', skills: [], mcpServers: [], apiConnections: [], repositories: [],
   },
   model: 'anthropic/claude-sonnet-4-6', provider: 'anthropic', instructions: 'Be useful.', instructionLayers: [],
+  modelAttribution: { source: 'pinned', providerId: 'anthropic' },
 } satisfies EffectiveSlackConfig;
 
 async function admittedFixture(store: SqliteRoutineStore, suffix: string) {

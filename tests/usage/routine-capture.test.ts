@@ -54,6 +54,7 @@ const config = {
   },
   model: 'anthropic/claude-haiku-4-5',
   provider: 'anthropic',
+  modelAttribution: { source: 'pinned', providerId: 'anthropic' },
   instructions: 'Be useful.',
   instructionLayers: [],
 } satisfies EffectiveSlackConfig;

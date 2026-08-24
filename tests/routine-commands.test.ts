@@ -25,6 +25,8 @@ const TEST_ASSIGNMENT: ResolvedAssignment = {
     lifecycle: 'active', creatorMembershipId: 'membership_test',
     editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [],
   },
+  model: 'openai/gpt-5.6',
+  modelAttribution: { source: 'workspace_default', providerId: 'openai', workspaceDefaultRevision: 1 },
 };
 
 const TEST_AUTHORITY_REFERENCE = {
@@ -46,6 +48,10 @@ async function handleRoutineSlackRequest(
     resolveAuthority: async (routine) => ({
       reference: { ...TEST_AUTHORITY_REFERENCE, scheduleId: routine.id },
       agent: TEST_ASSIGNMENT.agent,
+      assignment: TEST_ASSIGNMENT as ResolvedAssignment & {
+        model: string;
+        modelAttribution: NonNullable<ResolvedAssignment['modelAttribution']>;
+      },
       actorSlackUserId: 'U_MEMBER',
       effectiveConnections: [],
     }),

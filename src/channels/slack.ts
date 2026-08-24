@@ -20,7 +20,7 @@ import {
   resolveEffectiveSlackConfig,
 } from '../config/effective-config.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
-import { resolveAgentModel } from '../config/model-policy.ts';
+import { resolveModelPolicyForAssignment } from '../config/model-policy.ts';
 import { liveChannelConfigurationEnabled } from '../config/live-channel-config.ts';
 import {
   ModelResolutionError,
@@ -948,6 +948,7 @@ async function processSlackEvent(
         return;
       }
       routedBaseAssignment = routed.assignment;
+      const policyAssignment = await resolveModelPolicyForAssignment(routed.assignment, store);
       candidateTurn = turn.source === 'reaction_added';
       if (surface === 'channel') {
         const channel = await runtimeTransport.lookupChannel(turn.channelId);
@@ -958,9 +959,9 @@ async function processSlackEvent(
       const frozenAssignment = await getOrReplaceSnapshotForRoute(
         stores.snapshots,
         threadKey,
-        routed.route,
+        { ...routed.route, modelAttribution: policyAssignment.modelAttribution },
         async () => {
-          const config = effectiveSlackConfigFromAssignment(routed.assignment);
+          const config = effectiveSlackConfigFromAssignment(policyAssignment);
           const modelCredential = await resolveModelCredentialAttribution(
             config.model,
             platformEnv,
@@ -996,14 +997,15 @@ async function processSlackEvent(
   // A model-resolution error still follows the existing sanitized-failure path.
   if (!assignment.modelCredential) {
     try {
-      const model = assignment.model ?? resolveAgentModel(assignment.agent);
-      const modelCredential = await resolveModelCredentialAttribution(
-        model,
-        platformEnv,
-        stores.settings,
-        stores.usage,
-      );
-      if (modelCredential) assignment = { ...assignment, modelCredential };
+      if (assignment.model) {
+        const modelCredential = await resolveModelCredentialAttribution(
+          assignment.model,
+          platformEnv,
+          stores.settings,
+          stores.usage,
+        );
+        if (modelCredential) assignment = { ...assignment, modelCredential };
+      }
     } catch {
       // Reporting enrichment cannot change whether the turn is admitted.
     }
@@ -1179,12 +1181,7 @@ async function processSlackEvent(
   // established legacy turn path so Slack receives one sanitized failure
   // instead of an intake exception and silence.
   let modelReadyForCanonicalAdmission = true;
-  try {
-    void (assignment.model ?? resolveAgentModel(assignment.agent));
-  } catch (error) {
-    if (!(error instanceof ModelResolutionError)) throw error;
-    modelReadyForCanonicalAdmission = false;
-  }
+  modelReadyForCanonicalAdmission = Boolean(assignment.model && assignment.modelAttribution);
 
   if (admissionTruth.eligible && modelReadyForCanonicalAdmission) {
     emitManagementMetric('live_revision.admission', {
@@ -1496,6 +1493,11 @@ async function recordInteractionClassifierUsage(input: {
     agentId: input.assignment.agentId,
     agentLabel: input.assignment.agent.name,
     requestedModel: input.requestedModel,
+    requesterMembershipId: input.turn.actorMembershipId ?? null,
+    executionPrincipalId: input.assignment.agentId,
+    ...(input.assignment.modelAttribution
+      ? { modelAttribution: input.assignment.modelAttribution }
+      : {}),
     credentialRefId: input.assignment.modelCredential?.credentialRefId ?? null,
     credentialVersion: input.assignment.modelCredential?.version ?? null,
     store: input.stores.usage,
@@ -1536,13 +1538,7 @@ async function classifyCandidateTurn(
   classification: Awaited<ReturnType<typeof classifySlackInteraction>>;
   requestedModel: string | null;
 }> {
-  const requestedModel = assignment.model ?? (() => {
-    try {
-      return resolveAgentModel(assignment.agent);
-    } catch {
-      return null;
-    }
-  })();
+  const requestedModel = assignment.model ?? null;
   const context = await hydrateSlackContextViaWebClient(
     client,
     turn,
