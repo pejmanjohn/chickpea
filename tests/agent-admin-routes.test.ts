@@ -233,6 +233,35 @@ test('Agent create owns its handle, generated avatar, edit policy, and creator',
   }
 });
 
+test('Agent creation reserves Chickpea system identities across id, name, and handle', async () => {
+  const fixture = harness();
+  try {
+    const cases = [
+      { id: 'agent_chickpea', name: 'Helper', handle: 'helper' },
+      { id: 'chick-pea', name: 'Helper', handle: 'helper' },
+      { id: 'agent_helper', name: 'CHICK_PEA', handle: 'helper' },
+      { id: 'agent_helper', name: 'Helper', handle: 'Chick pea!!' },
+    ];
+    for (const candidate of cases) {
+      const response = await fixture.app.request('http://localhost/admin/api/agents', {
+        method: 'POST',
+        headers: auth(),
+        body: JSON.stringify({
+          ...candidate,
+          instructions: 'Help people.',
+          enabled: true,
+          model: 'local-stub/admin-agent',
+        }),
+      });
+      assert.equal(response.status, 400, JSON.stringify(candidate));
+      assert.equal((await response.json() as { error: string }).error, 'invalid_request');
+    }
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('reusable MCP credentials cannot target an undeclared header', async () => {
   const fixture = harness();
   try {

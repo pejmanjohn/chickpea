@@ -21,7 +21,7 @@ const TEST_ASSIGNMENT: ResolvedAssignment = {
   channelId: 'C_TEST',
   agentId: 'agent_test',
   agent: {
-    id: 'agent_test', revision: 1, name: 'Test Agent', instructions: 'Test.', enabled: true,
+    id: 'agent_test', kind: 'user', revision: 1, name: 'Test Agent', instructions: 'Test.', enabled: true,
     lifecycle: 'active', creatorMembershipId: 'membership_test',
     editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [],
   },

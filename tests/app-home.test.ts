@@ -11,7 +11,7 @@ import {
 
 function agent(id: string, name: string): CustomAgentConfig {
   return {
-    id, revision: 1, name, description: `${name} description`, instructions: 'Help.', enabled: true,
+    id, kind: 'user', revision: 1, name, description: `${name} description`, instructions: 'Help.', enabled: true,
     lifecycle: 'active', configurationGeneration: 1, skills: [], mcpServers: [],
     apiConnections: [], repositories: [],
     slackPresence: {

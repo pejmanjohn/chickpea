@@ -1,4 +1,5 @@
 import type { AgentChannelGrantInput, CustomAgentConfig } from './types.ts';
+import { CHICKPEA_AGENT_ID, CHICKPEA_AGENT_NAME } from './agent-id.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 
 export const SEED_CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-5.2';
@@ -13,6 +14,7 @@ export function createSeededAgents(
   const target = options.target ?? (isCloudflareTarget() ? 'cloudflare' : 'node');
   const defaultAgent: CustomAgentConfig = {
     id: 'agent_default',
+    kind: 'user',
     revision: 1,
     name: 'Sprout',
     // PROFILE layer only — the runtime composes the RUNTIME and GUARDRAIL layers
@@ -34,6 +36,31 @@ export function createSeededAgents(
     repositories: [],
   };
   return [defaultAgent];
+}
+
+/** Product-owned system principal, materialized only after the Stage 2 fleet gate. */
+export function createChickpeaAgent(): CustomAgentConfig {
+  return {
+    id: CHICKPEA_AGENT_ID,
+    kind: 'system',
+    revision: 1,
+    name: CHICKPEA_AGENT_NAME,
+    description: 'Your workspace assistant and Agent administrator.',
+    instructions: [
+      'You are Chickpea, the built-in workspace assistant.',
+      'Help with general questions, explain how Chickpea works, and administer the workspace only through authorized tools.',
+      'Suggest a user Agent when work should become specialized, reusable, or recurring.',
+      'Be direct and concise, and never invent facts or expose secrets.',
+    ].join(' '),
+    enabled: true,
+    lifecycle: 'active',
+    editPolicy: 'creator_and_admins',
+    configurationGeneration: 1,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  };
 }
 
 export const seededAgents: CustomAgentConfig[] = createSeededAgents();

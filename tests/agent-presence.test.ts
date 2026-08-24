@@ -530,6 +530,7 @@ function crc32(value: Uint8Array): number {
 function agent(id: string, name: string, handle: string): CustomAgentConfig {
   return {
     id,
+    kind: 'user',
     revision: 1,
     name,
     instructions: `You are ${name}.`,

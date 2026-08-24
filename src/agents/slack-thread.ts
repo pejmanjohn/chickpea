@@ -1216,6 +1216,7 @@ function projectRuntimePlanAgent(
   const mcpServers: CustomAgentConfig['mcpServers'] = [];
   return {
     id: current.id,
+    kind: current.kind,
     revision: current.revision,
     name: current.name,
     instructions: plan.instructions,

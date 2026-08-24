@@ -302,6 +302,7 @@ test('workspace installation selects one transport mode at the runtime edge', ()
     workspaceId: 'T123',
     revision: 1,
     transportMode,
+    runtimeContract: 'legacy',
     defaultAgentId: 'agent_default',
     health: 'healthy',
     createdAt: 1,

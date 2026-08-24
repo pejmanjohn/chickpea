@@ -3,9 +3,11 @@ import {
   AgentExistsError,
   AgentStillReferencedError,
   ChannelRevisionConflictError,
+  ReservedAgentIdentityError,
   UnknownAgentError,
+  WorkspaceModelDefaultRevisionConflictError,
 } from './errors.ts';
-import { seededAgents, seededAgentChannelGrants } from './seed.ts';
+import { createChickpeaAgent, seededAgents, seededAgentChannelGrants } from './seed.ts';
 import {
   type AgentChannelReference,
   type AgentChannelGrant,
@@ -24,6 +26,10 @@ import {
   type ConnectionAccount,
   type ConnectionAccountInput,
   type EnsureWorkspaceInstallationInput,
+  type SlackPublicContextEntry,
+  type SlackPublicContextEntryInput,
+  type WorkspaceModelDefault,
+  type WorkspaceModelDefaultInput,
   type WorkspaceInstallation,
   type WorkspaceInstallationPatch,
 } from './types.ts';
@@ -32,6 +38,10 @@ import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import {
+  CHICKPEA_AGENT_ID,
+  reservedAgentIdentityField,
+} from './agent-id.ts';
 
 export interface ConfigSeed {
   agents: readonly AgentCreateInput[];
@@ -55,6 +65,7 @@ const SCHEMA_MARKER_KEY = 'schema_marker';
  */
 export const CONFIG_SCHEMA_VERSION = 12;
 export const CONFIG_SCHEMA_MARKER = 'agent-first-v1';
+export const CONFIG_CHICKPEA_EXTENSION_MIGRATION = '2026-08-23-chickpea-system-agent-v1';
 
 interface AgentRow {
   id: string;
@@ -74,12 +85,14 @@ interface AgentRow {
   configuration_generation?: number | null;
   slack_presence_json?: string | null;
   archived_at?: number | null;
+  agent_kind?: string | null;
 }
 
 interface WorkspaceInstallationRow {
   workspace_id: string;
   revision: number;
   transport_mode: string;
+  runtime_contract?: string | null;
   default_agent_id: string;
   team_id: string | null;
   app_id: string | null;
@@ -110,7 +123,29 @@ interface AgentThreadRouteRow {
   thread_ts: string;
   agent_id: string;
   agent_generation: number;
+  owner_incarnation?: number | null;
   revision: number;
+  updated_at: number;
+}
+
+interface WorkspaceModelDefaultRow {
+  workspace_id: string;
+  model_id: string | null;
+  revision: number;
+  provenance: string;
+  last_changed_by_membership_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface SlackPublicContextRow {
+  workspace_id: string;
+  channel_id: string;
+  root_ts: string;
+  message_ts: string;
+  role: string;
+  text: string;
+  agent_id: string | null;
   updated_at: number;
 }
 
@@ -201,8 +236,11 @@ export type OAuthReauthorizationTarget =
  * the contract on both backends.
  */
 export interface ConfigStore {
+  /** Internal inventory. User-facing callers must use listUserAgents. */
   listAgents(): Promise<CustomAgentConfig[]>;
+  listUserAgents(): Promise<CustomAgentConfig[]>;
   getAgent(agentId: string): Promise<CustomAgentConfig>;
+  materializeChickpeaAgent(): Promise<CustomAgentConfig>;
   createAgent(agent: AgentCreateInput): Promise<CustomAgentConfig>;
   updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): Promise<CustomAgentConfig>;
   markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean>;
@@ -229,6 +267,11 @@ export interface ConfigStore {
     agentId: string,
     expectedRevision?: number,
   ): Promise<WorkspaceInstallation>;
+  getWorkspaceModelDefault(workspaceId: string): Promise<WorkspaceModelDefault | undefined>;
+  putWorkspaceModelDefault(
+    input: WorkspaceModelDefaultInput,
+    expectedRevision?: number,
+  ): Promise<WorkspaceModelDefault>;
   listAgentChannelGrants(workspaceId?: string, channelId?: string): Promise<AgentChannelGrant[]>;
   putAgentChannelGrant(
     input: AgentChannelGrantInput,
@@ -244,6 +287,23 @@ export interface ConfigStore {
     input: AgentThreadRouteInput,
     expectedRevision?: number,
   ): Promise<AgentThreadRoute>;
+  listSlackPublicContext(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+  ): Promise<SlackPublicContextEntry[]>;
+  putSlackPublicContext(input: SlackPublicContextEntryInput): Promise<SlackPublicContextEntry>;
+  deleteSlackPublicContextMessage(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+    messageTs: string,
+  ): Promise<boolean>;
+  deleteSlackPublicContextRoot(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+  ): Promise<number>;
   listConnectionAccounts(workspaceId: string): Promise<ConnectionAccount[]>;
   putConnectionAccount(
     input: ConnectionAccountInput,
@@ -299,25 +359,32 @@ export class ConfigStoreLogic {
       );
     }
     const defaultAgentId = input.defaultAgentId ?? this.requireFirstActiveAgent().id;
-    this.requireActiveAgent(defaultAgentId);
+    const defaultAgent = this.requireActiveUserAgent(defaultAgentId);
     const now = Date.now();
-    this.db.run(
-      `INSERT INTO config_workspace_installations (
-        workspace_id, revision, transport_mode, default_agent_id, team_id,
-        app_id, bot_user_id, gateway_binding_id, health, health_detail,
-        created_at, updated_at
-      ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)`,
-      input.workspaceId,
-      input.transportMode,
-      defaultAgentId,
-      input.teamId ?? null,
-      input.appId ?? null,
-      input.botUserId ?? null,
-      input.gatewayBindingId ?? null,
-      now,
-      now,
-    );
-    return this.getWorkspaceInstallation(input.workspaceId)!;
+    return this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO config_workspace_installations (
+          workspace_id, revision, transport_mode, runtime_contract, default_agent_id, team_id,
+          app_id, bot_user_id, gateway_binding_id, health, health_detail,
+          created_at, updated_at
+        ) VALUES (?, 1, ?, 'legacy', ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)`,
+        input.workspaceId,
+        input.transportMode,
+        defaultAgentId,
+        input.teamId ?? null,
+        input.appId ?? null,
+        input.botUserId ?? null,
+        input.gatewayBindingId ?? null,
+        now,
+        now,
+      );
+      this.insertWorkspaceModelDefault({
+        workspaceId: input.workspaceId,
+        ...(defaultAgent.model ? { modelId: defaultAgent.model } : {}),
+        provenance: defaultAgent.model ? 'installation_bootstrap' : 'migration_pending',
+      }, now);
+      return this.getWorkspaceInstallation(input.workspaceId)!;
+    });
   }
 
   getWorkspaceInstallation(workspaceId: string): WorkspaceInstallation | undefined {
@@ -370,6 +437,63 @@ export class ConfigStoreLogic {
     return this.getWorkspaceInstallation(workspaceId)!;
   }
 
+  getWorkspaceModelDefault(workspaceId: string): WorkspaceModelDefault | undefined {
+    const row = this.db.get(
+      'SELECT * FROM config_workspace_model_defaults WHERE workspace_id = ?',
+      workspaceId,
+    );
+    return row
+      ? rowToWorkspaceModelDefault(row as unknown as WorkspaceModelDefaultRow)
+      : undefined;
+  }
+
+  putWorkspaceModelDefault(
+    input: WorkspaceModelDefaultInput,
+    expectedRevision?: number,
+  ): WorkspaceModelDefault {
+    const current = this.getWorkspaceModelDefault(input.workspaceId);
+    if (!current) {
+      if (expectedRevision !== undefined && expectedRevision !== 0) {
+        throw new WorkspaceModelDefaultRevisionConflictError(
+          input.workspaceId,
+          expectedRevision,
+          0,
+        );
+      }
+      this.insertWorkspaceModelDefault(input, Date.now());
+      return this.getWorkspaceModelDefault(input.workspaceId)!;
+    }
+    const requiredRevision = expectedRevision ?? current.revision;
+    if (requiredRevision !== current.revision) {
+      throw new WorkspaceModelDefaultRevisionConflictError(
+        input.workspaceId,
+        requiredRevision,
+        current.revision,
+      );
+    }
+    const updated = this.db.run(
+      `UPDATE config_workspace_model_defaults
+       SET model_id = ?, provenance = ?, last_changed_by_membership_id = ?,
+           revision = revision + 1, updated_at = ?
+       WHERE workspace_id = ? AND revision = ?`,
+      input.modelId ?? null,
+      input.provenance,
+      input.lastChangedByMembershipId ?? null,
+      Date.now(),
+      input.workspaceId,
+      current.revision,
+    );
+    if (updated.changes !== 1) {
+      const actual = this.getWorkspaceModelDefault(input.workspaceId)?.revision ?? 0;
+      throw new WorkspaceModelDefaultRevisionConflictError(
+        input.workspaceId,
+        current.revision,
+        actual,
+      );
+    }
+    return this.getWorkspaceModelDefault(input.workspaceId)!;
+  }
+
   setWorkspaceDefaultAgent(
     workspaceId: string,
     agentId: string,
@@ -377,7 +501,7 @@ export class ConfigStoreLogic {
   ): WorkspaceInstallation {
     const current = this.getWorkspaceInstallation(workspaceId);
     if (!current) throw new Error(`Unknown workspace installation ${workspaceId}`);
-    this.requireActiveAgent(agentId);
+    this.requireActiveUserAgent(agentId);
     const requiredRevision = expectedRevision ?? current.revision;
     if (requiredRevision !== current.revision) {
       throw new Error(
@@ -402,6 +526,7 @@ export class ConfigStoreLogic {
     options: { replacementDefaultAgentId?: string; expectedRevision?: number } = {},
   ): CustomAgentConfig {
     const current = this.getAgent(agentId);
+    this.requireMutableUserAgent(current);
     // Archive is an idempotent desired-state operation. In particular, never
     // replace the original snapshot with an empty one on a delivery retry.
     if (current.lifecycle === 'archived') return current;
@@ -416,7 +541,7 @@ export class ConfigStoreLogic {
       throw new Error(`Archiving ${agentId} requires a replacement default Agent`);
     }
     if (options.replacementDefaultAgentId) {
-      this.requireActiveAgent(options.replacementDefaultAgentId);
+      this.requireActiveUserAgent(options.replacementDefaultAgentId);
     }
     return this.db.transaction(() => {
       for (const installation of installations) {
@@ -477,6 +602,7 @@ export class ConfigStoreLogic {
 
   restoreAgent(agentId: string, expectedRevision?: number): CustomAgentConfig {
     const current = this.getAgent(agentId);
+    this.requireMutableUserAgent(current);
     // Restoring an already-active Agent is also idempotent and must not bump
     // its configuration generation on a retry.
     if (current.lifecycle !== 'archived') return current;
@@ -566,7 +692,7 @@ export class ConfigStoreLogic {
     input: AgentChannelGrantInput,
     expectedRevision?: number,
   ): AgentChannelGrant {
-    this.requireActiveAgent(input.agentId);
+    this.requireActiveUserAgent(input.agentId);
     const current = this.db.get(
       `SELECT * FROM config_agent_channel_grants
        WHERE workspace_id = ? AND channel_id = ? AND agent_id = ?`,
@@ -659,13 +785,14 @@ export class ConfigStoreLogic {
       this.db.run(
         `INSERT INTO config_agent_thread_routes (
           workspace_id, channel_id, thread_ts, agent_id, agent_generation,
-          revision, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 1, ?)`,
+          owner_incarnation, revision, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
         input.workspaceId,
         input.channelId,
         input.threadTs,
         input.agentId,
         input.agentGeneration,
+        input.ownerIncarnation ?? 1,
         now,
       );
     } else {
@@ -677,10 +804,12 @@ export class ConfigStoreLogic {
       }
       const updated = this.db.run(
         `UPDATE config_agent_thread_routes
-         SET agent_id = ?, agent_generation = ?, revision = revision + 1, updated_at = ?
+         SET agent_id = ?, agent_generation = ?, owner_incarnation = ?,
+             revision = revision + 1, updated_at = ?
          WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND revision = ?`,
         input.agentId,
         input.agentGeneration,
+        input.ownerIncarnation ?? current.ownerIncarnation,
         now,
         input.workspaceId,
         input.channelId,
@@ -690,6 +819,88 @@ export class ConfigStoreLogic {
       if (updated.changes !== 1) throw new Error('Agent thread route changed');
     }
     return this.getAgentThreadRoute(input.workspaceId, input.channelId, input.threadTs)!;
+  }
+
+  listSlackPublicContext(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+  ): SlackPublicContextEntry[] {
+    return this.db.all(
+      `SELECT * FROM config_slack_public_context
+       WHERE workspace_id = ? AND channel_id = ? AND root_ts = ?
+       ORDER BY CAST(message_ts AS REAL), message_ts`,
+      workspaceId,
+      channelId,
+      rootTs,
+    ).map((row) => rowToSlackPublicContext(row as unknown as SlackPublicContextRow));
+  }
+
+  putSlackPublicContext(input: SlackPublicContextEntryInput): SlackPublicContextEntry {
+    if (!input.text.trim()) throw new Error('Slack public context text is required');
+    if ((input.role === 'agent') !== Boolean(input.agentId)) {
+      throw new Error('Slack public Agent context requires exactly one Agent identity');
+    }
+    if (input.agentId) this.getAgent(input.agentId);
+    const now = Date.now();
+    this.db.run(
+      `INSERT INTO config_slack_public_context (
+        workspace_id, channel_id, root_ts, message_ts, role, text, agent_id, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(workspace_id, channel_id, root_ts, message_ts) DO UPDATE SET
+        role = excluded.role,
+        text = excluded.text,
+        agent_id = excluded.agent_id,
+        updated_at = excluded.updated_at`,
+      input.workspaceId,
+      input.channelId,
+      input.rootTs,
+      input.messageTs,
+      input.role,
+      input.text,
+      input.agentId ?? null,
+      now,
+    );
+    const stored = this.db.get(
+      `SELECT * FROM config_slack_public_context
+       WHERE workspace_id = ? AND channel_id = ? AND root_ts = ? AND message_ts = ?`,
+      input.workspaceId,
+      input.channelId,
+      input.rootTs,
+      input.messageTs,
+    );
+    if (!stored) throw new Error('Slack public context was not stored');
+    return rowToSlackPublicContext(stored as unknown as SlackPublicContextRow);
+  }
+
+  deleteSlackPublicContextMessage(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+    messageTs: string,
+  ): boolean {
+    return this.db.run(
+      `DELETE FROM config_slack_public_context
+       WHERE workspace_id = ? AND channel_id = ? AND root_ts = ? AND message_ts = ?`,
+      workspaceId,
+      channelId,
+      rootTs,
+      messageTs,
+    ).changes === 1;
+  }
+
+  deleteSlackPublicContextRoot(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+  ): number {
+    return this.db.run(
+      `DELETE FROM config_slack_public_context
+       WHERE workspace_id = ? AND channel_id = ? AND root_ts = ?`,
+      workspaceId,
+      channelId,
+      rootTs,
+    ).changes;
   }
 
   listConnectionAccounts(workspaceId: string): ConnectionAccount[] {
@@ -775,7 +986,7 @@ export class ConfigStoreLogic {
   }
 
   putAgentConnectionBinding(input: AgentConnectionBindingInput): AgentConnectionBinding {
-    this.getAgent(input.agentId);
+    this.requireActiveUserAgent(input.agentId);
     const account = this.db.get('SELECT provider_id FROM config_connection_accounts WHERE id = ?', input.connectionAccountId);
     if (!account) throw new Error(`Unknown connection account ${input.connectionAccountId}`);
     if (String(account.provider_id) !== input.providerId) {
@@ -823,7 +1034,7 @@ export class ConfigStoreLogic {
     input: AgentScheduleReferenceInput,
     expectedRevision?: number,
   ): AgentScheduleReference {
-    this.getAgent(input.agentId);
+    this.requireActiveUserAgent(input.agentId);
     const current = this.db.get(
       'SELECT * FROM config_agent_schedule_references WHERE schedule_id = ?',
       input.scheduleId,
@@ -898,6 +1109,12 @@ export class ConfigStoreLogic {
       .map((row) => rowToAgent(row as unknown as AgentRow));
   }
 
+  listUserAgents(): CustomAgentConfig[] {
+    return this.db
+      .all("SELECT * FROM config_agents WHERE agent_kind = 'user' ORDER BY id")
+      .map((row) => rowToAgent(row as unknown as AgentRow));
+  }
+
   getAgent(agentId: string): CustomAgentConfig {
     const row = this.db.get('SELECT * FROM config_agents WHERE id = ?', agentId);
     if (!row) {
@@ -906,7 +1123,23 @@ export class ConfigStoreLogic {
     return rowToAgent(row as unknown as AgentRow);
   }
 
+  materializeChickpeaAgent(): CustomAgentConfig {
+    const existing = this.db.get('SELECT * FROM config_agents WHERE id = ?', CHICKPEA_AGENT_ID);
+    if (existing) {
+      const agent = rowToAgent(existing as unknown as AgentRow);
+      if (agent.kind !== 'system') {
+        throw new Error('The Chickpea system identity is already claimed by a user Agent');
+      }
+      return agent;
+    }
+    const chickpea = createChickpeaAgent();
+    const inserted = this.insertAgent(chickpea, { allowSystem: true });
+    if (inserted.changes !== 1) throw new Error('Chickpea was not materialized');
+    return this.getAgent(CHICKPEA_AGENT_ID);
+  }
+
   createAgent(agent: AgentCreateInput): CustomAgentConfig {
+    validateUserAgent(agent);
     let inserted;
     try {
       inserted = this.insertAgent(agent);
@@ -924,6 +1157,7 @@ export class ConfigStoreLogic {
 
   updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): CustomAgentConfig {
     const current = this.getAgent(agentId);
+    this.requireMutableUserAgent(current);
     const actualRevision = current.revision;
     const requiredRevision = expectedRevision ?? actualRevision;
     if (requiredRevision !== actualRevision) {
@@ -931,6 +1165,7 @@ export class ConfigStoreLogic {
     }
     const model = patch.model === undefined ? (current.model ?? null) : patch.model;
     const next = { ...current, ...patch, id: agentId };
+    validateUserAgent(next);
     if (current.enabled && !next.enabled) {
       this.requireAgentHasNoBlockingReferences(agentId);
     }
@@ -1017,6 +1252,7 @@ export class ConfigStoreLogic {
 
   deleteAgent(agentId: string, expectedRevision?: number): boolean {
     const current = this.getAgent(agentId);
+    this.requireMutableUserAgent(current);
     const requiredRevision = expectedRevision ?? current.revision;
     if (requiredRevision !== current.revision) {
       throw new AgentRevisionConflictError(agentId, requiredRevision, current.revision);
@@ -1048,6 +1284,7 @@ export class ConfigStoreLogic {
         }
         return true;
       }
+      this.requireMutableUserAgent(this.getAgent(agentId));
       this.requireAgentHasNoBlockingReferences(agentId);
       const deleted = this.db.run('DELETE FROM config_agents WHERE id = ?', agentId);
       if (deleted.changes !== 1) return false;
@@ -1186,6 +1423,8 @@ export class ConfigStoreLogic {
         workspace_id TEXT PRIMARY KEY,
         revision INTEGER NOT NULL,
         transport_mode TEXT NOT NULL,
+        runtime_contract TEXT NOT NULL DEFAULT 'legacy'
+          CHECK (runtime_contract IN ('legacy', 'chickpea-v1')),
         default_agent_id TEXT NOT NULL,
         team_id TEXT,
         app_id TEXT,
@@ -1224,6 +1463,7 @@ export class ConfigStoreLogic {
         thread_ts TEXT NOT NULL,
         agent_id TEXT NOT NULL,
         agent_generation INTEGER NOT NULL,
+        owner_incarnation INTEGER NOT NULL DEFAULT 1 CHECK (owner_incarnation > 0),
         revision INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (workspace_id, channel_id, thread_ts),
@@ -1301,7 +1541,9 @@ export class ConfigStoreLogic {
   }
 
   private requireFirstActiveAgent(): CustomAgentConfig {
-    const agent = this.listAgents().find((candidate) => candidate.lifecycle !== 'archived' && candidate.enabled);
+    const agent = this.listUserAgents().find(
+      (candidate) => candidate.lifecycle !== 'archived' && candidate.enabled,
+    );
     if (!agent) throw new Error('A workspace installation requires an active Agent');
     return agent;
   }
@@ -1312,6 +1554,38 @@ export class ConfigStoreLogic {
       throw new Error(`Agent ${agentId} is not active`);
     }
     return agent;
+  }
+
+  private requireActiveUserAgent(agentId: string): CustomAgentConfig {
+    const agent = this.requireActiveAgent(agentId);
+    if (agent.kind !== 'user') {
+      throw new Error(`The ${agent.name} system Agent cannot receive user-configured capabilities`);
+    }
+    return agent;
+  }
+
+  private requireMutableUserAgent(agent: CustomAgentConfig): void {
+    if (agent.kind === 'system') {
+      throw new Error(`The ${agent.name} system Agent is product-owned and cannot be changed`);
+    }
+  }
+
+  private insertWorkspaceModelDefault(
+    input: WorkspaceModelDefaultInput,
+    at: number,
+  ): void {
+    this.db.run(
+      `INSERT INTO config_workspace_model_defaults (
+        workspace_id, model_id, revision, provenance,
+        last_changed_by_membership_id, created_at, updated_at
+      ) VALUES (?, ?, 1, ?, ?, ?, ?)`,
+      input.workspaceId,
+      input.modelId ?? null,
+      input.provenance,
+      input.lastChangedByMembershipId ?? null,
+      at,
+      at,
+    );
   }
 
   private seedOnce(seed: ConfigSeed): void {
@@ -1346,15 +1620,23 @@ export class ConfigStoreLogic {
     });
   }
 
-  private insertAgent(agent: AgentCreateInput): { changes: number } {
+  private insertAgent(
+    agent: AgentCreateInput,
+    options: { allowSystem?: boolean } = {},
+  ): { changes: number } {
+    const kind = agent.kind ?? 'user';
+    if (kind === 'system' && !options.allowSystem) {
+      throw new Error('System Agents can only be materialized through the Stage 2 gate');
+    }
     return this.db.run(
       `INSERT INTO config_agents (
-        id, revision, name, description, instructions, enabled, lifecycle,
+        id, agent_kind, revision, name, description, instructions, enabled, lifecycle,
         creator_membership_id, edit_policy, configuration_generation,
         slack_presence_json, archived_at, model,
         skills_json, mcp_servers_json, api_connections_json, repositories_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
+      kind,
       1,
       agent.name,
       agent.description ?? null,
@@ -1364,7 +1646,9 @@ export class ConfigStoreLogic {
       agent.creatorMembershipId ?? null,
       agent.editPolicy ?? 'creator_and_admins',
       agent.configurationGeneration ?? 1,
-      JSON.stringify(agent.slackPresence ?? defaultAgentSlackPresence(agent.id, agent.name)),
+      kind === 'system'
+        ? 'null'
+        : JSON.stringify(agent.slackPresence ?? defaultAgentSlackPresence(agent.id, agent.name)),
       agent.archivedAt ?? null,
       agent.model ?? null,
       JSON.stringify(agent.skills ?? []),
@@ -1403,6 +1687,7 @@ export class ConfigStoreLogic {
         ) {
           throw incompatibleConfigSchemaError();
         }
+        this.installChickpeaExtensions();
         return;
       }
       if (existingConfigTables.length > 0) throw incompatibleConfigSchemaError();
@@ -1416,6 +1701,7 @@ export class ConfigStoreLogic {
       this.db.exec(
         `CREATE TABLE config_agents (
         id TEXT PRIMARY KEY,
+        agent_kind TEXT NOT NULL DEFAULT 'user' CHECK (agent_kind IN ('user', 'system')),
         revision INTEGER NOT NULL,
         name TEXT NOT NULL,
         description TEXT,
@@ -1453,6 +1739,7 @@ export class ConfigStoreLogic {
         )`,
       );
       this.installAgentPlatformSchema();
+      this.installChickpeaExtensions();
       this.db.run(
         'INSERT INTO config_meta (key, value) VALUES (?, ?)',
         SCHEMA_VERSION_KEY,
@@ -1465,6 +1752,119 @@ export class ConfigStoreLogic {
       );
     });
   }
+
+  private installChickpeaExtensions(): void {
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS config_migrations (
+        id TEXT PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      )`,
+    );
+    if (this.db.get(
+      'SELECT 1 AS present FROM config_migrations WHERE id = ?',
+      CONFIG_CHICKPEA_EXTENSION_MIGRATION,
+    )) return;
+
+    if (tableExists(this.db, 'config_agents') &&
+        !tableHasColumn(this.db, 'config_agents', 'agent_kind')) {
+      this.db.exec(
+        `ALTER TABLE config_agents ADD COLUMN agent_kind TEXT NOT NULL DEFAULT 'user'
+         CHECK (agent_kind IN ('user', 'system'))`,
+      );
+    }
+    if (tableExists(this.db, 'config_workspace_installations') &&
+        !tableHasColumn(this.db, 'config_workspace_installations', 'runtime_contract')) {
+      this.db.exec(
+        `ALTER TABLE config_workspace_installations
+         ADD COLUMN runtime_contract TEXT NOT NULL DEFAULT 'legacy'
+         CHECK (runtime_contract IN ('legacy', 'chickpea-v1'))`,
+      );
+    }
+    if (tableExists(this.db, 'config_agent_thread_routes') &&
+        !tableHasColumn(this.db, 'config_agent_thread_routes', 'owner_incarnation')) {
+      this.db.exec(
+        `ALTER TABLE config_agent_thread_routes
+         ADD COLUMN owner_incarnation INTEGER NOT NULL DEFAULT 1
+         CHECK (owner_incarnation > 0)`,
+      );
+    }
+
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS config_workspace_model_defaults (
+        workspace_id TEXT PRIMARY KEY,
+        model_id TEXT,
+        revision INTEGER NOT NULL CHECK (revision > 0),
+        provenance TEXT NOT NULL,
+        last_changed_by_membership_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS config_slack_public_context (
+        workspace_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        root_ts TEXT NOT NULL,
+        message_ts TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('human', 'agent')),
+        text TEXT NOT NULL,
+        agent_id TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (workspace_id, channel_id, root_ts, message_ts)
+      )`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS config_slack_public_context_root_idx
+       ON config_slack_public_context(workspace_id, channel_id, root_ts, updated_at)`,
+    );
+
+    if (tableExists(this.db, 'config_workspace_installations') &&
+        tableExists(this.db, 'config_agents')) {
+      const installations = this.db.all(
+        `SELECT installation.workspace_id, installation.created_at,
+                installation.updated_at, agent.model
+         FROM config_workspace_installations installation
+         LEFT JOIN config_agents agent ON agent.id = installation.default_agent_id
+         ORDER BY installation.workspace_id`,
+      );
+      for (const installation of installations) {
+        const modelId = typeof installation.model === 'string' && installation.model.trim()
+          ? installation.model
+          : null;
+        this.db.run(
+          `INSERT OR IGNORE INTO config_workspace_model_defaults (
+            workspace_id, model_id, revision, provenance,
+            last_changed_by_membership_id, created_at, updated_at
+          ) VALUES (?, ?, 1, ?, NULL, ?, ?)`,
+          String(installation.workspace_id),
+          modelId,
+          modelId ? 'migrated_agent' : 'migration_pending',
+          Number(installation.created_at),
+          Number(installation.updated_at),
+        );
+      }
+    }
+    this.db.run(
+      'INSERT INTO config_migrations (id, applied_at) VALUES (?, ?)',
+      CONFIG_CHICKPEA_EXTENSION_MIGRATION,
+      Date.now(),
+    );
+  }
+}
+
+function tableExists(db: StateDb, table: string): boolean {
+  return Boolean(db.get(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
+    table,
+  ));
+}
+
+function tableHasColumn(db: StateDb, table: string, column: string): boolean {
+  const sql = String(db.get(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+    table,
+  )?.sql ?? '');
+  return new RegExp(`(?:^|[^a-z0-9_])${column}(?:[^a-z0-9_]|$)`, 'i').test(sql);
 }
 
 function incompatibleConfigSchemaError(): Error {
@@ -1498,6 +1898,25 @@ function parseArchiveScheduleIds(value: string, agentId: string): string[] {
 
 function invalidArchiveSnapshotError(agentId: string): Error {
   return new Error(`Agent ${agentId} has an invalid archive snapshot`);
+}
+
+function validateUserAgent(agent: {
+  id: string;
+  name: string;
+  kind?: 'user' | 'system';
+  slackPresence?: AgentSlackPresence;
+}): void {
+  if (agent.kind === 'system') {
+    throw new Error('System Agents can only be materialized through the Stage 2 gate');
+  }
+  const field = reservedAgentIdentityField({
+    id: agent.id,
+    name: agent.name,
+    ...(agent.slackPresence
+      ? { handle: agent.slackPresence.requestedHandle || agent.slackPresence.normalizedHandle }
+      : {}),
+  });
+  if (field) throw new ReservedAgentIdentityError(field);
 }
 
 /**
@@ -1541,8 +1960,10 @@ function isConstraintViolation(err: unknown): boolean {
 }
 
 function rowToAgent(row: AgentRow): CustomAgentConfig {
+  const kind = row.agent_kind === 'system' ? 'system' : 'user';
   return {
     id: row.id,
+    kind,
     revision: Number(row.revision ?? 1),
     name: row.name,
     ...(row.description ? { description: row.description } : {}),
@@ -1559,7 +1980,9 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
         ? 'all_workspace_members'
         : 'creator_and_admins',
     configurationGeneration: Number(row.configuration_generation ?? 1),
-    slackPresence: parseAgentSlackPresence(row.slack_presence_json, row.id, row.name),
+    ...(kind === 'user'
+      ? { slackPresence: parseAgentSlackPresence(row.slack_presence_json, row.id, row.name) }
+      : {}),
     ...(row.archived_at !== null && row.archived_at !== undefined
       ? { archivedAt: Number(row.archived_at) }
       : {}),
@@ -1613,6 +2036,7 @@ function rowToWorkspaceInstallation(row: WorkspaceInstallationRow): WorkspaceIns
     workspaceId: row.workspace_id,
     revision: Number(row.revision),
     transportMode: row.transport_mode === 'gateway' ? 'gateway' : 'direct',
+    runtimeContract: row.runtime_contract === 'chickpea-v1' ? 'chickpea-v1' : 'legacy',
     defaultAgentId: row.default_agent_id,
     ...(row.team_id ? { teamId: row.team_id } : {}),
     ...(row.app_id ? { appId: row.app_id } : {}),
@@ -1655,7 +2079,42 @@ function rowToAgentThreadRoute(row: AgentThreadRouteRow): AgentThreadRoute {
     threadTs: row.thread_ts,
     agentId: row.agent_id,
     agentGeneration: Number(row.agent_generation),
+    ownerIncarnation: Number(row.owner_incarnation ?? 1),
     revision: Number(row.revision),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function rowToWorkspaceModelDefault(row: WorkspaceModelDefaultRow): WorkspaceModelDefault {
+  const provenance =
+    row.provenance === 'installation_bootstrap' ||
+    row.provenance === 'migrated_agent' ||
+    row.provenance === 'migrated_environment' ||
+    row.provenance === 'admin_selected'
+      ? row.provenance
+      : 'migration_pending';
+  return {
+    workspaceId: row.workspace_id,
+    ...(row.model_id ? { modelId: row.model_id } : {}),
+    revision: Number(row.revision),
+    provenance,
+    ...(row.last_changed_by_membership_id
+      ? { lastChangedByMembershipId: row.last_changed_by_membership_id }
+      : {}),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function rowToSlackPublicContext(row: SlackPublicContextRow): SlackPublicContextEntry {
+  return {
+    workspaceId: row.workspace_id,
+    channelId: row.channel_id,
+    rootTs: row.root_ts,
+    messageTs: row.message_ts,
+    role: row.role === 'agent' ? 'agent' : 'human',
+    text: row.text,
+    ...(row.agent_id ? { agentId: row.agent_id } : {}),
     updatedAt: Number(row.updated_at),
   };
 }

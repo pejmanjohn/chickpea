@@ -26,6 +26,7 @@ function connection(overrides: Partial<ApiConnectionConfig> = {}): ApiConnection
 function agent(apiConnections: ApiConnectionConfig[]): CustomAgentConfig {
   return {
     id: 'agent_api_connections',
+    kind: 'user',
     revision: 1,
     name: 'API Connections',
     instructions: 'Exercise API connection persistence.',

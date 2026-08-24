@@ -2341,12 +2341,13 @@ function materializeManagedAgent(
   actor: LiveManagementActor,
   input: ManagementAgentCreateInput,
   avatarSeed: string,
-): AgentCreateInput {
+): AgentCreateInput & { kind: 'user' } {
   const { requestedHandle, ...agent } = input;
   const handle = requestedHandle ?? input.name;
   const normalizedHandle = normalizeAgentHandle(handle);
   return {
     ...agent,
+    kind: 'user',
     lifecycle: 'draft',
     creatorMembershipId: actor.membershipId,
     editPolicy: input.editPolicy ?? 'creator_and_admins',

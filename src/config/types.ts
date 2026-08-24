@@ -120,6 +120,7 @@ export interface AgentReferenceSummary {
 }
 
 export type AgentLifecycle = 'draft' | 'active' | 'needs_attention' | 'archived';
+export type AgentKind = 'user' | 'system';
 export type AgentEditPolicy = 'creator_and_admins' | 'all_workspace_members';
 export type AgentPresenceDesiredState = 'unpublished' | 'active' | 'disabled';
 export type AgentPresenceHealth =
@@ -164,6 +165,8 @@ export interface AgentSlackPresence {
 
 export interface CustomAgentConfig {
   id: string;
+  /** System Agents are product-owned and never appear in user-Agent administration. */
+  kind: AgentKind;
   /** Durable optimistic-concurrency token. Persisted agents always expose it. */
   revision: number;
   name: string;
@@ -186,12 +189,40 @@ export interface CustomAgentConfig {
 
 export type SlackTransportMode = 'direct' | 'gateway';
 export type InstallationHealth = 'pending' | 'healthy' | 'needs_attention' | 'revoked';
+export type WorkspaceRuntimeContract = 'legacy' | 'chickpea-v1';
+
+export type WorkspaceModelDefaultProvenance =
+  | 'installation_bootstrap'
+  | 'migrated_agent'
+  | 'migrated_environment'
+  | 'migration_pending'
+  | 'admin_selected';
+
+/** Live Workspace model policy. Provider readiness is derived, not persisted here. */
+export interface WorkspaceModelDefault {
+  workspaceId: string;
+  /** Missing while migration or installation requires an administrator to choose a model. */
+  modelId?: string;
+  revision: number;
+  provenance: WorkspaceModelDefaultProvenance;
+  lastChangedByMembershipId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface WorkspaceModelDefaultInput {
+  workspaceId: string;
+  modelId?: string;
+  provenance: WorkspaceModelDefaultProvenance;
+  lastChangedByMembershipId?: string;
+}
 
 /** One Slack installation per deployed workspace; never a user-facing identity. */
 export interface WorkspaceInstallation {
   workspaceId: string;
   revision: number;
   transportMode: SlackTransportMode;
+  runtimeContract: WorkspaceRuntimeContract;
   defaultAgentId: string;
   teamId?: string;
   appId?: string;
@@ -250,11 +281,35 @@ export interface AgentThreadRoute {
   threadTs: string;
   agentId: string;
   agentGeneration: number;
+  /** Positive tenure counter for this owner within the Slack root. */
+  ownerIncarnation: number;
   revision: number;
   updatedAt: number;
 }
 
-export type AgentThreadRouteInput = Omit<AgentThreadRoute, 'revision' | 'updatedAt'>;
+export type AgentThreadRouteInput = Omit<
+  AgentThreadRoute,
+  'revision' | 'updatedAt' | 'ownerIncarnation'
+> & {
+  /** Optional only during the Stage 1 compatibility window; defaults to 1. */
+  ownerIncarnation?: number;
+};
+
+export type SlackPublicContextRole = 'human' | 'agent';
+
+/** Internal Slack-visible context used only when a thread transfers owners. */
+export interface SlackPublicContextEntry {
+  workspaceId: string;
+  channelId: string;
+  rootTs: string;
+  messageTs: string;
+  role: SlackPublicContextRole;
+  text: string;
+  agentId?: string;
+  updatedAt: number;
+}
+
+export type SlackPublicContextEntryInput = Omit<SlackPublicContextEntry, 'updatedAt'>;
 
 export type ConnectionAccountOwnerKind = 'team' | 'member';
 export type ConnectionAccountLifecycle = 'pending' | 'ready' | 'needs_attention' | 'revoked';
@@ -365,7 +420,11 @@ export type AgentScheduleReferenceInput = Omit<
 >;
 
 /** Create/seed input. Persistence assigns revision 1 regardless of caller input. */
-export type AgentCreateInput = Omit<CustomAgentConfig, 'revision'> & { revision?: number };
+export type AgentCreateInput = Omit<CustomAgentConfig, 'revision' | 'kind'> & {
+  revision?: number;
+  /** User is the only accepted public default; system creation uses a dedicated gate. */
+  kind?: AgentKind;
+};
 
 export type ChannelLifecycle = 'active' | 'archived';
 

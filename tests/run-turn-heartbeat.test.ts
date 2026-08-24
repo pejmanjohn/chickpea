@@ -50,8 +50,9 @@ const assignment: ResolvedAssignment = {
   model: 'local-stub/heartbeat',
   agent: {
     id: 'agent_heartbeat',
+    kind: 'user',
     revision: 1,
-    name: 'Chickpea',
+    name: 'Heartbeat',
     instructions: 'Answer directly.',
     enabled: true,
     skills: [],

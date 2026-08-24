@@ -14,7 +14,9 @@ import {
   AgentStillAssignedError,
   AgentStillReferencedError,
   ChannelRevisionConflictError,
+  ReservedAgentIdentityError,
   UnknownAgentError,
+  WorkspaceModelDefaultRevisionConflictError,
 } from './config/errors.ts';
 import {
   getCachedInstallationToken,
@@ -65,8 +67,8 @@ import {
   type ConfigAgentPatch,
   type OAuthReauthorizationTarget,
 } from './config/store.ts';
-import type { AgentCreateInput } from './config/types.ts';
 import type {
+  AgentCreateInput,
   AgentChannelGrant,
   AgentChannelGrantInput,
   AgentConnectionBinding,
@@ -83,6 +85,10 @@ import type {
   ConnectionAccount,
   ConnectionAccountInput,
   EnsureWorkspaceInstallationInput,
+  SlackPublicContextEntry,
+  SlackPublicContextEntryInput,
+  WorkspaceModelDefault,
+  WorkspaceModelDefaultInput,
   WorkspaceInstallation,
   WorkspaceInstallationPatch,
 } from './config/types.ts';
@@ -614,8 +620,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.config.listAgents());
   }
 
+  async configListUserAgents(): Promise<StateRpcResult<CustomAgentConfig[]>> {
+    return this.call((stores) => stores.config.listUserAgents());
+  }
+
   async configGetAgent(agentId: string): Promise<StateRpcResult<CustomAgentConfig>> {
     return this.call((stores) => stores.config.getAgent(agentId));
+  }
+
+  async configMaterializeChickpeaAgent(): Promise<StateRpcResult<CustomAgentConfig>> {
+    return this.call((stores) => stores.config.materializeChickpeaAgent());
   }
 
   async configCreateAgent(agent: AgentCreateInput): Promise<StateRpcResult<CustomAgentConfig>> {
@@ -704,6 +718,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     );
   }
 
+  async configGetWorkspaceModelDefault(
+    workspaceId: string,
+  ): Promise<StateRpcResult<WorkspaceModelDefault | null>> {
+    return this.call((stores) => stores.config.getWorkspaceModelDefault(workspaceId) ?? null);
+  }
+
+  async configPutWorkspaceModelDefault(
+    input: WorkspaceModelDefaultInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<WorkspaceModelDefault>> {
+    return this.call((stores) => stores.config.putWorkspaceModelDefault(input, expectedRevision));
+  }
+
   async configListAgentChannelGrants(
     workspaceId?: string,
     channelId?: string,
@@ -743,6 +770,46 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     expectedRevision?: number,
   ): Promise<StateRpcResult<AgentThreadRoute>> {
     return this.call((stores) => stores.config.putAgentThreadRoute(input, expectedRevision));
+  }
+
+  async configListSlackPublicContext(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+  ): Promise<StateRpcResult<SlackPublicContextEntry[]>> {
+    return this.call((stores) =>
+      stores.config.listSlackPublicContext(workspaceId, channelId, rootTs)
+    );
+  }
+
+  async configPutSlackPublicContext(
+    input: SlackPublicContextEntryInput,
+  ): Promise<StateRpcResult<SlackPublicContextEntry>> {
+    return this.call((stores) => stores.config.putSlackPublicContext(input));
+  }
+
+  async configDeleteSlackPublicContextMessage(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+    messageTs: string,
+  ): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) => stores.config.deleteSlackPublicContextMessage(
+      workspaceId,
+      channelId,
+      rootTs,
+      messageTs,
+    ));
+  }
+
+  async configDeleteSlackPublicContextRoot(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+  ): Promise<StateRpcResult<number>> {
+    return this.call((stores) =>
+      stores.config.deleteSlackPublicContextRoot(workspaceId, channelId, rootTs)
+    );
   }
 
   async configListConnectionAccounts(
@@ -1517,6 +1584,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (err instanceof AgentRevisionConflictError) {
         return rpcError('agent_revision_conflict', err.message, {
           agentId: err.agentId,
+          expectedRevision: String(err.expectedRevision),
+          actualRevision: String(err.actualRevision),
+        });
+      }
+      if (err instanceof ReservedAgentIdentityError) {
+        return rpcError('reserved_agent_identity', err.message, { field: err.field });
+      }
+      if (err instanceof WorkspaceModelDefaultRevisionConflictError) {
+        return rpcError('workspace_model_default_revision_conflict', err.message, {
+          workspaceId: err.workspaceId,
           expectedRevision: String(err.expectedRevision),
           actualRevision: String(err.actualRevision),
         });

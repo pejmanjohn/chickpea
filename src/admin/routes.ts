@@ -328,6 +328,7 @@ import {
   classifyAgentPresenceError,
 } from '../slack/agent-presence/errors.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import { reservedAgentIdentityField } from '../config/agent-id.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
 import { discoverableAgents } from '../slack/agent-routing.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
@@ -4214,6 +4215,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
     const requestedHandle = parsed.output.handle ?? parsed.output.name;
+    if (reservedAgentIdentityField({
+      id: parsed.output.id,
+      name: parsed.output.name,
+      handle: requestedHandle,
+    })) {
+      return invalidRequest(c);
+    }
     const principal = principalByContext.get(c);
     let agent: AgentCreateInput = {
       ...toAgentConfig(parsed.output),
@@ -5200,6 +5208,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const parsed = v.safeParse(agentPatchSchema, body);
     if (!parsed.success) {
       return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
+    }
+    if (reservedAgentIdentityField({
+      id: c.req.param('id'),
+      name: parsed.output.name ?? '',
+      ...(parsed.output.handle !== undefined ? { handle: parsed.output.handle } : {}),
+    })) {
+      return invalidRequest(c);
     }
     try {
       const configStore = store(c);

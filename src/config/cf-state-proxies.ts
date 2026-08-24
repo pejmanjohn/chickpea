@@ -4,10 +4,13 @@ import {
   AgentStillAssignedError,
   AgentStillReferencedError,
   ChannelRevisionConflictError,
+  ReservedAgentIdentityError,
   UnknownAgentError,
+  WorkspaceModelDefaultRevisionConflictError,
 } from './errors.ts';
 import type { SettingsPatch, SettingsStore } from './settings-store.ts';
 import type { AgentSnapshotStore } from './snapshot-store.ts';
+import type { AgentIdentityField } from './agent-id.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import type { StateRpcResult, TagStateRpc } from './state-rpc.ts';
 import type {
@@ -33,6 +36,10 @@ import type {
   ConnectionAccount,
   ConnectionAccountInput,
   EnsureWorkspaceInstallationInput,
+  SlackPublicContextEntry,
+  SlackPublicContextEntryInput,
+  WorkspaceModelDefault,
+  WorkspaceModelDefaultInput,
   WorkspaceInstallation,
   WorkspaceInstallationPatch,
 } from './types.ts';
@@ -226,6 +233,16 @@ function unwrap<T>(result: StateRpcResult<T>): T {
     case 'agent_revision_conflict':
       throw new AgentRevisionConflictError(
         details?.agentId ?? 'unknown',
+        Number(details?.expectedRevision ?? 0),
+        Number(details?.actualRevision ?? 0),
+      );
+    case 'reserved_agent_identity':
+      throw new ReservedAgentIdentityError(
+        (details?.field ?? 'id') as AgentIdentityField,
+      );
+    case 'workspace_model_default_revision_conflict':
+      throw new WorkspaceModelDefaultRevisionConflictError(
+        details?.workspaceId ?? 'unknown',
         Number(details?.expectedRevision ?? 0),
         Number(details?.actualRevision ?? 0),
       );
@@ -1021,8 +1038,16 @@ export class CfConfigStore implements ConfigStore {
     return unwrap(await this.stub.configListAgents());
   }
 
+  async listUserAgents(): Promise<CustomAgentConfig[]> {
+    return unwrap(await this.stub.configListUserAgents());
+  }
+
   async getAgent(agentId: string): Promise<CustomAgentConfig> {
     return unwrap(await this.stub.configGetAgent(agentId));
+  }
+
+  async materializeChickpeaAgent(): Promise<CustomAgentConfig> {
+    return unwrap(await this.stub.configMaterializeChickpeaAgent());
   }
 
   async createAgent(agent: AgentCreateInput): Promise<CustomAgentConfig> {
@@ -1093,6 +1118,19 @@ export class CfConfigStore implements ConfigStore {
     );
   }
 
+  async getWorkspaceModelDefault(
+    workspaceId: string,
+  ): Promise<WorkspaceModelDefault | undefined> {
+    return orUndefined(unwrap(await this.stub.configGetWorkspaceModelDefault(workspaceId)));
+  }
+
+  async putWorkspaceModelDefault(
+    input: WorkspaceModelDefaultInput,
+    expectedRevision?: number,
+  ): Promise<WorkspaceModelDefault> {
+    return unwrap(await this.stub.configPutWorkspaceModelDefault(input, expectedRevision));
+  }
+
   async listAgentChannelGrants(
     workspaceId?: string,
     channelId?: string,
@@ -1130,6 +1168,46 @@ export class CfConfigStore implements ConfigStore {
     expectedRevision?: number,
   ): Promise<AgentThreadRoute> {
     return unwrap(await this.stub.configPutAgentThreadRoute(input, expectedRevision));
+  }
+
+  async listSlackPublicContext(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+  ): Promise<SlackPublicContextEntry[]> {
+    return unwrap(await this.stub.configListSlackPublicContext(workspaceId, channelId, rootTs));
+  }
+
+  async putSlackPublicContext(
+    input: SlackPublicContextEntryInput,
+  ): Promise<SlackPublicContextEntry> {
+    return unwrap(await this.stub.configPutSlackPublicContext(input));
+  }
+
+  async deleteSlackPublicContextMessage(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+    messageTs: string,
+  ): Promise<boolean> {
+    return unwrap(await this.stub.configDeleteSlackPublicContextMessage(
+      workspaceId,
+      channelId,
+      rootTs,
+      messageTs,
+    ));
+  }
+
+  async deleteSlackPublicContextRoot(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+  ): Promise<number> {
+    return unwrap(await this.stub.configDeleteSlackPublicContextRoot(
+      workspaceId,
+      channelId,
+      rootTs,
+    ));
   }
 
   async listConnectionAccounts(workspaceId: string): Promise<ConnectionAccount[]> {

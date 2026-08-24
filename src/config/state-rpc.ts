@@ -21,6 +21,10 @@ import type {
   ConnectionAccount,
   ConnectionAccountInput,
   EnsureWorkspaceInstallationInput,
+  SlackPublicContextEntry,
+  SlackPublicContextEntryInput,
+  WorkspaceModelDefault,
+  WorkspaceModelDefaultInput,
   WorkspaceInstallation,
   WorkspaceInstallationPatch,
 } from './types.ts';
@@ -79,6 +83,8 @@ export type StateRpcErrorCode =
   | 'unknown_agent'
   | 'agent_exists'
   | 'agent_revision_conflict'
+  | 'reserved_agent_identity'
+  | 'workspace_model_default_revision_conflict'
   | 'agent_still_assigned'
   | 'agent_still_referenced'
   | 'channel_revision_conflict'
@@ -200,7 +206,9 @@ export interface TagStateRpc {
   ): Promise<StateRpcResult<ManagementRpcResponse>>;
   // -- config: agents ------------------------------------------------------
   configListAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
+  configListUserAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
   configGetAgent(agentId: string): Promise<StateRpcResult<CustomAgentConfig>>;
+  configMaterializeChickpeaAgent(): Promise<StateRpcResult<CustomAgentConfig>>;
   configCreateAgent(agent: AgentCreateInput): Promise<StateRpcResult<CustomAgentConfig>>;
   configUpdateAgent(
     agentId: string,
@@ -236,6 +244,13 @@ export interface TagStateRpc {
     agentId: string,
     expectedRevision?: number,
   ): Promise<StateRpcResult<WorkspaceInstallation>>;
+  configGetWorkspaceModelDefault(
+    workspaceId: string,
+  ): Promise<StateRpcResult<WorkspaceModelDefault | null>>;
+  configPutWorkspaceModelDefault(
+    input: WorkspaceModelDefaultInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<WorkspaceModelDefault>>;
   configListAgentChannelGrants(
     workspaceId?: string,
     channelId?: string,
@@ -258,6 +273,25 @@ export interface TagStateRpc {
     input: AgentThreadRouteInput,
     expectedRevision?: number,
   ): Promise<StateRpcResult<AgentThreadRoute>>;
+  configListSlackPublicContext(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+  ): Promise<StateRpcResult<SlackPublicContextEntry[]>>;
+  configPutSlackPublicContext(
+    input: SlackPublicContextEntryInput,
+  ): Promise<StateRpcResult<SlackPublicContextEntry>>;
+  configDeleteSlackPublicContextMessage(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+    messageTs: string,
+  ): Promise<StateRpcResult<boolean>>;
+  configDeleteSlackPublicContextRoot(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+  ): Promise<StateRpcResult<number>>;
   configListConnectionAccounts(
     workspaceId: string,
   ): Promise<StateRpcResult<ConnectionAccount[]>>;
