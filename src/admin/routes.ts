@@ -100,6 +100,7 @@ import {
   ModelResolutionError,
   NoAssignmentError,
   UnknownAgentError,
+  WorkspaceModelDefaultRevisionConflictError,
 } from '../config/errors.ts';
 import {
   EGRESS_SETTING_KEY,
@@ -162,7 +163,11 @@ import {
 } from '../config/mcp-connection-lifecycle.ts';
 import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
 import { validateMcpUrl } from '../config/mcp-url.ts';
-import { resolveAgentModel, type ModelResolvableAgent } from '../config/model-policy.ts';
+import {
+  resolveAgentModel,
+  resolveAgentModelPolicy,
+  type ModelResolvableAgent,
+} from '../config/model-policy.ts';
 import {
   resolveOpenAiAuthMethod,
   saveOpenAiAuthMethod,
@@ -193,7 +198,11 @@ import {
   validateProviderApiKey,
   type AdminProviderId,
 } from '../config/provider-models.ts';
-import { knownProviderIds, listRuntimeModelProviders } from '../config/providers.ts';
+import {
+  knownProviderIds,
+  listRuntimeModelProviders,
+  type RuntimeModelProvider,
+} from '../config/providers.ts';
 import {
   resolveSandboxSettings,
   SANDBOX_PACKAGE_REGISTRY_HOSTS,
@@ -223,7 +232,10 @@ import {
 import type { AgentSnapshotStore } from '../config/snapshot-store.ts';
 import type { RuntimeDrainStatus } from '../config/state-rpc.ts';
 import type { ConfigStore } from '../config/store.ts';
-import type { AgentCreateInput } from '../config/types.ts';
+import type {
+  AgentCreateInput,
+  WorkspaceModelDefault,
+} from '../config/types.ts';
 import { MemoryStateError, type MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
 import { RoutineService } from '../routines/service.ts';
@@ -517,6 +529,10 @@ const openAiAuthMethodSchema = v.object({
 });
 const workersAiEnabledSchema = v.object({
   enabled: v.boolean(),
+});
+const workspaceModelDefaultSchema = v.strictObject({
+  modelId: modelSpecifier,
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(0)),
 });
 const modelCatalogModeSchema = v.strictObject({
   mode: v.picklist(['hosted', 'bundled']),
@@ -3628,6 +3644,77 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json({ providers });
   });
 
+  app.get('/admin/api/workspace-model-default', async (c) => {
+    const configStore = store(c);
+    const installation = await modelDefaultInstallation(configStore);
+    if (!installation) {
+      return c.json({ error: 'workspace_installation_required' }, 409);
+    }
+    await loadModelCatalog(settings(c));
+    return c.json({
+      workspaceDefault: await workspaceModelDefaultProjection({
+        installation,
+        configStore,
+        settingsStore: settings(c),
+        platformEnv: c.env as PlatformEnv | undefined,
+        runtimeProviders: modelProviders(),
+      }),
+    });
+  });
+
+  app.put('/admin/api/workspace-model-default', async (c) => {
+    const parsed = v.safeParse(workspaceModelDefaultSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const configStore = store(c);
+    const installation = await modelDefaultInstallation(configStore);
+    if (!installation) {
+      return c.json({ error: 'workspace_installation_required' }, 409);
+    }
+    const principal = principalByContext.get(c);
+    if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    await loadModelCatalog(settings(c));
+    const compatibilityError = activeCatalogCompatibilityError(
+      parsed.output.modelId,
+      await resolveOpenAiAuthMethod(settings(c)),
+    );
+    if (compatibilityError) return invalidRequest(c, compatibilityError);
+    try {
+      await configStore.putWorkspaceModelDefault({
+        workspaceId: installation.workspaceId,
+        modelId: parsed.output.modelId,
+        provenance: 'admin_selected',
+        lastChangedByMembershipId: principal.membershipId,
+      }, parsed.output.expectedRevision);
+      return c.json({
+        workspaceDefault: await workspaceModelDefaultProjection({
+          installation,
+          configStore,
+          settingsStore: settings(c),
+          platformEnv: c.env as PlatformEnv | undefined,
+          runtimeProviders: modelProviders(),
+        }),
+      });
+    } catch (error) {
+      if (error instanceof WorkspaceModelDefaultRevisionConflictError) {
+        return c.json({
+          error: 'workspace_model_default_revision_conflict',
+          expectedRevision: error.expectedRevision,
+          actualRevision: error.actualRevision,
+          workspaceDefault: await workspaceModelDefaultProjection({
+            installation,
+            configStore,
+            settingsStore: settings(c),
+            platformEnv: c.env as PlatformEnv | undefined,
+            runtimeProviders: modelProviders(),
+          }),
+        }, 409);
+      }
+      return internalError(c, error);
+    }
+  });
+
   app.get('/admin/api/providers', async (c) => {
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
@@ -4248,7 +4335,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       await resolveOpenAiAuthMethod(settings(c)),
     );
     if (modelCompatibilityError) return invalidRequest(c, modelCompatibilityError);
-    const modelError = modelResolutionError(agent);
+    const modelError = await configuredModelResolutionError(store(c), {
+      ...agent,
+      kind: 'user',
+    });
     if (modelError) {
       return modelNotResolvable(c, modelError);
     }
@@ -4280,7 +4370,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       };
       const created = await configStore.createAgent(agent);
       return c.json({
-        agent: created,
+        agent: await agentAdminProjection(created, configStore, snapshots(c)),
         ...providerWarnings(agent.model, providerIds()),
       }, 201);
     } catch (err) {
@@ -5260,7 +5350,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         await resolveOpenAiAuthMethod(settings(c)),
       );
       if (modelCompatibilityError) return invalidRequest(c, modelCompatibilityError);
-      const modelError = modelResolutionError(next);
+      const modelError = await configuredModelResolutionError(configStore, {
+        ...next,
+        kind: current.kind,
+      });
       if (modelError) {
         return modelNotResolvable(c, modelError);
       }
@@ -7633,11 +7726,118 @@ function modelResolutionError(agent: ModelResolvableAgent): ModelResolutionError
   }
 }
 
+async function configuredModelResolutionError(
+  configStore: ConfigStore,
+  agent: ModelResolvableAgent & Pick<CustomAgentConfig, 'kind'>,
+): Promise<ModelResolutionError | undefined> {
+  const installations = await configStore.listWorkspaceInstallations();
+  const installation = installations.length === 1 ? installations[0] : undefined;
+  if (!installation || installation.runtimeContract === 'legacy') {
+    return modelResolutionError(agent);
+  }
+  const workspaceDefault = await configStore.getWorkspaceModelDefault(installation.workspaceId);
+  try {
+    resolveAgentModelPolicy({
+      agent,
+      runtimeContract: installation.runtimeContract,
+      ...(workspaceDefault ? { workspaceDefault } : {}),
+    });
+    return undefined;
+  } catch (error) {
+    if (error instanceof ModelResolutionError) return error;
+    throw error;
+  }
+}
+
 function modelNotResolvable(
   c: { json(body: { error: string; message: string }, status: 422): Response },
   err: ModelResolutionError,
 ): Response {
   return c.json({ error: 'model_not_resolvable', message: err.message }, 422);
+}
+
+async function modelDefaultInstallation(
+  configStore: ConfigStore,
+): Promise<WorkspaceInstallation | undefined> {
+  const installations = await configStore.listWorkspaceInstallations();
+  return installations.length === 1 ? installations[0] : undefined;
+}
+
+interface WorkspaceModelDefaultProjection {
+  workspaceId: string;
+  modelId: string | null;
+  revision: number;
+  provenance: WorkspaceModelDefault['provenance'];
+  runtimeContract: WorkspaceInstallation['runtimeContract'];
+  live: boolean;
+  inheritingAgentCount: number;
+  health: {
+    status: 'ready' | 'selection_required' | 'repair_required';
+    providerId: string | null;
+    code?: 'workspace_default_missing' | 'model_unsupported' | 'provider_unavailable';
+    repairPath?: '/admin/settings/providers';
+  };
+}
+
+async function workspaceModelDefaultProjection(input: {
+  installation: WorkspaceInstallation;
+  configStore: ConfigStore;
+  settingsStore: SettingsStore;
+  platformEnv: PlatformEnv | undefined;
+  runtimeProviders: RuntimeModelProvider[];
+}): Promise<WorkspaceModelDefaultProjection> {
+  const [workspaceDefault, agents, openAiAuthMethod, workersAiEnabled] = await Promise.all([
+    input.configStore.getWorkspaceModelDefault(input.installation.workspaceId),
+    input.configStore.listAgents(),
+    resolveOpenAiAuthMethod(input.settingsStore),
+    getWorkersAiEnabled(input.settingsStore),
+  ]);
+  const modelId = workspaceDefault?.modelId ?? null;
+  const separator = modelId?.indexOf('/') ?? -1;
+  const providerId = modelId && separator > 0 ? modelId.slice(0, separator) : null;
+  let health: WorkspaceModelDefaultProjection['health'];
+  if (!workspaceDefault || !modelId) {
+    health = {
+      status: 'selection_required',
+      providerId: null,
+      code: 'workspace_default_missing',
+      repairPath: '/admin/settings/providers',
+    };
+  } else if (!providerId || activeCatalogCompatibilityError(modelId, openAiAuthMethod)) {
+    health = {
+      status: 'repair_required',
+      providerId,
+      code: 'model_unsupported',
+      repairPath: '/admin/settings/providers',
+    };
+  } else {
+    const provider = input.runtimeProviders.find(({ id }) => id === providerId);
+    const workersAiReady = providerId !== 'cloudflare' ||
+      (workersAiEnabled && workersAiStatus(input.platformEnv) !== 'missing');
+    health = provider?.configured && workersAiReady
+      ? { status: 'ready', providerId }
+      : {
+          status: 'repair_required',
+          providerId,
+          code: 'provider_unavailable',
+          repairPath: '/admin/settings/providers',
+        };
+  }
+  return {
+    workspaceId: input.installation.workspaceId,
+    modelId,
+    revision: workspaceDefault?.revision ?? 0,
+    provenance: workspaceDefault?.provenance ?? 'migration_pending',
+    runtimeContract: input.installation.runtimeContract,
+    live: input.installation.runtimeContract === 'chickpea-v1',
+    inheritingAgentCount: agents.filter((agent) =>
+      agent.kind === 'user' &&
+      agent.lifecycle === 'active' &&
+      agent.enabled &&
+      !agent.model
+    ).length,
+    health,
+  };
 }
 
 async function readJson(req: { json(): Promise<unknown> }): Promise<unknown> {
@@ -7988,9 +8188,25 @@ async function agentAdminProjection(
   })();
   const { references, grants, installations, snapshotRoots } = projectionData;
   const workspaceId = grants[0]?.workspaceId ?? installations[0]?.workspaceId;
+  const installation = workspaceId
+    ? installations.find((candidate) => candidate.workspaceId === workspaceId)
+    : undefined;
+  const workspaceDefault = workspaceId
+    ? await configStore.getWorkspaceModelDefault(workspaceId)
+    : undefined;
+  const legacyDefaultInstallations = installations.filter(
+    ({ defaultAgentId, runtimeContract }) =>
+      runtimeContract === 'legacy' && defaultAgentId === agent.id,
+  );
   return {
     ...agent,
     canEdit: access.canEdit,
+    modelPolicy: {
+      source: agent.model ? 'pinned' : 'workspace_default',
+      effectiveModel: agent.model ?? workspaceDefault?.modelId ?? null,
+      live: installation?.runtimeContract === 'chickpea-v1',
+      ...(workspaceDefault ? { workspaceDefaultRevision: workspaceDefault.revision } : {}),
+    },
     slackPresenceRecovery: agent.slackPresence?.health === 'needs_attention' &&
         agent.slackPresence.errorCode
       ? agentPresenceRecovery(
@@ -8028,9 +8244,8 @@ async function agentAdminProjection(
         enabled,
       })),
     },
-    isWorkspaceDefault: installations.some(({ defaultAgentId }) => defaultAgentId === agent.id),
-    defaultForWorkspaces: installations
-      .filter(({ defaultAgentId }) => defaultAgentId === agent.id)
+    isWorkspaceDefault: legacyDefaultInstallations.length > 0,
+    defaultForWorkspaces: legacyDefaultInstallations
       .map(({ workspaceId: installedWorkspaceId }) => installedWorkspaceId),
     whereItWorks: {
       channels: grants.map((grant) => ({

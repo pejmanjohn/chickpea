@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 import { resolveModel } from '@flue/runtime/internal';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import type { AuthPrincipal } from '../src/auth/types.ts';
 import {
   invalidateProviderKeyCache,
   PROVIDER_KEY_SETTING_KEYS,
@@ -133,6 +134,138 @@ test('provider key resolution prefers environment keys over stored settings', as
   } finally {
     settings.close();
     invalidateProviderKeyCache();
+  }
+});
+
+test('Workspace default reads expose live inheritance health and exclude drafts from the count', async () => {
+  const { app, config, close } = appWithProviderAdmin();
+  try {
+    const base = await config.createAgent({
+      id: 'agent_base', name: 'Base', instructions: 'Start.', enabled: true,
+      lifecycle: 'active', model: 'openai/gpt-5.6-sol', skills: [], mcpServers: [],
+      apiConnections: [], repositories: [],
+    });
+    const installation = await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST',
+      transportMode: 'direct',
+      defaultAgentId: base.id,
+    });
+    await config.putWorkspaceModelDefault({
+      workspaceId: installation.workspaceId,
+      modelId: 'openai/gpt-5.6-sol',
+      provenance: 'admin_selected',
+      lastChangedByMembershipId: 'membership_test_owner',
+    }, 1);
+    await config.updateWorkspaceInstallation(
+      installation.workspaceId,
+      { runtimeContract: 'chickpea-v1' },
+      installation.revision,
+    );
+    await config.updateAgent(base.id, { model: null }, base.revision);
+    await config.createAgent({
+      id: 'agent_inheriting', name: 'Inheriting', instructions: 'Inherit.', enabled: true,
+      lifecycle: 'active', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.createAgent({
+      id: 'agent_draft', name: 'Draft', instructions: 'Wait.', enabled: false,
+      lifecycle: 'draft', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+
+    const response = await app.request('/admin/api/workspace-model-default', { headers: auth() });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      workspaceDefault: {
+        workspaceId: 'T_TEST',
+        modelId: 'openai/gpt-5.6-sol',
+        revision: 2,
+        provenance: 'admin_selected',
+        runtimeContract: 'chickpea-v1',
+        live: true,
+        inheritingAgentCount: 2,
+        health: { status: 'ready', providerId: 'openai' },
+      },
+    });
+  } finally {
+    close();
+  }
+});
+
+test('Workspace default updates are optimistic and return the current value on conflict', async () => {
+  const { app, config, close } = appWithProviderAdmin();
+  try {
+    const base = await config.createAgent({
+      id: 'agent_base', name: 'Base', instructions: 'Start.', enabled: true,
+      lifecycle: 'active', model: 'openai/gpt-5.6-sol', skills: [], mcpServers: [],
+      apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: base.id,
+    });
+    const saved = await app.request('/admin/api/workspace-model-default', {
+      method: 'PUT',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({ modelId: 'openai/gpt-5.6-sol', expectedRevision: 1 }),
+    });
+    assert.equal(saved.status, 200);
+    assert.equal((await saved.json() as {
+      workspaceDefault: { revision: number; modelId: string; live: boolean };
+    }).workspaceDefault.revision, 2);
+
+    const stale = await app.request('/admin/api/workspace-model-default', {
+      method: 'PUT',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({ modelId: 'anthropic/claude-haiku-4-5', expectedRevision: 1 }),
+    });
+    assert.equal(stale.status, 409);
+    assert.deepEqual(await stale.json(), {
+      error: 'workspace_model_default_revision_conflict',
+      expectedRevision: 1,
+      actualRevision: 2,
+      workspaceDefault: {
+        workspaceId: 'T_TEST',
+        modelId: 'openai/gpt-5.6-sol',
+        revision: 2,
+        provenance: 'admin_selected',
+        runtimeContract: 'legacy',
+        live: false,
+        inheritingAgentCount: 0,
+        health: { status: 'ready', providerId: 'openai' },
+      },
+    });
+  } finally {
+    close();
+  }
+});
+
+test('a workspace member cannot write the Workspace default through Admin', async () => {
+  const app = new Hono();
+  const config = new SqliteConfigStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const usage = new SqliteUsageStore(':memory:');
+  const member: AuthPrincipal = {
+    userId: 'user_member', membershipId: 'membership_member', organizationId: 'org_oss',
+    role: 'member', authenticatorKind: 'test_slack_session', credentialId: 'member_session',
+    correlationId: 'member_request', machine: false,
+  };
+  app.route('/', createAdminRoutes({
+    store: config,
+    settings,
+    usage,
+    ...testAdminAuthority(ADMIN_TOKEN, undefined, undefined, member),
+    knownProviders: new Set(['openai']),
+  }));
+  try {
+    const response = await app.request('/admin/api/workspace-model-default', {
+      method: 'PUT',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({ modelId: 'openai/gpt-5.6-sol', expectedRevision: 1 }),
+    });
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: 'forbidden' });
+  } finally {
+    config.close();
+    settings.close();
+    usage.close();
   }
 });
 

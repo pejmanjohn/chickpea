@@ -294,6 +294,21 @@ type ModelCatalogStatusFixture = {
   nextRefreshAt: number | null;
   lkgAvailable: boolean;
 };
+type WorkspaceDefaultFixture = {
+  workspaceId: string;
+  modelId: string | null;
+  revision: number;
+  provenance: 'installation_bootstrap' | 'migrated_agent' | 'migrated_environment' | 'migration_pending' | 'admin_selected';
+  runtimeContract: 'legacy' | 'chickpea-v1';
+  live: boolean;
+  inheritingAgentCount: number;
+  health: {
+    status: 'ready' | 'selection_required' | 'repair_required';
+    providerId: string | null;
+    code?: string;
+    repairPath?: string;
+  };
+};
 type ScheduledWorkFixture = {
   routine: Record<string, unknown>;
   runs: Array<Record<string, unknown>>;
@@ -348,6 +363,8 @@ function runAdminPageHarness(
     deferModelCatalogStatus?: boolean;
     modelCatalogRefreshError?: { status: number; error: string; message?: string };
     modelProviders?: ModelProviderFixture[];
+    workspaceDefault?: WorkspaceDefaultFixture | null;
+    workspaceDefaultPutError?: { status: number; error: string; current?: WorkspaceDefaultFixture };
     attachSelectionValue?: string;
     swapSelectionValue?: string;
     effectiveError?: { status: number; error: string; message?: string };
@@ -428,6 +445,7 @@ function runAdminPageHarness(
   openAiSubscriptionDisconnects(): number;
   favoritesPuts: Array<{ id: string; favorites: string[] }>;
   workersAiEnabledPuts: boolean[];
+  workspaceDefaultPuts: Array<{ modelId: string; expectedRevision: number }>;
   egressPuts: EgressPolicyFixture[];
   sandboxPuts: Array<{
     enabled: boolean;
@@ -605,6 +623,7 @@ function runAdminPageHarness(
   let openAiSubscriptionDisconnects = 0;
   const favoritesPuts: Array<{ id: string; favorites: string[] }> = [];
   const workersAiEnabledPuts: boolean[] = [];
+  const workspaceDefaultPuts: Array<{ modelId: string; expectedRevision: number }> = [];
   const egressPuts: EgressPolicyFixture[] = [];
   const sandboxPuts: Array<{
     enabled: boolean;
@@ -875,6 +894,18 @@ function runAdminPageHarness(
     nextRefreshAt: null,
     lkgAvailable: false,
   };
+  let workspaceDefault: WorkspaceDefaultFixture | null = options.workspaceDefault === undefined
+    ? {
+        workspaceId: 'T_DESIGN',
+        modelId: releaseAgent.model,
+        revision: 2,
+        provenance: 'admin_selected',
+        runtimeContract: 'chickpea-v1',
+        live: true,
+        inheritingAgentCount: 1,
+        health: { status: 'ready', providerId: 'local-stub' },
+      }
+    : options.workspaceDefault;
   const favoritesState: Record<string, string[]> = {
     openrouter: options.openrouterFavorites ?? ['anthropic/claude-sonnet-4', 'openai/gpt-4.1'],
     'workers-ai': options.workersAiFavorites ?? ['@cf/zai-org/glm-5.2', '@cf/moonshotai/kimi-k2.6'],
@@ -980,6 +1011,10 @@ function runAdminPageHarness(
       if (selector === '[data-action="agent-overflow-toggle"]' && appHtml.includes('data-action="agent-overflow-toggle"')) {
         return focusElement('agent-overflow-toggle');
       }
+      const modelPolicyAction = selector.match(/^\[data-action="(workspace-default-model|profile-model)"\]$/)?.[1];
+      if (modelPolicyAction && appHtml.includes(`data-action="${modelPolicyAction}"`)) {
+        return focusElement(modelPolicyAction);
+      }
       if (selector === '.topbar-menu > summary' && appHtml.includes('data-role="mobile-menu-trigger"')) {
         return focusElement('mobile-menu-trigger');
       }
@@ -1002,7 +1037,15 @@ function runAdminPageHarness(
     (agent) => {
       const projected = { ...(agent as Record<string, unknown>) };
       if (projected.isWorkspaceDefault === undefined) {
-        projected.isWorkspaceDefault = projected.id === releaseAgent.id;
+        projected.isWorkspaceDefault = false;
+      }
+      if (projected.modelPolicy === undefined) {
+        projected.modelPolicy = {
+          source: projected.model ? 'pinned' : 'workspace_default',
+          effectiveModel: projected.model || workspaceDefault?.modelId || null,
+          live: workspaceDefault?.live === true,
+          ...(workspaceDefault ? { workspaceDefaultRevision: workspaceDefault.revision } : {}),
+        };
       }
       if (!projected.whereItWorks) {
         projected.whereItWorks = {
@@ -1802,6 +1845,35 @@ function runAdminPageHarness(
         ),
       }));
     }
+    if (path === '/admin/api/workspace-model-default') {
+      if (method === 'PUT') {
+        const body = JSON.parse(options?.body ?? '{}') as { modelId: string; expectedRevision: number };
+        workspaceDefaultPuts.push(body);
+        if (harnessOptions.workspaceDefaultPutError) {
+          const current = harnessOptions.workspaceDefaultPutError.current ?? workspaceDefault;
+          return Promise.resolve(jsonResponse({
+            error: harnessOptions.workspaceDefaultPutError.error,
+            ...(current ? { workspaceDefault: current } : {}),
+          }, harnessOptions.workspaceDefaultPutError.status));
+        }
+        if (!workspaceDefault) {
+          return Promise.resolve(jsonResponse({ error: 'workspace_installation_required' }, 409));
+        }
+        workspaceDefault = {
+          ...workspaceDefault,
+          modelId: body.modelId,
+          revision: workspaceDefault.revision + 1,
+          provenance: 'admin_selected',
+          health: {
+            status: 'ready',
+            providerId: body.modelId.slice(0, body.modelId.indexOf('/')),
+          },
+        };
+      }
+      return Promise.resolve(workspaceDefault
+        ? jsonResponse({ workspaceDefault: { ...workspaceDefault } })
+        : jsonResponse({ error: 'workspace_installation_required' }, 409));
+    }
     if (path === '/admin/api/model-catalog') {
       if (deferModelCatalogStatus) {
         deferModelCatalogStatus = false;
@@ -2247,6 +2319,7 @@ function runAdminPageHarness(
     openAiSubscriptionDisconnects: () => openAiSubscriptionDisconnects,
     favoritesPuts,
     workersAiEnabledPuts,
+    workspaceDefaultPuts,
     egressPuts,
     sandboxPuts,
     sandboxAdvancedPatches,
@@ -2751,7 +2824,8 @@ test('admin page renders channel labels, profile secondary text, and singular ch
   await flushAsync();
 
   assert.doesNotMatch(harness.app.innerHTML, /class="agent-roster-item active"/);
-  assert.match(harness.app.innerHTML, /class="agent-roster-meta" title="1 channel \+ Direct messages">1 channel \+ Direct messages<\/span>/);
+  assert.match(harness.app.innerHTML, /class="agent-roster-meta" title="1 channel">1 channel<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Direct messages|\+ DMs|DM default/);
   assert.match(harness.app.innerHTML, /<h1 class="page-title mono-title">#eng-releases<\/h1>/);
   // Agents is now a main-panel destination (the modal was retired): opening it
   // swaps the main panel to the overview, and each card carries its usage meta.
@@ -3517,11 +3591,24 @@ test('a discoverable non-editor sees a truthful read-only Agent instead of a fai
 });
 
 test('archiving the workspace Default Agent transfers private routing explicitly', async () => {
-  const harness = runAdminPageHarness({ initialPath: '/admin' });
+  const harness = runAdminPageHarness({
+    initialPath: '/admin',
+    agents: [{ ...releaseAgent, isWorkspaceDefault: true }, opsAgent],
+    workspaceDefault: {
+      workspaceId: 'T_DESIGN',
+      modelId: releaseAgent.model,
+      revision: 1,
+      provenance: 'migration_pending',
+      runtimeContract: 'legacy',
+      live: false,
+      inheritingAgentCount: 0,
+      health: { status: 'ready', providerId: 'local-stub' },
+    },
+  });
   await flushAsync();
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'agent-overflow-toggle' }) });
-  assert.match(harness.app.innerHTML, /Default Agent after archive/);
+  assert.match(harness.app.innerHTML, /Legacy default Agent after archive/);
   assert.match(
     harness.app.innerHTML,
     /data-action="replacement-default-agent">[\s\S]*?<option value="agent_ops" selected>Ops Profile<\/option>/,
@@ -3538,7 +3625,7 @@ test('archiving the workspace Default Agent transfers private routing explicitly
     body: { expectedRevision: 1, replacementDefaultAgentId: 'agent_ops' },
   }]);
   assert.match(harness.app.innerHTML, /agent-status-chip disabled[\s\S]*?Archived/);
-  assert.doesNotMatch(harness.app.innerHTML, /Default Agent after archive/);
+  assert.doesNotMatch(harness.app.innerHTML, /Legacy default Agent after archive/);
   assert.match(harness.app.innerHTML, /Release Profile is archived/);
   assert.match(harness.app.innerHTML, /Restore this Agent before adding it to Channels\./);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="attach-open"/);
@@ -8701,8 +8788,9 @@ test('the attached Agent roster summarizes placements instead of grouping Channe
   await flushAsync();
 
   const roster = harness.app.innerHTML.match(/<nav class="agent-roster" aria-label="Agents">[\s\S]*?<\/nav>/)?.[0] ?? '';
-  assert.match(roster, /data-agent="agent_release"[\s\S]*?title="2 channels \+ Direct messages"/);
+  assert.match(roster, /data-agent="agent_release"[\s\S]*?title="2 channels"/);
   assert.match(roster, /data-agent="agent_ops"[\s\S]*?title="1 channel"/);
+  assert.doesNotMatch(roster, /Direct messages|\+ DMs|DM default/);
   assert.doesNotMatch(roster, /data-action="select-channel"|#eng-releases|#demo-channel/);
 });
 
@@ -9068,6 +9156,131 @@ test('the persistent section switcher opens Settings on the model-providers page
   assert.match(harness.app.innerHTML, /class="section-nav-item active" data-action="open-settings"[^>]*aria-current="page">Settings<\/button>/);
   assert.match(harness.app.innerHTML, /data-settings-panel="providers"><section/);
   assert.match(harness.app.innerHTML, /data-settings-panel="github" hidden>/);
+});
+
+test('Settings places the live Workspace default before provider configuration', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/settings/providers' });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  const defaultHeading = html.indexOf('id="workspace-default-heading">Default model</h2>');
+  const providerHeading = html.indexOf('<h2 class="section-title">Model providers</h2>');
+  assert.ok(defaultHeading >= 0 && providerHeading > defaultHeading);
+  assert.match(html, /The shared model for Chickpea and every Agent that is not pinned/);
+  assert.match(html, /Chickpea and 1 active Agent use this model/);
+  assert.match(html, /<span class="badge-src">Live<\/span>/);
+  assert.match(html, /Changes apply to the next admitted message, including replies in existing threads/);
+  assert.doesNotMatch(html, /Direct messages|\+ DMs|DM default/);
+});
+
+test('Settings saves the Workspace default optimistically and restores selector focus', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    modelProviders: [{
+      id: 'anthropic',
+      configured: true,
+      source: 'registered in src/app.ts',
+      suggestions: ['anthropic/claude-sonnet-5'],
+    }],
+  });
+  await flushAsync();
+  const change = harness.listeners.change;
+  const click = harness.listeners.click;
+  assert.ok(change && click);
+
+  change({
+    target: valueTarget({ 'data-action': 'workspace-default-model' }, 'anthropic/claude-sonnet-5'),
+  });
+  click({ target: actionTarget({ 'data-action': 'workspace-default-save' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.workspaceDefaultPuts, [{
+    modelId: 'anthropic/claude-sonnet-5',
+    expectedRevision: 2,
+  }]);
+  assert.match(harness.app.innerHTML, /Workspace default saved\. New messages use it when their turn is admitted/);
+  assert.match(harness.app.innerHTML, /<option value="anthropic\/claude-sonnet-5" selected>/);
+  assert.equal(harness.focusedAction(), 'workspace-default-model');
+});
+
+test('a Workspace default conflict preserves the selected model and current revision', async () => {
+  const current: WorkspaceDefaultFixture = {
+    workspaceId: 'T_DESIGN',
+    modelId: 'openai/gpt-5.6',
+    revision: 3,
+    provenance: 'admin_selected',
+    runtimeContract: 'chickpea-v1',
+    live: true,
+    inheritingAgentCount: 2,
+    health: { status: 'ready', providerId: 'openai' },
+  };
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    modelProviders: [{
+      id: 'anthropic',
+      configured: true,
+      source: 'registered in src/app.ts',
+      suggestions: ['anthropic/claude-sonnet-5'],
+    }],
+    workspaceDefaultPutError: {
+      status: 409,
+      error: 'workspace_model_default_revision_conflict',
+      current,
+    },
+  });
+  await flushAsync();
+  const change = harness.listeners.change;
+  const click = harness.listeners.click;
+  assert.ok(change && click);
+
+  change({
+    target: valueTarget({ 'data-action': 'workspace-default-model' }, 'anthropic/claude-sonnet-5'),
+  });
+  click({ target: actionTarget({ 'data-action': 'workspace-default-save' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.workspaceDefaultPuts, [{
+    modelId: 'anthropic/claude-sonnet-5',
+    expectedRevision: 2,
+  }]);
+  assert.match(harness.app.innerHTML, /changed in another session\. Your selection is preserved/);
+  assert.match(harness.app.innerHTML, /<option value="anthropic\/claude-sonnet-5" selected>/);
+  assert.equal(harness.focusedAction(), 'workspace-default-model');
+
+  click({ target: actionTarget({ 'data-action': 'workspace-default-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.workspaceDefaultPuts[1], {
+    modelId: 'anthropic/claude-sonnet-5',
+    expectedRevision: 3,
+  });
+});
+
+test('Settings distinguishes pending activation and static provider repair', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    workspaceDefault: {
+      workspaceId: 'T_DESIGN',
+      modelId: 'anthropic/claude-sonnet-5',
+      revision: 1,
+      provenance: 'migration_pending',
+      runtimeContract: 'legacy',
+      live: false,
+      inheritingAgentCount: 0,
+      health: {
+        status: 'repair_required',
+        providerId: 'anthropic',
+        code: 'provider_unavailable',
+        repairPath: '/admin/settings/providers',
+      },
+    },
+  });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /<span class="badge-src">Pending activation<\/span>/);
+  assert.match(html, /Slack keeps its legacy model routing until this workspace is activated/);
+  assert.match(html, /Repair required/);
+  assert.match(html, /href="\/admin\/settings\/providers">Review anthropic provider settings<\/a>/);
 });
 
 test('the left rail keeps one coherent section switcher and section-specific navigation', async () => {
@@ -10726,26 +10939,52 @@ test('Workers AI toggle ignores an older providers response that resolves after 
   assert.doesNotMatch(harness.app.innerHTML, /data-action="workers-ai-enabled" checked/);
 });
 
-test('the profile Model picker shows the node-unpinned pick-a-model prompt with the SLACK_TAG_MODEL note', async () => {
+test('an unpinned Agent visibly follows the live Workspace default', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
   const click = harness.listeners.click;
   assert.ok(click);
-  // A blank profile has no pinned model. The Model field is now a click-to-open
-  // combobox (F6): opening it renders the grouped popover. With no providers
-  // configured the popover shows the pick-a-model prompt.
+  // A blank Agent has no pin. Its empty field names the live Workspace default,
+  // while the open picker still explains that no provider choices are available.
   click({ target: actionTarget({ 'data-action': 'new-profile' }) });
   click({ target: actionTarget({ 'data-action': 'profile-model' }) });
   await flushAsync();
   const html = harness.app.innerHTML;
 
-  assert.match(html, /placeholder="Pick a model &mdash; none pinned"/);
+  assert.match(html, /<span class="badge-src">Workspace default<\/span><span class="mono hint">local-stub\/release<\/span>/);
+  assert.match(html, /placeholder="Workspace default — local-stub\/release"/);
   assert.match(html, /aria-expanded="true"/);
   assert.match(html, /<div class="combo-group">no providers configured<\/div>/);
-  // The empty-ish combo carries the offline/dev fallback note and a Settings link.
-  assert.match(html, /set <span class="mono"[^>]*>SLACK_TAG_MODEL<\/span>/);
-  assert.match(html, /as an offline\/dev fallback so an unpinned Agent still replies/);
-  assert.match(html, /data-action="open-settings">Manage providers &amp; models in Settings &nearr;<\/button>/);
+  assert.match(html, /This Agent follows live Workspace default changes/);
+  assert.doesNotMatch(html, /SLACK_TAG_MODEL|none pinned|offline\/dev fallback/);
+});
+
+test('a pinned Agent can explicitly return to live Workspace inheritance', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    workspaceDefault: {
+      workspaceId: 'T_DESIGN',
+      modelId: 'anthropic/claude-sonnet-5',
+      revision: 4,
+      provenance: 'admin_selected',
+      runtimeContract: 'chickpea-v1',
+      live: true,
+      inheritingAgentCount: 1,
+      health: { status: 'ready', providerId: 'anthropic' },
+    },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /<span class="badge-src">Pinned<\/span><span class="mono hint">local-stub\/release<\/span>/);
+  assert.match(harness.app.innerHTML, /data-action="profile-model-reset">use the Workspace default<\/button>/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-model-reset' }) });
+
+  assert.match(harness.app.innerHTML, /<span class="badge-src">Workspace default<\/span><span class="mono hint">anthropic\/claude-sonnet-5<\/span>/);
+  assert.match(harness.app.innerHTML, /placeholder="Workspace default — anthropic\/claude-sonnet-5"/);
+  assert.match(harness.app.innerHTML, /This Agent follows live Workspace default changes/);
+  assert.match(harness.app.innerHTML, /data-action="save-profile">Save changes<\/button>/);
+  assert.equal(harness.focusedAction(), 'profile-model');
 });
 
 test('the profile Model picker preserves the Agent page position across open, load, filter, and close renders', async () => {
@@ -10966,7 +11205,7 @@ test('the profile Model picker suppresses configured provider groups with no fav
   assert.match(harness.app.innerHTML, /Star models in Settings to add picker shortcuts/);
 });
 
-test('node-target Sprout seed is unpinned and its profile editor renders the pick-a-model prompt', async () => {
+test('node-target Sprout seed is unpinned and inherits the Workspace default', async () => {
   const defaultProfile = seededAgents.find((agent) => agent.id === 'agent_default');
   assert.ok(defaultProfile);
   assert.equal(defaultProfile.model, undefined);
@@ -10987,17 +11226,16 @@ test('node-target Sprout seed is unpinned and its profile editor renders the pic
 
   click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_default' }) });
-  // The seed's editor opens with an empty Model field; opening the combobox
-  // proves the unpinned pick-a-model guidance renders in the popover.
+  // The seed's editor opens with an empty pin and names the effective default.
   click({ target: actionTarget({ 'data-action': 'profile-model' }) });
   await flushAsync();
   const html = harness.app.innerHTML;
 
   assert.match(html, /<h1 class="page-title">Sprout<\/h1>/);
-  assert.match(html, /value="" autocomplete="off" role="combobox" aria-expanded="true" aria-haspopup="listbox" placeholder="Pick a model &mdash; none pinned"/);
+  assert.match(html, /value="" autocomplete="off" role="combobox" aria-expanded="true" aria-haspopup="listbox" placeholder="Workspace default — local-stub\/release"/);
   assert.match(html, /<div class="combo-group">no providers configured<\/div>/);
-  assert.match(html, /SLACK_TAG_MODEL/);
-  assert.match(html, /as an offline\/dev fallback so an unpinned Agent still replies/);
+  assert.match(html, /This Agent follows live Workspace default changes/);
+  assert.doesNotMatch(html, /SLACK_TAG_MODEL|none pinned|offline\/dev fallback/);
 });
 
 // The Repositories picker and the Skills import browser share one repo-search

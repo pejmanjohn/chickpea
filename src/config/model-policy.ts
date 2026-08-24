@@ -67,7 +67,7 @@ export async function resolveModelPolicyForAssignment(
 
 /** Resolve the policy source once, before effective configuration is built. */
 export function resolveAgentModelPolicy(input: {
-  agent: CustomAgentConfig;
+  agent: ModelResolvableAgent & Pick<CustomAgentConfig, 'kind'>;
   runtimeContract: WorkspaceRuntimeContract;
   workspaceDefault?: WorkspaceModelDefault;
   env?: NodeJS.ProcessEnv;
@@ -98,6 +98,11 @@ export function resolveAgentModelPolicy(input: {
   if (!workspaceDefault?.modelId) {
     throw new ModelResolutionError(
       'Workspace default is not ready. Choose a model in Settings > Model providers.',
+      {
+        status: 'provider_setup_required',
+        providerId: 'workspace_default',
+        path: '/admin/settings/providers',
+      },
     );
   }
   const model = noteResolvedModel(workspaceDefault.modelId);
@@ -160,7 +165,7 @@ function catalogRevisionForModel(model: string): Pick<AgentModelAttribution, 'ca
   if (!route) {
     throw new ModelResolutionError(
       `Model ${model} is not supported by the active catalog. Choose another Workspace default.`,
-      { status: 'unsupported', providerId, path: '/admin/settings#model-providers' },
+      { status: 'unsupported', providerId, path: '/admin/settings/providers' },
     );
   }
   return { catalogRevision: String(route.snapshot.revision) };
