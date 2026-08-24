@@ -12,9 +12,9 @@ import {
 } from './mcp-oauth.ts';
 
 export const BETTER_AUTH_BASE_PATH = '/api/auth';
-export const SESSION_IDLE_SECONDS = 4 * 60 * 60;
-export const SESSION_ABSOLUTE_MS = 24 * 60 * 60 * 1_000;
-export const SESSION_REFRESH_SECONDS = 60 * 60;
+export const SESSION_IDLE_SECONDS = 7 * 24 * 60 * 60;
+export const SESSION_ABSOLUTE_MS = 30 * 24 * 60 * 60 * 1_000;
+export const SESSION_REFRESH_SECONDS = 24 * 60 * 60;
 export const BETTER_AUTH_SLACK_PROVIDER_ID = 'slack';
 export const BETTER_AUTH_PRIVATE_SESSION_PATH = '/chickpea-private/issue-session';
 

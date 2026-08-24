@@ -8,6 +8,28 @@ import { applyBetterAuthMigrations, NodeBetterAuthBackend } from '../src/auth/be
 const ORIGIN = 'https://chickpea.example';
 const SECRET = Buffer.from(Uint8Array.from({ length: 32 }, (_, index) => (index * 37 + 11) % 256))
   .toString('base64url');
+const DAY_SECONDS = 24 * 60 * 60;
+const DAY_MS = DAY_SECONDS * 1_000;
+
+test('Admin sessions roll for seven days and stop after thirty days', () => {
+  const backend = new NodeBetterAuthBackend(':memory:');
+  try {
+    const options = createBetterAuthOptions({ backend, baseURL: ORIGIN, secret: SECRET });
+    assert.equal(options.session?.expiresIn, 7 * DAY_SECONDS);
+    assert.equal(options.session?.updateAge, DAY_SECONDS);
+
+    const defaultAbsoluteExpiry = options.session?.additionalFields?.absoluteExpiresAt?.defaultValue;
+    assert.equal(typeof defaultAbsoluteExpiry, 'function');
+    const before = Date.now();
+    const absoluteExpiry = (defaultAbsoluteExpiry as () => Date)();
+    const after = Date.now();
+    assert.equal(absoluteExpiry instanceof Date, true);
+    assert.equal(absoluteExpiry.getTime() >= before + 30 * DAY_MS, true);
+    assert.equal(absoluteExpiry.getTime() <= after + 30 * DAY_MS, true);
+  } finally {
+    backend.close();
+  }
+});
 
 test('reviewed Better Auth migrations are idempotent and Slack-only authentication stays passwordless', async () => {
   const backend = new NodeBetterAuthBackend(':memory:');
