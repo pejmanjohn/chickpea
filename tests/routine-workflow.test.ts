@@ -155,6 +155,11 @@ test('live access and a frozen app checkpoint precede Flue dispatch', async () =
     assert.equal(completed?.status, 'no_op');
     assert.equal(completed?.flueRunId, null);
     assert.equal(completed?.flueAgentEnvelope?.idempotencyKey, fixture.attempt.attemptId);
+    assert.deepEqual(
+      parseRoutineExecutionInitialData(completed?.flueAgentEnvelope?.initialData)
+        .connectorUsageCorrelation,
+      { operationId: fixture.run.id },
+    );
     assert.equal(
       (await store.listAdmissions(fixture.run.id))[0]?.flueAgentReceipt?.submissionId,
       'submission_test',

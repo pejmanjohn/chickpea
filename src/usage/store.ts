@@ -13,6 +13,20 @@ import {
 import { UsageStateError } from './store-error.ts';
 import { installReleasePriceCatalogs } from './pricing/catalog.ts';
 import { estimateUsage } from './pricing/estimate.ts';
+import type {
+  ConnectorUsageRecord,
+  ConnectorUsageSummary,
+  ConnectorUsageSummaryQuery,
+  ConnectorQuotaReservation,
+  ReleaseConnectorQuotaInput,
+  RecordConnectorUsageInput,
+  ReserveConnectorQuotaInput,
+} from './connectors/types.ts';
+import {
+  normalizeConnectorSummaryQuery,
+  normalizeConnectorQuotaReservation,
+  normalizeConnectorUsage,
+} from './connectors/validation.ts';
 import {
   USAGE_AGGREGATE_RETENTION_MONTHS,
   USAGE_RAW_RETENTION_DAYS,
@@ -114,6 +128,38 @@ interface CredentialRow {
   unknown_rotation: number;
   active_from: number;
   retired_at: number | null;
+}
+
+interface ConnectorUsageRow {
+  attempt_id: string;
+  workspace_id: string;
+  profile_id: string;
+  connection_account_id: string;
+  operation_id: string | null;
+  run_id: string | null;
+  run_execution_id: string | null;
+  adapter_id: string;
+  toolkit: string;
+  capability: string;
+  provider_tool: string | null;
+  provider_version: string | null;
+  effect_class: ConnectorUsageRecord['effectClass'];
+  outcome: ConnectorUsageRecord['outcome'];
+  retry_classification: ConnectorUsageRecord['retryClassification'];
+  started_at: number;
+  finished_at: number;
+  latency_ms: number;
+  remote_call_count: number;
+  provider_tool_call_count: number;
+  result_bytes: number | null;
+  http_status: number | null;
+  rate_limit_remaining: number | null;
+  retry_after_ms: number | null;
+  provider_log_id: string | null;
+  price_version_id: string | null;
+  estimated_cost_micros: number | null;
+  estimate_currency: 'USD' | null;
+  recorded_at: number;
 }
 
 const OPERATION_COLUMNS = `
@@ -260,6 +306,304 @@ export class UsageStoreLogic {
         input.operationId,
       );
       return requiredDetail(this.getOperation(input.operationId));
+    });
+  }
+
+  recordConnectorUsage(raw: RecordConnectorUsageInput): ConnectorUsageRecord {
+    const input = normalizeConnectorUsage(raw);
+    return this.db.transaction(() => {
+      const existing = this.getConnectorUsageRow(input.attemptId);
+      if (existing) {
+        const record = mapConnectorUsage(existing);
+        if (!sameConnectorUsage(record, input)) {
+          throw new UsageStateError(
+            'usage_measurement_conflict',
+            'Connector attempt ID already belongs to different work.',
+            { executionId: input.attemptId },
+          );
+        }
+        return record;
+      }
+      const recordedAt = this.now();
+      this.db.run(
+        `INSERT INTO usage_connector_attempts (
+          attempt_id, workspace_id, profile_id, connection_account_id,
+          operation_id, run_id, run_execution_id, adapter_id, toolkit,
+          capability, provider_tool, provider_version, effect_class, outcome,
+          retry_classification, started_at, finished_at, latency_ms,
+          remote_call_count, provider_tool_call_count, result_bytes, http_status,
+          rate_limit_remaining, retry_after_ms, provider_log_id,
+          price_version_id, estimated_cost_micros, estimate_currency, recorded_at
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )`,
+        input.attemptId,
+        input.workspaceId,
+        input.agentId,
+        input.connectionAccountId,
+        input.operationId ?? null,
+        input.runId ?? null,
+        input.runExecutionId ?? null,
+        input.adapterId,
+        input.toolkit,
+        input.capability,
+        input.providerTool,
+        input.providerVersion,
+        input.effectClass,
+        input.outcome,
+        input.retryClassification,
+        input.startedAt,
+        input.finishedAt,
+        input.latencyMs,
+        input.remoteCallCount,
+        input.providerToolCallCount,
+        input.resultBytes,
+        input.httpStatus,
+        input.rateLimitRemaining,
+        input.retryAfterMs,
+        input.providerLogId,
+        input.priceVersionId,
+        input.estimatedCostMicros,
+        input.estimateCurrency,
+        recordedAt,
+      );
+      const dayStart = Math.floor(input.finishedAt / 86_400_000) * 86_400_000;
+      this.db.run(
+        `INSERT INTO usage_connector_daily_rollups (
+          day_start, workspace_id, adapter_id, toolkit, capability, outcome,
+          attempt_count, success_count, throttled_count, ambiguous_count,
+          latency_ms_total, remote_call_count, provider_tool_call_count,
+          result_bytes_total, estimated_cost_micros, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(day_start, workspace_id, adapter_id, toolkit, capability, outcome)
+        DO UPDATE SET
+          attempt_count = attempt_count + 1,
+          success_count = success_count + excluded.success_count,
+          throttled_count = throttled_count + excluded.throttled_count,
+          ambiguous_count = ambiguous_count + excluded.ambiguous_count,
+          latency_ms_total = latency_ms_total + excluded.latency_ms_total,
+          remote_call_count = remote_call_count + excluded.remote_call_count,
+          provider_tool_call_count = provider_tool_call_count + excluded.provider_tool_call_count,
+          result_bytes_total = result_bytes_total + excluded.result_bytes_total,
+          estimated_cost_micros = estimated_cost_micros + excluded.estimated_cost_micros,
+          updated_at = excluded.updated_at`,
+        dayStart,
+        input.workspaceId,
+        input.adapterId,
+        input.toolkit,
+        input.capability,
+        input.outcome,
+        input.outcome === 'success' ? 1 : 0,
+        input.outcome === 'throttled' ? 1 : 0,
+        input.outcome === 'ambiguous' ? 1 : 0,
+        input.latencyMs,
+        input.remoteCallCount,
+        input.providerToolCallCount,
+        input.resultBytes ?? 0,
+        input.estimatedCostMicros ?? 0,
+        recordedAt,
+      );
+      return mapConnectorUsage(this.getConnectorUsageRow(input.attemptId)!);
+    });
+  }
+
+  summarizeConnectorUsage(raw: ConnectorUsageSummaryQuery): ConnectorUsageSummary {
+    const query = normalizeConnectorSummaryQuery(raw);
+    const retention = this.db.get(
+      'SELECT raw_retained_from FROM usage_retention_state WHERE singleton = 1',
+    );
+    const retainedFrom = retention ? Number(retention.raw_retained_from) : null;
+    const clauses = ['finished_at >= ?', 'finished_at < ?'];
+    const parameters: Array<string | number> = [query.from, query.to];
+    if (query.workspaceId) {
+      clauses.push('workspace_id = ?');
+      parameters.push(query.workspaceId);
+    }
+    if (query.agentId) {
+      clauses.push('profile_id = ?');
+      parameters.push(query.agentId);
+    }
+    if (query.toolkit) {
+      clauses.push('toolkit = ?');
+      parameters.push(query.toolkit);
+    }
+    const rows = this.db.all(
+      `SELECT workspace_id, profile_id, toolkit, capability, outcome,
+              COUNT(*) AS attempt_count,
+              COUNT(DISTINCT connection_account_id) AS measured_connection_account_count,
+              SUM(remote_call_count) AS remote_call_count,
+              SUM(provider_tool_call_count) AS provider_tool_call_count,
+              COALESCE(SUM(result_bytes), 0) AS total_result_bytes,
+              SUM(estimated_cost_micros) AS estimated_cost_micros,
+              AVG(latency_ms) AS average_latency_ms,
+              MIN(rate_limit_remaining) AS minimum_rate_limit_remaining,
+              MAX(retry_after_ms) AS maximum_retry_after_ms
+       FROM usage_connector_attempts
+       WHERE ${clauses.join(' AND ')}
+       GROUP BY workspace_id, profile_id, toolkit, capability, outcome
+       ORDER BY workspace_id, profile_id, toolkit, capability, outcome`,
+      ...parameters,
+    );
+    const groups = rows.map((row) => ({
+      workspaceId: String(row.workspace_id),
+      agentId: String(row.profile_id),
+      toolkit: String(row.toolkit),
+      capability: String(row.capability),
+      outcome: row.outcome as ConnectorUsageRecord['outcome'],
+      attemptCount: Number(row.attempt_count),
+      measuredConnectionAccountCount: Number(row.measured_connection_account_count),
+      remoteCallCount: Number(row.remote_call_count),
+      providerToolCallCount: Number(row.provider_tool_call_count),
+      totalResultBytes: Number(row.total_result_bytes),
+      estimatedCostMicros: row.estimated_cost_micros === null
+        ? null
+        : Number(row.estimated_cost_micros),
+      averageLatencyMs: Math.round(Number(row.average_latency_ms)),
+      minimumRateLimitRemaining: row.minimum_rate_limit_remaining === null
+        ? null
+        : Number(row.minimum_rate_limit_remaining),
+      maximumRetryAfterMs: row.maximum_retry_after_ms === null
+        ? null
+        : Number(row.maximum_retry_after_ms),
+    }));
+    const totals = this.db.get(
+      `SELECT COUNT(DISTINCT connection_account_id) AS measured_connection_account_count,
+              SUM(latency_ms) AS latency_ms_total,
+              MIN(rate_limit_remaining) AS minimum_rate_limit_remaining,
+              MAX(retry_after_ms) AS maximum_retry_after_ms
+       FROM usage_connector_attempts
+       WHERE ${clauses.join(' AND ')}`,
+      ...parameters,
+    );
+    const attemptCount = groups.reduce((sum, group) => sum + group.attemptCount, 0);
+    const successCount = groups.filter(({ outcome }) => outcome === 'success')
+      .reduce((sum, group) => sum + group.attemptCount, 0);
+    return {
+      from: query.from,
+      to: query.to,
+      retainedFrom,
+      isComplete: retainedFrom === null || query.from >= retainedFrom,
+      attemptCount,
+      successCount,
+      errorCount: attemptCount - successCount,
+      throttledCount: groups.filter(({ outcome }) => outcome === 'throttled')
+        .reduce((sum, group) => sum + group.attemptCount, 0),
+      ambiguousCount: groups.filter(({ outcome }) => outcome === 'ambiguous')
+        .reduce((sum, group) => sum + group.attemptCount, 0),
+      measuredConnectionAccountCount: Number(totals?.measured_connection_account_count ?? 0),
+      remoteCallCount: groups.reduce((sum, group) => sum + group.remoteCallCount, 0),
+      providerToolCallCount: groups.reduce(
+        (sum, group) => sum + group.providerToolCallCount, 0,
+      ),
+      totalResultBytes: groups.reduce((sum, group) => sum + group.totalResultBytes, 0),
+      estimatedCostMicros: groups.length === 0
+        ? null
+        : groups.reduce((sum, group) => sum + (group.estimatedCostMicros ?? 0), 0),
+      averageLatencyMs: attemptCount === 0
+        ? 0
+        : Math.round(Number(totals?.latency_ms_total ?? 0) / attemptCount),
+      minimumRateLimitRemaining: totals?.minimum_rate_limit_remaining === null ||
+          totals?.minimum_rate_limit_remaining === undefined
+        ? null
+        : Number(totals.minimum_rate_limit_remaining),
+      maximumRetryAfterMs: totals?.maximum_retry_after_ms === null ||
+          totals?.maximum_retry_after_ms === undefined
+        ? null
+        : Number(totals.maximum_retry_after_ms),
+      groups,
+    };
+  }
+
+  reserveConnectorQuota(raw: ReserveConnectorQuotaInput): ConnectorQuotaReservation {
+    const input = normalizeConnectorQuotaReservation(raw);
+    return this.db.transaction(() => {
+      const existing = this.db.get(
+        'SELECT * FROM usage_connector_quota_reservations WHERE reservation_id = ?',
+        input.reservationId,
+      );
+      if (existing) {
+        const used = connectorQuotaUsed(this.db, existing);
+        const reservation = mapConnectorQuotaReservation(existing, used);
+        if (!sameConnectorQuotaReservation(reservation, input)) {
+          throw new UsageStateError(
+            'usage_measurement_conflict',
+            'Connector quota reservation ID already belongs to different work.',
+            { executionId: input.reservationId },
+          );
+        }
+        return reservation;
+      }
+      const used = Number(this.db.get(
+        `SELECT COALESCE(SUM(units), 0) AS used
+         FROM usage_connector_quota_reservations
+         WHERE adapter_id = ? AND toolkit = ? AND bucket = ? AND period_start = ?`,
+        input.adapterId,
+        input.toolkit,
+        input.bucket,
+        input.periodStart,
+      )?.used ?? 0);
+      if (used + input.units > input.limit) {
+        throw new UsageStateError(
+          'usage_connector_quota_exceeded',
+          'Connector provider quota budget is exhausted for this period.',
+          {
+            adapterId: input.adapterId,
+            toolkit: input.toolkit,
+            bucket: input.bucket,
+            retryAt: String(input.periodEnd),
+          },
+        );
+      }
+      const recordedAt = this.now();
+      this.db.run(
+        `INSERT INTO usage_connector_quota_reservations (
+          reservation_id, workspace_id, adapter_id, toolkit, bucket, units,
+          quota_limit, period_start, period_end, recorded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        input.reservationId,
+        input.workspaceId,
+        input.adapterId,
+        input.toolkit,
+        input.bucket,
+        input.units,
+        input.limit,
+        input.periodStart,
+        input.periodEnd,
+        recordedAt,
+      );
+      return {
+        ...input,
+        used: used + input.units,
+        remaining: input.limit - used - input.units,
+        recordedAt,
+      };
+    });
+  }
+
+  releaseConnectorQuota(raw: ReleaseConnectorQuotaInput): boolean {
+    const input = normalizeConnectorQuotaReservation(raw);
+    return this.db.transaction(() => {
+      const existing = this.db.get(
+        'SELECT * FROM usage_connector_quota_reservations WHERE reservation_id = ?',
+        input.reservationId,
+      );
+      if (!existing) return false;
+      const reservation = mapConnectorQuotaReservation(
+        existing,
+        connectorQuotaUsed(this.db, existing),
+      );
+      if (!sameConnectorQuotaReservation(reservation, input)) {
+        throw new UsageStateError(
+          'usage_measurement_conflict',
+          'Connector quota reservation ID already belongs to different work.',
+          { executionId: input.reservationId },
+        );
+      }
+      this.db.run(
+        'DELETE FROM usage_connector_quota_reservations WHERE reservation_id = ?',
+        input.reservationId,
+      );
+      return true;
     });
   }
 
@@ -533,6 +877,21 @@ export class UsageStoreLogic {
         'DELETE FROM usage_daily_rollups WHERE day_start < ?',
         cutoffs.aggregatesBefore,
       ).changes;
+      // Connector rollups are updated atomically when each attempt is
+      // recorded, so retention only deletes raw detail here; re-aggregating
+      // expiring attempts would double-count them.
+      const connectorAttemptsDeleted = this.db.run(
+        'DELETE FROM usage_connector_attempts WHERE finished_at < ?',
+        cutoffs.rawBefore,
+      ).changes;
+      const connectorAggregateDaysDeleted = this.db.run(
+        'DELETE FROM usage_connector_daily_rollups WHERE day_start < ?',
+        cutoffs.aggregatesBefore,
+      ).changes;
+      const connectorQuotaReservationsDeleted = this.db.run(
+        'DELETE FROM usage_connector_quota_reservations WHERE period_end <= ?',
+        at,
+      ).changes;
       this.db.run(
         `INSERT INTO usage_retention_state (
           singleton, last_run_at, raw_retained_from, aggregate_retained_from
@@ -545,14 +904,23 @@ export class UsageStoreLogic {
         cutoffs.rawBefore,
         cutoffs.aggregatesBefore,
       );
-      if (operationsDeleted > 0 || aggregateDaysDeleted > 0) {
+      if (operationsDeleted > 0 || aggregateDaysDeleted > 0 ||
+          connectorAttemptsDeleted > 0 || connectorAggregateDaysDeleted > 0 ||
+          connectorQuotaReservationsDeleted > 0) {
         this.appendUsageAudit({
           eventId: `usage:retention:${at}`,
           eventType: 'usage.retention_applied',
           subjectId: 'usage-ledger',
           subjectVersion: 1,
           createdAt: at,
-          metadata: { operationsDeleted, measurementsDeleted, aggregateDaysDeleted },
+          metadata: {
+            operationsDeleted,
+            measurementsDeleted,
+            aggregateDaysDeleted,
+            connectorAttemptsDeleted,
+            connectorAggregateDaysDeleted,
+            connectorQuotaReservationsDeleted,
+          },
         });
       }
       return {
@@ -560,6 +928,9 @@ export class UsageStoreLogic {
         operationsDeleted,
         measurementsDeleted,
         aggregateDaysDeleted,
+        connectorAttemptsDeleted,
+        connectorAggregateDaysDeleted,
+        connectorQuotaReservationsDeleted,
       };
     });
   }
@@ -588,6 +959,23 @@ export class UsageStoreLogic {
         return { kind: 'operation', operation: this.admitOperation(request.input) };
       case 'record_terminal':
         return { kind: 'detail', detail: this.recordTerminal(request.input) };
+      case 'record_connector_usage':
+        return { kind: 'connector_usage', usage: this.recordConnectorUsage(request.input) };
+      case 'reserve_connector_quota':
+        return {
+          kind: 'connector_quota',
+          reservation: this.reserveConnectorQuota(request.input),
+        };
+      case 'release_connector_quota':
+        return {
+          kind: 'connector_quota_released',
+          released: this.releaseConnectorQuota(request.input),
+        };
+      case 'summarize_connector_usage':
+        return {
+          kind: 'connector_usage_summary',
+          summary: this.summarizeConnectorUsage(request.query),
+        };
       case 'get_operation':
         return { kind: 'detail', detail: this.getOperation(request.operationId) ?? null };
       case 'get_operation_by_run':
@@ -712,6 +1100,13 @@ export class UsageStoreLogic {
     ) as unknown as CredentialRow | undefined;
   }
 
+  private getConnectorUsageRow(attemptId: string): ConnectorUsageRow | undefined {
+    return this.db.get(
+      'SELECT * FROM usage_connector_attempts WHERE attempt_id = ?',
+      attemptId,
+    ) as unknown as ConnectorUsageRow | undefined;
+  }
+
   private initializeSchema(): void {
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS usage_operations (
@@ -786,6 +1181,74 @@ export class UsageStoreLogic {
       )`,
     );
     this.db.exec(
+      `CREATE TABLE IF NOT EXISTS usage_connector_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        profile_id TEXT NOT NULL,
+        connection_account_id TEXT NOT NULL,
+        operation_id TEXT,
+        run_id TEXT,
+        run_execution_id TEXT,
+        adapter_id TEXT NOT NULL,
+        toolkit TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        provider_tool TEXT,
+        provider_version TEXT,
+        effect_class TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        retry_classification TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER NOT NULL,
+        latency_ms INTEGER NOT NULL,
+        remote_call_count INTEGER NOT NULL,
+        provider_tool_call_count INTEGER NOT NULL,
+        result_bytes INTEGER,
+        http_status INTEGER,
+        rate_limit_remaining INTEGER,
+        retry_after_ms INTEGER,
+        provider_log_id TEXT,
+        price_version_id TEXT,
+        estimated_cost_micros INTEGER,
+        estimate_currency TEXT,
+        recorded_at INTEGER NOT NULL
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS usage_connector_daily_rollups (
+        day_start INTEGER NOT NULL,
+        workspace_id TEXT NOT NULL,
+        adapter_id TEXT NOT NULL,
+        toolkit TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL,
+        success_count INTEGER NOT NULL,
+        throttled_count INTEGER NOT NULL,
+        ambiguous_count INTEGER NOT NULL,
+        latency_ms_total INTEGER NOT NULL,
+        remote_call_count INTEGER NOT NULL,
+        provider_tool_call_count INTEGER NOT NULL,
+        result_bytes_total INTEGER NOT NULL,
+        estimated_cost_micros INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (day_start, workspace_id, adapter_id, toolkit, capability, outcome)
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS usage_connector_quota_reservations (
+        reservation_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        adapter_id TEXT NOT NULL,
+        toolkit TEXT NOT NULL,
+        bucket TEXT NOT NULL,
+        units INTEGER NOT NULL,
+        quota_limit INTEGER NOT NULL,
+        period_start INTEGER NOT NULL,
+        period_end INTEGER NOT NULL,
+        recorded_at INTEGER NOT NULL
+      )`,
+    );
+    this.db.exec(
       `CREATE TABLE IF NOT EXISTS usage_daily_rollups (
         day_start INTEGER PRIMARY KEY,
         operation_count INTEGER NOT NULL,
@@ -827,6 +1290,11 @@ export class UsageStoreLogic {
       'CREATE INDEX IF NOT EXISTS usage_measurements_operation_idx ON usage_measurements (operation_id, observed_at, execution_id)',
       "CREATE INDEX IF NOT EXISTS usage_measurements_unknown_price_idx ON usage_measurements (observed_at, execution_id) WHERE estimate_completeness = 'unknown'",
       'CREATE INDEX IF NOT EXISTS usage_credentials_provider_idx ON usage_credentials (provider_id, retired_at, credential_ref_id, version)',
+      'CREATE INDEX IF NOT EXISTS usage_connector_attempts_time_idx ON usage_connector_attempts (finished_at DESC, attempt_id)',
+      'CREATE INDEX IF NOT EXISTS usage_connector_attempts_workspace_idx ON usage_connector_attempts (workspace_id, finished_at DESC)',
+      'CREATE INDEX IF NOT EXISTS usage_connector_attempts_toolkit_idx ON usage_connector_attempts (toolkit, capability, finished_at DESC)',
+      'CREATE INDEX IF NOT EXISTS usage_connector_attempts_operation_idx ON usage_connector_attempts (operation_id, run_id, run_execution_id)',
+      'CREATE INDEX IF NOT EXISTS usage_connector_quota_period_idx ON usage_connector_quota_reservations (adapter_id, toolkit, bucket, period_start)',
     ]) this.db.exec(sql);
     const measurementColumns = this.db.all('PRAGMA table_info(usage_measurements)');
     if (!measurementColumns.some((row) => row.name === 'cache_read_tokens')) {
@@ -841,6 +1309,16 @@ export class UsageStoreLogic {
     }
     if (!rollupColumns.some((row) => row.name === 'cache_write_tokens')) {
       this.db.exec('ALTER TABLE usage_daily_rollups ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0');
+    }
+    const connectorColumns = this.db.all('PRAGMA table_info(usage_connector_attempts)');
+    if (!connectorColumns.some((row) => row.name === 'result_bytes')) {
+      this.db.exec('ALTER TABLE usage_connector_attempts ADD COLUMN result_bytes INTEGER');
+    }
+    const connectorRollupColumns = this.db.all('PRAGMA table_info(usage_connector_daily_rollups)');
+    if (!connectorRollupColumns.some((row) => row.name === 'result_bytes_total')) {
+      this.db.exec(
+        'ALTER TABLE usage_connector_daily_rollups ADD COLUMN result_bytes_total INTEGER NOT NULL DEFAULT 0',
+      );
     }
     // The pointers into the Work ledger (usage_operations.run_id,
     // usage_measurements.run_execution_id) and their partial indexes are
@@ -1023,6 +1501,73 @@ function mapCredential(row: CredentialRow): ModelCredentialRecord {
   };
 }
 
+function mapConnectorUsage(row: ConnectorUsageRow): ConnectorUsageRecord {
+  return {
+    attemptId: row.attempt_id,
+    workspaceId: row.workspace_id,
+    agentId: row.profile_id,
+    connectionAccountId: row.connection_account_id,
+    operationId: row.operation_id,
+    runId: row.run_id,
+    runExecutionId: row.run_execution_id,
+    adapterId: row.adapter_id,
+    toolkit: row.toolkit,
+    capability: row.capability,
+    providerTool: row.provider_tool,
+    providerVersion: row.provider_version,
+    effectClass: row.effect_class,
+    outcome: row.outcome,
+    retryClassification: row.retry_classification,
+    startedAt: Number(row.started_at),
+    finishedAt: Number(row.finished_at),
+    latencyMs: Number(row.latency_ms),
+    remoteCallCount: Number(row.remote_call_count),
+    providerToolCallCount: Number(row.provider_tool_call_count),
+    resultBytes: nullableNumber(row.result_bytes),
+    httpStatus: nullableNumber(row.http_status),
+    rateLimitRemaining: nullableNumber(row.rate_limit_remaining),
+    retryAfterMs: nullableNumber(row.retry_after_ms),
+    providerLogId: row.provider_log_id,
+    priceVersionId: row.price_version_id,
+    estimatedCostMicros: nullableNumber(row.estimated_cost_micros),
+    estimateCurrency: row.estimate_currency,
+    recordedAt: Number(row.recorded_at),
+  };
+}
+
+function mapConnectorQuotaReservation(
+  row: Record<string, unknown>,
+  used: number,
+): ConnectorQuotaReservation {
+  const limit = Number(row.quota_limit);
+  return {
+    reservationId: String(row.reservation_id),
+    workspaceId: String(row.workspace_id),
+    adapterId: String(row.adapter_id),
+    toolkit: String(row.toolkit),
+    bucket: String(row.bucket),
+    units: Number(row.units),
+    limit,
+    periodStart: Number(row.period_start),
+    periodEnd: Number(row.period_end),
+    used,
+    remaining: Math.max(0, limit - used),
+    recordedAt: Number(row.recorded_at),
+  };
+}
+
+function connectorQuotaUsed(db: StateDb, row: Record<string, unknown>): number {
+  return Number(db.get(
+    `SELECT COALESCE(SUM(units), 0) AS used
+     FROM usage_connector_quota_reservations
+     WHERE adapter_id = ? AND toolkit = ? AND bucket = ? AND period_start = ?`,
+    String(row.adapter_id),
+    String(row.toolkit),
+    String(row.bucket),
+    Number(row.period_start),
+  )?.used ?? 0);
+}
+
 function sameAdmission(operation: UsageOperation, input: AdmitUsageOperationInput): boolean {
   return operation.operationId === input.operationId &&
     operation.operationKind === input.operationKind &&
@@ -1107,6 +1652,55 @@ function sameCredential(
     credential.scopeLabel === input.scopeLabel &&
     credential.unknownRotation === input.unknownRotation &&
     credential.activeFrom === input.activeFrom;
+}
+
+function sameConnectorUsage(
+  record: ConnectorUsageRecord,
+  input: RecordConnectorUsageInput,
+): boolean {
+  return record.attemptId === input.attemptId &&
+    record.workspaceId === input.workspaceId &&
+    record.agentId === input.agentId &&
+    record.connectionAccountId === input.connectionAccountId &&
+    (record.operationId ?? null) === (input.operationId ?? null) &&
+    (record.runId ?? null) === (input.runId ?? null) &&
+    (record.runExecutionId ?? null) === (input.runExecutionId ?? null) &&
+    record.adapterId === input.adapterId &&
+    record.toolkit === input.toolkit &&
+    record.capability === input.capability &&
+    record.providerTool === input.providerTool &&
+    record.providerVersion === input.providerVersion &&
+    record.effectClass === input.effectClass &&
+    record.outcome === input.outcome &&
+    record.retryClassification === input.retryClassification &&
+    record.startedAt === input.startedAt &&
+    record.finishedAt === input.finishedAt &&
+    record.latencyMs === input.latencyMs &&
+    record.remoteCallCount === input.remoteCallCount &&
+    record.providerToolCallCount === input.providerToolCallCount &&
+    record.resultBytes === input.resultBytes &&
+    record.httpStatus === input.httpStatus &&
+    record.rateLimitRemaining === input.rateLimitRemaining &&
+    record.retryAfterMs === input.retryAfterMs &&
+    record.providerLogId === input.providerLogId &&
+    record.priceVersionId === input.priceVersionId &&
+    record.estimatedCostMicros === input.estimatedCostMicros &&
+    record.estimateCurrency === input.estimateCurrency;
+}
+
+function sameConnectorQuotaReservation(
+  record: ConnectorQuotaReservation,
+  input: ReserveConnectorQuotaInput,
+): boolean {
+  return record.reservationId === input.reservationId &&
+    record.workspaceId === input.workspaceId &&
+    record.adapterId === input.adapterId &&
+    record.toolkit === input.toolkit &&
+    record.bucket === input.bucket &&
+    record.units === input.units &&
+    record.limit === input.limit &&
+    record.periodStart === input.periodStart &&
+    record.periodEnd === input.periodEnd;
 }
 
 function nullableNumber(value: number | null): number | null {

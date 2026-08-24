@@ -26,6 +26,7 @@ import {
   type EnsureWorkspaceInstallationInput,
   type WorkspaceInstallation,
   type WorkspaceInstallationPatch,
+  MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY,
 } from './types.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
@@ -137,6 +138,7 @@ interface AgentConnectionBindingRow {
   connection_account_id: string;
   provider_id: string;
   allowed_capabilities_json: string;
+  resource_constraints_json: string;
   enabled: number;
   created_at: number;
   updated_at: number;
@@ -280,6 +282,7 @@ export class ConfigStoreLogic {
     seed: ConfigSeed = DEFAULT_SEED,
   ) {
     this.installConfigSchema();
+    this.installAgentConnectionBindingMigrations();
     const channelTable = this.db.get(
       "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'config_channels'",
     );
@@ -782,20 +785,23 @@ export class ConfigStoreLogic {
       throw new Error(`Connection account ${input.connectionAccountId} does not use ${input.providerId}`);
     }
     const now = Date.now();
+    const resourceConstraints = normalizeBindingResourceConstraints(input.resourceConstraints);
     this.db.run(
       `INSERT INTO config_agent_connection_bindings (
         agent_id, connection_account_id, provider_id, allowed_capabilities_json,
-        enabled, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        resource_constraints_json, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(agent_id, connection_account_id) DO UPDATE SET
         provider_id = excluded.provider_id,
         allowed_capabilities_json = excluded.allowed_capabilities_json,
+        resource_constraints_json = excluded.resource_constraints_json,
         enabled = excluded.enabled,
         updated_at = excluded.updated_at`,
       input.agentId,
       input.connectionAccountId,
       input.providerId,
       JSON.stringify([...new Set(input.allowedCapabilities)]),
+      JSON.stringify(resourceConstraints),
       input.enabled ? 1 : 0,
       now,
       now,
@@ -1261,6 +1267,7 @@ export class ConfigStoreLogic {
         connection_account_id TEXT NOT NULL,
         provider_id TEXT NOT NULL,
         allowed_capabilities_json TEXT NOT NULL,
+        resource_constraints_json TEXT NOT NULL DEFAULT '{}',
         enabled INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
@@ -1464,6 +1471,22 @@ export class ConfigStoreLogic {
         CONFIG_SCHEMA_MARKER,
       );
     });
+  }
+
+  private installAgentConnectionBindingMigrations(): void {
+    const bindingTable = this.db.get(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'config_agent_connection_bindings'",
+    );
+    if (!bindingTable) return;
+    const bindingColumns = new Set(
+      this.db.all('PRAGMA table_info(config_agent_connection_bindings)')
+        .map((column) => String(column.name)),
+    );
+    if (!bindingColumns.has('resource_constraints_json')) {
+      this.db.exec(
+        "ALTER TABLE config_agent_connection_bindings ADD COLUMN resource_constraints_json TEXT NOT NULL DEFAULT '{}'",
+      );
+    }
   }
 }
 
@@ -1676,9 +1699,12 @@ function validateConnectionAccountInput(input: ConnectionAccountInput): void {
   if (!input.label.trim() || input.label.length > 160) {
     throw new Error('Connection account label is invalid');
   }
-  if (input.policy.oauthAttemptId !== undefined &&
+  const oauthAttemptId = 'oauthAttemptId' in input.policy
+    ? input.policy.oauthAttemptId
+    : undefined;
+  if (oauthAttemptId !== undefined &&
       !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-        .test(input.policy.oauthAttemptId)) {
+        .test(oauthAttemptId)) {
     throw new Error('Connection account OAuth attempt is invalid');
   }
   if (input.policy.kind === 'api') {
@@ -1688,8 +1714,42 @@ function validateConnectionAccountInput(input: ConnectionAccountInput): void {
     if (input.policy.authMode === 'oauth' && !input.policy.oauthProvider) {
       throw new Error('OAuth API connection account requires a provider');
     }
-  } else if (!input.policy.url.trim()) {
+  } else if (input.policy.kind === 'mcp' && !input.policy.url.trim()) {
     throw new Error('MCP connection account policy is incomplete');
+  } else if (input.policy.kind === 'managed') {
+    const idPattern = /^[a-z0-9][a-z0-9_-]{0,127}$/;
+    const capabilities = input.policy.allowedCapabilities;
+    if (
+      !idPattern.test(input.policy.adapterId) ||
+      !idPattern.test(input.policy.toolkit) ||
+      !input.policy.principalRef.trim() || input.policy.principalRef.length > 256 ||
+      !input.policy.accountRef.trim() || input.policy.accountRef.length > 256 ||
+      capabilities.length === 0 || capabilities.length > 128 ||
+      new Set(capabilities).size !== capabilities.length ||
+      capabilities.some((capability) =>
+        !capability.trim() || capability.length > 256 || capability !== capability.trim()
+      )
+    ) {
+      throw new Error('Managed connection account policy is incomplete');
+    }
+    if (input.policy.resourceConstraints && Object.values(input.policy.resourceConstraints).some(
+      (selections) => !Array.isArray(selections) ||
+        selections.length > MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY ||
+        selections.some((selection) => selection.currencyCode !== undefined &&
+          !/^[A-Z]{3}$/.test(selection.currencyCode)),
+    )) {
+      throw new Error('Managed connection account resource constraints are invalid');
+    }
+    const grantSummary = input.policy.grantSummary;
+    if (grantSummary && (
+      typeof grantSummary.truncated !== 'boolean' ||
+      !Array.isArray(grantSummary.items) || grantSummary.items.length > 20 ||
+      grantSummary.items.some((item) =>
+        !item || (item.type !== 'page' && item.type !== 'database') ||
+        typeof item.label !== 'string' || !item.label.trim() || item.label.length > 240)
+    )) {
+      throw new Error('Managed connection grant summary is invalid');
+    }
   }
 }
 
@@ -1736,15 +1796,49 @@ function rowToAgentConnectionBinding(row: AgentConnectionBindingRow): AgentConne
   } catch {
     allowedCapabilities = [];
   }
+  const resourceConstraints = parseBindingResourceConstraints(row.resource_constraints_json);
   return {
     agentId: row.agent_id,
     connectionAccountId: row.connection_account_id,
     providerId: row.provider_id,
     allowedCapabilities,
+    resourceConstraints,
     enabled: Boolean(row.enabled),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
+}
+
+function normalizeBindingResourceConstraints(
+  value: AgentConnectionBinding['resourceConstraints'],
+): NonNullable<AgentConnectionBinding['resourceConstraints']> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).length > 32) {
+    throw new Error('Connection binding resource constraints are invalid');
+  }
+  const normalized: NonNullable<AgentConnectionBinding['resourceConstraints']> = {};
+  for (const [key, handles] of Object.entries(value)) {
+    if (!/^[a-z][A-Za-z0-9]{0,127}$/.test(key) || !Array.isArray(handles) ||
+        handles.length > 256 || new Set(handles).size !== handles.length ||
+        handles.some((handle) =>
+          typeof handle !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,127}$/.test(handle)
+        )) {
+      throw new Error('Connection binding resource constraints are invalid');
+    }
+    normalized[key] = [...handles];
+  }
+  return normalized;
+}
+
+function parseBindingResourceConstraints(
+  raw: string | null | undefined,
+): NonNullable<AgentConnectionBinding['resourceConstraints']> {
+  try {
+    return normalizeBindingResourceConstraints(JSON.parse(raw ?? '{}') as never);
+  } catch {
+    return {};
+  }
 }
 
 function rowToAgentScheduleReference(row: AgentScheduleReferenceRow): AgentScheduleReference {

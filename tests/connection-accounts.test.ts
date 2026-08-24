@@ -87,9 +87,14 @@ function effectiveGoogleService(
 ): EffectiveConnectionAccount {
   const policy = {
     ...gmailPolicy(),
-    allowedHosts: pathPrefixes.every((path) => path.startsWith('/gmail/'))
-      ? ['gmail.googleapis.com']
-      : ['www.googleapis.com'],
+    allowedHosts: [
+      ...(pathPrefixes.some((path) => path.startsWith('/gmail/'))
+        ? ['gmail.googleapis.com']
+        : []),
+      ...(pathPrefixes.some((path) => !path.startsWith('/gmail/'))
+        ? ['www.googleapis.com']
+        : []),
+    ],
     pathPrefixes,
   };
   return {
@@ -112,6 +117,54 @@ function effectiveGoogleService(
       connectionAccountId: id,
       providerId: 'google',
       allowedCapabilities: [],
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    policy,
+    scope: 'team',
+  };
+}
+
+function effectiveManagedGoogleService(
+  id: string,
+  label: string,
+  toolkit: string,
+): EffectiveConnectionAccount {
+  const policy = {
+    kind: 'managed' as const,
+    adapterId: 'composio',
+    toolkit,
+    principalRef: 'chickpea:organization:organization_test',
+    accountRef: `ca_${id}`,
+    allowedCapabilities: toolkit === 'gmail'
+      ? ['gmail.messages.search']
+      : toolkit === 'googlecalendar'
+      ? ['calendar.events.list']
+      : toolkit === 'googledrive'
+      ? ['drive.files.search']
+      : [`${toolkit}.fixture.read`],
+  };
+  return {
+    account: {
+      id,
+      workspaceId: 'T_CONNECTIONS',
+      revision: 1,
+      ownerKind: 'team',
+      createdByMembershipId: 'membership_creator',
+      providerId: 'google',
+      label,
+      policy,
+      secretRefId: `secret_${id}`,
+      lifecycle: 'ready',
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    binding: {
+      agentId: 'agent_workspace',
+      connectionAccountId: id,
+      providerId: 'google',
+      allowedCapabilities: [...policy.allowedCapabilities],
       enabled: true,
       createdAt: 1,
       updatedAt: 1,
@@ -435,6 +488,221 @@ test('Google service accounts select independently while duplicate service accou
   );
 });
 
+test('native and managed Google service accounts stay ambiguous during migration', () => {
+  for (const service of [
+    {
+      native: effectiveGoogleService('connection_gmail_native', 'Native Gmail', ['/gmail/v1/users/me']),
+      managed: effectiveManagedGoogleService(
+        'connection_gmail_managed', 'Managed Gmail', 'gmail',
+      ),
+    },
+    {
+      native: effectiveGoogleService('connection_calendar_native', 'Native Calendar', ['/calendar/v3']),
+      managed: effectiveManagedGoogleService(
+        'connection_calendar_managed', 'Managed Calendar', 'googlecalendar',
+      ),
+    },
+    {
+      native: effectiveGoogleService('connection_drive_native', 'Native Drive', ['/drive/v3']),
+      managed: effectiveManagedGoogleService(
+        'connection_drive_managed', 'Managed Drive', 'googledrive',
+      ),
+    },
+  ]) {
+    const resolution = selectConnectionsForRequest({
+      connections: [service.native, service.managed],
+      requestText: 'Use Google',
+    });
+    assert.deepEqual(resolution.selected, []);
+    assert.deepEqual(
+      resolution.ambiguous[0]?.choices.map(({ label }) => label),
+      [service.native.account.label, service.managed.account.label],
+    );
+  }
+});
+
+test('managed Google toolkits select independently outside the native migration aliases', () => {
+  const connections = [
+    effectiveManagedGoogleService('connection_sheets', 'Google Sheets', 'googlesheets'),
+    effectiveManagedGoogleService('connection_ads', 'Google Ads', 'googleads'),
+    effectiveManagedGoogleService('connection_youtube', 'YouTube', 'youtube'),
+  ];
+  const resolution = selectConnectionsForRequest({
+    connections,
+    requestText: 'Update the campaign sheet and review the related YouTube channel',
+  });
+
+  assert.deepEqual(
+    resolution.selected.map(({ account }) => account.id),
+    ['connection_sheets', 'connection_ads', 'connection_youtube'],
+  );
+  assert.deepEqual(resolution.ambiguous, []);
+});
+
+test('native and managed Notion accounts stay ambiguous until the request names one', () => {
+  const nativePolicy = {
+    kind: 'mcp' as const,
+    id: 'notion-native',
+    displayName: 'Native Notion',
+    url: 'https://mcp.notion.com/mcp',
+    transport: 'streamable-http' as const,
+    authMode: 'oauth' as const,
+    headerNames: [],
+    enabled: true,
+    lifecycleStatus: 'ready' as const,
+    statusText: 'Connected',
+    discoveredTools: [{ name: 'notion-search' }],
+    allowedTools: ['notion-search'],
+    presetId: 'notion',
+  };
+  const managedPolicy = {
+    kind: 'managed' as const,
+    adapterId: 'composio',
+    toolkit: 'notion',
+    principalRef: 'chickpea:organization:organization_test',
+    accountRef: 'ca_notion_managed',
+    allowedCapabilities: ['notion.content.search'],
+  };
+  const effective = (
+    id: string,
+    label: string,
+    policy: typeof nativePolicy | typeof managedPolicy,
+  ): EffectiveConnectionAccount => ({
+    account: {
+      id,
+      workspaceId: 'T_CONNECTIONS',
+      revision: 1,
+      ownerKind: 'team',
+      createdByMembershipId: 'membership_creator',
+      providerId: 'notion',
+      label,
+      policy,
+      secretRefId: `secret_${id}`,
+      lifecycle: 'ready',
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    binding: {
+      agentId: 'agent_workspace',
+      connectionAccountId: id,
+      providerId: 'notion',
+      allowedCapabilities: policy.kind === 'managed'
+        ? [...policy.allowedCapabilities]
+        : [...policy.allowedTools],
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    policy,
+    scope: 'team',
+  });
+  const native = effective('connection_notion_native', 'Native Notion', nativePolicy);
+  const managed = effective('connection_notion_managed', 'Managed Notion', managedPolicy);
+
+  const unspecified = selectConnectionsForRequest({
+    connections: [native, managed],
+    requestText: 'Search Notion for the launch plan',
+  });
+  assert.deepEqual(unspecified.selected, []);
+  assert.deepEqual(
+    unspecified.ambiguous[0]?.choices.map(({ label }) => label),
+    ['Native Notion', 'Managed Notion'],
+  );
+
+  const explicit = selectConnectionsForRequest({
+    connections: [native, managed],
+    requestText: 'Search Managed Notion for the launch plan',
+  });
+  assert.deepEqual(
+    explicit.selected.map(({ account }) => account.id),
+    ['connection_notion_managed'],
+  );
+  assert.deepEqual(explicit.ambiguous, []);
+});
+
+test('a multi-service native Google account is withheld when any managed service overlaps', () => {
+  const native = effectiveGoogleService(
+    'connection_workspace_native',
+    'Native Google Workspace',
+    ['/gmail/v1/users/me', '/calendar/v3'],
+  );
+  for (const managed of [
+    effectiveManagedGoogleService('connection_gmail_managed', 'Managed Gmail', 'gmail'),
+    effectiveManagedGoogleService(
+      'connection_calendar_managed', 'Managed Calendar', 'googlecalendar',
+    ),
+  ]) {
+    const resolution = selectConnectionsForRequest({
+      connections: [native, managed],
+      requestText: 'Use Google',
+    });
+    assert.deepEqual(resolution.selected, []);
+    assert.deepEqual(
+      resolution.ambiguous[0]?.choices.map(({ label }) => label),
+      [native.account.label, managed.account.label],
+    );
+  }
+});
+
+test('a broad native Google account cannot escape a language-matched Gmail ambiguity', () => {
+  const native = effectiveGoogleService(
+    'connection_workspace_native',
+    'Acme Google Workspace',
+    ['/gmail/v1/users/me', '/calendar/v3'],
+  );
+  const work = effectiveManagedGoogleService(
+    'connection_gmail_work', 'Work mailbox', 'gmail',
+  );
+  const personal = effectiveManagedGoogleService(
+    'connection_gmail_personal', 'Personal mailbox', 'gmail',
+  );
+  const resolution = selectConnectionsForRequest({
+    connections: [native, work, personal],
+    requestText: 'Search my work mailbox and personal mailbox for the invoice',
+  });
+  assert.deepEqual(resolution.selected, []);
+  assert.deepEqual(
+    resolution.ambiguous[0]?.choices.map(({ label }) => label),
+    ['Work mailbox', 'Personal mailbox'],
+  );
+});
+
+test('one broad native Google account is selected only once across service groups', () => {
+  const native = effectiveGoogleService(
+    'connection_workspace_native',
+    'Acme Google Workspace',
+    ['/gmail/v1/users/me', '/calendar/v3', '/drive/v3'],
+  );
+  const resolution = selectConnectionsForRequest({
+    connections: [native],
+    requestText: 'Review Google Workspace',
+  });
+  assert.deepEqual(resolution.selected.map(({ account }) => account.id), [native.account.id]);
+  assert.deepEqual(resolution.ambiguous, []);
+});
+
+test('broad and service-specific native Google accounts retain their legacy grouping', () => {
+  const broad = effectiveGoogleService(
+    'connection_workspace_native',
+    'Acme Google Workspace',
+    ['/gmail/v1/users/me', '/calendar/v3', '/drive/v3'],
+  );
+  const calendar = effectiveGoogleService(
+    'connection_calendar_native',
+    'Ops Calendar',
+    ['/calendar/v3'],
+  );
+  const resolution = selectConnectionsForRequest({
+    connections: [broad, calendar],
+    requestText: 'Check my schedule and email',
+  });
+  assert.deepEqual(
+    resolution.selected.map(({ account }) => account.id),
+    [broad.account.id, calendar.account.id],
+  );
+  assert.deepEqual(resolution.ambiguous, []);
+});
+
 test('a member-owned binding grants a provider capability without exposing another member account', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -516,6 +784,347 @@ test('a member-owned binding grants a provider capability without exposing anoth
   } finally {
     config.close();
     settings.close();
+  }
+});
+
+test('managed personal templates are not advertised before managed authorization is implemented', async () => {
+  const managedPolicy = {
+    kind: 'managed' as const,
+    adapterId: 'composio',
+    toolkit: 'gmail',
+    principalRef: 'chickpea:membership:membership_alice',
+    accountRef: 'ca_alice',
+    allowedCapabilities: ['gmail.messages.search'],
+  };
+  const options = await resolvePersonalConnectionAuthorizationOptions({
+    config: {
+      listConnectionAccounts: async () => [{
+        id: 'connection_managed_template',
+        workspaceId: 'T_CONNECTIONS',
+        revision: 1,
+        ownerKind: 'member' as const,
+        ownerMembershipId: 'membership_alice',
+        createdByMembershipId: 'membership_alice',
+        providerId: 'google',
+        label: 'Managed Gmail',
+        policy: managedPolicy,
+        secretRefId: '',
+        lifecycle: 'ready' as const,
+        createdAt: 1,
+        updatedAt: 1,
+      }],
+      listAgentConnectionBindings: async () => [{
+        agentId: 'agent_mail',
+        connectionAccountId: 'connection_managed_template',
+        providerId: 'google',
+        allowedCapabilities: ['gmail.messages.search'],
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      }],
+    },
+    workspaceId: 'T_CONNECTIONS',
+    agentId: 'agent_mail',
+    actorMembershipId: 'membership_alice',
+  });
+
+  assert.deepEqual(options, []);
+});
+
+test('managed personal bindings prefer the owner exact account without breaking member substitution', async () => {
+  const managedAccount = (
+    id: string,
+    ownerMembershipId: string,
+    accountRef: string,
+    allowedCapabilities = ['gmail.messages.search'],
+  ) => ({
+    id,
+    workspaceId: 'T_CONNECTIONS',
+    revision: 1,
+    ownerKind: 'member' as const,
+    ownerMembershipId,
+    createdByMembershipId: ownerMembershipId,
+    providerId: 'google',
+    label: 'Gmail · Personal',
+    policy: {
+      kind: 'managed' as const,
+      adapterId: 'composio',
+      toolkit: 'gmail',
+      principalRef: `chickpea:membership:${ownerMembershipId}`,
+      accountRef,
+      allowedCapabilities,
+    },
+    secretRefId: `secret_${id}`,
+    lifecycle: 'ready' as const,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  const aliceBound = managedAccount('connection_alice_bound', 'membership_alice', 'ca_alice_bound');
+  const aliceOther = managedAccount('connection_alice_other', 'membership_alice', 'ca_alice_other');
+  const bobSubstitute = managedAccount(
+    'connection_bob',
+    'membership_bob',
+    'ca_bob',
+    ['gmail.messages.search', 'gmail.messages.send'],
+  );
+  const config = {
+    listConnectionAccounts: async () => [aliceBound, aliceOther, bobSubstitute],
+    listAgentConnectionBindings: async () => [{
+      agentId: 'agent_mail',
+      connectionAccountId: aliceBound.id,
+      providerId: 'google',
+      allowedCapabilities: ['gmail.messages.search'],
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    }],
+  };
+
+  const forAlice = await resolveEffectiveConnectionAccounts({
+    config,
+    workspaceId: 'T_CONNECTIONS',
+    agentId: 'agent_mail',
+    actorMembershipId: 'membership_alice',
+  });
+  assert.deepEqual(forAlice.map(({ account }) => account.id), [aliceBound.id]);
+
+  const forBob = await resolveEffectiveConnectionAccounts({
+    config,
+    workspaceId: 'T_CONNECTIONS',
+    agentId: 'agent_mail',
+    actorMembershipId: 'membership_bob',
+  });
+  assert.deepEqual(forBob.map(({ account }) => account.id), [bobSubstitute.id]);
+  const bobPolicy = forBob[0]?.policy;
+  assert.equal(bobPolicy?.kind, 'managed');
+  if (bobPolicy?.kind !== 'managed') assert.fail('expected a managed policy');
+  assert.deepEqual(bobPolicy.allowedCapabilities, ['gmail.messages.search']);
+});
+
+test('a member exact managed binding wins over another member template in either row order', async () => {
+  const account = (id: string, ownerMembershipId: string) => ({
+    id,
+    workspaceId: 'T_CONNECTIONS',
+    revision: 1,
+    ownerKind: 'member' as const,
+    ownerMembershipId,
+    createdByMembershipId: ownerMembershipId,
+    providerId: 'google',
+    label: 'Gmail · Personal',
+    policy: {
+      kind: 'managed' as const,
+      adapterId: 'composio',
+      toolkit: 'gmail',
+      principalRef: `chickpea:membership:${ownerMembershipId}`,
+      accountRef: `ca_${ownerMembershipId}`,
+      allowedCapabilities: ['gmail.messages.search', 'gmail.messages.send'],
+    },
+    secretRefId: `secret_${id}`,
+    lifecycle: 'ready' as const,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  const alice = account('connection_alice_template', 'membership_alice');
+  const bob = account('connection_bob_exact', 'membership_bob');
+  const aliceTemplate = {
+    agentId: 'agent_mail',
+    connectionAccountId: alice.id,
+    providerId: 'google',
+    allowedCapabilities: ['gmail.messages.search', 'gmail.messages.send'],
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const bobExact = {
+    ...aliceTemplate,
+    connectionAccountId: bob.id,
+    allowedCapabilities: ['gmail.messages.search'],
+  };
+
+  for (const bindings of [
+    [aliceTemplate, bobExact],
+    [bobExact, aliceTemplate],
+  ]) {
+    const effective = await resolveEffectiveConnectionAccounts({
+      config: {
+        listConnectionAccounts: async () => [alice, bob],
+        listAgentConnectionBindings: async () => bindings,
+      },
+      workspaceId: 'T_CONNECTIONS',
+      agentId: 'agent_mail',
+      actorMembershipId: 'membership_bob',
+    });
+    assert.deepEqual(effective.map(({ account: current }) => current.id), [bob.id]);
+    const policy = effective[0]?.policy;
+    assert.equal(policy?.kind, 'managed');
+    if (policy?.kind !== 'managed') assert.fail('expected a managed policy');
+    assert.deepEqual(policy.allowedCapabilities, ['gmail.messages.search']);
+    assert.equal(effective[0]?.binding.connectionAccountId, bob.id);
+  }
+});
+
+test('foreign managed templates collapse to their capability intersection in either row order', async () => {
+  const account = (
+    id: string,
+    ownerMembershipId: string,
+    allowedCapabilities: string[],
+  ) => ({
+    id,
+    workspaceId: 'T_CONNECTIONS',
+    revision: 1,
+    ownerKind: 'member' as const,
+    ownerMembershipId,
+    createdByMembershipId: ownerMembershipId,
+    providerId: 'google',
+    label: 'Gmail · Personal',
+    policy: {
+      kind: 'managed' as const,
+      adapterId: 'composio',
+      toolkit: 'gmail',
+      principalRef: `chickpea:membership:${ownerMembershipId}`,
+      accountRef: `ca_${ownerMembershipId}`,
+      allowedCapabilities,
+    },
+    secretRefId: `secret_${id}`,
+    lifecycle: 'ready' as const,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  const alice = account(
+    'connection_alice_template',
+    'membership_alice',
+    ['gmail.messages.search', 'gmail.messages.send'],
+  );
+  const carol = account(
+    'connection_carol_template',
+    'membership_carol',
+    ['gmail.messages.search'],
+  );
+  const bob = account(
+    'connection_bob_unbound',
+    'membership_bob',
+    ['gmail.messages.search', 'gmail.messages.send'],
+  );
+  const binding = (current: typeof alice) => ({
+    agentId: 'agent_mail',
+    connectionAccountId: current.id,
+    providerId: 'google',
+    allowedCapabilities: [...current.policy.allowedCapabilities],
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  const aliceTemplate = binding(alice);
+  const carolTemplate = binding(carol);
+
+  for (const bindings of [
+    [aliceTemplate, carolTemplate],
+    [carolTemplate, aliceTemplate],
+  ]) {
+    const effective = await resolveEffectiveConnectionAccounts({
+      config: {
+        listConnectionAccounts: async () => [alice, carol, bob],
+        listAgentConnectionBindings: async () => bindings,
+      },
+      workspaceId: 'T_CONNECTIONS',
+      agentId: 'agent_mail',
+      actorMembershipId: 'membership_bob',
+    });
+    assert.deepEqual(effective.map(({ account: current }) => current.id), [bob.id]);
+    const policy = effective[0]?.policy;
+    assert.equal(policy?.kind, 'managed');
+    if (policy?.kind !== 'managed') assert.fail('expected a managed policy');
+    assert.deepEqual(policy.allowedCapabilities, ['gmail.messages.search']);
+  }
+});
+
+test('foreign managed templates collapse to their resource intersection in either row order', async () => {
+  const resource = (handle: string, providerRef: string) => ({
+    handle,
+    providerRef,
+    label: handle,
+  });
+  const account = (
+    id: string,
+    ownerMembershipId: string,
+    selectedHandles: string[],
+  ) => ({
+    id,
+    workspaceId: 'T_CONNECTIONS',
+    revision: 1,
+    ownerKind: 'member' as const,
+    ownerMembershipId,
+    createdByMembershipId: ownerMembershipId,
+    providerId: 'google',
+    label: 'Google Analytics · Personal',
+    policy: {
+      kind: 'managed' as const,
+      adapterId: 'composio',
+      toolkit: 'google_analytics',
+      principalRef: `chickpea:membership:${ownerMembershipId}`,
+      accountRef: `ca_${ownerMembershipId}`,
+      allowedCapabilities: ['analytics.reports.run'],
+      resourceConstraints: {
+        propertyIds: [
+          resource('property_shared', 'properties/100'),
+          resource('property_alice', 'properties/200'),
+          resource('property_carol', 'properties/300'),
+        ].filter(({ handle }) => selectedHandles.includes(handle)),
+      },
+    },
+    secretRefId: `secret_${id}`,
+    lifecycle: 'ready' as const,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  const alice = account(
+    'connection_alice_template',
+    'membership_alice',
+    ['property_shared', 'property_alice'],
+  );
+  const carol = account(
+    'connection_carol_template',
+    'membership_carol',
+    ['property_shared', 'property_carol'],
+  );
+  const bob = account(
+    'connection_bob_unbound',
+    'membership_bob',
+    ['property_shared', 'property_alice', 'property_carol'],
+  );
+  const binding = (current: typeof alice) => ({
+    agentId: 'agent_analytics',
+    connectionAccountId: current.id,
+    providerId: 'google',
+    allowedCapabilities: ['analytics.reports.run'],
+    resourceConstraints: {
+      propertyIds: current.policy.resourceConstraints.propertyIds.map(({ handle }) => handle),
+    },
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+
+  for (const bindings of [
+    [binding(alice), binding(carol)],
+    [binding(carol), binding(alice)],
+  ]) {
+    const effective = await resolveEffectiveConnectionAccounts({
+      config: {
+        listConnectionAccounts: async () => [alice, carol, bob],
+        listAgentConnectionBindings: async () => bindings,
+      },
+      workspaceId: 'T_CONNECTIONS',
+      agentId: 'agent_analytics',
+      actorMembershipId: 'membership_bob',
+    });
+    assert.deepEqual(effective.map(({ account: current }) => current.id), [bob.id]);
+    const policy = effective[0]?.policy;
+    assert.equal(policy?.kind, 'managed');
+    if (policy?.kind !== 'managed') assert.fail('expected a managed policy');
+    assert.deepEqual(policy.resourceConstraints?.propertyIds?.map(({ handle }) => handle), [
+      'property_shared',
+    ]);
   }
 });
 

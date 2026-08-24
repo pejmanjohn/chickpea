@@ -233,6 +233,7 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
     headerValuePrefix: 'Bearer ',
     authMode: 'credential',
   }]);
+  assert.equal(Object.hasOwn(plan, 'managedConnections'), false);
   assert.deepEqual(plan.repositories, [{ id: 'repo_acme', fullName: 'acme/product' }]);
   assert.equal(plan.sandbox.mode, 'cloudflare');
   assert.deepEqual(plan.artifactDestination, {
@@ -245,6 +246,54 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
   assert.equal(JSON.stringify(plan).includes('documents:read'), false);
   assert.equal(JSON.stringify(plan).includes('installationId'), false);
   assert.match(plan.instructions, /sk-live-looking-but-not-secret/);
+  assert.equal(parseRuntimePlanV2(structuredClone(plan)).harnessRevision, plan.harnessRevision);
+});
+
+test('managed providers freeze Chickpea capabilities without remote account identifiers', () => {
+  const policy = {
+    kind: 'managed' as const,
+    adapterId: 'composio',
+    toolkit: 'gmail',
+    principalRef: 'chickpea-user-private',
+    accountRef: 'ca_private',
+    allowedCapabilities: ['gmail.messages.search', 'gmail.drafts.create'],
+    resourceConstraints: {
+      mailboxIds: [{
+        handle: 'mailbox_primary',
+        providerRef: 'provider-mailbox-private',
+        label: 'Primary mailbox',
+      }],
+    },
+  };
+  const managed: EffectiveConnectionAccount = {
+    account: {
+      id: 'gmail-managed', workspaceId: 'T_RUNTIME', revision: 1, ownerKind: 'team',
+      createdByMembershipId: 'membership_owner', providerId: 'google', label: 'Managed Gmail',
+      policy, secretRefId: 'secret_unused', lifecycle: 'ready', createdAt: 1, updatedAt: 1,
+    },
+    binding: {
+      agentId: 'agent_runtime', connectionAccountId: 'gmail-managed', providerId: 'google',
+      allowedCapabilities: ['gmail.messages.search'], enabled: true, createdAt: 1, updatedAt: 1,
+      resourceConstraints: { mailboxIds: ['mailbox_primary'] },
+    },
+    policy: { ...policy, allowedCapabilities: ['gmail.messages.search'] },
+    scope: 'team',
+  };
+
+  const plan = compile({ effectiveConnections: [...structuredClone(EFFECTIVE_CONNECTIONS), managed] });
+  assert.equal(Object.hasOwn(plan, 'managedConnections'), true);
+  assert.deepEqual(plan.managedConnections, [{
+    id: 'gmail-managed',
+    providerId: 'google',
+    adapterId: 'composio',
+    toolkit: 'gmail',
+    allowedCapabilities: ['gmail.messages.search'],
+    resourceConstraints: { mailboxIds: ['mailbox_primary'] },
+  }]);
+  assert.doesNotMatch(
+    JSON.stringify(plan),
+    /ca_private|chickpea-user-private|secret_unused|provider-mailbox-private|Primary mailbox/,
+  );
   assert.equal(parseRuntimePlanV2(structuredClone(plan)).harnessRevision, plan.harnessRevision);
 });
 

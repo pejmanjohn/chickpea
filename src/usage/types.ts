@@ -1,4 +1,26 @@
 import type { AuditEvent } from '../audit/types.ts';
+import type {
+  ConnectorUsageRecord,
+  ConnectorUsageSummary,
+  ConnectorUsageSummaryQuery,
+  RecordConnectorUsageInput,
+  ReserveConnectorQuotaInput,
+  ReleaseConnectorQuotaInput,
+  ConnectorQuotaReservation,
+} from './connectors/types.ts';
+
+export type {
+  ConnectorRetryClassification,
+  ConnectorUsageOutcome,
+  ConnectorUsageRecord,
+  ConnectorUsageSummary,
+  ConnectorUsageSummaryGroup,
+  ConnectorUsageSummaryQuery,
+  RecordConnectorUsageInput,
+  ReserveConnectorQuotaInput,
+  ReleaseConnectorQuotaInput,
+  ConnectorQuotaReservation,
+} from './connectors/types.ts';
 
 export const USAGE_TELEMETRY_SCHEMA_VERSION = 1;
 
@@ -245,6 +267,9 @@ export interface UsageRetentionResult extends UsageRetentionStatus {
   operationsDeleted: number;
   measurementsDeleted: number;
   aggregateDaysDeleted: number;
+  connectorAttemptsDeleted: number;
+  connectorAggregateDaysDeleted: number;
+  connectorQuotaReservationsDeleted: number;
 }
 
 export const MODEL_CREDENTIAL_SOURCE_KINDS = [
@@ -273,6 +298,10 @@ export interface ModelCredentialRecord extends PutModelCredentialInput {
 export type UsageRpcRequest =
   | { kind: 'admit_operation'; input: AdmitUsageOperationInput }
   | { kind: 'record_terminal'; input: RecordUsageTerminalInput }
+  | { kind: 'record_connector_usage'; input: RecordConnectorUsageInput }
+  | { kind: 'reserve_connector_quota'; input: ReserveConnectorQuotaInput }
+  | { kind: 'release_connector_quota'; input: ReleaseConnectorQuotaInput }
+  | { kind: 'summarize_connector_usage'; query: ConnectorUsageSummaryQuery }
   | { kind: 'get_operation'; operationId: string }
   | { kind: 'get_operation_by_run'; runId: string }
   | { kind: 'list_operations'; query: UsageQuery }
@@ -286,6 +315,10 @@ export type UsageRpcRequest =
 
 export type UsageRpcResponse =
   | { kind: 'operation'; operation: UsageOperation }
+  | { kind: 'connector_usage'; usage: ConnectorUsageRecord }
+  | { kind: 'connector_quota'; reservation: ConnectorQuotaReservation }
+  | { kind: 'connector_quota_released'; released: boolean }
+  | { kind: 'connector_usage_summary'; summary: ConnectorUsageSummary }
   | { kind: 'detail'; detail: UsageOperationDetail | null }
   | { kind: 'operation_page'; page: UsageOperationPage }
   | { kind: 'summary'; summary: UsageSummary }
@@ -298,6 +331,10 @@ export type UsageRpcResponse =
 export interface UsageStore {
   admitOperation(input: AdmitUsageOperationInput): Promise<UsageOperation>;
   recordTerminal(input: RecordUsageTerminalInput): Promise<UsageOperationDetail>;
+  recordConnectorUsage(input: RecordConnectorUsageInput): Promise<ConnectorUsageRecord>;
+  reserveConnectorQuota(input: ReserveConnectorQuotaInput): Promise<ConnectorQuotaReservation>;
+  releaseConnectorQuota(input: ReleaseConnectorQuotaInput): Promise<boolean>;
+  summarizeConnectorUsage(query: ConnectorUsageSummaryQuery): Promise<ConnectorUsageSummary>;
   getOperation(operationId: string): Promise<UsageOperationDetail | undefined>;
   getOperationByRunId(runId: string): Promise<UsageOperationDetail | undefined>;
   listOperations(query: UsageQuery): Promise<UsageOperationPage>;

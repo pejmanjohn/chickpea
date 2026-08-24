@@ -4,6 +4,7 @@ import { resolveAgentModel } from '../config/model-policy.ts';
 import {
   type ApiConnectionConfig,
   type McpConnectionConfig,
+  type ManagedBindingResourceConstraints,
   type RepositoryGrant,
   type ResolvedAssignment,
   type SkillConfig,
@@ -13,6 +14,7 @@ import { slackThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
   projectEffectiveApiConnections,
+  projectEffectiveManagedConnections,
   projectEffectiveMcpConnections,
 } from '../connections/runtime.ts';
 import type { EffectiveConnectionAccount } from '../connections/types.ts';
@@ -58,6 +60,16 @@ export interface RuntimePlanApiConnectionV2 {
   authMode: 'credential' | 'oauth';
   oauthProvider?: 'google';
   oauthScopes?: string[];
+}
+
+export interface RuntimePlanManagedConnectionV2 {
+  id: string;
+  providerId: string;
+  adapterId: string;
+  toolkit: string;
+  allowedCapabilities: string[];
+  /** Chickpea-local handles only. Provider resource IDs never cross this boundary. */
+  resourceConstraints?: ManagedBindingResourceConstraints;
 }
 
 export interface RuntimePlanRepositoryV2 {
@@ -107,6 +119,8 @@ export interface RuntimePlanV2 {
   skills: RuntimePlanSkillV2[];
   mcpConnections: RuntimePlanMcpConnectionV2[];
   apiConnections: RuntimePlanApiConnectionV2[];
+  /** Provider/account references resolve live and never cross this boundary. */
+  managedConnections?: RuntimePlanManagedConnectionV2[];
   repositories: RuntimePlanRepositoryV2[];
   sandbox: { mode: RuntimePlanSandboxMode };
   artifactDestination: {
@@ -141,6 +155,9 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
   const effectiveConnections = input.effectiveConnections ?? [];
   const mcpConnections = projectEffectiveMcpConnections(effectiveConnections);
   const apiConnections = projectEffectiveApiConnections(effectiveConnections);
+  const managedConnections = compileManagedConnections(
+    projectEffectiveManagedConnections(effectiveConnections),
+  );
   const planWithoutRevision: Omit<RuntimePlanV2, 'harnessRevision'> = {
     schemaVersion: RUNTIME_PLAN_SCHEMA_VERSION,
     continuityPolicy: input.continuityPolicy ?? DEFAULT_CONTINUITY_POLICY,
@@ -173,6 +190,9 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     skills: compileSkills(input.assignment.agent.skills),
     mcpConnections: compileMcpConnections(mcpConnections),
     apiConnections: compileApiConnections(apiConnections),
+    ...(managedConnections.length > 0
+      ? { managedConnections }
+      : {}),
     repositories: compileRepositories(input.assignment.agent.repositories),
     sandbox: { mode: input.sandboxMode },
     artifactDestination: {
@@ -244,6 +264,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'skills',
     'mcpConnections',
     'apiConnections',
+    'managedConnections',
     'repositories',
     'sandbox',
     'artifactDestination',
@@ -254,6 +275,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'connectionAccountIds',
     'connectionAuthorizations',
     'connectionChoices',
+    'managedConnections',
   ]);
   if (record.schemaVersion !== RUNTIME_PLAN_SCHEMA_VERSION) {
     throw new Error('Runtime plan schemaVersion must be 2.');
@@ -326,6 +348,14 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     parseApiConnection,
     128,
   );
+  const managedConnections = record.managedConnections === undefined
+    ? []
+    : arrayOf(
+      record.managedConnections,
+      'managedConnections',
+      parseManagedConnection,
+      128,
+    );
   const repositories = arrayOf(record.repositories, 'repositories', parseRepository, 256);
   const sandboxRecord = exactRecord(record.sandbox, 'sandbox', ['mode']);
   const sandbox = {
@@ -362,6 +392,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     skills,
     mcpConnections,
     apiConnections,
+    ...(record.managedConnections === undefined ? {} : { managedConnections }),
     repositories,
     sandbox,
     artifactDestination,
@@ -372,8 +403,10 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
   delete legacyCandidate.connectionAccountIds;
   delete legacyCandidate.connectionAuthorizations;
   delete legacyCandidate.connectionChoices;
+  delete legacyCandidate.managedConnections;
   const legacyExpected = !parsed.actorMembershipId && connectionAccountIds.length === 0 &&
-      connectionAuthorizations.length === 0 && connectionChoices.length === 0
+      connectionAuthorizations.length === 0 && connectionChoices.length === 0 &&
+      managedConnections.length === 0
     ? computeHarnessRevision(legacyCandidate)
     : undefined;
   if (harnessRevision !== expected && harnessRevision !== legacyExpected) {
@@ -460,6 +493,24 @@ function compileApiConnections(
     .sort(compareBy('id'));
 }
 
+function compileManagedConnections(
+  connections: ReturnType<typeof projectEffectiveManagedConnections>,
+): RuntimePlanManagedConnectionV2[] {
+  return connections
+    .filter((connection) => connection.allowedCapabilities.length > 0)
+    .map((connection) => ({
+      id: connection.id,
+      providerId: connection.providerId,
+      adapterId: connection.adapterId,
+      toolkit: connection.toolkit,
+      allowedCapabilities: sortedUnique(connection.allowedCapabilities),
+      ...(connection.resourceConstraints && Object.keys(connection.resourceConstraints).length > 0
+        ? { resourceConstraints: sortResourceConstraints(connection.resourceConstraints) }
+        : {}),
+    }))
+    .sort(compareBy('id'));
+}
+
 function compileRepositories(
   repositories: readonly RepositoryGrant[] | undefined,
 ): RuntimePlanRepositoryV2[] {
@@ -511,6 +562,9 @@ function computeHarnessRevision(
       skills: plan.skills,
       mcpConnections: plan.mcpConnections,
       apiConnections: plan.apiConnections,
+      ...(plan.managedConnections !== undefined
+        ? { managedConnections: plan.managedConnections }
+        : {}),
       repositories: plan.repositories,
       sandbox: plan.sandbox,
       artifactDestinationKind: plan.artifactDestination.kind,
@@ -685,6 +739,80 @@ function parseApiConnection(value: unknown, index: number): RuntimePlanApiConnec
     ...(oauthProvider ? { oauthProvider } : {}),
     ...(oauthScopes ? { oauthScopes } : {}),
   };
+}
+
+function parseManagedConnection(
+  value: unknown,
+  index: number,
+): RuntimePlanManagedConnectionV2 {
+  const label = `managedConnections[${index}]`;
+  const record = exactRecord(value, label, [
+    'id',
+    'providerId',
+    'adapterId',
+    'toolkit',
+    'allowedCapabilities',
+    'resourceConstraints',
+  ], ['resourceConstraints']);
+  const allowedCapabilities = sortedUniqueStringArray(
+    record.allowedCapabilities,
+    `${label}.allowedCapabilities`,
+    128,
+  );
+  if (allowedCapabilities.length === 0) {
+    throw new Error(`Runtime plan ${label} must expose at least one capability.`);
+  }
+  return {
+    id: boundedString(record.id, `${label}.id`, 1, 160),
+    providerId: boundedString(record.providerId, `${label}.providerId`, 1, 128),
+    adapterId: boundedString(record.adapterId, `${label}.adapterId`, 1, 128),
+    toolkit: boundedString(record.toolkit, `${label}.toolkit`, 1, 128),
+    allowedCapabilities,
+    ...(record.resourceConstraints === undefined
+      ? {}
+      : {
+          resourceConstraints: parseResourceConstraints(
+            record.resourceConstraints,
+            `${label}.resourceConstraints`,
+          ),
+        }),
+  };
+}
+
+function parseResourceConstraints(
+  value: unknown,
+  label: string,
+): ManagedBindingResourceConstraints {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Runtime plan ${label} must be an object.`);
+  }
+  const entries = Object.entries(value);
+  if (entries.length === 0 || entries.length > 32) {
+    throw new Error(`Runtime plan ${label} has an invalid number of resource keys.`);
+  }
+  const parsed: ManagedBindingResourceConstraints = {};
+  for (const [key, handles] of entries) {
+    if (!/^[a-z][A-Za-z0-9]{0,127}$/.test(key)) {
+      throw new Error(`Runtime plan ${label} has an invalid resource key.`);
+    }
+    const normalized = sortedUniqueStringArray(handles, `${label}.${key}`, 256);
+    if (normalized.length === 0 || normalized.some(
+      (handle) => !/^[a-z0-9][a-z0-9_-]{0,127}$/.test(handle),
+    )) {
+      throw new Error(`Runtime plan ${label}.${key} has an invalid resource handle.`);
+    }
+    parsed[key] = normalized;
+  }
+  return parsed;
+}
+
+function sortResourceConstraints(
+  value: ManagedBindingResourceConstraints,
+): ManagedBindingResourceConstraints {
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [
+    key,
+    sortedUnique(value[key] ?? []),
+  ]));
 }
 
 function parseRepository(value: unknown, index: number): RuntimePlanRepositoryV2 {

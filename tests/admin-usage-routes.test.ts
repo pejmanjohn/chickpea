@@ -86,6 +86,36 @@ test('usage Admin APIs are authenticated, bounded, and expose no content fields'
       priceVersionId: null,
       priceUnknownReason: 'price_unknown',
     });
+    await usage.recordConnectorUsage({
+      attemptId: 'connector_admin_1',
+      workspaceId: 'T_ADMIN',
+      agentId: 'agent_default',
+      connectionAccountId: 'connection_gmail',
+      operationId: 'op_admin',
+      runId: null,
+      runExecutionId: null,
+      adapterId: 'composio',
+      toolkit: 'gmail',
+      capability: 'gmail.profile.read',
+      providerTool: 'GMAIL_GET_PROFILE',
+      providerVersion: '20260817_00',
+      effectClass: 'read',
+      outcome: 'success',
+      retryClassification: 'none',
+      startedAt: 1_100,
+      finishedAt: 1_200,
+      latencyMs: 100,
+      remoteCallCount: 1,
+      providerToolCallCount: 1,
+      resultBytes: 128,
+      httpStatus: null,
+      rateLimitRemaining: 1_999,
+      retryAfterMs: null,
+      providerLogId: 'log_admin_1',
+      priceVersionId: 'composio-2026-08-15',
+      estimatedCostMicros: 600,
+      estimateCurrency: 'USD',
+    });
     await usage.admitOperation({
       operationId: 'op_admin_classifier',
       operationKind: 'interaction_classification',
@@ -160,12 +190,28 @@ test('usage Admin APIs are authenticated, bounded, and expose no content fields'
     assert.equal(overviewBody.current.totals.operationCount, 1);
     assert.equal(overviewBody.previous.to, 1);
 
+    const connectors = await app.request(
+      '/admin/api/usage/connectors?from=1&to=3000&workspace=T_ADMIN&toolkit=gmail',
+      { headers },
+    );
+    assert.equal(connectors.status, 200);
+    const connectorsText = await connectors.text();
+    const connectorsBody = JSON.parse(connectorsText) as Record<string, any>;
+    assert.equal(connectorsBody.attemptCount, 1);
+    assert.equal(typeof connectorsBody.retainedFrom, 'number');
+    assert.equal(connectorsBody.isComplete, false);
+    assert.equal(connectorsBody.measuredConnectionAccountCount, 1);
+    assert.equal(connectorsBody.estimatedCostMicros, 600);
+    assert.equal(connectorsBody.totalResultBytes, 128);
+    assert.doesNotMatch(connectorsText, /arguments|response|token|apiKey|accountRef/i);
+
     const metadata = await app.request('/admin/api/usage/metadata', { headers });
     assert.equal(metadata.status, 200);
     const metadataText = await metadata.text();
     assert.match(metadataText, /chickpea_list_price_estimate/);
     assert.match(metadataText, /limitsManagedByChickpea":false/);
     assert.match(metadataText, /rawRetentionDays":90/);
+    assert.match(metadataText, /composio-2026-08-15/);
     assert.doesNotMatch(metadataText, /apiKey|authorization|billingCredential|clientSecret/i);
 
     const instances = await app.request(

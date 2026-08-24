@@ -1,10 +1,21 @@
 import type {
   AgentConnectionBinding,
   ConnectionAccount,
+  ConnectionAccountManagedPolicy,
   ConnectionAccountPolicy,
+  ManagedBindingResourceConstraints,
 } from '../config/types.ts';
 
-export type ConnectionAccountView = Omit<ConnectionAccount, 'secretRefId'> & {
+export type ManagedConnectionAccountViewPolicy = Omit<
+  ConnectionAccountManagedPolicy,
+  'principalRef' | 'accountRef' | 'resourceConstraints'
+> & {
+  resourceConstraints?: Record<string, Array<{ handle: string; label: string }>>;
+};
+
+export type ConnectionAccountView = Omit<ConnectionAccount, 'secretRefId' | 'policy'> & {
+  policy: Exclude<ConnectionAccountPolicy, ConnectionAccountManagedPolicy> |
+    ManagedConnectionAccountViewPolicy;
   credentialConfigured: boolean;
 };
 
@@ -13,6 +24,16 @@ export interface EffectiveConnectionAccount {
   binding: AgentConnectionBinding;
   policy: ConnectionAccountPolicy;
   scope: 'team' | 'personal';
+}
+
+/** Secret-free managed connection declaration safe to freeze in a runtime plan. */
+export interface ManagedConnectionDeclaration {
+  id: string;
+  providerId: string;
+  adapterId: string;
+  toolkit: string;
+  allowedCapabilities: string[];
+  resourceConstraints?: ManagedBindingResourceConstraints;
 }
 
 export interface PersonalConnectionAuthorizationOption {

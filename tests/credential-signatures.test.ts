@@ -42,6 +42,10 @@ const SAMPLES: readonly { input: string; redacted: string }[] = [
     redacted: '[credential redacted]',
   },
   {
+    input: 'COMPOSIO_WEBHOOK_SECRET=webhook-signing-secret',
+    redacted: '[credential redacted]',
+  },
+  {
     input: 'AWS_ACCESS_KEY_ID="abcdefgh12345"',
     redacted: '[credential redacted]"',
   },
@@ -66,6 +70,8 @@ test('credential markers stay the exact projection the streaming path relies on'
     'SLACK_APP_TOKEN',
     'ANTHROPIC_API_KEY',
     'OPENAI_API_KEY',
+    'COMPOSIO_API_KEY',
+    'COMPOSIO_WEBHOOK_SECRET',
     'GITHUB_TOKEN',
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
@@ -102,6 +108,10 @@ test('the AWS access-key-id signature stays case-sensitive', () => {
 test('streaming withholds a partial credential marker tail until it resolves', () => {
   assert.equal(streamableSlackMarkdownPrefix('secrets ahead AWS_ACC'), 'secrets ahead');
   assert.equal(streamableSlackMarkdownPrefix('secrets ahead sk-a'), 'secrets ahead');
+  assert.equal(
+    streamableSlackMarkdownPrefix('secrets ahead COMPOSIO_WEBHOOK_SEC'),
+    'secrets ahead',
+  );
   assert.equal(
     streamableSlackMarkdownPrefix(`token ${SYNTHETIC_SLACK_TOKEN} rest`),
     'token',

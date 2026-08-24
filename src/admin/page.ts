@@ -3,6 +3,7 @@ import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
 import {
   CONNECTOR_PRESETS,
   GOOGLE_WORKSPACE_SERVICE_PRESETS,
+  MANAGED_CONNECTOR_PRESETS,
   REUSABLE_CONNECTOR_PRESETS,
 } from '../config/presets.ts';
 import { GOOGLE_WORKSPACE_SCOPE_OPTIONS } from '../config/api-oauth-policy.ts';
@@ -2509,6 +2510,7 @@ button.capability-pill { cursor: pointer; }
   var USAGE_ADMIN_UI = ${usageAdminUi};
   var CONNECTOR_PRESETS = ${JSON.stringify(CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = ${JSON.stringify(GOOGLE_WORKSPACE_SERVICE_PRESETS).replace(/</g, '\\u003c')};
+  var MANAGED_CONNECTOR_PRESETS = ${JSON.stringify(MANAGED_CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var REUSABLE_CONNECTOR_PRESETS = ${JSON.stringify(REUSABLE_CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var CONNECTOR_LOGOS = ${JSON.stringify(CONNECTOR_LOGOS).replace(/</g, '\\u003c')};
   var SUGGESTED_SKILL_CATEGORIES = ${JSON.stringify(SUGGESTED_SKILL_CATEGORIES).replace(/</g, '\\u003c')};
@@ -2624,6 +2626,7 @@ button.capability-pill { cursor: pointer; }
     // authorization code, token, verifier, client secret, or provider error is
     // ever placed in the URL or this browser state.
     oauthReturn: null,
+    managedReturn: null,
     // Inline credentialed REST API editor. Its credential is transient and is
     // written to the API-connection secret endpoint only after the profile
     // policy saves successfully.
@@ -2631,10 +2634,11 @@ button.capability-pill { cursor: pointer; }
     // Connections are reusable accounts. The Agent owns only bindings; this
     // view deliberately exposes Team vs My account without ever receiving a
     // credential or secret reference from the server.
-    agentConnections: { agentId: "", workspaceId: "", attached: [], available: [], loading: false, error: "", notice: "" },
+    agentConnections: { agentId: "", workspaceId: "", attached: [], available: [], managedCatalog: [], loading: false, error: "", notice: "" },
     agentSchedules: { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" },
     connectionAccountsSupported: null,
     connectionAccountForm: null,
+    managedResourceEditor: null,
     // Non-null only while the gallery's single Custom connection flow is open.
     // Both lane editors may coexist so tab switches preserve typed values.
     customConnectionLane: null,
@@ -3093,15 +3097,17 @@ button.capability-pill { cursor: pointer; }
     if (selected.canEdit === false) {
       prepareReadOnlyAgentState(selected.id);
       render();
+      return Promise.resolve();
     } else {
-      loadAgentConnections(selected.id);
+      var connectionsLoad = loadAgentConnections(selected.id);
       loadAgentSchedules(selected.id);
       loadOwnerMemory("agent", connectedTeamId(), selected.id);
+      return connectionsLoad;
     }
   }
 
   function prepareReadOnlyAgentState(agentId) {
-    state.agentConnections = { agentId: agentId, workspaceId: connectedTeamId(), attached: [], available: [], loading: false, error: "", notice: "", legacyFallback: true };
+    state.agentConnections = { agentId: agentId, workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], loading: false, error: "", notice: "", legacyFallback: true };
     state.agentSchedules = { agentId: agentId, viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
     state.ownerMemory = {
       ownerKind: "agent", workspaceId: connectedTeamId() || "workspace", ownerId: agentId,
@@ -3117,7 +3123,7 @@ button.capability-pill { cursor: pointer; }
     state.profileDraft = newProfileDraft();
     state.editingAgentId = null;
     resetProfileTransientState();
-    state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], loading: false, error: "", notice: "" };
+    state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], loading: false, error: "", notice: "" };
     state.agentSchedules = { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
     render();
   }
@@ -3154,7 +3160,7 @@ button.capability-pill { cursor: pointer; }
     state.profileDraft = draft;
     state.editingAgentId = null;
     resetProfileTransientState();
-    state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], loading: false, error: "", notice: "" };
+    state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], loading: false, error: "", notice: "" };
     state.agentSchedules = { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
     render();
   }
@@ -3242,7 +3248,7 @@ button.capability-pill { cursor: pointer; }
       }
       if (parts[2]) {
         var routedAgent = agentById(parts[2]);
-        if (routedAgent) { openProfileEditor(routedAgent); return; }
+        if (routedAgent) return openProfileEditor(routedAgent);
       }
       enterProfiles(null);
       return;
@@ -3260,7 +3266,7 @@ button.capability-pill { cursor: pointer; }
       return;
     }
     var initialAgent = state.agents[0] || null;
-    if (initialAgent) openProfileEditor(initialAgent);
+    if (initialAgent) return openProfileEditor(initialAgent);
     else enterProfiles(null);
   }
 
@@ -4845,11 +4851,11 @@ button.capability-pill { cursor: pointer; }
   function loadAgentConnections(agentId) {
     var workspaceId = connectedTeamId();
     if (state.connectionAccountsSupported === false) {
-      state.agentConnections = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], loading: false, error: "", notice: "", legacyFallback: true };
+      state.agentConnections = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], managedCatalog: [], loading: false, error: "", notice: "", legacyFallback: true };
       render();
       return Promise.resolve();
     }
-    var requestState = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], loading: true, error: "", notice: "" };
+    var requestState = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], managedCatalog: [], loading: true, error: "", notice: "" };
     state.agentConnections = requestState;
     render();
     if (!workspaceId) {
@@ -4862,9 +4868,29 @@ button.capability-pill { cursor: pointer; }
       if (state.agentConnections !== requestState) return;
       state.agentConnections.attached = body.attached || [];
       state.agentConnections.available = body.available || [];
+      state.agentConnections.managedCatalog = body.managedConnectors && body.managedConnectors.catalog || [];
+      // Older servers predate the availability field and supported only the
+      // managed gallery behavior. Current servers report it explicitly so OSS
+      // deployments without Composio retain native Google OAuth setup.
+      state.agentConnections.managedGoogleAvailable = !body.managedConnectors ||
+        body.managedConnectors.composio === true;
       state.agentConnections.loading = false;
       state.agentConnections.error = "";
       state.connectionAccountsSupported = true;
+      if (state.managedReturn && state.managedReturn.status === "connected" &&
+          !state.managedReturn.resourcePrompted) {
+        var returnedScopedAccount = state.agentConnections.attached.find(function (entry) {
+          return entry.account && entry.account.lifecycle === "pending" &&
+            entry.account.policy && entry.account.policy.kind === "managed" &&
+            entry.account.policy.toolkit === state.managedReturn.toolkit &&
+            managedResourceDefinitions(entry.account).length > 0;
+        });
+        if (returnedScopedAccount) {
+          state.managedReturn.resourcePrompted = true;
+          startManagedResourceSelection(returnedScopedAccount.account.id);
+          return;
+        }
+      }
       render();
     }).catch(function (error) {
       if (state.agentConnections !== requestState) return;
@@ -4944,29 +4970,74 @@ button.capability-pill { cursor: pointer; }
 
   function newConnectionAccountFormFromPreset(presetId) {
     var googleService = googleServicePresetById(presetId);
-    var preset = googleService
+    var managedPreset = managedPresetById(presetId);
+    var managedCandidate = managedPreset || googleService;
+    var managedDescriptor = managedCandidate && managedConnectorDescriptorById(managedCandidate.id);
+    if (managedCandidate && managedDescriptor && managedConnectorLaneReady(managedDescriptor, "read")) {
+      state.connectionAccountForm = {
+        ownerKind: "team",
+        kind: "managed",
+        authMode: "composio",
+        presetId: managedCandidate.id,
+        preset: managedCandidate,
+        managedToolkit: managedDescriptor.toolkit,
+        managedAccess: "read",
+        providerId: managedDescriptor.providerId,
+        label: managedCandidate.name,
+        busy: false,
+        error: ""
+      };
+      state.connectorGallerySearch = "";
+      render();
+      return;
+    }
+    var preset = googleService && googleService.connectionPresetId
       ? presetById(googleService.connectionPresetId)
       : presetById(presetId);
     if (!preset) return;
+    if (googleService && googleService.service) {
+      var googleEditor = apiEditorFromPreset(preset);
+      googleEditor.googleAccess = { gmail: "off", calendar: "off", drive: "off" };
+      googleEditor.googleAccess[googleService.service] = "read";
+      syncGoogleApiPolicy(googleEditor);
+      state.connectionAccountForm = {
+        ownerKind: "team",
+        kind: "api",
+        authMode: "google_oauth",
+        presetId: googleService.id,
+        preset: googleService,
+        apiEditor: googleEditor,
+        mcpEditor: null,
+        apiSubdomain: "",
+        providerId: "google",
+        label: googleService.name,
+        purpose: "",
+        url: "",
+        capabilities: "",
+        credential: "",
+        oauthClientId: "",
+        oauthClientSecret: "",
+        busy: false,
+        error: ""
+      };
+      state.connectorGallerySearch = "";
+      render();
+      return;
+    }
     var lanes = presetLanes(preset);
-    if (googleService || (lanes.api && !lanes.mcp)) {
+    if (lanes.api && !lanes.mcp) {
       var apiEditor = apiEditorFromPreset(preset);
-      if (googleService) {
-        apiEditor.googleAccess = googleAccessFromScopes([]);
-        apiEditor.googleAccess[googleService.service] = "read";
-        syncGoogleApiPolicy(apiEditor);
-      }
       state.connectionAccountForm = {
         ownerKind: "team",
         kind: "api",
         authMode: isGoogleWorkspaceEditor(apiEditor) ? "google_oauth" : "credential",
-        presetId: googleService ? googleService.id : preset.id,
-        preset: googleService || preset,
+        presetId: preset.id,
+        preset: preset,
         apiEditor: apiEditor,
         mcpEditor: null,
         apiSubdomain: apiConnectionSubdomain(apiEditor),
-        providerId: googleService ? "google" : preset.id,
-        label: googleService ? googleService.name : preset.name,
+        providerId: preset.id,
+        label: preset.name,
         purpose: "",
         url: "",
         capabilities: "",
@@ -5015,6 +5086,37 @@ button.capability-pill { cursor: pointer; }
     var form = state.connectionAccountForm;
     var agentId = state.profileDraft && state.profileDraft.id;
     if (!form || !agentId || form.busy) return;
+    if (form.kind === "managed") {
+      if (!managedConnectorDescriptorByToolkit(form.managedToolkit)) {
+        form.error = "This managed connector is unavailable.";
+        render();
+        return;
+      }
+      form.busy = true;
+      form.error = "";
+      render();
+      postJson(
+        "/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/managed/start",
+        "POST",
+        {
+          workspaceId: state.agentConnections.workspaceId,
+          ownerKind: form.ownerKind === "member" ? "member" : "team",
+          toolkit: form.managedToolkit,
+          access: form.managedAccess === "write" ? "write" : "read"
+        }
+      ).then(function (body) {
+        var authorizationUrl;
+        try { authorizationUrl = new URL(String(body && body.authorizationUrl || "")); } catch (error) { throw new Error("Managed sign-in returned an invalid URL."); }
+        if (authorizationUrl.protocol !== "https:") throw new Error("Managed sign-in must use https.");
+        location.assign(authorizationUrl.href);
+      }).catch(function (error) {
+        if (!state.connectionAccountForm) return;
+        state.connectionAccountForm.busy = false;
+        state.connectionAccountForm.error = (error && (error.serverMessage || error.message)) || "Could not start managed sign-in.";
+        render();
+      });
+      return;
+    }
     var providerId = connectionAccountProviderId(form);
     var label = String(form.label || "").trim();
     var rawUrl = String(form.url || "").trim();
@@ -5034,6 +5136,8 @@ button.capability-pill { cursor: pointer; }
     else if (googleOauth && (!String(form.oauthClientId || "").trim() || !String(form.oauthClientSecret || "").trim())) form.error = "Google OAuth client ID and secret are required.";
     else if (credentialRequired && !String(form.credential || "").trim()) form.error = "Enter the credential for this connection.";
     else if (presetMcp && presetMcp.presetId === "supabase" && !validSupabaseProjectRef(presetMcp.supabaseProjectRef)) form.error = "Enter a valid Supabase project reference.";
+    else if (presetMcp && presetMcp.presetId === "sentry" && !sentryScopeFromUrl(presetMcp.url)) form.error = "Enter valid lowercase Sentry organization and project slugs.";
+    else if (presetMcp && presetMcp.presetId === "sentry" && presetMcp.sentryProjectSlug && !presetMcp.sentryOrganizationSlug) form.error = "Enter a Sentry organization before a project.";
     else form.error = "";
     var parsedUrl = null;
     if (!form.error && !googleOauth && !presetApi) {
@@ -5233,6 +5337,25 @@ button.capability-pill { cursor: pointer; }
     });
   }
 
+  function reconnectManagedConnection(accountId) {
+    var agentId = state.profileDraft && state.profileDraft.id;
+    if (!agentId || !accountId) return;
+    state.agentConnections.error = "";
+    postJson(
+      "/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/managed/start",
+      "POST",
+      { workspaceId: state.agentConnections.workspaceId, connectionAccountId: accountId }
+    ).then(function (body) {
+      var authorizationUrl;
+      try { authorizationUrl = new URL(String(body && body.authorizationUrl || "")); } catch (error) { throw new Error("Managed sign-in returned an invalid URL."); }
+      if (authorizationUrl.protocol !== "https:") throw new Error("Managed sign-in must use https.");
+      location.assign(authorizationUrl.href);
+    }).catch(function (error) {
+      state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not restart Google sign-in.";
+      render();
+    });
+  }
+
   function detachConnectionAccount(accountId) {
     var agentId = state.profileDraft && state.profileDraft.id;
     if (!agentId) return;
@@ -5246,15 +5369,25 @@ button.capability-pill { cursor: pointer; }
 
   function revokeConnectionAccount(accountId) {
     var label = "this account";
+    var managed = false;
     (state.agentConnections.attached || []).concat((state.agentConnections.available || []).map(function (account) { return { account: account }; })).some(function (entry) {
-      if (entry.account && entry.account.id === accountId) { label = entry.account.label; return true; }
+      if (entry.account && entry.account.id === accountId) {
+        label = entry.account.label;
+        managed = Boolean(entry.account.policy && entry.account.policy.kind === "managed");
+        return true;
+      }
       return false;
     });
-    if (!window.confirm("Disconnect " + label + "? Every Agent using it will lose access and dependent schedules will pause.")) return;
+    var confirmation = managed
+      ? "Disconnect " + label + "? Chickpea will remove access immediately, pause dependent schedules, and delete the stored Composio account. Google will still list Composio as authorized; remove it from Google Account settings to fully revoke access."
+      : "Disconnect " + label + "? Every Agent using it will lose access and dependent schedules will pause.";
+    if (!window.confirm(confirmation)) return;
     postJson("/admin/api/connections/" + encodeURIComponent(accountId) + "/revoke", "POST", {}).then(function () {
       return loadAgentConnections(state.profileDraft.id);
     }).then(function () {
-      state.agentConnections.notice = label + " was disconnected.";
+      state.agentConnections.notice = managed
+        ? label + " was disconnected and its Composio account deleted. To fully revoke access, remove Composio in Google Account settings."
+        : label + " was disconnected.";
       render();
     }).catch(function (error) {
       state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not disconnect that account.";
@@ -6007,6 +6140,82 @@ button.capability-pill { cursor: pointer; }
     return (GOOGLE_WORKSPACE_SERVICE_PRESETS || []).find(function (preset) { return preset.service === service; });
   }
 
+  function managedPresetById(id) {
+    return (MANAGED_CONNECTOR_PRESETS || []).find(function (preset) { return preset.id === id; });
+  }
+
+  function managedConnectorDescriptorByToolkit(toolkit) {
+    var configured = (state.agentConnections.managedCatalog || []).find(function (descriptor) {
+      return descriptor && descriptor.toolkit === toolkit;
+    });
+    if (configured) return configured;
+    var preset = (GOOGLE_WORKSPACE_SERVICE_PRESETS || []).find(function (candidate) {
+      return candidate.managedToolkit === toolkit;
+    });
+    return fallbackManagedConnectorDescriptor(preset);
+  }
+
+  function managedConnectorDescriptorById(id) {
+    var configured = (state.agentConnections.managedCatalog || []).find(function (descriptor) {
+      return descriptor && descriptor.id === id;
+    });
+    if (configured) return configured;
+    var managedPreset = managedPresetById(id);
+    if (managedPreset) return managedConnectorDescriptorByToolkit(managedPreset.managedToolkit);
+    return fallbackManagedConnectorDescriptor(googleServicePresetById(id));
+  }
+
+  function fallbackManagedConnectorDescriptor(preset) {
+    // Deep links are consumed only after the Agent's connector state loads.
+    // Still fail closed while availability is unknown so an OSS deployment
+    // can never render a Composio form that will only fail on submit.
+    if (!preset || !preset.service || state.agentConnections.managedGoogleAvailable !== true) return null;
+    var ready = { status: "ready", missingConfiguration: [] };
+    return {
+      id: preset.id,
+      toolkit: preset.managedToolkit,
+      providerId: "google",
+      label: preset.name,
+      description: preset.description,
+      securityDescription: "Google sign-in opens through Composio. Chickpea stores only the connected-account reference and this Agent's capability ceiling, not Google refresh tokens or a Google OAuth client secret.",
+      access: { read: ready, write: ready }
+    };
+  }
+
+  function managedConnectorLaneReady(descriptor, lane) {
+    return !!(descriptor && descriptor.access && descriptor.access[lane] &&
+      descriptor.access[lane].status === "ready");
+  }
+
+  function hasNativeNotionConnection() {
+    var draft = state.profileDraft || {};
+    var legacy = (draft.mcpServers || []).some(function (connection) {
+      return connection && connection.presetId === "notion";
+    });
+    if (legacy) return true;
+    return (state.agentConnections.attached || []).some(function (entry) {
+      var account = entry && entry.account;
+      var policy = account && account.policy;
+      return account && account.providerId === "notion" && policy &&
+        policy.kind === "mcp" && policy.presetId === "notion";
+    });
+  }
+
+  function hasLegacyTokenMcpConnection(providerId) {
+    var draft = state.profileDraft || {};
+    var legacy = (draft.mcpServers || []).some(function (connection) {
+      return connection && connection.presetId === providerId &&
+        (connection.authMode === "bearer" || (connection.headerNames || []).length > 0);
+    });
+    if (legacy) return true;
+    return (state.agentConnections.attached || []).concat(state.agentConnections.available || []).some(function (entry) {
+      var account = entry && entry.account ? entry.account : entry;
+      var policy = account && account.policy;
+      return account && account.providerId === providerId && policy && policy.kind === "mcp" &&
+        (policy.authMode === "bearer" || (policy.headerNames || []).length > 0);
+    });
+  }
+
   function googleWorkspaceConnection(draft) {
     return ((draft && draft.apiConnections) || []).find(function (conn) {
       return conn.id === "google-workspace" || conn.presetId === "google-workspace";
@@ -6028,7 +6237,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function connectorLogoHtml(preset) {
-    var logo = (CONNECTOR_LOGOS || {})[preset.id];
+    var logo = (CONNECTOR_LOGOS || {})[preset.logoId || preset.id];
     if (logo && logo.raster) {
       return '<span class="conn-logo conn-logo-raster">' + logo.svg + '</span>';
     }
@@ -6057,8 +6266,16 @@ button.capability-pill { cursor: pointer; }
     var catalog = REUSABLE_CONNECTOR_PRESETS || [];
     var shown = catalog.filter(function (preset) {
       var googleService = googleServicePresetById(preset.id);
+      var managedPreset = managedPresetById(preset.id);
       if (googleService) {
-        if (!accountMode && googleAccess[googleService.service] !== "off") return false;
+        var managedDescriptor = managedConnectorDescriptorById(googleService.id);
+        if (accountMode && !googleService.service &&
+            !managedConnectorLaneReady(managedDescriptor, "read")) return false;
+        if (!accountMode &&
+            (!googleService.service || googleAccess[googleService.service] !== "off")) return false;
+      } else if (managedPreset) {
+        var managedDescriptor = managedConnectorDescriptorById(managedPreset.id);
+        if (!accountMode || !managedConnectorLaneReady(managedDescriptor, "read")) return false;
       } else if (!accountMode && connectedPresetIds[preset.id]) {
         return false;
       }
@@ -6071,8 +6288,13 @@ button.capability-pill { cursor: pointer; }
     });
     var rows = shown.map(function (preset) {
       var googleService = googleServicePresetById(preset.id);
-      var lanes = googleService ? { mcp: false, api: true } : presetLanes(preset);
-      var laneLabel = [lanes.mcp ? "MCP" : "", lanes.api ? "API" : ""].filter(function (label) { return !!label; }).join(" ");
+      var managedPreset = managedPresetById(preset.id);
+      var managedDescriptor = (googleService || managedPreset) && managedConnectorDescriptorById(preset.id);
+      var lanes = (googleService || managedPreset) ? { mcp: false, api: true } : presetLanes(preset);
+      var laneLabel = (googleService || managedPreset) && accountMode &&
+          managedConnectorLaneReady(managedDescriptor, "read")
+        ? "Managed OAuth"
+        : [lanes.mcp ? "MCP" : "", lanes.api ? "API" : ""].filter(function (label) { return !!label; }).join(" ");
       var description = preset.description ? '<span class="gallery-row-desc">' + esc(preset.description) + '</span>' : "";
       var actionLabel = googleService && googleConnection && !accountMode ? "Enable" : "Connect";
       var rowClass = description ? "gallery-row gallery-row-described" : "gallery-row";
@@ -6290,6 +6512,44 @@ button.capability-pill { cursor: pointer; }
     editor.url = url.href;
   }
 
+  function validSentrySlug(value) {
+    return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(String(value || "").trim());
+  }
+
+  function sentryScopeFromUrl(value) {
+    try {
+      var url = new URL(String(value || ""));
+      if (url.origin !== "https://mcp.sentry.dev" || url.search || url.hash) return null;
+      var parts = url.pathname.split("/").filter(function (part) { return !!part; });
+      if (parts[0] !== "mcp" || parts.length > 3) return null;
+      var organizationSlug = parts[1] || "";
+      var projectSlug = parts[2] || "";
+      if (organizationSlug && !validSentrySlug(organizationSlug)) return null;
+      if (projectSlug && (!organizationSlug || !validSentrySlug(projectSlug))) return null;
+      return { organizationSlug: organizationSlug, projectSlug: projectSlug };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function syncSentryUrl(editor) {
+    var url = "https://mcp.sentry.dev/mcp";
+    var organizationSlug = String(editor.sentryOrganizationSlug || "").trim();
+    var projectSlug = String(editor.sentryProjectSlug || "").trim();
+    if (organizationSlug) url += "/" + encodeURIComponent(organizationSlug);
+    if (organizationSlug && projectSlug) url += "/" + encodeURIComponent(projectSlug);
+    editor.url = url;
+  }
+
+  function sentrySetupHtml(editor, actionPrefix) {
+    var prefix = actionPrefix || "conn";
+    return '<div class="form-grid"><div class="field"><label class="field-label">Organization slug <span class="hint">(optional)</span></label>' +
+      '<input class="input mono" autocomplete="off" value="' + esc(editor.sentryOrganizationSlug || "") + '" placeholder="acme" data-action="' + prefix + '-sentry-organization"></div>' +
+      '<div class="field"><label class="field-label">Project slug <span class="hint">(optional)</span></label>' +
+      '<input class="input mono" autocomplete="off" value="' + esc(editor.sentryProjectSlug || "") + '" placeholder="web-app" data-action="' + prefix + '-sentry-project"></div></div>' +
+      '<p class="hint">Leave both blank for all approved Sentry access, enter an organization to scope to it, or enter both to scope every request to one project.</p>';
+  }
+
   function supabaseSetupHtml(editor) {
     var readOnly = editor.supabaseReadOnly !== false;
     return '<div class="field"><label class="field-label" for="conn-supabase-project-ref">Project reference</label>' +
@@ -6322,7 +6582,9 @@ button.capability-pill { cursor: pointer; }
     } else {
       tokenHtml = oauthConnectionHtml(editor, preset);
     }
-    var setupHtml = preset.id === "supabase" ? supabaseSetupHtml(editor) : "";
+    var setupHtml = preset.id === "supabase"
+      ? supabaseSetupHtml(editor)
+      : (preset.oauthPathScope === "sentry-org-project" ? sentrySetupHtml(editor, "conn") : "");
     var docsHtml = preset.auth.kind !== "oauth" && preset.tokenDocsHint ? '<p class="hint">' + esc(preset.tokenDocsHint) + '</p>' : "";
     if (preset.auth.kind !== "oauth" && preset.tokenDocsUrl) {
       docsHtml += '<a class="hint-link" href="' + esc(preset.tokenDocsUrl) + '" target="_blank" rel="noopener noreferrer">Where do I find this?</a>';
@@ -6397,6 +6659,14 @@ button.capability-pill { cursor: pointer; }
     if (editor.presetId === "supabase" && editor.preset && !validSupabaseProjectRef(editor.supabaseProjectRef)) {
       return "Enter a valid Supabase project reference before signing in.";
     }
+    if (editor.presetId === "sentry" && editor.preset) {
+      if (!sentryScopeFromUrl(editor.url)) {
+        return "Enter valid lowercase Sentry organization and project slugs.";
+      }
+      if (editor.sentryProjectSlug && !editor.sentryOrganizationSlug) {
+        return "Enter a Sentry organization before a project.";
+      }
+    }
     return "";
   }
 
@@ -6414,7 +6684,190 @@ button.capability-pill { cursor: pointer; }
     if (policy.kind === "mcp") {
       return "MCP · " + connectionHost(policy.url || "") + " · " + (policy.allowedTools || []).length + " tools";
     }
+    if (policy.kind === "managed") {
+      var capabilityCount = (policy.allowedCapabilities || []).length;
+      return "Managed · " + (account.providerId || "Provider") + " / " + (policy.toolkit || "Toolkit") + " · " + capabilityCount + " " + (capabilityCount === 1 ? "capability" : "capabilities");
+    }
     return "API · " + ((policy.allowedHosts || [])[0] || account.providerId || "Custom");
+  }
+
+  function managedGrantSummaryHtml(account) {
+    var policy = account && account.policy || {};
+    var summary = policy.kind === "managed" && policy.grantSummary;
+    if (!summary || !Array.isArray(summary.items)) return "";
+    var labels = summary.items.slice(0, 3).map(function (item) {
+      return item && item.label ? item.label : "Untitled";
+    });
+    var suffix = summary.truncated || summary.items.length > labels.length ? " and more" : "";
+    return '<span>Provider grant: ' + esc(labels.length ? labels.join(", ") + suffix : "no pages currently listed") + '</span>';
+  }
+
+  function managedResourceDefinitions(account) {
+    var policy = account && account.policy;
+    if (!policy || policy.kind !== "managed") return [];
+    var descriptor = managedConnectorDescriptorByToolkit(policy.toolkit);
+    return descriptor && descriptor.resources || [];
+  }
+
+  function managedResourceSelectionLabel(account) {
+    var definitions = managedResourceDefinitions(account);
+    if (!definitions.length) return "";
+    return definitions.length === 1 ? definitions[0].label : "resources";
+  }
+
+  function startManagedResourceSelection(accountId) {
+    var entry = (state.agentConnections.attached || []).find(function (candidate) {
+      return candidate.account && candidate.account.id === accountId;
+    });
+    if (!entry) return;
+    var definitions = managedResourceDefinitions(entry.account);
+    if (!definitions.length) return;
+    var editor = {
+      accountId: accountId,
+      expectedRevision: entry.account.revision,
+      definitions: definitions,
+      options: {},
+      selected: Object.assign({}, entry.binding && entry.binding.resourceConstraints || {}),
+      notice: "",
+      loading: true,
+      busy: false,
+      error: ""
+    };
+    state.managedResourceEditor = editor;
+    render();
+    function loadPage(definition, cursor, collected, seen, seenCursors, pageCount) {
+      if (cursor && seenCursors[cursor]) {
+        return Promise.reject(new Error("Resource discovery returned a repeated cursor."));
+      }
+      if (cursor) seenCursors[cursor] = true;
+      var path = "/admin/api/agents/" + encodeURIComponent(state.agentConnections.agentId) +
+        "/connections/" + encodeURIComponent(accountId) + "/managed/resources?workspaceId=" +
+        encodeURIComponent(state.agentConnections.workspaceId) + "&resourceKey=" +
+        encodeURIComponent(definition.key) + (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
+      return api(path, { cache: "no-store" }).then(function (body) {
+        var resources = body && body.resources || [];
+        resources.forEach(function (resource) {
+          if (resource && resource.handle && !seen[resource.handle]) {
+            seen[resource.handle] = true;
+            collected.push({ handle: resource.handle, label: resource.label || resource.handle });
+          }
+        });
+        if (body && body.nextCursor && collected.length < 2000 && pageCount + 1 < 20) {
+          return loadPage(definition, body.nextCursor, collected, seen, seenCursors, pageCount + 1);
+        }
+        return {
+          resources: collected.slice(0, 2000),
+          truncated: !!(body && body.nextCursor)
+        };
+      });
+    }
+    Promise.all(definitions.map(function (definition) {
+      return loadPage(definition, "", [], {}, {}, 0).then(function (result) {
+        editor.options[definition.key] = result.resources;
+        return result.truncated;
+      });
+    })).then(function (truncatedGroups) {
+      if (state.managedResourceEditor !== editor) return;
+      var removedSelections = 0;
+      definitions.forEach(function (definition) {
+        var available = new Set((editor.options[definition.key] || []).map(function (option) {
+          return option.handle;
+        }));
+        var previous = editor.selected[definition.key] || [];
+        var retained = previous.filter(function (handle) { return available.has(handle); });
+        removedSelections += previous.length - retained.length;
+        editor.selected[definition.key] = retained;
+      });
+      var notices = [];
+      if (removedSelections) {
+        notices.push(removedSelections + " previously selected " +
+          (removedSelections === 1 ? "resource is" : "resources are") +
+          " no longer available in this list and " +
+          (removedSelections === 1 ? "was" : "were") + " removed.");
+      }
+      if (truncatedGroups.some(Boolean)) {
+        notices.push("Only the first 20 pages or 2,000 resources are shown. Narrow provider access if the resource you need is missing.");
+      }
+      editor.notice = notices.join(" ");
+      editor.loading = false;
+      render();
+    }).catch(function (error) {
+      if (state.managedResourceEditor !== editor) return;
+      editor.loading = false;
+      editor.error = (error && (error.serverMessage || error.message)) || "Could not load available resources.";
+      render();
+    });
+  }
+
+  function toggleManagedResourceSelection(key, handle, checked) {
+    var editor = state.managedResourceEditor;
+    if (!editor || editor.busy) return;
+    var definition = editor.definitions.find(function (candidate) { return candidate.key === key; });
+    if (!definition) return;
+    var selected = (editor.selected[key] || []).slice();
+    if (checked) {
+      selected = definition.multiple
+        ? selected.indexOf(handle) >= 0 ? selected : selected.concat([handle])
+        : [handle];
+    } else {
+      selected = selected.filter(function (candidate) { return candidate !== handle; });
+    }
+    editor.selected[key] = selected;
+    editor.error = "";
+    render();
+  }
+
+  function managedResourceSelectionComplete(editor) {
+    return editor.definitions.every(function (definition) {
+      return !definition.required || (editor.selected[definition.key] || []).length > 0;
+    });
+  }
+
+  function saveManagedResourceSelection() {
+    var editor = state.managedResourceEditor;
+    if (!editor || editor.busy || !managedResourceSelectionComplete(editor)) return;
+    editor.busy = true;
+    editor.error = "";
+    render();
+    postJson(
+      "/admin/api/agents/" + encodeURIComponent(state.agentConnections.agentId) +
+        "/connections/" + encodeURIComponent(editor.accountId) + "/managed/resources",
+      "POST",
+      {
+        workspaceId: state.agentConnections.workspaceId,
+        expectedRevision: editor.expectedRevision,
+        resourceConstraints: editor.selected
+      }
+    ).then(function () {
+      state.managedResourceEditor = null;
+      state.agentConnections.notice = "Resource access saved. The selected connector is ready for this Agent.";
+      return loadAgentConnections(state.agentConnections.agentId);
+    }).catch(function (error) {
+      if (state.managedResourceEditor !== editor) return;
+      editor.busy = false;
+      editor.error = (error && (error.serverMessage || error.message)) || "Could not save resource access.";
+      render();
+    });
+  }
+
+  function managedResourceEditorHtml(account) {
+    var editor = state.managedResourceEditor;
+    if (!editor || editor.accountId !== account.id) return "";
+    if (editor.loading) return '<div class="skill-form"><p class="hint">Loading available resources&hellip;</p></div>';
+    var groups = editor.definitions.map(function (definition) {
+      var options = editor.options[definition.key] || [];
+      var selected = editor.selected[definition.key] || [];
+      var choices = options.length ? options.map(function (option) {
+        var checked = selected.indexOf(option.handle) >= 0;
+        return '<label class="conn-tool"><span class="import-check' + (checked ? " on" : "") + '"><input type="' + (definition.multiple ? "checkbox" : "radio") + '" name="managed-resource-' + esc(definition.key) + '" data-action="connection-account-resource-toggle" data-resource-key="' + esc(definition.key) + '" data-resource-handle="' + esc(option.handle) + '" ' + (checked ? "checked " : "") + (editor.busy ? "disabled " : "") + '></span><span class="tool-body"><span class="tool-name">' + esc(option.label) + '</span></span></label>';
+      }).join("") : '<p class="hint">No accessible resources were returned. Confirm provider access, then reconnect if needed.</p>';
+      return '<div class="field"><label class="field-label">' + esc(definition.label) + (definition.required ? " · required" : "") + '</label><div class="conn-tools">' + choices + '</div></div>';
+    }).join("");
+    var complete = managedResourceSelectionComplete(editor);
+    return '<div class="skill-form">' + groups +
+      (editor.notice ? '<p class="hint" role="status">' + esc(editor.notice) + '</p>' : '') +
+      (editor.error ? '<p class="field-error" role="alert">' + esc(editor.error) + '</p>' : '') +
+      '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-resource-cancel"' + (editor.busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-resource-save"' + (!complete || editor.busy ? " disabled" : "") + '>' + (editor.busy ? "Saving&hellip;" : "Save access") + '</button></div></div>';
   }
 
   function connectionAccountRowHtml(entry, attached) {
@@ -6424,22 +6877,40 @@ button.capability-pill { cursor: pointer; }
     var oauthAction = account.policy && account.policy.authMode === "oauth" && account.lifecycle !== "ready"
       ? '<button type="button" class="btn btn-primary btn-sm" data-action="' + (account.policy.kind === "mcp" ? "connection-account-mcp-oauth-start" : "connection-account-oauth-start") + '" data-connection-id="' + esc(account.id) + '">Finish sign-in</button>'
       : '';
+    var managedResources = managedResourceDefinitions(account);
+    var bindingResources = attached && entry.binding && entry.binding.resourceConstraints || {};
+    var missingRequiredBindingResource = attached && managedResources.some(function (definition) {
+      return definition.required && !(bindingResources[definition.key] || []).length;
+    });
+    var pendingResourceSelection = managedResources.length > 0 &&
+      (account.lifecycle === "pending" || missingRequiredBindingResource);
+    var managedAction = account.policy && account.policy.kind === "managed" &&
+      account.lifecycle !== "ready" && account.lifecycle !== "revoked" &&
+      (account.lifecycle === "needs_attention" || !pendingResourceSelection)
+      ? '<button type="button" class="btn btn-primary btn-sm" data-action="connection-account-managed-reconnect" data-connection-id="' + esc(account.id) + '">Reconnect</button>'
+      : '';
+    var resourceAction = attached && managedResources.length
+      ? '<button type="button" class="btn ' + (pendingResourceSelection ? "btn-primary" : "btn-soft") + ' btn-sm" data-action="connection-account-resource-open" data-connection-id="' + esc(account.id) + '">' + (pendingResourceSelection ? "Choose " : "Change ") + esc(managedResourceSelectionLabel(account)) + '</button>'
+      : '';
     var action = attached
-      ? oauthAction + '<button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-detach" data-connection-id="' + esc(account.id) + '">Remove from Agent</button>'
-      : '<button type="button" class="btn btn-soft btn-sm" data-action="connection-account-attach" data-connection-id="' + esc(account.id) + '">Add to Agent</button>';
+      ? managedAction + resourceAction + oauthAction + '<button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-detach" data-connection-id="' + esc(account.id) + '">Remove from Agent</button>'
+      : managedAction + '<button type="button" class="btn btn-soft btn-sm" data-action="connection-account-attach" data-connection-id="' + esc(account.id) + '">Add to Agent</button>';
     return '<div class="skill-row conn-row"><div class="sk-body"><span class="sk-name" style="font-family:inherit;">' + esc(account.label) + '</span>' +
       connectionAccountScopeHtml(account) +
       '<span class="conn-host">' + esc(connectionAccountPolicySummary(account)) + '</span>' +
       '<span class="conn-meta"><span class="badge ' + statusClass + '"><span class="dot"></span>' + esc(account.lifecycle === "ready" ? "Ready" : String(account.lifecycle || "Needs attention").replace(/_/g, " ")) + '</span>' +
       (identity ? '<span>' + esc(identity) + '</span>' : '') +
-      (account.purpose ? '<span>' + esc(account.purpose) + '</span>' : '') + '</span></div>' + action +
-      '<button type="button" class="link-btn" data-action="connection-account-revoke" data-connection-id="' + esc(account.id) + '">Disconnect account</button></div>';
+      (account.purpose ? '<span>' + esc(account.purpose) + '</span>' : '') +
+      managedGrantSummaryHtml(account) + '</span></div>' + action +
+      '<button type="button" class="link-btn" data-action="connection-account-revoke" data-connection-id="' + esc(account.id) + '">Disconnect account</button>' + managedResourceEditorHtml(account) + '</div>';
   }
 
   function connectionAccountEndpointHtml(form, preset, oauth) {
     if (oauth) return '';
     var hostTemplate = !!(form.apiEditor && form.apiEditor.hostTemplate);
     var supabase = !!(form.mcpEditor && form.mcpEditor.presetId === "supabase");
+    var sentry = !!(form.mcpEditor && form.mcpEditor.presetId === "sentry");
+    if (sentry) return sentrySetupHtml(form.mcpEditor, "connection-account");
     if (preset && !hostTemplate && !supabase) return '';
     var label = form.kind === "mcp"
       ? (supabase ? "Project reference" : "Server URL")
@@ -6477,6 +6948,15 @@ button.capability-pill { cursor: pointer; }
 
   function connectionAccountAccessHtml(form) {
     var googleService = googleServicePresetById(form.presetId);
+    if (form.kind === "managed") {
+      var managedAccess = form.managedAccess === "write" ? "write" : "read";
+      var managedDescriptor = managedConnectorDescriptorByToolkit(form.managedToolkit);
+      var writeDisabled = !managedConnectorLaneReady(managedDescriptor, "write");
+      return '<div class="field"><label class="field-label">Access</label><div class="seg" role="group" aria-label="' + esc(form.preset && form.preset.name || "Managed connector") + ' access">' +
+        '<button type="button" class="' + (managedAccess === "read" ? "on" : "") + '" data-action="connection-account-managed-access" data-access="read">Read-only</button>' +
+        '<button type="button" class="' + (managedAccess === "write" ? "on" : "") + '" data-action="connection-account-managed-access" data-access="write"' + (writeDisabled ? ' disabled aria-disabled="true"' : '') + '>Read and write</button></div>' +
+        (writeDisabled ? '<p class="hint">Write access is not configured for this connector.</p>' : '') + '</div>';
+    }
     if (googleService && form.apiEditor) {
       var googleAccess = form.apiEditor.googleAccess[googleService.service] || "read";
       return '<div class="field"><label class="field-label">Access</label><div class="seg" role="group" aria-label="' + esc(googleService.name) + ' access">' +
@@ -6497,15 +6977,32 @@ button.capability-pill { cursor: pointer; }
     var form = state.connectionAccountForm;
     if (!form) return '';
     var busy = !!form.busy;
+    if (form.kind === "managed") {
+      var managedPreset = form.preset;
+      var managedDescriptor = managedConnectorDescriptorByToolkit(form.managedToolkit);
+      return '<div class="skill-form"><div class="form-grid"><div class="field"><label class="field-label">Who uses this account?</label><span class="select-wrap"><select class="input" data-action="connection-account-owner"><option value="team"' + (form.ownerKind === "team" ? " selected" : "") + '>Team connection</option><option value="member"' + (form.ownerKind === "member" ? " selected" : "") + '>My connection</option></select></span><p class="hint">Team connections can be reused by Agents across the workspace. Personal connections are available only when you invoke the Agent.</p></div><div></div></div>' +
+        '<div class="conn-title" style="margin-bottom:16px;">' + connectorLogoHtml(managedPreset) + '<div><strong>' + esc(managedPreset.name) + '</strong><p class="hint">' + esc(managedPreset.description || "") + '</p></div></div>' +
+        connectionAccountAccessHtml(form) +
+        '<p class="conn-security">' + esc(managedDescriptor && managedDescriptor.securityDescription || "Sign-in opens through the managed connector provider. Chickpea stores the connected-account reference and this Agent’s capability ceiling, not provider refresh tokens.") + '</p>' +
+        (form.managedToolkit === "notion" && hasNativeNotionConnection()
+          ? '<p class="hint">This adds managed Notion beside Native Notion. Chickpea will not change Agent bindings or disconnect the native account; validate the managed account first, then migrate explicitly.</p>'
+          : '') +
+        (form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '') +
+        '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy ? " disabled" : "") + '>' + (busy ? "Opening sign-in&hellip;" : "Continue to sign in") + '</button></div></div>';
+    }
     var oauth = form.kind === "api" && form.authMode === "google_oauth";
     var mcpOauth = form.kind === "mcp" && form.authMode === "oauth";
     var preset = form.preset;
-    var authHtml = !preset && form.kind === "api" ? '<div class="field"><label class="field-label">Authentication</label><span class="select-wrap"><select class="input" data-action="connection-account-auth"><option value="credential"' + (!oauth ? " selected" : "") + '>API token</option><option value="google_oauth"' + (oauth ? " selected" : "") + '>Google OAuth</option></select></span></div>' : '';
+    var managedGoogleAvailable = state.agentConnections.managedGoogleAvailable !== false;
+    var authHtml = !preset && form.kind === "api" ? '<div class="field"><label class="field-label">Authentication</label><span class="select-wrap"><select class="input" data-action="connection-account-auth"><option value="credential"' + (form.authMode !== "google_oauth" ? " selected" : "") + '>API token</option>' + (!managedGoogleAvailable ? '<option value="google_oauth"' + (form.authMode === "google_oauth" ? " selected" : "") + '>Google OAuth</option>' : '') + '</select></span><p class="hint">' + (managedGoogleAvailable ? 'Use a managed Google connector for Google OAuth.' : 'This deployment uses its own Google OAuth client credentials.') + '</p></div>' : '';
     var endpointHtml = connectionAccountEndpointHtml(form, preset, oauth);
     var credentialHtml = connectionAccountCredentialHtml(form, preset, oauth, mcpOauth);
     var accessHtml = connectionAccountAccessHtml(form);
     var presetHead = preset ? '<div class="conn-title" style="margin-bottom:16px;">' + connectorLogoHtml(preset) + '<div><strong>' + esc(preset.name) + '</strong><p class="hint">' + esc(preset.description || "") + '</p></div></div>' : '';
     var capabilitiesHtml = preset ? '' : '<div class="field"><label class="field-label">' + (form.kind === "mcp" ? "Allowed tools" : "Capabilities") + '</label><input class="input mono" value="' + esc(form.capabilities) + '" placeholder="tickets.read, tickets.update" data-action="connection-account-capabilities"><p class="hint">Comma-separated names. This becomes the Agent binding’s maximum authority.</p></div>';
+    var oauthMigrationHtml = mcpOauth && preset && (preset.id === "sentry" || preset.id === "intercom") && hasLegacyTokenMcpConnection(preset.id)
+      ? '<p class="hint">This adds OAuth beside the existing token connection. Review the discovered tools, bind and verify the OAuth account, then explicitly disconnect the token account when migration is complete.</p>'
+      : '';
     return '<div class="skill-form"><div class="form-grid"><div class="field"><label class="field-label">Who uses this account?</label><span class="select-wrap"><select class="input" data-action="connection-account-owner"><option value="team"' + (form.ownerKind === "team" ? " selected" : "") + '>Team connection</option><option value="member"' + (form.ownerKind === "member" ? " selected" : "") + '>My connection</option></select></span><p class="hint">Team connections can be reused by Agents across the workspace. Personal connections are available only when you invoke the Agent.</p></div>' +
       (!preset ? '<div class="field"><label class="field-label">Connection type</label><span class="select-wrap"><select class="input" data-action="connection-account-kind"><option value="api"' + (form.kind === "api" ? " selected" : "") + '>REST API</option><option value="mcp"' + (form.kind === "mcp" ? " selected" : "") + '>MCP server</option></select></span></div>' : '<div></div>') + '</div>' +
       presetHead +
@@ -6518,6 +7015,8 @@ button.capability-pill { cursor: pointer; }
       capabilitiesHtml +
       credentialHtml +
       (preset && preset.tokenDocsUrl ? '<p class="hint"><a href="' + esc(preset.tokenDocsUrl) + '" target="_blank" rel="noopener noreferrer">Open setup instructions &#8599;</a>' + (preset.tokenDocsHint ? ' &middot; ' + esc(preset.tokenDocsHint) : '') + '</p>' : '') +
+      (preset && preset.notes ? '<p class="hint">' + esc(preset.notes) + '</p>' : '') +
+      oauthMigrationHtml +
       (form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '') +
       '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy ? " disabled" : "") + '>' + (busy ? "Connecting&hellip;" : ((oauth || mcpOauth) ? "Continue to sign in" : "Connect and add")) + '</button></div></div>';
   }
@@ -6548,7 +7047,22 @@ button.capability-pill { cursor: pointer; }
     var notice = accounts.notice ? '<div class="oauth-return ok" role="status">' + esc(accounts.notice) + '</div>' : '';
     var create = connectionAccountFormHtml();
     var gallery = state.connectionAccountForm ? '' : connectorGalleryHtml(true);
-    return oauthReturnNoticeHtml(draft) + notice + '<p class="hint ptab-hint">Connections are configured here on the Agent. Credentials are stored once and can be safely reused.</p>' + attachedHtml + availableHtml + '<div style="margin-top:16px;">' + create + gallery + '</div>';
+    return managedReturnNoticeHtml() + oauthReturnNoticeHtml(draft) + notice + '<p class="hint ptab-hint">Connections are configured here on the Agent. Credentials are stored once and can be safely reused.</p>' + attachedHtml + availableHtml + '<div style="margin-top:16px;">' + create + gallery + '</div>';
+  }
+
+  function managedReturnNoticeHtml() {
+    var result = state.managedReturn;
+    if (!result) return "";
+    var descriptor = managedConnectorDescriptorByToolkit(result.toolkit);
+    var label = descriptor ? descriptor.label : "the managed connection";
+    if (result.status === "connected") {
+      var requiresResources = descriptor && descriptor.resources && descriptor.resources.length;
+      return '<div class="oauth-return ok" role="status">' + esc(label) +
+        (requiresResources
+          ? ' is authorized through Composio. Choose the resources this Agent may use to finish.'
+          : ' is connected through Composio and ready for this Agent.') + '</div>';
+    }
+    return '<div class="oauth-return error" role="alert">Sign-in did not finish. Try connecting ' + esc(label) + ' again.</div>';
   }
 
   function legacyConnectionsPanelHtml(draft) {
@@ -10655,9 +11169,15 @@ button.capability-pill { cursor: pointer; }
     if (action === "connection-account-new") { newConnectionAccountForm(); }
     if (action === "connection-account-preset") { newConnectionAccountFormFromPreset(target.getAttribute("data-preset") || ""); }
     if (action === "connection-account-cancel") { state.connectionAccountForm = null; render(); }
-    if (action === "connection-account-google-access" && state.connectionAccountForm && state.connectionAccountForm.apiEditor) {
+    if (action === "connection-account-managed-access" && state.connectionAccountForm &&
+        state.connectionAccountForm.kind === "managed") {
+      state.connectionAccountForm.managedAccess = target.getAttribute("data-access") === "write" ? "write" : "read";
+      state.connectionAccountForm.error = "";
+      render();
+    }
+    if (action === "connection-account-google-access" && state.connectionAccountForm) {
       var accountGoogleService = googleServicePresetById(state.connectionAccountForm.presetId);
-      if (accountGoogleService) {
+      if (accountGoogleService && state.connectionAccountForm.apiEditor) {
         state.connectionAccountForm.apiEditor.googleAccess[accountGoogleService.service] = target.getAttribute("data-access") === "write" ? "write" : "read";
         syncGoogleApiPolicy(state.connectionAccountForm.apiEditor);
         state.connectionAccountForm.error = "";
@@ -10674,6 +11194,17 @@ button.capability-pill { cursor: pointer; }
     if (action === "connection-account-create") { createConnectionAccount(); }
     if (action === "connection-account-oauth-start") { startConnectionAccountOAuth(target.getAttribute("data-connection-id") || "", false); }
     if (action === "connection-account-mcp-oauth-start") { startConnectionAccountOAuth(target.getAttribute("data-connection-id") || "", false, "mcp"); }
+    if (action === "connection-account-managed-reconnect") { reconnectManagedConnection(target.getAttribute("data-connection-id") || ""); }
+    if (action === "connection-account-resource-open") { startManagedResourceSelection(target.getAttribute("data-connection-id") || ""); }
+    if (action === "connection-account-resource-toggle") {
+      toggleManagedResourceSelection(
+        target.getAttribute("data-resource-key") || "",
+        target.getAttribute("data-resource-handle") || "",
+        !!target.checked
+      );
+    }
+    if (action === "connection-account-resource-cancel") { state.managedResourceEditor = null; render(); }
+    if (action === "connection-account-resource-save") { saveManagedResourceSelection(); }
     if (action === "connection-account-attach") { attachConnectionAccount(target.getAttribute("data-connection-id") || ""); }
     if (action === "connection-account-detach") { detachConnectionAccount(target.getAttribute("data-connection-id") || ""); }
     if (action === "connection-account-revoke") { revokeConnectionAccount(target.getAttribute("data-connection-id") || ""); }
@@ -11280,6 +11811,13 @@ button.capability-pill { cursor: pointer; }
         state.connectionAccountForm.url = state.connectionAccountForm.mcpEditor.url;
         state.connectionAccountForm.error = "";
       }
+      if ((action === "connection-account-sentry-organization" || action === "connection-account-sentry-project") && state.connectionAccountForm.mcpEditor) {
+        if (action === "connection-account-sentry-organization") state.connectionAccountForm.mcpEditor.sentryOrganizationSlug = target.value;
+        if (action === "connection-account-sentry-project") state.connectionAccountForm.mcpEditor.sentryProjectSlug = target.value;
+        syncSentryUrl(state.connectionAccountForm.mcpEditor);
+        state.connectionAccountForm.url = state.connectionAccountForm.mcpEditor.url;
+        state.connectionAccountForm.error = "";
+      }
       if (action === "connection-account-capabilities") { state.connectionAccountForm.capabilities = target.value; }
       if (action === "connection-account-credential") { state.connectionAccountForm.credential = target.value; }
       if (action === "connection-account-oauth-client-id") { state.connectionAccountForm.oauthClientId = target.value; state.connectionAccountForm.error = ""; }
@@ -11333,6 +11871,13 @@ button.capability-pill { cursor: pointer; }
           markProfileDirty();
           var supabaseOauthButton = document.querySelector('[data-action="conn-oauth-start"]');
           if (supabaseOauthButton) supabaseOauthButton.disabled = !validSupabaseProjectRef(connEditor.supabaseProjectRef);
+        }
+        if ((action === "conn-sentry-organization" || action === "conn-sentry-project") && connEditor.presetId === "sentry") {
+          if (action === "conn-sentry-organization") connEditor.sentryOrganizationSlug = target.value;
+          if (action === "conn-sentry-project") connEditor.sentryProjectSlug = target.value;
+          syncSentryUrl(connEditor);
+          connEditor.error = "";
+          markProfileDirty();
         }
         if (action === "conn-field-url") {
           connEditor.url = target.value;
@@ -12285,6 +12830,11 @@ button.capability-pill { cursor: pointer; }
       editor.supabaseReadOnly = true;
       syncSupabaseUrl(editor);
     }
+    if (preset.oauthPathScope === "sentry-org-project") {
+      editor.sentryOrganizationSlug = "";
+      editor.sentryProjectSlug = "";
+      syncSentryUrl(editor);
+    }
     return editor;
   }
 
@@ -12342,16 +12892,24 @@ button.capability-pill { cursor: pointer; }
       var supabaseSetup = matchedPreset && matchedPreset.id === "supabase"
         ? supabaseSetupFromUrl(conn.url)
         : null;
+      var sentrySetup = matchedPreset && matchedPreset.oauthPathScope === "sentry-org-project"
+        ? sentryScopeFromUrl(conn.url)
+        : null;
       var presetMatchesPolicy = !!matchedPreset &&
         matchedPreset.auth.kind === connectionAuthKind(conn) &&
         (matchedPreset.url === conn.url ||
-          (matchedPreset.id === "supabase" && !!supabaseSetup && validSupabaseProjectRef(supabaseSetup.projectRef)));
+          (matchedPreset.id === "supabase" && !!supabaseSetup && validSupabaseProjectRef(supabaseSetup.projectRef)) ||
+          (matchedPreset.oauthPathScope === "sentry-org-project" && !!sentrySetup));
       editor.preset = presetMatchesPolicy ? matchedPreset : null;
       if (editor.preset) {
         editor.view = "recommended";
         if (editor.preset.id === "supabase" && supabaseSetup) {
           editor.supabaseProjectRef = supabaseSetup.projectRef;
           editor.supabaseReadOnly = supabaseSetup.readOnly;
+        }
+        if (editor.preset.oauthPathScope === "sentry-org-project" && sentrySetup) {
+          editor.sentryOrganizationSlug = sentrySetup.organizationSlug;
+          editor.sentryProjectSlug = sentrySetup.projectSlug;
         }
         if (!editor.oauthScope && editor.preset.auth.kind === "oauth") {
           editor.oauthScope = String(editor.preset.auth.scope || "").trim();
@@ -13882,6 +14440,15 @@ button.capability-pill { cursor: pointer; }
     return { status: status, connectionId: connectionId, lane: lane };
   }
 
+  function managedReturnFromSearch(search) {
+    if (!search) return null;
+    var params = new URLSearchParams(search);
+    var status = params.get("managed");
+    if (status !== "connected" && status !== "failed") return null;
+    var toolkit = params.get("toolkit") || "";
+    return { status: status, toolkit: toolkit };
+  }
+
   function connectorSetupFromPath(pathname) {
     var parts = String(pathname || "").split("/").filter(Boolean).map(function (part) {
       try { return decodeURIComponent(part); } catch (_) { return ""; }
@@ -13908,10 +14475,14 @@ button.capability-pill { cursor: pointer; }
   }
   if (USAGE_ADMIN_UI && initialRoute === "/admin/usage") applyUsageQuery(location.search || "");
   state.oauthReturn = canNavigate ? oauthReturnFromSearch(location.search || "") : null;
+  state.managedReturn = canNavigate ? managedReturnFromSearch(location.search || "") : null;
   var connectorSetup = canNavigate ? connectorSetupFromPath(location.pathname) : null;
   var connectorSetupConsumed = false;
-  refreshData().then(function () {
-    applyRoute(initialRoute);
+  refreshData().then(async function () {
+    // Managed-only presets and the native-vs-managed Google decision both
+    // depend on the Agent connections response. Do not consume the one-shot
+    // connector handoff until that catalog and availability flag are known.
+    await applyRoute(initialRoute);
     if (connectorSetup && state.profileDraft && state.profileScreen === "edit") {
       state.profileTab = "connections";
       newConnectionAccountFormFromPreset(connectorSetup.connector);
@@ -13949,6 +14520,11 @@ button.capability-pill { cursor: pointer; }
       render();
       // The callback URL carries status and connection identity only, but it is
       // one-shot UI state. Remove it so a refresh cannot replay a stale banner.
+      history.replaceState(null, "", location.pathname);
+    }
+    if (state.managedReturn && state.profileDraft && state.profileScreen === "edit") {
+      state.profileTab = "connections";
+      render();
       history.replaceState(null, "", location.pathname);
     }
     routeReady = true;

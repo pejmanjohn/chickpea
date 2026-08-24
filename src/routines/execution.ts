@@ -413,6 +413,7 @@ async function prepareExecution(
         );
     envelope = createEnvelope({
       routine: input.routine,
+      run: input.run,
       access,
       prompt,
       attemptId,
@@ -530,6 +531,7 @@ async function prepareExecution(
 
 function createEnvelope(input: {
   routine: RoutineDefinition;
+  run: RoutineRun;
   access: RoutineRuntimeAccess;
   prompt: PreparedRoutinePrompt;
   attemptId: string;
@@ -558,6 +560,10 @@ function createEnvelope(input: {
   const initialData: RoutineExecutionInitialData = {
     runtimePlan,
     requestedModel: input.access.config.model,
+    connectorUsageCorrelation: {
+      operationId: input.run.id,
+      ...(input.run.canonicalRunId ? { runId: input.run.canonicalRunId } : {}),
+    },
   };
   return {
     schemaVersion: 1,

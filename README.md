@@ -107,6 +107,10 @@ The Agent screen is the conceptual home for connections, while credentials are n
 
 Credentials never enter model context or ordinary tool arguments. OAuth continuations bind the provider, account owner, Agent, and interrupted Slack task. Revoking an account tombstones secret access and pauses dependent schedules.
 
+Hosted deployments may optionally delegate OAuth storage, refresh, and API execution to a managed connector provider. Chickpea still owns team/personal account selection, Agent capability limits, confirmation policy, and a final live authorization check for every call. The first adapter supports curated Gmail, Google Calendar, Google Drive, Google Sheets, Google Docs, Google Slides, Search Console, Google Analytics, Notion, HubSpot, Gong, Google Ads, and YouTube capabilities through Composio. New Google connections use this managed path. Managed Notion is additive while its provider-page boundary is accepted in each environment, so Native Notion remains available and is never disconnected automatically. Native API/MCP connections also remain available for custom services. Self-hosted deployments may supply their own Composio project key or leave the adapter dormant. See [the managed connector runbook](docs/runbooks/composio-managed-connectors.md).
+
+Sentry and Intercom use their official hosted MCP servers and the generic Chickpea OAuth lifecycle. Sentry can be narrowed to one organization or organization/project; the resulting URL remains the OAuth resource and runtime endpoint. Intercom's hosted MCP currently supports only US-hosted workspaces, so Chickpea warns before authorization. Existing bearer-token accounts remain usable during an additive migration and are removed only by an explicit disconnect. Monday.com remains on its existing bearer-token preset for this release even though Monday now documents hosted MCP OAuth.
+
 Minor reversible writes may proceed without confirmation. Consequential actions—sending a message or email, deleting a resource, publishing, or broad/bulk changes—normally require confirmation unless the saved Agent instructions explicitly authorize that action class. Conversation text, retrieved content, and tool output cannot expand authority.
 
 ## Memory
@@ -148,6 +152,11 @@ If authority disappears, future runs pause without silently selecting another pe
 | `TAG_DB_PATH` | optional | Durable Flue transcript SQLite path. |
 | `SLACK_STATE_DB_PATH` | optional | App-owned state SQLite path. |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` | optional | Enable corresponding model providers; keys may instead be stored in Settings. |
+| `COMPOSIO_API_KEY` | optional | Enable Composio Connect Link and managed Google execution; never enters a runtime plan or model context. Composio currently requires a full-access project key to redeem callback identity verification. |
+| `COMPOSIO_WEBHOOK_SECRET` | required with Composio | Verify connected-account expiry events before pausing dependent work. |
+| `COMPOSIO_{GMAIL,CALENDAR,DRIVE,SHEETS,DOCS,SLIDES,NOTION,HUBSPOT,GOOGLE_ADS,YOUTUBE}_{READ,WRITE}_AUTH_CONFIG_ID`, `COMPOSIO_{SEARCH_CONSOLE,ANALYTICS,GONG}_READ_AUTH_CONFIG_ID` | required per enabled toolkit/lane | Select explicit Composio auth configs. For the managed-default launch, create one default config per toolkit and put its ID in each lane you want to offer; IDs are non-secret. Search Console, Analytics, and Gong are intentionally read-only. A missing lane disables only that toolkit/lane. The Google Ads auth config owns the developer token. |
+| `COMPOSIO_GOOGLE_ADS_ACCESS_LEVEL`, `COMPOSIO_GOOGLE_ADS_PERMISSIBLE_USE` | required with Google Ads | Declare the developer token's production approval as `basic` or `standard`, plus `reporting` or `ad_management`. Test/Explorer tokens and reporting-only write lanes stay unavailable. |
+| `COMPOSIO_YOUTUBE_{GENERAL_DAILY_QUOTA_UNITS,SEARCH_DAILY_CALL_LIMIT,UPLOAD_DAILY_CALL_LIMIT}`, `COMPOSIO_YOUTUBE_QUOTA_AUDIT_APPROVED` | optional with YouTube | Reserve provider-wide daily budgets before dispatch. Defaults are 10,000 general units, 100 searches, and 100 uploads. Higher configured limits remain unavailable until the audit-approval flag is true. Composio's managed/default app may still have a shared upstream quota across users. |
 | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | optional | Enable REST Workers AI. Cloudflare deployments can also use the keyless binding provider. |
 
 See [.env.example](.env.example) for the complete offline-safe environment surface.

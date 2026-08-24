@@ -27,6 +27,23 @@
 #   npx wrangler secret put ANTHROPIC_API_KEY
 #   npx wrangler secret put OPENAI_API_KEY
 #   npx wrangler secret put OPENROUTER_API_KEY
+#   npx wrangler secret put COMPOSIO_API_KEY
+# Composio currently requires this project key to have Full access because its
+# callback identity-verification redemption route has no scoped-key permission.
+#   npx wrangler secret put COMPOSIO_WEBHOOK_SECRET
+# Add the lane-specific auth-config IDs for the managed toolkits you enable,
+# for example COMPOSIO_NOTION_READ_AUTH_CONFIG_ID,
+# COMPOSIO_SEARCH_CONSOLE_READ_AUTH_CONFIG_ID, and
+# COMPOSIO_ANALYTICS_READ_AUTH_CONFIG_ID, and
+# COMPOSIO_HUBSPOT_READ_AUTH_CONFIG_ID, COMPOSIO_GONG_READ_AUTH_CONFIG_ID, and
+# COMPOSIO_GOOGLE_ADS_READ_AUTH_CONFIG_ID / COMPOSIO_GOOGLE_ADS_WRITE_AUTH_CONFIG_ID.
+# YouTube uses COMPOSIO_YOUTUBE_READ_AUTH_CONFIG_ID /
+# COMPOSIO_YOUTUBE_WRITE_AUTH_CONFIG_ID. Optional quota overrides are documented
+# in .env.example; values above the defaults require an approved compliance audit.
+# Google Ads also requires COMPOSIO_GOOGLE_ADS_ACCESS_LEVEL=basic|standard and
+# COMPOSIO_GOOGLE_ADS_PERMISSIBLE_USE=reporting|ad_management. Test or Explorer
+# developer tokens are intentionally reported as not production-ready.
+# See docs/runbooks/composio-managed-connectors.md.
 # Optional plain vars can label those environment credentials without exposing
 # them and identify rotations: <PROVIDER>_CREDENTIAL_ALIAS and
 # <PROVIDER>_CREDENTIAL_EPOCH. CHICKPEA_DEPLOYMENT_EPOCH identifies a keyless

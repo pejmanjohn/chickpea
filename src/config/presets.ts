@@ -11,11 +11,15 @@ interface ConnectorPresetCommon {
   tokenDocsUrl?: string;
   tokenDocsHint?: string;
   notes?: string;
+  /** Reuse another preset's brand mark for a distinct connection lane. */
+  logoId?: string;
 }
 
 interface McpPresetLane {
   url: string;
   transport: 'streamable-http';
+  /** Optional provider-owned URL narrowing rendered in the recommended setup. */
+  oauthPathScope?: 'sentry-org-project';
   auth:
     | { kind: 'none' }
     | { kind: 'oauth'; scope?: string }
@@ -52,11 +56,33 @@ export type ConnectorPreset = ConnectorPresetCommon &
 
 export interface GoogleWorkspaceServicePreset {
   id: string;
-  service: GoogleWorkspaceService;
-  connectionPresetId: 'google-workspace';
+  /** Native Google OAuth fallback. Managed-only connectors intentionally omit this. */
+  service?: GoogleWorkspaceService;
+  /** Managed-provider toolkit used when that lane is available. */
+  managedToolkit:
+    | 'gmail'
+    | 'googlecalendar'
+    | 'googledrive'
+    | 'googlesheets'
+    | 'googledocs'
+    | 'googleslides';
+  /** Native Google OAuth fallback preset. Managed-only connectors omit this. */
+  connectionPresetId?: 'google-workspace';
   name: string;
   description: string;
   accent: string;
+  logoId?: string;
+}
+
+export interface ManagedConnectorPreset {
+  id: string;
+  managedToolkit: string;
+  providerId: string;
+  name: string;
+  description: string;
+  category: ConnectorCategory;
+  accent: string;
+  logoId?: string;
 }
 
 // These are service-level catalog entries, not independent connector configs.
@@ -66,6 +92,7 @@ export const GOOGLE_WORKSPACE_SERVICE_PRESETS: GoogleWorkspaceServicePreset[] = 
   {
     id: 'gmail',
     service: 'gmail',
+    managedToolkit: 'gmail',
     connectionPresetId: 'google-workspace',
     name: 'Gmail',
     description: 'Search mail, summarize threads, and draft or organize messages.',
@@ -74,6 +101,7 @@ export const GOOGLE_WORKSPACE_SERVICE_PRESETS: GoogleWorkspaceServicePreset[] = 
   {
     id: 'google-calendar',
     service: 'calendar',
+    managedToolkit: 'googlecalendar',
     connectionPresetId: 'google-workspace',
     name: 'Google Calendar',
     description: 'Review availability and create or update events.',
@@ -82,10 +110,108 @@ export const GOOGLE_WORKSPACE_SERVICE_PRESETS: GoogleWorkspaceServicePreset[] = 
   {
     id: 'google-drive',
     service: 'drive',
+    managedToolkit: 'googledrive',
     connectionPresetId: 'google-workspace',
     name: 'Google Drive',
     description: 'Find, read, create, and organize files.',
     accent: '#4285F4',
+  },
+  {
+    id: 'google-sheets',
+    managedToolkit: 'googlesheets',
+    name: 'Google Sheets',
+    description: 'Find spreadsheets, read ranges, and make bounded table updates.',
+    accent: '#0F9D58',
+    logoId: 'google-sheets',
+  },
+  {
+    id: 'google-docs',
+    managedToolkit: 'googledocs',
+    name: 'Google Docs',
+    description: 'Find, read, export, create, and update documents.',
+    accent: '#4285F4',
+    logoId: 'google-docs',
+  },
+  {
+    id: 'google-slides',
+    managedToolkit: 'googleslides',
+    name: 'Google Slides',
+    description: 'Read presentations and create or update slides through bounded operations.',
+    accent: '#F4B400',
+    logoId: 'google-slides',
+  },
+];
+
+export const MANAGED_CONNECTOR_PRESETS: ManagedConnectorPreset[] = [
+  {
+    id: 'notion-managed',
+    managedToolkit: 'notion',
+    providerId: 'notion',
+    name: 'Notion (managed)',
+    description: 'Search, read, create, and update only the pages and databases you approve.',
+    category: 'docs',
+    accent: '#000000',
+    logoId: 'notion',
+  },
+  {
+    id: 'google-search-console',
+    managedToolkit: 'google_search_console',
+    providerId: 'google',
+    name: 'Google Search Console',
+    description: 'Inspect indexing, sitemaps, and search performance for selected sites.',
+    category: 'business',
+    accent: '#458CF5',
+    logoId: 'google-workspace',
+  },
+  {
+    id: 'google-analytics',
+    managedToolkit: 'google_analytics',
+    providerId: 'google',
+    name: 'Google Analytics',
+    description: 'Read metadata, quotas, and bounded GA4 reports for selected properties.',
+    category: 'business',
+    accent: '#E37400',
+    logoId: 'google-workspace',
+  },
+  {
+    id: 'hubspot-managed',
+    managedToolkit: 'hubspot',
+    providerId: 'hubspot',
+    name: 'HubSpot',
+    description: 'Research CRM records and make explicitly confirmed updates in one portal.',
+    category: 'business',
+    accent: '#FF7A59',
+    logoId: 'hubspot',
+  },
+  {
+    id: 'gong-managed',
+    managedToolkit: 'gong',
+    providerId: 'gong',
+    name: 'Gong',
+    description: 'Analyze calls, transcripts, coaching, tasks, and trackers in selected workspaces.',
+    category: 'business',
+    accent: '#6E3BF4',
+    logoId: 'gong',
+  },
+  {
+    id: 'google-ads',
+    managedToolkit: 'googleads',
+    providerId: 'google',
+    name: 'Google Ads',
+    description: 'Analyze and manage campaigns for explicitly selected client accounts.',
+    category: 'business',
+    accent: '#4285F4',
+    logoId: 'google-workspace',
+  },
+  {
+    id: 'youtube-managed',
+    managedToolkit: 'youtube',
+    providerId: 'google',
+    name: 'YouTube',
+    description: 'Analyze and manage explicitly selected channels with quota-aware publishing.',
+    category: 'business',
+    accent: '#FF0000',
+    logoId: 'youtube',
   },
 ];
 
@@ -125,7 +251,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   },
   {
     id: 'notion',
-    name: 'Notion',
+    name: 'Native Notion',
     description: 'Search, read, create, and update workspace pages and databases.',
     category: 'docs',
     accent: '#000000',
@@ -145,15 +271,12 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     accent: '#362D59',
     url: 'https://mcp.sentry.dev/mcp',
     transport: 'streamable-http',
-    auth: {
-      kind: 'header',
-      headerName: 'Authorization',
-      valuePrefix: 'Sentry-Bearer ',
-      placeholder: 'User Auth Token',
-    },
-    tokenDocsUrl: 'https://sentry.io/settings/account/api/auth-tokens/',
-    tokenDocsHint: 'Sentry → Settings → Account → User Auth Tokens',
-    notes: 'Uses a non-standard Sentry-Bearer authorization scheme.',
+    oauthPathScope: 'sentry-org-project',
+    auth: { kind: 'oauth' },
+    tokenDocsUrl: 'https://github.com/getsentry/sentry-mcp',
+    tokenDocsHint: 'Sign in to Sentry and approve the MCP skills Chickpea should receive.',
+    notes:
+      'Optionally narrow the OAuth resource to one organization or one organization/project. The scoped URL is enforced on every Sentry MCP request.',
   },
   {
     id: 'stripe',
@@ -260,6 +383,8 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     auth: { kind: 'bearer', placeholder: 'monday.com API token' },
     tokenDocsUrl: 'https://developer.monday.com/api-reference/docs/authentication',
     tokenDocsHint: 'monday.com → avatar → Developers → My access tokens',
+    notes:
+      'monday.com also supports hosted MCP OAuth. This release keeps the existing token path; evaluate an additive OAuth migration separately.',
   },
   {
     id: 'intercom',
@@ -269,11 +394,11 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     accent: '#1F8DED',
     url: 'https://mcp.intercom.com/mcp',
     transport: 'streamable-http',
-    auth: { kind: 'bearer', placeholder: 'Intercom access token' },
-    tokenDocsUrl:
-      'https://developers.intercom.com/docs/build-an-integration/learn-more/authentication',
-    tokenDocsHint: 'Intercom → Settings → Developers',
-    notes: 'US-hosted workspaces only.',
+    auth: { kind: 'oauth' },
+    tokenDocsUrl: 'https://developers.intercom.com/docs/guides/mcp',
+    tokenDocsHint: 'Sign in to the US-hosted Intercom workspace Chickpea should access.',
+    notes:
+      'Intercom currently supports its hosted MCP server only for US-hosted workspaces. EU and Australian workspaces cannot use this preset yet.',
   },
   {
     id: 'exa',
@@ -456,12 +581,16 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   },
 ];
 
-export type ReusableConnectorPreset = ConnectorPreset | GoogleWorkspaceServicePreset;
+export type ReusableConnectorPreset =
+  | ConnectorPreset
+  | GoogleWorkspaceServicePreset
+  | ManagedConnectorPreset;
 
 /** Catalog entries users can attach to more than one Agent without reconnecting. */
 export const REUSABLE_CONNECTOR_PRESETS: ReusableConnectorPreset[] = [
   ...CONNECTOR_PRESETS.filter(({ id }) => id !== 'google-workspace'),
   ...GOOGLE_WORKSPACE_SERVICE_PRESETS,
+  ...MANAGED_CONNECTOR_PRESETS,
 ].sort((left, right) => left.name.localeCompare(right.name));
 
 export function resolveReusableConnectorPreset(

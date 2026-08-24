@@ -428,6 +428,80 @@ test('runtime resolves OAuth at connection time and injects only the bearer head
   ]);
 });
 
+test('runtime preserves a Sentry-scoped OAuth URL and exposes only reviewed tools', async () => {
+  const serverUrl = 'https://mcp.sentry.dev/mcp/acme/web-app';
+  const seen: Array<{ serverUrl: string; connectedUrl: string; authorization: string }> = [];
+  const tools = await resolveProfileMcpTools([server({
+    id: 'sentry',
+    displayName: 'Sentry',
+    url: serverUrl,
+    authMode: 'oauth',
+    discoveredTools: [{ name: 'search_issues' }, { name: 'update_issue' }],
+    allowedTools: ['search_issues'],
+    presetId: 'sentry',
+  })], {
+    agentId: 'agent_test',
+    env: noSecretsEnv,
+    existingToolNames: [],
+    resolveOAuthAccessToken: async (input) => {
+      seen.push({ serverUrl: input.serverUrl, connectedUrl: '', authorization: '' });
+      return 'sentry-oauth-token';
+    },
+    connect: async (_name, options) => {
+      seen[0]!.connectedUrl = String(options.url);
+      seen[0]!.authorization = new Headers(options.headers).get('authorization') ?? '';
+      return fakeConnection([
+        tool('mcp__sentry__search_issues'),
+        tool('mcp__sentry__update_issue'),
+      ]);
+    },
+  });
+
+  assert.deepEqual(seen, [{
+    serverUrl,
+    connectedUrl: serverUrl,
+    authorization: 'Bearer sentry-oauth-token',
+  }]);
+  assert.deepEqual(tools.map(({ name }) => name), ['mcp__sentry__search_issues']);
+});
+
+test('runtime uses Intercom OAuth and withholds unreviewed discovered tools', async () => {
+  const serverUrl = 'https://mcp.intercom.com/mcp';
+  const seen: Array<{ serverUrl: string; connectedUrl: string; authorization: string }> = [];
+  const tools = await resolveProfileMcpTools([server({
+    id: 'intercom',
+    displayName: 'Intercom',
+    url: serverUrl,
+    authMode: 'oauth',
+    discoveredTools: [{ name: 'search_contacts' }, { name: 'delete_contact' }],
+    allowedTools: ['search_contacts'],
+    presetId: 'intercom',
+  })], {
+    agentId: 'agent_test',
+    env: noSecretsEnv,
+    existingToolNames: [],
+    resolveOAuthAccessToken: async (input) => {
+      seen.push({ serverUrl: input.serverUrl, connectedUrl: '', authorization: '' });
+      return 'intercom-oauth-token';
+    },
+    connect: async (_name, options) => {
+      seen[0]!.connectedUrl = String(options.url);
+      seen[0]!.authorization = new Headers(options.headers).get('authorization') ?? '';
+      return fakeConnection([
+        tool('mcp__intercom__search_contacts'),
+        tool('mcp__intercom__delete_contact'),
+      ]);
+    },
+  });
+
+  assert.deepEqual(seen, [{
+    serverUrl,
+    connectedUrl: serverUrl,
+    authorization: 'Bearer intercom-oauth-token',
+  }]);
+  assert.deepEqual(tools.map(({ name }) => name), ['mcp__intercom__search_contacts']);
+});
+
 // --- (b) graceful degrade: one dead server never kills the others ---------
 
 test('one server hanging past the connect deadline does not block the other', async () => {
@@ -530,12 +604,12 @@ test('turn-time MCP failure logs redact configured query and header credentials'
 // --- (e) collision with existingToolNames dropped -------------------------
 
 test('drops an MCP tool whose full name collides with an existing tool/skill name', async () => {
-  const conn = fakeConnection([tool('mcp__srv__search'), tool('mcp__srv__create')]);
+  const conn = fakeConnection([tool('gmail_send_message'), tool('mcp__srv__create')]);
   const { fn } = stubConnect({ srv: conn });
   const tools = await resolveProfileMcpTools([server()], {
     agentId: 'agent_test',
     env: noSecretsEnv,
-    existingToolNames: ['mcp__srv__search'],
+    existingToolNames: ['gmail_send_message'],
     connect: fn,
   });
   assert.deepEqual(
