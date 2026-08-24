@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { validateMcpUrl } from '../src/config/mcp-url.ts';
+import { CONNECTOR_LOGOS } from '../src/config/connector-logos.ts';
 import {
   CONNECTOR_PRESETS,
   GOOGLE_WORKSPACE_SERVICE_PRESETS,
+  MANAGED_CONNECTOR_PRESETS,
   REUSABLE_CONNECTOR_PRESETS,
   getConnectorPreset,
   presetLanes,
@@ -113,7 +115,7 @@ test('preset lanes classify the existing MCP catalog, the API additions, and bot
 test('the Notion MCP preset keeps the official OAuth-only hosted-server shape', () => {
   assert.deepEqual(getConnectorPreset('notion'), {
     id: 'notion',
-    name: 'Notion',
+    name: 'Native Notion',
     description: 'Search, read, create, and update workspace pages and databases.',
     category: 'docs',
     accent: '#000000',
@@ -125,6 +127,86 @@ test('the Notion MCP preset keeps the official OAuth-only hosted-server shape', 
     notes:
       'Notion MCP requires user OAuth. Chickpea discovers Notion metadata, registers this self-hosted install when needed, and stores the resulting credentials outside the profile.',
   });
+});
+
+test('managed connector presets keep Notion additive and add analytics and HubSpot connectors', () => {
+  assert.deepEqual(MANAGED_CONNECTOR_PRESETS, [{
+    id: 'notion-managed',
+    managedToolkit: 'notion',
+    providerId: 'notion',
+    name: 'Notion (managed)',
+    description: 'Search, read, create, and update only the pages and databases you approve.',
+    category: 'docs',
+    accent: '#000000',
+    logoId: 'notion',
+  }, {
+    id: 'google-search-console',
+    managedToolkit: 'google_search_console',
+    providerId: 'google',
+    name: 'Google Search Console',
+    description: 'Inspect indexing, sitemaps, and search performance for selected sites.',
+    category: 'business',
+    accent: '#458CF5',
+    logoId: 'google-workspace',
+  }, {
+    id: 'google-analytics',
+    managedToolkit: 'google_analytics',
+    providerId: 'google',
+    name: 'Google Analytics',
+    description: 'Read metadata, quotas, and bounded GA4 reports for selected properties.',
+    category: 'business',
+    accent: '#E37400',
+    logoId: 'google-workspace',
+  }, {
+    id: 'hubspot-managed',
+    managedToolkit: 'hubspot',
+    providerId: 'hubspot',
+    name: 'HubSpot',
+    description: 'Research CRM records and make explicitly confirmed updates in one portal.',
+    category: 'business',
+    accent: '#FF7A59',
+    logoId: 'hubspot',
+  }, {
+    id: 'gong-managed',
+    managedToolkit: 'gong',
+    providerId: 'gong',
+    name: 'Gong',
+    description: 'Analyze calls, transcripts, coaching, tasks, and trackers in selected workspaces.',
+    category: 'business',
+    accent: '#6E3BF4',
+    logoId: 'gong',
+  }, {
+    id: 'google-ads',
+    managedToolkit: 'googleads',
+    providerId: 'google',
+    name: 'Google Ads',
+    description: 'Analyze and manage campaigns for explicitly selected client accounts.',
+    category: 'business',
+    accent: '#4285F4',
+    logoId: 'google-workspace',
+  }, {
+    id: 'youtube-managed',
+    managedToolkit: 'youtube',
+    providerId: 'google',
+    name: 'YouTube',
+    description: 'Analyze and manage explicitly selected channels with quota-aware publishing.',
+    category: 'business',
+    accent: '#FF0000',
+    logoId: 'youtube',
+  }]);
+  assert.equal(REUSABLE_CONNECTOR_PRESETS.some(({ id }) => id === 'notion'), true);
+  assert.equal(REUSABLE_CONNECTOR_PRESETS.some(({ id }) => id === 'notion-managed'), true);
+  assert.equal(resolveReusableConnectorPreset('notion-managed')?.id, 'notion-managed');
+  assert.equal(resolveReusableConnectorPreset('Notion')?.id, 'notion');
+  assert.equal(resolveReusableConnectorPreset('Notion (managed)')?.id, 'notion-managed');
+  assert.equal(resolveReusableConnectorPreset('Native Notion')?.id, 'notion');
+  for (const preset of [...GOOGLE_WORKSPACE_SERVICE_PRESETS, ...MANAGED_CONNECTOR_PRESETS]) {
+    assert.ok(
+      CONNECTOR_LOGOS[preset.logoId ?? preset.id],
+      `missing connector logo for ${preset.id}`,
+    );
+    assert.equal(resolveReusableConnectorPreset(preset.name)?.id, preset.id);
+  }
 });
 
 test('the Linear MCP preset requests read-write OAuth access', () => {
@@ -142,6 +224,42 @@ test('the Linear MCP preset requests read-write OAuth access', () => {
     notes:
       'Chickpea requests Linear read and write access so it can find, create, and update workspace objects.',
   });
+});
+
+test('Sentry and Intercom use their official hosted OAuth MCPs while Monday stays token-based', () => {
+  assert.deepEqual(getConnectorPreset('sentry'), {
+    id: 'sentry',
+    name: 'Sentry',
+    description: 'Investigate errors, issues, traces, and application health.',
+    category: 'dev',
+    accent: '#362D59',
+    url: 'https://mcp.sentry.dev/mcp',
+    transport: 'streamable-http',
+    oauthPathScope: 'sentry-org-project',
+    auth: { kind: 'oauth' },
+    tokenDocsUrl: 'https://github.com/getsentry/sentry-mcp',
+    tokenDocsHint: 'Sign in to Sentry and approve the MCP skills Chickpea should receive.',
+    notes:
+      'Optionally narrow the OAuth resource to one organization or one organization/project. The scoped URL is enforced on every Sentry MCP request.',
+  });
+  assert.deepEqual(getConnectorPreset('intercom'), {
+    id: 'intercom',
+    name: 'Intercom',
+    description: 'Search customers and conversations, and manage support content.',
+    category: 'business',
+    accent: '#1F8DED',
+    url: 'https://mcp.intercom.com/mcp',
+    transport: 'streamable-http',
+    auth: { kind: 'oauth' },
+    tokenDocsUrl: 'https://developers.intercom.com/docs/guides/mcp',
+    tokenDocsHint: 'Sign in to the US-hosted Intercom workspace Chickpea should access.',
+    notes:
+      'Intercom currently supports its hosted MCP server only for US-hosted workspaces. EU and Australian workspaces cannot use this preset yet.',
+  });
+  const monday = getConnectorPreset('monday');
+  assert.ok(monday && 'auth' in monday);
+  assert.deepEqual(monday.auth, { kind: 'bearer', placeholder: 'monday.com API token' });
+  assert.match(monday.notes ?? '', /keeps the existing token path/);
 });
 
 test('the Granola MCP preset uses browser OAuth with the advertised resource scope', () => {
@@ -276,6 +394,7 @@ test('Google services are separate catalog entries backed by one shared OAuth co
     {
       id: 'gmail',
       service: 'gmail',
+      managedToolkit: 'gmail',
       connectionPresetId: 'google-workspace',
       name: 'Gmail',
       description: 'Search mail, summarize threads, and draft or organize messages.',
@@ -284,6 +403,7 @@ test('Google services are separate catalog entries backed by one shared OAuth co
     {
       id: 'google-calendar',
       service: 'calendar',
+      managedToolkit: 'googlecalendar',
       connectionPresetId: 'google-workspace',
       name: 'Google Calendar',
       description: 'Review availability and create or update events.',
@@ -292,10 +412,35 @@ test('Google services are separate catalog entries backed by one shared OAuth co
     {
       id: 'google-drive',
       service: 'drive',
+      managedToolkit: 'googledrive',
       connectionPresetId: 'google-workspace',
       name: 'Google Drive',
       description: 'Find, read, create, and organize files.',
       accent: '#4285F4',
+    },
+    {
+      id: 'google-sheets',
+      managedToolkit: 'googlesheets',
+      name: 'Google Sheets',
+      description: 'Find spreadsheets, read ranges, and make bounded table updates.',
+      accent: '#0F9D58',
+      logoId: 'google-sheets',
+    },
+    {
+      id: 'google-docs',
+      managedToolkit: 'googledocs',
+      name: 'Google Docs',
+      description: 'Find, read, export, create, and update documents.',
+      accent: '#4285F4',
+      logoId: 'google-docs',
+    },
+    {
+      id: 'google-slides',
+      managedToolkit: 'googleslides',
+      name: 'Google Slides',
+      description: 'Read presentations and create or update slides through bounded operations.',
+      accent: '#F4B400',
+      logoId: 'google-slides',
     },
   ]);
 });
@@ -371,5 +516,8 @@ test('reusable connector catalog is the shared Agent-facing lookup', () => {
   assert.equal(REUSABLE_CONNECTOR_PRESETS.some(({ id }) => id === 'google-workspace'), false);
   assert.equal(resolveReusableConnectorPreset('Gmail')?.id, 'gmail');
   assert.equal(resolveReusableConnectorPreset('google-calendar')?.name, 'Google Calendar');
+  const sheets = resolveReusableConnectorPreset('Google Sheets');
+  assert.ok(sheets && 'managedToolkit' in sheets);
+  assert.equal(sheets.managedToolkit, 'googlesheets');
   assert.equal(resolveReusableConnectorPreset('unknown'), undefined);
 });

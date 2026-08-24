@@ -80,6 +80,7 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'runbooks', 'auth-db-deployment.md'),
   exportPath('docs', 'runbooks', 'agent-first-acceptance-2026-08-21.md'),
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
+  exportPath('docs', 'runbooks', 'composio-managed-connectors.md'),
   exportPath('docs', 'runbooks', 'slack-auth-recovery.md'),
   exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
   exportPath('docs', 'runbooks', 'openai-subscription.md'),
@@ -108,7 +109,59 @@ const forbiddenBinaryExtensions = new Set([
 const allowedBinaryFiles = new Map([
   [
     exportPath('assets', 'bot-avatar.png'),
-    '3cee85ef83c9132393b57ef52ce73dcd3f2b1724a71f1fa8ef37dafd6f5ecdb4',
+    '7f0be0ca98c55c387533ac9d72a6e54382d683c4f9a5d015dbcf3eb0367f83e4',
+  ],
+  [
+    exportPath('assets', 'chickpea-avatars', 'install-default.png'),
+    '7f0be0ca98c55c387533ac9d72a6e54382d683c4f9a5d015dbcf3eb0367f83e4',
+  ],
+  [
+    exportPath('assets', 'chickpea-avatars', 'agent-defaults', '01-sage.png'),
+    'e2bb3da74917a7aa0be107eb91e6b3f5e863ecfcd9920c27f965a01eebfb5c66',
+  ],
+  [
+    exportPath('assets', 'chickpea-avatars', 'agent-defaults', '02-coral.png'),
+    '4a996c1a4c78ebe9f414b9c847ce9a028109bde2f9aba1f749cac66bed61d766',
+  ],
+  [
+    exportPath('assets', 'chickpea-avatars', 'agent-defaults', '03-lilac.png'),
+    'c977611ef6e7a938ae1fa63b80b65e72584e3ee74026de55123bb7f55dfa4ec8',
+  ],
+  [
+    exportPath('assets', 'chickpea-avatars', 'agent-defaults', '04-mineral-blue.png'),
+    '0150c6d49c9eae7f6eefa8f51507483b351cdfc1d7f6b8118f9111837dab629c',
+  ],
+  [
+    exportPath('assets', 'chickpea-avatars', 'agent-defaults', '05-dusty-rose.png'),
+    '71717ab350d142638a9c151fc93166f1033824241f22e57b4246fc16e28e9445',
+  ],
+  [
+    exportPath('assets', 'chickpea-avatars', 'agent-defaults', '06-deep-moss.png'),
+    '01d43684babfe9cc2f4a990508fe8d22d00f4fd2e122ae4297131fc1b3bbefa0',
+  ],
+  [
+    exportPath('assets', 'chickpea-avatars', 'agent-defaults', '07-periwinkle.png'),
+    '4e9d520f7886e67466c58691f10a8a9fd52cffb25d7bd41010e713c1cde2847b',
+  ],
+  [
+    exportPath('assets', 'chickpea-avatars', 'agent-defaults', '08-seafoam.png'),
+    '42400866e0298fbc469e34cb040d98a09c8c76800c2d64d13fc6d36bfe2785df',
+  ],
+  [
+    exportPath('assets', 'chickpea-avatars', 'agent-defaults', '09-warm-oat.png'),
+    '46fe38c615dc330eac3a949af2ba205e4140e431a690c35508be730cb5e3ca53',
+  ],
+  [
+    exportPath('assets', 'chickpea-avatars', 'agent-defaults', '10-midnight-indigo.png'),
+    '4147759426f1fb1bd70966116fc1372bf25b767cf0cd2f87050dca998a152391',
+  ],
+  [
+    exportPath('assets', 'chickpea-avatars', 'agent-defaults', '11-apricot.png'),
+    '6896865cf64e7ec2db2da30beec3aae37b4384df937e3960c4347fc77d724fcc',
+  ],
+  [
+    exportPath('assets', 'chickpea-avatars', 'agent-defaults', '12-muted-berry.png'),
+    '04653890b4cf6ffed29cec436ee32733dc014d87f0601988ef602b957d145b8c',
   ],
   [
     exportPath('assets', 'admin-page.png'),
@@ -209,6 +262,13 @@ const allowedBinaryFiles = new Map([
   [
     exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-production-responsive-phone-channel.png'),
     '3ada83213e769030cab6525eb67b6b28e171dd8c9df8ba054d89435bf41d7978',
+  ],
+]);
+
+const allowedLargeTextFiles = new Map([
+  [
+    exportPath('src', 'slack', 'agent-presence', 'default-avatar-pool.generated.ts'),
+    '0fbfcf58b59f0d08b24ce71c1be688e289c8e85df7979825a619a880f9e137d7',
   ],
 ]);
 
@@ -402,8 +462,16 @@ function scanExportTree(entries) {
     }
 
     if (size > 5_000_000) {
-      findings.push(`${rel}: file is too large for text leak scanning (${size} bytes)`);
-      continue;
+      const expectedHash = allowedLargeTextFiles.get(rel);
+      const actualHash = sha256(buffer);
+      if (!expectedHash) {
+        findings.push(`${rel}: file is too large for text leak scanning (${size} bytes)`);
+        continue;
+      }
+      if (actualHash !== expectedHash) {
+        findings.push(`${rel}: allowed large-text hash mismatch (${actualHash})`);
+        continue;
+      }
     }
 
     if (buffer.includes(0)) {
@@ -456,6 +524,7 @@ function verifyNpmPackManifest() {
     'docs/runbooks/auth-db-deployment.md',
     'docs/runbooks/agent-first-acceptance-2026-08-21.md',
     'docs/runbooks/coding-sandbox-deployment.md',
+    'docs/runbooks/composio-managed-connectors.md',
     'docs/runbooks/slack-auth-recovery.md',
     'docs/runbooks/workspace-management-mcp.md',
     'migrations/better-auth/0001_better_auth.sql',
@@ -506,12 +575,17 @@ function verifyAuthenticationExportContract(packageJson) {
     fail('Identity export summary must omit invitation, operation, setup, token, and session locators');
   }
   const example = readFileSync(join(scratch, '.dev.vars.example'), 'utf8');
+  const environmentExample = readFileSync(join(scratch, '.env.example'), 'utf8');
   const activeExampleKeys = example.split('\n')
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('#') && /^[A-Z][A-Z0-9_]*=/.test(line))
     .map((line) => line.slice(0, line.indexOf('=')));
   if (activeExampleKeys.length !== 0) {
     fail('Cloudflare Deploy example must expose no active secret prompt');
+  }
+  if (!/^COMPOSIO_API_KEY=$/m.test(environmentExample) ||
+      /^COMPOSIO_API_KEY=.+$/m.test(environmentExample)) {
+    fail('OSS environment example must keep the Composio project key optional and empty');
   }
   const wrangler = readFileSync(join(scratch, 'wrangler.jsonc'), 'utf8');
   if (/"vars"\s*:/.test(wrangler)) {
@@ -525,6 +599,15 @@ function verifyAuthenticationExportContract(packageJson) {
     readFileSync(join(scratch, 'README.md'), 'utf8'),
     readFileSync(join(scratch, 'docs', 'authentication.md'), 'utf8'),
   ].join('\n');
+  const managedConnectorCopy = readFileSync(
+    join(scratch, 'docs', 'runbooks', 'composio-managed-connectors.md'),
+    'utf8',
+  );
+  if (!/Self-hosters opt in by supplying their own Composio project key/i.test(
+    managedConnectorCopy,
+  ) || !/Without that key the adapter is dormant/i.test(managedConnectorCopy)) {
+    fail('OSS managed-connector docs must explain BYOK setup and no-key fallback');
+  }
   if (/Cloudflare Access is the default|Choose \*\*new Zero Trust organization\*\*/i.test(publicAuthCopy)) {
     fail('Public authentication copy still describes Access as the fresh-install default');
   }

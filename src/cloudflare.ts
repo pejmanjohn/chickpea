@@ -1735,6 +1735,10 @@ function localUsageStore(stores: TagStateStores): UsageStore {
   return {
     admitOperation: async (input) => stores.usage.admitOperation(input),
     recordTerminal: async (input) => stores.usage.recordTerminal(input),
+    recordConnectorUsage: async (input) => stores.usage.recordConnectorUsage(input),
+    reserveConnectorQuota: async (input) => stores.usage.reserveConnectorQuota(input),
+    releaseConnectorQuota: async (input) => stores.usage.releaseConnectorQuota(input),
+    summarizeConnectorUsage: async (query) => stores.usage.summarizeConnectorUsage(query),
     getOperation: async (operationId) => stores.usage.getOperation(operationId),
     getOperationByRunId: async (runId) => stores.usage.getOperationByRunId(runId),
     listOperations: async (query) => stores.usage.listOperations(query),

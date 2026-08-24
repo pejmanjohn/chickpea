@@ -126,6 +126,28 @@ async function readFrozenWorkspaceArtifact(
   sessionEnv: SessionEnv,
   sourcePath: string,
 ): Promise<Uint8Array> {
+  return freezeWorkspaceArtifact(sessionEnv, sourcePath, MAX_ARTIFACT_BYTES, true);
+}
+
+/** Freeze a workspace-owned file under a trusted random name before reading it. */
+export async function freezeWorkspaceArtifact(
+  sessionEnv: SessionEnv,
+  sourcePath: string,
+  maxBytes: number,
+  sourceAlreadyValidated = false,
+): Promise<Uint8Array> {
+  const normalizedSource = workspaceArtifactPath(sourcePath);
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 64 * 1024 * 1024) {
+    throw new Error('artifact size limit is invalid');
+  }
+  if (!sourceAlreadyValidated) {
+    const sourceStat = await sessionEnv.stat(normalizedSource);
+    if (!sourceStat.isFile) throw new Error('artifact path must identify a file');
+    if (!Number.isSafeInteger(sourceStat.size) || Number(sourceStat.size) < 0) {
+      throw new Error('artifact size is unavailable');
+    }
+    if (Number(sourceStat.size) > maxBytes) throw artifactSizeError(maxBytes);
+  }
   const tempPath = randomWorkspaceArtifactPath();
   try {
     // The model controls sourcePath and can mutate it after the fast pre-stat.
@@ -133,7 +155,7 @@ async function readFrozenWorkspaceArtifact(
     // only that frozen object. Noclobber keeps the random path new even in the
     // vanishingly unlikely event of a collision.
     const copy = await sessionEnv.exec(
-      `umask 077; set -C; head -c ${MAX_ARTIFACT_BYTES} -- ${shellQuote(sourcePath)} > ${shellQuote(tempPath)}`,
+      `umask 077; set -C; head -c ${maxBytes + 1} -- ${shellQuote(normalizedSource)} > ${shellQuote(tempPath)}`,
       { timeoutMs: 30_000 },
     );
     if (copy.exitCode !== 0) {
@@ -151,18 +173,24 @@ async function readFrozenWorkspaceArtifact(
     ) {
       throw new Error('artifact copy size is unavailable');
     }
-    if (stat.size > MAX_ARTIFACT_BYTES) {
-      throw new Error('artifact exceeds the 8 MB upload limit');
+    if (stat.size > maxBytes) {
+      throw artifactSizeError(maxBytes);
     }
 
     const bytes = await sessionEnv.readFileBuffer(tempPath);
-    if (bytes.byteLength > MAX_ARTIFACT_BYTES) {
-      throw new Error('artifact exceeds the 8 MB upload limit');
+    if (bytes.byteLength > maxBytes) {
+      throw artifactSizeError(maxBytes);
     }
     return bytes;
   } finally {
     await sessionEnv.rm(tempPath, { force: true }).catch(() => {});
   }
+}
+
+function artifactSizeError(maxBytes: number): Error {
+  return new Error(maxBytes === MAX_ARTIFACT_BYTES
+    ? 'artifact exceeds the 8 MB upload limit'
+    : 'artifact exceeds its upload limit');
 }
 
 function randomWorkspaceArtifactPath(): string {
@@ -177,7 +205,7 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function workspaceArtifactPath(path: string): string {
+export function workspaceArtifactPath(path: string): string {
   if (!path.startsWith('/workspace/')) {
     throw new Error('artifact path must be under /workspace');
   }

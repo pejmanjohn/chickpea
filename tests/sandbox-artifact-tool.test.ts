@@ -104,7 +104,7 @@ test('workspace artifact tool reads through SessionEnv and binds the Slack desti
   assert.match(
     execCommands[0] ?? '',
     new RegExp(
-      `head -c ${MAX_ARTIFACT_BYTES} -- '/workspace/proof\\.png' > '/workspace/\\.chickpea-artifact-[a-f0-9]{32}\\.tmp'$`,
+      `head -c ${MAX_ARTIFACT_BYTES + 1} -- '/workspace/proof\\.png' > '/workspace/\\.chickpea-artifact-[a-f0-9]{32}\\.tmp'$`,
     ),
   );
   assert.deepEqual(uploads, [
@@ -190,7 +190,7 @@ test('workspace artifact copy-freeze bounds a source that grows after the pre-st
 
   assert.equal(uploadedBytes, MAX_ARTIFACT_BYTES);
   assert.equal(execCommands.length, 1);
-  assert.match(execCommands[0] ?? '', new RegExp(`head -c ${MAX_ARTIFACT_BYTES}`));
+  assert.match(execCommands[0] ?? '', new RegExp(`head -c ${MAX_ARTIFACT_BYTES + 1}`));
   assert.deepEqual(removedPaths, readPaths);
 });
 
@@ -263,7 +263,7 @@ test('workspace artifact temp name is random and independent of model input', as
   assert.equal(execCommands.length, 1);
   assert.equal(
     (execCommands[0] ?? '').includes(
-      "head -c 8388608 -- '/workspace/model-controlled-'\\''-$HOME.bin'",
+      "head -c 8388609 -- '/workspace/model-controlled-'\\''-$HOME.bin'",
     ),
     true,
   );

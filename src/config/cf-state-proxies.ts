@@ -150,8 +150,15 @@ import {
 import {
   UsageStateError,
   type AdmitUsageOperationInput,
+  type ConnectorUsageRecord,
+  type ConnectorQuotaReservation,
+  type ConnectorUsageSummary,
+  type ConnectorUsageSummaryQuery,
   type ModelCredentialRecord,
   type PutModelCredentialInput,
+  type RecordConnectorUsageInput,
+  type ReleaseConnectorQuotaInput,
+  type ReserveConnectorQuotaInput,
   type RecordUsageTerminalInput,
   type UsageOperation,
   type UsageOperationDetail,
@@ -1569,6 +1576,34 @@ export class CfUsageStore implements UsageStore {
     const response = await this.execute({ kind: 'record_terminal', input });
     if (response.kind !== 'detail' || !response.detail) throw unexpectedUsageResponse();
     return response.detail;
+  }
+
+  async recordConnectorUsage(input: RecordConnectorUsageInput): Promise<ConnectorUsageRecord> {
+    const response = await this.execute({ kind: 'record_connector_usage', input });
+    if (response.kind !== 'connector_usage') throw unexpectedUsageResponse();
+    return response.usage;
+  }
+
+  async reserveConnectorQuota(
+    input: ReserveConnectorQuotaInput,
+  ): Promise<ConnectorQuotaReservation> {
+    const response = await this.execute({ kind: 'reserve_connector_quota', input });
+    if (response.kind !== 'connector_quota') throw unexpectedUsageResponse();
+    return response.reservation;
+  }
+
+  async releaseConnectorQuota(input: ReleaseConnectorQuotaInput): Promise<boolean> {
+    const response = await this.execute({ kind: 'release_connector_quota', input });
+    if (response.kind !== 'connector_quota_released') throw unexpectedUsageResponse();
+    return response.released;
+  }
+
+  async summarizeConnectorUsage(
+    query: ConnectorUsageSummaryQuery,
+  ): Promise<ConnectorUsageSummary> {
+    const response = await this.execute({ kind: 'summarize_connector_usage', query });
+    if (response.kind !== 'connector_usage_summary') throw unexpectedUsageResponse();
+    return response.summary;
   }
 
   async getOperation(operationId: string): Promise<UsageOperationDetail | undefined> {

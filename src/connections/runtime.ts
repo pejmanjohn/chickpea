@@ -17,9 +17,15 @@ import type {
   ConnectionSelection,
   ConnectionRequestResolution,
   EffectiveConnectionAccount,
+  ManagedConnectionDeclaration,
   PersonalConnectionAuthorizationOption,
 } from './types.ts';
 import { ConnectionCredentialUnavailableError } from './errors.ts';
+import {
+  MANAGED_CONNECTOR_CATALOG,
+  intersectManagedResourceConstraints,
+  projectManagedResourceHandles,
+} from './catalog/index.ts';
 
 export async function resolveEffectiveConnectionAccounts(input: {
   config: Pick<ConfigStore, 'listConnectionAccounts' | 'listAgentConnectionBindings'>;
@@ -66,7 +72,8 @@ function projectEffectiveConnectionAccounts(
   const resolved = bindings.flatMap((binding) => {
     const bound = byId.get(binding.connectionAccountId);
     if (!bound || !binding.enabled || bound.providerId !== binding.providerId) return [];
-    const candidates = bound.ownerKind === 'team'
+    const candidates = bound.ownerKind === 'team' ||
+        bound.policy.kind === 'managed' && bound.ownerMembershipId === actorMembershipId
       ? [bound]
       : accounts.filter((account) =>
           account.ownerKind === 'member' &&
@@ -78,7 +85,7 @@ function projectEffectiveConnectionAccounts(
       account,
       binding,
       policy: applyCapabilityCeiling(
-        bound.ownerKind === 'member'
+        bound.ownerKind === 'member' && account.id !== bound.id
           ? applyPersonalTemplateCeiling(bound.policy, account.policy)
           : account.policy,
         binding,
@@ -86,7 +93,30 @@ function projectEffectiveConnectionAccounts(
       scope: account.ownerKind === 'member' ? 'personal' as const : 'team' as const,
     }] : []);
   });
-  return [...new Map(resolved.map((entry) => [entry.account.id, entry])).values()];
+  const collapsed = new Map<string, EffectiveConnectionAccount>();
+  for (const entry of resolved) {
+    const existing = collapsed.get(entry.account.id);
+    if (!existing) {
+      collapsed.set(entry.account.id, entry);
+      continue;
+    }
+    const existingIsExact = existing.binding.connectionAccountId === existing.account.id;
+    const entryIsExact = entry.binding.connectionAccountId === entry.account.id;
+    if (entryIsExact && !existingIsExact) {
+      // A member's own explicit Agent binding is authoritative over another
+      // member's compatible personal template, independent of row order.
+      collapsed.set(entry.account.id, entry);
+      continue;
+    }
+    if (existingIsExact && !entryIsExact) continue;
+    // Multiple compatible templates for the same personal account fail closed
+    // to their shared capability intersection instead of random last-write wins.
+    collapsed.set(entry.account.id, {
+      ...existing,
+      policy: applyPersonalTemplateCeiling(existing.policy, entry.policy),
+    });
+  }
+  return [...collapsed.values()];
 }
 
 /**
@@ -120,7 +150,7 @@ function projectPersonalConnectionAuthorizationOptions(
   const options = bindings.flatMap((binding) => {
     const template = byId.get(binding.connectionAccountId);
     if (!binding.enabled || !template || template.ownerKind !== 'member' ||
-        template.providerId !== binding.providerId) return [];
+        template.providerId !== binding.providerId || template.policy.kind === 'managed') return [];
     const actorAccounts = accounts.filter((account) =>
       account.ownerKind === 'member' &&
       account.ownerMembershipId === actorMembershipId &&
@@ -172,14 +202,21 @@ export function selectConnectionsForRequest(input: {
   requestText: string;
 }): ConnectionRequestResolution {
   const byProvider = new Map<string, EffectiveConnectionAccount[]>();
+  const managedGoogleServices = new Set(input.connections.flatMap((connection) => {
+    const service = managedGoogleService(connection);
+    return service ? [service] : [];
+  }));
   for (const connection of input.connections) {
-    const key = connectionSelectionGroupKey(connection);
-    const group = byProvider.get(key) ?? [];
-    group.push(connection);
-    byProvider.set(key, group);
+    for (const key of connectionSelectionGroupKeys(connection, managedGoogleServices)) {
+      const group = byProvider.get(key) ?? [];
+      group.push(connection);
+      byProvider.set(key, group);
+    }
   }
-  const selected: EffectiveConnectionAccount[] = [];
+  const selectedCandidates: EffectiveConnectionAccount[] = [];
+  const withheldAccountIds = new Set<string>();
   const ambiguous: ConnectionRequestResolution['ambiguous'] = [];
+  const ambiguousKeys = new Set<string>();
   for (const [, choices] of byProvider) {
     const providerId = choices[0]!.account.providerId;
     const decision = selectConnectionAccount({
@@ -188,38 +225,86 @@ export function selectConnectionsForRequest(input: {
       requestText: input.requestText,
     });
     if (decision.kind === 'selected') {
-      selected.push(decision.connection);
+      selectedCandidates.push(decision.connection);
       continue;
     }
     if (decision.kind === 'ambiguous') {
-      ambiguous.push({
-        providerId,
-        choices: decision.choices.map(({ account, scope }) => ({
-          label: account.label,
-          ...(account.purpose ? { purpose: account.purpose } : {}),
-          scope,
-        })),
-      });
+      // Withhold the complete service group, not only the language-matched
+      // choices displayed to the user. A broad account can participate in
+      // several Google service groups and must not escape through another
+      // group while this service remains ambiguous.
+      for (const choice of choices) withheldAccountIds.add(choice.account.id);
+      const ambiguityKey = `${providerId.toLowerCase()}:${decision.choices
+        .map(({ account }) => account.id).sort().join(',')}`;
+      if (!ambiguousKeys.has(ambiguityKey)) {
+        ambiguousKeys.add(ambiguityKey);
+        ambiguous.push({
+          providerId,
+          choices: decision.choices.map(({ account, scope }) => ({
+            label: account.label,
+            ...(account.purpose ? { purpose: account.purpose } : {}),
+            scope,
+          })),
+        });
+      }
     }
   }
+  const selected = [...new Map(selectedCandidates
+    .filter(({ account }) => !withheldAccountIds.has(account.id))
+    .map((connection) => [connection.account.id, connection])).values()];
   return { selected, ambiguous };
 }
 
-function connectionSelectionGroupKey(connection: EffectiveConnectionAccount): string {
+function connectionSelectionGroupKeys(
+  connection: EffectiveConnectionAccount,
+  managedGoogleServices: ReadonlySet<string>,
+): string[] {
   const providerId = connection.account.providerId.toLowerCase();
-  if (providerId !== 'google' || connection.policy.kind !== 'api') return providerId;
+  const managedService = managedGoogleService(connection);
+  if (managedService) return [`google:${managedService}`];
+  // A managed migration account and a native account for the same non-Google
+  // provider are alternative credentials, not independent services. Group
+  // them together so an unspecified request with both paths attached is
+  // withheld and the Agent asks the member which labeled account to use.
+  if (connection.policy.kind === 'managed') return [providerId];
+  if (providerId !== 'google' || connection.policy.kind !== 'api') return [providerId];
   const hosts = new Set(connection.policy.allowedHosts.map((host) => host.toLowerCase()));
   const paths = connection.policy.pathPrefixes;
+  const services: string[] = [];
+  if (hosts.has('gmail.googleapis.com')) services.push('google:gmail');
+  if (paths.some((path) => path.startsWith('/calendar/'))) services.push('google:calendar');
+  if (paths.some(
+    (path) => path.startsWith('/drive/') || path.startsWith('/upload/drive/'),
+  )) services.push('google:drive');
+  const managedOverlaps = services.filter((service) =>
+    managedGoogleServices.has(service.slice('google:'.length)));
+  if (managedOverlaps.length > 0) return managedOverlaps;
+  // Preserve the native-only grouping contract. Multi-service Google API
+  // accounts historically coexist with service-specific native accounts;
+  // the per-service expansion exists only to make native/managed migration
+  // ambiguity fail closed.
   if (paths.length > 0 && paths.every((path) => path.startsWith('/calendar/'))) {
-    return 'google:calendar';
+    return ['google:calendar'];
   }
   if (paths.length > 0 && paths.every(
     (path) => path.startsWith('/drive/') || path.startsWith('/upload/drive/'),
-  )) {
-    return 'google:drive';
-  }
-  if (hosts.has('gmail.googleapis.com') && hosts.size === 1) return 'google:gmail';
-  return providerId;
+  )) return ['google:drive'];
+  if (hosts.has('gmail.googleapis.com') && hosts.size === 1) return ['google:gmail'];
+  return [providerId];
+}
+
+function managedGoogleService(connection: EffectiveConnectionAccount): string | undefined {
+  if (connection.account.providerId.toLowerCase() !== 'google' ||
+      connection.policy.kind !== 'managed') return undefined;
+  const toolkit = connection.policy.toolkit.toLowerCase();
+  const nativeOverlapAlias = ({
+    gmail: 'gmail',
+    googlecalendar: 'calendar',
+    googledrive: 'drive',
+  } as const)[toolkit as 'gmail' | 'googlecalendar' | 'googledrive'];
+  if (nativeOverlapAlias) return nativeOverlapAlias;
+  const connector = MANAGED_CONNECTOR_CATALOG.connector(toolkit);
+  return connector?.providerId === 'google' ? toolkit : undefined;
 }
 
 export function projectEffectiveApiConnections(
@@ -273,6 +358,21 @@ export function projectEffectiveMcpConnections(
   }] : []);
 }
 
+export function projectEffectiveManagedConnections(
+  connections: readonly EffectiveConnectionAccount[],
+): ManagedConnectionDeclaration[] {
+  return connections.flatMap(({ account, policy }) => policy.kind === 'managed' ? [{
+    id: account.id,
+    providerId: account.providerId,
+    adapterId: policy.adapterId,
+    toolkit: policy.toolkit,
+    allowedCapabilities: [...policy.allowedCapabilities],
+    ...(policy.resourceConstraints
+      ? { resourceConstraints: projectManagedResourceHandles(policy.resourceConstraints) }
+      : {}),
+  }] : []);
+}
+
 /**
  * Final per-invocation fence. Runtime planning is not authority: this re-reads
  * the account and binding immediately before returning secret material.
@@ -311,6 +411,38 @@ export async function resolveConnectionSecretForInvocation(input: {
   );
   if (!secret) throw new ConnectionCredentialUnavailableError();
   return secret;
+}
+
+/** Final live authority fence for managed provider invocations. */
+export async function resolveManagedConnectionForInvocation(input: {
+  config: Pick<ConfigStore, 'listConnectionAccounts' | 'listAgentConnectionBindings'>;
+  env?: PlatformEnv;
+  workspaceId: string;
+  agentId: string;
+  actorMembershipId: string;
+  connectionAccountId: string;
+  identity?: Pick<
+    IdentityStore,
+    | 'getOrganization'
+    | 'getMembership'
+    | 'getMembershipAccessOverlay'
+    | 'getUser'
+    | 'resolveSlackIdentity'
+  >;
+}): Promise<EffectiveConnectionAccount & { policy: Extract<ConnectionAccountPolicy, { kind: 'managed' }> }> {
+  if (!(await isActiveConnectionActor({
+    identity: input.identity ?? getIdentityStore(input.env),
+    workspaceId: input.workspaceId,
+    actorMembershipId: input.actorMembershipId,
+  }))) {
+    throw new Error('Connection account is not available to this actor');
+  }
+  const eligible = await resolveEffectiveConnectionAccounts(input);
+  const selected = eligible.find(({ account }) => account.id === input.connectionAccountId);
+  if (!selected || selected.policy.kind !== 'managed') {
+    throw new Error('Managed connection account is not available to this actor');
+  }
+  return { ...selected, policy: selected.policy };
 }
 
 export async function isActiveConnectionActor(input: {
@@ -370,8 +502,34 @@ function applyCapabilityCeiling(
   policy: ConnectionAccountPolicy,
   binding: AgentConnectionBinding,
 ): ConnectionAccountPolicy {
-  if (binding.allowedCapabilities.length === 0) return policy;
+  // Managed bindings must always carry an explicit snapshot. Fail closed for
+  // any legacy or malformed empty binding so widening the shared provider
+  // account can never silently widen an Agent's authority.
+  if (binding.allowedCapabilities.length === 0) {
+    return policy.kind === 'managed' ? { ...policy, allowedCapabilities: [] } : policy;
+  }
   const allowed = new Set(binding.allowedCapabilities);
+  if (policy.kind === 'managed') {
+    const connector = MANAGED_CONNECTOR_CATALOG.connector(policy.toolkit);
+    if (!connector) return { ...policy, allowedCapabilities: [], resourceConstraints: {} };
+    const catalogCapabilities = new Set(connector.capabilities.map(({ id }) => id));
+    const resourceConstraints = intersectManagedResourceConstraints(
+      connector,
+      policy.resourceConstraints,
+      binding.resourceConstraints,
+    );
+    return {
+      ...policy,
+      allowedCapabilities: resourceConstraints === undefined
+        ? []
+        : policy.allowedCapabilities.filter(
+            (capability) => allowed.has(capability) && catalogCapabilities.has(capability),
+          ),
+      ...(connector.resources?.length
+        ? { resourceConstraints: resourceConstraints ?? {} }
+        : {}),
+    };
+  }
   if (policy.kind === 'mcp') {
     return { ...policy, allowedTools: policy.allowedTools.filter((tool) => allowed.has(tool)) };
   }
@@ -424,7 +582,37 @@ function applyPersonalTemplateCeiling(
       ...(template.credentialOptional ? { credentialOptional: true } : {}),
     };
   }
+  if (template.kind === 'managed' && candidate.kind === 'managed') {
+    const {
+      resourceConstraints: _candidateResourceConstraints,
+      ...candidatePolicy
+    } = candidate;
+    const resourceConstraints = intersectEffectiveManagedResourceConstraints(
+      template.resourceConstraints,
+      candidate.resourceConstraints,
+    );
+    return {
+      ...candidatePolicy,
+      allowedCapabilities: intersectExact(
+        template.allowedCapabilities,
+        candidate.allowedCapabilities,
+      ),
+      ...(resourceConstraints === undefined ? {} : { resourceConstraints }),
+    };
+  }
   return candidate;
+}
+
+function intersectEffectiveManagedResourceConstraints(
+  left: Extract<ConnectionAccountPolicy, { kind: 'managed' }>['resourceConstraints'],
+  right: Extract<ConnectionAccountPolicy, { kind: 'managed' }>['resourceConstraints'],
+): Extract<ConnectionAccountPolicy, { kind: 'managed' }>['resourceConstraints'] {
+  if (left === undefined && right === undefined) return undefined;
+  const keys = new Set([...Object.keys(left ?? {}), ...Object.keys(right ?? {})]);
+  return Object.fromEntries([...keys].map((key) => {
+    const rightHandles = new Set((right?.[key] ?? []).map(({ handle }) => handle));
+    return [key, (left?.[key] ?? []).filter(({ handle }) => rightHandles.has(handle))];
+  }));
 }
 
 function intersectExact(left: readonly string[], right: readonly string[]): string[] {
@@ -459,6 +647,10 @@ function compatiblePersonalPolicy(
       Boolean(template.credentialOptional) === Boolean(candidate.credentialOptional) &&
       (template.presetId ?? '') === (candidate.presetId ?? '');
   }
+  if (template.kind === 'managed' && candidate.kind === 'managed') {
+    return template.adapterId === candidate.adapterId &&
+      template.toolkit === candidate.toolkit;
+  }
   return false;
 }
 
@@ -476,6 +668,7 @@ function accountLanguageKeys(account: ConnectionAccount): string[] {
 
 function genericConnectionLabels(account: ConnectionAccount): Set<string> {
   const labels = new Set([normalized(account.providerId)]);
+  if (account.policy.kind === 'managed') labels.add(normalized(account.policy.toolkit));
   if (account.providerId.toLowerCase() !== 'google' || account.policy.kind !== 'api') {
     return labels;
   }

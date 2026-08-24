@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono';
 
 import { UsageStateError } from '../usage/store.ts';
+import { COMPOSIO_CONNECTOR_PRICE_VERSION } from '../usage/connectors/pricing.ts';
 import { USAGE_PROVIDER_GUIDANCE } from '../usage/provider-guidance.ts';
 import { RELEASE_PRICE_CATALOGS } from '../usage/pricing/catalog.ts';
 import type {
@@ -66,6 +67,23 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
     }
   });
 
+  app.get('/usage/connectors', async (c) => {
+    try {
+      const workspaceId = c.req.query('workspace');
+      const agentId = c.req.query('agent');
+      const toolkit = c.req.query('toolkit');
+      return c.json(await options.store(c).summarizeConnectorUsage({
+        from: numberQuery(c, 'from'),
+        to: numberQuery(c, 'to'),
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(agentId ? { agentId } : {}),
+        ...(toolkit ? { toolkit } : {}),
+      }));
+    } catch (error) {
+      return usageError(c, error);
+    }
+  });
+
   app.get('/usage/metadata', async (c) => {
     try {
       const store = options.store(c);
@@ -92,6 +110,15 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
           currency: catalog.currency,
           models: catalog.rates.map((rate) => rate.modelId),
         })),
+        connectorCatalogs: [{
+          id: COMPOSIO_CONNECTOR_PRICE_VERSION.id,
+          providerId: COMPOSIO_CONNECTOR_PRICE_VERSION.providerId,
+          sourceUrl: COMPOSIO_CONNECTOR_PRICE_VERSION.sourceUrl,
+          effectiveFrom: COMPOSIO_CONNECTOR_PRICE_VERSION.effectiveFrom,
+          reviewedAt: COMPOSIO_CONNECTOR_PRICE_VERSION.reviewedAt,
+          currency: COMPOSIO_CONNECTOR_PRICE_VERSION.currency,
+          components: COMPOSIO_CONNECTOR_PRICE_VERSION.components,
+        }],
         credentials,
         retention,
         lifecycleEvents,

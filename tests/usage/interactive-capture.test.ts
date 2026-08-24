@@ -236,6 +236,10 @@ test('slow telemetry cannot hold delivery beyond the budget and one repair recor
   const store: UsageStore = {
     admitOperation: async (input) => (++admissionCalls === 1 ? never : durable.admitOperation(input)),
     recordTerminal: async (input) => (++terminalCalls === 1 ? never : durable.recordTerminal(input)),
+    recordConnectorUsage: (input) => durable.recordConnectorUsage(input),
+    reserveConnectorQuota: (input) => durable.reserveConnectorQuota(input),
+    releaseConnectorQuota: (input) => durable.releaseConnectorQuota(input),
+    summarizeConnectorUsage: (query) => durable.summarizeConnectorUsage(query),
     getOperation: (id) => durable.getOperation(id),
     getOperationByRunId: (runId) => durable.getOperationByRunId(runId),
     listOperations: (query) => durable.listOperations(query),

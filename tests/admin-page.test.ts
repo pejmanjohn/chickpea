@@ -383,7 +383,15 @@ function runAdminPageHarness(
     connectionAccounts?: {
       attached: Array<Record<string, unknown>>;
       available: Array<Record<string, unknown>>;
+      managedConnectors?: {
+        composio: boolean;
+        catalog?: Array<Record<string, unknown>>;
+      };
     };
+    managedResourcePages?: Record<string, {
+      resources: Array<{ handle: string; label: string }>;
+      nextCursor?: string;
+    }>;
     deferAgentPatch?: boolean;
     initialSearch?: string;
     usageAdminUi?: boolean;
@@ -455,6 +463,12 @@ function runAdminPageHarness(
   skillBrowseScrollTop(): number;
     mcpTestPosts: Array<Record<string, unknown>>;
   connectionAccountPosts: Array<{ agentId: string; body: Record<string, unknown> }>;
+  managedAuthorizationPosts: Array<{ agentId: string; body: Record<string, unknown> }>;
+  managedResourcePosts: Array<{
+    agentId: string;
+    connectionId: string;
+    body: Record<string, unknown>;
+  }>;
   oauthStartPosts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
   apiOAuthStartPosts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
   apiOAuthClientPuts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
@@ -628,6 +642,12 @@ function runAdminPageHarness(
   const settingsGetCalls: string[] = [];
   const mcpTestPosts: Array<Record<string, unknown>> = [];
   const connectionAccountPosts: Array<{ agentId: string; body: Record<string, unknown> }> = [];
+  const managedAuthorizationPosts: Array<{ agentId: string; body: Record<string, unknown> }> = [];
+  const managedResourcePosts: Array<{
+    agentId: string;
+    connectionId: string;
+    body: Record<string, unknown>;
+  }> = [];
   const oauthStartPosts: Array<{
     agentId: string;
     connectionId: string;
@@ -1213,6 +1233,37 @@ function runAdminPageHarness(
           agents: [{ id: 'agent_release', name: 'Release Profile' }],
         }],
       }));
+    }
+    const managedAuthorizationMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/connections\/managed\/start$/,
+    );
+    if (managedAuthorizationMatch && method === 'POST') {
+      const agentId = decodeURIComponent(managedAuthorizationMatch[1] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      managedAuthorizationPosts.push({ agentId, body });
+      return Promise.resolve(jsonResponse({
+        authorizationUrl: 'https://connect.composio.dev/link/lk_test',
+      }));
+    }
+    const managedResourcesMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/connections\/([^/]+)\/managed\/resources(?:\?(.+))?$/,
+    );
+    if (managedResourcesMatch && method === 'GET') {
+      const query = new URLSearchParams(managedResourcesMatch[3] ?? '');
+      const resourceKey = query.get('resourceKey') ?? '';
+      const cursor = query.get('cursor') ?? '';
+      const pageKey = `${resourceKey}:${cursor}`;
+      return Promise.resolve(jsonResponse(
+        harnessOptions.managedResourcePages?.[pageKey] ?? { resources: [] },
+      ));
+    }
+    if (managedResourcesMatch && method === 'POST') {
+      managedResourcePosts.push({
+        agentId: decodeURIComponent(managedResourcesMatch[1] as string),
+        connectionId: decodeURIComponent(managedResourcesMatch[2] as string),
+        body: JSON.parse(options?.body ?? '{}') as Record<string, unknown>,
+      });
+      return Promise.resolve(jsonResponse({ account: { lifecycle: 'ready' }, binding: {} }));
     }
     const agentConnectionsMatch = path.match(
       /^\/admin\/api\/agents\/([^/]+)\/connections(?:\?workspaceId=([^&]+))?$/,
@@ -2271,6 +2322,8 @@ function runAdminPageHarness(
     skillBrowseScrollTop: () => skillBrowseList.scrollTop,
     mcpTestPosts,
     connectionAccountPosts,
+    managedAuthorizationPosts,
+    managedResourcePosts,
     oauthStartPosts,
     apiOAuthStartPosts,
     apiOAuthClientPuts,
@@ -5119,15 +5172,437 @@ test('saving a profile with a filled-but-not-added skill editor commits the skil
 
 // ---- Connections (remote MCP servers) --------------------------------------
 
-test('Agent connections expose reusable Team and personal accounts with Google OAuth', () => {
+test('Agent connections expose reusable Team and personal accounts with managed Google OAuth', () => {
   const page = renderAdminPage();
   assert.match(page, />Team connection</);
   assert.match(page, />My connection</);
-  assert.match(page, />Google OAuth</);
+  assert.match(page, /connections\/managed\/start/);
+  assert.match(page, /Google sign-in opens through Composio/);
   assert.match(page, /Credentials are stored once and can be safely reused/);
   assert.match(page, /Every Agent using it will lose access and dependent schedules will pause/);
+  assert.match(page, /Google will still list Composio as authorized/);
+  assert.match(page, /remove it from Google Account settings to fully revoke access/);
+  assert.doesNotMatch(page, /ask Composio to revoke Google access/);
   assert.match(page, /\/connections\?workspaceId=/);
   assert.match(page, /\/oauth\/api\/start/);
+});
+
+test('managed connection accounts render their provider, toolkit, and capability ceiling', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [],
+      available: [{
+        id: 'connection_managed_gmail',
+        workspaceId: 'T_DESIGN',
+        ownerKind: 'team',
+        providerId: 'google',
+        label: 'Managed Gmail',
+        lifecycle: 'ready',
+        credentialConfigured: true,
+        policy: {
+          kind: 'managed',
+          adapterId: 'composio',
+          toolkit: 'gmail',
+          principalRef: 'chickpea:organization:T_DESIGN',
+          accountRef: 'ca_test_gmail',
+          allowedCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
+        },
+      }],
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  const managedRow = harness.app.innerHTML.match(
+    /<div class="skill-row conn-row">[\s\S]*?Managed Gmail[\s\S]*?<\/div>/,
+  )?.[0] ?? '';
+  assert.match(managedRow, /Managed · google \/ gmail · 2 capabilities/);
+  assert.doesNotMatch(managedRow, /API ·/);
+});
+
+test('managed Notion renders only safe provider grant summaries', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [],
+      available: [{
+        id: 'connection_managed_notion',
+        workspaceId: 'T_DESIGN',
+        ownerKind: 'team',
+        providerId: 'notion',
+        label: 'Managed Notion',
+        lifecycle: 'ready',
+        credentialConfigured: true,
+        policy: {
+          kind: 'managed',
+          adapterId: 'composio',
+          toolkit: 'notion',
+          principalRef: 'chickpea:organization:T_DESIGN',
+          accountRef: 'ca_test_notion',
+          allowedCapabilities: ['notion.content.search'],
+          grantSummary: {
+            items: [
+              { type: 'page', label: 'Launch <script>alert(1)</script>' },
+              { type: 'database', label: 'Customer pipeline' },
+            ],
+            truncated: true,
+          },
+        },
+      }],
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /Provider grant: Launch &lt;script&gt;alert\(1\)&lt;\/script&gt;, Customer pipeline and more/,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /<script>alert\(1\)<\/script>/);
+  assert.doesNotMatch(harness.app.innerHTML, /ca_test_notion/);
+});
+
+test('managed Google accounts that need attention reconnect in place', async () => {
+  const account = {
+    id: 'connection_managed_gmail',
+    workspaceId: 'T_DESIGN',
+    ownerKind: 'team',
+    providerId: 'google',
+    label: 'Managed Gmail',
+    lifecycle: 'needs_attention',
+    credentialConfigured: false,
+    policy: {
+      kind: 'managed',
+      adapterId: 'composio',
+      toolkit: 'gmail',
+      principalRef: 'chickpea:organization:T_DESIGN',
+      accountRef: 'ca_expired_gmail',
+      allowedCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
+    },
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [{
+        account,
+        binding: {
+          agentId: 'agent_conn',
+          connectionAccountId: account.id,
+          providerId: 'google',
+          allowedCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
+          enabled: true,
+        },
+      }],
+      available: [],
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /data-action="connection-account-managed-reconnect"/);
+  click({
+    target: actionTarget({
+      'data-action': 'connection-account-managed-reconnect',
+      'data-connection-id': account.id,
+    }),
+  });
+  await flushAsync();
+
+  assert.deepEqual(harness.managedAuthorizationPosts, [{
+    agentId: 'agent_conn',
+    body: { workspaceId: 'T_DESIGN', connectionAccountId: account.id },
+  }]);
+  assert.deepEqual(harness.assignedUrls, ['https://connect.composio.dev/link/lk_test']);
+});
+
+test('resource-scoped managed accounts stay pending until Admin selects an allowed property', async () => {
+  const account = {
+    id: 'connection_analytics',
+    revision: 3,
+    workspaceId: 'T_DESIGN',
+    ownerKind: 'team',
+    providerId: 'google',
+    label: 'Growth Analytics',
+    lifecycle: 'pending',
+    credentialConfigured: false,
+    policy: {
+      kind: 'managed',
+      adapterId: 'composio',
+      toolkit: 'google_analytics',
+      allowedCapabilities: ['analytics.reports.run'],
+      resourceConstraints: {
+        propertyIds: [{ handle: 'property_primary', label: 'Website — Acme' }],
+      },
+    },
+  };
+  const descriptor = {
+    ...managedCatalogFixture('google-analytics', 'google_analytics', 'Google Analytics', false),
+    resources: [{
+      key: 'propertyIds', label: 'GA4 properties', required: true, multiple: true,
+    }],
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [{
+        account,
+        binding: {
+          agentId: 'agent_conn', connectionAccountId: account.id, providerId: 'google',
+          allowedCapabilities: ['analytics.reports.run'], resourceConstraints: {}, enabled: true,
+        },
+      }],
+      available: [],
+      managedConnectors: { composio: true, catalog: [descriptor] },
+    },
+    managedResourcePages: {
+      'propertyIds:': {
+        resources: [
+          { handle: 'property_primary', label: 'Website — Acme' },
+          { handle: 'property_secondary', label: 'Mobile — Acme' },
+        ],
+      },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Choose GA4 properties/);
+  assert.doesNotMatch(harness.app.innerHTML, /Growth Analytics[\s\S]*?Reconnect/);
+  click({ target: actionTarget({
+    'data-action': 'connection-account-resource-open',
+    'data-connection-id': account.id,
+  }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Website — Acme/);
+  assert.match(harness.app.innerHTML, /Mobile — Acme/);
+  assert.doesNotMatch(harness.app.innerHTML, /properties\/123|ca_analytics/);
+
+  click({ target: ({
+    ...actionTarget({
+      'data-action': 'connection-account-resource-toggle',
+      'data-resource-key': 'propertyIds',
+      'data-resource-handle': 'property_primary',
+    }),
+    checked: true,
+  } as FakeTarget & { checked: boolean }) });
+  click({ target: actionTarget({ 'data-action': 'connection-account-resource-save' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.managedResourcePosts, [{
+    agentId: 'agent_conn',
+    connectionId: account.id,
+    body: {
+      workspaceId: 'T_DESIGN',
+      expectedRevision: 3,
+      resourceConstraints: { propertyIds: ['property_primary'] },
+    },
+  }]);
+});
+
+test('resource-scoped managed accounts that need attention offer reconnect and resource recovery', async () => {
+  const account = {
+    id: 'connection_analytics_expired', revision: 4, workspaceId: 'T_DESIGN',
+    ownerKind: 'team', providerId: 'google', label: 'Expired Analytics',
+    lifecycle: 'needs_attention', credentialConfigured: false,
+    policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'google_analytics',
+      allowedCapabilities: ['analytics.reports.run'],
+      resourceConstraints: {
+        propertyIds: [{ handle: 'property_primary', label: 'Website — Acme' }],
+      },
+    },
+  };
+  const descriptor = {
+    ...managedCatalogFixture('google-analytics', 'google_analytics', 'Google Analytics', false),
+    resources: [{
+      key: 'propertyIds', label: 'GA4 properties', required: true, multiple: true,
+    }],
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [{
+        account,
+        binding: {
+          agentId: 'agent_conn', connectionAccountId: account.id, providerId: 'google',
+          allowedCapabilities: ['analytics.reports.run'], resourceConstraints: {}, enabled: true,
+        },
+      }],
+      available: [],
+      managedConnectors: { composio: true, catalog: [descriptor] },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /data-action="connection-account-managed-reconnect"/);
+  assert.match(harness.app.innerHTML, /Choose GA4 properties/);
+});
+
+test('managed callback notice resolves the connector label after the catalog loads', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?managed=connected&toolkit=hubspot',
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [],
+      available: [],
+      managedConnectors: {
+        composio: true,
+        catalog: [managedCatalogFixture('hubspot-managed', 'hubspot', 'HubSpot')],
+      },
+    },
+  });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /HubSpot is connected through Composio and ready for this Agent\./,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /the managed connection is connected/);
+});
+
+test('managed resource picker removes stale handles and warns when discovery is capped', async () => {
+  const account = {
+    id: 'connection_analytics_stale', revision: 5, workspaceId: 'T_DESIGN',
+    ownerKind: 'team', providerId: 'google', label: 'Growth Analytics', lifecycle: 'ready',
+    credentialConfigured: true,
+    policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'google_analytics',
+      allowedCapabilities: ['analytics.reports.run'],
+      resourceConstraints: {
+        propertyIds: [{ handle: 'property_stale', label: 'Deleted property' }],
+      },
+    },
+  };
+  const descriptor = {
+    ...managedCatalogFixture('google-analytics', 'google_analytics', 'Google Analytics', false),
+    resources: [{ key: 'propertyIds', label: 'GA4 properties', required: true, multiple: true }],
+  };
+  const managedResourcePages = Object.fromEntries(Array.from({ length: 20 }, (_, index) => {
+    const cursor = index === 0 ? '' : `cursor_${index}`;
+    return [`propertyIds:${cursor}`, {
+      resources: [{ handle: `property_${index}`, label: `Property ${index}` }],
+      nextCursor: `cursor_${index + 1}`,
+    }];
+  }));
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [{
+        account,
+        binding: {
+          agentId: 'agent_conn', connectionAccountId: account.id, providerId: 'google',
+          allowedCapabilities: ['analytics.reports.run'],
+          resourceConstraints: { propertyIds: ['property_stale'] }, enabled: true,
+        },
+      }],
+      available: [],
+      managedConnectors: { composio: true, catalog: [descriptor] },
+    },
+    managedResourcePages,
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({
+    'data-action': 'connection-account-resource-open',
+    'data-connection-id': account.id,
+  }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /1 previously selected resource is no longer available/);
+  assert.match(harness.app.innerHTML, /Only the first 20 pages or 2,000 resources are shown/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-resource-handle="property_stale"/);
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="connection-account-resource-save" disabled/,
+  );
+
+  click({ target: ({
+    ...actionTarget({
+      'data-action': 'connection-account-resource-toggle',
+      'data-resource-key': 'propertyIds',
+      'data-resource-handle': 'property_0',
+    }),
+    checked: true,
+  } as FakeTarget & { checked: boolean }) });
+  click({ target: actionTarget({ 'data-action': 'connection-account-resource-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.managedResourcePosts[0]?.body.resourceConstraints, {
+    propertyIds: ['property_0'],
+  });
+});
+
+test('an unattached pending managed account offers reconnect instead of stranding the row', async () => {
+  const account = {
+    id: 'connection_pending_gmail',
+    workspaceId: 'T_DESIGN',
+    ownerKind: 'team',
+    providerId: 'google',
+    label: 'Pending Gmail',
+    lifecycle: 'pending',
+    credentialConfigured: false,
+    policy: {
+      kind: 'managed',
+      adapterId: 'composio',
+      toolkit: 'gmail',
+      principalRef: 'chickpea:organization:T_DESIGN',
+      accountRef: 'ca_pending_gmail',
+      allowedCapabilities: ['gmail.profile.read'],
+    },
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [account] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /Pending Gmail[\s\S]*?data-action="connection-account-managed-reconnect"/,
+  );
+  assert.match(
+    harness.app.innerHTML,
+    /Pending Gmail[\s\S]*?data-action="connection-account-attach"/,
+  );
 });
 
 test('reusable Agent connections retain the complete preset catalog', async () => {
@@ -5161,17 +5636,60 @@ test('connector handoff deep link opens the requested reusable account form', as
   const harness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_conn/connections/new/gmail/member',
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: {
+      attached: [], available: [], managedConnectors: { composio: false },
+    },
   });
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /<strong>Gmail<\/strong>/);
   assert.match(harness.app.innerHTML, /value="member" selected>My connection<\/option>/);
-  assert.match(harness.app.innerHTML, /Gmail access/);
+  assert.match(harness.app.innerHTML, /data-action="connection-account-google-access"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
   assert.ok(
     harness.historyReplaces.some((path) => path === '/admin/agents/agent_conn'),
     'one-shot connector path should be canonicalized after opening the form',
   );
+});
+
+test('connector handoff waits for Composio before opening managed Google setup', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_conn/connections/new/gmail/member',
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [],
+      available: [],
+      managedConnectors: {
+        composio: true,
+        catalog: [managedCatalogFixture('gmail', 'gmail', 'Gmail')],
+      },
+    },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-google-access"/);
+  assert.ok(harness.historyReplaces.includes('/admin/agents/agent_conn'));
+});
+
+test('connector handoff opens a managed-only preset after the catalog loads', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_conn/connections/new/notion-managed/team',
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [],
+      available: [],
+      managedConnectors: {
+        composio: true,
+        catalog: [managedCatalogFixture('notion-managed', 'notion', 'Notion (managed)')],
+      },
+    },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /<strong>Notion \(managed\)<\/strong>/);
+  assert.match(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.ok(harness.historyReplaces.includes('/admin/agents/agent_conn'));
 });
 
 test('connector handoff rejects an unknown account owner instead of widening it to Team', async () => {
@@ -5239,7 +5757,25 @@ test('legacy Google access does not hide reusable Google account presets', async
 test('every catalog connector opens a reusable-account setup flow', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: {
+      attached: [],
+      available: [],
+      managedConnectors: {
+        composio: true,
+        catalog: [
+          managedCatalogFixture('google-sheets', 'googlesheets', 'Google Sheets'),
+          managedCatalogFixture('google-docs', 'googledocs', 'Google Docs'),
+          managedCatalogFixture('google-slides', 'googleslides', 'Google Slides'),
+          managedCatalogFixture('google-search-console', 'google_search_console', 'Google Search Console'),
+          managedCatalogFixture('google-analytics', 'google_analytics', 'Google Analytics'),
+          managedCatalogFixture('notion-managed', 'notion', 'Notion'),
+          managedCatalogFixture('hubspot-managed', 'hubspot', 'HubSpot'),
+          managedCatalogFixture('gong-managed', 'gong', 'Gong'),
+          managedCatalogFixture('google-ads', 'googleads', 'Google Ads'),
+          managedCatalogFixture('youtube-managed', 'youtube', 'YouTube'),
+        ],
+      },
+    },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -5261,14 +5797,13 @@ test('every catalog connector opens a reusable-account setup flow', async () => 
     );
     click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
   }
-  assert.equal(presetIds.length, 26);
+  assert.equal(presetIds.length, 36);
 });
 
-test('reusable Sentry accounts preserve custom-header auth and discovered tool approval', async () => {
+test('reusable Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: { attached: [], available: [] },
-    mcpTestResult: { ok: true, tools: [{ name: 'search_issues' }, { name: 'get_trace' }] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -5279,41 +5814,155 @@ test('reusable Sentry accounts preserve custom-header auth and discovered tool a
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'sentry' }) });
-  assert.match(
-    harness.app.innerHTML,
-    /placeholder="User Auth Token"[^>]*data-action="connection-account-credential"/,
-  );
-  input({ target: inputTarget({ 'data-action': 'connection-account-credential' }, 'sentry-user-token') });
+  assert.match(harness.app.innerHTML, /data-action="connection-account-sentry-organization"/);
+  assert.match(harness.app.innerHTML, /data-action="connection-account-sentry-project"/);
+  assert.match(harness.app.innerHTML, /scope every request to one project/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-credential"/);
+  input({
+    target: inputTarget({ 'data-action': 'connection-account-sentry-organization' }, 'acme'),
+  });
+  input({
+    target: inputTarget({ 'data-action': 'connection-account-sentry-project' }, 'web-app'),
+  });
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
 
-  assert.equal(
-    (harness.mcpTestPosts[0]?.headers as Record<string, string>).Authorization,
-    'Sentry-Bearer sentry-user-token',
-  );
   const created = harness.connectionAccountPosts[0]?.body;
   assert.equal(created?.providerId, 'sentry');
-  assert.equal(created?.credential, 'sentry-user-token');
-  assert.deepEqual(created?.allowedCapabilities, ['search_issues', 'get_trace']);
+  assert.equal(created?.credential, undefined);
+  assert.deepEqual(created?.allowedCapabilities, []);
   assert.deepEqual(created?.mcp, {
     id: 'sentry',
     displayName: 'Sentry',
-    url: 'https://mcp.sentry.dev/mcp',
+    url: 'https://mcp.sentry.dev/mcp/acme/web-app',
     transport: 'streamable-http',
-    authMode: 'none',
-    headerNames: ['Authorization'],
+    authMode: 'oauth',
+    headerNames: [],
     enabled: true,
     lifecycleStatus: 'pending',
     statusText: '',
-    discoveredTools: [
-      { name: 'search_issues' },
-      { name: 'get_trace' },
-    ],
-    allowedTools: ['search_issues', 'get_trace'],
+    discoveredTools: [],
+    allowedTools: [],
     presetId: 'sentry',
-    credentialHeaderName: 'Authorization',
-    credentialValuePrefix: 'Sentry-Bearer ',
   });
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'connection_created', body: {} },
+  ]);
+  assert.deepEqual(harness.assignedUrls, ['https://auth.linear.example/authorize?state=opaque']);
+});
+
+test('reusable Sentry rejects a project scope without an organization before saving or OAuth', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'sentry' }) });
+  input({
+    target: inputTarget({ 'data-action': 'connection-account-sentry-project' }, 'web-app'),
+  });
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Enter a Sentry organization before a project/);
+  assert.deepEqual(harness.connectionAccountPosts, []);
+  assert.deepEqual(harness.oauthStartPosts, []);
+});
+
+test('reusable Intercom uses OAuth and warns before connecting a non-US workspace', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'intercom' }) });
+
+  assert.match(harness.app.innerHTML, /only for US-hosted workspaces/);
+  assert.match(harness.app.innerHTML, /EU and Australian workspaces cannot use this preset yet/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-credential"/);
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  const created = harness.connectionAccountPosts[0]?.body;
+  assert.equal(created?.credential, undefined);
+  assert.deepEqual(created?.mcp, {
+    id: 'intercom',
+    displayName: 'Intercom',
+    url: 'https://mcp.intercom.com/mcp',
+    transport: 'streamable-http',
+    authMode: 'oauth',
+    headerNames: [],
+    enabled: true,
+    lifecycleStatus: 'pending',
+    statusText: '',
+    discoveredTools: [],
+    allowedTools: [],
+    presetId: 'intercom',
+  });
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'connection_created', body: {} },
+  ]);
+});
+
+test('Sentry OAuth migration stays additive beside an existing token account', async () => {
+  const legacy = {
+    id: 'connection_sentry_token',
+    workspaceId: 'T_DESIGN',
+    ownerKind: 'team',
+    providerId: 'sentry',
+    label: 'Legacy Sentry token',
+    lifecycle: 'ready',
+    credentialConfigured: true,
+    policy: {
+      kind: 'mcp',
+      url: 'https://mcp.sentry.dev/mcp',
+      transport: 'streamable-http',
+      authMode: 'none',
+      headerNames: ['Authorization'],
+      credentialHeaderName: 'Authorization',
+      credentialValuePrefix: 'Sentry-Bearer ',
+      discoveredTools: [{ name: 'search_issues' }],
+      allowedTools: ['search_issues'],
+      presetId: 'sentry',
+    },
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [{
+        account: legacy,
+        binding: {
+          agentId: 'agent_conn', connectionAccountId: legacy.id,
+          providerId: 'sentry', allowedCapabilities: ['search_issues'], enabled: true,
+        },
+      }],
+      available: [],
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Legacy Sentry token/);
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'sentry' }) });
+  assert.match(harness.app.innerHTML, /adds OAuth beside the existing token connection/);
+  assert.match(harness.app.innerHTML, /explicitly disconnect the token account/);
 });
 
 test('reusable Linear accounts create policy before starting account-scoped MCP OAuth', async () => {
@@ -5342,97 +5991,163 @@ test('reusable Linear accounts create policy before starting account-scoped MCP 
   assert.deepEqual(harness.assignedUrls, ['https://auth.linear.example/authorize?state=opaque']);
 });
 
-test('reusable Google Drive accounts keep Drive-only policy and start API OAuth', async () => {
+test('reusable Google Drive accounts start a Drive-only Composio Connect Link', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: { attached: [], available: [] },
   });
   await flushAsync();
   const click = harness.listeners.click;
-  const input = harness.listeners.input;
-  assert.ok(click && input);
+  assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'google-drive' }) });
-  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-id' }, 'google-client') });
-  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-secret' }, 'google-secret') });
+  const managedForm = harness.app.innerHTML.match(
+    /<div class="skill-form">[\s\S]*?Continue to sign in[\s\S]*?<\/div>/,
+  )?.[0] ?? '';
+  assert.match(managedForm, /Google sign-in opens through Composio/);
+  assert.doesNotMatch(managedForm, /<label[^>]*>Google OAuth client (ID|secret)<\/label>/);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
 
-  const created = harness.connectionAccountPosts[0]?.body;
-  const api = created?.api as Record<string, unknown>;
-  assert.equal(created?.providerId, 'google');
-  assert.deepEqual(api.allowedHosts, ['www.googleapis.com']);
-  assert.deepEqual(api.pathPrefixes, ['/drive/v3']);
-  assert.deepEqual(api.allowedMethods, ['GET', 'HEAD']);
-  assert.deepEqual(api.oauthScopes, ['https://www.googleapis.com/auth/drive.readonly']);
-  assert.equal(api.presetId, 'google-workspace');
-  assert.deepEqual(harness.apiOAuthClientPuts[0], {
+  assert.deepEqual(harness.managedAuthorizationPosts, [{
     agentId: 'agent_conn',
-    connectionId: 'connection_created',
-    body: { provider: 'google', clientId: 'google-client', clientSecret: 'google-secret' },
-  });
-  assert.deepEqual(harness.apiOAuthStartPosts[0], {
-    agentId: 'agent_conn', connectionId: 'connection_created', body: {},
-  });
-  assert.deepEqual(harness.assignedUrls, ['https://accounts.google.com/o/oauth2/v2/auth?state=opaque']);
+    body: {
+      workspaceId: 'T_DESIGN', ownerKind: 'team', toolkit: 'googledrive', access: 'read',
+    },
+  }]);
+  assert.deepEqual(harness.connectionAccountPosts, []);
+  assert.deepEqual(harness.apiOAuthClientPuts, []);
+  assert.deepEqual(harness.apiOAuthStartPosts, []);
+  assert.deepEqual(harness.assignedUrls, ['https://connect.composio.dev/link/lk_test']);
 });
 
-test('reusable Google Drive accounts can explicitly request read-write policy', async () => {
+test('reusable Google Drive accounts can request a read-write Composio capability ceiling', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: { attached: [], available: [] },
   });
   await flushAsync();
   const click = harness.listeners.click;
-  const input = harness.listeners.input;
-  assert.ok(click && input);
+  assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'google-drive' }) });
-  click({ target: actionTarget({ 'data-action': 'connection-account-google-access', 'data-access': 'write' }) });
-  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-id' }, 'google-client') });
-  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-secret' }, 'google-secret') });
+  click({ target: actionTarget({ 'data-action': 'connection-account-managed-access', 'data-access': 'write' }) });
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
 
-  const api = harness.connectionAccountPosts[0]?.body.api as Record<string, unknown>;
-  assert.deepEqual(api.allowedMethods, ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
-  assert.deepEqual(api.oauthScopes, ['https://www.googleapis.com/auth/drive']);
-  assert.deepEqual(api.pathPrefixes, ['/drive/v3', '/upload/drive/v3']);
+  assert.equal(harness.managedAuthorizationPosts[0]?.body.access, 'write');
 });
 
-test('custom Google OAuth keeps the legacy Gmail read-only authority ceiling', async () => {
+test('managed productivity cards expose only configured read lanes and disable missing writes', async () => {
+  const unavailable = {
+    status: 'missing_configuration', missingConfiguration: ['auth_config_missing'],
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [],
+      available: [],
+      managedConnectors: {
+        composio: true,
+        catalog: [
+          managedCatalogFixture('google-sheets', 'googlesheets', 'Google Sheets', false),
+          managedCatalogFixture('google-docs', 'googledocs', 'Google Docs'),
+          {
+            ...managedCatalogFixture('google-slides', 'googleslides', 'Google Slides'),
+            access: { read: unavailable, write: unavailable },
+          },
+        ],
+      },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /data-preset="google-sheets"/);
+  assert.match(harness.app.innerHTML, /data-preset="google-docs"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-preset="google-slides"/);
+
+  click({
+    target: actionTarget({
+      'data-action': 'connection-account-preset', 'data-preset': 'google-sheets',
+    }),
+  });
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="connection-account-managed-access" data-access="write" disabled aria-disabled="true"/,
+  );
+  assert.match(harness.app.innerHTML, /Write access is not configured for this connector/);
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.managedAuthorizationPosts, [{
+    agentId: 'agent_conn',
+    body: {
+      workspaceId: 'T_DESIGN', ownerKind: 'team', toolkit: 'googlesheets', access: 'read',
+    },
+  }]);
+});
+
+test('custom reusable API setup directs Google OAuth to the managed connectors', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: { attached: [], available: [] },
   });
   await flushAsync();
   const click = harness.listeners.click;
-  const input = harness.listeners.input;
-  const change = harness.listeners.change;
-  assert.ok(click && input && change);
+  assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
-  change({ target: inputTarget({ 'data-action': 'connection-account-auth' }, 'google_oauth') });
-  input({ target: inputTarget({ 'data-action': 'connection-account-label' }, 'Work Gmail') });
-  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-id' }, 'google-client') });
-  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-secret' }, 'google-secret') });
-  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  assert.match(harness.app.innerHTML, /Use a managed Google connector for Google OAuth/);
+  assert.doesNotMatch(harness.app.innerHTML, /<option value="google_oauth"/);
+});
+
+test('self-hosted reusable Google connectors fall back to native OAuth setup without Composio', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [], available: [], managedConnectors: { composio: false },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
 
-  const api = harness.connectionAccountPosts[0]?.body.api as Record<string, unknown>;
-  assert.deepEqual(api.allowedHosts, ['gmail.googleapis.com']);
-  assert.deepEqual(api.pathPrefixes, ['/gmail/v1/users/me']);
-  assert.deepEqual(api.allowedMethods, ['GET', 'HEAD']);
-  assert.deepEqual(api.oauthScopes, ['https://www.googleapis.com/auth/gmail.readonly']);
+  assert.doesNotMatch(harness.app.innerHTML, /Managed OAuth/);
+  assert.match(harness.app.innerHTML, /Google Drive[\s\S]{0,500}gallery-lane">API/);
+
+  click({
+    target: actionTarget({
+      'data-action': 'connection-account-preset', 'data-preset': 'google-drive',
+    }),
+  });
+  assert.match(harness.app.innerHTML, /Google OAuth client ID/);
+  assert.match(harness.app.innerHTML, /Google OAuth client secret/);
+  assert.match(harness.app.innerHTML, /Google Drive access/);
+  assert.doesNotMatch(harness.app.innerHTML, /Google sign-in opens through Composio/);
+  click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
+
+  click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
+  assert.match(harness.app.innerHTML, /<option value="google_oauth"/);
+  assert.match(harness.app.innerHTML, /This deployment uses its own Google OAuth client credentials/);
 });
 
 test('reusable Exa accounts support anonymous limits without an API key', async () => {
@@ -5542,6 +6257,29 @@ function connectionsAgent(overrides: Record<string, unknown> = {}): Record<strin
     mcpServers: [],
     apiConnections: [],
     ...overrides,
+  };
+}
+
+function managedCatalogFixture(
+  id: string,
+  toolkit: string,
+  label: string,
+  writeReady = true,
+): Record<string, unknown> {
+  const ready = { status: 'ready', missingConfiguration: [] };
+  return {
+    id,
+    toolkit,
+    providerId: 'google',
+    label,
+    description: `${label} managed connector`,
+    securityDescription: 'Google sign-in opens through Composio.',
+    access: {
+      read: ready,
+      write: writeReady
+        ? ready
+        : { status: 'missing_configuration', missingConfiguration: ['auth_config_missing'] },
+    },
   };
 }
 
@@ -5721,7 +6459,7 @@ test('OAuth rows surface a persisted reconnect requirement instead of stale conn
   assert.doesNotMatch(panel, /Connected &middot;/);
 
   click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
-  assert.match(harness.app.innerHTML, /<span>Sign into Notion<\/span>/);
+  assert.match(harness.app.innerHTML, /<span>Sign into Native Notion<\/span>/);
 });
 
 test('saved MCP and API connections share one lane-badged list with matching inline editors', async () => {
@@ -6180,6 +6918,72 @@ test('editing a saved API connection shows a stored write-only credential placeh
     harness.app.innerHTML,
     /placeholder="•••• stored"[^>]*data-action="apiconn-field-credential"/,
   );
+});
+
+test('managed Notion is additive to Native Notion and explains the provider page boundary', async () => {
+  const ready = { status: 'ready', missingConfiguration: [] };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent({
+      mcpServers: [mcpConnectionFixture({
+        id: 'notion',
+        displayName: 'Native Notion',
+        url: 'https://mcp.notion.com/mcp',
+        authMode: 'oauth',
+        lifecycleStatus: 'ready',
+        presetId: 'notion',
+      })],
+    })],
+    connectionAccounts: {
+      attached: [],
+      available: [],
+      managedConnectors: {
+        composio: true,
+        catalog: [{
+          id: 'notion-managed',
+          toolkit: 'notion',
+          providerId: 'notion',
+          label: 'Notion',
+          description: 'Notion managed connector',
+          securityDescription: 'Choose only the pages and databases Chickpea may use. The Notion grant includes descendants made available by Notion.',
+          access: { read: ready, write: ready },
+        }],
+      },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /data-preset="notion-managed"/);
+  assert.match(harness.app.innerHTML, /data-preset="notion"/);
+  click({
+    target: actionTarget({
+      'data-action': 'connection-account-preset', 'data-preset': 'notion-managed',
+    }),
+  });
+  assert.match(harness.app.innerHTML, /Choose only the pages and databases Chickpea may use/);
+  assert.match(harness.app.innerHTML, /grant includes descendants made available by Notion/);
+  assert.match(harness.app.innerHTML, /adds managed Notion beside Native Notion/);
+  assert.match(harness.app.innerHTML, /will not change Agent bindings or disconnect the native account/);
+  click({
+    target: actionTarget({
+      'data-action': 'connection-account-managed-access', 'data-access': 'write',
+    }),
+  });
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.managedAuthorizationPosts, [{
+    agentId: 'agent_conn',
+    body: {
+      workspaceId: 'T_DESIGN', ownerKind: 'team', toolkit: 'notion', access: 'write',
+    },
+  }]);
+  assert.deepEqual(harness.connectionAccountPosts, []);
 });
 
 test('editing a saved API connection with no stored credential does not claim "stored"', async () => {
@@ -6838,7 +7642,7 @@ test('the Zendesk Recommended subdomain resolves into the Advanced host and back
   assert.match(harness.app.innerHTML, /<span class="conn-url-chip mono"[^>]*>acme\.zendesk\.com<\/span>/);
 });
 
-test('the Sentry preset keeps its header auth and applies the same idempotent prefix to test and save', async () => {
+test('the Sentry preset uses OAuth and saves its narrowed resource before authorization', async () => {
   const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
   await flushAsync();
 
@@ -6849,44 +7653,25 @@ test('the Sentry preset keeps its header auth and applies the same idempotent pr
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': 'sentry' }) });
   const recommended = harness.app.innerHTML;
-  assert.match(recommended, /Sentry → Settings → Account → User Auth Tokens/);
-  assert.match(
-    recommended,
-    /<a class="hint-link" href="https:\/\/sentry\.io\/settings\/account\/api\/auth-tokens\/"[^>]*>Where do I find this\?<\/a>/,
-  );
-  click({ target: actionTarget({ 'data-action': 'conn-view', 'data-view': 'advanced' }) });
-
-  assert.match(harness.app.innerHTML, /<option value="none" selected>None<\/option>/);
-  assert.match(harness.app.innerHTML, /value="Authorization"[^>]*data-action="conn-header-name"/);
-
-  input({ target: inputTarget({ 'data-action': 'conn-header-value', 'data-index': '0' }, 'sentry-user-token') });
-  click({ target: actionTarget({ 'data-action': 'conn-test' }) });
-  await flushAsync();
-  assert.equal(
-    (harness.mcpTestPosts[0]?.headers as Record<string, string>).Authorization,
-    'Sentry-Bearer sentry-user-token',
-  );
-
+  assert.match(recommended, /data-action="conn-sentry-organization"/);
+  assert.match(recommended, /data-action="conn-sentry-project"/);
+  assert.match(recommended, /Sign into Sentry/);
+  assert.doesNotMatch(recommended, /data-action="conn-header-value"|User Auth Token/);
   input({
-    target: inputTarget(
-      { 'data-action': 'conn-header-value', 'data-index': '0' },
-      'Sentry-Bearer sentry-user-token',
-    ),
+    target: inputTarget({ 'data-action': 'conn-sentry-organization' }, 'acme'),
   });
-  click({ target: actionTarget({ 'data-action': 'conn-test' }) });
+  input({ target: inputTarget({ 'data-action': 'conn-sentry-project' }, 'web-app') });
+  click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
   await flushAsync();
-  assert.equal(
-    (harness.mcpTestPosts[1]?.headers as Record<string, string>).Authorization,
-    'Sentry-Bearer sentry-user-token',
-  );
 
-  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
-  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
-  await flushAsync();
-  assert.equal(
-    (harness.mcpSecretPuts[0]?.body.headers as Record<string, string>).Authorization,
-    'Sentry-Bearer sentry-user-token',
-  );
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.equal(servers[0]?.url, 'https://mcp.sentry.dev/mcp/acme/web-app');
+  assert.equal(servers[0]?.authMode, 'oauth');
+  assert.deepEqual(servers[0]?.headerNames, []);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'sentry', body: {} },
+  ]);
+  assert.deepEqual(harness.mcpSecretPuts, []);
 });
 
 test('a preset connection carries presetId in the profile save body', async () => {
@@ -7313,7 +8098,7 @@ test('the Notion preset saves OAuth policy before starting authorization and nev
   assert.match(harness.app.innerHTML, /Sign in to Notion and choose the workspace access Chickpea should receive\.<\/p>/);
   assert.match(
     harness.app.innerHTML,
-    /<button[^>]*class="btn btn-primary btn-sm oauth-signin"[^>]*data-action="conn-oauth-start"[^>]*><span class="conn-logo conn-logo-img conn-logo-full"><svg[^>]*aria-hidden="true"[\s\S]*?<\/svg><\/span><span>Sign into Notion<\/span><\/button>/,
+    /<button[^>]*class="btn btn-primary btn-sm oauth-signin"[^>]*data-action="conn-oauth-start"[^>]*><span class="conn-logo conn-logo-img conn-logo-full"><svg[^>]*aria-hidden="true"[\s\S]*?<\/svg><\/span><span>Sign into Native Notion<\/span><\/button>/,
   );
   assert.doesNotMatch(harness.app.innerHTML, /When you continue|Save and connect Notion/);
   assert.doesNotMatch(harness.app.innerHTML, />Add connection<\/button>/);
@@ -7332,7 +8117,7 @@ test('the Notion preset saves OAuth policy before starting authorization and nev
   assert.deepEqual(servers, [
     {
       id: 'notion',
-      displayName: 'Notion',
+      displayName: 'Native Notion',
       url: 'https://mcp.notion.com/mcp',
       transport: 'streamable-http',
       authMode: 'oauth',
@@ -7372,10 +8157,10 @@ test('a Notion OAuth start failure keeps the saved connection recoverable in pla
   assert.equal(harness.agentPatchBodies.length, 1);
   assert.equal(harness.oauthStartPosts.length, 1);
   assert.deepEqual(harness.assignedUrls, []);
-  assert.match(harness.app.innerHTML, /Sign into Notion/);
+  assert.match(harness.app.innerHTML, /Sign into Native Notion/);
   assert.match(
     harness.app.innerHTML,
-    /Notion OAuth could not be prepared\. Check that this install has a reachable callback URL, then try again\./,
+    /Native Notion OAuth could not be prepared\. Check that this install has a reachable callback URL, then try again\./,
   );
 });
 
@@ -7401,8 +8186,8 @@ test('a blocked profile save re-enables OAuth start after returning to Connectio
   assert.deepEqual(harness.agentPatchBodies, []);
   assert.deepEqual(harness.oauthStartPosts, []);
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
-  assert.match(harness.app.innerHTML, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Notion<\/span>/);
-  assert.doesNotMatch(harness.app.innerHTML, /Opening Notion/);
+  assert.match(harness.app.innerHTML, /data-action="conn-oauth-start"[^>]*>[\s\S]*?<span>Sign into Native Notion<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Opening Native Notion/);
 });
 
 test('an OAuth callback return opens the profile Connections tab with a status-only notice', async () => {

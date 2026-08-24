@@ -99,11 +99,17 @@ import {
 import { githubAuthorizationHeader } from '../sandbox/github-auth.ts';
 import {
   projectEffectiveApiConnections,
+  projectEffectiveManagedConnections,
   projectEffectiveMcpConnections,
   resolveConnectionSecretForInvocation,
   resolveEffectiveConnectionAccounts,
   isActiveConnectionActor,
 } from '../connections/runtime.ts';
+import {
+  createManagedConnectionTools,
+  MANAGED_CONNECTION_RESULT_INSTRUCTION,
+  useManagedConnectionTools,
+} from '../connections/managed-tools.ts';
 import { usePersonalConnectionAuthorizationSlackTool } from '../connections/slack-authorization.ts';
 
 import type {
@@ -807,6 +813,17 @@ export async function createSlackAgentRuntime(
     apiConnections: apiConnectionActivities,
   });
 
+  const managedTools = input.actorMembershipId
+    ? createManagedConnectionTools({
+        connections: projectEffectiveManagedConnections(effectiveConnectionAccounts),
+        workspaceId,
+        agentId: config.agent.id,
+        actorMembershipId: input.actorMembershipId,
+        resolvePlatformEnv: async () => env,
+        reservedToolNames: skills.map(({ name }) => name),
+      })
+    : [];
+
   // MCP connection tools join at the same seam and inherit the same freeze
   // contract (mcpServers frozen in the snapshot for channels, live for DMs;
   // secrets always resolve live). The resolver degrades gracefully — a dead or
@@ -819,7 +836,10 @@ export async function createSlackAgentRuntime(
       {
         agentId: config.agent.id,
         env,
-        existingToolNames: skills.map((s) => s.name),
+        existingToolNames: [
+          ...skills.map((skill) => skill.name),
+          ...managedTools.map((tool) => tool.name),
+        ],
         ...(input.actorMembershipId
           ? {
               resolveBearerCredential: (connectionAccountId: string) =>
@@ -918,7 +938,7 @@ export async function createSlackAgentRuntime(
     settingsStore,
     monthlySessionCap: sandboxSettings.monthlySessionCap,
   });
-  let tools = mcpTools;
+  let tools = [...mcpTools, ...managedTools];
   if (sandboxSelection !== 'bash' && artifactThreadTs) {
     let presenter: Promise<WebClientPresenter> | undefined;
     const artifactCapability = createWorkspaceArtifactCapability({
@@ -950,7 +970,7 @@ export async function createSlackAgentRuntime(
       },
     });
     sandbox = artifactCapability.sandbox;
-    tools = [...mcpTools, artifactCapability.tool];
+    tools = [...mcpTools, ...managedTools, artifactCapability.tool];
   }
 
   const thinkingLevel = thinkingLevelForModel(config.model);
@@ -961,7 +981,9 @@ export async function createSlackAgentRuntime(
     // tool call even at low effort, so disable extra reasoning only for this
     // exact binding-backed model specifier. Other models keep Flue's policy.
     ...(thinkingLevel ? { thinkingLevel } : {}),
-    instructions: config.instructions,
+    instructions: managedTools.length > 0
+      ? `${config.instructions}\n\n${MANAGED_CONNECTION_RESULT_INSTRUCTION}`
+      : config.instructions,
     tools,
     sandbox,
     ...(skills.length > 0 ? { skills } : {}),
@@ -1051,6 +1073,7 @@ export function useRuntimePlanAgent(
   options: {
     responseMetadataModel?: string;
     sandboxConversationKey?: string;
+    connectorUsageCorrelation?: import('../connections/managed-tools.ts').ManagedToolUsageCorrelation;
     /** Current host-validated Slack request. Never source this from model tool input. */
     autonomousMemoryRequest?: { slackUserId: string; messageTs: string };
   } = {},
@@ -1073,6 +1096,11 @@ export function useRuntimePlanAgent(
     ));
   }
   useInstruction('Never invent facts or claim access to context and tools you do not have.');
+  useManagedConnectionTools(
+    plan,
+    resolveAgentPlatformEnv,
+    options.connectorUsageCorrelation,
+  );
   for (const skill of resolveProfileSkills(
     plan.skills.map((entry) => ({ ...entry, enabled: true })),
   )) {

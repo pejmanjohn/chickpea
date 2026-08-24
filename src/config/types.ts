@@ -296,11 +296,67 @@ export interface ConnectionAccountMcpPolicy {
   presetId?: string;
 }
 
+/**
+ * Non-secret policy for an account whose OAuth tokens and API execution are
+ * delegated to a managed connector provider. Chickpea still owns account
+ * selection, Agent capability ceilings, and invocation authorization.
+ */
+export interface ManagedResourceSelection {
+  /** Opaque Chickpea identifier safe to expose in a runtime plan. */
+  handle: string;
+  /** Provider identifier kept in execution-only policy. */
+  providerRef: string;
+  /** Display-safe Admin label. */
+  label: string;
+  /** Structured Google Ads billing currency; never inferred from the display label. */
+  currencyCode?: string;
+}
+
+export type ManagedAccountResourceConstraints = Record<
+  string,
+  ManagedResourceSelection[]
+>;
+
+export type ManagedBindingResourceConstraints = Record<string, string[]>;
+
+/** Durable upper bound shared by account ceilings, Agent bindings, and Admin discovery. */
+export const MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY = 256;
+
+export interface ManagedProviderGrantSummary {
+  /** Display-only provider-grant evidence; never used as a local authorization list. */
+  items: Array<{ type: 'page' | 'database'; label: string }>;
+  truncated: boolean;
+}
+
+export interface ConnectionAccountManagedPolicy {
+  kind: 'managed';
+  /** Connector infrastructure adapter, for example `composio`. */
+  adapterId: string;
+  /** Provider-local toolkit identifier, for example `gmail`. */
+  toolkit: string;
+  /** Opaque remote principal used to isolate this account at the adapter. */
+  principalRef: string;
+  /** Exact opaque remote account to pin on every invocation. */
+  accountRef: string;
+  /** Stable Chickpea capability names, never raw provider tool slugs. */
+  allowedCapabilities: string[];
+  /** Account-level resource maximum. Provider references stay execution-only. */
+  resourceConstraints?: ManagedAccountResourceConstraints;
+  /** Safe summary of the provider-enforced grant, such as Notion's page picker. */
+  grantSummary?: ManagedProviderGrantSummary;
+  /** Shared generation-token shape used by generic connection policy handling. */
+  oauthAttemptId?: string;
+}
+
 export type ConnectionAccountPolicy =
   | ConnectionAccountApiPolicy
-  | ConnectionAccountMcpPolicy;
+  | ConnectionAccountMcpPolicy
+  | ConnectionAccountManagedPolicy;
 
-/** Reusable credential ownership record; secret material stays behind secretRefId. */
+/**
+ * Reusable connection ownership record. Native secret material stays behind
+ * secretRefId; managed policies keep that local slot empty.
+ */
 export interface ConnectionAccount {
   id: string;
   workspaceId: string;
@@ -329,6 +385,8 @@ export interface AgentConnectionBinding {
   providerId: string;
   /** Empty means every capability allowed by the account policy. */
   allowedCapabilities: string[];
+  /** Chickpea-local resource handles that may only narrow the account maximum. */
+  resourceConstraints?: ManagedBindingResourceConstraints;
   enabled: boolean;
   createdAt: number;
   updatedAt: number;

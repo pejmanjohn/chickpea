@@ -37,10 +37,15 @@ interface FakeOAuthServerOptions {
   registrationAuthMethod?: 'client_secret_basic' | 'client_secret_post' | 'none';
   registrationDelayMs?: number;
   refreshError?: string;
+  serverUrl?: string;
   tokenAuthMethods?: Array<'client_secret_basic' | 'client_secret_post' | 'none'>;
 }
 
 function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
+  const serverUrl = options.serverUrl ?? SERVER_URL;
+  const parsedServerUrl = new URL(serverUrl);
+  const protectedResourceMetadataUrl =
+    `${parsedServerUrl.origin}/.well-known/oauth-protected-resource${parsedServerUrl.pathname}`;
   const calls: Array<{ url: string; body?: URLSearchParams }> = [];
   let registrations = 0;
   let exchanges = 0;
@@ -61,10 +66,10 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
 
     if (
       url ===
-      'https://mcp.example.test/.well-known/oauth-protected-resource/mcp'
+      protectedResourceMetadataUrl
     ) {
       return Response.json({
-        resource: SERVER_URL,
+        resource: serverUrl,
         authorization_servers: ['https://auth.example.test'],
         scopes_supported: ['read', 'write'],
       });
@@ -118,7 +123,7 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
         assert.equal(body?.get('code'), 'provider-code');
         assert.equal(body?.get('redirect_uri'), CALLBACK_URL);
         assert.ok(body?.get('code_verifier'));
-        assert.equal(body?.get('resource'), SERVER_URL);
+        assert.equal(body?.get('resource'), serverUrl);
         if (options.exchangeError) {
           return Response.json(
             { error: options.exchangeError, error_description: 'exchange rejected' },
@@ -148,7 +153,7 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
           );
         }
         assert.equal(body?.get('refresh_token'), 'refresh-initial');
-        assert.equal(body?.get('resource'), SERVER_URL);
+        assert.equal(body?.get('resource'), serverUrl);
         return Response.json({
           access_token: 'access-refreshed',
           token_type: 'Bearer',
@@ -298,6 +303,38 @@ test('DCR is registered once, pending state is single-use, and callback stores t
     const rawSettings = await settings.getSettings(mcpOAuthSettingKeys(REF));
     assert.equal(rawSettings.some((value) => value?.includes('access-initial')), true);
     assert.equal(rawSettings.some((value) => value?.includes('refresh-initial')), true);
+  } finally {
+    settings.close();
+  }
+});
+
+test('Sentry organization/project OAuth keeps the exact scoped resource URL', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const serverUrl = 'https://mcp.sentry.dev/mcp/acme/web-app';
+  const oauth = fakeOAuthServer({ serverUrl });
+  try {
+    const started = await startMcpOAuthAuthorization({
+      ref: { agentId: 'agent_test', connectionId: 'sentry' },
+      serverUrl,
+      callbackUrl: CALLBACK_URL,
+    }, {
+      settings,
+      fetchFn: oauth.fetchFn,
+      randomId: () => 'sentry-scope-state',
+      validateConnection: () => true,
+    });
+
+    assert.equal(started.authorizationUrl.searchParams.get('resource'), serverUrl);
+    assert.equal(
+      oauth.calls[0]?.url,
+      'https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp/acme/web-app',
+    );
+    const pending = JSON.parse(
+      (await settings.getSetting(mcpOAuthSettingKeys({
+        agentId: 'agent_test', connectionId: 'sentry',
+      })[1]))!,
+    ) as { resource: string };
+    assert.equal(pending.resource, serverUrl);
   } finally {
     settings.close();
   }
