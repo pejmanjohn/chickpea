@@ -2,6 +2,7 @@ import type { WebClient } from '@slack/web-api';
 
 import {
   getSlackStateStore,
+  getConfigStore,
   getIdentityStore,
   getManagementStore,
   getWorkStore,
@@ -26,7 +27,7 @@ import {
   sanitizeError,
 } from './run-turn.ts';
 import { AgentPromptFailure } from './flue-dispatch.ts';
-import { slackThreadKey } from './thread-key.ts';
+import { slackAgentThreadKey } from './thread-key.ts';
 import {
   cacheSlackInstallationExecutionContexts,
   effectiveTurnSlackInstallationId,
@@ -40,6 +41,7 @@ import {
 import { recordSlackInstallationUnavailable } from './installation-observability.ts';
 import { MAX_POST_DISPATCH_ATTEMPTS } from './turn-jobs.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
+import { recordDeliveredSlackAgentMessage } from './public-context.ts';
 
 const NODE_RECONCILE_INTERVAL_MS = 30_000;
 const NODE_RETRY_BACKOFF_MS = 2_000;
@@ -136,6 +138,7 @@ export async function drainNodeTurnRelayOnce(
 ): Promise<void> {
   const env = options.env;
   const state = options.state ?? getSlackStateStore(env);
+  const config = getConfigStore(env);
   const executeTurn = options.executeTurn ?? runTurn;
   const shouldResolveIdentity = Boolean(options.resolveInstallation) ||
     (!options.client && !options.executeTurn);
@@ -198,14 +201,14 @@ export async function drainNodeTurnRelayOnce(
           }
           await markTurnRecoveryRequired(job.id, 'slack_installation_unavailable');
           if (job.turn.interactionIntent?.disposition === 'work') {
-            await state.setActiveWork(slackThreadKey(job.turn), job.id, false);
+            await state.setActiveWork(slackAgentThreadKey(job.turn, job.assignment), job.id, false);
           }
           return false;
         }
       }
       const attempt = job.attempts + 1;
       let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
-        ? slackThreadKey(job.turn)
+        ? slackAgentThreadKey(job.turn, job.assignment)
         : undefined;
       await recordTurnAttempt(job.id, attempt);
       const flueDispatch = {
@@ -248,7 +251,7 @@ export async function drainNodeTurnRelayOnce(
           onInteractionIntent: async (intent) => {
             await recordInteractionIntent(job.id, intent);
             if (intent.disposition !== 'work') return;
-            activeWorkKey = slackThreadKey(job.turn);
+            activeWorkKey = slackAgentThreadKey(job.turn, job.assignment);
             await state.setActiveWork(activeWorkKey, job.id, true);
           },
           ...(job.progress.slackInteraction
@@ -256,6 +259,8 @@ export async function drainNodeTurnRelayOnce(
             : {}),
           onInteractionProgress: (patch) =>
             recordSlackInteractionProgress(job.id, patch),
+          onPublicMessageDelivered: (delivery) =>
+            recordDeliveredSlackAgentMessage(config, job.turn, job.assignment, delivery),
         });
         await markTurnDelivered(job.id);
         if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
@@ -291,7 +296,7 @@ export async function drainNodeTurnRelayOnce(
     };
     const groups = new Map<string, typeof pending>();
     for (const job of pending) {
-      const key = slackThreadKey(job.turn);
+      const key = slackAgentThreadKey(job.turn, job.assignment);
       const jobs = groups.get(key);
       if (jobs) jobs.push(job);
       else groups.set(key, [job]);
@@ -416,6 +421,13 @@ async function drainLedgerRuns(input: {
         : {}),
       setActiveWork: (key, generation, active) =>
         state.setActiveWork(key, generation, active),
+      onPublicMessageDelivered: (turn, assignment, delivery) =>
+        recordDeliveredSlackAgentMessage(
+          getConfigStore(input.env),
+          turn,
+          assignment,
+          delivery,
+        ),
       ...(input.client ? { client: input.client } : {}),
       ...(input.resolveInstallation ? { resolveInstallation: input.resolveInstallation } : {}),
       ...(input.verifyInstallationAccess

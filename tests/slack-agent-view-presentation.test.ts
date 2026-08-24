@@ -161,7 +161,7 @@ test('ordinary eligible answers start once, append ordered suffixes, and stop on
         'complete',
         observer(events),
       ),
-      { handled: true },
+      { handled: true, messageTs: '1785700100.000201' },
     );
     await h.presentation.markCanonicalFinalized();
 

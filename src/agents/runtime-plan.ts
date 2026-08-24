@@ -9,8 +9,13 @@ import {
   type SkillConfig,
 } from '../config/types.ts';
 import { opaqueId } from '../work/admission.ts';
-import { slackThreadKey } from '../slack/thread-key.ts';
+import { slackAgentThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
+import {
+  MAX_SLACK_PUBLIC_HANDOFF_CHARS,
+  MAX_SLACK_PUBLIC_HANDOFF_MESSAGES,
+  type SlackPublicHandoffMessage,
+} from '../slack/public-context.ts';
 import {
   projectEffectiveApiConnections,
   projectEffectiveMcpConnections,
@@ -109,6 +114,8 @@ export interface RuntimePlanV2 {
   };
   /** Ownership epoch frozen with the admitted turn. Required on V3. */
   ownerIncarnation?: number;
+  /** Slack-visible history only, frozen when a new owner begins. */
+  handoffContext?: SlackPublicHandoffMessage[];
   conversation: RuntimePlanConversationV2;
   model: string;
   /** Non-secret model policy facts frozen with the admitted turn. Required on V3. */
@@ -149,8 +156,10 @@ export interface CompileRuntimePlanV2Input {
  * trusted request-time resolvers own the current credential material.
  */
 export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimePlanV2 {
-  const conversationThreadTs = input.turn.sessionThreadTs ?? input.turn.threadTs;
-  const continuityKey = opaqueId('agent', slackThreadKey(input.turn));
+  const conversationThreadTs = input.assignment.runtimeContract === 'chickpea-v1'
+    ? input.turn.threadTs
+    : input.turn.sessionThreadTs ?? input.turn.threadTs;
+  const continuityKey = opaqueId('agent', slackAgentThreadKey(input.turn, input.assignment));
   const effectiveConnections = input.effectiveConnections ?? [];
   const mcpConnections = projectEffectiveMcpConnections(effectiveConnections);
   const apiConnections = projectEffectiveApiConnections(effectiveConnections);
@@ -174,6 +183,9 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
         : {}),
     },
     ownerIncarnation: input.assignment.ownerIncarnation ?? 1,
+    ...(input.assignment.handoffContext?.length
+      ? { handoffContext: input.assignment.handoffContext.map((message) => ({ ...message })) }
+      : {}),
     conversation: {
       workspaceId: input.turn.workspaceId,
       channelId: input.turn.channelId,
@@ -262,6 +274,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'connectionChoices',
     'configurationRevision',
     'ownerIncarnation',
+    'handoffContext',
     'conversation',
     'model',
     'modelAttribution',
@@ -282,6 +295,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'connectionAuthorizations',
     'connectionChoices',
     'ownerIncarnation',
+    'handoffContext',
     'modelAttribution',
     'modelCredential',
   ]);
@@ -319,6 +333,9 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
   const ownerIncarnation = record.ownerIncarnation === undefined
     ? undefined
     : positiveInteger(record.ownerIncarnation, 'ownerIncarnation');
+  const handoffContext = record.handoffContext === undefined
+    ? undefined
+    : parseHandoffContext(record.handoffContext);
   const modelAttribution = record.modelAttribution === undefined
     ? undefined
     : parseModelAttribution(record.modelAttribution);
@@ -399,6 +416,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     ...(record.connectionChoices === undefined ? {} : { connectionChoices }),
     ...(configurationRevision ? { configurationRevision } : {}),
     ...(ownerIncarnation ? { ownerIncarnation } : {}),
+    ...(handoffContext?.length ? { handoffContext } : {}),
     conversation,
     model,
     ...(modelAttribution ? { modelAttribution } : {}),
@@ -552,6 +570,7 @@ function computeHarnessRevision(
         ? { configurationRevision: plan.configurationRevision }
         : {}),
       ...(plan.ownerIncarnation ? { ownerIncarnation: plan.ownerIncarnation } : {}),
+      ...(plan.handoffContext?.length ? { handoffContext: plan.handoffContext } : {}),
       model: plan.model,
       ...(plan.modelAttribution ? { modelAttribution: plan.modelAttribution } : {}),
       ...(plan.modelCredential ? { modelCredential: plan.modelCredential } : {}),
@@ -565,6 +584,35 @@ function computeHarnessRevision(
       artifactDestinationKind: plan.artifactDestination.kind,
     }))
     .digest('hex');
+}
+
+function parseHandoffContext(value: unknown): SlackPublicHandoffMessage[] {
+  const messages = arrayOf(value, 'handoffContext', (candidate) => {
+    const record = exactRecord(candidate, 'handoff context message', [
+      'messageTs',
+      'role',
+      'text',
+      'agentId',
+    ], ['agentId']);
+    const role = oneOf(record.role, 'handoff context role', ['human', 'agent'] as const);
+    const agentId = record.agentId === undefined
+      ? undefined
+      : boundedString(record.agentId, 'handoff context agentId', 1, 128);
+    if ((role === 'agent') !== Boolean(agentId)) {
+      throw new Error('Handoff Agent messages require exactly one Agent identity.');
+    }
+    return {
+      messageTs: boundedString(record.messageTs, 'handoff context messageTs', 1, 64),
+      role,
+      text: boundedString(record.text, 'handoff context text', 1, MAX_SLACK_PUBLIC_HANDOFF_CHARS),
+      ...(agentId ? { agentId } : {}),
+    };
+  }, MAX_SLACK_PUBLIC_HANDOFF_MESSAGES);
+  const total = messages.reduce((sum, message) => sum + message.text.length, 0);
+  if (total > MAX_SLACK_PUBLIC_HANDOFF_CHARS) {
+    throw new Error('Handoff context exceeds its character limit.');
+  }
+  return messages;
 }
 
 function parseConnectionAuthorization(value: unknown): RuntimePlanConnectionAuthorizationV2 {

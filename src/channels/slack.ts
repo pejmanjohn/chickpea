@@ -96,10 +96,18 @@ import {
   createSlackWebClient,
   sanitizeError,
 } from '../slack/run-turn.ts';
-import { slackThreadKey } from '../slack/thread-key.ts';
+import { slackAgentThreadKey, slackThreadKey } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import { wakeNodeTurnRelay } from '../slack/node-turn-relay.ts';
-import { hydrateSlackContextViaWebClient } from '../slack/web-client-context.ts';
+import {
+  hydrateSlackContextViaWebClient,
+  hydrateSlackPublicHandoffFallback,
+} from '../slack/web-client-context.ts';
+import {
+  reconcileSlackPublicContextMutation,
+  recordAcceptedSlackHumanMessage,
+  recordDeliveredSlackAgentMessage,
+} from '../slack/public-context.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import type { SlackInboundEnvelope, SlackTransport } from '../slack/transport/types.ts';
@@ -604,13 +612,23 @@ async function seedAgentAppHomeThread(input: {
     channelType: 'im',
     contextMode: 'thread',
   };
-  await resolveAgentRoute({
+  const routed = await resolveAgentRoute({
     turn: synthetic,
     surface: 'direct',
     actor: actor.routing,
     config: input.stores.config,
     appHomeAgentId: agent.id,
   });
+  if (routed.kind === 'routed') {
+    await recordDeliveredSlackAgentMessage(
+      input.stores.config,
+      synthetic,
+      routed.assignment,
+      { messageTs: root.ts, text: agentAppHomeStarterMessage(agent.name) },
+    ).catch(() => {
+      console.warn('[chickpea] App Home starter was not added to public context');
+    });
+  }
 }
 
 async function resolvedAgentAvatarUrl(
@@ -841,6 +859,15 @@ async function processSlackEvent(
   if (!installation || installation.health === 'revoked') return;
   if (execution && installation.transportMode !== 'gateway') return;
   if (!execution && installation.transportMode !== 'direct') return;
+  if (
+    installation.runtimeContract === 'chickpea-v1' &&
+    payload.event.type === 'message' &&
+    await reconcileSlackPublicContextMutation(
+      stores.config,
+      payload.team_id,
+      payload.event,
+    )
+  ) return;
   const credentials = execution
     ? ({ connectionRevision: null } as ResolvedSlackInstallationCredentials)
     : await resolveSlackInstallationCredentials(WORKSPACE_SLACK_INSTALLATION_ID, platformEnv);
@@ -947,8 +974,29 @@ async function processSlackEvent(
         });
         return;
       }
-      routedBaseAssignment = routed.assignment;
-      const policyAssignment = await resolveModelPolicyForAssignment(routed.assignment, store);
+      let routedAssignment = routed.assignment;
+      if (routed.handoffFallbackRequired && routed.previousAgentId && routed.route.handoff) {
+        const fallbackContext = await hydrateSlackPublicHandoffFallback(
+          runtimeClient,
+          turn,
+          routed.previousAgentId,
+        );
+        await store.putAgentThreadRoute({
+          workspaceId: routed.route.workspaceId,
+          channelId: routed.route.channelId,
+          threadTs: routed.route.threadTs,
+          agentId: routed.route.agentId,
+          agentGeneration: routed.route.agentGeneration,
+          ownerIncarnation: routed.route.ownerIncarnation,
+          handoff: { ...routed.route.handoff, context: fallbackContext },
+        }, routed.route.revision);
+        routedAssignment = {
+          ...routed.assignment,
+          ...(fallbackContext.length ? { handoffContext: fallbackContext } : {}),
+        };
+      }
+      routedBaseAssignment = routedAssignment;
+      const policyAssignment = await resolveModelPolicyForAssignment(routedAssignment, store);
       candidateTurn = turn.source === 'reaction_added';
       if (surface === 'channel') {
         const channel = await runtimeTransport.lookupChannel(turn.channelId);
@@ -971,9 +1019,21 @@ async function processSlackEvent(
           return { ...config, ...(modelCredential ? { modelCredential } : {}) };
         },
       );
-      assignment = routed.assignment.interactionMode
-        ? { ...frozenAssignment, interactionMode: routed.assignment.interactionMode }
-        : frozenAssignment;
+      assignment = {
+        ...frozenAssignment,
+        ...(routedAssignment.runtimeContract
+          ? { runtimeContract: routedAssignment.runtimeContract }
+          : {}),
+        ...(routedAssignment.ownerIncarnation
+          ? { ownerIncarnation: routedAssignment.ownerIncarnation }
+          : {}),
+        ...(routedAssignment.handoffContext?.length
+          ? { handoffContext: routedAssignment.handoffContext }
+          : {}),
+        ...(routedAssignment.interactionMode
+          ? { interactionMode: routedAssignment.interactionMode }
+          : {}),
+      };
   } catch (err) {
     // A model that cannot resolve is NOT fail-closed: admit with a best-effort
     // assignment so the turn still delivers the sanitized provider-failure
@@ -1010,6 +1070,15 @@ async function processSlackEvent(
       // Reporting enrichment cannot change whether the turn is admitted.
     }
   }
+  if (
+    assignment.runtimeContract === 'chickpea-v1' &&
+    surface === 'direct' &&
+    turn.messageTs === turn.threadTs
+  ) {
+    // A user-Agent root is a new owned conversation, not an invitation to
+    // hydrate unrelated Agent roots from the shared base-app DM history.
+    turn.contextMode = 'thread';
+  }
   const assignmentAvatarUrl = await resolvedAgentAvatarUrl(
     assignment.agent,
     stores,
@@ -1033,7 +1102,7 @@ async function processSlackEvent(
     await state.claim(msgKey);
     return;
   }
-  threadKey = slackThreadKey(turn);
+  threadKey = slackAgentThreadKey(turn, assignment);
   turn.activeWorkAtAdmission = await state.isActiveWork(threadKey);
   const deterministicCommand = Boolean(parseMemoryCommand(turn.text)) ||
     (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text)));
@@ -1375,6 +1444,9 @@ async function processSlackEvent(
       console.error('[chickpea] enqueue turn failed:', enqueued.error.message);
       throw new SlackDurableEnqueueError(enqueued.error.message);
     }
+    await recordAcceptedSlackHumanMessage(stores.config, turn, assignment).catch(() => {
+      console.warn('[chickpea] accepted Slack message was not added to public context');
+    });
     return;
   }
   if (!durableCanonicalTurnJob) {
@@ -1403,6 +1475,9 @@ async function processSlackEvent(
       await state.recordSlackInteractionProgress(msgKey, admissionInteractionProgress);
     }
   }
+  await recordAcceptedSlackHumanMessage(stores.config, turn, assignment).catch(() => {
+    console.warn('[chickpea] accepted Slack message was not added to public context');
+  });
   await wakeNodeTurnRelay(platformEnv).catch((err) => {
     console.error('[chickpea] node turn wake failed:', sanitizeError(err));
   });

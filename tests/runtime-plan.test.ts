@@ -192,6 +192,60 @@ test('owner-bound sandbox keys converge for retries and isolate competing routin
   assert.throws(() => runtimePlanSandboxConversationKey(plan, 'x'.repeat(201)), /owner identity is invalid/);
 });
 
+test('activated owner incarnations rotate continuity and freeze public handoff context', () => {
+  const first = compile({
+    assignment: assignment({ runtimeContract: 'chickpea-v1', ownerIncarnation: 1 }),
+  });
+  const second = compile({
+    assignment: assignment({
+      runtimeContract: 'chickpea-v1',
+      ownerIncarnation: 2,
+      handoffContext: [
+        { messageTs: '1783000000.000050', role: 'human', text: 'Visible question.' },
+        {
+          messageTs: '1783000000.000075', role: 'agent', agentId: 'agent_previous',
+          text: 'Visible answer.',
+        },
+      ],
+    }),
+  });
+
+  assert.notEqual(first.conversation.continuityKey, second.conversation.continuityKey);
+  assert.notEqual(deriveRuntimePlanInstanceId(first), deriveRuntimePlanInstanceId(second));
+  assert.equal(second.ownerIncarnation, 2);
+  assert.deepEqual(second.handoffContext, [
+    { messageTs: '1783000000.000050', role: 'human', text: 'Visible question.' },
+    {
+      messageTs: '1783000000.000075', role: 'agent', agentId: 'agent_previous',
+      text: 'Visible answer.',
+    },
+  ]);
+});
+
+test('activated DMs use the real Slack root instead of the legacy channel-wide DM key', () => {
+  const dmTurn = turn({
+    channelId: 'D_RUNTIME',
+    threadTs: '1783000000.000900',
+    sessionThreadTs: 'dm',
+    source: 'dm_message',
+    channelType: 'im',
+  });
+  const legacy = compile({
+    turn: dmTurn,
+    assignment: assignment({ channelId: 'D_RUNTIME', runtimeContract: 'legacy' }),
+  });
+  const activated = compile({
+    turn: dmTurn,
+    assignment: assignment({
+      channelId: 'D_RUNTIME', runtimeContract: 'chickpea-v1', ownerIncarnation: 2,
+    }),
+  });
+
+  assert.equal(legacy.conversation.threadTs, 'dm');
+  assert.equal(activated.conversation.threadTs, '1783000000.000900');
+  assert.notEqual(legacy.conversation.continuityKey, activated.conversation.continuityKey);
+});
+
 test('owner-bound sandbox keys stay provider-safe at maximum runtime-plan bounds', () => {
   const workspaceId = `T${'W'.repeat(79)}`;
   const channelId = `C${'H'.repeat(79)}`;

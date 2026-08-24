@@ -183,6 +183,35 @@ test('deliverFinal sanitizes emphasized URLs before streaming them to Slack', as
   );
 });
 
+test('only a confirmed public final enters the handoff delivery callback', async () => {
+  const delivered: Array<{ messageTs: string; text: string }> = [];
+  const presenter = new WebClientPresenter(
+    {
+      chat: {
+        async startStream() {
+          return { ok: true, ts: '1782770400.000350' };
+        },
+        async stopStream() {
+          return { ok: true };
+        },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_BOUND', threadTs: '1782770400.000100',
+      userId: 'U_REQUESTER', workspaceId: 'T_WORKSPACE',
+      agentName: 'Test agent', agentId: 'agent_test',
+    },
+    undefined,
+    { onPublicDelivery: (delivery) => { delivered.push(delivery); } },
+  );
+
+  await presenter.deliverFinal('Visible answer.', 'markdown');
+  assert.deepEqual(delivered, [{
+    messageTs: '1782770400.000350',
+    text: 'Visible answer.',
+  }]);
+});
+
 test('deliverRequesterOnly posts an ephemeral response to the requesting member', async () => {
   const calls: unknown[] = [];
   const presenter = new WebClientPresenter(

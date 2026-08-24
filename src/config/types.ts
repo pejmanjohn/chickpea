@@ -246,6 +246,8 @@ export interface EnsureWorkspaceInstallationInput {
 
 export interface WorkspaceInstallationPatch {
   transportMode?: SlackTransportMode;
+  /** Internal rollout gate; Admin never writes this directly. */
+  runtimeContract?: WorkspaceRuntimeContract;
   teamId?: string | null;
   appId?: string | null;
   botUserId?: string | null;
@@ -283,8 +285,22 @@ export interface AgentThreadRoute {
   agentGeneration: number;
   /** Positive tenure counter for this owner within the Slack root. */
   ownerIncarnation: number;
+  /** Frozen retry receipt for the message that most recently changed owners. */
+  handoff?: AgentThreadHandoff;
   revision: number;
   updatedAt: number;
+}
+
+export interface AgentThreadHandoff {
+  transferMessageTs: string;
+  previousAgentId: string;
+  /** Undefined until the bounded legacy fallback has been attempted. */
+  context?: Array<{
+    messageTs: string;
+    role: 'human' | 'agent';
+    text: string;
+    agentId?: string;
+  }>;
 }
 
 export type AgentThreadRouteInput = Omit<
@@ -468,6 +484,8 @@ export interface ResolvedAssignment {
   workspaceId: string;
   channelId: string;
   agentId: string;
+  /** Routing contract frozen when Slack admits the message. */
+  runtimeContract?: WorkspaceRuntimeContract;
   /** Explicit base-app channel mentions are a memoryless workspace-management entry point. */
   interactionMode?: 'workspace_management';
   channelLabel?: string;
@@ -475,6 +493,11 @@ export interface ResolvedAssignment {
   channelRevision?: number;
   /** Persisted ownership epoch; later handoffs increment it. */
   ownerIncarnation?: number;
+  /** Bounded Slack-visible history frozen only for an ownership handoff. */
+  handoffContext?: Array<Pick<
+    SlackPublicContextEntry,
+    'messageTs' | 'role' | 'text' | 'agentId'
+  >>;
   agent: CustomAgentConfig;
   // Optional pre-resolved model label. Set only when the assignment is served
   // from a frozen thread snapshot; undefined means resolve from the agent via

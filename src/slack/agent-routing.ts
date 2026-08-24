@@ -8,6 +8,8 @@ import {
   type ResolvedAssignment,
 } from '../config/types.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
+import { boundedSlackPublicHandoff } from './public-context.ts';
 
 export type AgentRouteSurface = 'channel' | 'direct';
 export type AgentRouteSource =
@@ -42,6 +44,8 @@ export type AgentRoutingResult =
       route: AgentThreadRoute;
       handoff: boolean;
       routeChanged: boolean;
+      previousAgentId?: string;
+      handoffFallbackRequired?: boolean;
     };
 
 export interface AgentRoutingActor {
@@ -63,6 +67,7 @@ export interface ResolveAgentRouteInput {
     | 'listAgentChannelGrants'
     | 'getAgentThreadRoute'
     | 'putAgentThreadRoute'
+    | 'listSlackPublicContext'
   >;
   /** Trusted Agent seed from App Home interactivity, never Slack message text. */
   appHomeAgentId?: string;
@@ -102,18 +107,22 @@ export async function resolveAgentRoute(
   ]);
   const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
   const agentsByGroupId = new Map(
-    agents.flatMap((agent) => agent.slackPresence?.userGroupId
+    agents.flatMap((agent) => agent.kind === 'user' && agent.slackPresence?.userGroupId
       ? [[agent.slackPresence.userGroupId, agent] as const]
       : []),
   );
   const activeGrants = channelGrants.filter((grant) => grant.status === 'active');
   const available = await availableAlternatives(activeGrants, agentsById);
 
-  const mentionedAgents = parseAgentUserGroupMentions(turn.text)
+  const mentionedGroupIds = parseAgentUserGroupMentions(turn.text);
+  const mentionedAgents = mentionedGroupIds
     .flatMap((groupId) => {
       const agent = agentsByGroupId.get(groupId);
       return agent ? [agent] : [];
     });
+  if (mentionedAgents.length !== mentionedGroupIds.length) {
+    return denied('not_available', []);
+  }
   if (mentionedAgents.length > 1) {
     return denied('multiple_agents', available, 'ambiguous');
   }
@@ -132,13 +141,21 @@ export async function resolveAgentRoute(
     // when the default Agent itself has no grant in that Channel. An explicit
     // @Chickpea also takes ownership from an existing Agent thread.
     source = 'default_agent';
-    selected = agentsById.get(installation.defaultAgentId);
+    selected = agentsById.get(
+      installation.runtimeContract === 'chickpea-v1'
+        ? CHICKPEA_AGENT_ID
+        : installation.defaultAgentId,
+    );
   } else if (currentRoute) {
     source = 'thread_owner';
     selected = agentsById.get(currentRoute.agentId);
   } else if (surface === 'direct') {
     source = 'default_agent';
-    selected = agentsById.get(installation.defaultAgentId);
+    selected = agentsById.get(
+      installation.runtimeContract === 'chickpea-v1'
+        ? CHICKPEA_AGENT_ID
+        : installation.defaultAgentId,
+    );
   } else {
     return { kind: 'ignore' };
   }
@@ -155,15 +172,29 @@ export async function resolveAgentRoute(
     }
   } else {
     if (!actor.fullMember) return denied('member_required', []);
-    const selectedFromDirectory = source === 'app_home' || source === 'agent_handle' ||
-      (source === 'thread_owner' && selected.id !== installation.defaultAgentId);
+    const selectedFromDirectory = selected.kind === 'user' && (
+      source === 'app_home' || source === 'agent_handle' || source === 'thread_owner'
+    );
     if (selectedFromDirectory && !actor.discoverableAgentIds?.has(selected.id)) {
       return denied('not_available', []);
     }
   }
 
   const generation = selected.configurationGeneration ?? selected.revision;
-  const routeChanged = !currentRoute || currentRoute.agentId !== selected.id ||
+  const ownerChanged = Boolean(currentRoute && currentRoute.agentId !== selected.id);
+  const persistedHandoffRetry = installation.runtimeContract === 'chickpea-v1' &&
+    !ownerChanged && currentRoute?.handoff?.transferMessageTs === turn.messageTs
+      ? currentRoute.handoff
+      : undefined;
+  const freshHandoffContext = installation.runtimeContract === 'chickpea-v1' && ownerChanged
+    ? boundedSlackPublicHandoff(await config.listSlackPublicContext(
+        turn.workspaceId,
+        turn.channelId,
+        turn.threadTs,
+      ))
+    : undefined;
+  const handoffContext = persistedHandoffRetry?.context ?? freshHandoffContext;
+  const routeChanged = !currentRoute || ownerChanged ||
     currentRoute.agentGeneration !== generation;
   const route = routeChanged
     ? await config.putAgentThreadRoute({
@@ -172,6 +203,20 @@ export async function resolveAgentRoute(
         threadTs: turn.threadTs,
         agentId: selected.id,
         agentGeneration: generation,
+        ownerIncarnation: currentRoute
+          ? currentRoute.ownerIncarnation + (ownerChanged ? 1 : 0)
+          : 1,
+        ...(ownerChanged && currentRoute
+          ? {
+              handoff: {
+                transferMessageTs: turn.messageTs,
+                previousAgentId: currentRoute.agentId,
+                ...(freshHandoffContext?.length
+                  ? { context: freshHandoffContext }
+                  : {}),
+              },
+            }
+          : {}),
       }, currentRoute?.revision ?? 0)
     : currentRoute;
 
@@ -185,10 +230,24 @@ export async function resolveAgentRoute(
       source === 'default_agent' && turn.source === 'app_mention'
         ? 'workspace_management'
         : undefined,
+      route.ownerIncarnation,
+      installation.runtimeContract,
+      handoffContext,
     ),
     route,
-    handoff: Boolean(currentRoute && currentRoute.agentId !== selected.id),
+    handoff: ownerChanged || Boolean(persistedHandoffRetry),
     routeChanged,
+    ...((ownerChanged && currentRoute) || persistedHandoffRetry
+      ? {
+          previousAgentId: ownerChanged
+            ? currentRoute!.agentId
+            : persistedHandoffRetry!.previousAgentId,
+        }
+      : {}),
+    ...((ownerChanged && !freshHandoffContext?.length) ||
+        (persistedHandoffRetry && persistedHandoffRetry.context === undefined)
+      ? { handoffFallbackRequired: true }
+      : {}),
   };
 }
 
@@ -219,7 +278,7 @@ export async function discoverableAgents(input: {
   };
   const visible: CustomAgentConfig[] = [];
   for (const agent of agents) {
-    if (!agentIsActive(agent)) continue;
+    if (agent.kind !== 'user' || !agentIsActive(agent)) continue;
     if (input.principal && canEditAgent(input.principal, agent)) {
       visible.push(agent);
       continue;
@@ -236,7 +295,7 @@ export async function discoverableAgents(input: {
 }
 
 function agentIsActive(agent: CustomAgentConfig): boolean {
-  return agent.enabled && agent.lifecycle !== 'archived';
+  return agent.enabled && agent.lifecycle !== 'archived' && agent.lifecycle !== 'draft';
 }
 
 async function availableAlternatives(
@@ -246,7 +305,7 @@ async function availableAlternatives(
   return grants
     .flatMap((grant) => {
       const agent = agentsById.get(grant.agentId);
-      if (!agent || !agentIsActive(agent)) return [];
+      if (!agent || agent.kind !== 'user' || !agentIsActive(agent)) return [];
       return [{
         id: agent.id,
         name: agent.name,
@@ -261,12 +320,18 @@ function assignmentForAgent(
   agent: CustomAgentConfig,
   grants: AgentChannelGrant[],
   interactionMode?: ResolvedAssignment['interactionMode'],
+  ownerIncarnation?: number,
+  runtimeContract?: ResolvedAssignment['runtimeContract'],
+  handoffContext?: ResolvedAssignment['handoffContext'],
 ): ResolvedAssignment {
   const grant = grants.find((candidate) => candidate.agentId === agent.id);
   return {
     workspaceId: turn.workspaceId,
     channelId: turn.channelId,
     agentId: agent.id,
+    ...(runtimeContract ? { runtimeContract } : {}),
+    ...(ownerIncarnation ? { ownerIncarnation } : {}),
+    ...(handoffContext?.length ? { handoffContext } : {}),
     ...(interactionMode ? { interactionMode } : {}),
     ...(grant?.channelLabel ? { channelLabel: grant.channelLabel } : {}),
     agent,

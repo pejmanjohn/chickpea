@@ -100,6 +100,8 @@ export interface SlackDeliveryObserver {
 export interface SlackPresenterOptions {
   deliverySafety?: 'legacy' | 'ledger';
   agentViewPresentation?: SlackAgentViewPresentation;
+  /** Successful non-ephemeral final, for the ownership handoff ledger. */
+  onPublicDelivery?: (input: { messageTs: string; text: string }) => void | Promise<void>;
 }
 
 export class PersistedSlackDeliveryError extends Error {
@@ -355,7 +357,10 @@ export class WebClientPresenter {
           after: (input) => this.observeAfterDelivery(input),
         },
       );
-      if (result.handled) return;
+      if (result.handled) {
+        if (result.messageTs) await this.notifyPublicDelivery(result.messageTs, text);
+        return;
+      }
       forcePostFallback = result.fallbackPresentation;
     }
 
@@ -416,6 +421,7 @@ export class WebClientPresenter {
           outcome: 'delivered',
           deliveryRef: slackDeliveryRef(this.target.channelId, started.ts),
         });
+        await this.notifyPublicDelivery(String(started.ts), text);
         return;
       }
     }
@@ -444,6 +450,9 @@ export class WebClientPresenter {
         outcome: 'delivered',
         deliveryRef: slackDeliveryRef(this.target.channelId, posted.ts),
       });
+      if (typeof posted.ts === 'string' && posted.ts) {
+        await this.notifyPublicDelivery(posted.ts, text);
+      }
     } catch (error) {
       const outcome = this.deliveryOutcome(error);
       await this.observeAfterDelivery({
@@ -509,6 +518,16 @@ export class WebClientPresenter {
       if (this.options.deliverySafety === 'ledger') throw error;
       console.warn('[work] Slack delivery observation failed; delivery will continue');
       return undefined;
+    }
+  }
+
+  private async notifyPublicDelivery(messageTs: string, text: string): Promise<void> {
+    try {
+      await this.options.onPublicDelivery?.({ messageTs, text });
+    } catch {
+      // Slack delivery is the commit point. Ledger repair must never turn a
+      // confirmed final into a duplicate-delivery retry.
+      console.warn('[chickpea] Slack public-context recording failed');
     }
   }
 

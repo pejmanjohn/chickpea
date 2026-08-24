@@ -29,7 +29,7 @@ import type {
   FlueTurnObservationV1,
 } from './turn-job-types.ts';
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
-import { slackThreadKey } from './thread-key.ts';
+import { slackAgentThreadKey } from './thread-key.ts';
 import {
   cacheSlackInstallationExecutionContexts,
   effectiveTurnSlackInstallationId,
@@ -102,6 +102,11 @@ export interface LedgerSlackRunHandlerOptions {
   presentationState?: SlackPresentationStatePort;
   executeTurn?: LedgerSlackTurnExecutor;
   setActiveWork?: (key: string, generation: string, active: boolean) => MaybePromise<void>;
+  onPublicMessageDelivered?: (
+    turn: NormalizedSlackTurn,
+    assignment: ResolvedAssignment,
+    delivery: { messageTs: string; text: string },
+  ) => MaybePromise<void>;
   now?: () => number;
 }
 
@@ -218,7 +223,11 @@ export function createLedgerSlackRunHandler(
         onInteractionIntent: async (intent) => {
           await options.turns.recordInteractionIntent(job.id, intent);
           if (intent.disposition === 'work') {
-            await options.setActiveWork?.(slackThreadKey(job.turn), job.id, true);
+            await options.setActiveWork?.(
+              slackAgentThreadKey(job.turn, job.assignment),
+              job.id,
+              true,
+            );
           }
         },
         ...(job.progress.slackInteraction
@@ -227,6 +236,12 @@ export function createLedgerSlackRunHandler(
         onInteractionProgress: async (patch) => {
           await options.turns.recordSlackInteractionProgress(job.id, patch);
         },
+        ...(options.onPublicMessageDelivered
+          ? {
+              onPublicMessageDelivered: (delivery) =>
+                options.onPublicMessageDelivered!(job.turn, job.assignment, delivery),
+            }
+          : {}),
         onDelivered: async () => {
           await options.turns.markDelivered(job.id);
           await clearActiveWork(options, job);
@@ -564,5 +579,9 @@ async function clearActiveWork(
   job: PendingTurnJob,
 ): Promise<void> {
   if (job.turn.interactionIntent?.disposition !== 'work') return;
-  await options.setActiveWork?.(slackThreadKey(job.turn), job.id, false);
+  await options.setActiveWork?.(
+    slackAgentThreadKey(job.turn, job.assignment),
+    job.id,
+    false,
+  );
 }

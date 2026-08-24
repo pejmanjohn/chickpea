@@ -273,6 +273,11 @@ export interface TagStateRpc {
     input: AgentThreadRouteInput,
     expectedRevision?: number,
   ): Promise<StateRpcResult<AgentThreadRoute>>;
+  configDeleteAgentThreadRoute(
+    workspaceId: string,
+    channelId: string,
+    threadTs: string,
+  ): Promise<StateRpcResult<boolean>>;
   configListSlackPublicContext(
     workspaceId: string,
     channelId: string,

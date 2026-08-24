@@ -61,7 +61,7 @@ export interface SlackPresentationDeliveryObserver {
 }
 
 export type AgentViewFinalResult =
-  | { handled: true }
+  | { handled: true; messageTs?: string }
   | { handled: false; fallbackPresentation: boolean };
 
 export interface AgentViewPresentationOptions {
@@ -203,7 +203,9 @@ export class SlackAgentViewPresentation {
     let presentation = await this.requirePresentation();
     if (presentation.stream.state === 'finalized' ||
         presentation.stream.state === 'artifact_delivered') {
-      return { handled: true };
+      return { handled: true, ...(presentation.stream.messageTs
+        ? { messageTs: presentation.stream.messageTs }
+        : {}) };
     }
     if (presentation.stream.state === 'fallback') {
       return { handled: false, fallbackPresentation: true };
@@ -579,7 +581,7 @@ export class SlackAgentViewPresentation {
       deliveryRef: deliveryRef(presentation),
     });
     void approvedOutput;
-    return { handled: true };
+    return { handled: true, messageTs: presentation.stream.messageTs! };
   }
 
   private async correctDivergentStream(
@@ -650,7 +652,7 @@ export class SlackAgentViewPresentation {
       outcome: 'delivered',
       deliveryRef: deliveryRef(presentation),
     });
-    return { handled: true };
+    return { handled: true, messageTs };
   }
 
   private async invalidate(reason: ProgressiveRelayInvalidationReason): Promise<void> {

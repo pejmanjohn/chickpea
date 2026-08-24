@@ -66,6 +66,8 @@ const SCHEMA_MARKER_KEY = 'schema_marker';
 export const CONFIG_SCHEMA_VERSION = 12;
 export const CONFIG_SCHEMA_MARKER = 'agent-first-v1';
 export const CONFIG_CHICKPEA_EXTENSION_MIGRATION = '2026-08-23-chickpea-system-agent-v1';
+export const CONFIG_CHICKPEA_ROUTING_MIGRATION = '2026-08-24-chickpea-routing-retry-v1';
+const MAX_STORED_SLACK_PUBLIC_CONTEXT_ROWS = 200;
 
 interface AgentRow {
   id: string;
@@ -124,6 +126,9 @@ interface AgentThreadRouteRow {
   agent_id: string;
   agent_generation: number;
   owner_incarnation?: number | null;
+  transfer_message_ts?: string | null;
+  previous_agent_id?: string | null;
+  handoff_context_json?: string | null;
   revision: number;
   updated_at: number;
 }
@@ -287,6 +292,11 @@ export interface ConfigStore {
     input: AgentThreadRouteInput,
     expectedRevision?: number,
   ): Promise<AgentThreadRoute>;
+  deleteAgentThreadRoute(
+    workspaceId: string,
+    channelId: string,
+    threadTs: string,
+  ): Promise<boolean>;
   listSlackPublicContext(
     workspaceId: string,
     channelId: string,
@@ -416,11 +426,12 @@ export class ConfigStoreLogic {
     }
     const updated = this.db.run(
       `UPDATE config_workspace_installations
-       SET transport_mode = ?, team_id = ?, app_id = ?, bot_user_id = ?,
+       SET transport_mode = ?, runtime_contract = ?, team_id = ?, app_id = ?, bot_user_id = ?,
            gateway_binding_id = ?, health = ?, health_detail = ?,
            revision = revision + 1, updated_at = ?
        WHERE workspace_id = ? AND revision = ?`,
       patch.transportMode ?? current.transportMode,
+      patch.runtimeContract ?? current.runtimeContract,
       patch.teamId === undefined ? current.teamId ?? null : patch.teamId,
       patch.appId === undefined ? current.appId ?? null : patch.appId,
       patch.botUserId === undefined ? current.botUserId ?? null : patch.botUserId,
@@ -785,14 +796,18 @@ export class ConfigStoreLogic {
       this.db.run(
         `INSERT INTO config_agent_thread_routes (
           workspace_id, channel_id, thread_ts, agent_id, agent_generation,
-          owner_incarnation, revision, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
+          owner_incarnation, transfer_message_ts, previous_agent_id,
+          handoff_context_json, revision, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
         input.workspaceId,
         input.channelId,
         input.threadTs,
         input.agentId,
         input.agentGeneration,
         input.ownerIncarnation ?? 1,
+        input.handoff?.transferMessageTs ?? null,
+        input.handoff?.previousAgentId ?? null,
+        input.handoff?.context === undefined ? null : JSON.stringify(input.handoff.context),
         now,
       );
     } else {
@@ -805,11 +820,21 @@ export class ConfigStoreLogic {
       const updated = this.db.run(
         `UPDATE config_agent_thread_routes
          SET agent_id = ?, agent_generation = ?, owner_incarnation = ?,
+             transfer_message_ts = ?, previous_agent_id = ?, handoff_context_json = ?,
              revision = revision + 1, updated_at = ?
          WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND revision = ?`,
         input.agentId,
         input.agentGeneration,
         input.ownerIncarnation ?? current.ownerIncarnation,
+        input.handoff?.transferMessageTs ?? current.handoff?.transferMessageTs ?? null,
+        input.handoff?.previousAgentId ?? current.handoff?.previousAgentId ?? null,
+        input.handoff?.context !== undefined
+          ? JSON.stringify(input.handoff.context)
+          : current.handoff
+            ? current.handoff.context === undefined
+              ? null
+              : JSON.stringify(current.handoff.context)
+            : null,
         now,
         input.workspaceId,
         input.channelId,
@@ -819,6 +844,19 @@ export class ConfigStoreLogic {
       if (updated.changes !== 1) throw new Error('Agent thread route changed');
     }
     return this.getAgentThreadRoute(input.workspaceId, input.channelId, input.threadTs)!;
+  }
+
+  deleteAgentThreadRoute(workspaceId: string, channelId: string, threadTs: string): boolean {
+    return this.db.transaction(() => {
+      this.deleteSlackPublicContextRoot(workspaceId, channelId, threadTs);
+      return this.db.run(
+        `DELETE FROM config_agent_thread_routes
+         WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ?`,
+        workspaceId,
+        channelId,
+        threadTs,
+      ).changes === 1;
+    });
   }
 
   listSlackPublicContext(
@@ -860,6 +898,23 @@ export class ConfigStoreLogic {
       input.text,
       input.agentId ?? null,
       now,
+    );
+    this.db.run(
+      `DELETE FROM config_slack_public_context
+       WHERE workspace_id = ? AND channel_id = ? AND root_ts = ?
+         AND message_ts NOT IN (
+           SELECT message_ts FROM config_slack_public_context
+           WHERE workspace_id = ? AND channel_id = ? AND root_ts = ?
+           ORDER BY CAST(message_ts AS REAL) DESC, message_ts DESC
+           LIMIT ?
+         )`,
+      input.workspaceId,
+      input.channelId,
+      input.rootTs,
+      input.workspaceId,
+      input.channelId,
+      input.rootTs,
+      MAX_STORED_SLACK_PUBLIC_CONTEXT_ROWS,
     );
     const stored = this.db.get(
       `SELECT * FROM config_slack_public_context
@@ -1464,6 +1519,9 @@ export class ConfigStoreLogic {
         agent_id TEXT NOT NULL,
         agent_generation INTEGER NOT NULL,
         owner_incarnation INTEGER NOT NULL DEFAULT 1 CHECK (owner_incarnation > 0),
+        transfer_message_ts TEXT,
+        previous_agent_id TEXT,
+        handoff_context_json TEXT,
         revision INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (workspace_id, channel_id, thread_ts),
@@ -1760,6 +1818,7 @@ export class ConfigStoreLogic {
         applied_at INTEGER NOT NULL
       )`,
     );
+    this.installChickpeaRoutingExtensions();
     if (this.db.get(
       'SELECT 1 AS present FROM config_migrations WHERE id = ?',
       CONFIG_CHICKPEA_EXTENSION_MIGRATION,
@@ -1847,6 +1906,31 @@ export class ConfigStoreLogic {
     this.db.run(
       'INSERT INTO config_migrations (id, applied_at) VALUES (?, ?)',
       CONFIG_CHICKPEA_EXTENSION_MIGRATION,
+      Date.now(),
+    );
+  }
+
+  private installChickpeaRoutingExtensions(): void {
+    if (this.db.get(
+      'SELECT 1 AS present FROM config_migrations WHERE id = ?',
+      CONFIG_CHICKPEA_ROUTING_MIGRATION,
+    )) return;
+    if (tableExists(this.db, 'config_agent_thread_routes')) {
+      for (const [column, declaration] of [
+        ['transfer_message_ts', 'TEXT'],
+        ['previous_agent_id', 'TEXT'],
+        ['handoff_context_json', 'TEXT'],
+      ] as const) {
+        if (!tableHasColumn(this.db, 'config_agent_thread_routes', column)) {
+          this.db.exec(
+            `ALTER TABLE config_agent_thread_routes ADD COLUMN ${column} ${declaration}`,
+          );
+        }
+      }
+    }
+    this.db.run(
+      'INSERT INTO config_migrations (id, applied_at) VALUES (?, ?)',
+      CONFIG_CHICKPEA_ROUTING_MIGRATION,
       Date.now(),
     );
   }
@@ -2073,6 +2157,15 @@ function rowToAgentChannelGrant(row: AgentChannelGrantRow): AgentChannelGrant {
 }
 
 function rowToAgentThreadRoute(row: AgentThreadRouteRow): AgentThreadRoute {
+  const handoff = row.transfer_message_ts && row.previous_agent_id
+    ? {
+        transferMessageTs: row.transfer_message_ts,
+        previousAgentId: row.previous_agent_id,
+        ...(row.handoff_context_json
+          ? { context: parseAgentThreadHandoffContext(row.handoff_context_json) }
+          : {}),
+      }
+    : undefined;
   return {
     workspaceId: row.workspace_id,
     channelId: row.channel_id,
@@ -2080,9 +2173,37 @@ function rowToAgentThreadRoute(row: AgentThreadRouteRow): AgentThreadRoute {
     agentId: row.agent_id,
     agentGeneration: Number(row.agent_generation),
     ownerIncarnation: Number(row.owner_incarnation ?? 1),
+    ...(handoff ? { handoff } : {}),
     revision: Number(row.revision),
     updatedAt: Number(row.updated_at),
   };
+}
+
+function parseAgentThreadHandoffContext(
+  raw: string,
+): NonNullable<NonNullable<AgentThreadRoute['handoff']>['context']> {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((candidate) => {
+      if (!candidate || typeof candidate !== 'object') return [];
+      const entry = candidate as Record<string, unknown>;
+      if (
+        typeof entry.messageTs !== 'string' ||
+        (entry.role !== 'human' && entry.role !== 'agent') ||
+        typeof entry.text !== 'string' ||
+        (entry.role === 'agent') !== (typeof entry.agentId === 'string')
+      ) return [];
+      return [{
+        messageTs: entry.messageTs,
+        role: entry.role,
+        text: entry.text,
+        ...(typeof entry.agentId === 'string' ? { agentId: entry.agentId } : {}),
+      }];
+    });
+  } catch {
+    return [];
+  }
 }
 
 function rowToWorkspaceModelDefault(row: WorkspaceModelDefaultRow): WorkspaceModelDefault {

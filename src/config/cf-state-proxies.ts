@@ -1170,6 +1170,18 @@ export class CfConfigStore implements ConfigStore {
     return unwrap(await this.stub.configPutAgentThreadRoute(input, expectedRevision));
   }
 
+  async deleteAgentThreadRoute(
+    workspaceId: string,
+    channelId: string,
+    threadTs: string,
+  ): Promise<boolean> {
+    return unwrap(await this.stub.configDeleteAgentThreadRoute(
+      workspaceId,
+      channelId,
+      threadTs,
+    ));
+  }
+
   async listSlackPublicContext(
     workspaceId: string,
     channelId: string,

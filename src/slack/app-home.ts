@@ -6,7 +6,7 @@ import type { CustomAgentConfig } from '../config/types.ts';
 export const START_AGENT_ACTION_ID = 'chickpea.agent.start';
 
 export function agentAppHomeStarterMessage(agentName: string): string {
-  return `${agentName} is ready. Reply in this thread to start.`;
+  return `${agentName} is ready.`;
 }
 
 export function agentDirectoryAppHome(agents: readonly CustomAgentConfig[]): View {

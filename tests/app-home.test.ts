@@ -63,6 +63,6 @@ test('only the exact App Home Agent action produces a trusted selection', () => 
 test('App Home starts a native Agent thread without leaking the routing handle into the message', () => {
   assert.equal(
     agentAppHomeStarterMessage('Sprout'),
-    'Sprout is ready. Reply in this thread to start.',
+    'Sprout is ready.',
   );
 });

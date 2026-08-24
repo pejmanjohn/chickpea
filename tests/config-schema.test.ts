@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   CONFIG_CHICKPEA_EXTENSION_MIGRATION,
+  CONFIG_CHICKPEA_ROUTING_MIGRATION,
   CONFIG_SCHEMA_MARKER,
   CONFIG_SCHEMA_VERSION,
   ConfigStoreLogic,
@@ -266,6 +267,10 @@ test('schema 12 receives additive Chickpea contracts without changing its baseli
       'SELECT 1 AS present FROM config_migrations WHERE id = ?',
       CONFIG_CHICKPEA_EXTENSION_MIGRATION,
     ));
+    assert.ok(db.get(
+      'SELECT 1 AS present FROM config_migrations WHERE id = ?',
+      CONFIG_CHICKPEA_ROUTING_MIGRATION,
+    ));
     assert.deepEqual(store.listAgents().map(({ id, kind }) => ({ id, kind })), [
       { id: 'agent_default', kind: 'user' },
     ]);
@@ -359,6 +364,46 @@ test('Workspace default writes use optimistic revisions', () => {
       WorkspaceModelDefaultRevisionConflictError,
     );
     assert.equal(store.getWorkspaceModelDefault('TACME')?.modelId, 'openai/gpt-5.6');
+  } finally {
+    db.close();
+  }
+});
+
+test('removing an Agent thread route also removes its private public-context rows', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new ConfigStoreLogic(db);
+    store.putAgentThreadRoute({
+      workspaceId: 'T1', channelId: 'D1', threadTs: '100.1',
+      agentId: 'agent_default', agentGeneration: 1,
+    });
+    store.putSlackPublicContext({
+      workspaceId: 'T1', channelId: 'D1', rootTs: '100.1', messageTs: '100.1',
+      role: 'human', text: 'Visible message',
+    });
+
+    assert.equal(store.deleteAgentThreadRoute('T1', 'D1', '100.1'), true);
+    assert.equal(store.getAgentThreadRoute('T1', 'D1', '100.1'), undefined);
+    assert.deepEqual(store.listSlackPublicContext('T1', 'D1', '100.1'), []);
+  } finally {
+    db.close();
+  }
+});
+
+test('the private public-context ledger prunes old rows per Slack root', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new ConfigStoreLogic(db);
+    for (let index = 0; index < 205; index += 1) {
+      store.putSlackPublicContext({
+        workspaceId: 'T1', channelId: 'D1', rootTs: '100.1',
+        messageTs: `${1000 + index}.000001`, role: 'human', text: `message ${index}`,
+      });
+    }
+    const retained = store.listSlackPublicContext('T1', 'D1', '100.1');
+    assert.equal(retained.length, 200);
+    assert.equal(retained[0]?.text, 'message 5');
+    assert.equal(retained.at(-1)?.text, 'message 204');
   } finally {
     db.close();
   }
