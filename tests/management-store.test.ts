@@ -172,7 +172,7 @@ test('terminal management writes append one allowlisted, secret-free audit recei
       organizationId: 'org_audit',
       actorUserId: 'user_audit',
       actorMembershipId: 'member_audit',
-      originKey: 'mcp:client_audit',
+      originKey: 'slack:T1:C1:1.0:agent:agent_chickpea',
       idempotencyKey: 'idem_audit',
       digest: 'a'.repeat(64),
       operations: [operation],
@@ -197,9 +197,15 @@ test('terminal management writes append one allowlisted, secret-free audit recei
     const events = new AuditStoreLogic(db).list({ domain: 'management' });
     assert.equal(events.length, 1);
     assert.deepEqual(JSON.parse(events[0]!.metadataJson), {
+      actingAgentId: 'agent_chickpea',
+      authorization: 'live_membership_and_acting_agent',
+      operationCount: '1',
       operationId: 'operation_audit',
+      operationKind: 'create_agent',
       outcomeCount: '1',
       status: 'completed',
+      target: 'agent:agent_test',
+      targetCount: '1',
     });
     assert.doesNotMatch(events[0]!.metadataJson, /instruction|credential|token|secret/i);
   } finally {

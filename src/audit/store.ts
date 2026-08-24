@@ -292,11 +292,14 @@ function validateManagementMetadata(
   metadata: Record<string, unknown>,
 ): void {
   const expectedKeys = eventType === 'management.request.completed'
-    ? ['operationId', 'outcomeCount', 'status']
+    ? [
+        'actingAgentId', 'authorization', 'operationCount', 'operationId',
+        'operationKind', 'outcomeCount', 'status', 'target', 'targetCount',
+      ]
     : eventType === 'management.proposal.completed'
-      ? ['operationKind', 'proposalId', 'status']
+      ? ['actingAgentId', 'authorization', 'operationKind', 'proposalId', 'status', 'target']
       : eventType === 'management.setup.completed'
-        ? ['action', 'scopeCount', 'setupOperationId']
+        ? ['actingAgentId', 'action', 'authorization', 'scopeCount', 'setupOperationId', 'target']
       : undefined;
   if (!expectedKeys) throw new Error('Management audit event type is not allowlisted');
   if (JSON.stringify(Object.keys(metadata).sort()) !== JSON.stringify(expectedKeys)) {

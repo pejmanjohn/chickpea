@@ -110,7 +110,7 @@ test('management operation schemas expose Agent presence, Channel reach, and lif
   }
 });
 
-test('a full member creates an owned Agent and production publication seam owns the Channel grant', async () => {
+test('a full member creates an owned Agent before confirmed Channel publication', async () => {
   const f = await createManagementAdapterFixture('member-agent-parity');
   const provisioned = await f.identity.provisionSlackMember({
     slackTeamId: f.owner.binding.slackTeamId,
@@ -143,6 +143,12 @@ test('a full member creates an owned Agent and production publication seam owns 
     publishAgentChannel: async ({ actor, workspaceId, channelId, agentId }) => {
       publishCalls += 1;
       assert.equal(actor.membershipId, member.membership.id);
+      const draft = await f.config.getAgent(agentId);
+      await f.config.updateAgent(
+        agentId,
+        { lifecycle: 'active', enabled: true },
+        draft.revision,
+      );
       const grant = await f.config.putAgentChannelGrant({
         workspaceId,
         channelId,
@@ -197,8 +203,20 @@ test('a full member creates an owned Agent and production publication seam owns 
         },
       ],
     });
-    assert.equal(result.status, 'completed');
+    assert.equal(result.status, 'confirmation_required');
     assert.equal(membershipChecks, 1);
+    assert.equal(publishCalls, 0);
+    const draft = await f.config.getAgent('agent_support');
+    assert.equal(draft.lifecycle, 'draft');
+    assert.equal(draft.enabled, true);
+    assert.equal(
+      new URL(result.outcomes.find(({ itemId }) => itemId === 'create')!.handoffUrl!).pathname,
+      '/admin/agents/agent_support',
+    );
+    await service.confirmWorkspaceChange({
+      context,
+      proposalId: result.outcomes.find(({ itemId }) => itemId === 'grant')!.proposalId!,
+    });
     assert.equal(publishCalls, 1);
     const agent = await f.config.getAgent('agent_support');
     assert.equal(agent.creatorMembershipId, member.membership.id);

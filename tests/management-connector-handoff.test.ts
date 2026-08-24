@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
+import { UnknownAgentError } from '../src/config/errors.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import {
   invokeSlackWorkspaceManagementTool,
@@ -302,6 +304,243 @@ test('Slack management lets a member create an Agent and edit it through its spe
       (await f.config.getAgent(agent.id)).description,
       'Handles escalated specialist requests.',
     );
+  } finally {
+    f.close();
+  }
+});
+
+test('activated user Agents self-edit safely and hand authority-bearing work to Chickpea', async () => {
+  const f = await createManagementAdapterFixture('activated-agent-authority');
+  const workspaceId = f.admin.binding.slackTeamId;
+  const support = await f.config.createAgent({
+    id: 'agent_support',
+    name: 'Support',
+    creatorMembershipId: f.admin.membership.id,
+    editPolicy: 'creator_and_admins',
+    lifecycle: 'active',
+    configurationGeneration: 1,
+    instructions: 'Help with support.',
+    enabled: true,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  });
+  await f.config.materializeChickpeaAgent();
+  const installation = await f.config.ensureWorkspaceInstallation({
+    workspaceId,
+    transportMode: 'direct',
+    defaultAgentId: support.id,
+    teamId: workspaceId,
+    appId: 'A_AUTHORITY',
+    botUserId: 'U_CHICKPEA',
+  });
+  await f.config.updateWorkspaceInstallation(
+    workspaceId,
+    { runtimeContract: 'chickpea-v1' },
+    installation.revision,
+  );
+  let sequence = 0;
+  const signal = (agentId: string) => ({
+    agentId,
+    workspaceId,
+    channelId: 'D_AUTHORITY',
+    threadTs: '400.1',
+    slackUserId: f.admin.binding.slackUserId,
+    eventId: `Ev_AUTHORITY_${++sequence}`,
+    messageTs: `400.${sequence + 1}`,
+    turnJobId: `turn_AUTHORITY_${sequence}`,
+  });
+  try {
+    const scoped = await invokeSlackWorkspaceManagementTool({
+      signal: signal(support.id),
+      identity: f.identity,
+      service: f.service,
+      name: 'inspect_workspace',
+      args: {},
+    });
+    assert.equal(scoped.ok, true);
+    const snapshot = (scoped as { ok: true; result: {
+      currentAgentId: string;
+      agents: Array<{ id: string }>;
+      connectors: unknown[];
+      channels: unknown[];
+      providers: unknown[];
+      team?: unknown;
+    } }).result;
+    assert.equal(snapshot.currentAgentId, support.id);
+    assert.deepEqual(snapshot.agents.map(({ id }) => id), [support.id]);
+    assert.deepEqual(snapshot.connectors, []);
+    assert.deepEqual(snapshot.channels, []);
+    assert.deepEqual(snapshot.providers, []);
+    assert.equal(snapshot.team, undefined);
+
+    const selfEdit = await invokeSlackWorkspaceManagementTool({
+      signal: signal(support.id),
+      identity: f.identity,
+      service: f.service,
+      name: 'apply_workspace_changes',
+      args: {
+        idempotencyKey: 'support-self-edit',
+        operations: [{
+          itemId: 'self',
+          kind: 'update_agent',
+          agentId: support.id,
+          expectedRevision: support.revision,
+          patch: { description: 'Handles escalated support.' },
+        }],
+      },
+    });
+    assert.equal(selfEdit.ok, true);
+    assert.equal((await f.config.getAgent(support.id)).description, 'Handles escalated support.');
+
+    await f.config.putChannel({
+      workspaceId,
+      channelId: 'C_SUPPORT_AUTHORITY',
+      label: 'support-authority',
+      lifecycle: 'active',
+    }, 0);
+    const proposal = await invokeSlackWorkspaceManagementTool({
+      signal: signal(CHICKPEA_AGENT_ID),
+      identity: f.identity,
+      service: f.service,
+      name: 'apply_workspace_changes',
+      args: {
+        idempotencyKey: 'chickpea-propose-support-reach',
+        operations: [{
+          itemId: 'grant',
+          kind: 'grant_agent_channel',
+          workspaceId,
+          channelId: 'C_SUPPORT_AUTHORITY',
+          agentId: support.id,
+          expectedRevision: 0,
+        }],
+      },
+    });
+    const proposalId = (proposal as { ok: true; result: {
+      outcomes: Array<{ proposalId: string }>;
+    } }).result.outcomes[0]!.proposalId;
+    const wrongOwnerConfirmation = await invokeSlackWorkspaceManagementTool({
+      signal: signal(support.id),
+      identity: f.identity,
+      service: f.service,
+      name: 'confirm_workspace_change',
+      args: { proposalId },
+    });
+    assert.deepEqual(wrongOwnerConfirmation, {
+      ok: false,
+      error: {
+        code: 'proposal_binding_mismatch',
+        message: 'The confirmation does not match its initiating user and origin.',
+      },
+    });
+    const confirmed = await invokeSlackWorkspaceManagementTool({
+      signal: signal(CHICKPEA_AGENT_ID),
+      identity: f.identity,
+      service: f.service,
+      name: 'confirm_workspace_change',
+      args: { proposalId },
+    });
+    assert.equal(confirmed.ok, true);
+
+    const createHandoff = await invokeSlackWorkspaceManagementTool({
+      signal: signal(support.id),
+      identity: f.identity,
+      service: f.service,
+      name: 'apply_workspace_changes',
+      args: {
+        idempotencyKey: 'support-create-other',
+        operations: [{
+          itemId: 'create',
+          kind: 'create_agent',
+          agent: {
+            id: 'agent_other',
+            name: 'Other',
+            instructions: 'Do other work.',
+            enabled: true,
+            skills: [],
+            mcpServers: [],
+            apiConnections: [],
+            repositories: [],
+          },
+        }],
+      },
+    });
+    const createResult = (createHandoff as { ok: true; result: {
+      outcomes: Array<{ disposition: string; handoff: { instruction: string; target: { id: string } } }>;
+    } }).result;
+    assert.equal(createResult.outcomes[0]?.disposition, 'chickpea_handoff');
+    assert.equal(createResult.outcomes[0]?.handoff.target.id, 'agent_other');
+    assert.equal(createResult.outcomes[0]?.handoff.instruction, 'Mention @Chickpea in this thread to continue.');
+    await assert.rejects(f.config.getAgent('agent_other'), UnknownAgentError);
+
+    const connectorHandoff = await invokeSlackWorkspaceManagementTool({
+      signal: signal(support.id),
+      identity: f.identity,
+      service: f.service,
+      name: 'prepare_connector_setup',
+      args: { connector: 'Gmail', ownerKind: 'member' },
+    });
+    assert.deepEqual(connectorHandoff, {
+      ok: true,
+      result: {
+        kind: 'chickpea_handoff',
+        chickpeaAgentId: CHICKPEA_AGENT_ID,
+        actingAgentId: support.id,
+        requestedAction: 'prepare_connector_setup',
+        target: { kind: 'agent', id: support.id },
+        instruction: 'Mention @Chickpea in this thread to continue.',
+      },
+    });
+
+    const created = await invokeSlackWorkspaceManagementTool({
+      signal: signal(CHICKPEA_AGENT_ID),
+      identity: f.identity,
+      service: f.service,
+      name: 'apply_workspace_changes',
+      args: {
+        idempotencyKey: 'support-create-other',
+        operations: [{
+          itemId: 'create',
+          kind: 'create_agent',
+          agent: {
+            id: 'agent_other',
+            name: 'Other',
+            instructions: 'Do other work.',
+            enabled: true,
+            skills: [],
+            mcpServers: [],
+            apiConnections: [],
+            repositories: [],
+          },
+        }],
+      },
+    });
+    assert.equal(created.ok, true);
+    const createdResult = (created as { ok: true; result: {
+      operationId: string;
+      outcomes: Array<{ handoffUrl?: string }>;
+    } }).result;
+    assert.equal(
+      new URL(createdResult.outcomes[0]!.handoffUrl!).pathname,
+      '/admin/agents/agent_other',
+    );
+    const durableCreate = await invokeSlackWorkspaceManagementTool({
+      signal: signal(CHICKPEA_AGENT_ID),
+      identity: f.identity,
+      service: f.service,
+      name: 'get_operation',
+      args: { operationId: createdResult.operationId },
+    });
+    assert.equal(
+      new URL((durableCreate as { ok: true; result: {
+        operation: { outcomes: Array<{ handoffUrl: string }> };
+      } }).result.operation.outcomes[0]!.handoffUrl).pathname,
+      '/admin/agents/agent_other',
+    );
+    const draft = await f.config.getAgent('agent_other');
+    assert.equal(draft.lifecycle, 'draft');
+    assert.equal(draft.enabled, false);
   } finally {
     f.close();
   }

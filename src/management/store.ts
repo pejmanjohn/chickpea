@@ -10,6 +10,7 @@ import {
   type CompleteManagementSetupInput,
   type ExchangeManagementSetupInput,
   type ManagementApplyResult,
+  type ManagementOperation,
   type ManagementProposalRecord,
   type ManagementReceiptOutboxRecord,
   type ManagementRequestProgress,
@@ -23,6 +24,34 @@ import {
   type RevokeManagementSetupInput,
   type ReserveManagementRequestInput,
 } from './types.ts';
+
+function actingAgentIdFromOriginKey(originKey: string): string | undefined {
+  const marker = ':agent:';
+  const offset = originKey.lastIndexOf(marker);
+  return offset >= 0 ? originKey.slice(offset + marker.length) : undefined;
+}
+
+function managementAuditTarget(operation: ManagementOperation): string {
+  if (operation.kind === 'create_agent') return `agent:${operation.agent.id}`;
+  if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
+      operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
+      operation.kind === 'update_agent_memory') return `agent:${operation.agentId}`;
+  if (operation.kind === 'put_channel') {
+    return `channel:${operation.channel.workspaceId}:${operation.channel.channelId}`;
+  }
+  if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
+    return `channel:${operation.workspaceId}:${operation.channelId}`;
+  }
+  if (operation.kind === 'update_member') return `membership:${operation.membershipId}`;
+  if (operation.kind === 'remove_provider_credential') return `provider:${operation.providerId}`;
+  if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+      operation.kind === 'delete_routine') {
+    return `routine:${operation.routineId ?? `${operation.workspaceId}:${operation.channelId}`}`;
+  }
+  return operation.target.kind === 'provider_credential'
+    ? `provider:${operation.target.providerId}`
+    : `agent:${operation.target.agentId ?? operation.target.agentClientRef ?? 'unresolved'}`;
+}
 
 interface ManagementRequestRow {
   operation_id: string;
@@ -370,9 +399,15 @@ export class ManagementStoreLogic {
         subjectId: operationId,
         createdAt: at,
         metadataJson: JSON.stringify({
+          actingAgentId: actingAgentIdFromOriginKey(request.originKey) ?? 'human',
+          authorization: 'live_membership_and_acting_agent',
+          operationCount: String(request.operations.length),
           operationId,
+          operationKind: request.operations[0]?.kind ?? 'unknown',
           outcomeCount: String(result.outcomes.length),
           status: result.status,
+          target: request.operations[0] ? managementAuditTarget(request.operations[0]) : 'unknown',
+          targetCount: String(request.operations.length),
         }),
         idempotencyKey: `management:${request.organizationId}:${request.actorUserId}:${request.idempotencyKey}`,
       });
@@ -475,9 +510,12 @@ export class ManagementStoreLogic {
         subjectId: proposalId,
         createdAt: at,
         metadataJson: JSON.stringify({
+          actingAgentId: actingAgentIdFromOriginKey(proposal.originKey) ?? 'human',
+          authorization: 'live_membership_and_acting_agent',
           operationKind: proposal.operation.kind,
           proposalId,
           status: result.status,
+          target: managementAuditTarget(proposal.operation),
         }),
         idempotencyKey: `management-confirmation:${proposalId}`,
       });
@@ -718,8 +756,13 @@ export class ManagementStoreLogic {
         createdAt: input.at,
         metadataJson: JSON.stringify({
           action: setup.action,
+          actingAgentId: setup.origin.kind === 'slack'
+            ? setup.origin.agentId ?? 'legacy_slack_agent'
+            : 'human',
+          authorization: 'initiating_membership_browser_session',
           setupOperationId: input.setupOperationId,
           scopeCount: String(setup.scopes.length),
+          target: `${setup.target.kind}:${setup.target.targetId}`,
         }),
         idempotencyKey: `management-setup:${input.setupOperationId}`,
       });

@@ -14281,6 +14281,7 @@ function slackWorkspaceLabel(workspace?: SlackAuthWorkspace): string {
 }
 
 function safeSlackPageDestination(value: string): string {
+  if (/^\/setup\/setup_[A-Za-z0-9_-]{1,128}$/.test(value)) return value;
   if (!/^\/admin(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/.test(value)) return '/admin';
   try {
     const parsed = new URL(value, 'https://chickpea.invalid');

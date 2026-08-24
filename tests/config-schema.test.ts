@@ -408,3 +408,44 @@ test('the private public-context ledger prunes old rows per Slack root', () => {
     db.close();
   }
 });
+
+test('a private draft may hold only a pending publication grant until activation', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new ConfigStoreLogic(db, { agents: [] });
+    const draft = store.createAgent({
+      id: 'agent_draft',
+      name: 'Draft',
+      instructions: 'Draft safely.',
+      enabled: false,
+      lifecycle: 'draft',
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const pending = store.putAgentChannelGrant({
+      workspaceId: 'T1',
+      channelId: 'C1',
+      agentId: draft.id,
+      status: 'pending',
+      createdByMembershipId: 'membership_1',
+    }, 0);
+    assert.throws(
+      () => store.putAgentChannelGrant({ ...pending, status: 'active' }, pending.revision),
+      /not active/,
+    );
+    const active = store.updateAgent(
+      draft.id,
+      { enabled: true, lifecycle: 'active' },
+      draft.revision,
+    );
+    assert.equal(active.enabled, true);
+    assert.equal(
+      store.putAgentChannelGrant({ ...pending, status: 'active' }, pending.revision).status,
+      'active',
+    );
+  } finally {
+    db.close();
+  }
+});

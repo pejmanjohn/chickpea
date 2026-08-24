@@ -1,6 +1,7 @@
 import type { WorkspaceManagementService } from './service.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import {
+  ChickpeaHandoffRequired,
   ManagementError,
   type ManagementActorContext,
   type ManagementOperation,
@@ -100,6 +101,16 @@ export async function invokeWorkspaceManagementTool<TName extends WorkspaceManag
     });
     return success(result);
   } catch (error) {
+    if (error instanceof ChickpeaHandoffRequired) {
+      emitManagementMetric('tool.call', {
+        surface,
+        tool: name,
+        outcome: 'success',
+        reason: 'chickpea_handoff',
+        durationMs: Date.now() - startedAt,
+      });
+      return success(error.handoff);
+    }
     const result = failure(error);
     if (!(error instanceof ManagementError) && !(error instanceof AgentPresenceError)) {
       console.warn('[chickpea:management] unexpected tool failure', JSON.stringify({

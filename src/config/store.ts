@@ -703,7 +703,15 @@ export class ConfigStoreLogic {
     input: AgentChannelGrantInput,
     expectedRevision?: number,
   ): AgentChannelGrant {
-    this.requireActiveUserAgent(input.agentId);
+    if (input.status === 'pending') {
+      const agent = this.getAgent(input.agentId);
+      this.requireMutableUserAgent(agent);
+      if (agent.lifecycle === 'archived') {
+        throw new Error(`Agent ${input.agentId} is not active`);
+      }
+    } else {
+      this.requireActiveUserAgent(input.agentId);
+    }
     const current = this.db.get(
       `SELECT * FROM config_agent_channel_grants
        WHERE workspace_id = ? AND channel_id = ? AND agent_id = ?`,

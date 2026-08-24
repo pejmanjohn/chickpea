@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { resolveConnectorCredential } from '../src/config/connector-secrets.ts';
+import type { AuthPrincipal } from '../src/auth/types.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import {
   describeProviderKeySources,
@@ -22,7 +23,23 @@ import { createSlackOwner } from './helpers/slack-owner.ts';
 const START = 1_800_100_000_000;
 const CAPABILITY = 'c'.repeat(43);
 
-test('a signed-out link holder claims one browser and completes an exact connector setup', async () => {
+function browserPrincipal(actor: {
+  user: { id: string };
+  membership: { id: string; organizationId: string; role: AuthPrincipal['role'] };
+}): AuthPrincipal {
+  return {
+    userId: actor.user.id,
+    membershipId: actor.membership.id,
+    organizationId: actor.membership.organizationId,
+    role: actor.membership.role,
+    authenticatorKind: 'better_auth',
+    credentialId: `session_${actor.membership.id}`,
+    correlationId: 'setup_test',
+    machine: false,
+  };
+}
+
+test('the initiating member claims one authenticated browser and completes an exact connector setup', async () => {
   let now = START;
   let sequence = 0;
   const identity = new SqliteIdentityStore(':memory:', { now: () => now });
@@ -91,6 +108,7 @@ test('a signed-out link holder claims one browser and completes an exact connect
     assert.doesNotMatch(JSON.stringify(durableRequest), new RegExp(CAPABILITY));
 
     const delivered: string[] = [];
+    let principal: AuthPrincipal | undefined;
     const app = createManagementSetupRoutes({
       management,
       config,
@@ -98,6 +116,7 @@ test('a signed-out link holder claims one browser and completes an exact connect
       identity,
       now: () => now,
       randomCapability: () => 's'.repeat(43),
+      authenticatePrincipal: async () => principal,
       deliverReceipt: async (record) => {
         delivered.push(formatManagementSetupReceipt(record.receipt));
         return { deliveryRef: 'slack:C_ADMIN:receipt.1' };
@@ -116,6 +135,27 @@ test('a signed-out link holder claims one browser and completes an exact connect
       body: JSON.stringify({ capability: CAPABILITY }),
     });
     assert.equal(crossOrigin.status, 403);
+
+    const signedOut = await app.request(`http://localhost/setup/${setupId}/exchange`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ capability: CAPABILITY }),
+    });
+    assert.equal(signedOut.status, 401);
+
+    principal = {
+      ...browserPrincipal(owner),
+      userId: 'another_user',
+      membershipId: 'another_membership',
+    };
+    const wrongMember = await app.request(`http://localhost/setup/${setupId}/exchange`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ capability: CAPABILITY }),
+    });
+    assert.equal(wrongMember.status, 403);
+
+    principal = browserPrincipal(owner);
 
     const exchanged = await app.request(`http://localhost/setup/${setupId}/exchange`, {
       method: 'POST',
@@ -387,6 +427,7 @@ test('a provider key is validated in the browser lane and never enters MCP state
       settings,
       usage,
       identity,
+      authenticatePrincipal: async () => browserPrincipal(owner),
       now: () => START,
       randomCapability: () => 'q'.repeat(43),
       validateProviderKey: async (provider, key) => {
@@ -472,6 +513,7 @@ test('an older provider setup link cannot overwrite a newer rotation', async () 
     const newer = await issue('newer-provider-link');
     const app = createManagementSetupRoutes({
       management, config, settings, usage, identity,
+      authenticatePrincipal: async () => browserPrincipal(owner),
       now: () => START,
       validateProviderKey: async () => [],
       deliverReceipt: async () => ({ deliveryRef: 'slack:U1:provider' }),
@@ -543,6 +585,7 @@ test('invalid replacement input is cleared while the prior provider credential s
     const setupId = confirmed.outcomes[0]!.setupOperationId!;
     const app = createManagementSetupRoutes({
       management, config, settings, usage, identity,
+      authenticatePrincipal: async () => browserPrincipal(owner),
       now: () => START,
       randomCapability: () => 'j'.repeat(43),
       validateProviderKey: async () => { throw new Error('provider rejected'); },

@@ -7,21 +7,29 @@ export interface ManagementPolicyFacts {
   currentAgent?: CustomAgentConfig;
   agentReferences?: AgentReferenceSummary;
   currentChannelLifecycle?: 'active' | 'archived';
-  initialAgentBundle?: boolean;
   capabilityScopeExpanded?: boolean;
   credentialReplacement?: boolean;
   agentEditable?: boolean;
   adminRequired?: boolean;
+  userAgentSelfEditAllowed?: boolean;
 }
 
 export type ManagementPolicyDecision =
-  | { allowed: false; reason: 'owner_required' | 'operational_access_required' }
+  | { allowed: false; reason: 'owner_required' | 'operational_access_required' | 'chickpea_handoff_required' }
   | { allowed: true; posture: 'immediate' | 'confirmation'; reason: string };
 
 export function classifyManagementOperation(
   facts: ManagementPolicyFacts,
 ): ManagementPolicyDecision {
   const { actor, operation } = facts;
+  if (actor.actingAgentId && actor.actingAgentId !== 'agent_chickpea') {
+    const safeSelfEdit = operation.kind === 'update_agent' && facts.userAgentSelfEditAllowed;
+    const safeSelfMemory = operation.kind === 'update_agent_memory' &&
+      operation.agentId === actor.actingAgentId;
+    if (!safeSelfEdit && !safeSelfMemory) {
+      return { allowed: false, reason: 'chickpea_handoff_required' };
+    }
+  }
   if (facts.adminRequired && actor.role !== 'admin' && actor.role !== 'owner') {
     return { allowed: false, reason: 'operational_access_required' };
   }
@@ -73,13 +81,11 @@ export function classifyManagementOperation(
     return { allowed: true, posture: 'confirmation', reason: 'archive_channel' };
   }
   if (operation.kind === 'grant_agent_channel') {
-    if (!facts.initialAgentBundle) {
-      return {
-        allowed: true,
-        posture: 'confirmation',
-        reason: 'expand_channel_reach',
-      };
-    }
+    return {
+      allowed: true,
+      posture: 'confirmation',
+      reason: 'expand_channel_reach',
+    };
   }
   if (operation.kind === 'revoke_agent_channel') {
     return { allowed: true, posture: 'confirmation', reason: 'revoke_channel_reach' };
