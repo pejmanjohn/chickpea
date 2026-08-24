@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  CONFIG_CHICKPEA_CUTOVER_MIGRATION,
   CONFIG_CHICKPEA_EXTENSION_MIGRATION,
   CONFIG_CHICKPEA_ROUTING_MIGRATION,
   CONFIG_SCHEMA_MARKER,
@@ -9,6 +10,7 @@ import {
   ConfigStoreLogic,
 } from '../src/config/store.ts';
 import { WorkspaceModelDefaultRevisionConflictError } from '../src/config/errors.ts';
+import { createSeededAgents } from '../src/config/seed.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import type { StateDb } from '../src/state/state-db.ts';
 
@@ -271,6 +273,10 @@ test('schema 12 receives additive Chickpea contracts without changing its baseli
       'SELECT 1 AS present FROM config_migrations WHERE id = ?',
       CONFIG_CHICKPEA_ROUTING_MIGRATION,
     ));
+    assert.ok(db.get(
+      'SELECT 1 AS present FROM config_migrations WHERE id = ?',
+      CONFIG_CHICKPEA_CUTOVER_MIGRATION,
+    ));
     assert.deepEqual(store.listAgents().map(({ id, kind }) => ({ id, kind })), [
       { id: 'agent_default', kind: 'user' },
     ]);
@@ -285,6 +291,26 @@ test('schema 12 receives additive Chickpea contracts without changing its baseli
       updatedAt: 1,
     });
     assert.equal(db.get("SELECT 1 FROM config_agents WHERE id = 'agent_chickpea'"), undefined);
+    assert.deepEqual(store.preflightChickpeaCutover('TACME'), {
+      workspaceId: 'TACME',
+      state: 'prepared',
+      runtimeContract: 'legacy',
+      installationRevision: 1,
+      defaultModelId: 'cloudflare/@cf/zai-org/glm-5.2',
+      defaultRevision: 1,
+      defaultProvenance: 'migrated_agent',
+      modelClassification: 'untouched_cloudflare_starter',
+      systemPrincipalCount: 0,
+      validChickpeaPrincipalCount: 0,
+      routeCount: 1,
+      routeBackfillCount: 0,
+      pinnedAgentCount: 0,
+      inheritingAgentCount: 1,
+      starterPinClearCount: 1,
+      uncertainStarterPinCount: 0,
+      collisions: [],
+      blockers: [],
+    });
 
     const before = JSON.stringify({
       agents: store.listAgents(),
@@ -339,6 +365,205 @@ test('Stage 2 materializes one immutable Chickpea principal outside user-Agent l
     db.close();
   }
 });
+
+test('cutover activation is atomic, preserves route owners, and supports compatibility rollback', () => {
+  const db = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(db);
+    const store = new ConfigStoreLogic(db, { agents: [] });
+
+    const activated = store.activateChickpeaCutover({
+      workspaceId: 'TACME',
+      expectedInstallationRevision: 1,
+      expectedDefaultRevision: 1,
+      defaultReady: true,
+    });
+
+    assert.equal(activated.runtimeContract, 'chickpea-v1');
+    assert.equal(activated.installationRevision, 2);
+    assert.equal(activated.defaultRevision, 1);
+    assert.equal(activated.routeCount, 1);
+    assert.equal(activated.routeBackfillCount, 0);
+    assert.equal(activated.starterPinCleared, true);
+    assert.equal(store.getAgent('agent_default').model, undefined);
+    assert.equal(store.getAgent('agent_chickpea').kind, 'system');
+    assert.deepEqual(
+      store.getAgentThreadRoute('TACME', 'D1', '100.1'),
+      {
+        workspaceId: 'TACME',
+        channelId: 'D1',
+        threadTs: '100.1',
+        agentId: 'agent_default',
+        agentGeneration: 1,
+        ownerIncarnation: 1,
+        revision: 1,
+        updatedAt: 1,
+      },
+    );
+    assert.deepEqual(
+      store.activateChickpeaCutover({
+        workspaceId: 'TACME',
+        expectedInstallationRevision: 1,
+        expectedDefaultRevision: 1,
+        defaultReady: true,
+      }),
+      activated,
+    );
+
+    const rolledBack = store.rollbackChickpeaCutover({
+      workspaceId: 'TACME',
+      expectedInstallationRevision: 2,
+    });
+    assert.equal(rolledBack.runtimeContract, 'legacy');
+    assert.equal(rolledBack.state, 'rolled_back');
+    assert.equal(rolledBack.systemPrincipalCount, 1);
+    assert.equal(rolledBack.starterPinClearCount, 1);
+    assert.equal(store.getAgent('agent_default').model, 'cloudflare/@cf/zai-org/glm-5.2');
+
+    const reactivated = store.activateChickpeaCutover({
+      workspaceId: 'TACME',
+      expectedInstallationRevision: 3,
+      expectedDefaultRevision: 1,
+      defaultReady: true,
+    });
+    assert.equal(reactivated.installationRevision, 4);
+    assert.equal(reactivated.starterPinCleared, true);
+    assert.equal(store.getAgent('agent_default').model, undefined);
+  } finally {
+    db.close();
+  }
+});
+
+test('cutover preserves uncertain and known explicit Agent pins', () => {
+  const db = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(db);
+    db.run(
+      'UPDATE config_agents SET configuration_generation = 2 WHERE id = ?',
+      'agent_default',
+    );
+    const store = new ConfigStoreLogic(db, { agents: [] });
+    const preflight = store.preflightChickpeaCutover('TACME');
+
+    assert.equal(preflight.modelClassification, 'explicit_agent_pin');
+    assert.equal(preflight.pinnedAgentCount, 1);
+    assert.equal(preflight.starterPinClearCount, 0);
+    assert.equal(preflight.uncertainStarterPinCount, 1);
+
+    const activated = store.activateChickpeaCutover({
+      workspaceId: 'TACME',
+      expectedInstallationRevision: 1,
+      expectedDefaultRevision: 1,
+      defaultReady: true,
+    });
+    assert.equal(activated.starterPinCleared, false);
+    assert.equal(activated.starterPinPreserved, false);
+    assert.equal(store.getAgent('agent_default').model, 'cloudflare/@cf/zai-org/glm-5.2');
+  } finally {
+    db.close();
+  }
+});
+
+test('Stage 1 captures an environment-only default exactly once', () => {
+  const db = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(db);
+    db.run('UPDATE config_agents SET model = NULL WHERE id = ?', 'agent_default');
+    const store = new ConfigStoreLogic(db, { agents: [] });
+
+    assert.equal(store.preflightChickpeaCutover('TACME').modelClassification, 'model_missing');
+    const prepared = store.prepareChickpeaCutover({
+      workspaceId: 'TACME',
+      legacyEnvironmentModel: 'openai/gpt-5.6-sol',
+    });
+    assert.equal(prepared.modelClassification, 'environment_default');
+    assert.equal(prepared.defaultModelId, 'openai/gpt-5.6-sol');
+    assert.equal(prepared.defaultRevision, 2);
+    assert.equal(prepared.defaultProvenance, 'migrated_environment');
+    assert.equal(store.getAgent('agent_default').model, undefined);
+
+    const repeated = store.prepareChickpeaCutover({
+      workspaceId: 'TACME',
+      legacyEnvironmentModel: 'anthropic/claude-sonnet-5',
+    });
+    assert.equal(repeated.defaultModelId, 'openai/gpt-5.6-sol');
+    assert.equal(repeated.defaultRevision, 2);
+  } finally {
+    db.close();
+  }
+});
+
+test('activation fails closed for a missing default or reserved identity collision', () => {
+  const missingDb = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(missingDb);
+    missingDb.run('UPDATE config_agents SET model = NULL WHERE id = ?', 'agent_default');
+    const missingStore = new ConfigStoreLogic(missingDb, { agents: [] });
+    assert.throws(
+      () => missingStore.activateChickpeaCutover({
+        workspaceId: 'TACME',
+        expectedInstallationRevision: 1,
+        expectedDefaultRevision: 1,
+        defaultReady: false,
+      }),
+      /workspace_default_missing|workspace_default_not_ready/,
+    );
+    assert.equal(missingStore.getWorkspaceInstallation('TACME')?.runtimeContract, 'legacy');
+    assert.equal(dbHasChickpea(missingDb), false);
+  } finally {
+    missingDb.close();
+  }
+
+  const collisionDb = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(collisionDb);
+    collisionDb.run('UPDATE config_agents SET name = ? WHERE id = ?', 'Chick pea', 'agent_default');
+    const collisionStore = new ConfigStoreLogic(collisionDb, { agents: [] });
+    assert.deepEqual(collisionStore.preflightChickpeaCutover('TACME').collisions, [{
+      agentId: 'agent_default',
+      field: 'name',
+    }]);
+    assert.throws(
+      () => collisionStore.activateChickpeaCutover({
+        workspaceId: 'TACME',
+        expectedInstallationRevision: 1,
+        expectedDefaultRevision: 1,
+        defaultReady: true,
+      }),
+      /reserved_identity_collision/,
+    );
+    assert.equal(collisionStore.getWorkspaceInstallation('TACME')?.runtimeContract, 'legacy');
+    assert.equal(dbHasChickpea(collisionDb), false);
+  } finally {
+    collisionDb.close();
+  }
+});
+
+test('a post-gate installation creates Chickpea and its default atomically', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new ConfigStoreLogic(db, {
+      agents: createSeededAgents({ target: 'cloudflare' }),
+    });
+    const installation = store.ensureWorkspaceInstallation({
+      workspaceId: 'TNEW',
+      transportMode: 'gateway',
+      runtimeContract: 'chickpea-v1',
+    });
+
+    assert.equal(installation.runtimeContract, 'chickpea-v1');
+    assert.equal(store.getWorkspaceModelDefault('TNEW')?.modelId, 'cloudflare/@cf/zai-org/glm-5.2');
+    assert.equal(store.getAgent('agent_chickpea').kind, 'system');
+    assert.equal(store.getAgent('agent_default').model, undefined);
+    assert.equal(store.preflightChickpeaCutover('TNEW').state, 'activated');
+  } finally {
+    db.close();
+  }
+});
+
+function dbHasChickpea(db: StateDb): boolean {
+  return Boolean(db.get("SELECT 1 AS present FROM config_agents WHERE id = 'agent_chickpea'"));
+}
 
 test('Workspace default writes use optimistic revisions', () => {
   const db = openStateDb(':memory:');

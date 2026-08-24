@@ -82,6 +82,7 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
   exportPath('docs', 'runbooks', 'slack-auth-recovery.md'),
   exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
+  exportPath('docs', 'runbooks', 'chickpea-system-agent-cutover.md'),
   exportPath('docs', 'runbooks', 'openai-subscription.md'),
   exportPath('docs', 'runbooks', 'slack-interaction-operations.md'),
   exportPath('docs', 'runbooks', 'workspace-management-mcp.md'),

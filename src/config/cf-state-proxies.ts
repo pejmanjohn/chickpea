@@ -19,6 +19,7 @@ import type {
   OAuthReauthorizationTarget,
 } from './store.ts';
 import type {
+  ActivateChickpeaCutoverInput,
   AgentCreateInput,
   AgentChannelGrant,
   AgentChannelGrantInput,
@@ -32,10 +33,14 @@ import type {
   AgentThreadRoute,
   AgentThreadRouteInput,
   ChannelConfig,
+  ChickpeaCutoverActivation,
+  ChickpeaCutoverPreflight,
   CustomAgentConfig,
   ConnectionAccount,
   ConnectionAccountInput,
   EnsureWorkspaceInstallationInput,
+  PrepareChickpeaCutoverInput,
+  RollbackChickpeaCutoverInput,
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
   WorkspaceModelDefault,
@@ -1129,6 +1134,28 @@ export class CfConfigStore implements ConfigStore {
     expectedRevision?: number,
   ): Promise<WorkspaceModelDefault> {
     return unwrap(await this.stub.configPutWorkspaceModelDefault(input, expectedRevision));
+  }
+
+  async prepareChickpeaCutover(
+    input: PrepareChickpeaCutoverInput,
+  ): Promise<ChickpeaCutoverPreflight> {
+    return unwrap(await this.stub.configPrepareChickpeaCutover(input));
+  }
+
+  async preflightChickpeaCutover(workspaceId: string): Promise<ChickpeaCutoverPreflight> {
+    return unwrap(await this.stub.configPreflightChickpeaCutover(workspaceId));
+  }
+
+  async activateChickpeaCutover(
+    input: ActivateChickpeaCutoverInput,
+  ): Promise<ChickpeaCutoverActivation> {
+    return unwrap(await this.stub.configActivateChickpeaCutover(input));
+  }
+
+  async rollbackChickpeaCutover(
+    input: RollbackChickpeaCutoverInput,
+  ): Promise<ChickpeaCutoverPreflight> {
+    return unwrap(await this.stub.configRollbackChickpeaCutover(input));
   }
 
   async listAgentChannelGrants(

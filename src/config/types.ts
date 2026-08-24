@@ -217,6 +217,75 @@ export interface WorkspaceModelDefaultInput {
   lastChangedByMembershipId?: string;
 }
 
+export type ChickpeaCutoverModelClassification =
+  | 'untouched_cloudflare_starter'
+  | 'explicit_agent_pin'
+  | 'environment_default'
+  | 'model_missing';
+
+export type ChickpeaCutoverState = 'prepared' | 'activated' | 'rolled_back';
+
+/** Non-secret Stage 1 evidence. Provider health is joined at the operator boundary. */
+export interface ChickpeaCutoverPreflight {
+  workspaceId: string;
+  state: ChickpeaCutoverState;
+  runtimeContract: WorkspaceRuntimeContract;
+  installationRevision: number;
+  defaultModelId?: string;
+  defaultRevision: number;
+  defaultProvenance: WorkspaceModelDefaultProvenance;
+  modelClassification: ChickpeaCutoverModelClassification;
+  systemPrincipalCount: number;
+  validChickpeaPrincipalCount: number;
+  routeCount: number;
+  routeBackfillCount: number;
+  pinnedAgentCount: number;
+  inheritingAgentCount: number;
+  starterPinClearCount: number;
+  uncertainStarterPinCount: number;
+  collisions: Array<{
+    agentId: string;
+    field: 'id' | 'name' | 'handle' | 'system_principal';
+  }>;
+  blockers: Array<
+    | 'workspace_default_missing'
+    | 'reserved_identity_collision'
+    | 'system_principal_invalid'
+  >;
+}
+
+export interface PrepareChickpeaCutoverInput {
+  workspaceId: string;
+  /** Captured once during Stage 1; never consulted by activated runtime policy. */
+  legacyEnvironmentModel?: string;
+}
+
+export interface ActivateChickpeaCutoverInput {
+  workspaceId: string;
+  expectedInstallationRevision: number;
+  expectedDefaultRevision: number;
+  /** Static catalog and credential preflight result from the trusted operator boundary. */
+  defaultReady: boolean;
+}
+
+export interface ChickpeaCutoverActivation {
+  workspaceId: string;
+  runtimeContract: WorkspaceRuntimeContract;
+  installationRevision: number;
+  defaultRevision: number;
+  systemAgentId: string;
+  routeCount: number;
+  routeBackfillCount: number;
+  starterPinCleared: boolean;
+  starterPinPreserved: boolean;
+  activatedAt: number;
+}
+
+export interface RollbackChickpeaCutoverInput {
+  workspaceId: string;
+  expectedInstallationRevision: number;
+}
+
 /** One Slack installation per deployed workspace; never a user-facing identity. */
 export interface WorkspaceInstallation {
   workspaceId: string;
@@ -242,6 +311,8 @@ export interface EnsureWorkspaceInstallationInput {
   appId?: string;
   botUserId?: string;
   gatewayBindingId?: string;
+  /** Internal fleet gate. Omitted by the Stage 1 compatibility build. */
+  runtimeContract?: WorkspaceRuntimeContract;
 }
 
 export interface WorkspaceInstallationPatch {

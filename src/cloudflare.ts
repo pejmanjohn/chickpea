@@ -69,6 +69,7 @@ import {
   type OAuthReauthorizationTarget,
 } from './config/store.ts';
 import type {
+  ActivateChickpeaCutoverInput,
   AgentCreateInput,
   AgentChannelGrant,
   AgentChannelGrantInput,
@@ -82,10 +83,14 @@ import type {
   AgentThreadRoute,
   AgentThreadRouteInput,
   ChannelConfig,
+  ChickpeaCutoverActivation,
+  ChickpeaCutoverPreflight,
   CustomAgentConfig,
   ConnectionAccount,
   ConnectionAccountInput,
   EnsureWorkspaceInstallationInput,
+  PrepareChickpeaCutoverInput,
+  RollbackChickpeaCutoverInput,
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
   WorkspaceModelDefault,
@@ -730,6 +735,30 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     expectedRevision?: number,
   ): Promise<StateRpcResult<WorkspaceModelDefault>> {
     return this.call((stores) => stores.config.putWorkspaceModelDefault(input, expectedRevision));
+  }
+
+  async configPrepareChickpeaCutover(
+    input: PrepareChickpeaCutoverInput,
+  ): Promise<StateRpcResult<ChickpeaCutoverPreflight>> {
+    return this.call((stores) => stores.config.prepareChickpeaCutover(input));
+  }
+
+  async configPreflightChickpeaCutover(
+    workspaceId: string,
+  ): Promise<StateRpcResult<ChickpeaCutoverPreflight>> {
+    return this.call((stores) => stores.config.preflightChickpeaCutover(workspaceId));
+  }
+
+  async configActivateChickpeaCutover(
+    input: ActivateChickpeaCutoverInput,
+  ): Promise<StateRpcResult<ChickpeaCutoverActivation>> {
+    return this.call((stores) => stores.config.activateChickpeaCutover(input));
+  }
+
+  async configRollbackChickpeaCutover(
+    input: RollbackChickpeaCutoverInput,
+  ): Promise<StateRpcResult<ChickpeaCutoverPreflight>> {
+    return this.call((stores) => stores.config.rollbackChickpeaCutover(input));
   }
 
   async configListAgentChannelGrants(

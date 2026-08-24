@@ -262,6 +262,216 @@ test('a workspace member cannot write the Workspace default through Admin', asyn
     });
     assert.equal(response.status, 403);
     assert.deepEqual(await response.json(), { error: 'forbidden' });
+    const preflight = await app.request('/admin/api/chickpea-cutover/preflight', {
+      headers: auth(),
+    });
+    assert.equal(preflight.status, 403);
+    const activation = await app.request('/admin/api/chickpea-cutover/activate', {
+      method: 'POST',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        confirm: 'activate-chickpea-v1',
+        compatibilityTrafficConfirmed: true,
+        expectedInstallationRevision: 1,
+        expectedDefaultRevision: 1,
+      }),
+    });
+    assert.equal(activation.status, 403);
+  } finally {
+    config.close();
+    settings.close();
+    usage.close();
+  }
+});
+
+test('cutover operator APIs require explicit confirmation and preserve rollback evidence', async () => {
+  const { app, config, close } = appWithProviderAdmin();
+  try {
+    const base = await config.createAgent({
+      id: 'agent_base', name: 'Base', instructions: 'Start.', enabled: true,
+      lifecycle: 'active', model: 'openai/gpt-5.6-sol', skills: [], mcpServers: [],
+      apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: base.id,
+    });
+    await config.putAgentThreadRoute({
+      workspaceId: 'T_TEST', channelId: 'D_EXISTING', threadTs: '100.1',
+      agentId: base.id, agentGeneration: 1,
+    });
+
+    const preflight = await app.request('/admin/api/chickpea-cutover/preflight', {
+      headers: auth(),
+    });
+    assert.equal(preflight.status, 200);
+    const preflightBody = await preflight.json() as {
+      cutover: {
+        readyForActivation: boolean;
+        routeCount: number;
+        installationRevision: number;
+        defaultRevision: number;
+        defaultHealth: { status: string; providerId: string };
+      };
+    };
+    assert.equal(preflightBody.cutover.readyForActivation, true);
+    assert.equal(preflightBody.cutover.routeCount, 1);
+    assert.deepEqual(preflightBody.cutover.defaultHealth, {
+      status: 'ready', providerId: 'openai',
+    });
+
+    const unconfirmed = await app.request('/admin/api/chickpea-cutover/activate', {
+      method: 'POST',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        confirm: 'activate-chickpea-v1',
+        compatibilityTrafficConfirmed: false,
+        expectedInstallationRevision: 1,
+        expectedDefaultRevision: 1,
+      }),
+    });
+    assert.equal(unconfirmed.status, 400);
+    assert.equal((await config.getWorkspaceInstallation('T_TEST'))?.runtimeContract, 'legacy');
+
+    const staleInstallation = await app.request('/admin/api/chickpea-cutover/activate', {
+      method: 'POST',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        confirm: 'activate-chickpea-v1',
+        compatibilityTrafficConfirmed: true,
+        expectedInstallationRevision: preflightBody.cutover.installationRevision + 1,
+        expectedDefaultRevision: preflightBody.cutover.defaultRevision,
+      }),
+    });
+    assert.equal(staleInstallation.status, 409);
+    assert.deepEqual(await staleInstallation.json(), {
+      error: 'chickpea_cutover_revision_conflict',
+      expectedRevision: preflightBody.cutover.installationRevision + 1,
+      actualRevision: preflightBody.cutover.installationRevision,
+    });
+
+    const staleDefault = await app.request('/admin/api/chickpea-cutover/activate', {
+      method: 'POST',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        confirm: 'activate-chickpea-v1',
+        compatibilityTrafficConfirmed: true,
+        expectedInstallationRevision: preflightBody.cutover.installationRevision,
+        expectedDefaultRevision: preflightBody.cutover.defaultRevision + 1,
+      }),
+    });
+    assert.equal(staleDefault.status, 409);
+    assert.deepEqual(await staleDefault.json(), {
+      error: 'workspace_model_default_revision_conflict',
+      expectedRevision: preflightBody.cutover.defaultRevision + 1,
+      actualRevision: preflightBody.cutover.defaultRevision,
+    });
+
+    const activated = await app.request('/admin/api/chickpea-cutover/activate', {
+      method: 'POST',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        confirm: 'activate-chickpea-v1',
+        compatibilityTrafficConfirmed: true,
+        expectedInstallationRevision: preflightBody.cutover.installationRevision,
+        expectedDefaultRevision: preflightBody.cutover.defaultRevision,
+      }),
+    });
+    assert.equal(activated.status, 200);
+    const activation = (await activated.json() as {
+      activation: { runtimeContract: string; installationRevision: number; routeCount: number };
+    }).activation;
+    assert.equal(activation.runtimeContract, 'chickpea-v1');
+    assert.equal(activation.installationRevision, 2);
+    assert.equal(activation.routeCount, 1);
+    assert.equal((await config.getAgentThreadRoute(
+      'T_TEST', 'D_EXISTING', '100.1',
+    ))?.agentId, base.id);
+
+    const rolledBack = await app.request('/admin/api/chickpea-cutover/rollback', {
+      method: 'POST',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        confirm: 'rollback-to-legacy',
+        expectedInstallationRevision: activation.installationRevision,
+      }),
+    });
+    assert.equal(rolledBack.status, 200);
+    assert.equal((await rolledBack.json() as {
+      cutover: { runtimeContract: string; state: string; systemPrincipalCount: number };
+    }).cutover.runtimeContract, 'legacy');
+    assert.equal((await config.preflightChickpeaCutover('T_TEST')).state, 'rolled_back');
+    assert.equal((await config.preflightChickpeaCutover('T_TEST')).systemPrincipalCount, 1);
+  } finally {
+    close();
+  }
+});
+
+test('cutover activation fails closed when the selected provider is unavailable', async () => {
+  const app = new Hono();
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const usage = new SqliteUsageStore(':memory:');
+  app.route('/', createAdminRoutes({
+    store: config,
+    settings,
+    usage,
+    ...testAdminAuthority(ADMIN_TOKEN),
+    knownProviders: new Set(['openai']),
+  }));
+  try {
+    const base = await config.createAgent({
+      id: 'agent_base', name: 'Base', instructions: 'Start.', enabled: true,
+      lifecycle: 'active', model: 'anthropic/claude-sonnet-5', skills: [], mcpServers: [],
+      apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: base.id,
+    });
+    await config.putWorkspaceModelDefault({
+      workspaceId: 'T_TEST',
+      modelId: 'anthropic/claude-sonnet-5',
+      provenance: 'admin_selected',
+      lastChangedByMembershipId: 'membership_test_owner',
+    }, 1);
+
+    const preflight = await app.request('/admin/api/chickpea-cutover/preflight', {
+      headers: auth(),
+    });
+    assert.equal(preflight.status, 200);
+    const cutover = (await preflight.json() as {
+      cutover: {
+        readyForActivation: boolean;
+        installationRevision: number;
+        defaultRevision: number;
+        defaultHealth: { status: string; code: string; providerId: string };
+      };
+    }).cutover;
+    assert.equal(cutover.readyForActivation, false);
+    assert.deepEqual(cutover.defaultHealth, {
+      status: 'repair_required',
+      providerId: 'anthropic',
+      code: 'provider_unavailable',
+      repairPath: '/admin/settings/providers',
+    });
+
+    const activation = await app.request('/admin/api/chickpea-cutover/activate', {
+      method: 'POST',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        confirm: 'activate-chickpea-v1',
+        compatibilityTrafficConfirmed: true,
+        expectedInstallationRevision: cutover.installationRevision,
+        expectedDefaultRevision: cutover.defaultRevision,
+      }),
+    });
+    assert.equal(activation.status, 409);
+    assert.deepEqual(await activation.json(), {
+      error: 'chickpea_cutover_preflight_failed',
+      blockers: [],
+      defaultHealth: cutover.defaultHealth,
+    });
+    assert.equal((await config.getWorkspaceInstallation('T_TEST'))?.runtimeContract, 'legacy');
+    assert.equal((await config.listAgents()).some(({ kind }) => kind === 'system'), false);
   } finally {
     config.close();
     settings.close();

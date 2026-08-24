@@ -534,6 +534,19 @@ const workspaceModelDefaultSchema = v.strictObject({
   modelId: modelSpecifier,
   expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(0)),
 });
+const chickpeaCutoverPrepareSchema = v.strictObject({
+  confirm: v.literal('prepare-stage-1'),
+});
+const chickpeaCutoverActivateSchema = v.strictObject({
+  confirm: v.literal('activate-chickpea-v1'),
+  compatibilityTrafficConfirmed: v.literal(true),
+  expectedInstallationRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  expectedDefaultRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+});
+const chickpeaCutoverRollbackSchema = v.strictObject({
+  confirm: v.literal('rollback-to-legacy'),
+  expectedInstallationRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+});
 const modelCatalogModeSchema = v.strictObject({
   mode: v.picklist(['hosted', 'bundled']),
 });
@@ -3711,6 +3724,160 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           }),
         }, 409);
       }
+      return internalError(c, error);
+    }
+  });
+
+  app.get('/admin/api/chickpea-cutover/preflight', async (c) => {
+    const principal = principalByContext.get(c);
+    if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    const configStore = store(c);
+    const installation = await modelDefaultInstallation(configStore);
+    if (!installation) return c.json({ error: 'workspace_installation_required' }, 409);
+    await loadModelCatalog(settings(c));
+    const [cutover, workspaceDefault] = await Promise.all([
+      configStore.preflightChickpeaCutover(installation.workspaceId),
+      workspaceModelDefaultProjection({
+        installation,
+        configStore,
+        settingsStore: settings(c),
+        platformEnv: c.env as PlatformEnv | undefined,
+        runtimeProviders: modelProviders(),
+      }),
+    ]);
+    return c.json({
+      cutover: {
+        ...cutover,
+        defaultHealth: workspaceDefault.health,
+        readyForActivation: cutover.blockers.length === 0 &&
+          workspaceDefault.health.status === 'ready',
+      },
+    });
+  });
+
+  app.post('/admin/api/chickpea-cutover/prepare', async (c) => {
+    const parsed = v.safeParse(chickpeaCutoverPrepareSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const principal = principalByContext.get(c);
+    if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    const configStore = store(c);
+    const installation = await modelDefaultInstallation(configStore);
+    if (!installation) return c.json({ error: 'workspace_installation_required' }, 409);
+    const legacyEnvironmentModel = cutoverEnvironmentModel(c.env as PlatformEnv | undefined);
+    const cutover = await configStore.prepareChickpeaCutover({
+      workspaceId: installation.workspaceId,
+      ...(legacyEnvironmentModel ? { legacyEnvironmentModel } : {}),
+    });
+    await loadModelCatalog(settings(c));
+    const workspaceDefault = await workspaceModelDefaultProjection({
+      installation,
+      configStore,
+      settingsStore: settings(c),
+      platformEnv: c.env as PlatformEnv | undefined,
+      runtimeProviders: modelProviders(),
+    });
+    return c.json({
+      cutover: {
+        ...cutover,
+        defaultHealth: workspaceDefault.health,
+        readyForActivation: cutover.blockers.length === 0 &&
+          workspaceDefault.health.status === 'ready',
+      },
+    });
+  });
+
+  app.post('/admin/api/chickpea-cutover/activate', async (c) => {
+    const parsed = v.safeParse(chickpeaCutoverActivateSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const principal = principalByContext.get(c);
+    if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    const configStore = store(c);
+    const installation = await modelDefaultInstallation(configStore);
+    if (!installation) return c.json({ error: 'workspace_installation_required' }, 409);
+    await loadModelCatalog(settings(c));
+    const [cutover, workspaceDefault] = await Promise.all([
+      configStore.preflightChickpeaCutover(installation.workspaceId),
+      workspaceModelDefaultProjection({
+        installation,
+        configStore,
+        settingsStore: settings(c),
+        platformEnv: c.env as PlatformEnv | undefined,
+        runtimeProviders: modelProviders(),
+      }),
+    ]);
+    if (cutover.blockers.length > 0 || workspaceDefault.health.status !== 'ready') {
+      return c.json({
+        error: 'chickpea_cutover_preflight_failed',
+        blockers: cutover.blockers,
+        defaultHealth: workspaceDefault.health,
+      }, 409);
+    }
+    if (cutover.installationRevision !== parsed.output.expectedInstallationRevision) {
+      return c.json({
+        error: 'chickpea_cutover_revision_conflict',
+        expectedRevision: parsed.output.expectedInstallationRevision,
+        actualRevision: cutover.installationRevision,
+      }, 409);
+    }
+    if (cutover.defaultRevision !== parsed.output.expectedDefaultRevision) {
+      return c.json({
+        error: 'workspace_model_default_revision_conflict',
+        expectedRevision: parsed.output.expectedDefaultRevision,
+        actualRevision: cutover.defaultRevision,
+      }, 409);
+    }
+    try {
+      return c.json({
+        activation: await configStore.activateChickpeaCutover({
+          workspaceId: installation.workspaceId,
+          expectedInstallationRevision: parsed.output.expectedInstallationRevision,
+          expectedDefaultRevision: parsed.output.expectedDefaultRevision,
+          defaultReady: true,
+        }),
+      });
+    } catch (error) {
+      if (error instanceof WorkspaceModelDefaultRevisionConflictError) {
+        return c.json({
+          error: 'workspace_model_default_revision_conflict',
+          expectedRevision: error.expectedRevision,
+          actualRevision: error.actualRevision,
+        }, 409);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/chickpea-cutover/rollback', async (c) => {
+    const parsed = v.safeParse(chickpeaCutoverRollbackSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const principal = principalByContext.get(c);
+    if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    const configStore = store(c);
+    const installation = await modelDefaultInstallation(configStore);
+    if (!installation) return c.json({ error: 'workspace_installation_required' }, 409);
+    if (installation.revision !== parsed.output.expectedInstallationRevision) {
+      return c.json({
+        error: 'chickpea_cutover_revision_conflict',
+        expectedRevision: parsed.output.expectedInstallationRevision,
+        actualRevision: installation.revision,
+      }, 409);
+    }
+    try {
+      return c.json({
+        cutover: await configStore.rollbackChickpeaCutover({
+          workspaceId: installation.workspaceId,
+          expectedInstallationRevision: parsed.output.expectedInstallationRevision,
+        }),
+      });
+    } catch (error) {
       return internalError(c, error);
     }
   });
@@ -7761,6 +7928,14 @@ async function modelDefaultInstallation(
 ): Promise<WorkspaceInstallation | undefined> {
   const installations = await configStore.listWorkspaceInstallations();
   return installations.length === 1 ? installations[0] : undefined;
+}
+
+function cutoverEnvironmentModel(platformEnv: PlatformEnv | undefined): string | undefined {
+  const platformValue = (platformEnv as unknown as Record<string, unknown> | undefined)
+    ?.SLACK_TAG_MODEL;
+  const raw = typeof platformValue === 'string' ? platformValue : process.env.SLACK_TAG_MODEL;
+  const model = raw?.trim();
+  return model && /^[^/]+\/.+$/.test(model) ? model : undefined;
 }
 
 interface WorkspaceModelDefaultProjection {

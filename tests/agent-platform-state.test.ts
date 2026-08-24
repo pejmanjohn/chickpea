@@ -8,6 +8,8 @@ import type {
   AgentChannelGrant,
   AgentScheduleReference,
   AgentThreadRoute,
+  ChickpeaCutoverActivation,
+  ChickpeaCutoverPreflight,
   ConnectionAccount,
   SlackPublicContextEntry,
   WorkspaceModelDefault,
@@ -370,6 +372,38 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
     createdAt: 1,
     updatedAt: 2,
   };
+  const cutoverPreflight: ChickpeaCutoverPreflight = {
+    workspaceId: 'T_PLATFORM',
+    state: 'prepared',
+    runtimeContract: 'legacy',
+    installationRevision: 1,
+    defaultModelId: 'openai/gpt-5.6',
+    defaultRevision: modelDefault.revision,
+    defaultProvenance: modelDefault.provenance,
+    modelClassification: 'explicit_agent_pin',
+    systemPrincipalCount: 0,
+    validChickpeaPrincipalCount: 0,
+    routeCount: 1,
+    routeBackfillCount: 1,
+    pinnedAgentCount: 1,
+    inheritingAgentCount: 0,
+    starterPinClearCount: 0,
+    uncertainStarterPinCount: 0,
+    collisions: [],
+    blockers: [],
+  };
+  const cutoverActivation: ChickpeaCutoverActivation = {
+    workspaceId: 'T_PLATFORM',
+    runtimeContract: 'chickpea-v1',
+    installationRevision: 2,
+    defaultRevision: modelDefault.revision,
+    systemAgentId: 'agent_chickpea',
+    routeCount: 1,
+    routeBackfillCount: 1,
+    starterPinCleared: false,
+    starterPinPreserved: false,
+    activatedAt: 3,
+  };
   const publicContext: SlackPublicContextEntry = {
     workspaceId: 'T_PLATFORM',
     channelId: 'D_OWNER',
@@ -395,6 +429,13 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
     configGetAgentThreadRoute: () => ok(route),
     configGetWorkspaceModelDefault: () => ok(modelDefault),
     configPutWorkspaceModelDefault: () => ok(modelDefault),
+    configPrepareChickpeaCutover: () => ok(cutoverPreflight),
+    configPreflightChickpeaCutover: () => ok(cutoverPreflight),
+    configActivateChickpeaCutover: () => ok(cutoverActivation),
+    configRollbackChickpeaCutover: () => ok({
+      ...cutoverPreflight,
+      state: 'rolled_back' as const,
+    }),
     configListSlackPublicContext: () => ok([publicContext]),
     configPutSlackPublicContext: () => ok(publicContext),
     configDeleteSlackPublicContextMessage: () => ok(true),
@@ -438,6 +479,18 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
   assert.deepEqual(await store.putWorkspaceModelDefault({
     workspaceId: 'T_PLATFORM', modelId: 'openai/gpt-5.6', provenance: 'admin_selected',
   }, 1), modelDefault);
+  assert.deepEqual(await store.prepareChickpeaCutover({ workspaceId: 'T_PLATFORM' }), cutoverPreflight);
+  assert.deepEqual(await store.preflightChickpeaCutover('T_PLATFORM'), cutoverPreflight);
+  assert.deepEqual(await store.activateChickpeaCutover({
+    workspaceId: 'T_PLATFORM',
+    expectedInstallationRevision: 1,
+    expectedDefaultRevision: modelDefault.revision,
+    defaultReady: true,
+  }), cutoverActivation);
+  assert.equal((await store.rollbackChickpeaCutover({
+    workspaceId: 'T_PLATFORM',
+    expectedInstallationRevision: 2,
+  })).state, 'rolled_back');
   assert.deepEqual(
     await store.listSlackPublicContext('T_PLATFORM', 'D_OWNER', publicContext.rootTs),
     [publicContext],

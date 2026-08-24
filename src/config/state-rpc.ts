@@ -4,6 +4,7 @@ import type {
   OAuthReauthorizationTarget,
 } from './store.ts';
 import type {
+  ActivateChickpeaCutoverInput,
   AgentCreateInput,
   AgentChannelGrant,
   AgentChannelGrantInput,
@@ -17,10 +18,14 @@ import type {
   AgentThreadRoute,
   AgentThreadRouteInput,
   ChannelConfig,
+  ChickpeaCutoverActivation,
+  ChickpeaCutoverPreflight,
   CustomAgentConfig,
   ConnectionAccount,
   ConnectionAccountInput,
   EnsureWorkspaceInstallationInput,
+  PrepareChickpeaCutoverInput,
+  RollbackChickpeaCutoverInput,
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
   WorkspaceModelDefault,
@@ -251,6 +256,18 @@ export interface TagStateRpc {
     input: WorkspaceModelDefaultInput,
     expectedRevision?: number,
   ): Promise<StateRpcResult<WorkspaceModelDefault>>;
+  configPrepareChickpeaCutover(
+    input: PrepareChickpeaCutoverInput,
+  ): Promise<StateRpcResult<ChickpeaCutoverPreflight>>;
+  configPreflightChickpeaCutover(
+    workspaceId: string,
+  ): Promise<StateRpcResult<ChickpeaCutoverPreflight>>;
+  configActivateChickpeaCutover(
+    input: ActivateChickpeaCutoverInput,
+  ): Promise<StateRpcResult<ChickpeaCutoverActivation>>;
+  configRollbackChickpeaCutover(
+    input: RollbackChickpeaCutoverInput,
+  ): Promise<StateRpcResult<ChickpeaCutoverPreflight>>;
   configListAgentChannelGrants(
     workspaceId?: string,
     channelId?: string,
