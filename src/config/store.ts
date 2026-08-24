@@ -80,6 +80,7 @@ export const CONFIG_CHICKPEA_EXTENSION_MIGRATION = '2026-08-23-chickpea-system-a
 export const CONFIG_CHICKPEA_ROUTING_MIGRATION = '2026-08-24-chickpea-routing-retry-v1';
 export const CONFIG_CHICKPEA_CUTOVER_MIGRATION = '2026-08-24-chickpea-cutover-v1';
 const MAX_STORED_SLACK_PUBLIC_CONTEXT_ROWS = 200;
+const SLACK_PUBLIC_CONTEXT_RETENTION_MS = 30 * 24 * 60 * 60_000;
 
 interface AgentRow {
   id: string;
@@ -1151,6 +1152,7 @@ export class ConfigStoreLogic {
     channelId: string,
     rootTs: string,
   ): SlackPublicContextEntry[] {
+    this.pruneExpiredSlackPublicContext(Date.now());
     return this.db.all(
       `SELECT * FROM config_slack_public_context
        WHERE workspace_id = ? AND channel_id = ? AND root_ts = ?
@@ -1186,6 +1188,11 @@ export class ConfigStoreLogic {
       input.agentId ?? null,
       now,
     );
+    // Retention is root-scoped: one recent message keeps the bounded public
+    // handoff ledger for that root intact, while a root with no activity for
+    // 30 days is removed as a unit. The write above makes the current root
+    // active before this opportunistic sweep runs.
+    this.pruneExpiredSlackPublicContext(now);
     this.db.run(
       `DELETE FROM config_slack_public_context
        WHERE workspace_id = ? AND channel_id = ? AND root_ts = ?
@@ -1213,6 +1220,19 @@ export class ConfigStoreLogic {
     );
     if (!stored) throw new Error('Slack public context was not stored');
     return rowToSlackPublicContext(stored as unknown as SlackPublicContextRow);
+  }
+
+  private pruneExpiredSlackPublicContext(now: number): void {
+    this.db.run(
+      `DELETE FROM config_slack_public_context
+       WHERE (workspace_id, channel_id, root_ts) IN (
+         SELECT workspace_id, channel_id, root_ts
+         FROM config_slack_public_context
+         GROUP BY workspace_id, channel_id, root_ts
+         HAVING MAX(updated_at) < ?
+       )`,
+      now - SLACK_PUBLIC_CONTEXT_RETENTION_MS,
+    );
   }
 
   deleteSlackPublicContextMessage(

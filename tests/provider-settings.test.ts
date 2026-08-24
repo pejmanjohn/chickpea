@@ -138,7 +138,7 @@ test('provider key resolution prefers environment keys over stored settings', as
 });
 
 test('Workspace default reads expose live inheritance health and exclude drafts from the count', async () => {
-  const { app, config, close } = appWithProviderAdmin();
+  const { app, config, settings, close } = appWithProviderAdmin();
   try {
     const base = await config.createAgent({
       id: 'agent_base', name: 'Base', instructions: 'Start.', enabled: true,
@@ -184,6 +184,20 @@ test('Workspace default reads expose live inheritance health and exclude drafts 
         inheritingAgentCount: 2,
         health: { status: 'ready', providerId: 'openai' },
       },
+    });
+
+    await settings.setSetting(PROVIDER_KEY_SETTING_KEYS.openai, FAKE_PROVIDER_KEYS.openai);
+    const removal = await app.request('/admin/api/providers/openai/key', {
+      method: 'DELETE',
+      headers: auth(),
+    });
+    assert.equal(removal.status, 200);
+    assert.deepEqual(await removal.json(), {
+      ok: true,
+      provider: { id: 'openai', status: 'missing', modelCount: null },
+      pinnedAgentCount: 0,
+      workspaceDefaultAffected: true,
+      inheritingAgentCount: 2,
     });
   } finally {
     close();
@@ -665,6 +679,8 @@ test('provider settings endpoint matrix reports sources, enforces env read-only 
           ok: true,
           provider: { id: 'openai', status: 'missing', modelCount: null },
           pinnedAgentCount: 1,
+          workspaceDefaultAffected: false,
+          inheritingAgentCount: 0,
         });
         assert.equal(await settings.getSetting(PROVIDER_KEY_SETTING_KEYS.openai), undefined);
 

@@ -10711,7 +10711,7 @@ test('Settings remove-key confirmation names the pinned profiles and the honest 
   assert.match(html, /<b[^>]*>2 Agents<\/b> are pinned to an Anthropic model/);
   assert.match(html, /Support Triage/);
   assert.match(html, /Release Scribe/);
-  assert.match(html, /the model provider call failed before completion/);
+  assert.match(html, /Provider failures stay sanitized in Slack/);
   assert.match(html, /ANTHROPIC_API_KEY<\/span> in the environment, if set, still applies/);
   assert.doesNotMatch(html, /Ops/); // the OpenAI-pinned profile is not implicated
 
@@ -10719,6 +10719,38 @@ test('Settings remove-key confirmation names the pinned profiles and the honest 
   click({ target: actionTarget({ 'data-action': 'prov-remove-confirm', 'data-provider': 'anthropic' }) });
   await flushAsync();
   assert.deepEqual(harness.providerKeyDeletes, ['anthropic']);
+});
+
+test('Settings provider removal names Chickpea and live-inheriting Agents when it is the Workspace default', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      {
+        id: 'agent_support', name: 'Support', description: '', instructions: 'x',
+        enabled: true, lifecycle: 'active',
+      },
+    ],
+    workspaceDefault: {
+      workspaceId: 'T_DESIGN',
+      modelId: 'anthropic/claude-sonnet-4-6',
+      revision: 3,
+      provenance: 'admin_selected',
+      runtimeContract: 'chickpea-v1',
+      live: true,
+      inheritingAgentCount: 1,
+      health: { status: 'ready', providerId: 'anthropic' },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  click({ target: actionTarget({ 'data-action': 'prov-remove', 'data-provider': 'anthropic' }) });
+  const html = harness.app.innerHTML;
+  assert.match(html, /Workspace default<[\/]b> uses an Anthropic model/);
+  assert.match(html, /Chickpea and <b[^>]*>1 active Agent<[\/]b> inheriting it will stop answering/);
+  assert.doesNotMatch(html, /nothing stops answering|No Agent pin or Workspace default currently depends/);
 });
 
 test('Settings OpenRouter favorites manager searches, stars, and persists to the picker', async () => {

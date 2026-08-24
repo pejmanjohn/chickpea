@@ -18,7 +18,7 @@ import type {
   FlueDispatchEnvelopeV1,
   FlueDispatchReceiptV1,
 } from '../src/slack/turn-job-types.ts';
-import { runTurn } from '../src/slack/run-turn.ts';
+import { runTurn, WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT } from '../src/slack/run-turn.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
@@ -313,6 +313,56 @@ test('replay delivery skips model activity and never invokes the agent provider'
     ),
     false,
   );
+});
+
+test('activated turns never fall back to SLACK_TAG_MODEL when the frozen model is missing', async () => {
+  const previousModel = process.env.SLACK_TAG_MODEL;
+  process.env.SLACK_TAG_MODEL = 'local-stub/legacy-environment-fallback';
+  let delivered = '';
+  let agentCalls = 0;
+  let deliveredTombstones = 0;
+  const client = {
+    chat: {
+      startStream: async (input: { markdown_text: string }) => {
+        delivered = input.markdown_text;
+        return { ok: true, ts: 'repair-final-ts' };
+      },
+      stopStream: async () => ({ ok: true }),
+      postMessage: async (input: { text: string }) => {
+        delivered = input.text;
+        return { ok: true, channel: assignment.channelId, ts: 'repair-final-ts' };
+      },
+    },
+  } as unknown as WebClient;
+  const { model: _assignmentModel, modelAttribution: _attribution, ...assignmentWithoutModel } = assignment;
+  const { model: _agentModel, ...agentWithoutModel } = assignment.agent;
+  const activatedAssignment: ResolvedAssignment = {
+    ...assignmentWithoutModel,
+    runtimeContract: 'chickpea-v1',
+    agent: agentWithoutModel,
+  };
+
+  try {
+    await runTurn(workTurn('Ev_MISSING_WORKSPACE_DEFAULT'), activatedAssignment, undefined, {
+      client,
+      usageRecordingEnabled: false,
+      onDelivered() {
+        deliveredTombstones += 1;
+      },
+      async agentPrompt(): Promise<AgentDispatchResult> {
+        agentCalls += 1;
+        throw new Error('a missing frozen model must not enter Flue');
+      },
+    });
+  } finally {
+    if (previousModel === undefined) delete process.env.SLACK_TAG_MODEL;
+    else process.env.SLACK_TAG_MODEL = previousModel;
+  }
+
+  assert.equal(agentCalls, 0);
+  assert.equal(deliveredTombstones, 1);
+  assert.equal(delivered, WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT);
+  assert.doesNotMatch(delivered, /legacy-environment-fallback/);
 });
 
 test('runTurn resolves the authenticated self-mention placeholder before Slack delivery', async () => {

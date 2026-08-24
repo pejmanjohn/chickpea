@@ -561,7 +561,7 @@ async function publishAgentAppHome(input: {
     stores: input.stores,
   });
   const visible = actor.routing.fullMember
-    ? (await input.stores.config.listAgents()).filter((agent) =>
+    ? (await input.stores.config.listUserAgents()).filter((agent) =>
         actor.routing.discoverableAgentIds?.has(agent.id))
     : [];
   await input.transport.publishAppHome({

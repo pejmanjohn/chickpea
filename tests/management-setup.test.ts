@@ -386,6 +386,77 @@ test('stored provider replacement requires confirmation and reissue invalidates 
   }
 });
 
+test('management provider impact includes the Workspace default and inheriting Agents', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'provider-impact' });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  try {
+    const agent = await config.createAgent({
+      id: 'agent_support', name: 'Support', instructions: 'Help.', enabled: true,
+      lifecycle: 'active', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const installation = await config.ensureWorkspaceInstallation({
+      workspaceId: owner.user.slackTeamId,
+      transportMode: 'direct',
+      defaultAgentId: agent.id,
+    });
+    await config.putWorkspaceModelDefault({
+      workspaceId: installation.workspaceId,
+      modelId: 'anthropic/claude-sonnet-4-6',
+      provenance: 'admin_selected',
+      lastChangedByMembershipId: owner.membership.id,
+    }, 1);
+    await config.updateWorkspaceInstallation(
+      installation.workspaceId,
+      { runtimeContract: 'chickpea-v1' },
+      installation.revision,
+    );
+    const service = new WorkspaceManagementService({
+      identity,
+      config,
+      management,
+      providerCredentialSource: async () => 'stored',
+      randomId: () => 'provider_impact',
+    });
+    const context = {
+      userId: owner.user.id,
+      membershipId: owner.membership.id,
+      organizationId: owner.membership.organizationId,
+      origin: { kind: 'mcp' as const, clientId: 'codex' },
+    };
+
+    const snapshot = await service.inspectWorkspace(context);
+    const anthropic = snapshot.providers.find(({ id }) => id === 'anthropic');
+    assert.deepEqual(anthropic, {
+      id: 'anthropic',
+      source: 'stored',
+      mutable: true,
+      workspaceDefaultAffected: true,
+      inheritingAgentCount: 1,
+      affectedAgents: [{ id: 'agent_support', name: 'Support' }],
+    });
+
+    const proposed = await service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'remove_anthropic_default',
+      operations: [{
+        itemId: 'remove_anthropic',
+        kind: 'remove_provider_credential',
+        providerId: 'anthropic',
+      }],
+    });
+    assert.equal(proposed.status, 'confirmation_required');
+    const proposal = await management.getProposal(proposed.outcomes[0]!.proposalId!);
+    assert.match(proposal?.summary ?? '', /workspace_default=affected/);
+    assert.match(proposal?.summary ?? '', /Support \(agent_support\)/);
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+  }
+});
+
 test('a provider key is validated in the browser lane and never enters MCP state or receipts', async () => {
   let sequence = 0;
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });

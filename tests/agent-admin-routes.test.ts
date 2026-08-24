@@ -317,6 +317,52 @@ test('activated Agents inherit the Workspace default and a pinned Agent can rese
   }
 });
 
+test('the Chickpea system Agent stays hidden across direct and nested Admin routes', async () => {
+  const fixture = harness();
+  try {
+    const base = (await fixture.store.listAgents())[0]!;
+    const installation = await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST',
+      transportMode: 'direct',
+      defaultAgentId: base.id,
+    });
+    const workspaceDefault = await fixture.store.putWorkspaceModelDefault({
+      workspaceId: installation.workspaceId,
+      modelId: 'local-stub/workspace',
+      provenance: 'admin_selected',
+      lastChangedByMembershipId: 'membership_test_owner',
+    }, 1);
+    await fixture.store.activateChickpeaCutover({
+      workspaceId: installation.workspaceId,
+      expectedInstallationRevision: installation.revision,
+      expectedDefaultRevision: workspaceDefault.revision,
+      defaultReady: true,
+    });
+
+    const requests: Array<[string, RequestInit?]> = [
+      ['http://localhost/admin/api/agents/agent_chickpea'],
+      ['http://localhost/admin/api/agents/agent_chickpea/memory'],
+      ['http://localhost/admin/api/agents/agent_chickpea/schedules'],
+      ['http://localhost/admin/api/agents/agent_chickpea/connections?workspaceId=T_TEST'],
+      ['http://localhost/admin/api/agents/agent_chickpea', {
+        method: 'PATCH',
+        body: JSON.stringify({ expectedRevision: 1, instructions: 'Changed' }),
+      }],
+    ];
+    for (const [url, init] of requests) {
+      const response = await fixture.app.request(url, {
+        ...init,
+        headers: auth(),
+      });
+      assert.equal(response.status, 404, `${init?.method ?? 'GET'} ${url}`);
+      assert.equal((await response.json() as { error: string }).error, 'not_found');
+    }
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('Agent creation reserves Chickpea system identities across id, name, and handle', async () => {
   const fixture = harness();
   try {

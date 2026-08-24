@@ -203,6 +203,7 @@ import {
   listRuntimeModelProviders,
   type RuntimeModelProvider,
 } from '../config/providers.ts';
+import { resolveProviderRuntimeImpact } from '../config/provider-impact.ts';
 import {
   resolveSandboxSettings,
   SANDBOX_PACKAGE_REGISTRY_HOSTS,
@@ -1053,7 +1054,7 @@ async function sandboxStatus(
   const [resolved, github, agents] = await Promise.all([
     resolveSandboxSettings(settingsStore),
     getGithubConnection(settingsStore),
-    configStore.listAgents(),
+    configStore.listUserAgents(),
   ]);
   const cloudflare = isCloudflareTarget();
   const installed = cloudflare && sandboxBindingInstalled(env);
@@ -1734,20 +1735,24 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     maxSize: MAX_ADMIN_MUTATION_BODY_BYTES,
     onError: (c) => c.json({ error: 'request_too_large' }, 413),
   });
-  const enforceAgentMutationAuthority = async (
+  const requireAdminUserAgent = async (
+    c: Context,
+    agentId: string,
+  ): Promise<CustomAgentConfig> => {
+    const agent = await store(c).getAgent(agentId);
+    if (agent.kind !== 'user') throw new UnknownAgentError(agentId);
+    return agent;
+  };
+  const enforceAgentRouteAuthority = async (
     c: Context,
     principal: AuthPrincipal,
   ): Promise<void> => {
-    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) return;
     const match = c.req.path.match(/^\/admin\/api\/agents\/([^/]+)/);
     if (!match) return;
     const agentId = decodeURIComponent(match[1]!);
-    try {
-      requireAgentEdit(principal, await store(c).getAgent(agentId));
-    } catch (error) {
-      // Preserve each route's stable 404 response for a missing Agent. Every
-      // existing Agent, including nested connector routes, is fenced here.
-      if (!(error instanceof UnknownAgentError)) throw error;
+    const agent = await requireAdminUserAgent(c, agentId);
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
+      requireAgentEdit(principal, agent);
     }
   };
   const enforceAgentMemoryAuthority = async (
@@ -1762,7 +1767,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (ownerKind !== 'agent') {
       throw new AuthorizationError();
     }
-    requireAgentEdit(principal, await store(c).getAgent(decodeURIComponent(match[2]!)));
+    requireAgentEdit(
+      principal,
+      await requireAdminUserAgent(c, decodeURIComponent(match[2]!)),
+    );
   };
 
   const adminGate = async (c: Context, next: Next) => {
@@ -1786,7 +1794,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         try {
           if (principal.machine && !machinePrincipalAllowed(c)) throw new AuthorizationError();
           requirePermission(principal, permission);
-          await enforceAgentMutationAuthority(c, principal);
+          await enforceAgentRouteAuthority(c, principal);
           await enforceAgentMemoryAuthority(c, principal);
           await identity(c).recordAuthAudit({
             event: 'authorization',
@@ -1846,6 +1854,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         return next();
       } catch (error) {
+        if (error instanceof UnknownAgentError) {
+          return c.json({ error: 'not_found' }, 404);
+        }
         if (error instanceof AuthorizationError) {
           return c.json({ error: 'forbidden' }, 403);
         }
@@ -3504,7 +3515,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const settingsStore = settings(c);
     const configStore = store(c);
     const [allAgents, grants, installations] = await Promise.all([
-      configStore.listAgents(),
+      configStore.listUserAgents(),
       configStore.listAgentChannelGrants(),
       configStore.listWorkspaceInstallations(),
     ]);
@@ -4102,10 +4113,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       await service.confirmWorkspaceChange({ context, proposalId });
       const source = (await describeProviderKeySources(platformEnv, settingsStore))[id];
+      const impact = await providerRemovalImpact(store(c), id);
       return c.json({
         ok: true,
         provider: providerSummary(id, source),
-        pinnedAgentCount: await countPinnedAgents(store(c), id),
+        ...impact,
       });
     }
     const resolved = await deleteProviderApiKey(
@@ -4114,10 +4126,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       settingsStore,
       usage(c),
     );
+    const impact = await providerRemovalImpact(store(c), id);
     return c.json({
       ok: true,
       provider: providerSummary(id, resolved.source),
-      pinnedAgentCount: await countPinnedAgents(store(c), id),
+      ...impact,
     });
   });
 
@@ -4304,7 +4317,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const connection = await getGithubConnection(settings(c));
       // Agents holding grants are reported up front so the UI can warn
       // before a disconnect, not after (DELETE also reports, but too late).
-      const referencingAgents = (await store(c).listAgents())
+      const referencingAgents = (await store(c).listUserAgents())
         .filter((agent) => agent.repositories.length > 0)
         .map(({ id, name }) => ({ id, name }));
       if (connection.mode !== 'app') {
@@ -4414,7 +4427,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.delete('/admin/api/github', async (c) => {
     try {
-      const referencingAgents = (await store(c).listAgents())
+      const referencingAgents = (await store(c).listUserAgents())
         .filter((agent) => agent.repositories.length > 0)
         .map(({ id, name }) => ({ id, name }));
       await settings(c).applySettingsPatch({
@@ -4511,7 +4524,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     try {
       const configStore = store(c);
-      const existingGeneratedSeeds = (await configStore.listAgents()).flatMap((existing) => {
+      const existingGeneratedSeeds = (await configStore.listUserAgents()).flatMap((existing) => {
         const avatar = existing.slackPresence?.avatar;
         return avatar?.kind === 'generated' ? [avatar.seed ?? existing.id] : [];
       });
@@ -5026,7 +5039,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (organization?.slackTeamId !== workspaceId) throw new AuthorizationError();
       const [views, agents] = await Promise.all([
         connectionAccounts(c).listViews(workspaceId),
-        store(c).listAgents(),
+        store(c).listUserAgents(),
       ]);
       const visibleAccounts = views.filter(
         (account) => account.ownerKind === 'team' ||
@@ -6215,7 +6228,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const [configuredChannels, grants, agents] = await Promise.all([
       configStore.listChannels(),
       configStore.listAgentChannelGrants(),
-      configStore.listAgents(),
+      configStore.listUserAgents(),
     ]);
     let discoveredChannels: Awaited<ReturnType<typeof listSlackChannels>>['channels'] = [];
     let discoveryError: string | null = null;
@@ -7963,7 +7976,7 @@ async function workspaceModelDefaultProjection(input: {
 }): Promise<WorkspaceModelDefaultProjection> {
   const [workspaceDefault, agents, openAiAuthMethod, workersAiEnabled] = await Promise.all([
     input.configStore.getWorkspaceModelDefault(input.installation.workspaceId),
-    input.configStore.listAgents(),
+    input.configStore.listUserAgents(),
     resolveOpenAiAuthMethod(input.settingsStore),
     getWorkersAiEnabled(input.settingsStore),
   ]);
@@ -8265,19 +8278,20 @@ function normalizeEgressDomain(domain: string): string {
   return new URL(result.url).hostname.toLowerCase();
 }
 
-async function countPinnedAgents(configStore: ConfigStore, provider: string): Promise<number> {
-  const agents = await configStore.listAgents();
-  return agents.filter((agent) => modelBelongsToProvider(agent.model, provider)).length;
-}
-
-function modelBelongsToProvider(model: string | undefined, provider: string): boolean {
-  if (!model) {
-    return false;
-  }
-  if (provider === 'workers-ai') {
-    return model.startsWith('cloudflare/') || model.startsWith('cloudflare-workers-ai/');
-  }
-  return model.startsWith(`${provider}/`);
+async function providerRemovalImpact(
+  configStore: ConfigStore,
+  provider: string,
+): Promise<{
+  pinnedAgentCount: number;
+  workspaceDefaultAffected: boolean;
+  inheritingAgentCount: number;
+}> {
+  const impact = await resolveProviderRuntimeImpact(configStore, provider);
+  return {
+    pinnedAgentCount: impact.pinnedAgents.length,
+    workspaceDefaultAffected: impact.workspaceDefaultAffected,
+    inheritingAgentCount: impact.activeInheritingAgentCount,
+  };
 }
 
 // Never echo internal error text (raw SQLite messages) to API clients; log it

@@ -16,6 +16,10 @@ import {
 } from '../config/errors.ts';
 import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
 import {
+  resolveProviderRuntimeImpact,
+  resolveProviderRuntimeImpacts,
+} from '../config/provider-impact.ts';
+import {
   type AgentChannelGrant,
   type AgentCreateInput,
   type ChannelConfig,
@@ -103,7 +107,7 @@ export interface WorkspaceManagementServiceInput {
   >;
   config: Pick<
     ConfigStore,
-    | 'listAgents'
+    | 'listUserAgents'
     | 'getAgent'
     | 'createAgent'
     | 'updateAgent'
@@ -112,6 +116,7 @@ export interface WorkspaceManagementServiceInput {
     | 'restoreAgent'
     | 'getWorkspaceInstallation'
     | 'listWorkspaceInstallations'
+    | 'getWorkspaceModelDefault'
     | 'listChannels'
     | 'getChannel'
     | 'putChannel'
@@ -362,7 +367,7 @@ export class WorkspaceManagementService {
       id: actor.organizationId,
     });
     const editable = await this.editableAgents(actor);
-    return exportWorkspaceRecipe({ listAgents: async () => editable }, input);
+    return exportWorkspaceRecipe({ listUserAgents: async () => editable }, input);
   }
 
   async previewRecipe(
@@ -376,7 +381,7 @@ export class WorkspaceManagementService {
     });
     const editable = await this.editableAgents(actor);
     const preview = await previewWorkspaceRecipe(
-      { listAgents: async () => editable },
+      { listUserAgents: async () => editable },
       actor.role === 'member'
         ? async () => 'missing'
         : async (providerId) => this.stores.providerCredentialSource?.(providerId) ?? 'missing',
@@ -1070,7 +1075,7 @@ export class WorkspaceManagementService {
   }
 
   private async editableAgents(actor: LiveManagementActor): Promise<CustomAgentConfig[]> {
-    const agents = (await this.stores.config.listAgents()).filter(({ kind }) => kind === 'user');
+    const agents = await this.stores.config.listUserAgents();
     const editable = actor.role === 'member'
       ? agents.filter((agent) => this.actorCanEditAgent(actor, agent))
       : agents;
@@ -1116,7 +1121,7 @@ export class WorkspaceManagementService {
       actor.actingAgentId && actor.actingAgentId !== CHICKPEA_AGENT_ID,
     );
     const [allAgents, channels, allGrants, providerSources] = await Promise.all([
-      this.stores.config.listAgents(),
+      this.stores.config.listUserAgents(),
       this.stores.config.listChannels(),
       this.stores.config.listAgentChannelGrants(),
       actor.role === 'member' || userAgentScoped
@@ -1126,10 +1131,13 @@ export class WorkspaceManagementService {
             await this.stores.providerCredentialSource?.(id) ?? 'missing',
           ] as const)),
     ]);
-    const userAgents = allAgents.filter(({ kind }) => kind === 'user');
+    const providerImpacts = await resolveProviderRuntimeImpacts(
+      this.stores.config,
+      providerSources.map(([id]) => id),
+    );
     const editable = actor.role === 'member'
-      ? userAgents.filter((agent) => this.actorCanEditAgent(actor, agent))
-      : userAgents;
+      ? allAgents.filter((agent) => this.actorCanEditAgent(actor, agent))
+      : allAgents;
     const agents = userAgentScoped
       ? editable.filter(({ id }) => id === actor.actingAgentId)
       : editable;
@@ -1233,14 +1241,19 @@ export class WorkspaceManagementService {
         grants: (grantsByChannel.get(channelKey(channel.workspaceId, channel.channelId)) ?? [])
           .sort((left, right) => left.agentId.localeCompare(right.agentId)),
       })),
-      providers: providerSources.map(([id, source]) => ({
-        id,
-        source,
-        mutable: source !== 'env',
-        affectedAgents: agents
-          .filter((agent) => modelBelongsToProvider(agent.model, id))
-          .map(({ id: agentId, name }) => ({ id: agentId, name })),
-      })),
+      providers: providerSources.map(([id, source]) => {
+        const impact = providerImpacts.get(id)!;
+        return {
+          id,
+          source,
+          mutable: source !== 'env',
+          workspaceDefaultAffected: impact.workspaceDefaultAffected,
+          inheritingAgentCount: impact.activeInheritingAgentCount,
+          affectedAgents: [...impact.pinnedAgents, ...impact.inheritingAgents]
+            .filter((agent) => visibleAgentIds.has(agent.id))
+            .map(({ id: agentId, name }) => ({ id: agentId, name })),
+        };
+      }),
       ...(team ? { team } : {}),
       effectiveRevision: effectiveConfigurationRevision(refs),
     };
@@ -1376,7 +1389,7 @@ export class WorkspaceManagementService {
 
   private async effectiveRevision(): Promise<string> {
     const [agents, channels, grants] = await Promise.all([
-      this.stores.config.listAgents(),
+      this.stores.config.listUserAgents(),
       this.stores.config.listChannels(),
       this.stores.config.listAgentChannelGrants(),
     ]);
@@ -1520,10 +1533,12 @@ export class WorkspaceManagementService {
     providerId: ManagedProviderId,
     reason: string,
   ): Promise<string> {
-    const affected = (await this.stores.config.listAgents())
-      .filter((agent) => modelBelongsToProvider(agent.model, providerId))
+    const impact = await resolveProviderRuntimeImpact(this.stores.config, providerId);
+    const affected = [...impact.pinnedAgents, ...impact.inheritingAgents]
       .map(({ id, name }) => `${name} (${id})`);
-    return `${reason}:remove_provider_credential:provider:${providerId}:affected=${
+    return `${reason}:remove_provider_credential:provider:${providerId}:workspace_default=${
+      impact.workspaceDefaultAffected ? 'affected' : 'unaffected'
+    }:affected=${
       affected.length ? affected.join(', ') : 'none'
     }`;
   }
@@ -1674,7 +1689,7 @@ export class WorkspaceManagementService {
   ): Promise<ManagementPreparedItem> {
     switch (operation.kind) {
       case 'create_agent': {
-        const existingGeneratedSeeds = (await this.stores.config.listAgents()).flatMap((agent) => {
+        const existingGeneratedSeeds = (await this.stores.config.listUserAgents()).flatMap((agent) => {
           const avatar = agent.slackPresence?.avatar;
           return avatar?.kind === 'generated' ? [avatar.seed ?? agent.id] : [];
         });
@@ -2876,10 +2891,6 @@ async function routineContentAccess(
   } catch {
     return 'authorization_unknown';
   }
-}
-
-function modelBelongsToProvider(model: string | undefined, provider: ManagedProviderId): boolean {
-  return Boolean(model?.startsWith(`${provider}/`));
 }
 
 function withoutSetupCapabilities(result: ManagementApplyResult): ManagementApplyResult {

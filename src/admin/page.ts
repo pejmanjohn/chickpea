@@ -8921,19 +8921,32 @@ button.capability-pill { cursor: pointer; }
     var meta = providerMeta(id);
     var pinned = pinnedProfilesForProvider(id);
     var count = pinned.length;
+    var workspaceDefaultAffected = !!(state.workspaceDefault && state.workspaceDefault.live &&
+      modelBelongsToProvider(state.workspaceDefault.modelId, id));
+    var inheritingCount = workspaceDefaultAffected
+      ? Number(state.workspaceDefault.inheritingAgentCount || 0)
+      : 0;
     var names = joinNames(pinned.map(function (agent) {
       return '<span class="mono" style="color:var(--text);">' + esc(agent.name) + '</span>';
     }));
     var envNote = 'An <span class="mono" style="color:var(--text);">' + esc(meta.env) + '</span> in the environment, if set, still applies.';
     var lead = 'Remove the stored ' + esc(meta.name) + ' key? ';
-    var consequence;
-    if (count === 0) {
-      consequence = lead + 'No Agents are pinned to an ' + esc(meta.name) + ' model right now, so nothing stops answering. ' + envNote;
-    } else {
-      consequence = lead + '<b style="font-weight:500; color:var(--text);">' + count + ' Agent' + (count === 1 ? "" : "s") + '</b> ' + (count === 1 ? "is" : "are") +
-        ' pinned to an ' + esc(meta.name) + ' model &mdash; ' + names + '. They keep their pin, but until an ' + esc(meta.name) +
-        ' key returns each fails at reply time: the thread gets one sanitized line &mdash; <i>&ldquo;I reached the Slack thread, but the model provider call failed before completion.&rdquo;</i> &mdash; and no provider error leaks to Slack. Re-pin them to another provider to keep answering. ' + envNote;
+    var impacts = [];
+    if (workspaceDefaultAffected) {
+      impacts.push('<b style="font-weight:500; color:var(--text);">Workspace default</b> uses an ' + esc(meta.name) +
+        ' model. Chickpea' + (inheritingCount > 0
+          ? ' and <b style="font-weight:500; color:var(--text);">' + inheritingCount + ' active Agent' + (inheritingCount === 1 ? '' : 's') + '</b> inheriting it'
+          : '') + ' will stop answering until that default or credential is repaired.');
     }
+    if (count > 0) {
+      impacts.push('<b style="font-weight:500; color:var(--text);">' + count + ' Agent' + (count === 1 ? "" : "s") + '</b> ' + (count === 1 ? "is" : "are") +
+        ' pinned to an ' + esc(meta.name) + ' model &mdash; ' + names + '. ' + (count === 1 ? 'It keeps its pin' : 'They keep their pins') +
+        ', but each will fail at reply time until the credential returns or the Agent is re-pinned.');
+    }
+    var consequence = lead + (impacts.length
+      ? impacts.join(' ')
+      : 'No Agent pin or Workspace default currently depends on ' + esc(meta.name) + '.') +
+      ' Provider failures stay sanitized in Slack. ' + envNote;
     var errLine = summary && provUiFor(id).removeError ? '<p class="field-error">' + esc(provUiFor(id).removeError) + '</p>' : "";
     return '<div class="callout">' + icon("exclamation-triangle", "ic-l g") + '<span>' + consequence + '</span></div>' + errLine +
       '<div style="display:flex; gap:10px;">' +

@@ -220,6 +220,9 @@ export interface RunTurnOptions {
 
 const DEFAULT_PROGRESS_HEARTBEAT_MS = 60_000;
 
+export const WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT =
+  'The Workspace default model needs attention. An owner or admin can repair it in Settings → Model providers.';
+
 /**
  * Full Slack turn lifecycle:
  *   1. set Assistant status (or post a durable progress placeholder on reject),
@@ -253,13 +256,37 @@ export async function runTurn(
   const client = installationContext?.client ?? options.client ?? (await getClient(platformEnv));
   // A frozen assignment (from a thread snapshot) carries its model; otherwise
   // resolve it from the agent via policy.
-  const resolvedModel = assignment.model ?? tryResolveAgentModel(assignment.agent);
+  const resolvedModel = resolvedAssignmentModel(assignment);
   const ledgerAuthority = options.executionAuthority === 'ledger';
   // env (SLACK_TAG_PUBLIC_URL) → stored slack.publicUrl (the origin the admin
   // pinned): on a button deploy nobody sets the env var, so without the stored
   // fallback the footer's "Configure" link would be dead.
   const publicUrl = await resolveSlackPublicUrl(platformEnv);
   const agentAvatarUrl = agentAvatarUrlForPresentation(assignment.agent, publicUrl);
+  // Once the Chickpea contract is active, the frozen Workspace default is the
+  // only fallback for an unpinned Agent. Never reintroduce SLACK_TAG_MODEL (or
+  // another implicit provider default) after admission failed to freeze one.
+  if (assignment.runtimeContract === 'chickpea-v1' && !resolvedModel) {
+    const repairPresenter = new WebClientPresenter(client, {
+      channelId: turn.channelId,
+      threadTs: turn.threadTs,
+      agentName: assignment.agent.name,
+      ...(agentAvatarUrl ? { agentAvatarUrl } : {}),
+      agentId: assignment.agent.id,
+      publicUrl,
+      userId: turn.userId,
+      workspaceId: turn.workspaceId,
+    }, undefined, {
+      deliverySafety: options.executionAuthority === 'ledger' ? 'ledger' : 'legacy',
+      ...(options.onPublicMessageDelivered
+        ? { onPublicDelivery: options.onPublicMessageDelivered }
+        : {}),
+    });
+    await repairPresenter.deliverFinal(WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT, 'plain_text', 'error');
+    await options.onDelivered?.();
+    await repairPresenter.markCanonicalPresentationFinalized();
+    return;
+  }
   // Natural-language Routine intent runs through a fresh, tool-less v2 agent.
   // A selected ledger canary deliberately skips that pre-parser;
   // explicit Routine commands are kept off this lane at admission.
@@ -925,7 +952,7 @@ export async function repairSlackInteractionProgress(
       ? { agentAvatarUrl: assignment.agent.slackPresence.avatar.url }
       : {}),
     agentId: assignment.agent.id,
-    modelLabel: assignment.model ?? tryResolveAgentModel(assignment.agent),
+    modelLabel: resolvedAssignmentModel(assignment),
     userId: turn.userId,
     workspaceId: turn.workspaceId,
   });
@@ -1256,7 +1283,7 @@ export async function deliverAgentFailureFinal(
   platformEnv?: PlatformEnv,
   onPublicMessageDelivered?: RunTurnOptions['onPublicMessageDelivered'],
 ): Promise<void> {
-  const resolvedModel = assignment.model ?? tryResolveAgentModel(assignment.agent);
+  const resolvedModel = resolvedAssignmentModel(assignment);
   const publicUrl = await resolveSlackPublicUrl(platformEnv);
   const agentAvatarUrl = agentAvatarUrlForPresentation(assignment.agent, publicUrl);
   const presenter = new WebClientPresenter(client, {
@@ -1277,6 +1304,12 @@ export async function deliverAgentFailureFinal(
       : {}),
   });
   await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text');
+}
+
+function resolvedAssignmentModel(assignment: ResolvedAssignment): string | undefined {
+  if (assignment.model) return assignment.model;
+  if (assignment.runtimeContract === 'chickpea-v1') return undefined;
+  return tryResolveAgentModel(assignment.agent);
 }
 
 function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): string | undefined {

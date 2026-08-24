@@ -414,6 +414,8 @@ export interface ManagementWorkspaceSnapshot {
     id: 'anthropic' | 'openai' | 'openrouter';
     source: 'env' | 'stored' | 'missing';
     mutable: boolean;
+    workspaceDefaultAffected: boolean;
+    inheritingAgentCount: number;
     affectedAgents: Array<{ id: string; name: string }>;
   }>;
   team?: {

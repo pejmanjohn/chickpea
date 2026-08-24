@@ -66,10 +66,33 @@ test('tool discovery and portable recipe exports exclude secret and authority co
         fullName: 'northstar/research', enabled: true,
       }],
     });
-    const recipe = await exportWorkspaceRecipe(config, { agentIds: ['agent_secure'] });
+    const installation = await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_RECIPE',
+      transportMode: 'direct',
+      defaultAgentId: 'agent_secure',
+    });
+    const workspaceDefault = await config.putWorkspaceModelDefault({
+      workspaceId: installation.workspaceId,
+      modelId: 'openai/gpt-5.6-sol',
+      provenance: 'admin_selected',
+    }, 1);
+    await config.activateChickpeaCutover({
+      workspaceId: installation.workspaceId,
+      expectedInstallationRevision: installation.revision,
+      expectedDefaultRevision: workspaceDefault.revision,
+      defaultReady: true,
+    });
+
+    const recipe = await exportWorkspaceRecipe(config, {});
+    assert.deepEqual(recipe.agents.map(({ name }) => name), ['Secure export']);
     const serialized = JSON.stringify(recipe);
     assert.doesNotMatch(serialized, /alex-private|installationId|accountLogin|slackIdentityId/);
     assert.doesNotMatch(serialized, /identity|workspaceId|channelId|memory/i);
+    assert.doesNotMatch(serialized, /Chickpea|agent_chickpea/);
+    await assert.rejects(
+      () => exportWorkspaceRecipe(config, { agentIds: ['agent_chickpea'] }),
+      /recipe Agents were not found/,
+    );
   } finally {
     config.close();
   }

@@ -634,6 +634,42 @@ test('the private public-context ledger prunes old rows per Slack root', () => {
   }
 });
 
+test('the private public-context ledger expires inactive roots after 30 days', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new ConfigStoreLogic(db);
+    store.putSlackPublicContext({
+      workspaceId: 'T1', channelId: 'D1', rootTs: 'stale', messageTs: '100.1',
+      role: 'human', text: 'Expired context',
+    });
+    db.run(
+      `UPDATE config_slack_public_context SET updated_at = 0
+       WHERE workspace_id = 'T1' AND channel_id = 'D1' AND root_ts = 'stale'`,
+    );
+
+    store.putSlackPublicContext({
+      workspaceId: 'T1', channelId: 'D1', rootTs: 'active', messageTs: '200.1',
+      role: 'human', text: 'Older active-root context',
+    });
+    db.run(
+      `UPDATE config_slack_public_context SET updated_at = 0
+       WHERE workspace_id = 'T1' AND channel_id = 'D1' AND root_ts = 'active'`,
+    );
+    store.putSlackPublicContext({
+      workspaceId: 'T1', channelId: 'D1', rootTs: 'active', messageTs: '200.2',
+      role: 'human', text: 'Recent root activity',
+    });
+
+    assert.deepEqual(store.listSlackPublicContext('T1', 'D1', 'stale'), []);
+    assert.deepEqual(
+      store.listSlackPublicContext('T1', 'D1', 'active').map(({ text }) => text),
+      ['Older active-root context', 'Recent root activity'],
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test('a private draft may hold only a pending publication grant until activation', () => {
   const db = openStateDb(':memory:');
   try {
