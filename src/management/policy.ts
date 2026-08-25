@@ -11,7 +11,6 @@ export interface ManagementPolicyFacts {
   credentialReplacement?: boolean;
   agentEditable?: boolean;
   adminRequired?: boolean;
-  userAgentSelfEditAllowed?: boolean;
 }
 
 export type ManagementPolicyDecision =
@@ -22,14 +21,6 @@ export function classifyManagementOperation(
   facts: ManagementPolicyFacts,
 ): ManagementPolicyDecision {
   const { actor, operation } = facts;
-  if (actor.actingAgentId && actor.actingAgentId !== 'agent_chickpea') {
-    const safeSelfEdit = operation.kind === 'update_agent' && facts.userAgentSelfEditAllowed;
-    const safeSelfMemory = operation.kind === 'update_agent_memory' &&
-      operation.agentId === actor.actingAgentId;
-    if (!safeSelfEdit && !safeSelfMemory) {
-      return { allowed: false, reason: 'chickpea_handoff_required' };
-    }
-  }
   if (facts.adminRequired && actor.role !== 'admin' && actor.role !== 'owner') {
     return { allowed: false, reason: 'operational_access_required' };
   }

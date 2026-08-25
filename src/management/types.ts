@@ -418,6 +418,17 @@ export interface ManagementWorkspaceSnapshot {
     inheritingAgentCount: number;
     affectedAgents: Array<{ id: string; name: string }>;
   }>;
+  /** Additional secret-free context exposed only to a trusted routed user Agent. */
+  selfManagement?: {
+    availableModels: Array<{ id: string; name?: string }>;
+    routineSchedulingAvailable: boolean;
+    capabilityHealth: {
+      mcpConnections: { ready: number; pending: number; failed: number };
+      apiConnections: { ready: number; pending: number; failed: number };
+      repositories: { enabled: number; setupRequired: number };
+      channelGrants: { active: number; pending: number; needsAttention: number };
+    };
+  };
   team?: {
     members: Array<{
       id: string;

@@ -2,6 +2,8 @@ import { SqliteConfigStore } from '../../src/config/store.ts';
 import { SqliteIdentityStore } from '../../src/identity/store.ts';
 import { SqliteManagementStore } from '../../src/management/store.ts';
 import { WorkspaceManagementService } from '../../src/management/service.ts';
+import { SqliteMemoryStateStore } from '../../src/memory/store.ts';
+import { SqliteRoutineStore } from '../../src/routines/store.ts';
 import { createSlackOwner } from './slack-owner.ts';
 
 export async function createManagementAdapterFixture(suffix: string) {
@@ -31,10 +33,15 @@ export async function createManagementAdapterFixture(suffix: string) {
   });
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const management = new SqliteManagementStore(':memory:');
+  const memory = new SqliteMemoryStateStore(':memory:', () => now);
+  const routines = new SqliteRoutineStore(':memory:', () => now);
   const service = new WorkspaceManagementService({
     identity,
     config,
     management,
+    memory,
+    routines,
+    routineSchedulingAvailable: true,
     setupBaseUrl: 'http://localhost',
     randomCapability: () => 'c'.repeat(43),
     now: () => now,
@@ -46,11 +53,15 @@ export async function createManagementAdapterFixture(suffix: string) {
     admin,
     config,
     management,
+    memory,
+    routines,
     service,
     close() {
       identity.close();
       config.close();
       management.close();
+      memory.close();
+      routines.close();
     },
   };
 }

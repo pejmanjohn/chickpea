@@ -172,6 +172,7 @@ export interface WorkspaceManagementServiceInput {
     actor: LiveManagementActor,
   ) => Promise<unknown>;
   testMcpConnection?: (agentId: string, connectionId: string) => Promise<unknown>;
+  listAvailableModels?: () => Promise<Array<{ id: string; name?: string }>>;
   publishAgentChannel?: (input: {
     actor: LiveManagementActor;
     workspaceId: string;
@@ -206,6 +207,13 @@ interface ImmediateMutation {
   handoffUrl?: string;
 }
 
+interface ActingAgentScopeTarget {
+  scope: 'agent' | 'authority';
+  agentId?: string | undefined;
+  requestedAction: ChickpeaManagementHandoff['requestedAction'];
+  target: ChickpeaManagementHandoff['target'];
+}
+
 /**
  * One requester-bound control plane shared by MCP, Slack, and Admin adapters.
  * Adapters supply trusted actor context; this service re-checks that authority
@@ -237,9 +245,11 @@ export class WorkspaceManagementService {
     if (!isAgentId(input.agentId)) {
       throw new ManagementError('invalid_request', 'Choose a valid Agent before preparing connector setup.');
     }
-    this.requireChickpeaAgent(actor, 'prepare_connector_setup', {
-      kind: 'agent',
-      id: input.agentId,
+    this.assertActingAgentScope(actor, {
+      scope: 'agent',
+      agentId: input.agentId,
+      requestedAction: 'prepare_connector_setup',
+      target: { kind: 'agent', id: input.agentId },
     });
     const agent = await this.requireEditableAgent(actor, input.agentId);
     const connector = resolveReusableConnectorPreset(input.connector);
@@ -270,9 +280,11 @@ export class WorkspaceManagementService {
     refresh = false,
   ): Promise<unknown> {
     const actor = await this.requireLiveActor(context);
-    this.requireChickpeaAgent(actor, 'discover_slack_channels', {
-      kind: 'workspace',
-      id: actor.organizationId,
+    this.assertActingAgentScope(actor, {
+      scope: 'agent',
+      agentId: actor.actingAgentId,
+      requestedAction: 'discover_slack_channels',
+      target: { kind: 'workspace', id: actor.organizationId },
     });
     if (!this.stores.discoverSlackChannels) {
       throw new ManagementError('invalid_request', 'Slack Channel discovery is unavailable.');
@@ -286,9 +298,11 @@ export class WorkspaceManagementService {
     connectionId: string,
   ): Promise<unknown> {
     const actor = await this.requireLiveActor(context);
-    this.requireChickpeaAgent(actor, 'test_mcp_connection', {
-      kind: 'agent',
-      id: agentId,
+    this.assertActingAgentScope(actor, {
+      scope: 'agent',
+      agentId,
+      requestedAction: 'test_mcp_connection',
+      target: { kind: 'agent', id: agentId },
     });
     await this.requireEditableAgent(actor, agentId);
     if (!this.stores.testMcpConnection) {
@@ -302,14 +316,12 @@ export class WorkspaceManagementService {
     agentId: string,
   ): Promise<ManagementMemorySnapshot> {
     const actor = await this.requireLiveActor(context);
-    if (actor.actingAgentId && actor.actingAgentId !== CHICKPEA_AGENT_ID &&
-        actor.actingAgentId !== agentId) {
-      throw new ChickpeaHandoffRequired(chickpeaHandoff(
-        actor,
-        'inspect_memory',
-        { kind: 'agent', id: agentId },
-      ));
-    }
+    this.assertActingAgentScope(actor, {
+      scope: 'agent',
+      agentId,
+      requestedAction: 'inspect_memory',
+      target: { kind: 'agent', id: agentId },
+    });
     await this.requireEditableAgent(actor, agentId);
     await this.requireAgentMemory(agentId);
     return this.stores.memory!.getAgentMemory(agentId);
@@ -320,9 +332,11 @@ export class WorkspaceManagementService {
     input: ManagementRoutineInspectionInput,
   ): Promise<ManagementRoutineSnapshot> {
     const actor = await this.requireLiveActor(context);
-    this.requireChickpeaAgent(actor, 'inspect_routines', {
-      kind: 'workspace',
-      id: input.workspaceId,
+    this.assertActingAgentScope(actor, {
+      scope: 'agent',
+      agentId: actor.actingAgentId,
+      requestedAction: 'inspect_routines',
+      target: { kind: 'workspace', id: input.workspaceId },
     });
     await this.requireWorkspaceScope(actor, input.workspaceId);
     if (!this.stores.routines) {
@@ -330,13 +344,16 @@ export class WorkspaceManagementService {
     }
     let routines = await this.stores.routines.listRoutines(input.workspaceId, input.channelId);
     if (input.routineId) routines = routines.filter(({ id }) => id === input.routineId);
-    if (actor.role === 'member') {
+    if (actor.role === 'member' || isUserAgentScoped(actor)) {
       const visible: typeof routines = [];
       for (const routine of routines) {
         const reference = await this.stores.config.getAgentScheduleReference(routine.id);
         if (!reference) continue;
         const agent = await optionalAgent(this.stores.config, reference.agentId);
-        if (agent && this.actorCanEditAgent(actor, agent)) visible.push(routine);
+        if (agent && this.actorCanEditAgent(actor, agent) &&
+            (!isUserAgentScoped(actor) || reference.agentId === actor.actingAgentId)) {
+          visible.push(routine);
+        }
       }
       routines = visible;
     }
@@ -371,9 +388,10 @@ export class WorkspaceManagementService {
     input: { agentIds?: string[] | undefined },
   ): Promise<WorkspaceRecipe> {
     const actor = await this.requireLiveActor(context);
-    this.requireChickpeaAgent(actor, 'export_workspace_recipe', {
-      kind: 'workspace',
-      id: actor.organizationId,
+    this.assertActingAgentScope(actor, {
+      scope: 'authority',
+      requestedAction: 'export_workspace_recipe',
+      target: { kind: 'workspace', id: actor.organizationId },
     });
     const editable = await this.editableAgents(actor);
     return exportWorkspaceRecipe({ listUserAgents: async () => editable }, input);
@@ -384,9 +402,10 @@ export class WorkspaceManagementService {
     input: PreviewWorkspaceRecipeInput,
   ): Promise<WorkspaceRecipePreview> {
     const actor = await this.requireLiveActor(context);
-    this.requireChickpeaAgent(actor, 'preview_workspace_recipe', {
-      kind: 'workspace',
-      id: actor.organizationId,
+    this.assertActingAgentScope(actor, {
+      scope: 'authority',
+      requestedAction: 'preview_workspace_recipe',
+      target: { kind: 'workspace', id: actor.organizationId },
     });
     const editable = await this.editableAgents(actor);
     const preview = await previewWorkspaceRecipe(
@@ -467,7 +486,7 @@ export class WorkspaceManagementService {
       }
 
       try {
-        const actingAgentHandoff = this.userAgentOperationHandoff(actor, operation);
+        const actingAgentHandoff = await this.actingAgentOperationHandoff(actor, operation);
         if (actingAgentHandoff) {
           progress = appendOutcome(progress, index, {
             itemId: operation.itemId,
@@ -608,7 +627,7 @@ export class WorkspaceManagementService {
     const changes: ManagementChangeSetPreview['changes'] = [];
     const missingSetup: ManagementChangeSetPreview['missingSetup'] = [];
     for (const operation of operations) {
-      const handoff = this.userAgentOperationHandoff(actor, operation);
+      const handoff = await this.actingAgentOperationHandoff(actor, operation);
       if (handoff) throw new ChickpeaHandoffRequired(handoff);
       const policy = classifyManagementOperation(await this.policyFacts(actor, operation));
       if (!policy.allowed) {
@@ -768,7 +787,7 @@ export class WorkspaceManagementService {
     }
     try {
       for (const operation of existing.operations) {
-        const handoff = this.userAgentOperationHandoff(actor, operation);
+        const handoff = await this.actingAgentOperationHandoff(actor, operation);
         if (handoff) throw new ChickpeaHandoffRequired(handoff);
         const policy = classifyManagementOperation(await this.policyFacts(actor, operation));
         if (!policy.allowed) {
@@ -877,6 +896,23 @@ export class WorkspaceManagementService {
       withoutSetupCapabilitiesFromProgress(resumedProgress),
       this.now(),
     );
+    if (resumedProgress.nextIndex >= request.operations.length) {
+      const resumed = await this.resultFor(
+        request.operationId,
+        publicManagementIdempotencyKey(actor, request.idempotencyKey),
+        outcomes,
+      );
+      await this.stores.management.completeRequest(
+        request.operationId,
+        withoutSetupCapabilities(resumed),
+        this.now(),
+      );
+      return {
+        ...resumed,
+        outcomes: resumed.outcomes.map((outcome) =>
+          outcome.itemId === confirmedOutcome.itemId ? confirmedOutcome : outcome),
+      };
+    }
     const resumed = await this.applyWorkspaceChanges({
       context,
       idempotencyKey: publicManagementIdempotencyKey(actor, request.idempotencyKey),
@@ -959,15 +995,25 @@ export class WorkspaceManagementService {
     reissue = false,
   ): Promise<{ revoked: ManagementSetupPublicStatus; replacement?: { setupOperationId: string; setupUrl: string } }> {
     const actor = await this.requireLiveActor(context);
-    this.requireChickpeaAgent(actor, 'revoke_setup_link', {
-      kind: 'setup',
-      id: setupOperationId,
-    });
     const existing = await this.stores.management.getSetup(setupOperationId, this.now());
     if (!existing || existing.organizationId !== actor.organizationId ||
-        existing.actorUserId !== actor.userId) {
+        existing.actorUserId !== actor.userId ||
+        existing.actorMembershipId !== actor.membershipId ||
+        managementOriginKey(existing.origin) !== managementOriginKey(actor.origin)) {
       throw new ManagementError('setup_not_found', 'The setup operation was not found.');
     }
+    this.assertActingAgentScope(actor, existing.target.agentId
+      ? {
+          scope: 'agent',
+          agentId: existing.target.agentId,
+          requestedAction: 'revoke_setup_link',
+          target: { kind: 'setup', id: setupOperationId },
+        }
+      : {
+          scope: 'authority',
+          requestedAction: 'revoke_setup_link',
+          target: { kind: 'setup', id: setupOperationId },
+        });
     const revoked = await this.stores.management.revokeSetup({
       setupOperationId,
       organizationId: actor.organizationId,
@@ -1220,7 +1266,8 @@ export class WorkspaceManagementService {
     const actingAgent = await optionalAgent(this.stores.config, actingAgentId);
     if (!actingAgent ||
         (actingAgentId === CHICKPEA_AGENT_ID && actingAgent.kind !== 'system') ||
-        (actingAgentId !== CHICKPEA_AGENT_ID && actingAgent.kind !== 'user')) {
+        (actingAgentId !== CHICKPEA_AGENT_ID &&
+          (actingAgent.kind !== 'user' || !actingAgent.enabled || actingAgent.lifecycle === 'archived'))) {
       throw new ManagementError('forbidden', 'The acting Agent route is unavailable.');
     }
     return {
@@ -1231,26 +1278,68 @@ export class WorkspaceManagementService {
     };
   }
 
-  private requireChickpeaAgent(
+  private assertActingAgentScope(
     actor: LiveManagementActor,
-    requestedAction: ChickpeaManagementHandoff['requestedAction'],
-    target: ChickpeaManagementHandoff['target'],
+    target: ActingAgentScopeTarget,
   ): void {
-    if (!actor.actingAgentId || actor.actingAgentId === CHICKPEA_AGENT_ID) return;
-    throw new ChickpeaHandoffRequired(chickpeaHandoff(actor, requestedAction, target));
+    if (!isUserAgentScoped(actor)) return;
+    if (target.scope === 'agent' && target.agentId === actor.actingAgentId) return;
+    throw new ChickpeaHandoffRequired(chickpeaHandoff(
+      actor,
+      target.requestedAction,
+      target.target,
+    ));
   }
 
-  private userAgentOperationHandoff(
+  private async actingAgentOperationHandoff(
     actor: LiveManagementActor,
     operation: ManagementOperation,
-  ): ChickpeaManagementHandoff | undefined {
-    if (!actor.actingAgentId || actor.actingAgentId === CHICKPEA_AGENT_ID) return undefined;
-    if (operation.kind === 'update_agent' && operation.agentId === actor.actingAgentId &&
-        safeUserAgentSelfPatch(operation.patch)) return undefined;
-    if (operation.kind === 'update_agent_memory' && operation.agentId === actor.actingAgentId) {
+  ): Promise<ChickpeaManagementHandoff | undefined> {
+    if (!isUserAgentScoped(actor)) return undefined;
+    const target = await this.managementOperationScopeTarget(operation);
+    if (target.scope === 'agent' && target.agentId === actor.actingAgentId) {
       return undefined;
     }
-    return chickpeaHandoffForOperation(actor, operation);
+    return chickpeaHandoff(actor, target.requestedAction, target.target);
+  }
+
+  private async managementOperationScopeTarget(
+    operation: ManagementOperation,
+  ): Promise<ActingAgentScopeTarget> {
+    if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
+        operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
+        operation.kind === 'update_agent_memory') {
+      return operationAgentScopeTarget(operation.kind, operation.agentId);
+    }
+    if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
+      return operation.agentId
+        ? operationAgentScopeTarget(operation.kind, operation.agentId, {
+            kind: 'channel',
+            id: channelKey(operation.workspaceId, operation.channelId),
+          })
+        : operationAuthorityScopeTarget(operation);
+    }
+    if (operation.kind === 'save_routine') {
+      return operationAgentScopeTarget(operation.kind, operation.agentId, {
+        kind: 'routine',
+        id: operation.routineId ?? channelKey(operation.workspaceId, operation.channelId),
+      });
+    }
+    if (operation.kind === 'control_routine' || operation.kind === 'delete_routine') {
+      const reference = operation.routineId
+        ? await this.stores.config.getAgentScheduleReference(operation.routineId)
+        : undefined;
+      return reference
+        ? operationAgentScopeTarget(operation.kind, reference.agentId, {
+            kind: 'routine', id: operation.routineId,
+          })
+        : operationAuthorityScopeTarget(operation);
+    }
+    if (operation.kind === 'request_setup' && operation.target.kind !== 'provider_credential' &&
+        operation.target.agentId) {
+      return operationAgentScopeTarget(operation.kind, operation.target.agentId);
+    }
+    return operationAuthorityScopeTarget(operation);
   }
 
   private actorCanEditAgent(actor: LiveManagementActor, agent: CustomAgentConfig): boolean {
@@ -1300,6 +1389,8 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     proposal: ManagementProposalRecord,
   ): Promise<void> {
+    const handoff = await this.actingAgentOperationHandoff(actor, proposal.operation);
+    if (handoff) throw new ChickpeaHandoffRequired(handoff);
     const facts = await this.policyFacts(
       actor,
       proposal.operation,
@@ -1314,9 +1405,7 @@ export class WorkspaceManagementService {
   }
 
   private async snapshot(actor: LiveManagementActor): Promise<ManagementWorkspaceSnapshot> {
-    const userAgentScoped = Boolean(
-      actor.actingAgentId && actor.actingAgentId !== CHICKPEA_AGENT_ID,
-    );
+    const userAgentScoped = isUserAgentScoped(actor);
     const [allAgents, channels, allGrants, providerSources] = await Promise.all([
       this.stores.config.listUserAgents(),
       this.stores.config.listChannels(),
@@ -1348,7 +1437,10 @@ export class WorkspaceManagementService {
       grantsByChannel.set(key, entries);
     }
     const visibleChannels = userAgentScoped
-      ? []
+      ? channels.filter((channel) => grantsByChannel.has(channelKey(
+          channel.workspaceId,
+          channel.channelId,
+        )))
       : actor.role === 'member'
       ? channels.filter((channel) => grantsByChannel.has(channelKey(
           channel.workspaceId,
@@ -1371,18 +1463,31 @@ export class WorkspaceManagementService {
     const team = actor.role === 'owner' && !userAgentScoped
       ? await this.teamSnapshot(actor.organizationId)
       : undefined;
+    const [listedModels, routineSchedulingAvailable, workspaceDefault] = userAgentScoped
+      ? await Promise.all([
+          this.stores.listAvailableModels?.().catch(() => []) ?? [],
+          this.isRoutineSchedulingAvailable(),
+          actor.origin.kind === 'slack'
+            ? this.stores.config.getWorkspaceModelDefault(actor.origin.workspaceId)
+            : Promise.resolve(undefined),
+        ])
+      : [[], false, undefined] as const;
+    const availableModels = uniqueModelChoices([
+      ...listedModels,
+      ...agents.flatMap(({ model }) => model ? [{ id: model }] : []),
+      ...(workspaceDefault?.modelId ? [{ id: workspaceDefault.modelId }] : []),
+    ]);
+    const selfAgent = userAgentScoped ? agents[0] : undefined;
     return {
       organizationId: actor.organizationId,
       ...(actor.origin.kind === 'slack' && actor.origin.agentId
         ? { currentAgentId: actor.origin.agentId }
         : {}),
-      connectors: userAgentScoped
-        ? []
-        : REUSABLE_CONNECTOR_PRESETS.map(({ id, name, description }) => ({
-            id,
-            name,
-            description,
-          })),
+      connectors: REUSABLE_CONNECTOR_PRESETS.map(({ id, name, description }) => ({
+        id,
+        name,
+        description,
+      })),
       agents: agents.map(({
         id,
         revision,
@@ -1451,6 +1556,15 @@ export class WorkspaceManagementService {
             .map(({ id: agentId, name }) => ({ id: agentId, name })),
         };
       }),
+      ...(userAgentScoped && selfAgent
+        ? {
+            selfManagement: {
+              availableModels,
+              routineSchedulingAvailable,
+              capabilityHealth: selfCapabilityHealth(selfAgent, grants),
+            },
+          }
+        : {}),
       ...(team ? { team } : {}),
       effectiveRevision: effectiveConfigurationRevision(refs),
     };
@@ -1523,9 +1637,7 @@ export class WorkspaceManagementService {
       throw new ManagementError('invalid_request', 'The routine Channel was not found.');
     }
     if (operation.kind === 'save_routine') {
-      const available = typeof this.stores.routineSchedulingAvailable === 'function'
-        ? await this.stores.routineSchedulingAvailable()
-        : this.stores.routineSchedulingAvailable ?? true;
+      const available = await this.isRoutineSchedulingAvailable();
       if (!available) {
         throw new ManagementError('invalid_request', 'Routine scheduling is unavailable on this deployment.');
       }
@@ -1563,6 +1675,12 @@ export class WorkspaceManagementService {
       throw new ManagementError('invalid_request', 'The schedule Agent binding was not found.');
     }
     await this.requireEditableAgent(actor, reference.agentId);
+  }
+
+  private async isRoutineSchedulingAvailable(): Promise<boolean> {
+    return typeof this.stores.routineSchedulingAvailable === 'function'
+      ? this.stores.routineSchedulingAvailable()
+      : this.stores.routineSchedulingAvailable ?? true;
   }
 
   private async resultFor(
@@ -1663,8 +1781,6 @@ export class WorkspaceManagementService {
         currentAgent,
         agentReferences,
         capabilityScopeExpanded: capabilityScopeExpanded(currentAgent, operation.patch),
-        userAgentSelfEditAllowed: operation.agentId === actor.actingAgentId &&
-          safeUserAgentSelfPatch(operation.patch),
         agentEditable: true,
       };
     }
@@ -2873,64 +2989,126 @@ function capabilityScopeExpanded(agent: CustomAgentConfig, patch: ManagementAgen
   return false;
 }
 
-function safeUserAgentSelfPatch(patch: ManagementAgentPatch): boolean {
-  const allowed = new Set(['name', 'description', 'instructions', 'model']);
-  return Object.keys(patch).every((key) => allowed.has(key));
+function uniqueModelChoices(
+  choices: Array<{ id: string; name?: string }>,
+): Array<{ id: string; name?: string }> {
+  const byId = new Map<string, { id: string; name?: string }>();
+  for (const choice of choices) {
+    if (!choice.id || byId.has(choice.id)) continue;
+    byId.set(choice.id, choice);
+  }
+  return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function selfCapabilityHealth(
+  agent: CustomAgentConfig,
+  grants: AgentChannelGrant[],
+): NonNullable<ManagementWorkspaceSnapshot['selfManagement']>['capabilityHealth'] {
+  const mcpConnections = { ready: 0, pending: 0, failed: 0 };
+  for (const connection of agent.mcpServers) mcpConnections[connection.lifecycleStatus] += 1;
+  const apiConnections = { ready: 0, pending: 0, failed: 0 };
+  for (const connection of agent.apiConnections) {
+    apiConnections[connection.lifecycleStatus ?? 'ready'] += 1;
+  }
+  return {
+    mcpConnections,
+    apiConnections,
+    repositories: {
+      enabled: agent.repositories.filter(({ enabled }) => enabled).length,
+      setupRequired: agent.repositories.filter(({ enabled, installationId }) =>
+        enabled && installationId === null).length,
+    },
+    channelGrants: {
+      active: grants.filter(({ status }) => status === 'active').length,
+      pending: grants.filter(({ status }) => status === 'pending').length,
+      needsAttention: grants.filter(({ status }) => status === 'needs_attention').length,
+    },
+  };
+}
+
+function isUserAgentScoped(actor: LiveManagementActor): actor is LiveManagementActor & {
+  actingAgentId: string;
+} {
+  return Boolean(actor.actingAgentId && actor.actingAgentId !== CHICKPEA_AGENT_ID);
+}
+
+function operationAgentScopeTarget(
+  requestedAction: ChickpeaManagementHandoff['requestedAction'],
+  agentId: string,
+  target: ChickpeaManagementHandoff['target'] = { kind: 'agent', id: agentId },
+): ActingAgentScopeTarget {
+  return { scope: 'agent', agentId, requestedAction, target };
+}
+
+function operationAuthorityScopeTarget(
+  operation: ManagementOperation,
+): ActingAgentScopeTarget {
+  return {
+    scope: 'authority',
+    requestedAction: operation.kind,
+    target: handoffTargetForOperation(operation),
+  };
 }
 
 function chickpeaHandoffForOperation(
   actor: LiveManagementActor,
   operation: ManagementOperation,
 ): ChickpeaManagementHandoff {
+  return chickpeaHandoff(actor, operation.kind, handoffTargetForOperation(operation));
+}
+
+function handoffTargetForOperation(
+  operation: ManagementOperation,
+): ChickpeaManagementHandoff['target'] {
   if (operation.kind === 'create_agent') {
-    return chickpeaHandoff(actor, operation.kind, { kind: 'agent', id: operation.agent.id });
+    return { kind: 'agent', id: operation.agent.id };
   }
   if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
       operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
       operation.kind === 'update_agent_memory') {
-    return chickpeaHandoff(actor, operation.kind, { kind: 'agent', id: operation.agentId });
+    return { kind: 'agent', id: operation.agentId };
   }
   if (operation.kind === 'put_channel') {
-    return chickpeaHandoff(actor, operation.kind, {
+    return {
       kind: 'channel',
       id: channelKey(operation.channel.workspaceId, operation.channel.channelId),
-    });
+    };
   }
   if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
-    return chickpeaHandoff(actor, operation.kind, {
+    return {
       kind: 'channel',
       id: channelKey(operation.workspaceId, operation.channelId),
-    });
+    };
   }
   if (operation.kind === 'update_member') {
-    return chickpeaHandoff(actor, operation.kind, {
+    return {
       kind: 'membership',
       id: operation.membershipId,
-    });
+    };
   }
   if (operation.kind === 'remove_provider_credential') {
-    return chickpeaHandoff(actor, operation.kind, {
+    return {
       kind: 'provider',
       id: operation.providerId,
-    });
+    };
   }
   if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
       operation.kind === 'delete_routine') {
-    return chickpeaHandoff(actor, operation.kind, {
+    return {
       kind: 'routine',
       id: operation.routineId ?? channelKey(operation.workspaceId, operation.channelId),
-    });
+    };
   }
   if (operation.target.kind === 'provider_credential') {
-    return chickpeaHandoff(actor, operation.kind, {
+    return {
       kind: 'provider',
       id: operation.target.providerId,
-    });
+    };
   }
-  return chickpeaHandoff(actor, operation.kind, {
+  return {
     kind: 'agent',
     id: operation.target.agentId ?? operation.target.agentClientRef ?? 'unresolved_agent',
-  });
+  };
 }
 
 function chickpeaHandoff(

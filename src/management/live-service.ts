@@ -19,7 +19,9 @@ import {
 } from '../config/provider-keys.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import { storedCredentialMetadata } from '../config/model-credential-refs.ts';
+import { getProviderFavorites } from '../config/provider-models.ts';
 import { clearRepointedMcpCredentials } from '../config/mcp-connection-lifecycle.ts';
+import { activeModelCatalogSnapshot } from '../model-catalog/index.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
@@ -168,6 +170,27 @@ export function createLiveWorkspaceManagementService(
       config,
       settings,
     }),
+    listAvailableModels: async () => {
+      const sources = await describeProviderKeySources(env, settings);
+      const entries: Array<{ id: string; name?: string }> =
+        activeModelCatalogSnapshot().entries.flatMap((entry) => {
+          if (entry.id.startsWith('anthropic/') &&
+              entry.lanes.anthropic_api_key && sources.anthropic !== 'missing') {
+            return [{ id: entry.id, ...(entry.displayName ? { name: entry.displayName } : {}) }];
+          }
+          if (entry.id.startsWith('openai/') &&
+              entry.lanes.openai_api_key && sources.openai !== 'missing') {
+            return [{ id: entry.id, ...(entry.displayName ? { name: entry.displayName } : {}) }];
+          }
+          return [];
+        });
+      if (sources.openrouter !== 'missing') {
+        entries.push(...(await getProviderFavorites('openrouter', settings)).map((id) => ({
+          id: `openrouter/${id}`,
+        })));
+      }
+      return entries;
+    },
     publishAgentChannel: async ({ actor, workspaceId, channelId, agentId }) => {
       const user = await actorSlackUser(actor, workspaceId);
       return (await presenceReconciler(workspaceId)).publish({
