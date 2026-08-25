@@ -29,13 +29,19 @@ function setup(state: SlackSetupTransaction['state']): SlackSetupTransaction {
 test('Slack sign-in is the only visible login path and preserves a safe Admin destination', () => {
   const html = renderSlackSignInPage(DESTINATION);
   assert.match(html, /data-slack-auth-surface="sign-in"/);
-  assert.match(html, /Sign in with Slack/);
+  assert.match(html, /<h1 class="auth-title" id="auth-title">Welcome back<\/h1>/);
+  assert.match(html, /Sign in with the Slack account you use with Chickpea in this workspace\./);
   assert.match(html, /name="destination" value="\/admin\/channels"/);
-  assert.match(html, /Full Slack members get access after their first Agent interaction/);
-  assert.match(html, /Guests and Slack Connect participants remain Slack-only/);
+  assert.match(
+    html,
+    /<button class="auth-button slack-provider-button"[^>]*><span class="slack-provider-logo slack-logo-image" aria-hidden="true"><\/span>Continue with Slack<\/button>/,
+  );
+  assert.match(html, /\.slack-logo-image\{background:url\("data:image\/png;base64,/);
+  assert.doesNotMatch(html, /Full Slack members|Guests and Slack Connect participants/);
+  assert.doesNotMatch(html, />Sign in with Slack<\/h1>/);
   assert.doesNotMatch(html, /invitation-only|invited to manage/i);
   assert.match(html, /<main[^>]*aria-labelledby="auth-title"/);
-  assert.match(html, /role="status" aria-live="polite"/);
+  assert.doesNotMatch(html, /role="status"/);
   assert.match(html, /autofocus/);
   assert.match(html, /@media\(max-width:/);
   assert.doesNotMatch(html, /password|forgot|sign up|cloudflare access|admin token|migrate/i);
@@ -51,12 +57,20 @@ test('Slack sign-in may resume one exact authenticated management setup path', (
 });
 
 test('setup leads with Add to Slack and keeps the customer-owned app as a fallback', () => {
-  const render = (state: SlackSetupTransaction['state']) => renderSlackSetupPage({
+  const render = (
+    state: SlackSetupTransaction['state'],
+    gatewayState?: 'disconnected' | 'pending' | 'connected' | 'error',
+  ) => renderSlackSetupPage({
     setup: setup(state), destination: DESTINATION, manifest: MANIFEST,
+    ...(gatewayState ? { gatewayState } : {}),
   });
   const creation = render('awaiting_app_creation');
   assert.match(creation, /Add Chickpea to Slack/);
   assert.match(creation, /data-primary-action="gateway-install"/);
+  assert.match(
+    creation,
+    /<button class="auth-button slack-provider-button"[^>]*data-primary-action="gateway-install"[^>]*><span class="slack-provider-logo slack-logo-image" aria-hidden="true"><\/span>Add to Slack<\/button>/,
+  );
   assert.match(creation, /No app configuration token or Slack credentials to copy/);
   assert.match(creation, /<details[^>]*data-secondary-action="customer-owned-app"/);
   assert.match(creation, /Use your own Slack app instead/);
@@ -69,6 +83,13 @@ test('setup leads with Add to Slack and keeps the customer-owned app as a fallba
   assert.doesNotMatch(creation, /href="\/admin\/setup\/manual"[^>]*target="_blank"/);
   assert.doesNotMatch(creation, /name="(?:appId|clientId|clientSecret|signingSecret|observedManifest)"/);
   assert.doesNotMatch(creation, /Install Chickpea in Slack|Become the first Owner/);
+
+  const connected = render('awaiting_app_creation', 'connected');
+  assert.match(connected, /Slack is connected/);
+  assert.match(
+    connected,
+    /<button class="auth-button slack-provider-button"[^>]*data-primary-action="gateway-owner"[^>]*><span class="slack-provider-logo slack-logo-image" aria-hidden="true"><\/span>Continue with Slack<\/button>/,
+  );
 
   const install = render('app_created');
   assert.match(install, /data-primary-action="install-app"/);
@@ -89,6 +110,10 @@ test('setup leads with Add to Slack and keeps the customer-owned app as a fallba
   const owner = render('bot_installed');
   assert.match(owner, /data-primary-action="claim-owner"/);
   assert.match(owner, /same Slack member who installed/i);
+  assert.match(
+    owner,
+    /<button class="auth-button slack-provider-button"[^>]*data-primary-action="claim-owner"[^>]*><span class="slack-provider-logo slack-logo-image" aria-hidden="true"><\/span>Sign in with Slack<\/button>/,
+  );
   assert.doesNotMatch(owner, /configurationToken|Install Chickpea in Slack/);
 });
 

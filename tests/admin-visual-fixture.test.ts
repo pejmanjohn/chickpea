@@ -288,7 +288,17 @@ test('Slack auth visual states render the production Slack-only journey without 
       const html = await response.text();
       assert.match(html, /data-slack-auth-surface=/, name);
       assert.match(html, /<main[^>]*aria-labelledby="auth-title"/, name);
-      assert.match(html, /role="status" aria-live="polite"/, name);
+      if (name === 'signIn') {
+        assert.match(html, />Welcome back<\/h1>/, name);
+        assert.match(html, /slack-provider-logo slack-logo-image/, name);
+        assert.doesNotMatch(html, /role="status"|Full Slack members|Slack Connect participants/, name);
+      } else if (name === 'setupCreate' || name === 'setupOwner') {
+        assert.match(html, /slack-provider-button/, name);
+        assert.match(html, /slack-provider-logo slack-logo-image/, name);
+        assert.match(html, /role="status" aria-live="polite"/, name);
+      } else {
+        assert.match(html, /role="status" aria-live="polite"/, name);
+      }
       assert.doesNotMatch(
         html,
         /xox(?:b|p|e)-[A-Za-z0-9-]{8,}|route-client-secret|route-signing-secret|visual-setup-capability/,
