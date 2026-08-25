@@ -211,7 +211,7 @@ test('no declaration accepts no progressive text and records not_requested', asy
   assert.deepEqual(h.delivered, []);
 });
 
-test('late, repeated, failed, mismatched, mixed-tool, and structured declarations fail closed', async () => {
+test('late, repeated, failed, mixed-tool, and structured declarations fail closed', async () => {
   const cases: Array<{
     name: string;
     events: Array<Parameters<ReturnType<typeof modelRelay>['emit']>[0]>;
@@ -235,11 +235,6 @@ test('late, repeated, failed, mismatched, mixed-tool, and structured declaration
         position: { batch: 3, index: 0 },
       }],
       reason: 'declaration_failed',
-    },
-    {
-      name: 'mismatched',
-      events: [streamInput(), streamOutput({ batch: 3, index: 0 }, 'stream_call_other')],
-      reason: 'mismatched_declaration',
     },
     {
       name: 'mixed',
@@ -272,6 +267,21 @@ test('late, repeated, failed, mismatched, mixed-tool, and structured declaration
     );
     assert.deepEqual(h.delivered, [], scenario.name);
   }
+});
+
+test('foreign tool outcomes cannot deny a valid pending declaration', async () => {
+  const h = modelRelay();
+  h.emit(streamInput());
+  h.emit(streamOutput({ batch: 3, index: 0 }, 'foreign_tool_call'));
+  h.emit(streamOutput({ batch: 4, index: 0 }));
+  h.emit(answerDelta('safe answer', { batch: 5, index: 0 }));
+
+  await h.relay.closeAndDrain();
+  assert.deepEqual(h.operations, [
+    'intent:candidate:stream_call_1',
+    'intent:requested:stream_call_1',
+    'append:safe answer',
+  ]);
 });
 
 test('requested-intent persistence failure accepts no text and enters recovery invalidation', async () => {

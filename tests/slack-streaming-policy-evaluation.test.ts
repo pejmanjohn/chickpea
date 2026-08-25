@@ -3,10 +3,28 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import {
+  assessSlackStreamingDeclaration,
   evaluateSlackStreamingPolicy,
   parseSlackStreamingPolicyFixtureSet,
   type SlackStreamingPolicyTrial,
 } from '../src/slack/streaming-policy-evaluation.ts';
+
+test('declaration assessment refuses malformed parallel calls before continuation', () => {
+  assert.deepEqual(assessSlackStreamingDeclaration([
+    { id: 'call_1', name: 'stream_answer', arguments: {} },
+    { id: 'call_2', name: 'stream_answer', arguments: {} },
+  ]), {
+    declared: true,
+    declarationShapeValid: false,
+  });
+  assert.deepEqual(assessSlackStreamingDeclaration([
+    { id: 'call_1', name: 'stream_answer', arguments: {} },
+  ]), {
+    declared: true,
+    declarationShapeValid: true,
+    declarationId: 'call_1',
+  });
+});
 
 const fixtures = parseSlackStreamingPolicyFixtureSet(JSON.parse(readFileSync(
   new URL('../fixtures/slack-streaming-policy.json', import.meta.url),
@@ -48,10 +66,10 @@ test('streaming policy evaluator passes strong selection, protocol, and latency 
       declarationBeforeText: true,
       declarationShapeValid: true,
       contaminationDetected: false,
-      offeredFirstVisibleMs: declared ? 500 + index : 1_200 + index,
+      offeredProviderReadyMs: declared ? 500 + index : 1_200 + index,
       ...(declared ? { declarationMs: 250 + index } : {}),
       ...(fixture.expectation === 'clear_positive'
-        ? { controlFirstVisibleMs: 1_500 + index }
+        ? { controlProviderReadyMs: 1_500 + index }
         : {}),
     };
   });
@@ -63,8 +81,13 @@ test('streaming policy evaluator passes strong selection, protocol, and latency 
   assert.deepEqual(report.ambiguous, { total: 4, selected: 2, selectionRate: 0.5 });
   assert.equal(report.protocolViolations, 0);
   assert.equal(report.contaminationCount, 0);
-  assert.equal(report.latencyMs.offeredFirstVisible.count, 6);
-  assert.equal(report.latencyMs.offeredFirstVisible.p90! < report.latencyMs.controlFirstVisible.p90!, true);
+  assert.equal(report.evidenceScope, 'model_policy_and_provider_latency_proxy');
+  assert.equal(report.slackVisibleLatencyVerified, false);
+  assert.equal(report.launchReady, false);
+  assert.equal(report.policyPass, true);
+  assert.equal(report.providerLatencyProxyPass, true);
+  assert.equal(report.latencyMs.offeredProviderReady.count, 6);
+  assert.equal(report.latencyMs.offeredProviderReady.p90! < report.latencyMs.controlProviderReady.p90!, true);
   assert.deepEqual(report.failedFixtureIds, []);
 });
 
@@ -73,18 +96,18 @@ test('streaming policy evaluator fails closed on weak decisions, malformed calls
     {
       fixtureId: 'positive_failed', expectation: 'clear_positive', category: 'analysis',
       declared: false, declarationBeforeText: true, declarationShapeValid: true,
-      contaminationDetected: false, offeredFirstVisibleMs: 1_000,
-      controlFirstVisibleMs: 900,
+      contaminationDetected: false, offeredProviderReadyMs: 1_000,
+      controlProviderReadyMs: 900,
     },
     {
       fixtureId: 'negative_failed', expectation: 'clear_negative', category: 'tool_work',
       declared: true, declarationBeforeText: false, declarationShapeValid: false,
-      contaminationDetected: true, offeredFirstVisibleMs: 1_100, declarationMs: 600,
+      contaminationDetected: true, offeredProviderReadyMs: 1_100, declarationMs: 600,
     },
     {
       fixtureId: 'ambiguous_observed', expectation: 'ambiguous', category: 'decision_note',
       declared: false, declarationBeforeText: true, declarationShapeValid: true,
-      contaminationDetected: false, offeredFirstVisibleMs: 800,
+      contaminationDetected: false, offeredProviderReadyMs: 800,
     },
   ];
 

@@ -176,10 +176,19 @@ npm run verify:oss-export
 `verify:slack-streaming-policy` validates the content-free model-decision fixture corpus. A
 provider evaluation is deliberately separate and opt-in: run
 `npm run verify:slack-streaming-policy:live -- --live --lane <lane> --model <id>` only when
-quota use has been approved. It compares the exact `stream_answer` prompt/tool contract against
-clear positive, clear negative, and ambiguous Slack requests, including paired terminal-delivery
-latency controls. It never calls Slack or prints model output. Re-run it for each supported model
-when the model, system instruction, or tool protocol changes.
+quota use has been approved. It exercises the shipped `stream_answer` name, description,
+instruction, and acknowledgement against clear positive, clear negative, and ambiguous Slack
+requests under a reduced prompt and tool surface. Its paired timings are provider-boundary
+proxies: they show whether the declaration round trip can beat terminal model completion, but
+they do not include durable persistence or Slack transport. The command never calls Slack or
+prints model output. Actual first-visible Slack latency remains a separate, approved disposable-
+workspace launch gate. Re-run both checks for each supported model when the model, system
+instruction, or tool protocol changes.
+
+Upgrades intentionally ignore the removed workspace `nativeTasks` and `progressiveStreaming`
+values for new turns. Native task cards become invariant. Operators that need progressive answer
+delivery disabled during rollout must set `SLACK_TAG_PROGRESSIVE_STREAMING=false` before the
+upgrade; the variable does not affect native task cards.
 
 The repository includes parity fixtures for direct Slack transport and the shared-gateway protocol. Live Slack acceptance should use a disposable paid workspace to verify user-group policy, handle collisions, public auto-join, private invitation, App Home, avatar updates, archive, and restore.
 

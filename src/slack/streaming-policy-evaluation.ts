@@ -1,3 +1,5 @@
+import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
+
 export type SlackStreamingPolicyExpectation =
   | 'clear_positive'
   | 'clear_negative'
@@ -27,12 +29,24 @@ export interface SlackStreamingPolicyTrial {
   declarationShapeValid: boolean;
   /** The final answer mentioned the hidden delivery mechanism or acknowledgement. */
   contaminationDetected: boolean;
-  /** First user-visible answer time under the offered policy. */
-  offeredFirstVisibleMs: number;
+  /** Model/provider-boundary proxy for when offered answer text is ready. */
+  offeredProviderReadyMs: number;
   /** Time at which a valid stream_answer declaration completed. */
   declarationMs?: number;
-  /** Terminal first-visible time for a paired no-tool control. */
-  controlFirstVisibleMs?: number;
+  /** Model/provider-boundary proxy for when a paired terminal control is ready. */
+  controlProviderReadyMs?: number;
+}
+
+export interface SlackStreamingToolCall {
+  id: string;
+  name: string;
+  arguments?: unknown;
+}
+
+export interface SlackStreamingDeclarationAssessment {
+  declared: boolean;
+  declarationShapeValid: boolean;
+  declarationId?: string;
 }
 
 export interface SlackStreamingPolicyLatencySummary {
@@ -43,6 +57,9 @@ export interface SlackStreamingPolicyLatencySummary {
 
 export interface SlackStreamingPolicyEvaluation {
   schemaVersion: 1;
+  evidenceScope: 'model_policy_and_provider_latency_proxy';
+  slackVisibleLatencyVerified: false;
+  launchReady: false;
   trialCount: number;
   thresholds: {
     positiveRecall: number;
@@ -55,10 +72,12 @@ export interface SlackStreamingPolicyEvaluation {
   contaminationCount: number;
   latencyMs: {
     declaration: SlackStreamingPolicyLatencySummary;
-    offeredFirstVisible: SlackStreamingPolicyLatencySummary;
-    controlFirstVisible: SlackStreamingPolicyLatencySummary;
+    offeredProviderReady: SlackStreamingPolicyLatencySummary;
+    controlProviderReady: SlackStreamingPolicyLatencySummary;
   };
   failedFixtureIds: string[];
+  policyPass: boolean;
+  providerLatencyProxyPass: boolean;
   pass: boolean;
 }
 
@@ -66,6 +85,25 @@ export const SLACK_STREAMING_POLICY_THRESHOLDS = {
   positiveRecall: 0.8,
   negativeAbstention: 0.9,
 } as const;
+
+/** Classify the declaration turn without attempting an invalid continuation. */
+export function assessSlackStreamingDeclaration(
+  calls: readonly SlackStreamingToolCall[],
+): SlackStreamingDeclarationAssessment {
+  const declarations = calls.filter((call) => call.name === SLACK_STREAM_ANSWER_TOOL_NAME);
+  const declared = declarations.length > 0;
+  const declaration = declarations[0];
+  const argumentsValue = declaration?.arguments;
+  const argumentsValid = argumentsValue === undefined ||
+    (argumentsValue !== null && typeof argumentsValue === 'object' &&
+      !Array.isArray(argumentsValue) && Object.keys(argumentsValue).length === 0);
+  const declarationShapeValid = declarations.length === 1 && calls.length === 1 && argumentsValid;
+  return {
+    declared,
+    declarationShapeValid,
+    ...(declarationShapeValid && declaration ? { declarationId: declaration.id } : {}),
+  };
+}
 
 export function parseSlackStreamingPolicyFixtureSet(
   value: unknown,
@@ -135,22 +173,22 @@ export function evaluateSlackStreamingPolicy(
   ).length;
   const contaminationCount = trials.filter((trial) => trial.contaminationDetected).length;
   const pairedPositive = positive.filter((trial) =>
-    validSelection(trial) && trial.controlFirstVisibleMs !== undefined
+    validSelection(trial) && trial.controlProviderReadyMs !== undefined
   );
   const declaration = summarize(pairedPositive.flatMap((trial) =>
     trial.declarationMs === undefined ? [] : [trial.declarationMs]
   ));
-  const offeredFirstVisible = summarize(
-    pairedPositive.map((trial) => trial.offeredFirstVisibleMs),
+  const offeredProviderReady = summarize(
+    pairedPositive.map((trial) => trial.offeredProviderReadyMs),
   );
-  const controlFirstVisible = summarize(
-    pairedPositive.map((trial) => trial.controlFirstVisibleMs!),
+  const controlProviderReady = summarize(
+    pairedPositive.map((trial) => trial.controlProviderReadyMs!),
   );
   const positiveRecall = rate(positiveSelected, positive.length);
   const negativeAbstention = rate(negativeAbstained, negative.length);
-  const latencyImproved = offeredFirstVisible.count > 0 &&
-    offeredFirstVisible.p50! < controlFirstVisible.p50! &&
-    offeredFirstVisible.p90! < controlFirstVisible.p90!;
+  const providerLatencyProxyPass = offeredProviderReady.count > 0 &&
+    offeredProviderReady.p50! < controlProviderReady.p50! &&
+    offeredProviderReady.p90! < controlProviderReady.p90!;
   const failedFixtureIds = [...new Set(trials.flatMap((trial) => {
     const failedExpectation = trial.expectation === 'clear_positive'
       ? !validSelection(trial)
@@ -161,8 +199,16 @@ export function evaluateSlackStreamingPolicy(
       ? [trial.fixtureId]
       : [];
   }))].sort();
+  const policyPass = positiveRecall !== null &&
+    positiveRecall >= SLACK_STREAMING_POLICY_THRESHOLDS.positiveRecall &&
+    negativeAbstention !== null &&
+    negativeAbstention >= SLACK_STREAMING_POLICY_THRESHOLDS.negativeAbstention &&
+    protocolViolations === 0 && contaminationCount === 0;
   return {
     schemaVersion: 1,
+    evidenceScope: 'model_policy_and_provider_latency_proxy',
+    slackVisibleLatencyVerified: false,
+    launchReady: false,
     trialCount: trials.length,
     thresholds: { ...SLACK_STREAMING_POLICY_THRESHOLDS },
     positive: {
@@ -182,13 +228,11 @@ export function evaluateSlackStreamingPolicy(
     },
     protocolViolations,
     contaminationCount,
-    latencyMs: { declaration, offeredFirstVisible, controlFirstVisible },
+    latencyMs: { declaration, offeredProviderReady, controlProviderReady },
     failedFixtureIds,
-    pass: positiveRecall !== null &&
-      positiveRecall >= SLACK_STREAMING_POLICY_THRESHOLDS.positiveRecall &&
-      negativeAbstention !== null &&
-      negativeAbstention >= SLACK_STREAMING_POLICY_THRESHOLDS.negativeAbstention &&
-      protocolViolations === 0 && contaminationCount === 0 && latencyImproved,
+    policyPass,
+    providerLatencyProxyPass,
+    pass: policyPass && providerLatencyProxyPass,
   };
 }
 
@@ -199,9 +243,9 @@ function validateTrial(trial: SlackStreamingPolicyTrial): void {
     throw new Error('Streaming policy trial identity is invalid.');
   }
   for (const value of [
-    trial.offeredFirstVisibleMs,
+    trial.offeredProviderReadyMs,
     trial.declarationMs,
-    trial.controlFirstVisibleMs,
+    trial.controlProviderReadyMs,
   ]) {
     if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
       throw new Error(`Streaming policy trial ${trial.fixtureId} has invalid timing.`);

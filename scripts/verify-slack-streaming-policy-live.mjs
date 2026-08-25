@@ -24,6 +24,7 @@ import {
   SLACK_STREAM_ANSWER_TOOL_NAME,
 } from '../src/slack/presentation-intent.ts';
 import {
+  assessSlackStreamingDeclaration,
   evaluateSlackStreamingPolicy,
   parseSlackStreamingPolicyFixtureSet,
 } from '../src/slack/streaming-policy-evaluation.ts';
@@ -139,15 +140,15 @@ try {
     for (const fixture of fixtureSet.fixtures) {
       const needsControl = fixture.expectation === 'clear_positive';
       let offered;
-      let controlFirstVisibleMs;
+      let controlProviderReadyMs;
       // Alternate pair order to reduce a simple warm-cache/order bias.
       if (needsControl && ordinal % 2 === 0) {
-        controlFirstVisibleMs = await runControl(api, model, options, fixture.prompt);
+        controlProviderReadyMs = await runControl(api, model, options, fixture.prompt);
         offered = await runOffered(api, model, options, fixture.prompt);
       } else {
         offered = await runOffered(api, model, options, fixture.prompt);
         if (needsControl) {
-          controlFirstVisibleMs = await runControl(api, model, options, fixture.prompt);
+          controlProviderReadyMs = await runControl(api, model, options, fixture.prompt);
         }
       }
       trials.push({
@@ -155,7 +156,7 @@ try {
         expectation: fixture.expectation,
         category: fixture.category,
         ...offered,
-        ...(controlFirstVisibleMs === undefined ? {} : { controlFirstVisibleMs }),
+        ...(controlProviderReadyMs === undefined ? {} : { controlProviderReadyMs }),
       });
       ordinal += 1;
     }
@@ -195,23 +196,28 @@ async function runOffered(api, model, options, prompt) {
       parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
     }],
   }, options);
-  const declarations = first.message.content.filter((part) =>
-    part.type === 'toolCall' && part.name === SLACK_STREAM_ANSWER_TOOL_NAME
-  );
-  const declared = declarations.length > 0;
-  const declarationShapeValid = declarations.length === 1 &&
-    Object.keys(declarations[0].arguments ?? {}).length === 0 &&
-    first.message.content.filter((part) => part.type === 'toolCall').length === 1;
+  const toolCalls = first.message.content.filter((part) => part.type === 'toolCall');
+  const declaration = assessSlackStreamingDeclaration(toolCalls);
+  const { declared, declarationShapeValid } = declaration;
   if (!declared) {
     return {
       declared: false,
       declarationBeforeText: true,
       declarationShapeValid: true,
       contaminationDetected: containsDeliveryContamination(first.text),
-      offeredFirstVisibleMs: first.completedAt - startedAt,
+      offeredProviderReadyMs: first.completedAt - startedAt,
     };
   }
-  const declaration = declarations[0];
+  if (!declarationShapeValid || !declaration.declarationId) {
+    return {
+      declared: true,
+      declarationBeforeText: first.text.length === 0,
+      declarationShapeValid: false,
+      contaminationDetected: containsDeliveryContamination(first.text),
+      offeredProviderReadyMs: (first.firstTextAt ?? first.completedAt) - startedAt,
+      declarationMs: (first.declarationAt ?? first.completedAt) - startedAt,
+    };
+  }
   const continuation = await consumeTurn(api, model, {
     systemPrompt: `You are Chickpea, a helpful Slack agent. ${SLACK_STREAM_ANSWER_INSTRUCTION}`,
     messages: [
@@ -219,7 +225,7 @@ async function runOffered(api, model, options, prompt) {
       first.message,
       {
         role: 'toolResult',
-        toolCallId: declaration.id,
+        toolCallId: declaration.declarationId,
         toolName: SLACK_STREAM_ANSWER_TOOL_NAME,
         content: [{ type: 'text', text: SLACK_STREAM_ANSWER_ACKNOWLEDGEMENT }],
         isError: false,
@@ -232,7 +238,7 @@ async function runOffered(api, model, options, prompt) {
     declarationBeforeText: first.text.length === 0,
     declarationShapeValid,
     contaminationDetected: containsDeliveryContamination(continuation.text),
-    offeredFirstVisibleMs: (continuation.firstTextAt ?? continuation.completedAt) - startedAt,
+    offeredProviderReadyMs: (continuation.firstTextAt ?? continuation.completedAt) - startedAt,
     declarationMs: (first.declarationAt ?? first.completedAt) - startedAt,
   };
 }
@@ -243,7 +249,7 @@ async function runControl(api, model, options, prompt) {
     systemPrompt: 'You are Chickpea, a helpful Slack agent. Answer the user directly.',
     messages: [{ role: 'user', content: prompt, timestamp: Date.now() }],
   }, options);
-  // Terminal delivery is visible only after the full model turn completes.
+  // Terminal delivery is provider-ready only after the full model turn completes.
   return turn.completedAt - startedAt;
 }
 

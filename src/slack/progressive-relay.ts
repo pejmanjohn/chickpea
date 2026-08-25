@@ -110,10 +110,12 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       return;
     }
     if (chunk.type === 'tool-output') {
+      if (!this.targetToolCallIds.has(chunk.toolCallId)) return;
       this.handleToolOutcome(chunk.toolCallId, true);
       return;
     }
     if (chunk.type === 'tool-output-error') {
+      if (!this.targetToolCallIds.has(chunk.toolCallId)) return;
       this.handleToolOutcome(chunk.toolCallId, false);
       return;
     }
@@ -171,6 +173,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
   private intentStatus: SlackProgressiveIntent['status'];
   private intentToolCallId: string | undefined;
   private preIntentTextSeen = false;
+  private readonly targetToolCallIds = new Set<string>();
 
   constructor(
     private readonly options: ProgressiveTextSink & { submissionId: string },
@@ -228,6 +231,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       this.denyAndInvalidate('identity_conflict', 'message_identity_conflict', true);
       return;
     }
+    this.targetToolCallIds.add(toolCallId);
     if (toolName !== SLACK_STREAM_ANSWER_TOOL_NAME) {
       this.denyAndInvalidate(
         'non_presentation_tool',
