@@ -404,6 +404,7 @@ function runAdminPageHarness(
     memorySaveError?: { status: number; error: string; currentVersion?: number };
     agentSchedules?: Array<Record<string, unknown>>;
     agentSchedulesFetch?: (agentId: string, call: number) => Promise<FakeResponse>;
+    agentScheduleControlError?: { status: number; error: string; message?: string };
     agentDetailFetch?: (agentId: string, call: number) => Promise<FakeResponse>;
     memoryGetFetch?: (agentId: string, call: number) => Promise<FakeResponse>;
     scheduledWork?: ScheduledWorkFixture;
@@ -537,6 +538,12 @@ function runAdminPageHarness(
   agentConnectionGets(): number;
   slackStatusGets(): number;
   setAgentSchedules(schedules: Array<Record<string, unknown>>): void;
+  agentScheduleControlPosts: Array<{
+    agentId: string;
+    scheduleId: string;
+    body: Record<string, unknown>;
+    idempotencyKey: string;
+  }>;
   setMemoryEntry(body: string, version: number): void;
   focusWindow(): void;
   setVisibility(state: 'hidden' | 'visible'): void;
@@ -739,6 +746,12 @@ function runAdminPageHarness(
   const memoryPuts: Array<Record<string, unknown>> = [];
   const ownerMemoryGetCaches: Array<string | undefined> = [];
   let agentScheduleGets = 0;
+  const agentScheduleControlPosts: Array<{
+    agentId: string;
+    scheduleId: string;
+    body: Record<string, unknown>;
+    idempotencyKey: string;
+  }> = [];
   let agentDetailGets = 0;
   let agentConnectionGets = 0;
   let memoryGetCalls = 0;
@@ -1026,6 +1039,9 @@ function runAdminPageHarness(
       if (id.startsWith('ptab-') && appHtml.includes(`id="${id}"`)) {
         return focusElement(id);
       }
+      if (id.startsWith('agent-schedule-') && appHtml.includes(`id="${id}"`)) {
+        return focusElement(id);
+      }
       // The favorites search re-renders only its own results container; hand it a
       // tracked fake element so a keystroke's filtered output is observable.
       if (id.startsWith('fav-results-')) {
@@ -1103,6 +1119,10 @@ function runAdminPageHarness(
       const modelPolicyAction = selector.match(/^\[data-action="(workspace-default-model|profile-model)"\]$/)?.[1];
       if (modelPolicyAction && appHtml.includes(`data-action="${modelPolicyAction}"`)) {
         return focusElement(modelPolicyAction);
+      }
+      const agentScheduleAction = selector.match(/^\[data-action="(agent-schedule-delete-(?:cancel|confirm))"\]$/)?.[1];
+      if (agentScheduleAction && appHtml.includes(`data-action="${agentScheduleAction}"`)) {
+        return focusElement(agentScheduleAction);
       }
       if (selector === '.topbar-menu > summary' && appHtml.includes('data-role="mobile-menu-trigger"')) {
         return focusElement('mobile-menu-trigger');
@@ -1544,6 +1564,51 @@ function runAdminPageHarness(
       }
       return Promise.resolve(jsonResponse({
         schedules: agentSchedules.map((schedule) => ({ ...schedule })),
+      }));
+    }
+    const agentScheduleControlMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/schedules\/([^/]+)\/control$/,
+    );
+    if (agentScheduleControlMatch && method === 'POST') {
+      const agentId = decodeURIComponent(agentScheduleControlMatch[1] as string);
+      const scheduleId = decodeURIComponent(agentScheduleControlMatch[2] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      agentScheduleControlPosts.push({
+        agentId,
+        scheduleId,
+        body,
+        idempotencyKey: options?.headers?.['idempotency-key'] ?? '',
+      });
+      if (harnessOptions.agentScheduleControlError) {
+        return Promise.resolve(jsonResponse(
+          harnessOptions.agentScheduleControlError,
+          harnessOptions.agentScheduleControlError.status,
+        ));
+      }
+      const action = String(body.action || '');
+      agentSchedules = agentSchedules.flatMap((schedule) => {
+        if (schedule.id !== scheduleId) return [schedule];
+        if (action === 'delete') return [];
+        const status = action === 'pause' ? 'paused' : 'active';
+        return [{
+          ...schedule,
+          status,
+          version: Number(schedule.version || 0) + 1,
+          actions: {
+            ...(schedule.actions as Record<string, unknown> | undefined),
+            pause: action === 'resume',
+            resume: action === 'pause',
+          },
+        }];
+      });
+      const updated = agentSchedules.find((schedule) => schedule.id === scheduleId);
+      return Promise.resolve(jsonResponse({
+        schedule: updated ?? {
+          id: scheduleId,
+          status: 'deleted',
+          version: Number(body.expectedVersion || 0) + 1,
+        },
+        ...(action === 'delete' ? { irreversible: true } : {}),
       }));
     }
     if (path === '/admin/api/agents' && method === 'GET') {
@@ -2632,6 +2697,7 @@ function runAdminPageHarness(
     setAgentSchedules(schedules) {
       agentSchedules = schedules.map((schedule) => ({ ...schedule }));
     },
+    agentScheduleControlPosts,
     setMemoryEntry(body, version) {
       memoryEntry = { ...memoryEntry, body, version };
     },
@@ -3776,6 +3842,175 @@ test('opening Schedules revalidates work created after the Agent editor opened',
 
   assert.equal(harness.agentScheduleGets(), 1);
   assert.match(harness.app.innerHTML, /Fresh schedule from Slack/);
+});
+
+test('Agent Schedules is a compact controllable flat list with authoritative refreshes', async () => {
+  const schedule = (
+    id: string,
+    name: string,
+    status: string,
+    actions: { pause: boolean; resume: boolean; delete: boolean },
+    overrides: Record<string, unknown> = {},
+  ) => ({
+    id,
+    name,
+    contentAccess: 'readable',
+    status,
+    version: 4,
+    cadence: {
+      triggerKind: 'schedule',
+      scheduleInput: '0 9 * * 1-5',
+      timezone: 'America/Los_Angeles',
+    },
+    channelLabel: 'eng-releases',
+    nextRunAt: 1_785_168_000_000,
+    lastFinishedAt: 1_785_081_600_000,
+    actions,
+    ...overrides,
+  });
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedules: [
+      schedule(
+        'routine_active',
+        'Daily launch readiness digest with a deliberately long but still scannable name',
+        'active',
+        { pause: true, resume: false, delete: true },
+        {
+          prompt: 'SECRET_PROMPT_MUST_NOT_RENDER',
+          description: 'SECRET_DESCRIPTION_MUST_NOT_RENDER',
+          runsAs: 'SECRET_RUNS_AS_MUST_NOT_RENDER',
+          connectionCount: 9,
+          channelId: 'C_RAW_MUST_NOT_RENDER',
+          pausedReason: 'member_pause',
+          runs: ['SECRET_HISTORY_MUST_NOT_RENDER'],
+        },
+      ),
+      schedule('routine_paused', 'Weekly customer summary', 'paused', {
+        pause: false, resume: true, delete: true,
+      }),
+      schedule('routine_attention', 'Dependency follow-up', 'needs_attention', {
+        pause: false, resume: false, delete: true,
+      }),
+      schedule('routine_completed', 'One-time migration reminder', 'completed', {
+        pause: false, resume: false, delete: true,
+      }, {
+        cadence: { triggerKind: 'once', scheduleInput: '2026-07-27T11:00', timezone: 'UTC' },
+        nextRunAt: null,
+      }),
+    ],
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+
+  const initial = harness.app.innerHTML;
+  assert.match(initial, /class="agent-schedule-list"/);
+  assert.match(initial, /class="agent-schedule-name"[^>]*>Daily launch readiness digest/);
+  assert.match(initial, />Active<\/span>/);
+  assert.match(initial, />Paused<\/span>/);
+  assert.match(initial, />Needs attention<\/span>/);
+  assert.match(initial, />Completed<\/span>/);
+  assert.match(initial, /Weekdays at 9:00 AM Pacific/);
+  assert.match(initial, /#eng-releases/);
+  assert.match(initial, /Next run/);
+  assert.match(initial, /Last run/);
+  assert.match(initial, /aria-label="Pause Daily launch readiness digest/);
+  assert.match(initial, /aria-label="Resume Weekly customer summary"/);
+  assert.match(initial, /aria-label="Delete One-time migration reminder"/);
+  assert.doesNotMatch(initial, /SECRET_PROMPT_MUST_NOT_RENDER|SECRET_DESCRIPTION_MUST_NOT_RENDER|SECRET_RUNS_AS_MUST_NOT_RENDER|SECRET_HISTORY_MUST_NOT_RENDER|C_RAW_MUST_NOT_RENDER|member_pause/);
+  assert.doesNotMatch(initial, /Runs as:|Connections:|Create schedule|Edit timing|data-action="agent-schedule-reassign"/);
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'agent-schedule-control',
+      'data-control': 'pause',
+      'data-schedule-id': 'routine_active',
+    }),
+  });
+  await flushAsync();
+  assert.equal(harness.agentScheduleGets(), 2);
+  assert.deepEqual(harness.agentScheduleControlPosts[0]?.body, {
+    action: 'pause', expectedVersion: 4,
+  });
+  assert.ok(harness.agentScheduleControlPosts[0]?.idempotencyKey);
+  assert.match(harness.app.innerHTML, /aria-label="Resume Daily launch readiness digest/);
+  assert.match(harness.app.innerHTML, /Schedule paused\./);
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'agent-schedule-control',
+      'data-control': 'resume',
+      'data-schedule-id': 'routine_paused',
+    }),
+  });
+  await flushAsync();
+  assert.equal(harness.agentScheduleGets(), 3);
+  assert.deepEqual(harness.agentScheduleControlPosts[1]?.body, {
+    action: 'resume', expectedVersion: 4,
+  });
+  assert.match(harness.app.innerHTML, /aria-label="Pause Weekly customer summary"/);
+  assert.match(harness.app.innerHTML, /Schedule resumed\./);
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'agent-schedule-delete-open',
+      'data-schedule-id': 'routine_active',
+    }),
+  });
+  assert.match(harness.app.innerHTML, /role="dialog" aria-modal="true" aria-labelledby="agent-schedule-delete-title"/);
+  assert.equal(harness.focusedAction(), 'agent-schedule-delete-cancel');
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'agent-schedule-delete-cancel' }) });
+  assert.equal(harness.focusedAction(), 'agent-schedule-delete-routine_active');
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'agent-schedule-delete-open',
+      'data-schedule-id': 'routine_active',
+    }),
+  });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'agent-schedule-delete-confirm' }) });
+  await flushAsync();
+  assert.deepEqual(harness.agentScheduleControlPosts[2]?.body, {
+    action: 'delete', expectedVersion: 5, acknowledgeIrreversible: true,
+  });
+  assert.equal(harness.agentScheduleGets(), 4);
+  assert.doesNotMatch(harness.app.innerHTML, /Daily launch readiness digest/);
+  assert.match(harness.app.innerHTML, /id="ptab-schedules"[^>]*>Schedules<span class="ptab-count">3<\/span>/);
+  assert.match(harness.app.innerHTML, /Schedule deleted\./);
+});
+
+test('failed Agent schedule control reloads the latest row and reports a safe error', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedules: [{
+      id: 'routine_conflict', name: 'Conflict canary', contentAccess: 'readable', status: 'active', version: 7,
+      cadence: { triggerKind: 'schedule', scheduleInput: '*/5 * * * *', timezone: 'UTC' },
+      channelLabel: 'schedule-lab', nextRunAt: 1_785_168_000_000, lastFinishedAt: null,
+      actions: { pause: true, resume: false, delete: true },
+    }],
+    agentScheduleControlError: {
+      status: 409,
+      error: 'routine_version_conflict',
+      message: 'SECRET_SERVER_DETAIL_MUST_NOT_RENDER',
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'agent-schedule-control',
+      'data-control': 'pause',
+      'data-schedule-id': 'routine_conflict',
+    }),
+  });
+  await flushAsync();
+
+  assert.equal(harness.agentScheduleGets(), 2);
+  assert.match(harness.app.innerHTML, /Conflict canary/);
+  assert.match(harness.app.innerHTML, /This schedule changed elsewhere\. Review the latest state before trying again\./);
+  assert.doesNotMatch(harness.app.innerHTML, /SECRET_SERVER_DETAIL_MUST_NOT_RENDER/);
 });
 
 test('opening an editable Agent view revalidates its visible detail without loading hidden tabs', async () => {
@@ -5973,12 +6208,13 @@ test('managed authorization polling backs off and stops for a manual check', () 
   assert.match(page, /Still waiting for approval\. Finish sign-in, then check again\./);
 });
 
-test('the existing Runs as member can explicitly resume repairable authority-paused schedules', () => {
+test('Agent schedule controls use the scoped optimistic API without Runs as reassignment UI', () => {
   const page = renderAdminPage();
-  assert.match(page, /repairablePause = \["schedule_authority_missing", "assignment_missing", "creator_ineligible", "credential_unavailable"\]/);
-  assert.match(page, /reference\.state === "needs_attention" \|\| routine\.state === "paused" && repairablePause/);
-  assert.match(page, /canResume \? 'Resume future runs' : 'Take over future runs'/);
-  assert.match(page, /data-action="agent-schedule-reassign"/);
+  assert.match(page, /\/agents\/" \+ encodeURIComponent\(agentId\) \+ "\/schedules\/" \+ encodeURIComponent\(scheduleId\) \+ "\/control"/);
+  assert.match(page, /expectedVersion: expectedVersion/);
+  assert.match(page, /acknowledgeIrreversible: true/);
+  assert.match(page, /invalidateAgentSchedules\(agentId\);/);
+  assert.doesNotMatch(page, /data-action="agent-schedule-reassign"/);
 });
 
 test('compact connection rows disclose only trusted capability effects and support hover, focus, and click disclosure', async () => {

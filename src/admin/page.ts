@@ -1821,6 +1821,26 @@ button.capability-pill { cursor: pointer; }
 .owner-memory-intro p { margin: 0; }
 .owner-memory-editor { background: #fffdf8; border: 1px solid #e7dcc7; border-radius: 12px; display: flex; flex-direction: column; gap: 13px; min-width: 0; padding: 22px 24px 24px; }
 .agent-tabs-card [id="ptab-panel-memory"] .owner-memory-editor { border-bottom: 0; border-left: 0; border-radius: 0; border-right: 0; margin: 8px -28px -28px; }
+.agent-schedule-list { border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
+.agent-schedule-row { align-items: center; background: var(--bg); display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) auto; min-width: 0; padding: 15px 16px; }
+.agent-schedule-row + .agent-schedule-row { border-top: 1px solid var(--line); }
+.agent-schedule-copy { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.agent-schedule-heading { align-items: center; display: flex; flex-wrap: wrap; gap: 7px 9px; min-width: 0; }
+.agent-schedule-name { color: var(--text); font-size: .8125rem; font-weight: 700; line-height: 1.4; min-width: 0; overflow-wrap: anywhere; }
+.agent-schedule-status { border-radius: 999px; display: inline-flex; flex: none; font-size: .65625rem; font-weight: 750; line-height: 1; padding: 5px 8px; }
+.agent-schedule-status-active { background: var(--ok-tint); color: var(--ok); }
+.agent-schedule-status-paused, .agent-schedule-status-completed { background: var(--well); color: var(--text-2); }
+.agent-schedule-status-attention { background: #fbf1da; color: #8a6119; }
+.agent-schedule-meta { align-items: center; color: var(--text-3); display: flex; flex-wrap: wrap; font-size: .71875rem; gap: 5px 7px; line-height: 1.45; min-width: 0; }
+.agent-schedule-meta-item { min-width: 0; overflow-wrap: anywhere; }
+.agent-schedule-channel { color: var(--text-2); }
+.agent-schedule-separator { color: #c6b999; }
+.agent-schedule-actions { align-items: center; display: flex; flex: none; gap: 6px; }
+.agent-schedule-actions .btn { white-space: nowrap; }
+.agent-schedule-delete { color: var(--danger); }
+.agent-schedule-delete:hover:not(:disabled) { background: var(--danger-well); }
+.agent-schedule-live { color: var(--text-3); font-size: .75rem; margin: 0; min-height: 18px; }
+.agent-schedule-live.error { color: var(--danger); }
 .owner-memory-editor-head { align-items: flex-start; border-bottom: 1px solid #eee4d1; display: flex; gap: 18px; justify-content: space-between; padding-bottom: 16px; }
 .owner-memory-form { display: grid; gap: 13px; }
 .owner-memory-editor textarea { line-height: 1.65; min-height: 300px; resize: vertical; }
@@ -1937,6 +1957,8 @@ button.capability-pill { cursor: pointer; }
   .agent-channel-empty-icon { display: none; }
   .owner-memory-editor { padding: 20px; }
   .agent-tabs-card [id="ptab-panel-memory"] .owner-memory-editor { margin: 8px -20px -20px; }
+  .agent-schedule-row { align-items: stretch; grid-template-columns: 1fr; }
+  .agent-schedule-actions { justify-content: flex-start; }
   .channel-capability-groups { grid-template-columns: 1fr; }
   .owner-memory-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .owner-memory-actions .spacer { display: none; }
@@ -1972,6 +1994,8 @@ button.capability-pill { cursor: pointer; }
 }
 @media (max-width: 480px) {
   .agent-profile-page .ptabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .agent-schedule-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .agent-schedule-actions .btn { width: 100%; }
 }
 
 /* ---- profile repositories ---------------------------------------------- */
@@ -2878,6 +2902,7 @@ button.capability-pill { cursor: pointer; }
     composioSetup: null,
     managedAuthorization: null,
     agentSchedules: { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" },
+    agentScheduleDeleteConfirm: null,
     connectionAccountsSupported: null,
     connectionAccountForm: null,
     managedResourceEditor: null,
@@ -3442,6 +3467,7 @@ button.capability-pill { cursor: pointer; }
     resetRepositoryTransientState();
     state.modelPickerOpen = false;
     state.modelPickerFilter = "";
+    state.agentScheduleDeleteConfirm = null;
   }
 
   // Open a profile's edit screen (from a click or a route), resetting every
@@ -3633,7 +3659,7 @@ button.capability-pill { cursor: pointer; }
     lastRenderedPath = renderedPath;
     var app = document.getElementById("app");
     if (app.removeAttribute) app.removeAttribute("aria-busy");
-    var overlays = teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
+    var overlays = teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + agentScheduleDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
     if (state.view === "onboarding") {
       app.className = "frame onboarding-frame";
       app.innerHTML = onboardingShellHtml() + overlays;
@@ -3718,6 +3744,17 @@ button.capability-pill { cursor: pointer; }
           ? document.querySelector('[data-role="sandbox-confirm-error"]')
           : document.querySelector('[data-action="sandbox-confirm-cancel"]');
       if (sandboxConfirmFocus && sandboxConfirmFocus.focus) sandboxConfirmFocus.focus();
+    }
+    if (state.agentScheduleDeleteConfirm) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      var agentScheduleDeleteFocus = state.agentSchedules.busy
+        ? document.querySelector('[data-role="agent-schedule-delete-dialog"]')
+        : document.querySelector('[data-action="agent-schedule-delete-cancel"]');
+      if (agentScheduleDeleteFocus && agentScheduleDeleteFocus.focus) agentScheduleDeleteFocus.focus();
     }
     if (state.scheduledSelection && !state.scheduledInspector && !state.scheduledDeleteConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
@@ -5368,32 +5405,105 @@ button.capability-pill { cursor: pointer; }
     invalidateVisibleResource("schedules", agentId);
   }
 
-  function reassignAgentSchedule(scheduleId, expectedRevision) {
+  function agentScheduleMutationKey(agentId, scheduleId, action) {
+    return "admin-ui:agent:" + agentId + ":schedule:" + scheduleId + ":" + action + ":" + Date.now() + ":" + Math.random().toString(36).slice(2);
+  }
+
+  function agentScheduleById(scheduleId) {
+    return (state.agentSchedules.schedules || []).find(function (schedule) {
+      return schedule.id === scheduleId;
+    });
+  }
+
+  function agentScheduleControlError(error) {
+    if (error && error.status === 409) {
+      return "This schedule changed elsewhere. Review the latest state before trying again.";
+    }
+    if (error && (error.status === 403 || error.status === 404)) {
+      return "This schedule is no longer available to manage.";
+    }
+    return "Could not update this schedule. Review the latest state and try again.";
+  }
+
+  function focusAgentScheduleDelete(scheduleId) {
+    var control = document.getElementById("agent-schedule-delete-" + scheduleId);
+    if (control && control.focus) control.focus();
+  }
+
+  function closeAgentScheduleDeleteConfirm(restoreFocus) {
+    var confirmation = state.agentScheduleDeleteConfirm;
+    if (!confirmation || state.agentSchedules.busy) return;
+    state.agentScheduleDeleteConfirm = null;
+    render();
+    if (restoreFocus) focusAgentScheduleDelete(confirmation.scheduleId);
+  }
+
+  function openAgentScheduleDeleteConfirm(scheduleId) {
     var schedules = state.agentSchedules;
-    var membershipId = schedules.viewerMembershipId || "";
-    if (!membershipId || schedules.busy) return;
-    schedules.busy = scheduleId;
+    var schedule = agentScheduleById(scheduleId);
+    if (!schedule || schedules.busy || !(schedule.actions && schedule.actions.delete)) return;
+    state.agentScheduleDeleteConfirm = {
+      agentId: schedules.agentId,
+      scheduleId: schedule.id,
+      name: schedule.name || "Restricted schedule"
+    };
     schedules.error = "";
     schedules.notice = "";
     render();
-    return postJson(
-      "/admin/api/agents/" + encodeURIComponent(schedules.agentId) + "/schedules/" + encodeURIComponent(scheduleId) + "/reassign",
-      "POST",
-      { runsAsMembershipId: membershipId, expectedAuthorityRevision: Number(expectedRevision) }
-    ).then(function (body) {
-      var notice = body && body.routine && body.routine.state === "paused"
-        ? "Schedule authority updated. This routine is still paused."
-        : "Schedule authority updated and paused work resumed.";
-      invalidateAgentSchedules(schedules.agentId);
-      return loadAgentSchedules(schedules.agentId).then(function () {
-        if (state.agentSchedules.agentId !== schedules.agentId) return;
-        state.agentSchedules.notice = notice;
-        render();
+  }
+
+  function controlAgentSchedule(scheduleId, action) {
+    var schedules = state.agentSchedules;
+    var schedule = agentScheduleById(scheduleId);
+    var actions = schedule && schedule.actions || {};
+    if (!schedule || schedules.busy || ["pause", "resume", "delete"].indexOf(action) < 0 || !actions[action]) return;
+    var agentId = schedules.agentId;
+    var expectedVersion = Number(schedule.version);
+    if (!agentId || !Number.isFinite(expectedVersion) || expectedVersion < 1) return;
+    schedules.busy = scheduleId + ":" + action;
+    schedules.error = "";
+    schedules.notice = "";
+    renderPreservingPagePosition();
+    return api(
+      "/admin/api/agents/" + encodeURIComponent(agentId) + "/schedules/" + encodeURIComponent(scheduleId) + "/control",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": agentScheduleMutationKey(agentId, scheduleId, action)
+        },
+        body: JSON.stringify({
+          action: action,
+          expectedVersion: expectedVersion,
+          ...(action === "delete" ? { acknowledgeIrreversible: true } : {})
+        })
+      }
+    ).then(function () {
+      state.agentScheduleDeleteConfirm = null;
+      invalidateAgentSchedules(agentId);
+      return loadAgentSchedules(agentId).then(function () {
+        if (state.agentSchedules.agentId !== agentId) return;
+        state.agentSchedules.busy = "";
+        state.agentSchedules.notice = action === "delete"
+          ? "Schedule deleted."
+          : "Schedule " + (action === "pause" ? "paused." : "resumed.");
+        renderPreservingPagePosition();
+        if (action === "delete") {
+          var schedulesTab = document.getElementById("ptab-schedules");
+          if (schedulesTab && schedulesTab.focus) schedulesTab.focus();
+        }
       });
     }).catch(function (error) {
-      schedules.busy = "";
-      schedules.error = (error && (error.serverMessage || error.message)) || "Could not update Runs as.";
-      render();
+      var message = agentScheduleControlError(error);
+      state.agentScheduleDeleteConfirm = null;
+      invalidateAgentSchedules(agentId);
+      return loadAgentSchedules(agentId).then(function () {
+        if (state.agentSchedules.agentId !== agentId) return;
+        state.agentSchedules.busy = "";
+        state.agentSchedules.error = message;
+        renderPreservingPagePosition();
+        if (action === "delete") focusAgentScheduleDelete(scheduleId);
+      });
     });
   }
 
@@ -6661,51 +6771,88 @@ button.capability-pill { cursor: pointer; }
       '<div class="owner-memory-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-discard"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>Discard</button><button type="button" class="btn btn-primary btn-sm" data-action="owner-memory-save"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>' + (memory.busy === "save" || memory.busy === "create" ? "Saving&hellip;" : "Save memory") + '</button></div></div></section>' + status;
   }
 
+  function agentScheduleStatusView(status) {
+    return ({
+      active: { label: "Active", css: "active" },
+      paused: { label: "Paused", css: "paused" },
+      needs_attention: { label: "Needs attention", css: "attention" },
+      completed: { label: "Completed", css: "completed" }
+    })[status] || { label: "Needs attention", css: "attention" };
+  }
+
+  function agentScheduleCadence(entry) {
+    var cadence = entry.cadence;
+    if (!cadence) return "Cadence unavailable";
+    if (cadence.triggerKind === "once") return "One time";
+    return formatScheduledSchedule({
+      triggerKind: cadence.triggerKind,
+      scheduleInput: cadence.scheduleInput,
+      timezone: cadence.timezone,
+      nextRunAt: entry.nextRunAt,
+      lastScheduledAt: entry.lastFinishedAt
+    });
+  }
+
+  function agentScheduleTime(entry) {
+    if (entry.status === "active") {
+      return entry.nextRunAt == null
+        ? "Next run pending"
+        : "Next run " + formatScheduledDate(entry.nextRunAt, entry.cadence && entry.cadence.timezone);
+    }
+    return entry.lastFinishedAt == null
+      ? "No completed runs yet"
+      : "Last run " + formatScheduledDate(entry.lastFinishedAt, entry.cadence && entry.cadence.timezone);
+  }
+
+  function agentScheduleDeleteModalHtml() {
+    var confirmation = state.agentScheduleDeleteConfirm;
+    if (!confirmation) return "";
+    var busy = state.agentSchedules.busy === confirmation.scheduleId + ":delete";
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="agent-schedule-delete-title" tabindex="-1" data-role="agent-schedule-delete-dialog">' +
+      '<h2 class="modal-title" id="agent-schedule-delete-title">Delete ' + esc(confirmation.name) + '?</h2>' +
+      '<p class="modal-body">This permanently deletes the saved schedule and stops all future runs. This cannot be undone.</p>' +
+      '<p class="sr-only" role="status" aria-live="polite">' + (busy ? "Deleting schedule." : "") + '</p>' +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="agent-schedule-delete-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><span class="spacer"></span><button type="button" class="btn btn-danger" data-action="agent-schedule-delete-confirm"' + (busy ? " disabled" : "") + '>' + (busy ? "Deleting&hellip;" : "Delete schedule") + '</button></div></div></div>';
+  }
+
   function agentSchedulesPanelHtml(draft) {
     var schedules = state.agentSchedules;
     if (!draft || !draft.id) {
-      return '<div class="empty"><p class="field-label">Save this Agent to add schedules</p><p class="hint">Scheduled work always belongs to one Agent and one Runs as member.</p></div>';
+      return '<div class="empty"><p class="field-label">Save this Agent to see schedules</p></div>';
     }
     if (schedules.agentId !== draft.id || schedules.loading) {
       return '<div class="empty"><p class="hint">Loading Agent schedules&hellip;</p></div>';
     }
-    var status = schedules.error
-      ? '<p class="error" role="alert">' + esc(schedules.error) + ' <button type="button" class="btn btn-soft btn-sm" data-action="agent-schedules-retry">Retry</button></p>'
-      : schedules.notice ? '<p class="hint" role="status">' + esc(schedules.notice) + '</p>' : '';
+    var live = '<p class="agent-schedule-live' + (schedules.error ? " error" : "") + '" ' +
+      (schedules.error ? 'role="alert" aria-live="assertive"' : 'role="status" aria-live="polite"') + '>' +
+      esc(schedules.error || schedules.notice || "") +
+      (schedules.error ? ' <button type="button" class="btn btn-soft btn-sm" data-action="agent-schedules-retry">Retry</button>' : "") + '</p>';
     if (!schedules.schedules.length) {
-      return status + '<div class="empty"><p class="field-label">No scheduled work</p><p class="hint">Ask this Agent in Slack to schedule a recurring or one-time task. The destination, required connections, and Runs as authority are saved together.</p></div>';
+      return live + '<div class="empty"><p class="field-label">No scheduled work</p><p class="hint">Ask this Agent in Slack to schedule a recurring or one-time task.</p></div>';
     }
     var rows = schedules.schedules.map(function (entry) {
-      // U4 projects a compact, authorization-filtered schedule. Keep this
-      // compatibility row deliberately small; U6 owns the final Flat List
-      // treatment and controls.
-      if (!entry.reference && entry.id) {
-        return '<article class="connection-account-row"><div class="connection-account-copy"><div><strong>' +
-          esc(entry.name || "Restricted schedule") + '</strong> <span class="badge ' +
-          (entry.status === "active" ? "badge-on" : "badge-off") + '">' + esc(entry.status || "unknown") +
-          '</span></div></div></article>';
-      }
-      var reference = entry.reference || {};
-      var routine = entry.routine || {};
-      var runsAs = entry.runsAs || {};
-      var needsAttention = reference.state === "needs_attention" || routine.state === "paused";
-      var canTakeOver = !!schedules.viewerMembershipId && schedules.viewerMembershipId !== reference.runsAsMembershipId;
-      var repairablePause = ["schedule_authority_missing", "assignment_missing", "creator_ineligible", "credential_unavailable"].indexOf(routine.pausedReason || "") >= 0;
-      var canResume = !!schedules.viewerMembershipId && schedules.viewerMembershipId === reference.runsAsMembershipId &&
-        (reference.state === "needs_attention" || routine.state === "paused" && repairablePause);
-      var scheduleAction = canTakeOver || canResume
-        ? '<button type="button" class="btn btn-soft btn-sm" data-action="agent-schedule-reassign" data-schedule-id="' + esc(reference.scheduleId) + '" data-revision="' + Number(reference.revision || 0) + '"' + (schedules.busy ? ' disabled' : '') + '>' + (canResume ? 'Resume future runs' : 'Take over future runs') + '</button>'
-        : '<span class="hint">' + (schedules.viewerMembershipId ? 'Runs as you' : 'Runs as authority unavailable') + '</span>';
-      return '<article class="connection-account-row"><div class="connection-account-copy"><div><strong>' + esc(routine.name || reference.scheduleId) + '</strong> ' +
-        '<span class="badge ' + (needsAttention ? 'badge-off' : 'badge-on') + '">' + esc(needsAttention ? "Needs attention" : (routine.state || reference.state || "active")) + '</span></div>' +
-        '<p class="hint">' + esc(routine.description || "Scheduled Agent work") + '</p>' +
-        '<p class="hint"><strong>Runs as:</strong> ' + esc(runsAs.displayName || runsAs.contactEmail || reference.runsAsMembershipId || "Unavailable") +
-        ' &middot; <strong>Destination:</strong> ' + esc(reference.channelId || "") +
-        ' &middot; <strong>Connections:</strong> ' + Number((reference.requiredConnectionAccountIds || []).length) + '</p>' +
-        (routine.pausedReason ? '<p class="error">Paused: ' + esc(routine.pausedReason) + '</p>' : '') + '</div>' +
-        '<div class="connection-account-actions">' + scheduleAction + '</div></article>';
+      var scheduleStatus = agentScheduleStatusView(entry.status);
+      var name = entry.name || "Restricted schedule";
+      var channel = normalizeChannelLabel(entry.channelLabel || "");
+      var busy = String(schedules.busy || "").indexOf(entry.id + ":") === 0;
+      var actions = entry.actions || {};
+      var control = actions.pause
+        ? '<button type="button" id="agent-schedule-control-' + esc(entry.id) + '" class="btn btn-soft btn-sm" data-action="agent-schedule-control" data-control="pause" data-schedule-id="' + esc(entry.id) + '" aria-label="Pause ' + esc(name) + '"' + (schedules.busy ? " disabled" : "") + '>' + (busy ? "Pausing&hellip;" : "Pause") + '</button>'
+        : actions.resume
+          ? '<button type="button" id="agent-schedule-control-' + esc(entry.id) + '" class="btn btn-soft btn-sm" data-action="agent-schedule-control" data-control="resume" data-schedule-id="' + esc(entry.id) + '" aria-label="Resume ' + esc(name) + '"' + (schedules.busy ? " disabled" : "") + '>' + (busy ? "Resuming&hellip;" : "Resume") + '</button>'
+          : "";
+      var remove = actions.delete
+        ? '<button type="button" id="agent-schedule-delete-' + esc(entry.id) + '" class="btn btn-ghost btn-sm agent-schedule-delete" data-action="agent-schedule-delete-open" data-schedule-id="' + esc(entry.id) + '" aria-label="Delete ' + esc(name) + '"' + (schedules.busy ? " disabled" : "") + '>Delete</button>'
+        : "";
+      var meta = '<span class="agent-schedule-meta-item">' + esc(agentScheduleCadence(entry)) + '</span>' +
+        (channel ? '<span class="agent-schedule-separator" aria-hidden="true">&middot;</span><span class="agent-schedule-meta-item agent-schedule-channel">#' + esc(channel) + '</span>' : "") +
+        '<span class="agent-schedule-separator" aria-hidden="true">&middot;</span><span class="agent-schedule-meta-item">' + esc(agentScheduleTime(entry)) + '</span>';
+      return '<article class="agent-schedule-row"><div class="agent-schedule-copy"><div class="agent-schedule-heading">' +
+        '<span class="agent-schedule-name">' + esc(name) + '</span><span class="agent-schedule-status agent-schedule-status-' + scheduleStatus.css + '">' + esc(scheduleStatus.label) + '</span></div>' +
+        '<div class="agent-schedule-meta">' + meta + '</div></div>' +
+        ((control || remove) ? '<div class="agent-schedule-actions">' + control + remove + '</div>' : "") + '</article>';
     }).join("");
-    return status + '<p class="hint ptab-hint">Each schedule uses this Agent\\'s instructions and memory. Team connections are shared; personal connections always resolve as the named member.</p><div class="connection-account-list">' + rows + '</div>';
+    return live + '<div class="agent-schedule-list">' + rows + '</div>';
   }
 
   // ---- Capability tabs (Instructions / Skills / Connections / Repositories / Memory / Schedules) -
@@ -12471,6 +12618,15 @@ button.capability-pill { cursor: pointer; }
       return;
     }
 
+    if (state.agentScheduleDeleteConfirm) {
+      if (action === "agent-schedule-delete-cancel") {
+        closeAgentScheduleDeleteConfirm(true);
+      } else if (action === "agent-schedule-delete-confirm") {
+        controlAgentSchedule(state.agentScheduleDeleteConfirm.scheduleId, "delete");
+      }
+      return;
+    }
+
     if (state.scheduledDeleteConfirm) {
       if (action === "scheduled-delete-cancel") {
         if (state.scheduledBusy) return;
@@ -12735,11 +12891,14 @@ button.capability-pill { cursor: pointer; }
     if (action === "connection-account-detach") { detachConnectionAccount(target.getAttribute("data-connection-id") || ""); }
     if (action === "connection-account-revoke") { revokeConnectionAccount(target.getAttribute("data-connection-id") || ""); }
     if (action === "agent-schedules-retry" && state.profileDraft) { loadAgentSchedules(state.profileDraft.id); }
-    if (action === "agent-schedule-reassign") {
-      reassignAgentSchedule(
+    if (action === "agent-schedule-control") {
+      controlAgentSchedule(
         target.getAttribute("data-schedule-id") || "",
-        target.getAttribute("data-revision") || "0"
+        target.getAttribute("data-control") || ""
       );
+    }
+    if (action === "agent-schedule-delete-open") {
+      openAgentScheduleDeleteConfirm(target.getAttribute("data-schedule-id") || "");
     }
     if (action === "repo-add") { openRepositoryAdd(); }
     if (action === "repo-add-cancel") { closeRepositoryPicker(); }
@@ -13878,6 +14037,14 @@ button.capability-pill { cursor: pointer; }
       state.sandboxError = "";
       render();
       return;
+    }
+    if (state.agentScheduleDeleteConfirm) {
+      if (trapModalTab(event, '[data-role="agent-schedule-delete-dialog"]')) return;
+      if (event.key === "Escape" || event.key === "Esc") {
+        event.preventDefault();
+        closeAgentScheduleDeleteConfirm(true);
+        return;
+      }
     }
     if (state.scheduledDeleteConfirm && (event.key === "Escape" || event.key === "Esc")) {
       event.preventDefault();

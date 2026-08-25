@@ -329,6 +329,18 @@ try {
       !pageHtml.includes('setInterval(function () {\n      revalidateCurrentVisibleResources()'),
   );
 
+  record(
+    'Agent Schedules uses the compact Flat List and scoped controls only',
+    pageHtml.includes('class="agent-schedule-list"') &&
+      pageHtml.includes('data-action="agent-schedule-control"') &&
+      pageHtml.includes('data-action="agent-schedule-delete-open"') &&
+      pageHtml.includes('function invalidateAgentSchedules(agentId)') &&
+      pageHtml.includes('invalidateAgentSchedules(agentId);') &&
+      !pageHtml.includes('data-action="agent-schedule-create"') &&
+      !pageHtml.includes('data-action="agent-schedule-edit"') &&
+      !pageHtml.includes('data-action="agent-schedule-reassign"'),
+  );
+
   const usageOverview = await adminJson(
     app,
     `/admin/api/usage/overview?from=${usageNow - 86_400_000}&to=${usageNow + 1}&groupBy=channel&currency=USD`,
@@ -425,6 +437,53 @@ try {
     assigned.status === 201 && assigned.body?.grant?.agentId === AGENT_ID &&
       assigned.body?.grant?.status === 'active',
     `status=${assigned.status}`,
+  );
+
+  await store.putAgentScheduleReference({
+    scheduleId: ROUTINE_ID,
+    agentId: AGENT_ID,
+    workspaceId: WORKSPACE_ID,
+    channelId: CHANNEL_ID,
+    createdByMembershipId: owner.membership.id,
+    runsAsMembershipId: owner.membership.id,
+    authorityReceiptId: 'receipt_admin_ui_release',
+    requiredConnectionAccountIds: [],
+    state: 'active',
+  });
+  const agentSchedules = await adminJson(app, `/admin/api/agents/${AGENT_ID}/schedules`);
+  const resumedAgentSchedule = await adminJson(
+    app,
+    `/admin/api/agents/${AGENT_ID}/schedules/${ROUTINE_ID}/control`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-agent-schedule-resume' },
+      body: JSON.stringify({ action: 'resume', expectedVersion: 2 }),
+    },
+  );
+  const deletedAgentSchedule = await adminJson(
+    app,
+    `/admin/api/agents/${AGENT_ID}/schedules/${ROUTINE_ID}/control`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'idempotency-key': 'admin-ui-agent-schedule-delete' },
+      body: JSON.stringify({
+        action: 'delete', expectedVersion: 3, acknowledgeIrreversible: true,
+      }),
+    },
+  );
+  const schedulesAfterDelete = await adminJson(app, `/admin/api/agents/${AGENT_ID}/schedules`);
+  record(
+    'Agent Schedules exposes the compact projection and scoped resume/delete controls',
+    agentSchedules.status === 200 &&
+      agentSchedules.body?.schedules?.[0]?.name === 'Release readiness check' &&
+      agentSchedules.body?.schedules?.[0]?.channelLabel === CHANNEL_LABEL &&
+      agentSchedules.body?.schedules?.[0]?.status === 'paused' &&
+      agentSchedules.body?.schedules?.[0]?.actions?.resume === true &&
+      agentSchedules.body?.schedules?.[0]?.taskText === undefined &&
+      resumedAgentSchedule.status === 200 && resumedAgentSchedule.body?.schedule?.status === 'active' &&
+      deletedAgentSchedule.status === 200 && deletedAgentSchedule.body?.irreversible === true &&
+      schedulesAfterDelete.status === 200 && schedulesAfterDelete.body?.schedules?.length === 0,
+    `list=${agentSchedules.status} resume=${resumedAgentSchedule.status} delete=${deletedAgentSchedule.status}`,
   );
 
   const secondAgentId = 'agent_admin_ui_two';
