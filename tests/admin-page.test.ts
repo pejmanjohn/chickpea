@@ -2838,6 +2838,49 @@ test('a stale shared-app binding changes every Slack status to Reconnect require
   assert.doesNotMatch(harness.app.innerHTML, /agent-slack-status[^>]*>Connected/);
 });
 
+test('an offline inbound Slack session renders a specific retryable status', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/slack/identities',
+    slackConnection: {
+      ...connectedSlackFixture(),
+      transportMode: 'gateway',
+      credentials: { botToken: 'missing', signingSecret: 'missing', botUserId: 'missing' },
+    },
+    slackTestError: {
+      status: 502,
+      error: 'slack_gateway_unreachable',
+      detail: 'gateway_session_offline',
+    },
+  });
+  await flushAsync();
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-test' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /inbound event session is offline/i);
+  assert.match(harness.app.innerHTML, /badge badge-off[^>]*>[\s\S]*?Needs attention/);
+});
+
+test('a successful Slack re-test clears an earlier inbound-session warning', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/slack/identities',
+    slackConnection: {
+      ...connectedSlackFixture(),
+      health: 'needs_attention',
+      healthDetail: 'gateway_session_offline',
+      transportMode: 'gateway',
+    },
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /badge badge-off[^>]*>[\s\S]*?Needs attention/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-test' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Connection healthy · Acme Inc/);
+  assert.match(harness.app.innerHTML, /badge badge-on[^>]*>[\s\S]*?Connected/);
+});
+
 test('Slack behavior load and save failures stay honest and recoverable', async () => {
   const loadHarness = runAdminPageHarness({
     initialPath: '/admin/settings/slack/identities',

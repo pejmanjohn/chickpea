@@ -6117,6 +6117,7 @@ button.capability-pill { cursor: pointer; }
   function slackErrorText(message, detail, serverMessage) {
     if (message === "slack_unreachable") return "Could not reach the Slack API. Check connectivity and try again.";
     if (message === "slack_gateway_unreachable" && slackReconnectRequired(detail)) return "This deployment is no longer linked to the shared Slack app, or its approving member can no longer manage Agent handles. Reconnect as a current Slack Owner or Admin.";
+    if (message === "slack_gateway_unreachable" && detail === "gateway_session_offline") return "Slack’s outbound API is reachable, but Chickpea’s inbound event session is offline. Retry now; the deployment health check will reconnect it automatically.";
     if (message === "slack_gateway_unreachable") return "The shared Slack connection is temporarily unavailable. Retry now; if it continues, open Slack setup and use Add to Slack again.";
     if (message === "slack_auth_failed") return "Slack rejected the installed bot credential.";
     if (message === "slack_missing_scopes") return "The Slack installation is missing required permissions. Use the scoped recovery flow to repair it.";
@@ -13917,13 +13918,18 @@ button.capability-pill { cursor: pointer; }
       state.slackTestBusy = false;
       state.slackConnectionBusy = "";
       var team = (result && (result.teamName || result.teamId)) || connectedTeamName();
+      if (state.slack) {
+        state.slack.health = "healthy";
+        state.slack.healthDetail = null;
+      }
       state.slackTestStatus = { ok: true, message: "Connection healthy" + (team ? " · " + team : "") };
       render();
     }).catch(function (error) {
       state.slackTestBusy = false;
       state.slackConnectionBusy = "";
       var detail = error.detail || (error.payload && error.payload.detail);
-      if (state.slack && error.message === "slack_gateway_unreachable" && slackReconnectRequired(detail)) {
+      if (state.slack && error.message === "slack_gateway_unreachable" &&
+          (slackReconnectRequired(detail) || detail === "gateway_session_offline")) {
         state.slack.health = "needs_attention";
         state.slack.healthDetail = detail;
       }

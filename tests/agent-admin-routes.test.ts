@@ -120,12 +120,14 @@ class FakeTransport implements SlackTransport {
   };
   memberAllowed = true;
   createError?: Error;
+  lookupError?: Error;
 
   async getWorkspaceInfo(): Promise<{ teamId: string; teamName?: string }> {
     return { teamId: 'T_TEST', teamName: 'Acme Inc' };
   }
 
   async lookupMember(userId: string): Promise<SlackMember> {
+    if (this.lookupError) throw this.lookupError;
     return {
       id: userId, deleted: false, bot: false, restricted: false, ultraRestricted: false,
       appUser: false, stranger: false,
@@ -194,6 +196,93 @@ test('shared Slack connection backfills and persists the workspace display name'
     assert.equal(body.teamId, 'T_TEST');
     assert.equal(body.teamName, 'Acme Inc');
     assert.equal(await fixture.settings.getSetting('slack.teamName'), 'Acme Inc');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('shared Slack connection test requires inbound session health even when outbound Slack succeeds', async () => {
+  const fixture = harness();
+  let inboundHealthy = false;
+  let statusCalls = 0;
+  const env = {
+    SLACK_GATEWAY_SESSION: {
+      idFromName: (name: string) => name,
+      get: () => ({
+        status: async () => {
+          statusCalls += 1;
+          return {
+            healthy: inboundHealthy,
+            phase: inboundHealthy ? 'healthy' : 'retrying',
+            detail: inboundHealthy ? null : 'gateway_session_offline',
+            generation: 3,
+          };
+        },
+      }),
+    },
+  };
+  try {
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST',
+      teamId: 'T_TEST',
+      transportMode: 'gateway',
+      appId: 'A_TEST',
+      botUserId: 'U_BOT',
+      gatewayBindingId: 'binding_test',
+    });
+
+    const offline = await fixture.app.request(
+      'http://localhost/admin/api/slack-connection/test',
+      { method: 'POST', headers: auth(), body: '{}' },
+      env,
+    );
+    assert.equal(offline.status, 502);
+    assert.deepEqual(await offline.json(), {
+      error: 'slack_gateway_unreachable',
+      detail: 'gateway_session_offline',
+    });
+    assert.equal(statusCalls, 1);
+    assert.equal((await fixture.store.getWorkspaceInstallation('T_TEST'))?.health, 'needs_attention');
+    assert.equal(
+      (await fixture.store.getWorkspaceInstallation('T_TEST'))?.healthDetail,
+      'gateway_session_offline',
+    );
+
+    inboundHealthy = true;
+    const recovered = await fixture.app.request(
+      'http://localhost/admin/api/slack-connection/test',
+      { method: 'POST', headers: auth(), body: '{}' },
+      env,
+    );
+    assert.equal(recovered.status, 200);
+    assert.equal((await recovered.json() as { ok: boolean }).ok, true);
+    assert.equal(statusCalls, 2);
+    assert.equal((await fixture.store.getWorkspaceInstallation('T_TEST'))?.health, 'healthy');
+    assert.equal(
+      (await fixture.store.getWorkspaceInstallation('T_TEST'))?.healthDetail ?? null,
+      null,
+    );
+
+    inboundHealthy = false;
+    fixture.transport.lookupError = new SlackTransportError(
+      'users.info',
+      'gateway_binding_mismatch',
+    );
+    const reconnect = await fixture.app.request(
+      'http://localhost/admin/api/slack-connection/test',
+      { method: 'POST', headers: auth(), body: '{}' },
+      env,
+    );
+    assert.equal(reconnect.status, 502);
+    assert.deepEqual(await reconnect.json(), {
+      error: 'slack_gateway_unreachable',
+      detail: 'gateway_binding_mismatch',
+    });
+    assert.equal(
+      (await fixture.store.getWorkspaceInstallation('T_TEST'))?.healthDetail,
+      'gateway_binding_mismatch',
+    );
   } finally {
     fixture.store.close();
     fixture.settings.close();

@@ -10,7 +10,12 @@ import {
 } from '../src/slack/gateway/client.ts';
 import { CHICKPEA_GATEWAY_PROTOCOL_VERSION } from '../src/slack/gateway/protocol.ts';
 import {
+  classifyGatewaySessionRunnerHealth,
   GatewaySessionRunner,
+  GatewaySessionRunnerSupervisor,
+  reconcileGatewaySessionStatus,
+  type GatewaySessionRunnerControl,
+  type GatewaySessionRunnerHealthSnapshot,
   type GatewaySocket,
 } from '../src/slack/gateway/session-runner.ts';
 
@@ -49,6 +54,7 @@ test('session runner reconnects and rotates a renewable logical session', async 
       clearTimer: () => {},
     });
     assert.equal(await runner.start(), true);
+    assert.equal(runner.healthSnapshot().phase, 'connecting');
     sockets[0]!.open();
     await waitFor(() => sockets[0]!.sent.length === 1);
     assert.equal(JSON.parse(sockets[0]!.sent[0]!).kind, 'session.hello');
@@ -58,6 +64,7 @@ test('session runner reconnects and rotates a renewable logical session', async 
       rotateAt: NOW + 15 * 60_000,
     }));
     await spin();
+    assert.equal(runner.healthSnapshot().phase, 'healthy');
     assert.ok(timers.some(({ delay }) => delay === 12 * 60_000));
     assert.ok(timers.some(({ delay }) => delay === 90_000));
     await waitFor(async () => {
@@ -65,6 +72,7 @@ test('session runner reconnects and rotates a renewable logical session', async 
       return value ? JSON.parse(value).health === 'healthy' : false;
     });
     sockets[0]!.fail();
+    assert.equal(runner.healthSnapshot().phase, 'retrying');
     assert.ok((timers.at(-1)?.delay ?? -1) >= 0);
     await waitFor(async () => {
       const value = await settings.getSetting(GATEWAY_SESSION_SETTING);
@@ -140,6 +148,179 @@ test('session runner stop and restart supersede an in-flight start without orpha
     settings.close();
     config.close();
   }
+});
+
+test('session runner health classification covers generation, retry, socket, ready, heartbeat, and rotation state', () => {
+  const healthyCheckpoint = {
+    health: 'healthy' as const,
+    attempt: 0,
+    lastHeartbeatAt: NOW,
+    rotateAt: NOW + 12 * 60_000,
+  };
+  const cases: Array<{
+    name: string;
+    input: Parameters<typeof classifyGatewaySessionRunnerHealth>[0];
+    expected: Partial<GatewaySessionRunnerHealthSnapshot>;
+  }> = [
+    {
+      name: 'current deployment generation',
+      input: {
+        generation: 7,
+        stopped: false,
+        starting: false,
+        socketState: 1,
+        checkpoint: healthyCheckpoint,
+        scheduledAction: 'rotate',
+        scheduledAt: healthyCheckpoint.rotateAt,
+        now: NOW,
+      },
+      expected: { generation: 7, phase: 'healthy', healthy: true, shouldReplace: false },
+    },
+    {
+      name: 'future retry timer',
+      input: {
+        generation: 8,
+        stopped: false,
+        starting: false,
+        scheduledAction: 'retry',
+        scheduledAt: NOW + 1_000,
+        now: NOW,
+      },
+      expected: { phase: 'retrying', healthy: false, shouldReplace: false },
+    },
+    {
+      name: 'closed socket',
+      input: {
+        generation: 9,
+        stopped: false,
+        starting: false,
+        socketState: 3,
+        checkpoint: healthyCheckpoint,
+        scheduledAction: 'rotate',
+        scheduledAt: healthyCheckpoint.rotateAt,
+        now: NOW,
+      },
+      expected: { phase: 'stale', reason: 'socket_closed', healthy: false, shouldReplace: true },
+    },
+    {
+      name: 'half-open socket inside ready timeout',
+      input: {
+        generation: 10,
+        stopped: false,
+        starting: false,
+        socketState: 0,
+        checkpoint: { health: 'connecting', attempt: 0 },
+        scheduledAction: 'ready_timeout',
+        scheduledAt: NOW + 90_000,
+        now: NOW,
+      },
+      expected: { phase: 'connecting', healthy: false, shouldReplace: false },
+    },
+    {
+      name: 'expired heartbeat',
+      input: {
+        generation: 11,
+        stopped: false,
+        starting: false,
+        socketState: 1,
+        checkpoint: healthyCheckpoint,
+        scheduledAction: 'rotate',
+        scheduledAt: healthyCheckpoint.rotateAt,
+        now: NOW + 90_001,
+      },
+      expected: { phase: 'stale', reason: 'heartbeat_expired', healthy: false, shouldReplace: true },
+    },
+    {
+      name: 'expired rotation with a fresh heartbeat',
+      input: {
+        generation: 12,
+        stopped: false,
+        starting: false,
+        socketState: 1,
+        checkpoint: {
+          ...healthyCheckpoint,
+          lastHeartbeatAt: NOW + 12 * 60_000,
+        },
+        scheduledAction: 'rotate',
+        scheduledAt: healthyCheckpoint.rotateAt,
+        now: NOW + 12 * 60_000,
+      },
+      expected: { phase: 'stale', reason: 'rotation_expired', healthy: false, shouldReplace: true },
+    },
+    {
+      name: 'binding revoked requires attention instead of automatic replacement',
+      input: {
+        generation: 13,
+        stopped: false,
+        starting: false,
+        checkpoint: { health: 'needs_attention', attempt: 1, reason: 'binding_revoked' },
+        now: NOW,
+      },
+      expected: {
+        phase: 'needs_attention',
+        reason: 'binding_revoked',
+        healthy: false,
+        shouldReplace: false,
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    const actual = classifyGatewaySessionRunnerHealth(scenario.input);
+    assert.deepEqual(
+      Object.fromEntries(Object.keys(scenario.expected).map((key) => [
+        key,
+        actual[key as keyof GatewaySessionRunnerHealthSnapshot],
+      ])),
+      scenario.expected,
+      scenario.name,
+    );
+  }
+});
+
+test('session runner supervisor leaves an active generation alone and replaces one stale generation once', async () => {
+  const runners: FakeRunnerControl[] = [];
+  const supervisor = new GatewaySessionRunnerSupervisor(() => {
+    const runner = new FakeRunnerControl(runners.length === 0 ? 'connecting' : 'healthy');
+    runners.push(runner);
+    return runner;
+  });
+
+  await supervisor.ensureHealthy();
+  await supervisor.ensureHealthy();
+  assert.equal(runners.length, 1);
+  assert.equal(runners[0]!.starts, 1);
+  assert.equal(runners[0]!.stops, 0);
+
+  runners[0]!.phase = 'stale';
+  await Promise.all([supervisor.ensureHealthy(), supervisor.ensureHealthy()]);
+  assert.equal(runners.length, 2);
+  assert.equal(runners[0]!.stops, 1);
+  assert.equal(runners[1]!.starts, 1);
+  assert.equal(runners[1]!.stops, 0);
+});
+
+test('live runner health wins over a stale persisted healthy checkpoint', () => {
+  const status = reconcileGatewaySessionStatus({
+    generation: 4,
+    phase: 'stale',
+    reason: 'socket_closed',
+    healthy: false,
+    shouldReplace: true,
+    socketState: 3,
+  }, {
+    health: 'healthy',
+    attempt: 0,
+    lastHeartbeatAt: NOW,
+    rotateAt: NOW + 60_000,
+  });
+
+  assert.deepEqual(status, {
+    healthy: false,
+    phase: 'stale',
+    detail: 'gateway_session_offline',
+    generation: 4,
+  });
 });
 
 test('session runner reconnects a half-open socket after heartbeat timeout', async () => {
@@ -374,6 +555,35 @@ class FakeSocket implements GatewaySocket {
   }
   fail(): void {
     for (const listener of this.listeners.get('error') ?? []) listener();
+  }
+}
+
+class FakeRunnerControl implements GatewaySessionRunnerControl {
+  starts = 0;
+  stops = 0;
+
+  constructor(public phase: GatewaySessionRunnerHealthSnapshot['phase']) {}
+
+  async start(): Promise<boolean> {
+    this.starts += 1;
+    return true;
+  }
+
+  stop(): void {
+    this.stops += 1;
+  }
+
+  healthSnapshot(): GatewaySessionRunnerHealthSnapshot {
+    return {
+      generation: this.starts,
+      phase: this.phase,
+      healthy: this.phase === 'healthy',
+      shouldReplace: this.phase === 'stale' || this.phase === 'stopped',
+      ...(this.phase === 'healthy' ? { socketState: 1 } : {}),
+      ...(this.phase === 'connecting'
+        ? { scheduledAction: 'ready_timeout' as const, scheduledAt: NOW + 90_000 }
+        : {}),
+    };
   }
 }
 

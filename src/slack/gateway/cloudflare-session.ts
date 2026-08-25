@@ -5,11 +5,17 @@ import { tagStateStub } from '../../config/state-rpc.ts';
 import { GATEWAY_BINDING_SETTING } from './client.ts';
 import { GATEWAY_DURABLE_ADMISSION_CAPABILITY } from './protocol.ts';
 import { createGatewayDeploymentClient } from './runtime.ts';
-import { GatewaySessionRunner } from './session-runner.ts';
+import {
+  GatewaySessionRunner,
+  GatewaySessionRunnerSupervisor,
+  reconcileGatewaySessionStatus,
+  type GatewaySessionStatusSnapshot,
+} from './session-runner.ts';
 
 export interface SlackGatewaySessionRpc {
   wake(): Promise<void>;
   restart(): Promise<void>;
+  status(): Promise<GatewaySessionStatusSnapshot>;
 }
 
 /**
@@ -18,7 +24,7 @@ export interface SlackGatewaySessionRpc {
  * the session runner rotates before Cloudflare's outbound-WebSocket ceiling.
  */
 export class SlackGatewaySession extends DurableObject implements SlackGatewaySessionRpc {
-  private runner: GatewaySessionRunner | undefined;
+  private supervisor: GatewaySessionRunnerSupervisor | undefined;
   private readonly state: DurableObjectState & {
     waitUntil(promise: Promise<unknown>): void;
   };
@@ -32,34 +38,36 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
   }
 
   async wake(): Promise<void> {
-    if (this.runner) return;
     const platformEnv = this.env as PlatformEnv;
-    const binding = await getSettingsStore(platformEnv).getSetting(GATEWAY_BINDING_SETTING);
-    if (!binding) return;
-    const client = createGatewayDeploymentClient(platformEnv);
-    const runner = new GatewaySessionRunner({
-      client,
-      capabilities: [GATEWAY_DURABLE_ADMISSION_CAPABILITY],
-      waitUntil: (promise) => this.state.waitUntil(promise),
-      onEvent: async (delivery) => {
-        const result = await tagStateStub(platformEnv).admitGatewayDelivery(delivery);
-        return result.ok ? result.value : 'rejected';
-      },
-    });
-    this.runner = runner;
-    try {
-      if (!(await runner.start())) this.runner = undefined;
-    } catch (error) {
-      runner.stop();
-      this.runner = undefined;
-      throw error;
+    if (!this.supervisor) {
+      const binding = await getSettingsStore(platformEnv).getSetting(GATEWAY_BINDING_SETTING);
+      if (!binding) return;
+      this.supervisor = new GatewaySessionRunnerSupervisor(() => new GatewaySessionRunner({
+        client: createGatewayDeploymentClient(platformEnv),
+        capabilities: [GATEWAY_DURABLE_ADMISSION_CAPABILITY],
+        waitUntil: (promise) => this.state.waitUntil(promise),
+        onEvent: async (delivery) => {
+          const result = await tagStateStub(platformEnv).admitGatewayDelivery(delivery);
+          return result.ok ? result.value : 'rejected';
+        },
+      }));
     }
+    await this.supervisor.ensureHealthy();
   }
 
   async restart(): Promise<void> {
-    this.runner?.stop();
-    this.runner = undefined;
+    if (!this.supervisor) {
+      await this.wake();
+      return;
+    }
+    await this.supervisor.restart();
+  }
+
+  async status(): Promise<GatewaySessionStatusSnapshot> {
     await this.wake();
+    const persisted = await createGatewayDeploymentClient(this.env as PlatformEnv)
+      .loadSessionCheckpoint();
+    return reconcileGatewaySessionStatus(this.supervisor?.snapshot(), persisted);
   }
 }
 

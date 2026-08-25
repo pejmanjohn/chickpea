@@ -416,7 +416,11 @@ import {
   GATEWAY_BINDING_SETTING,
   GATEWAY_CLAIM_SETTING,
 } from '../slack/gateway/client.ts';
-import { startNodeGatewaySession } from '../slack/gateway/node-runtime.ts';
+import {
+  nodeGatewaySessionStatus,
+  startNodeGatewaySession,
+} from '../slack/gateway/node-runtime.ts';
+import type { GatewaySessionStatusSnapshot } from '../slack/gateway/session-runner.ts';
 import { GatewaySlackOidcProvider } from '../auth/gateway-slack-oidc.ts';
 import { SlackTransportError, type SlackTransport } from '../slack/transport/types.ts';
 import { SLACK_PENDING_ENVELOPE_SETTING } from '../slack/installation-handshake.ts';
@@ -7956,6 +7960,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!installation?.botUserId) {
         return c.json({ error: 'slack_not_configured' }, 409);
       }
+      const inboundStatus = await readGatewaySessionStatus(c.env);
       try {
         const bot = await (await agentSlackTransport(c, installation.workspaceId))
           .lookupMember(installation.botUserId);
@@ -7969,11 +7974,36 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             detail: 'gateway_identity_mismatch',
           }, 422);
         }
+        if (!inboundStatus.healthy) {
+          try {
+            const current = await store(c).getWorkspaceInstallation(installation.workspaceId);
+            if (
+              current &&
+              (current.health !== 'needs_attention' ||
+                current.healthDetail !== 'gateway_session_offline')
+            ) {
+              await store(c).updateWorkspaceInstallation(installation.workspaceId, {
+                health: 'needs_attention',
+                healthDetail: 'gateway_session_offline',
+              }, current.revision);
+            }
+          } catch {
+            // This response still reports current live health; reload reconciles
+            // a concurrent installation write.
+          }
+          return c.json({
+            error: 'slack_gateway_unreachable',
+            detail: 'gateway_session_offline',
+          }, 502);
+        }
         if (installation.health !== 'healthy' || installation.healthDetail) {
-          await store(c).updateWorkspaceInstallation(installation.workspaceId, {
-            health: 'healthy',
-            healthDetail: null,
-          }, installation.revision);
+          const current = await store(c).getWorkspaceInstallation(installation.workspaceId);
+          if (current && (current.health !== 'healthy' || current.healthDetail)) {
+            await store(c).updateWorkspaceInstallation(installation.workspaceId, {
+              health: 'healthy',
+              healthDetail: null,
+            }, current.revision);
+          }
         }
         const teamInfo = await readStoredSlackTeamInfo(
           c.env as PlatformEnv | undefined,
@@ -8736,6 +8766,33 @@ async function restartCloudflareGatewaySession(rawEnv: unknown): Promise<void> {
   } | undefined;
   if (!namespace) return;
   await namespace.get(namespace.idFromName('deployment')).restart();
+}
+
+async function readGatewaySessionStatus(rawEnv: unknown): Promise<GatewaySessionStatusSnapshot> {
+  const env = (rawEnv ?? {}) as Record<string, unknown>;
+  const namespace = env.SLACK_GATEWAY_SESSION as {
+    idFromName(name: string): unknown;
+    get(id: unknown): { status(): Promise<GatewaySessionStatusSnapshot> };
+  } | undefined;
+  if (namespace) {
+    try {
+      const status = await namespace.get(namespace.idFromName('deployment')).status();
+      if (typeof status?.healthy === 'boolean') return status;
+    } catch {
+      // A missing or unreachable live-health RPC is itself an offline inbound
+      // path. The outbound Slack diagnostic still runs and may provide a
+      // narrower reconnect-required detail.
+    }
+  } else {
+    const nodeStatus = nodeGatewaySessionStatus();
+    if (nodeStatus) return nodeStatus;
+  }
+  return {
+    healthy: false,
+    phase: 'offline',
+    detail: 'gateway_session_offline',
+    generation: null,
+  };
 }
 
 function authResponseHeaders(c: Context): void {
