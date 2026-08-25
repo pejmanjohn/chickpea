@@ -5,7 +5,11 @@ import { createRoutineAdminApi } from '../../src/admin/routines-api.ts';
 import type { EffectiveSlackConfig } from '../../src/config/effective-config.ts';
 import type { RoutineDefinition, RoutineRun, RoutineStore } from '../../src/routines/types.ts';
 import { SqliteUsageStore } from '../../src/usage/store.ts';
-import { RoutineUsageRecorder } from '../../src/usage/runtime-recorder.ts';
+import {
+  RoutineUsageRecorder,
+  type UsagePersistenceEvent,
+} from '../../src/usage/runtime-recorder.ts';
+import type { UsageStore } from '../../src/usage/types.ts';
 import { routineUsageFromAgentReply } from '../../src/routines/execution.ts';
 import { CHICKPEA_RESPONSE_METADATA_KEY } from '../../src/usage/response-metadata.ts';
 
@@ -110,6 +114,58 @@ test('routine recorder captures success, no-op-style zero usage, failure, and in
     assert.equal((await usage.getOperation('rrun_interrupted'))?.operation.status, 'interrupted');
   } finally {
     usage.close();
+  }
+});
+
+test('routine durable persistence waits past the interactive budget and links Work execution', async () => {
+  const durable = new SqliteUsageStore(':memory:');
+  const events: UsagePersistenceEvent[] = [];
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...values) => warnings.push(values.join(' '));
+  const delayed = new Proxy(durable, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== 'function') return value;
+      const bound = value.bind(target);
+      if (property !== 'admitOperation' && property !== 'recordTerminal') return bound;
+      return async (...args: unknown[]) => {
+        await new Promise((resolve) => setTimeout(resolve, 125));
+        return bound(...args);
+      };
+    },
+  }) as UsageStore;
+  try {
+    const recorder = new RoutineUsageRecorder({
+      operationId: 'rrun_durable', executionId: 'exec_routine_durable', startedAt: 1_000,
+      runId: 'run_routine_durable', workspaceId: routine.workspaceId,
+      channelId: routine.channelId, agentId: config.agentId, agentLabel: config.agent.name,
+      routineId: routine.id, routineLabel: routine.name, requestedModel: config.model,
+      credentialRefId: null, credentialVersion: null, store: delayed,
+      persistenceMode: 'durable', writeBudgetMs: 5, now: () => 2_000,
+      onPersistence: (event) => events.push(event),
+    });
+    const started = performance.now();
+    await recorder.admit();
+    recorder.linkRunExecution('execution_routine_durable_1');
+    await recorder.recordTerminal({
+      status: 'completed', usage: { input: 10, output: 5, totalTokens: 15 },
+    });
+    const elapsed = performance.now() - started;
+
+    assert.ok(elapsed >= 225, `durable persistence returned after only ${elapsed}ms`);
+    assert.deepEqual(events.map(({ phase, outcome }) => [phase, outcome]), [
+      ['admission', 'recorded'],
+      ['terminal', 'recorded'],
+    ]);
+    assert.equal(
+      (await durable.getOperation('rrun_durable'))?.measurements[0]?.runExecutionId,
+      'execution_routine_durable_1',
+    );
+    assert.deepEqual(warnings, []);
+  } finally {
+    console.warn = originalWarn;
+    durable.close();
   }
 });
 

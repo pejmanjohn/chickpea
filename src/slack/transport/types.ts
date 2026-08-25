@@ -92,6 +92,9 @@ export interface SlackTransport {
   channelHasMember(channelId: string, userId: string): Promise<boolean>;
   openDirectConversation(userId: string): Promise<SlackChannel>;
   joinPublicChannel(channelId: string): Promise<SlackChannel>;
+  /** Authenticated directory lookup. Address the group by immutable Slack id;
+   * the optional display label in message text is never an identity key. */
+  lookupUserGroup(userGroupId: string): Promise<SlackUserGroup | undefined>;
   listUserGroups(options?: { includeDisabled?: boolean }): Promise<SlackUserGroup[]>;
   createUserGroup(input: {
     name: string;
@@ -115,6 +118,8 @@ export interface SlackTransport {
     text: string;
     blocks?: unknown[];
     persona?: SlackMessagePersona;
+    /** Stable write identity for retries that must not create another message. */
+    idempotencyKey?: string;
   }): Promise<SlackMessageReference>;
 }
 

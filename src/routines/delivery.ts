@@ -74,6 +74,7 @@ export async function deliverRoutineFailureNotice(
         input.routine,
         input.run,
         input.access.publicUrl,
+        input.access.config.agentId,
       ),
       routineReplyFooter(input.access),
     ),
@@ -205,6 +206,7 @@ export function renderRoutineDelivery(
     routine,
     run,
     footer?.publicUrl,
+    footer?.agentId,
   );
   const withFallback = { ...withRunContext, text: fallback.text };
   return footer ? appendSlackReplyFooter(withFallback, footer) : withFallback;
@@ -215,6 +217,7 @@ function appendRoutineRunContext(
   routine: Pick<RoutineDefinition, 'id' | 'timezone'>,
   run: Pick<RoutineRun, 'scheduledFor'>,
   publicUrl: string | undefined,
+  agentId: string | undefined,
 ): RenderedSlackMessage {
   return {
     ...rendered,
@@ -224,7 +227,7 @@ function appendRoutineRunContext(
         type: 'context',
         elements: [{
           type: 'mrkdwn',
-          text: routineRunContext(routine, run, publicUrl),
+          text: routineRunContext(routine, run, publicUrl, agentId),
         }],
       },
     ],
@@ -235,14 +238,15 @@ function routineRunContext(
   routine: Pick<RoutineDefinition, 'id' | 'timezone'>,
   run: Pick<RoutineRun, 'scheduledFor'>,
   publicUrl: string | undefined,
+  agentId: string | undefined,
 ): string {
   const scheduled = formatScheduledTime(run.scheduledFor, routine.timezone);
   const adminBase = buildSlackAdminUrl(publicUrl);
-  if (!adminBase) return `Scheduled ${scheduled}`;
+  if (!adminBase || !agentId) return `Scheduled ${scheduled}`;
   const detail = new URL(adminBase);
-  detail.pathname = `/admin/audit-logs/scheduled-work/${encodeURIComponent(routine.id)}`;
-  detail.search = '';
-  return `Scheduled ${scheduled} · <${detail.toString()}|View in Audit>`;
+  detail.pathname = `/admin/agents/${encodeURIComponent(agentId)}`;
+  detail.search = '?tab=schedules';
+  return `Scheduled ${scheduled} · <${detail.toString()}|View schedule>`;
 }
 
 function formatScheduledTime(timestamp: number, timezone: string): string {

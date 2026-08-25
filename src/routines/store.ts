@@ -500,6 +500,7 @@ export class RoutineStoreLogic {
           JSON.stringify({ action: 'delete', routineId: current.id, expectedVersion: current.version }),
           confirmation.id,
         );
+        this.config.retireAgentScheduleReference(current.id);
         this.insertRevision(
           current.id,
           nextVersion,

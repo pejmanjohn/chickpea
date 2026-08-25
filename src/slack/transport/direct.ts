@@ -1,6 +1,7 @@
 import type { View } from '@slack/types';
 
 import { createSlackWebClient } from '../web-client.ts';
+import { slackClientMessageId } from './message-id.ts';
 import {
   SlackTransportError,
   type SlackAppHomeReference,
@@ -127,6 +128,18 @@ export function createDirectSlackTransportFromClient(
       return mapChannel(requiredRecord(result.channel, 'conversations.join'));
     },
 
+    async lookupUserGroup(userGroupId): Promise<SlackUserGroup | undefined> {
+      const result = await call(client.usergroups.list, 'usergroups.list', {
+        include_disabled: true,
+      });
+      if (!Array.isArray(result.usergroups)) return undefined;
+      for (const candidate of result.usergroups) {
+        const group = mapUserGroup(requiredRecord(candidate, 'usergroups.list'));
+        if (group.id === userGroupId) return group;
+      }
+      return undefined;
+    },
+
     async listUserGroups(options = {}): Promise<SlackUserGroup[]> {
       const result = await call(client.usergroups.list, 'usergroups.list', {
         include_disabled: options.includeDisabled ?? false,
@@ -190,6 +203,9 @@ export function createDirectSlackTransportFromClient(
           username: input.persona.name,
           icon_url: input.persona.avatarUrl,
         } : {}),
+        ...(input.idempotencyKey
+          ? { client_msg_id: slackClientMessageId(input.idempotencyKey) }
+          : {}),
       });
       const channelId = requiredString(result.channel, 'chat.postMessage');
       const ts = requiredString(result.ts, 'chat.postMessage');

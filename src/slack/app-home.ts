@@ -70,6 +70,8 @@ export interface AgentAppHomeSelection {
   workspaceId: string;
   userId: string;
   agentId: string;
+  /** Stable Slack action identity used to deduplicate a retried starter post. */
+  deliveryId?: string;
 }
 
 export function parseAgentAppHomeSelection(
@@ -80,10 +82,20 @@ export function parseAgentAppHomeSelection(
   }
   const action = payload.actions.find((candidate) => candidate.action_id === START_AGENT_ACTION_ID);
   if (!action || typeof action.value !== 'string' || !safeAgentId(action.value)) return undefined;
+  const actionTs = (action as { action_ts?: unknown }).action_ts;
+  const triggerId = (payload as { trigger_id?: unknown }).trigger_id;
+  const actionIdentity = typeof actionTs === 'string' && actionTs.length <= 256
+    ? actionTs
+    : typeof triggerId === 'string' && triggerId.length <= 256
+      ? triggerId
+      : undefined;
   return {
     workspaceId: payload.team.id,
     userId: payload.user.id,
     agentId: action.value,
+    ...(actionIdentity
+      ? { deliveryId: `interaction:${payload.team.id}:${payload.user.id}:${action.value}:${actionIdentity}` }
+      : {}),
   };
 }
 

@@ -49,10 +49,14 @@ test('only the exact App Home Agent action produces a trusted selection', () => 
     user: { id: 'U1' },
     api_app_id: 'A1',
     container: {},
-    actions: [{ type: 'button', action_id: START_AGENT_ACTION_ID, value: 'agent_support' }],
+    actions: [{
+      type: 'button', action_id: START_AGENT_ACTION_ID,
+      action_ts: '1737.001', value: 'agent_support',
+    }],
   };
   assert.deepEqual(parseAgentAppHomeSelection(payload as never), {
     workspaceId: 'T1', userId: 'U1', agentId: 'agent_support',
+    deliveryId: 'interaction:T1:U1:agent_support:1737.001',
   });
   assert.equal(parseAgentAppHomeSelection({
     ...payload,

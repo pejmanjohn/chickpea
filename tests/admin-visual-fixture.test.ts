@@ -143,6 +143,19 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
     assert.equal(releaseConnections.attached[0]?.account.lifecycle, 'needs_attention');
     assert.equal(releaseConnections.attached[0]?.account.ownerKind, 'team');
 
+    const releaseSchedules = await fixtureJson<{
+      schedules: Array<{ name: string; status: string; channelLabel: string }>;
+    }>(fixture, '/admin/api/agents/agent_release/schedules');
+    assert.deepEqual(
+      releaseSchedules.schedules.map((schedule) => [schedule.name, schedule.status]),
+      [
+        ['Daily launch readiness digest with a long scannable name', 'active'],
+        ['Dependency follow-up', 'needs_attention'],
+        ['Weekly customer summary', 'paused'],
+      ],
+    );
+    assert.ok(releaseSchedules.schedules.every((schedule) => schedule.channelLabel === 'release-room'));
+
     const channels = await fixtureJson<{ channels: ChannelProjection[] }>(
       fixture,
       '/admin/api/channels',
@@ -238,6 +251,7 @@ test('canonical visual states use authenticated production URLs and UI actions o
       agentInstructions: { path: '/admin/agents/agent_research', actions: [] },
       agentBlankDescription: { path: '/admin/agents/agent_customer', actions: [] },
       agentMemory: { path: '/admin/agents/agent_research', actions: ['Memory'] },
+      agentSchedules: { path: '/admin/agents/agent_release', actions: ['Schedules'] },
       channelsIndex: { path: '/admin/channels', actions: [] },
       channelDetail: { path: '/admin/channels/TVISUAL/C_RELEASES', actions: [] },
       channelAdvanced: {

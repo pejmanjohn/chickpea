@@ -31,6 +31,7 @@ export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
   agentInstructions: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze([]) }),
   agentBlankDescription: Object.freeze({ path: '/admin/agents/agent_customer', actions: Object.freeze([]) }),
   agentMemory: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze(['Memory']) }),
+  agentSchedules: Object.freeze({ path: '/admin/agents/agent_release', actions: Object.freeze(['Schedules']) }),
   channelsIndex: Object.freeze({ path: '/admin/channels', actions: Object.freeze([]) }),
   channelDetail: Object.freeze({ path: '/admin/channels/TVISUAL/C_RELEASES', actions: Object.freeze([]) }),
   channelAdvanced: Object.freeze({
@@ -382,6 +383,81 @@ async function seedMemory(memory) {
   });
 }
 
+async function seedSchedules(store, routines, ownerMembershipId, RoutineService) {
+  const definitions = [
+    {
+      id: 'routine_visual_daily_release',
+      name: 'Daily launch readiness digest with a long scannable name',
+      scheduleInput: '0 9 * * 1-5',
+      nextRunAt: Date.UTC(2026, 7, 26, 16),
+      pause: false,
+      referenceState: 'active',
+    },
+    {
+      id: 'routine_visual_weekly_summary',
+      name: 'Weekly customer summary',
+      scheduleInput: '0 14 * * 5',
+      nextRunAt: Date.UTC(2026, 7, 28, 21),
+      pause: true,
+      referenceState: 'active',
+    },
+    {
+      id: 'routine_visual_dependency',
+      name: 'Dependency follow-up',
+      scheduleInput: '*/30 * * * *',
+      nextRunAt: Date.UTC(2026, 7, 25, 20, 30),
+      pause: false,
+      referenceState: 'needs_attention',
+    },
+  ];
+  for (const item of definitions) {
+    const service = new RoutineService(routines, { routineId: () => item.id });
+    let routine = await service.save({
+      action: 'create',
+      actorId: 'UVISUALOWNER',
+      workspaceId: WORKSPACE_ID,
+      channelId: 'C_RELEASES',
+      definition: {
+        name: item.name,
+        description: 'Visual schedule fixture.',
+        taskText: 'Post a concise visual-fixture update.',
+        triggerKind: 'schedule',
+        scheduleInput: item.scheduleInput,
+        scheduleJson: JSON.stringify({ version: 1, kind: 'cron', expression: item.scheduleInput }),
+        timezone: 'America/Los_Angeles',
+        outputPolicy: 'post',
+        authorityMode: 'live_channel_v1',
+      },
+      nextRunAt: item.nextRunAt,
+      projectedDailyStarts: 1,
+      reservations: [{ windowStart: item.nextRunAt, count: 1 }],
+      sourceVisibility: 'public',
+    }, `visual-schedule:${item.id}`);
+    if (item.pause) {
+      routine = await service.control({
+        routineId: routine.id,
+        expectedVersion: routine.version,
+        action: 'pause',
+        actorId: 'UVISUALOWNER',
+        actorClass: 'operator',
+        reasonCode: 'admin_control',
+        idempotencyKey: `visual-schedule-pause:${item.id}`,
+      });
+    }
+    await store.putAgentScheduleReference({
+      scheduleId: routine.id,
+      agentId: 'agent_release',
+      workspaceId: WORKSPACE_ID,
+      channelId: 'C_RELEASES',
+      createdByMembershipId: ownerMembershipId,
+      runsAsMembershipId: ownerMembershipId,
+      authorityReceiptId: `receipt_${item.id}`,
+      requiredConnectionAccountIds: [],
+      state: item.referenceState,
+    });
+  }
+}
+
 function fakeSlackResponse(pathname, body) {
   if (pathname.endsWith('/conversations.list')) {
     return {
@@ -566,6 +642,7 @@ export async function startAdminVisualFixture(options = {}) {
     const { PROVIDER_KEY_SETTING_KEYS } = await loadTsModule('src/config/provider-keys.ts');
     const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
     const { SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
+    const { RoutineService } = await loadTsModule('src/routines/service.ts');
     const { SqliteUsageStore } = await loadTsModule('src/usage/store.ts');
     const { SqliteWorkStore } = await loadTsModule('src/work/store.ts');
     const { SqliteSlackStateStore } = await loadTsModule('src/slack/claim-store.ts');
@@ -650,6 +727,7 @@ export async function startAdminVisualFixture(options = {}) {
     await seedMemory(memory);
     const owner = await seedVisualSlackOwner(identity);
     await seedConnections(store, owner.membership.id);
+    await seedSchedules(store, routines, owner.membership.id, RoutineService);
     await seedVisualTeam(identity, provisionSlackInteractionMember, owner);
 
     const adminToken = `visual-${randomBytes(18).toString('base64url')}`;

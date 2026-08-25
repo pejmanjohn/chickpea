@@ -603,6 +603,10 @@ class FakeSlackTransport implements SlackTransport {
     return { id: 'D_ACTOR', private: true, member: true, archived: false };
   }
   async joinPublicChannel() { this.joinCalls += 1; this.channel.member = true; return { ...this.channel }; }
+  async lookupUserGroup(id: string) {
+    const group = this.groups.find((candidate) => candidate.id === id);
+    return group ? { ...group } : undefined;
+  }
   async listUserGroups() { return this.groups.map((group) => ({ ...group })); }
   async createUserGroup(input: { name: string; handle: string; description?: string }) {
     this.createCalls += 1;

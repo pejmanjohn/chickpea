@@ -6,9 +6,17 @@ import {
 } from '../../channels/slack.ts';
 import { createGatewayDeploymentClient } from './runtime.ts';
 import { GATEWAY_BINDING_SETTING } from './client.ts';
-import { GatewaySessionRunner } from './session-runner.ts';
+import {
+  GatewaySessionRunner,
+  reconcileGatewaySessionStatus,
+  type GatewaySessionRunnerHealthSnapshot,
+  type GatewaySessionStatusSnapshot,
+} from './session-runner.ts';
 
-let runner: Pick<GatewaySessionRunner, 'start' | 'stop'> | undefined;
+type NodeGatewayRunner = Pick<GatewaySessionRunner, 'start' | 'stop'> &
+  Partial<Pick<GatewaySessionRunner, 'healthSnapshot'>>;
+
+let runner: NodeGatewayRunner | undefined;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let clearRetryTimer: (timer: ReturnType<typeof setTimeout>) => void = clearTimeout;
 const NODE_GATEWAY_RETRY_MS = 5_000;
@@ -16,7 +24,7 @@ const NODE_GATEWAY_RETRY_MS = 5_000;
 export interface NodeGatewayRuntimeDependencies {
   isCloudflare?: () => boolean;
   readBinding?: (env?: PlatformEnv) => Promise<string | undefined>;
-  createRunner?: (env?: PlatformEnv) => Pick<GatewaySessionRunner, 'start' | 'stop'>;
+  createRunner?: (env?: PlatformEnv) => NodeGatewayRunner;
   setTimer?: typeof setTimeout;
   clearTimer?: typeof clearTimeout;
   onError?: (error: unknown) => void;
@@ -76,6 +84,11 @@ export function stopNodeGatewaySession(): void {
   retryTimer = undefined;
   runner?.stop();
   runner = undefined;
+}
+
+export function nodeGatewaySessionStatus(): GatewaySessionStatusSnapshot | undefined {
+  const snapshot = runner?.healthSnapshot?.() as GatewaySessionRunnerHealthSnapshot | undefined;
+  return snapshot ? reconcileGatewaySessionStatus(snapshot, undefined) : undefined;
 }
 
 function reportNodeGatewayError(

@@ -1844,6 +1844,26 @@ button.capability-pill { cursor: pointer; }
 .owner-memory-intro p { margin: 0; }
 .owner-memory-editor { background: #fffdf8; border: 1px solid #e7dcc7; border-radius: 12px; display: flex; flex-direction: column; gap: 13px; min-width: 0; padding: 22px 24px 24px; }
 .agent-tabs-card [id="ptab-panel-memory"] .owner-memory-editor { border-bottom: 0; border-left: 0; border-radius: 0; border-right: 0; margin: 8px -28px -28px; }
+.agent-schedule-list { border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
+.agent-schedule-row { align-items: center; background: var(--bg); display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) auto; min-width: 0; padding: 15px 16px; }
+.agent-schedule-row + .agent-schedule-row { border-top: 1px solid var(--line); }
+.agent-schedule-copy { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.agent-schedule-heading { align-items: center; display: flex; flex-wrap: wrap; gap: 7px 9px; min-width: 0; }
+.agent-schedule-name { color: var(--text); font-size: .8125rem; font-weight: 700; line-height: 1.4; min-width: 0; overflow-wrap: anywhere; }
+.agent-schedule-status { border-radius: 999px; display: inline-flex; flex: none; font-size: .65625rem; font-weight: 750; line-height: 1; padding: 5px 8px; }
+.agent-schedule-status-active { background: var(--ok-tint); color: var(--ok); }
+.agent-schedule-status-paused, .agent-schedule-status-completed { background: var(--well); color: var(--text-2); }
+.agent-schedule-status-attention { background: #fbf1da; color: #8a6119; }
+.agent-schedule-meta { align-items: center; color: var(--text-3); display: flex; flex-wrap: wrap; font-size: .71875rem; gap: 5px 7px; line-height: 1.45; min-width: 0; }
+.agent-schedule-meta-item { min-width: 0; overflow-wrap: anywhere; }
+.agent-schedule-channel { color: var(--text-2); }
+.agent-schedule-separator { color: #c6b999; }
+.agent-schedule-actions { align-items: center; display: flex; flex: none; gap: 6px; }
+.agent-schedule-actions .btn { white-space: nowrap; }
+.agent-schedule-delete { color: var(--danger); }
+.agent-schedule-delete:hover:not(:disabled) { background: var(--danger-well); }
+.agent-schedule-live { color: var(--text-3); font-size: .75rem; margin: 0; min-height: 18px; }
+.agent-schedule-live.error { color: var(--danger); }
 .owner-memory-editor-head { align-items: flex-start; border-bottom: 1px solid #eee4d1; display: flex; gap: 18px; justify-content: space-between; padding-bottom: 16px; }
 .owner-memory-form { display: grid; gap: 13px; }
 .owner-memory-editor textarea { line-height: 1.65; min-height: 300px; resize: vertical; }
@@ -1960,6 +1980,8 @@ button.capability-pill { cursor: pointer; }
   .agent-channel-empty-icon { display: none; }
   .owner-memory-editor { padding: 20px; }
   .agent-tabs-card [id="ptab-panel-memory"] .owner-memory-editor { margin: 8px -20px -20px; }
+  .agent-schedule-row { align-items: stretch; grid-template-columns: 1fr; }
+  .agent-schedule-actions { justify-content: flex-start; }
   .channel-capability-groups { grid-template-columns: 1fr; }
   .owner-memory-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .owner-memory-actions .spacer { display: none; }
@@ -1995,6 +2017,8 @@ button.capability-pill { cursor: pointer; }
 }
 @media (max-width: 480px) {
   .agent-profile-page .ptabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .agent-schedule-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .agent-schedule-actions .btn { width: 100%; }
 }
 
 /* ---- profile repositories ---------------------------------------------- */
@@ -2902,7 +2926,8 @@ button.capability-pill { cursor: pointer; }
     agentConnections: { agentId: "", workspaceId: "", attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" },
     composioSetup: null,
     managedAuthorization: null,
-    agentSchedules: { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" },
+    agentSchedules: { agentId: "", schedules: [], loading: false, busy: "", error: "", notice: "" },
+    agentScheduleDeleteConfirm: null,
     connectionAccountsSupported: null,
     connectionAccountForm: null,
     managedResourceEditor: null,
@@ -3075,6 +3100,88 @@ button.capability-pill { cursor: pointer; }
       requestId: 0
     }
   };
+  // Every server-backed surface owns one small freshness record. The record is
+  // separate from its rendered data so returning to one visible surface never
+  // causes unrelated hidden tabs to load. A request ticket also gives every
+  // loader the same stale-response and focus/visibility coalescing contract.
+  var visibleResources = {};
+
+  function visibleResource(name, ownerKey) {
+    var key = String(ownerKey || "");
+    var resource = visibleResources[name];
+    if (!resource) {
+      resource = visibleResources[name] = {
+        ownerKey: key,
+        requestGeneration: 0,
+        loading: false,
+        promise: null
+      };
+    } else if (resource.ownerKey !== key) {
+      resource.ownerKey = key;
+      resource.requestGeneration += 1;
+      resource.loading = false;
+      resource.promise = null;
+    }
+    return resource;
+  }
+
+  function beginVisibleResourceLoad(name, ownerKey, dirty) {
+    var resource = visibleResource(name, ownerKey);
+    if (dirty) return null;
+    if (resource.loading) return null;
+    resource.requestGeneration += 1;
+    resource.loading = true;
+    return {
+      name: name,
+      ownerKey: resource.ownerKey,
+      generation: resource.requestGeneration,
+      resource: resource
+    };
+  }
+
+  function visibleResourceLoadIsCurrent(ticket) {
+    if (!ticket) return false;
+    var current = visibleResources[ticket.name];
+    return current === ticket.resource &&
+      current.ownerKey === ticket.ownerKey &&
+      current.requestGeneration === ticket.generation;
+  }
+
+  function trackVisibleResourcePromise(ticket, promise) {
+    var tracked = promise.finally(function () {
+      finishVisibleResourceLoad(ticket);
+    });
+    if (ticket) ticket.resource.promise = tracked;
+    return tracked;
+  }
+
+  function finishVisibleResourceLoad(ticket) {
+    if (!visibleResourceLoadIsCurrent(ticket)) return false;
+    ticket.resource.loading = false;
+    ticket.resource.promise = null;
+    return true;
+  }
+
+  function coalescedVisibleResourcePromise(name, ownerKey) {
+    var resource = visibleResource(name, ownerKey);
+    return resource.loading && resource.promise ? resource.promise : Promise.resolve();
+  }
+
+  function invalidateVisibleResource(name, ownerKey) {
+    var resource = visibleResource(name, ownerKey);
+    // A local mutation makes an older response unsafe even when its HTTP call
+    // is already in flight. The next visible load receives a fresh ticket.
+    resource.requestGeneration += 1;
+    resource.loading = false;
+    resource.promise = null;
+  }
+
+  function markVisibleResourceCurrent(name, ownerKey) {
+    var resource = visibleResource(name, ownerKey);
+    resource.requestGeneration += 1;
+    resource.loading = false;
+    resource.promise = null;
+  }
   var lastRenderedPath = "";
   var egressDraft = { mode: "allowlist", domains: [""] };
   var sandboxDraft = {
@@ -3347,11 +3454,23 @@ button.capability-pill { cursor: pointer; }
     resetRepositoryTransientState();
     state.modelPickerOpen = false;
     state.modelPickerFilter = "";
+    state.agentScheduleDeleteConfirm = null;
   }
 
   // Open a profile's edit screen (from a click or a route), resetting every
   // transient editor state.
-  function openProfileEditor(selected) {
+  function normalizedProfileTab(tab) {
+    return ["instructions", "skills", "connections", "repositories", "memory", "schedules"].includes(tab)
+      ? tab
+      : "instructions";
+  }
+
+  function requestedProfileTab(search) {
+    if (!search || typeof URLSearchParams === "undefined") return "instructions";
+    return normalizedProfileTab(new URLSearchParams(search).get("tab") || "instructions");
+  }
+
+  function openProfileEditor(selected, initialTab) {
     state.mobileAgentRosterOpen = false;
     state.view = "profiles";
     state.profileScreen = "edit";
@@ -3359,22 +3478,19 @@ button.capability-pill { cursor: pointer; }
     state.profileLastAgentId = selected.id;
     state.profileDraft = cloneAgent(selected);
     resetProfileTransientState();
+    state.profileTab = normalizedProfileTab(initialTab || "instructions");
+    markVisibleResourceCurrent("agent-detail", selected.id);
     render();
     if (selected.canEdit === false) {
       prepareReadOnlyAgentState(selected.id);
       render();
-      return Promise.resolve();
-    } else {
-      var connectionsLoad = loadAgentConnections(selected.id);
-      loadAgentSchedules(selected.id);
-      loadOwnerMemory("agent", connectedTeamId(), selected.id);
-      return connectionsLoad;
     }
+    return revalidateCurrentVisibleResources();
   }
 
   function prepareReadOnlyAgentState(agentId) {
     state.agentConnections = { agentId: agentId, workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "", legacyFallback: true };
-    state.agentSchedules = { agentId: agentId, viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
+    state.agentSchedules = { agentId: agentId, schedules: [], loading: false, busy: "", error: "", notice: "" };
     state.ownerMemory = {
       ownerKind: "agent", workspaceId: connectedTeamId() || "workspace", ownerId: agentId,
       detail: null, draft: null, dirty: false, loading: false, busy: "", error: "", notice: "", conflict: null,
@@ -3390,7 +3506,7 @@ button.capability-pill { cursor: pointer; }
     state.editingAgentId = null;
     resetProfileTransientState();
     state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" };
-    state.agentSchedules = { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
+    state.agentSchedules = { agentId: "", schedules: [], loading: false, busy: "", error: "", notice: "" };
     render();
   }
 
@@ -3427,7 +3543,7 @@ button.capability-pill { cursor: pointer; }
     state.editingAgentId = null;
     resetProfileTransientState();
     state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" };
-    state.agentSchedules = { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
+    state.agentSchedules = { agentId: "", schedules: [], loading: false, busy: "", error: "", notice: "" };
     render();
   }
 
@@ -3514,7 +3630,12 @@ button.capability-pill { cursor: pointer; }
       }
       if (parts[2]) {
         var routedAgent = agentById(parts[2]);
-        if (routedAgent) return openProfileEditor(routedAgent);
+        if (routedAgent) {
+          return openProfileEditor(
+            routedAgent,
+            requestedProfileTab(canNavigate ? location.search : "")
+          );
+        }
       }
       enterProfiles(null);
       return;
@@ -3542,7 +3663,7 @@ button.capability-pill { cursor: pointer; }
     lastRenderedPath = renderedPath;
     var app = document.getElementById("app");
     if (app.removeAttribute) app.removeAttribute("aria-busy");
-    var overlays = teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
+    var overlays = teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + agentScheduleDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
     if (state.view === "onboarding") {
       app.className = "frame onboarding-frame";
       app.innerHTML = onboardingShellHtml() + overlays;
@@ -3618,6 +3739,17 @@ button.capability-pill { cursor: pointer; }
           : document.querySelector('[data-action="sandbox-confirm-cancel"]');
       if (sandboxConfirmFocus && sandboxConfirmFocus.focus) sandboxConfirmFocus.focus();
     }
+    if (state.agentScheduleDeleteConfirm) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      var agentScheduleDeleteFocus = state.agentSchedules.busy
+        ? document.querySelector('[data-role="agent-schedule-delete-dialog"]')
+        : document.querySelector('[data-action="agent-schedule-delete-cancel"]');
+      if (agentScheduleDeleteFocus && agentScheduleDeleteFocus.focus) agentScheduleDeleteFocus.focus();
+    }
     if (state.scheduledSelection && !state.scheduledInspector && !state.scheduledDeleteConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
         if (!region) return;
@@ -3659,9 +3791,18 @@ button.capability-pill { cursor: pointer; }
     var pageY = typeof window !== "undefined" ? (window.scrollY || window.pageYOffset || 0) : 0;
     var active = document.activeElement;
     var activeId = active && active.id ? active.id : "";
-    var caret = null;
+    var selectionStart = null;
+    var selectionEnd = null;
+    var selectionDirection = "none";
     if (activeId) {
-      try { caret = active.selectionStart; } catch (error) { caret = null; }
+      try {
+        selectionStart = active.selectionStart;
+        selectionEnd = active.selectionEnd == null ? selectionStart : active.selectionEnd;
+        selectionDirection = active.selectionDirection || "none";
+      } catch (error) {
+        selectionStart = null;
+        selectionEnd = null;
+      }
     }
     render();
     var nextMain = document.querySelector(".main");
@@ -3673,8 +3814,8 @@ button.capability-pill { cursor: pointer; }
       var nextActive = document.getElementById(activeId);
       if (nextActive && nextActive.focus) {
         try { nextActive.focus({ preventScroll: true }); } catch (error) { nextActive.focus(); }
-        if (caret != null && nextActive.setSelectionRange) {
-          try { nextActive.setSelectionRange(caret, caret); } catch (error) { /* ignore */ }
+        if (selectionStart != null && nextActive.setSelectionRange) {
+          try { nextActive.setSelectionRange(selectionStart, selectionEnd, selectionDirection); } catch (error) { /* ignore */ }
         }
       }
     }
@@ -5182,9 +5323,13 @@ button.capability-pill { cursor: pointer; }
 
   function loadAgentConnections(agentId) {
     var workspaceId = connectedTeamId();
+    var resourceOwner = agentId + ":" + workspaceId;
+    var resourceTicket = beginVisibleResourceLoad("connections", resourceOwner, false);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("connections", resourceOwner);
     if (state.connectionAccountsSupported === false) {
       state.agentConnections = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "", legacyFallback: true };
-      render();
+      finishVisibleResourceLoad(resourceTicket);
+      renderPreservingPagePosition();
       return Promise.resolve();
     }
     var requestState = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: true, error: "", notice: "" };
@@ -5193,11 +5338,12 @@ button.capability-pill { cursor: pointer; }
     if (!workspaceId) {
       state.agentConnections.loading = false;
       state.agentConnections.error = "Connect Slack before adding Agent connections.";
-      render();
+      finishVisibleResourceLoad(resourceTicket);
+      renderPreservingPagePosition();
       return Promise.resolve();
     }
-    return api("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections?workspaceId=" + encodeURIComponent(workspaceId)).then(function (body) {
-      if (state.agentConnections !== requestState) return;
+    var request = api("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections?workspaceId=" + encodeURIComponent(workspaceId)).then(function (body) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentConnections !== requestState) return;
       state.agentConnections.attached = body.attached || [];
       state.agentConnections.available = body.available || [];
       state.agentConnections.managedCatalog = body.managedConnectors && body.managedConnectors.catalog || [];
@@ -5212,62 +5358,180 @@ button.capability-pill { cursor: pointer; }
       state.agentConnections.error = "";
       state.connectionAccountsSupported = true;
       restoreManagedAuthorization(agentId);
-      render();
+      finishVisibleResourceLoad(resourceTicket);
+      renderPreservingPagePosition();
     }).catch(function (error) {
-      if (state.agentConnections !== requestState) return;
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentConnections !== requestState) return;
       state.agentConnections.loading = false;
       state.agentConnections.legacyFallback = !!(error && error.status === 404);
       if (state.agentConnections.legacyFallback) state.connectionAccountsSupported = false;
       state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not load connections.";
-      render();
+      finishVisibleResourceLoad(resourceTicket);
+      renderPreservingPagePosition();
     });
+    return trackVisibleResourcePromise(resourceTicket, request);
   }
 
-  function loadAgentSchedules(agentId) {
-    var requestState = { agentId: agentId, viewerMembershipId: "", schedules: [], members: [], loading: true, busy: "", error: "", notice: "" };
+  function invalidateAgentConnections(agentId) {
+    invalidateVisibleResource("connections", agentId + ":" + connectedTeamId());
+  }
+
+  function loadAgentSchedules(agentId, terminalState) {
+    var resourceTicket = beginVisibleResourceLoad("schedules", agentId, false);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("schedules", agentId);
+    var current = state.agentSchedules;
+    var requestState = {
+      agentId: agentId,
+      schedules: [],
+      loading: true,
+      busy: terminalState ? "" : (current.agentId === agentId ? current.busy : ""),
+      error: "",
+      notice: ""
+    };
     state.agentSchedules = requestState;
-    render();
-    return api("/admin/api/agents/" + encodeURIComponent(agentId) + "/schedules", { cache: "no-store" }).then(function (body) {
-      if (state.agentSchedules !== requestState) return;
+    renderPreservingPagePosition();
+    var request = api("/admin/api/agents/" + encodeURIComponent(agentId) + "/schedules", { cache: "no-store" }).then(function (body) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentSchedules !== requestState) return;
       state.agentSchedules.schedules = body.schedules || [];
-      state.agentSchedules.members = body.members || [];
-      state.agentSchedules.viewerMembershipId = body.viewerMembershipId || "";
       state.agentSchedules.loading = false;
-      state.agentSchedules.error = "";
-      render();
+      state.agentSchedules.error = terminalState && terminalState.error || "";
+      state.agentSchedules.notice = terminalState && terminalState.notice || "";
+      var clearedDeleteConfirmation = false;
+      if (state.agentScheduleDeleteConfirm) {
+        var confirmedSchedule = agentScheduleById(state.agentScheduleDeleteConfirm.scheduleId);
+        if (!confirmedSchedule || !(confirmedSchedule.actions && confirmedSchedule.actions.delete)) {
+          state.agentScheduleDeleteConfirm = null;
+          clearedDeleteConfirmation = true;
+        }
+      }
+      finishVisibleResourceLoad(resourceTicket);
+      renderPreservingPagePosition();
+      if (clearedDeleteConfirmation) {
+        var schedulesTab = document.getElementById("ptab-schedules");
+        if (schedulesTab && schedulesTab.focus) schedulesTab.focus();
+      }
     }).catch(function (error) {
-      if (state.agentSchedules !== requestState) return;
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentSchedules !== requestState) return;
       state.agentSchedules.loading = false;
       state.agentSchedules.error = (error && (error.serverMessage || error.message)) || "Could not load schedules.";
-      render();
+      finishVisibleResourceLoad(resourceTicket);
+      renderPreservingPagePosition();
+    });
+    return trackVisibleResourcePromise(resourceTicket, request);
+  }
+
+  function invalidateAgentSchedules(agentId) {
+    invalidateVisibleResource("schedules", agentId);
+  }
+
+  function agentScheduleMutationKey(agentId, scheduleId, action) {
+    return "admin-ui:agent:" + agentId + ":schedule:" + scheduleId + ":" + action + ":" + Date.now() + ":" + Math.random().toString(36).slice(2);
+  }
+
+  function agentScheduleById(scheduleId) {
+    return (state.agentSchedules.schedules || []).find(function (schedule) {
+      return schedule.id === scheduleId;
     });
   }
 
-  function reassignAgentSchedule(scheduleId, expectedRevision) {
+  function agentScheduleControlError(error) {
+    if (error && error.status === 409) {
+      return "This schedule changed elsewhere. Review the latest state before trying again.";
+    }
+    if (error && (error.status === 403 || error.status === 404)) {
+      return "This schedule is no longer available to manage.";
+    }
+    return "Could not update this schedule. Review the latest state and try again.";
+  }
+
+  function focusAgentScheduleDelete(scheduleId) {
+    var control = document.getElementById("agent-schedule-delete-" + scheduleId);
+    if (control && control.focus) control.focus();
+  }
+
+  function closeAgentScheduleDeleteConfirm(restoreFocus) {
+    var confirmation = state.agentScheduleDeleteConfirm;
+    if (!confirmation || state.agentSchedules.busy) return;
+    state.agentScheduleDeleteConfirm = null;
+    render();
+    if (restoreFocus) focusAgentScheduleDelete(confirmation.scheduleId);
+  }
+
+  function openAgentScheduleDeleteConfirm(scheduleId) {
     var schedules = state.agentSchedules;
-    var membershipId = schedules.viewerMembershipId || "";
-    if (!membershipId || schedules.busy) return;
-    schedules.busy = scheduleId;
+    var schedule = agentScheduleById(scheduleId);
+    if (!schedule || schedules.busy || !(schedule.actions && schedule.actions.delete)) return;
+    state.agentScheduleDeleteConfirm = {
+      scheduleId: schedule.id,
+      name: schedule.name || "Restricted schedule"
+    };
     schedules.error = "";
     schedules.notice = "";
     render();
-    return postJson(
-      "/admin/api/agents/" + encodeURIComponent(schedules.agentId) + "/schedules/" + encodeURIComponent(scheduleId) + "/reassign",
-      "POST",
-      { runsAsMembershipId: membershipId, expectedAuthorityRevision: Number(expectedRevision) }
-    ).then(function (body) {
-      var notice = body && body.routine && body.routine.state === "paused"
-        ? "Schedule authority updated. This routine is still paused."
-        : "Schedule authority updated and paused work resumed.";
-      return loadAgentSchedules(schedules.agentId).then(function () {
-        if (state.agentSchedules.agentId !== schedules.agentId) return;
-        state.agentSchedules.notice = notice;
-        render();
+  }
+
+  function agentSchedulesVisibleFor(agentId) {
+    return state.view === "profiles" && state.profileScreen === "edit" &&
+      state.profileTab === "schedules" && state.profileDraft && state.profileDraft.id === agentId;
+  }
+
+  function controlAgentSchedule(scheduleId, action) {
+    var schedules = state.agentSchedules;
+    var schedule = agentScheduleById(scheduleId);
+    var actions = schedule && schedule.actions || {};
+    if (!schedule || schedules.busy || ["pause", "resume", "delete"].indexOf(action) < 0 || !actions[action]) return;
+    var agentId = schedules.agentId;
+    var expectedVersion = Number(schedule.version);
+    if (!agentId || !Number.isFinite(expectedVersion) || expectedVersion < 1) return;
+    schedules.busy = scheduleId + ":" + action;
+    schedules.error = "";
+    schedules.notice = "";
+    renderPreservingPagePosition();
+    return api(
+      "/admin/api/agents/" + encodeURIComponent(agentId) + "/schedules/" + encodeURIComponent(scheduleId) + "/control",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": agentScheduleMutationKey(agentId, scheduleId, action)
+        },
+        body: JSON.stringify({
+          action: action,
+          expectedVersion: expectedVersion,
+          ...(action === "delete" ? { acknowledgeIrreversible: true } : {})
+        })
+      }
+    ).then(function () {
+      if (state.agentSchedules.agentId !== agentId) return;
+      state.agentScheduleDeleteConfirm = null;
+      var notice = action === "delete"
+        ? "Schedule deleted."
+        : "Schedule " + (action === "pause" ? "paused." : "resumed.");
+      if (!agentSchedulesVisibleFor(agentId)) {
+        state.agentSchedules.busy = "";
+        return;
+      }
+      invalidateAgentSchedules(agentId);
+      return loadAgentSchedules(agentId, { notice: notice }).then(function () {
+        if (!agentSchedulesVisibleFor(agentId)) return;
+        if (action === "delete") {
+          var schedulesTab = document.getElementById("ptab-schedules");
+          if (schedulesTab && schedulesTab.focus) schedulesTab.focus();
+        }
       });
     }).catch(function (error) {
-      schedules.busy = "";
-      schedules.error = (error && (error.serverMessage || error.message)) || "Could not update Runs as.";
-      render();
+      var message = agentScheduleControlError(error);
+      if (state.agentSchedules.agentId !== agentId) return;
+      state.agentScheduleDeleteConfirm = null;
+      if (!agentSchedulesVisibleFor(agentId)) {
+        state.agentSchedules.busy = "";
+        return;
+      }
+      invalidateAgentSchedules(agentId);
+      return loadAgentSchedules(agentId, { error: message }).then(function () {
+        if (!agentSchedulesVisibleFor(agentId)) return;
+        if (action === "delete") focusAgentScheduleDelete(scheduleId);
+      });
     });
   }
 
@@ -5609,6 +5873,7 @@ button.capability-pill { cursor: pointer; }
         return startConnectionAccountOAuth(mcpAccountId, true, "mcp");
       }
       state.connectionAccountForm = null;
+      invalidateAgentConnections(agentId);
       return loadAgentConnections(agentId);
     }).then(function (result) {
       if (result && result.oauthStarted) return;
@@ -5626,6 +5891,7 @@ button.capability-pill { cursor: pointer; }
     var agentId = state.profileDraft && state.profileDraft.id;
     if (!agentId) return;
     postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId) + "/attach", "POST", { allowedCapabilities: [] }).then(function () {
+      invalidateAgentConnections(agentId);
       return loadAgentConnections(agentId);
     }).catch(function (error) {
       state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not add that connection.";
@@ -5813,6 +6079,7 @@ button.capability-pill { cursor: pointer; }
             render();
           });
         }
+        invalidateAgentConnections(agentId);
         return loadAgentConnections(agentId).then(function () {
           if (state.agentConnections.agentId !== agentId) return;
           var connectedEntry = state.agentConnections.attached.find(function (entry) {
@@ -5929,6 +6196,7 @@ button.capability-pill { cursor: pointer; }
       });
     }
     detachWithCleanupRetry(true).then(function () {
+      invalidateAgentConnections(agentId);
       return loadAgentConnections(agentId);
     }).catch(function (error) {
       state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not remove that connection from the Agent.";
@@ -6129,6 +6397,7 @@ button.capability-pill { cursor: pointer; }
   function slackErrorText(message, detail, serverMessage) {
     if (message === "slack_unreachable") return "Could not reach the Slack API. Check connectivity and try again.";
     if (message === "slack_gateway_unreachable" && slackReconnectRequired(detail)) return "This deployment is no longer linked to the shared Slack app, or its approving member can no longer manage Agent handles. Reconnect as a current Slack Owner or Admin.";
+    if (message === "slack_gateway_unreachable" && detail === "gateway_session_offline") return "Slack’s outbound API is reachable, but Chickpea’s inbound event session is offline. Retry now; the deployment health check will reconnect it automatically.";
     if (message === "slack_gateway_unreachable") return "The shared Slack connection is temporarily unavailable. Retry now; if it continues, open Slack setup and use Add to Slack again.";
     if (message === "slack_auth_failed") return "Slack rejected the installed bot credential.";
     if (message === "slack_missing_scopes") return "The Slack installation is missing required permissions. Use the scoped recovery flow to repair it.";
@@ -6530,42 +6799,90 @@ button.capability-pill { cursor: pointer; }
       '<div class="owner-memory-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="owner-memory-discard"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>Discard</button><button type="button" class="btn btn-primary btn-sm" data-action="owner-memory-save"' + (!memory.dirty || memory.busy ? " disabled" : "") + '>' + (memory.busy === "save" || memory.busy === "create" ? "Saving&hellip;" : "Save memory") + '</button></div></div></section>' + status;
   }
 
+  function agentScheduleStatusView(status) {
+    return ({
+      active: { label: "Active", css: "active" },
+      paused: { label: "Paused", css: "paused" },
+      needs_attention: { label: "Needs attention", css: "attention" },
+      completed: { label: "Completed", css: "completed" }
+    })[status] || { label: "Needs attention", css: "attention" };
+  }
+
+  function agentScheduleCadence(entry) {
+    var cadence = entry.cadence;
+    if (!cadence) return "Cadence unavailable";
+    if (cadence.triggerKind === "once") return "One time";
+    return formatScheduledSchedule({
+      triggerKind: cadence.triggerKind,
+      scheduleInput: cadence.scheduleInput,
+      timezone: cadence.timezone,
+      nextRunAt: entry.nextRunAt,
+      lastScheduledAt: entry.lastFinishedAt
+    });
+  }
+
+  function agentScheduleTime(entry) {
+    if (entry.status === "active") {
+      return entry.nextRunAt == null
+        ? "Next run pending"
+        : "Next run " + formatScheduledDate(entry.nextRunAt, entry.cadence && entry.cadence.timezone);
+    }
+    return entry.lastFinishedAt == null
+      ? "No completed runs yet"
+      : "Last run " + formatScheduledDate(entry.lastFinishedAt, entry.cadence && entry.cadence.timezone);
+  }
+
+  function agentScheduleDeleteModalHtml() {
+    var confirmation = state.agentScheduleDeleteConfirm;
+    if (!confirmation) return "";
+    var busy = state.agentSchedules.busy === confirmation.scheduleId + ":delete";
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="agent-schedule-delete-title" tabindex="-1" data-role="agent-schedule-delete-dialog">' +
+      '<h2 class="modal-title" id="agent-schedule-delete-title">Delete ' + esc(confirmation.name) + '?</h2>' +
+      '<p class="modal-body">This permanently deletes the saved schedule and stops all future runs. This cannot be undone.</p>' +
+      '<p class="sr-only" role="status" aria-live="polite">' + (busy ? "Deleting schedule." : "") + '</p>' +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="agent-schedule-delete-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><span class="spacer"></span><button type="button" class="btn btn-danger" data-action="agent-schedule-delete-confirm"' + (busy ? " disabled" : "") + '>' + (busy ? "Deleting&hellip;" : "Delete schedule") + '</button></div></div></div>';
+  }
+
   function agentSchedulesPanelHtml(draft) {
     var schedules = state.agentSchedules;
     if (!draft || !draft.id) {
-      return '<div class="empty"><p class="field-label">Save this Agent to add schedules</p><p class="hint">Scheduled work always belongs to one Agent and one Runs as member.</p></div>';
+      return '<div class="empty"><p class="field-label">Save this Agent to see schedules</p></div>';
     }
     if (schedules.agentId !== draft.id || schedules.loading) {
       return '<div class="empty"><p class="hint">Loading Agent schedules&hellip;</p></div>';
     }
-    var status = schedules.error
-      ? '<p class="error" role="alert">' + esc(schedules.error) + ' <button type="button" class="btn btn-soft btn-sm" data-action="agent-schedules-retry">Retry</button></p>'
-      : schedules.notice ? '<p class="hint" role="status">' + esc(schedules.notice) + '</p>' : '';
+    var live = '<p class="agent-schedule-live' + (schedules.error ? " error" : "") + '" ' +
+      (schedules.error ? 'role="alert" aria-live="assertive"' : 'role="status" aria-live="polite"') + '>' +
+      esc(schedules.error || schedules.notice || "") +
+      (schedules.error ? ' <button type="button" class="btn btn-soft btn-sm" data-action="agent-schedules-retry">Retry</button>' : "") + '</p>';
     if (!schedules.schedules.length) {
-      return status + '<div class="empty"><p class="field-label">No scheduled work</p><p class="hint">Ask this Agent in Slack to schedule a recurring or one-time task. The destination, required connections, and Runs as authority are saved together.</p></div>';
+      return live + '<div class="empty"><p class="field-label">No scheduled work</p><p class="hint">Ask this Agent in Slack to schedule a recurring or one-time task.</p></div>';
     }
     var rows = schedules.schedules.map(function (entry) {
-      var reference = entry.reference || {};
-      var routine = entry.routine || {};
-      var runsAs = entry.runsAs || {};
-      var needsAttention = reference.state === "needs_attention" || routine.state === "paused";
-      var canTakeOver = !!schedules.viewerMembershipId && schedules.viewerMembershipId !== reference.runsAsMembershipId;
-      var repairablePause = ["schedule_authority_missing", "assignment_missing", "creator_ineligible", "credential_unavailable"].indexOf(routine.pausedReason || "") >= 0;
-      var canResume = !!schedules.viewerMembershipId && schedules.viewerMembershipId === reference.runsAsMembershipId &&
-        (reference.state === "needs_attention" || routine.state === "paused" && repairablePause);
-      var scheduleAction = canTakeOver || canResume
-        ? '<button type="button" class="btn btn-soft btn-sm" data-action="agent-schedule-reassign" data-schedule-id="' + esc(reference.scheduleId) + '" data-revision="' + Number(reference.revision || 0) + '"' + (schedules.busy ? ' disabled' : '') + '>' + (canResume ? 'Resume future runs' : 'Take over future runs') + '</button>'
-        : '<span class="hint">' + (schedules.viewerMembershipId ? 'Runs as you' : 'Runs as authority unavailable') + '</span>';
-      return '<article class="connection-account-row"><div class="connection-account-copy"><div><strong>' + esc(routine.name || reference.scheduleId) + '</strong> ' +
-        '<span class="badge ' + (needsAttention ? 'badge-off' : 'badge-on') + '">' + esc(needsAttention ? "Needs attention" : (routine.state || reference.state || "active")) + '</span></div>' +
-        '<p class="hint">' + esc(routine.description || "Scheduled Agent work") + '</p>' +
-        '<p class="hint"><strong>Runs as:</strong> ' + esc(runsAs.displayName || runsAs.contactEmail || reference.runsAsMembershipId || "Unavailable") +
-        ' &middot; <strong>Destination:</strong> ' + esc(reference.channelId || "") +
-        ' &middot; <strong>Connections:</strong> ' + Number((reference.requiredConnectionAccountIds || []).length) + '</p>' +
-        (routine.pausedReason ? '<p class="error">Paused: ' + esc(routine.pausedReason) + '</p>' : '') + '</div>' +
-        '<div class="connection-account-actions">' + scheduleAction + '</div></article>';
+      var scheduleStatus = agentScheduleStatusView(entry.status);
+      var name = entry.name || "Restricted schedule";
+      var channel = normalizeChannelLabel(entry.channelLabel || "");
+      var busyAction = String(schedules.busy || "").indexOf(entry.id + ":") === 0
+        ? String(schedules.busy).slice(entry.id.length + 1)
+        : "";
+      var actions = entry.actions || {};
+      var control = actions.pause
+        ? '<button type="button" id="agent-schedule-control-' + esc(entry.id) + '" class="btn btn-soft btn-sm" data-action="agent-schedule-control" data-control="pause" data-schedule-id="' + esc(entry.id) + '" aria-label="Pause ' + esc(name) + '"' + (schedules.busy ? " disabled" : "") + '>' + (busyAction === "pause" ? "Pausing&hellip;" : "Pause") + '</button>'
+        : actions.resume
+          ? '<button type="button" id="agent-schedule-control-' + esc(entry.id) + '" class="btn btn-soft btn-sm" data-action="agent-schedule-control" data-control="resume" data-schedule-id="' + esc(entry.id) + '" aria-label="Resume ' + esc(name) + '"' + (schedules.busy ? " disabled" : "") + '>' + (busyAction === "resume" ? "Resuming&hellip;" : "Resume") + '</button>'
+          : "";
+      var remove = actions.delete
+        ? '<button type="button" id="agent-schedule-delete-' + esc(entry.id) + '" class="btn btn-ghost btn-sm agent-schedule-delete" data-action="agent-schedule-delete-open" data-schedule-id="' + esc(entry.id) + '" aria-label="Delete ' + esc(name) + '"' + (schedules.busy ? " disabled" : "") + '>Delete</button>'
+        : "";
+      var meta = '<span class="agent-schedule-meta-item">' + esc(agentScheduleCadence(entry)) + '</span>' +
+        (channel ? '<span class="agent-schedule-separator" aria-hidden="true">&middot;</span><span class="agent-schedule-meta-item agent-schedule-channel">#' + esc(channel) + '</span>' : "") +
+        '<span class="agent-schedule-separator" aria-hidden="true">&middot;</span><span class="agent-schedule-meta-item">' + esc(agentScheduleTime(entry)) + '</span>';
+      return '<article class="agent-schedule-row"><div class="agent-schedule-copy"><div class="agent-schedule-heading">' +
+        '<span class="agent-schedule-name">' + esc(name) + '</span><span class="agent-schedule-status agent-schedule-status-' + scheduleStatus.css + '">' + esc(scheduleStatus.label) + '</span></div>' +
+        '<div class="agent-schedule-meta">' + meta + '</div></div>' +
+        ((control || remove) ? '<div class="agent-schedule-actions">' + control + remove + '</div>' : "") + '</article>';
     }).join("");
-    return status + '<p class="hint ptab-hint">Each schedule uses this Agent\\'s instructions and memory. Team connections are shared; personal connections always resolve as the named member.</p><div class="connection-account-list">' + rows + '</div>';
+    return live + '<div class="agent-schedule-list">' + rows + '</div>';
   }
 
   // ---- Capability tabs (Instructions / Skills / Connections / Repositories / Memory / Schedules) -
@@ -7646,6 +7963,7 @@ button.capability-pill { cursor: pointer; }
     ).then(function () {
       state.managedResourceEditor = null;
       state.agentConnections.notice = "Resource access saved. The selected connector is ready for this Agent.";
+      invalidateAgentConnections(state.agentConnections.agentId);
       return loadAgentConnections(state.agentConnections.agentId);
     }).catch(function (error) {
       if (state.managedResourceEditor !== editor) return;
@@ -9417,22 +9735,29 @@ button.capability-pill { cursor: pointer; }
   }
 
   function loadScheduledRoutines() {
-    if (state.scheduledLoading) return Promise.resolve();
+    var resourceOwner = scheduledListPath();
+    var resourceTicket = beginVisibleResourceLoad("audit", resourceOwner, false);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("audit", resourceOwner);
     state.scheduledLoading = true;
     state.scheduledError = "";
     render();
-    return api(scheduledListPath()).then(function (body) {
+    var request = api(resourceOwner, { cache: "no-store" }).then(function (body) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.view !== "audit") return;
       state.scheduledRoutines = body.routines || [];
       state.scheduledCapability = body.capability || null;
       state.scheduledLimits = body.limits || null;
       state.scheduledLoading = false;
+      finishVisibleResourceLoad(resourceTicket);
       render();
       if (state.scheduledSelection) return loadScheduledDetail(state.scheduledSelection);
     }).catch(function (error) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.view !== "audit") return;
       state.scheduledLoading = false;
       state.scheduledError = error.serverMessage || error.message || "Could not load scheduled work.";
+      finishVisibleResourceLoad(resourceTicket);
       render();
     });
+    return trackVisibleResourcePromise(resourceTicket, request);
   }
 
   function selectScheduledRoutine(routineId) {
@@ -9473,6 +9798,7 @@ button.capability-pill { cursor: pointer; }
       state.scheduledBusy = "";
       state.scheduledNotice = "Routine " + action + (action.endsWith("e") ? "d" : "ed") + ".";
       state.scheduledRoutines = null;
+      invalidateVisibleResource("audit", scheduledListPath());
       render();
       return loadScheduledRoutines();
     }).catch(function (error) {
@@ -9481,6 +9807,7 @@ button.capability-pill { cursor: pointer; }
         ? "This routine changed in another session. The list has been refreshed."
         : error.serverMessage || error.message || "Could not update this routine.";
       state.scheduledRoutines = null;
+      invalidateVisibleResource("audit", scheduledListPath());
       render();
       return loadScheduledRoutines();
     });
@@ -9497,22 +9824,27 @@ button.capability-pill { cursor: pointer; }
 
   function loadScheduledDetail(routineId) {
     if (!routineId) return Promise.resolve();
+    var resourceTicket = beginVisibleResourceLoad("audit-detail", routineId, false);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("audit-detail", routineId);
     state.scheduledDetailLoading = true;
     state.scheduledError = "";
     render();
-    return api("/admin/api/audit/scheduled_work/routines/" + encodeURIComponent(routineId)).then(function (body) {
-      if (state.scheduledSelection !== routineId) return;
+    var request = api("/admin/api/audit/scheduled_work/routines/" + encodeURIComponent(routineId), { cache: "no-store" }).then(function (body) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.scheduledSelection !== routineId || state.view !== "audit") return;
       state.scheduledDetail = body;
       state.scheduledCapability = body.capability || state.scheduledCapability;
       state.scheduledLimits = body.limits || state.scheduledLimits;
       state.scheduledDetailLoading = false;
+      finishVisibleResourceLoad(resourceTicket);
       render();
     }).catch(function (error) {
-      if (state.scheduledSelection !== routineId) return;
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.scheduledSelection !== routineId || state.view !== "audit") return;
       state.scheduledDetailLoading = false;
       state.scheduledError = error.serverMessage || error.message || "Could not load this routine.";
+      finishVisibleResourceLoad(resourceTicket);
       render();
     });
+    return trackVisibleResourcePromise(resourceTicket, request);
   }
 
   function scheduledMutationKey(action) {
@@ -9547,6 +9879,8 @@ button.capability-pill { cursor: pointer; }
         if (state.scheduledDetail) state.scheduledDetail.routine = body.routine;
       }
       state.scheduledRoutines = null;
+      invalidateVisibleResource("audit", scheduledListPath());
+      invalidateVisibleResource("audit-detail", routine.id);
       render();
       return loadScheduledRoutines();
     }).catch(function (error) {
@@ -9565,14 +9899,16 @@ button.capability-pill { cursor: pointer; }
     if (!ownerKind || !ownerId) return Promise.resolve();
     var memory = state.ownerMemory;
     var sameOwner = ownerMemoryMatches(ownerKind, workspaceId, ownerId);
-    if (sameOwner && memory.dirty) return Promise.resolve();
+    var resourceOwner = ownerKind + ":" + workspaceId + ":" + ownerId;
+    var resourceTicket = beginVisibleResourceLoad("memory", resourceOwner, sameOwner && memory.dirty);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("memory", resourceOwner);
     var requestId = memory.requestId + 1;
     state.ownerMemory = {
       ownerKind: ownerKind,
       workspaceId: workspaceId,
       ownerId: ownerId,
-      detail: null,
-      draft: null,
+      detail: sameOwner ? memory.detail : null,
+      draft: sameOwner ? memory.draft : null,
       dirty: false,
       loading: true,
       busy: "load",
@@ -9581,10 +9917,10 @@ button.capability-pill { cursor: pointer; }
       conflict: null,
       requestId: requestId
     };
-    render();
-    return api("/admin/api/agents/" + encodeURIComponent(ownerId) + "/memory", { cache: "no-store" }).then(function (body) {
+    renderPreservingPagePosition();
+    var request = api("/admin/api/agents/" + encodeURIComponent(ownerId) + "/memory", { cache: "no-store" }).then(function (body) {
       var current = state.ownerMemory;
-      if (current.requestId !== requestId || !ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || current.requestId !== requestId || !ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
       var saved = body.memory || { agentId: ownerId, body: "", revision: 0 };
       var entry = {
         entryId: "memory",
@@ -9598,23 +9934,31 @@ button.capability-pill { cursor: pointer; }
       current.draft = { description: entry.description, type: entry.type, body: entry.body };
       current.loading = false;
       current.busy = "";
-      render();
+      finishVisibleResourceLoad(resourceTicket);
+      renderPreservingPagePosition();
     }).catch(function (error) {
       var current = state.ownerMemory;
-      if (current.requestId !== requestId || !ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || current.requestId !== requestId || !ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
       current.loading = false;
       current.busy = "";
       current.error = error.serverMessage || error.message || "Could not load memory.";
-      render();
+      finishVisibleResourceLoad(resourceTicket);
+      renderPreservingPagePosition();
     });
+    return trackVisibleResourcePromise(resourceTicket, request);
   }
 
   function markOwnerMemoryDirty() {
     var memory = state.ownerMemory;
     memory.dirty = true;
+    if (memory.busy === "load") {
+      memory.busy = "";
+      memory.loading = false;
+    }
     memory.error = "";
     memory.notice = "";
     memory.conflict = null;
+    invalidateVisibleResource("memory", memory.ownerKind + ":" + memory.workspaceId + ":" + memory.ownerId);
     var save = document.querySelector('[data-action="owner-memory-save"]');
     var discard = document.querySelector('[data-action="owner-memory-discard"]');
     if (save) save.disabled = false;
@@ -9630,6 +9974,7 @@ button.capability-pill { cursor: pointer; }
     memory.busy = "save";
     memory.error = "";
     memory.notice = "";
+    invalidateVisibleResource("memory", ownerKey);
     render();
     return api("/admin/api/agents/" + encodeURIComponent(memory.ownerId) + "/memory", {
       method: "PUT",
@@ -9644,6 +9989,7 @@ button.capability-pill { cursor: pointer; }
       current.dirty = false;
       current.busy = "";
       current.notice = "Memory saved.";
+      markVisibleResourceCurrent("memory", ownerKey);
       render();
     }).catch(function (error) {
       var current = state.ownerMemory;
@@ -10522,6 +10868,7 @@ button.capability-pill { cursor: pointer; }
     state.workspaceDefaultNotice = "";
     if (state.settingsSection === "slack") {
       render();
+      revalidateCurrentVisibleResources();
       return;
     }
     if (state.settingsSection === "connectors") {
@@ -10689,6 +11036,7 @@ button.capability-pill { cursor: pointer; }
       projectKey: String(setup.key).trim(),
       continuation: { agentId: agentId, toolkit: setup.toolkit }
     }).then(function () {
+      invalidateAgentConnections(agentId);
       return loadAgentConnections(agentId);
     }).then(function () {
       if (state.composioSetup !== setup) return;
@@ -10813,6 +11161,14 @@ button.capability-pill { cursor: pointer; }
     render();
   }
 
+  function invalidateProfileRepositories(agentId) {
+    invalidateVisibleResource("repositories", agentId || "new");
+    // loadGithubStatus owns its own request fence because Settings also uses it.
+    // Retire an in-flight profile status request when a local repository edit
+    // makes that response older than the draft now on screen.
+    state.githubStatusRequestId += 1;
+  }
+
   function applyRepositoryPicker() {
     var picker = state.repositoryPicker;
     var draft = state.profileDraft;
@@ -10860,6 +11216,7 @@ button.capability-pill { cursor: pointer; }
     });
     draft.repositories = next;
     resetRepositoryTransientState();
+    invalidateProfileRepositories(draft.id);
     markProfileDirty();
     render();
     // Apply reads as a commit but only edits the draft — pulse the save bar
@@ -10873,6 +11230,7 @@ button.capability-pill { cursor: pointer; }
     var next = repositories.filter(function (grant) { return grant.id !== id; });
     if (next.length === repositories.length) return;
     state.profileDraft.repositories = next;
+    invalidateProfileRepositories(state.profileDraft.id);
     markProfileDirty();
     render();
   }
@@ -10897,6 +11255,7 @@ button.capability-pill { cursor: pointer; }
         return !(grant.installationId === installationId && grant.allRepos === true);
       });
     }
+    invalidateProfileRepositories(state.profileDraft.id);
     markProfileDirty();
     render();
   }
@@ -11773,16 +12132,82 @@ button.capability-pill { cursor: pointer; }
 
   // Bring a capability tab into view after a validation failure elsewhere on
   // the page, so the inline error is never hidden behind an inactive tab.
+  function loadVisibleAgentDetail(agentId) {
+    if (!agentId) return Promise.resolve();
+    var resourceTicket = beginVisibleResourceLoad("agent-detail", agentId, state.profileDirty);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("agent-detail", agentId);
+    var request = api("/admin/api/agents/" + encodeURIComponent(agentId), { cache: "no-store" }).then(function (body) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
+      if (
+        state.view !== "profiles" || state.profileScreen !== "edit" ||
+        !state.profileDraft || state.profileDraft.id !== agentId || state.profileDirty
+      ) {
+        finishVisibleResourceLoad(resourceTicket);
+        return;
+      }
+      var latest = body && body.agent;
+      if (!latest) throw new Error("Agent response was missing.");
+      var index = state.agents.findIndex(function (agent) { return agent.id === latest.id; });
+      if (index >= 0) state.agents[index] = latest;
+      else state.agents.push(latest);
+      state.profileDraft = cloneAgent(latest);
+      state.profileConflict = false;
+      finishVisibleResourceLoad(resourceTicket);
+      renderPreservingPagePosition();
+    }).catch(function (error) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
+      finishVisibleResourceLoad(resourceTicket);
+      if (
+        state.view === "profiles" && state.profileScreen === "edit" &&
+        state.profileDraft && state.profileDraft.id === agentId && !state.profileDirty
+      ) {
+        state.profileError = (error && (error.serverMessage || error.message)) || "Could not refresh this Agent.";
+        renderPreservingPagePosition();
+      }
+    });
+    return trackVisibleResourcePromise(resourceTicket, request);
+  }
+
+  function loadProfileRepositories(agentId) {
+    var resourceTicket = beginVisibleResourceLoad("repositories", agentId, false);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("repositories", agentId);
+    var request = loadGithubStatus().then(function () {
+      if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
+      finishVisibleResourceLoad(resourceTicket);
+      if (
+        state.view === "profiles" && state.profileScreen === "edit" &&
+        state.profileDraft && state.profileDraft.id === agentId && state.profileTab === "repositories"
+      ) renderPreservingPagePosition();
+    });
+    return trackVisibleResourcePromise(resourceTicket, request);
+  }
+
+  function revalidateProfileTab(tab) {
+    var draft = state.profileDraft;
+    if (
+      state.view !== "profiles" || state.profileScreen !== "edit" ||
+      !draft || !draft.id || draft.canEdit === false
+    ) return Promise.resolve();
+    if (tab === "connections") return loadAgentConnections(draft.id);
+    if (tab === "repositories") return loadProfileRepositories(draft.id);
+    if (tab === "memory") return loadOwnerMemory("agent", connectedTeamId(), draft.id, true);
+    if (tab === "schedules") return loadAgentSchedules(draft.id);
+    return Promise.resolve();
+  }
+
   function showProfileTab(tab) {
+    tab = normalizedProfileTab(tab);
     var changed = state.profileTab !== tab;
     if (changed) {
       if (tab !== "skills") resetSkillImportBrowseTransientState();
       state.profileTab = tab;
+      if (canNavigate && routeReady) {
+        var tabSearch = tab === "instructions" ? "" : "?tab=" + encodeURIComponent(tab);
+        history.replaceState(null, "", canonicalPath() + tabSearch);
+      }
       render();
     }
-    if (changed && tab === "repositories" && !state.githubStatusLoaded) {
-      loadGithubStatus().then(render);
-    }
+    revalidateProfileTab(tab);
   }
 
   function collectProfileDraft() {
@@ -11808,6 +12233,9 @@ button.capability-pill { cursor: pointer; }
   function markProfileDirty() {
     var wasDirty = state.profileDirty;
     state.profileDirty = true;
+    if (state.profileDraft && state.profileDraft.id) {
+      invalidateVisibleResource("agent-detail", state.profileDraft.id);
+    }
     var discard = document.querySelector('[data-action="discard-profile"]');
     if (discard) discard.disabled = false;
     if (state.profileScreen === "edit") {
@@ -12267,6 +12695,15 @@ button.capability-pill { cursor: pointer; }
       return;
     }
 
+    if (state.agentScheduleDeleteConfirm) {
+      if (action === "agent-schedule-delete-cancel") {
+        closeAgentScheduleDeleteConfirm(true);
+      } else if (action === "agent-schedule-delete-confirm") {
+        controlAgentSchedule(state.agentScheduleDeleteConfirm.scheduleId, "delete");
+      }
+      return;
+    }
+
     if (state.scheduledDeleteConfirm) {
       if (action === "scheduled-delete-cancel") {
         if (state.scheduledBusy) return;
@@ -12547,11 +12984,14 @@ button.capability-pill { cursor: pointer; }
     if (action === "connection-account-detach") { detachConnectionAccount(target.getAttribute("data-connection-id") || ""); }
     if (action === "connection-account-revoke") { revokeConnectionAccount(target.getAttribute("data-connection-id") || ""); }
     if (action === "agent-schedules-retry" && state.profileDraft) { loadAgentSchedules(state.profileDraft.id); }
-    if (action === "agent-schedule-reassign") {
-      reassignAgentSchedule(
+    if (action === "agent-schedule-control") {
+      controlAgentSchedule(
         target.getAttribute("data-schedule-id") || "",
-        target.getAttribute("data-revision") || "0"
+        target.getAttribute("data-control") || ""
       );
+    }
+    if (action === "agent-schedule-delete-open") {
+      openAgentScheduleDeleteConfirm(target.getAttribute("data-schedule-id") || "");
     }
     if (action === "repo-add") { openRepositoryAdd(); }
     if (action === "repo-add-cancel") { closeRepositoryPicker(); }
@@ -12783,7 +13223,7 @@ button.capability-pill { cursor: pointer; }
     // carries data-action="profile-model"; the same action feeds keystrokes to
     // the filter in the input listener below.
     if (action === "profile-model") { openModelPicker(); }
-    if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); state.profileDirty = true; closeModelPicker(); }
+    if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); markProfileDirty(); closeModelPicker(); }
     if (action === "profile-model-reset" && state.profileDraft) {
       state.profileDraft.model = "";
       state.modelPickerOpen = false;
@@ -12823,7 +13263,7 @@ button.capability-pill { cursor: pointer; }
     if (action === "delete-profile") { deleteProfile(); }
     if (action === "open-channel-from-profile") { state.view = "channels"; state.channelScreen = "detail"; state.profileScreen = "list"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
     if (action === "disable-keep") { state.disableConfirm = false; render(); focusAction("agent-overflow-toggle"); }
-    if (action === "disable-confirm") { if (state.profileDraft) state.profileDraft.enabled = false; state.disableConfirm = false; state.profileDirty = true; render(); focusAction("agent-overflow-toggle"); }
+    if (action === "disable-confirm") { if (state.profileDraft) state.profileDraft.enabled = false; state.disableConfirm = false; markProfileDirty(); render(); focusAction("agent-overflow-toggle"); }
     // Custom-skills editor: open blank / open seeded / remove / save / cancel.
     // Each editor open captures the current field text off state.skillEditor so
     // the inline error survives a re-render (input handlers mirror keystrokes).
@@ -13694,6 +14134,14 @@ button.capability-pill { cursor: pointer; }
       render();
       return;
     }
+    if (state.agentScheduleDeleteConfirm) {
+      if (trapModalTab(event, '[data-role="agent-schedule-delete-dialog"]')) return;
+      if (event.key === "Escape" || event.key === "Esc") {
+        event.preventDefault();
+        closeAgentScheduleDeleteConfirm(true);
+        return;
+      }
+    }
     if (state.scheduledDeleteConfirm && (event.key === "Escape" || event.key === "Esc")) {
       event.preventDefault();
       if (state.scheduledBusy) return;
@@ -13831,6 +14279,9 @@ button.capability-pill { cursor: pointer; }
       }
       syncOnboardingActivity();
     });
+    window.addEventListener("focus", function () {
+      revalidateCurrentVisibleResources();
+    });
     window.addEventListener("beforeunload", function (event) {
       if (
         (state.profileScreen === "edit" && state.profileDirty) ||
@@ -13891,6 +14342,13 @@ button.capability-pill { cursor: pointer; }
       applyRoute(targetPath);
     });
   }
+  if (typeof document !== "undefined" && document.addEventListener) {
+    document.addEventListener("visibilitychange", function () {
+      if (!document.visibilityState || document.visibilityState === "visible") {
+        revalidateCurrentVisibleResources();
+      }
+    });
+  }
 
   // Land on the Profiles overview (topbar / channel-page "Manage profiles"), or
   // directly on a profile's edit detail when a target id is supplied (the
@@ -13909,15 +14367,14 @@ button.capability-pill { cursor: pointer; }
       state.editingAgentId = target.id;
       state.profileLastAgentId = target.id;
       state.profileDraft = cloneAgent(target);
-      loadAgentConnections(target.id);
-      loadAgentSchedules(target.id);
-      loadOwnerMemory("agent", connectedTeamId(), target.id);
+      markVisibleResourceCurrent("agent-detail", target.id);
     } else {
       state.profileScreen = "list";
       state.profileDraft = null;
       state.editingAgentId = null;
     }
     render();
+    return revalidateCurrentVisibleResources();
   }
 
   function openHome() {
@@ -13937,6 +14394,7 @@ button.capability-pill { cursor: pointer; }
       loadSlackChannels(false);
     }
     render();
+    revalidateCurrentVisibleResources();
   }
 
   function openAddChannel(agentId) {
@@ -13949,6 +14407,45 @@ button.capability-pill { cursor: pointer; }
     if (!ensureSlackChannelsLoaded()) render();
   }
 
+  function loadVisibleSlackStatus() {
+    var resourceOwner = connectedTeamId() || "installation";
+    var resourceTicket = beginVisibleResourceLoad("slack-status", resourceOwner, false);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("slack-status", resourceOwner);
+    var request = api("/admin/api/slack-connection", { cache: "no-store" }).then(function (body) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
+      state.slack = body;
+      finishVisibleResourceLoad(resourceTicket);
+      renderPreservingPagePosition();
+    }).catch(function (error) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
+      if (error && error.status === 404) state.slack = null;
+      finishVisibleResourceLoad(resourceTicket);
+      renderPreservingPagePosition();
+    });
+    return trackVisibleResourcePromise(resourceTicket, request);
+  }
+
+  function revalidateCurrentVisibleResources() {
+    if (typeof document !== "undefined" && document.visibilityState && document.visibilityState !== "visible") {
+      return Promise.resolve();
+    }
+    var loads = [];
+    if (state.view === "profiles" && state.profileScreen === "edit" && state.profileDraft) {
+      if (state.profileDraft.canEdit !== false) {
+        loads.push(loadVisibleAgentDetail(state.profileDraft.id));
+        loads.push(revalidateProfileTab(state.profileTab));
+      }
+      loads.push(loadVisibleSlackStatus());
+    } else if (state.view === "channels") {
+      loads.push(loadVisibleSlackStatus());
+    } else if (state.view === "settings" && state.settingsSection === "slack") {
+      loads.push(loadVisibleSlackStatus());
+    } else if (state.view === "audit" && state.auditDomain === "scheduled-work") {
+      loads.push(loadScheduledRoutines());
+    }
+    return Promise.all(loads);
+  }
+
   function testSlackConnection() {
     if (state.slackConnectionBusy) return;
     state.slackConnectionBusy = "test";
@@ -13959,13 +14456,18 @@ button.capability-pill { cursor: pointer; }
       state.slackTestBusy = false;
       state.slackConnectionBusy = "";
       var team = (result && (result.teamName || result.teamId)) || connectedTeamName();
+      if (state.slack) {
+        state.slack.health = "healthy";
+        state.slack.healthDetail = null;
+      }
       state.slackTestStatus = { ok: true, message: "Connection healthy" + (team ? " · " + team : "") };
       render();
     }).catch(function (error) {
       state.slackTestBusy = false;
       state.slackConnectionBusy = "";
       var detail = error.detail || (error.payload && error.payload.detail);
-      if (state.slack && error.message === "slack_gateway_unreachable" && slackReconnectRequired(detail)) {
+      if (state.slack && error.message === "slack_gateway_unreachable" &&
+          (slackReconnectRequired(detail) || detail === "gateway_session_offline")) {
         state.slack.health = "needs_attention";
         state.slack.healthDetail = detail;
       }
@@ -15887,6 +16389,10 @@ button.capability-pill { cursor: pointer; }
     await applyRoute(initialRoute);
     if (connectorSetup && state.profileDraft && state.profileScreen === "edit") {
       state.profileTab = "connections";
+      // The one-shot handoff lands directly on Connections, so this is the
+      // visible resource even though the editor normally opens on Instructions.
+      // Wait for its catalog before choosing native versus managed setup.
+      await revalidateProfileTab("connections");
       newConnectionAccountFormFromPreset(connectorSetup.connector);
       if (state.connectionAccountForm) {
         state.connectionAccountForm.ownerKind = connectorSetup.ownerKind;

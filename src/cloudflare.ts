@@ -62,6 +62,7 @@ import {
   getRoutineStore,
   getSettingsStore,
   getSlackStateStore,
+  type AppStores,
   type PlatformEnv,
 } from './config/state-backend.ts';
 import {
@@ -160,6 +161,19 @@ import {
   type RoutineRpcResponse,
 } from './routines/types.ts';
 import { createRoutineScheduledHandler } from './routines/scheduler-adapter.ts';
+import {
+  GATEWAY_INBOX_MAX_DRAIN_BATCH,
+  GatewayInboxStoreLogic,
+} from './slack/gateway/inbox.ts';
+import {
+  GatewayDeploymentClient,
+} from './slack/gateway/client.ts';
+import { resolveChickpeaGatewayUrl } from './slack/gateway/runtime.ts';
+import { loadCredentialKeyring } from './slack/credential-keyring.ts';
+import {
+  processGatewayAgentSelection,
+  processGatewaySlackEnvelope,
+} from './channels/slack.ts';
 import {
   SlackGatewaySession,
   wakeCloudflareGatewaySession,
@@ -536,6 +550,7 @@ interface TagStateStores {
   slack: SlackStateLogic;
   settings: SettingsStoreLogic;
   turnJobs: TurnJobStoreLogic;
+  gatewayInbox: GatewayInboxStoreLogic;
   presentations: SlackRunPresentationStoreLogic;
   memory: MemoryStoreLogic;
   routines: RoutineStoreLogic;
@@ -580,6 +595,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         slack: new SlackStateLogic(db),
         settings: new SettingsStoreLogic(db),
         turnJobs: new TurnJobStoreLogic(db),
+        gatewayInbox: new GatewayInboxStoreLogic(db),
         presentations: new SlackRunPresentationStoreLogic(db),
         memory: new MemoryStoreLogic(db),
         routines: new RoutineStoreLogic(db),
@@ -901,6 +917,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.config.putAgentScheduleReference(input, expectedRevision));
   }
 
+  async configRetireAgentScheduleReference(
+    scheduleId: string,
+  ): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) => stores.config.retireAgentScheduleReference(scheduleId));
+  }
+
   async configListChannels(): Promise<StateRpcResult<ChannelConfig[]>> {
     return this.call((stores) => stores.config.listChannels());
   }
@@ -1199,6 +1221,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => {
       const categories = {
         ...stores.turnJobs.runtimeDrainCounts(),
+        ...stores.gatewayInbox.runtimeDrainCounts(),
         executingRuns: stores.work.countExecutingRuns(),
         admittingOrRunningRoutineOccurrences:
           stores.routines.countAdmittingOrRunningOccurrences(),
@@ -1242,6 +1265,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (alarm === null) {
         await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
       }
+    }
+    return result;
+  }
+
+  async admitGatewayDelivery(
+    delivery: Parameters<TagStateRpc['admitGatewayDelivery']>[0],
+  ): ReturnType<TagStateRpc['admitGatewayDelivery']> {
+    const result = this.call((stores) => stores.gatewayInbox.admit(delivery));
+    if (result.ok) {
+      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
     }
     return result;
   }
@@ -1300,6 +1333,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     }
     const stores = this.stores;
     stores.management.cleanupRetention(Date.now(), 250);
+    const gatewayNeedsRetry = await drainGatewayInbox(
+      stores,
+      this.env as PlatformEnv,
+    );
     const pending = stores.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
     if (pending.length === 0) {
       const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
@@ -1313,8 +1350,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         await drainSlackInteractionCleanups(stores, resolveInstallation);
       }
       await drainCloudflareManagementReceipts(stores, resolveInstallation);
-      const turnRetry = stores.turnJobs.hasPending('ledger') ||
-        stores.turnJobs.hasPendingSlackInteractionCleanup()
+      const turnRetry = gatewayNeedsRetry || stores.gatewayInbox.hasPending() ||
+        stores.turnJobs.hasPending('ledger') || stores.turnJobs.hasPendingSlackInteractionCleanup()
         ? Date.now() + runDriverRetryDelayMs(ledgerDrain, RELAY_RETRY_BACKOFF_MS)
         : undefined;
       const outboxRetry = stores.management.nextOutboxDueAt();
@@ -1327,7 +1364,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // credential rotation without ever falling back to another identity.
     const resolveInstallation = this.createAlarmIdentityResolver(stores);
     const usageStore = localUsageStore(stores);
-    let needsRetry = false;
+    let needsRetry = gatewayNeedsRetry;
     let identityRetryDelayMs = RELAY_RETRY_BACKOFF_MS;
     const runJob = async (job: (typeof pending)[number]): Promise<boolean> => {
       if (!job.turn.interactionIntent && job.progress.interactionIntent) {
@@ -1577,7 +1614,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     await drainCloudflareManagementReceipts(stores, resolveInstallation);
     needsRetry ||= stores.turnJobs.hasPending('legacy') ||
       stores.turnJobs.hasPending('ledger') ||
-      stores.turnJobs.hasPendingSlackInteractionCleanup();
+      stores.turnJobs.hasPendingSlackInteractionCleanup() ||
+      stores.gatewayInbox.hasPending();
     const turnRetry = needsRetry ? Date.now() + identityRetryDelayMs : undefined;
     const outboxRetry = stores.management.nextOutboxDueAt();
     const nextWake = earliestDefined(turnRetry, outboxRetry);
@@ -1864,6 +1902,83 @@ async function drainLedgerRuns(
         recordDeliveredSlackAgentMessage(stores.config, turn, assignment, delivery),
     }),
   }).drain();
+}
+
+async function drainGatewayInbox(
+  stores: TagStateStores,
+  platformEnv: PlatformEnv,
+): Promise<boolean> {
+  const pending = stores.gatewayInbox.claimPending(GATEWAY_INBOX_MAX_DRAIN_BATCH);
+  if (pending.length === 0) return stores.gatewayInbox.hasPending();
+  const appStores = localGatewayAppStores(stores);
+  let client: GatewayDeploymentClient;
+  try {
+    client = new GatewayDeploymentClient({
+      settings: appStores.settings,
+      config: appStores.config,
+      identity: appStores.identity,
+      keyring: loadCredentialKeyring(platformEnv),
+      gatewayBaseUrl: resolveChickpeaGatewayUrl(platformEnv),
+    });
+  } catch {
+    for (const item of pending) {
+      stores.gatewayInbox.retryOrRecover(item.id, 'delivery_dependency_unavailable');
+    }
+    return stores.gatewayInbox.hasPending();
+  }
+  let needsRetry = false;
+  for (const item of pending) {
+    try {
+      const outcome = item.delivery.kind === 'event.deliver'
+        ? await processGatewaySlackEnvelope(
+            item.delivery.envelope,
+            platformEnv,
+            client,
+            {
+              stores: appStores,
+              enqueueTurn: async (job) => {
+                stores.turnJobs.enqueue(job);
+                return { ok: true, value: null };
+              },
+            },
+          )
+        : await processGatewayAgentSelection(
+            item.delivery,
+            platformEnv,
+            client,
+            appStores,
+          );
+      if (outcome === 'accepted') {
+        stores.gatewayInbox.complete(item.id);
+      } else {
+        stores.gatewayInbox.markRecoveryRequired(item.id, 'binding_revalidation_rejected');
+      }
+    } catch {
+      needsRetry ||= stores.gatewayInbox.retryOrRecover(
+        item.id,
+        'delivery_processing_failed',
+      ) === 'pending';
+    }
+  }
+  return needsRetry || stores.gatewayInbox.hasPending();
+}
+
+function localGatewayAppStores(stores: TagStateStores): AppStores {
+  // Store logic methods are synchronous inside the owning DO. The public
+  // ports are promise-shaped, and `await` safely accepts these immediate
+  // values while avoiding a self-RPC back into TAG_STATE from its alarm.
+  return {
+    identity: stores.identity,
+    config: stores.config,
+    snapshots: stores.snapshots,
+    slackState: stores.slack,
+    settings: stores.settings,
+    memory: stores.memory,
+    routines: stores.routines,
+    usage: stores.usage,
+    work: stores.work,
+    management: stores.management,
+  } as unknown as AppStores;
 }
 
 function localSettingsStore(stores: TagStateStores): SettingsStore {

@@ -26,6 +26,10 @@ export interface ShadowWorkLifecycleOptions {
   onGap?: (stage: ShadowLifecycleStage) => void;
   /** Legacy observes gaps; ledger authority must fail closed on every gap. */
   mode?: 'observe' | 'enforce';
+  /** Scheduled observation waits within the outer occurrence lifecycle. */
+  persistenceMode?: 'bounded' | 'durable';
+  /** Outer wall-time boundary for durable observational writes. */
+  deadlineAt?: number;
   /** Legacy-only budget so shadow writes cannot delay the established path. */
   observeWriteBudgetMs?: number;
 }
@@ -239,7 +243,13 @@ export class ShadowWorkLifecycle {
   private async observe(stage: ShadowLifecycleStage, write: () => Promise<unknown>): Promise<boolean> {
     if (!this.usable) return false;
     try {
-      if (this.options.mode === 'enforce') {
+      if (this.options.persistenceMode === 'durable' && this.options.deadlineAt !== undefined) {
+        const remainingMs = this.options.deadlineAt - this.now();
+        const recorded = remainingMs > 0 && await withinBudget(write(), remainingMs);
+        if (!recorded) throw new Error('durable_write_deadline_exceeded');
+      } else if (this.options.mode === 'enforce') {
+        await write();
+      } else if (this.options.persistenceMode === 'durable') {
         await write();
       } else {
         const recorded = await withinBudget(
@@ -253,7 +263,9 @@ export class ShadowWorkLifecycle {
       this.usable = false;
       this.options.onGap?.(stage);
       if (this.options.mode === 'enforce') throw error;
-      console.warn(`[work] shadow lifecycle gap at ${stage}; legacy execution will continue`);
+      if (this.options.persistenceMode !== 'durable') {
+        console.warn(`[work] shadow lifecycle gap at ${stage}; legacy execution will continue`);
+      }
       return false;
     }
   }

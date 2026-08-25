@@ -363,6 +363,7 @@ export interface ConfigStore {
     input: AgentScheduleReferenceInput,
     expectedRevision?: number,
   ): Promise<AgentScheduleReference>;
+  retireAgentScheduleReference(scheduleId: string): Promise<boolean>;
   listChannels(): Promise<ChannelConfig[]>;
   getChannel(workspaceId: string, channelId: string): Promise<ChannelConfig | undefined>;
   putChannel(channel: ChannelConfig, expectedRevision?: number): Promise<ChannelConfig>;
@@ -1503,6 +1504,17 @@ export class ConfigStoreLogic {
     return this.listAgentScheduleReferences(input.agentId).find(
       (reference) => reference.scheduleId === input.scheduleId,
     )!;
+  }
+
+  retireAgentScheduleReference(scheduleId: string): boolean {
+    const result = this.db.run(
+      `UPDATE config_agent_schedule_references
+       SET state = 'archived', revision = revision + 1, updated_at = ?
+       WHERE schedule_id = ? AND state <> 'archived'`,
+      Date.now(),
+      scheduleId,
+    );
+    return result.changes === 1;
   }
 
   listAgents(): CustomAgentConfig[] {

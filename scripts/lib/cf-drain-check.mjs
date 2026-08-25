@@ -4,6 +4,9 @@ const DRAIN_CATEGORY_KEYS = [
   'pendingLedgerTurnJobs',
   'pendingSlackInteractionCleanups',
   'recoveryRequiredTurnJobs',
+  'pendingGatewayInboxDeliveries',
+  'inFlightGatewayInboxDeliveries',
+  'recoveryRequiredGatewayInboxDeliveries',
   'executingRuns',
   'admittingOrRunningRoutineOccurrences',
 ];
