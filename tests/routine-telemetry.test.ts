@@ -3,7 +3,10 @@ import { test } from 'node:test';
 
 import type { RoutineAdmissionController } from '../src/routines/admission.ts';
 import { RoutineScheduler } from '../src/routines/scheduler.ts';
-import { emitRoutineHeartbeatTelemetry } from '../src/routines/telemetry.ts';
+import {
+  emitRoutineHeartbeatTelemetry,
+  emitRoutinePersistenceTelemetry,
+} from '../src/routines/telemetry.ts';
 import type { RoutineStore } from '../src/routines/types.ts';
 
 const result = {
@@ -49,6 +52,37 @@ test('telemetry sink failures never fail scheduling', () => {
   assert.doesNotThrow(() => emitRoutineHeartbeatTelemetry(result, 1, {
     info() { throw new Error('logging unavailable'); },
   }));
+});
+
+test('routine persistence emits one sanitized summary and only unrepaired gaps use error', () => {
+  const info: string[] = [];
+  const errors: string[] = [];
+  const sink = {
+    info: (message: string) => info.push(message),
+    error: (message: string) => errors.push(message),
+  };
+  emitRoutinePersistenceTelemetry({
+    phase: 'repair', outcome: 'repaired', usage: 'repaired', work: 'recorded', durationMs: 128,
+  }, sink);
+  emitRoutinePersistenceTelemetry({
+    phase: 'work', outcome: 'unrepaired', usage: 'recorded', work: 'unrepaired', durationMs: 255,
+  }, sink);
+
+  assert.equal(info.length, 1);
+  assert.equal(errors.length, 1);
+  for (const message of [...info, ...errors]) {
+    assert.match(message, /^\[chickpea:routines\] /);
+    assert.doesNotMatch(message, /routine_|rrun_|channel|prompt|task|credential|actor|message/i);
+  }
+  assert.deepEqual(JSON.parse(info[0]!.replace(/^\[chickpea:routines\] /, '')), {
+    event: 'routine.persistence',
+    phase: 'repair',
+    outcome: 'repaired',
+    usage: 'repaired',
+    work: 'recorded',
+    durationMs: 128,
+  });
+  assert.match(errors[0]!, /"outcome":"unrepaired"/);
 });
 
 test('scheduler runs maintenance before claims and emits one heartbeat record', async () => {

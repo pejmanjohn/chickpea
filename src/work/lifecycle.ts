@@ -26,6 +26,8 @@ export interface ShadowWorkLifecycleOptions {
   onGap?: (stage: ShadowLifecycleStage) => void;
   /** Legacy observes gaps; ledger authority must fail closed on every gap. */
   mode?: 'observe' | 'enforce';
+  /** Scheduled observation waits within the outer occurrence lifecycle. */
+  persistenceMode?: 'bounded' | 'durable';
   /** Legacy-only budget so shadow writes cannot delay the established path. */
   observeWriteBudgetMs?: number;
 }
@@ -241,6 +243,8 @@ export class ShadowWorkLifecycle {
     try {
       if (this.options.mode === 'enforce') {
         await write();
+      } else if (this.options.persistenceMode === 'durable') {
+        await write();
       } else {
         const recorded = await withinBudget(
           write(),
@@ -253,7 +257,9 @@ export class ShadowWorkLifecycle {
       this.usable = false;
       this.options.onGap?.(stage);
       if (this.options.mode === 'enforce') throw error;
-      console.warn(`[work] shadow lifecycle gap at ${stage}; legacy execution will continue`);
+      if (this.options.persistenceMode !== 'durable') {
+        console.warn(`[work] shadow lifecycle gap at ${stage}; legacy execution will continue`);
+      }
       return false;
     }
   }

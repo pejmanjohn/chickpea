@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import type { AgentInstanceHandle, AgentReply, DispatchReceipt } from '@flue/runtime';
 
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
 import {
   executeRoutineOccurrence,
 } from '../src/routines/execution.ts';
@@ -19,6 +23,10 @@ import {
   parseRoutineExecutionInitialData,
   ROUTINE_RESULT_DATA_NAME,
 } from '../src/agents/routine-execution.ts';
+import { SqliteUsageStore } from '../src/usage/store.ts';
+import type { UsageStore } from '../src/usage/types.ts';
+import { SqliteWorkStore } from '../src/work/store.ts';
+import type { RunExecutionId, WorkStore } from '../src/work/types.ts';
 
 const NOW = Date.UTC(2026, 6, 27, 12);
 
@@ -32,7 +40,12 @@ const config = {
   modelAttribution: { source: 'pinned', providerId: 'anthropic' },
 } satisfies EffectiveSlackConfig;
 
-async function admittedFixture(store: SqliteRoutineStore, suffix: string) {
+async function admittedFixture(
+  store: SqliteRoutineStore,
+  suffix: string,
+  beforeOccurrence?: (routine: RoutineDefinition) => Promise<void>,
+  sourceVisibility?: 'public' | 'private' | 'unknown',
+) {
   const definition: RoutineDefinitionContent = {
     name: 'Execution fixture', description: '', taskText: 'Inspect current state.',
     triggerKind: 'schedule', scheduleInput: '0 * * * *',
@@ -40,14 +53,16 @@ async function admittedFixture(store: SqliteRoutineStore, suffix: string) {
     timezone: 'UTC', outputPolicy: 'post', authorityMode: 'live_channel_v1',
   };
   const routineId = `routine_${suffix}`;
-  await store.save({
+  const saved = await store.save({
     actorId: 'U_MEMBER', actorClass: 'member', workspaceId: 'T_TEST', channelId: 'C_TEST',
     draft: {
       action: 'create', routineId, definition, nextRunAt: NOW,
       projectedDailyStarts: 1, reservations: [{ windowStart: NOW, count: 1 }],
     },
     idempotencyKey: `create:${suffix}`,
+    ...(sourceVisibility ? { sourceVisibility } : {}),
   });
+  await beforeOccurrence?.(saved);
   const run = await store.createOccurrence({
     runId: `rrun_${suffix}`,
     idempotencyKey: `run:${suffix}`,
@@ -69,6 +84,42 @@ async function admittedFixture(store: SqliteRoutineStore, suffix: string) {
     routine: (await store.getRoutine(routineId))!,
     attempt,
   };
+}
+
+async function linkAgentSchedule(
+  store: SqliteConfigStore,
+  routine: RoutineDefinition,
+): Promise<void> {
+  const agent = await store.getAgent(config.agentId);
+  if (!agent.model) {
+    await store.updateAgent(config.agentId, { model: config.model }, agent.revision);
+  }
+  await store.putChannel({
+    workspaceId: routine.workspaceId,
+    channelId: routine.channelId,
+    label: 'routine-reliability-lab',
+    lifecycle: 'active',
+  });
+  await store.putAgentChannelGrant({
+    workspaceId: routine.workspaceId,
+    channelId: routine.channelId,
+    agentId: config.agentId,
+    status: 'active',
+    createdByMembershipId: 'membership_routine_owner',
+    channelLabel: 'routine-reliability-lab',
+    channelIsPrivate: false,
+  });
+  await store.putAgentScheduleReference({
+    scheduleId: routine.id,
+    agentId: config.agentId,
+    workspaceId: routine.workspaceId,
+    channelId: routine.channelId,
+    createdByMembershipId: 'membership_routine_owner',
+    runsAsMembershipId: 'membership_routine_owner',
+    authorityReceiptId: 'receipt_routine_reliability',
+    requiredConnectionAccountIds: [],
+    state: 'active',
+  });
 }
 
 function dependencies(events: string[] = []) {
@@ -139,6 +190,30 @@ function fakeHandle(input: {
       };
     },
     async abort() {},
+  };
+}
+
+function successfulReply(): AgentReply {
+  return {
+    submissionId: 'submission_test',
+    uid: 'uid_test',
+    text: 'Routine result',
+    data: {
+      [ROUTINE_RESULT_DATA_NAME]: [{ outcome: 'succeeded', message: 'Routine result' }],
+    },
+  };
+}
+
+function telemetrySink() {
+  const info: string[] = [];
+  const errors: string[] = [];
+  return {
+    info,
+    errors,
+    sink: {
+      info: (message: string) => info.push(message),
+      error: (message: string) => errors.push(message),
+    },
   };
 }
 
@@ -563,5 +638,205 @@ test('the occurrence attempt id is stable, opaque, and unique per attempt', asyn
     assert.notEqual(hashRoutineValue(fixture.run.id), fixture.attempt.attemptId);
   } finally {
     store.close();
+  }
+});
+
+test('routine Usage repairs failed admission and terminal persistence before completion', async () => {
+  const routines = new SqliteRoutineStore(':memory:', () => NOW);
+  const usage = new SqliteUsageStore(':memory:');
+  let admissionCalls = 0;
+  let terminalCalls = 0;
+  const repairingUsage = new Proxy(usage, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== 'function') return value;
+      const bound = value.bind(target);
+      if (property === 'admitOperation') {
+        return async (...args: unknown[]) => {
+          if (++admissionCalls === 1) throw new Error('temporary admission outage');
+          return bound(...args);
+        };
+      }
+      if (property === 'recordTerminal') {
+        return async (...args: unknown[]) => {
+          if (++terminalCalls === 1) throw new Error('temporary terminal outage');
+          return bound(...args);
+        };
+      }
+      return bound;
+    },
+  }) as UsageStore;
+  const telemetry = telemetrySink();
+  try {
+    const fixture = await admittedFixture(routines, 'usage_repair');
+    assert.equal(await executeRoutineOccurrence({
+      env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(),
+      usageRecordingEnabled: true,
+      usageStore: repairingUsage,
+      persistenceTelemetrySink: telemetry.sink,
+      handle: fakeHandle({}),
+    }), 'completed');
+
+    assert.equal((await usage.getOperation(fixture.run.id))?.operation.status, 'completed');
+    assert.equal(admissionCalls, 2);
+    assert.equal(terminalCalls, 2);
+    assert.equal(telemetry.info.length, 1);
+    assert.equal(telemetry.errors.length, 0);
+    assert.match(telemetry.info[0]!, /"phase":"repair","outcome":"repaired"/);
+  } finally {
+    usage.close();
+    routines.close();
+  }
+});
+
+test('routine Usage and Work settle with the same canonical execution correlation', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-correlation-'));
+  const path = join(directory, 'state.sqlite');
+  const routines = new SqliteRoutineStore(path, () => NOW);
+  const configuration = new SqliteConfigStore(path);
+  const usage = new SqliteUsageStore(':memory:');
+  const work = new SqliteWorkStore(path, { now: () => NOW });
+  const telemetry = telemetrySink();
+  try {
+    const fixture = await admittedFixture(
+      routines,
+      'correlation',
+      (routine) => linkAgentSchedule(configuration, routine),
+      'public',
+    );
+    assert.ok(fixture.run.canonicalRunId);
+    await executeRoutineOccurrence({
+      env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(),
+      usageRecordingEnabled: true,
+      usageStore: usage,
+      workStore: work,
+      persistenceTelemetrySink: telemetry.sink,
+      handle: fakeHandle({}),
+    });
+
+    const operation = await usage.getOperation(fixture.run.id);
+    const executionId = operation?.measurements[0]?.runExecutionId;
+    assert.equal(operation?.operation.runId, fixture.run.canonicalRunId);
+    assert.ok(executionId);
+    assert.equal(
+      (await work.getRunExecution(executionId as RunExecutionId))?.runId,
+      fixture.run.canonicalRunId,
+    );
+    assert.match(telemetry.info[0]!, /"usage":"recorded","work":"recorded"/);
+    assert.deepEqual(telemetry.errors, []);
+  } finally {
+    work.close();
+    usage.close();
+    configuration.close();
+    routines.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('permanent Work initialization failure is one gap and never redispatches', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-work-gap-'));
+  const path = join(directory, 'state.sqlite');
+  const routines = new SqliteRoutineStore(path, () => NOW);
+  const configuration = new SqliteConfigStore(path);
+  const telemetry = telemetrySink();
+  const events: string[] = [];
+  try {
+    const fixture = await admittedFixture(
+      routines,
+      'work_gap',
+      (routine) => linkAgentSchedule(configuration, routine),
+      'public',
+    );
+    const failedWork = {
+      getRun: async () => { throw new Error('work state owner unavailable'); },
+    } as unknown as WorkStore;
+    const executionInput = {
+      env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    };
+    assert.equal(await executeRoutineOccurrence(executionInput, {
+      ...dependencies(), usageRecordingEnabled: false, workStore: failedWork,
+      persistenceTelemetrySink: telemetry.sink, handle: fakeHandle({ events }),
+    }), 'completed');
+    assert.equal(await executeRoutineOccurrence(executionInput, {
+      ...dependencies(), usageRecordingEnabled: false, workStore: failedWork,
+      persistenceTelemetrySink: telemetry.sink, handle: fakeHandle({ events }),
+    }), 'superseded');
+
+    assert.equal(events.filter((event) => event === 'dispatch').length, 1);
+    assert.equal(telemetry.info.length, 0);
+    assert.equal(telemetry.errors.length, 1);
+    assert.match(telemetry.errors[0]!, /"phase":"work","outcome":"unrepaired"/);
+    assert.doesNotMatch(telemetry.errors[0]!, /work state owner|routine_work_gap|C_TEST/);
+  } finally {
+    configuration.close();
+    routines.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Work terminal failure after Slack delivery cannot post or replay twice', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-terminal-gap-'));
+  const path = join(directory, 'state.sqlite');
+  const routines = new SqliteRoutineStore(path, () => NOW);
+  const configuration = new SqliteConfigStore(path);
+  const durableWork = new SqliteWorkStore(path, { now: () => NOW });
+  const telemetry = telemetrySink();
+  let posts = 0;
+  const client = {
+    chat: {
+      postMessage: async () => {
+        posts += 1;
+        return { ok: true, channel: 'C_TEST', ts: '1900000000.000001' };
+      },
+    },
+  };
+  const failingTerminalWork = new Proxy(durableWork, {
+    get(target, property, receiver) {
+      if (property === 'finalizeRunDelivery') {
+        return async () => { throw new Error('terminal Work persistence unavailable'); };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as WorkStore;
+  try {
+    const fixture = await admittedFixture(
+      routines,
+      'terminal_gap',
+      (routine) => linkAgentSchedule(configuration, routine),
+      'public',
+    );
+    const access = dependencies().resolveAccess;
+    const executionInput = {
+      env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    };
+    const executionDependencies = {
+      ...dependencies(),
+      usageRecordingEnabled: false,
+      workStore: failingTerminalWork,
+      persistenceTelemetrySink: telemetry.sink,
+      resolveAccess: async (run: RoutineRun, routine: RoutineDefinition) => ({
+        ...(await access(run, routine)),
+        client: client as never,
+      }),
+      handle: fakeHandle({ reply: successfulReply() }),
+    };
+    assert.equal(await executeRoutineOccurrence(executionInput, executionDependencies), 'completed');
+    assert.equal(await executeRoutineOccurrence(executionInput, executionDependencies), 'superseded');
+
+    assert.equal(posts, 1);
+    assert.equal((await routines.getRun(fixture.run.id))?.status, 'succeeded');
+    assert.equal((await routines.getRun(fixture.run.id))?.deliveryStatus, 'delivered');
+    assert.equal(telemetry.errors.length, 1);
+    assert.match(telemetry.errors[0]!, /"work":"unrepaired"/);
+  } finally {
+    durableWork.close();
+    configuration.close();
+    routines.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });

@@ -46,6 +46,45 @@ test('legacy shadow writes stop blocking after their bounded observer budget', a
   }
 });
 
+test('durable observational Work waits past 100ms without turning a slow owner into a gap', async () => {
+  const fixture = await lifecycleFixture('public');
+  const gaps: string[] = [];
+  const delayed = new Proxy(fixture.store, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== 'function') return value;
+      const bound = value.bind(target);
+      return async (...args: unknown[]) => {
+        await new Promise((resolve) => setTimeout(resolve, 125));
+        return bound(...args);
+      };
+    },
+  }) as WorkStore;
+  try {
+    const lifecycle = new ShadowWorkLifecycle({
+      store: delayed,
+      runId: fixture.runId,
+      attemptNumber: 2,
+      agentName: 'profile_durable_routine',
+      canonicalModel: 'openai/gpt-5.6-sol',
+      sensitivity: 'public',
+      routeEvidence: { providerAuthRoute: 'openai_api_key' },
+      mode: 'observe',
+      persistenceMode: 'durable',
+      observeWriteBudgetMs: 5,
+      onGap: (stage) => gaps.push(stage),
+      now: () => NOW + 100,
+    });
+    const started = performance.now();
+    assert.equal(await lifecycle.prepareExecution('durable routine prompt'), 'durable routine prompt');
+    assert.ok(performance.now() - started >= 475);
+    assert.equal(lifecycle.hasExecution, true);
+    assert.deepEqual(gaps, []);
+  } finally {
+    fixture.close();
+  }
+});
+
 test('legacy shadow lifecycle settles through the synchronous in-isolate store', async () => {
   const db = openStateDb(':memory:');
   try {

@@ -56,6 +56,7 @@ export interface WorkExecutionBoundaryOptions {
   now?: () => number;
   onGap?: ConstructorParameters<typeof ShadowWorkLifecycle>[0]['onGap'];
   mode?: ConstructorParameters<typeof ShadowWorkLifecycle>[0]['mode'];
+  persistenceMode?: ConstructorParameters<typeof ShadowWorkLifecycle>[0]['persistenceMode'];
 }
 
 /**
@@ -101,6 +102,7 @@ export async function createWorkExecutionBoundary(
     now,
     ...(options.onGap ? { onGap: options.onGap } : {}),
     ...(options.mode ? { mode: options.mode } : {}),
+    ...(options.persistenceMode ? { persistenceMode: options.persistenceMode } : {}),
   });
   const receiptBase = {
     runId: run.id,

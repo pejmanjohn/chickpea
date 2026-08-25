@@ -18,6 +18,7 @@ import {
 
 export const DEFAULT_USAGE_WRITE_BUDGET_MS = 100;
 
+type UsagePersistenceMode = 'bounded' | 'durable';
 export type UsagePersistencePhase = 'admission' | 'terminal' | 'repair';
 export type UsagePersistenceOutcome = 'recorded' | 'timed_out' | 'failed';
 
@@ -161,9 +162,11 @@ export class InteractiveUsageRecorder {
     return persistUsage(
       write(),
       this.budgetMs,
-      phase,
-      this.options.executionId,
-      this.options.onPersistence,
+      {
+        phase,
+        executionId: this.options.executionId,
+        onPersistence: this.options.onPersistence,
+      },
     );
   }
 
@@ -228,6 +231,7 @@ export interface RoutineUsageRecorderOptions {
   platformEnv?: PlatformEnv;
   processEnv?: NodeJS.ProcessEnv;
   writeBudgetMs?: number;
+  persistenceMode?: UsagePersistenceMode;
   now?: () => number;
   onPersistence?: (event: UsagePersistenceEvent) => void;
 }
@@ -315,9 +319,11 @@ export class InteractionUsageRecorder {
     const outcome = await persistUsage(
       this.options.store.admitOperation(this.admission),
       this.budgetMs,
-      'admission',
-      this.options.executionId,
-      this.options.onPersistence,
+      {
+        phase: 'admission',
+        executionId: this.options.executionId,
+        onPersistence: this.options.onPersistence,
+      },
     );
     this.needsRepair ||= outcome !== 'recorded';
   }
@@ -364,9 +370,11 @@ export class InteractionUsageRecorder {
     const outcome = await persistUsage(
       this.options.store.recordTerminal(this.terminalInput),
       this.budgetMs,
-      'terminal',
-      this.options.executionId,
-      this.options.onPersistence,
+      {
+        phase: 'terminal',
+        executionId: this.options.executionId,
+        onPersistence: this.options.onPersistence,
+      },
     );
     this.needsRepair ||= outcome !== 'recorded';
   }
@@ -380,9 +388,11 @@ export class InteractionUsageRecorder {
         await this.options.store.recordTerminal(this.terminalInput!);
       })(),
       this.budgetMs,
-      'repair',
-      this.options.executionId,
-      this.options.onPersistence,
+      {
+        phase: 'repair',
+        executionId: this.options.executionId,
+        onPersistence: this.options.onPersistence,
+      },
     );
     if (outcome === 'recorded') this.needsRepair = false;
   }
@@ -392,6 +402,7 @@ export class RoutineUsageRecorder {
   private readonly admission: AdmitUsageOperationInput;
   private readonly budgetMs: number;
   private readonly now: () => number;
+  private readonly persistenceMode: UsagePersistenceMode;
   private terminalInput: RecordUsageTerminalInput | undefined;
   private repairAttempted = false;
   private needsRepair = false;
@@ -400,6 +411,7 @@ export class RoutineUsageRecorder {
   constructor(private readonly options: RoutineUsageRecorderOptions) {
     this.now = options.now ?? Date.now;
     this.budgetMs = boundedBudget(options.writeBudgetMs);
+    this.persistenceMode = options.persistenceMode ?? 'bounded';
     this.runExecutionId = options.runExecutionId;
     const requested = splitModelSpecifier(options.requestedModel);
     this.admission = {
@@ -432,9 +444,12 @@ export class RoutineUsageRecorder {
     const outcome = await persistUsage(
       this.options.store.admitOperation(this.admission),
       this.budgetMs,
-      'admission',
-      this.options.executionId,
-      this.options.onPersistence,
+      {
+        phase: 'admission',
+        executionId: this.options.executionId,
+        onPersistence: this.options.onPersistence,
+        mode: this.persistenceMode,
+      },
     );
     this.needsRepair ||= outcome !== 'recorded';
   }
@@ -487,9 +502,12 @@ export class RoutineUsageRecorder {
     const outcome = await persistUsage(
       this.options.store.recordTerminal(terminalInput),
       this.budgetMs,
-      'terminal',
-      this.options.executionId,
-      this.options.onPersistence,
+      {
+        phase: 'terminal',
+        executionId: this.options.executionId,
+        onPersistence: this.options.onPersistence,
+        mode: this.persistenceMode,
+      },
     );
     this.needsRepair ||= outcome !== 'recorded';
   }
@@ -503,9 +521,12 @@ export class RoutineUsageRecorder {
         await this.options.store.recordTerminal(this.terminalInput!);
       })(),
       this.budgetMs,
-      'repair',
-      this.options.executionId,
-      this.options.onPersistence,
+      {
+        phase: 'repair',
+        executionId: this.options.executionId,
+        onPersistence: this.options.onPersistence,
+        mode: this.persistenceMode,
+      },
     );
     if (outcome === 'recorded') this.needsRepair = false;
   }
@@ -579,14 +600,24 @@ async function withinBudget(
 async function persistUsage(
   promise: Promise<unknown>,
   budgetMs: number,
-  phase: UsagePersistencePhase,
-  executionId: string,
-  onPersistence?: (event: UsagePersistenceEvent) => void,
+  options: {
+    phase: UsagePersistencePhase;
+    executionId: string;
+    onPersistence?: ((event: UsagePersistenceEvent) => void) | undefined;
+    mode?: UsagePersistenceMode;
+  },
 ): Promise<UsagePersistenceOutcome> {
-  const outcome = await withinBudget(promise, budgetMs);
-  onPersistence?.({ phase, outcome, executionId });
-  if (outcome !== 'recorded') {
-    console.warn(`[usage] ${phase} persistence ${outcome}; model execution will continue`);
+  const mode = options.mode ?? 'bounded';
+  const outcome = mode === 'durable'
+    ? await promise.then(() => 'recorded' as const, () => 'failed' as const)
+    : await withinBudget(promise, budgetMs);
+  options.onPersistence?.({
+    phase: options.phase,
+    outcome,
+    executionId: options.executionId,
+  });
+  if (outcome !== 'recorded' && mode === 'bounded') {
+    console.warn(`[usage] ${options.phase} persistence ${outcome}; model execution will continue`);
   }
   return outcome;
 }

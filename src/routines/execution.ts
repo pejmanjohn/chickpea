@@ -49,6 +49,7 @@ import {
 } from '../usage/response-metadata.ts';
 import {
   RoutineUsageRecorder,
+  type UsagePersistenceEvent,
   usageRuntimeRecordingEnabled,
 } from '../usage/runtime-recorder.ts';
 import { opaqueId } from '../work/admission.ts';
@@ -75,6 +76,11 @@ import {
   type RoutineRuntimeAccess,
 } from './runtime.ts';
 import { markRoutineAuthorityNeedsAttention } from './agent-authority.ts';
+import {
+  emitRoutinePersistenceTelemetry,
+  type RoutinePersistenceSummary,
+  type RoutinePersistenceTelemetrySink,
+} from './telemetry.ts';
 import type {
   RoutineAdmissionAttempt,
   RoutineAgentDispatchEnvelopeV1,
@@ -105,6 +111,7 @@ interface RoutineExecutionDependencies {
   usageStore?: UsageStore;
   settingsStore?: SettingsStore;
   workStore?: WorkStore;
+  persistenceTelemetrySink?: RoutinePersistenceTelemetrySink;
 }
 
 interface PreparedExecution {
@@ -118,6 +125,7 @@ interface PreparedExecution {
   receipt: RoutineAgentReceiptV1 | null;
   usageRecorder?: RoutineUsageRecorder;
   workLifecycle?: ShadowWorkLifecycle;
+  persistence: RoutinePersistenceTracker;
   usedCloudflareSandbox: boolean;
   sandboxUnavailableFallback: boolean;
 }
@@ -194,10 +202,12 @@ export async function executeRoutineOccurrence(
   }
   if (prepared.run.flueAgentSettlement) {
     try {
+      await recordUsage(prepared, prepared.run.flueAgentSettlement);
       await finalizeSettlement(prepared, prepared.run.flueAgentSettlement, now());
-      await prepared.usageRecorder?.repairAfterTerminal();
       return 'completed';
     } finally {
+      await prepared.usageRecorder?.repairAfterTerminal();
+      prepared.persistence.emit();
       await releasePreparedSandbox(input.env, prepared, dependencies);
     }
   }
@@ -304,6 +314,7 @@ export async function executeRoutineOccurrence(
     });
     await finalizeSettlement(prepared, settlement, now());
     await prepared.usageRecorder?.repairAfterTerminal();
+    prepared.persistence.emit();
     return 'completed';
   } catch (error) {
     const toolCallCount = toolCalls.count;
@@ -334,6 +345,7 @@ export async function executeRoutineOccurrence(
       await finalizeSettlement(prepared, settlement, now());
     } finally {
       await prepared.usageRecorder?.repairAfterTerminal();
+      prepared.persistence.emit();
     }
     return 'completed';
   } finally {
@@ -458,7 +470,13 @@ async function prepareExecution(
   const run = await input.store.getRun(input.run.id);
   if (!run) throw new Error('Routine occurrence was not readable after admission.');
 
-  const usageRecorder = (dependencies.usageRecordingEnabled ?? usageRuntimeRecordingEnabled(input.env))
+  const usageEnabled = dependencies.usageRecordingEnabled ?? usageRuntimeRecordingEnabled(input.env);
+  const persistence = new RoutinePersistenceTracker({
+    usageEnabled,
+    workExpected: Boolean(run.canonicalRunId),
+    sink: dependencies.persistenceTelemetrySink ?? console,
+  });
+  const usageRecorder = usageEnabled
     ? new RoutineUsageRecorder({
         operationId: run.id,
         executionId: `exec:${run.id}:${attemptId}`,
@@ -478,7 +496,9 @@ async function prepareExecution(
         credentialVersion: modelCredential?.version ?? null,
         store: usageStore,
         platformEnv: input.env,
+        persistenceMode: 'durable',
         now,
+        onPersistence: (event) => persistence.recordUsage(event),
       })
     : undefined;
   await usageRecorder?.admit();
@@ -497,6 +517,7 @@ async function prepareExecution(
         unknownReason: 'provider_request_unknown',
       });
       await usageRecorder?.repairAfterTerminal();
+      persistence.emit();
       await (dependencies.releaseSandbox ?? releaseCloudflareSandboxTurn)(
         input.env,
         sandboxConversationKey,
@@ -506,16 +527,18 @@ async function prepareExecution(
     }
   }
 
-  const workLifecycle = await createRoutineShadowLifecycle(
+  const workLifecycle = await createRoutineShadowLifecycle({
     run,
     access,
     envelope,
-    runtimeModel.providerAuthRoute,
-    modelCredential ?? undefined,
-    dependencies.workStore ?? getWorkStore(input.env),
-    input.attempt,
-  );
+    providerAuthRoute: runtimeModel.providerAuthRoute,
+    modelCredential: modelCredential ?? undefined,
+    workStore: dependencies.workStore ?? getWorkStore(input.env),
+    attemptNumber: input.attempt,
+    onGap: () => persistence.recordWorkGap(),
+  });
   if (workLifecycle) {
+    persistence.linkWork();
     usageRecorder?.linkRunExecution(workLifecycle.executionId);
   }
   return {
@@ -529,6 +552,7 @@ async function prepareExecution(
     receipt: input.admission.flueAgentReceipt ?? null,
     ...(usageRecorder ? { usageRecorder } : {}),
     ...(workLifecycle ? { workLifecycle } : {}),
+    persistence,
     usedCloudflareSandbox: prepareSandbox,
     sandboxUnavailableFallback,
   };
@@ -611,14 +635,29 @@ function assertRoutineReattachmentAttribution(
 }
 
 async function createRoutineShadowLifecycle(
-  run: RoutineRun,
-  access: RoutineRuntimeAccess,
-  envelope: RoutineAgentDispatchEnvelopeV1,
-  providerAuthRoute: ProviderAuthRoute | undefined,
-  modelCredential: NonNullable<Awaited<ReturnType<typeof resolveModelCredentialAttribution>>> | undefined,
-  workStore: WorkStore,
-  attemptNumber = 1,
+  input: {
+    run: RoutineRun;
+    access: RoutineRuntimeAccess;
+    envelope: RoutineAgentDispatchEnvelopeV1;
+    providerAuthRoute: ProviderAuthRoute | undefined;
+    modelCredential:
+      | NonNullable<Awaited<ReturnType<typeof resolveModelCredentialAttribution>>>
+      | undefined;
+    workStore: WorkStore;
+    attemptNumber?: number;
+    onGap?: () => void;
+  },
 ): Promise<ShadowWorkLifecycle | undefined> {
+  const {
+    run,
+    access,
+    envelope,
+    providerAuthRoute,
+    modelCredential,
+    workStore,
+    attemptNumber = 1,
+    onGap,
+  } = input;
   if (!run.canonicalRunId) return undefined;
   try {
     const lifecycle = await createWorkExecutionLifecycle(workStore, {
@@ -633,10 +672,14 @@ async function createRoutineShadowLifecycle(
         providerAuthRoute,
         modelCredential,
       ),
+    }, {
+      mode: 'observe',
+      persistenceMode: 'durable',
+      ...(onGap ? { onGap } : {}),
     });
     return await lifecycle.prepareExecution(envelope.message) ? lifecycle : undefined;
   } catch {
-    console.warn('[work] Routine shadow lifecycle initialization failed; execution will continue');
+    onGap?.();
     return undefined;
   }
 }
@@ -736,6 +779,72 @@ async function recordUsage(
     ...(usage?.returnedModel ? { returnedModel: usage.returnedModel } : {}),
     ...(usage ? {} : { unknownReason: 'provider_request_unknown' }),
   });
+}
+
+class RoutinePersistenceTracker {
+  private readonly startedAt = performance.now();
+  private readonly usageEvents: UsagePersistenceEvent[] = [];
+  private workLinked = false;
+  private workGap = false;
+  private emitted = false;
+
+  constructor(private readonly options: {
+    usageEnabled: boolean;
+    workExpected: boolean;
+    sink: RoutinePersistenceTelemetrySink;
+  }) {}
+
+  recordUsage(event: UsagePersistenceEvent): void {
+    this.usageEvents.push(event);
+  }
+
+  linkWork(): void {
+    this.workLinked = true;
+  }
+
+  recordWorkGap(): void {
+    this.workGap = true;
+  }
+
+  emit(): void {
+    if (this.emitted) return;
+    this.emitted = true;
+    const usage = this.usageOutcome();
+    const work = !this.options.workExpected
+      ? 'not_linked' as const
+      : this.workLinked && !this.workGap
+        ? 'recorded' as const
+        : 'unrepaired' as const;
+    const outcome: RoutinePersistenceSummary['outcome'] =
+      usage === 'unrepaired' || work === 'unrepaired'
+        ? 'unrepaired'
+        : usage === 'repaired'
+          ? 'repaired'
+          : 'recorded';
+    emitRoutinePersistenceTelemetry({
+      phase: work === 'unrepaired'
+        ? 'work'
+        : usage === 'repaired' || usage === 'unrepaired'
+          ? 'repair'
+          : 'terminal',
+      outcome,
+      usage,
+      work,
+      durationMs: performance.now() - this.startedAt,
+    }, this.options.sink);
+  }
+
+  private usageOutcome(): RoutinePersistenceSummary['usage'] {
+    if (!this.options.usageEnabled) return 'disabled';
+    if (this.usageEvents.some((event) => event.phase === 'repair' && event.outcome === 'recorded')) {
+      return 'repaired';
+    }
+    const admission = this.usageEvents.findLast((event) => event.phase === 'admission');
+    const terminal = this.usageEvents.findLast((event) => event.phase === 'terminal');
+    return admission?.outcome === 'recorded' && terminal?.outcome === 'recorded'
+      ? 'recorded'
+      : 'unrepaired';
+  }
 }
 
 function routineResult(reply: AgentReply, run: RoutineRun, routine: RoutineDefinition) {
