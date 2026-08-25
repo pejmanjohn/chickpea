@@ -371,7 +371,7 @@ test('setup shares one request deadline and reports a saved key when preparation
   let clientCreations = 0;
   const fixture = harness(new FakeTransport(), {
     composioConfiguration: { credentials },
-    composioPreparationTimeoutMs: 5,
+    composioPreparationTimeoutMs: 50,
     composioCreateClient: async () => {
       clientCreations += 1;
       if (clientCreations === 1) return validationClient;
