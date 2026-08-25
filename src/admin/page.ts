@@ -671,12 +671,6 @@ button, input, textarea, select { font: inherit; }
 .workspace-icon .ic { height: 22px; width: 22px; }
 .workspace-name { color: var(--text); font-size: 0.9375rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-meta { color: var(--text-3); font-size: 0.75rem; overflow-wrap: anywhere; }
-.behavior-list { background: var(--well); border-radius: 16px; overflow: hidden; }
-.behavior-row { align-items: center; display: flex; gap: 18px; padding: 13px 16px; }
-.behavior-row + .behavior-row { border-top: 1.5px solid var(--bg); }
-.behavior-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
-.behavior-title { color: var(--text); font-size: 0.8125rem; font-weight: 700; }
-.behavior-state { color: var(--text-3); font-size: 0.75rem; min-width: 22px; text-align: right; }
 .action-well {
   align-items: center;
   background: var(--well);
@@ -1256,8 +1250,6 @@ details[open].advanced summary::before {
   .main-head, .section-head, .bundle-row, .save-bar { align-items: stretch; flex-direction: column; }
   .channel-memory-total, .channel-memory-note { font-size: 1rem; }
   .workspace-card { align-items: flex-start; grid-template-columns: 1fr; }
-  .behavior-row { align-items: flex-start; }
-  .behavior-row .toggle { margin-left: auto; }
   .action-well, .danger-panel, .slack-overview-foot { align-items: stretch; flex-direction: column; }
   .action-well .slack-console-link { margin-left: 0; }
   .bundle-row .b-name { max-width: 100%; }
@@ -2911,12 +2903,6 @@ button.capability-pill { cursor: pointer; }
     // drives the dismissable success toast in the connected funnel.
     slackToast: null,
     slackToastDismissed: false,
-    // Post-onboarding Slack management state. The behavior payload comes from
-    // /admin/api/slack-behavior as { value, source } entries so env-managed
-    // toggles stay visibly read-only instead of pretending a stored write won.
-    slackBehavior: null,
-    slackBehaviorError: "",
-    slackBehaviorBusy: "",
     // One lock covers every Slack connection operation. The legacy per-action
     // booleans below still drive their specific labels, while this value keeps
     // test, credential replacement, disconnect, and navigation from racing.
@@ -4792,42 +4778,6 @@ button.capability-pill { cursor: pointer; }
     return "Credentials stored in Chickpea";
   }
 
-  function slackBehaviorRowHtml(key, title, description) {
-    var entry = state.slackBehavior && state.slackBehavior[key];
-    var value = entry ? !!entry.value : true;
-    var envManaged = !!entry && entry.source === "env";
-    var busy = state.slackBehaviorBusy === key;
-    // Serialize writes: each response is a complete settings snapshot, so a
-    // second overlapping update could otherwise let an older response win.
-    var disabled = !entry || envManaged || !!state.slackBehaviorBusy;
-    var sourceNote = envManaged ? " Managed by the environment." : "";
-    return '<div class="behavior-row"><div class="behavior-copy">' +
-      '<span class="behavior-title">' + esc(title) + '</span>' +
-      '<span class="hint">' + esc(description + sourceNote) + '</span></div>' +
-      '<span class="behavior-state">' + (busy ? "Saving" : value ? "On" : "Off") + '</span>' +
-      '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="slack-behavior" data-setting="' + esc(key) + '" ' +
-      (value ? "checked " : "") + (disabled ? "disabled " : "") + 'aria-label="' + esc(title) + '"></span></div>';
-  }
-
-  function slackBehaviorHtml() {
-    if (!state.slackBehavior) {
-      if (state.slackBehaviorBusy) {
-        return '<div class="empty"><p class="field-label">Loading Slack behavior&hellip;</p></div>';
-      }
-      return '<div class="empty"><p class="field-label">Slack behavior could not load</p>' +
-        '<p class="error" role="alert">' + esc(state.slackBehaviorError || "Reload the settings to try again.") + '</p>' +
-        '<button type="button" class="btn btn-soft btn-sm" data-action="slack-behavior-retry">Retry</button></div>';
-    }
-    return '<div class="behavior-list">' +
-      slackBehaviorRowHtml("nativeTasks", "Show native task plans", "Project admitted Work as Slack task cards. The existing checklist remains the fallback when Slack rejects the native stream.") +
-      slackBehaviorRowHtml("progressiveStreaming", "Stream safe answer text", "Show answer-only text as it is generated. Memory, recovery, sandbox, and effect-capable turns remain terminal-only.") +
-      '</div>' +
-      (state.slackBehaviorError
-        ? '<div class="inline-status error" role="alert">' + esc(state.slackBehaviorError) +
-          ' <button type="button" class="link-btn" data-action="slack-behavior-retry">Retry</button></div>'
-        : '');
-  }
-
   function slackConnectionStatusHtml() {
     var status = state.slackTestStatus;
     if (!status) return "";
@@ -4985,8 +4935,6 @@ button.capability-pill { cursor: pointer; }
       '<span class="badge ' + (slackPresentation.key === "connected" ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + esc(slackPresentation.label) + '</span>' +
       '<span class="hint">' + esc(count + " configured " + (count === 1 ? "channel" : "channels")) + '</span>' +
       '<span class="hint">' + esc(slackCredentialSummary()) + '</span></div></section>';
-    var behavior = '<section class="section"><div class="section-head"><div><h2 class="section-title">Slack behavior</h2>' +
-      '<p class="hint">Control how Chickpea behaves across this Slack workspace.</p></div></div>' + slackBehaviorHtml() + '</section>';
     var testButton = state.slackTestBusy
       ? '<button type="button" class="btn btn-soft i-lead" disabled><span class="spinner"></span>Testing&hellip;</button>'
       : '<button type="button" class="btn btn-soft i-lead" data-action="slack-test"' + (connectionBusy ? " disabled" : "") + '>' + icon("arrow-path") + 'Test connection</button>';
@@ -5005,7 +4953,7 @@ button.capability-pill { cursor: pointer; }
       (!mutable ? '<span class="hint">This connection is managed by the environment and is read-only here.</span>' : "") +
       (state.slackDisconnectError ? '<span class="inline-status error">' + esc(state.slackDisconnectError) + '</span>' : "") + '</div>' +
       '<button type="button" class="btn btn-danger" data-action="slack-disconnect-open"' + (mutable && !connectionBusy ? "" : " disabled") + '>Disconnect</button></div></section>';
-    return workspace + behavior + connection;
+    return workspace + connection;
   }
 
   function slackDisconnectModalHtml() {
@@ -12000,11 +11948,6 @@ button.capability-pill { cursor: pointer; }
       // Resilient on purpose: the connection card is auxiliary — if this
       // endpoint fails, the rest of the admin page must still render.
       api("/admin/api/slack-connection").catch(function () { return null; }),
-      api("/admin/api/slack-behavior").then(function (body) {
-        return { body: body, error: "" };
-      }).catch(function (error) {
-        return { body: null, error: error.serverMessage || error.message || "Could not load Slack behavior." };
-      }),
       api("/admin/api/onboarding").then(function (body) {
         return { body: body, error: "" };
       }).catch(function (error) {
@@ -12026,12 +11969,9 @@ button.capability-pill { cursor: pointer; }
       state.grants = [];
       state.models = parts[1];
       state.slack = parts[2];
-      state.slackBehavior = parts[3].body;
-      state.slackBehaviorError = parts[3].error;
-      state.slackBehaviorBusy = "";
-      state.onboarding = parts[4].body;
-      state.onboardingError = parts[4].error;
-      state.channelIndex = parts[5].channels;
+      state.onboarding = parts[3].body;
+      state.onboardingError = parts[3].error;
+      state.channelIndex = parts[4].channels;
       state.channelIndex.forEach(function (channel) {
         (channel.grants || []).forEach(function (grant) {
           state.grants.push(Object.assign({}, grant, {
@@ -12041,8 +11981,8 @@ button.capability-pill { cursor: pointer; }
           }));
         });
       });
-      state.channelIndexError = parts[5].error;
-      if (parts[6] && parts[6].workspaceDefault) applyWorkspaceDefault(parts[6].workspaceDefault, false);
+      state.channelIndexError = parts[4].error;
+      if (parts[5] && parts[5].workspaceDefault) applyWorkspaceDefault(parts[5].workspaceDefault, false);
       syncChannelFormWorkspacePrefill();
       if (renderAfterRefresh) renderAfterRefresh();
       else render();
@@ -12366,7 +12306,6 @@ button.capability-pill { cursor: pointer; }
     if (action === "toggle-add-channel") { openAddChannel(); }
     if (action === "cancel-add-channel") { state.addChannelOpen = false; state.addChannelManual = false; state.addChannelError = ""; state.addChannelAgentId = ""; render(); }
     if (action === "refresh-channels") { loadSlackChannels(true); }
-    if (action === "slack-behavior-retry") { loadSlackBehavior(); }
     if (action === "slack-test") { testSlackConnection(); }
     if (action === "slack-gateway-refresh") { refreshSlackGatewayAuthorization(); }
     if (action === "slack-disconnect-open" && slackConnectionMutable()) {
@@ -13358,9 +13297,6 @@ button.capability-pill { cursor: pointer; }
       state.sandboxError = "";
       render();
     }
-    if (action === "slack-behavior") {
-      saveSlackBehavior(target.getAttribute("data-setting"), !!target.checked);
-    }
     // Remember the picked channel so a Refresh / re-render keeps the selection.
     if (action === "select-channel-option") { state.addChannelSelected = target.value; }
     if (action === "attach-channel-option") { state.attachChannelSelected = target.value; }
@@ -13851,9 +13787,8 @@ button.capability-pill { cursor: pointer; }
     state.disableConfirm = false;
     state.addChannelOpen = false;
     state.slackDisconnectConfirm = false;
-    if (isSlackConnected()) {
-      if (!state.slackBehavior) loadSlackBehavior();
-      if (!state.slackChannels && !state.slackChannelsLoading) loadSlackChannels(false);
+    if (isSlackConnected() && !state.slackChannels && !state.slackChannelsLoading) {
+      loadSlackChannels(false);
     }
     render();
   }
@@ -13866,45 +13801,6 @@ button.capability-pill { cursor: pointer; }
     state.addChannelInvite = "";
     state.addChannelAgentId = agentId || "";
     if (!ensureSlackChannelsLoaded()) render();
-  }
-
-  function loadSlackBehavior() {
-    if (state.slackBehaviorBusy) return Promise.resolve(null);
-    state.slackBehaviorBusy = "load";
-    state.slackBehaviorError = "";
-    render();
-    return api("/admin/api/slack-behavior").then(function (body) {
-      state.slackBehavior = body;
-      state.slackBehaviorBusy = "";
-      render();
-      return body;
-    }).catch(function (error) {
-      state.slackBehaviorError = error.serverMessage || error.message || "Could not load Slack behavior.";
-      state.slackBehaviorBusy = "";
-      render();
-      return null;
-    });
-  }
-
-  function saveSlackBehavior(key, value) {
-    if (!key || state.slackBehaviorBusy || !state.slackBehavior || !state.slackBehavior[key]) return;
-    var prior = state.slackBehavior[key].value;
-    state.slackBehavior[key].value = value;
-    state.slackBehaviorBusy = key;
-    state.slackBehaviorError = "";
-    render();
-    var body = {};
-    body[key] = value;
-    postJson("/admin/api/slack-behavior", "PUT", body).then(function (result) {
-      state.slackBehavior = result;
-      state.slackBehaviorBusy = "";
-      render();
-    }).catch(function (error) {
-      state.slackBehavior[key].value = prior;
-      state.slackBehaviorBusy = "";
-      state.slackBehaviorError = error.serverMessage || error.message || "Could not save Slack behavior.";
-      render();
-    });
   }
 
   function testSlackConnection() {
@@ -13968,7 +13864,6 @@ button.capability-pill { cursor: pointer; }
       state.slackDisconnectConfirm = false;
       state.slackDisconnectError = "";
       state.slackTestStatus = null;
-      state.slackBehavior = null;
       state.slackChannelsRequestId += 1;
       state.slackChannels = null;
       state.active = null;

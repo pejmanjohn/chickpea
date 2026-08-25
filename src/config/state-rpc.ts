@@ -62,7 +62,7 @@ import type {
   SlackAppendReservation,
   SlackPresentationTransitionInput,
   SlackPresentationTransitionResult,
-  SlackRunPresentationV1,
+  SlackRunPresentation,
   SlackPresentationSummary,
 } from '../slack/run-presentations.ts';
 
@@ -418,7 +418,7 @@ export interface TagStateRpc {
   ): Promise<StateRpcResult<null>>;
   slackPresentationGet(
     runId: string,
-  ): Promise<StateRpcResult<SlackRunPresentationV1 | null>>;
+  ): Promise<StateRpcResult<SlackRunPresentation | null>>;
   slackPresentationTransition(
     input: SlackPresentationTransitionInput,
   ): Promise<StateRpcResult<SlackPresentationTransitionResult>>;
@@ -431,7 +431,7 @@ export interface TagStateRpc {
   ): Promise<StateRpcResult<{ cooldownUntil: number; budgetVersion: number }>>;
   slackPresentationRepairList(
     limit: number,
-  ): Promise<StateRpcResult<SlackRunPresentationV1[]>>;
+  ): Promise<StateRpcResult<SlackRunPresentation[]>>;
   slackPresentationMaintain(
     limit: number,
   ): Promise<StateRpcResult<{ finalizedPurged: number; expiredTombstoned: number }>>;

@@ -28,8 +28,13 @@ import {
 } from '../src/memory/autonomous.ts';
 import { MemoryStateError } from '../src/memory/types.ts';
 import { resultFromAgentReply } from '../src/slack/flue-dispatch.ts';
+import {
+  SLACK_STREAM_ANSWER_ACKNOWLEDGEMENT,
+  SLACK_STREAM_ANSWER_TOOL_NAME,
+} from '../src/slack/presentation-intent.ts';
 
 const MODEL = 'faux/characterization';
+let failStreamDeclaration = false;
 
 function ProgressiveProbe() {
   useModel(MODEL);
@@ -46,6 +51,26 @@ function ToolProbe() {
     run: ({ data }) => ({ output: `synthetic:${data.query}` }),
   });
   return 'Use the scripted tool response.';
+}
+
+function StreamIntentProbe() {
+  useModel(MODEL);
+  useTool({
+    name: SLACK_STREAM_ANSWER_TOOL_NAME,
+    description: 'Declare progressive answer delivery before answer text.',
+    output: v.string(),
+    run: () => {
+      if (failStreamDeclaration) throw new Error('synthetic declaration failure');
+      return { output: SLACK_STREAM_ANSWER_ACKNOWLEDGEMENT };
+    },
+  });
+  useTool({
+    name: 'lookup',
+    description: 'Return one synthetic lookup result.',
+    output: v.string(),
+    run: () => ({ output: 'synthetic lookup result' }),
+  });
+  return 'Use stream_answer only before useful stable answer text.';
 }
 
 function StructuredProbe() {
@@ -127,6 +152,115 @@ function textEventsFor(
 function eventIdentity(events: readonly TimedChunk[]): unknown[] {
   return events.map(({ chunk }) => chunk);
 }
+
+test(
+  'Flue preserves declaration, mixed-tool, failure, and replay ordering for the Slack relay',
+  { timeout: 30_000 },
+  async () => {
+    const faux = fauxProvider({
+      models: [{ id: 'characterization', reasoning: true }],
+      tokensPerSecond: 100,
+      tokenSize: { min: 3, max: 3 },
+    });
+    const flue = await start({
+      agents: [{ agent: StreamIntentProbe, name: 'stream-intent-characterization' }],
+      providers: [faux.provider],
+    });
+    try {
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall(SLACK_STREAM_ANSWER_TOOL_NAME, {})], {
+          stopReason: 'toolUse',
+        }),
+        fauxAssistantMessage('A long answer follows the declaration.'),
+      ]);
+      const toolFirst = init(StreamIntentProbe, { id: 'stream-tool-first' });
+      const toolFirstReceipt = await toolFirst.dispatch('Explain this in depth.');
+      const toolFirstRead = await capture(toolFirst, toolFirstReceipt);
+      const toolFirstMessageIds = messageIdsFor(toolFirstRead.events, toolFirstReceipt.submissionId);
+      const declarationInput = toolFirstRead.events.findIndex(({ chunk }) =>
+        chunk.type === 'tool-input' && chunk.toolName === SLACK_STREAM_ANSWER_TOOL_NAME
+      );
+      const declarationCall = toolFirstRead.events[declarationInput]?.chunk;
+      const declarationOutput = toolFirstRead.events.findIndex(({ chunk }) =>
+        chunk.type === 'tool-output' && declarationCall?.type === 'tool-input' &&
+        chunk.toolCallId === declarationCall.toolCallId
+      );
+      const answerText = toolFirstRead.events.findIndex(({ chunk }) =>
+        chunk.type === 'message-delta' && chunk.kind === 'text'
+      );
+      assert.equal(toolFirstMessageIds.length, 1);
+      assert.ok(declarationInput >= 0);
+      assert.ok(declarationOutput > declarationInput);
+      assert.ok(answerText > declarationOutput);
+      assert.equal(toolFirstRead.reply.text, 'A long answer follows the declaration.');
+
+      const callsAfterFirstRead = faux.state.callCount;
+      const replay = await capture(toolFirst, toolFirstReceipt);
+      assert.deepEqual(eventIdentity(replay.events), eventIdentity(toolFirstRead.events));
+      assert.equal(faux.state.callCount, callsAfterFirstRead);
+
+      faux.setResponses([fauxAssistantMessage('A short terminal answer.')]);
+      const noTool = init(StreamIntentProbe, { id: 'stream-no-tool' });
+      const noToolReceipt = await noTool.dispatch('Confirm this.');
+      const noToolRead = await capture(noTool, noToolReceipt);
+      assert.equal(noToolRead.events.some(({ chunk }) => chunk.type === 'tool-input'), false);
+
+      faux.setResponses([
+        fauxAssistantMessage([
+          fauxText('Text appeared too early. '),
+          fauxToolCall(SLACK_STREAM_ANSWER_TOOL_NAME, {}),
+        ], { stopReason: 'toolUse' }),
+        fauxAssistantMessage('The rest remains terminal.'),
+      ]);
+      const late = init(StreamIntentProbe, { id: 'stream-late' });
+      const lateReceipt = await late.dispatch('Declare too late.');
+      const lateRead = await capture(late, lateReceipt);
+      assert.ok(lateRead.events.findIndex(({ chunk }) =>
+        chunk.type === 'message-delta' && chunk.kind === 'text'
+      ) < lateRead.events.findIndex(({ chunk }) =>
+        chunk.type === 'tool-input' && chunk.toolName === SLACK_STREAM_ANSWER_TOOL_NAME
+      ));
+
+      faux.setResponses([
+        fauxAssistantMessage([
+          fauxToolCall(SLACK_STREAM_ANSWER_TOOL_NAME, {}),
+          fauxToolCall('lookup', {}),
+        ], { stopReason: 'toolUse' }),
+        fauxAssistantMessage('Mixed-tool responses remain terminal.'),
+      ]);
+      const mixed = init(StreamIntentProbe, { id: 'stream-mixed' });
+      const mixedReceipt = await mixed.dispatch('Use both tools.');
+      const mixedRead = await capture(mixed, mixedReceipt);
+      assert.deepEqual(
+        mixedRead.events.flatMap(({ chunk }) =>
+          chunk.type === 'tool-input' ? [chunk.toolName] : []
+        ),
+        [SLACK_STREAM_ANSWER_TOOL_NAME, 'lookup'],
+      );
+
+      failStreamDeclaration = true;
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall(SLACK_STREAM_ANSWER_TOOL_NAME, {})], {
+          stopReason: 'toolUse',
+        }),
+        fauxAssistantMessage('A failed declaration stays terminal.'),
+      ]);
+      const failed = init(StreamIntentProbe, { id: 'stream-failed' });
+      const failedReceipt = await failed.dispatch('Fail the declaration.');
+      const failedRead = await capture(failed, failedReceipt);
+      const failedDeclaration = failedRead.events.find(({ chunk }) =>
+        chunk.type === 'tool-input' && chunk.toolName === SLACK_STREAM_ANSWER_TOOL_NAME
+      )?.chunk;
+      assert.ok(failedRead.events.some(({ chunk }) =>
+        chunk.type === 'tool-output-error' && failedDeclaration?.type === 'tool-input' &&
+        chunk.toolCallId === failedDeclaration.toolCallId
+      ));
+    } finally {
+      failStreamDeclaration = false;
+      await flue.stop();
+    }
+  },
+);
 
 test(
   'Flue 2 receipt-scoped chunks expose a safe progressive subset and explicit terminal-only cases',

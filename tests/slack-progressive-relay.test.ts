@@ -5,10 +5,14 @@ import type { ConversationStreamChunk } from '@flue/runtime';
 
 import {
   ReceiptScopedTextRelay,
+  type ProgressiveIntentTransition,
   type ProgressiveRelayInvalidationReason,
   type ProgressiveTextChunk,
 } from '../src/slack/progressive-relay.ts';
+import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../src/slack/presentation-intent.ts';
+import type { SlackProgressiveIntent } from '../src/slack/run-presentations.ts';
 import { decideProgressiveEligibility } from '../src/slack/progressive-eligibility.ts';
+import { slackProgressiveStreamingEnabled } from '../src/slack/progressive-ops-flag.ts';
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 
 function event(
@@ -21,6 +25,76 @@ function event(
     ...value,
     position: value.position ?? { batch: 1, index: 0 },
   } as ConversationStreamChunk;
+}
+
+function modelRelay(input: {
+  initial?: SlackProgressiveIntent;
+  failIntent?: ProgressiveIntentTransition['kind'];
+} = {}) {
+  const operations: string[] = [];
+  const delivered: ProgressiveTextChunk[] = [];
+  const relay = new ReceiptScopedTextRelay({
+    submissionId: 'submission_model_intent',
+    modelIntent: {
+      initial: input.initial ?? { status: 'unresolved' },
+      async transition(intent) {
+        operations.push(`intent:${intent.kind}:${
+          'toolCallId' in intent ? intent.toolCallId :
+          intent.kind === 'denied' ? intent.reason : ''
+        }`);
+        if (intent.kind === input.failIntent) throw new Error('synthetic persistence failure');
+      },
+    },
+    async append(chunk) {
+      operations.push(`append:${chunk.delta}`);
+      delivered.push(structuredClone(chunk));
+    },
+    async invalidate(reason) {
+      operations.push(`invalidate:${reason}`);
+    },
+  });
+  const emit = (value: Parameters<typeof event>[0]) => relay.onEvent(event(value));
+  emit({
+    type: 'message-started',
+    conversationId: 'conversation_model_intent',
+    messageId: 'message_model_intent',
+    submissionId: 'submission_model_intent',
+    position: { batch: 1, index: 0 },
+  });
+  return { relay, emit, operations, delivered };
+}
+
+function streamInput(position = { batch: 2, index: 0 }, toolCallId = 'stream_call_1') {
+  return {
+    type: 'tool-input' as const,
+    conversationId: 'conversation_model_intent',
+    messageId: 'message_model_intent',
+    toolCallId,
+    toolName: SLACK_STREAM_ANSWER_TOOL_NAME,
+    input: {},
+    position,
+  };
+}
+
+function streamOutput(position = { batch: 3, index: 0 }, toolCallId = 'stream_call_1') {
+  return {
+    type: 'tool-output' as const,
+    conversationId: 'conversation_model_intent',
+    toolCallId,
+    output: 'Delivery preference noted. Continue with the answer.',
+    position,
+  };
+}
+
+function answerDelta(delta: string, position: { batch: number; index: number }) {
+  return {
+    type: 'message-delta' as const,
+    conversationId: 'conversation_model_intent',
+    messageId: 'message_model_intent',
+    kind: 'text' as const,
+    delta,
+    position,
+  };
 }
 
 test('receipt-scoped relay serializes only exact assistant text and drains before close', async () => {
@@ -107,6 +181,139 @@ test('receipt-scoped relay serializes only exact assistant text and drains befor
     kind: 'text', delta: ' late', position: { batch: 9, index: 0 },
   }));
   assert.equal(delivered.length, 2, 'late chunks no-op after the relay is closed');
+});
+
+test('model-selected relay persists successful intent before exact post-declaration text', async () => {
+  const h = modelRelay();
+  h.emit(streamInput());
+  h.emit(streamOutput());
+  h.emit(answerDelta('Hello', { batch: 4, index: 0 }));
+  h.emit(answerDelta(' world', { batch: 5, index: 0 }));
+
+  const summary = await h.relay.closeAndDrain();
+  assert.deepEqual(h.operations, [
+    'intent:candidate:stream_call_1',
+    'intent:requested:stream_call_1',
+    'append:Hello world',
+  ]);
+  assert.equal(summary.acceptedChunks, 2);
+  assert.equal(summary.acceptedBytes, 11);
+  assert.equal(h.delivered.map((chunk) => chunk.delta).join(''), 'Hello world');
+});
+
+test('no declaration accepts no progressive text and records not_requested', async () => {
+  const h = modelRelay();
+  h.emit(answerDelta('Short terminal answer.', { batch: 2, index: 0 }));
+
+  const summary = await h.relay.closeAndDrain();
+  assert.deepEqual(h.operations, ['intent:not_requested:']);
+  assert.equal(summary.acceptedBytes, 0);
+  assert.deepEqual(h.delivered, []);
+});
+
+test('late, repeated, failed, mixed-tool, and structured declarations fail closed', async () => {
+  const cases: Array<{
+    name: string;
+    events: Array<Parameters<ReturnType<typeof modelRelay>['emit']>[0]>;
+    reason: string;
+  }> = [
+    {
+      name: 'late',
+      events: [answerDelta('too early', { batch: 2, index: 0 }), streamInput({ batch: 3, index: 0 })],
+      reason: 'late_declaration',
+    },
+    {
+      name: 'repeated',
+      events: [streamInput(), streamInput({ batch: 3, index: 0 }, 'stream_call_2')],
+      reason: 'repeated_declaration',
+    },
+    {
+      name: 'failed',
+      events: [streamInput(), {
+        type: 'tool-output-error', conversationId: 'conversation_model_intent',
+        toolCallId: 'stream_call_1', errorText: 'private failure',
+        position: { batch: 3, index: 0 },
+      }],
+      reason: 'declaration_failed',
+    },
+    {
+      name: 'mixed',
+      events: [streamInput(), {
+        type: 'tool-input', conversationId: 'conversation_model_intent',
+        messageId: 'message_model_intent', toolCallId: 'lookup_1', toolName: 'lookup', input: {},
+        position: { batch: 3, index: 0 },
+      }],
+      reason: 'non_presentation_tool',
+    },
+    {
+      name: 'structured',
+      events: [{
+        type: 'data-part', conversationId: 'conversation_model_intent',
+        messageId: 'message_model_intent', name: 'result', data: { answer: 'private' },
+        position: { batch: 2, index: 0 },
+      }],
+      reason: 'structured_output',
+    },
+  ];
+
+  for (const scenario of cases) {
+    const h = modelRelay();
+    for (const candidate of scenario.events) h.emit(candidate);
+    h.emit(answerDelta('must remain terminal', { batch: 9, index: 0 }));
+    await h.relay.closeAndDrain();
+    assert.ok(
+      h.operations.some((operation) => operation === `intent:denied:${scenario.reason}`),
+      scenario.name,
+    );
+    assert.deepEqual(h.delivered, [], scenario.name);
+  }
+});
+
+test('foreign tool outcomes cannot deny a valid pending declaration', async () => {
+  const h = modelRelay();
+  h.emit(streamInput());
+  h.emit(streamOutput({ batch: 3, index: 0 }, 'foreign_tool_call'));
+  h.emit(streamOutput({ batch: 4, index: 0 }));
+  h.emit(answerDelta('safe answer', { batch: 5, index: 0 }));
+
+  await h.relay.closeAndDrain();
+  assert.deepEqual(h.operations, [
+    'intent:candidate:stream_call_1',
+    'intent:requested:stream_call_1',
+    'append:safe answer',
+  ]);
+});
+
+test('requested-intent persistence failure accepts no text and enters recovery invalidation', async () => {
+  const h = modelRelay({ failIntent: 'requested' });
+  h.emit(streamInput());
+  h.emit(streamOutput());
+  h.emit(answerDelta('must not escape', { batch: 4, index: 0 }));
+
+  const summary = await h.relay.closeAndDrain();
+  assert.deepEqual(h.operations, [
+    'intent:candidate:stream_call_1',
+    'intent:requested:stream_call_1',
+    'invalidate:intent_persistence_failed',
+  ]);
+  assert.deepEqual(h.delivered, []);
+  assert.equal(summary.invalidationReason, 'intent_persistence_failed');
+});
+
+test('receipt replay reuses persisted requested intent without repeating its transition', async () => {
+  const h = modelRelay({
+    initial: {
+      status: 'requested',
+      toolCallId: 'stream_call_1',
+      requestedAt: 1_800_000_000_000,
+    },
+  });
+  h.emit(streamInput());
+  h.emit(streamOutput());
+  h.emit(answerDelta('replayed answer', { batch: 4, index: 0 }));
+
+  await h.relay.closeAndDrain();
+  assert.deepEqual(h.operations, ['append:replayed answer']);
 });
 
 test('joined submissions and replayed positions cannot cross the receipt fence', async () => {
@@ -242,6 +449,7 @@ test('progressive eligibility closes every replacement and external-effect path'
   const decide = (overrides: Partial<Parameters<typeof decideProgressiveEligibility>[0]> = {}) =>
     decideProgressiveEligibility({
       runtimePlan: basePlan,
+      operationsEnabled: true,
       memorySelected: false,
       recoveryRequired: false,
       concurrentAttributionProven: true,
@@ -250,6 +458,9 @@ test('progressive eligibility closes every replacement and external-effect path'
     });
 
   assert.deepEqual(decide(), { allowed: true, reason: 'safe_early_release' });
+  assert.deepEqual(decide({ operationsEnabled: false }), {
+    allowed: false, reason: 'operations_disabled',
+  });
   assert.deepEqual(decide({ memorySelected: true }), { allowed: false, reason: 'memory' });
   assert.deepEqual(decide({ recoveryRequired: true }), {
     allowed: false, reason: 'recovery',
@@ -260,6 +471,13 @@ test('progressive eligibility closes every replacement and external-effect path'
   assert.deepEqual(decide({ replacementCapable: true }), {
     allowed: false, reason: 'other',
   });
+  assert.deepEqual(decideProgressiveEligibility({
+    operationsEnabled: true,
+    memorySelected: false,
+    recoveryRequired: false,
+    concurrentAttributionProven: true,
+    replacementCapable: false,
+  }), { allowed: false, reason: 'other' });
   assert.deepEqual(decide({
     runtimePlan: { ...basePlan, sandbox: { mode: 'cloudflare' } },
   }), { allowed: false, reason: 'sandbox' });
@@ -276,4 +494,29 @@ test('progressive eligibility closes every replacement and external-effect path'
   ]) {
     assert.deepEqual(decide({ runtimePlan }), { allowed: false, reason: 'effect_capable' });
   }
+});
+
+test('the deployment-only progressive gate defaults on and recognizes explicit false values', () => {
+  assert.equal(slackProgressiveStreamingEnabled(undefined, {}), true);
+  for (const raw of ['false', 'FALSE', ' 0 ', 'off', 'NO']) {
+    assert.equal(
+      slackProgressiveStreamingEnabled(undefined, { SLACK_TAG_PROGRESSIVE_STREAMING: raw }),
+      false,
+      raw,
+    );
+  }
+  for (const raw of ['', 'true', '1', 'on', 'yes', 'unexpected']) {
+    assert.equal(
+      slackProgressiveStreamingEnabled(undefined, { SLACK_TAG_PROGRESSIVE_STREAMING: raw }),
+      true,
+      raw,
+    );
+  }
+  assert.equal(
+    slackProgressiveStreamingEnabled(
+      { SLACK_TAG_PROGRESSIVE_STREAMING: 'off' },
+      { SLACK_TAG_PROGRESSIVE_STREAMING: 'true' },
+    ),
+    false,
+  );
 });

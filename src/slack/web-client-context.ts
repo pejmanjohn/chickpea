@@ -221,6 +221,8 @@ export function assembleSlackPrompt(
     handoffBlock?: string;
     memoryBlock?: string;
     memorySelected?: boolean;
+    currentRequestPolicyVersion?: 1 | 2;
+    progressiveStreamingOffered?: boolean;
     slackApp?: SlackPromptApp;
   } = {},
 ): string {
@@ -279,6 +281,10 @@ export function assembleSlackPrompt(
       options.memorySelected === true,
       turn.userId,
       turn.messageTs,
+      {
+        schemaVersion: options.currentRequestPolicyVersion ?? 2,
+        progressiveStreamingOffered: options.progressiveStreamingOffered === true,
+      },
     ),
   );
   return parts.join('\n');

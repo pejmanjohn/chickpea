@@ -25,6 +25,8 @@ import { SqliteWorkStore } from '../src/work/store.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { SANDBOX_UNAVAILABLE_FALLBACK_NOTICE } from '../src/slack/web-client-presenter.ts';
 import { SLACK_SELF_MENTION_PLACEHOLDER } from '../src/slack/web-client-context.ts';
+import { openStateDb } from '../src/state/node-state-db.ts';
+import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -559,14 +561,19 @@ test('a stalled detail status does not delay agent start or final delivery', asy
 
 test('runTurn freezes eligibility before exposing the receipt-scoped relay factory', async () => {
   const work = new SqliteWorkStore(':memory:', { now: () => 1_800_000_000_000 });
+  const presentationDb = openStateDb(':memory:');
   try {
   const client = {
     assistant: { threads: { setStatus: async () => ({ ok: true }) } },
     conversations: { history: async () => ({ ok: true, messages: [] }) },
     chat: {
-      startStream: async () => ({ ok: true, ts: 'final-ts' }),
+      startStream: async () => ({ ok: true, ts: '1785700200.000100' }),
       stopStream: async () => ({ ok: true }),
-      postMessage: async () => ({ ok: true, channel: assignment.channelId, ts: 'final-ts' }),
+      postMessage: async () => ({
+        ok: true,
+        channel: assignment.channelId,
+        ts: '1785700200.000100',
+      }),
     },
   } as unknown as WebClient;
   const currentTurn: NormalizedSlackTurn = {
@@ -587,6 +594,23 @@ test('runTurn freezes eligibility before exposing the receipt-scoped relay facto
     sourceVisibility: 'private',
     admittedAt: 1_800_000_000_000,
   }));
+  const presentations = new SlackRunPresentationStoreLogic(
+    presentationDb,
+    () => 1_800_000_000_000,
+  );
+  presentations.create({
+    runId: admitted.run.id,
+    turnJobId: 'turn_progressive_eligibility',
+    bindingId: admitted.binding.id,
+    workBindingGeneration: admitted.binding.generation,
+    runFencingToken: 0,
+    root: {
+      workspaceId: currentTurn.workspaceId,
+      channelId: currentTurn.channelId,
+      threadTs: currentTurn.threadTs,
+      requesterUserId: currentTurn.userId,
+    },
+  });
 
   await runTurn(currentTurn, assignment, undefined, {
     client,
@@ -597,6 +621,17 @@ test('runTurn freezes eligibility before exposing the receipt-scoped relay facto
       runtimePlan,
       instanceId: deriveRuntimePlanInstanceId(runtimePlan),
     },
+    // The Cloudflare relay always provides this recovery callback. Its mere
+    // presence must not imply replacement authority for a frozen bash plan.
+    beforeDelivery: async () => undefined,
+    presentationState: {
+      getRunPresentation: (runId) => presentations.get(runId),
+      transitionRunPresentation: (input) => presentations.transition(input),
+      reserveSlackAppend: (workspaceId) => presentations.reserveAppend(workspaceId),
+      applySlackAppendCooldown: (workspaceId, retryAfterMs) =>
+        presentations.applyAppendCooldown(workspaceId, retryAfterMs),
+      matchFlueObservation: () => undefined,
+    },
     progressiveAttributionProven: true,
     prepareProgressiveRelay: async (input) => {
       captured.push(structuredClone(input));
@@ -604,6 +639,11 @@ test('runTurn freezes eligibility before exposing the receipt-scoped relay facto
     },
     usageRecordingEnabled: false,
     async agentPrompt(input): Promise<AgentDispatchResult> {
+      assert.deepEqual(presentations.get(admitted.run.id)?.progressiveEligibility, {
+        status: 'frozen',
+        allowed: true,
+        reason: 'safe_early_release',
+      });
       assert.equal(typeof input.prepareProgressiveRelay, 'function');
       await input.prepareProgressiveRelay?.({
         instanceId: deriveRuntimePlanInstanceId(runtimePlan),
@@ -635,6 +675,7 @@ test('runTurn freezes eligibility before exposing the receipt-scoped relay facto
     eligibility: { allowed: true, reason: 'safe_early_release' },
   }]);
   } finally {
+    presentationDb.close();
     work.close();
   }
 });

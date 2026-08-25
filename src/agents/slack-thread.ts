@@ -156,6 +156,7 @@ import {
 import { createMemoryScopeSlackFromWebClient, verifyMemoryMutationMembership } from '../memory/scope.ts';
 import { parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
+import { slackPresentationIntentCapability } from '../slack/presentation-intent.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
 import { useWorkspaceManagementSlackTools } from '../management/slack-tools.ts';
@@ -1064,6 +1065,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
   const plan = parseRuntimePlanV2(initialData);
   const delivery = useDelivery();
   const currentRequest = parseCurrentRequestEnvelope(delivery.body);
+  const presentationIntent = slackPresentationIntentCapability(currentRequest);
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
     ...(currentRequest?.slackActorId && currentRequest.slackMessageTs
@@ -1077,6 +1079,10 @@ export function ChickpeaSlack({ id }: AgentProps) {
   });
   useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv);
   usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
+  if (presentationIntent) {
+    useInstruction(presentationIntent.instruction);
+    useTool(presentationIntent.tool);
+  }
   return plan.instructions;
 }
 

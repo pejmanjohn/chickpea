@@ -98,13 +98,6 @@ type OnboardingFixture = {
   agentId?: string;
   redirectTo?: string;
 };
-type SlackBehaviorEntry = { value: boolean; source: 'env' | 'stored' | 'default' };
-type SlackBehaviorFixture = {
-  unassignedHint: SlackBehaviorEntry;
-  welcomeOnJoin: SlackBehaviorEntry;
-  progressiveStreaming: SlackBehaviorEntry;
-  nativeTasks: SlackBehaviorEntry;
-};
 type GithubStatusFixture = {
   mode: 'none' | 'app';
   appSlug?: string;
@@ -338,9 +331,6 @@ function runAdminPageHarness(
   options: {
     assignments?: AssignmentFixture[];
     slackConnection?: SlackConnectionFixture | null;
-    slackBehavior?: SlackBehaviorFixture;
-    slackBehaviorGetFailures?: number;
-    slackBehaviorPutError?: { status: number; error: string; message?: string };
     slackTestError?: { status: number; error: string; detail?: string };
     slackDisconnectError?: { status: number; error: string };
     initialPath?: string;
@@ -751,14 +741,6 @@ function runAdminPageHarness(
   const mcpTestResult = options.mcpTestResult;
   let assignments = options.assignments ?? defaultAssignments();
   const slackConnection = options.slackConnection === undefined ? connectedSlackFixture() : options.slackConnection;
-  let slackBehavior: SlackBehaviorFixture = options.slackBehavior ?? {
-    unassignedHint: { value: true, source: 'default' },
-    welcomeOnJoin: { value: true, source: 'default' },
-    progressiveStreaming: { value: false, source: 'default' },
-    nativeTasks: { value: true, source: 'default' },
-  };
-  let slackBehaviorGetFailures = options.slackBehaviorGetFailures ?? 0;
-  const slackBehaviorPutError = options.slackBehaviorPutError;
   const slackChannels = options.slackChannels;
   const slackChannelsFetch = options.slackChannelsFetch;
   let onboarding = options.onboarding ?? null;
@@ -2337,34 +2319,11 @@ function runAdminPageHarness(
     if (path === '/admin/api/slack-behavior' && method === 'PUT') {
       const body = JSON.parse(options?.body ?? '{}') as Record<string, boolean>;
       slackBehaviorPuts.push(body);
-      if (slackBehaviorPutError) {
-        return Promise.resolve(
-          jsonResponse(
-            {
-              error: slackBehaviorPutError.error,
-              ...(slackBehaviorPutError.message ? { message: slackBehaviorPutError.message } : {}),
-            },
-            slackBehaviorPutError.status,
-          ),
-        );
-      }
-      slackBehavior = {
-        ...slackBehavior,
-        ...Object.fromEntries(
-          Object.entries(body).map(([key, value]) => [key, { value, source: 'stored' as const }]),
-        ),
-      };
-      return Promise.resolve(jsonResponse(slackBehavior));
+      return Promise.resolve(jsonResponse({}));
     }
     if (path === '/admin/api/slack-behavior') {
       slackBehaviorGets += 1;
-      if (slackBehaviorGetFailures > 0) {
-        slackBehaviorGetFailures -= 1;
-        return Promise.resolve(
-          jsonResponse({ error: 'slack_behavior_unavailable', message: 'Behavior service unavailable.' }, 503),
-        );
-      }
-      return Promise.resolve(jsonResponse(slackBehavior));
+      return Promise.resolve(jsonResponse({}));
     }
     if (path === '/admin/api/slack-connection/test' && method === 'POST') {
       slackTestCalls += 1;
@@ -2754,28 +2713,17 @@ test('Channels deep links and popstate keep the route and selected screen in syn
   assert.match(harness.app.innerHTML, /class="agent-roster-item active" data-action="edit-profile" data-agent="agent_ops"/);
 });
 
-test('Slack overview controls save behavior, test the connection, and confirm disconnect without credential paste-back', async () => {
+test('Slack settings omit workspace behavior switches and their client requests', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin/settings/slack/identities' });
   await flushAsync();
 
-  const change = harness.listeners.change;
   const click = harness.listeners.click;
-  assert.ok(change && click);
-
-  change({
-    target: {
-      checked: true,
-      closest: () => null,
-      getAttribute(name: string) {
-        if (name === 'data-action') return 'slack-behavior';
-        if (name === 'data-setting') return 'progressiveStreaming';
-        return null;
-      },
-    } as unknown as FakeTarget,
-  });
-  await flushAsync();
-  assert.deepEqual(harness.slackBehaviorPuts, [{ progressiveStreaming: true }]);
-  assert.match(harness.app.innerHTML, /Stream safe answer text[\s\S]*?<span class="behavior-state">On<\/span>/);
+  assert.ok(click);
+  assert.doesNotMatch(harness.app.innerHTML, /Slack behavior/);
+  assert.doesNotMatch(harness.app.innerHTML, /Show native task plans/);
+  assert.doesNotMatch(harness.app.innerHTML, /Stream safe answer text/);
+  assert.equal(harness.slackBehaviorGets(), 0);
+  assert.deepEqual(harness.slackBehaviorPuts, []);
 
   click({ target: actionTarget({ 'data-action': 'slack-test' }) });
   await flushAsync();
@@ -2836,85 +2784,6 @@ test('a stale shared-app binding changes every Slack status to Reconnect require
   await flushAsync();
   assert.match(harness.app.innerHTML, /agent-slack-status attention[^>]*>Reconnect required/);
   assert.doesNotMatch(harness.app.innerHTML, /agent-slack-status[^>]*>Connected/);
-});
-
-test('Slack behavior load and save failures stay honest and recoverable', async () => {
-  const loadHarness = runAdminPageHarness({
-    initialPath: '/admin/settings/slack/identities',
-    slackBehaviorGetFailures: 1,
-  });
-  await flushAsync();
-  assert.match(loadHarness.app.innerHTML, /Slack behavior could not load/);
-  assert.match(loadHarness.app.innerHTML, /Behavior service unavailable\./);
-  assert.match(loadHarness.app.innerHTML, /data-action="slack-behavior-retry"/);
-  assert.doesNotMatch(loadHarness.app.innerHTML, /class="behavior-state">On/);
-
-  const loadClick = loadHarness.listeners.click;
-  assert.ok(loadClick);
-  loadClick({ target: actionTarget({ 'data-action': 'slack-behavior-retry' }) });
-  await flushAsync();
-  assert.equal(loadHarness.slackBehaviorGets(), 2);
-  assert.match(loadHarness.app.innerHTML, /Show native task plans/);
-  assert.match(loadHarness.app.innerHTML, /class="behavior-state">On/);
-
-  const saveHarness = runAdminPageHarness({
-    initialPath: '/admin/settings/slack/identities',
-    slackBehaviorPutError: {
-      status: 503,
-      error: 'slack_behavior_unavailable',
-      message: 'Could not save that Slack setting.',
-    },
-  });
-  await flushAsync();
-  const saveChange = saveHarness.listeners.change;
-  assert.ok(saveChange);
-  saveChange({
-    target: {
-      checked: true,
-      closest: () => null,
-      getAttribute(name: string) {
-        if (name === 'data-action') return 'slack-behavior';
-        if (name === 'data-setting') return 'progressiveStreaming';
-        return null;
-      },
-    } as unknown as FakeTarget,
-  });
-  await flushAsync();
-  assert.match(saveHarness.app.innerHTML, /Stream safe answer text/);
-  assert.match(saveHarness.app.innerHTML, /class="behavior-state">Off/);
-  assert.match(saveHarness.app.innerHTML, /Could not save that Slack setting\./);
-  assert.match(saveHarness.app.innerHTML, /data-action="slack-behavior-retry"/);
-});
-
-test('Slack behavior writes serialize and environment-managed settings stay read-only', async () => {
-  const harness = runAdminPageHarness({
-    initialPath: '/admin/settings/slack/identities',
-    slackBehavior: {
-      unassignedHint: { value: true, source: 'default' },
-      welcomeOnJoin: { value: false, source: 'default' },
-      progressiveStreaming: { value: false, source: 'default' },
-      nativeTasks: { value: true, source: 'env' },
-    },
-  });
-  await flushAsync();
-  assert.match(harness.app.innerHTML, /Show native task plans[\s\S]*?Managed by the environment\./);
-  assert.match(harness.app.innerHTML, /data-setting="nativeTasks"[^>]*disabled/);
-
-  const change = harness.listeners.change;
-  assert.ok(change);
-  const behaviorTarget = (setting: string, checked: boolean) => ({
-    checked,
-    closest: () => null,
-    getAttribute(name: string) {
-      if (name === 'data-action') return 'slack-behavior';
-      if (name === 'data-setting') return setting;
-      return null;
-    },
-  }) as unknown as FakeTarget;
-  change({ target: behaviorTarget('progressiveStreaming', true) });
-  change({ target: behaviorTarget('nativeTasks', false) });
-  await flushAsync();
-  assert.deepEqual(harness.slackBehaviorPuts, [{ progressiveStreaming: true }]);
 });
 
 test('Slack connection failures stay visible and the disconnect dialog gates background actions', async () => {

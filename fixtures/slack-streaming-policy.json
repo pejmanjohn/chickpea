@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "id": "positive_explainer_oauth_migration",
+      "expectation": "clear_positive",
+      "category": "long_explainer",
+      "prompt": "Explain to our engineering team how to migrate from one shared OAuth credential to per-workspace OAuth. Cover the trust boundary, rollout stages, failure recovery, observability, and the tradeoffs in enough detail for us to review the design in Slack."
+    },
+    {
+      "id": "positive_explainer_queue_backpressure",
+      "expectation": "clear_positive",
+      "category": "long_explainer",
+      "prompt": "Teach a newer engineer how backpressure should work in our asynchronous job queue. Include admission, bounded buffering, retries, idempotency, overload behavior, and concrete examples of what operators should see."
+    },
+    {
+      "id": "positive_draft_incident_followup",
+      "expectation": "clear_positive",
+      "category": "draft",
+      "prompt": "Draft a thoughtful incident follow-up for customers after a two-hour delay in Slack responses. It should acknowledge impact, explain the failure without hand-waving, describe the repair and prevention work, and set expectations for the next update."
+    },
+    {
+      "id": "positive_draft_rollout_announcement",
+      "expectation": "clear_positive",
+      "category": "draft",
+      "prompt": "Write a detailed internal rollout announcement for a new workspace permissions model. Include why it is changing, what members and admins will experience, the rollout sequence, rollback criteria, and where to report confusing behavior."
+    },
+    {
+      "id": "positive_analysis_streaming_tradeoffs",
+      "expectation": "clear_positive",
+      "category": "analysis",
+      "prompt": "Analyze the product and engineering tradeoffs between terminal-only Slack answers and selectively progressive answers. Consider perceived latency, answer stability, correction risk, accessibility, provider differences, and operational complexity, then recommend a policy."
+    },
+    {
+      "id": "positive_analysis_onboarding_models",
+      "expectation": "clear_positive",
+      "category": "analysis",
+      "prompt": "Compare three onboarding models for a Slack agent: configure everything before first use, progressively disclose setup after connection, or begin with a guided first task. Evaluate time to value, recovery, user comprehension, and implementation risk."
+    },
+    {
+      "id": "negative_confirmation_complete",
+      "expectation": "clear_negative",
+      "category": "short_confirmation",
+      "prompt": "Confirm in one short sentence that the migration checklist is complete."
+    },
+    {
+      "id": "negative_confirmation_ack",
+      "expectation": "clear_negative",
+      "category": "short_confirmation",
+      "prompt": "Reply only with a brief acknowledgement that you understand."
+    },
+    {
+      "id": "negative_structured_json",
+      "expectation": "clear_negative",
+      "category": "structured",
+      "prompt": "Return only valid JSON with keys status, owner, and retryable. Use complete, platform, and false as their values. Do not add prose or a code fence."
+    },
+    {
+      "id": "negative_structured_table",
+      "expectation": "clear_negative",
+      "category": "structured",
+      "prompt": "Return only a two-column Markdown table mapping dev to development, stg to staging, and prod to production."
+    },
+    {
+      "id": "negative_correction_numbers",
+      "expectation": "clear_negative",
+      "category": "correction",
+      "prompt": "Correction: in your prior answer, change the retry limit from five to three and the timeout from 60 seconds to 45 seconds. Restate only the corrected sentence."
+    },
+    {
+      "id": "negative_correction_name",
+      "expectation": "clear_negative",
+      "category": "correction",
+      "prompt": "Your last reply called the feature Smart Streams. Correct it to Progressive Answers and give me the corrected one-line heading only."
+    },
+    {
+      "id": "negative_tool_current_status",
+      "expectation": "clear_negative",
+      "category": "tool_work",
+      "prompt": "Check the current production deployment status and tell me whether the latest release is healthy. Use the deployment tools available to you before answering."
+    },
+    {
+      "id": "negative_tool_repository_lookup",
+      "expectation": "clear_negative",
+      "category": "tool_work",
+      "prompt": "Inspect the repository and tell me the exact file and line where the Slack retry limit is configured. Do not guess; look it up before answering."
+    },
+    {
+      "id": "ambiguous_medium_explanation",
+      "expectation": "ambiguous",
+      "category": "medium_explanation",
+      "prompt": "Explain in two or three paragraphs why an idempotency key is useful for sending Slack messages."
+    },
+    {
+      "id": "ambiguous_mixed_checklist",
+      "expectation": "ambiguous",
+      "category": "mixed_format",
+      "prompt": "Give me a short explanation of the rollout risk followed by a five-item checklist for mitigating it."
+    },
+    {
+      "id": "ambiguous_decision_note",
+      "expectation": "ambiguous",
+      "category": "decision_note",
+      "prompt": "Write a concise decision note comparing server-sent events and polling for a status panel, with a recommendation."
+    },
+    {
+      "id": "ambiguous_targeted_analysis",
+      "expectation": "ambiguous",
+      "category": "targeted_analysis",
+      "prompt": "What are the two most important risks of progressively revealing an AI answer, and how would you mitigate each one?"
+    }
+  ]
+}
