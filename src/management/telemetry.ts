@@ -1,22 +1,46 @@
+import type { ManagementOperation } from './types.ts';
+
 export type ManagementMetricValue = boolean | number | string;
+
+export type AgentAuthoringArtifactClass =
+  | 'identity'
+  | 'instructions'
+  | 'skill'
+  | 'memory'
+  | 'connection'
+  | 'repository'
+  | 'schedule'
+  | 'model'
+  | 'slack_presence'
+  | 'reach'
+  | 'edit_authority'
+  | 'mixed'
+  | 'other';
 
 const MANAGEMENT_METRIC_FIELDS = new Set([
   'action',
   'agentCount',
+  'artifactClass',
   'channelCount',
   'conflictCount',
   'durationMs',
+  'guideVersion',
+  'handoffClass',
   'operation',
   'operationCount',
   'outcome',
+  'posture',
+  'proposalOutcome',
   'reason',
   'setupRequiredCount',
   'stage',
+  'staleReason',
   'surface',
   'tool',
 ]);
 
 const MANAGEMENT_METRIC_EVENTS = new Set([
+  'agent_authoring.outcome',
   'live_revision.admission',
   'oauth.dcr',
   'oauth.discovery',
@@ -41,21 +65,34 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'update_agent_memory', 'save_routine', 'control_routine', 'delete_routine',
     'request_setup',
   ]),
+  artifactClass: new Set([
+    'identity', 'instructions', 'skill', 'memory', 'connection', 'repository',
+    'schedule', 'model', 'slack_presence', 'reach', 'edit_authority', 'mixed', 'other',
+  ]),
+  guideVersion: new Set(['1.0.0']),
+  handoffClass: new Set(['cross_agent', 'workspace_authority', 'none']),
   outcome: new Set([
     'admitted', 'applied', 'completed', 'confirmation_required', 'delivered',
     'chickpea_handoff', 'denied', 'error', 'failed', 'partial', 'retry', 'setup_required',
     'skipped', 'success',
   ]),
+  posture: new Set(['commit', 'explore', 'capability_question', 'clarify']),
+  proposalOutcome: new Set([
+    'created', 'applied', 'partial', 'setup_required', 'stale', 'denied', 'failed',
+  ]),
   stage: new Set([
     'authorization_server', 'bearer', 'exchange', 'membership', 'quota',
     'registration', 'resource', 'scope', 'validation',
+  ]),
+  staleReason: new Set([
+    'binding', 'digest_mismatch', 'expired', 'permission_changed', 'target_revision', 'unknown',
   ]),
   surface: new Set(['admin', 'mcp', 'service', 'setup', 'slack', 'unknown']),
   tool: new Set([
     'inspect_workspace', 'prepare_connector_setup', 'discover_slack_channels', 'test_mcp_connection',
     'inspect_memory', 'inspect_routines',
     'export_workspace_recipe', 'preview_workspace_recipe',
-    'apply_workspace_changes', 'confirm_workspace_change',
+    'propose_workspace_changes', 'apply_workspace_changes', 'confirm_workspace_change',
     'undo_workspace_change', 'get_operation', 'revoke_setup_link',
   ]),
 };
@@ -107,6 +144,70 @@ export function emitManagementMetric(
   } catch {
     // Observability is best effort and never changes control-plane behavior.
   }
+}
+
+/** Reduce exact operations to a content-free Agent-authoring primitive. */
+export function agentAuthoringArtifactClass(
+  operations: readonly ManagementOperation[],
+): AgentAuthoringArtifactClass {
+  const classes = new Set<Exclude<AgentAuthoringArtifactClass, 'mixed'>>();
+  for (const operation of operations) {
+    switch (operation.kind) {
+      case 'create_agent':
+        classes.add('identity');
+        if (operation.agent.instructions) classes.add('instructions');
+        if (operation.agent.skills.length > 0) classes.add('skill');
+        if (operation.agent.model) classes.add('model');
+        if (operation.agent.requestedHandle) classes.add('slack_presence');
+        if (operation.agent.editPolicy) classes.add('edit_authority');
+        break;
+      case 'update_agent':
+        if ('name' in operation.patch || 'description' in operation.patch) classes.add('identity');
+        if ('instructions' in operation.patch) classes.add('instructions');
+        if ('skills' in operation.patch) classes.add('skill');
+        if ('model' in operation.patch) classes.add('model');
+        if ('requestedHandle' in operation.patch || 'slackPresence' in operation.patch) {
+          classes.add('slack_presence');
+        }
+        if ('editPolicy' in operation.patch) classes.add('edit_authority');
+        if ('mcpServers' in operation.patch || 'apiConnections' in operation.patch) {
+          classes.add('connection');
+        }
+        if ('repositories' in operation.patch) classes.add('repository');
+        break;
+      case 'update_agent_memory':
+        classes.add('memory');
+        break;
+      case 'save_routine':
+      case 'control_routine':
+      case 'delete_routine':
+        classes.add('schedule');
+        break;
+      case 'grant_agent_channel':
+      case 'revoke_agent_channel':
+      case 'put_channel':
+      case 'archive_agent':
+      case 'restore_agent':
+      case 'delete_agent':
+        classes.add('reach');
+        break;
+      case 'request_setup':
+        if (operation.target.kind === 'repository_access') classes.add('repository');
+        else classes.add('connection');
+        break;
+      case 'update_member':
+        classes.add('edit_authority');
+        break;
+      case 'remove_provider_credential':
+        classes.add('connection');
+        break;
+      default:
+        classes.add('other');
+    }
+  }
+  if (classes.size === 0) return 'other';
+  if (classes.size > 1) return 'mixed';
+  return [...classes][0]!;
 }
 
 function safeToken(value: string): string {

@@ -63,7 +63,11 @@ import {
   type WorkspaceRecipePreview,
 } from './recipes.ts';
 import type { ManagementStore } from './store.ts';
-import { emitManagementMetric } from './telemetry.ts';
+import {
+  agentAuthoringArtifactClass,
+  emitManagementMetric,
+  type ManagementMetricValue,
+} from './telemetry.ts';
 import {
   ChickpeaHandoffRequired,
   ManagementError,
@@ -616,9 +620,16 @@ export class WorkspaceManagementService {
     const missingSetup: ManagementChangeSetPreview['missingSetup'] = [];
     for (const operation of operations) {
       const handoff = await this.actingAgentOperationHandoff(actor, operation);
-      if (handoff) throw new ChickpeaHandoffRequired(handoff);
+      if (handoff) {
+        emitAgentAuthoringOutcome(actor, operations, {
+          proposalOutcome: 'denied',
+          handoffClass: handoff.target.kind === 'agent' ? 'cross_agent' : 'workspace_authority',
+        });
+        throw new ChickpeaHandoffRequired(handoff);
+      }
       const policy = classifyManagementOperation(await this.policyFacts(actor, operation));
       if (!policy.allowed) {
+        emitAgentAuthoringOutcome(actor, operations, { proposalOutcome: 'denied' });
         throw new ManagementError('forbidden', 'Current workspace authority does not permit this proposal.');
       }
       const revisions = await this.targetRevisions(operation);
@@ -666,6 +677,7 @@ export class WorkspaceManagementService {
       expiresAt: at + PROPOSAL_TTL_MS,
       at,
     });
+    emitAgentAuthoringOutcome(actor, operations, { proposalOutcome: 'created' });
     return publicChangeSetProposal(proposal);
   }
 
@@ -673,7 +685,16 @@ export class WorkspaceManagementService {
     const actor = await this.requireLiveActor(input.context);
     const changeSet = await this.stores.management.getChangeSetProposal(input.proposalId);
     if (changeSet) {
-      return this.confirmChangeSetProposal(actor, changeSet);
+      try {
+        const result = await this.confirmChangeSetProposal(actor, changeSet);
+        emitAgentAuthoringOutcome(actor, changeSet.operations, {
+          proposalOutcome: authoringProposalOutcome(result),
+        });
+        return result;
+      } catch (error) {
+        emitAgentAuthoringOutcome(actor, changeSet.operations, authoringProposalFailure(error));
+        throw error;
+      }
     }
     const existing = await this.stores.management.getProposal(input.proposalId);
     if (existing) this.assertProposalBinding(actor, existing);
@@ -2773,6 +2794,60 @@ function emitOperationOutcomes(
     });
   }
   return result;
+}
+
+function emitAgentAuthoringOutcome(
+  actor: LiveManagementActor,
+  operations: readonly ManagementOperation[],
+  fields: Readonly<Record<string, ManagementMetricValue>>,
+): void {
+  emitManagementMetric('agent_authoring.outcome', {
+    surface: actor.origin.kind,
+    guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+    posture: 'commit',
+    artifactClass: agentAuthoringArtifactClass(operations),
+    operationCount: operations.length,
+    ...fields,
+  });
+}
+
+function authoringProposalOutcome(
+  result: ManagementApplyResult,
+): 'applied' | 'partial' | 'setup_required' | 'failed' {
+  if (result.outcomes.some(({ disposition }) => disposition === 'setup_required')) {
+    return 'setup_required';
+  }
+  if (result.status === 'partial') return 'partial';
+  if (result.outcomes.some(({ disposition }) => disposition === 'failed')) return 'failed';
+  return 'applied';
+}
+
+function authoringProposalFailure(
+  error: unknown,
+): Readonly<Record<string, ManagementMetricValue>> {
+  if (error instanceof ChickpeaHandoffRequired) {
+    return {
+      proposalOutcome: 'denied',
+      handoffClass: error.handoff.target.kind === 'agent' ? 'cross_agent' : 'workspace_authority',
+    };
+  }
+  if (!(error instanceof ManagementError)) return { proposalOutcome: 'failed' };
+  if (error.code === 'proposal_binding_mismatch') {
+    return { proposalOutcome: 'stale', staleReason: 'binding' };
+  }
+  if (error.code === 'proposal_expired') {
+    return { proposalOutcome: 'stale', staleReason: 'expired' };
+  }
+  if (error.code === 'revision_conflict') {
+    return { proposalOutcome: 'stale', staleReason: 'target_revision' };
+  }
+  if (error.code === 'proposal_stale') {
+    return { proposalOutcome: 'stale', staleReason: 'unknown' };
+  }
+  if (error.code === 'forbidden') {
+    return { proposalOutcome: 'denied', staleReason: 'permission_changed' };
+  }
+  return { proposalOutcome: 'failed' };
 }
 
 function agentClientRefs(operations: readonly ManagementOperation[]): Map<string, string> {

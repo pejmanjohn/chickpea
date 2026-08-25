@@ -90,3 +90,44 @@ test('interactive Slack Agent mounts authoring while routine execution does not'
   assert.doesNotMatch(slackSource.slice(slackSource.indexOf('export function useRuntimePlanAgent')),
     /useAgentAuthoring/);
 });
+
+test('behavioral evaluation corpus is versioned, synthetic, and guide-bound', async () => {
+  const corpus = JSON.parse(await readFile(
+    new URL('../evals/agent-authoring/cases.json', import.meta.url),
+    'utf8',
+  )) as {
+    schemaVersion: number;
+    corpusVersion: string;
+    guideVersion: string;
+    baseline: { id: string };
+    cases: Array<{
+      id: string;
+      prompt: string;
+      expected: Record<string, unknown> & {
+        assertions: string[];
+        criticalAssertions: string[];
+      };
+    }>;
+  };
+
+  assert.equal(corpus.schemaVersion, 1);
+  assert.match(corpus.corpusVersion, /^\d+\.\d+\.\d+$/);
+  assert.equal(corpus.guideVersion, AGENT_AUTHORING_GUIDE_VERSION);
+  assert.equal(corpus.baseline.id, 'no-guide-v1');
+  assert.ok(corpus.cases.length >= 12);
+  assert.equal(new Set(corpus.cases.map(({ id }) => id)).size, corpus.cases.length);
+  for (const entry of corpus.cases) {
+    assert.match(entry.id, /^[a-z0-9][a-z0-9-]+$/);
+    assert.ok(entry.prompt.length >= 20);
+    for (const field of [
+      'activation', 'skillCreation', 'posture', 'placements', 'requiredInspections',
+      'toolClass', 'mutationAllowance', 'approvalPosture', 'assertions', 'criticalAssertions',
+    ]) assert.ok(Object.hasOwn(entry.expected, field), `${entry.id} is missing ${field}`);
+    for (const critical of entry.expected.criticalAssertions) {
+      assert.ok(entry.expected.assertions.includes(critical));
+    }
+  }
+
+  const prompts = corpus.cases.map(({ prompt }) => prompt).join('\n');
+  assert.doesNotMatch(prompts, /northstar|PRIVATE_|T_PRIVATE|C_PRIVATE/i);
+});
