@@ -1,6 +1,6 @@
 # Composio-managed connectors
 
-Chickpea can delegate OAuth credentials, refresh, and API execution to Composio while keeping authorization and product behavior inside Chickpea. New Gmail, Google Calendar, Google Drive, Google Sheets, Google Docs, Google Slides, Search Console, and Google Analytics connections use this managed path. Notion is additive while its provider-enforced page boundary is accepted: Native Notion stays available and working until an Admin explicitly migrates. Existing native connection records remain readable so installations can migrate without breaking saved Agents.
+Chickpea can delegate OAuth credentials, refresh, and API execution to Composio while keeping authorization and product behavior inside Chickpea. New Gmail, Google Calendar, Google Drive, Google Sheets, Google Docs, Google Slides, Search Console, Google Analytics, and Notion connections use this managed path. Existing Native Notion connection records remain readable and editable so installations can upgrade without breaking saved Agents, but the native preset is no longer offered for new connections.
 
 Self-hosters opt in by supplying their own Composio project key. Without that key the adapter is dormant and Chickpea's native API and MCP connection lanes continue to work.
 
@@ -33,7 +33,7 @@ Every row requires an active project key plus its deterministic managed-auth con
 | Slides / `googleslides` | Read, write | Exact team or personal account | Disposable artifact canary |
 | Search Console / `google_search_console` | Read | One or more sites | Selected/unselected resource denial canary |
 | Analytics / `google_analytics` | Read | One or more GA4 properties | Selected/unselected resource denial canary |
-| Notion / `notion` | Read, write | Provider OAuth page/database picker | Keep Native Notion until sibling-denial acceptance passes |
+| Notion / `notion` | Read, write | Provider OAuth page/database picker | Sibling-denial acceptance is a launch gate |
 | HubSpot / `hubspot` | Read, write | Exact portal | Accept managed-app warning; triggers remain off |
 | Gong / `gong` | Read | One or more workspaces | Accept documented company-wide endpoints |
 | Google Ads / `googleads` | Read, write | One or more non-manager clients | Basic/Standard token plus permissible-use declaration |
@@ -125,7 +125,7 @@ Notion uses the page/database picker in Notion's own OAuth screen as the authori
 
 Search and reads return bounded, normalized data. Page-property writes accept only reviewed scalar property types, and block appends accept a bounded text-oriented block vocabulary. Archive, delete, sharing, permission administration, arbitrary page updates, and raw block trees are absent. Admin may show a bounded list of provider-visible page/database labels after validation; those labels are informational and never treated as a local authorization decision.
 
-When Native Notion and managed Notion are both attached, an unnamed Notion request withholds both account paths and asks the member to choose a label. Naming one account selects only that path. Connecting managed Notion never changes existing bindings or disconnects Native Notion.
+New Notion connections use the managed path. Existing Native Notion records remain readable and editable but do not appear as a new-connection catalog option. If a legacy and managed Notion account are both attached, an unnamed Notion request withholds both account paths and asks the member to choose a label; naming one account selects only that path.
 
 ## Curated HubSpot surface
 
@@ -374,9 +374,9 @@ Before making managed Notion the recommended path in an environment, run the com
 2. Through the Agent tools, search/read sibling A, create one child page under A with confirmation, and read it back.
 3. Prove sibling B is absent from search and a direct read of B is denied. The tool must not widen the grant or retry with another account.
 4. Reconnect the exact managed account, select only sibling B, and prove B is readable while A is no longer readable.
-5. Disconnect that exact managed account and verify Native Notion still works. Do not grant-wide revoke a shared provider credential during this check.
+5. Disconnect that exact managed account and verify only its Agent bindings are affected. Do not grant-wide revoke a shared provider credential during this check.
 
-Record the account labels, provider log IDs, toolkit version, and pass/fail outcomes without retaining page content or provider object IDs. A failure keeps managed Notion additive; it does not justify disabling or deleting Native Notion.
+Record the account labels, provider log IDs, toolkit version, and pass/fail outcomes without retaining page content or provider object IDs. Treat a failed boundary check as a Notion launch blocker rather than bypassing the managed authorization boundary.
 
 Before enabling Search Console or Analytics for customers, repeat each read canary with one selected and one accessible-but-unselected resource. The selected handle must work and the unselected handle must fail before a provider call. Exercise multi-page resource discovery, then revoke provider access to the selected site/property and verify the next call fails closed and the connection requires attention. Confirm the runtime plan still exposes no Search Console mutation or Analytics administration/event-ingestion capability.
 

@@ -6797,20 +6797,6 @@ button.capability-pill { cursor: pointer; }
     }, 0);
   }
 
-  function hasNativeNotionConnection() {
-    var draft = state.profileDraft || {};
-    var legacy = (draft.mcpServers || []).some(function (connection) {
-      return connection && connection.presetId === "notion";
-    });
-    if (legacy) return true;
-    return (state.agentConnections.attached || []).some(function (entry) {
-      var account = entry && entry.account;
-      var policy = account && account.policy;
-      return account && account.providerId === "notion" && policy &&
-        policy.kind === "mcp" && policy.presetId === "notion";
-    });
-  }
-
   function hasLegacyTokenMcpConnection(providerId) {
     var draft = state.profileDraft || {};
     var legacy = (draft.mcpServers || []).some(function (connection) {
@@ -7790,9 +7776,6 @@ button.capability-pill { cursor: pointer; }
         '<div class="conn-title" style="margin-bottom:16px;">' + connectorLogoHtml(managedPreset) + '<div><strong>' + esc(managedPreset.name) + '</strong><p class="hint">' + esc(managedPreset.description || "") + '</p></div></div>' +
         connectionAccountAccessHtml(form) +
         '<p class="conn-security">' + esc(managedSecurityCopy) + '</p>' +
-        (form.managedToolkit === "notion" && hasNativeNotionConnection()
-          ? '<p class="hint">This adds managed Notion beside Native Notion. Chickpea will not change Agent bindings or disconnect the native account; validate the managed account first, then migrate explicitly.</p>'
-          : '') +
         (form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '') +
         '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy ? " disabled" : "") + '>' + (busy ? "Opening sign-in&hellip;" : "Continue to sign in") + '</button></div></div>';
     }

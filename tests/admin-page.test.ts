@@ -6151,7 +6151,7 @@ test('reusable Agent connections retain the complete preset catalog', async () =
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
   assert.equal(
     (panel.match(/data-action="connection-account-preset"/g) ?? []).length,
-    36,
+    35,
   );
 });
 
@@ -6353,13 +6353,13 @@ test('connector handoff opens a managed-only preset after the catalog loads', as
       available: [],
       managedConnectors: {
         composio: true,
-        catalog: [managedCatalogFixture('notion-managed', 'notion', 'Notion (managed)')],
+        catalog: [managedCatalogFixture('notion-managed', 'notion', 'Notion')],
       },
     },
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /<strong>Notion \(managed\)<\/strong>/);
+  assert.match(harness.app.innerHTML, /<strong>Notion<\/strong>/);
   assert.match(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
   assert.ok(harness.historyReplaces.includes('/admin/agents/agent_conn'));
 });
@@ -6423,7 +6423,7 @@ test('legacy Google access does not hide reusable Google account presets', async
   assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
-  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 36);
+  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 35);
 });
 
 test('every catalog connector opens a reusable-account setup flow', async () => {
@@ -6469,7 +6469,7 @@ test('every catalog connector opens a reusable-account setup flow', async () => 
     );
     click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
   }
-  assert.equal(presetIds.length, 36);
+  assert.equal(presetIds.length, 35);
 });
 
 test('reusable Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {
@@ -7126,9 +7126,9 @@ test('a connected preset drops out of the Available gallery until it is removed'
   // Linear and Asana are already connected, so the gallery no longer offers them...
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="linear"/);
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="asana"/);
-  // ...other presets remain, and the Available count drops from 26 to 24.
+  // ...other presets remain, and the Available count drops from 25 to 23.
   assert.match(panel, /data-action="conn-preset" data-preset="airtable"/);
-  assert.match(panel, /<span class="gallery-head-count">24<\/span>/);
+  assert.match(panel, /<span class="gallery-head-count">23<\/span>/);
 });
 
 test('OAuth rows surface a persisted reconnect requirement instead of stale connected copy', async () => {
@@ -7629,19 +7629,10 @@ test('editing a saved API connection shows a stored write-only credential placeh
   );
 });
 
-test('managed Notion is additive to Native Notion and explains the provider page boundary', async () => {
+test('managed Notion is the only catalog option and explains the provider page boundary', async () => {
   const ready = { status: 'ready', missingConfiguration: [] };
   const harness = runAdminPageHarness({
-    agents: [connectionsAgent({
-      mcpServers: [mcpConnectionFixture({
-        id: 'notion',
-        displayName: 'Native Notion',
-        url: 'https://mcp.notion.com/mcp',
-        authMode: 'oauth',
-        lifecycleStatus: 'ready',
-        presetId: 'notion',
-      })],
-    })],
+    agents: [connectionsAgent()],
     connectionAccounts: {
       attached: [],
       available: [],
@@ -7668,7 +7659,7 @@ test('managed Notion is additive to Native Notion and explains the provider page
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /data-preset="notion-managed"/);
-  assert.match(harness.app.innerHTML, /data-preset="notion"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-preset="notion"/);
   click({
     target: actionTarget({
       'data-action': 'connection-account-preset', 'data-preset': 'notion-managed',
@@ -7676,8 +7667,7 @@ test('managed Notion is additive to Native Notion and explains the provider page
   });
   assert.match(harness.app.innerHTML, /Choose only the pages and databases Chickpea may use/);
   assert.match(harness.app.innerHTML, /grant includes descendants made available by Notion/);
-  assert.match(harness.app.innerHTML, /adds managed Notion beside Native Notion/);
-  assert.match(harness.app.innerHTML, /will not change Agent bindings or disconnect the native account/);
+  assert.doesNotMatch(harness.app.innerHTML, /Native Notion/);
   click({
     target: actionTarget({
       'data-action': 'connection-account-managed-access', 'data-access': 'write',
@@ -7827,9 +7817,9 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(gallery, /data-action="conn-gallery-search"/);
   assert.equal(
     (gallery.match(/data-action="conn-preset" data-preset="[^"]+">Connect<\/button>/g) ?? []).length,
-    26,
+    25,
   );
-  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">26<\/span>/);
+  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">25<\/span>/);
   assert.doesNotMatch(gallery, /data-preset="google-workspace"/);
   assert.doesNotMatch(gallery, /data-preset="github"/);
   assert.doesNotMatch(gallery, /data-preset="context7"/);
@@ -7889,11 +7879,7 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(atlassianRow, /style="color:#0052CC"><path/);
   assert.match(atlassianRow, /<span class="gallery-row-name">Atlassian<\/span>/);
 
-  const notionRow = gallery.match(
-    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img conn-logo-full"><svg[^>]*aria-hidden="true"(?:(?!<\/div>)[\s\S])*?data-preset="notion">Connect<\/button><\/div>/,
-  )?.[0];
-  assert.ok(notionRow);
-  assert.doesNotMatch(notionRow, /conn-logo-mono|conn-logo-raster|data:image|>NO<\/span>/);
+  assert.doesNotMatch(gallery, /data-preset="notion"/);
 
   const gmailRow = gallery.match(
     /<div class="gallery-row gallery-row-described">(?:(?!<\/div>)[\s\S])*?data-preset="gmail">Connect<\/button><\/div>/,

@@ -147,7 +147,7 @@ export const MANAGED_CONNECTOR_PRESETS: ManagedConnectorPreset[] = [
     id: 'notion-managed',
     managedToolkit: 'notion',
     providerId: 'notion',
-    name: 'Notion (managed)',
+    name: 'Notion',
     description: 'Search, read, create, and update only the pages and databases you approve.',
     category: 'docs',
     accent: '#000000',
@@ -588,7 +588,7 @@ export type ReusableConnectorPreset =
 
 /** Catalog entries users can attach to more than one Agent without reconnecting. */
 export const REUSABLE_CONNECTOR_PRESETS: ReusableConnectorPreset[] = [
-  ...CONNECTOR_PRESETS.filter(({ id }) => id !== 'google-workspace'),
+  ...CONNECTOR_PRESETS.filter(({ id }) => id !== 'google-workspace' && id !== 'notion'),
   ...GOOGLE_WORKSPACE_SERVICE_PRESETS,
   ...MANAGED_CONNECTOR_PRESETS,
 ].sort((left, right) => left.name.localeCompare(right.name));

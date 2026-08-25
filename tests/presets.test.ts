@@ -150,12 +150,12 @@ test('the Notion MCP preset keeps the official OAuth-only hosted-server shape', 
   });
 });
 
-test('managed connector presets keep Notion additive and add analytics and HubSpot connectors', () => {
+test('managed connector presets make managed Notion the only reusable Notion option', () => {
   assert.deepEqual(MANAGED_CONNECTOR_PRESETS, [{
     id: 'notion-managed',
     managedToolkit: 'notion',
     providerId: 'notion',
-    name: 'Notion (managed)',
+    name: 'Notion',
     description: 'Search, read, create, and update only the pages and databases you approve.',
     category: 'docs',
     accent: '#000000',
@@ -215,12 +215,12 @@ test('managed connector presets keep Notion additive and add analytics and HubSp
     accent: '#FF0000',
     logoId: 'youtube',
   }]);
-  assert.equal(REUSABLE_CONNECTOR_PRESETS.some(({ id }) => id === 'notion'), true);
+  assert.equal(REUSABLE_CONNECTOR_PRESETS.some(({ id }) => id === 'notion'), false);
   assert.equal(REUSABLE_CONNECTOR_PRESETS.some(({ id }) => id === 'notion-managed'), true);
   assert.equal(resolveReusableConnectorPreset('notion-managed')?.id, 'notion-managed');
-  assert.equal(resolveReusableConnectorPreset('Notion')?.id, 'notion');
+  assert.equal(resolveReusableConnectorPreset('Notion')?.id, 'notion-managed');
   assert.equal(resolveReusableConnectorPreset('Notion (managed)')?.id, 'notion-managed');
-  assert.equal(resolveReusableConnectorPreset('Native Notion')?.id, 'notion');
+  assert.equal(resolveReusableConnectorPreset('Native Notion'), undefined);
   for (const preset of [...GOOGLE_WORKSPACE_SERVICE_PRESETS, ...MANAGED_CONNECTOR_PRESETS]) {
     assert.ok(
       CONNECTOR_LOGOS[preset.logoId ?? preset.id],
