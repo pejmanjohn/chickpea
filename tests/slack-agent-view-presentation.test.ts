@@ -339,14 +339,22 @@ test('a retry reuses frozen eligibility after the operations environment changes
         allowed: true,
         reason: 'safe_early_release',
       }),
-      { allowed: true, reason: 'safe_early_release' },
+      {
+        allowed: true,
+        reason: 'safe_early_release',
+        presentationSchemaVersion: 2,
+      },
     );
     assert.deepEqual(
       await h.presentation.freezeProgressiveEligibility({
         allowed: false,
         reason: 'operations_disabled',
       }),
-      { allowed: true, reason: 'safe_early_release' },
+      {
+        allowed: true,
+        reason: 'safe_early_release',
+        presentationSchemaVersion: 2,
+      },
     );
     assert.equal(h.store.get(h.runId)?.projectionVersion, 2);
   } finally {

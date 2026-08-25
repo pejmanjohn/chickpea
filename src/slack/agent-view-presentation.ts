@@ -62,6 +62,10 @@ export interface SlackPresentationDeliveryObserver {
   }): Promise<void>;
 }
 
+export interface FrozenProgressiveEligibilityDecision extends ProgressiveEligibilityDecision {
+  presentationSchemaVersion: 1 | 2;
+}
+
 export type AgentViewFinalResult =
   | { handled: true; messageTs?: string }
   | { handled: false; fallbackPresentation: boolean };
@@ -104,7 +108,7 @@ export class SlackAgentViewPresentation {
   /** Freeze once before prompt persistence; retries reuse the stored decision. */
   async freezeProgressiveEligibility(
     candidate: ProgressiveEligibilityDecision,
-  ): Promise<ProgressiveEligibilityDecision> {
+  ): Promise<FrozenProgressiveEligibilityDecision> {
     let presentation = await this.requirePresentation();
     presentation = await this.advanceFenceIfRequired(presentation);
     if (presentation.progressiveEligibility.status === 'pending') {
@@ -119,6 +123,7 @@ export class SlackAgentViewPresentation {
     return {
       allowed: presentation.progressiveEligibility.allowed,
       reason: presentation.progressiveEligibility.reason,
+      presentationSchemaVersion: presentation.schemaVersion,
     };
   }
 

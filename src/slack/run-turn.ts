@@ -748,6 +748,7 @@ export async function runTurn(
             agentViewPresentation.prepareReceipt(input)
         : undefined);
     let frozenProgressiveEligibility: ProgressiveEligibilityDecision | undefined;
+    let currentRequestPolicyVersion: 1 | 2 = 2;
     if (
       options.replayText === undefined &&
       progressiveRelayFactory &&
@@ -763,14 +764,24 @@ export async function runTurn(
         replacementCapable: options.beforeDelivery !== undefined &&
           runtimePlanDecision.runtimePlan.sandbox.mode === 'cloudflare',
       });
-      frozenProgressiveEligibility = agentViewPresentation
-        ? await agentViewPresentation.freezeProgressiveEligibility(candidate)
-        : candidate;
+      if (agentViewPresentation) {
+        const frozen = await agentViewPresentation.freezeProgressiveEligibility(candidate);
+        frozenProgressiveEligibility = {
+          allowed: frozen.allowed,
+          reason: frozen.reason,
+        };
+        currentRequestPolicyVersion = frozen.presentationSchemaVersion;
+      } else {
+        frozenProgressiveEligibility = candidate;
+      }
     }
     const prompt = assembleSlackPrompt(turn, context, {
       ...(handoffBlock ? { handoffBlock } : {}),
       ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
+      currentRequestPolicyVersion,
+      progressiveStreamingOffered:
+        currentRequestPolicyVersion === 2 && frozenProgressiveEligibility?.allowed === true,
       ...(installationContext
         ? {
             slackApp: {

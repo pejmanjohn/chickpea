@@ -28,6 +28,10 @@ import {
   observeMemoryToolPolicy,
 } from './memory/tool-policy.ts';
 import { publishActivityStatus } from './slack/activity-publisher.ts';
+import {
+  observePresentationToolPolicy,
+  presentationToolPolicyInterceptor,
+} from './slack/presentation-tool-policy.ts';
 import { startNodeTurnRelay, wakeNodeTurnRelay } from './slack/node-turn-relay.ts';
 import { startNodeGatewaySession } from './slack/gateway/node-runtime.ts';
 import { workModelInvocationInterceptor } from './work/model-invocation.ts';
@@ -82,6 +86,13 @@ instrument({
   key: Symbol.for('chickpea.memory-tool-policy'),
   interceptor: memoryToolPolicyInterceptor,
   observe: observeMemoryToolPolicy,
+  dispose() {},
+});
+
+instrument({
+  key: Symbol.for('chickpea.slack-presentation-tool-policy'),
+  interceptor: presentationToolPolicyInterceptor,
+  observe: observePresentationToolPolicy,
   dispose() {},
 });
 
