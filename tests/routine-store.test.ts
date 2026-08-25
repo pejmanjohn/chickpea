@@ -10,6 +10,7 @@ import { ROUTINE_LIMITS } from '../src/routines/limits.ts';
 import { normalizeRoutineSchedule } from '../src/routines/schedule.ts';
 import { RoutineService } from '../src/routines/service.ts';
 import { RoutineStoreLogic, SqliteRoutineStore } from '../src/routines/store.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
 import {
   RoutineStateError,
   type RoutineConfirmationDraft,
@@ -933,8 +934,29 @@ test('confirmed deletion scrubs product-owned bodies but retains hashes, runs, a
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-routine-delete-'));
   const path = join(dir, 'state.db');
   const store = new SqliteRoutineStore(path, () => CREATED_AT);
+  const config = new SqliteConfigStore(path, { agents: [] });
   try {
     const routine = await confirmDraft(store, createDraft(), 'delete-create');
+    const agent = await config.createAgent({
+      id: 'agent_delete_reference',
+      name: 'Delete reference Agent',
+      instructions: 'Own the deletion test routine.',
+      enabled: true,
+      creatorMembershipId: 'membership_delete',
+      editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.putAgentScheduleReference({
+      scheduleId: routine.id,
+      agentId: agent.id,
+      workspaceId: routine.workspaceId,
+      channelId: routine.channelId,
+      createdByMembershipId: 'membership_delete',
+      runsAsMembershipId: 'membership_delete',
+      authorityReceiptId: 'receipt_delete_reference',
+      requiredConnectionAccountIds: [],
+      state: 'active',
+    });
     await store.createOccurrence({
       runId: 'rrun_delete', idempotencyKey: 'delete-run', routineId: routine.id,
       routineVersion: routine.version, scheduledFor: NEXT_RUN, triggerSource: 'schedule',
@@ -945,8 +967,10 @@ test('confirmed deletion scrubs product-owned bodies but retains hashes, runs, a
       { action: 'delete', routineId: routine.id, expectedVersion: routine.version },
       'delete-confirm',
     );
+    assert.equal((await config.getAgentScheduleReference(routine.id))?.state, 'archived');
   } finally {
     store.close();
+    config.close();
   }
 
   const db = openStateDb(path);
@@ -957,6 +981,7 @@ test('confirmed deletion scrubs product-owned bodies but retains hashes, runs, a
       confirmations: db.all('SELECT * FROM routine_confirmations'),
       runs: db.all('SELECT * FROM routine_runs'),
       audit: db.all("SELECT * FROM audit_events WHERE domain = 'scheduled_work'"),
+      scheduleReferences: db.all('SELECT * FROM config_agent_schedule_references'),
     });
     assert.doesNotMatch(serialized, /Daily project steward|channel-authorized|Every day at 9am/);
     assert.equal(db.get('SELECT deleted_at FROM routines WHERE id = ?', 'routine_test')?.deleted_at, CREATED_AT);

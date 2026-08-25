@@ -1,5 +1,6 @@
 import type { WebClient } from '@slack/web-api';
 
+import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { createHash } from 'node:crypto';
 
@@ -193,7 +194,10 @@ async function isWorkspaceManagementTurn(input: {
   // through the normal Channel-grant and memory lease checks.
   const installation = await getConfigStore(input.platformEnv)
     .getWorkspaceInstallation(input.turn.workspaceId);
-  if (!installation || installation.defaultAgentId !== input.assignment.agentId) return false;
+  if (
+    !installation ||
+    workspaceManagementAgentId(installation) !== input.assignment.agentId
+  ) return false;
   const botUserId = input.botUserId ?? installation.botUserId;
   if (!botUserId) return false;
   const escapedBotUserId = botUserId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -233,7 +237,7 @@ async function prepareWorkspaceManagementTurn(
     agent.lifecycle === 'archived' ||
     !installation ||
     installation.health === 'revoked' ||
-    installation.defaultAgentId !== assignment.agentId
+    workspaceManagementAgentId(installation) !== assignment.agentId
   ) {
     throw new MemoryStateError(
       'memory_owner_unavailable',
@@ -292,7 +296,7 @@ async function validateWorkspaceManagementLease(
       turn.source === 'app_mention' &&
       agent.enabled && agent.lifecycle !== 'archived' &&
       installation && installation.health !== 'revoked' &&
-      installation.defaultAgentId === assignment.agentId &&
+      workspaceManagementAgentId(installation) === assignment.agentId &&
       (!installation.botUserId || installation.botUserId === botUserId) &&
       conversation.ok && facts && facts.id === turn.channelId &&
       (!facts.teamId || facts.teamId === turn.workspaceId) && !facts.archived && !facts.frozen &&
@@ -306,6 +310,14 @@ async function validateWorkspaceManagementLease(
   } catch {
     return false;
   }
+}
+
+function workspaceManagementAgentId(
+  installation: { runtimeContract: 'legacy' | 'chickpea-v1'; defaultAgentId: string },
+): string {
+  return installation.runtimeContract === 'chickpea-v1'
+    ? CHICKPEA_AGENT_ID
+    : installation.defaultAgentId;
 }
 
 async function resolveAgentMemoryRuntime(

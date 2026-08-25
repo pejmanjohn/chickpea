@@ -30,6 +30,237 @@ export interface AgentPublicationResult {
   grant: AgentChannelGrant;
 }
 
+type MentionRepairConfig = Pick<
+  ConfigStore,
+  'listAgents' | 'listAgentChannelGrants' | 'updateAgent'
+>;
+
+export type MentionedAgentUserGroupRepairResult =
+  | { kind: 'repaired'; agent: CustomAgentConfig }
+  | { kind: 'not_available' | 'temporarily_unavailable' };
+
+type UserGroupLookupResult =
+  | { kind: 'found'; group: SlackUserGroup }
+  | { kind: 'missing' | 'rate_limited' | 'failed' };
+
+interface LookupWindow {
+  startedAt: number;
+  count: number;
+}
+
+interface NegativeLookupReceipt {
+  until: number;
+  kind: 'missing' | 'rate_limited' | 'failed';
+}
+
+interface MentionedAgentUserGroupRepairInput {
+  workspaceId: string;
+  channelId: string;
+  userGroupId: string;
+  config: MentionRepairConfig;
+  transport: Pick<SlackTransport, 'lookupUserGroup'>;
+  limiter?: AgentUserGroupLookupLimiter;
+  now?: () => number;
+}
+
+/**
+ * Bounds exceptional directory repair. Normal stored-id routing never reaches
+ * this limiter. Failed or rejected ids are cached briefly, while a per-workspace
+ * window prevents a stream of novel ids from becoming a Slack API fan-out.
+ */
+export class AgentUserGroupLookupLimiter {
+  private readonly negativeReceipts = new Map<string, NegativeLookupReceipt>();
+  private readonly windows = new Map<string, LookupWindow>();
+  private readonly repairs = new Map<string, Promise<MentionedAgentUserGroupRepairResult>>();
+
+  constructor(private readonly options: {
+    now?: () => number;
+    negativeTtlMs?: number;
+    windowMs?: number;
+    maxLookupsPerWindow?: number;
+    maxNegativeEntries?: number;
+    maxWorkspaceWindows?: number;
+  } = {}) {}
+
+  async lookup(
+    workspaceId: string,
+    userGroupId: string,
+    transport: Pick<SlackTransport, 'lookupUserGroup'>,
+  ): Promise<UserGroupLookupResult> {
+    const now = (this.options.now ?? Date.now)();
+    const key = `${workspaceId}:${userGroupId}`;
+    const cached = this.negativeReceipts.get(key);
+    if (cached !== undefined) {
+      if (cached.until > now) return { kind: cached.kind };
+      this.negativeReceipts.delete(key);
+    }
+
+    const windowMs = this.options.windowMs ?? 60_000;
+    const existing = this.windows.get(workspaceId);
+    const window = !existing || now - existing.startedAt >= windowMs
+      ? { startedAt: now, count: 0 }
+      : existing;
+    if (window.count >= (this.options.maxLookupsPerWindow ?? 8)) {
+      this.rememberDenied(workspaceId, userGroupId, now, 'rate_limited');
+      return { kind: 'rate_limited' };
+    }
+    window.count += 1;
+    this.windows.delete(workspaceId);
+    this.windows.set(workspaceId, window);
+    this.trimWorkspaceWindows();
+
+    try {
+      const group = await transport.lookupUserGroup(userGroupId);
+      if (group) return { kind: 'found', group };
+      this.rememberDenied(workspaceId, userGroupId, now, 'missing');
+      return { kind: 'missing' };
+    } catch {
+      this.rememberDenied(workspaceId, userGroupId, now, 'failed');
+      return { kind: 'failed' };
+    }
+  }
+
+  rememberDenied(
+    workspaceId: string,
+    userGroupId: string,
+    now?: number,
+    kind: NegativeLookupReceipt['kind'] = 'missing',
+  ): void {
+    const observedAt = now ?? (this.options.now ?? Date.now)();
+    const key = `${workspaceId}:${userGroupId}`;
+    this.negativeReceipts.delete(key);
+    this.negativeReceipts.set(key, {
+      until: observedAt + (this.options.negativeTtlMs ?? 30_000),
+      kind,
+    });
+    const maximum = this.options.maxNegativeEntries ?? 256;
+    while (this.negativeReceipts.size > maximum) {
+      const oldest = this.negativeReceipts.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.negativeReceipts.delete(oldest);
+    }
+  }
+
+  runRepair(
+    workspaceId: string,
+    channelId: string,
+    userGroupId: string,
+    repair: () => Promise<MentionedAgentUserGroupRepairResult>,
+  ): Promise<MentionedAgentUserGroupRepairResult> {
+    const key = `${workspaceId}:${channelId}:${userGroupId}`;
+    const active = this.repairs.get(key);
+    if (active) return active;
+    const pending = repair();
+    this.repairs.set(key, pending);
+    void pending.finally(() => {
+      if (this.repairs.get(key) === pending) this.repairs.delete(key);
+    }).catch(() => undefined);
+    return pending;
+  }
+
+  private trimWorkspaceWindows(): void {
+    const maximum = this.options.maxWorkspaceWindows ?? 64;
+    while (this.windows.size > maximum) {
+      const oldest = this.windows.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.windows.delete(oldest);
+    }
+  }
+}
+
+const defaultAgentUserGroupLookupLimiter = new AgentUserGroupLookupLimiter();
+
+export function repairMentionedAgentUserGroup(
+  input: MentionedAgentUserGroupRepairInput,
+): Promise<MentionedAgentUserGroupRepairResult> {
+  const limiter = input.limiter ?? defaultAgentUserGroupLookupLimiter;
+  return limiter.runRepair(
+    input.workspaceId,
+    input.channelId,
+    input.userGroupId,
+    () => repairMentionedAgentUserGroupOnce(input, limiter),
+  );
+}
+
+async function repairMentionedAgentUserGroupOnce(
+  input: MentionedAgentUserGroupRepairInput,
+  limiter: AgentUserGroupLookupLimiter,
+): Promise<MentionedAgentUserGroupRepairResult> {
+  const lookup = await limiter.lookup(input.workspaceId, input.userGroupId, input.transport);
+  if (lookup.kind !== 'found') {
+    if (lookup.kind === 'failed' || lookup.kind === 'rate_limited') {
+      return { kind: 'temporarily_unavailable' };
+    }
+    return { kind: 'not_available' };
+  }
+  if (lookup.group.disabled) {
+    limiter.rememberDenied(input.workspaceId, input.userGroupId);
+    return { kind: 'not_available' };
+  }
+
+  const [agents, grants] = await Promise.all([
+    input.config.listAgents(),
+    input.config.listAgentChannelGrants(input.workspaceId, input.channelId),
+  ]);
+  const groupHandle = normalizeAgentHandle(lookup.group.handle);
+  const candidates = agents.filter((agent) =>
+    agent.kind === 'user' &&
+    agent.enabled &&
+    agent.lifecycle !== 'archived' &&
+    agent.lifecycle !== 'draft' &&
+    agent.slackPresence?.desiredState === 'active' &&
+    normalizeAgentHandle(
+      agent.slackPresence.normalizedHandle ||
+      agent.slackPresence.requestedHandle ||
+      agent.name,
+    ) === groupHandle
+  );
+  if (candidates.length !== 1) {
+    limiter.rememberDenied(input.workspaceId, input.userGroupId);
+    return { kind: 'not_available' };
+  }
+  const agent = candidates[0]!;
+  const activeGrants = grants.filter((grant) =>
+    grant.agentId === agent.id && grant.status === 'active'
+  );
+  const competingClaim = agents.some((candidate) =>
+    candidate.id !== agent.id && candidate.slackPresence?.userGroupId === lookup.group.id
+  );
+  if (activeGrants.length !== 1 || competingClaim) {
+    limiter.rememberDenied(input.workspaceId, input.userGroupId);
+    return { kind: 'not_available' };
+  }
+
+  const presence = agent.slackPresence!;
+  try {
+    const repaired = await input.config.updateAgent(
+      agent.id,
+      {
+        lifecycle: 'active',
+        slackPresence: {
+          ...withoutPendingCreate(withoutPresenceErrors(presence)),
+          userGroupId: lookup.group.id,
+          desiredState: 'active',
+          health: 'healthy',
+          observedAt: (input.now ?? Date.now)(),
+        },
+      },
+      agent.revision,
+    );
+    const claims = (await input.config.listAgents()).filter((candidate) =>
+      candidate.slackPresence?.userGroupId === lookup.group.id
+    );
+    if (claims.length !== 1 || claims[0]?.id !== repaired.id) {
+      limiter.rememberDenied(input.workspaceId, input.userGroupId);
+      return { kind: 'not_available' };
+    }
+    return { kind: 'repaired', agent: repaired };
+  } catch {
+    limiter.rememberDenied(input.workspaceId, input.userGroupId);
+    return { kind: 'temporarily_unavailable' };
+  }
+}
+
 export class AgentPresenceReconciler {
   private readonly now: () => number;
 
@@ -178,7 +409,7 @@ export class AgentPresenceReconciler {
           );
           throw collision;
         }
-        if (!matchesAmbiguousCreateLease(handleMatch, presence.pendingCreate)) {
+        if (!hasAmbiguousCreateOwnershipProof({ slackPresence: presence }, handleMatch)) {
           throw new AgentPresenceError(
             'user_group_create_ambiguous',
             `Slack has a matching @${normalizedHandle} user group, but Chickpea cannot prove it came from the interrupted create. Change the Agent handle or ask a Slack Admin to resolve the collision.`,
@@ -447,6 +678,15 @@ function withoutPendingCreate(
 ): Omit<AgentSlackPresence, 'errorCode' | 'errorDetail' | 'pendingCreate'> {
   const { pendingCreate: _pendingCreate, ...clean } = presence;
   return clean;
+}
+
+export function hasAmbiguousCreateOwnershipProof(
+  agent: Pick<CustomAgentConfig, 'slackPresence'>,
+  group: SlackUserGroup,
+): boolean {
+  const presence = agent.slackPresence;
+  return presence?.errorCode === 'user_group_create_ambiguous' &&
+    matchesAmbiguousCreateLease(group, presence.pendingCreate);
 }
 
 function matchesAmbiguousCreateLease(

@@ -107,6 +107,13 @@ test('unknown tool names are never copied into status text', () => {
   assert.doesNotMatch(status.text, new RegExp(secret));
 });
 
+test('the presentation declaration uses user-facing activity copy', () => {
+  assert.deepEqual(
+    toolActivityStatus('stream_answer'),
+    { text: 'is preparing the response' },
+  );
+});
+
 test('sandbox primitives use fixed statuses without exposing their arguments', () => {
   const secret = 'credential-do-not-leak';
   const expected = new Map([

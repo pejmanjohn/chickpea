@@ -5,6 +5,7 @@ import {
   type CurlRequest,
   type ParsedShellCommand,
 } from './curl-request-urls.ts';
+import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../slack/presentation-intent.ts';
 
 export interface ActivityStatus {
   text: string;
@@ -131,6 +132,9 @@ export function toolActivityStatus(
   args?: unknown,
   context?: RegisteredActivityContext,
 ): ActivityStatus {
+  if (toolName === SLACK_STREAM_ANSWER_TOOL_NAME) {
+    return { text: 'is preparing the response' };
+  }
   if (toolName === 'activate_skill') {
     const name = objectString(args, 'name');
     const displayName = name ? context?.skills.get(name) : undefined;

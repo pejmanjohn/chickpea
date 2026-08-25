@@ -4,6 +4,18 @@ export interface RoutineTelemetrySink {
   info(message: string): void;
 }
 
+export interface RoutinePersistenceTelemetrySink extends RoutineTelemetrySink {
+  error(message: string): void;
+}
+
+export interface RoutinePersistenceSummary {
+  phase: 'terminal' | 'repair' | 'work';
+  outcome: 'recorded' | 'repaired' | 'unrepaired';
+  usage: 'recorded' | 'repaired' | 'unrepaired' | 'disabled';
+  work: 'recorded' | 'unrepaired' | 'not_linked';
+  durationMs: number;
+}
+
 /**
  * Emit one deliberately body-free routine heartbeat record. Only stable event
  * names, counts, and durations cross this boundary: no task text, prompts,
@@ -33,6 +45,28 @@ export function emitRoutineHeartbeatTelemetry(
   };
   try {
     sink.info(`[chickpea:routines] ${JSON.stringify(record)}`);
+  } catch {
+    // Observability is best effort and must never change scheduling behavior.
+  }
+}
+
+/** Emit one body-free terminal summary for the routine's observational writes. */
+export function emitRoutinePersistenceTelemetry(
+  summary: RoutinePersistenceSummary,
+  sink: RoutinePersistenceTelemetrySink = console,
+): void {
+  const record = {
+    event: 'routine.persistence',
+    phase: summary.phase,
+    outcome: summary.outcome,
+    usage: summary.usage,
+    work: summary.work,
+    durationMs: Math.max(0, Math.round(summary.durationMs)),
+  };
+  try {
+    const message = `[chickpea:routines] ${JSON.stringify(record)}`;
+    if (summary.outcome === 'unrepaired') sink.error(message);
+    else sink.info(message);
   } catch {
     // Observability is best effort and must never change scheduling behavior.
   }

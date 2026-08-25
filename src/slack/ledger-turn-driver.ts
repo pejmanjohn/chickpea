@@ -47,7 +47,7 @@ import { AgentPromptFailure } from './flue-dispatch.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 import type {
   SlackPresentationMutation,
-  SlackRunPresentationV1,
+  SlackRunPresentation,
 } from './run-presentations.ts';
 
 type MaybePromise<T> = T | Promise<T>;
@@ -417,7 +417,7 @@ function persistedDeliveryMethod(renderedPayload: string): string {
 }
 
 function presentationRequiresOperatorRecovery(
-  presentation: SlackRunPresentationV1,
+  presentation: SlackRunPresentation,
   method: string,
   deliveryStatus: string,
 ): boolean {
@@ -441,9 +441,9 @@ function presentationRequiresOperatorRecovery(
 
 async function recordRecoveredPresentationDelivery(
   state: SlackPresentationStatePort | undefined,
-  initial: SlackRunPresentationV1 | undefined,
+  initial: SlackRunPresentation | undefined,
   receipt: PersistedSlackDeliveryReceipt,
-): Promise<SlackRunPresentationV1 | undefined> {
+): Promise<SlackRunPresentation | undefined> {
   if (!state || !initial) return initial;
   let current = await state.getRunPresentation(initial.runId) ?? initial;
   try {
@@ -483,7 +483,7 @@ async function recordRecoveredPresentationDelivery(
 
 async function markRecoveredPresentationFinalized(
   state: SlackPresentationStatePort | undefined,
-  initial: SlackRunPresentationV1 | undefined,
+  initial: SlackRunPresentation | undefined,
 ): Promise<void> {
   if (!state || !initial) return;
   try {
@@ -499,9 +499,9 @@ async function markRecoveredPresentationFinalized(
 
 async function applyPresentationMutation(
   state: SlackPresentationStatePort,
-  current: SlackRunPresentationV1,
+  current: SlackRunPresentation,
   mutation: SlackPresentationMutation,
-): Promise<SlackRunPresentationV1> {
+): Promise<SlackRunPresentation> {
   const result = await state.transitionRunPresentation({
     runId: current.runId,
     workBindingGeneration: current.workBindingGeneration,

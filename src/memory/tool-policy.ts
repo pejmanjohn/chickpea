@@ -17,8 +17,12 @@ export const MEMORY_CURRENT_REQUEST_ENVELOPE_START =
 export const MEMORY_CURRENT_REQUEST_ENVELOPE_END =
   '--- END CHICKPEA CURRENT REQUEST POLICY v1 ---';
 
-export interface CurrentRequestEnvelope {
-  schemaVersion: 1;
+export const CURRENT_REQUEST_ENVELOPE_V2_START =
+  '--- BEGIN CHICKPEA CURRENT REQUEST POLICY v2 ---';
+export const CURRENT_REQUEST_ENVELOPE_V2_END =
+  '--- END CHICKPEA CURRENT REQUEST POLICY v2 ---';
+
+interface CurrentRequestEnvelopeBase {
   memoryInfluenced: boolean;
   explicitExternalSideEffectIntent: boolean;
   explicitArtifactDeliveryIntent: boolean;
@@ -27,6 +31,17 @@ export interface CurrentRequestEnvelope {
   /** Host-validated Slack message coordinate paired with slackActorId. */
   slackMessageTs?: string;
 }
+
+export interface CurrentRequestEnvelopeV1 extends CurrentRequestEnvelopeBase {
+  schemaVersion: 1;
+}
+
+export interface CurrentRequestEnvelopeV2 extends CurrentRequestEnvelopeBase {
+  schemaVersion: 2;
+  progressiveStreamingOffered: boolean;
+}
+
+export type CurrentRequestEnvelope = CurrentRequestEnvelopeV1 | CurrentRequestEnvelopeV2;
 
 interface SubmissionPolicyState {
   policy?: CurrentRequestEnvelope;
@@ -138,9 +153,12 @@ export function serializeCurrentRequestEnvelope(
   memoryInfluenced: boolean,
   slackActorId?: string,
   slackMessageTs?: string,
+  options: {
+    schemaVersion?: 1 | 2;
+    progressiveStreamingOffered?: boolean;
+  } = {},
 ): string {
-  const payload: CurrentRequestEnvelope = {
-    schemaVersion: 1,
+  const shared: CurrentRequestEnvelopeBase = {
     memoryInfluenced,
     explicitExternalSideEffectIntent:
       hasExplicitExternalSideEffectIntent(currentRequest),
@@ -148,19 +166,47 @@ export function serializeCurrentRequestEnvelope(
       hasExplicitArtifactDeliveryIntent(currentRequest),
     ...(slackActorId && slackMessageTs ? { slackActorId, slackMessageTs } : {}),
   };
+  const schemaVersion = options.schemaVersion ?? 2;
+  const payload: CurrentRequestEnvelope = schemaVersion === 1
+    ? { ...shared, schemaVersion: 1 }
+    : {
+        ...shared,
+        schemaVersion: 2,
+        progressiveStreamingOffered: options.progressiveStreamingOffered === true,
+      };
+  const markers = schemaVersion === 1
+    ? [MEMORY_CURRENT_REQUEST_ENVELOPE_START, MEMORY_CURRENT_REQUEST_ENVELOPE_END]
+    : [CURRENT_REQUEST_ENVELOPE_V2_START, CURRENT_REQUEST_ENVELOPE_V2_END];
   return [
-    MEMORY_CURRENT_REQUEST_ENVELOPE_START,
+    markers[0],
     JSON.stringify(payload),
-    MEMORY_CURRENT_REQUEST_ENVELOPE_END,
+    markers[1],
   ].join('\n');
 }
 
 export function parseCurrentRequestEnvelope(
   prompt: string,
 ): CurrentRequestEnvelope | undefined {
-  const end = `\n${MEMORY_CURRENT_REQUEST_ENVELOPE_END}`;
+  return parseCurrentRequestEnvelopeVersion(prompt, 2) ??
+    parseCurrentRequestEnvelopeVersion(prompt, 1);
+}
+
+export function currentRequestOffersProgressiveStreaming(
+  envelope: CurrentRequestEnvelope | undefined,
+): boolean {
+  return envelope?.schemaVersion === 2 && envelope.progressiveStreamingOffered;
+}
+
+function parseCurrentRequestEnvelopeVersion(
+  prompt: string,
+  schemaVersion: 1 | 2,
+): CurrentRequestEnvelope | undefined {
+  const [startValue, endValue] = schemaVersion === 1
+    ? [MEMORY_CURRENT_REQUEST_ENVELOPE_START, MEMORY_CURRENT_REQUEST_ENVELOPE_END]
+    : [CURRENT_REQUEST_ENVELOPE_V2_START, CURRENT_REQUEST_ENVELOPE_V2_END];
+  const end = `\n${endValue}`;
   if (!prompt.endsWith(end)) return undefined;
-  const startMarker = `${MEMORY_CURRENT_REQUEST_ENVELOPE_START}\n`;
+  const startMarker = `${startValue}\n`;
   const start = prompt.lastIndexOf(startMarker, prompt.length - end.length);
   if (start < 0) return undefined;
   const json = prompt.slice(start + startMarker.length, prompt.length - end.length);
@@ -176,24 +222,26 @@ export function parseCurrentRequestEnvelope(
       'explicitArtifactDeliveryIntent',
       'slackActorId',
       'slackMessageTs',
+      'progressiveStreamingOffered',
     ]);
     const hasSlackCoordinates = value.slackActorId !== undefined &&
       value.slackMessageTs !== undefined;
     if (
-      value.schemaVersion !== 1 ||
+      value.schemaVersion !== schemaVersion ||
       typeof value.memoryInfluenced !== 'boolean' ||
       typeof value.explicitExternalSideEffectIntent !== 'boolean' ||
       typeof value.explicitArtifactDeliveryIntent !== 'boolean' ||
+      (schemaVersion === 2 && typeof value.progressiveStreamingOffered !== 'boolean') ||
+      (schemaVersion === 1 && value.progressiveStreamingOffered !== undefined) ||
       (value.slackActorId !== undefined && !isSlackActorId(value.slackActorId)) ||
       (value.slackMessageTs !== undefined && !isSlackMessageTs(value.slackMessageTs)) ||
       (value.slackActorId === undefined) !== (value.slackMessageTs === undefined) ||
       keys.some((key) => !allowedKeys.has(key)) ||
-      keys.length !== (hasSlackCoordinates ? 6 : 4)
+      keys.length !== (hasSlackCoordinates ? 6 : 4) + (schemaVersion === 2 ? 1 : 0)
     ) {
       return undefined;
     }
-    return {
-      schemaVersion: 1,
+    const shared: CurrentRequestEnvelopeBase = {
       memoryInfluenced: value.memoryInfluenced,
       explicitExternalSideEffectIntent: value.explicitExternalSideEffectIntent,
       explicitArtifactDeliveryIntent: value.explicitArtifactDeliveryIntent,
@@ -204,6 +252,13 @@ export function parseCurrentRequestEnvelope(
           }
         : {}),
     };
+    return schemaVersion === 1
+      ? { ...shared, schemaVersion: 1 }
+      : {
+          ...shared,
+          schemaVersion: 2,
+          progressiveStreamingOffered: value.progressiveStreamingOffered as boolean,
+        };
   } catch {
     return undefined;
   }

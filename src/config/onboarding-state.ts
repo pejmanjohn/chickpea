@@ -1,6 +1,16 @@
 import type { SettingsStore } from './settings-store.ts';
+import { modelBelongsToProvider as providerOwnsModel } from './provider-impact.ts';
 
 export const ONBOARDING_JOURNEY_KEY = 'onboarding.journey.v2';
+
+export const ONBOARDING_PROVIDER_IDS = [
+  'cloudflare',
+  'anthropic',
+  'openai',
+  'openrouter',
+] as const;
+
+export type OnboardingProviderId = (typeof ONBOARDING_PROVIDER_IDS)[number];
 
 export interface OnboardingJourney {
   version: 2;
@@ -10,6 +20,9 @@ export interface OnboardingJourney {
   selectedWorkspaceId?: string;
   selectedChannelId?: string;
   selectedChannelName?: string;
+  selectedProviderId?: OnboardingProviderId;
+  selectedModelId?: string;
+  trySlackUserId?: string;
   tryStartedAt?: number;
   completedAt?: number;
 }
@@ -45,28 +58,54 @@ export async function beginOnboardingJourney(
   return raced;
 }
 
-export async function startOnboardingTry(
+export async function selectOnboardingProvider(
   settings: SettingsStore,
   input: {
     expectedRevision: string;
-    agentId: string;
     workspaceId: string;
-    channelId: string;
-    channelName: string;
-    tryStartedAt?: number;
+    providerId: OnboardingProviderId;
   },
 ): Promise<OnboardingSnapshot> {
   const current = parseOnboardingJourney(input.expectedRevision);
   if (current.state !== 'active') return { journey: current, revision: input.expectedRevision };
   const journey: OnboardingJourney = {
     ...current,
-    agentId: agentId(input.agentId),
     selectedWorkspaceId: slackId(input.workspaceId, 'workspaceId'),
-    selectedChannelId: slackId(input.channelId, 'channelId'),
-    selectedChannelName: channelName(input.channelName),
-    tryStartedAt: validTime(input.tryStartedAt ?? Date.now()),
+    selectedProviderId: providerId(input.providerId),
   };
+  delete journey.agentId;
+  delete journey.selectedChannelId;
+  delete journey.selectedChannelName;
+  delete journey.selectedModelId;
+  delete journey.trySlackUserId;
+  delete journey.tryStartedAt;
+  delete journey.completedAt;
   return writeJourney(settings, input.expectedRevision, journey);
+}
+
+export async function startOnboardingTry(
+  settings: SettingsStore,
+  input: {
+    expectedRevision: string;
+    agentId: string;
+    modelId: string;
+    slackUserId: string;
+    tryStartedAt?: number;
+  },
+): Promise<OnboardingSnapshot> {
+  const current = parseOnboardingJourney(input.expectedRevision);
+  if (current.state !== 'active') return { journey: current, revision: input.expectedRevision };
+  if (!current.selectedWorkspaceId || !current.selectedProviderId) {
+    throw new Error('Onboarding cannot start Try before choosing a provider.');
+  }
+  const selectedModelId = modelId(input.modelId, current.selectedProviderId);
+  return writeJourney(settings, input.expectedRevision, {
+    ...current,
+    agentId: agentId(input.agentId),
+    selectedModelId,
+    trySlackUserId: slackId(input.slackUserId, 'slackUserId'),
+    tryStartedAt: validTime(input.tryStartedAt ?? Date.now()),
+  });
 }
 
 export async function completeOnboardingJourney(
@@ -76,8 +115,7 @@ export async function completeOnboardingJourney(
 ): Promise<OnboardingSnapshot> {
   const current = parseOnboardingJourney(expectedRevision);
   if (current.state === 'complete') return { journey: current, revision: expectedRevision };
-  if (!current.agentId || !current.selectedWorkspaceId || !current.selectedChannelId ||
-      !current.tryStartedAt) {
+  if (!current.agentId || !current.selectedWorkspaceId || !current.tryStartedAt) {
     throw new Error('Onboarding cannot complete before Try begins.');
   }
   return writeJourney(settings, expectedRevision, {
@@ -97,6 +135,9 @@ export function parseOnboardingJourney(raw: string): OnboardingJourney {
   if (!isRecord(value) || value.version !== 2 ||
       !['active', 'complete'].includes(String(value.state)) ||
       !isTime(value.startedAt)) throw new Error('Stored onboarding journey is invalid.');
+  const hasRawProvider = typeof value.selectedProviderId === 'string';
+  const hasRawModel = typeof value.selectedModelId === 'string';
+  if (hasRawModel && !hasRawProvider) throw new Error('Stored onboarding journey is invalid.');
   const journey: OnboardingJourney = {
     version: 2,
     state: value.state as OnboardingJourney['state'],
@@ -111,17 +152,70 @@ export function parseOnboardingJourney(raw: string): OnboardingJourney {
     ...(typeof value.selectedChannelName === 'string'
       ? { selectedChannelName: channelName(value.selectedChannelName) }
       : {}),
+    ...(hasRawProvider
+      ? { selectedProviderId: providerId(String(value.selectedProviderId)) }
+      : {}),
+    ...(hasRawModel && hasRawProvider
+      ? {
+          selectedModelId: modelId(
+            String(value.selectedModelId),
+            providerId(String(value.selectedProviderId)),
+          ),
+        }
+      : {}),
+    ...(typeof value.trySlackUserId === 'string'
+      ? { trySlackUserId: slackId(value.trySlackUserId, 'slackUserId') }
+      : {}),
     ...(isTime(value.tryStartedAt) ? { tryStartedAt: value.tryStartedAt } : {}),
     ...(isTime(value.completedAt) ? { completedAt: value.completedAt } : {}),
   };
-  const selected = Boolean(journey.agentId && journey.selectedWorkspaceId && journey.selectedChannelId &&
-    journey.selectedChannelName && journey.tryStartedAt);
-  if (Boolean(journey.agentId || journey.selectedWorkspaceId || journey.selectedChannelId ||
-      journey.selectedChannelName || journey.tryStartedAt) !== selected ||
-      (journey.state === 'complete' && (!selected || !journey.completedAt))) {
+  const hasAnyChannel = Boolean(journey.selectedChannelId || journey.selectedChannelName);
+  const hasChannel = hasSelectedChannel(journey);
+  const hasAnyNewSelection = Boolean(journey.selectedProviderId || journey.selectedModelId);
+  const newSelectionValid = !hasAnyNewSelection || Boolean(
+    journey.selectedWorkspaceId && journey.selectedProviderId &&
+    (!journey.selectedModelId || providerOwnsModel(
+      journey.selectedModelId,
+      runtimeProviderId(journey.selectedProviderId),
+    )),
+  );
+  const dmTryValid = Boolean(
+    journey.agentId && journey.selectedWorkspaceId && journey.selectedProviderId &&
+    journey.selectedModelId && journey.trySlackUserId,
+  );
+  const tryValid = !journey.tryStartedAt || hasChannel || dmTryValid;
+  if (hasAnyChannel !== hasChannel || !newSelectionValid || !tryValid ||
+      (journey.selectedModelId && !journey.tryStartedAt) ||
+      (journey.state === 'complete' && (!journey.tryStartedAt || !journey.completedAt))) {
     throw new Error('Stored onboarding journey is invalid.');
   }
   return journey;
+}
+
+function hasSelectedChannel(journey: OnboardingJourney): boolean {
+  return Boolean(
+    journey.agentId && journey.selectedWorkspaceId && journey.selectedChannelId && journey.selectedChannelName,
+  );
+}
+
+function providerId(value: string): OnboardingProviderId {
+  if (!(ONBOARDING_PROVIDER_IDS as readonly string[]).includes(value)) {
+    throw new Error('providerId is invalid.');
+  }
+  return value as OnboardingProviderId;
+}
+
+function modelId(value: string, provider: OnboardingProviderId): string {
+  const normalized = value.trim();
+  if (!/^[^/]+\/.+$/.test(normalized) ||
+      !providerOwnsModel(normalized, runtimeProviderId(provider))) {
+    throw new Error('modelId is invalid.');
+  }
+  return normalized;
+}
+
+function runtimeProviderId(provider: OnboardingProviderId): string {
+  return provider === 'cloudflare' ? 'workers-ai' : provider;
 }
 
 function agentId(value: string): string {

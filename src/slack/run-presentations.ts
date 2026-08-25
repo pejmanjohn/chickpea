@@ -13,6 +13,7 @@ export const DEFAULT_SLACK_APPEND_BUDGET = {
 
 export type SlackProgressiveEligibilityReason =
   | 'safe_early_release'
+  | 'operations_disabled'
   | 'memory'
   | 'sandbox'
   | 'recovery'
@@ -60,8 +61,79 @@ export type SlackPresentationDegradationReason =
   | 'unsupported_contract'
   | 'unknown_effect';
 
-export interface SlackRunPresentationV1 {
-  schemaVersion: 1;
+export type SlackProgressiveIntentDenialReason =
+  | 'late_declaration'
+  | 'repeated_declaration'
+  | 'declaration_failed'
+  | 'mismatched_declaration'
+  | 'non_presentation_tool'
+  | 'structured_output'
+  | 'reset'
+  | 'identity_conflict'
+  | 'persistence_failure'
+  | 'runtime_denied';
+
+export type SlackProgressiveIntent =
+  | { status: 'unresolved' }
+  | { status: 'pending'; toolCallId: string }
+  | { status: 'requested'; toolCallId: string; requestedAt: number }
+  | { status: 'not_requested'; decidedAt: number }
+  | {
+      status: 'denied';
+      reason: SlackProgressiveIntentDenialReason;
+      decidedAt: number;
+    };
+
+export interface SlackPresentationPersona {
+  name: string;
+  avatarUrl: string;
+  avatarRevision: number;
+}
+
+export interface SlackPresentationRoot {
+  workspaceId: string;
+  channelId: string;
+  threadTs: string;
+  requesterUserId: string;
+}
+
+export interface SlackPresentationStream {
+  state: SlackPresentationStreamState;
+  messageTs?: string;
+  flue?: {
+    instanceId: string;
+    submissionId: string;
+    messageId?: string;
+    lastAcceptedPosition?: { batch: number; index: number };
+  };
+  acknowledgedByteLength: number;
+  slackAppendCursor: number;
+  acknowledgedPrefixHash?: string;
+  pendingAppend?: {
+    cursor: number;
+    from: number;
+    to: number;
+    hash: string;
+  };
+  presentationOutcome?: SlackPresentationOutcome;
+  degradationReason?: SlackPresentationDegradationReason;
+}
+
+export interface SlackPresentationPlan {
+  displayMode: 'timeline' | 'plan';
+  tasks: Array<{
+    id: string;
+    title: string;
+    status: 'pending' | 'in_progress' | 'complete' | 'error';
+  }>;
+}
+
+export interface SlackPresentationTelemetry {
+  eligibilityDecidedAt?: number;
+  firstProgressiveEffectAt?: number;
+}
+
+interface SlackRunPresentationBase {
   runId: string;
   turnJobId: string;
   bindingId: string;
@@ -69,55 +141,44 @@ export interface SlackRunPresentationV1 {
   runFencingToken: number;
   projectionVersion: number;
   progressiveEligibility: SlackProgressiveEligibility;
+  /** Immutable Agent authorship captured before any Slack effect. */
+  persona?: SlackPresentationPersona;
+  root: SlackPresentationRoot;
+  stream: SlackPresentationStream;
+  plan?: SlackPresentationPlan;
+  title?: { valueHash: string; outcome: 'pending' | 'set' | 'failed' };
+  /** Content-free event times used only for aggregate delivery evidence. */
+  telemetry?: SlackPresentationTelemetry;
+  repairRequired: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SlackRunPresentationV1 extends SlackRunPresentationBase {
+  schemaVersion: 1;
   features: {
     progressiveStreaming: boolean;
     nativeTasks: boolean;
   };
-  /** Immutable Agent authorship captured before any Slack effect. */
-  persona?: {
-    name: string;
-    avatarUrl: string;
-    avatarRevision: number;
-  };
-  root: {
-    workspaceId: string;
-    channelId: string;
-    threadTs: string;
-    requesterUserId: string;
-  };
-  stream: {
-    state: SlackPresentationStreamState;
-    messageTs?: string;
-    flue?: {
-      instanceId: string;
-      submissionId: string;
-      messageId?: string;
-      lastAcceptedPosition?: { batch: number; index: number };
-    };
-    acknowledgedByteLength: number;
-    slackAppendCursor: number;
-    acknowledgedPrefixHash?: string;
-    pendingAppend?: {
-      cursor: number;
-      from: number;
-      to: number;
-      hash: string;
-    };
-    presentationOutcome?: SlackPresentationOutcome;
-    degradationReason?: SlackPresentationDegradationReason;
-  };
-  plan?: {
-    displayMode: 'timeline' | 'plan';
-    tasks: Array<{
-      id: string;
-      title: string;
-      status: 'pending' | 'in_progress' | 'complete' | 'error';
-    }>;
-  };
-  title?: { valueHash: string; outcome: 'pending' | 'set' | 'failed' };
-  repairRequired: boolean;
-  createdAt: number;
-  updatedAt: number;
+}
+
+export interface SlackRunPresentationV2 extends SlackRunPresentationBase {
+  schemaVersion: 2;
+  progressiveIntent: SlackProgressiveIntent;
+}
+
+export type SlackRunPresentation = SlackRunPresentationV1 | SlackRunPresentationV2;
+
+export function presentationAllowsProgressive(
+  presentation: SlackRunPresentation,
+): boolean {
+  return presentation.schemaVersion === 2 || presentation.features.progressiveStreaming;
+}
+
+export function presentationUsesNativeTasks(
+  presentation: SlackRunPresentation,
+): boolean {
+  return presentation.schemaVersion === 2 || presentation.features.nativeTasks;
 }
 
 export interface SlackRunPresentationCreateInput {
@@ -126,9 +187,11 @@ export interface SlackRunPresentationCreateInput {
   bindingId: string;
   workBindingGeneration: number;
   runFencingToken: number;
+  /** Test and migration seam only. New admissions default to V2. */
+  schemaVersion?: 1 | 2;
   features?: Partial<SlackRunPresentationV1['features']>;
-  persona?: SlackRunPresentationV1['persona'];
-  root: SlackRunPresentationV1['root'];
+  persona?: SlackPresentationPersona;
+  root: SlackPresentationRoot;
   taskLabels?: readonly string[];
 }
 
@@ -141,6 +204,13 @@ export type SlackPresentationMutation =
       };
     }
   | { kind: 'advance_run_fence'; runFencingToken: number }
+  | { kind: 'progressive_intent_candidate'; toolCallId: string }
+  | { kind: 'progressive_intent_requested'; toolCallId: string }
+  | { kind: 'progressive_intent_not_requested' }
+  | {
+      kind: 'progressive_intent_denied';
+      reason: SlackProgressiveIntentDenialReason;
+    }
   | { kind: 'stream_start_intent' }
   | {
       kind: 'stream_started';
@@ -193,7 +263,7 @@ export interface SlackPresentationTransitionInput {
 }
 
 export type SlackPresentationTransitionResult =
-  | { outcome: 'applied'; presentation: SlackRunPresentationV1 }
+  | { outcome: 'applied'; presentation: SlackRunPresentation }
   | { outcome: 'missing' | 'stale' };
 
 export type SlackAppendReservation =
@@ -221,6 +291,40 @@ export interface SlackPresentationSummary {
   eligibility: Record<string, number>;
   outcomes: Record<string, number>;
   degradations: Record<string, number>;
+  offers: Record<string, number>;
+  intents: Record<string, number>;
+  policyOutcomes: Record<string, number>;
+  acceptedBytes: { total: number; max: number };
+  latencyMs: {
+    offerToRequest: SlackPresentationLatencySummary;
+    requestToFirstEffect: SlackPresentationLatencySummary;
+    total: SlackPresentationLatencySummary;
+  };
+}
+
+export interface SlackPresentationLatencySummary {
+  count: number;
+  min: number | null;
+  p50: number | null;
+  p90: number | null;
+  max: number | null;
+}
+
+export interface SlackPresentationFinalizationRecord {
+  schemaVersion: 1;
+  runRef: string;
+  presentationSchemaVersion: 1 | 2;
+  offer: string;
+  intent: string;
+  policyOutcome: string;
+  deliveryOutcome: SlackPresentationOutcome | 'pending';
+  degradation: SlackPresentationDegradationReason | 'none';
+  acceptedBytes: number;
+  timingMs: {
+    offerToRequest?: number;
+    requestToFirstEffect?: number;
+    total: number;
+  };
 }
 
 export type SlackPresentationStateErrorCode =
@@ -328,13 +432,13 @@ export class SlackRunPresentationStoreLogic {
     );
   }
 
-  create(input: SlackRunPresentationCreateInput): SlackRunPresentationV1 {
+  create(input: SlackRunPresentationCreateInput): SlackRunPresentation {
     validateCreateInput(input);
     return this.db.transaction(() => this.createInTransaction(input));
   }
 
   /** Composite Slack admission already owns the StateDb transaction. */
-  createInTransaction(input: SlackRunPresentationCreateInput): SlackRunPresentationV1 {
+  createInTransaction(input: SlackRunPresentationCreateInput): SlackRunPresentation {
     validateCreateInput(input);
     const existing = this.getRow(input.runId);
     if (existing) {
@@ -345,8 +449,7 @@ export class SlackRunPresentationStoreLogic {
       return presentation;
     }
     const at = this.now();
-    const presentation: SlackRunPresentationV1 = {
-        schemaVersion: 1,
+    const shared: SlackRunPresentationBase = {
         runId: input.runId,
         turnJobId: input.turnJobId,
         bindingId: input.bindingId,
@@ -354,10 +457,6 @@ export class SlackRunPresentationStoreLogic {
         runFencingToken: input.runFencingToken,
         projectionVersion: 1,
         progressiveEligibility: { status: 'pending' },
-        features: {
-          progressiveStreaming: input.features?.progressiveStreaming ?? false,
-          nativeTasks: input.features?.nativeTasks ?? false,
-        },
         ...(input.persona ? { persona: { ...input.persona } } : {}),
         root: { ...input.root },
         stream: {
@@ -372,6 +471,20 @@ export class SlackRunPresentationStoreLogic {
         createdAt: at,
         updatedAt: at,
     };
+    const presentation: SlackRunPresentation = input.schemaVersion === 1
+      ? {
+          ...shared,
+          schemaVersion: 1,
+          features: {
+            progressiveStreaming: input.features?.progressiveStreaming ?? false,
+            nativeTasks: input.features?.nativeTasks ?? false,
+          },
+        }
+      : {
+          ...shared,
+          schemaVersion: 2,
+          progressiveIntent: { status: 'unresolved' },
+        };
     this.db.run(
         `INSERT INTO slack_run_presentations (
           run_id, binding_generation, run_fencing_token, projection_version,
@@ -393,7 +506,7 @@ export class SlackRunPresentationStoreLogic {
     return presentation;
   }
 
-  get(runId: string): SlackRunPresentationV1 | undefined {
+  get(runId: string): SlackRunPresentation | undefined {
     validateId(runId, 'Run id');
     const row = this.getRow(runId);
     return row ? decodePresentation(row) : undefined;
@@ -461,7 +574,7 @@ export class SlackRunPresentationStoreLogic {
     });
   }
 
-  listRepairRequired(limit = 50): SlackRunPresentationV1[] {
+  listRepairRequired(limit = 50): SlackRunPresentation[] {
     const boundedLimit = boundedLimitValue(limit);
     return (this.db.all(
       `SELECT ${PRESENTATION_COLUMNS} FROM slack_run_presentations
@@ -658,9 +771,21 @@ export class SlackRunPresentationStoreLogic {
       eligibility: {},
       outcomes: {},
       degradations: {},
+      offers: {},
+      intents: {},
+      policyOutcomes: {},
+      acceptedBytes: { total: 0, max: 0 },
+      latencyMs: {
+        offerToRequest: emptyLatencySummary(),
+        requestToFirstEffect: emptyLatencySummary(),
+        total: emptyLatencySummary(),
+      },
     };
+    const offerToRequest: number[] = [];
+    const requestToFirstEffect: number[] = [];
+    const totalLatency: number[] = [];
     for (const row of rows) {
-      const presentation = JSON.parse(String(row.presentation_json)) as SlackRunPresentationV1;
+      const presentation = JSON.parse(String(row.presentation_json)) as SlackRunPresentation;
       increment(summary.streamStates, presentation.stream.state);
       const eligibility = presentation.progressiveEligibility.status === 'pending'
         ? 'pending'
@@ -670,7 +795,24 @@ export class SlackRunPresentationStoreLogic {
       increment(summary.eligibility, eligibility);
       increment(summary.outcomes, presentation.stream.presentationOutcome ?? 'pending');
       increment(summary.degradations, presentation.stream.degradationReason ?? 'none');
+      increment(summary.offers, presentationOffer(presentation));
+      increment(summary.intents, presentationIntent(presentation));
+      increment(summary.policyOutcomes, presentationPolicyOutcome(presentation));
+      summary.acceptedBytes.total += presentation.stream.acknowledgedByteLength;
+      summary.acceptedBytes.max = Math.max(
+        summary.acceptedBytes.max,
+        presentation.stream.acknowledgedByteLength,
+      );
+      collectPresentationLatencies(
+        presentation,
+        offerToRequest,
+        requestToFirstEffect,
+        totalLatency,
+      );
     }
+    summary.latencyMs.offerToRequest = summarizeLatency(offerToRequest);
+    summary.latencyMs.requestToFirstEffect = summarizeLatency(requestToFirstEffect);
+    summary.latencyMs.total = summarizeLatency(totalLatency);
     return summary;
   }
 
@@ -692,10 +834,10 @@ export class SlackRunPresentationStoreLogic {
 }
 
 function applyMutation(
-  current: SlackRunPresentationV1,
+  current: SlackRunPresentation,
   mutation: SlackPresentationMutation,
-  _at: number,
-): SlackRunPresentationV1 {
+  at: number,
+): SlackRunPresentation {
   const next = structuredClone(current);
   switch (mutation.kind) {
     case 'freeze_progressive_eligibility':
@@ -712,6 +854,7 @@ function applyMutation(
         status: 'frozen',
         ...mutation.eligibility,
       };
+      next.telemetry = { ...current.telemetry, eligibilityDecidedAt: at };
       return next;
     case 'advance_run_fence':
       if (!Number.isSafeInteger(mutation.runFencingToken) ||
@@ -722,6 +865,51 @@ function applyMutation(
         throw stateError('invalid_transition', 'An active Slack effect blocks fence advancement.');
       }
       next.runFencingToken = mutation.runFencingToken;
+      return next;
+    case 'progressive_intent_candidate':
+      requireV2ProgressiveIntent(current);
+      requireProgressiveIntentState(current, 'unresolved');
+      validateId(mutation.toolCallId, 'Progressive intent tool call id');
+      (next as SlackRunPresentationV2).progressiveIntent = {
+        status: 'pending',
+        toolCallId: mutation.toolCallId,
+      };
+      return next;
+    case 'progressive_intent_requested':
+      requireV2ProgressiveIntent(current);
+      requireProgressiveIntentState(current, 'pending');
+      validateId(mutation.toolCallId, 'Progressive intent tool call id');
+      if (current.progressiveIntent.toolCallId !== mutation.toolCallId) {
+        throw stateError('identity_conflict', 'Progressive intent result does not match its call.');
+      }
+      (next as SlackRunPresentationV2).progressiveIntent = {
+        status: 'requested',
+        toolCallId: mutation.toolCallId,
+        requestedAt: at,
+      };
+      return next;
+    case 'progressive_intent_not_requested':
+      requireV2ProgressiveIntent(current);
+      requireProgressiveIntentState(current, 'unresolved');
+      (next as SlackRunPresentationV2).progressiveIntent = {
+        status: 'not_requested',
+        decidedAt: at,
+      };
+      return next;
+    case 'progressive_intent_denied':
+      requireV2ProgressiveIntent(current);
+      if (current.progressiveIntent.status === 'not_requested' ||
+          current.progressiveIntent.status === 'denied') {
+        throw stateError('terminal_rewrite', 'Progressive intent is already terminal.');
+      }
+      if (!isProgressiveIntentDenialReason(mutation.reason)) {
+        throw stateError('invalid_input', 'Progressive intent denial reason is invalid.');
+      }
+      (next as SlackRunPresentationV2).progressiveIntent = {
+        status: 'denied',
+        reason: mutation.reason,
+        decidedAt: at,
+      };
       return next;
     case 'stream_start_intent':
       requireState(current, 'absent');
@@ -786,6 +974,13 @@ function applyMutation(
       next.stream.acknowledgedPrefixHash = mutation.acknowledgedPrefixHash;
       delete next.stream.pendingAppend;
       next.repairRequired = false;
+      // This transition happens only after Slack accepted the answer bytes, so
+      // it is visibility evidence rather than merely a stream-start attempt.
+      // It also covers prose appended to an already-open native task stream.
+      if (current.schemaVersion === 2 && current.progressiveIntent.status === 'requested' &&
+          current.telemetry?.firstProgressiveEffectAt === undefined) {
+        next.telemetry = { ...current.telemetry, firstProgressiveEffectAt: at };
+      }
       return next;
     }
     case 'append_rejected': {
@@ -865,7 +1060,7 @@ function applyMutation(
       if (current.plan) {
         throw stateError('terminal_rewrite', 'A native plan is already frozen.');
       }
-      if (!current.features.nativeTasks) {
+      if (!presentationUsesNativeTasks(current)) {
         throw stateError('invalid_transition', 'Native tasks are disabled for this presentation.');
       }
       requireState(current, 'absent');
@@ -909,11 +1104,194 @@ function applyMutation(
   }
 }
 
+/** One bounded, content-free record emitted after canonical finalization. */
+export function slackPresentationFinalizationRecord(
+  presentation: SlackRunPresentation,
+): SlackPresentationFinalizationRecord {
+  if (presentation.stream.state !== 'finalized') {
+    throw stateError('invalid_transition', 'Only a finalized presentation can emit evidence.');
+  }
+  const timing = presentationTiming(presentation);
+  return {
+    schemaVersion: 1,
+    runRef: `run_${createHash('sha256').update(presentation.runId).digest('hex').slice(0, 24)}`,
+    presentationSchemaVersion: presentation.schemaVersion,
+    offer: presentationOffer(presentation),
+    intent: presentationIntent(presentation),
+    policyOutcome: presentationPolicyOutcome(presentation),
+    deliveryOutcome: presentation.stream.presentationOutcome ?? 'pending',
+    degradation: presentation.stream.degradationReason ?? 'none',
+    acceptedBytes: presentation.stream.acknowledgedByteLength,
+    timingMs: {
+      ...(timing.offerToRequest === undefined
+        ? {}
+        : { offerToRequest: timing.offerToRequest }),
+      ...(timing.requestToFirstEffect === undefined
+        ? {}
+        : { requestToFirstEffect: timing.requestToFirstEffect }),
+      total: Math.max(0, presentation.updatedAt - presentation.createdAt),
+    },
+  };
+}
+
+function presentationOffer(presentation: SlackRunPresentation): string {
+  const eligibility = presentation.progressiveEligibility;
+  if (eligibility.status === 'pending') return 'pending';
+  return eligibility.allowed ? 'offered' : `denied:${eligibility.reason}`;
+}
+
+function presentationIntent(presentation: SlackRunPresentation): string {
+  if (presentation.schemaVersion === 1) return 'legacy';
+  const intent = presentation.progressiveIntent;
+  return intent.status === 'denied' ? `denied:${intent.reason}` : intent.status;
+}
+
+function presentationPolicyOutcome(presentation: SlackRunPresentation): string {
+  const eligibility = presentation.progressiveEligibility;
+  if (eligibility.status === 'pending') return 'pending';
+  if (!eligibility.allowed) {
+    return eligibility.reason === 'operations_disabled'
+      ? 'operationally_disabled'
+      : `runtime_denied:${eligibility.reason}`;
+  }
+  if (presentation.schemaVersion === 1) return 'legacy';
+  const intent = presentation.progressiveIntent;
+  if (intent.status === 'not_requested') return 'offered_not_requested';
+  if (intent.status === 'denied') return `requested_denied:${intent.reason}`;
+  if (intent.status !== 'requested') return `offered_${intent.status}`;
+  const outcome = presentation.stream.presentationOutcome;
+  if (outcome === 'progressive') return 'requested_progressive';
+  if (outcome === 'corrected') return 'requested_corrected';
+  if (outcome === 'fallback') return 'requested_fallback';
+  return 'requested_terminal';
+}
+
+function presentationTiming(presentation: SlackRunPresentation): {
+  offerToRequest?: number;
+  requestToFirstEffect?: number;
+} {
+  if (presentation.schemaVersion !== 2 ||
+      presentation.progressiveIntent.status !== 'requested') return {};
+  const offeredAt = presentation.telemetry?.eligibilityDecidedAt;
+  const requestedAt = presentation.progressiveIntent.requestedAt;
+  const firstEffectAt = presentation.telemetry?.firstProgressiveEffectAt;
+  return {
+    ...(offeredAt === undefined
+      ? {}
+      : { offerToRequest: Math.max(0, requestedAt - offeredAt) }),
+    ...(firstEffectAt === undefined
+      ? {}
+      : { requestToFirstEffect: Math.max(0, firstEffectAt - requestedAt) }),
+  };
+}
+
+function collectPresentationLatencies(
+  presentation: SlackRunPresentation,
+  offerToRequest: number[],
+  requestToFirstEffect: number[],
+  total: number[],
+): void {
+  const timing = presentationTiming(presentation);
+  if (timing.offerToRequest !== undefined) offerToRequest.push(timing.offerToRequest);
+  if (timing.requestToFirstEffect !== undefined) {
+    requestToFirstEffect.push(timing.requestToFirstEffect);
+  }
+  if (presentation.stream.state === 'finalized') {
+    total.push(Math.max(0, presentation.updatedAt - presentation.createdAt));
+  }
+}
+
+function emptyLatencySummary(): SlackPresentationLatencySummary {
+  return { count: 0, min: null, p50: null, p90: null, max: null };
+}
+
+function summarizeLatency(values: readonly number[]): SlackPresentationLatencySummary {
+  if (values.length === 0) return emptyLatencySummary();
+  const ordered = [...values].sort((left, right) => left - right);
+  return {
+    count: ordered.length,
+    min: ordered[0]!,
+    p50: percentile(ordered, 0.5),
+    p90: percentile(ordered, 0.9),
+    max: ordered.at(-1)!,
+  };
+}
+
+function percentile(ordered: readonly number[], quantile: number): number {
+  return ordered[Math.max(0, Math.ceil(ordered.length * quantile) - 1)]!;
+}
+
 function increment(target: Record<string, number>, key: string): void {
   target[key] = (target[key] ?? 0) + 1;
 }
 
-function buildPlan(runId: string, labels: readonly string[]): NonNullable<SlackRunPresentationV1['plan']> {
+function isProgressiveIntent(value: unknown): value is SlackProgressiveIntent {
+  if (!value || typeof value !== 'object') return false;
+  const intent = value as Record<string, unknown>;
+  if (intent.status === 'unresolved') return Object.keys(intent).length === 1;
+  if (intent.status === 'pending') {
+    return typeof intent.toolCallId === 'string' && intent.toolCallId.length > 0;
+  }
+  if (intent.status === 'requested') {
+    return typeof intent.toolCallId === 'string' && intent.toolCallId.length > 0 &&
+      typeof intent.requestedAt === 'number' && Number.isSafeInteger(intent.requestedAt) &&
+      intent.requestedAt >= 0;
+  }
+  if (intent.status === 'not_requested') {
+    return typeof intent.decidedAt === 'number' && Number.isSafeInteger(intent.decidedAt) &&
+      intent.decidedAt >= 0;
+  }
+  if (intent.status === 'denied') {
+    return isProgressiveIntentDenialReason(intent.reason) &&
+      typeof intent.decidedAt === 'number' &&
+      Number.isSafeInteger(intent.decidedAt) &&
+      intent.decidedAt >= 0;
+  }
+  return false;
+}
+
+function requireV2ProgressiveIntent(
+  presentation: SlackRunPresentation,
+): asserts presentation is SlackRunPresentationV2 {
+  if (presentation.schemaVersion !== 2) {
+    throw stateError('invalid_transition', 'Legacy presentations do not store model intent.');
+  }
+  if (presentation.progressiveEligibility.status !== 'frozen' ||
+      !presentation.progressiveEligibility.allowed) {
+    throw stateError('invalid_transition', 'Progressive intent was not offered by runtime policy.');
+  }
+  if (presentation.stream.state === 'finalized' || presentation.stream.state === 'fallback' ||
+      presentation.stream.state === 'artifact_delivered' ||
+      presentation.stream.state === 'finalizing' || presentation.stream.state === 'reconciling') {
+    throw stateError('terminal_rewrite', 'A terminal presentation cannot change model intent.');
+  }
+}
+
+function requireProgressiveIntentState<S extends SlackProgressiveIntent['status']>(
+  presentation: SlackRunPresentationV2,
+  expected: S,
+): asserts presentation is SlackRunPresentationV2 & {
+  progressiveIntent: Extract<SlackProgressiveIntent, { status: S }>;
+} {
+  if (presentation.progressiveIntent.status !== expected) {
+    throw stateError(
+      'invalid_transition',
+      `Progressive intent is not ${expected}.`,
+    );
+  }
+}
+
+function isProgressiveIntentDenialReason(
+  value: unknown,
+): value is SlackProgressiveIntentDenialReason {
+  return value === 'late_declaration' || value === 'repeated_declaration' ||
+    value === 'declaration_failed' || value === 'mismatched_declaration' ||
+    value === 'non_presentation_tool' || value === 'structured_output' ||
+    value === 'reset' || value === 'identity_conflict' ||
+    value === 'persistence_failure' || value === 'runtime_denied';
+}
+
+function buildPlan(runId: string, labels: readonly string[]): SlackPresentationPlan {
   if (labels.length < 1 || labels.length > 4) {
     throw stateError('invalid_input', 'Native task count must be between one and four.');
   }
@@ -961,7 +1339,7 @@ function validateTransitionInput(input: SlackPresentationTransitionInput): void 
 }
 
 function sameCreateIdentity(
-  presentation: SlackRunPresentationV1,
+  presentation: SlackRunPresentation,
   input: SlackRunPresentationCreateInput,
 ): boolean {
   const expectedPlan = input.taskLabels && input.taskLabels.length > 0
@@ -973,15 +1351,11 @@ function sameCreateIdentity(
     presentation.workBindingGeneration === input.workBindingGeneration &&
     presentation.runFencingToken === input.runFencingToken &&
     JSON.stringify(presentation.root) === JSON.stringify(input.root) &&
-    JSON.stringify(presentation.features) === JSON.stringify({
-      progressiveStreaming: input.features?.progressiveStreaming ?? false,
-      nativeTasks: input.features?.nativeTasks ?? false,
-    }) &&
     JSON.stringify(presentation.persona) === JSON.stringify(input.persona) &&
     JSON.stringify(presentation.plan) === JSON.stringify(expectedPlan);
 }
 
-function decodePresentation(row: PresentationRow): SlackRunPresentationV1 {
+function decodePresentation(row: PresentationRow): SlackRunPresentation {
   let value: unknown;
   try {
     value = JSON.parse(row.presentation_json);
@@ -991,9 +1365,9 @@ function decodePresentation(row: PresentationRow): SlackRunPresentationV1 {
   if (!value || typeof value !== 'object') {
     throw stateError('invalid_input', 'Stored presentation shape is invalid.');
   }
-  const presentation = value as SlackRunPresentationV1;
+  const presentation = value as SlackRunPresentation;
   if (
-    presentation.schemaVersion !== 1 ||
+    (presentation.schemaVersion !== 1 && presentation.schemaVersion !== 2) ||
     presentation.runId !== row.run_id ||
     presentation.workBindingGeneration !== row.binding_generation ||
     presentation.runFencingToken !== row.run_fencing_token ||
@@ -1002,15 +1376,36 @@ function decodePresentation(row: PresentationRow): SlackRunPresentationV1 {
     presentation.root?.workspaceId !== row.workspace_id ||
     presentation.root?.channelId !== row.channel_id ||
     (presentation.stream.messageTs ?? null) !== row.message_ts ||
-    presentation.repairRequired !== (row.repair_required === 1)
+    presentation.repairRequired !== (row.repair_required === 1) ||
+    !isPresentationTelemetry(presentation.telemetry)
   ) {
     throw stateError('invalid_input', 'Stored presentation columns do not match payload.');
+  }
+  if (
+    (presentation.schemaVersion === 1 &&
+      (typeof presentation.features?.progressiveStreaming !== 'boolean' ||
+        typeof presentation.features?.nativeTasks !== 'boolean')) ||
+    (presentation.schemaVersion === 2 && !isProgressiveIntent(presentation.progressiveIntent))
+  ) {
+    throw stateError('invalid_input', 'Stored presentation version payload is invalid.');
   }
   return structuredClone(presentation);
 }
 
+function isPresentationTelemetry(value: unknown): value is SlackPresentationTelemetry | undefined {
+  if (value === undefined) return true;
+  if (!value || typeof value !== 'object') return false;
+  const telemetry = value as Record<string, unknown>;
+  return Object.keys(telemetry).every((key) =>
+    key === 'eligibilityDecidedAt' || key === 'firstProgressiveEffectAt'
+  ) && [telemetry.eligibilityDecidedAt, telemetry.firstProgressiveEffectAt].every((entry) =>
+    entry === undefined ||
+    (typeof entry === 'number' && Number.isSafeInteger(entry) && entry >= 0)
+  );
+}
+
 function requireState(
-  presentation: SlackRunPresentationV1,
+  presentation: SlackRunPresentation,
   expected: SlackPresentationStreamState,
 ): void {
   if (presentation.stream.state === 'finalized') {

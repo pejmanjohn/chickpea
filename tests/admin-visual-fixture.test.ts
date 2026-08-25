@@ -7,6 +7,12 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { renderAdminPage } from '../src/admin/page.ts';
+import {
+  ONBOARDING_JOURNEY_KEY,
+  readOnboardingJourney,
+} from '../src/config/onboarding-state.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
 
 interface VisualFixture {
   address: string;
@@ -14,6 +20,7 @@ interface VisualFixture {
   authStates: Record<string, { path: string }>;
   baseUrl: string;
   canonicalStates: Record<string, { path: string; actions: readonly string[] }>;
+  onboardingStage: 'choose_provider' | 'choose_model' | 'try' | null;
   runtimeContract: 'legacy' | 'chickpea-v1';
   stateDbPath: string;
   stateDirectory: string;
@@ -25,6 +32,8 @@ interface VisualFixtureModule {
     host?: string;
     port?: number;
     runtimeContract?: 'legacy' | 'chickpea-v1';
+    onboardingStage?: 'choose_provider' | 'choose_model' | 'try';
+    principalRole?: 'owner' | 'admin' | 'member';
   }): Promise<VisualFixture>;
 }
 
@@ -64,6 +73,24 @@ async function fixtureJson<T>(fixture: VisualFixture, path: string): Promise<T> 
   });
   assert.equal(response.status, 200, path);
   return response.json() as Promise<T>;
+}
+
+async function fixtureMutation(
+  fixture: VisualFixture,
+  path: string,
+  body: Record<string, unknown>,
+  method = 'POST',
+): Promise<Response> {
+  return fetch(`${fixture.baseUrl}${path}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${fixture.adminToken}`,
+      origin: fixture.baseUrl,
+      'sec-fetch-site': 'same-origin',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
 }
 
 async function waitForFixtureStatePath(child: ReturnType<typeof spawn>): Promise<string> {
@@ -115,6 +142,19 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
     assert.equal(releaseConnections.attached[0]?.account.label, 'Gmail · Team');
     assert.equal(releaseConnections.attached[0]?.account.lifecycle, 'needs_attention');
     assert.equal(releaseConnections.attached[0]?.account.ownerKind, 'team');
+
+    const releaseSchedules = await fixtureJson<{
+      schedules: Array<{ name: string; status: string; channelLabel: string }>;
+    }>(fixture, '/admin/api/agents/agent_release/schedules');
+    assert.deepEqual(
+      releaseSchedules.schedules.map((schedule) => [schedule.name, schedule.status]),
+      [
+        ['Daily launch readiness digest with a long scannable name', 'active'],
+        ['Dependency follow-up', 'needs_attention'],
+        ['Weekly customer summary', 'paused'],
+      ],
+    );
+    assert.ok(releaseSchedules.schedules.every((schedule) => schedule.channelLabel === 'release-room'));
 
     const channels = await fixtureJson<{ channels: ChannelProjection[] }>(
       fixture,
@@ -211,6 +251,7 @@ test('canonical visual states use authenticated production URLs and UI actions o
       agentInstructions: { path: '/admin/agents/agent_research', actions: [] },
       agentBlankDescription: { path: '/admin/agents/agent_customer', actions: [] },
       agentMemory: { path: '/admin/agents/agent_research', actions: ['Memory'] },
+      agentSchedules: { path: '/admin/agents/agent_release', actions: ['Schedules'] },
       channelsIndex: { path: '/admin/channels', actions: [] },
       channelDetail: { path: '/admin/channels/TVISUAL/C_RELEASES', actions: [] },
       channelAdvanced: {
@@ -278,7 +319,7 @@ test('Slack auth visual states render the production Slack-only journey without 
   const fixture = await startAdminVisualFixture();
   try {
     assert.deepEqual(Object.keys(fixture.authStates), [
-      'signIn', 'setupCreate', 'setupApproval', 'setupOwner',
+      'signIn', 'setupCreate', 'setupConnected', 'setupApproval', 'setupOwner',
       'accessDenied', 'ownerComplete', 'recovery',
     ]);
     for (const [name, state] of Object.entries(fixture.authStates)) {
@@ -292,10 +333,13 @@ test('Slack auth visual states render the production Slack-only journey without 
         assert.match(html, />Welcome back<\/h1>/, name);
         assert.match(html, /slack-provider-logo slack-logo-image/, name);
         assert.doesNotMatch(html, /role="status"|Full Slack members|Slack Connect participants/, name);
-      } else if (name === 'setupCreate' || name === 'setupOwner') {
+      } else if (name === 'setupCreate' || name === 'setupConnected' || name === 'setupOwner') {
         assert.match(html, /slack-provider-button/, name);
         assert.match(html, /slack-provider-logo slack-logo-image/, name);
-        assert.match(html, /role="status" aria-live="polite"/, name);
+        if (name === 'setupOwner') assert.match(html, /role="status" aria-live="polite"/, name);
+        else assert.doesNotMatch(html, /role="status" aria-live="polite"/, name);
+      } else if (name === 'ownerComplete') {
+        assert.doesNotMatch(html, /role="status" aria-live="polite"/, name);
       } else {
         assert.match(html, /role="status" aria-live="polite"/, name);
       }
@@ -306,6 +350,224 @@ test('Slack auth visual states render the production Slack-only journey without 
       );
       assert.doesNotMatch(html, /fonts\.googleapis|Forgot Password|Sign up|Cloudflare Access/i, name);
     }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('visual fixture renders every durable onboarding stage through the production URL', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+  const stages = ['choose_provider', 'choose_model', 'try'] as const;
+  for (const onboardingStage of stages) {
+    const fixture = await startAdminVisualFixture({
+      onboardingStage,
+    });
+    try {
+      assert.equal(fixture.onboardingStage, onboardingStage);
+      const login = await fetch(
+        `${fixture.baseUrl}/__admin_visual_fixture/login?token=${encodeURIComponent(fixture.adminToken)}&destination=/admin/onboarding`,
+        { redirect: 'manual' },
+      );
+      const cookie = login.headers.get('set-cookie');
+      assert.ok(cookie);
+      const page = await fetch(`${fixture.baseUrl}/admin/onboarding`, {
+        headers: { cookie },
+      });
+      assert.equal(page.status, 200);
+      assert.match(await page.text(), /app\.className = "frame onboarding-frame"/);
+      const state = await fetch(`${fixture.baseUrl}/admin/api/onboarding`, {
+        headers: { cookie },
+      });
+      assert.equal(state.status, 200);
+      assert.equal((await state.json() as { stage: string }).stage, onboardingStage);
+    } finally {
+      await fixture.close();
+    }
+  }
+});
+
+test('onboarding production routes reject stale, unavailable, invalid, and conflicting choices', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+
+  const staleFixture = await startAdminVisualFixture({ onboardingStage: 'choose_provider' });
+  try {
+    const stale = await fixtureMutation(staleFixture, '/admin/api/onboarding/provider', {
+      expectedRevision: '{"version":0}',
+      providerId: 'cloudflare',
+    });
+    assert.equal(stale.status, 409);
+    assert.equal((await stale.json() as { error: string }).error, 'onboarding_changed');
+  } finally {
+    await staleFixture.close();
+  }
+
+  const providerFixture = await startAdminVisualFixture({ onboardingStage: 'choose_provider' });
+  try {
+    const onboarding = await fixtureJson<{ revision: string }>(providerFixture, '/admin/api/onboarding');
+    const unavailable = await fixtureMutation(providerFixture, '/admin/api/onboarding/provider', {
+      expectedRevision: onboarding.revision,
+      providerId: 'openai',
+    });
+    assert.equal(unavailable.status, 409);
+    assert.equal(
+      (await unavailable.json() as { error: string }).error,
+      'onboarding_provider_not_configured',
+    );
+  } finally {
+    await providerFixture.close();
+  }
+
+  const modelFixture = await startAdminVisualFixture({ onboardingStage: 'choose_model' });
+  try {
+    const onboarding = await fixtureJson<{ revision: string }>(modelFixture, '/admin/api/onboarding');
+    const workspace = await fixtureJson<{
+      workspaceDefault: { revision: number };
+    }>(modelFixture, '/admin/api/workspace-model-default');
+
+    const invalid = await fixtureMutation(modelFixture, '/admin/api/onboarding/try', {
+      expectedRevision: onboarding.revision,
+      modelId: 'anthropic/not-in-the-catalog',
+      expectedDefaultRevision: workspace.workspaceDefault.revision,
+    });
+    assert.equal(invalid.status, 400);
+
+    const conflict = await fixtureMutation(modelFixture, '/admin/api/onboarding/try', {
+      expectedRevision: onboarding.revision,
+      modelId: 'anthropic/claude-sonnet-5',
+      expectedDefaultRevision: workspace.workspaceDefault.revision + 1,
+    });
+    assert.equal(conflict.status, 409);
+    const conflictBody = await conflict.json() as {
+      error: string;
+      workspaceDefault?: { revision: number };
+    };
+    assert.equal(conflictBody.error, 'workspace_model_default_revision_conflict');
+    assert.equal(conflictBody.workspaceDefault?.revision, workspace.workspaceDefault.revision);
+  } finally {
+    await modelFixture.close();
+  }
+});
+
+test('onboarding production routes keep setup mutations owner- or admin-only', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+  const fixture = await startAdminVisualFixture({
+    onboardingStage: 'choose_model',
+    principalRole: 'member',
+  });
+  try {
+    const revision = '{"version":0,"state":"active"}';
+    const attempts = [
+      fixtureMutation(fixture, '/admin/api/onboarding/provider', {
+        expectedRevision: revision,
+        providerId: 'anthropic',
+      }),
+      fixtureMutation(fixture, '/admin/api/onboarding/try', {
+        expectedRevision: revision,
+        modelId: 'anthropic/claude-sonnet-5',
+        expectedDefaultRevision: 0,
+      }),
+      fixtureMutation(fixture, '/admin/api/onboarding/complete', {
+        expectedRevision: revision,
+      }),
+    ];
+    for (const response of await Promise.all(attempts)) {
+      assert.equal(response.status, 403);
+      assert.equal((await response.json() as { error: string }).error, 'forbidden');
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('onboarding accepts a matching workspace-model conflict and advances to Try', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+  const fixture = await startAdminVisualFixture({ onboardingStage: 'choose_model' });
+  try {
+    const onboarding = await fixtureJson<{ revision: string }>(fixture, '/admin/api/onboarding');
+    const workspace = await fixtureJson<{
+      workspaceDefault: { revision: number };
+    }>(fixture, '/admin/api/workspace-model-default');
+    const modelId = 'anthropic/claude-sonnet-5';
+    const saved = await fixtureMutation(fixture, '/admin/api/workspace-model-default', {
+      modelId,
+      expectedRevision: workspace.workspaceDefault.revision,
+    }, 'PUT');
+    assert.equal(saved.status, 200, await saved.clone().text());
+
+    const started = await fixtureMutation(fixture, '/admin/api/onboarding/try', {
+      expectedRevision: onboarding.revision,
+      modelId,
+      expectedDefaultRevision: workspace.workspaceDefault.revision,
+    });
+    assert.equal(started.status, 200, await started.clone().text());
+    const body = await started.json() as {
+      stage: string;
+      modelId: string;
+      agentId: string;
+      slackAppId: string;
+    };
+    assert.equal(body.stage, 'try');
+    assert.equal(body.modelId, modelId);
+    assert.equal(body.agentId, 'agent_chickpea');
+    assert.equal(body.slackAppId, 'AVISUAL');
+
+    const settings = new SqliteSettingsStore(fixture.stateDbPath);
+    try {
+      assert.equal(
+        (await readOnboardingJourney(settings))?.journey.trySlackUserId,
+        'UVISUALOWNER',
+      );
+    } finally {
+      settings.close();
+    }
+
+    const cutover = await fixtureJson<{
+      cutover: { runtimeContract: string; state: string; systemPrincipalCount: number };
+    }>(fixture, '/admin/api/chickpea-cutover/preflight');
+    assert.equal(cutover.cutover.runtimeContract, 'chickpea-v1');
+    assert.equal(cutover.cutover.state, 'activated');
+    assert.equal(cutover.cutover.systemPrincipalCount, 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('legacy channel onboarding resumes at provider selection instead of a stale Try screen', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+  const fixture = await startAdminVisualFixture({ onboardingStage: 'choose_provider' });
+  try {
+    const settings = new SqliteSettingsStore(fixture.stateDbPath);
+    try {
+      await settings.setSetting(
+        PROVIDER_KEY_SETTING_KEYS.anthropic,
+        'sk-ant-local-admin-visual-fixture',
+      );
+      await settings.setSetting(ONBOARDING_JOURNEY_KEY, JSON.stringify({
+        version: 2,
+        state: 'active',
+        startedAt: 100,
+        agentId: 'agent_default',
+        selectedWorkspaceId: 'TVISUAL',
+        selectedChannelId: 'C12345678',
+        selectedChannelName: 'release-room',
+        tryStartedAt: 300,
+      }));
+    } finally {
+      settings.close();
+    }
+
+    const onboarding = await fixtureJson<{ stage: string; revision: string }>(
+      fixture,
+      '/admin/api/onboarding',
+    );
+    assert.equal(onboarding.stage, 'choose_provider');
+
+    const resumed = await fixtureMutation(fixture, '/admin/api/onboarding/provider', {
+      expectedRevision: onboarding.revision,
+      providerId: 'anthropic',
+    });
+    assert.equal(resumed.status, 200, await resumed.clone().text());
+    assert.equal((await resumed.json() as { stage: string }).stage, 'choose_model');
   } finally {
     await fixture.close();
   }

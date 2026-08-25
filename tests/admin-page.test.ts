@@ -89,21 +89,17 @@ type SlackChannelsFixture = {
   truncated?: boolean;
 };
 type OnboardingFixture = {
-  stage: 'connect_slack' | 'choose_channel' | 'try' | 'complete';
+  stage: 'connect_slack' | 'choose_provider' | 'choose_model' | 'try' | 'complete';
   revision: string;
   workspace: { id: string; name: string | null } | null;
   channel: { id: string; name: string } | null;
+  providerId?: 'cloudflare' | 'anthropic' | 'openai' | 'openrouter' | null;
+  modelId?: string | null;
+  slackAppId?: string | null;
   tryStartedAt: number | null;
   completedAt: number | null;
   agentId?: string;
   redirectTo?: string;
-};
-type SlackBehaviorEntry = { value: boolean; source: 'env' | 'stored' | 'default' };
-type SlackBehaviorFixture = {
-  unassignedHint: SlackBehaviorEntry;
-  welcomeOnJoin: SlackBehaviorEntry;
-  progressiveStreaming: SlackBehaviorEntry;
-  nativeTasks: SlackBehaviorEntry;
 };
 type GithubStatusFixture = {
   mode: 'none' | 'app';
@@ -338,9 +334,6 @@ function runAdminPageHarness(
   options: {
     assignments?: AssignmentFixture[];
     slackConnection?: SlackConnectionFixture | null;
-    slackBehavior?: SlackBehaviorFixture;
-    slackBehaviorGetFailures?: number;
-    slackBehaviorPutError?: { status: number; error: string; message?: string };
     slackTestError?: { status: number; error: string; detail?: string };
     slackDisconnectError?: { status: number; error: string };
     initialPath?: string;
@@ -349,6 +342,8 @@ function runAdminPageHarness(
     channelIndex?: Array<Record<string, unknown>>;
     channelIndexError?: { status: number; error: string; message?: string };
     onboarding?: OnboardingFixture | null;
+    onboardingProviderError?: { status: number; error: string; message?: string };
+    onboardingTryError?: { status: number; error: string; message?: string; workspaceDefault?: WorkspaceDefaultFixture };
     slackChannelFailures?: number;
     putIsMember?: boolean;
     putAssignmentError?: { status: number; error: string; message?: string };
@@ -402,6 +397,16 @@ function runAdminPageHarness(
     skillBrowseDom?: boolean;
     mcpTestResult?: { ok: true; tools: Array<{ name: string; title?: string; description?: string }> } | { ok: false; code: string; message: string };
     memorySaveError?: { status: number; error: string; currentVersion?: number };
+    agentSchedules?: Array<Record<string, unknown>>;
+    agentSchedulesFetch?: (agentId: string, call: number) => Promise<FakeResponse>;
+    agentScheduleControlFetch?: (
+      agentId: string,
+      scheduleId: string,
+      body: Record<string, unknown>,
+    ) => Promise<FakeResponse>;
+    agentScheduleControlError?: { status: number; error: string; message?: string };
+    agentDetailFetch?: (agentId: string, call: number) => Promise<FakeResponse>;
+    memoryGetFetch?: (agentId: string, call: number) => Promise<FakeResponse>;
     scheduledWork?: ScheduledWorkFixture;
     redactScheduledName?: boolean;
     scheduledControlError?: { status: number; error: string; message?: string };
@@ -455,6 +460,7 @@ function runAdminPageHarness(
   putAssignments: unknown[];
   agentChannelPosts: Array<{ agentId: string; body: Record<string, unknown> }>;
   agentChannelDeletes: Array<{ agentId: string; workspaceId: string; channelId: string }>;
+  onboardingProviderPosts: Array<Record<string, unknown>>;
   onboardingTryPosts: Array<Record<string, unknown>>;
   onboardingCompletePosts: Array<Record<string, unknown>>;
   slackBehaviorPuts: Array<Record<string, boolean>>;
@@ -528,6 +534,20 @@ function runAdminPageHarness(
   apiConnectionSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   memoryPuts: Array<Record<string, unknown>>;
   ownerMemoryGetCaches: Array<string | undefined>;
+  agentScheduleGets(): number;
+  agentDetailGets(): number;
+  agentConnectionGets(): number;
+  slackStatusGets(): number;
+  setAgentSchedules(schedules: Array<Record<string, unknown>>): void;
+  agentScheduleControlPosts: Array<{
+    agentId: string;
+    scheduleId: string;
+    body: Record<string, unknown>;
+    idempotencyKey: string;
+  }>;
+  setMemoryEntry(body: string, version: number): void;
+  focusWindow(): void;
+  setVisibility(state: 'hidden' | 'visible'): void;
   scheduledControlPosts: Array<{ routineId: string; body: Record<string, unknown>; idempotencyKey: string }>;
   clipboardWrites: string[];
   resolveClipboardWrite(): void;
@@ -651,11 +671,13 @@ function runAdminPageHarness(
   const putAssignments: unknown[] = [];
   const agentChannelPosts: Array<{ agentId: string; body: Record<string, unknown> }> = [];
   const agentChannelDeletes: Array<{ agentId: string; workspaceId: string; channelId: string }> = [];
+  const onboardingProviderPosts: Array<Record<string, unknown>> = [];
   const onboardingTryPosts: Array<Record<string, unknown>> = [];
   const onboardingCompletePosts: Array<Record<string, unknown>> = [];
   const slackBehaviorPuts: Array<Record<string, boolean>> = [];
   let slackBehaviorGets = 0;
   let slackTestCalls = 0;
+  let slackStatusGets = 0;
   let slackDisconnectCalls = 0;
   const slackGatewayRefreshResult = options.slackGatewayRefreshResult;
   const channelListCalls: string[] = [];
@@ -725,6 +747,16 @@ function runAdminPageHarness(
   const apiConnectionSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const memoryPuts: Array<Record<string, unknown>> = [];
   const ownerMemoryGetCaches: Array<string | undefined> = [];
+  let agentScheduleGets = 0;
+  const agentScheduleControlPosts: Array<{
+    agentId: string;
+    scheduleId: string;
+    body: Record<string, unknown>;
+    idempotencyKey: string;
+  }> = [];
+  let agentDetailGets = 0;
+  let agentConnectionGets = 0;
+  let memoryGetCalls = 0;
   const scheduledControlPosts: Array<{ routineId: string; body: Record<string, unknown>; idempotencyKey: string }> = [];
   const clipboardWrites: string[] = [];
   let clipboardWriteResolver: (() => void) | null = null;
@@ -751,17 +783,11 @@ function runAdminPageHarness(
   const mcpTestResult = options.mcpTestResult;
   let assignments = options.assignments ?? defaultAssignments();
   const slackConnection = options.slackConnection === undefined ? connectedSlackFixture() : options.slackConnection;
-  let slackBehavior: SlackBehaviorFixture = options.slackBehavior ?? {
-    unassignedHint: { value: true, source: 'default' },
-    welcomeOnJoin: { value: true, source: 'default' },
-    progressiveStreaming: { value: false, source: 'default' },
-    nativeTasks: { value: true, source: 'default' },
-  };
-  let slackBehaviorGetFailures = options.slackBehaviorGetFailures ?? 0;
-  const slackBehaviorPutError = options.slackBehaviorPutError;
   const slackChannels = options.slackChannels;
   const slackChannelsFetch = options.slackChannelsFetch;
   let onboarding = options.onboarding ?? null;
+  const onboardingProviderError = options.onboardingProviderError;
+  const onboardingTryError = options.onboardingTryError;
   const putIsMember = options.putIsMember;
   const putAssignmentError = options.putAssignmentError;
   let slackChannelFailures = options.slackChannelFailures ?? 0;
@@ -799,6 +825,7 @@ function runAdminPageHarness(
     body: 'Run <script>alert(1)</script> before release.',
     version: 1, modifiedAt: 1753444800000,
   };
+  let agentSchedules = (options.agentSchedules ?? []).map((schedule) => ({ ...schedule }));
   const scheduledFixture: ScheduledWorkFixture = options.scheduledWork ?? {
     routine: {
       id: 'routine_release_digest', workspaceId: 'T_DESIGN', channelId: 'C0EXR3L9T',
@@ -873,6 +900,7 @@ function runAdminPageHarness(
     },
   };
   const windowListeners: Record<string, (event: Record<string, unknown>) => void> = {};
+  let documentVisibilityState: 'hidden' | 'visible' = 'visible';
   let documentScrollLeft = 0;
   let documentScrollTop = 0;
   const window = {
@@ -991,6 +1019,9 @@ function runAdminPageHarness(
   };
 
   const document = {
+    get visibilityState() {
+      return documentVisibilityState;
+    },
     get activeElement() {
       return activeElement;
     },
@@ -1002,6 +1033,9 @@ function runAdminPageHarness(
         return focusElement(id);
       }
       if (id.startsWith('ptab-') && appHtml.includes(`id="${id}"`)) {
+        return focusElement(id);
+      }
+      if (id.startsWith('agent-schedule-') && appHtml.includes(`id="${id}"`)) {
         return focusElement(id);
       }
       // The favorites search re-renders only its own results container; hand it a
@@ -1081,6 +1115,10 @@ function runAdminPageHarness(
       const modelPolicyAction = selector.match(/^\[data-action="(workspace-default-model|profile-model)"\]$/)?.[1];
       if (modelPolicyAction && appHtml.includes(`data-action="${modelPolicyAction}"`)) {
         return focusElement(modelPolicyAction);
+      }
+      const agentScheduleAction = selector.match(/^\[data-action="(agent-schedule-delete-(?:cancel|confirm))"\]$/)?.[1];
+      if (agentScheduleAction && appHtml.includes(`data-action="${agentScheduleAction}"`)) {
+        return focusElement(agentScheduleAction);
       }
       if (selector === '.topbar-menu > summary' && appHtml.includes('data-role="mobile-menu-trigger"')) {
         return focusElement('mobile-menu-trigger');
@@ -1281,6 +1319,13 @@ function runAdminPageHarness(
     const agentMemoryMatch = path.match(/^\/admin\/api\/agents\/([^/]+)\/memory$/);
     if (agentMemoryMatch && method === 'GET') {
       ownerMemoryGetCaches.push(options?.cache);
+      memoryGetCalls += 1;
+      if (harnessOptions.memoryGetFetch) {
+        return harnessOptions.memoryGetFetch(
+          decodeURIComponent(agentMemoryMatch[1] as string),
+          memoryGetCalls,
+        );
+      }
       return Promise.resolve(jsonResponse({
         memory: {
           agentId: decodeURIComponent(agentMemoryMatch[1] as string),
@@ -1453,11 +1498,31 @@ function runAdminPageHarness(
       });
       return Promise.resolve(jsonResponse({ account: { lifecycle: 'ready' }, binding: {} }));
     }
+    const agentConnectionAttachMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/connections\/([^/]+)\/attach$/,
+    );
+    if (agentConnectionAttachMatch && method === 'POST') {
+      const agentId = decodeURIComponent(agentConnectionAttachMatch[1] as string);
+      const accountId = decodeURIComponent(agentConnectionAttachMatch[2] as string);
+      const accounts = harnessOptions.connectionAccounts;
+      const availableIndex = accounts?.available.findIndex((account) => account.id === accountId) ?? -1;
+      if (accounts && availableIndex >= 0) {
+        const [account] = accounts.available.splice(availableIndex, 1);
+        accounts.attached.push({
+          account,
+          binding: { agentId, connectionAccountId: accountId, allowedCapabilities: [], enabled: true },
+        });
+      }
+      return Promise.resolve(jsonResponse({ ok: true }));
+    }
     const agentConnectionsMatch = path.match(
       /^\/admin\/api\/agents\/([^/]+)\/connections(?:\?workspaceId=([^&]+))?$/,
     );
-    if (agentConnectionsMatch && method === 'GET' && harnessOptions.connectionAccounts) {
-      return Promise.resolve(jsonResponse(harnessOptions.connectionAccounts));
+    if (agentConnectionsMatch && method === 'GET') {
+      agentConnectionGets += 1;
+      if (harnessOptions.connectionAccounts) {
+        return Promise.resolve(jsonResponse(harnessOptions.connectionAccounts));
+      }
     }
     if (agentConnectionsMatch && method === 'POST') {
       const agentId = decodeURIComponent(agentConnectionsMatch[1] as string);
@@ -1484,6 +1549,67 @@ function runAdminPageHarness(
         },
       }, 201));
     }
+    const agentSchedulesMatch = path.match(/^\/admin\/api\/agents\/([^/]+)\/schedules$/);
+    if (agentSchedulesMatch && method === 'GET') {
+      agentScheduleGets += 1;
+      if (harnessOptions.agentSchedulesFetch) {
+        return harnessOptions.agentSchedulesFetch(
+          decodeURIComponent(agentSchedulesMatch[1] as string),
+          agentScheduleGets,
+        );
+      }
+      return Promise.resolve(jsonResponse({
+        schedules: agentSchedules.map((schedule) => ({ ...schedule })),
+      }));
+    }
+    const agentScheduleControlMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/schedules\/([^/]+)\/control$/,
+    );
+    if (agentScheduleControlMatch && method === 'POST') {
+      const agentId = decodeURIComponent(agentScheduleControlMatch[1] as string);
+      const scheduleId = decodeURIComponent(agentScheduleControlMatch[2] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      agentScheduleControlPosts.push({
+        agentId,
+        scheduleId,
+        body,
+        idempotencyKey: options?.headers?.['idempotency-key'] ?? '',
+      });
+      if (harnessOptions.agentScheduleControlFetch) {
+        return harnessOptions.agentScheduleControlFetch(agentId, scheduleId, body);
+      }
+      if (harnessOptions.agentScheduleControlError) {
+        return Promise.resolve(jsonResponse(
+          harnessOptions.agentScheduleControlError,
+          harnessOptions.agentScheduleControlError.status,
+        ));
+      }
+      const action = String(body.action || '');
+      agentSchedules = agentSchedules.flatMap((schedule) => {
+        if (schedule.id !== scheduleId) return [schedule];
+        if (action === 'delete') return [];
+        const status = action === 'pause' ? 'paused' : 'active';
+        return [{
+          ...schedule,
+          status,
+          version: Number(schedule.version || 0) + 1,
+          actions: {
+            ...(schedule.actions as Record<string, unknown> | undefined),
+            pause: action === 'resume',
+            resume: action === 'pause',
+          },
+        }];
+      });
+      const updated = agentSchedules.find((schedule) => schedule.id === scheduleId);
+      return Promise.resolve(jsonResponse({
+        schedule: updated ?? {
+          id: scheduleId,
+          status: 'deleted',
+          version: Number(body.expectedVersion || 0) + 1,
+        },
+        ...(action === 'delete' ? { irreversible: true } : {}),
+      }));
+    }
     if (path === '/admin/api/agents' && method === 'GET') {
       if (harnessOptions.agentsGetError) {
         return Promise.resolve(jsonResponse(
@@ -1496,6 +1622,10 @@ function runAdminPageHarness(
     const agentGetMatch = path.match(/^\/admin\/api\/agents\/([^/]+)$/);
     if (agentGetMatch && method === 'GET') {
       const id = decodeURIComponent(agentGetMatch[1] as string);
+      agentDetailGets += 1;
+      if (harnessOptions.agentDetailFetch) {
+        return harnessOptions.agentDetailFetch(id, agentDetailGets);
+      }
       const agent = agentsList.find((candidate) => candidate.id === id);
       return Promise.resolve(agent ? jsonResponse({ agent }) : jsonResponse({ error: 'not_found' }, 404));
     }
@@ -1933,15 +2063,50 @@ function runAdminPageHarness(
           : jsonResponse({ error: 'onboarding_not_found' }, 404),
       );
     }
+    if (path === '/admin/api/onboarding/provider' && method === 'POST') {
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      onboardingProviderPosts.push(body);
+      if (onboardingProviderError) {
+        return Promise.resolve(jsonResponse({
+          error: onboardingProviderError.error,
+          ...(onboardingProviderError.message ? { message: onboardingProviderError.message } : {}),
+        }, onboardingProviderError.status));
+      }
+      onboarding = {
+        ...(onboarding ?? {
+          workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+          channel: null,
+          slackAppId: 'A_CHICKPEA',
+        }),
+        stage: 'choose_model',
+        revision: JSON.stringify({ ...body, selectedProviderAt: 1_800_000_000_100 }),
+        providerId: String(body.providerId) as NonNullable<OnboardingFixture['providerId']>,
+        modelId: null,
+        tryStartedAt: null,
+        completedAt: null,
+      };
+      return Promise.resolve(jsonResponse(onboarding));
+    }
     if (path === '/admin/api/onboarding/try' && method === 'POST') {
       const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
       onboardingTryPosts.push(body);
+      if (onboardingTryError) {
+        return Promise.resolve(jsonResponse({
+          error: onboardingTryError.error,
+          ...(onboardingTryError.message ? { message: onboardingTryError.message } : {}),
+          ...(onboardingTryError.workspaceDefault ? { workspaceDefault: onboardingTryError.workspaceDefault } : {}),
+        }, onboardingTryError.status));
+      }
       onboarding = {
+        ...(onboarding ?? {}),
         stage: 'try',
         revision: JSON.stringify({ ...body, tryStartedAt: 1_800_000_000_000 }),
-        workspace: { id: String(body.workspaceId), name: 'Acme Inc' },
-        channel: { id: String(body.channelId), name: String(body.channelName) },
-        agentId: 'agent_default',
+        workspace: onboarding?.workspace ?? { id: 'T_DESIGN', name: 'Acme Inc' },
+        channel: null,
+        slackAppId: onboarding?.slackAppId ?? 'A_CHICKPEA',
+        providerId: onboarding?.providerId ?? null,
+        modelId: String(body.modelId),
+        agentId: 'agent_chickpea',
         tryStartedAt: 1_800_000_000_000,
         completedAt: null,
       };
@@ -1953,14 +2118,15 @@ function runAdminPageHarness(
       onboarding = {
         ...(onboarding ?? {
           workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
-          channel: { id: 'C_NEW', name: 'new-channel' },
+          channel: null,
+          slackAppId: 'A_CHICKPEA',
           tryStartedAt: 1_800_000_000_000,
         }),
         stage: 'complete',
         revision: JSON.stringify({ state: 'complete', completedAt: 1_800_000_005_000 }),
         completedAt: 1_800_000_005_000,
-        agentId: 'agent_default',
-        redirectTo: '/admin/agents/agent_default',
+        agentId: 'agent_chickpea',
+        redirectTo: '/admin/agents',
       };
       return Promise.resolve(jsonResponse(onboarding));
     }
@@ -2038,7 +2204,14 @@ function runAdminPageHarness(
       return Promise.resolve(jsonResponse({
         providers: (modelProviders ?? []).filter(
           (provider) => workersAiEnabled || provider.id !== 'cloudflare',
-        ),
+        ).map((provider) => {
+          const summaryId = provider.id === 'cloudflare' ? 'workers-ai' : provider.id;
+          const summary = providerState.find((candidate) => candidate.id === summaryId);
+          return {
+            ...provider,
+            configured: provider.configured || summary?.status === 'stored' || summary?.status === 'env',
+          };
+        }),
       }));
     }
     if (path === '/admin/api/workspace-model-default') {
@@ -2337,34 +2510,11 @@ function runAdminPageHarness(
     if (path === '/admin/api/slack-behavior' && method === 'PUT') {
       const body = JSON.parse(options?.body ?? '{}') as Record<string, boolean>;
       slackBehaviorPuts.push(body);
-      if (slackBehaviorPutError) {
-        return Promise.resolve(
-          jsonResponse(
-            {
-              error: slackBehaviorPutError.error,
-              ...(slackBehaviorPutError.message ? { message: slackBehaviorPutError.message } : {}),
-            },
-            slackBehaviorPutError.status,
-          ),
-        );
-      }
-      slackBehavior = {
-        ...slackBehavior,
-        ...Object.fromEntries(
-          Object.entries(body).map(([key, value]) => [key, { value, source: 'stored' as const }]),
-        ),
-      };
-      return Promise.resolve(jsonResponse(slackBehavior));
+      return Promise.resolve(jsonResponse({}));
     }
     if (path === '/admin/api/slack-behavior') {
       slackBehaviorGets += 1;
-      if (slackBehaviorGetFailures > 0) {
-        slackBehaviorGetFailures -= 1;
-        return Promise.resolve(
-          jsonResponse({ error: 'slack_behavior_unavailable', message: 'Behavior service unavailable.' }, 503),
-        );
-      }
-      return Promise.resolve(jsonResponse(slackBehavior));
+      return Promise.resolve(jsonResponse({}));
     }
     if (path === '/admin/api/slack-connection/test' && method === 'POST') {
       slackTestCalls += 1;
@@ -2394,6 +2544,7 @@ function runAdminPageHarness(
       );
     }
     if (path === '/admin/api/slack-connection') {
+      slackStatusGets += 1;
       // Without a fixture, mirror an endpoint failure: the page must render
       // everything else and simply omit the card (resilience contract).
       return slackConnection
@@ -2480,6 +2631,7 @@ function runAdminPageHarness(
     putAssignments,
     agentChannelPosts,
     agentChannelDeletes,
+    onboardingProviderPosts,
     onboardingTryPosts,
     onboardingCompletePosts,
     slackBehaviorPuts,
@@ -2558,6 +2710,24 @@ function runAdminPageHarness(
     apiConnectionSecretDeletes,
     memoryPuts,
     ownerMemoryGetCaches,
+    agentScheduleGets: () => agentScheduleGets,
+    agentDetailGets: () => agentDetailGets,
+    agentConnectionGets: () => agentConnectionGets,
+    slackStatusGets: () => slackStatusGets,
+    setAgentSchedules(schedules) {
+      agentSchedules = schedules.map((schedule) => ({ ...schedule }));
+    },
+    agentScheduleControlPosts,
+    setMemoryEntry(body, version) {
+      memoryEntry = { ...memoryEntry, body, version };
+    },
+    focusWindow() {
+      windowListeners.focus?.({});
+    },
+    setVisibility(nextState) {
+      documentVisibilityState = nextState;
+      listeners.visibilitychange?.({ target: actionTarget({}) });
+    },
     scheduledControlPosts,
     clipboardWrites,
     resolveClipboardWrite() {
@@ -2754,28 +2924,17 @@ test('Channels deep links and popstate keep the route and selected screen in syn
   assert.match(harness.app.innerHTML, /class="agent-roster-item active" data-action="edit-profile" data-agent="agent_ops"/);
 });
 
-test('Slack overview controls save behavior, test the connection, and confirm disconnect without credential paste-back', async () => {
+test('Slack settings omit workspace behavior switches and their client requests', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin/settings/slack/identities' });
   await flushAsync();
 
-  const change = harness.listeners.change;
   const click = harness.listeners.click;
-  assert.ok(change && click);
-
-  change({
-    target: {
-      checked: true,
-      closest: () => null,
-      getAttribute(name: string) {
-        if (name === 'data-action') return 'slack-behavior';
-        if (name === 'data-setting') return 'progressiveStreaming';
-        return null;
-      },
-    } as unknown as FakeTarget,
-  });
-  await flushAsync();
-  assert.deepEqual(harness.slackBehaviorPuts, [{ progressiveStreaming: true }]);
-  assert.match(harness.app.innerHTML, /Stream safe answer text[\s\S]*?<span class="behavior-state">On<\/span>/);
+  assert.ok(click);
+  assert.doesNotMatch(harness.app.innerHTML, /Slack behavior/);
+  assert.doesNotMatch(harness.app.innerHTML, /Show native task plans/);
+  assert.doesNotMatch(harness.app.innerHTML, /Stream safe answer text/);
+  assert.equal(harness.slackBehaviorGets(), 0);
+  assert.deepEqual(harness.slackBehaviorPuts, []);
 
   click({ target: actionTarget({ 'data-action': 'slack-test' }) });
   await flushAsync();
@@ -2838,83 +2997,47 @@ test('a stale shared-app binding changes every Slack status to Reconnect require
   assert.doesNotMatch(harness.app.innerHTML, /agent-slack-status[^>]*>Connected/);
 });
 
-test('Slack behavior load and save failures stay honest and recoverable', async () => {
-  const loadHarness = runAdminPageHarness({
-    initialPath: '/admin/settings/slack/identities',
-    slackBehaviorGetFailures: 1,
-  });
-  await flushAsync();
-  assert.match(loadHarness.app.innerHTML, /Slack behavior could not load/);
-  assert.match(loadHarness.app.innerHTML, /Behavior service unavailable\./);
-  assert.match(loadHarness.app.innerHTML, /data-action="slack-behavior-retry"/);
-  assert.doesNotMatch(loadHarness.app.innerHTML, /class="behavior-state">On/);
-
-  const loadClick = loadHarness.listeners.click;
-  assert.ok(loadClick);
-  loadClick({ target: actionTarget({ 'data-action': 'slack-behavior-retry' }) });
-  await flushAsync();
-  assert.equal(loadHarness.slackBehaviorGets(), 2);
-  assert.match(loadHarness.app.innerHTML, /Show native task plans/);
-  assert.match(loadHarness.app.innerHTML, /class="behavior-state">On/);
-
-  const saveHarness = runAdminPageHarness({
-    initialPath: '/admin/settings/slack/identities',
-    slackBehaviorPutError: {
-      status: 503,
-      error: 'slack_behavior_unavailable',
-      message: 'Could not save that Slack setting.',
-    },
-  });
-  await flushAsync();
-  const saveChange = saveHarness.listeners.change;
-  assert.ok(saveChange);
-  saveChange({
-    target: {
-      checked: true,
-      closest: () => null,
-      getAttribute(name: string) {
-        if (name === 'data-action') return 'slack-behavior';
-        if (name === 'data-setting') return 'progressiveStreaming';
-        return null;
-      },
-    } as unknown as FakeTarget,
-  });
-  await flushAsync();
-  assert.match(saveHarness.app.innerHTML, /Stream safe answer text/);
-  assert.match(saveHarness.app.innerHTML, /class="behavior-state">Off/);
-  assert.match(saveHarness.app.innerHTML, /Could not save that Slack setting\./);
-  assert.match(saveHarness.app.innerHTML, /data-action="slack-behavior-retry"/);
-});
-
-test('Slack behavior writes serialize and environment-managed settings stay read-only', async () => {
+test('an offline inbound Slack session renders a specific retryable status', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/settings/slack/identities',
-    slackBehavior: {
-      unassignedHint: { value: true, source: 'default' },
-      welcomeOnJoin: { value: false, source: 'default' },
-      progressiveStreaming: { value: false, source: 'default' },
-      nativeTasks: { value: true, source: 'env' },
+    slackConnection: {
+      ...connectedSlackFixture(),
+      transportMode: 'gateway',
+      credentials: { botToken: 'missing', signingSecret: 'missing', botUserId: 'missing' },
+    },
+    slackTestError: {
+      status: 502,
+      error: 'slack_gateway_unreachable',
+      detail: 'gateway_session_offline',
     },
   });
   await flushAsync();
-  assert.match(harness.app.innerHTML, /Show native task plans[\s\S]*?Managed by the environment\./);
-  assert.match(harness.app.innerHTML, /data-setting="nativeTasks"[^>]*disabled/);
 
-  const change = harness.listeners.change;
-  assert.ok(change);
-  const behaviorTarget = (setting: string, checked: boolean) => ({
-    checked,
-    closest: () => null,
-    getAttribute(name: string) {
-      if (name === 'data-action') return 'slack-behavior';
-      if (name === 'data-setting') return setting;
-      return null;
-    },
-  }) as unknown as FakeTarget;
-  change({ target: behaviorTarget('progressiveStreaming', true) });
-  change({ target: behaviorTarget('nativeTasks', false) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-test' }) });
   await flushAsync();
-  assert.deepEqual(harness.slackBehaviorPuts, [{ progressiveStreaming: true }]);
+
+  assert.match(harness.app.innerHTML, /inbound event session is offline/i);
+  assert.match(harness.app.innerHTML, /badge badge-off[^>]*>[\s\S]*?Needs attention/);
+});
+
+test('a successful Slack re-test clears an earlier inbound-session warning', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/slack/identities',
+    slackConnection: {
+      ...connectedSlackFixture(),
+      health: 'needs_attention',
+      healthDetail: 'gateway_session_offline',
+      transportMode: 'gateway',
+    },
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /badge badge-off[^>]*>[\s\S]*?Needs attention/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-test' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Connection healthy · Acme Inc/);
+  assert.match(harness.app.innerHTML, /badge badge-on[^>]*>[\s\S]*?Connected/);
 });
 
 test('Slack connection failures stay visible and the disconnect dialog gates background actions', async () => {
@@ -3622,6 +3745,481 @@ test('profile capability tabs switch the visible panel on click', async () => {
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'instructions' }) });
   assert.match(harness.app.innerHTML, /Answer carefully\.\n\n- next bullet </);
   assert.equal((harness.app.innerHTML.match(/class="save-bar-sticky/g) ?? []).length, 1);
+});
+
+test('opening Schedules revalidates work created after the Agent editor opened', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedules: [],
+  });
+  await flushAsync();
+  assert.equal(harness.agentScheduleGets(), 0);
+
+  harness.setAgentSchedules([{
+    id: 'routine_added_after_open',
+    name: 'Fresh schedule from Slack',
+    contentAccess: 'readable',
+    status: 'active',
+    version: 1,
+    cadence: { triggerKind: 'schedule', scheduleInput: '0 9 * * 1-5', timezone: 'America/Los_Angeles' },
+    channelLabel: 'eng-releases',
+    nextRunAt: 1_785_168_000_000,
+    lastFinishedAt: null,
+    actions: { pause: true, resume: false, delete: true },
+  }]);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentScheduleGets(), 1);
+  assert.match(harness.app.innerHTML, /Fresh schedule from Slack/);
+});
+
+test('Agent Schedules is a compact controllable flat list with authoritative refreshes', async () => {
+  const schedule = (
+    id: string,
+    name: string,
+    status: string,
+    actions: { pause: boolean; resume: boolean; delete: boolean },
+    overrides: Record<string, unknown> = {},
+  ) => ({
+    id,
+    name,
+    contentAccess: 'readable',
+    status,
+    version: 4,
+    cadence: {
+      triggerKind: 'schedule',
+      scheduleInput: '0 9 * * 1-5',
+      timezone: 'America/Los_Angeles',
+    },
+    channelLabel: 'eng-releases',
+    nextRunAt: 1_785_168_000_000,
+    lastFinishedAt: 1_785_081_600_000,
+    actions,
+    ...overrides,
+  });
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedules: [
+      schedule(
+        'routine_active',
+        'Daily launch readiness digest with a deliberately long but still scannable name',
+        'active',
+        { pause: true, resume: false, delete: true },
+        {
+          prompt: 'SECRET_PROMPT_MUST_NOT_RENDER',
+          description: 'SECRET_DESCRIPTION_MUST_NOT_RENDER',
+          runsAs: 'SECRET_RUNS_AS_MUST_NOT_RENDER',
+          connectionCount: 9,
+          channelId: 'C_RAW_MUST_NOT_RENDER',
+          pausedReason: 'member_pause',
+          runs: ['SECRET_HISTORY_MUST_NOT_RENDER'],
+        },
+      ),
+      schedule('routine_paused', 'Weekly customer summary', 'paused', {
+        pause: false, resume: true, delete: true,
+      }),
+      schedule('routine_attention', 'Dependency follow-up', 'needs_attention', {
+        pause: false, resume: false, delete: true,
+      }),
+      schedule('routine_completed', 'One-time migration reminder', 'completed', {
+        pause: false, resume: false, delete: true,
+      }, {
+        cadence: { triggerKind: 'once', scheduleInput: '2026-07-27T11:00', timezone: 'UTC' },
+        nextRunAt: null,
+      }),
+    ],
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+
+  const initial = harness.app.innerHTML;
+  assert.match(initial, /class="agent-schedule-list"/);
+  assert.match(initial, /class="agent-schedule-name"[^>]*>Daily launch readiness digest/);
+  assert.match(initial, />Active<\/span>/);
+  assert.match(initial, />Paused<\/span>/);
+  assert.match(initial, />Needs attention<\/span>/);
+  assert.match(initial, />Completed<\/span>/);
+  assert.match(initial, /Weekdays at 9:00 AM Pacific/);
+  assert.match(initial, /#eng-releases/);
+  assert.match(initial, /Next run/);
+  assert.match(initial, /Last run/);
+  assert.match(initial, /aria-label="Pause Daily launch readiness digest/);
+  assert.match(initial, /aria-label="Resume Weekly customer summary"/);
+  assert.match(initial, /aria-label="Delete One-time migration reminder"/);
+  assert.doesNotMatch(initial, /SECRET_PROMPT_MUST_NOT_RENDER|SECRET_DESCRIPTION_MUST_NOT_RENDER|SECRET_RUNS_AS_MUST_NOT_RENDER|SECRET_HISTORY_MUST_NOT_RENDER|C_RAW_MUST_NOT_RENDER|member_pause/);
+  assert.doesNotMatch(initial, /Runs as:|Connections:|Create schedule|Edit timing|data-action="agent-schedule-reassign"/);
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'agent-schedule-control',
+      'data-control': 'pause',
+      'data-schedule-id': 'routine_active',
+    }),
+  });
+  await flushAsync();
+  assert.equal(harness.agentScheduleGets(), 2);
+  assert.deepEqual(harness.agentScheduleControlPosts[0]?.body, {
+    action: 'pause', expectedVersion: 4,
+  });
+  assert.ok(harness.agentScheduleControlPosts[0]?.idempotencyKey);
+  assert.match(harness.app.innerHTML, /aria-label="Resume Daily launch readiness digest/);
+  assert.match(harness.app.innerHTML, /Schedule paused\./);
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'agent-schedule-control',
+      'data-control': 'resume',
+      'data-schedule-id': 'routine_paused',
+    }),
+  });
+  await flushAsync();
+  assert.equal(harness.agentScheduleGets(), 3);
+  assert.deepEqual(harness.agentScheduleControlPosts[1]?.body, {
+    action: 'resume', expectedVersion: 4,
+  });
+  assert.match(harness.app.innerHTML, /aria-label="Pause Weekly customer summary"/);
+  assert.match(harness.app.innerHTML, /Schedule resumed\./);
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'agent-schedule-delete-open',
+      'data-schedule-id': 'routine_active',
+    }),
+  });
+  assert.match(harness.app.innerHTML, /role="dialog" aria-modal="true" aria-labelledby="agent-schedule-delete-title"/);
+  assert.equal(harness.focusedAction(), 'agent-schedule-delete-cancel');
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'agent-schedule-delete-cancel' }) });
+  assert.equal(harness.focusedAction(), 'agent-schedule-delete-routine_active');
+
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'agent-schedule-delete-open',
+      'data-schedule-id': 'routine_active',
+    }),
+  });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'agent-schedule-delete-confirm' }) });
+  await flushAsync();
+  assert.deepEqual(harness.agentScheduleControlPosts[2]?.body, {
+    action: 'delete', expectedVersion: 5, acknowledgeIrreversible: true,
+  });
+  assert.equal(harness.agentScheduleGets(), 4);
+  assert.doesNotMatch(harness.app.innerHTML, /Daily launch readiness digest/);
+  assert.match(harness.app.innerHTML, /id="ptab-schedules"[^>]*>Schedules<span class="ptab-count">3<\/span>/);
+  assert.match(harness.app.innerHTML, /Schedule deleted\./);
+});
+
+test('failed Agent schedule control reloads the latest row and reports a safe error', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedules: [{
+      id: 'routine_conflict', name: 'Conflict canary', contentAccess: 'readable', status: 'active', version: 7,
+      cadence: { triggerKind: 'schedule', scheduleInput: '*/5 * * * *', timezone: 'UTC' },
+      channelLabel: 'schedule-lab', nextRunAt: 1_785_168_000_000, lastFinishedAt: null,
+      actions: { pause: true, resume: false, delete: true },
+    }],
+    agentScheduleControlError: {
+      status: 409,
+      error: 'routine_version_conflict',
+      message: 'SECRET_SERVER_DETAIL_MUST_NOT_RENDER',
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'agent-schedule-control',
+      'data-control': 'pause',
+      'data-schedule-id': 'routine_conflict',
+    }),
+  });
+  await flushAsync();
+
+  assert.equal(harness.agentScheduleGets(), 2);
+  assert.match(harness.app.innerHTML, /Conflict canary/);
+  assert.match(harness.app.innerHTML, /This schedule changed elsewhere\. Review the latest state before trying again\./);
+  assert.doesNotMatch(harness.app.innerHTML, /SECRET_SERVER_DETAIL_MUST_NOT_RENDER/);
+});
+
+test('schedule revalidation preserves an in-flight control and completion cannot reload a stale Agent', async () => {
+  let resolveControl!: (response: FakeResponse) => void;
+  let resolveOpsSchedules!: (response: FakeResponse) => void;
+  const controlResponse = new Promise<FakeResponse>((resolve) => {
+    resolveControl = resolve;
+  });
+  const pendingSchedule = {
+    id: 'routine_pending', name: 'Pending control canary', contentAccess: 'readable', status: 'active', version: 1,
+    cadence: { triggerKind: 'schedule', scheduleInput: '*/5 * * * *', timezone: 'UTC' },
+    channelLabel: 'schedule-lab', nextRunAt: 1_785_168_000_000, lastFinishedAt: null,
+    actions: { pause: true, resume: false, delete: true },
+  };
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedulesFetch(agentId) {
+      if (agentId === 'agent_ops') {
+        return new Promise((resolve) => { resolveOpsSchedules = resolve; });
+      }
+      return Promise.resolve(jsonResponse({ schedules: [pendingSchedule] }));
+    },
+    agentScheduleControlFetch: () => controlResponse,
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'agent-schedule-control',
+      'data-control': 'pause',
+      'data-schedule-id': 'routine_pending',
+    }),
+  });
+  assert.match(harness.app.innerHTML, /Pausing&hellip;/);
+
+  harness.focusWindow();
+  await flushAsync();
+  assert.equal(harness.agentScheduleGets(), 2);
+  assert.match(harness.app.innerHTML, /Pausing&hellip;/);
+  assert.match(harness.app.innerHTML, /aria-label="Pause Pending control canary" disabled/);
+
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_ops' }),
+  });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  assert.match(harness.app.innerHTML, /class="page-title">Ops Profile<\/h1>/);
+  assert.match(harness.app.innerHTML, /Loading Agent schedules/);
+  resolveControl(jsonResponse({ schedule: { id: 'routine_pending', status: 'paused', version: 2 } }));
+  await flushAsync();
+  assert.equal(harness.agentScheduleGets(), 3);
+  resolveOpsSchedules(jsonResponse({ schedules: [{
+    ...pendingSchedule,
+    id: 'routine_ops',
+    name: 'Ops schedule from current response',
+  }] }));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /class="page-title">Ops Profile<\/h1>/);
+  assert.match(harness.app.innerHTML, /Ops schedule from current response/);
+  assert.doesNotMatch(harness.app.innerHTML, /Loading Agent schedules/);
+});
+
+test('schedule refresh closes a delete confirmation whose row disappeared', async () => {
+  const schedule = {
+    id: 'routine_disappears', name: 'Disappearing schedule', contentAccess: 'readable', status: 'active', version: 1,
+    cadence: { triggerKind: 'schedule', scheduleInput: '*/5 * * * *', timezone: 'UTC' },
+    channelLabel: 'schedule-lab', nextRunAt: 1_785_168_000_000, lastFinishedAt: null,
+    actions: { pause: true, resume: false, delete: true },
+  };
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedulesFetch(_agentId, call) {
+      return Promise.resolve(jsonResponse({ schedules: call === 1 ? [schedule] : [] }));
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'agent-schedule-delete-open',
+      'data-schedule-id': schedule.id,
+    }),
+  });
+  assert.match(harness.app.innerHTML, /Delete Disappearing schedule/);
+
+  harness.focusWindow();
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /agent-schedule-delete-title/);
+  assert.match(harness.app.innerHTML, /No scheduled work/);
+  assert.equal(harness.focusedAction(), 'ptab-schedules');
+});
+
+test('opening an editable Agent view revalidates its visible detail without loading hidden tabs', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentDetailFetch() {
+      return Promise.resolve(jsonResponse({
+        agent: { ...releaseAgent, name: 'Release Profile from server' },
+      }));
+    },
+  });
+  await flushAsync();
+
+  assert.equal(harness.agentDetailGets(), 1);
+  assert.match(harness.app.innerHTML, /Release Profile from server/);
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.equal(harness.agentScheduleGets(), 0);
+  assert.deepEqual(harness.ownerMemoryGetCaches, []);
+});
+
+test('focus revalidates only the current Agent surface and active data tab', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
+  await flushAsync();
+  const initialSlackGets = harness.slackStatusGets();
+  const initialDetailGets = harness.agentDetailGets();
+
+  harness.focusWindow();
+  await flushAsync();
+
+  assert.equal(harness.agentDetailGets(), initialDetailGets + 1);
+  assert.equal(harness.slackStatusGets(), initialSlackGets + 1);
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.equal(harness.agentScheduleGets(), 0);
+  assert.deepEqual(harness.ownerMemoryGetCaches, []);
+});
+
+test('focus and visibility coalesce while the active schedule request is loading', async () => {
+  let resolveSchedules: ((response: FakeResponse) => void) | undefined;
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedulesFetch() {
+      return new Promise((resolve) => { resolveSchedules = resolve; });
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  assert.equal(harness.agentScheduleGets(), 1);
+
+  harness.focusWindow();
+  harness.setVisibility('visible');
+  await flushAsync();
+  assert.equal(harness.agentScheduleGets(), 1);
+
+  assert.ok(resolveSchedules);
+  resolveSchedules(jsonResponse({ schedules: [] }));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /No scheduled work/);
+});
+
+test('a stale schedule response cannot overwrite a newer owner generation', async () => {
+  let resolveFirstRelease: ((response: FakeResponse) => void) | undefined;
+  const compactSchedule = (id: string, name: string) => ({
+    id,
+    name,
+    contentAccess: 'readable',
+    status: 'active',
+    version: 1,
+    cadence: { triggerKind: 'schedule', scheduleInput: '0 9 * * *', timezone: 'UTC' },
+    channelLabel: 'eng-releases',
+    nextRunAt: 1_785_168_000_000,
+    lastFinishedAt: null,
+    actions: { pause: true, resume: false, delete: true },
+  });
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedulesFetch(agentId, call) {
+      if (agentId === 'agent_release' && call === 1) {
+        return new Promise((resolve) => { resolveFirstRelease = resolve; });
+      }
+      return Promise.resolve(jsonResponse({
+        schedules: [compactSchedule(
+          agentId === 'agent_release' ? 'routine_release_new' : 'routine_ops',
+          agentId === 'agent_release' ? 'Newest release schedule' : 'Ops schedule',
+        )],
+      }));
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_ops' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Newest release schedule/);
+
+  assert.ok(resolveFirstRelease);
+  resolveFirstRelease(jsonResponse({ schedules: [compactSchedule('routine_release_old', 'Stale release schedule')] }));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Newest release schedule/);
+  assert.doesNotMatch(harness.app.innerHTML, /Stale release schedule/);
+});
+
+test('read-only Agent tabs do not start edit-only resource loads', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agents: [{ ...releaseAgent, canEdit: false }],
+  });
+  await flushAsync();
+  for (const tab of ['connections', 'repositories', 'memory', 'schedules']) {
+    harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': tab }) });
+  }
+  await flushAsync();
+  harness.focusWindow();
+  await flushAsync();
+
+  assert.equal(harness.agentDetailGets(), 0);
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.equal(harness.agentScheduleGets(), 0);
+  assert.deepEqual(harness.ownerMemoryGetCaches, []);
+});
+
+test('a connection mutation refreshes Connections without loading hidden Agent resources', async () => {
+  const account = {
+    id: 'connection_linear', workspaceId: 'T_DESIGN', ownerKind: 'team',
+    providerId: 'linear', label: 'Linear', lifecycle: 'ready', credentialConfigured: true,
+    policy: { kind: 'api', allowedCapabilities: ['issues.read'] },
+  };
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    connectionAccounts: { attached: [], available: [account] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  assert.equal(harness.agentConnectionGets(), 1);
+
+  click({
+    target: actionTarget({
+      'data-action': 'connection-account-attach',
+      'data-connection-id': 'connection_linear',
+    }),
+  });
+  await flushAsync();
+
+  assert.equal(harness.agentConnectionGets(), 2);
+  assert.equal(harness.agentScheduleGets(), 0);
+  assert.deepEqual(harness.ownerMemoryGetCaches, []);
+  assert.match(harness.app.innerHTML, /Linear is connected to this Agent|In this Agent/);
+});
+
+test('a repository draft mutation revalidates only Repositories on focus', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agents: [{
+      ...releaseAgent,
+      repositories: [{
+        id: 'repo_acme_release', installationId: 77, accountLogin: 'acme',
+        fullName: 'acme/release', enabled: true,
+      }],
+    }],
+    githubStatus: {
+      mode: 'app',
+      installations: [{ id: 77, accountLogin: 'acme', accountType: 'Organization', repoCount: 1 }],
+      referencingProfiles: [],
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'repositories' }) });
+  await flushAsync();
+  assert.equal(harness.settingsGetCalls.filter((path) => path === '/admin/api/github/status').length, 1);
+
+  click({ target: actionTarget({ 'data-action': 'repo-remove', 'data-repository-id': 'repo_acme_release' }) });
+  harness.focusWindow();
+  await flushAsync();
+
+  assert.equal(harness.settingsGetCalls.filter((path) => path === '/admin/api/github/status').length, 2);
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.equal(harness.agentScheduleGets(), 0);
+  assert.deepEqual(harness.ownerMemoryGetCaches, []);
+  assert.doesNotMatch(harness.app.innerHTML, /acme\/release/);
 });
 
 test('Agent description lives under the title and is edited with its pencil', async () => {
@@ -4426,6 +5024,7 @@ test('Agent owner memory exposes one directly editable current body without file
   const harness = runAdminPageHarness({ initialPath: '/admin' });
   await flushAsync();
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  await flushAsync();
   assert.deepEqual(harness.ownerMemoryGetCaches, ['no-store']);
   assert.match(harness.app.innerHTML, /One shared memory follows Release Profile everywhere it works/);
   assert.match(harness.app.innerHTML, /<label class="field-label" for="owner-memory-body">Memory<\/label>/);
@@ -4446,6 +5045,7 @@ test('shared Agent memory stays a simple responsive editor', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
   await flushAsync();
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  await flushAsync();
 
   const page = renderAdminPage();
   assert.match(harness.app.innerHTML, /class="owner-memory-editor"/);
@@ -4454,10 +5054,115 @@ test('shared Agent memory stays a simple responsive editor', async () => {
   assert.match(page, /@container \(max-width: 750px\)[\s\S]*?\.owner-memory-editor\s*\{[^}]*padding:\s*20px;/s);
 });
 
+test('a clean Memory tab adopts the newest server body when reopened', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Run &lt;script&gt;alert\(1\)&lt;\/script&gt; before release\./);
+
+  harness.setMemoryEntry('Use the server-side launch checklist.', 2);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'instructions' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.ownerMemoryGetCaches, ['no-store', 'no-store']);
+  assert.match(harness.app.innerHTML, /Use the server-side launch checklist\./);
+});
+
+test('a dirty Memory draft survives tab changes, focus, and visibility restoration', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  await flushAsync();
+  harness.listeners.input?.({
+    target: valueTarget({ 'data-action': 'owner-memory-body' }, 'Keep this unsaved local memory draft.'),
+  });
+  harness.setMemoryEntry('Newer server memory must not replace the draft.', 2);
+
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'instructions' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  harness.focusWindow();
+  harness.setVisibility('hidden');
+  harness.setVisibility('visible');
+  await flushAsync();
+
+  assert.deepEqual(harness.ownerMemoryGetCaches, ['no-store']);
+  assert.match(harness.app.innerHTML, /Keep this unsaved local memory draft\./);
+  assert.doesNotMatch(harness.app.innerHTML, /Newer server memory must not replace the draft/);
+  assert.match(harness.app.innerHTML, /Unsaved memory changes/);
+});
+
+test('typing during a Memory revalidation retires the in-flight server response', async () => {
+  let resolveRevalidation: ((response: FakeResponse) => void) | undefined;
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    memoryGetFetch(agentId, call) {
+      if (call === 1) {
+        return Promise.resolve(jsonResponse({ memory: { agentId, body: 'Initial memory.', revision: 1 } }));
+      }
+      return new Promise((resolve) => { resolveRevalidation = resolve; });
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  await flushAsync();
+  harness.focusWindow();
+  await flushAsync();
+  assert.ok(resolveRevalidation);
+
+  harness.listeners.input?.({
+    target: valueTarget({ 'data-action': 'owner-memory-body' }, 'Draft typed while refresh was pending.'),
+  });
+  resolveRevalidation(jsonResponse({
+    memory: { agentId: 'agent_release', body: 'Late server memory.', revision: 2 },
+  }));
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'instructions' }) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+
+  assert.match(harness.app.innerHTML, /Draft typed while refresh was pending\./);
+  assert.doesNotMatch(harness.app.innerHTML, /Late server memory/);
+  assert.match(harness.app.innerHTML, /data-action="owner-memory-save"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="owner-memory-save" disabled/);
+});
+
+test('a dirty profile draft blocks focus refresh and keeps focus, caret, and scroll', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    resetDocumentScrollOnRender: true,
+  });
+  await flushAsync();
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'profile-instructions' }, 'Unsaved profile instructions.'),
+  });
+  harness.focusModelInput(5);
+  harness.setMainScrollTop(486);
+  harness.setDocumentScrollTop(486);
+  const detailGetsBeforeFocus = harness.agentDetailGets();
+
+  harness.focusWindow();
+  harness.setVisibility('visible');
+  await flushAsync();
+
+  assert.equal(harness.agentDetailGets(), detailGetsBeforeFocus);
+  assert.match(harness.app.innerHTML, /Unsaved profile instructions\./);
+  assert.equal(harness.focusedAction(), 'p-model');
+  assert.deepEqual(harness.modelSelectionRanges.at(-1), [5, 5]);
+  assert.equal(harness.mainScrollTop(), 486);
+  assert.equal(harness.documentScrollTop(), 486);
+  assert.match(harness.app.innerHTML, /data-action="save-profile">Save changes<\/button>/);
+});
+
 test('saving Agent memory writes the one canonical body', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin' });
   await flushAsync();
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  await flushAsync();
   harness.listeners.input?.({ target: valueTarget({ 'data-action': 'owner-memory-body' }, '# Launch context\nShip safely.') });
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-save' }) });
   await flushAsync();
@@ -4468,6 +5173,12 @@ test('saving Agent memory writes the one canonical body', async () => {
   });
   assert.match(harness.app.innerHTML, /# Launch context\nShip safely\./);
   assert.doesNotMatch(harness.app.innerHTML, /agent-memory\.md|memory files/i);
+
+  harness.focusWindow();
+  await flushAsync();
+  assert.deepEqual(harness.ownerMemoryGetCaches, ['no-store', 'no-store']);
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.equal(harness.agentScheduleGets(), 0);
 });
 
 test('Agent saves use the projected revision and preserve a draft on concurrent edit conflict', async () => {
@@ -5518,12 +6229,13 @@ test('managed authorization polling backs off and stops for a manual check', () 
   assert.match(page, /Still waiting for approval\. Finish sign-in, then check again\./);
 });
 
-test('the existing Runs as member can explicitly resume repairable authority-paused schedules', () => {
+test('Agent schedule controls use the scoped optimistic API without Runs as reassignment UI', () => {
   const page = renderAdminPage();
-  assert.match(page, /repairablePause = \["schedule_authority_missing", "assignment_missing", "creator_ineligible", "credential_unavailable"\]/);
-  assert.match(page, /reference\.state === "needs_attention" \|\| routine\.state === "paused" && repairablePause/);
-  assert.match(page, /canResume \? 'Resume future runs' : 'Take over future runs'/);
-  assert.match(page, /data-action="agent-schedule-reassign"/);
+  assert.match(page, /\/agents\/" \+ encodeURIComponent\(agentId\) \+ "\/schedules\/" \+ encodeURIComponent\(scheduleId\) \+ "\/control"/);
+  assert.match(page, /expectedVersion: expectedVersion/);
+  assert.match(page, /acknowledgeIrreversible: true/);
+  assert.match(page, /invalidateAgentSchedules\(agentId\);/);
+  assert.doesNotMatch(page, /data-action="agent-schedule-reassign"/);
 });
 
 test('compact connection rows disclose only trusted capability effects and support hover, focus, and click disclosure', async () => {
@@ -6146,6 +6858,7 @@ test('managed resource picker removes stale handles and warns when discovery is 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({
     'data-action': 'connection-account-resource-open',
     'data-connection-id': account.id,
@@ -10161,6 +10874,10 @@ test('Home opens the canonical Agent and keeps Agent and owner-memory draft guar
 
   const memoryHarness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
   await flushAsync();
+  memoryHarness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }),
+  });
+  await flushAsync();
   memoryHarness.listeners.input?.({
     target: inputTarget({ 'data-action': 'owner-memory-body' }, 'Unsaved Agent memory.'),
   });
@@ -10386,56 +11103,170 @@ test('onboarding never paints normal Admin navigation before its first routed re
   );
 });
 
-test('onboarding publishes the base Agent into one Slack channel and lands directly in Try Chickpea', async () => {
+test('onboarding skips channel publication, validates a provider, requires a model, and opens a Chickpea DM', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding',
     agents: [seededAgents[0]],
-    slackChannels: channelsFixture([
-      { id: 'C_NEW', name: 'new-channel', isPrivate: false, isMember: false },
-      { id: 'C_PRIVATE', name: 'invited-secret', isPrivate: true, isMember: true },
-    ]),
-    putIsMember: true,
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'env', modelCount: null, enabled: true },
+    ],
+    modelProviders: [
+      { id: 'anthropic', configured: false, source: 'missing', suggestions: ['anthropic/claude-sonnet-5', 'anthropic/claude-opus-5'] },
+      { id: 'openai', configured: false, source: 'missing', suggestions: ['openai/gpt-5.6-terra'] },
+      { id: 'openrouter', configured: false, source: 'missing', suggestions: ['openrouter/anthropic/claude-sonnet-5'] },
+      { id: 'cloudflare', configured: true, source: 'Workers AI binding', suggestions: ['cloudflare/@cf/zai-org/glm-5.2'] },
+    ],
     onboarding: {
-      stage: 'choose_channel',
+      stage: 'choose_provider',
       revision: '{"version":1,"state":"active"}',
       workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
       channel: null,
+      slackAppId: 'A_CHICKPEA',
       tryStartedAt: null,
       completedAt: null,
     },
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /Choose where Chickpea should start/);
-  assert.match(harness.app.innerHTML, /# new-channel/);
-  assert.match(harness.app.innerHTML, /# invited-secret \(private\)/);
-  assert.doesNotMatch(harness.app.innerHTML, /unreturned-secret/);
+  assert.doesNotMatch(harness.app.innerHTML, /Choose where Chickpea should start|Choose a channel/);
+  assert.equal(harness.agentChannelPosts.length, 0);
+  assert.equal(harness.onboardingTryPosts.length, 0);
+  assert.match(harness.app.innerHTML, /Choose your model provider/);
+  assert.match(harness.app.innerHTML, /Cloudflare/);
+  assert.match(harness.app.innerHTML, /Anthropic/);
+  assert.match(harness.app.innerHTML, /OpenAI/);
+  assert.match(harness.app.innerHTML, /OpenRouter/);
+  assert.equal((harness.app.innerHTML.match(/class="onboarding-provider-logo"/g) ?? []).length, 4);
 
-  harness.listeners.submit?.({
-    target: submitTarget({ 'data-action': 'onboarding-channel-form' }, { channelSelect: 'C_NEW' }),
-    preventDefault() {},
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' }),
+  });
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'onboarding-provider-key', 'data-provider': 'anthropic' }, 'sk-ant-onboarding'),
+  });
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-provider-continue' }),
   });
   await flushAsync();
 
-  assert.deepEqual(harness.agentChannelPosts.at(-1), {
-    agentId: 'agent_default',
-    body: { workspaceId: 'T_DESIGN', channelId: 'C_NEW' },
+  assert.deepEqual(harness.providerKeyPosts.at(-1), { id: 'anthropic', key: 'sk-ant-onboarding' });
+  assert.equal(harness.onboardingProviderPosts.at(-1)?.providerId, 'anthropic');
+  assert.match(harness.app.innerHTML, /Choose your model/);
+  assert.match(harness.app.innerHTML, /Choose a model/);
+  assert.match(harness.app.innerHTML, /class="onboarding-model-select-wrap"/);
+  assert.match(harness.app.innerHTML, /class="ic onboarding-model-select-icon"/);
+  assert.doesNotMatch(harness.app.innerHTML, /Recommended|default for Anthropic/);
+  assert.match(harness.app.innerHTML, /data-action="onboarding-model-continue" disabled>Select Model<\/button>/);
+
+  harness.listeners.change?.({
+    target: inputTarget({ 'data-action': 'onboarding-model-select' }, 'anthropic/claude-sonnet-5'),
   });
-  assert.deepEqual(harness.onboardingTryPosts, [{
-    expectedRevision: '{"version":1,"state":"active"}',
-    workspaceId: 'T_DESIGN',
-    channelId: 'C_NEW',
-    channelName: 'new-channel',
-  }]);
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-model-continue' }),
+  });
+  await flushAsync();
+
+  assert.equal(harness.onboardingTryPosts.at(-1)?.modelId, 'anthropic/claude-sonnet-5');
+  assert.equal(harness.onboardingTryPosts.at(-1)?.expectedDefaultRevision, 2);
   assert.match(harness.app.innerHTML, /Try Chickpea/);
-  assert.match(harness.app.innerHTML, /https:\/\/app\.slack\.com\/client\/T_DESIGN\/C_NEW/);
+  assert.match(harness.app.innerHTML, /https:\/\/slack\.com\/app_redirect\?app=A_CHICKPEA&amp;team=T_DESIGN/);
   assert.match(harness.app.innerHTML, /Waiting for Chickpea to reply…/);
   assert.doesNotMatch(harness.app.innerHTML, /Waiting for Chickpea to reply&amp;hellip;/);
   assert.match(
     harness.app.innerHTML,
-    /@Chickpea Give me three useful ways you can help this channel, each with an example prompt I could try next\./,
+    /Give me three useful ways you can help me, each with an example prompt I could try next\./,
   );
   assert.match(harness.app.innerHTML, /data-action="onboarding-proceed-dashboard"[^>]*>Proceed to Dashboard<\/button>/);
+  assert.match(harness.app.innerHTML, /Step 4 of 4/);
+});
+
+test('onboarding translates provider and model conflicts into recovery copy', async () => {
+  const rejectedKey = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    providerKeyReject: { status: 401, detail: 'authentication_error: invalid x-api-key' },
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'env', modelCount: null, enabled: true },
+    ],
+    modelProviders: [
+      { id: 'anthropic', configured: false, source: 'missing', suggestions: ['anthropic/claude-sonnet-5'] },
+      { id: 'cloudflare', configured: true, source: 'Workers AI binding', suggestions: ['cloudflare/@cf/zai-org/glm-5.2'] },
+    ],
+    onboarding: {
+      stage: 'choose_provider',
+      revision: '{"version":2,"state":"active"}',
+      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+      channel: null,
+      slackAppId: 'A_CHICKPEA',
+      tryStartedAt: null,
+      completedAt: null,
+    },
+  });
+  await flushAsync();
+
+  rejectedKey.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' }),
+  });
+  rejectedKey.listeners.input?.({
+    target: inputTarget({ 'data-action': 'onboarding-provider-key', 'data-provider': 'anthropic' }, 'sk-ant-invalid'),
+  });
+  rejectedKey.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-provider-continue' }),
+  });
+  await flushAsync();
+
+  assert.match(rejectedKey.app.innerHTML, /Anthropic rejected the key/);
+  assert.doesNotMatch(rejectedKey.app.innerHTML, /provider_key_rejected/);
+
+  const currentDefault: WorkspaceDefaultFixture = {
+    workspaceId: 'T_DESIGN',
+    modelId: 'openai/gpt-5.6',
+    revision: 3,
+    provenance: 'admin_selected',
+    runtimeContract: 'chickpea-v1',
+    live: true,
+    inheritingAgentCount: 1,
+    health: { status: 'ready', providerId: 'openai' },
+  };
+  const modelConflict = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    onboardingTryError: {
+      status: 409,
+      error: 'workspace_model_default_revision_conflict',
+      workspaceDefault: { ...currentDefault, revision: currentDefault.revision + 1 },
+    },
+    modelProviders: [
+      { id: 'anthropic', configured: true, source: 'stored', suggestions: ['anthropic/claude-sonnet-5'] },
+    ],
+    onboarding: {
+      stage: 'choose_model',
+      revision: '{"version":3,"state":"active"}',
+      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+      channel: null,
+      slackAppId: 'A_CHICKPEA',
+      providerId: 'anthropic',
+      modelId: null,
+      tryStartedAt: null,
+      completedAt: null,
+    },
+  });
+  await flushAsync();
+
+  modelConflict.listeners.change?.({
+    target: inputTarget({ 'data-action': 'onboarding-model-select' }, 'anthropic/claude-sonnet-5'),
+  });
+  modelConflict.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-model-continue' }),
+  });
+  await flushAsync();
+
+  assert.match(modelConflict.app.innerHTML, /workspace model changed in another window/i);
+  assert.doesNotMatch(modelConflict.app.innerHTML, /workspace_model_default_revision_conflict/);
 });
 
 test('onboarding can finish from Try Chickpea without waiting for a Slack reply', async () => {
@@ -10446,10 +11277,11 @@ test('onboarding can finish from Try Chickpea without waiting for a Slack reply'
       stage: 'try',
       revision: '{"version":2,"state":"active","tryStartedAt":1800000000000}',
       workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
-      channel: { id: 'C_NEW', name: 'new-channel' },
+      channel: null,
+      slackAppId: 'A_CHICKPEA',
       tryStartedAt: 1_800_000_000_000,
       completedAt: null,
-      agentId: 'agent_default',
+      agentId: 'agent_chickpea',
     },
   });
   await flushAsync();
@@ -10460,98 +11292,36 @@ test('onboarding can finish from Try Chickpea without waiting for a Slack reply'
   assert.deepEqual(harness.onboardingCompletePosts, [{
     expectedRevision: '{"version":2,"state":"active","tryStartedAt":1800000000000}',
   }]);
-  assert.equal(harness.locationPath(), '/admin/agents/agent_default');
-  assert.match(harness.app.innerHTML, /class="agent-profile-page"/);
+  assert.equal(harness.locationPath(), '/admin/agents');
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Agents<\/h1>/);
 });
 
-test('onboarding stays on channel selection until Slack membership is positively verified', async () => {
-  const harness = runAdminPageHarness({
-    initialPath: '/admin/onboarding',
-    agents: [seededAgents[0]],
-    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
-    putAssignmentError: {
-      status: 409,
-      error: 'private_channel_invite_required',
-      message: 'Invite Chickpea to #new-channel, then retry.',
-    },
-    onboarding: {
-      stage: 'choose_channel',
-      revision: '{"version":1,"state":"active"}',
-      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
-      channel: null,
-      tryStartedAt: null,
-      completedAt: null,
-    },
-  });
-  await flushAsync();
-
-  harness.listeners.submit?.({
-    target: submitTarget({ 'data-action': 'onboarding-channel-form' }, { channelSelect: 'C_NEW' }),
-    preventDefault() {},
-  });
-  await flushAsync();
-
-  assert.equal(harness.onboardingTryPosts.length, 0);
-  assert.match(harness.app.innerHTML, /Invite Chickpea to #new-channel, then retry\./);
-  assert.match(harness.app.innerHTML, /Choose where Chickpea should start/);
-});
-
-test('onboarding carries the saved Slack channel name into the immediate Agent handoff', async () => {
-  const harness = runAdminPageHarness({
-    initialPath: '/admin/onboarding',
-    agents: [seededAgents[0]],
-    putIsMember: true,
-    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
-    onboarding: {
-      stage: 'choose_channel',
-      revision: '{"version":1,"state":"active"}',
-      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
-      channel: null,
-      tryStartedAt: null,
-      completedAt: null,
-    },
-  });
-  await flushAsync();
-
-  harness.listeners.submit?.({
-    target: submitTarget({ 'data-action': 'onboarding-channel-form' }, { channelSelect: 'C_NEW' }),
-    preventDefault() {},
-  });
-  await flushAsync();
-  harness.listeners.click?.({
-    target: actionTarget({ 'data-action': 'open-profiles', 'data-agent': 'agent_default' }),
-  });
-
-  assert.match(harness.app.innerHTML, /class="where-channel-name">new-channel<\/span>/);
-  assert.doesNotMatch(harness.app.innerHTML, /class="where-channel-name">C_NEW<\/span>/);
-});
-
-test('completed onboarding confirms the reply and hands off to the canonical Agent', async () => {
+test('completed onboarding confirms the DM and hands off to the dashboard', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding',
     onboarding: {
       stage: 'complete',
       revision: '{"version":1,"state":"complete"}',
       workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
-      channel: { id: 'C_NEW', name: 'new-channel' },
+      channel: null,
+      slackAppId: 'A_CHICKPEA',
       tryStartedAt: 1_800_000_000_000,
       completedAt: 1_800_000_005_000,
-      agentId: 'agent_release',
-      redirectTo: '/admin/agents/agent_release',
+      agentId: 'agent_chickpea',
+      redirectTo: '/admin/agents',
     },
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /Reply confirmed in #new-channel/);
+  assert.match(harness.app.innerHTML, /Reply confirmed in Slack/);
   assert.match(harness.app.innerHTML, /<h1 class="onboarding-title">Chickpea is ready<\/h1>/);
-  assert.match(harness.app.innerHTML, /Continue in Release Profile/);
   assert.doesNotMatch(harness.app.innerHTML, /aria-label="Admin navigation"/);
-  assert.match(harness.app.innerHTML, /class="btn btn-primary" data-action="open-profiles" data-agent="agent_release">Open Release Profile/);
-  assert.match(harness.app.innerHTML, /class="btn btn-soft" href="https:\/\/app\.slack\.com\/client\/T_DESIGN\/C_NEW"/);
-  assert.doesNotMatch(harness.app.innerHTML, /readonly value="@Chickpea summarize|Copy message/);
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-profiles', 'data-agent': 'agent_release' }) });
+  assert.match(harness.app.innerHTML, /data-action="onboarding-open-dashboard"[^>]*>Open dashboard<\/button>/);
+  assert.match(harness.app.innerHTML, /href="https:\/\/slack\.com\/app_redirect\?app=A_CHICKPEA&amp;team=T_DESIGN"/);
+  assert.doesNotMatch(harness.app.innerHTML, /readonly value=|Copy message/);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-open-dashboard' }) });
   assert.match(harness.app.innerHTML, /aria-label="Admin navigation"/);
-  assert.equal(harness.locationPath(), '/admin/agents/agent_release');
+  assert.equal(harness.locationPath(), '/admin/agents');
 });
 
 test('admin page renders a credential-free recovery boundary when Slack is missing', async () => {
@@ -11277,6 +12047,7 @@ test('leaving Settings while its shared loads are pending ignores their stale co
   click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'github' }) });
   assert.equal(pending.size, deferredPaths.size);
   click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'slack' }) });
+  await flushAsync();
   const renderCountAfterLeaving = harness.renderHistory.length;
 
   pending.get('/admin/api/providers')?.(jsonResponse({ providers: [] }));
@@ -11337,6 +12108,30 @@ test('initial deep-link routing leaves browser-restored document position intact
 
   assert.equal(harness.locationPath(), '/admin/agents/agent_release');
   assert.equal(harness.documentScrollTop(), 900);
+});
+
+test('an Agent schedules deep link opens the schedules tab and keeps tab navigation canonical', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    initialSearch: '?tab=schedules',
+  });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /id="ptab-schedules" class="ptab on" role="tab" aria-selected="true"/,
+  );
+  assert.match(harness.app.innerHTML, /<h2>Schedules<\/h2>/);
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({
+    target: actionTarget({
+      'data-action': 'profile-tab',
+      'data-tab': 'memory',
+    }),
+  });
+  assert.equal(harness.historyReplaces.at(-1), '/admin/agents/agent_release?tab=memory');
 });
 
 test('deep-linked Scheduled Work summaries preserve the underlying list position', async () => {

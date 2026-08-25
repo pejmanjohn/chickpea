@@ -40,6 +40,7 @@ import {
 import {
   tagStateStub,
   type SlackInteractionProgress,
+  type StateRpcResult,
   type TurnJob,
 } from '../config/state-rpc.ts';
 import {
@@ -60,6 +61,7 @@ import {
   agentAppHomeStarterMessage,
   agentDirectoryAppHome,
   parseAgentAppHomeSelection,
+  type AgentAppHomeSelection,
 } from '../slack/app-home.ts';
 import {
   classifySlackInteraction,
@@ -578,6 +580,7 @@ async function seedAgentAppHomeThread(input: {
   transport: SlackTransport;
   platformEnv?: PlatformEnv;
   botUserId?: string;
+  deliveryId?: string;
 }): Promise<void> {
   if (!input.botUserId) return;
   const installation = await input.stores.config.getWorkspaceInstallation(input.workspaceId);
@@ -599,6 +602,9 @@ async function seedAgentAppHomeThread(input: {
     channelId: dm.id,
     text: agentAppHomeStarterMessage(agent.name),
     persona: { name: agent.name, avatarUrl },
+    ...(input.deliveryId
+      ? { idempotencyKey: input.deliveryId }
+      : {}),
   });
   const synthetic: NormalizedSlackTurn = {
     workspaceId: input.workspaceId,
@@ -655,6 +661,8 @@ async function postAgentRoutingFeedback(input: {
     ? `Mention one Agent at a time.${alternatives}`
     : input.result.reason === 'member_required'
       ? 'Only full workspace members can start private Agent conversations.'
+      : input.result.reason === 'temporarily_unavailable'
+        ? 'That Agent address could not be verified right now. Try again.'
       : `That Agent is not available here.${alternatives}`;
   if (input.surface === 'channel') {
     // Explicit base-app and Agent-handle mentions receive a private denial.
@@ -739,6 +747,8 @@ interface SlackEventExecution {
   transport: SlackTransport;
   client: ReturnType<typeof createSlackWebClient>;
   botUserId: string;
+  stores?: AppStores;
+  enqueueTurn?: (job: TurnJob) => Promise<StateRpcResult<null>>;
 }
 
 class SlackDurableEnqueueError extends Error {
@@ -755,8 +765,12 @@ export async function processGatewaySlackEnvelope(
   envelope: SlackInboundEnvelope,
   platformEnv?: PlatformEnv,
   providedClient?: GatewayDeploymentClient,
+  providedExecution?: {
+    stores: AppStores;
+    enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>>;
+  },
 ): Promise<'accepted' | 'rejected'> {
-  const stores = resolveStores(platformEnv);
+  const stores = providedExecution?.stores ?? resolveStores(platformEnv);
   const installation = await stores.config.getWorkspaceInstallation(envelope.workspaceId);
   if (
     !installation || installation.transportMode !== 'gateway' ||
@@ -819,16 +833,19 @@ export async function processGatewaySlackEnvelope(
     transport,
     client,
     botUserId: installation.botUserId,
+    stores,
+    ...(providedExecution ? { enqueueTurn: providedExecution.enqueueTurn } : {}),
   });
   return 'accepted';
 }
 
 export async function processGatewayAgentSelection(
-  selection: { workspaceId: string; userId: string; agentId: string },
+  selection: AgentAppHomeSelection,
   platformEnv?: PlatformEnv,
   providedClient?: GatewayDeploymentClient,
+  providedStores?: AppStores,
 ): Promise<'accepted' | 'rejected'> {
-  const stores = resolveStores(platformEnv);
+  const stores = providedStores ?? resolveStores(platformEnv);
   const installation = await stores.config.getWorkspaceInstallation(selection.workspaceId);
   if (
     !installation || installation.transportMode !== 'gateway' ||
@@ -853,7 +870,7 @@ async function processSlackEvent(
   platformEnv: PlatformEnv | undefined,
   execution?: SlackEventExecution,
 ): Promise<void> {
-  const stores = resolveStores(platformEnv);
+  const stores = execution?.stores ?? resolveStores(platformEnv);
   const behavior = await resolveSlackBehaviorSettings(platformEnv, stores.settings);
   const installation = await stores.config.getWorkspaceInstallation(payload.team_id);
   if (!installation || installation.health === 'revoked') return;
@@ -962,6 +979,7 @@ async function processSlackEvent(
         surface,
         actor: agentRoutingActor.routing,
         config: store,
+        transport: runtimeTransport,
       });
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed') {
@@ -1319,10 +1337,6 @@ async function processSlackEvent(
           ...(turn.interactionIntent?.disposition === 'work'
             ? { taskLabels: turn.interactionIntent.checklist }
             : {}),
-          features: {
-            progressiveStreaming: behavior.progressiveStreaming.value,
-            nativeTasks: behavior.nativeTasks.value,
-          },
         },
       });
       if (!result.claimed) return;
@@ -1334,6 +1348,9 @@ async function processSlackEvent(
         // transaction rolled its claims back, so Slack may safely redeliver.
         console.error('[chickpea] ledger Work admission failed:', sanitizeError(err));
         if (promotedDecisionKey) await state.release(promotedDecisionKey);
+        if (execution?.enqueueTurn) {
+          throw new SlackDurableEnqueueError('Canonical Work admission failed.');
+        }
         return;
       }
       // U3 is deliberately observational. Preserve the existing product path
@@ -1433,7 +1450,9 @@ async function processSlackEvent(
       turn,
       assignment,
     };
-    const enqueued = await tagStateStub(platformEnv).enqueueTurn(job);
+    const enqueued = execution?.enqueueTurn
+      ? await execution.enqueueTurn(job)
+      : await tagStateStub(platformEnv).enqueueTurn(job);
     if (!enqueued.ok) {
       // Enqueue failed before anything ran: free the claims so a Slack
       // redelivery can re-drive, and stay silent.

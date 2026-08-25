@@ -10,6 +10,11 @@ import {
 import type { NormalizedSlackTurn } from './types.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import { boundedSlackPublicHandoff } from './public-context.ts';
+import {
+  AgentUserGroupLookupLimiter,
+  repairMentionedAgentUserGroup,
+} from './agent-presence/reconciler.ts';
+import type { SlackTransport } from './transport/types.ts';
 
 export type AgentRouteSurface = 'channel' | 'direct';
 export type AgentRouteSource =
@@ -22,7 +27,8 @@ export type AgentRoutingDenialReason =
   | 'not_available'
   | 'multiple_agents'
   | 'member_required'
-  | 'installation_unavailable';
+  | 'installation_unavailable'
+  | 'temporarily_unavailable';
 
 export interface AgentRouteAlternative {
   id: string;
@@ -65,12 +71,17 @@ export interface ResolveAgentRouteInput {
     | 'getAgent'
     | 'getWorkspaceInstallation'
     | 'listAgentChannelGrants'
+    | 'updateAgent'
     | 'getAgentThreadRoute'
     | 'putAgentThreadRoute'
     | 'listSlackPublicContext'
   >;
   /** Trusted Agent seed from App Home interactivity, never Slack message text. */
   appHomeAgentId?: string;
+  /** Authenticated Slack directory seam used only when a mentioned immutable
+   * group id is absent from the stored Agent map. */
+  transport?: Pick<SlackTransport, 'lookupUserGroup'>;
+  userGroupLookupLimiter?: AgentUserGroupLookupLimiter;
 }
 
 const USER_GROUP_MENTION = /<!subteam\^([A-Z0-9]+)(?:\|[^>]*)?>/g;
@@ -106,10 +117,17 @@ export async function resolveAgentRoute(
     config.getAgentThreadRoute(turn.workspaceId, turn.channelId, turn.threadTs),
   ]);
   const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
+  const agentClaimsByGroupId = new Map<string, CustomAgentConfig[]>();
+  for (const agent of agents) {
+    if (agent.kind !== 'user' || !agent.slackPresence?.userGroupId) continue;
+    const claims = agentClaimsByGroupId.get(agent.slackPresence.userGroupId) ?? [];
+    claims.push(agent);
+    agentClaimsByGroupId.set(agent.slackPresence.userGroupId, claims);
+  }
   const agentsByGroupId = new Map(
-    agents.flatMap((agent) => agent.kind === 'user' && agent.slackPresence?.userGroupId
-      ? [[agent.slackPresence.userGroupId, agent] as const]
-      : []),
+    [...agentClaimsByGroupId.entries()].flatMap(([groupId, claims]) =>
+      claims.length === 1 ? [[groupId, claims[0]!] as const] : []
+    ),
   );
   const activeGrants = channelGrants.filter((grant) => grant.status === 'active');
   const available = await availableAlternatives(activeGrants, agentsById);
@@ -120,6 +138,38 @@ export async function resolveAgentRoute(
       const agent = agentsByGroupId.get(groupId);
       return agent ? [agent] : [];
     });
+  if (mentionedGroupIds.some((groupId) =>
+    (agentClaimsByGroupId.get(groupId)?.length ?? 0) > 1
+  )) {
+    return denied('not_available', []);
+  }
+  if (
+    mentionedGroupIds.length === 1 &&
+    mentionedAgents.length === 0 &&
+    input.transport
+  ) {
+    const repair = await repairMentionedAgentUserGroup({
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      userGroupId: mentionedGroupIds[0]!,
+      config,
+      transport: input.transport,
+      ...(input.userGroupLookupLimiter
+        ? { limiter: input.userGroupLookupLimiter }
+        : {}),
+    });
+    if (repair.kind === 'repaired') {
+      // Re-enter the ordinary stored-id path so routing, grants, handoff, and
+      // memory preparation remain identical to a previously healthy mapping.
+      return resolveAgentRoute(input);
+    }
+    return denied(
+      repair.kind === 'temporarily_unavailable'
+        ? 'temporarily_unavailable'
+        : 'not_available',
+      [],
+    );
+  }
   if (mentionedAgents.length !== mentionedGroupIds.length) {
     return denied('not_available', []);
   }

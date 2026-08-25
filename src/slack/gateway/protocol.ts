@@ -3,6 +3,8 @@ import type { SlackInboundEnvelope } from '../transport/types.ts';
 export const CHICKPEA_GATEWAY_PROTOCOL_VERSION = 1 as const;
 export const MAX_GATEWAY_FRAME_BYTES = 1_048_576;
 export const MAX_GATEWAY_CLOCK_SKEW_MS = 5 * 60_000;
+export const GATEWAY_DURABLE_ADMISSION_CAPABILITY = 'durable_admission_v1' as const;
+export type GatewaySessionCapability = typeof GATEWAY_DURABLE_ADMISSION_CAPABILITY;
 
 export const GATEWAY_SLACK_OPERATIONS = [
   'auth.test',
@@ -93,6 +95,7 @@ export interface GatewayWorkspaceBinding {
 export interface GatewaySessionHello extends GatewaySignedRequest {
   kind: 'session.hello';
   bindingId: string;
+  capabilities?: GatewaySessionCapability[];
 }
 
 export interface GatewaySessionReady {

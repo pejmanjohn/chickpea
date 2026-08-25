@@ -31,6 +31,7 @@ export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
   agentInstructions: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze([]) }),
   agentBlankDescription: Object.freeze({ path: '/admin/agents/agent_customer', actions: Object.freeze([]) }),
   agentMemory: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze(['Memory']) }),
+  agentSchedules: Object.freeze({ path: '/admin/agents/agent_release', actions: Object.freeze(['Schedules']) }),
   channelsIndex: Object.freeze({ path: '/admin/channels', actions: Object.freeze([]) }),
   channelDetail: Object.freeze({ path: '/admin/channels/TVISUAL/C_RELEASES', actions: Object.freeze([]) }),
   channelAdvanced: Object.freeze({
@@ -43,6 +44,7 @@ export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
 export const CANONICAL_SLACK_AUTH_VISUAL_STATES = Object.freeze({
   signIn: Object.freeze({ path: '/__admin_visual_fixture/auth/sign-in' }),
   setupCreate: Object.freeze({ path: '/__admin_visual_fixture/auth/setup-create' }),
+  setupConnected: Object.freeze({ path: '/__admin_visual_fixture/auth/setup-connected' }),
   setupApproval: Object.freeze({ path: '/__admin_visual_fixture/auth/setup-approval' }),
   setupOwner: Object.freeze({ path: '/__admin_visual_fixture/auth/setup-owner' }),
   accessDenied: Object.freeze({ path: '/__admin_visual_fixture/auth/access-denied' }),
@@ -58,7 +60,6 @@ const VISUAL_CHANNELS = Object.freeze([
   { id: 'C_ARCHIVED', name: 'research-archive', is_private: true, is_member: true },
   { id: 'C_DISCOVERED', name: 'design-critique', is_private: false, is_member: true },
 ]);
-
 let activeFixture = false;
 
 async function seedVisualSlackOwner(identity) {
@@ -382,6 +383,81 @@ async function seedMemory(memory) {
   });
 }
 
+async function seedSchedules(store, routines, ownerMembershipId, RoutineService) {
+  const definitions = [
+    {
+      id: 'routine_visual_daily_release',
+      name: 'Daily launch readiness digest with a long scannable name',
+      scheduleInput: '0 9 * * 1-5',
+      nextRunAt: Date.UTC(2026, 7, 26, 16),
+      pause: false,
+      referenceState: 'active',
+    },
+    {
+      id: 'routine_visual_weekly_summary',
+      name: 'Weekly customer summary',
+      scheduleInput: '0 14 * * 5',
+      nextRunAt: Date.UTC(2026, 7, 28, 21),
+      pause: true,
+      referenceState: 'active',
+    },
+    {
+      id: 'routine_visual_dependency',
+      name: 'Dependency follow-up',
+      scheduleInput: '*/30 * * * *',
+      nextRunAt: Date.UTC(2026, 7, 25, 20, 30),
+      pause: false,
+      referenceState: 'needs_attention',
+    },
+  ];
+  for (const item of definitions) {
+    const service = new RoutineService(routines, { routineId: () => item.id });
+    let routine = await service.save({
+      action: 'create',
+      actorId: 'UVISUALOWNER',
+      workspaceId: WORKSPACE_ID,
+      channelId: 'C_RELEASES',
+      definition: {
+        name: item.name,
+        description: 'Visual schedule fixture.',
+        taskText: 'Post a concise visual-fixture update.',
+        triggerKind: 'schedule',
+        scheduleInput: item.scheduleInput,
+        scheduleJson: JSON.stringify({ version: 1, kind: 'cron', expression: item.scheduleInput }),
+        timezone: 'America/Los_Angeles',
+        outputPolicy: 'post',
+        authorityMode: 'live_channel_v1',
+      },
+      nextRunAt: item.nextRunAt,
+      projectedDailyStarts: 1,
+      reservations: [{ windowStart: item.nextRunAt, count: 1 }],
+      sourceVisibility: 'public',
+    }, `visual-schedule:${item.id}`);
+    if (item.pause) {
+      routine = await service.control({
+        routineId: routine.id,
+        expectedVersion: routine.version,
+        action: 'pause',
+        actorId: 'UVISUALOWNER',
+        actorClass: 'operator',
+        reasonCode: 'admin_control',
+        idempotencyKey: `visual-schedule-pause:${item.id}`,
+      });
+    }
+    await store.putAgentScheduleReference({
+      scheduleId: routine.id,
+      agentId: 'agent_release',
+      workspaceId: WORKSPACE_ID,
+      channelId: 'C_RELEASES',
+      createdByMembershipId: ownerMembershipId,
+      runsAsMembershipId: ownerMembershipId,
+      authorityReceiptId: `receipt_${item.id}`,
+      requiredConnectionAccountIds: [],
+      state: item.referenceState,
+    });
+  }
+}
+
 function fakeSlackResponse(pathname, body) {
   if (pathname.endsWith('/conversations.list')) {
     return {
@@ -440,7 +516,8 @@ function fakeSlackResponse(pathname, body) {
     };
   }
   if (pathname.endsWith('/conversations.info')) {
-    const channel = VISUAL_CHANNELS.find((candidate) => candidate.id === body.channel);
+    const channel = VISUAL_CHANNELS
+      .find((candidate) => candidate.id === body.channel);
     return channel
       ? { ok: true, channel }
       : { ok: false, error: 'channel_not_found' };
@@ -448,7 +525,7 @@ function fakeSlackResponse(pathname, body) {
   return { ok: false, error: 'fixture_endpoint_not_found' };
 }
 
-async function nodeRequest(req, res, app, baseUrl) {
+async function nodeRequest(req, res, app, baseUrl, platformEnv) {
   try {
     const chunks = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -458,7 +535,7 @@ async function nodeRequest(req, res, app, baseUrl) {
       headers: req.headers,
       ...(body ? { body } : {}),
     });
-    const response = await app.fetch(request);
+    const response = await app.fetch(request, platformEnv);
     res.statusCode = response.status;
     for (const [name, value] of response.headers) res.setHeader(name, value);
     const bytes = Buffer.from(await response.arrayBuffer());
@@ -495,12 +572,22 @@ export async function startAdminVisualFixture(options = {}) {
   const host = options.host ?? DEFAULT_HOST;
   const port = options.port ?? 0;
   const runtimeContract = options.runtimeContract ?? 'legacy';
+  const onboardingStage = options.onboardingStage ?? null;
+  const principalRole = options.principalRole ?? 'owner';
   assertLoopbackHost(host);
   if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) {
     throw new Error(`Admin visual fixture port must be an integer from 0 to 65535, received ${port}.`);
   }
   if (runtimeContract !== 'legacy' && runtimeContract !== 'chickpea-v1') {
     throw new Error(`Admin visual fixture runtime contract must be legacy or chickpea-v1, received ${runtimeContract}.`);
+  }
+  if (onboardingStage !== null && ![
+    'choose_provider', 'choose_model', 'try',
+  ].includes(onboardingStage)) {
+    throw new Error(`Unknown onboarding visual stage ${onboardingStage}.`);
+  }
+  if (!['owner', 'admin', 'member'].includes(principalRole)) {
+    throw new Error(`Unknown Admin visual principal role ${principalRole}.`);
   }
   if (activeFixture) throw new Error('Only one Admin visual fixture can run in a process at a time.');
   activeFixture = true;
@@ -552,14 +639,21 @@ export async function startAdminVisualFixture(options = {}) {
     } = await loadTsModule('src/slack/app-manifest.ts');
     const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
     const { SqliteSettingsStore } = await loadTsModule('src/config/settings-store.ts');
+    const { PROVIDER_KEY_SETTING_KEYS } = await loadTsModule('src/config/provider-keys.ts');
     const { SqliteMemoryStateStore } = await loadTsModule('src/memory/store.ts');
     const { SqliteRoutineStore } = await loadTsModule('src/routines/store.ts');
+    const { RoutineService } = await loadTsModule('src/routines/service.ts');
     const { SqliteUsageStore } = await loadTsModule('src/usage/store.ts');
     const { SqliteWorkStore } = await loadTsModule('src/work/store.ts');
     const { SqliteSlackStateStore } = await loadTsModule('src/slack/claim-store.ts');
     const { SqliteAgentSnapshotStore } = await loadTsModule('src/config/snapshot-store.ts');
     const { SqliteIdentityStore } = await loadTsModule('src/identity/store.ts');
     const { provisionSlackInteractionMember } = await loadTsModule('src/auth/slack-admission.ts');
+    const {
+      beginOnboardingJourney,
+      selectOnboardingProvider,
+      startOnboardingTry,
+    } = await loadTsModule('src/config/onboarding-state.ts');
     const { generateCredentialKeyring } = await loadTsModule('src/slack/credential-keyring.ts');
     const { writeSlackInstallationCredentials } = await loadTsModule('src/slack/installation-credentials.ts');
     const { WORKSPACE_SLACK_INSTALLATION_ID } = await loadTsModule('src/config/types.ts');
@@ -589,6 +683,31 @@ export async function startAdminVisualFixture(options = {}) {
 
     await seedConfig(store, runtimeContract);
     await seedSettings(settings);
+    if (onboardingStage) {
+      if (onboardingStage === 'choose_model' || onboardingStage === 'try') {
+        await settings.setSetting(
+          PROVIDER_KEY_SETTING_KEYS.anthropic,
+          'sk-ant-local-admin-visual-fixture',
+        );
+      }
+      let onboarding = await beginOnboardingJourney(settings, Date.now());
+      if (onboardingStage === 'choose_model' || onboardingStage === 'try') {
+        onboarding = await selectOnboardingProvider(settings, {
+          expectedRevision: onboarding.revision,
+          workspaceId: WORKSPACE_ID,
+          providerId: 'anthropic',
+        });
+      }
+      if (onboardingStage === 'try') {
+        await startOnboardingTry(settings, {
+          expectedRevision: onboarding.revision,
+          agentId: 'agent_chickpea',
+          modelId: 'anthropic/claude-sonnet-5',
+          slackUserId: 'UVISUAL',
+          tryStartedAt: Date.now(),
+        });
+      }
+    }
     const slackCredentials = {
       state: identity,
       keyring: generateCredentialKeyring(),
@@ -608,6 +727,7 @@ export async function startAdminVisualFixture(options = {}) {
     await seedMemory(memory);
     const owner = await seedVisualSlackOwner(identity);
     await seedConnections(store, owner.membership.id);
+    await seedSchedules(store, routines, owner.membership.id, RoutineService);
     await seedVisualTeam(identity, provisionSlackInteractionMember, owner);
 
     const adminToken = `visual-${randomBytes(18).toString('base64url')}`;
@@ -626,6 +746,11 @@ export async function startAdminVisualFixture(options = {}) {
       'setup-create': renderSlackSetupPage({
         setup: authSetup('awaiting_app_creation'), destination: '/admin/channels',
         manifest: authManifest, manifestPrefillUrl: slackManifestPrefillUrl(authManifest),
+      }),
+      'setup-connected': renderSlackSetupPage({
+        setup: authSetup('awaiting_app_creation'), destination: '/admin/channels',
+        manifest: authManifest, manifestPrefillUrl: slackManifestPrefillUrl(authManifest),
+        gatewayState: 'connected',
       }),
       'setup-approval': renderSlackSetupPage({
         setup: authSetup('approval_pending'), destination: '/admin/channels',
@@ -687,7 +812,7 @@ export async function startAdminVisualFixture(options = {}) {
             userId: owner.user.id,
             membershipId: owner.membership.id,
             organizationId: owner.membership.organizationId,
-            role: 'owner',
+            role: principalRole,
             authenticatorKind: 'visual_slack_session',
             credentialId: 'visual_session',
             correlationId: 'visual_request',
@@ -695,7 +820,7 @@ export async function startAdminVisualFixture(options = {}) {
           };
         },
       },
-      knownProviders: new Set(['local-stub']),
+      knownProviders: new Set(onboardingStage ? ['local-stub', 'cloudflare'] : ['local-stub']),
       runtimeDrain: async () => ({
         drained: true,
         categories: {
@@ -708,8 +833,11 @@ export async function startAdminVisualFixture(options = {}) {
       }),
     }));
 
+    const platformEnv = onboardingStage
+      ? { AI: { models() { return []; } } }
+      : undefined;
     let baseUrl = '';
-    server = createServer((req, res) => void nodeRequest(req, res, app, baseUrl));
+    server = createServer((req, res) => void nodeRequest(req, res, app, baseUrl, platformEnv));
     await listen(server, port, host);
     const bound = server.address();
     if (!bound || typeof bound === 'string' || !loopbackAddress(bound.address)) {
@@ -736,6 +864,7 @@ export async function startAdminVisualFixture(options = {}) {
       adminToken,
       baseUrl,
       runtimeContract,
+      onboardingStage,
       authStates: CANONICAL_SLACK_AUTH_VISUAL_STATES,
       canonicalStates: CANONICAL_ADMIN_VISUAL_STATES,
       stateDbPath,
@@ -749,12 +878,13 @@ export async function startAdminVisualFixture(options = {}) {
 }
 
 function parseCliArgs(args) {
-  const parsed = { host: DEFAULT_HOST, port: 0, runtimeContract: 'legacy' };
+  const parsed = { host: DEFAULT_HOST, port: 0, runtimeContract: 'legacy', onboardingStage: null };
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
     if (value === '--host') parsed.host = args[++index];
     else if (value === '--port') parsed.port = Number(args[++index]);
     else if (value === '--runtime-contract') parsed.runtimeContract = args[++index];
+    else if (value === '--onboarding-stage') parsed.onboardingStage = args[++index];
     else throw new Error(`Unknown argument: ${value}`);
   }
   return parsed;
@@ -764,6 +894,7 @@ async function runCli() {
   const fixture = await startAdminVisualFixture(parseCliArgs(process.argv.slice(2)));
   console.log(`Admin visual fixture: ${fixture.baseUrl}`);
   console.log(`Runtime contract: ${fixture.runtimeContract}`);
+  if (fixture.onboardingStage) console.log(`Onboarding stage: ${fixture.onboardingStage}`);
   console.log(`Local login token: ${fixture.adminToken}`);
   console.log('Canonical states (production URLs; perform the listed UI actions after load):');
   for (const [name, state] of Object.entries(fixture.canonicalStates)) {

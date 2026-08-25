@@ -1350,6 +1350,10 @@ export class CfConfigStore implements ConfigStore {
     return unwrap(await this.stub.configPutAgentScheduleReference(input, expectedRevision));
   }
 
+  async retireAgentScheduleReference(scheduleId: string): Promise<boolean> {
+    return unwrap(await this.stub.configRetireAgentScheduleReference(scheduleId));
+  }
+
   async listChannels(): Promise<ChannelConfig[]> {
     return unwrap(await this.stub.configListChannels());
   }

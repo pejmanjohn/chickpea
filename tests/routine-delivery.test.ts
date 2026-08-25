@@ -78,7 +78,8 @@ test('routine delivery claims once, posts at top level, and records the Slack re
   );
   assert.match(requests[0]?.text ?? '', /Completed the write/);
   assert.doesNotMatch(requests[0]?.blocks ?? '', /rrun_test|!routines show/);
-  assert.match(requests[0]?.blocks ?? '', /View in Audit/);
+  assert.match(requests[0]?.blocks ?? '', /View schedule/);
+  assert.doesNotMatch(requests[0]?.blocks ?? '', /audit-logs/);
   assert.match(requests[0]?.blocks ?? '', /anthropic\/claude-sonnet-4/);
   const rendered = renderRoutineDelivery(routine, run, 'Done.', {
     agentName: 'Default', modelLabel: 'anthropic/claude-sonnet-4',
@@ -89,7 +90,7 @@ test('routine delivery claims once, posts at top level, and records the Slack re
     type: 'context',
     elements: [{
       type: 'mrkdwn',
-      text: 'Scheduled Jul 27 at 4:00 PM UTC · <https://chickpea.example/admin/audit-logs/scheduled-work/routine_test|View in Audit>',
+      text: 'Scheduled Jul 27 at 4:00 PM UTC · <https://chickpea.example/admin/agents/agent_default?tab=schedules|View schedule>',
     }],
   });
   assert.match(JSON.stringify(rendered.blocks?.at(-1)), /Default.*anthropic\/claude-sonnet-4.*Configure/);
@@ -161,7 +162,8 @@ test('terminal notices point to safe history and share the same dedupe lease', a
   }, client);
   assert.match(posted, /Automatic scheduling is paused/);
   assert.doesNotMatch(blocks, /rrun_test|!routines show|`routine_test`/);
-  assert.match(blocks, /View in Audit/);
+  assert.match(blocks, /View schedule/);
+  assert.doesNotMatch(blocks, /audit-logs/);
   assert.match(blocks, /anthropic\/claude-sonnet-4/);
   assert.deepEqual(events, ['claim', 'record:delivered:1785000000.000200']);
 });

@@ -8,21 +8,27 @@ import {
 import { opaqueId } from '../src/work/admission.ts';
 import type { WorkRunListItem, WorkStore } from '../src/work/types.ts';
 
-const TARGET = { workspaceId: 'T123', channelId: 'C456', tryStartedAt: 100 };
+const TARGET = { workspaceId: 'T123', slackUserId: 'U_OWNER', tryStartedAt: 100 };
 
-test('onboarding proof requires one delivered selected-channel mention after Try', () => {
+test('onboarding proof requires one delivered installer DM after Try', () => {
   const delivered = fixture();
   assert.equal(isDeliveredOnboardingReply(delivered, TARGET), true);
 
   for (const changed of [
+    fixture({ run: { triggerKind: 'slack_app_mention' }, binding: { configMode: 'frozen_on_open' } }),
     fixture({ run: { triggerKind: 'slack_message' } }),
     fixture({ run: { createdAt: 99 } }),
+    fixture({ run: { actorRef: opaqueId('actor', 'slack:T123:U_SOMEONE_ELSE') } }),
     fixture({ run: { terminalDisposition: 'failed' } }),
     fixture({ run: { deliveryStatus: 'pending' } }),
     fixture({ run: { deliveryMethod: 'slack_reaction_add' } }),
-    fixture({ run: { deliveryRef: 'slack:C999:1900000000.000001' } }),
+    fixture({ run: { deliveryRef: 'slack:C456:1900000000.000001' } }),
     fixture({ binding: { externalAccountId: opaqueId('account', 'slack:T999') } }),
   ]) assert.equal(isDeliveredOnboardingReply(changed, TARGET), false);
+
+  assert.equal(isDeliveredOnboardingReply(fixture({
+    run: { triggerKind: 'slack_app_mention' },
+  }), TARGET), true, 'an explicit @Chickpea inside the DM remains valid');
 });
 
 test('onboarding proof follows bounded pages and stops once runs predate Try', async () => {
@@ -76,7 +82,7 @@ function fixture(
       sourceVisibility: 'private',
       configMode: 'resolve_each_run',
       pinnedConfigRevisionId: null,
-      orderingKey: 'slack:T123:C456',
+      orderingKey: 'slack:T123:D456',
       createdAt: 90,
       expiredAt: null,
       ...override.binding,
@@ -87,10 +93,10 @@ function fixture(
       bindingId: 'binding_onboarding' as WorkRunListItem['run']['bindingId'],
       kind: 'interactive',
       admissionSequence: 1,
-      triggerKind: 'slack_app_mention',
+      triggerKind: 'slack_dm_message',
       triggerRef: 'slack:event:one',
       dedupeKey: 'event-one',
-      actorRef: null,
+      actorRef: opaqueId('actor', 'slack:T123:U_OWNER'),
       actorTrustTier: 'member',
       sourceContextWatermark: null,
       triggerContentRef: null,
@@ -107,7 +113,7 @@ function fixture(
       deliveryStatus: 'delivered',
       deliveryMethod: 'slack_chat_postMessage',
       deliveryAttemptId: 'attempt-one',
-      deliveryRef: 'slack:C456:1900000000.000001',
+      deliveryRef: 'slack:D456:1900000000.000001',
       deliveryFinalizedAt: 120,
       leaseOwner: null,
       leaseUntil: null,

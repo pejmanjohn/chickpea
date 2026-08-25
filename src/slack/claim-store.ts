@@ -30,6 +30,9 @@ import {
   type SlackPresentationTransitionInput,
   type SlackPresentationTransitionResult,
   type SlackPresentationSummary,
+  type SlackPresentationPersona,
+  type SlackPresentationRoot,
+  type SlackRunPresentation,
   type SlackRunPresentationV1,
 } from './run-presentations.ts';
 import { ACTIVE_WORK_TTL_MS, CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
@@ -43,8 +46,8 @@ export interface SlackCanonicalAdmissionInput {
   admission: AdmitShadowRunInput;
   turnJob?: TurnJob;
   presentation?: {
-    root: SlackRunPresentationV1['root'];
-    persona?: SlackRunPresentationV1['persona'];
+    root: SlackPresentationRoot;
+    persona?: SlackPresentationPersona;
     taskLabels?: readonly string[];
     features?: Partial<SlackRunPresentationV1['features']>;
   };
@@ -140,7 +143,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   listTurnRecoveryRequired?(limit?: number): Promise<SlackTurnRecoveryItem[]>;
   retrySlackInstallationRecovery?(workspaceId: string): Promise<number>;
   resolveTurnRecoveryRequired?(id: string): Promise<boolean>;
-  getRunPresentation?(runId: string): Promise<SlackRunPresentationV1 | undefined>;
+  getRunPresentation?(runId: string): Promise<SlackRunPresentation | undefined>;
   transitionRunPresentation?(
     input: SlackPresentationTransitionInput,
   ): Promise<SlackPresentationTransitionResult>;
@@ -149,7 +152,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
     workspaceId: string,
     retryAfterMs: number,
   ): Promise<{ cooldownUntil: number; budgetVersion: number }>;
-  listRunPresentationsForRepair?(limit?: number): Promise<SlackRunPresentationV1[]>;
+  listRunPresentationsForRepair?(limit?: number): Promise<SlackRunPresentation[]>;
   maintainRunPresentations?(
     limit?: number,
   ): Promise<{ finalizedPurged: number; expiredTombstoned: number }>;

@@ -8,6 +8,9 @@ import {
   SLACK_PRESENTATION_RETENTION_MS,
   SlackRunPresentationStoreLogic,
   SlackPresentationStateError,
+  slackPresentationFinalizationRecord,
+  type SlackPresentationMutation,
+  type SlackRunPresentation,
 } from '../src/slack/run-presentations.ts';
 import { TURN_JOB_TTL_MS, TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 
@@ -35,16 +38,36 @@ function createInput(runId = 'run_presentation_1') {
   } as const;
 }
 
-test('presentation creation freezes identity and stable native tasks', () => {
+function advance(
+  store: SlackRunPresentationStoreLogic,
+  current: SlackRunPresentation,
+  mutation: SlackPresentationMutation,
+): SlackRunPresentation {
+  const result = store.transition({
+    runId: current.runId,
+    workBindingGeneration: current.workBindingGeneration,
+    runFencingToken: current.runFencingToken,
+    expectedProjectionVersion: current.projectionVersion,
+    expectedStreamState: current.stream.state,
+    mutation,
+  });
+  assert.equal(result.outcome, 'applied');
+  if (result.outcome !== 'applied') throw new Error('synthetic transition was not applied');
+  return result.presentation;
+}
+
+test('presentation creation writes V2 with stable native tasks and feature-free identity', () => {
   let clock = 1_800_000_000_000;
   const db = openStateDb(':memory:');
   try {
     const store = new SlackRunPresentationStoreLogic(db, () => clock++);
     const created = store.create(createInput());
 
-    assert.equal(created.schemaVersion, 1);
+    assert.equal(created.schemaVersion, 2);
     assert.equal(created.projectionVersion, 1);
     assert.deepEqual(created.progressiveEligibility, { status: 'pending' });
+    assert.deepEqual(created.progressiveIntent, { status: 'unresolved' });
+    assert.equal('features' in created, false);
     assert.equal(created.stream.state, 'absent');
     assert.deepEqual(created.persona, createInput().persona);
     assert.equal(created.plan?.displayMode, 'plan');
@@ -54,7 +77,10 @@ test('presentation creation freezes identity and stable native tasks', () => {
     ]);
     assert.notEqual(created.plan?.tasks[0]?.id, created.plan?.tasks[1]?.id);
 
-    const replay = store.create(createInput());
+    const replay = store.create({
+      ...createInput(),
+      features: { progressiveStreaming: false, nativeTasks: false },
+    });
     assert.deepEqual(replay, created, 'idempotent admission must not replace frozen state');
 
     assert.throws(
@@ -69,6 +95,124 @@ test('presentation creation freezes identity and stable native tasks', () => {
       }),
       (error: unknown) =>
         error instanceof SlackPresentationStateError && error.code === 'identity_conflict',
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('V1 rows retain frozen features and adopt under V1 identity after the default changes', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => 1_800_000_000_000);
+    const { taskLabels: _legacyTaskLabels, ...legacyBase } = createInput(
+      'run_v1_deploy_boundary',
+    );
+    const legacyInput = {
+      ...legacyBase,
+      schemaVersion: 1 as const,
+      features: { progressiveStreaming: true, nativeTasks: false },
+    };
+    const legacy = store.create(legacyInput);
+    assert.equal(legacy.schemaVersion, 1);
+    assert.deepEqual(legacy.features, {
+      progressiveStreaming: true,
+      nativeTasks: false,
+    });
+
+    const adopted = store.create({
+      ...legacyBase,
+    });
+    assert.deepEqual(adopted, legacy);
+  } finally {
+    db.close();
+  }
+});
+
+test('V2 model intent is fenced, durable, and rejects mismatched or legacy transitions', () => {
+  let clock = 1_800_000_000_000;
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => clock++);
+    const { taskLabels: _intentTaskLabels, ...intentInput } = createInput('run_intent');
+    let current = store.create(intentInput);
+    const apply = (mutation: Parameters<typeof store.transition>[0]['mutation']) => {
+      const result = store.transition({
+        runId: current.runId,
+        workBindingGeneration: current.workBindingGeneration,
+        runFencingToken: current.runFencingToken,
+        expectedProjectionVersion: current.projectionVersion,
+        expectedStreamState: current.stream.state,
+        mutation,
+      });
+      assert.equal(result.outcome, 'applied');
+      if (result.outcome === 'applied') current = result.presentation;
+    };
+    apply({
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    apply({ kind: 'progressive_intent_candidate', toolCallId: 'stream_call_1' });
+    assert.equal(current.schemaVersion, 2);
+    if (current.schemaVersion !== 2) return;
+    assert.deepEqual(current.progressiveIntent, {
+      status: 'pending',
+      toolCallId: 'stream_call_1',
+    });
+
+    assert.throws(
+      () => store.transition({
+        runId: current.runId,
+        workBindingGeneration: current.workBindingGeneration,
+        runFencingToken: current.runFencingToken,
+        expectedProjectionVersion: current.projectionVersion,
+        expectedStreamState: current.stream.state,
+        mutation: { kind: 'progressive_intent_requested', toolCallId: 'stream_call_other' },
+      }),
+      (error: unknown) =>
+        error instanceof SlackPresentationStateError && error.code === 'identity_conflict',
+    );
+    apply({ kind: 'progressive_intent_requested', toolCallId: 'stream_call_1' });
+    assert.equal(current.schemaVersion, 2);
+    if (current.schemaVersion !== 2) return;
+    assert.deepEqual(current.progressiveIntent, {
+      status: 'requested',
+      toolCallId: 'stream_call_1',
+      requestedAt: 1_800_000_000_004,
+    });
+
+    const { taskLabels: _legacyIntentTaskLabels, ...legacyIntentInput } = createInput(
+      'run_legacy_intent',
+    );
+    const legacy = store.create({
+      ...legacyIntentInput,
+      schemaVersion: 1,
+      features: { progressiveStreaming: true, nativeTasks: false },
+    });
+    const legacyEligible = store.transition({
+      runId: legacy.runId,
+      workBindingGeneration: legacy.workBindingGeneration,
+      runFencingToken: legacy.runFencingToken,
+      expectedProjectionVersion: legacy.projectionVersion,
+      expectedStreamState: legacy.stream.state,
+      mutation: {
+        kind: 'freeze_progressive_eligibility',
+        eligibility: { allowed: true, reason: 'safe_early_release' },
+      },
+    });
+    assert.equal(legacyEligible.outcome, 'applied');
+    if (legacyEligible.outcome !== 'applied') return;
+    assert.throws(
+      () => store.transition({
+        runId: legacy.runId,
+        workBindingGeneration: legacy.workBindingGeneration,
+        runFencingToken: legacy.runFencingToken,
+        expectedProjectionVersion: legacyEligible.presentation.projectionVersion,
+        expectedStreamState: legacyEligible.presentation.stream.state,
+        mutation: { kind: 'progressive_intent_not_requested' },
+      }),
+      (error: unknown) =>
+        error instanceof SlackPresentationStateError && error.code === 'invalid_transition',
     );
   } finally {
     db.close();
@@ -96,7 +240,139 @@ test('presentation diagnostics aggregate only content-free workspace outcomes', 
       eligibility: { pending: 1 },
       outcomes: { pending: 1 },
       degradations: { none: 1 },
+      offers: { pending: 1 },
+      intents: { unresolved: 1 },
+      policyOutcomes: { pending: 1 },
+      acceptedBytes: { total: 0, max: 0 },
+      latencyMs: {
+        offerToRequest: { count: 0, min: null, p50: null, p90: null, max: null },
+        requestToFirstEffect: { count: 0, min: null, p50: null, p90: null, max: null },
+        total: { count: 0, min: null, p50: null, p90: null, max: null },
+      },
     });
+  } finally {
+    db.close();
+  }
+});
+
+test('presentation evidence separates offer, intent, delivery, bytes, and latency without content', () => {
+  let clock = 1_800_000_000_000;
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => (clock += 10));
+    const withoutTasks = (runId: string, threadTs: string) => {
+      const { taskLabels: _taskLabels, ...input } = createInput(runId);
+      return store.create({ ...input, root: { ...ROOT, threadTs } });
+    };
+
+    let progressive = withoutTasks('run_evidence_progressive', '1785700010.000100');
+    progressive = advance(store, progressive, {
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    progressive = advance(store, progressive, {
+      kind: 'progressive_intent_candidate', toolCallId: 'stream_evidence',
+    });
+    progressive = advance(store, progressive, {
+      kind: 'progressive_intent_requested', toolCallId: 'stream_evidence',
+    });
+    progressive = advance(store, progressive, { kind: 'stream_start_intent' });
+    progressive = advance(store, progressive, {
+      kind: 'stream_started',
+      messageTs: '1785700010.000200',
+      flue: {
+        instanceId: 'instance_evidence',
+        submissionId: 'submission_evidence',
+        messageId: 'message_evidence',
+      },
+    });
+    assert.equal(progressive.telemetry?.firstProgressiveEffectAt, undefined);
+    progressive = advance(store, progressive, {
+      kind: 'append_intent',
+      position: { batch: 5, index: 0 },
+      from: 0,
+      to: 5,
+      hash: 'a'.repeat(64),
+    });
+    progressive = advance(store, progressive, {
+      kind: 'append_acknowledged',
+      cursor: 1,
+      acknowledgedPrefixHash: 'a'.repeat(64),
+    });
+    assert.equal(typeof progressive.telemetry?.firstProgressiveEffectAt, 'number');
+    progressive = advance(store, progressive, {
+      kind: 'close_stream', outcome: 'progressive',
+    });
+    progressive = advance(store, progressive, { kind: 'mark_finalizing' });
+    progressive = advance(store, progressive, {
+      kind: 'mark_artifact_delivered', outcome: 'progressive',
+    });
+    progressive = advance(store, progressive, { kind: 'mark_finalized' });
+
+    let declined = withoutTasks('run_evidence_declined', '1785700011.000100');
+    declined = advance(store, declined, {
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    declined = advance(store, declined, { kind: 'progressive_intent_not_requested' });
+    declined = advance(store, declined, { kind: 'mark_non_stream_finalized' });
+
+    let disabled = withoutTasks('run_evidence_disabled', '1785700012.000100');
+    disabled = advance(store, disabled, {
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: false, reason: 'operations_disabled' },
+    });
+    disabled = advance(store, disabled, { kind: 'mark_non_stream_finalized' });
+
+    let denied = withoutTasks('run_evidence_denied', '1785700013.000100');
+    denied = advance(store, denied, {
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    denied = advance(store, denied, {
+      kind: 'progressive_intent_candidate', toolCallId: 'stream_denied',
+    });
+    denied = advance(store, denied, {
+      kind: 'progressive_intent_denied', reason: 'non_presentation_tool',
+    });
+    denied = advance(store, denied, { kind: 'mark_non_stream_finalized' });
+
+    const summary = store.summarize(ROOT.workspaceId);
+    assert.deepEqual(summary.offers, { offered: 3, 'denied:operations_disabled': 1 });
+    assert.deepEqual(summary.intents, {
+      requested: 1,
+      not_requested: 1,
+      unresolved: 1,
+      'denied:non_presentation_tool': 1,
+    });
+    assert.deepEqual(summary.policyOutcomes, {
+      requested_progressive: 1,
+      offered_not_requested: 1,
+      operationally_disabled: 1,
+      'requested_denied:non_presentation_tool': 1,
+    });
+    assert.deepEqual(summary.acceptedBytes, { total: 5, max: 5 });
+    assert.equal(summary.latencyMs.offerToRequest.count, 1);
+    assert.equal(summary.latencyMs.requestToFirstEffect.count, 1);
+    assert.equal(summary.latencyMs.total.count, 4);
+
+    const record = slackPresentationFinalizationRecord(progressive);
+    assert.match(record.runRef, /^run_[a-f0-9]{24}$/);
+    assert.equal(record.policyOutcome, 'requested_progressive');
+    assert.equal(record.acceptedBytes, 5);
+    const serialized = JSON.stringify(record);
+    for (const privateValue of [
+      progressive.runId,
+      progressive.root.workspaceId,
+      progressive.root.channelId,
+      progressive.root.threadTs,
+      progressive.root.requesterUserId,
+      'instance_evidence',
+      'submission_evidence',
+      'message_evidence',
+    ]) {
+      assert.equal(serialized.includes(privateValue), false, privateValue);
+    }
   } finally {
     db.close();
   }
@@ -325,6 +601,7 @@ test('adopt_plan attaches a late plan only when absent, native, and plan-free', 
       bindingId: 'binding_presentation',
       workBindingGeneration: 7,
       runFencingToken: 0,
+      schemaVersion: 1,
       root: ROOT,
       features: { progressiveStreaming: false, nativeTasks: true },
     });
@@ -375,6 +652,7 @@ test('adopt_plan is refused when native tasks are disabled', () => {
       bindingId: 'binding_presentation',
       workBindingGeneration: 7,
       runFencingToken: 0,
+      schemaVersion: 1,
       root: ROOT,
       features: { progressiveStreaming: false, nativeTasks: false },
     });
@@ -452,35 +730,52 @@ test('maintenance purges finalized rows early and tombstones unresolved rows wit
       if (result.outcome === 'applied') current = result.presentation;
     }
 
-    const unresolved = store.create(createInput('run_unresolved'));
-    const unknown = store.transition({
-      runId: unresolved.runId,
-      workBindingGeneration: unresolved.workBindingGeneration,
-      runFencingToken: unresolved.runFencingToken,
-      expectedProjectionVersion: unresolved.projectionVersion,
-      expectedStreamState: 'absent',
-      mutation: { kind: 'mark_unknown', degradationReason: 'unknown_effect' },
-    });
-    assert.equal(unknown.outcome, 'applied');
-    assert.deepEqual(store.listRepairRequired(10).map((row) => row.runId), ['run_unresolved']);
+    for (const unresolved of [
+      store.create(createInput('run_unresolved_v2')),
+      store.create({
+        ...createInput('run_unresolved_v1'),
+        schemaVersion: 1,
+        features: { progressiveStreaming: true, nativeTasks: true },
+      }),
+    ]) {
+      const unknown = store.transition({
+        runId: unresolved.runId,
+        workBindingGeneration: unresolved.workBindingGeneration,
+        runFencingToken: unresolved.runFencingToken,
+        expectedProjectionVersion: unresolved.projectionVersion,
+        expectedStreamState: 'absent',
+        mutation: { kind: 'mark_unknown', degradationReason: 'unknown_effect' },
+      });
+      assert.equal(unknown.outcome, 'applied');
+      if (unknown.outcome === 'applied') {
+        assert.equal(unknown.presentation.schemaVersion, unresolved.schemaVersion);
+      }
+    }
+    assert.deepEqual(
+      store.listRepairRequired(10).map((row) => row.runId),
+      ['run_unresolved_v1', 'run_unresolved_v2'],
+    );
 
     clock += SLACK_PRESENTATION_FINALIZED_TTL_MS + 1;
     assert.deepEqual(store.maintain(10), { finalizedPurged: 1, expiredTombstoned: 0 });
     assert.equal(store.get('run_finalized'), undefined);
-    assert.ok(store.get('run_unresolved'), 'repair state must outlive normal terminal TTL');
+    assert.ok(store.get('run_unresolved_v1'), 'V1 repair state must outlive normal terminal TTL');
+    assert.ok(store.get('run_unresolved_v2'), 'V2 repair state must outlive normal terminal TTL');
 
     clock = 1_800_000_000_000 + SLACK_PRESENTATION_RETENTION_MS + 1;
-    assert.deepEqual(store.maintain(10), { finalizedPurged: 0, expiredTombstoned: 1 });
-    assert.equal(store.get('run_unresolved'), undefined);
-    assert.deepEqual(store.listRetentionTombstones(10), [{
+    assert.deepEqual(store.maintain(10), { finalizedPurged: 0, expiredTombstoned: 2 });
+    assert.equal(store.get('run_unresolved_v1'), undefined);
+    assert.equal(store.get('run_unresolved_v2'), undefined);
+    assert.deepEqual(store.listRetentionTombstones(10), Array.from({ length: 2 }, () => ({
       streamState: 'unknown',
       repairRequired: true,
       expiredAt: 1_800_000_000_000 + SLACK_PRESENTATION_RETENTION_MS,
       tombstonedAt: clock,
-    }]);
+    })));
     const serialized = JSON.stringify(store.listRetentionTombstones(10));
     for (const identifier of [
-      'run_unresolved',
+      'run_unresolved_v1',
+      'run_unresolved_v2',
       ROOT.workspaceId,
       ROOT.channelId,
       ROOT.requesterUserId,
