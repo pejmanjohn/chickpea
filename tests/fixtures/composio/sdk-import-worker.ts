@@ -18,7 +18,7 @@ export default {
       'chickpea:membership:workerd_smoke',
       'ac_workerd_smoke',
       {
-        callbackUrl: 'https://chickpea.example.test/admin/connections/composio/callback',
+        callbackUrl: 'https://example.test/composio/return',
         allowMultiple: true,
       },
     );

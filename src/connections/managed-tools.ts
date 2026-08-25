@@ -23,8 +23,8 @@ import {
 } from './artifacts.ts';
 import type { ManagedConnectionDeclaration } from './types.ts';
 import {
-  createDefaultManagedConnectionProviderRegistry,
   invokeManagedConnectionCapability,
+  resolveDefaultManagedConnectionProviderRegistry,
   type ManagedConnectionProviderRegistry,
 } from './managed.ts';
 
@@ -72,6 +72,10 @@ interface ManagedToolInput {
   actorMembershipId: string;
   resolvePlatformEnv: PlatformEnvResolver;
   providers?: ManagedConnectionProviderRegistry;
+  /** Test/embedding seam; defaults to installation-aware async resolution. */
+  resolveProviders?: (
+    env: PlatformEnv | undefined,
+  ) => Promise<ManagedConnectionProviderRegistry>;
   stores?: ManagedToolStores;
   usageCorrelation?: ManagedToolUsageCorrelation;
 }
@@ -88,6 +92,7 @@ export function createManagedConnectionTools(input: {
   const nameCounts = new Map<string, number>();
   const reservedToolNames = new Set(input.reservedToolNames ?? []);
   const groups = groupManagedConnections(input.connections);
+  let environmentPromise: Promise<PlatformEnv | undefined> | undefined;
   let runtimePromise: Promise<ManagedToolRuntime> | undefined;
   const context: ManagedToolContext = {
     workspaceId: input.workspaceId,
@@ -95,11 +100,24 @@ export function createManagedConnectionTools(input: {
     actorMembershipId: input.actorMembershipId,
     ...(input.usageCorrelation ? { usageCorrelation: input.usageCorrelation } : {}),
     ...(input.stores ? { stores: input.stores } : {}),
-    resolveRuntime() {
-      runtimePromise ??= input.resolvePlatformEnv().then((env) => ({
-        env,
-        providers: input.providers ?? createDefaultManagedConnectionProviderRegistry(env),
-      }));
+    async resolveRuntime() {
+      if (!runtimePromise) {
+        const attempt = (async () => {
+          environmentPromise ??= input.resolvePlatformEnv();
+          const env = await environmentPromise;
+          return {
+            env,
+            providers: input.providers ?? await (
+              input.resolveProviders ?? resolveDefaultManagedConnectionProviderRegistry
+            )(env),
+          };
+        })();
+        runtimePromise = attempt;
+        void attempt.catch(() => {
+          if (runtimePromise === attempt) runtimePromise = undefined;
+          environmentPromise = undefined;
+        });
+      }
       return runtimePromise;
     },
   };

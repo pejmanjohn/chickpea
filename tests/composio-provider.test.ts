@@ -8,7 +8,10 @@ import {
   ManagedAuthorizationExpiredError,
   ManagedProviderRequestError,
 } from '../src/connections/managed-errors.ts';
-import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
+import {
+  ComposioManagedConnectionProvider,
+  inspectComposioConnectedAccount,
+} from '../src/connections/providers/composio.ts';
 import { COMPOSIO_TOOLKIT_VERSIONS } from '../src/connections/providers/composio/versions.ts';
 
 const POLICY: ConnectionAccountManagedPolicy = {
@@ -66,11 +69,41 @@ test('validation binds a connected account to the exact Chickpea principal', asy
   assert.equal(
     requestedUrl,
     'https://backend.composio.dev/api/v3.1/connected_accounts' +
-      '?connected_account_ids=ca_test' +
-      '&user_ids=chickpea%3Amembership%3Amembership_test&limit=1',
+      '?connected_account_ids=ca_test&user_ids=chickpea%3Amembership%3Amembership_test&limit=1',
   );
   assert.equal(requestedApiKey, 'test-key');
   assert.equal(clientCreations, 0);
+});
+
+test('reconciliation inspects the exact account through the ownership-filtered REST path', async (t) => {
+  let requestedUrl = '';
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+    requestedUrl = String(input);
+    return Response.json({
+      items: [{
+        id: 'ca_test',
+        status: 'ACTIVE',
+        is_disabled: false,
+        toolkit: { slug: 'GMAIL' },
+        user_id: 'chickpea:membership:membership_test',
+      }],
+    });
+  });
+
+  const result = await inspectComposioConnectedAccount({
+    apiKey: 'test-key',
+    accountRef: 'ca_test',
+    principalRef: 'chickpea:membership:membership_test',
+    toolkit: 'gmail',
+    signal: AbortSignal.timeout(1_000),
+  });
+
+  assert.equal(result, 'match');
+  assert.equal(
+    requestedUrl,
+    'https://backend.composio.dev/api/v3.1/connected_accounts' +
+      '?connected_account_ids=ca_test&user_ids=chickpea%3Amembership%3Amembership_test&limit=1',
+  );
 });
 
 test('production execution pins the dated toolkit version and exact account', async () => {
@@ -1408,7 +1441,6 @@ test('YouTube upload stages only a trusted bounded artifact and pins the exact a
 test('YouTube higher quota overrides remain unavailable until audit approval', () => {
   const defaults = new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
-    webhookReady: true,
     authConfigIds: { youtube: { read: 'ac_youtube_read', write: 'ac_youtube_write' } },
   });
   assert.equal(defaults.availability({ toolkit: 'youtube', accessLane: 'write' }).status, 'ready');
@@ -1418,7 +1450,6 @@ test('YouTube higher quota overrides remain unavailable until audit approval', (
   });
   const unaudited = new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
-    webhookReady: true,
     authConfigIds: { youtube: { write: 'ac_youtube_write' } },
     youtubeGeneralDailyQuota: '20000',
   });
@@ -1428,7 +1459,6 @@ test('YouTube higher quota overrides remain unavailable until audit approval', (
   );
   const audited = new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
-    webhookReady: true,
     authConfigIds: { youtube: { write: 'ac_youtube_write' } },
     youtubeGeneralDailyQuota: '20000',
     youtubeQuotaAuditApproved: 'true',
@@ -1595,7 +1625,7 @@ test('provider throttling preserves Retry-After without probing account status',
   assert.equal(accountQueries, 0);
 });
 
-test('validation rejects a mismatched deprecated user_id returned by the principal-filtered lookup', async (t) => {
+test('validation rejects a mismatched deprecated user_id returned by the exact-account lookup', async (t) => {
   let clientCreations = 0;
   t.mock.method(globalThis, 'fetch', async () => Response.json({
     items: [{
@@ -1616,7 +1646,7 @@ test('validation rejects a mismatched deprecated user_id returned by the princip
 
   await assert.rejects(
     provider.validate({ policy: POLICY }),
-    /Composio managed connection could not be validated/,
+    (error: unknown) => error instanceof ManagedAuthorizationExpiredError,
   );
   assert.equal(clientCreations, 0);
 });
@@ -1947,8 +1977,39 @@ test('Composio execution surfaces a stable reconnect signal for an inactive acco
   );
 });
 
-test('Composio validation uses the pinned v3.1 connected-account endpoint', async (t) => {
+test('Composio execution surfaces reconnect when the exact remote account was deleted', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({
+    items: [],
+    next_cursor: null,
+    total_pages: 0,
+  }));
+  const provider = new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    createClient: async () => ({
+      sessions: {
+        async create() {
+          return {
+            async execute() { throw new Error('provider execution failed'); },
+          };
+        },
+      },
+    }),
+  });
+
+  await assert.rejects(
+    provider.execute({
+      policy: POLICY,
+      capability: 'gmail.messages.search',
+      arguments: { query: 'is:unread' },
+    }),
+    ManagedAuthorizationExpiredError,
+  );
+});
+
+test('Composio validation observes a deprecated missing account owner without exposing ids', async (t) => {
   const requests: string[] = [];
+  const warnings: string[] = [];
+  t.mock.method(console, 'warn', (message: string) => { warnings.push(message); });
   t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
     requests.push(String(input));
     return Response.json({
@@ -1972,12 +2033,63 @@ test('Composio validation uses the pinned v3.1 connected-account endpoint', asyn
   });
 
   await provider.validate({ policy: POLICY });
+  const secondProvider = new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    createClient: async () => ({
+      sessions: {
+        async create() {
+          return { async execute() { return { data: {} }; } };
+        },
+      },
+    }),
+  });
+  await secondProvider.validate({ policy: POLICY });
 
   assert.deepEqual(requests, [
     'https://backend.composio.dev/api/v3.1/connected_accounts' +
-      '?connected_account_ids=ca_test' +
-      '&user_ids=chickpea%3Amembership%3Amembership_test&limit=1',
+      '?connected_account_ids=ca_test&user_ids=chickpea%3Amembership%3Amembership_test&limit=1',
+    'https://backend.composio.dev/api/v3.1/connected_accounts' +
+      '?connected_account_ids=ca_test&user_ids=chickpea%3Amembership%3Amembership_test&limit=1',
   ]);
+  assert.deepEqual(warnings.map((warning) => JSON.parse(warning)), [{
+    event: 'chickpea.managed_connection.account_owner_unavailable',
+    adapterId: 'composio',
+    toolkit: 'gmail',
+  }]);
+  assert.equal(warnings.some((warning) => warning.includes('ca_test')), false);
+});
+
+test('validation fails closed when the principal filter is unavailable and ownership is omitted', async (t) => {
+  const requests: string[] = [];
+  const errors: string[] = [];
+  t.mock.method(console, 'error', (message: string) => { errors.push(message); });
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+    const url = String(input);
+    requests.push(url);
+    return Response.json({
+      items: url.includes('user_ids=') ? [] : [{
+        id: 'ca_test',
+        status: 'ACTIVE',
+        is_disabled: false,
+        toolkit: { slug: 'gmail' },
+      }],
+    });
+  });
+  const provider = new ComposioManagedConnectionProvider({ apiKey: 'test-key' });
+
+  await assert.rejects(
+    provider.validate({ policy: POLICY }),
+    (error: unknown) => error instanceof ManagedProviderRequestError &&
+      error.code === 'provider_unavailable',
+  );
+  assert.equal(requests.length, 2);
+  assert.match(requests[0] ?? '', /user_ids=/);
+  assert.doesNotMatch(requests[1] ?? '', /user_ids=/);
+  assert.deepEqual(errors.map((message) => JSON.parse(message)), [{
+    event: 'chickpea.managed_connection.account_owner_verification_unavailable',
+    adapterId: 'composio',
+  }]);
+  assert.equal(errors.some((message) => message.includes('ca_test')), false);
 });
 
 test('concurrent Composio requests share one successful client construction', async () => {
@@ -2013,11 +2125,10 @@ test('concurrent Composio requests share one successful client construction', as
   ]);
 });
 
-test('managed authorization uses the auth config Connect Link and completes callback identity verification', async () => {
+test('managed authorization uses the auth config Connect Link', async () => {
   let linkedUser = '';
   let linkedAuthConfig = '';
   let linkOptions: Record<string, unknown> | undefined;
-  let completedInput: Record<string, unknown> | undefined;
   const provider = new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
     authConfigIds: { gmail: { read: 'ac_gmail_read' } },
@@ -2039,34 +2150,130 @@ test('managed authorization uses the auth config Connect Link and completes call
         },
       },
     }),
-    completeAuthorization: async (input) => {
-      completedInput = input;
-      return { accountRef: 'ca_connected', toolkit: 'gmail' };
-    },
   });
 
   const started = await provider.authorize({
     principalRef: 'chickpea:membership:membership_test',
     toolkit: 'gmail',
     allowedCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
-    callbackUrl: 'https://chickpea.example/admin/connections/composio/callback',
   });
   assert.equal(started.authorizationUrl.toString(), 'https://connect.composio.dev/link/lk_test');
   assert.equal(started.authorizationRef, 'ca_connected');
   assert.equal(linkedUser, 'chickpea:membership:membership_test');
   assert.equal(linkedAuthConfig, 'ac_gmail_read');
   assert.deepEqual(linkOptions, {
-    callbackUrl: 'https://chickpea.example/admin/connections/composio/callback',
     allowMultiple: true,
   });
+});
 
-  const completed = await provider.completeAuthorization({
-    principalRef: 'chickpea:membership:membership_test',
-    sessionUri: 'session://signed-once',
+test('hostless managed authorization omits callbackUrl entirely', async () => {
+  let linkOptions: Record<string, unknown> | undefined;
+  const provider = new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    authConfigIds: { gmail: { read: 'ac_gmail_read' } },
+    createClient: async () => ({
+      connectedAccounts: {
+        async link(_userId, _authConfigId, options) {
+          linkOptions = options;
+          return {
+            id: 'ca_hostless',
+            redirectUrl: 'https://connect.composio.dev/link/lk_hostless',
+          };
+        },
+        async get() {
+          return {
+            id: 'ca_hostless',
+            status: 'INITIATED',
+            isDisabled: false,
+            toolkit: { slug: 'gmail' },
+          };
+        },
+      },
+      sessions: {
+        async create() {
+          return { async execute() { return { data: {} }; } };
+        },
+      },
+    }),
   });
-  assert.deepEqual(completed, { accountRef: 'ca_connected', toolkit: 'gmail' });
-  assert.equal(completedInput?.principalRef, 'chickpea:membership:membership_test');
-  assert.equal(completedInput?.sessionUri, 'session://signed-once');
+
+  const started = await provider.authorize({
+    principalRef: POLICY.principalRef,
+    toolkit: 'gmail',
+    allowedCapabilities: ['gmail.profile.read'],
+  });
+
+  assert.equal(started.authorizationRef, 'ca_hostless');
+  assert.equal(started.authorizationUrl.toString(),
+    'https://connect.composio.dev/link/lk_hostless');
+  assert.deepEqual(linkOptions, { allowMultiple: true });
+  assert.equal(Object.hasOwn(linkOptions ?? {}, 'callbackUrl'), false);
+});
+
+test('authorization polling distinguishes pending, active, and terminal exact accounts', async () => {
+  const statuses = ['INITIATED', 'ACTIVE', 'EXPIRED'];
+  let calls = 0;
+  const provider = new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    getConnectedAccount: async () => {
+      const status = statuses[calls++]!;
+      return {
+        id: 'ca_poll',
+        status,
+        isDisabled: false,
+        toolkit: 'gmail',
+        userId: POLICY.principalRef,
+      };
+    },
+  });
+  const input = {
+    authorizationRef: 'ca_poll',
+    principalRef: POLICY.principalRef,
+    toolkit: 'gmail',
+  };
+
+  assert.deepEqual(await provider.pollAuthorization(input), { status: 'pending' });
+  assert.deepEqual(await provider.pollAuthorization(input), {
+    status: 'active',
+    accountRef: 'ca_poll',
+    toolkit: 'gmail',
+  });
+  assert.deepEqual(await provider.pollAuthorization(input), {
+    status: 'terminal',
+    reason: 'expired',
+  });
+});
+
+test('concurrent exact-account authorization polls stay request-local and terminalize identity mismatches', async () => {
+  let calls = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const provider = new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    getConnectedAccount: async () => {
+      calls += 1;
+      await gate;
+      return {
+        id: 'ca_poll',
+        status: 'ACTIVE',
+        isDisabled: false,
+        toolkit: 'gmail',
+        userId: 'another-principal',
+      };
+    },
+  });
+  const input = {
+    authorizationRef: 'ca_poll',
+    principalRef: POLICY.principalRef,
+    toolkit: 'gmail',
+  };
+  const first = provider.pollAuthorization(input);
+  const second = provider.pollAuthorization(input);
+  release();
+
+  assert.deepEqual(await first, { status: 'terminal', reason: 'failed' });
+  assert.deepEqual(await second, { status: 'terminal', reason: 'failed' });
+  assert.equal(calls, 2);
 });
 
 test('managed authorization surfaces an allocated account when its Connect Link is invalid', async () => {
@@ -2092,61 +2299,9 @@ test('managed authorization surfaces an allocated account when its Connect Link 
       principalRef: POLICY.principalRef,
       toolkit: 'gmail',
       allowedCapabilities: ['gmail.profile.read'],
-      callbackUrl: 'https://chickpea.example/admin/connections/composio/callback',
     }),
     (error: unknown) => error instanceof ManagedAuthorizationAllocatedError &&
       error.authorizationRef === 'ca_allocated_without_link',
-  );
-});
-
-test('Composio callback redemption uses the documented complete_auth contract', async (t) => {
-  let requestUrl = '';
-  let requestMethod = '';
-  let requestApiKey = '';
-  let requestBody: unknown;
-  t.mock.method(globalThis, 'fetch', async (
-    input: string | URL | Request,
-    init?: RequestInit,
-  ) => {
-    requestUrl = String(input);
-    requestMethod = init?.method ?? 'GET';
-    requestApiKey = new Headers(init?.headers).get('x-api-key') ?? '';
-    requestBody = JSON.parse(String(init?.body));
-    return Response.json({
-      connected_account_id: 'ca_completed',
-      toolkit_slug: 'GMAIL',
-    });
-  });
-  const provider = new ComposioManagedConnectionProvider({ apiKey: 'test-key' });
-
-  assert.deepEqual(await provider.completeAuthorization({
-    principalRef: POLICY.principalRef,
-    sessionUri: 'session://signed-once',
-  }), { accountRef: 'ca_completed', toolkit: 'gmail' });
-  assert.equal(
-    requestUrl,
-    'https://backend.composio.dev/api/v3.1/connected_accounts/complete_auth',
-  );
-  assert.equal(requestMethod, 'POST');
-  assert.equal(requestApiKey, 'test-key');
-  assert.deepEqual(requestBody, {
-    session_uri: 'session://signed-once',
-    user_id: POLICY.principalRef,
-  });
-});
-
-test('Composio callback redemption rejects a malformed response', async (t) => {
-  t.mock.method(globalThis, 'fetch', async () => Response.json({
-    connected_account_id: 'ca_completed',
-  }));
-  const provider = new ComposioManagedConnectionProvider({ apiKey: 'test-key' });
-
-  await assert.rejects(
-    provider.completeAuthorization({
-      principalRef: POLICY.principalRef,
-      sessionUri: 'session://signed-once',
-    }),
-    /could not be completed/,
   );
 });
 
@@ -2183,7 +2338,6 @@ test('managed authorization selects the write auth config and fails closed when 
     principalRef: 'chickpea:membership:membership_test',
     toolkit: 'googlecalendar',
     allowedCapabilities: ['calendar.events.list', 'calendar.events.create'],
-    callbackUrl: 'https://chickpea.example/admin/connections/composio/callback',
   });
   assert.equal(linkedAuthConfigs[0], 'ac_calendar_write');
 
@@ -2197,7 +2351,6 @@ test('managed authorization selects the write auth config and fails closed when 
       principalRef: 'chickpea:membership:membership_test',
       toolkit: 'googlecalendar',
       allowedCapabilities: ['calendar.events.create'],
-      callbackUrl: 'https://chickpea.example/admin/connections/composio/callback',
     }),
     /Composio managed authorization could not be started/,
   );
@@ -2661,8 +2814,13 @@ test('Notion validation rejects a provider response that explicitly reports unsu
     }),
   });
 
-  await assert.rejects(provider.validate({ policy }),
-    /Composio managed connection could not be validated/);
+  await assert.rejects(
+    provider.validate({ policy }),
+    (error: unknown) => error instanceof ManagedProviderRequestError &&
+      error.code === 'validation_failed' &&
+      error.metadata.definiteFailure === true &&
+      error.metadata.providerToolCallCount === 1,
+  );
 });
 
 test('Notion exposes only curated exact tools and maps bounded provider arguments', async () => {

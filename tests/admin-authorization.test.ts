@@ -131,6 +131,22 @@ test('an Agent editor may take over Runs as but cannot grant another member auth
       apiConnections: [],
       repositories: [],
     });
+    const unavailableConnection = await config.putConnectionAccount({
+      id: 'connection_schedule_unavailable', workspaceId: 'T_TEST', ownerKind: 'team',
+      createdByMembershipId: owner.membership.id, providerId: 'google', label: 'Shared Gmail',
+      policy: {
+        kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+        principalRef: 'principal_schedule_unavailable',
+        accountRef: 'account_schedule_unavailable',
+        allowedCapabilities: ['gmail.messages.search'],
+      },
+      secretRefId: 'secret_schedule_unavailable', lifecycle: 'needs_attention',
+    }, 0);
+    await config.putAgentConnectionBinding({
+      agentId: agent.id, connectionAccountId: unavailableConnection.id,
+      providerId: unavailableConnection.providerId,
+      allowedCapabilities: ['gmail.messages.search'], enabled: true,
+    });
     const reference = await config.putAgentScheduleReference({
       scheduleId: 'schedule_authority',
       agentId: agent.id,
@@ -139,9 +155,42 @@ test('an Agent editor may take over Runs as but cannot grant another member auth
       createdByMembershipId: other.resolution.membership.id,
       runsAsMembershipId: other.resolution.membership.id,
       authorityReceiptId: 'receipt_other',
-      requiredConnectionAccountIds: [],
-      state: 'paused',
+      requiredConnectionAccountIds: [unavailableConnection.id],
+      connectionPauseAccountIds: [unavailableConnection.id],
+      state: 'needs_attention',
     });
+    const nextRunAt = Date.now() + 60 * 60_000;
+    const savedRoutine = await routines.save({
+      actorId: other.resolution.membership.id,
+      actorClass: 'member',
+      workspaceId: 'T_TEST',
+      channelId: 'C_TEST',
+      draft: {
+        action: 'create',
+        routineId: reference.scheduleId,
+        definition: {
+          name: 'Schedule authority', description: 'Test authority takeover.',
+          taskText: 'Run scheduled work.', triggerKind: 'schedule',
+          scheduleInput: '0 * * * *',
+          scheduleJson: JSON.stringify({ version: 1, kind: 'cron', expression: '0 * * * *' }),
+          timezone: 'UTC', outputPolicy: 'post', authorityMode: 'live_channel_v1',
+        },
+        nextRunAt,
+        projectedDailyStarts: 1,
+        reservations: [{ windowStart: nextRunAt, count: 1 }],
+      },
+      idempotencyKey: 'create:schedule_authority',
+    });
+    const pausedRoutine = await routines.control({
+      routineId: savedRoutine.id,
+      expectedVersion: savedRoutine.version,
+      action: 'pause',
+      actorId: other.resolution.membership.id,
+      actorClass: 'member',
+      reasonCode: 'connection_unavailable',
+      idempotencyKey: 'pause:schedule_authority',
+    });
+    assert.equal(pausedRoutine.state, 'paused');
     const ownerPrincipal: AuthPrincipal = {
       userId: owner.user.id,
       membershipId: owner.membership.id,
@@ -179,8 +228,68 @@ test('an Agent editor may take over Runs as but cannot grant another member auth
       }),
     });
     assert.equal(takeover.status, 200, await takeover.clone().text());
-    assert.equal((await takeover.json() as Record<string, any>).reference.runsAsMembershipId,
-      owner.membership.id);
+    const takeoverBody = await takeover.json() as Record<string, any>;
+    assert.equal(takeoverBody.reference.runsAsMembershipId, owner.membership.id);
+    assert.equal(takeoverBody.reference.state, 'needs_attention');
+    assert.deepEqual(takeoverBody.reference.connectionPauseAccountIds, [unavailableConnection.id]);
+    assert.equal(takeoverBody.routine.state, 'paused');
+    const latestUnavailableConnection = (await config.listConnectionAccounts('T_TEST'))
+      .find(({ id }) => id === unavailableConnection.id)!;
+    await config.putConnectionAccount({
+      ...latestUnavailableConnection,
+      lifecycle: 'ready',
+    }, latestUnavailableConnection.revision);
+    const activeAuthority = await app.request(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        expectedAuthorityRevision: takeoverBody.reference.revision,
+        runsAsMembershipId: owner.membership.id,
+      }),
+    });
+    assert.equal(activeAuthority.status, 200, await activeAuthority.clone().text());
+    const activeAuthorityBody = await activeAuthority.json() as Record<string, any>;
+    assert.equal(activeAuthorityBody.reference.state, 'active');
+    assert.equal(
+      activeAuthorityBody.routine.state,
+      'paused',
+      'Runs-as reassignment must not acknowledge a non-authority pause',
+    );
+    assert.equal(activeAuthorityBody.routine.pausedReason, 'connection_unavailable');
+    const resumedForSystemPause = await routines.control({
+      routineId: activeAuthorityBody.routine.id,
+      expectedVersion: activeAuthorityBody.routine.version,
+      action: 'resume',
+      actorId: owner.membership.id,
+      actorClass: 'operator',
+      idempotencyKey: 'resume:before-credential-pause',
+    });
+    const credentialPaused = await routines.control({
+      routineId: resumedForSystemPause.id,
+      expectedVersion: resumedForSystemPause.version,
+      action: 'pause',
+      actorId: owner.membership.id,
+      actorClass: 'system',
+      reasonCode: 'credential_unavailable',
+      idempotencyKey: 'pause:credential-unavailable',
+    });
+    assert.equal(credentialPaused.state, 'paused');
+    const repairedCredentialPause = await app.request(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        expectedAuthorityRevision: activeAuthorityBody.reference.revision,
+        runsAsMembershipId: owner.membership.id,
+      }),
+    });
+    assert.equal(
+      repairedCredentialPause.status,
+      200,
+      await repairedCredentialPause.clone().text(),
+    );
+    const repairedCredentialBody = await repairedCredentialPause.json() as Record<string, any>;
+    assert.equal(repairedCredentialBody.reference.state, 'active');
+    assert.equal(repairedCredentialBody.routine.state, 'active');
   } finally {
     routines.close();
     config.close();

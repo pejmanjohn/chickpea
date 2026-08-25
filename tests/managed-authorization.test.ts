@@ -7,6 +7,7 @@ import {
   abandonManagedAuthorization,
   abandonStaleManagedAuthorization,
   finalizeManagedAuthorization,
+  assertManagedAuthorizationProvider,
   inspectManagedAuthorization,
   inspectManagedAuthorizationForCleanup,
   inspectStaleManagedAuthorization,
@@ -26,6 +27,8 @@ const INPUT = {
   principalRef: 'chickpea:organization:org_test',
   allowedCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
   bindingCapabilities: ['gmail.messages.search'],
+  providerGeneration: 7,
+  providerLineage: 'a'.repeat(24),
 };
 const MANAGED_AUTHORIZATION_TTL_MS = 30 * 60_000;
 const MANAGED_AUTHORIZATION_STALE_GRACE_MS = 10 * 60_000;
@@ -50,6 +53,17 @@ test('managed authorization binds a browser secret to one active member attempt'
     assert.equal(inspected.status, 'pending');
     assert.equal(inspected.principalRef, INPUT.principalRef);
     assert.deepEqual(inspected.allowedCapabilities, INPUT.allowedCapabilities);
+    assert.doesNotThrow(() => assertManagedAuthorizationProvider(inspected, {
+      generation: 7,
+      lineage: 'a'.repeat(24),
+    }));
+    assert.throws(
+      () => assertManagedAuthorizationProvider(inspected, {
+        generation: 8,
+        lineage: 'b'.repeat(24),
+      }),
+      /stale managed authorization provider/,
+    );
 
     await assert.rejects(
       beginManagedAuthorization({

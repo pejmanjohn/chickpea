@@ -6,8 +6,10 @@ import {
 } from '../config/connector-secrets.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
+import { ConnectionAccountRevisionConflictError } from '../config/errors.ts';
 import type {
   AgentConnectionBinding,
+  AgentScheduleReference,
   ConnectionAccount,
   ConnectionAccountPolicy,
   ManagedAccountResourceConstraints,
@@ -27,6 +29,10 @@ import {
   intersectManagedResourceConstraints,
   projectManagedResourceHandles,
 } from './catalog/index.ts';
+import {
+  projectEffectiveConnectionAccounts,
+  projectRecoverableConnectionAccounts,
+} from './runtime.ts';
 
 export interface ConnectionAccountServiceDependencies {
   config: ConfigStore;
@@ -38,6 +44,10 @@ export interface ConnectionAccountServiceDependencies {
 
 export class ManagedConnectionConflictError extends Error {
   readonly name = 'ManagedConnectionConflictError';
+}
+
+export class ConnectionScheduleConflictError extends Error {
+  readonly name = 'ConnectionScheduleConflictError';
 }
 
 /** Browser-safe projection shared by every Admin response carrying an account. */
@@ -53,6 +63,8 @@ export function toConnectionAccountView(account: ConnectionAccount): ConnectionA
   const {
     principalRef: _principalRef,
     accountRef: _accountRef,
+    providerGeneration: _providerGeneration,
+    providerLineage: _providerLineage,
     resourceConstraints,
     ...safePolicy
   } = policy;
@@ -343,6 +355,16 @@ export class ConnectionAccountService {
       ...binding,
       resourceConstraints: input.resourceConstraints,
     });
+    if (updatedAccount.lifecycle === 'ready') {
+      try {
+        await resumeDependentSchedules(this.dependencies.config, updatedAccount.id);
+      } catch {
+        console.warn(JSON.stringify({
+          event: 'chickpea.managed_connection.schedule_resume_deferred',
+          connectionAccountId: updatedAccount.id,
+        }));
+      }
+    }
     return {
       account: {
         id: updatedAccount.id,
@@ -421,7 +443,7 @@ export class ConnectionAccountService {
         excludeConnectionAccountId: account.id,
       });
     }
-    return this.dependencies.config.putAgentConnectionBinding({
+    const binding = await this.dependencies.config.putAgentConnectionBinding({
       agentId: input.agentId,
       connectionAccountId: account.id,
       providerId: account.providerId,
@@ -429,6 +451,25 @@ export class ConnectionAccountService {
       resourceConstraints: bindingResourceConstraints,
       enabled: true,
     });
+    const scheduleIndex = await buildConnectionScheduleIndex(this.dependencies.config);
+    let resumed = false;
+    for (let attempt = 0; attempt < 2 && !resumed; attempt += 1) {
+      try {
+        const currentScheduleIndex = attempt === 0
+          ? scheduleIndex
+          : await buildConnectionScheduleIndex(this.dependencies.config);
+        await resumeDependentSchedules(this.dependencies.config, account.id, currentScheduleIndex);
+        resumed = true;
+      } catch {
+        if (attempt === 1) {
+          console.warn(JSON.stringify({
+            event: 'chickpea.connection.schedule_resume_deferred',
+            connectionAccountId: account.id,
+          }));
+        }
+      }
+    }
+    return binding;
   }
 
   /** Preflight the one-Team/one-Personal lane invariant before remote import. */
@@ -476,7 +517,40 @@ export class ConnectionAccountService {
     const current = (await this.dependencies.config.listAgentConnectionBindings(input.agentId))
       .find((binding) => binding.connectionAccountId === input.connectionAccountId);
     if (!current) throw new Error('Connection binding does not exist');
-    return this.dependencies.config.putAgentConnectionBinding({ ...current, enabled: false });
+    const beforeDetachIndex = await buildConnectionScheduleIndex(this.dependencies.config);
+    const contributions = bindingScheduleContributions(
+      beforeDetachIndex,
+      input.agentId,
+      input.connectionAccountId,
+    );
+    const binding = await this.dependencies.config.putAgentConnectionBinding({
+      ...current,
+      enabled: false,
+    });
+    try {
+      const afterDetachIndex = await buildConnectionScheduleIndex(this.dependencies.config);
+      for (const [connectionAccountId, candidateScheduleIds] of contributions) {
+        const disconnectedScheduleIds = new Set([...candidateScheduleIds].filter((scheduleId) => {
+          const schedule = afterDetachIndex.schedules.get(scheduleId);
+          return schedule && !recoverableConnectionIds(afterDetachIndex, schedule)
+            .has(connectionAccountId);
+        }));
+        if (disconnectedScheduleIds.size === 0) continue;
+        await retireConnectionFromDependentSchedules(
+          this.dependencies.config,
+          connectionAccountId,
+          input.agentId,
+          afterDetachIndex,
+          false,
+          disconnectedScheduleIds,
+        );
+      }
+    } catch {
+      throw new ConnectionScheduleConflictError(
+        'The connection was removed, but dependent schedules changed. Retry to finish cleanup.',
+      );
+    }
+    return binding;
   }
 
   async revoke(input: {
@@ -485,15 +559,37 @@ export class ConnectionAccountService {
   }): Promise<ConnectionAccount> {
     const account = await this.findAccount(input.connectionAccountId);
     this.requireManage(input.principal, account);
-    if (account.lifecycle === 'revoked') return account;
+    if (account.lifecycle === 'revoked') {
+      try {
+        await retireConnectionFromDependentSchedules(
+          this.dependencies.config,
+          account.id,
+          undefined,
+          undefined,
+          true,
+        );
+      } catch {
+        throw new ConnectionScheduleConflictError(
+          'The connection is disconnected, but dependent schedules changed. Retry to finish cleanup.',
+        );
+      }
+      return account;
+    }
 
     // Pause dependents before making the account unavailable. If secret
     // deletion fails, needs_attention remains a fail-closed intermediate state.
+    const scheduleIndex = await buildConnectionScheduleIndex(this.dependencies.config);
     const needsAttention = await this.dependencies.config.putConnectionAccount(
       { ...account, lifecycle: 'needs_attention' },
       account.revision,
     );
-    await this.pauseDependentSchedules(account.id);
+    try {
+      await pauseDependentSchedules(this.dependencies.config, account.id, scheduleIndex);
+    } catch {
+      throw new ConnectionScheduleConflictError(
+        'Dependent schedules changed before the connection could be disconnected. Try again.',
+      );
+    }
     if (account.policy.kind === 'managed') {
       const provider = this.dependencies.managedProviders?.get(account.policy.adapterId);
       if (!provider) {
@@ -506,10 +602,24 @@ export class ConnectionAccountService {
       undefined,
       this.dependencies.settings,
     );
-    return this.dependencies.config.putConnectionAccount(
+    const revoked = await this.dependencies.config.putConnectionAccount(
       { ...needsAttention, lifecycle: 'revoked' },
       needsAttention.revision,
     );
+    try {
+      await retireConnectionFromDependentSchedules(
+        this.dependencies.config,
+        account.id,
+        undefined,
+        scheduleIndex,
+        true,
+      );
+    } catch {
+      throw new ConnectionScheduleConflictError(
+        'The connection is disconnected, but dependent schedules changed. Retry to finish cleanup.',
+      );
+    }
+    return revoked;
   }
 
   async findManagedByRemoteRef(input: {
@@ -556,6 +666,10 @@ export class ConnectionAccountService {
     /** Capability ceiling to persist after provider validation. */
     allowedCapabilities: string[];
     accountRef: string;
+    providerGeneration?: number;
+    providerLineage?: string;
+    /** The caller will resume schedules after its dependent binding mutation commits. */
+    deferScheduleResume?: boolean;
   }): Promise<ConnectionAccount> {
     const account = await this.findAccount(input.connectionAccountId);
     this.requireManage(input.principal, account);
@@ -579,6 +693,12 @@ export class ConnectionAccountService {
       ...account.policy,
       accountRef: input.accountRef,
       allowedCapabilities: [...input.allowedCapabilities],
+      ...(input.providerGeneration !== undefined
+        ? { providerGeneration: input.providerGeneration }
+        : {}),
+      ...(input.providerLineage !== undefined
+        ? { providerLineage: input.providerLineage }
+        : {}),
     };
     if (policy.kind !== 'managed') throw new Error('Managed connection policy is unavailable');
     policy = applyManagedValidation(policy, await provider.validate({ policy }));
@@ -601,7 +721,34 @@ export class ConnectionAccountService {
         }));
       }
     }
+    if (replaced.lifecycle === 'ready' && !input.deferScheduleResume) {
+      try {
+        await resumeDependentSchedules(this.dependencies.config, replaced.id);
+      } catch {
+        console.warn(JSON.stringify({
+          event: 'chickpea.managed_connection.schedule_resume_deferred',
+          connectionAccountId: replaced.id,
+        }));
+      }
+    }
     return replaced;
+  }
+
+  async resumeManagedAccountSchedules(input: {
+    principal: AuthPrincipal;
+    connectionAccountId: string;
+  }): Promise<void> {
+    const account = await this.findAccount(input.connectionAccountId);
+    this.requireManage(input.principal, account);
+    if (account.lifecycle !== 'ready' || account.policy.kind !== 'managed') return;
+    try {
+      await resumeDependentSchedules(this.dependencies.config, account.id);
+    } catch {
+      console.warn(JSON.stringify({
+        event: 'chickpea.managed_connection.schedule_resume_deferred',
+        connectionAccountId: account.id,
+      }));
+    }
   }
 
   async markManagedAccountExpired(input: {
@@ -609,10 +756,6 @@ export class ConnectionAccountService {
     accountRef: string;
   }): Promise<number> {
     return markManagedAccountExpired(this.dependencies.config, input);
-  }
-
-  private async pauseDependentSchedules(connectionAccountId: string): Promise<void> {
-    await pauseDependentSchedules(this.dependencies.config, connectionAccountId);
   }
 
   private async findAccount(id: string): Promise<ConnectionAccount> {
@@ -805,42 +948,563 @@ export async function markManagedAccountExpired(
   for (const installation of await config.listWorkspaceInstallations()) {
     const accounts = await config.listConnectionAccounts(installation.workspaceId);
     for (const account of accounts) {
-      if (account.lifecycle === 'revoked' || account.policy.kind !== 'managed' ||
-          account.policy.adapterId.trim().toLowerCase() !== normalizedAdapterId ||
-          account.policy.accountRef !== input.accountRef) continue;
-      if (account.lifecycle !== 'needs_attention') {
-        await config.putConnectionAccount(
-          { ...account, lifecycle: 'needs_attention' },
-          account.revision,
-        );
-        changed += 1;
+      if (!matchesManagedRemoteAccount(account, normalizedAdapterId, input.accountRef)) continue;
+      let current: ConnectionAccount | undefined = account;
+      let pauseSchedules = false;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (!matchesManagedRemoteAccount(current, normalizedAdapterId, input.accountRef)) break;
+        if (current.lifecycle === 'needs_attention') {
+          pauseSchedules = true;
+          break;
+        }
+        if (await putConnectionAccountIfCurrent(
+          config,
+          { ...current, lifecycle: 'needs_attention' },
+          current.revision,
+        )) {
+          changed += 1;
+          pauseSchedules = true;
+          break;
+        }
+        current = (await config.listConnectionAccounts(installation.workspaceId))
+          .find((candidate) => candidate.id === account.id);
+        if (matchesManagedRemoteAccount(current, normalizedAdapterId, input.accountRef) &&
+            current.lifecycle === 'needs_attention') {
+          pauseSchedules = true;
+          break;
+        }
+        if (attempt === 2 &&
+            matchesManagedRemoteAccount(current, normalizedAdapterId, input.accountRef) &&
+            current.lifecycle !== 'needs_attention') {
+          throw new ManagedConnectionConflictError(
+            'Managed account expiry could not be persisted. Retry delivery.',
+          );
+        }
       }
-      await pauseDependentSchedules(config, account.id);
+      if (pauseSchedules) await pauseDependentSchedules(config, account.id);
     }
   }
   return changed;
 }
 
+function matchesManagedRemoteAccount(
+  account: ConnectionAccount | undefined,
+  normalizedAdapterId: string,
+  accountRef: string,
+): account is ConnectionAccount & { policy: Extract<ConnectionAccountPolicy, { kind: 'managed' }> } {
+  return Boolean(account && account.lifecycle !== 'revoked' && account.policy.kind === 'managed' &&
+    account.policy.adapterId.trim().toLowerCase() === normalizedAdapterId &&
+    account.policy.accountRef === accountRef);
+}
+
+export async function markManagedProviderAccountsUnavailable(
+  config: ConfigStore,
+  input: { adapterId: string },
+): Promise<{ accounts: number; schedules: number; retryable: number }> {
+  const normalizedAdapterId = input.adapterId.trim().toLowerCase();
+  const installations = await config.listWorkspaceInstallations();
+  const accountsByWorkspace = await listConnectionAccountsByWorkspace(config, installations);
+  const scheduleIndex = await buildConnectionScheduleIndex(config, accountsByWorkspace);
+  let accounts = 0;
+  let schedules = 0;
+  let retryable = 0;
+  for (const installation of installations) {
+    for (const account of accountsByWorkspace.get(installation.workspaceId) ?? []) {
+      if (account.lifecycle === 'revoked' || account.policy.kind !== 'managed' ||
+          account.policy.adapterId.trim().toLowerCase() !== normalizedAdapterId) continue;
+      if (account.lifecycle !== 'needs_attention') {
+        const updated = { ...account, lifecycle: 'needs_attention' as const };
+        if (!await putConnectionAccountIfCurrent(
+          config,
+          updated,
+          account.revision,
+        )) {
+          retryable += 1;
+          continue;
+        }
+        cacheConnectionAccount(scheduleIndex, updated);
+        accounts += 1;
+      }
+      try {
+        schedules += await pauseDependentSchedules(config, account.id, scheduleIndex);
+      } catch {
+        retryable += 1;
+        console.warn(JSON.stringify({
+          event: 'chickpea.managed_connection.schedule_pause_deferred',
+          connectionAccountId: account.id,
+        }));
+      }
+    }
+  }
+  return { accounts, schedules, retryable };
+}
+
+export type ManagedProviderAccountInspection =
+  | 'match'
+  | 'missing'
+  | 'mismatch'
+  | 'transient';
+
+export async function reconcileManagedProviderAccounts(
+  config: ConfigStore,
+  input: {
+    adapterId: string;
+    generation: number;
+    lineage: string;
+    inspect(input: {
+      accountRef: string;
+      principalRef: string;
+      toolkit: string;
+    }): Promise<ManagedProviderAccountInspection>;
+    maxInspections?: number;
+  },
+): Promise<{ restored: number; needsAttention: number; retryable: number }> {
+  if (!Number.isSafeInteger(input.generation) || input.generation < 1 ||
+      !/^[a-f0-9]{24}$/.test(input.lineage)) {
+    throw new Error('Managed provider reconciliation input is invalid');
+  }
+  const maxInspections = input.maxInspections ?? 25;
+  if (!Number.isSafeInteger(maxInspections) || maxInspections < 1 || maxInspections > 100) {
+    throw new Error('Managed provider reconciliation batch is invalid');
+  }
+  const normalizedAdapterId = input.adapterId.trim().toLowerCase();
+  const installations = await config.listWorkspaceInstallations();
+  const accountsByWorkspace = await listConnectionAccountsByWorkspace(config, installations);
+  const scheduleIndex = await buildConnectionScheduleIndex(config, accountsByWorkspace);
+  let restored = 0;
+  let needsAttention = 0;
+  let retryable = 0;
+  let inspectionCount = 0;
+  for (const installation of installations) {
+    for (const account of accountsByWorkspace.get(installation.workspaceId) ?? []) {
+      if (account.lifecycle === 'revoked' || account.policy.kind !== 'managed' ||
+          account.policy.adapterId.trim().toLowerCase() !== normalizedAdapterId) continue;
+      if (account.policy.providerGeneration === input.generation &&
+          account.policy.providerLineage === input.lineage) {
+        try {
+          if (account.lifecycle === 'ready') {
+            await resumeDependentSchedules(config, account.id, scheduleIndex);
+          } else if (account.lifecycle === 'needs_attention') {
+            await pauseDependentSchedules(config, account.id, scheduleIndex);
+          }
+        } catch {
+          retryable += 1;
+          console.warn(JSON.stringify({
+            event: 'chickpea.managed_connection.schedule_reconciliation_deferred',
+            connectionAccountId: account.id,
+          }));
+        }
+        continue;
+      }
+      if (inspectionCount >= maxInspections) {
+        retryable += 1;
+        continue;
+      }
+      inspectionCount += 1;
+      let inspection: ManagedProviderAccountInspection;
+      try {
+        inspection = await input.inspect({
+          accountRef: account.policy.accountRef,
+          principalRef: account.policy.principalRef,
+          toolkit: account.policy.toolkit,
+        });
+      } catch {
+        inspection = 'transient';
+      }
+      if (inspection === 'transient') {
+        retryable += 1;
+        continue;
+      }
+      if (inspection !== 'match') {
+        const updated = {
+            ...account,
+            lifecycle: 'needs_attention' as const,
+            policy: {
+              ...account.policy,
+              providerGeneration: input.generation,
+              providerLineage: input.lineage,
+            },
+          };
+        if (!await putConnectionAccountIfCurrent(config, updated, account.revision)) {
+          retryable += 1;
+          continue;
+        }
+        cacheConnectionAccount(scheduleIndex, updated);
+        try {
+          await pauseDependentSchedules(config, account.id, scheduleIndex);
+        } catch {
+          retryable += 1;
+          console.warn(JSON.stringify({
+            event: 'chickpea.managed_connection.schedule_pause_deferred',
+            connectionAccountId: account.id,
+          }));
+        }
+        needsAttention += 1;
+        continue;
+      }
+      const connector = MANAGED_CONNECTOR_CATALOG.connector(account.policy.toolkit);
+      const lifecycle = connector?.resources?.some((resource) =>
+        resource.required && !(account.policy.kind === 'managed' &&
+          account.policy.resourceConstraints?.[resource.key]?.length)
+      ) ? 'pending' as const : 'ready' as const;
+      const updated = {
+          ...account,
+          lifecycle,
+          policy: {
+            ...account.policy,
+            providerGeneration: input.generation,
+            providerLineage: input.lineage,
+          },
+        };
+      if (!await putConnectionAccountIfCurrent(config, updated, account.revision)) {
+        retryable += 1;
+        continue;
+      }
+      cacheConnectionAccount(scheduleIndex, updated);
+      if (lifecycle === 'ready') {
+        try {
+          await resumeDependentSchedules(config, account.id, scheduleIndex);
+        } catch {
+          retryable += 1;
+          console.warn(JSON.stringify({
+            event: 'chickpea.managed_connection.schedule_resume_deferred',
+            connectionAccountId: account.id,
+          }));
+        }
+      }
+      restored += 1;
+    }
+  }
+  return { restored, needsAttention, retryable };
+}
+
+interface ConnectionScheduleIndex {
+  schedules: Map<string, AgentScheduleReference>;
+  bindingsByAgent: Map<string, AgentConnectionBinding[]>;
+  accountsByWorkspace: Map<string, ConnectionAccount[]>;
+  archivedAgentIds: Set<string>;
+  requiredScheduleIdsByConnection: Map<string, Set<string>>;
+  pausableScheduleIdsByConnection: Map<string, Set<string>>;
+  pausedScheduleIdsByConnection: Map<string, Set<string>>;
+}
+
+async function buildConnectionScheduleIndex(
+  config: ConfigStore,
+  knownAccountsByWorkspace = new Map<string, ConnectionAccount[]>(),
+): Promise<ConnectionScheduleIndex> {
+  const agents = await config.listAgents();
+  const index: ConnectionScheduleIndex = {
+    schedules: new Map(),
+    bindingsByAgent: new Map(),
+    accountsByWorkspace: new Map(knownAccountsByWorkspace),
+    archivedAgentIds: new Set(agents.filter(({ lifecycle }) => lifecycle === 'archived')
+      .map(({ id }) => id)),
+    requiredScheduleIdsByConnection: new Map(),
+    pausableScheduleIdsByConnection: new Map(),
+    pausedScheduleIdsByConnection: new Map(),
+  };
+  const schedulesByAgent = await Promise.all(agents.map(async ({ id }) => {
+    const [bindings, schedules] = await Promise.all([
+      config.listAgentConnectionBindings(id),
+      config.listAgentScheduleReferences(id),
+    ]);
+    index.bindingsByAgent.set(id, bindings);
+    return schedules;
+  }));
+  const schedules = schedulesByAgent.flat();
+  const workspaceIds = new Set(schedules.map(({ workspaceId }) => workspaceId));
+  await Promise.all([...workspaceIds].map(async (workspaceId) => {
+    if (index.accountsByWorkspace.has(workspaceId)) return;
+    index.accountsByWorkspace.set(workspaceId, await config.listConnectionAccounts(workspaceId));
+  }));
+  for (const schedule of schedules) indexConnectionSchedule(index, schedule);
+  return index;
+}
+
+async function listConnectionAccountsByWorkspace(
+  config: ConfigStore,
+  installations: Awaited<ReturnType<ConfigStore['listWorkspaceInstallations']>>,
+): Promise<Map<string, ConnectionAccount[]>> {
+  return new Map(await Promise.all(installations.map(async ({ workspaceId }) => [
+    workspaceId,
+    await config.listConnectionAccounts(workspaceId),
+  ] as const)));
+}
+
+function cacheConnectionAccount(
+  index: ConnectionScheduleIndex,
+  account: ConnectionAccount,
+): void {
+  const accounts = index.accountsByWorkspace.get(account.workspaceId) ?? [];
+  index.accountsByWorkspace.set(account.workspaceId, [
+    ...accounts.filter(({ id }) => id !== account.id),
+    account,
+  ]);
+}
+
+function indexConnectionSchedule(
+  index: ConnectionScheduleIndex,
+  schedule: AgentScheduleReference,
+  previous?: AgentScheduleReference,
+): void {
+  if (previous) removeConnectionScheduleFromIndex(index, previous);
+  index.schedules.set(schedule.scheduleId, schedule);
+  const pausedBy = schedule.connectionPauseAccountIds ?? [];
+  const recoverable = recoverableConnectionIds(index, schedule);
+  for (const connectionAccountId of schedule.requiredConnectionAccountIds) {
+    addScheduleIndexEntry(
+      index.requiredScheduleIdsByConnection,
+      connectionAccountId,
+      schedule.scheduleId,
+    );
+    if (schedule.state !== 'archived') {
+      if (!recoverable.has(connectionAccountId)) continue;
+      addScheduleIndexEntry(
+        index.pausableScheduleIdsByConnection,
+        connectionAccountId,
+        schedule.scheduleId,
+      );
+    }
+  }
+  for (const connectionAccountId of pausedBy) {
+    addScheduleIndexEntry(
+      index.pausedScheduleIdsByConnection,
+      connectionAccountId,
+      schedule.scheduleId,
+    );
+  }
+}
+
+function removeConnectionScheduleFromIndex(
+  index: ConnectionScheduleIndex,
+  schedule: AgentScheduleReference,
+): void {
+  for (const connectionAccountId of schedule.requiredConnectionAccountIds) {
+    index.requiredScheduleIdsByConnection.get(connectionAccountId)?.delete(schedule.scheduleId);
+    index.pausableScheduleIdsByConnection.get(connectionAccountId)?.delete(schedule.scheduleId);
+  }
+  for (const connectionAccountId of schedule.connectionPauseAccountIds ?? []) {
+    index.pausedScheduleIdsByConnection.get(connectionAccountId)?.delete(schedule.scheduleId);
+  }
+}
+
+function addScheduleIndexEntry(
+  index: Map<string, Set<string>>,
+  connectionAccountId: string,
+  scheduleId: string,
+): void {
+  const scheduleIds = index.get(connectionAccountId) ?? new Set<string>();
+  scheduleIds.add(scheduleId);
+  index.set(connectionAccountId, scheduleIds);
+}
+
 async function pauseDependentSchedules(
   config: ConfigStore,
   connectionAccountId: string,
-): Promise<void> {
-  const agents = await config.listAgents();
-  for (const agent of agents) {
-    const binding = (await config.listAgentConnectionBindings(agent.id))
-      .find((candidate) => candidate.connectionAccountId === connectionAccountId && candidate.enabled);
-    if (!binding) continue;
-    for (const schedule of await config.listAgentScheduleReferences(agent.id)) {
-      if (
-        schedule.state === 'active' &&
-        schedule.requiredConnectionAccountIds.includes(connectionAccountId)
-      ) {
-        await config.putAgentScheduleReference(
-          { ...schedule, state: 'needs_attention' },
-          schedule.revision,
-        );
+  scheduleIndex?: ConnectionScheduleIndex,
+): Promise<number> {
+  const index = scheduleIndex ?? await buildConnectionScheduleIndex(config);
+  let changed = 0;
+  const scheduleIds = [
+    ...(index.pausableScheduleIdsByConnection.get(connectionAccountId) ?? []),
+  ];
+  for (const scheduleId of scheduleIds) {
+    const schedule = index.schedules.get(scheduleId);
+    if (!schedule) continue;
+    const pausedBy = schedule.connectionPauseAccountIds ?? [];
+    if (schedule.state === 'archived') continue;
+    if (pausedBy.includes(connectionAccountId)) continue;
+    const connectionPausePreservesState = schedule.connectionPausePreservesState === true ||
+      (pausedBy.length === 0 && schedule.state !== 'active' &&
+        !(schedule.state === 'paused' && index.archivedAgentIds.has(schedule.agentId)));
+    const {
+      connectionPausePreservesState: _connectionPausePreservesState,
+      ...scheduleWithoutPauseState
+    } = schedule;
+    const updated = await config.putAgentScheduleReference({
+      ...scheduleWithoutPauseState,
+      connectionPauseAccountIds: [...pausedBy, connectionAccountId],
+      ...(connectionPausePreservesState ? { connectionPausePreservesState: true } : {}),
+      state: schedule.state === 'paused' ? 'paused' : 'needs_attention',
+    }, schedule.revision);
+    indexConnectionSchedule(index, updated, schedule);
+    if (schedule.state === 'active') changed += 1;
+  }
+  return changed;
+}
+
+async function resumeDependentSchedules(
+  config: ConfigStore,
+  connectionAccountId: string,
+  scheduleIndex?: ConnectionScheduleIndex,
+): Promise<number> {
+  const index = scheduleIndex ?? await buildConnectionScheduleIndex(config);
+  let changed = 0;
+  const scheduleIds = new Set([
+    ...(index.pausedScheduleIdsByConnection.get(connectionAccountId) ?? []),
+    ...(index.requiredScheduleIdsByConnection.get(connectionAccountId) ?? []),
+  ]);
+  for (const scheduleId of scheduleIds) {
+    const schedule = index.schedules.get(scheduleId);
+    if (!schedule) continue;
+    const pausedBy = schedule.connectionPauseAccountIds ?? [];
+    if (pausedBy.length === 0 || schedule.state === 'archived') continue;
+    const available = effectiveConnectionIds(index, schedule);
+    const nextPauseIds = schedule.requiredConnectionAccountIds
+      .filter((id) => !available.has(id));
+    const state = nextPauseIds.length > 0
+      ? 'needs_attention' as const
+      : index.archivedAgentIds.has(schedule.agentId)
+        ? schedule.state
+        : schedule.connectionPausePreservesState ? schedule.state : 'active' as const;
+    if (state === schedule.state && sameStringSet(nextPauseIds, pausedBy)) continue;
+    const {
+      connectionPauseAccountIds: _pausedBy,
+      connectionPausePreservesState: _connectionPausePreservesState,
+      ...scheduleWithoutPauseIds
+    } = schedule;
+    const updated = await config.putAgentScheduleReference({
+      ...scheduleWithoutPauseIds,
+      ...(nextPauseIds.length > 0 ? { connectionPauseAccountIds: nextPauseIds } : {}),
+      ...(nextPauseIds.length > 0 && schedule.connectionPausePreservesState
+        ? { connectionPausePreservesState: true }
+        : {}),
+      state,
+    }, schedule.revision);
+    indexConnectionSchedule(index, updated, schedule);
+    if (schedule.state !== 'active' && state === 'active') changed += 1;
+  }
+  return changed;
+}
+
+async function retireConnectionFromDependentSchedules(
+  config: ConfigStore,
+  connectionAccountId: string,
+  agentId?: string,
+  scheduleIndex?: ConnectionScheduleIndex,
+  keepPaused = false,
+  eligibleScheduleIds?: ReadonlySet<string>,
+): Promise<number> {
+  const index = scheduleIndex ?? await buildConnectionScheduleIndex(config);
+  const scheduleIds = new Set([
+    ...(index.requiredScheduleIdsByConnection.get(connectionAccountId) ?? []),
+    ...(index.pausedScheduleIdsByConnection.get(connectionAccountId) ?? []),
+  ]);
+  let changed = 0;
+  for (const scheduleId of scheduleIds) {
+    const schedule = index.schedules.get(scheduleId);
+    if (!schedule || (agentId && schedule.agentId !== agentId) ||
+        (eligibleScheduleIds && !eligibleScheduleIds.has(scheduleId))) continue;
+    const pausedBy = schedule.connectionPauseAccountIds ?? [];
+    const requiredConnectionAccountIds = schedule.requiredConnectionAccountIds
+      .filter((id) => id !== connectionAccountId);
+    let nextPauseIds = pausedBy.filter((id) => id !== connectionAccountId);
+    let state = schedule.state;
+    if (keepPaused && schedule.state !== 'archived' &&
+        (pausedBy.includes(connectionAccountId) ||
+          schedule.requiredConnectionAccountIds.includes(connectionAccountId))) {
+      state = schedule.state === 'paused' && index.archivedAgentIds.has(schedule.agentId)
+        ? schedule.state
+        : 'needs_attention';
+    } else if (pausedBy.includes(connectionAccountId) && schedule.state !== 'archived') {
+      const available = effectiveConnectionIds(index, schedule);
+      nextPauseIds = requiredConnectionAccountIds.filter((id) => !available.has(id));
+      state = nextPauseIds.length > 0
+        ? 'needs_attention'
+        : index.archivedAgentIds.has(schedule.agentId)
+          ? schedule.state
+          : schedule.connectionPausePreservesState ? schedule.state : 'active';
+    }
+    if (sameStringSet(requiredConnectionAccountIds, schedule.requiredConnectionAccountIds) &&
+        sameStringSet(nextPauseIds, pausedBy) && state === schedule.state) continue;
+    const {
+      connectionPauseAccountIds: _pausedBy,
+      connectionPausePreservesState: _connectionPausePreservesState,
+      ...scheduleWithoutPauseIds
+    } = schedule;
+    const updated = await config.putAgentScheduleReference({
+      ...scheduleWithoutPauseIds,
+      requiredConnectionAccountIds,
+      ...(nextPauseIds.length > 0 ? { connectionPauseAccountIds: nextPauseIds } : {}),
+      ...(nextPauseIds.length > 0 && schedule.connectionPausePreservesState
+        ? { connectionPausePreservesState: true }
+        : {}),
+      state,
+    }, schedule.revision);
+    indexConnectionSchedule(index, updated, schedule);
+    changed += 1;
+  }
+  return changed;
+}
+
+function effectiveConnectionIds(
+  index: ConnectionScheduleIndex,
+  schedule: AgentScheduleReference,
+): Set<string> {
+  return new Set(projectEffectiveConnectionAccounts(
+    index.accountsByWorkspace.get(schedule.workspaceId) ?? [],
+    index.bindingsByAgent.get(schedule.agentId) ?? [],
+    schedule.runsAsMembershipId,
+  ).map(({ account }) => account.id));
+}
+
+function recoverableConnectionIds(
+  index: ConnectionScheduleIndex,
+  schedule: AgentScheduleReference,
+): Set<string> {
+  return new Set(projectRecoverableConnectionAccounts(
+    index.accountsByWorkspace.get(schedule.workspaceId) ?? [],
+    index.bindingsByAgent.get(schedule.agentId) ?? [],
+    schedule.runsAsMembershipId,
+  ).map(({ account }) => account.id));
+}
+
+function bindingScheduleContributions(
+  index: ConnectionScheduleIndex,
+  agentId: string,
+  bindingConnectionAccountId: string,
+): Map<string, Set<string>> {
+  const contributions = new Map<string, Set<string>>();
+  const add = (connectionAccountId: string, scheduleId: string) => {
+    const scheduleIds = contributions.get(connectionAccountId) ?? new Set<string>();
+    scheduleIds.add(scheduleId);
+    contributions.set(connectionAccountId, scheduleIds);
+  };
+  for (const scheduleId of new Set([
+    ...(index.requiredScheduleIdsByConnection.get(bindingConnectionAccountId) ?? []),
+    ...(index.pausedScheduleIdsByConnection.get(bindingConnectionAccountId) ?? []),
+  ])) add(bindingConnectionAccountId, scheduleId);
+  const bindings = (index.bindingsByAgent.get(agentId) ?? []).map((binding) =>
+    binding.connectionAccountId === bindingConnectionAccountId
+      ? { ...binding, enabled: true }
+      : binding
+  );
+  for (const schedule of index.schedules.values()) {
+    if (schedule.agentId !== agentId) continue;
+    for (const connection of projectRecoverableConnectionAccounts(
+      index.accountsByWorkspace.get(schedule.workspaceId) ?? [],
+      bindings,
+      schedule.runsAsMembershipId,
+    )) {
+      if (connection.binding.connectionAccountId === bindingConnectionAccountId) {
+        add(connection.account.id, schedule.scheduleId);
       }
     }
+  }
+  return contributions;
+}
+
+async function putConnectionAccountIfCurrent(
+  config: ConfigStore,
+  account: ConnectionAccount,
+  expectedRevision: number,
+): Promise<boolean> {
+  try {
+    await config.putConnectionAccount(account, expectedRevision);
+    return true;
+  } catch (error) {
+    if (error instanceof ConnectionAccountRevisionConflictError) return false;
+    throw error;
   }
 }
 

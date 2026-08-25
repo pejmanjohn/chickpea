@@ -22,6 +22,10 @@ export interface ManagedAuthorizationInput {
   bindingCapabilities?: string[];
   /** Existing Chickpea account whose remote authorization is being replaced. */
   connectionAccountId?: string;
+  /** Installation provider revision that created this remote request. */
+  providerGeneration?: number;
+  /** One-way project fingerprint. It is safe metadata, never a credential. */
+  providerLineage?: string;
 }
 
 export type ManagedAuthorizationAttempt = ManagedAuthorizationInput & {
@@ -41,6 +45,7 @@ export class ManagedAuthorizationError extends Error {
     | 'expired'
     | 'replayed'
     | 'toolkit_mismatch'
+    | 'stale_provider'
     | 'in_progress'
     | 'recovery_required') {
     super(
@@ -52,10 +57,22 @@ export class ManagedAuthorizationError extends Error {
         ? 'managed authorization is already in progress'
         : code === 'toolkit_mismatch'
         ? 'managed authorization toolkit did not match'
+        : code === 'stale_provider'
+        ? 'stale managed authorization provider'
         : code === 'replayed'
         ? 'replayed managed authorization attempt'
         : 'invalid managed authorization attempt',
     );
+  }
+}
+
+export function assertManagedAuthorizationProvider(
+  attempt: ManagedAuthorizationAttempt,
+  provider: { generation: number; lineage: string },
+): void {
+  if (attempt.providerGeneration !== provider.generation ||
+      attempt.providerLineage !== provider.lineage) {
+    throw new ManagedAuthorizationError('stale_provider');
   }
 }
 
@@ -432,6 +449,11 @@ function validateInput(input: ManagedAuthorizationInput): void {
       (input.connectionAccountId !== undefined &&
         !/^connection_[A-Za-z0-9_-]{1,180}$/.test(input.connectionAccountId)) ||
       (input.ownerKind !== 'team' && input.ownerKind !== 'member') ||
+      ((input.providerGeneration === undefined) !== (input.providerLineage === undefined)) ||
+      (input.providerGeneration !== undefined && (
+        !Number.isSafeInteger(input.providerGeneration) || input.providerGeneration < 1 ||
+        !/^[a-f0-9]{24}$/.test(input.providerLineage ?? '')
+      )) ||
       !validCapabilities(input.allowedCapabilities) ||
       (input.connectionAccountId === undefined
         ? !validCapabilities(input.bindingCapabilities) || input.bindingCapabilities.some(

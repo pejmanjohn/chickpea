@@ -5,7 +5,8 @@ export type SlackCredentialIdentityClass = 'workspace_installation';
 export type SlackCredentialPurpose =
   | 'app_credentials'
   | 'connected_credentials'
-  | 'gateway_deployment_key';
+  | 'gateway_deployment_key'
+  | 'managed_connector_project_key';
 
 export interface CredentialKeyring {
   currentKeyId: string;

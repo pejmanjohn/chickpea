@@ -6,6 +6,7 @@ import {
   createManagedConnectionTools,
   MANAGED_CONNECTION_RESULT_INSTRUCTION,
 } from '../src/connections/managed-tools.ts';
+import { createManagedConnectionProviderRegistry } from '../src/connections/managed.ts';
 
 const context = {
   workspaceId: 'T_MANAGED',
@@ -103,6 +104,77 @@ test('managed tools fail closed when a skill already owns the stable tool name',
   });
 
   assert.deepEqual(tools.map(({ name }) => name), ['gmail_get_profile']);
+});
+
+test('managed tools retry provider resolution after a transient failure', async () => {
+  let resolutions = 0;
+  const tools = createManagedConnectionTools({
+    ...context,
+    connections: [{
+      id: 'connection_gmail',
+      providerId: 'google',
+      adapterId: 'composio',
+      toolkit: 'gmail',
+      allowedCapabilities: ['gmail.profile.read'],
+    }],
+    resolveProviders: async () => {
+      resolutions += 1;
+      throw new Error('async provider resolution reached');
+    },
+  });
+  const tool = tools[0];
+  assert.ok(tool);
+  const run = tool.run as unknown as (input: {
+    toolCallId: string;
+    log: { info(): void; warn(): void; error(): void };
+    data: Record<string, unknown>;
+  }) => Promise<unknown>;
+
+  await assert.rejects(run({
+    toolCallId: 'gmail_profile',
+    log: { info() {}, warn() {}, error() {} },
+    data: {},
+  }), /async provider resolution reached/);
+  await assert.rejects(run({
+    toolCallId: 'gmail_profile_again',
+    log: { info() {}, warn() {}, error() {} },
+    data: {},
+  }), /async provider resolution reached/);
+  assert.equal(resolutions, 2);
+});
+
+test('managed tools memoize a successful provider resolution for the turn', async () => {
+  let resolutions = 0;
+  const tools = createManagedConnectionTools({
+    ...context,
+    connections: [{
+      id: 'connection_gmail',
+      providerId: 'google',
+      adapterId: 'composio',
+      toolkit: 'gmail',
+      allowedCapabilities: ['gmail.profile.read'],
+    }],
+    resolveProviders: async () => {
+      resolutions += 1;
+      return createManagedConnectionProviderRegistry([]);
+    },
+  });
+  const tool = tools[0];
+  assert.ok(tool);
+  const run = tool.run as unknown as (input: {
+    toolCallId: string;
+    log: { info(): void; warn(): void; error(): void };
+    data: Record<string, unknown>;
+  }) => Promise<unknown>;
+
+  for (const toolCallId of ['gmail_profile', 'gmail_profile_again']) {
+    await assert.rejects(run({
+      toolCallId,
+      log: { info() {}, warn() {}, error() {} },
+      data: {},
+    }));
+  }
+  assert.equal(resolutions, 1);
 });
 
 test('managed Google toolkits project only their curated Chickpea capability surface', () => {

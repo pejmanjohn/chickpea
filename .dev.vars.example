@@ -27,19 +27,30 @@
 #   npx wrangler secret put ANTHROPIC_API_KEY
 #   npx wrangler secret put OPENAI_API_KEY
 #   npx wrangler secret put OPENROUTER_API_KEY
+# For normal OSS setup, leave Composio out of this file and use
+# Admin → Settings → Connectors. Get a project key from Composio under
+# Settings → Project Settings → API Keys; Chickpea stores it encrypted and
+# prepares the standard managed-auth defaults.
+#
+# Deployment-owned configuration may set the project key as a secret and the
+# mode as a plain variable. Admin can prepare defaults but cannot replace or
+# disable the deployment key:
 #   npx wrangler secret put COMPOSIO_API_KEY
-# Composio currently requires this project key to have Full access because its
-# callback identity-verification redemption route has no scoped-key permission.
+# Set CHICKPEA_COMPOSIO_CONFIGURATION_MODE=deployment in the Worker's variables.
+# Rotating this secret changes the provider lineage. Managed execution pauses
+# until an owner/admin opens Settings → Connectors and retries preparation;
+# Chickpea then re-inspects every preserved account before reactivating it.
+# Chickpea polls hosted authorization while connecting and verifies exact
+# account identity on connect, reconnect, and reconciliation. Add the optional
+# webhook to surface upstream revocation promptly between those checks:
 #   npx wrangler secret put COMPOSIO_WEBHOOK_SECRET
-# Add the lane-specific auth-config IDs for the managed toolkits you enable,
-# for example COMPOSIO_NOTION_READ_AUTH_CONFIG_ID,
-# COMPOSIO_SEARCH_CONSOLE_READ_AUTH_CONFIG_ID, and
-# COMPOSIO_ANALYTICS_READ_AUTH_CONFIG_ID, and
-# COMPOSIO_HUBSPOT_READ_AUTH_CONFIG_ID, COMPOSIO_GONG_READ_AUTH_CONFIG_ID, and
-# COMPOSIO_GOOGLE_ADS_READ_AUTH_CONFIG_ID / COMPOSIO_GOOGLE_ADS_WRITE_AUTH_CONFIG_ID.
-# YouTube uses COMPOSIO_YOUTUBE_READ_AUTH_CONFIG_ID /
-# COMPOSIO_YOUTUBE_WRITE_AUTH_CONFIG_ID. Optional quota overrides are documented
-# in .env.example; values above the defaults require an approved compliance audit.
+# Existing installations may retain explicit lane-specific auth-config ID
+# overrides. They must belong to the active Composio project and be enabled,
+# Composio-managed, and unrestricted. Chickpea ignores an invalid or temporarily
+# unverifiable lane without taking down the other connectors and logs the safe
+# environment-variable name for repair. Fresh one-key setup does not require
+# overrides. Optional quota overrides are documented in .env.example; values
+# above the defaults require an approved compliance audit.
 # Google Ads also requires COMPOSIO_GOOGLE_ADS_ACCESS_LEVEL=basic|standard and
 # COMPOSIO_GOOGLE_ADS_PERMISSIBLE_USE=reporting|ad_management. Test or Explorer
 # developer tokens are intentionally reported as not production-ready.

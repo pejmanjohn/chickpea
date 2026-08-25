@@ -9,6 +9,18 @@ import {
 } from '../src/config/presets.ts';
 import { seededAgents } from '../src/config/seed.ts';
 
+test('connection removal retries a schedule cleanup race once', () => {
+  const page = renderAdminPage();
+  assert.match(
+    page,
+    /detachWithCleanupRetry[^]*connection_schedule_changed[^]*api\(detachPath, \{ method: "DELETE" \}\)/,
+  );
+  assert.match(
+    page,
+    /allowRetry[^]*connection_schedule_changed[^]*postJson\(revokePath, "POST", \{\}\)/,
+  );
+});
+
 test('admin navigation omits the unimplemented account destination', () => {
   const html = renderAdminPage();
   assert.doesNotMatch(html, /href="\/admin\/account"|>Account<\/a>/);
@@ -385,9 +397,22 @@ function runAdminPageHarness(
       available: Array<Record<string, unknown>>;
       managedConnectors?: {
         composio: boolean;
+        canConfigure?: boolean;
+        configurationReadOnly?: boolean;
         catalog?: Array<Record<string, unknown>>;
       };
     };
+    composioSettings?: Record<string, unknown>;
+    composioSettingsError?: {
+      status: number;
+      error: string;
+      message?: string;
+      recovery?: Record<string, unknown>;
+    };
+    composioSetupError?: { status: number; error: string; message?: string };
+    composioRetryError?: { status: number; error: string; message?: string };
+    managedPollResult?: Record<string, unknown>;
+    managedPollError?: { status: number; error: string; message?: string };
     managedResourcePages?: Record<string, {
       resources: Array<{ handle: string; label: string }>;
       nextCursor?: string;
@@ -402,6 +427,7 @@ function runAdminPageHarness(
     usageNextCursor?: string | null;
     resetDocumentScrollOnRender?: boolean;
     modelFocusScrollTop?: number;
+    initialSessionStorage?: Record<string, string>;
   } = {},
 ): {
   app: FakeElement;
@@ -464,6 +490,10 @@ function runAdminPageHarness(
     mcpTestPosts: Array<Record<string, unknown>>;
   connectionAccountPosts: Array<{ agentId: string; body: Record<string, unknown> }>;
   managedAuthorizationPosts: Array<{ agentId: string; body: Record<string, unknown> }>;
+  composioSetupPosts: Array<Record<string, unknown>>;
+  composioRetryCalls(): number;
+  managedPollCalls(): number;
+  managedCancelCalls(): number;
   managedResourcePosts: Array<{
     agentId: string;
     connectionId: string;
@@ -493,6 +523,7 @@ function runAdminPageHarness(
   setDocumentScrollTop(value: number): void;
   focusModelInput(caret?: number): void;
   modelSelectionRanges: Array<[number, number]>;
+  sessionStorageValue(key: string): string | null;
 } {
   const makeRegion = (): FakeRegion => ({
     inert: false,
@@ -643,6 +674,10 @@ function runAdminPageHarness(
   const mcpTestPosts: Array<Record<string, unknown>> = [];
   const connectionAccountPosts: Array<{ agentId: string; body: Record<string, unknown> }> = [];
   const managedAuthorizationPosts: Array<{ agentId: string; body: Record<string, unknown> }> = [];
+  const composioSetupPosts: Array<Record<string, unknown>> = [];
+  let composioRetryCalls = 0;
+  let managedPollCalls = 0;
+  let managedCancelCalls = 0;
   const managedResourcePosts: Array<{
     agentId: string;
     connectionId: string;
@@ -833,7 +868,11 @@ function runAdminPageHarness(
       documentScrollLeft = Number(left) || 0;
       documentScrollTop = Number(top) || 0;
     },
-    open() {
+    setTimeout() { return 1; },
+    open(url?: string) {
+      if (url && url !== 'about:blank') {
+        openedUrls.push(String(url));
+      }
       return {
         opener: null,
         closed: false,
@@ -846,6 +885,14 @@ function runAdminPageHarness(
         close() {},
       };
     },
+  };
+  const sessionValues = new Map<string, string>(
+    Object.entries(options.initialSessionStorage ?? {}),
+  );
+  const sessionStorage = {
+    getItem(key: string) { return sessionValues.get(key) ?? null; },
+    setItem(key: string, value: string) { sessionValues.set(key, value); },
+    removeItem(key: string) { sessionValues.delete(key); },
   };
 
   // Mutable provider state so a POST/DELETE key flips the /admin/api/providers
@@ -1224,15 +1271,95 @@ function runAdminPageHarness(
     }
     if (path === '/admin/api/connections?workspaceId=T_DESIGN' && method === 'GET') {
       return Promise.resolve(jsonResponse({
-        accounts: [{
-          account: {
-            id: 'connection_zendesk', workspaceId: 'T_DESIGN', ownerKind: 'team',
-            providerId: 'zendesk', label: 'Support Zendesk', purpose: 'Customer support',
-            lifecycle: 'ready', credentialConfigured: true,
+        accounts: [
+          {
+            account: {
+              id: 'connection_zendesk', workspaceId: 'T_DESIGN', ownerKind: 'team',
+              providerId: 'zendesk', label: 'Support Zendesk', purpose: 'Customer support',
+              lifecycle: 'ready', credentialConfigured: true,
+            },
+            agents: [{ id: 'agent_release', name: 'Release Profile' }],
           },
-          agents: [{ id: 'agent_release', name: 'Release Profile' }],
-        }],
+          {
+            account: {
+              id: 'connection_youtube', workspaceId: 'T_DESIGN', ownerKind: 'member',
+              providerId: 'google', label: 'YouTube · Personal', lifecycle: 'needs_attention',
+              credentialConfigured: false,
+              policy: {
+                kind: 'managed', adapterId: 'composio', toolkit: 'youtube',
+                allowedCapabilities: ['YOUTUBE_SEARCH_YOU_TUBE'],
+              },
+            },
+            agents: [],
+            reconnectAgentId: 'agent_release',
+          },
+        ],
       }));
+    }
+    if (path === '/admin/api/settings/connectors/composio' && method === 'GET') {
+      if (harnessOptions.composioSettingsError) {
+        return Promise.resolve(jsonResponse(
+          harnessOptions.composioSettingsError,
+          harnessOptions.composioSettingsError.status,
+        ));
+      }
+      return Promise.resolve(jsonResponse(harnessOptions.composioSettings ?? {
+        provider: {
+          source: 'missing', configured: false, readOnly: false,
+          desiredState: 'enabled', generation: 0, reconciliationPending: false,
+          connectors: [],
+        },
+        canConfigure: true,
+        impact: { accounts: 0, schedules: 0 },
+        catalog: managedSettingsCatalogFixture(),
+      }));
+    }
+    if (path === '/admin/api/settings/connectors/composio/setup' && method === 'POST') {
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      composioSetupPosts.push(body);
+      if (harnessOptions.composioSetupError) {
+        return Promise.resolve(jsonResponse(
+          harnessOptions.composioSetupError,
+          harnessOptions.composioSetupError.status,
+        ));
+      }
+      const readyCatalog = managedSettingsCatalogFixture();
+      const provider = {
+        source: 'stored', configured: true, readOnly: false,
+        desiredState: 'enabled', generation: 1, reconciliationPending: false,
+        connectors: readyCatalog.map((entry) => ({ toolkit: entry.toolkit, status: 'ready' })),
+      };
+      harnessOptions.composioSettings = {
+        provider,
+        canConfigure: true,
+        impact: { accounts: 0, schedules: 0 },
+        catalog: readyCatalog,
+      };
+      if (harnessOptions.connectionAccounts?.managedConnectors) {
+        harnessOptions.connectionAccounts.managedConnectors.composio = true;
+        harnessOptions.connectionAccounts.managedConnectors.canConfigure = true;
+        harnessOptions.connectionAccounts.managedConnectors.catalog = readyCatalog;
+      }
+      return Promise.resolve(jsonResponse({
+        provider,
+        ...('continuation' in body ? { continuation: { ...(body.continuation as object), action: 'authorize' } } : {}),
+      }));
+    }
+    if (path === '/admin/api/settings/connectors/composio/retry' && method === 'POST') {
+      composioRetryCalls += 1;
+      if (harnessOptions.composioRetryError) {
+        return Promise.resolve(jsonResponse(
+          harnessOptions.composioRetryError,
+          harnessOptions.composioRetryError.status,
+        ));
+      }
+      return Promise.resolve(jsonResponse({ provider: harnessOptions.composioSettings?.provider ?? null }));
+    }
+    if (path === '/admin/api/settings/connectors/composio/disable' && method === 'POST') {
+      return Promise.resolve(jsonResponse({ provider: {
+        source: 'missing', configured: false, readOnly: false,
+        desiredState: 'disabled', generation: 2, reconciliationPending: false, connectors: [],
+      } }));
     }
     const managedAuthorizationMatch = path.match(
       /^\/admin\/api\/agents\/([^/]+)\/connections\/managed\/start$/,
@@ -1243,7 +1370,25 @@ function runAdminPageHarness(
       managedAuthorizationPosts.push({ agentId, body });
       return Promise.resolve(jsonResponse({
         authorizationUrl: 'https://connect.composio.dev/link/lk_test',
+        pollUrl: `/admin/api/agents/${encodeURIComponent(agentId)}/connections/managed/poll`,
       }));
+    }
+    const managedPollMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/connections\/managed\/(poll|cancel)$/,
+    );
+    if (managedPollMatch && method === 'POST') {
+      if (managedPollMatch[2] === 'cancel') {
+        managedCancelCalls += 1;
+        return Promise.resolve(jsonResponse({ cancelled: true }));
+      }
+      managedPollCalls += 1;
+      if (harnessOptions.managedPollError) {
+        return Promise.resolve(jsonResponse(
+          harnessOptions.managedPollError,
+          harnessOptions.managedPollError.status,
+        ));
+      }
+      return Promise.resolve(jsonResponse(harnessOptions.managedPollResult ?? { status: 'pending' }, 202));
     }
     const managedResourcesMatch = path.match(
       /^\/admin\/api\/agents\/([^/]+)\/connections\/([^/]+)\/managed\/resources(?:\?(.+))?$/,
@@ -2247,6 +2392,7 @@ function runAdminPageHarness(
           },
         },
       window,
+      sessionStorage,
       history,
       location,
     },
@@ -2323,6 +2469,10 @@ function runAdminPageHarness(
     mcpTestPosts,
     connectionAccountPosts,
     managedAuthorizationPosts,
+    composioSetupPosts,
+    composioRetryCalls: () => composioRetryCalls,
+    managedPollCalls: () => managedPollCalls,
+    managedCancelCalls: () => managedCancelCalls,
     managedResourcePosts,
     oauthStartPosts,
     apiOAuthStartPosts,
@@ -2369,6 +2519,9 @@ function runAdminPageHarness(
       input.focus();
     },
     modelSelectionRanges,
+    sessionStorageValue(key: string) {
+      return sessionStorage.getItem(key);
+    },
   };
 }
 
@@ -2377,7 +2530,8 @@ async function openReleaseAttachPicker(
 ): Promise<Listener> {
   await flushAsync();
   const click = harness.listeners.click;
-  assert.ok(click);
+  const input = harness.listeners.input;
+  assert.ok(click && input);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'attach-open' }) });
@@ -5177,38 +5331,72 @@ test('Agent connections expose reusable Team and personal accounts with managed 
   assert.match(page, />Team connection</);
   assert.match(page, />My connection</);
   assert.match(page, /connections\/managed\/start/);
-  assert.match(page, /Google sign-in opens through Composio/);
-  assert.match(page, /Credentials are stored once and can be safely reused/);
+  assert.match(page, /Sign-in opens in a secure hosted tab/);
+  assert.match(page, /Team and personal accounts this Agent can use/);
   assert.match(page, /Every Agent using it will lose access and dependent schedules will pause/);
-  assert.match(page, /Google will still list Composio as authorized/);
-  assert.match(page, /remove it from Google Account settings to fully revoke access/);
+  assert.match(page, /provider may still list the authorization/);
+  assert.match(page, /remove it from the provider.s account settings/);
   assert.doesNotMatch(page, /ask Composio to revoke Google access/);
   assert.match(page, /\/connections\?workspaceId=/);
   assert.match(page, /\/oauth\/api\/start/);
 });
 
-test('managed connection accounts render their provider, toolkit, and capability ceiling', async () => {
+test('connection accounts use the compact prototype states without provider implementation details', async () => {
+  const gmailAccount = {
+    id: 'connection_managed_gmail',
+    workspaceId: 'T_DESIGN',
+    ownerKind: 'team',
+    providerId: 'google',
+    label: 'Gmail · Team',
+    lifecycle: 'ready',
+    credentialConfigured: true,
+    identity: { accountName: 'team@acme.test' },
+    policy: {
+      kind: 'managed',
+      adapterId: 'composio',
+      toolkit: 'gmail',
+      principalRef: 'chickpea:organization:T_DESIGN',
+      accountRef: 'ca_test_gmail',
+      allowedCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
+    },
+  };
+  const calendarAccount = {
+    id: 'connection_managed_calendar',
+    workspaceId: 'T_DESIGN',
+    ownerKind: 'member',
+    providerId: 'google',
+    label: 'Google Calendar · Personal',
+    lifecycle: 'ready',
+    credentialConfigured: true,
+    identity: { accountName: 'person@acme.test' },
+    policy: {
+      kind: 'managed',
+      adapterId: 'composio',
+      toolkit: 'googlecalendar',
+      principalRef: 'chickpea:member:membership_design',
+      accountRef: 'ca_test_calendar',
+      allowedCapabilities: ['calendar.calendars.list', 'calendar.events.list'],
+    },
+  };
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: {
-      attached: [],
-      available: [{
-        id: 'connection_managed_gmail',
-        workspaceId: 'T_DESIGN',
-        ownerKind: 'team',
-        providerId: 'google',
-        label: 'Managed Gmail',
-        lifecycle: 'ready',
-        credentialConfigured: true,
-        policy: {
-          kind: 'managed',
-          adapterId: 'composio',
-          toolkit: 'gmail',
-          principalRef: 'chickpea:organization:T_DESIGN',
-          accountRef: 'ca_test_gmail',
-          allowedCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
+      attached: [{
+        account: gmailAccount,
+        binding: {
+          agentId: 'agent_conn', connectionAccountId: gmailAccount.id, providerId: 'google',
+          allowedCapabilities: ['gmail.profile.read'], enabled: true,
         },
       }],
+      available: [calendarAccount],
+      managedConnectors: {
+        composio: true,
+        catalog: [
+          managedCatalogFixture('gmail', 'gmail', 'Gmail'),
+          managedCatalogFixture('google-calendar', 'googlecalendar', 'Google Calendar'),
+          managedCatalogFixture('hubspot-managed', 'hubspot', 'HubSpot'),
+        ],
+      },
     },
   });
   await flushAsync();
@@ -5220,11 +5408,225 @@ test('managed connection accounts render their provider, toolkit, and capability
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
 
-  const managedRow = harness.app.innerHTML.match(
-    /<div class="skill-row conn-row">[\s\S]*?Managed Gmail[\s\S]*?<\/div>/,
-  )?.[0] ?? '';
-  assert.match(managedRow, /Managed · google \/ gmail · 2 capabilities/);
-  assert.doesNotMatch(managedRow, /API ·/);
+  const html = harness.app.innerHTML;
+  const rows = html.match(/<div class="connection-state-stack">[\s\S]*?<\/section><\/div>/)?.[0] ?? '';
+  assert.match(html, /<h3>In this Agent<\/h3>[\s\S]*?<span class="connection-section-count">1<\/span>/);
+  assert.match(html, /<h3>Available<\/h3>/);
+  assert.match(html, /connection-account-row connection-account-row-attached[\s\S]*?Gmail[\s\S]*?team@acme\.test &middot; Team/);
+  assert.match(html, /connection-account-row connection-account-row-available[\s\S]*?Google Calendar[\s\S]*?person@acme\.test &middot; Personal/);
+  assert.match(html, /Google Calendar[\s\S]*?Account ready[\s\S]*?2 capabilities[\s\S]*?>Add<\/button>/);
+  assert.match(html, /HubSpot[\s\S]*?No account[\s\S]*?>Connect<\/button>/);
+  assert.match(html, /Gmail capabilities[\s\S]*?Read the email address and mailbox totals/);
+  assert.match(html, /Gmail capabilities[\s\S]*?What this Agent can do with this account\./);
+  assert.match(html, /Gmail[\s\S]*?<summary aria-label="Show 1 Gmail capability">1 capability<\/summary>/);
+  assert.match(html, /class="conn-logo conn-logo-img"/);
+  assert.doesNotMatch(rows, /Gmail · Team|Google Calendar · Personal|Personal · Personal|Team · Team/);
+  assert.doesNotMatch(rows, /Managed ·|google \/ gmail|Managed OAuth|Composio|>In Agent</);
+});
+
+test('managed authorization polling backs off and stops for a manual check', () => {
+  const page = renderAdminPage();
+  assert.match(page, /current\.pollAttempts < 20 \? 1500 : current\.pollAttempts < 38 \? 5000 : 15000/);
+  assert.match(page, /Date\.now\(\) - current\.startedAt >= 5 \* 60 \* 1000/);
+  assert.match(page, /Still waiting for approval\. Finish sign-in, then check again\./);
+});
+
+test('the existing Runs as member can explicitly resume repairable authority-paused schedules', () => {
+  const page = renderAdminPage();
+  assert.match(page, /repairablePause = \["schedule_authority_missing", "assignment_missing", "creator_ineligible", "credential_unavailable"\]/);
+  assert.match(page, /reference\.state === "needs_attention" \|\| routine\.state === "paused" && repairablePause/);
+  assert.match(page, /canResume \? 'Resume future runs' : 'Take over future runs'/);
+  assert.match(page, /data-action="agent-schedule-reassign"/);
+});
+
+test('compact connection rows disclose only trusted capability effects and support hover, focus, and click disclosure', async () => {
+  const unknownManaged = {
+    id: 'connection_unknown_managed', workspaceId: 'T_DESIGN', ownerKind: 'team',
+    providerId: 'google', label: 'Unknown managed', lifecycle: 'ready',
+    policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'catalog_lag',
+      accountRef: 'ca_unknown', principalRef: 'chickpea:organization:T_DESIGN',
+      allowedCapabilities: ['gmail.messages.send'],
+    },
+  };
+  const mcp = {
+    id: 'connection_mcp', workspaceId: 'T_DESIGN', ownerKind: 'team',
+    providerId: 'custom', label: 'Issue server', lifecycle: 'ready',
+    policy: {
+      kind: 'mcp', url: 'https://mcp.example.test', allowedTools: ['delete_issue'],
+      discoveredTools: [{ name: 'delete_issue', description: 'Delete an issue.' }],
+    },
+  };
+  const api = {
+    id: 'connection_api', workspaceId: 'T_DESIGN', ownerKind: 'team',
+    providerId: 'custom', label: 'Issue API', lifecycle: 'ready',
+    policy: { kind: 'api', allowedHosts: ['api.example.test'], allowedMethods: ['GET', 'DELETE'] },
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [], available: [unknownManaged, mcp, api] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /Unknown managed capabilities[\s\S]*?Messages send<\/span><\/li>/);
+  assert.match(html, /Issue server capabilities[\s\S]*?Delete an issue\.<\/span><\/li>/);
+  assert.doesNotMatch(html, /connection-capability-effect-unknown|>unknown<\/span>/);
+  assert.match(html, /GET requests to approved paths<\/span><span class="connection-capability-effect">Read<\/span>/);
+  assert.match(html, /DELETE requests to approved paths<\/span><span class="connection-capability-effect connection-capability-effect-write">Write<\/span>/);
+
+  const page = renderAdminPage();
+  assert.match(page, /\.connection-capabilities:not\(\[open\]\):hover > \.connection-capabilities-popover/);
+  assert.match(page, /\.connection-capabilities:not\(\[open\]\):focus-within > \.connection-capabilities-popover/);
+  assert.match(page, /querySelectorAll\("\.connection-state-stack details\[open\]"\)/);
+  assert.match(page, /details !== clickedConnectionDetails/);
+  assert.match(page, /\.connection-state-stack \.connection-row-menu-panel \{[\s\S]*?right: 34px;/);
+  assert.match(page, /grid-template-columns: 38px minmax\(0, 1fr\) auto auto 28px/);
+  assert.match(page, /\.connection-state-stack \.connection-account-state \{ grid-column: 2 \/ 5; grid-row: 2; \}/);
+  assert.match(page, /\.connection-state-stack \.connection-capabilities \{ grid-column: 2; grid-row: 3; justify-self: start; \}/);
+  assert.match(page, /\.connection-state-stack \.connection-row-action \{ grid-column: 4; grid-row: 3; \}/);
+  assert.doesNotMatch(page, /connection-account-row-available \.connection-capabilities \{ display: none; \}/);
+  assert.match(html, /<details class="connection-capabilities"><summary aria-label="Show /);
+});
+
+test('custom connection labels cannot spoof connector branding and keep their endpoint visible', async () => {
+  const account = {
+    id: 'connection_spoofed_drive', workspaceId: 'T_DESIGN', ownerKind: 'team',
+    providerId: 'google-drive', label: 'Google Drive', lifecycle: 'ready',
+    policy: {
+      kind: 'mcp', url: 'https://mcp.attacker.example/connector', allowedTools: ['search_files'],
+      presetId: 'google-drive',
+      discoveredTools: [{ name: 'search_files', description: 'Search files.' }],
+    },
+    identity: { accountName: 'drive.google.com' },
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()], connectionAccounts: { attached: [], available: [account] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  const row = harness.app.innerHTML.match(/<div class="connection-account-row connection-account-row-available">[\s\S]*?data-connection-id="connection_spoofed_drive"[\s\S]*?<\/div>/)?.[0] ?? '';
+  assert.match(row, /conn-logo conn-logo-mono/);
+  assert.doesNotMatch(row, /conn-logo conn-logo-img/);
+  assert.match(row, /Google Drive<\/span><span class="connection-account-identity">mcp\.attacker\.example &middot; Team/);
+});
+
+test('available rows exclude revoked accounts, suppress duplicate catalog rows, and expose truthful search results', async () => {
+  const gmail = {
+    id: 'connection_gmail', workspaceId: 'T_DESIGN', ownerKind: 'team', providerId: 'google',
+    label: 'Work email', lifecycle: 'ready', policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'gmail', accountRef: 'ca_gmail',
+      principalRef: 'chickpea:organization:T_DESIGN', allowedCapabilities: ['gmail.profile.read'],
+    },
+  };
+  const drive = {
+    id: 'connection_drive', workspaceId: 'T_DESIGN', ownerKind: 'team', providerId: 'google',
+    label: 'Drive', lifecycle: 'ready', policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'googledrive', accountRef: 'ca_drive',
+      principalRef: 'chickpea:organization:T_DESIGN', allowedCapabilities: ['drive.files.search'],
+    },
+  };
+  const calendar = {
+    id: 'connection_calendar', workspaceId: 'T_DESIGN', ownerKind: 'team', providerId: 'google',
+    label: 'Calendar account', lifecycle: 'ready', policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'googlecalendar', accountRef: 'ca_calendar',
+      principalRef: 'chickpea:organization:T_DESIGN', allowedCapabilities: ['calendar.events.list'],
+    },
+  };
+  const revoked = {
+    id: 'connection_revoked', workspaceId: 'T_DESIGN', ownerKind: 'team', providerId: 'google',
+    label: 'Revoked Gmail', lifecycle: 'revoked', policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'gmail', accountRef: 'ca_revoked',
+      principalRef: 'chickpea:organization:T_DESIGN', allowedCapabilities: ['gmail.profile.read'],
+    },
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [
+        { account: gmail, binding: { agentId: 'agent_conn', connectionAccountId: gmail.id, providerId: 'google', enabled: true } },
+        { account: drive, binding: { agentId: 'agent_conn', connectionAccountId: drive.id, providerId: 'google', enabled: true } },
+      ],
+      available: [calendar, revoked],
+      managedConnectors: { composio: true, catalog: [
+        managedCatalogFixture('gmail', 'gmail', 'Gmail'),
+        managedCatalogFixture('google-drive', 'googledrive', 'Google Drive'),
+        managedCatalogFixture('google-calendar', 'googlecalendar', 'Google Calendar'),
+      ] },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  let html = harness.app.innerHTML;
+  assert.match(html, /Work email[\s\S]*?Remove from this Agent[\s\S]*?Disconnect account/);
+  assert.match(html, /Calendar account[\s\S]*?Disconnect account/);
+  assert.doesNotMatch(html, /Calendar account[\s\S]*?Remove from this Agent/);
+  assert.doesNotMatch(html, /data-action="connection-account-preset" data-preset="(?:gmail|google-drive|google-calendar)">Connect<\/button>/);
+  assert.doesNotMatch(html, /Connect (?:personal|Team) account/);
+  assert.doesNotMatch(html, /Revoked Gmail|data-connection-id="connection_revoked"/);
+
+  input({ target: inputTarget({ 'data-action': 'conn-gallery-search' }, 'gmail') });
+  html = harness.app.innerHTML;
+  assert.match(html, /Work email/);
+  assert.doesNotMatch(html, /data-action="connection-account-preset" data-preset="gmail">Connect<\/button>/);
+
+  input({ target: inputTarget({ 'data-action': 'conn-gallery-search' }, 'not-a-real-connector') });
+  html = harness.app.innerHTML;
+  assert.match(html, /No connectors match/);
+  assert.doesNotMatch(html, /Custom connection/);
+  assert.match(html, /<h3>Available<\/h3><span class="connection-section-count">0<\/span>/);
+
+  input({ target: inputTarget({ 'data-action': 'conn-gallery-search' }, 'another') });
+  html = harness.app.innerHTML;
+  assert.match(html, /Custom connection/);
+  assert.equal(html.match(/<h3>Available<\/h3><span class="connection-section-count">(\d+)<\/span>/)?.[1], '1');
+});
+
+test('reusable rows remain visible while a connection form is open', async () => {
+  const account = {
+    id: 'connection_recovery', workspaceId: 'T_DESIGN', ownerKind: 'team', providerId: 'google',
+    label: 'Recovery Gmail', lifecycle: 'needs_attention', policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'gmail', accountRef: 'ca_recovery',
+      principalRef: 'chickpea:organization:T_DESIGN', allowedCapabilities: ['gmail.profile.read'],
+    },
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()], connectionAccounts: { attached: [], available: [account] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  input({ target: inputTarget({ 'data-action': 'conn-gallery-search' }, 'mcp') });
+  assert.doesNotMatch(harness.app.innerHTML, /Recovery Gmail/);
+  click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
+  const html = harness.app.innerHTML;
+  assert.match(html, /Recovery Gmail[\s\S]*?data-action="connection-account-managed-reconnect"/);
+  assert.match(html, /Recovery Gmail[\s\S]*?Needs attention/);
+  assert.doesNotMatch(html, />needs attention</);
+  assert.doesNotMatch(html, /id="conn-gallery-search-input"/);
+  assert.doesNotMatch(html, /No connectors match/);
 });
 
 test('managed Notion renders only safe provider grant summaries', async () => {
@@ -5330,7 +5732,151 @@ test('managed Google accounts that need attention reconnect in place', async () 
     agentId: 'agent_conn',
     body: { workspaceId: 'T_DESIGN', connectionAccountId: account.id },
   }]);
-  assert.deepEqual(harness.assignedUrls, ['https://connect.composio.dev/link/lk_test']);
+  assert.deepEqual(harness.openedUrls, ['https://connect.composio.dev/link/lk_test']);
+  assert.match(harness.app.innerHTML, /Finish sign-in in the new tab/);
+  assert.equal(harness.managedPollCalls(), 1);
+
+  click({ target: actionTarget({ 'data-action': 'managed-auth-cancel' }) });
+  await flushAsync();
+  assert.equal(harness.managedCancelCalls(), 1);
+  assert.doesNotMatch(harness.app.innerHTML, /Finish sign-in in the new tab/);
+});
+
+test('managed sign-in polling retries a transient outage without rendering a raw error code', async () => {
+  const account = {
+    id: 'connection_managed_gmail_safe_error', workspaceId: 'T_DESIGN', ownerKind: 'team',
+    providerId: 'google', label: 'Managed Gmail', lifecycle: 'needs_attention',
+    credentialConfigured: false,
+    policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+      principalRef: 'chickpea:organization:T_DESIGN', accountRef: 'ca_safe_error',
+      allowedCapabilities: ['gmail.profile.read'],
+    },
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    managedPollError: { status: 503, error: 'managed_provider_unavailable' },
+    connectionAccounts: {
+      attached: [{
+        account,
+        binding: {
+          agentId: 'agent_conn', connectionAccountId: account.id, providerId: 'google',
+          allowedCapabilities: ['gmail.profile.read'], enabled: true,
+        },
+      }],
+      available: [],
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({
+    target: actionTarget({
+      'data-action': 'connection-account-managed-reconnect',
+      'data-connection-id': account.id,
+    }),
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Sign-in check is temporarily unavailable\. Chickpea will keep trying\./);
+  assert.match(harness.app.innerHTML, /Finish sign-in in the new tab/);
+  assert.doesNotMatch(harness.app.innerHTML, /managed_provider_unavailable/);
+});
+
+test('hostless polling completion refreshes the Agent and preserves its success notice', async () => {
+  const storageKey = 'chickpea.managed-authorization.v1:agent_conn';
+  const account = {
+    id: 'connection_managed_gmail_poll_complete', workspaceId: 'T_DESIGN', ownerKind: 'team',
+    providerId: 'google', label: 'Managed Gmail', lifecycle: 'ready',
+    credentialConfigured: true,
+    policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+      principalRef: 'chickpea:organization:T_DESIGN', accountRef: 'ca_poll_complete',
+      allowedCapabilities: ['gmail.profile.read'],
+    },
+  };
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_conn',
+    initialSessionStorage: {
+      [storageKey]: JSON.stringify({
+        agentId: 'agent_conn', toolkit: 'gmail', label: 'Gmail · Team',
+        authorizationUrl: 'https://connect.composio.dev/link/lk_complete',
+        pollUrl: '/admin/api/agents/agent_conn/connections/managed/poll',
+        expiresAt: Date.now() + 20 * 60_000, startedAt: Date.now(),
+        returnToSettings: false, popupBlocked: false,
+      }),
+    },
+    managedPollResult: { status: 'connected', account: { id: account.id } },
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [{
+        account,
+        binding: {
+          agentId: 'agent_conn', connectionAccountId: account.id, providerId: 'google',
+          allowedCapabilities: ['gmail.profile.read'], enabled: true,
+        },
+      }],
+      available: [],
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  assert.equal(harness.managedPollCalls(), 1);
+  assert.equal(harness.sessionStorageValue(storageKey), null);
+  assert.match(harness.app.innerHTML, /Gmail · Team is connected and ready for this Agent\./);
+});
+
+test('a stale managed provider clears the saved sign-in and asks the user to restart', async () => {
+  const account = {
+    id: 'connection_managed_gmail_stale_provider', workspaceId: 'T_DESIGN', ownerKind: 'team',
+    providerId: 'google', label: 'Managed Gmail', lifecycle: 'needs_attention',
+    credentialConfigured: false,
+    policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+      principalRef: 'chickpea:organization:T_DESIGN', accountRef: 'ca_stale_provider',
+      allowedCapabilities: ['gmail.profile.read'],
+    },
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    managedPollError: { status: 409, error: 'managed_authorization_stale_provider' },
+    connectionAccounts: {
+      attached: [{
+        account,
+        binding: {
+          agentId: 'agent_conn', connectionAccountId: account.id, providerId: 'google',
+          allowedCapabilities: ['gmail.profile.read'], enabled: true,
+        },
+      }],
+      available: [],
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({
+    target: actionTarget({
+      'data-action': 'connection-account-managed-reconnect',
+      'data-connection-id': account.id,
+    }),
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /connector configuration changed\. Start the connection again\./);
+  assert.doesNotMatch(harness.app.innerHTML, /managed_authorization_stale_provider/);
+  assert.doesNotMatch(harness.app.innerHTML, /Finish sign-in in the new tab/);
 });
 
 test('resource-scoped managed accounts stay pending until Admin selects an allowed property', async () => {
@@ -5389,7 +5935,7 @@ test('resource-scoped managed accounts stay pending until Admin selects an allow
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /Choose GA4 properties/);
+  assert.match(harness.app.innerHTML, /data-action="connection-account-resource-open"[^>]*>Choose<\/button>/);
   assert.doesNotMatch(harness.app.innerHTML, /Growth Analytics[\s\S]*?Reconnect/);
   click({ target: actionTarget({
     'data-action': 'connection-account-resource-open',
@@ -5465,29 +6011,6 @@ test('resource-scoped managed accounts that need attention offer reconnect and r
 
   assert.match(harness.app.innerHTML, /data-action="connection-account-managed-reconnect"/);
   assert.match(harness.app.innerHTML, /Choose GA4 properties/);
-});
-
-test('managed callback notice resolves the connector label after the catalog loads', async () => {
-  const harness = runAdminPageHarness({
-    initialPath: '/admin/agents/agent_conn',
-    initialSearch: '?managed=connected&toolkit=hubspot',
-    agents: [connectionsAgent()],
-    connectionAccounts: {
-      attached: [],
-      available: [],
-      managedConnectors: {
-        composio: true,
-        catalog: [managedCatalogFixture('hubspot-managed', 'hubspot', 'HubSpot')],
-      },
-    },
-  });
-  await flushAsync();
-
-  assert.match(
-    harness.app.innerHTML,
-    /HubSpot is connected through Composio and ready for this Agent\./,
-  );
-  assert.doesNotMatch(harness.app.innerHTML, /the managed connection is connected/);
 });
 
 test('managed resource picker removes stale handles and warns when discovery is capped', async () => {
@@ -5599,7 +6122,7 @@ test('an unattached pending managed account offers reconnect instead of strandin
     harness.app.innerHTML,
     /Pending Gmail[\s\S]*?data-action="connection-account-managed-reconnect"/,
   );
-  assert.match(
+  assert.doesNotMatch(
     harness.app.innerHTML,
     /Pending Gmail[\s\S]*?data-action="connection-account-attach"/,
   );
@@ -5628,8 +6151,157 @@ test('reusable Agent connections retain the complete preset catalog', async () =
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
   assert.equal(
     (panel.match(/data-action="connection-account-preset"/g) ?? []).length,
-    26,
+    36,
   );
+});
+
+test('unconfigured managed connectors stay discoverable and continue after owner setup', async () => {
+  const missingCatalog: Array<Record<string, unknown>> = managedSettingsCatalogFixture().map((descriptor) => ({
+    ...descriptor,
+    access: {
+      read: { status: 'missing_configuration', missingConfiguration: ['api_key'] },
+      write: { status: 'missing_configuration', missingConfiguration: ['api_key'] },
+    },
+  }));
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [],
+      available: [],
+      managedConnectors: {
+        composio: false,
+        canConfigure: true,
+        catalog: missingCatalog,
+      },
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  for (const descriptor of missingCatalog) {
+    assert.match(harness.app.innerHTML, new RegExp(`data-preset="${descriptor.id}"`));
+  }
+  assert.match(harness.app.innerHTML, /YouTube[\s\S]*?Setup required[\s\S]*?>Set up<\/button>/);
+
+  click({
+    target: actionTarget({
+      'data-action': 'connection-account-preset',
+      'data-preset': 'youtube-managed',
+      'data-owner-kind': 'member',
+    }),
+  });
+  assert.match(harness.app.innerHTML, /role="dialog"[\s\S]*?Set up YouTube/);
+  assert.match(harness.app.innerHTML, /type="password"/);
+  assert.match(harness.app.innerHTML, /Settings &rarr; Project Settings &rarr; API Keys/);
+  assert.match(
+    harness.app.innerHTML,
+    /role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="composio-setup-title"[\s\S]{0,1200}class="conn-logo conn-logo-img"/,
+  );
+  assert.doesNotMatch(
+    harness.app.innerHTML,
+    /role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="composio-setup-title"[\s\S]{0,1200}conn-logo-mono/,
+  );
+
+  const secret = 'ak_setup_secret_never_echo';
+  input({ target: inputTarget({ 'data-action': 'composio-setup-key' }, secret) });
+  click({ target: actionTarget({ 'data-action': 'composio-setup-save' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.composioSetupPosts, [{
+    projectKey: secret,
+    continuation: { agentId: 'agent_conn', toolkit: 'youtube' },
+  }]);
+  assert.doesNotMatch(harness.app.innerHTML, new RegExp(secret));
+  assert.match(harness.app.innerHTML, /<strong>YouTube<\/strong>/);
+  assert.match(harness.app.innerHTML, /value="member" selected>My connection<\/option>/);
+  assert.match(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+});
+
+test('members can discover managed connectors without seeing the project-key field', async () => {
+  const descriptor = {
+    ...managedCatalogFixture('youtube-managed', 'youtube', 'YouTube'),
+    access: {
+      read: { status: 'missing_configuration', missingConfiguration: ['api_key'] },
+      write: { status: 'missing_configuration', missingConfiguration: ['api_key'] },
+    },
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [],
+      available: [],
+      managedConnectors: { composio: false, canConfigure: false, catalog: [descriptor] },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({
+    target: actionTarget({
+      'data-action': 'connection-account-preset',
+      'data-preset': 'youtube-managed',
+    }),
+  });
+
+  assert.match(harness.app.innerHTML, /managed connectors must first be enabled by a Chickpea owner or admin/);
+  assert.match(harness.app.innerHTML, /Ask an owner or admin to open Settings &rarr; Connectors/);
+  assert.doesNotMatch(harness.app.innerHTML, /id="composio-project-key"/);
+  const modalCopy = harness.app.innerHTML
+    .slice(harness.app.innerHTML.lastIndexOf('Set up YouTube'))
+    .replace(/<[^>]+>/g, ' ');
+  assert.doesNotMatch(modalCopy, /composio/i);
+});
+
+test('deployment-managed connector setup sends owners to preparation without asking for the key', async () => {
+  const descriptor = {
+    ...managedCatalogFixture('youtube-managed', 'youtube', 'YouTube'),
+    access: {
+      read: { status: 'missing_configuration', missingConfiguration: ['auth_config_missing'] },
+      write: { status: 'missing_configuration', missingConfiguration: ['auth_config_missing'] },
+    },
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [],
+      available: [],
+      managedConnectors: {
+        composio: false,
+        canConfigure: true,
+        configurationReadOnly: true,
+        catalog: [descriptor],
+      },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /YouTube[\s\S]*?Preparation required/);
+  click({
+    target: actionTarget({
+      'data-action': 'connection-account-preset',
+      'data-preset': 'youtube-managed',
+    }),
+  });
+
+  assert.match(harness.app.innerHTML, /already supplies its project key through deployment configuration/);
+  assert.match(harness.app.innerHTML, /prepare the standard connector defaults/);
+  assert.doesNotMatch(harness.app.innerHTML, /id="composio-project-key"/);
 });
 
 test('connector handoff deep link opens the requested reusable account form', async () => {
@@ -5751,7 +6423,7 @@ test('legacy Google access does not hide reusable Google account presets', async
   assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
-  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 26);
+  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 36);
 });
 
 test('every catalog connector opens a reusable-account setup flow', async () => {
@@ -6007,7 +6679,8 @@ test('reusable Google Drive accounts start a Drive-only Composio Connect Link', 
   const managedForm = harness.app.innerHTML.match(
     /<div class="skill-form">[\s\S]*?Continue to sign in[\s\S]*?<\/div>/,
   )?.[0] ?? '';
-  assert.match(managedForm, /Google sign-in opens through Composio/);
+  assert.match(managedForm, /Sign-in opens in a secure hosted tab/);
+  assert.match(managedForm, /data-action="connection-account-owner"[\s\S]*?class="[^"]*select-caret/);
   assert.doesNotMatch(managedForm, /<label[^>]*>Google OAuth client (ID|secret)<\/label>/);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
@@ -6021,7 +6694,8 @@ test('reusable Google Drive accounts start a Drive-only Composio Connect Link', 
   assert.deepEqual(harness.connectionAccountPosts, []);
   assert.deepEqual(harness.apiOAuthClientPuts, []);
   assert.deepEqual(harness.apiOAuthStartPosts, []);
-  assert.deepEqual(harness.assignedUrls, ['https://connect.composio.dev/link/lk_test']);
+  assert.deepEqual(harness.openedUrls, ['https://connect.composio.dev/link/lk_test']);
+  assert.match(harness.app.innerHTML, /Finish sign-in in the new tab/);
 });
 
 test('reusable Google Drive accounts can request a read-write Composio capability ceiling', async () => {
@@ -6076,7 +6750,7 @@ test('managed productivity cards expose only configured read lanes and disable m
 
   assert.match(harness.app.innerHTML, /data-preset="google-sheets"/);
   assert.match(harness.app.innerHTML, /data-preset="google-docs"/);
-  assert.doesNotMatch(harness.app.innerHTML, /data-preset="google-slides"/);
+  assert.match(harness.app.innerHTML, /data-preset="google-slides"[\s\S]*?Set up/);
 
   click({
     target: actionTarget({
@@ -6112,8 +6786,12 @@ test('custom reusable API setup directs Google OAuth to the managed connectors',
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
-  assert.match(harness.app.innerHTML, /Use a managed Google connector for Google OAuth/);
-  assert.doesNotMatch(harness.app.innerHTML, /<option value="google_oauth"/);
+  const form = harness.app.innerHTML;
+  assert.match(form, /Use a managed Google connector for Google OAuth/);
+  assert.doesNotMatch(form, /<option value="google_oauth"/);
+  assert.match(form, /data-action="connection-account-owner"[\s\S]*?class="[^"]*select-caret/);
+  assert.match(form, /data-action="connection-account-kind"[\s\S]*?class="[^"]*select-caret/);
+  assert.match(form, /data-action="connection-account-auth"[\s\S]*?class="[^"]*select-caret/);
 });
 
 test('self-hosted reusable Google connectors fall back to native OAuth setup without Composio', async () => {
@@ -6132,7 +6810,8 @@ test('self-hosted reusable Google connectors fall back to native OAuth setup wit
   await flushAsync();
 
   assert.doesNotMatch(harness.app.innerHTML, /Managed OAuth/);
-  assert.match(harness.app.innerHTML, /Google Drive[\s\S]{0,500}gallery-lane">API/);
+  assert.match(harness.app.innerHTML, /Google Drive[\s\S]{0,900}>Connect<\/button>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Google Drive[\s\S]{0,500}gallery-lane/);
 
   click({
     target: actionTarget({
@@ -6274,6 +6953,17 @@ function managedCatalogFixture(
     label,
     description: `${label} managed connector`,
     securityDescription: 'Google sign-in opens through Composio.',
+    capabilities: id === 'gmail'
+      ? [
+          { id: 'gmail.profile.read', accessLane: 'read', description: 'Read the email address and mailbox totals.' },
+          { id: 'gmail.messages.search', accessLane: 'read', description: 'Search messages with Gmail query syntax.' },
+        ]
+      : id === 'google-calendar'
+        ? [
+            { id: 'calendar.calendars.list', accessLane: 'read', description: 'List accessible calendars.' },
+            { id: 'calendar.events.list', accessLane: 'read', description: 'List or search calendar events.' },
+          ]
+        : [],
     access: {
       read: ready,
       write: writeReady
@@ -6281,6 +6971,25 @@ function managedCatalogFixture(
         : { status: 'missing_configuration', missingConfiguration: ['auth_config_missing'] },
     },
   };
+}
+
+function managedSettingsCatalogFixture(): Array<Record<string, unknown>> {
+  const connectors: Array<[string, string, string]> = [
+    ['gmail', 'gmail', 'Gmail'],
+    ['google-calendar', 'googlecalendar', 'Google Calendar'],
+    ['google-drive', 'googledrive', 'Google Drive'],
+    ['google-sheets', 'googlesheets', 'Google Sheets'],
+    ['google-docs', 'googledocs', 'Google Docs'],
+    ['google-slides', 'googleslides', 'Google Slides'],
+    ['google-search-console', 'google_search_console', 'Google Search Console'],
+    ['google-analytics', 'google_analytics', 'Google Analytics'],
+    ['notion-managed', 'notion', 'Notion'],
+    ['hubspot-managed', 'hubspot', 'HubSpot'],
+    ['gong-managed', 'gong', 'Gong'],
+    ['google-ads', 'googleads', 'Google Ads'],
+    ['youtube-managed', 'youtube', 'YouTube'],
+  ];
+  return connectors.map(([id, toolkit, label]) => managedCatalogFixture(id, toolkit, label));
 }
 
 function apiConnectionFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -9912,18 +10621,387 @@ test('the left rail keeps one coherent section switcher and section-specific nav
   assert.match(harness.app.innerHTML, /data-settings-panel="github"><section/);
 });
 
-test('Settings includes a secondary connection inventory while Agent pages remain the management surface', async () => {
+test('Settings Connectors configures managed integrations and manages connected accounts', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin/settings/connections' });
   await flushAsync();
 
-  assert.equal(harness.locationPath(), '/admin/settings/connections');
-  assert.match(harness.app.innerHTML, /class="chan-item active" data-action="settings-section" data-section="connections"/);
-  assert.match(harness.app.innerHTML, /A secondary inventory of Team connections and your personal accounts/);
+  assert.equal(harness.locationPath(), '/admin/settings/connectors');
+  assert.match(harness.app.innerHTML, /class="chan-item active" data-action="settings-section" data-section="connectors"/);
+  assert.match(harness.app.innerHTML, /Some Chickpea connectors are managed by Composio/);
+  assert.match(harness.app.innerHTML, /Settings &rarr; Project Settings &rarr; API Keys/);
+  assert.match(harness.app.innerHTML, /Google Sheets/);
+  assert.match(harness.app.innerHTML, /YouTube/);
+  assert.equal((harness.app.innerHTML.match(/class="managed-settings-row"/g) ?? []).length, 13);
+  assert.match(harness.app.innerHTML, /Connected accounts/);
   assert.match(harness.app.innerHTML, /Support Zendesk/);
   assert.match(harness.app.innerHTML, /Customer support/);
   assert.match(harness.app.innerHTML, /data-action="edit-profile" data-agent="agent_release">Release Profile<\/button>/);
-  assert.match(harness.app.innerHTML, /Add connections and choose access from an Agent/);
+  assert.match(harness.app.innerHTML, /Reconnect or disconnect accounts here/);
+  assert.match(harness.app.innerHTML, /<strong>YouTube<\/strong>[\s\S]*?Personal[\s\S]*?Needs attention/);
+  assert.doesNotMatch(harness.app.innerHTML, /<strong>YouTube · Personal<\/strong>|<p class="hint">google<\/p>/);
+  assert.match(harness.app.innerHTML, /data-action="connection-inventory-provider-setup"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-inventory-reconnect"/);
+  assert.equal((harness.app.innerHTML.match(/data-action="connection-account-revoke"/g) ?? []).length, 2);
   assert.doesNotMatch(harness.app.innerHTML, /Connect and add|connection-account-create/);
+
+  const input = harness.listeners.input;
+  const click = harness.listeners.click;
+  assert.ok(input && click);
+  const secret = 'ak_settings_secret_never_echo';
+  input({ target: inputTarget({ 'data-action': 'connector-settings-key' }, secret) });
+  click({ target: actionTarget({ 'data-action': 'connector-settings-save' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.composioSetupPosts, [{ projectKey: secret }]);
+  assert.doesNotMatch(harness.app.innerHTML, new RegExp(secret));
+  assert.match(harness.app.innerHTML, /Connected[\s\S]*?Replace project key[\s\S]*?Disable in Chickpea/);
+  assert.match(harness.app.innerHTML, /data-action="connection-inventory-reconnect"/);
+
+  click({
+    target: actionTarget({
+      'data-action': 'connection-inventory-reconnect',
+      'data-connection-id': 'connection_youtube',
+      'data-agent-id': 'agent_release',
+    }),
+  });
+  await flushAsync();
+  assert.deepEqual(harness.managedAuthorizationPosts.at(-1), {
+    agentId: 'agent_release',
+    body: { workspaceId: 'T_DESIGN', connectionAccountId: 'connection_youtube' },
+  });
+  assert.match(harness.app.innerHTML, /Connect YouTube · Personal/);
+
+  const storageKey = 'chickpea.managed-authorization.v1:agent_release';
+  const persisted = harness.sessionStorageValue(storageKey);
+  assert.ok(persisted);
+  assert.deepEqual(
+    (({ returnToSettings, popupBlocked }) => ({ returnToSettings, popupBlocked }))(
+      JSON.parse(persisted) as Record<string, unknown>,
+    ),
+    { returnToSettings: true, popupBlocked: false },
+  );
+
+  const refreshed = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    initialSessionStorage: { [storageKey]: persisted },
+    managedPollResult: { status: 'connected' },
+  });
+  await flushAsync();
+  assert.equal(refreshed.locationPath(), '/admin/settings/connectors');
+  assert.equal(refreshed.managedPollCalls(), 1);
+  assert.match(refreshed.app.innerHTML, /YouTube · Personal is connected again\./);
+  assert.equal(refreshed.sessionStorageValue(storageKey), null);
+});
+
+test('Settings Connectors keeps provider implementation details out of member-visible copy', async () => {
+  const catalog = managedSettingsCatalogFixture();
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    composioSettings: {
+      provider: {
+        source: 'stored', configured: false, readOnly: false,
+        desiredState: 'enabled', generation: 1, reconciliationPending: true,
+        connectors: catalog.map((entry) => ({
+          toolkit: entry.toolkit,
+          status: 'setup_required' as const,
+        })),
+      },
+      canConfigure: false,
+      catalog,
+    },
+  });
+  await flushAsync();
+
+  const visibleText = harness.app.innerHTML.replace(/<[^>]+>/g, ' ');
+  assert.doesNotMatch(visibleText, /composio/i);
+  assert.match(visibleText, /owner or admin can enable managed connectors/i);
+  assert.match(visibleText, /finishing connector reconciliation/i);
+  assert.match(harness.app.innerHTML, /aria-label="Managed connectors"/);
+  assert.doesNotMatch(harness.app.innerHTML, /aria-label="Composio-managed connectors"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connector-settings-retry"/);
+});
+
+test('Settings Connectors lets an owner retry pending connector reconciliation', async () => {
+  const catalog = managedSettingsCatalogFixture();
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    composioSettings: {
+      provider: {
+        source: 'stored', configured: true, readOnly: false,
+        desiredState: 'enabled', generation: 2, reconciliationPending: true,
+        connectors: catalog.map((entry) => ({
+          toolkit: entry.toolkit,
+          status: 'setup_required' as const,
+        })),
+      },
+      canConfigure: true,
+      impact: { accounts: 2, schedules: 1 },
+      catalog,
+    },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /finishing connector reconciliation/i);
+  assert.match(harness.app.innerHTML, /data-action="connector-settings-retry"/);
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'connector-settings-retry' }) });
+  await flushAsync();
+  assert.equal(harness.composioRetryCalls(), 1);
+});
+
+test('managed sign-in actions persist their refreshed timeout and popup state', async () => {
+  const storageKey = 'chickpea.managed-authorization.v1:agent_release';
+  const originalStartedAt = Date.now() - 4 * 60_000;
+  const saved = JSON.stringify({
+    agentId: 'agent_release',
+    toolkit: 'youtube',
+    label: 'YouTube · Personal',
+    authorizationUrl: 'https://connect.composio.dev/link/lk_resume',
+    pollUrl: '/admin/api/agents/agent_release/connections/managed/poll',
+    expiresAt: Date.now() + 20 * 60_000,
+    startedAt: originalStartedAt,
+    returnToSettings: true,
+    popupBlocked: true,
+  });
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    initialSessionStorage: { [storageKey]: saved },
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Your browser did not open the hosted sign-in tab/);
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'managed-auth-open' }) });
+  click({ target: actionTarget({ 'data-action': 'managed-auth-retry' }) });
+  await flushAsync();
+
+  const updated = harness.sessionStorageValue(storageKey);
+  assert.ok(updated);
+  const parsed = JSON.parse(updated) as Record<string, unknown>;
+  assert.equal(parsed.popupBlocked, false);
+  assert.ok(Number(parsed.startedAt) > originalStartedAt);
+
+  const refreshed = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    initialSessionStorage: { [storageKey]: updated },
+  });
+  await flushAsync();
+  assert.doesNotMatch(refreshed.app.innerHTML, /Your browser did not open the hosted sign-in tab/);
+  assert.doesNotMatch(refreshed.app.innerHTML, /Sign-in needs attention/);
+  assert.equal(refreshed.managedPollCalls(), 1);
+});
+
+test('Settings Connectors can repair an unavailable stored configuration', async () => {
+  const catalog = managedSettingsCatalogFixture().map(({ access: _access, ...entry }) => entry);
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    composioSettingsError: {
+      status: 503,
+      error: 'composio_configuration_unavailable',
+      message: 'The managed connector configuration needs attention.',
+      recovery: { canConfigure: true, catalog },
+    },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Configuration needs attention/);
+  assert.match(harness.app.innerHTML, /type="password"/);
+  assert.match(harness.app.innerHTML, /Validate and repair/);
+  assert.match(harness.app.innerHTML, /Disable in Chickpea/);
+  assert.equal((harness.app.innerHTML.match(/class="managed-settings-row"/g) ?? []).length, 13);
+
+  const input = harness.listeners.input;
+  const click = harness.listeners.click;
+  assert.ok(input && click);
+  const secret = 'ak_repair_secret_never_echo';
+  input({ target: inputTarget({ 'data-action': 'connector-settings-key' }, secret) });
+  click({ target: actionTarget({ 'data-action': 'connector-settings-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.composioSetupPosts, [{ projectKey: secret }]);
+  assert.doesNotMatch(harness.app.innerHTML, new RegExp(secret));
+});
+
+test('Settings Connectors clears a stale provider card when a reload needs recovery', async () => {
+  const catalog = managedSettingsCatalogFixture();
+  const options: Parameters<typeof runAdminPageHarness>[0] = {
+    initialPath: '/admin/settings/connectors',
+    composioSettings: {
+      provider: {
+        source: 'stored', configured: true, readOnly: false,
+        desiredState: 'enabled', generation: 2, reconciliationPending: false,
+        connectors: catalog.map((entry) => ({ toolkit: entry.toolkit, status: 'ready' })),
+      },
+      canConfigure: true,
+      impact: { accounts: 1, schedules: 0 },
+      catalog,
+    },
+  };
+  const harness = runAdminPageHarness(options);
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Connected/);
+
+  options.composioSettingsError = {
+    status: 503,
+    error: 'composio_configuration_unavailable',
+    message: 'The managed connector configuration needs attention.',
+    recovery: {
+      canConfigure: true,
+      catalog: catalog.map(({ access: _access, ...entry }) => entry),
+    },
+  };
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'github' }) });
+  click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'connectors' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Configuration needs attention/);
+  assert.match(harness.app.innerHTML, /Validate and repair/);
+  assert.doesNotMatch(harness.app.innerHTML, /Replace project key/);
+});
+
+test('Settings Connectors keeps a neutral reload retry beside stale provider status', async () => {
+  const catalog = managedSettingsCatalogFixture();
+  const options: Parameters<typeof runAdminPageHarness>[0] = {
+    initialPath: '/admin/settings/connectors',
+    composioSettings: {
+      provider: {
+        source: 'stored', configured: true, readOnly: false,
+        desiredState: 'enabled', generation: 2, reconciliationPending: false,
+        connectors: catalog.map((entry) => ({ toolkit: entry.toolkit, status: 'ready' })),
+      },
+      canConfigure: true,
+      impact: { accounts: 1, schedules: 0 },
+      catalog,
+    },
+  };
+  const harness = runAdminPageHarness(options);
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Connected/);
+
+  options.composioSettingsError = {
+    status: 500,
+    error: 'temporary_settings_failure',
+    message: 'Managed connector status is temporarily unavailable.',
+  };
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'github' }) });
+  click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'connectors' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Connected/);
+  assert.match(harness.app.innerHTML, /Managed connector status is temporarily unavailable/);
+  assert.match(harness.app.innerHTML, /data-action="connector-settings-retry-load"/);
+  assert.doesNotMatch(harness.app.innerHTML, /Configuration needs attention/);
+});
+
+test('Settings Connectors never renders a raw configuration error code', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    composioSettingsError: {
+      status: 409,
+      error: 'internal_provider_configuration_code',
+    },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Could not load managed connector settings\./);
+  assert.doesNotMatch(harness.app.innerHTML, /internal_provider_configuration_code/);
+  assert.doesNotMatch(harness.app.innerHTML, /Configuration needs attention|Replace the stored project key|owner or admin can repair/i);
+  assert.match(harness.app.innerHTML, /data-action="connector-settings-retry-load"/);
+});
+
+test('deployment-managed connector settings are visible but immutable in Admin', async () => {
+  const deploymentCatalog = managedSettingsCatalogFixture().map((entry, index) => index === 0
+    ? {
+        ...entry,
+        access: {
+          read: { status: 'missing_configuration', missingConfiguration: ['auth_config_missing'] },
+          write: { status: 'missing_configuration', missingConfiguration: ['auth_config_missing'] },
+        },
+      }
+    : entry);
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    composioSettings: {
+      provider: {
+        source: 'deployment', configured: true, readOnly: true,
+        desiredState: 'enabled', generation: 1, reconciliationPending: false,
+        connectors: deploymentCatalog.map((entry, index) => ({
+          toolkit: entry.toolkit,
+          status: index === 0 ? 'setup_required' : 'ready',
+        })),
+      },
+      canConfigure: true,
+      impact: { accounts: 2, schedules: 1 },
+      catalog: deploymentCatalog,
+    },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Configured by deployment/);
+  assert.match(harness.app.innerHTML, /cannot be replaced or disabled in Admin/);
+  assert.match(harness.app.innerHTML, /Prepare connector defaults/);
+  assert.doesNotMatch(harness.app.innerHTML, /id="connector-settings-key"|Replace project key|Disable in Chickpea/);
+  assert.equal((harness.app.innerHTML.match(/class="managed-settings-row"/g) ?? []).length, 13);
+});
+
+test('invalid project keys stay masked and return an inline correction', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    composioSetupError: { status: 400, error: 'invalid_composio_project_key' },
+  });
+  await flushAsync();
+  const input = harness.listeners.input;
+  const click = harness.listeners.click;
+  assert.ok(input && click);
+  input({ target: inputTarget({ 'data-action': 'connector-settings-key' }, 'ak_invalid_test') });
+  click({ target: actionTarget({ 'data-action': 'connector-settings-save' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /type="password"/);
+  assert.match(harness.app.innerHTML, /That project key was not accepted/);
+  assert.match(harness.app.innerHTML, /role="alert"/);
+});
+
+test('managed connector retry failures stay visible beside configured controls', async () => {
+  const catalog = managedSettingsCatalogFixture();
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    composioSettings: {
+      provider: {
+        source: 'stored', configured: true, readOnly: false,
+        desiredState: 'enabled', generation: 2, reconciliationPending: false,
+        lastSetupResult: {
+          status: 'partial', completedAt: 1_800_000_000_000,
+          issueCodes: ['temporary_provider_failure'],
+        },
+        connectors: catalog.map((entry) => ({ toolkit: entry.toolkit, status: 'setup_required' })),
+      },
+      canConfigure: true,
+      impact: { accounts: 1, schedules: 1 },
+      catalog,
+    },
+    composioRetryError: {
+      status: 503,
+      error: 'composio_reconciliation_incomplete',
+      message: 'Composio is temporarily unavailable. Try again.',
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  assert.match(harness.app.innerHTML, /Retry setup/);
+
+  click({ target: actionTarget({ 'data-action': 'connector-settings-retry' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /role="alert"[\s\S]*?Composio is temporarily unavailable\. Try again\./);
+  assert.match(harness.app.innerHTML, /Replace project key/);
+  assert.match(harness.app.innerHTML, /Disable in Chickpea/);
 });
 
 test('shared Slack settings expose a direct authorization recovery without reopening setup', async () => {

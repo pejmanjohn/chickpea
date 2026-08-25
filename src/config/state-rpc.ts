@@ -1,4 +1,8 @@
-import type { SettingsPatch } from './settings-store.ts';
+import type {
+  EncryptedCredentialRevision,
+  ReplaceEncryptedCredentialRevisionInput,
+  SettingsPatch,
+} from './settings-store.ts';
 import type {
   ConfigAgentPatch,
   OAuthReauthorizationTarget,
@@ -82,6 +86,7 @@ export type StateRpcErrorCode =
   | 'agent_still_assigned'
   | 'agent_still_referenced'
   | 'channel_revision_conflict'
+  | 'connection_account_revision_conflict'
   | 'identity'
   | 'management'
   | 'memory'
@@ -387,6 +392,16 @@ export interface TagStateRpc {
     key: string,
     values: readonly string[],
   ): Promise<StateRpcResult<string[]>>;
+  encryptedCredentialGet(
+    key: string,
+  ): Promise<StateRpcResult<EncryptedCredentialRevision | null>>;
+  encryptedCredentialReplace(
+    input: ReplaceEncryptedCredentialRevisionInput,
+  ): Promise<StateRpcResult<EncryptedCredentialRevision | null>>;
+  encryptedCredentialDelete(
+    key: string,
+    expectedRevision: string,
+  ): Promise<StateRpcResult<boolean>>;
   // -- memory + generic audit envelope ------------------------------------
   memoryExecute(request: MemoryRpcRequest): Promise<StateRpcResult<MemoryRpcResponse>>;
   configDeleteAgentWithMemory(

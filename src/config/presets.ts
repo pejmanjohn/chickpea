@@ -161,7 +161,7 @@ export const MANAGED_CONNECTOR_PRESETS: ManagedConnectorPreset[] = [
     description: 'Inspect indexing, sitemaps, and search performance for selected sites.',
     category: 'business',
     accent: '#458CF5',
-    logoId: 'google-workspace',
+    logoId: 'google-search-console',
   },
   {
     id: 'google-analytics',
@@ -171,7 +171,7 @@ export const MANAGED_CONNECTOR_PRESETS: ManagedConnectorPreset[] = [
     description: 'Read metadata, quotas, and bounded GA4 reports for selected properties.',
     category: 'business',
     accent: '#E37400',
-    logoId: 'google-workspace',
+    logoId: 'google-analytics',
   },
   {
     id: 'hubspot-managed',
@@ -201,7 +201,7 @@ export const MANAGED_CONNECTOR_PRESETS: ManagedConnectorPreset[] = [
     description: 'Analyze and manage campaigns for explicitly selected client accounts.',
     category: 'business',
     accent: '#4285F4',
-    logoId: 'google-workspace',
+    logoId: 'google-ads',
   },
   {
     id: 'youtube-managed',

@@ -25,18 +25,27 @@ import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
 import {
+  ConnectionScheduleConflictError,
   ConnectionAccountService,
   ManagedConnectionConflictError,
   ManagedConnectionProviderUnavailableError,
   ManagedResourceSelectionError,
+  markManagedProviderAccountsUnavailable,
+  reconcileManagedProviderAccounts,
   toConnectionAccountView,
 } from '../connections/store.ts';
 import {
   createDefaultManagedConnectionProviderRegistry,
+  createManagedConnectionProviderRegistry,
+  createResolvedManagedConnectionProviderRegistry,
   managedProviderAvailability,
+  type ManagedConnectionProvider,
   type ManagedConnectionProviderRegistry,
 } from '../connections/managed.ts';
-import { ManagedAuthorizationAllocatedError } from '../connections/managed-errors.ts';
+import {
+  ManagedAuthorizationAllocatedError,
+  ManagedProviderRequestError,
+} from '../connections/managed-errors.ts';
 import {
   abandonManagedAuthorization,
   abandonManagedAuthorizationForRestart,
@@ -51,7 +60,30 @@ import {
   type ManagedAuthorizationAttempt,
   recordManagedAuthorizationAccount,
   recordManagedAuthorizationRequest,
+  assertManagedAuthorizationProvider,
 } from '../connections/managed-authorization.ts';
+import {
+  completeComposioReconciliation,
+  ComposioConfigurationMutationError,
+  ComposioConfigurationStateError,
+  composioConfigurationIsMutable,
+  describeComposioConfiguration,
+  disableStoredComposioConfiguration,
+  resolveComposioConfiguration,
+  saveStoredComposioProjectKey,
+  type ComposioConfigurationOptions,
+  type ResolvedComposioConfiguration,
+} from '../config/composio-settings.ts';
+import {
+  prepareResolvedComposioManagedAuthConfigs,
+  validateComposioProjectKey,
+  ComposioProjectKeyValidationError,
+  ComposioSetupInProgressError,
+} from '../connections/composio-setup.ts';
+import {
+  inspectComposioConnectedAccount,
+  type ComposioClientLike,
+} from '../connections/providers/composio.ts';
 import {
   MANAGED_CONNECTOR_CATALOG,
   type ManagedConnectorCatalog,
@@ -396,6 +428,7 @@ import { createBetterAuthEnvironmentPublicHandler } from '../auth/better-auth-ru
 import {
   AuthorizationError,
   canEditAgent,
+  permissionForRole,
   requireAgentEdit,
   requirePermission,
   type Permission,
@@ -448,6 +481,17 @@ interface AdminRoutesOptions {
   management?: ManagementStore | undefined;
   managedConnectionProviders?: ManagedConnectionProviderRegistry | undefined;
   managedConnectorCatalog?: ManagedConnectorCatalog | undefined;
+  composioConfiguration?: Omit<ComposioConfigurationOptions, 'env' | 'settings'> | undefined;
+  composioCreateClient?: ((input: { apiKey: string }) => Promise<ComposioClientLike>) | undefined;
+  composioInspectAccount?: ((input: {
+    apiKey: string;
+    accountRef: string;
+    principalRef: string;
+    toolkit: string;
+    signal?: AbortSignal;
+  }) => Promise<'match' | 'missing' | 'mismatch' | 'transient'>) | undefined;
+  composioReconciliationTimeoutMs?: number | undefined;
+  composioPreparationTimeoutMs?: number | undefined;
   /**
    * Explicit encrypted Slack credential realm for tests and embedded hosts.
    * Production resolves persistent TAG_STATE and its target keyring from the
@@ -838,15 +882,6 @@ function managedAuthorizationRemoteRef(
   return attempt.accountRef ?? attempt.authorizationRef;
 }
 
-function managedAuthorizationRemoteRefs(
-  attempt: ManagedAuthorizationAttempt,
-): string[] {
-  return [...new Set(
-    [attempt.authorizationRef, attempt.accountRef]
-      .filter((value): value is string => Boolean(value)),
-  )];
-}
-
 const connectionAccountAttachSchema = v.object({
   allowedCapabilities: v.optional(v.pipe(
     v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(256))),
@@ -1056,10 +1091,6 @@ const managedAuthorizationStartSchema = v.union([
   }),
 ]);
 
-const managedAuthorizationCallbackSchema = v.object({
-  session_uri: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4_096)),
-});
-
 const managedResourceSelectionSchema = v.strictObject({
   workspaceId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9_]{2,32}$/)),
   expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
@@ -1077,6 +1108,14 @@ const managedResourceSelectionSchema = v.strictObject({
 
 const managedAuthorizationRecoverySchema = v.strictObject({
   actorMembershipId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9_.:@-]{1,256}$/)),
+});
+
+const composioProjectSetupSchema = v.strictObject({
+  projectKey: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(16_384)),
+  continuation: v.optional(v.strictObject({
+    agentId: agentIdSchema,
+    toolkit: v.pipe(v.string(), v.trim(), v.regex(/^[a-z0-9][a-z0-9_-]{0,127}$/)),
+  })),
 });
 
 const onboardingTrySchema = v.strictObject({
@@ -1180,7 +1219,24 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const principalByContext = new WeakMap<object, AuthPrincipal>();
   const betterAuthByContext = new WeakMap<object, Promise<BetterAuthContext | undefined>>();
   const managedProvidersByContext = new WeakMap<object, ManagedConnectionProviderRegistry>();
+  type ResolvedManagedProviderContext = {
+    providers: ManagedConnectionProviderRegistry;
+    generation: number;
+    lineage: string;
+    readOnly: boolean;
+  };
+  const resolvedManagedProvidersByContext = new WeakMap<
+    object,
+    Promise<ResolvedManagedProviderContext>
+  >();
   const managedCatalog = options.managedConnectorCatalog ?? MANAGED_CONNECTOR_CATALOG;
+  const managedCatalogDescriptors = () => managedCatalog.list().map((connector) => ({
+    id: connector.id,
+    toolkit: connector.toolkit,
+    providerId: connector.providerId,
+    label: connector.label,
+    description: connector.description,
+  }));
   const store = (c: Context) => options.store ?? getConfigStore(c.env as PlatformEnv | undefined);
   const snapshots = (c: Context) =>
     options.snapshots ?? getAgentSnapshotStore(c.env as PlatformEnv | undefined);
@@ -1188,6 +1244,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.identity ?? getIdentityStore(c.env as PlatformEnv | undefined);
   const settings = (c: Context) =>
     options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
+  const composioConfiguration = (c: Context): ComposioConfigurationOptions => ({
+    ...options.composioConfiguration,
+    settings: settings(c),
+    ...(c.env ? { env: c.env as PlatformEnv } : {}),
+  });
   const managedProviders = (c: Context): ManagedConnectionProviderRegistry => {
     if (options.managedConnectionProviders) return options.managedConnectionProviders;
     const cached = managedProvidersByContext.get(c);
@@ -1197,6 +1258,51 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     );
     managedProvidersByContext.set(c, created);
     return created;
+  };
+  const resolvedManagedProviderContext = async (
+    c: Context,
+  ): Promise<ResolvedManagedProviderContext> => {
+    if (options.managedConnectionProviders) {
+      return {
+        providers: options.managedConnectionProviders,
+        generation: 1,
+        lineage: '0'.repeat(24),
+        readOnly: false,
+      };
+    }
+    const cached = resolvedManagedProvidersByContext.get(c);
+    if (cached) return cached;
+    const resolving = (async (): Promise<ResolvedManagedProviderContext> => {
+      let resolved: ResolvedComposioConfiguration;
+      try {
+        resolved = await resolveComposioConfiguration(composioConfiguration(c));
+      } catch (error) {
+        if (error instanceof ComposioConfigurationStateError) {
+          return {
+            providers: createManagedConnectionProviderRegistry([]),
+            generation: 1,
+            lineage: '0'.repeat(24),
+            readOnly: false,
+          };
+        }
+        throw error;
+      }
+      return {
+        providers: createResolvedManagedConnectionProviderRegistry(
+          resolved,
+          c.env as PlatformEnv | undefined,
+        ),
+        generation: resolved.generation,
+        lineage: resolved.keyFingerprint ?? resolved.lastKeyFingerprint ?? '0'.repeat(24),
+        readOnly: resolved.readOnly,
+      };
+    })();
+    resolvedManagedProvidersByContext.set(c, resolving);
+    return resolving;
+  };
+  const resolvedConnectionAccounts = async (c: Context): Promise<ConnectionAccountService> => {
+    const providerContext = await resolvedManagedProviderContext(c);
+    return connectionAccounts(c, providerContext.providers);
   };
   const slackCredentialDependencies = (
     c: Context,
@@ -1554,13 +1660,76 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!membership || membership.status !== 'active' || !user) throw new AuthorizationError();
     return { principal, slackUserId: user.slackUserId, slackTeamId: user.slackTeamId };
   };
-  const connectionAccounts = (c: Context): ConnectionAccountService =>
+  const connectionAccounts = (
+    c: Context,
+    providers: ManagedConnectionProviderRegistry = managedProviders(c),
+  ): ConnectionAccountService =>
     new ConnectionAccountService({
       config: store(c),
       settings: settings(c),
-      managedProviders: managedProviders(c),
+      managedProviders: providers,
       managedCatalog,
     });
+  const resumeComposioReconciliation = async (
+    c: Context,
+    requestSignal?: AbortSignal,
+  ) => {
+    let resolved = await resolveComposioConfiguration(composioConfiguration(c));
+    if (!resolved.reconciliationPending) return resolved;
+    if (resolved.desiredState === 'disabled' || !resolved.apiKey) {
+      const marked = await markManagedProviderAccountsUnavailable(
+        store(c),
+        { adapterId: 'composio' },
+      );
+      if (marked.retryable === 0) {
+        await completeComposioReconciliation(resolved.generation, composioConfiguration(c));
+        return resolveComposioConfiguration(composioConfiguration(c));
+      }
+      return resolved;
+    }
+    const reconciliationSignal = requestSignal ?? AbortSignal.any([
+        c.req.raw.signal,
+        AbortSignal.timeout(options.composioReconciliationTimeoutMs ?? 30_000),
+      ]);
+    const inspect = options.composioInspectAccount
+      ? ({ accountRef, principalRef, toolkit }: {
+          accountRef: string;
+          principalRef: string;
+          toolkit: string;
+        }) => inspectionWithinSignal(reconciliationSignal, () =>
+          options.composioInspectAccount!({
+            apiKey: resolved.apiKey!, accountRef, principalRef, toolkit,
+            signal: reconciliationSignal,
+          }))
+      : async ({ accountRef, principalRef, toolkit }: {
+          accountRef: string;
+          principalRef: string;
+          toolkit: string;
+        }) => inspectionWithinSignal(reconciliationSignal, () =>
+          inspectComposioConnectedAccount({
+            apiKey: resolved.apiKey!, accountRef, principalRef, toolkit,
+            signal: reconciliationSignal,
+          }));
+    while (!reconciliationSignal.aborted) {
+      const inspected = await reconcileManagedProviderAccounts(store(c), {
+        adapterId: 'composio',
+        generation: resolved.generation,
+        lineage: resolved.keyFingerprint ?? resolved.lastKeyFingerprint ?? '0'.repeat(24),
+        inspect,
+        maxInspections: 25,
+      });
+      if (inspected.retryable === 0) {
+        await completeComposioReconciliation(resolved.generation, composioConfiguration(c));
+        resolved = await resolveComposioConfiguration(composioConfiguration(c));
+        break;
+      }
+      // A successful batch means more stale accounts may remain beyond the
+      // cap. Continue inside the same bounded request. Zero progress means the
+      // remaining work is transient or revision-conflicted and needs a retry.
+      if (inspected.restored + inspected.needsAttention === 0) break;
+    }
+    return resolved;
+  };
   const managedConnectionAccount = async (
     c: Context,
     agentId: string,
@@ -3217,6 +3386,227 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       : slackInstallationAdminBodyLimit(c, next);
   app.use('/admin/api/slack-connection', limitSlackInstallationMutation);
 
+  app.get('/admin/api/settings/connectors/composio', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    try {
+      const principal = principalByContext.get(c);
+      const canConfigure = Boolean(
+        principal && permissionForRole(principal.role).has('admin.configure'),
+      );
+      const provider = (await resolvedManagedProviderContext(c)).providers.get('composio');
+      const configuration = await describeComposioConfiguration(composioConfiguration(c));
+      const { lastSetupResult: _lastSetupResult, ...memberConfiguration } = configuration;
+      return c.json({
+        provider: canConfigure ? configuration : memberConfiguration,
+        canConfigure,
+        ...(canConfigure ? { impact: await managedProviderImpact(store(c), 'composio') } : {}),
+        catalog: managedCatalogDescriptors().map((connector) => ({
+          ...connector,
+          access: {
+            read: managedProviderAvailability(provider, {
+              toolkit: connector.toolkit,
+              accessLane: 'read',
+            }),
+            write: managedProviderAvailability(provider, {
+              toolkit: connector.toolkit,
+              accessLane: 'write',
+            }),
+          },
+        })),
+      });
+    } catch (error) {
+      if (error instanceof ComposioConfigurationStateError) {
+        const principal = principalByContext.get(c);
+        const canAdminConfigure = Boolean(
+          principal && permissionForRole(principal.role).has('admin.configure'),
+        );
+        return c.json({
+          error: 'composio_configuration_unavailable',
+          message: 'The managed connector configuration needs attention.',
+          recovery: {
+            canConfigure: canAdminConfigure,
+            catalog: managedCatalogDescriptors(),
+          },
+        }, 503);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/settings/connectors/composio/setup', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const parsed = v.safeParse(composioProjectSetupSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    let projectKeyValidated = false;
+    let projectKeySaved = false;
+    const setupSignal = AbortSignal.any([
+      c.req.raw.signal,
+      AbortSignal.timeout(Math.min(
+        60_000,
+        options.composioReconciliationTimeoutMs ?? 60_000,
+        options.composioPreparationTimeoutMs ?? 60_000,
+      )),
+    ]);
+    try {
+      const principal = principalByContext.get(c);
+      requirePermission(principal, 'admin.configure');
+      if (!composioConfigurationIsMutable(composioConfiguration(c))) {
+        throw new ComposioConfigurationMutationError();
+      }
+      if (parsed.output.continuation) {
+        const agent = await store(c).getAgent(parsed.output.continuation.agentId);
+        requireAgentEdit(principal, agent);
+        if (!managedCatalog.connector(parsed.output.continuation.toolkit)) return invalidRequest(c);
+      }
+      await validateComposioProjectKey(parsed.output.projectKey, {
+        ...(options.composioCreateClient ? { createClient: options.composioCreateClient } : {}),
+        signal: setupSignal,
+      });
+      projectKeyValidated = true;
+      await saveStoredComposioProjectKey(
+        parsed.output.projectKey,
+        composioConfiguration(c),
+      );
+      projectKeySaved = true;
+      const reconciled = await resumeComposioReconciliation(c, setupSignal);
+      if (reconciled.reconciliationPending) {
+        return c.json({
+          error: 'composio_reconciliation_incomplete',
+          message: 'Chickpea is still reconciling managed accounts. Try again shortly.',
+          provider: await describeComposioConfiguration(composioConfiguration(c)),
+        }, 503);
+      }
+      await prepareResolvedComposioManagedAuthConfigs({
+        ...composioConfiguration(c),
+        ...(options.composioCreateClient ? { createClient: options.composioCreateClient } : {}),
+        signal: setupSignal,
+      });
+      return c.json({
+        provider: await describeComposioConfiguration(composioConfiguration(c)),
+        ...(parsed.output.continuation
+          ? {
+              continuation: {
+                ...parsed.output.continuation,
+                action: 'authorize' as const,
+              },
+            }
+          : {}),
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (isAbortOrTimeoutError(error)) {
+        return c.json({
+          error: 'composio_setup_unavailable',
+          message: projectKeySaved
+            ? 'The key was saved, but managed connectors could not be prepared. Retry setup.'
+            : 'Composio could not be reached before setup timed out. Try again.',
+        }, 503);
+      }
+      if (error instanceof ComposioProjectKeyValidationError) {
+        return projectKeyValidated
+          ? c.json({
+              error: 'composio_setup_unavailable',
+              message: 'The key was saved, but managed connectors could not be prepared. Retry setup.',
+            }, 503)
+          : c.json({ error: 'invalid_composio_project_key' }, 400);
+      }
+      if (error instanceof ComposioSetupInProgressError) {
+        return c.json({
+          error: 'composio_setup_in_progress',
+          message: 'Managed connector setup is already in progress. Try again shortly.',
+        }, 409);
+      }
+      if (error instanceof ComposioConfigurationMutationError) {
+        return c.json({
+          error: 'composio_configuration_deployment_managed',
+          message: 'This Composio project is managed by deployment configuration and cannot be changed here.',
+        }, 409);
+      }
+      if (error instanceof ComposioConfigurationStateError) {
+        return c.json({
+          error: 'composio_configuration_unavailable',
+          message: 'The managed connector configuration needs attention. Repair it in Settings and try again.',
+        }, 503);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/settings/connectors/composio/retry', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    try {
+      const principal = principalByContext.get(c);
+      requirePermission(principal, 'admin.configure');
+      const reconciled = await resumeComposioReconciliation(c);
+      if (!reconciled.apiKey || reconciled.desiredState !== 'enabled') {
+        return c.json({
+          error: 'composio_configuration_missing',
+          message: 'Add a Composio project key before preparing managed connectors.',
+        }, 409);
+      }
+      if (reconciled.reconciliationPending) {
+        return c.json({
+          error: 'composio_reconciliation_incomplete',
+          message: 'Chickpea is still reconciling managed accounts. Try again shortly.',
+        }, 503);
+      }
+      await prepareResolvedComposioManagedAuthConfigs({
+        ...composioConfiguration(c),
+        ...(options.composioCreateClient ? { createClient: options.composioCreateClient } : {}),
+        signal: AbortSignal.any([c.req.raw.signal, AbortSignal.timeout(45_000)]),
+      });
+      return c.json({ provider: await describeComposioConfiguration(composioConfiguration(c)) });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof ComposioSetupInProgressError) {
+        return c.json({
+          error: 'composio_setup_in_progress',
+          message: 'Managed connector setup is already in progress. Try again shortly.',
+        }, 409);
+      }
+      if (error instanceof ComposioConfigurationMutationError) {
+        return c.json({
+          error: 'composio_configuration_deployment_managed',
+          message: 'This Composio project is managed by deployment configuration and cannot be changed here.',
+        }, 409);
+      }
+      if (error instanceof ComposioConfigurationStateError) {
+        return c.json({
+          error: 'composio_configuration_unavailable',
+          message: 'The managed connector configuration needs attention. Repair it in Settings and try again.',
+        }, 503);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/settings/connectors/composio/disable', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    try {
+      const principal = principalByContext.get(c);
+      requirePermission(principal, 'admin.configure');
+      await disableStoredComposioConfiguration(composioConfiguration(c));
+      await resumeComposioReconciliation(c);
+      return c.json({ provider: await describeComposioConfiguration(composioConfiguration(c)) });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof ComposioConfigurationMutationError) {
+        return c.json({
+          error: 'composio_configuration_deployment_managed',
+          message: 'This Composio project is managed by deployment configuration and cannot be changed here.',
+        }, 409);
+      }
+      if (error instanceof ComposioConfigurationStateError) {
+        return c.json({
+          error: 'composio_configuration_unavailable',
+          message: 'The managed connector configuration needs attention. Repair it in Settings and try again.',
+        }, 503);
+      }
+      return internalError(c, error);
+    }
+  });
+
   app.post('/admin/api/connections/managed/recover', async (c) => {
     c.header('Cache-Control', 'no-store');
     const parsed = v.safeParse(managedAuthorizationRecoverySchema, await readJson(c.req));
@@ -3236,7 +3626,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           if (await connectionAccounts(c).hasManagedRemoteRef({ adapterId, accountRef })) {
             return false;
           }
-          const provider = managedProviders(c).get(adapterId);
+          const provider = (await resolvedManagedProviderContext(c)).providers.get(adapterId);
           if (!provider?.cleanupRemoteAccount) {
             throw new ManagedConnectionProviderUnavailableError(adapterId);
           }
@@ -3278,6 +3668,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     let startedAttempt: Awaited<ReturnType<typeof beginManagedAuthorization>> | undefined;
     let startedAuthorizationRef: string | undefined;
     let startedAuthorizationRecorded = false;
+    let authorizationProviders: ManagedConnectionProviderRegistry | undefined;
     try {
       const principal = principalByContext.get(c);
       if (!principal) throw new AuthorizationError('principal_required');
@@ -3347,7 +3738,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             connector.toolkit,
             'access' in parsed.output ? parsed.output.access : 'read',
           ).map(({ id }) => id);
-      const provider = managedProviders(c).get('composio');
+      const providerContext = await resolvedManagedProviderContext(c);
+      authorizationProviders = providerContext.providers;
+      const provider = providerContext.providers.get('composio');
       const accessLane = connector.capabilities.some(({ id, accessLane }) =>
         accessLane === 'write' && capabilities.includes(id)) ? 'write' : 'read';
       if (!provider?.authorize || managedProviderAvailability(provider, {
@@ -3378,7 +3771,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             accountRef: existingRemoteRef,
           });
           if (!alreadyImported) {
-            const cleanupProvider = managedProviders(c).get(existingAttempt.adapterId);
+            const cleanupProvider = providerContext.providers.get(existingAttempt.adapterId);
             if (!cleanupProvider) throw new Error('managed provider is unavailable');
             await cleanupProvider.revoke({
               policy: {
@@ -3425,7 +3818,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           accountRef: staleRemoteRef,
         });
         if (!alreadyImported) {
-          const cleanupProvider = managedProviders(c).get(staleAttempt.adapterId);
+          const cleanupProvider = providerContext.providers.get(staleAttempt.adapterId);
           if (!cleanupProvider) throw new Error('managed provider is unavailable');
           await cleanupProvider.revoke({
             policy: {
@@ -3463,17 +3856,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ...(replacement
             ? { connectionAccountId: replacement.account.id }
             : { bindingCapabilities: [...capabilities] }),
+          providerGeneration: providerContext.generation,
+          providerLineage: providerContext.lineage,
         },
       });
-      const callbackUrl = new URL(
-        '/admin/connections/composio/callback',
-        requestOrigin(c),
-      ).toString();
       const authorization = await provider.authorize({
         principalRef,
         toolkit: connector.toolkit,
         allowedCapabilities: capabilities,
-        callbackUrl,
       });
       startedAuthorizationRef = authorization.authorizationRef;
       await recordManagedAuthorizationRequest({
@@ -3490,7 +3880,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         sameSite: 'Lax',
         maxAge: 30 * 60,
       });
-      return c.json({ authorizationUrl: authorization.authorizationUrl.toString() });
+      return c.json({
+        authorizationUrl: authorization.authorizationUrl.toString(),
+        pollUrl: `/admin/api/agents/${encodeURIComponent(agent.id)}/connections/managed/poll`,
+      });
     } catch (error) {
       if (error instanceof ManagedAuthorizationAllocatedError) {
         startedAuthorizationRef = error.authorizationRef;
@@ -3515,7 +3908,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         if (startedAuthorizationRef) {
           try {
-            const cleanupProvider = managedProviders(c).get(startedAttempt.attempt.adapterId);
+            const cleanupProvider = (authorizationProviders ?? managedProviders(c))
+              .get(startedAttempt.attempt.adapterId);
             if (!cleanupProvider) throw new Error('managed provider is unavailable');
             await cleanupProvider.revoke({
               policy: {
@@ -3568,317 +3962,387 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.get('/admin/connections/composio/callback', async (c) => {
+  app.post('/admin/api/agents/:id/connections/managed/poll', async (c) => {
     c.header('Cache-Control', 'no-store');
-    const principal = principalByContext.get(c);
-    const callbackQuery = c.req.query();
-    const parsed = v.safeParse(managedAuthorizationCallbackSchema, callbackQuery);
-    const browserSecret = getCookie(c, MANAGED_AUTHORIZATION_BROWSER_COOKIE) ?? '';
-    let returnAgentId: string | undefined;
-    let cleanupAttempt: ManagedAuthorizationAttempt | undefined;
-    let remoteIdentityDurablyRecorded = false;
-    let callbackAccountMutation:
-      | { kind: 'created'; accountId: string }
-      | { kind: 'replaced'; previous: ConnectionAccount; currentRevision: number }
-      | undefined;
+    const body = await readJson(c.req);
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length > 0) {
+      return invalidRequest(c);
+    }
     try {
+      const principal = principalByContext.get(c);
       if (!principal) throw new AuthorizationError('principal_required');
-      if (!parsed.success) {
-        if (callbackQuery.status || callbackQuery.connected_account_id) {
-          console.error(JSON.stringify({
-            event: 'chickpea.managed_connection.callback_identity_verifier_unavailable',
-            adapterId: 'composio',
-          }));
-        }
-        throw new ManagedAuthorizationError('invalid');
+      const agent = await store(c).getAgent(c.req.param('id'));
+      requireAgentEdit(principal, agent);
+      const browserSecret = getCookie(c, MANAGED_AUTHORIZATION_BROWSER_COOKIE) ?? '';
+      const poll = (async () => {
+          let cleanupAttempt: ManagedAuthorizationAttempt | undefined;
+          let cleanupService: ConnectionAccountService | undefined;
+          let cleanupProvider: ManagedConnectionProvider | undefined;
+          let remoteAccountObserved = false;
+          let accountMutation:
+            | { kind: 'created'; accountId: string }
+            | { kind: 'replaced'; previous: ConnectionAccount; currentRevision: number }
+            | undefined;
+          try {
+            let attempt = await inspectManagedAuthorization({
+              settings: settings(c),
+              actorMembershipId: principal.membershipId,
+              browserSecret,
+            });
+            cleanupAttempt = attempt;
+            const organization = await identity(c).getOrganization();
+            if (organization?.slackTeamId !== attempt.workspaceId) throw new AuthorizationError();
+            if (attempt.agentId !== agent.id || !attempt.authorizationRef) {
+              throw new ManagedAuthorizationError('invalid');
+            }
+          const providerContext = await resolvedManagedProviderContext(c);
+          assertManagedAuthorizationProvider(attempt, {
+            generation: providerContext.generation,
+            lineage: providerContext.lineage,
+          });
+          const provider = providerContext.providers.get(attempt.adapterId);
+          if (!provider?.pollAuthorization) {
+            throw new ManagedConnectionProviderUnavailableError(attempt.adapterId);
+          }
+          cleanupProvider = provider;
+          const result = await provider.pollAuthorization({
+            authorizationRef: attempt.authorizationRef,
+            principalRef: attempt.principalRef,
+            toolkit: attempt.toolkit,
+          });
+          if (result.status === 'pending') return { status: 'pending' as const };
+          if (result.status === 'terminal') {
+            const service = connectionAccounts(c, providerContext.providers);
+            const remoteRef = managedAuthorizationRemoteRef(attempt);
+            if (remoteRef && !await service.hasManagedRemoteRef({
+              adapterId: attempt.adapterId,
+              accountRef: remoteRef,
+            })) {
+              if (provider.cleanupRemoteAccount) {
+                await provider.cleanupRemoteAccount({ accountRef: remoteRef });
+              } else {
+                await provider.revoke({
+                  policy: {
+                    kind: 'managed',
+                    adapterId: attempt.adapterId,
+                    toolkit: attempt.toolkit,
+                    principalRef: attempt.principalRef,
+                    accountRef: remoteRef,
+                    allowedCapabilities: [...attempt.allowedCapabilities],
+                  },
+                });
+              }
+            }
+            await abandonManagedAuthorization({
+              settings: settings(c),
+              actorMembershipId: principal.membershipId,
+              browserSecret,
+            });
+            return { status: 'terminal' as const, reason: result.reason };
+          }
+          remoteAccountObserved = true;
+          attempt = await recordManagedAuthorizationAccount({
+            settings: settings(c),
+            actorMembershipId: principal.membershipId,
+            browserSecret,
+            accountRef: result.accountRef,
+            toolkit: result.toolkit,
+          });
+          cleanupAttempt = attempt;
+          assertManagedAuthorizationProvider(attempt, {
+            generation: providerContext.generation,
+            lineage: providerContext.lineage,
+          });
+          const service = connectionAccounts(c, providerContext.providers);
+          cleanupService = service;
+          if (!attempt.connectionAccountId) {
+            await service.assertManagedLaneAvailable({
+              principal,
+              agentId: agent.id,
+              ownerKind: attempt.ownerKind,
+              adapterId: attempt.adapterId,
+              toolkit: attempt.toolkit,
+            });
+          }
+          const imported = await service.findManagedByRemoteRef({
+            principal,
+            workspaceId: attempt.workspaceId,
+            adapterId: attempt.adapterId,
+            accountRef: attempt.accountRef!,
+          });
+          let account: ConnectionAccount;
+          let scheduleResumeDeferred = false;
+          if (attempt.connectionAccountId) {
+            const current = await service.getForManagement(principal, attempt.connectionAccountId);
+            if (current.policy.kind !== 'managed') throw new ManagedAuthorizationError('invalid');
+            account = await service.replaceManagedAuthorization({
+              principal,
+              connectionAccountId: current.id,
+              expectedRevision: current.revision,
+              adapterId: attempt.adapterId,
+              toolkit: attempt.toolkit,
+              principalRef: attempt.principalRef,
+              expectedAllowedCapabilities: attempt.allowedCapabilities,
+              allowedCapabilities: attempt.allowedCapabilities,
+              accountRef: attempt.accountRef!,
+              providerGeneration: providerContext.generation,
+              providerLineage: providerContext.lineage,
+            });
+          } else if (imported) {
+            if (imported.policy.kind !== 'managed') throw new ManagedAuthorizationError('replayed');
+            account = await service.replaceManagedAuthorization({
+              principal,
+              connectionAccountId: imported.id,
+              expectedRevision: imported.revision,
+              adapterId: attempt.adapterId,
+              toolkit: attempt.toolkit,
+              principalRef: attempt.principalRef,
+              expectedAllowedCapabilities: imported.policy.allowedCapabilities,
+              allowedCapabilities: [...new Set([
+                ...imported.policy.allowedCapabilities,
+                ...attempt.allowedCapabilities,
+              ])],
+              accountRef: attempt.accountRef!,
+              providerGeneration: providerContext.generation,
+              providerLineage: providerContext.lineage,
+              deferScheduleResume: true,
+            });
+            scheduleResumeDeferred = true;
+            accountMutation = {
+              kind: 'replaced',
+              previous: imported,
+              currentRevision: account.revision,
+            };
+          } else {
+            account = await service.create({
+              principal,
+              workspaceId: attempt.workspaceId,
+              ownerKind: attempt.ownerKind,
+              providerId: attempt.providerId,
+              label: attempt.label,
+              policy: {
+                kind: 'managed',
+                adapterId: attempt.adapterId,
+                toolkit: attempt.toolkit,
+                principalRef: attempt.principalRef,
+                accountRef: attempt.accountRef!,
+                allowedCapabilities: [...attempt.allowedCapabilities],
+                providerGeneration: providerContext.generation,
+                providerLineage: providerContext.lineage,
+              },
+            });
+            accountMutation = { kind: 'created', accountId: account.id };
+          }
+          if (!attempt.connectionAccountId) {
+            if (!attempt.bindingCapabilities) throw new ManagedAuthorizationError('invalid');
+            await service.attach({
+              principal,
+              agentId: agent.id,
+              connectionAccountId: account.id,
+              allowedCapabilities: [...attempt.bindingCapabilities],
+            });
+            accountMutation = undefined;
+            if (scheduleResumeDeferred) {
+              await service.resumeManagedAccountSchedules({
+                principal,
+                connectionAccountId: account.id,
+              });
+            }
+          }
+          try {
+            await finalizeManagedAuthorization({
+              settings: settings(c),
+              actorMembershipId: principal.membershipId,
+              browserSecret,
+            });
+          } catch {
+            // The account and optional Agent binding are already durable. A
+            // competing poll may have consumed the attempt, so report the
+            // working connection instead of deleting valid authorization.
+            console.warn(JSON.stringify({
+              event: 'chickpea.managed_connection.finalization_deferred',
+              adapterId: attempt.adapterId,
+              toolkit: attempt.toolkit,
+            }));
+          }
+          return { status: 'connected' as const, account: toConnectionAccountView(account) };
+          } catch (error) {
+            if (error instanceof ManagedProviderRequestError &&
+                error.metadata.definiteFailure !== true) {
+              throw error;
+            }
+            if (!remoteAccountObserved && accountMutation === undefined) throw error;
+            let cleanupComplete = true;
+            let remoteIdentitySafe = false;
+            if (accountMutation?.kind === 'created' && cleanupService) {
+              try {
+                await cleanupService.revoke({
+                  principal,
+                  connectionAccountId: accountMutation.accountId,
+                });
+                remoteIdentitySafe = true;
+              } catch {
+                cleanupComplete = false;
+              }
+            } else if (accountMutation?.kind === 'replaced') {
+              try {
+                await store(c).putConnectionAccount(
+                  accountMutation.previous,
+                  accountMutation.currentRevision,
+                );
+                remoteIdentitySafe = true;
+              } catch {
+                cleanupComplete = false;
+              }
+            }
+            const remoteRef = cleanupAttempt && managedAuthorizationRemoteRef(cleanupAttempt);
+            if (!remoteIdentitySafe && cleanupComplete && remoteRef && cleanupService) {
+              try {
+                if (await cleanupService.hasManagedRemoteRef({
+                  adapterId: cleanupAttempt!.adapterId,
+                  accountRef: remoteRef,
+                })) {
+                  remoteIdentitySafe = true;
+                } else if (cleanupProvider?.cleanupRemoteAccount) {
+                  await cleanupProvider.cleanupRemoteAccount({ accountRef: remoteRef });
+                  remoteIdentitySafe = true;
+                } else {
+                  cleanupComplete = false;
+                }
+              } catch {
+                cleanupComplete = false;
+              }
+            }
+            if (cleanupComplete && remoteIdentitySafe) {
+              try {
+                await abandonManagedAuthorizationForRestart({
+                  settings: settings(c),
+                  actorMembershipId: principal.membershipId,
+                  browserSecret,
+                });
+              } catch {
+                cleanupComplete = false;
+              }
+            }
+            if (!cleanupComplete) {
+              console.error(JSON.stringify({
+                event: 'chickpea.managed_connection.poll_cleanup_failed',
+                adapterId: cleanupAttempt?.adapterId ?? 'composio',
+              }));
+              throw error;
+            }
+            if (error instanceof ManagedProviderRequestError &&
+                error.metadata.definiteFailure === true) {
+              return { status: 'terminal' as const, reason: 'failed' as const };
+            }
+            if (error instanceof AuthorizationError || error instanceof UnknownAgentError ||
+                error instanceof ManagedConnectionProviderUnavailableError ||
+                error instanceof ManagedAuthorizationError) {
+              throw error;
+            }
+            throw new ManagedAuthorizationError('invalid');
+          }
+        })();
+      const result = await poll;
+      if (result.status === 'pending') return c.json({ status: 'pending' }, 202);
+      deleteCookie(c, MANAGED_AUTHORIZATION_BROWSER_COOKIE, { path: '/admin', secure: true });
+      if (result.status === 'terminal') {
+        return c.json({ error: 'managed_authorization_terminal', reason: result.reason }, 409);
       }
-      let attempt = await inspectManagedAuthorization({
+      return c.json({ status: 'connected', account: result.account });
+    } catch (error) {
+      if (error instanceof AuthorizationError) {
+        return c.json({
+          error: 'forbidden',
+          message: 'You no longer have permission to finish this sign-in.',
+        }, 403);
+      }
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof ManagedAuthorizationError && error.code === 'stale_provider') {
+        return c.json({
+          error: 'managed_authorization_stale_provider',
+          message: 'The connector configuration changed. Start this sign-in again.',
+        }, 409);
+      }
+      if (error instanceof ManagedAuthorizationError) {
+        deleteCookie(c, MANAGED_AUTHORIZATION_BROWSER_COOKIE, { path: '/admin', secure: true });
+        return c.json({ error: 'managed_authorization_invalid' }, 409);
+      }
+      if (error instanceof ManagedConnectionProviderUnavailableError) {
+        return c.json({
+          error: 'managed_provider_unavailable',
+          message: 'Managed sign-in is temporarily unavailable. Try again.',
+        }, 503);
+      }
+      if (error instanceof ManagedProviderRequestError) {
+        return c.json({
+          error: 'managed_authorization_poll_unavailable',
+          message: 'Managed sign-in could not be checked yet. Chickpea will keep trying.',
+        }, 503);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/connections/managed/cancel', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const body = await readJson(c.req);
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length > 0) {
+      return invalidRequest(c);
+    }
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const agent = await store(c).getAgent(c.req.param('id'));
+      requireAgentEdit(principal, agent);
+      const browserSecret = getCookie(c, MANAGED_AUTHORIZATION_BROWSER_COOKIE) ?? '';
+      const attempt = await inspectManagedAuthorization({
         settings: settings(c),
         actorMembershipId: principal.membershipId,
         browserSecret,
       });
-      cleanupAttempt = attempt;
-      remoteIdentityDurablyRecorded = attempt.status === 'authorized';
-      returnAgentId = attempt.agentId;
-      const agent = await store(c).getAgent(attempt.agentId);
-      requireAgentEdit(principal, agent);
       const organization = await identity(c).getOrganization();
       if (organization?.slackTeamId !== attempt.workspaceId) throw new AuthorizationError();
-      const provider = managedProviders(c).get(attempt.adapterId);
-      if (!provider?.completeAuthorization) throw new Error('managed provider is unavailable');
-      if (attempt.status === 'pending') {
-        const completed = await provider.completeAuthorization({
-          principalRef: attempt.principalRef,
-          sessionUri: parsed.output.session_uri,
-        });
-        cleanupAttempt = {
-          ...attempt,
-          status: 'authorized',
-          accountRef: completed.accountRef,
-          updatedAt: Date.now(),
-        };
-        attempt = await recordManagedAuthorizationAccount({
-          settings: settings(c),
-          actorMembershipId: principal.membershipId,
-          browserSecret,
-          accountRef: completed.accountRef,
-          toolkit: completed.toolkit,
-        });
-        cleanupAttempt = attempt;
-        remoteIdentityDurablyRecorded = true;
-      }
-      if (!attempt.accountRef) throw new ManagedAuthorizationError('invalid');
-      const service = connectionAccounts(c);
-      let account: ConnectionAccount;
-      if (attempt.connectionAccountId) {
-        const replacement = await managedConnectionAccount(
-          c,
-          attempt.agentId,
-          attempt.connectionAccountId,
-          false,
-        );
-        if (replacement.account.policy.kind !== 'managed' ||
-            replacement.account.workspaceId !== attempt.workspaceId ||
-            replacement.account.ownerKind !== attempt.ownerKind ||
-            replacement.account.policy.adapterId.trim().toLowerCase() !==
-              attempt.adapterId.trim().toLowerCase() ||
-            replacement.account.policy.toolkit !== attempt.toolkit ||
-            replacement.account.policy.principalRef !== attempt.principalRef ||
-            !sameStringSet(
-              replacement.account.policy.allowedCapabilities,
-              attempt.allowedCapabilities,
-            )) {
-          throw new ManagedAuthorizationError('replayed');
-        }
-        account = await service.replaceManagedAuthorization({
-          principal,
-          connectionAccountId: replacement.account.id,
-          expectedRevision: replacement.account.revision,
+      if (attempt.agentId !== agent.id) throw new ManagedAuthorizationError('invalid');
+      const remoteRef = managedAuthorizationRemoteRef(attempt);
+      if (remoteRef) {
+        const service = await resolvedConnectionAccounts(c);
+        const imported = await service.hasManagedRemoteRef({
           adapterId: attempt.adapterId,
-          toolkit: attempt.toolkit,
-          principalRef: attempt.principalRef,
-          allowedCapabilities: attempt.allowedCapabilities,
-          accountRef: attempt.accountRef,
+          accountRef: remoteRef,
         });
-      } else {
-        await service.assertManagedLaneAvailable({
-          principal,
-          agentId: attempt.agentId,
-          ownerKind: attempt.ownerKind,
-          adapterId: attempt.adapterId,
-          toolkit: attempt.toolkit,
-        });
-        const imported = await service.findManagedByRemoteRef({
-          principal,
-          workspaceId: attempt.workspaceId,
-          adapterId: attempt.adapterId,
-          accountRef: attempt.accountRef,
-        });
-        if (imported) {
-          if (imported.policy.kind !== 'managed' ||
-              imported.workspaceId !== attempt.workspaceId ||
-              imported.policy.toolkit !== attempt.toolkit ||
-              imported.policy.principalRef !== attempt.principalRef) {
-            throw new ManagedAuthorizationError('replayed');
-          }
-          // One remote Google account can serve multiple Agent bindings. Never
-          // narrow the shared account ceiling when a new Agent requests less;
-          // widen it when necessary, while the binding below retains exactly
-          // the access selected for this Agent.
-          const accountCapabilities = [...new Set([
-            ...imported.policy.allowedCapabilities,
-            ...attempt.allowedCapabilities,
-          ])];
-          // A fresh Connect flow can resolve to an account that Chickpea
-          // already knows (for example after Composio reported it expired).
-          // Revalidate that exact remote account and restore readiness before
-          // attaching it; a needs-attention account must never look connected
-          // in the UI while remaining unavailable to the runtime.
-          account = await service.replaceManagedAuthorization({
-            principal,
-            connectionAccountId: imported.id,
-            expectedRevision: imported.revision,
-            adapterId: attempt.adapterId,
-            toolkit: attempt.toolkit,
-            principalRef: attempt.principalRef,
-            expectedAllowedCapabilities: imported.policy.allowedCapabilities,
-            allowedCapabilities: accountCapabilities,
-            accountRef: attempt.accountRef,
-          });
-          callbackAccountMutation = {
-            kind: 'replaced',
-            previous: imported,
-            currentRevision: account.revision,
-          };
-        } else {
-          account = await service.create({
-            principal,
-            workspaceId: attempt.workspaceId,
-            ownerKind: attempt.ownerKind,
-            providerId: attempt.providerId,
-            label: attempt.label,
-            purpose: `${attempt.label} managed by Composio`,
+        if (!imported) {
+          const provider = (await resolvedManagedProviderContext(c)).providers.get(attempt.adapterId);
+          if (!provider) throw new ManagedConnectionProviderUnavailableError(attempt.adapterId);
+          await provider.revoke({
             policy: {
               kind: 'managed',
               adapterId: attempt.adapterId,
               toolkit: attempt.toolkit,
               principalRef: attempt.principalRef,
-              accountRef: attempt.accountRef,
-              allowedCapabilities: attempt.allowedCapabilities,
+              accountRef: remoteRef,
+              allowedCapabilities: [...attempt.allowedCapabilities],
             },
           });
-          callbackAccountMutation = { kind: 'created', accountId: account.id };
         }
-        if (!attempt.bindingCapabilities) throw new ManagedAuthorizationError('invalid');
-        await service.attach({
-          principal,
-          agentId: attempt.agentId,
-          connectionAccountId: account.id,
-          allowedCapabilities: attempt.bindingCapabilities,
-        });
-        callbackAccountMutation = undefined;
       }
-      try {
-        await finalizeManagedAuthorization({
-          settings: settings(c),
-          actorMembershipId: principal.membershipId,
-          browserSecret,
-        });
-      } catch {
-        // The account and Agent binding are already durable. A competing
-        // callback may have consumed or replaced this attempt, and surfacing a
-        // failed connection here would tell the member to delete working auth.
-        console.warn(JSON.stringify({
-          event: 'chickpea.managed_connection.finalization_deferred',
-          adapterId: attempt.adapterId,
-          toolkit: attempt.toolkit,
-        }));
-      }
+      await abandonManagedAuthorization({
+        settings: settings(c),
+        actorMembershipId: principal.membershipId,
+        browserSecret,
+      });
       deleteCookie(c, MANAGED_AUTHORIZATION_BROWSER_COOKIE, { path: '/admin', secure: true });
-      return c.redirect(
-        `/admin/agents/${encodeURIComponent(attempt.agentId)}/connections?managed=connected&toolkit=${encodeURIComponent(attempt.toolkit)}`,
-        303,
-      );
+      return c.json({ cancelled: true });
     } catch (error) {
-      let terminalAuthorizationFailure =
-        error instanceof ManagedAuthorizationError ||
-        error instanceof AuthorizationError ||
-        error instanceof UnknownAgentError ||
-        error instanceof ManagedConnectionConflictError ||
-        callbackAccountMutation !== undefined;
-      if (!cleanupAttempt && principal && terminalAuthorizationFailure) {
-        try {
-          cleanupAttempt = await inspectManagedAuthorizationForCleanup({
-            settings: settings(c),
-            actorMembershipId: principal.membershipId,
-            browserSecret,
-          });
-          remoteIdentityDurablyRecorded = cleanupAttempt.status === 'authorized';
-          returnAgentId ??= cleanupAttempt.agentId;
-        } catch {
-          // The attempt is missing, malformed, or bound to another browser.
-        }
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof ManagedAuthorizationError) {
+        return c.json({ error: 'managed_authorization_invalid' }, 409);
       }
-      // A redeemed remote identity that was not durably recorded cannot be
-      // retried because Composio callback session URIs are single-use.
-      if (cleanupAttempt?.accountRef && !remoteIdentityDurablyRecorded) {
-        terminalAuthorizationFailure = true;
+      if (error instanceof ManagedConnectionProviderUnavailableError) {
+        return c.json({ error: 'managed_provider_unavailable' }, 503);
       }
-      if (terminalAuthorizationFailure) {
-        let remoteCleanupComplete = true;
-        let remoteIdentitySafe = false;
-        if (principal && callbackAccountMutation?.kind === 'created') {
-          try {
-            await connectionAccounts(c).revoke({
-              principal,
-              connectionAccountId: callbackAccountMutation.accountId,
-            });
-            remoteIdentitySafe = true;
-          } catch {
-            remoteCleanupComplete = false;
-            console.error(JSON.stringify({
-              event: 'chickpea.managed_connection.rejected_import_cleanup_failed',
-              adapterId: cleanupAttempt?.adapterId ?? 'composio',
-            }));
-          }
-        } else if (callbackAccountMutation?.kind === 'replaced') {
-          try {
-            await store(c).putConnectionAccount(
-              callbackAccountMutation.previous,
-              callbackAccountMutation.currentRevision,
-            );
-            remoteIdentitySafe = true;
-          } catch {
-            remoteCleanupComplete = false;
-            console.error(JSON.stringify({
-              event: 'chickpea.managed_connection.rejected_import_restore_failed',
-              adapterId: cleanupAttempt?.adapterId ?? 'composio',
-            }));
-          }
-        }
-        const cleanupRemoteRefs = cleanupAttempt
-          ? managedAuthorizationRemoteRefs(cleanupAttempt)
-          : [];
-        if (remoteCleanupComplete && cleanupAttempt && cleanupRemoteRefs.length > 0 &&
-            !remoteIdentitySafe) {
-          try {
-            const provider = managedProviders(c).get(cleanupAttempt.adapterId);
-            if (!provider) throw new Error('managed provider is unavailable');
-            for (const cleanupRemoteRef of cleanupRemoteRefs) {
-              const remoteIdentity = {
-                adapterId: cleanupAttempt.adapterId,
-                accountRef: cleanupRemoteRef,
-              };
-              const alreadyImported = await connectionAccounts(c).hasManagedRemoteRef(remoteIdentity);
-              if (alreadyImported) continue;
-              await provider.revoke({
-                policy: {
-                  kind: 'managed',
-                  adapterId: cleanupAttempt.adapterId,
-                  toolkit: cleanupAttempt.toolkit,
-                  principalRef: cleanupAttempt.principalRef,
-                  accountRef: cleanupRemoteRef,
-                  allowedCapabilities: [...cleanupAttempt.allowedCapabilities],
-                },
-              });
-            }
-          } catch {
-            remoteCleanupComplete = false;
-            console.error(JSON.stringify({
-              event: 'chickpea.managed_connection.rejected_authorization_cleanup_failed',
-              adapterId: cleanupAttempt.adapterId,
-            }));
-          }
-        }
-        if (principal && cleanupAttempt && remoteCleanupComplete) {
-          try {
-            await abandonManagedAuthorization({
-              settings: settings(c),
-              actorMembershipId: principal.membershipId,
-              browserSecret,
-              allowExpired: true,
-            });
-          } catch {
-            remoteCleanupComplete = false;
-            console.error(JSON.stringify({
-              event: 'chickpea.managed_connection.rejected_attempt_cleanup_failed',
-              adapterId: cleanupAttempt.adapterId,
-            }));
-          }
-        }
-        if (remoteCleanupComplete || !cleanupAttempt) {
-          deleteCookie(c, MANAGED_AUTHORIZATION_BROWSER_COOKIE, { path: '/admin', secure: true });
-        }
-      }
-      console.error(JSON.stringify({
-        event: 'chickpea.managed_connection.authorization_failed',
-        adapterId: 'composio',
-        code: error instanceof ManagedAuthorizationError ? error.code : 'internal_error',
-      }));
-      const destination = returnAgentId && AGENT_ID_PATTERN.test(returnAgentId)
-        ? `/admin/agents/${encodeURIComponent(returnAgentId)}/connections?managed=failed`
-        : '/admin?managed=failed';
-      return c.redirect(destination, 303);
+      return internalError(c, error);
     }
   });
 
@@ -3899,12 +4363,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         requireAgentEdit(principal, agent);
         const organization = await identity(c).getOrganization();
         if (organization?.slackTeamId !== workspaceId) throw new AuthorizationError();
-        const account = await connectionAccounts(c).getForManagement(
+        const service = await resolvedConnectionAccounts(c);
+        const account = await service.getForManagement(
           principal,
           c.req.param('connectionAccountId'),
         );
         if (account.workspaceId !== workspaceId) throw new AuthorizationError();
-        return c.json(await connectionAccounts(c).listManagedResources({
+        return c.json(await service.listManagedResources({
           principal,
           connectionAccountId: account.id,
           resourceKey,
@@ -3937,12 +4402,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (organization?.slackTeamId !== parsed.output.workspaceId) {
           throw new AuthorizationError();
         }
-        const account = await connectionAccounts(c).getForManagement(
+        const service = await resolvedConnectionAccounts(c);
+        const account = await service.getForManagement(
           principal,
           c.req.param('connectionAccountId'),
         );
         if (account.workspaceId !== parsed.output.workspaceId) throw new AuthorizationError();
-        return c.json(await connectionAccounts(c).selectManagedResources({
+        return c.json(await service.selectManagedResources({
           principal,
           agentId: c.req.param('agentId'),
           connectionAccountId: account.id,
@@ -5698,8 +6164,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         store(c).listAgents(),
       ]);
       const visibleAccounts = views.filter(
-        (account) => account.ownerKind === 'team' ||
-          account.ownerMembershipId === principal.membershipId,
+        (account) => account.lifecycle !== 'revoked' && (
+          account.ownerKind === 'team' ||
+          account.ownerMembershipId === principal.membershipId
+        ),
       );
       const visibleAgents = agents.filter((agent) => canEditAgent(principal, agent));
       const bindings = await Promise.all(
@@ -5709,13 +6177,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         })),
       );
       return c.json({
-        accounts: visibleAccounts.map((account) => ({
-          account,
-          agents: bindings.flatMap(({ agent, bindings: agentBindings }) =>
+        accounts: visibleAccounts.map((account) => {
+          const accountAgents = bindings.flatMap(({ agent, bindings: agentBindings }) =>
             agentBindings.some((binding) => binding.connectionAccountId === account.id && binding.enabled)
               ? [{ id: agent.id, name: agent.name }]
-              : []),
-        })),
+              : []);
+          return {
+            account,
+            agents: accountAgents,
+            reconnectAgentId: accountAgents[0]?.id,
+          };
+        }),
       });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
@@ -5733,51 +6205,62 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!canEditAgent(principal, agent)) throw new AuthorizationError();
       const organization = await identity(c).getOrganization();
       if (organization?.slackTeamId !== workspaceId) throw new AuthorizationError();
-      const [views, bindings] = await Promise.all([
+      const [views, bindings, providerContext] = await Promise.all([
         connectionAccounts(c).listViews(workspaceId),
         store(c).listAgentConnectionBindings(agent.id),
+        resolvedManagedProviderContext(c),
       ]);
       const visible = views.filter(
         (account) => account.ownerKind === 'team' ||
           account.ownerMembershipId === principal.membershipId,
       );
       const byId = new Map(bindings.map((binding) => [binding.connectionAccountId, binding]));
+      const provider = providerContext.providers.get('composio');
+      const managedConnectorCatalog = managedCatalog.list().map((connector) => ({
+        id: connector.id,
+        toolkit: connector.toolkit,
+        providerId: connector.providerId,
+        label: connector.label,
+        description: connector.description,
+        securityDescription: connector.securityDescription,
+        capabilities: connector.capabilities.map((capability) => ({
+          id: capability.id,
+          accessLane: capability.accessLane,
+          description: capability.description,
+        })),
+        resources: (connector.resources ?? []).map((resource) => ({
+          key: resource.key,
+          label: resource.label,
+          required: resource.required,
+          multiple: resource.multiple,
+        })),
+        access: {
+          read: managedProviderAvailability(provider, {
+            toolkit: connector.toolkit,
+            accessLane: 'read',
+          }),
+          write: managedProviderAvailability(provider, {
+            toolkit: connector.toolkit,
+            accessLane: 'write',
+          }),
+        },
+      }));
       return c.json({
         attached: visible.flatMap((account) => {
           const binding = byId.get(account.id);
           return binding?.enabled ? [{ account, binding }] : [];
         }),
-        available: visible.filter((account) => !byId.get(account.id)?.enabled),
+        // Revoked accounts are terminal tombstones. They remain visible in an
+        // existing binding until it is removed, but must never be offered as
+        // reusable accounts because attach rejects them.
+        available: visible.filter((account) =>
+          account.lifecycle !== 'revoked' && !byId.get(account.id)?.enabled,
+        ),
         managedConnectors: {
-          composio: managedCatalog.list().some((connector) =>
-            managedProviderAvailability(managedProviders(c).get('composio'), {
-              toolkit: connector.toolkit,
-              accessLane: 'read',
-            }).status === 'ready'),
-          catalog: managedCatalog.list().map((connector) => ({
-            id: connector.id,
-            toolkit: connector.toolkit,
-            providerId: connector.providerId,
-            label: connector.label,
-            description: connector.description,
-            securityDescription: connector.securityDescription,
-            resources: (connector.resources ?? []).map((resource) => ({
-              key: resource.key,
-              label: resource.label,
-              required: resource.required,
-              multiple: resource.multiple,
-            })),
-            access: {
-              read: managedProviderAvailability(managedProviders(c).get('composio'), {
-                toolkit: connector.toolkit,
-                accessLane: 'read',
-              }),
-              write: managedProviderAvailability(managedProviders(c).get('composio'), {
-                toolkit: connector.toolkit,
-                accessLane: 'write',
-              }),
-            },
-          })),
+          composio: managedConnectorCatalog.some((connector) => connector.access.read.status === 'ready'),
+          canConfigure: permissionForRole(principal.role).has('admin.configure'),
+          configurationReadOnly: providerContext.readOnly,
+          catalog: managedConnectorCatalog,
         },
       });
     } catch (error) {
@@ -5887,7 +6370,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const principal = principalByContext.get(c);
       if (!principal) throw new AuthorizationError('principal_required');
-      const binding = await connectionAccounts(c).attach({
+      const binding = await (await resolvedConnectionAccounts(c)).attach({
         principal,
         agentId: c.req.param('id'),
         connectionAccountId: c.req.param('connectionAccountId'),
@@ -5922,6 +6405,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof ConnectionScheduleConflictError) return c.json({
+        error: 'connection_schedule_changed',
+        message: error.message,
+      }, 409);
       return internalError(c, error);
     }
   });
@@ -5932,7 +6419,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const principal = principalByContext.get(c);
       if (!principal) throw new AuthorizationError('principal_required');
-      const account = await connectionAccounts(c).revoke({
+      const account = await (await resolvedConnectionAccounts(c)).revoke({
         principal,
         connectionAccountId: c.req.param('connectionAccountId'),
       });
@@ -5966,6 +6453,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         error: 'managed_provider_unavailable',
         message: `Restore the ${error.adapterId} provider credentials before disconnecting this managed account so its remote account can also be removed.`,
       }, 503);
+      if (error instanceof ConnectionScheduleConflictError) return c.json({
+        error: 'connection_schedule_changed',
+        message: error.message,
+      }, 409);
       return internalError(c, error);
     }
   });
@@ -6067,7 +6558,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         identity: identity(c),
       });
       const routine = await routines(c).getRoutine(current.scheduleId);
-      const resumed = routine?.state === 'paused'
+      const repairedAuthorityPause = routine?.pausedReason === 'schedule_authority_missing' ||
+        routine?.pausedReason === 'assignment_missing' ||
+        routine?.pausedReason === 'creator_ineligible' ||
+        routine?.pausedReason === 'credential_unavailable';
+      const resumed = reference.state === 'active' && routine?.state === 'paused' &&
+          repairedAuthorityPause
         ? await new RoutineService(routines(c)).control({
             routineId: routine.id,
             expectedVersion: routine.version,
@@ -8314,6 +8810,9 @@ function isAdminPageGet(c: Context): boolean {
 function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permission {
   if (isAdminPageGet(c)) return 'agent.create';
   if (c.req.path === '/admin/logout') return 'account.view';
+  if (c.req.method === 'GET' && c.req.path === '/admin/api/settings/connectors/composio') {
+    return 'agent.create';
+  }
   if (c.req.path === '/admin/team' ||
       (c.req.method === 'GET' && c.req.path === '/admin/api/team')) return 'team.view';
   if (c.req.path.startsWith('/admin/api/team/memberships')) return 'team.manage_members';
@@ -8340,6 +8839,58 @@ function machinePrincipalAllowed(c: Context): boolean {
 
 function isHumanAuthFormMutation(c: Context): boolean {
   return c.req.method === 'POST' && c.req.path === '/admin/logout';
+}
+
+async function inspectionWithinSignal(
+  signal: AbortSignal,
+  inspect: () => Promise<'match' | 'missing' | 'mismatch' | 'transient'>,
+): Promise<'match' | 'missing' | 'mismatch' | 'transient'> {
+  if (signal.aborted) return 'transient';
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (result: 'match' | 'missing' | 'mismatch' | 'transient') => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', aborted);
+      resolve(result);
+    };
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', aborted);
+      reject(error);
+    };
+    const aborted = () => finish('transient');
+    signal.addEventListener('abort', aborted, { once: true });
+    inspect().then(finish, fail);
+  });
+}
+
+async function managedProviderImpact(
+  config: ConfigStore,
+  adapterId: string,
+): Promise<{ accounts: number; schedules: number }> {
+  const normalizedAdapterId = adapterId.trim().toLowerCase();
+  const accountIds = new Set<string>();
+  for (const installation of await config.listWorkspaceInstallations()) {
+    for (const account of await config.listConnectionAccounts(installation.workspaceId)) {
+      if (account.lifecycle !== 'revoked' && account.policy.kind === 'managed' &&
+          account.policy.adapterId.trim().toLowerCase() === normalizedAdapterId) {
+        accountIds.add(account.id);
+      }
+    }
+  }
+  let schedules = 0;
+  if (accountIds.size > 0) {
+    for (const agent of await config.listAgents()) {
+      for (const reference of await config.listAgentScheduleReferences(agent.id)) {
+        if (reference.requiredConnectionAccountIds.some((id) => accountIds.has(id))) {
+          schedules += 1;
+        }
+      }
+    }
+  }
+  return { accounts: accountIds.size, schedules };
 }
 
 function betterAuthJsonRequest(
@@ -9047,4 +9598,9 @@ function effectiveConfigResponse(config: EffectiveSlackConfig): object {
     instructionLayers: config.instructionLayers,
     snapshotHash: computeSnapshotHash(config),
   };
+}
+
+function isAbortOrTimeoutError(error: unknown): boolean {
+  return error instanceof Error &&
+    (error.name === 'AbortError' || error.name === 'TimeoutError');
 }

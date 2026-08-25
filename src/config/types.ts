@@ -346,6 +346,10 @@ export interface ConnectionAccountManagedPolicy {
   grantSummary?: ManagedProviderGrantSummary;
   /** Shared generation-token shape used by generic connection policy handling. */
   oauthAttemptId?: string;
+  /** Installation provider revision that last validated this exact account. */
+  providerGeneration?: number;
+  /** One-way project fingerprint. It is safe metadata, never a credential. */
+  providerLineage?: string;
 }
 
 export type ConnectionAccountPolicy =
@@ -411,6 +415,10 @@ export interface AgentScheduleReference {
   /** Changes only through an explicit authority assignment receipt. */
   authorityReceiptId: string;
   requiredConnectionAccountIds: string[];
+  /** Connections whose provider outage changed this schedule from active to needs-attention. */
+  connectionPauseAccountIds?: string[];
+  /** The schedule was already non-active before the first recorded connection outage. */
+  connectionPausePreservesState?: boolean;
   state: AgentScheduleState;
   revision: number;
   createdAt: number;

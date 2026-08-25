@@ -14,6 +14,7 @@ import {
   AgentStillAssignedError,
   AgentStillReferencedError,
   ChannelRevisionConflictError,
+  ConnectionAccountRevisionConflictError,
   UnknownAgentError,
 } from './config/errors.ts';
 import {
@@ -36,7 +37,11 @@ import {
   SANDBOX_PACKAGE_REGISTRY_HOSTS,
   SANDBOX_SETTING_KEYS,
 } from './config/sandbox-settings.ts';
-import type { SettingsPatch, SettingsStore } from './config/settings-store.ts';
+import type {
+  ReplaceEncryptedCredentialRevisionInput,
+  SettingsPatch,
+  SettingsStore,
+} from './config/settings-store.ts';
 import { SettingsStoreLogic } from './config/settings-store.ts';
 import { SnapshotStoreLogic } from './config/snapshot-store.ts';
 import type {
@@ -1042,6 +1047,21 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.settings.mergeSettingStringSet(key, values));
   }
 
+  async encryptedCredentialGet(key: string) {
+    return this.call((stores) => stores.settings.getEncryptedCredentialRevision(key) ?? null);
+  }
+
+  async encryptedCredentialReplace(input: ReplaceEncryptedCredentialRevisionInput) {
+    return this.call((stores) => stores.settings.replaceEncryptedCredentialRevision(input) ?? null);
+  }
+
+  async encryptedCredentialDelete(key: string, expectedRevision: string) {
+    return this.call((stores) => stores.settings.deleteEncryptedCredentialRevision(
+      key,
+      expectedRevision,
+    ));
+  }
+
   // ── memory + generic audit envelope ─────────────────────────────────────
 
   async memoryExecute(
@@ -1537,6 +1557,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         return rpcError('channel_revision_conflict', err.message, {
           workspaceId: err.workspaceId,
           channelId: err.channelId,
+          expectedRevision: String(err.expectedRevision),
+          actualRevision: String(err.actualRevision),
+        });
+      }
+      if (err instanceof ConnectionAccountRevisionConflictError) {
+        return rpcError('connection_account_revision_conflict', err.message, {
+          accountId: err.accountId,
           expectedRevision: String(err.expectedRevision),
           actualRevision: String(err.actualRevision),
         });

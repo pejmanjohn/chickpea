@@ -40,7 +40,56 @@ interface ComposioSessionLike {
   }>;
 }
 
-interface ComposioClientLike {
+export interface ComposioAuthConfigLike {
+  id: string;
+  name: string;
+  toolkit: { slug: string };
+  status: string;
+  credentials?: Record<string, unknown> | undefined;
+  restrictToFollowingTools?: string[] | undefined;
+  isComposioManaged?: boolean | undefined;
+  createdAt?: string | undefined;
+  toolAccessConfig?: {
+    toolsAvailableForExecution?: string[] | undefined;
+    toolsForConnectedAccountCreation?: string[] | undefined;
+  } | undefined;
+}
+
+export interface ComposioClientLike {
+  authConfigs?: {
+    list(
+      query?: {
+        cursor?: string;
+        isComposioManaged?: boolean;
+        limit?: number;
+        search?: string;
+        showDisabled?: boolean;
+        toolkit?: string;
+      },
+      requestOptions?: { signal?: AbortSignal },
+    ): Promise<{
+      items: ComposioAuthConfigLike[];
+      nextCursor: string | null;
+      totalPages: number;
+    }>;
+    create(
+      toolkit: string,
+      options: {
+        type: 'use_composio_managed_auth';
+        name: string;
+      },
+      requestOptions?: { signal?: AbortSignal },
+    ): Promise<{
+      id: string;
+      authScheme: string;
+      isComposioManaged: boolean;
+      toolkit: string;
+    }>;
+    get?(
+      id: string,
+      requestOptions?: { signal?: AbortSignal },
+    ): Promise<ComposioAuthConfigLike>;
+  };
   connectedAccounts?: {
     link(
       userId: string,
@@ -48,6 +97,15 @@ interface ComposioClientLike {
       options?: { callbackUrl?: string; allowMultiple?: boolean },
       requestOptions?: { signal?: AbortSignal },
     ): Promise<{ id: string; redirectUrl?: string | null }>;
+    get?(
+      id: string,
+      requestOptions?: { signal?: AbortSignal },
+    ): Promise<{
+      id: string;
+      status: string;
+      isDisabled: boolean;
+      toolkit: { slug: string };
+    }>;
   };
   sessions: {
     create(
@@ -75,7 +133,7 @@ interface ComposioClientLike {
   };
 }
 
-interface ComposioConnectedAccount {
+export interface ComposioConnectedAccount {
   id: string;
   status: string;
   isDisabled: boolean;
@@ -95,7 +153,6 @@ export function isComposioAuthConfigId(value: string | undefined): value is stri
 
 interface ComposioManagedConnectionProviderOptions {
   apiKey?: string;
-  webhookReady?: boolean;
   authConfigIds?: ComposioManagedAuthConfigIds;
   googleAdsAccessLevel?: string;
   googleAdsPermissibleUse?: string;
@@ -109,12 +166,6 @@ interface ComposioManagedConnectionProviderOptions {
     accountRef: string;
     signal: AbortSignal;
   }) => Promise<void>;
-  completeAuthorization?: (input: {
-    apiKey: string;
-    principalRef: string;
-    sessionUri: string;
-    signal: AbortSignal;
-  }) => Promise<{ accountRef: string; toolkit: string }>;
   getConnectedAccount?: (input: {
     apiKey: string;
     accountRef: string;
@@ -1517,6 +1568,21 @@ const YOUTUBE_WRITE_CAPABILITIES = new Set([
   'youtube.thumbnails.set',
 ]);
 
+let warnedMissingAccountOwner = false;
+let missingAccountOwnerWarningSink: typeof console.warn | undefined;
+
+function definiteManagedValidationFailure(
+  message: string,
+  providerToolCallCount = 0,
+): ManagedProviderRequestError {
+  return new ManagedProviderRequestError('validation_failed', message, {
+    remoteCallCount: 1 + providerToolCallCount,
+    providerToolCallCount,
+    capabilityToolDispatched: false,
+    definiteFailure: true,
+  });
+}
+
 export class ComposioManagedConnectionProvider implements ManagedConnectionProvider {
   readonly id = 'composio';
   private clientPromise: Promise<ComposioClientLike> | undefined;
@@ -1538,7 +1604,6 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
     if (input.toolkit === 'youtube' && !this.youtubeQuotaIsProductionReady()) {
       missingConfiguration.push('provider_prerequisite_missing');
     }
-    if (this.options.webhookReady === false) missingConfiguration.push('webhook_missing');
     return {
       status: missingConfiguration.length === 0 ? 'ready' : 'missing_configuration',
       missingConfiguration,
@@ -1549,12 +1614,10 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
     principalRef: string;
     toolkit: string;
     allowedCapabilities: readonly string[];
-    callbackUrl: string;
     signal?: AbortSignal;
   }): Promise<{ authorizationUrl: URL; authorizationRef: string }> {
     const apiKey = this.requireApiKey();
     const connector = requireToolkit(input.toolkit);
-    const callbackUrl = requireHttpsUrl(input.callbackUrl, 'callback URL');
     const signal = boundedSignal(input.signal);
     let allocatedAuthorizationRef: string | undefined;
     try {
@@ -1575,7 +1638,6 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         input.principalRef,
         authConfigId,
         {
-          callbackUrl: callbackUrl.toString(),
           // Reconnects and multiple Google accounts intentionally allocate a
           // fresh remote account. Runtime sessions still pin one exact account
           // reference, so this does not make tool execution ambiguous.
@@ -1611,26 +1673,23 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
     }
   }
 
-  async completeAuthorization(input: {
+  async pollAuthorization(input: {
+    authorizationRef: string;
     principalRef: string;
-    sessionUri: string;
+    toolkit: string;
     signal?: AbortSignal;
-  }): Promise<{ accountRef: string; toolkit: string }> {
-    const apiKey = this.requireApiKey();
-    if (!input.principalRef.trim() || input.principalRef.length > 256 ||
-        !input.sessionUri.trim() || input.sessionUri.length > 4_096) {
-      throw new Error('Composio managed authorization could not be completed');
+  }): Promise<ManagedAuthorizationPollResult> {
+    if (!/^[A-Za-z0-9_.:@-]{1,256}$/.test(input.authorizationRef) ||
+        !/^[A-Za-z0-9_.:@-]{1,256}$/.test(input.principalRef)) {
+      throw new Error('Composio managed authorization could not be inspected');
     }
-    try {
-      return await (this.options.completeAuthorization ?? completeComposioAuthorization)({
-        apiKey,
-        principalRef: input.principalRef,
-        sessionUri: input.sessionUri,
-        signal: boundedSignal(input.signal),
-      });
-    } catch {
-      throw new Error('Composio managed authorization could not be completed');
-    }
+    const connector = requireToolkit(input.toolkit);
+    return this.inspectAuthorization({
+      authorizationRef: input.authorizationRef,
+      principalRef: input.principalRef,
+      toolkit: connector.toolkit,
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
   }
 
   async discoverResources(input: {
@@ -1747,6 +1806,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         principalRef: input.policy.principalRef,
         signal,
       });
+      this.observeMissingAccountOwner(account);
       if (
         account.id !== input.policy.accountRef ||
         (account.userId !== undefined && account.userId !== input.policy.principalRef) ||
@@ -1754,11 +1814,22 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         account.isDisabled ||
         account.toolkit.toLowerCase() !== input.policy.toolkit.toLowerCase()
       ) {
-        throw new Error('account is not active for the configured principal and toolkit');
+        throw new ManagedAuthorizationExpiredError({
+          remoteCallCount: 1,
+          providerToolCallCount: 0,
+          capabilityToolDispatched: false,
+          definiteFailure: true,
+        });
       }
       const capability = COMPOSIO_CAPABILITIES[input.policy.allowedCapabilities[0] ?? ''];
-      if (!capability) throw new Error('connection has no supported capabilities');
-      requireToolkitVersion(capability.toolkit);
+      if (!capability) {
+        throw definiteManagedValidationFailure('connection has no supported capabilities');
+      }
+      try {
+        requireToolkitVersion(capability.toolkit);
+      } catch {
+        throw definiteManagedValidationFailure('Composio toolkit version is not pinned');
+      }
       if (input.policy.toolkit === 'hubspot') {
         const client = await this.client(apiKey);
         const result = await executeComposioTool(client, input.policy, {
@@ -1769,7 +1840,10 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         });
         const portal = result.error ? {} : projectHubSpotAccount(result.data);
         if (typeof portal.portalId !== 'string') {
-          throw new Error('HubSpot portal identity verification failed');
+          throw definiteManagedValidationFailure(
+            'HubSpot portal identity verification failed',
+            1,
+          );
         }
       }
       if (input.policy.toolkit === 'gong') {
@@ -1781,11 +1855,13 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
           signal,
         });
         const accessible = result.error ? [] : gongWorkspaces(result.data);
-        if (accessible.length === 0) throw new Error('Gong workspace verification failed');
+        if (accessible.length === 0) {
+          throw definiteManagedValidationFailure('Gong workspace verification failed', 1);
+        }
         const accessibleIds = new Set(accessible.map(({ providerRef }) => providerRef));
         const selected = input.policy.resourceConstraints?.workspaceIds ?? [];
         if (selected.some(({ providerRef }) => !accessibleIds.has(providerRef))) {
-          throw new Error('Gong workspace is no longer accessible');
+          throw definiteManagedValidationFailure('Gong workspace is no longer accessible', 1);
         }
       }
       if (input.policy.toolkit === 'googleads') {
@@ -1810,12 +1886,17 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         const selected = input.policy.resourceConstraints?.channelIds ?? [];
         if (accessible.length === 0 ||
             selected.some(({ providerRef }) => !accessibleIds.has(providerRef))) {
-          throw new Error('Selected YouTube channel is no longer accessible');
+          throw definiteManagedValidationFailure(
+            'Selected YouTube channel is no longer accessible',
+            1,
+          );
         }
       }
       if (input.policy.toolkit === 'notion') {
         const search = COMPOSIO_CAPABILITIES['notion.content.search'];
-        if (!search) throw new Error('Notion grant verification is unavailable');
+        if (!search) {
+          throw definiteManagedValidationFailure('Notion grant verification is unavailable');
+        }
         const client = await this.client(apiKey);
         const result = await executeComposioTool(client, input.policy, {
           toolkit: search.toolkit,
@@ -1826,11 +1907,23 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
           },
           signal,
         });
-        if (result.error) throw new Error('Notion grant verification failed');
+        if (result.error) {
+          throw definiteManagedValidationFailure('Notion grant verification failed', 1);
+        }
         return { grantSummary: notionGrantSummary(result.data) };
       }
-    } catch {
-      throw new Error('Composio managed connection could not be validated');
+    } catch (error) {
+      if (error instanceof ManagedAuthorizationExpiredError ||
+          error instanceof ManagedProviderRequestError) throw error;
+      throw new ManagedProviderRequestError(
+        'provider_unavailable',
+        'Composio managed connection health could not be verified',
+        {
+          remoteCallCount: 1,
+          providerToolCallCount: 0,
+          capabilityToolDispatched: false,
+        },
+      );
     }
   }
 
@@ -2198,12 +2291,14 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         principalRef: policy.principalRef,
         signal,
       });
+      this.observeMissingAccountOwner(account);
       return account.id !== policy.accountRef ||
         (account.userId !== undefined && account.userId !== policy.principalRef) ||
         account.status !== 'ACTIVE' ||
         account.isDisabled ||
         account.toolkit.toLowerCase() !== policy.toolkit.toLowerCase();
-    } catch {
+    } catch (error) {
+      if (error instanceof ManagedAuthorizationExpiredError) return true;
       // A failed status check may be a transient Composio outage or a bad
       // project key. Do not mislabel the user's Google grant in that case.
       return false;
@@ -2240,6 +2335,8 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
   }
 
   private client(apiKey: string): Promise<ComposioClientLike> {
+    // Default provider registries are request-scoped. Sharing construction only
+    // within this instance avoids carrying SDK I/O across Worker requests.
     if (!this.clientPromise) {
       const createClient = this.options.createClient ?? createComposioClient;
       const attempt = Promise.resolve().then(() => createClient({ apiKey }));
@@ -2250,7 +2347,80 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
     }
     return this.clientPromise;
   }
+
+  private observeMissingAccountOwner(account: ComposioConnectedAccount): void {
+    if (account.userId !== undefined ||
+        warnedMissingAccountOwner && missingAccountOwnerWarningSink === console.warn) return;
+    warnedMissingAccountOwner = true;
+    missingAccountOwnerWarningSink = console.warn;
+    console.warn(JSON.stringify({
+      event: 'chickpea.managed_connection.account_owner_unavailable',
+      adapterId: 'composio',
+      toolkit: account.toolkit,
+    }));
+  }
+
+  private async inspectAuthorization(input: {
+    authorizationRef: string;
+    principalRef: string;
+    toolkit: string;
+    signal?: AbortSignal;
+  }): Promise<ManagedAuthorizationPollResult> {
+    let account: ComposioConnectedAccount;
+    try {
+      account = await (
+        this.options.getConnectedAccount ?? getComposioConnectedAccount
+      )({
+        apiKey: this.requireApiKey(),
+        accountRef: input.authorizationRef,
+        principalRef: input.principalRef,
+        signal: boundedSignal(input.signal),
+      });
+    } catch (error) {
+      if (error instanceof ManagedAuthorizationExpiredError) {
+        return { status: 'terminal', reason: 'expired' };
+      }
+      if (error instanceof ManagedProviderRequestError) throw error;
+      throw new ManagedProviderRequestError(
+        'provider_unavailable',
+        'Composio managed authorization could not be inspected',
+        {
+          remoteCallCount: 1,
+          providerToolCallCount: 0,
+          capabilityToolDispatched: false,
+          definiteFailure: false,
+        },
+      );
+    }
+    this.observeMissingAccountOwner(account);
+    if (account.id !== input.authorizationRef || account.toolkit !== input.toolkit ||
+        account.userId !== undefined && account.userId !== input.principalRef) {
+      return { status: 'terminal', reason: 'failed' };
+    }
+    if (account.isDisabled) return { status: 'terminal', reason: 'disabled' };
+    const status = account.status.toUpperCase();
+    if (status === 'ACTIVE') {
+      return {
+        status: 'active',
+        accountRef: account.id,
+        toolkit: account.toolkit,
+      };
+    }
+    if (status === 'INITIALIZING' || status === 'INITIATED') return { status: 'pending' };
+    if (status === 'EXPIRED') return { status: 'terminal', reason: 'expired' };
+    if (status === 'REVOKED') return { status: 'terminal', reason: 'revoked' };
+    if (status === 'INACTIVE') return { status: 'terminal', reason: 'inactive' };
+    return { status: 'terminal', reason: 'failed' };
+  }
 }
+
+export type ManagedAuthorizationPollResult =
+  | { status: 'pending' }
+  | { status: 'active'; accountRef: string; toolkit: string }
+  | {
+      status: 'terminal';
+      reason: 'disabled' | 'expired' | 'failed' | 'inactive' | 'revoked';
+    };
 
 function ambiguousManagedWriteFailure(
   providerTool: string,
@@ -2914,7 +3084,10 @@ async function validateGoogleAdsSelectedCustomers(
       if (!customer || requiresCurrency && (
         !selection.currencyCode || customer.currencyCode !== selection.currencyCode
       )) {
-        throw new Error('Google Ads client customer is no longer accessible');
+        throw definiteManagedValidationFailure(
+          'Google Ads client customer is no longer accessible',
+          1,
+        );
       }
     }));
   }
@@ -3018,7 +3191,9 @@ function googleAdsNextPageToken(data: Record<string, unknown>): string | undefin
   return token && token.length <= 2_000 ? token : undefined;
 }
 
-async function createComposioClient(input: { apiKey: string }): Promise<ComposioClientLike> {
+export async function createComposioClient(
+  input: { apiKey: string },
+): Promise<ComposioClientLike> {
   const { Composio } = await import('@composio/core');
   const client = new Composio({
     apiKey: input.apiKey,
@@ -3026,9 +3201,16 @@ async function createComposioClient(input: { apiKey: string }): Promise<Composio
     sensitiveFileUploadProtection: true,
   });
   return {
+    authConfigs: {
+      list: (query, requestOptions) => client.authConfigs.list(query, requestOptions),
+      create: (toolkit, options, requestOptions) =>
+        client.authConfigs.create(toolkit, options, requestOptions),
+      get: (id, requestOptions) => client.authConfigs.get(id, requestOptions),
+    },
     connectedAccounts: {
       link: (userId, authConfigId, options, requestOptions) =>
         client.connectedAccounts.link(userId, authConfigId, options, requestOptions),
+      get: (id, requestOptions) => client.connectedAccounts.get(id, requestOptions),
     },
     sessions: {
       create: (userId, config, requestOptions) =>
@@ -3050,23 +3232,68 @@ async function getComposioConnectedAccount(input: {
   principalRef: string;
   signal: AbortSignal;
 }): Promise<ComposioConnectedAccount> {
-  // The server-side filters are the durable ownership boundary. Composio is
-  // deprecating user_id on list responses, but corroborate it while present.
-  const url = new URL('https://backend.composio.dev/api/v3.1/connected_accounts');
-  url.searchParams.append('connected_account_ids', input.accountRef);
-  url.searchParams.append('user_ids', input.principalRef);
-  url.searchParams.set('limit', '1');
-  const response = await fetch(url, {
-    headers: { 'x-api-key': input.apiKey },
-    signal: input.signal,
-  });
-  if (!response.ok) {
-    throw new Error(`Composio connected account lookup failed with HTTP ${response.status}`);
+  let remoteCallCount = 0;
+  const requestAccounts = async (filterByPrincipal: boolean): Promise<unknown[]> => {
+    const url = new URL('https://backend.composio.dev/api/v3.1/connected_accounts');
+    url.searchParams.append('connected_account_ids', input.accountRef);
+    if (filterByPrincipal) url.searchParams.append('user_ids', input.principalRef);
+    url.searchParams.set('limit', '1');
+    const response = await fetch(url, {
+      headers: { 'x-api-key': input.apiKey },
+      signal: input.signal,
+    });
+    remoteCallCount += 1;
+    if (!response.ok) {
+      throw new ManagedProviderRequestError(
+        'provider_unavailable',
+        'Composio connected account health could not be checked',
+        {
+          remoteCallCount,
+          providerToolCallCount: 0,
+          capabilityToolDispatched: false,
+          httpStatus: response.status,
+          definiteFailure: false,
+        },
+      );
+    }
+    const body: unknown = await response.json();
+    if (!isRecord(body) || !Array.isArray(body.items)) {
+      throw new Error('Composio connected account response was invalid');
+    }
+    return body.items;
+  };
+
+  const filtered = await requestAccounts(true);
+  let account = filtered.find((item) => isRecord(item) && item.id === input.accountRef);
+  const matchedPrincipalFilter = account !== undefined;
+  if (account === undefined) {
+    const unfiltered = await requestAccounts(false);
+    account = unfiltered.find((item) => isRecord(item) && item.id === input.accountRef);
   }
-  const body: unknown = await response.json();
-  const account = isRecord(body) && Array.isArray(body.items)
-    ? body.items.find((item) => isRecord(item) && item.id === input.accountRef)
-    : undefined;
+  if (account === undefined) {
+    throw new ManagedAuthorizationExpiredError({
+      remoteCallCount,
+      providerToolCallCount: 0,
+      capabilityToolDispatched: false,
+      definiteFailure: true,
+    });
+  }
+  if (!matchedPrincipalFilter && isRecord(account) && account.user_id === undefined) {
+    console.error(JSON.stringify({
+      event: 'chickpea.managed_connection.account_owner_verification_unavailable',
+      adapterId: 'composio',
+    }));
+    throw new ManagedProviderRequestError(
+      'provider_unavailable',
+      'Composio connected account ownership could not be verified',
+      {
+        remoteCallCount,
+        providerToolCallCount: 0,
+        capabilityToolDispatched: false,
+        definiteFailure: false,
+      },
+    );
+  }
   if (
     !isRecord(account) ||
     typeof account.id !== 'string' ||
@@ -3089,33 +3316,34 @@ async function getComposioConnectedAccount(input: {
   };
 }
 
-async function completeComposioAuthorization(input: {
+/**
+ * Inspect one exact connected account through the ownership-filtered REST API.
+ * Reconciliation shares this path with runtime validation so it never relies
+ * on SDK response fields that omit the remote account owner.
+ */
+export async function inspectComposioConnectedAccount(input: {
   apiKey: string;
+  accountRef: string;
   principalRef: string;
-  sessionUri: string;
+  toolkit: string;
   signal: AbortSignal;
-}): Promise<{ accountRef: string; toolkit: string }> {
-  const response = await fetch(
-    'https://backend.composio.dev/api/v3.1/connected_accounts/complete_auth',
-    {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': input.apiKey,
-      },
-      body: JSON.stringify({ session_uri: input.sessionUri, user_id: input.principalRef }),
-      signal: input.signal,
-    },
-  );
-  if (!response.ok) throw new Error(`Composio complete auth failed with HTTP ${response.status}`);
-  const body: unknown = await response.json();
-  if (!isRecord(body) || typeof body.connected_account_id !== 'string' ||
-      typeof body.toolkit_slug !== 'string' ||
-      !/^[A-Za-z0-9_.:@-]{1,256}$/.test(body.connected_account_id) ||
-      !/^[A-Za-z0-9_-]{1,128}$/.test(body.toolkit_slug)) {
-    throw new Error('Composio complete auth response was invalid');
+}): Promise<'match' | 'missing' | 'mismatch' | 'transient'> {
+  let account: ComposioConnectedAccount;
+  try {
+    account = await getComposioConnectedAccount(input);
+  } catch (error) {
+    if (error instanceof ManagedAuthorizationExpiredError) return 'missing';
+    return 'transient';
   }
-  return { accountRef: body.connected_account_id, toolkit: body.toolkit_slug.toLowerCase() };
+  if (account.id !== input.accountRef || account.toolkit !== input.toolkit.toLowerCase() ||
+      account.userId !== undefined && account.userId !== input.principalRef) {
+    return 'mismatch';
+  }
+  if (account.isDisabled) return 'missing';
+  const status = account.status.toUpperCase();
+  if (status === 'ACTIVE') return 'match';
+  if (status === 'INITIALIZING' || status === 'INITIATED') return 'transient';
+  return 'missing';
 }
 
 async function revokeComposioAccount(input: {

@@ -3,6 +3,7 @@ import {
   AgentExistsError,
   AgentStillReferencedError,
   ChannelRevisionConflictError,
+  ConnectionAccountRevisionConflictError,
   UnknownAgentError,
 } from './errors.ts';
 import { seededAgents, seededAgentChannelGrants } from './seed.ts';
@@ -153,6 +154,8 @@ interface AgentScheduleReferenceRow {
   runs_as_membership_id: string;
   authority_receipt_id: string;
   required_connection_account_ids_json: string;
+  connection_pause_account_ids_json: string;
+  connection_pause_preserves_state: number;
   state: string;
   revision: number;
   created_at: number;
@@ -283,6 +286,7 @@ export class ConfigStoreLogic {
   ) {
     this.installConfigSchema();
     this.installAgentConnectionBindingMigrations();
+    this.installAgentScheduleReferenceMigrations();
     const channelTable = this.db.get(
       "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'config_channels'",
     );
@@ -439,7 +443,12 @@ export class ConfigStoreLogic {
       const pausedScheduleIds = this.db
         .all(
           `SELECT schedule_id FROM config_agent_schedule_references
-           WHERE agent_id = ? AND state = 'active'
+           WHERE agent_id = ? AND (
+             state = 'active' OR (
+               state = 'needs_attention' AND connection_pause_account_ids_json <> '[]' AND
+               connection_pause_preserves_state = 0
+             )
+           )
            ORDER BY schedule_id`,
           agentId,
         )
@@ -470,7 +479,12 @@ export class ConfigStoreLogic {
       this.db.run(
         `UPDATE config_agent_schedule_references
          SET state = 'paused', revision = revision + 1, updated_at = ?
-         WHERE agent_id = ? AND state = 'active'`,
+         WHERE agent_id = ? AND (
+           state = 'active' OR (
+             state = 'needs_attention' AND connection_pause_account_ids_json <> '[]' AND
+             connection_pause_preserves_state = 0
+           )
+         )`,
         now,
         agentId,
       );
@@ -532,7 +546,11 @@ export class ConfigStoreLogic {
       for (const scheduleId of pausedScheduleIds) {
         this.db.run(
           `UPDATE config_agent_schedule_references
-           SET state = 'active', revision = revision + 1, updated_at = ?
+           SET state = CASE
+                 WHEN connection_pause_account_ids_json = '[]' THEN 'active'
+                 ELSE 'needs_attention'
+               END,
+               revision = revision + 1, updated_at = ?
            WHERE schedule_id = ? AND agent_id = ? AND state = 'paused'`,
           now,
           scheduleId,
@@ -713,7 +731,7 @@ export class ConfigStoreLogic {
     const now = Date.now();
     if (!current) {
       if (expectedRevision !== undefined && expectedRevision !== 0) {
-        throw new Error(`Connection account changed (expected revision ${expectedRevision}, actual 0)`);
+        throw new ConnectionAccountRevisionConflictError(input.id, expectedRevision, 0);
       }
       this.db.run(
         `INSERT INTO config_connection_accounts (
@@ -749,8 +767,10 @@ export class ConfigStoreLogic {
       }
       const requiredRevision = expectedRevision ?? Number(current.revision);
       if (requiredRevision !== Number(current.revision)) {
-        throw new Error(
-          `Connection account changed (expected revision ${requiredRevision}, actual ${current.revision})`,
+        throw new ConnectionAccountRevisionConflictError(
+          input.id,
+          requiredRevision,
+          Number(current.revision),
         );
       }
       this.db.run(
@@ -843,8 +863,9 @@ export class ConfigStoreLogic {
         `INSERT INTO config_agent_schedule_references (
           schedule_id, agent_id, workspace_id, channel_id, created_by_membership_id,
           runs_as_membership_id, authority_receipt_id,
-          required_connection_account_ids_json, state, revision, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+          required_connection_account_ids_json, connection_pause_account_ids_json,
+          connection_pause_preserves_state, state, revision, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         input.scheduleId,
         input.agentId,
         input.workspaceId,
@@ -853,6 +874,8 @@ export class ConfigStoreLogic {
         input.runsAsMembershipId,
         input.authorityReceiptId,
         JSON.stringify(input.requiredConnectionAccountIds),
+        JSON.stringify(input.connectionPauseAccountIds ?? []),
+        input.connectionPausePreservesState ? 1 : 0,
         input.state,
         now,
         now,
@@ -877,7 +900,8 @@ export class ConfigStoreLogic {
         `UPDATE config_agent_schedule_references
          SET agent_id = ?, workspace_id = ?, channel_id = ?, created_by_membership_id = ?,
              runs_as_membership_id = ?, authority_receipt_id = ?,
-             required_connection_account_ids_json = ?, state = ?,
+             required_connection_account_ids_json = ?, connection_pause_account_ids_json = ?,
+             connection_pause_preserves_state = ?, state = ?,
              revision = revision + 1, updated_at = ?
          WHERE schedule_id = ? AND revision = ?`,
         input.agentId,
@@ -887,6 +911,8 @@ export class ConfigStoreLogic {
         input.runsAsMembershipId,
         input.authorityReceiptId,
         JSON.stringify(input.requiredConnectionAccountIds),
+        JSON.stringify(input.connectionPauseAccountIds ?? []),
+        input.connectionPausePreservesState ? 1 : 0,
         input.state,
         now,
         input.scheduleId,
@@ -1286,6 +1312,8 @@ export class ConfigStoreLogic {
         runs_as_membership_id TEXT NOT NULL,
         authority_receipt_id TEXT NOT NULL,
         required_connection_account_ids_json TEXT NOT NULL,
+        connection_pause_account_ids_json TEXT NOT NULL DEFAULT '[]',
+        connection_pause_preserves_state INTEGER NOT NULL DEFAULT 0,
         state TEXT NOT NULL,
         revision INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
@@ -1485,6 +1513,27 @@ export class ConfigStoreLogic {
     if (!bindingColumns.has('resource_constraints_json')) {
       this.db.exec(
         "ALTER TABLE config_agent_connection_bindings ADD COLUMN resource_constraints_json TEXT NOT NULL DEFAULT '{}'",
+      );
+    }
+  }
+
+  private installAgentScheduleReferenceMigrations(): void {
+    const scheduleTable = this.db.get(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'config_agent_schedule_references'",
+    );
+    if (!scheduleTable) return;
+    const scheduleColumns = new Set(
+      this.db.all('PRAGMA table_info(config_agent_schedule_references)')
+        .map((column) => String(column.name)),
+    );
+    if (!scheduleColumns.has('connection_pause_account_ids_json')) {
+      this.db.exec(
+        "ALTER TABLE config_agent_schedule_references ADD COLUMN connection_pause_account_ids_json TEXT NOT NULL DEFAULT '[]'",
+      );
+    }
+    if (!scheduleColumns.has('connection_pause_preserves_state')) {
+      this.db.exec(
+        'ALTER TABLE config_agent_schedule_references ADD COLUMN connection_pause_preserves_state INTEGER NOT NULL DEFAULT 0',
       );
     }
   }
@@ -1851,6 +1900,17 @@ function rowToAgentScheduleReference(row: AgentScheduleReferenceRow): AgentSched
   } catch {
     requiredConnectionAccountIds = [];
   }
+  let connectionPauseAccountIds: string[] = [];
+  try {
+    const parsed = JSON.parse(row.connection_pause_account_ids_json ?? '[]') as unknown;
+    if (Array.isArray(parsed)) {
+      connectionPauseAccountIds = parsed.filter(
+        (value): value is string => typeof value === 'string',
+      );
+    }
+  } catch {
+    connectionPauseAccountIds = [];
+  }
   return {
     scheduleId: row.schedule_id,
     agentId: row.agent_id,
@@ -1860,6 +1920,10 @@ function rowToAgentScheduleReference(row: AgentScheduleReferenceRow): AgentSched
     runsAsMembershipId: row.runs_as_membership_id,
     authorityReceiptId: row.authority_receipt_id,
     requiredConnectionAccountIds,
+    ...(connectionPauseAccountIds.length > 0 ? { connectionPauseAccountIds } : {}),
+    ...(connectionPauseAccountIds.length > 0 && Number(row.connection_pause_preserves_state) === 1
+      ? { connectionPausePreservesState: true }
+      : {}),
     state:
       row.state === 'paused' || row.state === 'needs_attention' || row.state === 'archived'
         ? row.state
