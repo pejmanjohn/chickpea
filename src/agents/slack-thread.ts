@@ -159,6 +159,10 @@ import { resolveSlackInstallationExecutionContext } from '../slack/installation-
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
 import { useWorkspaceManagementSlackTools } from '../management/slack-tools.ts';
+import {
+  AGENT_AUTHORING_SKILL_NAME,
+  useAgentAuthoring,
+} from '../management/agent-authoring/index.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
 import {
@@ -792,7 +796,7 @@ export async function createSlackAgentRuntime(
     ...connectorSkills,
     ...config.agent.skills,
     ...(workspaceSkill ? [workspaceSkill] : []),
-  ]);
+  ], { reservedNames: [AGENT_AUTHORING_SKILL_NAME] });
 
   const apiConnectionActivities: ApiConnectionActivity[] = [
     ...repositoryAccess.connectors.map(({ allowedHosts, pathPrefixes, allowedMethods, matchesRequest }) => ({
@@ -834,7 +838,10 @@ export async function createSlackAgentRuntime(
         agentId: config.agent.id,
         actorMembershipId: input.actorMembershipId,
         resolvePlatformEnv: async () => env,
-        reservedToolNames: skills.map(({ name }) => name),
+        reservedToolNames: [
+          AGENT_AUTHORING_SKILL_NAME,
+          ...skills.map(({ name }) => name),
+        ],
       })
     : [];
 
@@ -851,6 +858,7 @@ export async function createSlackAgentRuntime(
         agentId: config.agent.id,
         env,
         existingToolNames: [
+          AGENT_AUTHORING_SKILL_NAME,
           ...skills.map((skill) => skill.name),
           ...managedTools.map((tool) => tool.name),
         ],
@@ -1075,6 +1083,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
         }
       : {}),
   });
+  useAgentAuthoring();
   useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv);
   usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
   return plan.instructions;
@@ -1114,9 +1123,11 @@ export function useRuntimePlanAgent(
     plan,
     resolveAgentPlatformEnv,
     options.connectorUsageCorrelation,
+    [AGENT_AUTHORING_SKILL_NAME],
   );
   for (const skill of resolveProfileSkills(
     plan.skills.map((entry) => ({ ...entry, enabled: true })),
+    { reservedNames: [AGENT_AUTHORING_SKILL_NAME] },
   )) {
     useSkill(skill);
   }

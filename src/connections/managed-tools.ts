@@ -174,6 +174,7 @@ export function useManagedConnectionTools(
   plan: RuntimePlanV2,
   resolvePlatformEnv: PlatformEnvResolver,
   usageCorrelation?: ManagedToolUsageCorrelation,
+  reservedToolNames: readonly string[] = [],
 ): void {
   if (!plan.actorMembershipId || !plan.managedConnections?.length) return;
   useInstruction(MANAGED_CONNECTION_RESULT_INSTRUCTION);
@@ -183,7 +184,10 @@ export function useManagedConnectionTools(
     agentId: plan.agentId,
     actorMembershipId: plan.actorMembershipId,
     resolvePlatformEnv,
-    reservedToolNames: plan.skills.map(({ name }) => name),
+    reservedToolNames: [
+      ...plan.skills.map(({ name }) => name),
+      ...reservedToolNames,
+    ],
     ...(usageCorrelation ? { usageCorrelation } : {}),
   })) {
     useTool(tool);
