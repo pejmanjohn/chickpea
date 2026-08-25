@@ -494,6 +494,11 @@ export interface ProposeWorkspaceChangesResult {
   proposalId: string;
   status: 'pending';
   digest: string;
+  guide: {
+    version: string;
+    uri: string;
+    digest: string;
+  };
   preview: ManagementChangeSetPreview;
   expiresAt: number;
   confirmationTool: 'confirm_workspace_change';

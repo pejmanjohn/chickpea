@@ -20,6 +20,7 @@ export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'inspect_routines',
   'export_workspace_recipe',
   'preview_workspace_recipe',
+  'propose_workspace_changes',
   'apply_workspace_changes',
   'confirm_workspace_change',
   'undo_workspace_change',
@@ -38,6 +39,7 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, or routine.',
   export_workspace_recipe: 'Export selected Agents and their connection requirements as a versioned, secret-free portable recipe.',
   preview_workspace_recipe: 'Preview a portable recipe against live workspace state and compile chosen outcomes into ordinary typed changes.',
+  propose_workspace_changes: 'Create a read-only, exact, requester-bound Agent configuration proposal. Read chickpea://guide/agent-authoring/v1 before proposing creation or a complex edit.',
   apply_workspace_changes: 'Apply one or more typed Chickpea workspace changes with durable idempotency and per-item outcomes.',
   confirm_workspace_change: 'Confirm one requester- and client-bound destructive or capability-expanding change proposal.',
   undo_workspace_change: 'Undo one eligible operation at the exact resulting revision.',
@@ -60,6 +62,7 @@ export type WorkspaceManagementToolArguments = {
   inspect_routines: ManagementRoutineInspectionInput;
   export_workspace_recipe: { agentIds?: string[] | undefined };
   preview_workspace_recipe: PreviewWorkspaceRecipeInput;
+  propose_workspace_changes: { operations: ManagementOperation[] };
   apply_workspace_changes: { idempotencyKey: string; operations: ManagementOperation[] };
   confirm_workspace_change: { proposalId: string };
   undo_workspace_change: { operationId: string; idempotencyKey: string };
@@ -188,6 +191,10 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
       case 'preview_workspace_recipe': {
         const value = args as WorkspaceManagementToolArguments['preview_workspace_recipe'];
         return service.previewRecipe(context, value);
+      }
+      case 'propose_workspace_changes': {
+        const value = args as WorkspaceManagementToolArguments['propose_workspace_changes'];
+        return service.proposeWorkspaceChanges({ context, operations: value.operations });
       }
       case 'apply_workspace_changes': {
         const value = args as WorkspaceManagementToolArguments['apply_workspace_changes'];

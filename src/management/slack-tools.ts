@@ -14,6 +14,7 @@ import {
 import type { IdentityStore } from '../identity/types.ts';
 import {
   applyWorkspaceChangesValibotSchema,
+  proposeWorkspaceChangesValibotSchema,
   confirmWorkspaceChangeValibotSchema,
   getOperationValibotSchema,
   inspectWorkspaceValibotSchema,
@@ -170,6 +171,19 @@ export function useWorkspaceManagementSlackTools(
     async run({ data }) {
       return slackToolOutput(await invokeLiveSlackTool(
         signal, resolvePlatformEnv, 'revoke_setup_link', data,
+      ));
+    },
+  });
+  useTool({
+    name: 'propose_workspace_changes',
+    description: workspaceManagementToolDescription('propose_workspace_changes'),
+    input: proposeWorkspaceChangesValibotSchema,
+    async run({ data }) {
+      return slackToolOutput(await invokeLiveSlackTool(
+        signal,
+        resolvePlatformEnv,
+        'propose_workspace_changes',
+        { operations: data.operations as ManagementOperation[] },
       ));
     },
   });

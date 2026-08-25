@@ -7,9 +7,15 @@ import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts'
 import { validatePublicMcpClientRegistration } from '../src/auth/mcp-oauth.ts';
 import {
   createWorkspaceManagementMcpServer,
+  WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
   WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI,
   WORKSPACE_MANAGEMENT_SERVER_INFO,
 } from '../src/management/mcp.ts';
+import {
+  AGENT_AUTHORING_GUIDE,
+  AGENT_AUTHORING_GUIDE_DIGEST,
+  AGENT_AUTHORING_GUIDE_VERSION,
+} from '../src/management/agent-authoring/index.ts';
 import { MANAGEMENT_OPERATION_KINDS } from '../src/management/schemas.ts';
 import { WORKSPACE_MANAGEMENT_TOOL_NAMES } from '../src/management/tool-adapter.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
@@ -87,6 +93,11 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         `${client.name} must require an explicit Agent for connector setup`,
       );
       assert.ok(
+        listedTools.find(({ name }) => name === 'propose_workspace_changes')
+          ?.inputSchema?.required?.includes('operations'),
+        `${client.name} must require exact proposal operations`,
+      );
+      assert.ok(
         listedTools.find(({ name }) => name === 'prepare_connector_setup')
           ?.inputSchema?.required?.includes('ownerKind'),
         `${client.name} must require an explicit personal or Team connection owner`,
@@ -137,6 +148,49 @@ test('supported coding clients share public PKCE registration and stateless MCP 
       };
       assert.equal(contract.schemaVersion, 2);
       assert.deepEqual(contract.operationKinds, MANAGEMENT_OPERATION_KINDS);
+
+      const resources = await mcpCall(handler.fetch, client.protocol, 'resources/list', {});
+      assert.ok((resources.result as { resources: Array<{ uri: string }> }).resources.some(
+        ({ uri }) => uri === WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
+      ));
+      const guideResult = await mcpCall(handler.fetch, client.protocol, 'resources/read', {
+        uri: WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
+      });
+      const guide = JSON.parse((guideResult.result as {
+        contents: Array<{ text: string }>;
+      }).contents[0]!.text) as { version: string; digest: string; guide: string };
+      assert.deepEqual(guide, {
+        version: AGENT_AUTHORING_GUIDE_VERSION,
+        digest: AGENT_AUTHORING_GUIDE_DIGEST,
+        guide: AGENT_AUTHORING_GUIDE,
+      });
+
+      const proposed = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
+        name: 'propose_workspace_changes',
+        arguments: {
+          operations: [{
+            itemId: 'description',
+            kind: 'update_agent',
+            agentId: agent.id,
+            expectedRevision: 1,
+            patch: { description: `Reviewed by ${client.name}.` },
+          }],
+        },
+      });
+      const proposedResult = JSON.parse((proposed.result as {
+        content: Array<{ text: string }>;
+      }).content[0]!.text) as {
+        ok: boolean;
+        result: { proposalId: string; guide: { version: string; uri: string; digest: string } };
+      };
+      assert.equal(proposedResult.ok, true);
+      assert.deepEqual(proposedResult.result.guide, {
+        version: AGENT_AUTHORING_GUIDE_VERSION,
+        uri: WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
+        digest: AGENT_AUTHORING_GUIDE_DIGEST,
+      });
+      assert.match(proposedResult.result.proposalId, /^changeset_/);
+      assert.equal((await f.config.getAgent(agent.id)).revision, 1);
     }
   } finally {
     f.close();
@@ -146,7 +200,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
 test('workspace management MCP publishes the version 2 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '2.0.0',
+    version: '2.1.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });

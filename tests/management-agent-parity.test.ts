@@ -3,8 +3,15 @@ import { test } from 'node:test';
 
 import * as v from 'valibot';
 
+import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
+import {
+  AGENT_AUTHORING_GUIDE_DIGEST,
+  AGENT_AUTHORING_GUIDE_URI,
+  AGENT_AUTHORING_GUIDE_VERSION,
+} from '../src/management/agent-authoring/index.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
+import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import {
   managementOperationValibotSchema,
@@ -112,6 +119,109 @@ test('management operation schemas expose Agent presence, Channel reach, and lif
   ]) {
     assert.equal(managementOperationZodSchema.safeParse(operation).success, false);
     assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, false);
+  }
+});
+
+test('Slack and MCP share exact proposal semantics while preserving origin binding', async () => {
+  const f = await createManagementAdapterFixture('proposal-surface-parity');
+  const agent = await f.config.createAgent({
+    ...agentInput,
+    creatorMembershipId: f.admin.membership.id,
+    lifecycle: 'active',
+    configurationGeneration: 1,
+  });
+  const signal = {
+    agentId: CHICKPEA_AGENT_ID,
+    workspaceId: f.admin.binding.slackTeamId,
+    channelId: 'D_AUTHORING',
+    threadTs: '100.1',
+    slackUserId: f.admin.binding.slackUserId,
+    eventId: 'Ev_AUTHORING',
+    messageTs: '100.2',
+    turnJobId: 'turn_AUTHORING',
+  };
+  try {
+    const operation: ManagementOperation = {
+      itemId: 'description',
+      kind: 'update_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+      patch: { description: 'Handles escalated support.' },
+    };
+    const proposed = await invokeSlackWorkspaceManagementTool({
+      signal,
+      identity: f.identity,
+      service: f.service,
+      name: 'propose_workspace_changes',
+      args: { operations: [operation] },
+    });
+    assert.equal(proposed.ok, true);
+    const result = (proposed as { ok: true; result: {
+      proposalId: string;
+      guide: { version: string; uri: string; digest: string };
+    } }).result;
+    assert.deepEqual(result.guide, {
+      version: AGENT_AUTHORING_GUIDE_VERSION,
+      uri: AGENT_AUTHORING_GUIDE_URI,
+      digest: AGENT_AUTHORING_GUIDE_DIGEST,
+    });
+    assert.equal((await f.config.getAgent(agent.id)).revision, agent.revision);
+
+    const mcpConfirmation = await invokeWorkspaceManagementTool({
+      service: f.service,
+      resolveContext: async () => ({
+        userId: f.admin.user.id,
+        membershipId: f.admin.membership.id,
+        organizationId: f.admin.membership.organizationId,
+        origin: { kind: 'mcp', clientId: 'proposal-surface-parity' },
+      }),
+    }, 'confirm_workspace_change', { proposalId: result.proposalId });
+    assert.deepEqual(mcpConfirmation, {
+      ok: false,
+      error: {
+        code: 'proposal_binding_mismatch',
+        message: 'The confirmation does not match its initiating user and origin.',
+      },
+    });
+
+    const wrongThread = await invokeSlackWorkspaceManagementTool({
+      signal: { ...signal, threadTs: '100.9' },
+      identity: f.identity,
+      service: f.service,
+      name: 'confirm_workspace_change',
+      args: { proposalId: result.proposalId },
+    });
+    assert.equal(wrongThread.ok, false);
+    assert.equal((await f.config.getAgent(agent.id)).revision, agent.revision);
+
+    const confirmed = await invokeSlackWorkspaceManagementTool({
+      signal,
+      identity: f.identity,
+      service: f.service,
+      name: 'confirm_workspace_change',
+      args: { proposalId: result.proposalId },
+    });
+    assert.equal(confirmed.ok, true);
+    assert.equal((await f.config.getAgent(agent.id)).description, 'Handles escalated support.');
+
+    const secret = 'sk-proj-abcdefghijklmnopqrstuvwxyz123456';
+    const rejected = await invokeSlackWorkspaceManagementTool({
+      signal,
+      identity: f.identity,
+      service: f.service,
+      name: 'propose_workspace_changes',
+      args: {
+        operations: [{
+          ...operation,
+          expectedRevision: (await f.config.getAgent(agent.id)).revision,
+          patch: { instructions: `Use ${secret}` },
+        }],
+      },
+    });
+    assert.equal(rejected.ok, false);
+    assert.doesNotMatch(JSON.stringify(rejected), new RegExp(secret));
+  } finally {
+    f.close();
   }
 });
 

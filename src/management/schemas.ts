@@ -263,6 +263,9 @@ export const applyWorkspaceChangesZodSchema = z.strictObject({
   idempotencyKey: zText(256),
   operations: z.array(managementOperationZodSchema).min(1).max(25),
 });
+export const proposeWorkspaceChangesZodSchema = z.strictObject({
+  operations: z.array(managementOperationZodSchema).min(1).max(25),
+});
 export const confirmWorkspaceChangeZodSchema = z.strictObject({ proposalId: zId });
 export const undoWorkspaceChangeZodSchema = z.strictObject({
   operationId: zId,
@@ -543,6 +546,9 @@ export const managementOperationValibotSchema = v.variant('kind', [
 
 export const applyWorkspaceChangesValibotSchema = v.strictObject({
   idempotencyKey: vt(256),
+  operations: v.pipe(v.array(managementOperationValibotSchema), v.minLength(1), v.maxLength(25)),
+});
+export const proposeWorkspaceChangesValibotSchema = v.strictObject({
   operations: v.pipe(v.array(managementOperationValibotSchema), v.minLength(1), v.maxLength(25)),
 });
 export const confirmWorkspaceChangeValibotSchema = v.strictObject({ proposalId: vid });

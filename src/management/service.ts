@@ -43,6 +43,11 @@ import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import {
+  AGENT_AUTHORING_GUIDE_DIGEST,
+  AGENT_AUTHORING_GUIDE_URI,
+  AGENT_AUTHORING_GUIDE_VERSION,
+} from './agent-authoring/index.ts';
+import {
   canonicalJson,
   effectiveConfigurationRevision,
   managementOperationDigest,
@@ -3103,6 +3108,11 @@ function publicChangeSetProposal(
     proposalId: proposal.proposalId,
     status: 'pending',
     digest: proposal.digest,
+    guide: {
+      version: AGENT_AUTHORING_GUIDE_VERSION,
+      uri: AGENT_AUTHORING_GUIDE_URI,
+      digest: AGENT_AUTHORING_GUIDE_DIGEST,
+    },
     preview: proposal.preview,
     expiresAt: proposal.expiresAt,
     confirmationTool: 'confirm_workspace_change',
