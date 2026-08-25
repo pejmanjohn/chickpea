@@ -207,12 +207,13 @@ interface ImmediateMutation {
   handoffUrl?: string;
 }
 
-interface ActingAgentScopeTarget {
-  scope: 'agent' | 'authority';
-  agentId?: string | undefined;
+type ActingAgentScopeTarget = {
   requestedAction: ChickpeaManagementHandoff['requestedAction'];
   target: ChickpeaManagementHandoff['target'];
-}
+} & (
+  | { scope: 'agent'; agentId: string }
+  | { scope: 'authority' }
+);
 
 /**
  * One requester-bound control plane shared by MCP, Slack, and Admin adapters.
@@ -282,7 +283,7 @@ export class WorkspaceManagementService {
     const actor = await this.requireLiveActor(context);
     this.assertActingAgentScope(actor, {
       scope: 'agent',
-      agentId: actor.actingAgentId,
+      agentId: actor.actingAgentId ?? CHICKPEA_AGENT_ID,
       requestedAction: 'discover_slack_channels',
       target: { kind: 'workspace', id: actor.organizationId },
     });
@@ -334,7 +335,7 @@ export class WorkspaceManagementService {
     const actor = await this.requireLiveActor(context);
     this.assertActingAgentScope(actor, {
       scope: 'agent',
-      agentId: actor.actingAgentId,
+      agentId: actor.actingAgentId ?? CHICKPEA_AGENT_ID,
       requestedAction: 'inspect_routines',
       target: { kind: 'workspace', id: input.workspaceId },
     });
@@ -345,17 +346,18 @@ export class WorkspaceManagementService {
     let routines = await this.stores.routines.listRoutines(input.workspaceId, input.channelId);
     if (input.routineId) routines = routines.filter(({ id }) => id === input.routineId);
     if (actor.role === 'member' || isUserAgentScoped(actor)) {
-      const visible: typeof routines = [];
-      for (const routine of routines) {
+      const visible = await Promise.all(routines.map(async (routine) => {
         const reference = await this.stores.config.getAgentScheduleReference(routine.id);
-        if (!reference) continue;
+        if (!reference) return undefined;
         const agent = await optionalAgent(this.stores.config, reference.agentId);
         if (agent && this.actorCanEditAgent(actor, agent) &&
             (!isUserAgentScoped(actor) || reference.agentId === actor.actingAgentId)) {
-          visible.push(routine);
+          return routine;
         }
-      }
-      routines = visible;
+        return undefined;
+      }));
+      routines = visible.filter((routine): routine is NonNullable<typeof routine> =>
+        routine !== undefined);
     }
     return {
       routines: await Promise.all(routines.map(async (routine) => {
@@ -504,20 +506,6 @@ export class WorkspaceManagementService {
         const facts = await this.policyFacts(actor, operation);
         const policy = classifyManagementOperation(facts);
         if (!policy.allowed) {
-          if (policy.reason === 'chickpea_handoff_required') {
-            progress = appendOutcome(progress, index, {
-              itemId: operation.itemId,
-              operationKind: operation.kind,
-              disposition: 'chickpea_handoff',
-              handoff: chickpeaHandoffForOperation(actor, operation),
-            });
-            request = await this.stores.management.saveRequestProgress(
-              request.operationId,
-              withoutSetupCapabilitiesFromProgress(progress),
-              this.now(),
-            );
-            continue;
-          }
           progress = appendOutcome(progress, index, {
             itemId: operation.itemId,
             operationKind: operation.kind,
@@ -631,9 +619,6 @@ export class WorkspaceManagementService {
       if (handoff) throw new ChickpeaHandoffRequired(handoff);
       const policy = classifyManagementOperation(await this.policyFacts(actor, operation));
       if (!policy.allowed) {
-        if (policy.reason === 'chickpea_handoff_required') {
-          throw new ChickpeaHandoffRequired(chickpeaHandoffForOperation(actor, operation));
-        }
         throw new ManagementError('forbidden', 'Current workspace authority does not permit this proposal.');
       }
       const revisions = await this.targetRevisions(operation);
@@ -1282,13 +1267,19 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     target: ActingAgentScopeTarget,
   ): void {
-    if (!isUserAgentScoped(actor)) return;
-    if (target.scope === 'agent' && target.agentId === actor.actingAgentId) return;
-    throw new ChickpeaHandoffRequired(chickpeaHandoff(
-      actor,
-      target.requestedAction,
-      target.target,
-    ));
+    const handoff = this.actingAgentScopeHandoff(actor, target);
+    if (handoff) throw new ChickpeaHandoffRequired(handoff);
+  }
+
+  private actingAgentScopeHandoff(
+    actor: LiveManagementActor,
+    target: ActingAgentScopeTarget,
+  ): ChickpeaManagementHandoff | undefined {
+    if (!isUserAgentScoped(actor) ||
+        (target.scope === 'agent' && target.agentId === actor.actingAgentId)) {
+      return undefined;
+    }
+    return chickpeaHandoff(actor, target.requestedAction, target.target);
   }
 
   private async actingAgentOperationHandoff(
@@ -1297,10 +1288,7 @@ export class WorkspaceManagementService {
   ): Promise<ChickpeaManagementHandoff | undefined> {
     if (!isUserAgentScoped(actor)) return undefined;
     const target = await this.managementOperationScopeTarget(operation);
-    if (target.scope === 'agent' && target.agentId === actor.actingAgentId) {
-      return undefined;
-    }
-    return chickpeaHandoff(actor, target.requestedAction, target.target);
+    return this.actingAgentScopeHandoff(actor, target);
   }
 
   private async managementOperationScopeTarget(
@@ -1397,9 +1385,6 @@ export class WorkspaceManagementService {
     );
     const policy = classifyManagementOperation(facts);
     if (!policy.allowed) {
-      if (policy.reason === 'chickpea_handoff_required') {
-        throw new ChickpeaHandoffRequired(chickpeaHandoffForOperation(actor, proposal.operation));
-      }
       throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
     }
   }
@@ -1436,12 +1421,7 @@ export class WorkspaceManagementService {
       entries.push({ agentId: grant.agentId, status: grant.status });
       grantsByChannel.set(key, entries);
     }
-    const visibleChannels = userAgentScoped
-      ? channels.filter((channel) => grantsByChannel.has(channelKey(
-          channel.workspaceId,
-          channel.channelId,
-        )))
-      : actor.role === 'member'
+    const visibleChannels = userAgentScoped || actor.role === 'member'
       ? channels.filter((channel) => grantsByChannel.has(channelKey(
           channel.workspaceId,
           channel.channelId,
@@ -3048,13 +3028,6 @@ function operationAuthorityScopeTarget(
     requestedAction: operation.kind,
     target: handoffTargetForOperation(operation),
   };
-}
-
-function chickpeaHandoffForOperation(
-  actor: LiveManagementActor,
-  operation: ManagementOperation,
-): ChickpeaManagementHandoff {
-  return chickpeaHandoff(actor, operation.kind, handoffTargetForOperation(operation));
 }
 
 function handoffTargetForOperation(

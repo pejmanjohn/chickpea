@@ -14,7 +14,7 @@ export interface ManagementPolicyFacts {
 }
 
 export type ManagementPolicyDecision =
-  | { allowed: false; reason: 'owner_required' | 'operational_access_required' | 'chickpea_handoff_required' }
+  | { allowed: false; reason: 'owner_required' | 'operational_access_required' }
   | { allowed: true; posture: 'immediate' | 'confirmation'; reason: string };
 
 export function classifyManagementOperation(
