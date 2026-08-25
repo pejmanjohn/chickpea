@@ -68,6 +68,7 @@ const REASON_TOKENS = new Set([
   'missing_token', 'operation_in_progress', 'operation_not_found', 'other',
   'operational_access_required', 'owner_required', 'proposal_binding_mismatch', 'proposal_expired',
   'proposal_not_found', 'proposal_stale', 'revision_conflict', 'setup_expired',
+  'base_agent_capabilities_require_setup',
   'setup_failed', 'setup_not_found', 'setup_session_mismatch', 'setup_unavailable',
   'target_changed', 'undo_unavailable', 'validation_failed',
   'archive_agent_reach', 'restore_agent_reach',

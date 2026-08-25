@@ -485,6 +485,20 @@ export interface ApplyWorkspaceChangesInput {
   operations: ManagementOperation[];
 }
 
+export interface ProposeWorkspaceChangesInput {
+  context: ManagementActorContext;
+  operations: ManagementOperation[];
+}
+
+export interface ProposeWorkspaceChangesResult {
+  proposalId: string;
+  status: 'pending';
+  digest: string;
+  preview: ManagementChangeSetPreview;
+  expiresAt: number;
+  confirmationTool: 'confirm_workspace_change';
+}
+
 export interface ConfirmWorkspaceChangeInput {
   context: ManagementActorContext;
   proposalId: string;
@@ -543,6 +557,40 @@ export interface ManagementProposalRecord {
   updatedAt: number;
 }
 
+export interface ManagementChangeSetPreview {
+  summary: string;
+  changes: Array<{
+    itemId: string;
+    operationKind: ManagementOperation['kind'];
+    target: string;
+    before?: unknown;
+    after?: unknown;
+  }>;
+  missingSetup: Array<{
+    itemId: string;
+    kind: ManagementSetupRequestTarget['kind'];
+    target: string;
+  }>;
+}
+
+/** Durable exact multi-operation proposal. Kept separate from the legacy single-op row. */
+export interface ManagementChangeSetProposalRecord {
+  proposalId: string;
+  organizationId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  originKey: string;
+  operations: ManagementOperation[];
+  digest: string;
+  preview: ManagementChangeSetPreview;
+  targetRevisions: Record<string, number>;
+  status: 'pending' | 'applying' | 'completed' | 'stale' | 'expired';
+  result?: ManagementApplyResult;
+  expiresAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface ManagementUndoRecord {
   operationId: string;
   organizationId: string;
@@ -567,6 +615,7 @@ export class ManagementError extends Error {
       | 'proposal_binding_mismatch'
       | 'proposal_expired'
       | 'proposal_stale'
+      | 'base_agent_capabilities_require_setup'
       | 'undo_unavailable'
       | 'operation_in_progress'
       | 'revision_conflict'
@@ -611,6 +660,20 @@ export interface PutManagementProposalInput {
   summary: string;
   targetRevisions: Record<string, number>;
   requestOperationId?: string;
+  expiresAt: number;
+  at: number;
+}
+
+export interface PutManagementChangeSetProposalInput {
+  proposalId: string;
+  organizationId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  originKey: string;
+  operations: ManagementOperation[];
+  digest: string;
+  preview: ManagementChangeSetPreview;
+  targetRevisions: Record<string, number>;
   expiresAt: number;
   at: number;
 }
@@ -682,6 +745,16 @@ export type ManagementRpcRequest =
       at: number;
     }
   | { kind: 'mark_proposal_stale'; proposalId: string; at: number }
+  | { kind: 'put_change_set_proposal'; input: PutManagementChangeSetProposalInput }
+  | { kind: 'get_change_set_proposal'; proposalId: string }
+  | { kind: 'claim_change_set_proposal'; input: ClaimManagementProposalInput }
+  | {
+      kind: 'complete_change_set_proposal';
+      proposalId: string;
+      result: ManagementApplyResult;
+      at: number;
+    }
+  | { kind: 'mark_change_set_proposal_stale'; proposalId: string; at: number }
   | { kind: 'put_undo'; record: ManagementUndoRecord }
   | { kind: 'get_undo'; operationId: string }
   | { kind: 'consume_undo'; operationId: string; at: number }
@@ -715,6 +788,7 @@ export type ManagementRpcResponse =
   | { kind: 'request_reservation'; request: ManagementRequestRecord; created: boolean }
   | { kind: 'request'; request: ManagementRequestRecord | null }
   | { kind: 'proposal'; proposal: ManagementProposalRecord | null }
+  | { kind: 'change_set_proposal'; proposal: ManagementChangeSetProposalRecord | null }
   | { kind: 'undo'; undo: ManagementUndoRecord | null }
   | { kind: 'setup'; setup: ManagementSetupRecord | null }
   | { kind: 'outbox'; outbox: ManagementReceiptOutboxRecord | null }

@@ -86,7 +86,12 @@ test('management-created schedules bind one active Agent and runs-as member', as
         outputPolicy: 'post',
       }],
     });
-    assert.equal(result.status, 'completed');
+    assert.equal(result.status, 'confirmation_required');
+    const confirmed = await service.confirmWorkspaceChange({
+      context,
+      proposalId: result.outcomes[0]!.proposalId!,
+    });
+    assert.equal(confirmed.status, 'completed');
     const [routine] = await routines.listRoutines('T_MANAGEMENT_ROUTINE', 'C_SUPPORT');
     assert.ok(routine);
     const authority = await config.getAgentScheduleReference(routine.id);

@@ -137,6 +137,105 @@ test('confirmation proposals are actor, origin, expiry, and single-use bound', a
   }
 });
 
+test('change-set proposals coexist with legacy proposals and preserve exact typed operations', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  try {
+    await store.putProposal({
+      proposalId: 'proposal_legacy',
+      organizationId: 'org_1', actorUserId: 'user_1', actorMembershipId: 'member_1',
+      originKey: 'mcp:client_1', operation, summary: 'legacy', targetRevisions: {},
+      expiresAt: NOW + 1_000, at: NOW,
+    });
+    const changeSet = await store.putChangeSetProposal({
+      proposalId: 'changeset_1',
+      organizationId: 'org_1', actorUserId: 'user_1', actorMembershipId: 'member_1',
+      originKey: 'mcp:client_1', operations: [operation], digest: 'd'.repeat(64),
+      preview: {
+        summary: 'Create Test',
+        changes: [{ itemId: 'create', operationKind: 'create_agent', target: 'agent:agent_test' }],
+        missingSetup: [],
+      },
+      targetRevisions: {}, expiresAt: NOW + 1_000, at: NOW,
+    });
+    assert.equal((await store.getProposal('proposal_legacy'))?.operation.kind, 'create_agent');
+    assert.equal(await store.getProposal('changeset_1'), undefined);
+    assert.equal(await store.getChangeSetProposal('proposal_legacy'), undefined);
+    assert.deepEqual(changeSet.operations, [operation]);
+    assert.equal(changeSet.digest, 'd'.repeat(64));
+    assert.equal(changeSet.status, 'pending');
+
+    await assert.rejects(
+      () => store.claimChangeSetProposal({
+        proposalId: 'changeset_1', organizationId: 'org_1', actorUserId: 'user_1',
+        actorMembershipId: 'member_1', originKey: 'slack:T1:C1:1.0', at: NOW + 1,
+      }),
+      (error: unknown) => error instanceof ManagementError &&
+        error.code === 'proposal_binding_mismatch',
+    );
+    assert.equal((await store.getChangeSetProposal('changeset_1'))?.status, 'pending');
+    assert.equal((await store.claimChangeSetProposal({
+      proposalId: 'changeset_1', organizationId: 'org_1', actorUserId: 'user_1',
+      actorMembershipId: 'member_1', originKey: 'mcp:client_1', at: NOW + 1,
+    })).status, 'applying');
+    assert.equal((await store.claimChangeSetProposal({
+      proposalId: 'changeset_1', organizationId: 'org_1', actorUserId: 'user_1',
+      actorMembershipId: 'member_1', originKey: 'mcp:client_1', at: NOW + 2,
+    })).status, 'applying');
+  } finally {
+    store.close();
+  }
+});
+
+test('change-set proposals expire, stale, complete once, and are retained independently', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  const put = (proposalId: string, expiresAt: number, at = NOW) => store.putChangeSetProposal({
+    proposalId,
+    organizationId: 'org_1', actorUserId: 'user_1', actorMembershipId: 'member_1',
+    originKey: 'mcp:client_1', operations: [operation], digest: 'e'.repeat(64),
+    preview: { summary: 'Change set', changes: [], missingSetup: [] },
+    targetRevisions: {}, expiresAt, at,
+  });
+  try {
+    await put('changeset_expired', NOW, NOW - 1);
+    await assert.rejects(
+      () => store.claimChangeSetProposal({
+        proposalId: 'changeset_expired', organizationId: 'org_1', actorUserId: 'user_1',
+        actorMembershipId: 'member_1', originKey: 'mcp:client_1', at: NOW,
+      }),
+      (error: unknown) => error instanceof ManagementError && error.code === 'proposal_expired',
+    );
+    assert.equal((await store.getChangeSetProposal('changeset_expired'))?.status, 'expired');
+
+    await put('changeset_stale', NOW + 1_000);
+    assert.equal((await store.markChangeSetProposalStale('changeset_stale', NOW + 1)).status, 'stale');
+    await assert.rejects(
+      () => store.claimChangeSetProposal({
+        proposalId: 'changeset_stale', organizationId: 'org_1', actorUserId: 'user_1',
+        actorMembershipId: 'member_1', originKey: 'mcp:client_1', at: NOW + 2,
+      }),
+      (error: unknown) => error instanceof ManagementError && error.code === 'proposal_stale',
+    );
+
+    await put('changeset_complete', NOW + 1_000);
+    await store.claimChangeSetProposal({
+      proposalId: 'changeset_complete', organizationId: 'org_1', actorUserId: 'user_1',
+      actorMembershipId: 'member_1', originKey: 'mcp:client_1', at: NOW + 1,
+    });
+    const result: ManagementApplyResult = {
+      operationId: 'changeset_complete', idempotencyKey: 'confirmation:changeset_complete',
+      status: 'completed', outcomes: [], effectiveRevision: 'f'.repeat(32), activation: 'next_turn',
+    };
+    assert.equal((await store.completeChangeSetProposal(
+      'changeset_complete', result, NOW + 2,
+    )).status, 'completed');
+    assert.deepEqual((await store.completeChangeSetProposal(
+      'changeset_complete', result, NOW + 3,
+    )).result, result);
+  } finally {
+    store.close();
+  }
+});
+
 test('management retention removes only terminal rows beyond 30 days', async () => {
   const store = new SqliteManagementStore(':memory:');
   const old = NOW - 31 * 24 * 60 * 60_000;

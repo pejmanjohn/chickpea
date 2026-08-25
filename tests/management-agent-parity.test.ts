@@ -10,7 +10,12 @@ import {
   managementOperationValibotSchema,
   managementOperationZodSchema,
 } from '../src/management/schemas.ts';
-import type { ManagementActorContext, ManagementOperation } from '../src/management/types.ts';
+import type {
+  ManagementActorContext,
+  ManagementAgentPatch,
+  ManagementOperation,
+} from '../src/management/types.ts';
+import { ManagementError } from '../src/management/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 const agentInput = {
@@ -110,6 +115,255 @@ test('management operation schemas expose Agent presence, Channel reach, and lif
   }
 });
 
+test('exact create proposal writes nothing before approval and creates only the active base Agent', async () => {
+  const f = await createManagementAdapterFixture('exact-create-proposal');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'exact-create-client' },
+  };
+  try {
+    const proposed = await f.service.proposeWorkspaceChanges({
+      context,
+      operations: [{
+        itemId: 'create',
+        kind: 'create_agent',
+        agent: {
+          ...agentInput,
+          skills: [{
+            name: 'support-triage',
+            description: 'Triage a newly reported customer support issue.',
+            instructions: 'Inspect the report, classify urgency, and propose the next owner.',
+            enabled: true,
+          }],
+        },
+      }],
+    });
+    assert.equal(proposed.status, 'pending');
+    assert.equal(proposed.confirmationTool, 'confirm_workspace_change');
+    assert.equal(proposed.preview.changes[0]?.operationKind, 'create_agent');
+    await assert.rejects(() => f.config.getAgent('agent_support'));
+    assert.deepEqual(await f.config.listAgentChannelGrants(), []);
+
+    const confirmed = await f.service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(confirmed.status, 'completed');
+    const created = await f.config.getAgent('agent_support');
+    assert.equal(created.lifecycle, 'active');
+    assert.equal(created.enabled, true);
+    assert.equal(created.slackPresence?.desiredState, 'unpublished');
+    assert.equal(created.slackPresence?.health, 'unpublished');
+    assert.deepEqual(created.mcpServers, []);
+    assert.deepEqual(created.apiConnections, []);
+    assert.deepEqual(created.repositories, []);
+    assert.equal(created.skills[0]?.name, 'support-triage');
+    assert.deepEqual(await f.config.listAgentChannelGrants(), []);
+
+    const replay = await f.service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.deepEqual(replay, confirmed);
+    assert.equal((await f.config.listUserAgents()).filter(({ id }) => id === 'agent_support').length, 1);
+  } finally {
+    f.close();
+  }
+});
+
+test('change-set proposal preflights the whole set and stales before the first write', async () => {
+  const f = await createManagementAdapterFixture('whole-set-stale');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'whole-set-client' },
+  };
+  try {
+    for (const [id, name] of [['agent_alpha', 'Alpha'], ['agent_beta', 'Beta']] as const) {
+      await f.config.createAgent({
+        id, name, instructions: `Run ${name}.`, enabled: true, lifecycle: 'active',
+        creatorMembershipId: f.admin.membership.id, configurationGeneration: 1,
+        skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      });
+    }
+    const proposed = await f.service.proposeWorkspaceChanges({
+      context,
+      operations: [
+        {
+          itemId: 'alpha', kind: 'update_agent', agentId: 'agent_alpha',
+          expectedRevision: 1, patch: { description: 'New Alpha.' },
+        },
+        {
+          itemId: 'beta', kind: 'update_agent', agentId: 'agent_beta',
+          expectedRevision: 1, patch: { description: 'New Beta.' },
+        },
+      ],
+    });
+    await f.config.updateAgent('agent_beta', { description: 'Concurrent Beta.' }, 1);
+    await assert.rejects(
+      () => f.service.confirmWorkspaceChange({ context, proposalId: proposed.proposalId }),
+      (error: unknown) => error instanceof Error && /proposed target changed/i.test(error.message),
+    );
+    assert.equal((await f.config.getAgent('agent_alpha')).description, undefined);
+    assert.equal((await f.management.getChangeSetProposal(proposed.proposalId))?.status, 'stale');
+  } finally {
+    f.close();
+  }
+});
+
+test('legacy apply routes creation and compound or skill edits through confirmation', async () => {
+  const f = await createManagementAdapterFixture('legacy-review-floor');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'legacy-review-client' },
+  };
+  try {
+    const create = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'legacy-create',
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
+    });
+    assert.equal(create.status, 'confirmation_required');
+    await assert.rejects(() => f.config.getAgent('agent_support'));
+    await f.service.confirmWorkspaceChange({
+      context,
+      proposalId: create.outcomes[0]!.proposalId!,
+    });
+    const current = await f.config.getAgent('agent_support');
+
+    const patches: Array<[string, ManagementAgentPatch]> = [
+      ['compound', { name: 'Support', description: 'Updated.' }],
+      ['skill', { skills: [{
+        name: 'support-triage', description: 'Triage support.', instructions: 'Triage it.', enabled: true,
+      }] }],
+    ];
+    for (const [idempotencyKey, patch] of patches) {
+      const result = await f.service.applyWorkspaceChanges({
+        context,
+        idempotencyKey,
+        operations: [{
+          itemId: idempotencyKey,
+          kind: 'update_agent',
+          agentId: current.id,
+          expectedRevision: current.revision,
+          patch,
+        }],
+      });
+      assert.equal(result.status, 'confirmation_required');
+    }
+  } finally {
+    f.close();
+  }
+});
+
+test('authoring proposals reject capability-bearing creation and remain origin-bound', async () => {
+  const f = await createManagementAdapterFixture('proposal-safety');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'proposal-owner' },
+  };
+  try {
+    await assert.rejects(
+      () => f.service.proposeWorkspaceChanges({
+        context,
+        operations: [{
+          itemId: 'create', kind: 'create_agent',
+          agent: {
+            ...agentInput,
+            repositories: [{
+              id: 'repo_support', installationId: 1, accountLogin: 'acme',
+              fullName: 'acme/support', enabled: true,
+            }],
+          },
+        }],
+      }),
+      (error: unknown) => error instanceof Error &&
+        'code' in error && error.code === 'base_agent_capabilities_require_setup',
+    );
+    const proposed = await f.service.proposeWorkspaceChanges({
+      context,
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
+    });
+    await assert.rejects(
+      () => f.service.confirmWorkspaceChange({
+        context: { ...context, origin: { kind: 'mcp', clientId: 'different-client' } },
+        proposalId: proposed.proposalId,
+      }),
+      (error: unknown) => error instanceof Error &&
+        'code' in error && error.code === 'proposal_binding_mismatch',
+    );
+    await assert.rejects(() => f.config.getAgent('agent_support'));
+  } finally {
+    f.close();
+  }
+});
+
+test('admitted change sets return a content-free partial receipt when a later item fails', async () => {
+  const f = await createManagementAdapterFixture('proposal-partial');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'partial-client' },
+  };
+  for (const [id, name] of [['agent_first', 'First'], ['agent_second', 'Second']] as const) {
+    await f.config.createAgent({
+      id, name, instructions: `Run ${name}.`, enabled: true, lifecycle: 'active',
+      creatorMembershipId: f.admin.membership.id, configurationGeneration: 1,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+  }
+  let sequence = 0;
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    randomId: () => `partial_${++sequence}`,
+    prepareAgentUpdate: async (agent) => {
+      if (agent.id === 'agent_second') {
+        throw new ManagementError('invalid_request', 'Synthetic downstream denial.');
+      }
+    },
+  });
+  try {
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      operations: [
+        {
+          itemId: 'first', kind: 'update_agent', agentId: 'agent_first',
+          expectedRevision: 1, patch: { description: 'Reviewed first.' },
+        },
+        {
+          itemId: 'second', kind: 'update_agent', agentId: 'agent_second',
+          expectedRevision: 1, patch: { description: 'Reviewed second.' },
+        },
+      ],
+    });
+    const confirmed = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(confirmed.status, 'partial');
+    assert.equal(confirmed.outcomes[0]?.disposition, 'applied');
+    assert.equal(confirmed.outcomes[1]?.disposition, 'failed');
+    assert.equal(confirmed.outcomes[1]?.code, 'invalid_request');
+    assert.equal((await f.config.getAgent('agent_first')).description, 'Reviewed first.');
+    assert.equal((await f.config.getAgent('agent_second')).description, undefined);
+    assert.doesNotMatch(JSON.stringify(
+      await f.management.getChangeSetProposal(proposed.proposalId),
+    ), /Synthetic downstream denial/);
+  } finally {
+    f.close();
+  }
+});
+
 test('a full member creates an owned Agent before confirmed Channel publication', async () => {
   const f = await createManagementAdapterFixture('member-agent-parity');
   const provisioned = await f.identity.provisionSlackMember({
@@ -176,11 +430,27 @@ test('a full member creates an owned Agent before confirmed Channel publication'
           error.message.includes('Agent IDs must start with a lowercase letter or digit'),
       );
     }
+    const createResult = await service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'member-create',
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
+    });
+    assert.equal(createResult.status, 'confirmation_required');
+    await assert.rejects(() => f.config.getAgent('agent_support'));
+    const created = await service.confirmWorkspaceChange({
+      context,
+      proposalId: createResult.outcomes[0]!.proposalId!,
+    });
+    assert.equal((await f.config.getAgent('agent_support')).lifecycle, 'active');
+    assert.equal(
+      new URL(created.outcomes[0]!.handoffUrl!).pathname,
+      '/admin/agents/agent_support',
+    );
+
     const result = await service.applyWorkspaceChanges({
       context,
-      idempotencyKey: 'member-create-publish',
+      idempotencyKey: 'member-publish',
       operations: [
-        { itemId: 'create', kind: 'create_agent', clientRef: 'support', agent: agentInput },
         {
           itemId: 'channel',
           kind: 'put_channel',
@@ -194,11 +464,11 @@ test('a full member creates an owned Agent before confirmed Channel publication'
         },
         {
           itemId: 'grant',
-          dependsOn: ['create', 'channel'],
+          dependsOn: ['channel'],
           kind: 'grant_agent_channel',
           workspaceId: f.owner.binding.slackTeamId,
           channelId: 'CSUPPORT',
-          agentClientRef: 'support',
+          agentId: 'agent_support',
           expectedRevision: 0,
         },
       ],
@@ -206,13 +476,6 @@ test('a full member creates an owned Agent before confirmed Channel publication'
     assert.equal(result.status, 'confirmation_required');
     assert.equal(membershipChecks, 1);
     assert.equal(publishCalls, 0);
-    const draft = await f.config.getAgent('agent_support');
-    assert.equal(draft.lifecycle, 'draft');
-    assert.equal(draft.enabled, true);
-    assert.equal(
-      new URL(result.outcomes.find(({ itemId }) => itemId === 'create')!.handoffUrl!).pathname,
-      '/admin/agents/agent_support',
-    );
     await service.confirmWorkspaceChange({
       context,
       proposalId: result.outcomes.find(({ itemId }) => itemId === 'grant')!.proposalId!,
@@ -453,7 +716,12 @@ test('Agent presentation updates preserve avatar and observed Slack state', asyn
         },
       }],
     });
-    assert.equal(result.status, 'completed');
+    assert.equal(result.status, 'confirmation_required');
+    assert.equal(reconciles, 0);
+    await service.confirmWorkspaceChange({
+      context,
+      proposalId: result.outcomes[0]!.proposalId!,
+    });
     assert.equal(reconciles, 1);
     const updated = await f.config.getAgent('agent_present');
     assert.equal(updated.description, 'After.');

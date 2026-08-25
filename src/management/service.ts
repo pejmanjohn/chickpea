@@ -66,6 +66,8 @@ import {
   type ConfirmWorkspaceChangeInput,
   type LiveManagementActor,
   type ManagementApplyResult,
+  type ManagementChangeSetPreview,
+  type ManagementChangeSetProposalRecord,
   type ChickpeaManagementHandoff,
   type ManagementItemOutcome,
   type ManagementMemorySnapshot,
@@ -85,6 +87,8 @@ import {
   type ManagementWorkspaceSnapshot,
   type PrepareConnectorSetupInput,
   type PrepareConnectorSetupResult,
+  type ProposeWorkspaceChangesInput,
+  type ProposeWorkspaceChangesResult,
   type UndoWorkspaceChangeInput,
 } from './types.ts';
 
@@ -405,6 +409,7 @@ export class WorkspaceManagementService {
   async applyWorkspaceChanges(input: ApplyWorkspaceChangesInput): Promise<ManagementApplyResult> {
     const actor = await this.requireLiveActor(input.context);
     const operations = validateManagementOperations(input.operations);
+    assertBaseAgentCreationContract(operations);
     const storageIdempotencyKey = managementStorageIdempotencyKey(actor, input.idempotencyKey);
     const at = this.now();
     const reservation = await this.stores.management.reserveRequest({
@@ -580,8 +585,87 @@ export class WorkspaceManagementService {
     return emitOperationOutcomes(actor.origin.kind, result);
   }
 
+  async proposeWorkspaceChanges(
+    input: ProposeWorkspaceChangesInput,
+  ): Promise<ProposeWorkspaceChangesResult> {
+    const actor = await this.requireLiveActor(input.context);
+    const operations = validateManagementOperations(input.operations);
+    assertBaseAgentCreationContract(operations);
+    if (operations.some(({ kind }) => kind === 'create_agent') && operations.length !== 1) {
+      throw new ManagementError(
+        'base_agent_capabilities_require_setup',
+        'Create the base Agent in its own proposal. Add reach, capabilities, and schedules afterward.',
+      );
+    }
+
+    const proposalId = `changeset_${this.randomId()}`;
+    const targetRevisions: Record<string, number> = {};
+    const changes: ManagementChangeSetPreview['changes'] = [];
+    const missingSetup: ManagementChangeSetPreview['missingSetup'] = [];
+    for (const operation of operations) {
+      const handoff = this.userAgentOperationHandoff(actor, operation);
+      if (handoff) throw new ChickpeaHandoffRequired(handoff);
+      const policy = classifyManagementOperation(await this.policyFacts(actor, operation));
+      if (!policy.allowed) {
+        if (policy.reason === 'chickpea_handoff_required') {
+          throw new ChickpeaHandoffRequired(chickpeaHandoffForOperation(actor, operation));
+        }
+        throw new ManagementError('forbidden', 'Current workspace authority does not permit this proposal.');
+      }
+      const revisions = await this.targetRevisions(operation);
+      for (const [key, revision] of Object.entries(revisions)) {
+        const existing = targetRevisions[key];
+        if (existing !== undefined && existing !== revision) {
+          throw new ManagementError('revision_conflict', 'The proposal has conflicting target revisions.');
+        }
+        targetRevisions[key] = revision;
+      }
+      const prepared = await this.prepareItem(actor, operation, proposalId);
+      changes.push({
+        itemId: operation.itemId,
+        operationKind: operation.kind,
+        target: managementPreviewTarget(operation),
+        ...(prepared.before === undefined ? {} : { before: prepared.before }),
+        ...(prepared.intendedAfter === undefined ? {} : { after: prepared.intendedAfter }),
+      });
+      if (operation.kind === 'request_setup') {
+        const setup = await this.resolveSetupTarget(operation.target);
+        missingSetup.push({
+          itemId: operation.itemId,
+          kind: operation.target.kind,
+          target: setup.target.targetId,
+        });
+      }
+    }
+    await this.assertRevisionMap(targetRevisions);
+    const preview = boundedChangeSetPreview({
+      summary: `${operations.length} reviewed workspace change${operations.length === 1 ? '' : 's'}`,
+      changes,
+      missingSetup,
+    });
+    const at = this.now();
+    const proposal = await this.stores.management.putChangeSetProposal({
+      proposalId,
+      organizationId: actor.organizationId,
+      actorUserId: actor.userId,
+      actorMembershipId: actor.membershipId,
+      originKey: managementActorOriginKey(actor),
+      operations,
+      digest: managementOperationDigest(operations),
+      preview,
+      targetRevisions,
+      expiresAt: at + PROPOSAL_TTL_MS,
+      at,
+    });
+    return publicChangeSetProposal(proposal);
+  }
+
   async confirmWorkspaceChange(input: ConfirmWorkspaceChangeInput): Promise<ManagementApplyResult> {
     const actor = await this.requireLiveActor(input.context);
+    const changeSet = await this.stores.management.getChangeSetProposal(input.proposalId);
+    if (changeSet) {
+      return this.confirmChangeSetProposal(actor, changeSet);
+    }
     const existing = await this.stores.management.getProposal(input.proposalId);
     if (existing) this.assertProposalBinding(actor, existing);
     if (existing?.status === 'completed' && existing.result) {
@@ -650,6 +734,7 @@ export class WorkspaceManagementService {
         operationKind: proposal.operation.kind,
         disposition: 'applied',
         changed: mutation.changed,
+        ...(mutation.handoffUrl ? { handoffUrl: mutation.handoffUrl } : {}),
       }],
     );
     const resumed = await this.resumeConfirmedRequest(actor, input.context, proposal, result);
@@ -659,6 +744,100 @@ export class WorkspaceManagementService {
       this.now(),
     );
     return emitOperationOutcomes(actor.origin.kind, resumed);
+  }
+
+  private async confirmChangeSetProposal(
+    actor: LiveManagementActor,
+    existing: ManagementChangeSetProposalRecord,
+  ): Promise<ManagementApplyResult> {
+    this.assertProposalBinding(actor, existing);
+    if (existing.status === 'completed' && existing.result) {
+      return emitOperationOutcomes(actor.origin.kind, existing.result);
+    }
+    if (existing.status === 'applying') {
+      throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
+    }
+    if (managementOperationDigest(existing.operations) !== existing.digest) {
+      await this.stores.management.markChangeSetProposalStale(existing.proposalId, this.now());
+      throw new ManagementError('proposal_stale', 'The reviewed change set no longer matches its digest.');
+    }
+    try {
+      for (const operation of existing.operations) {
+        const handoff = this.userAgentOperationHandoff(actor, operation);
+        if (handoff) throw new ChickpeaHandoffRequired(handoff);
+        const policy = classifyManagementOperation(await this.policyFacts(actor, operation));
+        if (!policy.allowed) {
+          throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
+        }
+      }
+      await this.assertRevisionMap(existing.targetRevisions);
+    } catch (error) {
+      await this.stores.management.markChangeSetProposalStale(existing.proposalId, this.now());
+      throw error;
+    }
+
+    const proposal = await this.stores.management.claimChangeSetProposal({
+      proposalId: existing.proposalId,
+      organizationId: actor.organizationId,
+      actorUserId: actor.userId,
+      actorMembershipId: actor.membershipId,
+      originKey: managementActorOriginKey(actor),
+      at: this.now(),
+    });
+    const outcomes: ManagementItemOutcome[] = [];
+    for (const operation of proposal.operations) {
+      const dependencyFailed = (operation.dependsOn ?? []).some((itemId) =>
+        outcomes.find((outcome) => outcome.itemId === itemId)?.disposition !== 'applied');
+      if (dependencyFailed) {
+        outcomes.push({
+          itemId: operation.itemId,
+          operationKind: operation.kind,
+          disposition: 'skipped',
+          code: 'dependency_not_applied',
+        });
+        continue;
+      }
+      try {
+        if (operation.kind === 'request_setup') {
+          const setup = await this.issueSetup(actor, operation);
+          outcomes.push({
+            itemId: operation.itemId,
+            operationKind: operation.kind,
+            disposition: 'setup_required',
+            setupOperationId: setup.record.setupOperationId,
+            setupUrl: setup.url,
+          });
+          continue;
+        }
+        const mutation = await this.executeConfirmed(actor, operation, proposal.proposalId);
+        outcomes.push({
+          itemId: operation.itemId,
+          operationKind: operation.kind,
+          disposition: 'applied',
+          changed: mutation.changed,
+          ...(mutation.handoffUrl ? { handoffUrl: mutation.handoffUrl } : {}),
+        });
+      } catch (error) {
+        if (!isExpectedMutationError(error)) throw error;
+        outcomes.push({
+          itemId: operation.itemId,
+          operationKind: operation.kind,
+          disposition: 'failed',
+          code: mutationErrorCode(error),
+        });
+      }
+    }
+    const result = await this.resultFor(
+      proposal.proposalId,
+      `confirmation:${proposal.proposalId}`,
+      outcomes,
+    );
+    await this.stores.management.completeChangeSetProposal(
+      proposal.proposalId,
+      withoutSetupCapabilities(result),
+      this.now(),
+    );
+    return emitOperationOutcomes(actor.origin.kind, result);
   }
 
   private async resumeConfirmedRequest(
@@ -747,6 +926,16 @@ export class WorkspaceManagementService {
         throw new ManagementError('operation_not_found', 'The management operation was not found.');
       }
       return proposal.result;
+    }
+    const changeSet = await this.stores.management.getChangeSetProposal(operationId);
+    if (changeSet) {
+      if (changeSet.organizationId !== actor.organizationId ||
+          changeSet.actorUserId !== actor.userId ||
+          changeSet.actorMembershipId !== actor.membershipId ||
+          changeSet.originKey !== managementActorOriginKey(actor)) {
+        throw new ManagementError('operation_not_found', 'The management operation was not found.');
+      }
+      return changeSet.result;
     }
     const setup = await this.stores.management.getSetup(operationId, this.now());
     if (!setup || setup.organizationId !== actor.organizationId || setup.actorUserId !== actor.userId ||
@@ -1086,7 +1275,10 @@ export class WorkspaceManagementService {
 
   private assertProposalBinding(
     actor: LiveManagementActor,
-    proposal: ManagementProposalRecord,
+    proposal: Pick<
+      ManagementProposalRecord | ManagementChangeSetProposalRecord,
+      'organizationId' | 'actorUserId' | 'actorMembershipId' | 'originKey'
+    >,
   ): void {
     if (proposal.organizationId !== actor.organizationId ||
         proposal.actorUserId !== actor.userId ||
@@ -1686,6 +1878,7 @@ export class WorkspaceManagementService {
   private async prepareItem(
     actor: LiveManagementActor,
     operation: ManagementOperation,
+    creationNonce?: string,
   ): Promise<ManagementPreparedItem> {
     switch (operation.kind) {
       case 'create_agent': {
@@ -1697,7 +1890,7 @@ export class WorkspaceManagementService {
           ...materializeManagedAgent(
             actor,
             operation.agent,
-            nextDefaultAgentAvatarSeed(existingGeneratedSeeds, randomUUID()),
+            nextDefaultAgentAvatarSeed(existingGeneratedSeeds, creationNonce ?? randomUUID()),
           ),
           revision: 1,
         } satisfies CustomAgentConfig;
@@ -2179,12 +2372,14 @@ export class WorkspaceManagementService {
           [objectRevisionKey(ref), ref.revision ?? 0])),
       };
     }
-    const prepared = await this.prepareItem(actor, operation);
+    const prepared = await this.prepareItem(actor, operation, proposalId);
     return this.executeImmediate(actor, proposalId, operation, prepared);
   }
 
   private async targetRevisions(operation: ManagementOperation): Promise<Record<string, number>> {
-    if (operation.kind === 'create_agent') return {};
+    if (operation.kind === 'create_agent') {
+      return { [`agent:${operation.agent.id}`]: 0 };
+    }
     if (operation.kind === 'update_agent_memory') {
       const memory = await this.stores.memory?.getAgentMemory(operation.agentId);
       return { [`memory:${operation.agentId}`]: memory?.revision ?? 0 };
@@ -2530,15 +2725,14 @@ function materializeManagedAgent(
   const { requestedHandle, ...agent } = input;
   const handle = requestedHandle ?? input.name;
   const normalizedHandle = normalizeAgentHandle(handle);
-  const privateChickpeaDraft = actor.actingAgentId === CHICKPEA_AGENT_ID;
   return {
     ...agent,
     kind: 'user',
-    lifecycle: 'draft',
-    enabled: privateChickpeaDraft ? false : agent.enabled,
-    mcpServers: privateChickpeaDraft ? [] : agent.mcpServers,
-    apiConnections: privateChickpeaDraft ? [] : agent.apiConnections,
-    repositories: privateChickpeaDraft ? [] : agent.repositories,
+    lifecycle: 'active',
+    enabled: true,
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
     creatorMembershipId: actor.membershipId,
     editPolicy: input.editPolicy ?? 'creator_and_admins',
     configurationGeneration: 1,
@@ -2837,6 +3031,82 @@ function proposalSummary(operation: ManagementOperation, reason: string): string
               : operation.target.agentId ?? operation.target.agentClientRef ?? 'agent'
             : operation.agentId;
   return `${reason}:${operation.kind}:${target}`;
+}
+
+function assertBaseAgentCreationContract(operations: readonly ManagementOperation[]): void {
+  for (const operation of operations) {
+    const skills = operation.kind === 'create_agent'
+      ? operation.agent.skills
+      : operation.kind === 'update_agent'
+        ? operation.patch.skills
+        : undefined;
+    if (skills?.some(({ name }) => name === 'agent-authoring')) {
+      throw new ManagementError(
+        'invalid_request',
+        'The agent-authoring skill name is reserved by Chickpea.',
+      );
+    }
+    if (operation.kind !== 'create_agent') continue;
+    if (operation.agent.mcpServers.length || operation.agent.apiConnections.length ||
+        operation.agent.repositories.length) {
+      throw new ManagementError(
+        'base_agent_capabilities_require_setup',
+        'Create the base Agent without connections or repositories, then add approved access separately.',
+      );
+    }
+  }
+}
+
+function managementPreviewTarget(operation: ManagementOperation): string {
+  if (operation.kind === 'create_agent') return `agent:${operation.agent.id}`;
+  if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
+      operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
+      operation.kind === 'update_agent_memory') return `agent:${operation.agentId}`;
+  if (operation.kind === 'put_channel') {
+    return `channel:${channelKey(operation.channel.workspaceId, operation.channel.channelId)}`;
+  }
+  if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
+    const agentId = operation.kind === 'grant_agent_channel'
+      ? operation.agentId ?? operation.agentClientRef ?? 'unresolved'
+      : operation.agentId;
+    return `channel_grant:${grantKey(
+      operation.workspaceId,
+      operation.channelId,
+      agentId,
+    )}`;
+  }
+  if (operation.kind === 'update_member') return `membership:${operation.membershipId}`;
+  if (operation.kind === 'remove_provider_credential') return `provider:${operation.providerId}`;
+  if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+      operation.kind === 'delete_routine') {
+    return `routine:${operation.routineId ?? `${operation.workspaceId}:${operation.channelId}`}`;
+  }
+  return operation.target.kind === 'provider_credential'
+    ? `provider:${operation.target.providerId}`
+    : `agent:${operation.target.agentId ?? operation.target.agentClientRef ?? 'unresolved'}`;
+}
+
+function boundedChangeSetPreview(preview: ManagementChangeSetPreview): ManagementChangeSetPreview {
+  if (Buffer.byteLength(JSON.stringify(preview), 'utf8') > 128 * 1024) {
+    throw new ManagementError(
+      'invalid_request',
+      'The reviewed change diff is too large. Split it into smaller proposals.',
+    );
+  }
+  return preview;
+}
+
+function publicChangeSetProposal(
+  proposal: ManagementChangeSetProposalRecord,
+): ProposeWorkspaceChangesResult {
+  return {
+    proposalId: proposal.proposalId,
+    status: 'pending',
+    digest: proposal.digest,
+    preview: proposal.preview,
+    expiresAt: proposal.expiresAt,
+    confirmationTool: 'confirm_workspace_change',
+  };
 }
 
 function capabilityDigest(capability: string): string {

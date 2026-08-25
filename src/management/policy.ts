@@ -50,6 +50,12 @@ export function classifyManagementOperation(
   if (operation.kind === 'delete_routine') {
     return { allowed: true, posture: 'confirmation', reason: 'irreversible_routine_delete' };
   }
+  if (operation.kind === 'create_agent') {
+    return { allowed: true, posture: 'confirmation', reason: 'agent_creation' };
+  }
+  if (operation.kind === 'save_routine') {
+    return { allowed: true, posture: 'confirmation', reason: 'schedule_change' };
+  }
   if (operation.kind === 'delete_agent') {
     return { allowed: true, posture: 'confirmation', reason: 'agent_deletion' };
   }
@@ -74,6 +80,18 @@ export function classifyManagementOperation(
     }
     if (facts.capabilityScopeExpanded) {
       return { allowed: true, posture: 'confirmation', reason: 'capability_scope_expansion' };
+    }
+    const fields = Object.keys(operation.patch);
+    if (fields.includes('skills')) {
+      return { allowed: true, posture: 'confirmation', reason: 'skill_change' };
+    }
+    if (fields.some((field) => [
+      'apiConnections', 'mcpServers', 'repositories', 'editPolicy', 'slackPresence',
+    ].includes(field))) {
+      return { allowed: true, posture: 'confirmation', reason: 'capability_or_authority_change' };
+    }
+    if (fields.length > 1) {
+      return { allowed: true, posture: 'confirmation', reason: 'compound_agent_change' };
     }
   }
   if (operation.kind === 'put_channel' &&

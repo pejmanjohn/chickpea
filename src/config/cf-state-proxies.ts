@@ -959,6 +959,52 @@ export class CfManagementStore implements ManagementStore {
     return response.proposal;
   }
 
+  async putChangeSetProposal(input: Parameters<ManagementStore['putChangeSetProposal']>[0]) {
+    const response = await this.execute({ kind: 'put_change_set_proposal', input });
+    if (response.kind !== 'change_set_proposal' || !response.proposal) {
+      throw unexpectedManagementResponse();
+    }
+    return response.proposal;
+  }
+
+  async getChangeSetProposal(proposalId: string) {
+    const response = await this.execute({ kind: 'get_change_set_proposal', proposalId });
+    if (response.kind !== 'change_set_proposal') throw unexpectedManagementResponse();
+    return orUndefined(response.proposal);
+  }
+
+  async claimChangeSetProposal(
+    input: Parameters<ManagementStore['claimChangeSetProposal']>[0],
+  ) {
+    const response = await this.execute({ kind: 'claim_change_set_proposal', input });
+    if (response.kind !== 'change_set_proposal' || !response.proposal) {
+      throw unexpectedManagementResponse();
+    }
+    return response.proposal;
+  }
+
+  async completeChangeSetProposal(
+    proposalId: string,
+    result: Parameters<ManagementStore['completeChangeSetProposal']>[1],
+    at: number,
+  ) {
+    const response = await this.execute({
+      kind: 'complete_change_set_proposal', proposalId, result, at,
+    });
+    if (response.kind !== 'change_set_proposal' || !response.proposal) {
+      throw unexpectedManagementResponse();
+    }
+    return response.proposal;
+  }
+
+  async markChangeSetProposalStale(proposalId: string, at: number) {
+    const response = await this.execute({ kind: 'mark_change_set_proposal_stale', proposalId, at });
+    if (response.kind !== 'change_set_proposal' || !response.proposal) {
+      throw unexpectedManagementResponse();
+    }
+    return response.proposal;
+  }
+
   async putUndo(record: Parameters<ManagementStore['putUndo']>[0]) {
     const response = await this.execute({ kind: 'put_undo', record });
     if (response.kind !== 'undo' || !response.undo) throw unexpectedManagementResponse();

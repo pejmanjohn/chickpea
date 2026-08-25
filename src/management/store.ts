@@ -10,6 +10,7 @@ import {
   type CompleteManagementSetupInput,
   type ExchangeManagementSetupInput,
   type ManagementApplyResult,
+  type ManagementChangeSetProposalRecord,
   type ManagementOperation,
   type ManagementProposalRecord,
   type ManagementReceiptOutboxRecord,
@@ -21,6 +22,7 @@ import {
   type ManagementUndoRecord,
   type PutManagementSetupInput,
   type PutManagementProposalInput,
+  type PutManagementChangeSetProposalInput,
   type RevokeManagementSetupInput,
   type ReserveManagementRequestInput,
 } from './types.ts';
@@ -80,6 +82,23 @@ interface ManagementProposalRow {
   target_revisions_json: string;
   request_operation_id: string | null;
   status: ManagementProposalRecord['status'];
+  result_json: string | null;
+  expires_at: number;
+  created_at: number;
+  updated_at: number;
+}
+
+interface ManagementChangeSetProposalRow {
+  proposal_id: string;
+  organization_id: string;
+  actor_user_id: string;
+  actor_membership_id: string;
+  origin_key: string;
+  operations_json: string;
+  digest: string;
+  preview_json: string;
+  target_revisions_json: string;
+  status: ManagementChangeSetProposalRecord['status'];
   result_json: string | null;
   expires_at: number;
   created_at: number;
@@ -159,6 +178,22 @@ export interface ManagementStore {
     at: number,
   ): Promise<ManagementProposalRecord>;
   markProposalStale(proposalId: string, at: number): Promise<ManagementProposalRecord>;
+  putChangeSetProposal(
+    input: PutManagementChangeSetProposalInput,
+  ): Promise<ManagementChangeSetProposalRecord>;
+  getChangeSetProposal(proposalId: string): Promise<ManagementChangeSetProposalRecord | undefined>;
+  claimChangeSetProposal(
+    input: ClaimManagementProposalInput,
+  ): Promise<ManagementChangeSetProposalRecord>;
+  completeChangeSetProposal(
+    proposalId: string,
+    result: ManagementApplyResult,
+    at: number,
+  ): Promise<ManagementChangeSetProposalRecord>;
+  markChangeSetProposalStale(
+    proposalId: string,
+    at: number,
+  ): Promise<ManagementChangeSetProposalRecord>;
   putUndo(record: ManagementUndoRecord): Promise<ManagementUndoRecord>;
   getUndo(operationId: string): Promise<ManagementUndoRecord | undefined>;
   consumeUndo(operationId: string, at: number): Promise<ManagementUndoRecord>;
@@ -238,6 +273,35 @@ export class ManagementStoreLogic {
         return {
           kind: 'proposal',
           proposal: this.markProposalStale(request.proposalId, request.at),
+        };
+      case 'put_change_set_proposal':
+        return {
+          kind: 'change_set_proposal',
+          proposal: this.putChangeSetProposal(request.input),
+        };
+      case 'get_change_set_proposal':
+        return {
+          kind: 'change_set_proposal',
+          proposal: this.getChangeSetProposal(request.proposalId) ?? null,
+        };
+      case 'claim_change_set_proposal':
+        return {
+          kind: 'change_set_proposal',
+          proposal: this.claimChangeSetProposal(request.input),
+        };
+      case 'complete_change_set_proposal':
+        return {
+          kind: 'change_set_proposal',
+          proposal: this.completeChangeSetProposal(
+            request.proposalId,
+            request.result,
+            request.at,
+          ),
+        };
+      case 'mark_change_set_proposal_stale':
+        return {
+          kind: 'change_set_proposal',
+          proposal: this.markChangeSetProposalStale(request.proposalId, request.at),
         };
       case 'put_undo':
         return { kind: 'undo', undo: this.putUndo(request.record) };
@@ -532,6 +596,124 @@ export class ManagementStoreLogic {
       proposalId,
     );
     return this.requireProposal(proposalId);
+  }
+
+  putChangeSetProposal(
+    input: PutManagementChangeSetProposalInput,
+  ): ManagementChangeSetProposalRecord {
+    const existing = this.getChangeSetProposal(input.proposalId);
+    if (existing) return existing;
+    this.db.run(
+      `INSERT INTO management_change_set_proposals (
+        proposal_id, organization_id, actor_user_id, actor_membership_id,
+        origin_key, operations_json, digest, preview_json, target_revisions_json,
+        status, result_json, expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`,
+      input.proposalId,
+      input.organizationId,
+      input.actorUserId,
+      input.actorMembershipId,
+      input.originKey,
+      JSON.stringify(input.operations),
+      input.digest,
+      JSON.stringify(input.preview),
+      JSON.stringify(input.targetRevisions),
+      input.expiresAt,
+      input.at,
+      input.at,
+    );
+    return this.requireChangeSetProposal(input.proposalId);
+  }
+
+  getChangeSetProposal(proposalId: string): ManagementChangeSetProposalRecord | undefined {
+    const row = this.db.get(
+      'SELECT * FROM management_change_set_proposals WHERE proposal_id = ?',
+      proposalId,
+    ) as unknown as ManagementChangeSetProposalRow | undefined;
+    return row ? changeSetProposalFromRow(row) : undefined;
+  }
+
+  claimChangeSetProposal(input: ClaimManagementProposalInput): ManagementChangeSetProposalRecord {
+    const proposal = this.requireChangeSetProposal(input.proposalId);
+    assertProposalClaimBinding(proposal, input);
+    if (proposal.status === 'completed' || proposal.status === 'applying') return proposal;
+    if (proposal.status !== 'pending') {
+      throw new ManagementError('proposal_stale', 'The confirmation is no longer available.');
+    }
+    if (proposal.expiresAt <= input.at) {
+      this.db.run(
+        `UPDATE management_change_set_proposals SET status = 'expired', updated_at = ?
+         WHERE proposal_id = ? AND status = 'pending'`,
+        input.at,
+        input.proposalId,
+      );
+      throw new ManagementError('proposal_expired', 'The confirmation has expired.');
+    }
+    this.db.run(
+      `UPDATE management_change_set_proposals SET status = 'applying', updated_at = ?
+       WHERE proposal_id = ? AND status = 'pending'`,
+      input.at,
+      input.proposalId,
+    );
+    return this.requireChangeSetProposal(input.proposalId);
+  }
+
+  completeChangeSetProposal(
+    proposalId: string,
+    result: ManagementApplyResult,
+    at: number,
+  ): ManagementChangeSetProposalRecord {
+    return this.db.transaction(() => {
+      const proposal = this.requireChangeSetProposal(proposalId);
+      if (proposal.status === 'completed') return proposal;
+      const updated = this.db.run(
+        `UPDATE management_change_set_proposals
+         SET status = 'completed', result_json = ?, updated_at = ?
+         WHERE proposal_id = ? AND status = 'applying'`,
+        JSON.stringify(result),
+        at,
+        proposalId,
+      );
+      if (updated.changes !== 1) {
+        throw new ManagementError('proposal_stale', 'The confirmation is no longer applicable.');
+      }
+      this.audit.appendIdempotent({
+        eventId: `management-change-set:${proposalId}`,
+        domain: 'management',
+        eventType: 'management.change_set.completed',
+        outcome: 'success',
+        actorClass: 'chickpea_user',
+        actorId: proposal.actorUserId,
+        workspaceId: proposal.organizationId,
+        subjectId: proposalId,
+        createdAt: at,
+        metadataJson: JSON.stringify({
+          actingAgentId: actingAgentIdFromOriginKey(proposal.originKey) ?? 'human',
+          authorization: 'live_membership_and_acting_agent',
+          operationCount: String(proposal.operations.length),
+          operationKinds: [...new Set(proposal.operations.map(({ kind }) => kind))].sort().join('/'),
+          proposalId,
+          status: result.status,
+          targetCount: String(proposal.preview.changes.length),
+        }),
+        idempotencyKey: `management-change-set:${proposalId}`,
+      });
+      return this.requireChangeSetProposal(proposalId);
+    });
+  }
+
+  markChangeSetProposalStale(
+    proposalId: string,
+    at: number,
+  ): ManagementChangeSetProposalRecord {
+    this.requireChangeSetProposal(proposalId);
+    this.db.run(
+      `UPDATE management_change_set_proposals SET status = 'stale', updated_at = ?
+       WHERE proposal_id = ? AND status IN ('pending', 'applying')`,
+      at,
+      proposalId,
+    );
+    return this.requireChangeSetProposal(proposalId);
   }
 
   putUndo(record: ManagementUndoRecord): ManagementUndoRecord {
@@ -887,6 +1069,15 @@ export class ManagementStoreLogic {
         boundedLimit,
       );
       remove(
+        `DELETE FROM management_change_set_proposals WHERE proposal_id IN (
+           SELECT proposal_id FROM management_change_set_proposals
+           WHERE status IN ('completed', 'stale', 'expired') AND updated_at < ?
+           ORDER BY updated_at LIMIT ?
+         )`,
+        cutoff,
+        boundedLimit,
+      );
+      remove(
         `DELETE FROM management_proposals WHERE proposal_id IN (
            SELECT proposal_id FROM management_proposals
            WHERE status IN ('completed', 'stale', 'expired') AND updated_at < ?
@@ -975,6 +1166,32 @@ export class ManagementStoreLogic {
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS management_proposals_retention_idx
        ON management_proposals (status, updated_at)`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS management_change_set_proposals (
+        proposal_id TEXT PRIMARY KEY,
+        organization_id TEXT NOT NULL,
+        actor_user_id TEXT NOT NULL,
+        actor_membership_id TEXT NOT NULL,
+        origin_key TEXT NOT NULL,
+        operations_json TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        preview_json TEXT NOT NULL,
+        target_revisions_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'applying', 'completed', 'stale', 'expired')),
+        result_json TEXT,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS management_change_set_proposals_state_idx
+       ON management_change_set_proposals (organization_id, actor_user_id, status, expires_at)`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS management_change_set_proposals_retention_idx
+       ON management_change_set_proposals (status, updated_at)`,
     );
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS management_undo (
@@ -1110,6 +1327,14 @@ export class ManagementStoreLogic {
     return proposal;
   }
 
+  private requireChangeSetProposal(proposalId: string): ManagementChangeSetProposalRecord {
+    const proposal = this.getChangeSetProposal(proposalId);
+    if (!proposal) {
+      throw new ManagementError('proposal_not_found', 'The confirmation was not found.');
+    }
+    return proposal;
+  }
+
   private requireUndo(operationId: string): ManagementUndoRecord {
     const undo = this.getUndo(operationId);
     if (!undo) throw new ManagementError('undo_unavailable', 'No undo action is available.');
@@ -1207,6 +1432,47 @@ function proposalFromRow(row: ManagementProposalRow): ManagementProposalRecord {
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
+}
+
+function changeSetProposalFromRow(
+  row: ManagementChangeSetProposalRow,
+): ManagementChangeSetProposalRecord {
+  return {
+    proposalId: row.proposal_id,
+    organizationId: row.organization_id,
+    actorUserId: row.actor_user_id,
+    actorMembershipId: row.actor_membership_id,
+    originKey: row.origin_key,
+    operations: JSON.parse(row.operations_json) as ManagementChangeSetProposalRecord['operations'],
+    digest: row.digest,
+    preview: JSON.parse(row.preview_json) as ManagementChangeSetProposalRecord['preview'],
+    targetRevisions: JSON.parse(row.target_revisions_json) as Record<string, number>,
+    status: row.status,
+    ...(row.result_json
+      ? { result: JSON.parse(row.result_json) as ManagementApplyResult }
+      : {}),
+    expiresAt: Number(row.expires_at),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function assertProposalClaimBinding(
+  proposal: Pick<
+    ManagementChangeSetProposalRecord,
+    'organizationId' | 'actorUserId' | 'actorMembershipId' | 'originKey'
+  >,
+  input: ClaimManagementProposalInput,
+): void {
+  if (proposal.organizationId !== input.organizationId ||
+      proposal.actorUserId !== input.actorUserId ||
+      proposal.actorMembershipId !== input.actorMembershipId ||
+      proposal.originKey !== input.originKey) {
+    throw new ManagementError(
+      'proposal_binding_mismatch',
+      'The confirmation does not match its initiating user and origin.',
+    );
+  }
 }
 
 function undoFromRow(row: ManagementUndoRow): ManagementUndoRecord {
