@@ -94,6 +94,9 @@ interface ManagementChangeSetProposalRow {
   actor_user_id: string;
   actor_membership_id: string;
   origin_key: string;
+  idempotency_key: string | null;
+  guide_version: string | null;
+  authoring_reason: ManagementChangeSetProposalRecord['authoringReason'] | null;
   operations_json: string;
   digest: string;
   preview_json: string;
@@ -523,7 +526,10 @@ export class ManagementStoreLogic {
         'The confirmation does not match its initiating user and origin.',
       );
     }
-    if (proposal.status === 'completed' || proposal.status === 'applying') return proposal;
+    if (proposal.status === 'completed') return proposal;
+    if (proposal.status === 'applying') {
+      throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
+    }
     if (proposal.status !== 'pending') {
       throw new ManagementError('proposal_stale', 'The confirmation is no longer available.');
     }
@@ -603,17 +609,42 @@ export class ManagementStoreLogic {
   ): ManagementChangeSetProposalRecord {
     const existing = this.getChangeSetProposal(input.proposalId);
     if (existing) return existing;
+    const replayRow = this.db.get(
+      `SELECT * FROM management_change_set_proposals
+       WHERE organization_id = ? AND actor_user_id = ? AND actor_membership_id = ?
+         AND origin_key = ? AND idempotency_key = ?`,
+      input.organizationId,
+      input.actorUserId,
+      input.actorMembershipId,
+      input.originKey,
+      input.idempotencyKey,
+    ) as unknown as ManagementChangeSetProposalRow | undefined;
+    if (replayRow) {
+      const replay = changeSetProposalFromRow(replayRow);
+      if (replay.digest !== input.digest || replay.guideVersion !== input.guideVersion ||
+          replay.authoringReason !== input.authoringReason) {
+        throw new ManagementError(
+          'idempotency_conflict',
+          'The proposal idempotency key was reused for different content.',
+        );
+      }
+      return replay;
+    }
     this.db.run(
       `INSERT INTO management_change_set_proposals (
         proposal_id, organization_id, actor_user_id, actor_membership_id,
-        origin_key, operations_json, digest, preview_json, target_revisions_json,
+        origin_key, idempotency_key, guide_version, authoring_reason,
+        operations_json, digest, preview_json, target_revisions_json,
         status, result_json, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`,
       input.proposalId,
       input.organizationId,
       input.actorUserId,
       input.actorMembershipId,
       input.originKey,
+      input.idempotencyKey,
+      input.guideVersion,
+      input.authoringReason,
       JSON.stringify(input.operations),
       input.digest,
       JSON.stringify(input.preview),
@@ -636,7 +667,10 @@ export class ManagementStoreLogic {
   claimChangeSetProposal(input: ClaimManagementProposalInput): ManagementChangeSetProposalRecord {
     const proposal = this.requireChangeSetProposal(input.proposalId);
     assertProposalClaimBinding(proposal, input);
-    if (proposal.status === 'completed' || proposal.status === 'applying') return proposal;
+    if (proposal.status === 'completed') return proposal;
+    if (proposal.status === 'applying') {
+      throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
+    }
     if (proposal.status !== 'pending') {
       throw new ManagementError('proposal_stale', 'The confirmation is no longer available.');
     }
@@ -692,6 +726,8 @@ export class ManagementStoreLogic {
           authorization: 'live_membership_and_acting_agent',
           operationCount: String(proposal.operations.length),
           operationKinds: [...new Set(proposal.operations.map(({ kind }) => kind))].sort().join('/'),
+          guideVersion: proposal.guideVersion,
+          authoringReason: proposal.authoringReason,
           proposalId,
           status: result.status,
           targetCount: String(proposal.preview.changes.length),
@@ -709,7 +745,7 @@ export class ManagementStoreLogic {
     this.requireChangeSetProposal(proposalId);
     this.db.run(
       `UPDATE management_change_set_proposals SET status = 'stale', updated_at = ?
-       WHERE proposal_id = ? AND status IN ('pending', 'applying')`,
+       WHERE proposal_id = ? AND status = 'pending'`,
       at,
       proposalId,
     );
@@ -1174,6 +1210,9 @@ export class ManagementStoreLogic {
         actor_user_id TEXT NOT NULL,
         actor_membership_id TEXT NOT NULL,
         origin_key TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        guide_version TEXT NOT NULL,
+        authoring_reason TEXT NOT NULL,
         operations_json TEXT NOT NULL,
         digest TEXT NOT NULL,
         preview_json TEXT NOT NULL,
@@ -1185,6 +1224,7 @@ export class ManagementStoreLogic {
         updated_at INTEGER NOT NULL
       )`,
     );
+    this.ensureChangeSetProposalColumns();
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS management_change_set_proposals_state_idx
        ON management_change_set_proposals (organization_id, actor_user_id, status, expires_at)`,
@@ -1192,6 +1232,12 @@ export class ManagementStoreLogic {
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS management_change_set_proposals_retention_idx
        ON management_change_set_proposals (status, updated_at)`,
+    );
+    this.db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS management_change_set_proposals_idempotency_idx
+       ON management_change_set_proposals (
+         organization_id, actor_user_id, actor_membership_id, origin_key, idempotency_key
+       ) WHERE idempotency_key IS NOT NULL`,
     );
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS management_undo (
@@ -1298,6 +1344,24 @@ export class ManagementStoreLogic {
     ));
     if (!columns.has('request_operation_id')) {
       this.db.exec('ALTER TABLE management_proposals ADD COLUMN request_operation_id TEXT');
+    }
+  }
+
+  private ensureChangeSetProposalColumns(): void {
+    const columns = new Set((this.db.all(
+      'PRAGMA table_info(management_change_set_proposals)',
+    ) as Array<{ name: string }>).map(({ name }) => name));
+    const additions: Array<[string, string]> = [
+      ['idempotency_key', 'TEXT'],
+      ['guide_version', 'TEXT'],
+      ['authoring_reason', 'TEXT'],
+    ];
+    for (const [name, definition] of additions) {
+      if (!columns.has(name)) {
+        this.db.exec(
+          `ALTER TABLE management_change_set_proposals ADD COLUMN ${name} ${definition}`,
+        );
+      }
     }
   }
 
@@ -1443,6 +1507,9 @@ function changeSetProposalFromRow(
     actorUserId: row.actor_user_id,
     actorMembershipId: row.actor_membership_id,
     originKey: row.origin_key,
+    idempotencyKey: row.idempotency_key ?? `legacy:${row.proposal_id}`,
+    guideVersion: row.guide_version ?? 'unknown',
+    authoringReason: row.authoring_reason ?? 'agent_edit',
     operations: JSON.parse(row.operations_json) as ManagementChangeSetProposalRecord['operations'],
     digest: row.digest,
     preview: JSON.parse(row.preview_json) as ManagementChangeSetProposalRecord['preview'],

@@ -93,7 +93,9 @@ async function main(rawBaseUrl) {
   const guide = JSON.parse(guideResult?.contents?.[0]?.text ?? '{}');
   requireEqual(guide.version, AGENT_AUTHORING_GUIDE_VERSION, 'Agent-authoring guide version');
   if (typeof guide.digest !== 'string' || !/^[a-f0-9]{64}$/.test(guide.digest) ||
-      typeof guide.guide !== 'string' || guide.guide.length < 1) {
+      typeof guide.guide !== 'string' || guide.guide.length < 1 ||
+      typeof guide.files?.['skill-creation.md'] !== 'string' ||
+      guide.files['skill-creation.md'].length < 1) {
     throw new Error('Agent-authoring guide content or digest is invalid.');
   }
   const inspected = await mcpCall(base, token, 'tools/call', {
@@ -106,6 +108,9 @@ async function main(rawBaseUrl) {
   const proposed = await mcpCall(base, token, 'tools/call', {
     name: 'propose_workspace_changes',
     arguments: {
+      idempotencyKey: `canary-${Date.now().toString(36)}`,
+      guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+      authoringReason: 'agent_creation',
       operations: [{
         itemId: 'canary',
         kind: 'create_agent',

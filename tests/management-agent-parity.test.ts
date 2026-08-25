@@ -23,6 +23,7 @@ import type {
   ManagementOperation,
 } from '../src/management/types.ts';
 import { ManagementError } from '../src/management/types.ts';
+import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 const agentInput = {
@@ -153,7 +154,10 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
       identity: f.identity,
       service: f.service,
       name: 'propose_workspace_changes',
-      args: { operations: [operation] },
+      args: {
+        ...authoringProposalMetadata('surface-parity'),
+        operations: [operation],
+      },
     });
     assert.equal(proposed.ok, true);
     const result = (proposed as { ok: true; result: {
@@ -211,6 +215,7 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
       service: f.service,
       name: 'propose_workspace_changes',
       args: {
+        ...authoringProposalMetadata('surface-parity-secret'),
         operations: [{
           ...operation,
           expectedRevision: (await f.config.getAgent(agent.id)).revision,
@@ -236,6 +241,7 @@ test('exact create proposal writes nothing before approval and creates only the 
   try {
     const proposed = await f.service.proposeWorkspaceChanges({
       context,
+      ...authoringProposalMetadata('exact-create', 'agent_creation'),
       operations: [{
         itemId: 'create',
         kind: 'create_agent',
@@ -301,6 +307,7 @@ test('change-set proposal preflights the whole set and stales before the first w
     }
     const proposed = await f.service.proposeWorkspaceChanges({
       context,
+      ...authoringProposalMetadata('whole-set'),
       operations: [
         {
           itemId: 'alpha', kind: 'update_agent', agentId: 'agent_alpha',
@@ -315,7 +322,7 @@ test('change-set proposal preflights the whole set and stales before the first w
     await f.config.updateAgent('agent_beta', { description: 'Concurrent Beta.' }, 1);
     await assert.rejects(
       () => f.service.confirmWorkspaceChange({ context, proposalId: proposed.proposalId }),
-      (error: unknown) => error instanceof Error && /proposed target changed/i.test(error.message),
+      (error: unknown) => error instanceof ManagementError && error.code === 'revision_conflict',
     );
     assert.equal((await f.config.getAgent('agent_alpha')).description, undefined);
     assert.equal((await f.management.getChangeSetProposal(proposed.proposalId))?.status, 'stale');
@@ -383,6 +390,7 @@ test('authoring proposals reject capability-bearing creation and remain origin-b
     await assert.rejects(
       () => f.service.proposeWorkspaceChanges({
         context,
+        ...authoringProposalMetadata('capability-bearing-create', 'agent_creation'),
         operations: [{
           itemId: 'create', kind: 'create_agent',
           agent: {
@@ -399,6 +407,7 @@ test('authoring proposals reject capability-bearing creation and remain origin-b
     );
     const proposed = await f.service.proposeWorkspaceChanges({
       context,
+      ...authoringProposalMetadata('proposal-safety-create', 'agent_creation'),
       operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
     });
     await assert.rejects(
@@ -445,6 +454,7 @@ test('admitted change sets return a content-free partial receipt when a later it
   try {
     const proposed = await service.proposeWorkspaceChanges({
       context,
+      ...authoringProposalMetadata('partial'),
       operations: [
         {
           itemId: 'first', kind: 'update_agent', agentId: 'agent_first',
@@ -469,6 +479,109 @@ test('admitted change sets return a content-free partial receipt when a later it
     assert.doesNotMatch(JSON.stringify(
       await f.management.getChangeSetProposal(proposed.proposalId),
     ), /Synthetic downstream denial/);
+  } finally {
+    f.close();
+  }
+});
+
+test('concurrent confirmations acquire one change-set execution claim', async () => {
+  const f = await createManagementAdapterFixture('proposal-concurrent-claim');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'concurrent-claim-client' },
+  };
+  let removalCalls = 0;
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    providerCredentialSource: async () => 'stored',
+    providerCredentialRevision: async () => 1,
+    removeProviderCredential: async () => {
+      removalCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return 'missing';
+    },
+  });
+  try {
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('concurrent-provider-removal'),
+      operations: [{
+        itemId: 'remove-provider',
+        kind: 'remove_provider_credential',
+        providerId: 'openai',
+      }],
+    });
+    const confirmations = await Promise.allSettled([
+      service.confirmWorkspaceChange({ context, proposalId: proposed.proposalId }),
+      service.confirmWorkspaceChange({ context, proposalId: proposed.proposalId }),
+    ]);
+    assert.equal(removalCalls, 1);
+    assert.equal(confirmations.filter(({ status }) => status === 'fulfilled').length, 1);
+    assert.equal(confirmations.filter(({ status }) => status === 'rejected').length, 1);
+    assert.equal(
+      (await f.management.getChangeSetProposal(proposed.proposalId))?.status,
+      'completed',
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test('confirmation preflights deterministic failures before an earlier item writes', async () => {
+  const f = await createManagementAdapterFixture('proposal-admission-preflight');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'admission-preflight-client' },
+  };
+  try {
+    const first = await f.config.createAgent({
+      id: 'agent_first', name: 'First', instructions: 'Run first.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: f.admin.membership.id,
+      configurationGeneration: 1, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const second = await f.config.createAgent({
+      id: 'agent_second', name: 'Second', instructions: 'Run second.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: f.admin.membership.id,
+      configurationGeneration: 1, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const proposed = await f.service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('admission-preflight'),
+      operations: [
+        {
+          itemId: 'first', kind: 'update_agent', agentId: first.id,
+          expectedRevision: first.revision, patch: { description: 'Must remain unchanged.' },
+        },
+        {
+          itemId: 'second', kind: 'delete_agent', agentId: second.id,
+          expectedRevision: second.revision,
+        },
+      ],
+    });
+    await f.config.putChannel({
+      workspaceId: f.admin.binding.slackTeamId,
+      channelId: 'C_PREFLIGHT',
+      lifecycle: 'active',
+    }, 0);
+    await f.config.putAgentChannelGrant({
+      workspaceId: f.admin.binding.slackTeamId,
+      channelId: 'C_PREFLIGHT',
+      agentId: second.id,
+      status: 'active',
+      createdByMembershipId: f.admin.membership.id,
+    }, 0);
+    await assert.rejects(
+      () => f.service.confirmWorkspaceChange({ context, proposalId: proposed.proposalId }),
+      (error: unknown) => error instanceof ManagementError && error.code === 'invalid_request',
+    );
+    assert.equal((await f.config.getAgent(first.id)).description, undefined);
+    assert.equal((await f.management.getChangeSetProposal(proposed.proposalId))?.status, 'stale');
   } finally {
     f.close();
   }

@@ -183,7 +183,7 @@ export function useWorkspaceManagementSlackTools(
         signal,
         resolvePlatformEnv,
         'propose_workspace_changes',
-        { operations: data.operations as ManagementOperation[] },
+        { ...data, operations: data.operations as ManagementOperation[] },
       ));
     },
   });

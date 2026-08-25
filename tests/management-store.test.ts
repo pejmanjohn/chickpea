@@ -3,7 +3,11 @@ import { test } from 'node:test';
 
 import { AuditStoreLogic } from '../src/audit/store.ts';
 import { ManagementStoreLogic, SqliteManagementStore } from '../src/management/store.ts';
-import { ManagementError, type ManagementApplyResult } from '../src/management/types.ts';
+import {
+  ManagementError,
+  type ManagementApplyResult,
+  type PutManagementChangeSetProposalInput,
+} from '../src/management/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 
 const NOW = 1_800_000_000_000;
@@ -21,6 +25,67 @@ const operation = {
     repositories: [],
   },
 };
+
+test('change-set proposal schema migration preserves legacy rows and adds provenance columns', () => {
+  const db = openStateDb(':memory:');
+  try {
+    db.exec(`CREATE TABLE management_change_set_proposals (
+      proposal_id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      actor_user_id TEXT NOT NULL,
+      actor_membership_id TEXT NOT NULL,
+      origin_key TEXT NOT NULL,
+      operations_json TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      preview_json TEXT NOT NULL,
+      target_revisions_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      result_json TEXT,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`);
+    db.run(
+      `INSERT INTO management_change_set_proposals (
+        proposal_id, organization_id, actor_user_id, actor_membership_id, origin_key,
+        operations_json, digest, preview_json, target_revisions_json, status,
+        result_json, expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`,
+      'changeset_legacy', 'org_1', 'user_1', 'member_1', 'mcp:client_1',
+      JSON.stringify([operation]), 'f'.repeat(64),
+      JSON.stringify({ summary: 'Legacy change set', changes: [], missingSetup: [] }),
+      '{}', NOW + 1_000, NOW, NOW,
+    );
+
+    const store = new ManagementStoreLogic(db);
+    const columns = new Set((db.all(
+      'PRAGMA table_info(management_change_set_proposals)',
+    ) as Array<{ name: string }>).map(({ name }) => name));
+    assert.ok(columns.has('idempotency_key'));
+    assert.ok(columns.has('guide_version'));
+    assert.ok(columns.has('authoring_reason'));
+    assert.deepEqual(store.getChangeSetProposal('changeset_legacy'), {
+      proposalId: 'changeset_legacy',
+      organizationId: 'org_1',
+      actorUserId: 'user_1',
+      actorMembershipId: 'member_1',
+      originKey: 'mcp:client_1',
+      idempotencyKey: 'legacy:changeset_legacy',
+      guideVersion: 'unknown',
+      authoringReason: 'agent_edit',
+      operations: [operation],
+      digest: 'f'.repeat(64),
+      preview: { summary: 'Legacy change set', changes: [], missingSetup: [] },
+      targetRevisions: {},
+      status: 'pending',
+      expiresAt: NOW + 1_000,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+  } finally {
+    db.close();
+  }
+});
 
 test('management request reservations are retry-stable and digest-bound', async () => {
   const store = new SqliteManagementStore(':memory:');
@@ -146,23 +211,43 @@ test('change-set proposals coexist with legacy proposals and preserve exact type
       originKey: 'mcp:client_1', operation, summary: 'legacy', targetRevisions: {},
       expiresAt: NOW + 1_000, at: NOW,
     });
-    const changeSet = await store.putChangeSetProposal({
+    const changeSetInput: PutManagementChangeSetProposalInput = {
       proposalId: 'changeset_1',
       organizationId: 'org_1', actorUserId: 'user_1', actorMembershipId: 'member_1',
-      originKey: 'mcp:client_1', operations: [operation], digest: 'd'.repeat(64),
+      originKey: 'mcp:client_1', idempotencyKey: 'change-set-1', guideVersion: '1.0.0',
+      authoringReason: 'agent_creation' as const, operations: [operation], digest: 'd'.repeat(64),
       preview: {
         summary: 'Create Test',
         changes: [{ itemId: 'create', operationKind: 'create_agent', target: 'agent:agent_test' }],
         missingSetup: [],
       },
       targetRevisions: {}, expiresAt: NOW + 1_000, at: NOW,
-    });
+    };
+    const changeSet = await store.putChangeSetProposal(changeSetInput);
     assert.equal((await store.getProposal('proposal_legacy'))?.operation.kind, 'create_agent');
     assert.equal(await store.getProposal('changeset_1'), undefined);
     assert.equal(await store.getChangeSetProposal('proposal_legacy'), undefined);
     assert.deepEqual(changeSet.operations, [operation]);
     assert.equal(changeSet.digest, 'd'.repeat(64));
+    assert.equal(changeSet.idempotencyKey, 'change-set-1');
+    assert.equal(changeSet.guideVersion, '1.0.0');
+    assert.equal(changeSet.authoringReason, 'agent_creation');
     assert.equal(changeSet.status, 'pending');
+    const replay = await store.putChangeSetProposal({
+      ...changeSetInput,
+      proposalId: 'changeset_retry',
+      at: NOW + 1,
+    });
+    assert.equal(replay.proposalId, changeSet.proposalId);
+    await assert.rejects(
+      () => store.putChangeSetProposal({
+        ...changeSetInput,
+        proposalId: 'changeset_conflict',
+        digest: 'c'.repeat(64),
+        at: NOW + 1,
+      }),
+      (error: unknown) => error instanceof ManagementError && error.code === 'idempotency_conflict',
+    );
 
     await assert.rejects(
       () => store.claimChangeSetProposal({
@@ -177,10 +262,14 @@ test('change-set proposals coexist with legacy proposals and preserve exact type
       proposalId: 'changeset_1', organizationId: 'org_1', actorUserId: 'user_1',
       actorMembershipId: 'member_1', originKey: 'mcp:client_1', at: NOW + 1,
     })).status, 'applying');
-    assert.equal((await store.claimChangeSetProposal({
-      proposalId: 'changeset_1', organizationId: 'org_1', actorUserId: 'user_1',
-      actorMembershipId: 'member_1', originKey: 'mcp:client_1', at: NOW + 2,
-    })).status, 'applying');
+    await assert.rejects(
+      () => store.claimChangeSetProposal({
+        proposalId: 'changeset_1', organizationId: 'org_1', actorUserId: 'user_1',
+        actorMembershipId: 'member_1', originKey: 'mcp:client_1', at: NOW + 2,
+      }),
+      (error: unknown) => error instanceof ManagementError &&
+        error.code === 'operation_in_progress',
+    );
   } finally {
     store.close();
   }
@@ -191,7 +280,8 @@ test('change-set proposals expire, stale, complete once, and are retained indepe
   const put = (proposalId: string, expiresAt: number, at = NOW) => store.putChangeSetProposal({
     proposalId,
     organizationId: 'org_1', actorUserId: 'user_1', actorMembershipId: 'member_1',
-    originKey: 'mcp:client_1', operations: [operation], digest: 'e'.repeat(64),
+    originKey: 'mcp:client_1', idempotencyKey: proposalId, guideVersion: '1.0.0',
+    authoringReason: 'agent_creation', operations: [operation], digest: 'e'.repeat(64),
     preview: { summary: 'Change set', changes: [], missingSetup: [] },
     targetRevisions: {}, expiresAt, at,
   });

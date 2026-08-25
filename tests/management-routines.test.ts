@@ -7,6 +7,7 @@ import { WorkspaceManagementService } from '../src/management/service.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
+import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
@@ -194,7 +195,10 @@ test('a routed Agent manages and inspects only its own routines', async () => {
       identity: f.identity,
       service: f.service,
       name: 'propose_workspace_changes',
-      args: { operations: [routineOperation(support.id, 'support')] },
+      args: {
+        ...authoringProposalMetadata('support-routine', 'onboarding'),
+        operations: [routineOperation(support.id, 'support')],
+      },
     });
     assert.equal(proposal.ok, true);
     assert.deepEqual(await f.routines.listRoutines(workspaceId, 'C_SELF_ROUTINE'), []);
@@ -214,6 +218,7 @@ test('a routed Agent manages and inspects only its own routines', async () => {
     };
     const salesProposal = await f.service.proposeWorkspaceChanges({
       context: adminContext,
+      ...authoringProposalMetadata('sales-routine', 'onboarding'),
       operations: [routineOperation(sales.id, 'sales')],
     });
     await f.service.confirmWorkspaceChange({

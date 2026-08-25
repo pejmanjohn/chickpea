@@ -16,6 +16,7 @@ import {
   AGENT_AUTHORING_GUIDE,
   AGENT_AUTHORING_GUIDE_DIGEST,
   AGENT_AUTHORING_GUIDE_VERSION,
+  AGENT_SKILL_CREATION_GUIDE,
 } from '../src/management/agent-authoring/index.ts';
 import { MANAGEMENT_OPERATION_KINDS } from '../src/management/schemas.ts';
 import { WORKSPACE_MANAGEMENT_TOOL_NAMES } from '../src/management/tool-adapter.ts';
@@ -93,11 +94,15 @@ test('supported coding clients share public PKCE registration and stateless MCP 
           ?.inputSchema?.required?.includes('agentId'),
         `${client.name} must require an explicit Agent for connector setup`,
       );
-      assert.ok(
-        listedTools.find(({ name }) => name === 'propose_workspace_changes')
-          ?.inputSchema?.required?.includes('operations'),
-        `${client.name} must require exact proposal operations`,
-      );
+      const proposalRequired = listedTools.find(
+        ({ name }) => name === 'propose_workspace_changes',
+      )?.inputSchema?.required;
+      for (const field of ['operations', 'idempotencyKey', 'guideVersion', 'authoringReason']) {
+        assert.ok(
+          proposalRequired?.includes(field),
+          `${client.name} must require proposal ${field}`,
+        );
+      }
       assert.ok(
         listedTools.find(({ name }) => name === 'prepare_connector_setup')
           ?.inputSchema?.required?.includes('ownerKind'),
@@ -159,16 +164,25 @@ test('supported coding clients share public PKCE registration and stateless MCP 
       });
       const guide = JSON.parse((guideResult.result as {
         contents: Array<{ text: string }>;
-      }).contents[0]!.text) as { version: string; digest: string; guide: string };
+      }).contents[0]!.text) as {
+        version: string;
+        digest: string;
+        guide: string;
+        files: Record<string, string>;
+      };
       assert.deepEqual(guide, {
         version: AGENT_AUTHORING_GUIDE_VERSION,
         digest: AGENT_AUTHORING_GUIDE_DIGEST,
         guide: AGENT_AUTHORING_GUIDE,
+        files: { 'skill-creation.md': AGENT_SKILL_CREATION_GUIDE },
       });
 
       const proposed = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
         name: 'propose_workspace_changes',
         arguments: {
+          idempotencyKey: `client-${client.name}`,
+          guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+          authoringReason: 'agent_edit',
           operations: [{
             itemId: 'description',
             kind: 'update_agent',

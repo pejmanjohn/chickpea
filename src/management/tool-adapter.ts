@@ -10,6 +10,7 @@ import {
 } from './types.ts';
 import type { PreviewWorkspaceRecipeInput } from './recipes.ts';
 import { emitManagementMetric } from './telemetry.ts';
+import type { AgentAuthoringReason } from './agent-authoring/index.ts';
 
 export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'inspect_workspace',
@@ -62,7 +63,12 @@ export type WorkspaceManagementToolArguments = {
   inspect_routines: ManagementRoutineInspectionInput;
   export_workspace_recipe: { agentIds?: string[] | undefined };
   preview_workspace_recipe: PreviewWorkspaceRecipeInput;
-  propose_workspace_changes: { operations: ManagementOperation[] };
+  propose_workspace_changes: {
+    idempotencyKey: string;
+    guideVersion: string;
+    authoringReason: AgentAuthoringReason;
+    operations: ManagementOperation[];
+  };
   apply_workspace_changes: { idempotencyKey: string; operations: ManagementOperation[] };
   confirm_workspace_change: { proposalId: string };
   undo_workspace_change: { operationId: string; idempotencyKey: string };
@@ -194,7 +200,7 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
       }
       case 'propose_workspace_changes': {
         const value = args as WorkspaceManagementToolArguments['propose_workspace_changes'];
-        return service.proposeWorkspaceChanges({ context, operations: value.operations });
+        return service.proposeWorkspaceChanges({ context, ...value });
       }
       case 'apply_workspace_changes': {
         const value = args as WorkspaceManagementToolArguments['apply_workspace_changes'];

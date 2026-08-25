@@ -10,6 +10,7 @@ import {
 } from '../src/management/slack-tools.ts';
 import { safeSlackLoginDestination } from '../src/auth/setup-handoff.ts';
 import type { ManagementActorContext, ManagementOperation } from '../src/management/types.ts';
+import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 test('connector setup handoff resolves the current Slack Agent and opens its connector form', async () => {
@@ -435,6 +436,7 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
       service: f.service,
       name: 'propose_workspace_changes',
       args: {
+        ...authoringProposalMetadata('support-full-self-edit'),
         operations: [{
           itemId: 'skill',
           kind: 'update_agent',
@@ -805,6 +807,7 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
       service: f.service,
       name: 'propose_workspace_changes',
       args: {
+        ...authoringProposalMetadata('cross-agent-proposal'),
         operations: [{
           itemId: 'other-proposal',
           kind: 'update_agent',

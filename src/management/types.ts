@@ -15,6 +15,7 @@ import type {
   RoutineOutputPolicy,
   RoutineState,
 } from '../routines/types.ts';
+import type { AgentAuthoringReason } from './agent-authoring/index.ts';
 
 export type ManagementOrigin =
   | {
@@ -498,6 +499,9 @@ export interface ApplyWorkspaceChangesInput {
 
 export interface ProposeWorkspaceChangesInput {
   context: ManagementActorContext;
+  idempotencyKey: string;
+  guideVersion: string;
+  authoringReason: AgentAuthoringReason;
   operations: ManagementOperation[];
 }
 
@@ -596,6 +600,9 @@ export interface ManagementChangeSetProposalRecord {
   actorUserId: string;
   actorMembershipId: string;
   originKey: string;
+  idempotencyKey: string;
+  guideVersion: string;
+  authoringReason: AgentAuthoringReason;
   operations: ManagementOperation[];
   digest: string;
   preview: ManagementChangeSetPreview;
@@ -686,6 +693,9 @@ export interface PutManagementChangeSetProposalInput {
   actorUserId: string;
   actorMembershipId: string;
   originKey: string;
+  idempotencyKey: string;
+  guideVersion: string;
+  authoringReason: AgentAuthoringReason;
   operations: ManagementOperation[];
   digest: string;
   preview: ManagementChangeSetPreview;

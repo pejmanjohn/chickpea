@@ -300,8 +300,8 @@ function validateManagementMetadata(
       ? ['actingAgentId', 'authorization', 'operationKind', 'proposalId', 'status', 'target']
       : eventType === 'management.change_set.completed'
         ? [
-            'actingAgentId', 'authorization', 'operationCount', 'operationKinds',
-            'proposalId', 'status', 'targetCount',
+            'actingAgentId', 'authoringReason', 'authorization', 'guideVersion',
+            'operationCount', 'operationKinds', 'proposalId', 'status', 'targetCount',
           ]
       : eventType === 'management.setup.completed'
         ? ['actingAgentId', 'action', 'authorization', 'scopeCount', 'setupOperationId', 'target']

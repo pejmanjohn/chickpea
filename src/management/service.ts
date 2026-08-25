@@ -605,6 +605,12 @@ export class WorkspaceManagementService {
     input: ProposeWorkspaceChangesInput,
   ): Promise<ProposeWorkspaceChangesResult> {
     const actor = await this.requireLiveActor(input.context);
+    if (input.guideVersion !== AGENT_AUTHORING_GUIDE_VERSION) {
+      throw new ManagementError(
+        'invalid_request',
+        `Read ${AGENT_AUTHORING_GUIDE_URI} and use guide version ${AGENT_AUTHORING_GUIDE_VERSION}.`,
+      );
+    }
     const operations = validateManagementOperations(input.operations);
     assertBaseAgentCreationContract(operations);
     if (operations.some(({ kind }) => kind === 'create_agent') && operations.length !== 1) {
@@ -640,7 +646,7 @@ export class WorkspaceManagementService {
         }
         targetRevisions[key] = revision;
       }
-      const prepared = await this.prepareItem(actor, operation, proposalId);
+      const prepared = await this.preflightProposalItem(actor, operation, proposalId);
       changes.push({
         itemId: operation.itemId,
         operationKind: operation.kind,
@@ -670,6 +676,9 @@ export class WorkspaceManagementService {
       actorUserId: actor.userId,
       actorMembershipId: actor.membershipId,
       originKey: managementActorOriginKey(actor),
+      idempotencyKey: input.idempotencyKey,
+      guideVersion: input.guideVersion,
+      authoringReason: input.authoringReason,
       operations,
       digest: managementOperationDigest(operations),
       preview,
@@ -726,6 +735,9 @@ export class WorkspaceManagementService {
       originKey: managementActorOriginKey(actor),
       at: this.now(),
     });
+    if (proposal.status === 'completed' && proposal.result) {
+      return emitOperationOutcomes(actor.origin.kind, proposal.result);
+    }
     try {
       await this.assertTargetRevisions(proposal);
     } catch (error) {
@@ -799,6 +811,7 @@ export class WorkspaceManagementService {
         if (!policy.allowed) {
           throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
         }
+        await this.preflightProposalItem(actor, operation, existing.proposalId);
       }
       await this.assertRevisionMap(existing.targetRevisions);
     } catch (error) {
@@ -814,6 +827,9 @@ export class WorkspaceManagementService {
       originKey: managementActorOriginKey(actor),
       at: this.now(),
     });
+    if (proposal.status === 'completed' && proposal.result) {
+      return emitOperationOutcomes(actor.origin.kind, proposal.result);
+    }
     const outcomes: ManagementItemOutcome[] = [];
     for (const operation of proposal.operations) {
       const dependencyFailed = (operation.dependsOn ?? []).some((itemId) =>
@@ -2154,6 +2170,35 @@ export class WorkspaceManagementService {
       default:
         return { itemId: operation.itemId, operation };
     }
+  }
+
+  private async preflightProposalItem(
+    actor: LiveManagementActor,
+    operation: ManagementOperation,
+    proposalId: string,
+  ): Promise<ManagementPreparedItem> {
+    const prepared = await this.prepareItem(actor, operation, proposalId);
+    if (operation.kind === 'delete_agent') {
+      const agent = await this.stores.config.getAgent(operation.agentId);
+      const references = await this.stores.config.getAgentReferences(operation.agentId);
+      if (references.channelGrants.length > 0 || agent.slackPresence?.userGroupId) {
+        throw new ManagementError(
+          'invalid_request',
+          'Archive the Agent and remove its Slack reach before deleting it.',
+        );
+      }
+    }
+    if ((operation.kind === 'put_channel' && operation.channel.lifecycle === 'active') ||
+        operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
+      const workspaceId = operation.kind === 'put_channel'
+        ? operation.channel.workspaceId
+        : operation.workspaceId;
+      const channelId = operation.kind === 'put_channel'
+        ? operation.channel.channelId
+        : operation.channelId;
+      await this.stores.assertAgentChannelMembership?.({ actor, workspaceId, channelId });
+    }
+    return prepared;
   }
 
   private async executeImmediate(

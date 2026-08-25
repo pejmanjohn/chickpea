@@ -26,6 +26,7 @@ import {
   AGENT_AUTHORING_GUIDE_DIGEST,
   AGENT_AUTHORING_GUIDE_URI,
   AGENT_AUTHORING_GUIDE_VERSION,
+  AGENT_SKILL_CREATION_GUIDE,
 } from './agent-authoring/index.ts';
 import { WorkspaceManagementService } from './service.ts';
 import { createLiveWorkspaceManagementService } from './live-service.ts';
@@ -171,7 +172,7 @@ export function createWorkspaceManagementMcpServer(
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'propose_workspace_changes',
-    { operations: args.operations as ManagementOperation[] },
+    { ...args, operations: args.operations as ManagementOperation[] },
   )));
 
   server.registerTool('apply_workspace_changes', {
@@ -282,6 +283,7 @@ export function createWorkspaceManagementMcpServer(
           version: AGENT_AUTHORING_GUIDE_VERSION,
           digest: AGENT_AUTHORING_GUIDE_DIGEST,
           guide: AGENT_AUTHORING_GUIDE,
+          files: { 'skill-creation.md': AGENT_SKILL_CREATION_GUIDE },
         }),
       }],
     }),
