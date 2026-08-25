@@ -1,11 +1,9 @@
 import { DurableObject, type DurableObjectState } from 'cloudflare:workers';
 
 import { getSettingsStore, type PlatformEnv } from '../../config/state-backend.ts';
-import {
-  processGatewayAgentSelection,
-  processGatewaySlackEnvelope,
-} from '../../channels/slack.ts';
+import { tagStateStub } from '../../config/state-rpc.ts';
 import { GATEWAY_BINDING_SETTING } from './client.ts';
+import { GATEWAY_DURABLE_ADMISSION_CAPABILITY } from './protocol.ts';
 import { createGatewayDeploymentClient } from './runtime.ts';
 import { GatewaySessionRunner } from './session-runner.ts';
 
@@ -21,9 +19,16 @@ export interface SlackGatewaySessionRpc {
  */
 export class SlackGatewaySession extends DurableObject implements SlackGatewaySessionRpc {
   private runner: GatewaySessionRunner | undefined;
+  private readonly state: DurableObjectState & {
+    waitUntil(promise: Promise<unknown>): void;
+  };
 
   constructor(ctx: DurableObjectState, rawEnv: unknown) {
     super(ctx, rawEnv);
+    // The Cloudflare runtime exposes waitUntil on DurableObjectState; the
+    // module-scoped cloudflare:workers declaration currently omits it while
+    // @cloudflare/workers-types includes the runtime method.
+    this.state = ctx as typeof this.state;
   }
 
   async wake(): Promise<void> {
@@ -34,9 +39,12 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
     const client = createGatewayDeploymentClient(platformEnv);
     const runner = new GatewaySessionRunner({
       client,
-      onEvent: (delivery) => delivery.kind === 'event.deliver'
-        ? processGatewaySlackEnvelope(delivery.envelope, platformEnv, client)
-        : processGatewayAgentSelection(delivery, platformEnv, client),
+      capabilities: [GATEWAY_DURABLE_ADMISSION_CAPABILITY],
+      waitUntil: (promise) => this.state.waitUntil(promise),
+      onEvent: async (delivery) => {
+        const result = await tagStateStub(platformEnv).admitGatewayDelivery(delivery);
+        return result.ok ? result.value : 'rejected';
+      },
     });
     this.runner = runner;
     try {

@@ -260,6 +260,7 @@ test('session runner handles and acknowledges deliveries in socket order', async
   let releaseFirst!: () => void;
   const firstMayFinish = new Promise<void>((resolve) => { releaseFirst = resolve; });
   const handled: string[] = [];
+  const lifetimes: Promise<unknown>[] = [];
   let runner: GatewaySessionRunner | undefined;
   try {
     await client.beginClaim();
@@ -273,6 +274,7 @@ test('session runner handles and acknowledges deliveries in socket order', async
       },
       createSocket: () => socket,
       now: () => NOW,
+      waitUntil: (promise) => lifetimes.push(promise),
     });
     assert.equal(await runner.start(), true);
     socket.open();
@@ -303,6 +305,8 @@ test('session runner handles and acknowledges deliveries in socket order', async
       'delivery_first',
       'delivery_second',
     ]);
+    await Promise.all(lifetimes);
+    assert.equal(lifetimes.length >= 3, true);
   } finally {
     runner?.stop();
     settings.close();

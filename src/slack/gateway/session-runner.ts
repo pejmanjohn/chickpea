@@ -1,5 +1,6 @@
 import type { GatewayDeploymentClient, GatewayLogicalSession } from './client.ts';
 import type { GatewayInboundDelivery } from './protocol.ts';
+import type { GatewaySessionCapability } from './protocol.ts';
 import {
   GATEWAY_HEARTBEAT_TIMEOUT_MS,
   gatewaySessionHealthy,
@@ -22,6 +23,8 @@ export interface GatewaySessionRunnerOptions {
   now?: () => number;
   setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
+  capabilities?: readonly GatewaySessionCapability[];
+  waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 /** Keeps exactly one renewable, credential-free delivery socket per process. */
@@ -69,6 +72,7 @@ export class GatewaySessionRunner {
       },
       this.options.onEvent,
       connecting,
+      this.options.capabilities,
     );
     if (!this.current(generation)) return false;
     const connectedSocket = (this.options.createSocket ?? defaultSocket)(binding.sessionUrl);
@@ -99,6 +103,7 @@ export class GatewaySessionRunner {
         if (rotateAt) this.schedule(() => connectedSocket.close(1000, 'rotate'), rotateAt - this.now());
         this.scheduleHeartbeat(connectedSocket, session);
       }).catch(() => this.reconnect(connectedSocket, 'invalid_frame'));
+      this.options.waitUntil?.(messageChain);
     });
     connectedSocket.addEventListener('close', () => this.reconnect(connectedSocket, 'closed'));
     connectedSocket.addEventListener('error', () => this.reconnect(connectedSocket, 'network'));

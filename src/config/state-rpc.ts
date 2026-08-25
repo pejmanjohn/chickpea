@@ -59,6 +59,11 @@ import type {
 } from '../slack/turn-job-types.ts';
 import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
 import type {
+  GatewayInboxAdmissionOutcome,
+  GatewayInboxDrainCounts,
+} from '../slack/gateway/inbox.ts';
+import type { GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
+import type {
   SlackAppendReservation,
   SlackPresentationTransitionInput,
   SlackPresentationTransitionResult,
@@ -131,7 +136,7 @@ export interface SlackTurnRecoveryItem {
   enqueuedAt: number;
 }
 
-export type RuntimeDrainCategories = SlackRuntimeDrainCounts & {
+export type RuntimeDrainCategories = SlackRuntimeDrainCounts & GatewayInboxDrainCounts & {
   executingRuns: number;
   admittingOrRunningRoutineOccurrences: number;
 };
@@ -480,6 +485,13 @@ export interface TagStateRpc {
    * invocation's fate. Idempotent by `job.id` (a duplicate enqueue is ignored).
    */
   enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>>;
+  /**
+   * Transactionally accept a normalized shared-gateway delivery and arm the
+   * state alarm before returning a receipt to the authenticated session.
+   */
+  admitGatewayDelivery(
+    delivery: GatewayInboundDelivery,
+  ): Promise<StateRpcResult<GatewayInboxAdmissionOutcome>>;
   /** Clone a completed authorization-link turn into one idempotent resume turn. */
   resumeTurnAfterOAuth(
     originalTaskId: string,

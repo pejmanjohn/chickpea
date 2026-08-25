@@ -275,6 +275,9 @@ export async function readRuntimeDrainStatus(env?: PlatformEnv): Promise<Runtime
   ]);
   const categories = {
     ...turnJobs,
+    pendingGatewayInboxDeliveries: 0,
+    inFlightGatewayInboxDeliveries: 0,
+    recoveryRequiredGatewayInboxDeliveries: 0,
     executingRuns,
     admittingOrRunningRoutineOccurrences,
   };

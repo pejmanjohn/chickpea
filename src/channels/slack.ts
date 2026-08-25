@@ -40,6 +40,7 @@ import {
 import {
   tagStateStub,
   type SlackInteractionProgress,
+  type StateRpcResult,
   type TurnJob,
 } from '../config/state-rpc.ts';
 import {
@@ -739,6 +740,8 @@ interface SlackEventExecution {
   transport: SlackTransport;
   client: ReturnType<typeof createSlackWebClient>;
   botUserId: string;
+  stores?: AppStores;
+  enqueueTurn?: (job: TurnJob) => Promise<StateRpcResult<null>>;
 }
 
 class SlackDurableEnqueueError extends Error {
@@ -755,8 +758,12 @@ export async function processGatewaySlackEnvelope(
   envelope: SlackInboundEnvelope,
   platformEnv?: PlatformEnv,
   providedClient?: GatewayDeploymentClient,
+  providedExecution?: {
+    stores: AppStores;
+    enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>>;
+  },
 ): Promise<'accepted' | 'rejected'> {
-  const stores = resolveStores(platformEnv);
+  const stores = providedExecution?.stores ?? resolveStores(platformEnv);
   const installation = await stores.config.getWorkspaceInstallation(envelope.workspaceId);
   if (
     !installation || installation.transportMode !== 'gateway' ||
@@ -819,6 +826,8 @@ export async function processGatewaySlackEnvelope(
     transport,
     client,
     botUserId: installation.botUserId,
+    stores,
+    ...(providedExecution ? { enqueueTurn: providedExecution.enqueueTurn } : {}),
   });
   return 'accepted';
 }
@@ -827,8 +836,9 @@ export async function processGatewayAgentSelection(
   selection: { workspaceId: string; userId: string; agentId: string },
   platformEnv?: PlatformEnv,
   providedClient?: GatewayDeploymentClient,
+  providedStores?: AppStores,
 ): Promise<'accepted' | 'rejected'> {
-  const stores = resolveStores(platformEnv);
+  const stores = providedStores ?? resolveStores(platformEnv);
   const installation = await stores.config.getWorkspaceInstallation(selection.workspaceId);
   if (
     !installation || installation.transportMode !== 'gateway' ||
@@ -853,7 +863,7 @@ async function processSlackEvent(
   platformEnv: PlatformEnv | undefined,
   execution?: SlackEventExecution,
 ): Promise<void> {
-  const stores = resolveStores(platformEnv);
+  const stores = execution?.stores ?? resolveStores(platformEnv);
   const behavior = await resolveSlackBehaviorSettings(platformEnv, stores.settings);
   const installation = await stores.config.getWorkspaceInstallation(payload.team_id);
   if (!installation || installation.health === 'revoked') return;
@@ -1433,7 +1443,9 @@ async function processSlackEvent(
       turn,
       assignment,
     };
-    const enqueued = await tagStateStub(platformEnv).enqueueTurn(job);
+    const enqueued = execution?.enqueueTurn
+      ? await execution.enqueueTurn(job)
+      : await tagStateStub(platformEnv).enqueueTurn(job);
     if (!enqueued.ok) {
       // Enqueue failed before anything ran: free the claims so a Slack
       // redelivery can re-drive, and stay silent.

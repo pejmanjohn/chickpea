@@ -20,6 +20,7 @@ import {
 } from '../src/slack/gateway/identity.ts';
 import {
   CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+  GATEWAY_DURABLE_ADMISSION_CAPABILITY,
   canonicalGatewayPayload,
   type GatewayClientFrame,
   type GatewayPublicKey,
@@ -717,9 +718,15 @@ test('logical sessions authenticate before delivery, ack once, and fence tenant 
         if (delivery.deliveryId === 'delivery_failure') throw new Error('store unavailable');
         return deliveries.length === 1 ? 'accepted' : 'duplicate';
       },
+      undefined,
+      [GATEWAY_DURABLE_ADMISSION_CAPABILITY],
     );
     await session.hello();
     assert.equal(sent[0]?.kind, 'session.hello');
+    assert.deepEqual(
+      sent[0]?.kind === 'session.hello' ? sent[0].capabilities : undefined,
+      [GATEWAY_DURABLE_ADMISSION_CAPABILITY],
+    );
     await session.handle(JSON.stringify({
       protocolVersion: 1,
       kind: 'session.ready',

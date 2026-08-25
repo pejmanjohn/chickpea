@@ -29,6 +29,7 @@ import {
   type GatewayOperationRequest,
   type GatewayServerFrame,
   type GatewaySessionHello,
+  type GatewaySessionCapability,
   type GatewaySlackOperation,
   type GatewayWorkspaceBinding,
 } from './protocol.ts';
@@ -392,6 +393,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     send: (frame: GatewayClientFrame) => void,
     onEvent: (delivery: GatewayInboundDelivery) => Promise<'accepted' | 'duplicate' | 'rejected'>,
     checkpoint?: GatewaySessionCheckpoint,
+    capabilities: readonly GatewaySessionCapability[] = [],
   ): Promise<GatewayLogicalSession> {
     const [identity, binding] = await Promise.all([this.identity(), this.loadBinding()]);
     if (!binding) throw new Error('Gateway workspace binding is unavailable.');
@@ -402,6 +404,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       onEvent,
       now: this.now,
       checkpoint: checkpoint ?? { health: 'connecting', attempt: 0 },
+      capabilities,
     });
   }
 
@@ -581,6 +584,7 @@ export class GatewayLogicalSession {
     onEvent: (delivery: GatewayInboundDelivery) => Promise<'accepted' | 'duplicate' | 'rejected'>;
     now: () => number;
     checkpoint: GatewaySessionCheckpoint;
+    capabilities?: readonly GatewaySessionCapability[];
   }) {
     this.checkpoint = { ...input.checkpoint };
   }
@@ -594,6 +598,9 @@ export class GatewayLogicalSession {
       issuedAt: this.input.now(),
       nonce: requestId('nonce'),
       bindingId: this.input.binding.bindingId,
+      ...(this.input.capabilities?.length
+        ? { capabilities: [...this.input.capabilities] }
+        : {}),
     } satisfies Omit<GatewaySessionHello, 'signature'>;
     this.input.send(await signGatewayRequest(this.input.identity, unsigned));
   }
