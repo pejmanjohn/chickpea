@@ -347,6 +347,9 @@ export interface TagStateRpc {
     input: AgentScheduleReferenceInput,
     expectedRevision?: number,
   ): Promise<StateRpcResult<AgentScheduleReference>>;
+  configRetireAgentScheduleReference(
+    scheduleId: string,
+  ): Promise<StateRpcResult<boolean>>;
   configListChannels(): Promise<StateRpcResult<ChannelConfig[]>>;
   configGetChannel(
     workspaceId: string,

@@ -21,6 +21,14 @@ import {
 } from './page.ts';
 import { onboardingAssetBytes } from './onboarding-assets.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
+import {
+  RoutineContentAccessResolver,
+  routineContentReadable,
+} from './routine-content-access.ts';
+import {
+  readIdempotencyKey as readAdminIdempotencyKey,
+  safeMutationRequest as safeAdminMutationRequest,
+} from './api-support.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
@@ -299,11 +307,17 @@ import type { RuntimeDrainStatus } from '../config/state-rpc.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type {
   AgentCreateInput,
+  AgentScheduleState,
   WorkspaceModelDefault,
 } from '../config/types.ts';
 import { MemoryStateError, type MemoryStateStore } from '../memory/types.ts';
-import type { RoutineStore } from '../routines/types.ts';
+import {
+  RoutineStateError,
+  type RoutineDefinition,
+  type RoutineStore,
+} from '../routines/types.ts';
 import { RoutineService } from '../routines/service.ts';
+import { hashRoutineValue } from '../routines/ids.ts';
 import {
   reassignRoutineAgentAuthority,
   RoutineAuthorityError,
@@ -930,6 +944,12 @@ const connectionAccountAttachSchema = v.object({
 const scheduleAuthorityReassignSchema = v.strictObject({
   runsAsMembershipId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9_-]{1,200}$/)),
   expectedAuthorityRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+});
+
+const agentScheduleControlSchema = v.strictObject({
+  action: v.picklist(['pause', 'resume', 'delete']),
+  expectedVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  acknowledgeIrreversible: v.optional(v.boolean()),
 });
 
 const repositoryGrantSchema = v.pipe(
@@ -1697,6 +1717,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const user = membership ? await identity(c).getUser(membership.userId) : undefined;
     if (!membership || membership.status !== 'active' || !user) throw new AuthorizationError();
     return { principal, slackUserId: user.slackUserId, slackTeamId: user.slackTeamId };
+  };
+  const routineAccessByContext = new WeakMap<object, RoutineContentAccessResolver>();
+  const routineContentAccess = (c: Context): RoutineContentAccessResolver => {
+    const current = routineAccessByContext.get(c);
+    if (current) return current;
+    const created = new RoutineContentAccessResolver({
+      work: work(c),
+      actor: async () => {
+        const actor = await agentActor(c);
+        return { slackTeamId: actor.slackTeamId, slackUserId: actor.slackUserId };
+      },
+      transport: (workspaceId) => agentSlackTransport(c, workspaceId),
+    });
+    routineAccessByContext.set(c, created);
+    return created;
   };
   const connectionAccounts = (
     c: Context,
@@ -4831,7 +4866,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ? { management: managementService }
       : {}),
   }));
-  app.route('/admin/api', createRoutineAdminApi({ store: routines, usage, work }));
+  app.route('/admin/api', createRoutineAdminApi({
+    store: routines,
+    usage,
+    work,
+    contentAccess: routineContentAccess,
+  }));
   app.route('/admin/api', createUsageAdminApi({ store: usage, work }));
   app.route('/admin/api', createWorkAdminApi({ store: work, usage }));
 
@@ -6752,56 +6792,148 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!principal) throw new AuthorizationError('principal_required');
       const agent = await store(c).getAgent(c.req.param('id'));
       requireAgentEdit(principal, agent);
-      const references = await store(c).listAgentScheduleReferences(agent.id);
-      const memberships = new Map(
-        (await identity(c).listMemberships()).map((membership) => [membership.id, membership]),
-      );
-      const userRows = await Promise.all([...memberships.values()].map((membership) =>
-        identity(c).getUser(membership.userId)
-      ));
-      const users = new Map(userRows.flatMap((user) => user ? [[user.id, user] as const] : []));
+      const config = store(c);
+      const references = (await config.listAgentScheduleReferences(agent.id))
+        .filter((reference) => reference.state !== 'archived');
       return c.json({
-        viewerMembershipId: principal.membershipId,
-        members: [...memberships.values()].filter((membership) => membership.status === 'active')
-          .map((membership) => ({
-            membershipId: membership.id,
-            role: membership.role,
-            displayName: users.get(membership.userId)?.displayName ?? null,
-            contactEmail: users.get(membership.userId)?.contactEmail ?? null,
-          })),
-        schedules: await Promise.all(references.map(async (reference) => {
+        schedules: (await Promise.all(references.map(async (reference) => {
           const routine = await routines(c).getRoutine(reference.scheduleId);
-          const membership = memberships.get(reference.runsAsMembershipId);
-          const user = membership ? users.get(membership.userId) : undefined;
+          if (!routine || routine.deletedAt !== null ||
+              routine.workspaceId !== reference.workspaceId ||
+              routine.channelId !== reference.channelId) return null;
+          const access = await routineContentAccess(c).resolve(routine);
+          const readable = routineContentReadable(access);
+          const channel = readable
+            ? await config.getChannel(routine.workspaceId, routine.channelId)
+            : undefined;
+          const status = agentScheduleStatus(reference.state, routine.state);
           return {
-            reference,
-            routine: routine
+            id: routine.id,
+            name: readable ? routine.name : null,
+            contentAccess: access,
+            status,
+            version: routine.version,
+            cadence: readable
               ? {
-                  id: routine.id,
-                  name: routine.name,
-                  description: routine.description,
-                  state: routine.state,
-                  version: routine.version,
-                  nextRunAt: routine.nextRunAt,
-                  lastFinishedAt: routine.lastFinishedAt,
-                  pausedReason: routine.pausedReason,
+                  triggerKind: routine.triggerKind,
+                  scheduleInput: routine.scheduleInput,
+                  timezone: routine.timezone,
                 }
               : null,
-            runsAs: membership
-              ? {
-                  membershipId: membership.id,
-                  role: membership.role,
-                  status: membership.status,
-                  displayName: user?.displayName ?? null,
-                  contactEmail: user?.contactEmail ?? null,
-                }
-              : null,
+            channelLabel: readable ? channel?.label ?? null : null,
+            nextRunAt: routine.nextRunAt,
+            lastFinishedAt: routine.lastFinishedAt,
+            actions: {
+              pause: readable && reference.state === 'active' && routine.state === 'active',
+              resume: readable && reference.state === 'active' && routine.state === 'paused',
+              delete: readable,
+            },
           };
-        })),
+        }))).filter((schedule) => schedule !== null),
       });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/agents/:id/schedules/:scheduleId/control', async (c) => {
+    if (!safeAdminMutationRequest(c)) return c.json({ error: 'cross_origin_denied' }, 403);
+    const idempotencyKey = readAdminIdempotencyKey(c);
+    if (!idempotencyKey) return c.json({ error: 'idempotency_key_required' }, 400);
+    const parsed = v.safeParse(agentScheduleControlSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      const config = store(c);
+      const agent = await config.getAgent(c.req.param('id'));
+      requireAgentEdit(principal, agent);
+      const reference = await config.getAgentScheduleReference(c.req.param('scheduleId'));
+      if (!reference || reference.agentId !== agent.id) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      const state = routines(c);
+      const routine = await state.getRoutine(reference.scheduleId);
+      if (!routine || routine.workspaceId !== reference.workspaceId ||
+          routine.channelId !== reference.channelId) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      const access = await routineContentAccess(c).resolve(routine);
+      if (!routineContentReadable(access)) return c.json({ error: 'forbidden' }, 403);
+
+      const action = parsed.output.action;
+      const operationKey = `admin:agent:${agent.id}:schedule:${action}:${idempotencyKey}`;
+      if (action === 'delete') {
+        if (parsed.output.acknowledgeIrreversible !== true) return invalidRequest(c);
+        const token = createHash('sha256').update(`agent-schedule-delete\0${operationKey}`).digest('hex');
+        const draft = {
+          action: 'delete' as const,
+          routineId: routine.id,
+          expectedVersion: parsed.output.expectedVersion,
+        };
+        const service = new RoutineService(state, {
+          confirmationId: () => `rconfirm_admin_${createHash('sha256').update(operationKey).digest('hex').slice(0, 32)}`,
+          token: () => token,
+        });
+        const previewHash = hashRoutineValue(JSON.stringify(draft));
+        if (routine.deletedAt === null) {
+          const existingConfirmation = await state.getConfirmation(hashRoutineValue(token));
+          if (!existingConfirmation) {
+            await service.createConfirmation({
+              action: 'delete',
+              actorId: principal.membershipId,
+              actorClass: 'operator',
+              workspaceId: routine.workspaceId,
+              channelId: routine.channelId,
+              routineId: routine.id,
+              expectedVersion: parsed.output.expectedVersion,
+            });
+          }
+        }
+        const deleted = await service.confirm({
+          token,
+          actorId: principal.membershipId,
+          workspaceId: routine.workspaceId,
+          channelId: routine.channelId,
+          previewHash,
+          idempotencyKey: operationKey,
+        });
+        return c.json({
+          schedule: { id: deleted.id, status: 'deleted', version: deleted.version },
+          irreversible: true,
+        });
+      }
+      if (routine.deletedAt !== null || reference.state === 'archived') {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      const updated = await new RoutineService(state).control({
+        routineId: routine.id,
+        expectedVersion: parsed.output.expectedVersion,
+        action,
+        actorId: principal.membershipId,
+        actorClass: 'operator',
+        reasonCode: 'admin_control',
+        idempotencyKey: operationKey,
+      });
+      return c.json({
+        schedule: {
+          id: updated.id,
+          status: agentScheduleStatus(reference.state, updated.state),
+          version: updated.version,
+        },
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof RoutineStateError) {
+        if (error.code === 'routine_not_found') return c.json({ error: 'not_found' }, 404);
+        if (error.code === 'routine_version_conflict') {
+          return c.json({ error: error.code, ...error.details }, 409);
+        }
+        return c.json({ error: error.code }, 400);
+      }
       return internalError(c, error);
     }
   });
@@ -9888,6 +10020,16 @@ function internalError(
 
 function agentReferenceCount(references: AgentReferenceSummary): number {
   return references.channelGrants.length;
+}
+
+function agentScheduleStatus(
+  authorityState: AgentScheduleState,
+  routineState: RoutineDefinition['state'],
+): 'active' | 'paused' | 'needs_attention' | 'completed' {
+  if (authorityState === 'needs_attention') return 'needs_attention';
+  if (routineState === 'paused' || authorityState === 'paused') return 'paused';
+  if (routineState === 'active') return 'active';
+  return 'completed';
 }
 
 function agentStillReferenced(c: Context, error: AgentStillReferencedError): Response {

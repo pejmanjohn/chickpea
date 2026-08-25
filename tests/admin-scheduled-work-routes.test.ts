@@ -10,9 +10,12 @@ import { createAdminRoutes } from '../src/admin/routes.ts';
 import { createRoutineAdminApi } from '../src/admin/routines-api.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import type { AuthPrincipal } from '../src/auth/types.ts';
+import type { IdentityStore } from '../src/identity/types.ts';
 import { RoutineService } from '../src/routines/service.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineDefinitionContent } from '../src/routines/types.ts';
+import type { SlackTransport } from '../src/slack/transport/types.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import type { SourceVisibility } from '../src/work/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
@@ -349,7 +352,7 @@ test('Scheduled Work structurally redacts private and unlinked definition conten
     const list = JSON.parse(listText) as Record<string, any>;
     assert.equal(list.routines[0].name, null);
     assert.equal(list.routines[0].description, null);
-    assert.equal(list.routines[0].contentAccess, 'private');
+    assert.equal(list.routines[0].contentAccess, 'authorization_unknown');
 
     const detailText = await (await api.request(
       `/audit/scheduled_work/routines/${routine.id}`,
@@ -372,6 +375,373 @@ test('Scheduled Work structurally redacts private and unlinked definition conten
   } finally {
     routines.close();
     work.close();
+  }
+});
+
+test('private schedule projections are readable only to proven Channel members across global and Agent APIs', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-routine-private-member-')), 'state.db');
+  const routines = new SqliteRoutineStore(path);
+  const work = new SqliteWorkStore(path);
+  const config = new SqliteConfigStore(path, { agents: [] });
+  const settings = new SqliteSettingsStore(path);
+  const canary = 'PRIVATE_MEMBER_ROUTINE_CANARY';
+  const identity = {
+    getMembership: async (membershipId: string) => ({
+      id: membershipId,
+      organizationId: 'org_oss',
+      userId: membershipId === 'membership_member' ? 'user_member' : 'user_nonmember',
+      role: 'owner',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+    }),
+    getUser: async (userId: string) => ({
+      id: userId,
+      slackTeamId: 'T_TEST',
+      slackUserId: userId === 'user_member' ? 'U_MEMBER' : 'U_NONMEMBER',
+      displayName: userId,
+      contactEmail: null,
+      createdAt: 1,
+      updatedAt: 1,
+    }),
+    listMemberships: async () => [],
+    recordAuthAudit: async () => undefined,
+  } as unknown as IdentityStore;
+  const principal = (member: boolean): AuthPrincipal => ({
+    userId: member ? 'user_member' : 'user_nonmember',
+    membershipId: member ? 'membership_member' : 'membership_nonmember',
+    organizationId: 'org_oss',
+    role: 'owner',
+    authenticatorKind: 'test_slack_session',
+    credentialId: member ? 'session_member' : 'session_nonmember',
+    correlationId: member ? 'request_member' : 'request_nonmember',
+    machine: false,
+  });
+  const transport = (member: boolean) => ({
+    mode: 'direct',
+    listMemberChannels: async () => new Set(member ? ['C_TEST'] : []),
+  }) as unknown as SlackTransport;
+  try {
+    const nextRunAt = Date.now() + 3_600_000;
+    const routine = await new RoutineService(routines, {
+      now: Date.now,
+      routineId: () => 'routine_private_member',
+    }).save({
+      action: 'create',
+      actorId: 'U_CREATOR',
+      workspaceId: 'T_TEST',
+      channelId: 'C_TEST',
+      definition: {
+        ...definition(),
+        name: canary,
+        description: `description ${canary}`,
+        taskText: `task ${canary}`,
+      },
+      nextRunAt,
+      projectedDailyStarts: 5,
+      reservations: [{ windowStart: nextRunAt, count: 1 }],
+      sourceVisibility: 'private',
+    }, 'seed-private-member-routine');
+    const agent = await config.createAgent({
+      id: 'agent_private_schedule',
+      name: 'Private schedule Agent',
+      instructions: 'Run private scheduled work.',
+      enabled: true,
+      lifecycle: 'active',
+      creatorMembershipId: 'membership_member',
+      editPolicy: 'all_workspace_members',
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    await config.putChannel({
+      workspaceId: 'T_TEST',
+      channelId: 'C_TEST',
+      label: 'private-schedule-lab',
+      lifecycle: 'active',
+    });
+    await config.putAgentScheduleReference({
+      scheduleId: routine.id,
+      agentId: agent.id,
+      workspaceId: routine.workspaceId,
+      channelId: routine.channelId,
+      createdByMembershipId: 'membership_member',
+      runsAsMembershipId: 'membership_member',
+      authorityReceiptId: 'receipt_private_member',
+      requiredConnectionAccountIds: [],
+      state: 'active',
+    });
+    const appFor = (member: boolean) => createAdminRoutes({
+      store: config,
+      settings,
+      routines,
+      work,
+      slackTransport: transport(member),
+      ...testAdminAuthority(TOKEN, undefined, identity, principal(member)),
+    });
+    const requestBoth = async (member: boolean) => {
+      const app = appFor(member);
+      const headers = testAdminHeaders(TOKEN);
+      const [globalResponse, agentResponse] = await Promise.all([
+        app.request('http://localhost/admin/api/audit/scheduled_work/routines', { headers }),
+        app.request(`http://localhost/admin/api/agents/${agent.id}/schedules`, { headers }),
+      ]);
+      assert.equal(globalResponse.status, 200, await globalResponse.clone().text());
+      assert.equal(agentResponse.status, 200, await agentResponse.clone().text());
+      return {
+        global: (await globalResponse.json() as Record<string, any>).routines[0],
+        agent: (await agentResponse.json() as Record<string, any>).schedules[0],
+      };
+    };
+
+    const memberView = await requestBoth(true);
+    assert.equal(memberView.global.name, canary);
+    assert.equal(memberView.agent.name, canary);
+    assert.equal(memberView.global.contentAccess, 'private_member');
+    assert.equal(memberView.agent.contentAccess, 'private_member');
+    assert.equal(memberView.agent.channelLabel, 'private-schedule-lab');
+    assert.deepEqual(memberView.agent.actions, { pause: true, resume: false, delete: true });
+
+    const nonmemberView = await requestBoth(false);
+    assert.equal(nonmemberView.global.name, null);
+    assert.equal(nonmemberView.agent.name, null);
+    assert.equal(nonmemberView.global.contentAccess, 'private_nonmember');
+    assert.equal(nonmemberView.agent.contentAccess, 'private_nonmember');
+    assert.equal(nonmemberView.agent.channelLabel, null);
+    assert.deepEqual(nonmemberView.agent.actions, { pause: false, resume: false, delete: false });
+    assert.doesNotMatch(JSON.stringify(nonmemberView), /PRIVATE_MEMBER_ROUTINE_CANARY/);
+
+    const controlUrl = `http://localhost/admin/api/agents/${agent.id}/schedules/${routine.id}/control`;
+    const controlHeaders = (key: string) => testAdminHeaders(TOKEN, {
+      'content-type': 'application/json',
+      'idempotency-key': key,
+    });
+    const crossOrigin = await appFor(true).request(controlUrl, {
+      method: 'POST',
+      headers: {
+        ...controlHeaders('cross-origin-pause'),
+        origin: 'https://evil.test',
+        'sec-fetch-site': 'cross-site',
+      },
+      body: JSON.stringify({ action: 'pause', expectedVersion: 1 }),
+    });
+    assert.equal(crossOrigin.status, 403);
+    const missingIdempotency = await appFor(true).request(controlUrl, {
+      method: 'POST',
+      headers: testAdminHeaders(TOKEN, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ action: 'pause', expectedVersion: 1 }),
+    });
+    assert.equal(missingIdempotency.status, 400);
+    const deniedPause = await appFor(false).request(controlUrl, {
+      method: 'POST',
+      headers: controlHeaders('nonmember-pause'),
+      body: JSON.stringify({ action: 'pause', expectedVersion: 1 }),
+    });
+    assert.equal(deniedPause.status, 403);
+    assert.equal((await routines.getRoutine(routine.id))?.version, 1);
+
+    const memberApp = appFor(true);
+    const paused = await memberApp.request(controlUrl, {
+      method: 'POST',
+      headers: controlHeaders('member-pause'),
+      body: JSON.stringify({ action: 'pause', expectedVersion: 1 }),
+    });
+    assert.equal(paused.status, 200, await paused.clone().text());
+    assert.deepEqual((await paused.json() as Record<string, any>).schedule, {
+      id: routine.id,
+      status: 'paused',
+      version: 2,
+    });
+    const replayedPause = await memberApp.request(controlUrl, {
+      method: 'POST',
+      headers: controlHeaders('member-pause'),
+      body: JSON.stringify({ action: 'pause', expectedVersion: 1 }),
+    });
+    assert.equal(replayedPause.status, 200, await replayedPause.clone().text());
+    assert.equal((await replayedPause.json() as Record<string, any>).schedule.version, 2);
+    assert.equal((await routines.getRoutine(routine.id))?.pausedReason, 'admin_control');
+    const pausedView = await requestBoth(true);
+    assert.equal(pausedView.global.name, canary);
+    assert.equal(pausedView.global.state, 'paused');
+    assert.equal(pausedView.agent.name, canary);
+    assert.equal(pausedView.agent.status, 'paused');
+    assert.deepEqual(pausedView.agent.actions, { pause: false, resume: true, delete: true });
+
+    const staleResume = await memberApp.request(controlUrl, {
+      method: 'POST',
+      headers: controlHeaders('stale-resume'),
+      body: JSON.stringify({ action: 'resume', expectedVersion: 1 }),
+    });
+    assert.equal(staleResume.status, 409);
+    assert.equal((await routines.getRoutine(routine.id))?.version, 2);
+    const resumed = await memberApp.request(controlUrl, {
+      method: 'POST',
+      headers: controlHeaders('member-resume'),
+      body: JSON.stringify({ action: 'resume', expectedVersion: 2 }),
+    });
+    assert.equal(resumed.status, 200, await resumed.clone().text());
+    assert.equal((await resumed.json() as Record<string, any>).schedule.status, 'active');
+    const resumedView = await requestBoth(true);
+    assert.equal(resumedView.global.name, canary);
+    assert.equal(resumedView.agent.name, canary);
+    assert.equal(resumedView.agent.status, 'active');
+    const activeReference = (await config.getAgentScheduleReference(routine.id))!;
+    const attentionReference = await config.putAgentScheduleReference({
+      ...activeReference,
+      state: 'needs_attention',
+    }, activeReference.revision);
+    const attentionView = await requestBoth(true);
+    assert.equal(attentionView.agent.status, 'needs_attention');
+    assert.deepEqual(attentionView.agent.actions, { pause: false, resume: false, delete: true });
+    await config.putAgentScheduleReference({
+      ...attentionReference,
+      state: 'active',
+    }, attentionReference.revision);
+
+    const otherAgent = await config.createAgent({
+      id: 'agent_other_private_schedule',
+      name: 'Other private schedule Agent',
+      instructions: 'Own other scheduled work.',
+      enabled: true,
+      lifecycle: 'active',
+      creatorMembershipId: 'membership_member',
+      editPolicy: 'all_workspace_members',
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const wrongAgent = await memberApp.request(
+      `http://localhost/admin/api/agents/${otherAgent.id}/schedules/${routine.id}/control`,
+      {
+        method: 'POST',
+        headers: controlHeaders('wrong-agent-pause'),
+        body: JSON.stringify({ action: 'pause', expectedVersion: 3 }),
+      },
+    );
+    assert.equal(wrongAgent.status, 404);
+
+    const deleted = await memberApp.request(controlUrl, {
+      method: 'POST',
+      headers: controlHeaders('member-delete'),
+      body: JSON.stringify({
+        action: 'delete',
+        expectedVersion: 3,
+        acknowledgeIrreversible: true,
+      }),
+    });
+    assert.equal(deleted.status, 200, await deleted.clone().text());
+    assert.deepEqual((await deleted.json() as Record<string, any>).schedule, {
+      id: routine.id,
+      status: 'deleted',
+      version: 4,
+    });
+    const replayedDelete = await memberApp.request(controlUrl, {
+      method: 'POST',
+      headers: controlHeaders('member-delete'),
+      body: JSON.stringify({
+        action: 'delete',
+        expectedVersion: 3,
+        acknowledgeIrreversible: true,
+      }),
+    });
+    assert.equal(replayedDelete.status, 200, await replayedDelete.clone().text());
+    assert.equal((await replayedDelete.json() as Record<string, any>).schedule.version, 4);
+    const tombstone = await routines.getRoutine(routine.id);
+    assert.ok(tombstone?.deletedAt);
+    assert.equal(tombstone?.name, '');
+    assert.equal(tombstone?.description, '');
+    assert.equal(tombstone?.taskText, '');
+    assert.equal((await config.getAgentScheduleReference(routine.id))?.state, 'archived');
+    const currentSchedules = await memberApp.request(
+      `http://localhost/admin/api/agents/${agent.id}/schedules`,
+      { headers: testAdminHeaders(TOKEN) },
+    );
+    assert.deepEqual((await currentSchedules.json() as Record<string, any>).schedules, []);
+    assert.doesNotMatch(
+      JSON.stringify(await routines.listAuditEvents({ subjectId: routine.id, limit: 100 })),
+      /PRIVATE_MEMBER_ROUTINE_CANARY/,
+    );
+  } finally {
+    routines.close();
+    work.close();
+    config.close();
+    settings.close();
+  }
+});
+
+test('private schedule authorization fails closed with one Slack membership lookup per request', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-routine-private-failure-')), 'state.db');
+  const routines = new SqliteRoutineStore(path, () => NOW);
+  const work = new SqliteWorkStore(path, { now: () => NOW });
+  const config = new SqliteConfigStore(path, { agents: [] });
+  const settings = new SqliteSettingsStore(path);
+  let membershipCalls = 0;
+  const sourceIdentity = {
+    getMembership: async () => ({
+      id: 'membership_member', organizationId: 'org_oss', userId: 'user_member',
+      role: 'owner', status: 'active', createdAt: 1, updatedAt: 1,
+    }),
+    getUser: async () => ({
+      id: 'user_member', slackTeamId: 'T_TEST', slackUserId: 'U_MEMBER',
+      displayName: 'Member', contactEmail: null, createdAt: 1, updatedAt: 1,
+    }),
+    recordAuthAudit: async () => undefined,
+  } as unknown as IdentityStore;
+  const owner: AuthPrincipal = {
+    userId: 'user_member', membershipId: 'membership_member', organizationId: 'org_oss',
+    role: 'owner', authenticatorKind: 'test_slack_session', credentialId: 'session_member',
+    correlationId: 'request_member', machine: false,
+  };
+  try {
+    for (const suffix of ['one', 'two']) {
+      await routines.save({
+        actorId: 'U_CREATOR', actorClass: 'member', workspaceId: 'T_TEST', channelId: 'C_TEST',
+        draft: {
+          action: 'create', routineId: `routine_private_failure_${suffix}`,
+          definition: { ...definition(), name: `PRIVATE_FAILURE_${suffix}` },
+          nextRunAt: NOW + 3_600_000,
+          projectedDailyStarts: 5,
+          reservations: [{ windowStart: NOW + 3_600_000, count: 1 }],
+        },
+        idempotencyKey: `seed-private-failure-${suffix}`,
+        sourceVisibility: 'private',
+      });
+    }
+    const transport = {
+      mode: 'direct',
+      listMemberChannels: async () => {
+        membershipCalls += 1;
+        throw new Error('rate_limited');
+      },
+    } as unknown as SlackTransport;
+    const app = createAdminRoutes({
+      store: config,
+      settings,
+      routines,
+      work,
+      slackTransport: transport,
+      ...testAdminAuthority(TOKEN, undefined, sourceIdentity, owner),
+    });
+    const response = await app.request(
+      'http://localhost/admin/api/audit/scheduled_work/routines',
+      { headers: testAdminHeaders(TOKEN) },
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.json() as Record<string, any>;
+    assert.equal(body.routines.length, 2);
+    assert.equal(membershipCalls, 1);
+    assert.deepEqual(
+      body.routines.map((routine: Record<string, any>) => [routine.name, routine.contentAccess]),
+      [[null, 'authorization_unknown'], [null, 'authorization_unknown']],
+    );
+    assert.doesNotMatch(JSON.stringify(body), /PRIVATE_FAILURE_/);
+  } finally {
+    routines.close();
+    work.close();
+    config.close();
+    settings.close();
   }
 });
 
