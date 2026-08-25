@@ -108,6 +108,96 @@ test('V1 rows retain frozen features and adopt under V1 identity after the defau
   }
 });
 
+test('V2 model intent is fenced, durable, and rejects mismatched or legacy transitions', () => {
+  let clock = 1_800_000_000_000;
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => clock++);
+    const { taskLabels: _intentTaskLabels, ...intentInput } = createInput('run_intent');
+    let current = store.create(intentInput);
+    const apply = (mutation: Parameters<typeof store.transition>[0]['mutation']) => {
+      const result = store.transition({
+        runId: current.runId,
+        workBindingGeneration: current.workBindingGeneration,
+        runFencingToken: current.runFencingToken,
+        expectedProjectionVersion: current.projectionVersion,
+        expectedStreamState: current.stream.state,
+        mutation,
+      });
+      assert.equal(result.outcome, 'applied');
+      if (result.outcome === 'applied') current = result.presentation;
+    };
+    apply({
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    apply({ kind: 'progressive_intent_candidate', toolCallId: 'stream_call_1' });
+    assert.equal(current.schemaVersion, 2);
+    if (current.schemaVersion !== 2) return;
+    assert.deepEqual(current.progressiveIntent, {
+      status: 'pending',
+      toolCallId: 'stream_call_1',
+    });
+
+    assert.throws(
+      () => store.transition({
+        runId: current.runId,
+        workBindingGeneration: current.workBindingGeneration,
+        runFencingToken: current.runFencingToken,
+        expectedProjectionVersion: current.projectionVersion,
+        expectedStreamState: current.stream.state,
+        mutation: { kind: 'progressive_intent_requested', toolCallId: 'stream_call_other' },
+      }),
+      (error: unknown) =>
+        error instanceof SlackPresentationStateError && error.code === 'identity_conflict',
+    );
+    apply({ kind: 'progressive_intent_requested', toolCallId: 'stream_call_1' });
+    assert.equal(current.schemaVersion, 2);
+    if (current.schemaVersion !== 2) return;
+    assert.deepEqual(current.progressiveIntent, {
+      status: 'requested',
+      toolCallId: 'stream_call_1',
+      requestedAt: 1_800_000_000_004,
+    });
+
+    const { taskLabels: _legacyIntentTaskLabels, ...legacyIntentInput } = createInput(
+      'run_legacy_intent',
+    );
+    const legacy = store.create({
+      ...legacyIntentInput,
+      schemaVersion: 1,
+      features: { progressiveStreaming: true, nativeTasks: false },
+    });
+    const legacyEligible = store.transition({
+      runId: legacy.runId,
+      workBindingGeneration: legacy.workBindingGeneration,
+      runFencingToken: legacy.runFencingToken,
+      expectedProjectionVersion: legacy.projectionVersion,
+      expectedStreamState: legacy.stream.state,
+      mutation: {
+        kind: 'freeze_progressive_eligibility',
+        eligibility: { allowed: true, reason: 'safe_early_release' },
+      },
+    });
+    assert.equal(legacyEligible.outcome, 'applied');
+    if (legacyEligible.outcome !== 'applied') return;
+    assert.throws(
+      () => store.transition({
+        runId: legacy.runId,
+        workBindingGeneration: legacy.workBindingGeneration,
+        runFencingToken: legacy.runFencingToken,
+        expectedProjectionVersion: legacyEligible.presentation.projectionVersion,
+        expectedStreamState: legacyEligible.presentation.stream.state,
+        mutation: { kind: 'progressive_intent_not_requested' },
+      }),
+      (error: unknown) =>
+        error instanceof SlackPresentationStateError && error.code === 'invalid_transition',
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test('presentation diagnostics aggregate only content-free workspace outcomes', () => {
   const db = openStateDb(':memory:');
   try {

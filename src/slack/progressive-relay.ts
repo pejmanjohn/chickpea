@@ -1,5 +1,11 @@
 import type { ConversationStreamChunk } from '@flue/runtime';
 
+import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
+import type {
+  SlackProgressiveIntent,
+  SlackProgressiveIntentDenialReason,
+} from './run-presentations.ts';
+
 export interface ProgressiveTextChunk {
   messageId: string;
   delta: string;
@@ -15,7 +21,14 @@ export type ProgressiveRelayInvalidationReason =
   | 'settlement_persist_failed'
   | 'invalid_result'
   | 'run_failed'
+  | 'intent_persistence_failed'
   | 'sink_failed';
+
+export type ProgressiveIntentTransition =
+  | { kind: 'candidate'; toolCallId: string }
+  | { kind: 'requested'; toolCallId: string }
+  | { kind: 'not_requested' }
+  | { kind: 'denied'; reason: SlackProgressiveIntentDenialReason };
 
 export interface ProgressiveRelaySummary {
   acceptedChunks: number;
@@ -28,6 +41,11 @@ export interface ProgressiveRelaySummary {
 export interface ProgressiveTextSink {
   append(chunk: ProgressiveTextChunk): Promise<void>;
   invalidate(reason: ProgressiveRelayInvalidationReason): Promise<void>;
+  /** Omitted only for retained V1 presentations with the legacy immediate relay. */
+  modelIntent?: {
+    initial: SlackProgressiveIntent;
+    transition(intent: ProgressiveIntentTransition): Promise<void>;
+  };
 }
 
 export interface SlackProgressiveReadRelay {
@@ -39,21 +57,23 @@ export interface SlackProgressiveReadRelay {
 }
 
 type RelayOperation =
+  | { kind: 'intent'; transition: ProgressiveIntentTransition }
   | { kind: 'append'; chunk: ProgressiveTextChunk; count: number }
   | { kind: 'invalidate'; reason: ProgressiveRelayInvalidationReason };
 
 /**
  * Active-turn content relay for one exact Flue receipt. The callback is
- * deliberately synchronous: it copies only a bounded public text delta and
- * its opaque position into a serialized queue, while every durable mutation
- * and Slack effect happens in the awaited sink. Reasoning, tools, data, other
- * submissions, and late events never enter the queue.
+ * deliberately synchronous: it copies only bounded public protocol facts
+ * into a serialized queue. V2 answer text enters that queue only after a
+ * matching successful stream_answer result, and the durable requested-intent
+ * operation is always ahead of the first append. V1 keeps its frozen legacy
+ * behavior for the row's retention lifetime.
  */
 export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
   readonly onEvent = (chunk: ConversationStreamChunk): void => {
     if (!this.accepting) return;
     if (!validPosition(chunk.position)) {
-      this.queueInvalidation('message_identity_conflict');
+      this.denyAndInvalidate('identity_conflict', 'message_identity_conflict', true);
       return;
     }
     if (this.lastSeenPosition && comparePosition(chunk.position, this.lastSeenPosition) <= 0) {
@@ -62,21 +82,20 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     this.lastSeenPosition = { ...chunk.position };
 
     if (chunk.type === 'conversation-reset') {
-      // A creation/reset snapshot before this receipt's response begins is a
-      // normal read boundary. Once target identity or text exists, a reset
-      // invalidates the incremental proof and closes live presentation.
-      if (this.targetMessageId || this.queuedTextChunks > 0 || this.acceptedChunks > 0) {
-        this.queueInvalidation('conversation_reset');
+      // The initial replay snapshot is a normal read boundary. A later reset
+      // destroys the incremental identity proof even before a Slack effect.
+      if (this.targetMessageId || this.sawTargetActivity()) {
+        this.denyAndInvalidate('reset', 'conversation_reset', true);
       }
       return;
     }
     if (chunk.type === 'message-started' && chunk.submissionId === this.submissionId) {
       if (this.targetMessageCompleted) {
-        this.queueInvalidation('tool_activity');
+        this.denyAndInvalidate('identity_conflict', 'message_identity_conflict', true);
         return;
       }
       if (this.targetMessageId && this.targetMessageId !== chunk.messageId) {
-        this.queueInvalidation('message_identity_conflict');
+        this.denyAndInvalidate('identity_conflict', 'message_identity_conflict', true);
         return;
       }
       this.targetMessageId = chunk.messageId;
@@ -87,11 +106,27 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       return;
     }
     if (chunk.type === 'tool-input' && chunk.messageId === this.targetMessageId) {
-      this.queueInvalidation('tool_activity');
+      this.handleToolInput(chunk.toolName, chunk.toolCallId);
+      return;
+    }
+    if (chunk.type === 'tool-output') {
+      this.handleToolOutcome(chunk.toolCallId, true);
+      return;
+    }
+    if (chunk.type === 'tool-output-error') {
+      this.handleToolOutcome(chunk.toolCallId, false);
       return;
     }
     if (chunk.type === 'data-part' && chunk.messageId === this.targetMessageId) {
-      this.queueInvalidation('structured_output');
+      if (this.usesModelIntent) {
+        this.denyAndInvalidate(
+          'structured_output',
+          'structured_output',
+          this.hasQueuedOrAcceptedText(),
+        );
+      } else {
+        this.queueInvalidation('structured_output');
+      }
       return;
     }
     if (
@@ -105,20 +140,21 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     // 128 KiB is the durable presentation pending-buffer ceiling. One Flue
     // event above that cannot ever be a legal append and closes the relay.
     if (new TextEncoder().encode(chunk.delta).byteLength > 128 * 1_024) {
-      this.queueInvalidation('message_identity_conflict');
+      this.denyAndInvalidate('identity_conflict', 'message_identity_conflict', true);
       return;
     }
-    this.queuedTextChunks += 1;
-    this.queue.push({
-      kind: 'append',
-      count: 1,
-      chunk: {
-        messageId: chunk.messageId,
-        delta: chunk.delta,
-        position: { ...chunk.position },
-      },
+    if (this.usesModelIntent && this.intentStatus !== 'requested') {
+      // A normal no-tool answer remains unresolved until close so it records
+      // not_requested. If a declaration arrives later, it becomes explicitly
+      // denied as late without exposing this already-seen text.
+      this.preIntentTextSeen = true;
+      return;
+    }
+    this.queueText({
+      messageId: chunk.messageId,
+      delta: chunk.delta,
+      position: { ...chunk.position },
     });
-    this.startPump();
   };
 
   private readonly queue: RelayOperation[] = [];
@@ -132,6 +168,9 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
   private targetMessageCompleted = false;
   private invalidated = false;
   private invalidationReason: ProgressiveRelayInvalidationReason | undefined;
+  private intentStatus: SlackProgressiveIntent['status'];
+  private intentToolCallId: string | undefined;
+  private preIntentTextSeen = false;
 
   constructor(
     private readonly options: ProgressiveTextSink & { submissionId: string },
@@ -139,13 +178,34 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     if (!boundedIdentity(options.submissionId)) {
       throw new Error('Progressive relay submission identity is invalid.');
     }
+    const initial = options.modelIntent?.initial;
+    this.intentStatus = initial?.status ?? 'requested';
+    this.intentToolCallId = initial?.status === 'pending' || initial?.status === 'requested'
+      ? initial.toolCallId
+      : undefined;
+    if (initial?.status === 'not_requested' || initial?.status === 'denied') {
+      throw new Error('A terminal model intent cannot open a progressive relay.');
+    }
   }
 
   private get submissionId(): string {
     return this.options.submissionId;
   }
 
+  private get usesModelIntent(): boolean {
+    return this.options.modelIntent !== undefined;
+  }
+
   async closeAndDrain(): Promise<ProgressiveRelaySummary> {
+    if (this.accepting && this.usesModelIntent) {
+      if (this.intentStatus === 'unresolved') {
+        this.intentStatus = 'not_requested';
+        this.queueIntent({ kind: 'not_requested' });
+      } else if (this.intentStatus === 'pending') {
+        this.intentStatus = 'denied';
+        this.queueIntent({ kind: 'denied', reason: 'declaration_failed' });
+      }
+    }
     this.accepting = false;
     await this.drain();
     return this.summary();
@@ -157,6 +217,95 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     this.queueInvalidation(reason);
     await this.drain();
     return this.summary();
+  }
+
+  private handleToolInput(toolName: string, toolCallId: string): void {
+    if (!this.usesModelIntent) {
+      this.queueInvalidation('tool_activity');
+      return;
+    }
+    if (!boundedIdentity(toolCallId)) {
+      this.denyAndInvalidate('identity_conflict', 'message_identity_conflict', true);
+      return;
+    }
+    if (toolName !== SLACK_STREAM_ANSWER_TOOL_NAME) {
+      this.denyAndInvalidate(
+        'non_presentation_tool',
+        'tool_activity',
+        this.hasQueuedOrAcceptedText(),
+      );
+      return;
+    }
+    if (this.preIntentTextSeen) {
+      this.denyAndInvalidate('late_declaration', 'tool_activity', false);
+      return;
+    }
+    if (this.intentStatus === 'unresolved') {
+      this.intentStatus = 'pending';
+      this.intentToolCallId = toolCallId;
+      this.queueIntent({ kind: 'candidate', toolCallId });
+      return;
+    }
+    if ((this.intentStatus === 'pending' || this.intentStatus === 'requested') &&
+        this.intentToolCallId === toolCallId) {
+      // Full receipt replay repeats the same positioned declaration. The
+      // durable state is already authoritative, so this is a no-op.
+      return;
+    }
+    this.denyAndInvalidate('repeated_declaration', 'tool_activity', this.hasQueuedOrAcceptedText());
+  }
+
+  private handleToolOutcome(toolCallId: string, succeeded: boolean): void {
+    if (!this.usesModelIntent) return;
+    if (this.intentStatus === 'requested' && this.intentToolCallId === toolCallId) {
+      return;
+    }
+    if (this.intentStatus !== 'pending') return;
+    if (this.intentToolCallId !== toolCallId) {
+      this.denyAndInvalidate(
+        'mismatched_declaration',
+        'tool_activity',
+        this.hasQueuedOrAcceptedText(),
+      );
+      return;
+    }
+    if (!succeeded) {
+      this.denyAndInvalidate('declaration_failed', 'tool_activity', this.hasQueuedOrAcceptedText());
+      return;
+    }
+    if (this.preIntentTextSeen) {
+      this.denyAndInvalidate('late_declaration', 'tool_activity', false);
+      return;
+    }
+    this.intentStatus = 'requested';
+    this.queueIntent({ kind: 'requested', toolCallId });
+  }
+
+  private queueText(chunk: ProgressiveTextChunk): void {
+    this.queuedTextChunks += 1;
+    this.queue.push({ kind: 'append', count: 1, chunk });
+    this.startPump();
+  }
+
+  private queueIntent(transition: ProgressiveIntentTransition): void {
+    this.queue.push({ kind: 'intent', transition });
+    this.startPump();
+  }
+
+  private denyAndInvalidate(
+    denial: SlackProgressiveIntentDenialReason,
+    invalidation: ProgressiveRelayInvalidationReason,
+    hardInvalidate: boolean,
+  ): void {
+    if (!this.usesModelIntent) {
+      this.queueInvalidation(invalidation);
+      return;
+    }
+    if (this.intentStatus === 'denied' || this.intentStatus === 'not_requested') return;
+    this.intentStatus = 'denied';
+    this.queueIntent({ kind: 'denied', reason: denial });
+    this.accepting = false;
+    if (hardInvalidate) this.queueInvalidation(invalidation);
   }
 
   private queueInvalidation(reason: ProgressiveRelayInvalidationReason): void {
@@ -191,7 +340,24 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
         }
         continue;
       }
-      if (this.invalidationReason === 'sink_failed') continue;
+      if (operation.kind === 'intent') {
+        try {
+          await this.options.modelIntent!.transition(operation.transition);
+        } catch {
+          this.invalidated = true;
+          this.invalidationReason = 'intent_persistence_failed';
+          this.accepting = false;
+          this.queue.length = 0;
+          try {
+            await this.options.invalidate('intent_persistence_failed');
+          } catch {
+            // The missing durable transition is itself the recovery signal.
+          }
+        }
+        continue;
+      }
+      if (this.invalidationReason === 'sink_failed' ||
+          this.invalidationReason === 'intent_persistence_failed') continue;
       while (this.queue[0]?.kind === 'append') {
         const next = this.queue.shift() as Extract<RelayOperation, { kind: 'append' }>;
         operation.chunk = {
@@ -226,6 +392,14 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       this.startPump();
       await this.pumpPromise;
     }
+  }
+
+  private hasQueuedOrAcceptedText(): boolean {
+    return this.queuedTextChunks > 0 || this.acceptedChunks > 0;
+  }
+
+  private sawTargetActivity(): boolean {
+    return this.preIntentTextSeen || this.hasQueuedOrAcceptedText();
   }
 
   private summary(): ProgressiveRelaySummary {

@@ -76,7 +76,7 @@ export type SlackProgressiveIntentDenialReason =
 export type SlackProgressiveIntent =
   | { status: 'unresolved' }
   | { status: 'pending'; toolCallId: string }
-  | { status: 'requested'; requestedAt: number }
+  | { status: 'requested'; toolCallId: string; requestedAt: number }
   | { status: 'not_requested'; decidedAt: number }
   | {
       status: 'denied';
@@ -197,6 +197,13 @@ export type SlackPresentationMutation =
       };
     }
   | { kind: 'advance_run_fence'; runFencingToken: number }
+  | { kind: 'progressive_intent_candidate'; toolCallId: string }
+  | { kind: 'progressive_intent_requested'; toolCallId: string }
+  | { kind: 'progressive_intent_not_requested' }
+  | {
+      kind: 'progressive_intent_denied';
+      reason: SlackProgressiveIntentDenialReason;
+    }
   | { kind: 'stream_start_intent' }
   | {
       kind: 'stream_started';
@@ -759,7 +766,7 @@ export class SlackRunPresentationStoreLogic {
 function applyMutation(
   current: SlackRunPresentation,
   mutation: SlackPresentationMutation,
-  _at: number,
+  at: number,
 ): SlackRunPresentation {
   const next = structuredClone(current);
   switch (mutation.kind) {
@@ -787,6 +794,51 @@ function applyMutation(
         throw stateError('invalid_transition', 'An active Slack effect blocks fence advancement.');
       }
       next.runFencingToken = mutation.runFencingToken;
+      return next;
+    case 'progressive_intent_candidate':
+      requireV2ProgressiveIntent(current);
+      requireProgressiveIntentState(current, 'unresolved');
+      validateId(mutation.toolCallId, 'Progressive intent tool call id');
+      (next as SlackRunPresentationV2).progressiveIntent = {
+        status: 'pending',
+        toolCallId: mutation.toolCallId,
+      };
+      return next;
+    case 'progressive_intent_requested':
+      requireV2ProgressiveIntent(current);
+      requireProgressiveIntentState(current, 'pending');
+      validateId(mutation.toolCallId, 'Progressive intent tool call id');
+      if (current.progressiveIntent.toolCallId !== mutation.toolCallId) {
+        throw stateError('identity_conflict', 'Progressive intent result does not match its call.');
+      }
+      (next as SlackRunPresentationV2).progressiveIntent = {
+        status: 'requested',
+        toolCallId: mutation.toolCallId,
+        requestedAt: at,
+      };
+      return next;
+    case 'progressive_intent_not_requested':
+      requireV2ProgressiveIntent(current);
+      requireProgressiveIntentState(current, 'unresolved');
+      (next as SlackRunPresentationV2).progressiveIntent = {
+        status: 'not_requested',
+        decidedAt: at,
+      };
+      return next;
+    case 'progressive_intent_denied':
+      requireV2ProgressiveIntent(current);
+      if (current.progressiveIntent.status === 'not_requested' ||
+          current.progressiveIntent.status === 'denied') {
+        throw stateError('terminal_rewrite', 'Progressive intent is already terminal.');
+      }
+      if (!isProgressiveIntentDenialReason(mutation.reason)) {
+        throw stateError('invalid_input', 'Progressive intent denial reason is invalid.');
+      }
+      (next as SlackRunPresentationV2).progressiveIntent = {
+        status: 'denied',
+        reason: mutation.reason,
+        decidedAt: at,
+      };
       return next;
     case 'stream_start_intent':
       requireState(current, 'absent');
@@ -985,17 +1037,63 @@ function isProgressiveIntent(value: unknown): value is SlackProgressiveIntent {
   if (intent.status === 'pending') {
     return typeof intent.toolCallId === 'string' && intent.toolCallId.length > 0;
   }
-  if (intent.status === 'requested' || intent.status === 'not_requested') {
-    const decidedAt = intent.status === 'requested' ? intent.requestedAt : intent.decidedAt;
-    return typeof decidedAt === 'number' && Number.isSafeInteger(decidedAt) && decidedAt >= 0;
+  if (intent.status === 'requested') {
+    return typeof intent.toolCallId === 'string' && intent.toolCallId.length > 0 &&
+      typeof intent.requestedAt === 'number' && Number.isSafeInteger(intent.requestedAt) &&
+      intent.requestedAt >= 0;
+  }
+  if (intent.status === 'not_requested') {
+    return typeof intent.decidedAt === 'number' && Number.isSafeInteger(intent.decidedAt) &&
+      intent.decidedAt >= 0;
   }
   if (intent.status === 'denied') {
-    return typeof intent.reason === 'string' &&
+    return isProgressiveIntentDenialReason(intent.reason) &&
       typeof intent.decidedAt === 'number' &&
       Number.isSafeInteger(intent.decidedAt) &&
       intent.decidedAt >= 0;
   }
   return false;
+}
+
+function requireV2ProgressiveIntent(
+  presentation: SlackRunPresentation,
+): asserts presentation is SlackRunPresentationV2 {
+  if (presentation.schemaVersion !== 2) {
+    throw stateError('invalid_transition', 'Legacy presentations do not store model intent.');
+  }
+  if (presentation.progressiveEligibility.status !== 'frozen' ||
+      !presentation.progressiveEligibility.allowed) {
+    throw stateError('invalid_transition', 'Progressive intent was not offered by runtime policy.');
+  }
+  if (presentation.stream.state === 'finalized' || presentation.stream.state === 'fallback' ||
+      presentation.stream.state === 'artifact_delivered' ||
+      presentation.stream.state === 'finalizing' || presentation.stream.state === 'reconciling') {
+    throw stateError('terminal_rewrite', 'A terminal presentation cannot change model intent.');
+  }
+}
+
+function requireProgressiveIntentState<S extends SlackProgressiveIntent['status']>(
+  presentation: SlackRunPresentationV2,
+  expected: S,
+): asserts presentation is SlackRunPresentationV2 & {
+  progressiveIntent: Extract<SlackProgressiveIntent, { status: S }>;
+} {
+  if (presentation.progressiveIntent.status !== expected) {
+    throw stateError(
+      'invalid_transition',
+      `Progressive intent is not ${expected}.`,
+    );
+  }
+}
+
+function isProgressiveIntentDenialReason(
+  value: unknown,
+): value is SlackProgressiveIntentDenialReason {
+  return value === 'late_declaration' || value === 'repeated_declaration' ||
+    value === 'declaration_failed' || value === 'mismatched_declaration' ||
+    value === 'non_presentation_tool' || value === 'structured_output' ||
+    value === 'reset' || value === 'identity_conflict' ||
+    value === 'persistence_failure' || value === 'runtime_denied';
 }
 
 function buildPlan(runId: string, labels: readonly string[]): SlackPresentationPlan {

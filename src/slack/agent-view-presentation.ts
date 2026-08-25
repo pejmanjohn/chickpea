@@ -15,6 +15,7 @@ import {
 } from './message-format.ts';
 import {
   ReceiptScopedTextRelay,
+  type ProgressiveIntentTransition,
   type ProgressiveRelayInvalidationReason,
   type ProgressiveTextChunk,
   type SlackProgressiveReadRelay,
@@ -200,6 +201,11 @@ export class SlackAgentViewPresentation {
         presentation.stream.state === 'finalized') {
       return undefined;
     }
+    if (presentation.schemaVersion === 2 &&
+        (presentation.progressiveIntent.status === 'not_requested' ||
+          presentation.progressiveIntent.status === 'denied')) {
+      return undefined;
+    }
     return new ReceiptScopedTextRelay({
       submissionId: input.receipt.submissionId,
       append: (chunk) => this.appendProgressiveText(
@@ -208,6 +214,15 @@ export class SlackAgentViewPresentation {
         chunk,
       ),
       invalidate: (reason) => this.invalidate(reason),
+      ...(presentation.schemaVersion === 2
+        ? {
+            modelIntent: {
+              initial: presentation.progressiveIntent,
+              transition: (intent: ProgressiveIntentTransition) =>
+                this.recordProgressiveIntent(intent),
+            },
+          }
+        : {}),
     });
   }
 
@@ -673,8 +688,63 @@ export class SlackAgentViewPresentation {
   }
 
   private async invalidate(reason: ProgressiveRelayInvalidationReason): Promise<void> {
+    if (reason === 'intent_persistence_failed') {
+      try {
+        let presentation = await this.requirePresentation();
+        if (presentation.schemaVersion === 2 &&
+            presentation.progressiveIntent.status !== 'not_requested' &&
+            presentation.progressiveIntent.status !== 'denied') {
+          presentation = await this.transition(presentation, {
+            kind: 'progressive_intent_denied',
+            reason: 'persistence_failure',
+          });
+        }
+        await this.markUnknown(presentation, 'unknown_effect');
+      } catch {
+        // The failed durable intent write remains recoverable through the Run
+        // receipt even when its best-effort repair marker also cannot persist.
+      }
+      return;
+    }
     if (reason === 'sink_failed') return;
     this.degradedReason = 'unsafe_incomplete_block';
+  }
+
+  private async recordProgressiveIntent(
+    intent: ProgressiveIntentTransition,
+  ): Promise<void> {
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 2) {
+      throw new Error('Legacy presentations cannot record model intent.');
+    }
+    const current = presentation.progressiveIntent;
+    if (intent.kind === 'candidate') {
+      if ((current.status === 'pending' || current.status === 'requested') &&
+          current.toolCallId === intent.toolCallId) return;
+      await this.transition(presentation, {
+        kind: 'progressive_intent_candidate',
+        toolCallId: intent.toolCallId,
+      });
+      return;
+    }
+    if (intent.kind === 'requested') {
+      if (current.status === 'requested' && current.toolCallId === intent.toolCallId) return;
+      await this.transition(presentation, {
+        kind: 'progressive_intent_requested',
+        toolCallId: intent.toolCallId,
+      });
+      return;
+    }
+    if (intent.kind === 'not_requested') {
+      if (current.status === 'not_requested') return;
+      await this.transition(presentation, { kind: 'progressive_intent_not_requested' });
+      return;
+    }
+    if (current.status === 'denied') return;
+    await this.transition(presentation, {
+      kind: 'progressive_intent_denied',
+      reason: intent.reason,
+    });
   }
 
   private async advanceFenceIfRequired(
