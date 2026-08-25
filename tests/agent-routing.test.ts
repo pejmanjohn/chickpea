@@ -400,6 +400,43 @@ test('unknown group lookup uses negative caching and a bounded per-workspace win
   assert.equal(failures, 1);
 });
 
+test('concurrent unknown-group repairs share one directory lookup', async () => {
+  let lookups = 0;
+  let releaseLookup!: () => void;
+  const lookupGate = new Promise<void>((resolve) => {
+    releaseLookup = resolve;
+  });
+  const input = {
+    workspaceId: 'T1',
+    channelId: 'C1',
+    userGroupId: 'SUNKNOWN',
+    config: {
+      listAgents: async () => [],
+      listAgentChannelGrants: async () => [],
+      updateAgent: async () => {
+        throw new Error('a missing group never reaches persistence');
+      },
+    } satisfies MentionRepairConfig,
+    transport: {
+      lookupUserGroup: async () => {
+        lookups += 1;
+        await lookupGate;
+        return undefined;
+      },
+    },
+    limiter: new AgentUserGroupLookupLimiter(),
+  };
+
+  const first = repairMentionedAgentUserGroup(input);
+  const second = repairMentionedAgentUserGroup(input);
+  assert.equal(lookups, 1);
+  releaseLookup();
+  assert.deepEqual(await Promise.all([first, second]), [
+    { kind: 'not_available' },
+    { kind: 'not_available' },
+  ]);
+});
+
 test('Agent discovery checks granted Channels lazily and reuses membership results', async () => {
   const { store, support, finance } = await fixture();
   try {

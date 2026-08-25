@@ -297,14 +297,17 @@ export class GatewayInboxStoreLogic {
   }
 
   runtimeDrainCounts(): GatewayInboxDrainCounts {
-    const count = (status: GatewayInboxStatus): number => Number(this.db.get(
-      'SELECT COUNT(*) AS count FROM gateway_inbox WHERE status = ?',
-      status,
-    )?.count ?? 0);
+    const counts = this.db.get(
+      `SELECT
+         SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+         SUM(CASE WHEN status = 'in_flight' THEN 1 ELSE 0 END) AS in_flight,
+         SUM(CASE WHEN status = 'recovery_required' THEN 1 ELSE 0 END) AS recovery_required
+       FROM gateway_inbox`,
+    );
     return {
-      pendingGatewayInboxDeliveries: count('pending'),
-      inFlightGatewayInboxDeliveries: count('in_flight'),
-      recoveryRequiredGatewayInboxDeliveries: count('recovery_required'),
+      pendingGatewayInboxDeliveries: Number(counts?.pending ?? 0),
+      inFlightGatewayInboxDeliveries: Number(counts?.in_flight ?? 0),
+      recoveryRequiredGatewayInboxDeliveries: Number(counts?.recovery_required ?? 0),
     };
   }
 }

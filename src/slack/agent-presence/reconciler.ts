@@ -53,6 +53,16 @@ interface NegativeLookupReceipt {
   kind: 'missing' | 'rate_limited' | 'failed';
 }
 
+interface MentionedAgentUserGroupRepairInput {
+  workspaceId: string;
+  channelId: string;
+  userGroupId: string;
+  config: MentionRepairConfig;
+  transport: Pick<SlackTransport, 'lookupUserGroup'>;
+  limiter?: AgentUserGroupLookupLimiter;
+  now?: () => number;
+}
+
 /**
  * Bounds exceptional directory repair. Normal stored-id routing never reaches
  * this limiter. Failed or rejected ids are cached briefly, while a per-workspace
@@ -61,6 +71,7 @@ interface NegativeLookupReceipt {
 export class AgentUserGroupLookupLimiter {
   private readonly negativeReceipts = new Map<string, NegativeLookupReceipt>();
   private readonly windows = new Map<string, LookupWindow>();
+  private readonly repairs = new Map<string, Promise<MentionedAgentUserGroupRepairResult>>();
 
   constructor(private readonly options: {
     now?: () => number;
@@ -130,6 +141,23 @@ export class AgentUserGroupLookupLimiter {
     }
   }
 
+  runRepair(
+    workspaceId: string,
+    channelId: string,
+    userGroupId: string,
+    repair: () => Promise<MentionedAgentUserGroupRepairResult>,
+  ): Promise<MentionedAgentUserGroupRepairResult> {
+    const key = `${workspaceId}:${channelId}:${userGroupId}`;
+    const active = this.repairs.get(key);
+    if (active) return active;
+    const pending = repair();
+    this.repairs.set(key, pending);
+    void pending.finally(() => {
+      if (this.repairs.get(key) === pending) this.repairs.delete(key);
+    }).catch(() => undefined);
+    return pending;
+  }
+
   private trimWorkspaceWindows(): void {
     const maximum = this.options.maxWorkspaceWindows ?? 64;
     while (this.windows.size > maximum) {
@@ -142,16 +170,22 @@ export class AgentUserGroupLookupLimiter {
 
 const defaultAgentUserGroupLookupLimiter = new AgentUserGroupLookupLimiter();
 
-export async function repairMentionedAgentUserGroup(input: {
-  workspaceId: string;
-  channelId: string;
-  userGroupId: string;
-  config: MentionRepairConfig;
-  transport: Pick<SlackTransport, 'lookupUserGroup'>;
-  limiter?: AgentUserGroupLookupLimiter;
-  now?: () => number;
-}): Promise<MentionedAgentUserGroupRepairResult> {
+export function repairMentionedAgentUserGroup(
+  input: MentionedAgentUserGroupRepairInput,
+): Promise<MentionedAgentUserGroupRepairResult> {
   const limiter = input.limiter ?? defaultAgentUserGroupLookupLimiter;
+  return limiter.runRepair(
+    input.workspaceId,
+    input.channelId,
+    input.userGroupId,
+    () => repairMentionedAgentUserGroupOnce(input, limiter),
+  );
+}
+
+async function repairMentionedAgentUserGroupOnce(
+  input: MentionedAgentUserGroupRepairInput,
+  limiter: AgentUserGroupLookupLimiter,
+): Promise<MentionedAgentUserGroupRepairResult> {
   const lookup = await limiter.lookup(input.workspaceId, input.userGroupId, input.transport);
   if (lookup.kind !== 'found') {
     if (lookup.kind === 'failed' || lookup.kind === 'rate_limited') {

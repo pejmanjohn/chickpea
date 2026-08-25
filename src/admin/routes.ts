@@ -420,7 +420,10 @@ import {
   nodeGatewaySessionStatus,
   startNodeGatewaySession,
 } from '../slack/gateway/node-runtime.ts';
-import type { GatewaySessionStatusSnapshot } from '../slack/gateway/session-runner.ts';
+import {
+  reconcileGatewaySessionStatus,
+  type GatewaySessionStatusSnapshot,
+} from '../slack/gateway/session-runner.ts';
 import { GatewaySlackOidcProvider } from '../auth/gateway-slack-oidc.ts';
 import { SlackTransportError, type SlackTransport } from '../slack/transport/types.ts';
 import { SLACK_PENDING_ENVELOPE_SETTING } from '../slack/installation-handshake.ts';
@@ -8787,12 +8790,7 @@ async function readGatewaySessionStatus(rawEnv: unknown): Promise<GatewaySession
     const nodeStatus = nodeGatewaySessionStatus();
     if (nodeStatus) return nodeStatus;
   }
-  return {
-    healthy: false,
-    phase: 'offline',
-    detail: 'gateway_session_offline',
-    generation: null,
-  };
+  return reconcileGatewaySessionStatus(undefined, undefined);
 }
 
 function authResponseHeaders(c: Context): void {

@@ -1327,7 +1327,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     }
     const stores = this.stores;
     stores.management.cleanupRetention(Date.now(), 250);
-    stores.gatewayInbox.maintain();
     const gatewayNeedsRetry = await drainGatewayInbox(
       stores,
       this.env as PlatformEnv,

@@ -65,9 +65,11 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
 
   async status(): Promise<GatewaySessionStatusSnapshot> {
     await this.wake();
+    const live = this.supervisor?.snapshot();
+    if (live) return reconcileGatewaySessionStatus(live, undefined);
     const persisted = await createGatewayDeploymentClient(this.env as PlatformEnv)
       .loadSessionCheckpoint();
-    return reconcileGatewaySessionStatus(this.supervisor?.snapshot(), persisted);
+    return reconcileGatewaySessionStatus(undefined, persisted);
   }
 }
 
