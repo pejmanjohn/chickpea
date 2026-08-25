@@ -1236,8 +1236,6 @@ const slackBehaviorPatchSchema = v.pipe(
     v.strictObject({
       unassignedHint: v.boolean(),
       welcomeOnJoin: v.boolean(),
-      progressiveStreaming: v.boolean(),
-      nativeTasks: v.boolean(),
     }),
   ),
   v.check((patch) => Object.keys(patch).length > 0),

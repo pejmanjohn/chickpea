@@ -144,8 +144,7 @@ If authority disappears, future runs pause without silently selecting another pe
 | `SLACK_TAG_PUBLIC_URL` | optional | Public base URL for Slack-visible Configure links. |
 | `SLACK_TAG_UNASSIGNED_HINT` | optional | `false` disables private recovery feedback when an explicit Channel invocation is unavailable. |
 | `SLACK_TAG_WELCOME_ON_JOIN` | optional | `false` suppresses the one-time welcome after the base bot joins a granted Channel. |
-| `SLACK_TAG_PROGRESSIVE_STREAMING` | optional | Enable safe answer-text streaming. Effect-capable, memory, and recovery turns remain terminal-only. |
-| `SLACK_TAG_NATIVE_TASKS` | optional | `false` retains checklist-only progress instead of Slack task cards. |
+| `SLACK_TAG_PROGRESSIVE_STREAMING` | optional | Default-on deployment kill switch for model-selected Slack answer streaming. Set to `false` to stop offering the capability on new turns; native task cards are unaffected. |
 | `SLACK_TAG_MODEL` | optional | Offline/dev fallback `provider/model` for an unpinned Agent. |
 | `CHICKPEA_AUTH_SECRET` | Cloudflare-managed; Node required | Stable internal signing authority. |
 | `CHICKPEA_RECOVERY_TOKEN` | optional break glass | One short-lived repair capability; never a login credential. |

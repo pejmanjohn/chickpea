@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { type WebClient } from '@slack/web-api';
+import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import { openStateDb } from '../src/state/node-state-db.ts';
 import {
@@ -25,6 +25,7 @@ function harness(input: {
   native?: boolean;
   schemaVersion?: 1 | 2;
   failIntentMutation?: boolean;
+  startStreamError?: unknown;
   onNativeStarted?: () => Promise<void>;
   persona?: { name: string; avatarUrl: string; avatarRevision: number };
 } = {}) {
@@ -61,6 +62,7 @@ function harness(input: {
     chat: {
       async startStream(value: Record<string, unknown>) {
         calls.push({ method: 'chat.startStream', input: value });
+        if (input.startStreamError) throw input.startStreamError;
         stream += 1;
         return { ok: true, ts: `1785700100.00020${stream}` };
       },
@@ -273,6 +275,39 @@ test('effect-capable Work starts honest native tasks but emits no progressive an
     assert.equal(chunks[0]?.text, 'The customer is ready for review.');
     assert.deepEqual(chunks.slice(1).map((chunk) => chunk.status), ['complete', 'complete']);
     assert.equal(h.calls.some((call) => call.method === 'chat.appendStream'), false);
+  } finally {
+    h.db.close();
+  }
+});
+
+test('new V2 work falls back cleanly when Slack rejects its native task stream', async () => {
+  const h = harness({
+    tasks: ['Inspect the customer'],
+    startStreamError: { code: ErrorCode.PlatformError, data: { error: 'invalid_blocks' } },
+  });
+  try {
+    const relay = await prepareReceipt(h, {
+      instanceId: 'instance_native_rejected',
+      receipt: { submissionId: 'submission_native_rejected', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: false, reason: 'effect_capable' },
+    });
+    assert.equal(relay, undefined);
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.schemaVersion, 2);
+    assert.equal(stored?.stream.state, 'fallback');
+    assert.deepEqual(
+      await h.presentation.finalize(
+        'The checklist fallback remains authoritative.',
+        'markdown',
+        'complete',
+        observer([]),
+      ),
+      { handled: false, fallbackPresentation: true },
+    );
+    assert.deepEqual(
+      h.calls.filter((call) => call.method.startsWith('chat.')).map((call) => call.method),
+      ['chat.startStream'],
+    );
   } finally {
     h.db.close();
   }
