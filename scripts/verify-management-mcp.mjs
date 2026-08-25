@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 const REQUEST_TIMEOUT_MS = 15_000;
 const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1';
 const AGENT_AUTHORING_GUIDE_VERSION = '1.0.0';
+const MANAGEMENT_MCP_SERVER_VERSION = '2.1.0';
 
 function fetchWithDeadline(input, init = {}) {
   return fetch(input, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
@@ -60,6 +61,18 @@ async function main(rawBaseUrl) {
     return;
   }
 
+  if (protocolVersion() !== '2026-07-28') {
+    const initialized = await mcpCall(base, token, 'initialize', {
+      protocolVersion: protocolVersion(),
+      capabilities: {},
+      clientInfo: { name: 'chickpea-management-canary', version: '1.0.0' },
+    });
+    requireEqual(
+      initialized?.serverInfo?.version,
+      MANAGEMENT_MCP_SERVER_VERSION,
+      'workspace-management MCP server version',
+    );
+  }
   const listed = await mcpCall(base, token, 'tools/list', {});
   const names = listed?.tools?.map?.((tool) => tool?.name).filter(Boolean) ?? [];
   for (const expected of [

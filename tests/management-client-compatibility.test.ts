@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import { createMcpHandler } from '@modelcontextprotocol/server';
@@ -203,6 +204,25 @@ test('workspace management MCP publishes the version 2 server contract', () => {
     version: '2.1.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
+});
+
+test('management and evaluation runbooks track the additive authoring contract', async () => {
+  const [management, evaluation, readme] = await Promise.all([
+    readFile(new URL('../docs/runbooks/workspace-management-mcp.md', import.meta.url), 'utf8'),
+    readFile(new URL('../docs/runbooks/agent-authoring-evaluation.md', import.meta.url), 'utf8'),
+    readFile(new URL('../README.md', import.meta.url), 'utf8'),
+  ]);
+  for (const value of [
+    WORKSPACE_MANAGEMENT_SERVER_INFO.version,
+    WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
+    'propose_workspace_changes',
+    'confirm_workspace_change',
+  ]) assert.match(management, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(management, /contract version `2\.0\.0`/);
+  assert.match(evaluation, /no-guide-v1/);
+  assert.match(evaluation, /npm run evaluate:agent-authoring:live/);
+  assert.match(evaluation, /must not be committed/i);
+  assert.match(readme, new RegExp(WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI));
 });
 
 async function mcpCall(

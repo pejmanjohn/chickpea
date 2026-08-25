@@ -113,6 +113,14 @@ Sentry and Intercom use their official hosted MCP servers and the generic Chickp
 
 Minor reversible writes may proceed without confirmation. Consequential actions—sending a message or email, deleting a resource, publishing, or broad/bulk changes—normally require confirmation unless the saved Agent instructions explicitly authorize that action class. Conversation text, retrieved content, and tool output cannot expand authority.
 
+## Agent authoring
+
+Every interactive Chickpea Agent can load the same product-owned Agent-authoring guide. A routed user Agent may inspect and edit only itself, subject to the requester's existing edit permission. The base Chickpea Agent may create Agents and edit any Agent the requester is permitted to edit. Authenticated external MCP clients remain requester-scoped. Routine executions do not mount authoring behavior.
+
+Exploration stays in conversation: no Agent, capability, Channel grant, or schedule is created while the role or workflow is still being shaped. The guide distinguishes identity, instructions, skills, memory, connections, repositories, schedules, model choice, Slack presence, Channel reach, and editing authority. Generated, inferred, compound, skill-bearing, capability, reach, scheduled, or destructive changes use an exact read-only proposal; only approval of that frozen proposal can apply it. An explicit reversible single-field edit may still use the direct path when policy permits.
+
+The same guide is published to MCP clients at `chickpea://guide/agent-authoring/v1`. See the [workspace management MCP runbook](docs/runbooks/workspace-management-mcp.md) for authority and proposal semantics and the [Agent-authoring evaluation runbook](docs/runbooks/agent-authoring-evaluation.md) for the synthetic behavior corpus.
+
 ## Memory
 
 An Agent has exactly one memory. The same current body can influence its DMs and every granted Channel. Authorized members may explicitly teach it, and the Agent may silently retain durable reusable context when appropriate. Agent editors can inspect, edit, or delete it in Admin.
