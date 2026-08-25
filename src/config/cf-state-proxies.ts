@@ -4,9 +4,15 @@ import {
   AgentStillAssignedError,
   AgentStillReferencedError,
   ChannelRevisionConflictError,
+  ConnectionAccountRevisionConflictError,
   UnknownAgentError,
 } from './errors.ts';
-import type { SettingsPatch, SettingsStore } from './settings-store.ts';
+import type {
+  EncryptedCredentialStore,
+  ReplaceEncryptedCredentialRevisionInput,
+  SettingsPatch,
+  SettingsStore,
+} from './settings-store.ts';
 import type { AgentSnapshotStore } from './snapshot-store.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import type { StateRpcResult, TagStateRpc } from './state-rpc.ts';
@@ -247,6 +253,12 @@ function unwrap<T>(result: StateRpcResult<T>): T {
       throw new ChannelRevisionConflictError(
         details?.workspaceId ?? 'unknown',
         details?.channelId ?? 'unknown',
+        Number(details?.expectedRevision ?? 0),
+        Number(details?.actualRevision ?? 0),
+      );
+    case 'connection_account_revision_conflict':
+      throw new ConnectionAccountRevisionConflictError(
+        details?.accountId ?? 'unknown',
         Number(details?.expectedRevision ?? 0),
         Number(details?.actualRevision ?? 0),
       );
@@ -1356,7 +1368,7 @@ export class CfSlackStateStore implements SlackStateStore {
   }
 }
 
-export class CfSettingsStore implements SettingsStore {
+export class CfSettingsStore implements SettingsStore, EncryptedCredentialStore {
   constructor(private readonly stub: TagStateRpc) {}
 
   async getSetting(key: string): Promise<string | undefined> {
@@ -1381,6 +1393,18 @@ export class CfSettingsStore implements SettingsStore {
 
   async mergeSettingStringSet(key: string, values: readonly string[]): Promise<string[]> {
     return unwrap(await this.stub.settingMergeStringSet(key, values));
+  }
+
+  async getEncryptedCredentialRevision(key: string) {
+    return orUndefined(unwrap(await this.stub.encryptedCredentialGet(key)));
+  }
+
+  async replaceEncryptedCredentialRevision(input: ReplaceEncryptedCredentialRevisionInput) {
+    return orUndefined(unwrap(await this.stub.encryptedCredentialReplace(input)));
+  }
+
+  async deleteEncryptedCredentialRevision(key: string, expectedRevision: string) {
+    return unwrap(await this.stub.encryptedCredentialDelete(key, expectedRevision));
   }
 }
 

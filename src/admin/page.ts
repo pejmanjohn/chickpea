@@ -866,6 +866,19 @@ details[open].advanced summary::before {
 .modal-body { color: var(--text-2); font-size: 0.875rem; margin-top: 6px; }
 .modal-foot { align-items: center; display: flex; gap: 8px; margin-top: 18px; }
 .modal-foot .spacer { flex: 1; }
+.managed-setup-modal { display: grid; gap: 16px; max-width: 560px; padding: 26px; }
+.managed-setup-modal .modal-title { font-size: 1.25rem; }
+.managed-setup-intro { color: var(--text-2); display: grid; font-size: .875rem; gap: 10px; line-height: 1.55; }
+.managed-setup-intro p { margin: 0; }
+.managed-setup-connector { align-items: center; background: var(--well); border: 1px solid var(--line); border-radius: 14px; display: flex; gap: 12px; padding: 12px 14px; }
+.managed-setup-connector .conn-logo { flex: 0 0 auto; }
+.managed-setup-connector strong { color: var(--text); }
+.managed-setup-progress { color: var(--text-2); font-size: .8125rem; margin: 0; min-height: 20px; }
+.managed-setup-progress.error { color: var(--danger); }
+.managed-waiting { align-items: center; background: var(--well); border-radius: 14px; display: flex; gap: 14px; padding: 16px; }
+.managed-waiting-mark { align-items: center; background: var(--ember-tint); border-radius: 999px; color: var(--ember-press); display: inline-flex; flex: 0 0 40px; font-weight: 800; height: 40px; justify-content: center; }
+.managed-waiting p { margin: 3px 0 0; }
+.managed-impact { background: var(--well); border-radius: 12px; color: var(--text-2); font-size: .8125rem; padding: 11px 13px; }
 @media (max-width: 720px) {
   .modal-foot { flex-direction: column-reverse; align-items: stretch; }
   .modal-foot .spacer { display: none; }
@@ -2157,8 +2170,226 @@ button.capability-pill { cursor: pointer; }
 .conn-header-row .input { flex: 1; min-width: 140px; }
 .conn-security { color: var(--text-3); font-size: 0.78125rem; text-wrap: pretty; }
 .conn-template-hint { color: var(--danger); font-weight: 700; }
+.connection-state-stack { display: grid; gap: 22px; }
+.connection-state-stack .connection-state-section { display: grid; gap: 8px; }
+.connection-state-stack .connection-section-head {
+  align-items: center;
+  color: var(--text-3);
+  display: flex;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 0 3px;
+  text-transform: uppercase;
+}
+.connection-state-stack .connection-section-head h3 { font: inherit; margin: 0; }
+.connection-state-stack .connection-section-count { margin-left: auto; }
+.connection-state-stack .connection-account-list {
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  overflow: visible;
+}
+.connection-state-stack .connection-account-row {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 42px minmax(180px, 1fr) minmax(88px, auto) auto 76px 28px;
+  min-height: 64px;
+  padding: 7px 14px;
+  position: relative;
+}
+.connection-state-stack .connection-account-row + .connection-account-row { border-top: 1px solid var(--line); }
+.connection-state-stack .connection-account-row:hover { background: rgba(248, 241, 226, 0.58); }
+.connection-state-stack .connection-account-row:first-child { border-radius: 16px 16px 0 0; }
+.connection-state-stack .connection-account-row:last-child { border-radius: 0 0 16px 16px; }
+.connection-state-stack .connection-account-row:only-child { border-radius: 16px; }
+.connection-state-stack .connection-account-row .conn-logo { border-radius: 10px; height: 42px; width: 42px; }
+.connection-state-stack .connection-account-row .conn-logo-img svg { max-height: 28px; max-width: 28px; }
+.connection-state-stack .connection-account-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.connection-state-stack .connection-account-name { color: var(--text); font-size: 0.9375rem; font-weight: 600; line-height: 1.2; }
+.connection-state-stack .connection-account-identity {
+  color: var(--text-3);
+  font-size: 0.78125rem;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.connection-state-stack .connection-account-state { color: var(--text-3); font-size: 0.75rem; font-weight: 700; white-space: nowrap; }
+.connection-state-stack .connection-account-state::before { content: ""; border: 1.5px solid currentColor; border-radius: 50%; display: inline-block; height: 6px; margin-right: 7px; vertical-align: 1px; width: 6px; }
+.connection-state-stack .connection-account-state-ready { color: #946000; }
+.connection-state-stack .connection-account-state-ready::before { background: #dda116; border-color: #dda116; }
+.connection-state-stack .connection-account-state-warn { color: var(--danger); }
+.connection-state-stack .connection-account-state-placeholder,
+.connection-state-stack .connection-capability-placeholder,
+.connection-state-stack .connection-row-action-placeholder,
+.connection-state-stack .connection-row-menu-placeholder { min-width: 0; }
+.connection-state-stack .connection-capabilities { justify-self: end; position: relative; }
+.connection-state-stack .connection-capabilities > summary {
+  align-items: center;
+  background: rgba(59, 50, 32, 0.065);
+  border: 0;
+  border-radius: 999px;
+  color: var(--text-2);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.75rem;
+  font-weight: 700;
+  gap: 10px;
+  list-style: none;
+  min-height: 34px;
+  padding: 6px 14px;
+  white-space: nowrap;
+}
+.connection-state-stack .connection-capabilities > summary::-webkit-details-marker,
+.connection-state-stack .connection-row-menu > summary::-webkit-details-marker { display: none; }
+.connection-state-stack .connection-capabilities > summary::after {
+  border-bottom: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  content: "";
+  height: 5px;
+  margin-left: 1px;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 120ms ease;
+  width: 5px;
+}
+.connection-state-stack .connection-capabilities[open] > summary::after { transform: translateY(1px) rotate(225deg); }
+.connection-state-stack .connection-capabilities > summary:hover,
+.connection-state-stack .connection-capabilities > summary:focus-visible { background: rgba(59, 50, 32, 0.11); outline: none; }
+.connection-state-stack .connection-capabilities:not([open]):hover > .connection-capabilities-popover,
+.connection-state-stack .connection-capabilities:not([open]):focus-within > .connection-capabilities-popover { display: block; }
+.connection-state-stack .connection-capabilities-popover {
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  box-shadow: 0 18px 42px rgba(59, 50, 32, 0.2);
+  margin-top: 7px;
+  min-width: 330px;
+  padding: 13px;
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 12;
+}
+.connection-state-stack .connection-capabilities-popover h4 { font-size: 0.8125rem; margin: 0 0 3px; }
+.connection-state-stack .connection-capabilities-popover p { color: var(--text-3); font-size: 0.71875rem; line-height: 1.35; margin: 0 0 10px; }
+.connection-state-stack .connection-capability-list { display: grid; gap: 0; list-style: none; margin: 0; padding: 0; }
+.connection-state-stack .connection-capability-list li { align-items: start; border-top: 1px solid var(--line); display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) auto; padding: 8px 0; }
+.connection-state-stack .connection-capability-list li:first-child { border-top: 0; }
+.connection-state-stack .connection-capability-description { color: var(--text-2); font-size: 0.75rem; line-height: 1.35; }
+.connection-state-stack .connection-capability-effect { color: var(--ok); font-family: var(--mono); font-size: 0.625rem; font-weight: 750; text-transform: uppercase; }
+.connection-state-stack .connection-capability-effect-write { color: #a66b00; }
+.connection-state-stack .connection-capability-effect-unknown { color: var(--text-3); }
+.connection-state-stack .connection-capability-grant { border-top: 1px solid var(--line); margin-top: 4px !important; padding-top: 9px; }
+.connection-state-stack .connection-row-action { justify-self: stretch; min-width: 76px; padding-left: 12px; padding-right: 12px; }
+.connection-state-stack .connection-row-menu { justify-self: end; position: relative; }
+.connection-state-stack .connection-row-menu > summary {
+  align-items: center;
+  border-radius: 8px;
+  color: var(--text-3);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 1.25rem;
+  height: 28px;
+  justify-content: center;
+  line-height: 1;
+  list-style: none;
+  width: 28px;
+}
+.connection-state-stack .connection-row-menu > summary:hover,
+.connection-state-stack .connection-row-menu > summary:focus-visible { background: rgba(59, 50, 32, 0.08); color: var(--text); outline: none; }
+.connection-state-stack .connection-row-menu-panel {
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 14px 34px rgba(59, 50, 32, 0.19);
+  display: grid;
+  min-width: 210px;
+  padding: 6px;
+  position: absolute;
+  /* Keep the menu clear of the shared overflow-button column so the next
+     row's menu remains directly clickable while this one is open. */
+  right: 34px;
+  top: 34px;
+  z-index: 13;
+}
+.connection-state-stack .connection-row-menu-panel button {
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 650;
+  padding: 8px 9px;
+  text-align: left;
+}
+.connection-state-stack .connection-row-menu-panel button:hover { background: var(--well); }
+.connection-state-stack .connection-row-menu-panel button.danger { color: var(--danger); }
+.connection-state-stack .connection-row-editor { grid-column: 2 / -1; padding: 0 0 10px; }
+.connection-state-stack .connection-empty { border: 1px solid var(--line-strong); border-radius: 14px; color: var(--text-3); font-size: 0.8125rem; padding: 14px 16px; }
+.managed-provider-section { display: grid; gap: 16px; }
+.managed-provider-card { background: var(--well); border: 1px solid var(--line); border-radius: 16px; display: grid; gap: 16px; padding: 18px; }
+.managed-provider-status { align-items: flex-start; display: flex; gap: 11px; }
+.managed-provider-status p { margin: 3px 0 0; }
+.managed-provider-dot { border: 2px solid var(--text-3); border-radius: 50%; flex: 0 0 10px; height: 10px; margin-top: 5px; width: 10px; }
+.managed-provider-dot.ready { background: var(--ok); border-color: var(--ok); }
+.managed-provider-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.managed-provider-guidance { color: var(--text-2); font-size: .8125rem; margin: 0; }
+.managed-key-form { display: grid; gap: 10px; }
+.managed-settings-list { border: 1px solid var(--line-strong); border-radius: 16px; overflow: hidden; }
+.managed-settings-row { align-items: center; background: var(--bg); display: grid; gap: 12px; grid-template-columns: 38px minmax(0, 1fr) auto; min-height: 58px; padding: 8px 14px; }
+.managed-settings-row + .managed-settings-row { border-top: 1px solid var(--line); }
+.managed-settings-row .conn-logo { border-radius: 9px; height: 38px; width: 38px; }
+.managed-settings-row .conn-logo-img svg { max-height: 26px; max-width: 26px; }
+.managed-settings-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.managed-readiness { color: var(--text-3); font-size: .75rem; white-space: nowrap; }
+.managed-readiness::before { border: 1.5px solid currentColor; border-radius: 50%; content: ""; display: inline-block; height: 6px; margin-right: 7px; vertical-align: 1px; width: 6px; }
+.managed-readiness-ready { color: var(--ok); }
+.managed-readiness-ready::before { background: var(--ok); border-color: var(--ok); }
+.managed-readiness-prerequisite { color: #946000; }
+.connection-inventory-row { align-items: center; border: 1px solid var(--line); border-radius: 14px; display: flex; gap: 14px; justify-content: space-between; padding: 12px 14px; }
+.connection-inventory-row + .connection-inventory-row { margin-top: 8px; }
+.connection-inventory-row .connection-account-copy { min-width: 0; }
+.connection-inventory-actions { align-items: center; display: flex; flex-shrink: 0; gap: 6px; }
+.danger-text { color: var(--danger); }
 @media (max-width: 720px) {
   .skill-row.conn-row { align-items: stretch; flex-direction: column; }
+}
+@media (max-width: 620px) {
+  .managed-settings-row { align-items: start; grid-template-columns: 38px minmax(0, 1fr); }
+  .managed-readiness { grid-column: 2; }
+  .connection-inventory-row { align-items: stretch; flex-direction: column; }
+  .connection-inventory-actions { justify-content: flex-end; }
+}
+@media (max-width: 900px) {
+  .connection-state-stack .connection-account-row {
+    align-items: center;
+    gap: 7px 10px;
+    grid-template-columns: 38px minmax(0, 1fr) auto auto 28px;
+    min-height: 72px;
+    padding: 9px 11px;
+  }
+  .connection-state-stack .connection-account-row .conn-logo { height: 38px; width: 38px; }
+  .connection-state-stack .connection-account-copy { grid-column: 2 / 5; }
+  .connection-state-stack .connection-account-state { grid-column: 2 / 5; grid-row: 2; }
+  .connection-state-stack .connection-capabilities { grid-column: 2; grid-row: 3; justify-self: start; }
+  .connection-state-stack .connection-row-action { grid-column: 4; grid-row: 3; }
+  .connection-state-stack .connection-row-menu { grid-column: 5; grid-row: 1 / span 3; }
+  .connection-state-stack .connection-account-row > .conn-logo { grid-column: 1; grid-row: 1 / span 3; }
+  .connection-state-stack .connection-capabilities-popover { min-width: min(330px, calc(100vw - 48px)); right: -38px; }
+  .connection-state-stack .connection-account-state-placeholder,
+  .connection-state-stack .connection-capability-placeholder,
+  .connection-state-stack .connection-row-action-placeholder,
+  .connection-state-stack .connection-row-menu-placeholder { display: none; }
+  .connection-state-stack .connection-row-editor { grid-column: 1 / -1; }
+}
+@media (max-width: 520px) {
+  .connection-state-stack .connection-account-row:has(.connection-capabilities) .connection-row-action { grid-row: 4; }
+  .connection-state-stack .connection-account-row:has(.connection-capabilities) .connection-row-menu,
+  .connection-state-stack .connection-account-row:has(.connection-capabilities) > .conn-logo { grid-row: 1 / span 4; }
 }
 
 /* ---- profile footer (delete / add-to-channels / usage) ---- */
@@ -2626,7 +2857,6 @@ button.capability-pill { cursor: pointer; }
     // authorization code, token, verifier, client secret, or provider error is
     // ever placed in the URL or this browser state.
     oauthReturn: null,
-    managedReturn: null,
     // Inline credentialed REST API editor. Its credential is transient and is
     // written to the API-connection secret endpoint only after the profile
     // policy saves successfully.
@@ -2634,7 +2864,9 @@ button.capability-pill { cursor: pointer; }
     // Connections are reusable accounts. The Agent owns only bindings; this
     // view deliberately exposes Team vs My account without ever receiving a
     // credential or secret reference from the server.
-    agentConnections: { agentId: "", workspaceId: "", attached: [], available: [], managedCatalog: [], loading: false, error: "", notice: "" },
+    agentConnections: { agentId: "", workspaceId: "", attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" },
+    composioSetup: null,
+    managedAuthorization: null,
     agentSchedules: { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" },
     connectionAccountsSupported: null,
     connectionAccountForm: null,
@@ -2694,7 +2926,8 @@ button.capability-pill { cursor: pointer; }
     settingsSection: "providers",
     settingsLoaded: false,
     settingsLoadGeneration: 0,
-    connectionInventory: { accounts: [], loading: false, error: "" },
+    connectionInventory: { accounts: [], loading: false, error: "", notice: "" },
+    connectorSettings: { provider: null, catalog: [], canConfigure: false, recoveryMode: false, impact: { accounts: 0, schedules: 0 }, loading: false, busy: "", error: "", notice: "", key: "", editing: false, confirm: "" },
     providerSettingsRequestId: 0,
     settingsError: "",
     modelCatalog: null,
@@ -3107,7 +3340,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function prepareReadOnlyAgentState(agentId) {
-    state.agentConnections = { agentId: agentId, workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], loading: false, error: "", notice: "", legacyFallback: true };
+    state.agentConnections = { agentId: agentId, workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "", legacyFallback: true };
     state.agentSchedules = { agentId: agentId, viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
     state.ownerMemory = {
       ownerKind: "agent", workspaceId: connectedTeamId() || "workspace", ownerId: agentId,
@@ -3123,7 +3356,7 @@ button.capability-pill { cursor: pointer; }
     state.profileDraft = newProfileDraft();
     state.editingAgentId = null;
     resetProfileTransientState();
-    state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], loading: false, error: "", notice: "" };
+    state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" };
     state.agentSchedules = { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
     render();
   }
@@ -3160,7 +3393,7 @@ button.capability-pill { cursor: pointer; }
     state.profileDraft = draft;
     state.editingAgentId = null;
     resetProfileTransientState();
-    state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], loading: false, error: "", notice: "" };
+    state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" };
     state.agentSchedules = { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
     render();
   }
@@ -3276,7 +3509,7 @@ button.capability-pill { cursor: pointer; }
     lastRenderedPath = renderedPath;
     var app = document.getElementById("app");
     if (app.removeAttribute) app.removeAttribute("aria-busy");
-    var overlays = teamConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
+    var overlays = teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
     if (state.view === "onboarding") {
       app.className = "frame onboarding-frame";
       app.innerHTML = onboardingShellHtml() + overlays;
@@ -3317,6 +3550,13 @@ button.capability-pill { cursor: pointer; }
       });
       var teamConfirmCancel = document.querySelector('[data-action="team-confirm-cancel"]');
       if (teamConfirmCancel && teamConfirmCancel.focus) teamConfirmCancel.focus();
+    }
+    if (state.composioSetup || state.managedAuthorization || state.connectorSettings.confirm) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
     }
     // The disconnect confirmation is a true modal: keep the rest of the app
     // out of the focus and accessibility trees until it is resolved.
@@ -3450,6 +3690,69 @@ button.capability-pill { cursor: pointer; }
       '<button type="button" class="btn btn-danger" data-action="leave-discard">Discard &amp; leave</button>' +
       '<button type="button" class="btn btn-primary" data-action="leave-save">Save changes</button>' +
       '</div></div></div>';
+  }
+
+  function composioSetupModalHtml() {
+    var setup = state.composioSetup;
+    if (!setup) return "";
+    var busy = setup.phase === "validating" || setup.phase === "preparing";
+    var title = "Set up " + setup.label;
+    var providerLink = 'In Composio, open Settings &rarr; Project Settings &rarr; API Keys. <a class="hint-link" href="https://dashboard.composio.dev" target="_blank" rel="noopener noreferrer">Open Composio &nearr;</a>';
+    var body;
+    if (!setup.canConfigure) {
+      body = '<div class="managed-setup-intro"><p>' + esc(setup.label) + ' is available in Chickpea, but managed connectors must first be enabled by a Chickpea owner or admin.</p>' +
+        '<p class="hint">Ask an owner or admin to open Settings &rarr; Connectors and enable managed connectors for this installation.</p></div>' +
+        '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="composio-setup-close">Close</button><span class="spacer"></span><button type="button" class="btn btn-soft" data-action="composio-setup-settings">View Connectors settings</button></div>';
+    } else if (setup.deploymentManaged) {
+      body = '<div class="managed-setup-intro"><p>' + esc(setup.label) + ' is available in Chickpea and this installation already supplies its project key through deployment configuration.</p>' +
+        '<p class="hint">Open Settings &rarr; Connectors and prepare the standard connector defaults. The deployment key stays read-only in Admin.</p></div>' +
+        '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="composio-setup-close">Close</button><span class="spacer"></span><button type="button" class="btn btn-primary" data-action="composio-setup-settings">Open Connectors settings</button></div>';
+    } else {
+      var setupPreset = (REUSABLE_CONNECTOR_PRESETS || []).find(function (preset) {
+        return preset.id === setup.presetId;
+      }) || {
+        id: setup.presetId,
+        logoId: setup.toolkit,
+        name: setup.label,
+        accent: "#dda126"
+      };
+      var phaseCopy = setup.phase === "validating"
+        ? "Checking this project key&hellip;"
+        : setup.phase === "preparing"
+          ? "Preparing managed connectors&hellip;"
+          : setup.phase === "selected_unavailable"
+            ? setup.label + " still needs additional setup. Other connectors that finished are ready to use."
+            : "";
+      body = '<div class="managed-setup-intro"><div class="managed-setup-connector">' + connectorLogoHtml(setupPreset) +
+        '<div><strong>' + esc(setup.label) + '</strong><p class="hint">' + esc(setup.description) + '</p></div></div>' +
+        '<p>One Composio project unlocks Chickpea&rsquo;s managed connectors. Add its project key once; Chickpea prepares the standard connector setup for you.</p>' + providerLink + '</div>' +
+        '<div class="field"><label class="field-label" for="composio-project-key">Composio project key</label><input class="input mono" id="composio-project-key" type="password" autocomplete="off" value="' + esc(setup.key || "") + '" data-action="composio-setup-key" aria-describedby="composio-project-key-help' + (setup.error ? ' composio-project-key-error' : '') + '"' + (busy ? ' disabled' : '') + '><p class="hint" id="composio-project-key-help">Stored encrypted and never shown again.</p>' +
+        (setup.error ? '<p class="field-error" id="composio-project-key-error" role="alert">' + esc(setup.error) + '</p>' : '') + '</div>' +
+        (phaseCopy ? '<p class="managed-setup-progress' + (setup.phase === "selected_unavailable" ? ' error' : '') + '" role="' + (setup.phase === "selected_unavailable" ? 'alert' : 'status') + '" aria-live="' + (setup.phase === "selected_unavailable" ? 'assertive' : 'polite') + '">' + phaseCopy + '</p>' : '') +
+        '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="composio-setup-close"' + (busy ? ' disabled' : '') + '>Cancel</button><span class="spacer"></span>' +
+        (setup.phase === "selected_unavailable" ? '<button type="button" class="btn btn-soft" data-action="composio-setup-settings">Review connector status</button>' : '') +
+        '<button type="button" class="btn btn-primary" data-action="composio-setup-save"' + (busy || !String(setup.key || "").trim() ? ' disabled' : '') + '>' + (busy ? "Setting up&hellip;" : "Save key and continue") + '</button></div>';
+    }
+    return '<div class="modal-backdrop"><div class="modal-card managed-setup-modal" role="dialog" aria-modal="true" aria-labelledby="composio-setup-title" tabindex="-1" data-role="composio-setup-dialog"><h2 class="modal-title" id="composio-setup-title">' + esc(title) + '</h2>' + body + '</div></div>';
+  }
+
+  function managedAuthorizationModalHtml() {
+    var current = state.managedAuthorization;
+    if (!current) return "";
+    var failed = current.status === "failed";
+    var cancelling = current.status === "cancelling";
+    var statusCopy = failed
+      ? current.error
+      : cancelling
+        ? "Canceling this sign-in safely&hellip;"
+        : current.error || "Waiting for you to approve access in the sign-in tab.";
+    return '<div class="modal-backdrop"><div class="modal-card managed-setup-modal" role="dialog" aria-modal="true" aria-labelledby="managed-auth-title" tabindex="-1" data-role="managed-auth-dialog">' +
+      '<h2 class="modal-title" id="managed-auth-title">Connect ' + esc(current.label) + '</h2>' +
+      '<div class="managed-waiting"><span class="managed-waiting-mark" aria-hidden="true">' + (failed ? '!' : '<span class="spinner"></span>') + '</span><div><strong>' + (failed ? 'Sign-in needs attention' : 'Finish sign-in in the new tab') + '</strong><p class="hint" role="' + (failed ? 'alert' : 'status') + '" aria-live="' + (failed ? 'assertive' : 'polite') + '">' + esc(statusCopy) + '</p></div></div>' +
+      (current.popupBlocked && !failed ? '<p class="callout">Your browser did not open the hosted sign-in tab. Use Open sign-in below.</p>' : '') +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="managed-auth-cancel"' + (cancelling ? ' disabled' : '') + '>' + (cancelling ? 'Canceling&hellip;' : 'Cancel') + '</button><span class="spacer"></span>' +
+      (failed ? '<button type="button" class="btn btn-soft" data-action="managed-auth-retry">Check again</button>' : '') +
+      '<button type="button" class="btn btn-primary" data-action="managed-auth-open"' + (cancelling ? ' disabled' : '') + '>Open sign-in &nearr;</button></div></div></div>';
   }
 
   function topbarHtml() {
@@ -3744,7 +4047,7 @@ button.capability-pill { cursor: pointer; }
   function settingsRailHtml() {
     var sections = [
       { id: "slack", name: "Slack", meta: "Installation" },
-      { id: "connections", name: "Connections", meta: "Shared inventory" },
+      { id: "connectors", name: "Connectors", meta: "Managed integrations" },
       { id: "providers", name: "Model providers", meta: "Keys and models" },
       { id: "github", name: "GitHub", meta: "Accounts and access" },
       { id: "sandbox", name: "Coding sandbox", meta: "Workspace runtime" },
@@ -4851,11 +5154,11 @@ button.capability-pill { cursor: pointer; }
   function loadAgentConnections(agentId) {
     var workspaceId = connectedTeamId();
     if (state.connectionAccountsSupported === false) {
-      state.agentConnections = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], managedCatalog: [], loading: false, error: "", notice: "", legacyFallback: true };
+      state.agentConnections = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "", legacyFallback: true };
       render();
       return Promise.resolve();
     }
-    var requestState = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], managedCatalog: [], loading: true, error: "", notice: "" };
+    var requestState = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: true, error: "", notice: "" };
     state.agentConnections = requestState;
     render();
     if (!workspaceId) {
@@ -4869,6 +5172,8 @@ button.capability-pill { cursor: pointer; }
       state.agentConnections.attached = body.attached || [];
       state.agentConnections.available = body.available || [];
       state.agentConnections.managedCatalog = body.managedConnectors && body.managedConnectors.catalog || [];
+      state.agentConnections.managedCanConfigure = !!(body.managedConnectors && body.managedConnectors.canConfigure);
+      state.agentConnections.managedConfigurationReadOnly = !!(body.managedConnectors && body.managedConnectors.configurationReadOnly);
       // Older servers predate the availability field and supported only the
       // managed gallery behavior. Current servers report it explicitly so OSS
       // deployments without Composio retain native Google OAuth setup.
@@ -4877,20 +5182,7 @@ button.capability-pill { cursor: pointer; }
       state.agentConnections.loading = false;
       state.agentConnections.error = "";
       state.connectionAccountsSupported = true;
-      if (state.managedReturn && state.managedReturn.status === "connected" &&
-          !state.managedReturn.resourcePrompted) {
-        var returnedScopedAccount = state.agentConnections.attached.find(function (entry) {
-          return entry.account && entry.account.lifecycle === "pending" &&
-            entry.account.policy && entry.account.policy.kind === "managed" &&
-            entry.account.policy.toolkit === state.managedReturn.toolkit &&
-            managedResourceDefinitions(entry.account).length > 0;
-        });
-        if (returnedScopedAccount) {
-          state.managedReturn.resourcePrompted = true;
-          startManagedResourceSelection(returnedScopedAccount.account.id);
-          return;
-        }
-      }
+      restoreManagedAuthorization(agentId);
       render();
     }).catch(function (error) {
       if (state.agentConnections !== requestState) return;
@@ -4934,9 +5226,15 @@ button.capability-pill { cursor: pointer; }
       "/admin/api/agents/" + encodeURIComponent(schedules.agentId) + "/schedules/" + encodeURIComponent(scheduleId) + "/reassign",
       "POST",
       { runsAsMembershipId: membershipId, expectedAuthorityRevision: Number(expectedRevision) }
-    ).then(function () {
-      schedules.notice = "Schedule authority updated and paused work resumed.";
-      return loadAgentSchedules(schedules.agentId);
+    ).then(function (body) {
+      var notice = body && body.routine && body.routine.state === "paused"
+        ? "Schedule authority updated. This routine is still paused."
+        : "Schedule authority updated and paused work resumed.";
+      return loadAgentSchedules(schedules.agentId).then(function () {
+        if (state.agentSchedules.agentId !== schedules.agentId) return;
+        state.agentSchedules.notice = notice;
+        render();
+      });
     }).catch(function (error) {
       schedules.busy = "";
       schedules.error = (error && (error.serverMessage || error.message)) || "Could not update Runs as.";
@@ -4945,6 +5243,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function newConnectionAccountForm() {
+    state.connectorGallerySearch = "";
     state.connectionAccountForm = {
       ownerKind: "team",
       kind: "api",
@@ -4968,14 +5267,18 @@ button.capability-pill { cursor: pointer; }
     render();
   }
 
-  function newConnectionAccountFormFromPreset(presetId) {
+  function newConnectionAccountFormFromPreset(presetId, preferredOwnerKind) {
     var googleService = googleServicePresetById(presetId);
     var managedPreset = managedPresetById(presetId);
     var managedCandidate = managedPreset || googleService;
     var managedDescriptor = managedCandidate && managedConnectorDescriptorById(managedCandidate.id);
+    if (managedCandidate && managedDescriptor && !managedConnectorLaneReady(managedDescriptor, "read")) {
+      openComposioSetup(managedCandidate, managedDescriptor, preferredOwnerKind);
+      return;
+    }
     if (managedCandidate && managedDescriptor && managedConnectorLaneReady(managedDescriptor, "read")) {
       state.connectionAccountForm = {
-        ownerKind: "team",
+        ownerKind: preferredOwnerKind === "member" ? "member" : "team",
         kind: "managed",
         authMode: "composio",
         presetId: managedCandidate.id,
@@ -5001,7 +5304,7 @@ button.capability-pill { cursor: pointer; }
       googleEditor.googleAccess[googleService.service] = "read";
       syncGoogleApiPolicy(googleEditor);
       state.connectionAccountForm = {
-        ownerKind: "team",
+        ownerKind: preferredOwnerKind === "member" ? "member" : "team",
         kind: "api",
         authMode: "google_oauth",
         presetId: googleService.id,
@@ -5028,7 +5331,7 @@ button.capability-pill { cursor: pointer; }
     if (lanes.api && !lanes.mcp) {
       var apiEditor = apiEditorFromPreset(preset);
       state.connectionAccountForm = {
-        ownerKind: "team",
+        ownerKind: preferredOwnerKind === "member" ? "member" : "team",
         kind: "api",
         authMode: isGoogleWorkspaceEditor(apiEditor) ? "google_oauth" : "credential",
         presetId: preset.id,
@@ -5050,7 +5353,7 @@ button.capability-pill { cursor: pointer; }
     } else {
       var mcpEditor = editorFromPreset(preset);
       state.connectionAccountForm = {
-        ownerKind: "team",
+        ownerKind: preferredOwnerKind === "member" ? "member" : "team",
         kind: "mcp",
         authMode: mcpEditor.authMode,
         presetId: preset.id,
@@ -5092,29 +5395,12 @@ button.capability-pill { cursor: pointer; }
         render();
         return;
       }
-      form.busy = true;
-      form.error = "";
-      render();
-      postJson(
-        "/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/managed/start",
-        "POST",
-        {
-          workspaceId: state.agentConnections.workspaceId,
-          ownerKind: form.ownerKind === "member" ? "member" : "team",
-          toolkit: form.managedToolkit,
-          access: form.managedAccess === "write" ? "write" : "read"
-        }
-      ).then(function (body) {
-        var authorizationUrl;
-        try { authorizationUrl = new URL(String(body && body.authorizationUrl || "")); } catch (error) { throw new Error("Managed sign-in returned an invalid URL."); }
-        if (authorizationUrl.protocol !== "https:") throw new Error("Managed sign-in must use https.");
-        location.assign(authorizationUrl.href);
-      }).catch(function (error) {
-        if (!state.connectionAccountForm) return;
-        state.connectionAccountForm.busy = false;
-        state.connectionAccountForm.error = (error && (error.serverMessage || error.message)) || "Could not start managed sign-in.";
-        render();
-      });
+      startManagedAuthorization({
+        workspaceId: state.agentConnections.workspaceId,
+        ownerKind: form.ownerKind === "member" ? "member" : "team",
+        toolkit: form.managedToolkit,
+        access: form.managedAccess === "write" ? "write" : "read"
+      }, form.preset && form.preset.name || "Managed connector");
       return;
     }
     var providerId = connectionAccountProviderId(form);
@@ -5337,29 +5623,283 @@ button.capability-pill { cursor: pointer; }
     });
   }
 
-  function reconnectManagedConnection(accountId) {
-    var agentId = state.profileDraft && state.profileDraft.id;
-    if (!agentId || !accountId) return;
+  function managedAuthorizationStorageKey(agentId) {
+    return "chickpea.managed-authorization.v1:" + String(agentId || "");
+  }
+
+  function persistManagedAuthorization(value) {
+    try {
+      if (value && value.agentId) {
+        sessionStorage.setItem(managedAuthorizationStorageKey(value.agentId), JSON.stringify({
+          agentId: value.agentId,
+          toolkit: value.toolkit || "",
+          label: value.label || "Managed connector",
+          authorizationUrl: value.authorizationUrl,
+          pollUrl: value.pollUrl,
+          expiresAt: value.expiresAt,
+          startedAt: value.startedAt,
+          returnToSettings: !!value.returnToSettings,
+          popupBlocked: !!value.popupBlocked
+        }));
+      }
+    } catch (_) { /* session storage is an optional refresh convenience */ }
+  }
+
+  function clearManagedAuthorization(agentId) {
+    try { sessionStorage.removeItem(managedAuthorizationStorageKey(agentId)); } catch (_) {}
+    state.managedAuthorization = null;
+  }
+
+  function restoreManagedAuthorization(agentId) {
+    if (!agentId || state.managedAuthorization) return;
+    try {
+      var raw = sessionStorage.getItem(managedAuthorizationStorageKey(agentId));
+      if (!raw) return;
+      var parsed = JSON.parse(raw);
+      var authorizationUrl = new URL(String(parsed.authorizationUrl || ""));
+      if (parsed.agentId !== agentId || authorizationUrl.protocol !== "https:" ||
+          !String(parsed.pollUrl || "").startsWith("/admin/api/agents/") ||
+          Number(parsed.expiresAt || 0) <= Date.now()) {
+        sessionStorage.removeItem(managedAuthorizationStorageKey(agentId));
+        return;
+      }
+      state.managedAuthorization = {
+        agentId: agentId,
+        toolkit: String(parsed.toolkit || ""),
+        label: String(parsed.label || "Managed connector"),
+        authorizationUrl: authorizationUrl.href,
+        pollUrl: String(parsed.pollUrl),
+        expiresAt: Number(parsed.expiresAt),
+        startedAt: Number(parsed.startedAt) > 0
+          ? Number(parsed.startedAt)
+          : Number(parsed.expiresAt) - 30 * 60 * 1000,
+        status: "waiting",
+        error: "",
+        pollScheduled: false,
+        pollAttempts: 0,
+        returnToSettings: !!parsed.returnToSettings,
+        popupBlocked: !!parsed.popupBlocked
+      };
+      pollManagedAuthorization();
+    } catch (_) {
+      try { sessionStorage.removeItem(managedAuthorizationStorageKey(agentId)); } catch (_) {}
+    }
+  }
+
+  function openManagedAuthorizationTab(url) {
+    var opened = null;
+    try { opened = window.open(url, "_blank", "noopener,noreferrer"); } catch (_) { opened = null; }
+    return !!opened;
+  }
+
+  function startManagedAuthorization(body, label, context) {
+    var form = state.connectionAccountForm;
+    var agentId = context && context.agentId || state.profileDraft && state.profileDraft.id;
+    if (!agentId || state.managedAuthorization) return;
+    if (form) { form.busy = true; form.error = ""; }
     state.agentConnections.error = "";
+    render();
     postJson(
       "/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/managed/start",
       "POST",
-      { workspaceId: state.agentConnections.workspaceId, connectionAccountId: accountId }
-    ).then(function (body) {
+      body
+    ).then(function (response) {
       var authorizationUrl;
-      try { authorizationUrl = new URL(String(body && body.authorizationUrl || "")); } catch (error) { throw new Error("Managed sign-in returned an invalid URL."); }
+      try { authorizationUrl = new URL(String(response && response.authorizationUrl || "")); } catch (_) { throw new Error("Managed sign-in returned an invalid URL."); }
       if (authorizationUrl.protocol !== "https:") throw new Error("Managed sign-in must use https.");
-      location.assign(authorizationUrl.href);
+      var pollUrl = String(response && response.pollUrl || "");
+      if (!pollUrl.startsWith("/admin/api/agents/")) throw new Error("Managed sign-in returned an invalid status URL.");
+      var descriptor = "toolkit" in body ? managedConnectorDescriptorByToolkit(body.toolkit) : null;
+      state.connectionAccountForm = null;
+      state.managedAuthorization = {
+        agentId: agentId,
+        toolkit: descriptor && descriptor.toolkit || "",
+        label: label || descriptor && descriptor.label || "Managed connector",
+        authorizationUrl: authorizationUrl.href,
+        pollUrl: pollUrl,
+        expiresAt: Date.now() + 30 * 60 * 1000,
+        startedAt: Date.now(),
+        status: "waiting",
+        error: "",
+        pollScheduled: false,
+        pollAttempts: 0,
+        popupBlocked: !openManagedAuthorizationTab(authorizationUrl.href),
+        returnToSettings: !!(context && context.returnToSettings)
+      };
+      persistManagedAuthorization(state.managedAuthorization);
+      render();
+      pollManagedAuthorization();
     }).catch(function (error) {
-      state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not restart Google sign-in.";
+      if (form && state.connectionAccountForm === form) {
+        form.busy = false;
+        form.error = (error && (error.serverMessage || error.message)) || "Could not start managed sign-in.";
+      } else if (context && context.returnToSettings) {
+        state.connectionInventory.error = (error && (error.serverMessage || error.message)) || "Could not start managed sign-in.";
+      } else {
+        state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not start managed sign-in.";
+      }
       render();
     });
+  }
+
+  function scheduleManagedAuthorizationPoll(current) {
+    if (!current || state.managedAuthorization !== current || current.pollScheduled || current.status !== "waiting") return;
+    current.pollScheduled = true;
+    var delay = current.pollAttempts < 20 ? 1500 : current.pollAttempts < 38 ? 5000 : 15000;
+    window.setTimeout(function () {
+      if (state.managedAuthorization !== current) return;
+      current.pollScheduled = false;
+      pollManagedAuthorization();
+    }, delay);
+  }
+
+  function pollManagedAuthorization() {
+    var current = state.managedAuthorization;
+    if (!current || current.status === "checking") return;
+    if (Date.now() >= current.expiresAt) {
+      current.status = "failed";
+      current.error = "This sign-in link expired. Start again to create a fresh link.";
+      render();
+      return;
+    }
+    if (Date.now() - current.startedAt >= 5 * 60 * 1000) {
+      current.status = "failed";
+      current.error = "Still waiting for approval. Finish sign-in, then check again.";
+      render();
+      return;
+    }
+    current.status = "checking";
+    current.pollAttempts += 1;
+    return postJson(current.pollUrl, "POST", {}).then(function (body) {
+      if (state.managedAuthorization !== current) return;
+      if (body && body.status === "connected") {
+        var agentId = current.agentId;
+        var label = current.label;
+        var returnToSettings = current.returnToSettings;
+        var connectedAccountId = body.account && body.account.id;
+        clearManagedAuthorization(agentId);
+        if (returnToSettings) {
+          return loadConnectionInventory(state.settingsLoadGeneration).then(function () {
+            state.connectionInventory.notice = label + " is connected again.";
+            render();
+          });
+        }
+        return loadAgentConnections(agentId).then(function () {
+          if (state.agentConnections.agentId !== agentId) return;
+          var connectedEntry = state.agentConnections.attached.find(function (entry) {
+            return entry.account && entry.account.id === connectedAccountId;
+          });
+          if (connectedEntry && connectedEntry.account.lifecycle === "pending" &&
+              managedResourceDefinitions(connectedEntry.account).length > 0) {
+            startManagedResourceSelection(connectedEntry.account.id);
+            return;
+          }
+          state.agentConnections.notice = label + " is connected and ready for this Agent.";
+          render();
+        });
+      }
+      current.error = "";
+      current.status = "waiting";
+      render();
+      scheduleManagedAuthorizationPoll(current);
+    }).catch(function (error) {
+      if (state.managedAuthorization !== current) return;
+      if (error && error.status === 409 &&
+          (error.message === "managed_authorization_invalid" ||
+            error.message === "managed_authorization_terminal" ||
+            error.message === "managed_authorization_stale_provider")) {
+        clearManagedAuthorization(current.agentId);
+        var staleProvider = error.message === "managed_authorization_stale_provider";
+        if (current.returnToSettings) {
+          state.connectionInventory.error = staleProvider
+            ? "The connector configuration changed. Start the reconnection again."
+            : error.message === "managed_authorization_terminal"
+            ? "The provider did not complete that sign-in. Start the reconnection again."
+            : "That sign-in is no longer active. Start the reconnection again.";
+        } else {
+          state.agentConnections.error = staleProvider
+            ? "The connector configuration changed. Start the connection again."
+            : error.message === "managed_authorization_terminal"
+            ? "The provider did not complete that sign-in. Start the connection again."
+            : "That sign-in is no longer active. Start the connection again.";
+        }
+        render();
+        return;
+      }
+      if (error && (error.status === 503 || error.status >= 500)) {
+        current.status = "waiting";
+        current.error = "Sign-in check is temporarily unavailable. Chickpea will keep trying.";
+        render();
+        scheduleManagedAuthorizationPoll(current);
+        return;
+      }
+      current.status = "failed";
+      current.error = (error && error.serverMessage) || "Sign-in could not be checked. Try again.";
+      render();
+    });
+  }
+
+  function cancelManagedAuthorization() {
+    var current = state.managedAuthorization;
+    if (!current || current.status === "cancelling") return;
+    current.status = "cancelling";
+    current.error = "";
+    render();
+    postJson(
+      "/admin/api/agents/" + encodeURIComponent(current.agentId) + "/connections/managed/cancel",
+      "POST",
+      {}
+    ).then(function () {
+      clearManagedAuthorization(current.agentId);
+      render();
+    }).catch(function (error) {
+      if (state.managedAuthorization !== current) return;
+      current.status = "failed";
+      current.error = (error && (error.serverMessage || error.message)) || "Could not cancel this sign-in safely.";
+      render();
+    });
+  }
+
+  function reconnectManagedConnection(accountId) {
+    var agentId = state.profileDraft && state.profileDraft.id;
+    if (!agentId || !accountId) return;
+    var entry = (state.agentConnections.attached || []).concat(
+      (state.agentConnections.available || []).map(function (account) { return { account: account }; })
+    ).find(function (candidate) { return candidate.account && candidate.account.id === accountId; });
+    startManagedAuthorization(
+      { workspaceId: state.agentConnections.workspaceId, connectionAccountId: accountId },
+      entry && entry.account ? connectionAccountDisplayName(entry.account) : "Managed connector"
+    );
+  }
+
+  function reconnectSettingsConnectionAccount(accountId, agentId) {
+    if (!accountId || !agentId || state.managedAuthorization) return;
+    var entry = (state.connectionInventory.accounts || []).find(function (candidate) {
+      return candidate.account && candidate.account.id === accountId;
+    });
+    if (!entry || !entry.account || !entry.account.policy || entry.account.policy.kind !== "managed") return;
+    state.connectionInventory.error = "";
+    state.connectionInventory.notice = "";
+    startManagedAuthorization(
+      { workspaceId: connectedTeamId(), connectionAccountId: accountId },
+      entry.account.label || entry.account.providerId || "Managed connector",
+      { agentId: agentId, returnToSettings: true }
+    );
   }
 
   function detachConnectionAccount(accountId) {
     var agentId = state.profileDraft && state.profileDraft.id;
     if (!agentId) return;
-    api("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId), { method: "DELETE" }).then(function () {
+    var detachPath = "/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId);
+    function detachWithCleanupRetry(allowRetry) {
+      return api(detachPath, { method: "DELETE" }).catch(function (error) {
+        if (allowRetry && error && error.payload && error.payload.error === "connection_schedule_changed") {
+          return api(detachPath, { method: "DELETE" });
+        }
+        throw error;
+      });
+    }
+    detachWithCleanupRetry(true).then(function () {
       return loadAgentConnections(agentId);
     }).catch(function (error) {
       state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not remove that connection from the Agent.";
@@ -5370,27 +5910,51 @@ button.capability-pill { cursor: pointer; }
   function revokeConnectionAccount(accountId) {
     var label = "this account";
     var managed = false;
-    (state.agentConnections.attached || []).concat((state.agentConnections.available || []).map(function (account) { return { account: account }; })).some(function (entry) {
+    var knownAccounts = (state.agentConnections.attached || [])
+      .concat((state.agentConnections.available || []).map(function (account) { return { account: account }; }))
+      .concat(state.connectionInventory.accounts || []);
+    knownAccounts.some(function (entry) {
       if (entry.account && entry.account.id === accountId) {
-        label = entry.account.label;
+        label = connectionAccountDisplayName(entry.account);
         managed = Boolean(entry.account.policy && entry.account.policy.kind === "managed");
         return true;
       }
       return false;
     });
     var confirmation = managed
-      ? "Disconnect " + label + "? Chickpea will remove access immediately, pause dependent schedules, and delete the stored Composio account. Google will still list Composio as authorized; remove it from Google Account settings to fully revoke access."
+      ? "Disconnect " + label + "? Chickpea will remove access immediately, pause dependent schedules, and delete the stored managed account. The provider may still list the authorization until you remove it from the provider’s account settings."
       : "Disconnect " + label + "? Every Agent using it will lose access and dependent schedules will pause.";
     if (!window.confirm(confirmation)) return;
-    postJson("/admin/api/connections/" + encodeURIComponent(accountId) + "/revoke", "POST", {}).then(function () {
+    var revokePath = "/admin/api/connections/" + encodeURIComponent(accountId) + "/revoke";
+    function revokeWithCleanupRetry(allowRetry) {
+      return postJson(revokePath, "POST", {}).catch(function (error) {
+        if (allowRetry && error && error.payload && error.payload.error === "connection_schedule_changed") {
+          return postJson(revokePath, "POST", {});
+        }
+        throw error;
+      });
+    }
+    revokeWithCleanupRetry(true).then(function () {
+      if (primarySection() === "settings" && state.settingsSection === "connectors") {
+        return loadConnectionInventory(state.settingsLoadGeneration);
+      }
       return loadAgentConnections(state.profileDraft.id);
     }).then(function () {
-      state.agentConnections.notice = managed
-        ? label + " was disconnected and its Composio account deleted. To fully revoke access, remove Composio in Google Account settings."
-        : label + " was disconnected.";
+      var notice = managed
+          ? label + " was disconnected. To fully revoke provider access, remove the authorization in the provider’s account settings."
+          : label + " was disconnected.";
+      if (primarySection() === "settings" && state.settingsSection === "connectors") {
+        state.connectionInventory.notice = notice;
+      } else {
+        state.agentConnections.notice = notice;
+      }
       render();
     }).catch(function (error) {
-      state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not disconnect that account.";
+      if (primarySection() === "settings" && state.settingsSection === "connectors") {
+        state.connectionInventory.error = (error && (error.serverMessage || error.message)) || "Could not disconnect that account.";
+      } else {
+        state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not disconnect that account.";
+      }
       render();
     });
   }
@@ -5951,6 +6515,12 @@ button.capability-pill { cursor: pointer; }
       var runsAs = entry.runsAs || {};
       var needsAttention = reference.state === "needs_attention" || routine.state === "paused";
       var canTakeOver = !!schedules.viewerMembershipId && schedules.viewerMembershipId !== reference.runsAsMembershipId;
+      var repairablePause = ["schedule_authority_missing", "assignment_missing", "creator_ineligible", "credential_unavailable"].indexOf(routine.pausedReason || "") >= 0;
+      var canResume = !!schedules.viewerMembershipId && schedules.viewerMembershipId === reference.runsAsMembershipId &&
+        (reference.state === "needs_attention" || routine.state === "paused" && repairablePause);
+      var scheduleAction = canTakeOver || canResume
+        ? '<button type="button" class="btn btn-soft btn-sm" data-action="agent-schedule-reassign" data-schedule-id="' + esc(reference.scheduleId) + '" data-revision="' + Number(reference.revision || 0) + '"' + (schedules.busy ? ' disabled' : '') + '>' + (canResume ? 'Resume future runs' : 'Take over future runs') + '</button>'
+        : '<span class="hint">' + (schedules.viewerMembershipId ? 'Runs as you' : 'Runs as authority unavailable') + '</span>';
       return '<article class="connection-account-row"><div class="connection-account-copy"><div><strong>' + esc(routine.name || reference.scheduleId) + '</strong> ' +
         '<span class="badge ' + (needsAttention ? 'badge-off' : 'badge-on') + '">' + esc(needsAttention ? "Needs attention" : (routine.state || reference.state || "active")) + '</span></div>' +
         '<p class="hint">' + esc(routine.description || "Scheduled Agent work") + '</p>' +
@@ -5958,9 +6528,7 @@ button.capability-pill { cursor: pointer; }
         ' &middot; <strong>Destination:</strong> ' + esc(reference.channelId || "") +
         ' &middot; <strong>Connections:</strong> ' + Number((reference.requiredConnectionAccountIds || []).length) + '</p>' +
         (routine.pausedReason ? '<p class="error">Paused: ' + esc(routine.pausedReason) + '</p>' : '') + '</div>' +
-        '<div class="connection-account-actions">' + (canTakeOver
-          ? '<button type="button" class="btn btn-soft btn-sm" data-action="agent-schedule-reassign" data-schedule-id="' + esc(reference.scheduleId) + '" data-revision="' + Number(reference.revision || 0) + '"' + (schedules.busy ? ' disabled' : '') + '>Take over future runs</button>'
-          : '<span class="hint">' + (schedules.viewerMembershipId ? 'Runs as you' : 'Runs as authority unavailable') + '</span>') + '</div></article>';
+        '<div class="connection-account-actions">' + scheduleAction + '</div></article>';
     }).join("");
     return status + '<p class="hint ptab-hint">Each schedule uses this Agent\\'s instructions and memory. Team connections are shared; personal connections always resolve as the named member.</p><div class="connection-account-list">' + rows + '</div>';
   }
@@ -6187,18 +6755,46 @@ button.capability-pill { cursor: pointer; }
       descriptor.access[lane].status === "ready");
   }
 
-  function hasNativeNotionConnection() {
-    var draft = state.profileDraft || {};
-    var legacy = (draft.mcpServers || []).some(function (connection) {
-      return connection && connection.presetId === "notion";
-    });
-    if (legacy) return true;
-    return (state.agentConnections.attached || []).some(function (entry) {
-      var account = entry && entry.account;
-      var policy = account && account.policy;
-      return account && account.providerId === "notion" && policy &&
-        policy.kind === "mcp" && policy.presetId === "notion";
-    });
+  function managedConnectorMissingCodes(descriptor, lane) {
+    var availability = descriptor && descriptor.access && descriptor.access[lane];
+    return availability && availability.missingConfiguration || [];
+  }
+
+  function managedConnectorReadiness(descriptor, lane) {
+    if (managedConnectorLaneReady(descriptor, lane)) return { label: "Ready", kind: "ready" };
+    var codes = managedConnectorMissingCodes(descriptor, lane);
+    if (codes.indexOf("provider_prerequisite_missing") >= 0) {
+      return { label: "Additional setup required", kind: "prerequisite" };
+    }
+    return {
+      label: state.agentConnections.managedCanConfigure
+        ? (state.agentConnections.managedConfigurationReadOnly ? "Preparation required" : "Setup required")
+        : "Owner setup required",
+      kind: "setup"
+    };
+  }
+
+  function openComposioSetup(preset, descriptor, preferredOwnerKind) {
+    if (!preset || !descriptor) return;
+    state.composioSetup = {
+      presetId: preset.id,
+      toolkit: descriptor.toolkit,
+      label: preset.name,
+      description: preset.description || descriptor.description || "",
+      ownerKind: preferredOwnerKind === "member" ? "member" : "team",
+      canConfigure: !!state.agentConnections.managedCanConfigure,
+      deploymentManaged: !!state.agentConnections.managedConfigurationReadOnly,
+      key: "",
+      phase: "idle",
+      error: "",
+      returnFocusPresetId: preset.id
+    };
+    render();
+    window.setTimeout(function () {
+      var focusTarget = document.querySelector('[data-role="composio-setup-dialog"] input') ||
+        document.querySelector('[data-role="composio-setup-dialog"] button');
+      if (focusTarget && focusTarget.focus) focusTarget.focus();
+    }, 0);
   }
 
   function hasLegacyTokenMcpConnection(providerId) {
@@ -6250,7 +6846,7 @@ button.capability-pill { cursor: pointer; }
     return '<span class="conn-logo conn-logo-mono" style="background:' + esc(preset.accent) + '">' + esc(connectorMonogram(preset.name)) + '</span>';
   }
 
-  function connectorGalleryHtml(accountMode) {
+  function connectorGalleryHtml(accountMode, reusableAccounts, attachedAccounts, showCatalog) {
     // Legacy Agent-owned connections use preset ids as unique connection ids,
     // so only that lane hides presets already in use. Reusable accounts may
     // intentionally connect the same provider more than once.
@@ -6264,24 +6860,31 @@ button.capability-pill { cursor: pointer; }
     var googleAccess = googleAccessFromScopes(googleConnection ? googleConnection.oauthScopes : []);
     var q = String(state.connectorGallerySearch || "").trim().toLowerCase();
     var catalog = REUSABLE_CONNECTOR_PRESETS || [];
-    var shown = catalog.filter(function (preset) {
+    var reusable = (reusableAccounts || []).filter(function (account) {
+      return account.lifecycle !== "revoked";
+    });
+    var accountPresets = accountMode
+      ? reusable.concat(attachedAccounts || []).map(connectionAccountPreset).filter(Boolean)
+      : [];
+    var connectedAccountPresetIds = new Set(accountPresets.map(function (preset) { return preset.id; }));
+    var catalogVisible = showCatalog !== false;
+    var shown = (catalogVisible ? catalog : []).filter(function (preset) {
       var googleService = googleServicePresetById(preset.id);
       var managedPreset = managedPresetById(preset.id);
       if (googleService) {
         var managedDescriptor = managedConnectorDescriptorById(googleService.id);
-        if (accountMode && !googleService.service &&
-            !managedConnectorLaneReady(managedDescriptor, "read")) return false;
         if (!accountMode &&
             (!googleService.service || googleAccess[googleService.service] !== "off")) return false;
       } else if (managedPreset) {
         var managedDescriptor = managedConnectorDescriptorById(managedPreset.id);
-        if (!accountMode || !managedConnectorLaneReady(managedDescriptor, "read")) return false;
+        if (!accountMode) return false;
       } else if (!accountMode && connectedPresetIds[preset.id]) {
         return false;
       }
+      if (accountMode && connectedAccountPresetIds.has(preset.id)) return false;
       var searchText = (preset.name + " " + (preset.description || "")).toLowerCase();
       return !q || searchText.indexOf(q) >= 0;
-    }).slice().sort(function (a, b) {
+    }).sort(function (a, b) {
       var an = a.name.toLowerCase();
       var bn = b.name.toLowerCase();
       return an < bn ? -1 : an > bn ? 1 : 0;
@@ -6289,34 +6892,69 @@ button.capability-pill { cursor: pointer; }
     var rows = shown.map(function (preset) {
       var googleService = googleServicePresetById(preset.id);
       var managedPreset = managedPresetById(preset.id);
-      var managedDescriptor = (googleService || managedPreset) && managedConnectorDescriptorById(preset.id);
+      if (accountMode) {
+        var managedDescriptor = (googleService || managedPreset) && managedConnectorDescriptorById(preset.id);
+        var readiness = managedDescriptor ? managedConnectorReadiness(managedDescriptor, "read") : null;
+        var stateLabel = readiness && readiness.kind !== "ready" ? readiness.label : "No account";
+        var actionLabel = readiness && readiness.kind !== "ready" ? "Set up" : "Connect";
+        return '<div class="connection-account-row connection-catalog-row">' + connectorLogoHtml(preset) +
+          '<span class="connection-account-copy"><span class="connection-account-name">' + esc(preset.name) + '</span>' +
+          '<span class="connection-account-identity">' + esc(preset.description || "Connect an account.") + '</span></span>' +
+          '<span class="connection-account-state' + (readiness && readiness.kind !== "ready" ? ' connection-account-state-warn' : '') + '">' + esc(stateLabel) + '</span>' +
+          '<span class="connection-capability-placeholder" aria-hidden="true"></span>' +
+          '<button type="button" class="btn btn-soft btn-sm connection-row-action" data-action="connection-account-preset" data-preset="' + esc(preset.id) + '">' + esc(actionLabel) + '</button>' +
+          '<span class="connection-row-menu-placeholder" aria-hidden="true"></span></div>';
+      }
       var lanes = (googleService || managedPreset) ? { mcp: false, api: true } : presetLanes(preset);
-      var laneLabel = (googleService || managedPreset) && accountMode &&
-          managedConnectorLaneReady(managedDescriptor, "read")
-        ? "Managed OAuth"
-        : [lanes.mcp ? "MCP" : "", lanes.api ? "API" : ""].filter(function (label) { return !!label; }).join(" ");
+      var laneLabel = [lanes.mcp ? "MCP" : "", lanes.api ? "API" : ""].filter(function (label) { return !!label; }).join(" ");
       var description = preset.description ? '<span class="gallery-row-desc">' + esc(preset.description) + '</span>' : "";
-      var actionLabel = googleService && googleConnection && !accountMode ? "Enable" : "Connect";
+      var actionLabel = googleService && googleConnection ? "Enable" : "Connect";
       var rowClass = description ? "gallery-row gallery-row-described" : "gallery-row";
       return '<div class="' + rowClass + '">' + connectorLogoHtml(preset) +
         '<span class="gallery-row-copy"><span class="gallery-row-name">' + esc(preset.name) + '</span>' + description + '</span>' +
         '<span class="gallery-lane">' + laneLabel + '</span>' +
         '<span class="gallery-row-spacer"></span>' +
-        '<button type="button" class="btn btn-soft btn-sm" data-action="' + (accountMode ? "connection-account-preset" : "conn-preset") + '" data-preset="' + esc(preset.id) + '">' + actionLabel + '</button></div>';
+        '<button type="button" class="btn btn-soft btn-sm" data-action="conn-preset" data-preset="' + esc(preset.id) + '">' + actionLabel + '</button></div>';
     }).join("");
-    var list = shown.length
-      ? '<div class="gallery-list">' + rows + '</div>'
-      : (q
+    var matchingAccounts = reusable.filter(function (account) {
+      if (!q) return true;
+      var identity = account.identity && (account.identity.accountName || account.identity.workspaceName) || "";
+      var preset = connectionAccountPreset(account);
+      var policy = account.policy || {};
+      var searchText = [
+        account.label,
+        identity,
+        account.purpose || "",
+        preset && preset.name || "",
+        account.providerId || "",
+        policy.toolkit || "",
+      ].join(" ").toLowerCase();
+      return searchText.indexOf(q) >= 0;
+    });
+    var accountRows = accountMode ? matchingAccounts.map(function (account) {
+      return connectionAccountRowHtml(account, false);
+    }).join("") : "";
+    var combinedRows = accountRows + rows;
+    var custom = accountMode
+      ? '<div class="connection-account-row connection-catalog-row"><span class="conn-logo conn-logo-mono" style="background:var(--ember)">+</span>' +
+        '<span class="connection-account-copy"><span class="connection-account-name">Custom connection</span><span class="connection-account-identity">Connect another API or MCP server.</span></span>' +
+        '<span class="connection-account-state">No account</span><span class="connection-capability-placeholder" aria-hidden="true"></span>' +
+        '<button type="button" class="btn btn-soft btn-sm connection-row-action" data-action="connection-account-new">Connect</button><span class="connection-row-menu-placeholder" aria-hidden="true"></span></div>'
+      : '<div class="gallery-row"><span class="conn-logo conn-logo-mono" style="background:var(--ember)">+</span>' +
+        '<span class="gallery-row-name">Custom connection</span><span class="gallery-row-spacer"></span>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="conn-custom">Connect</button></div>';
+    var customMatches = accountMode && catalogVisible && (!q || "custom connection connect another api mcp server".indexOf(q) >= 0);
+    var listRows = combinedRows + (customMatches ? custom : "");
+    var list = listRows
+      ? '<div class="' + (accountMode ? "connection-account-list" : "gallery-list") + '">' + listRows + '</div>'
+      : (!catalogVisible
+          ? '<div class="connection-empty">No reusable accounts yet.</div>'
+          : q
           ? '<div class="gallery-empty">No connectors match &ldquo;' + esc(state.connectorGallerySearch) + '&rdquo;.</div>'
           : '<div class="gallery-empty">Every prepackaged connector is already added.</div>');
-    var custom = '<div class="gallery-row">' +
-      '<span class="conn-logo conn-logo-mono" style="background:var(--ember)">+</span>' +
-      '<span class="gallery-row-name">Custom connection</span>' +
-      '<span class="gallery-row-spacer"></span>' +
-      '<button type="button" class="btn btn-soft btn-sm" data-action="' + (accountMode ? "connection-account-new" : "conn-custom") + '">Connect</button></div>';
-    return '<input class="input" id="conn-gallery-search-input" type="text" autocomplete="off" placeholder="Search connectors" value="' + esc(state.connectorGallerySearch || "") + '" data-action="conn-gallery-search" aria-label="Search connectors">' +
-      '<div class="gallery-head"><span>Available</span><span class="gallery-head-count">' + shown.length + '</span></div>' +
-      list + custom;
+    return (catalogVisible ? '<input class="input" id="conn-gallery-search-input" type="text" autocomplete="off" placeholder="Search connectors" value="' + esc(state.connectorGallerySearch || "") + '" data-action="conn-gallery-search" aria-label="Search connectors">' : "") +
+      '<div class="' + (accountMode ? "connection-section-head" : "gallery-head") + '">' + (accountMode ? "<h3>Available</h3>" : "<span>Available</span>") + '<span class="' + (accountMode ? "connection-section-count" : "gallery-head-count") + '">' + (shown.length + matchingAccounts.length + (customMatches ? 1 : 0)) + '</span></div>' +
+      list + (accountMode ? "" : custom);
   }
 
   function connectionStatusPill(conn) {
@@ -6675,20 +7313,152 @@ button.capability-pill { cursor: pointer; }
     return '<span class="conn-meta">GitHub now lives in the <button type="button" class="link-btn" data-action="profile-tab" data-tab="repositories">Repositories tab</button></span>';
   }
 
-  function connectionAccountScopeHtml(account) {
-    return '<span class="badge-src">' + (account.ownerKind === "member" ? "My connection" : "Team connection") + '</span>';
+  function connectionAccountPreset(account) {
+    var policy = account && account.policy || {};
+    var presets = REUSABLE_CONNECTOR_PRESETS || [];
+    if (policy.kind === "managed") {
+      var byToolkit = presets.find(function (preset) { return preset.managedToolkit === policy.toolkit; });
+      if (byToolkit) return byToolkit;
+      var descriptor = managedConnectorDescriptorByToolkit(policy.toolkit);
+      if (descriptor) {
+        var byDescriptor = presets.find(function (preset) { return preset.id === descriptor.id; });
+        if (byDescriptor) return byDescriptor;
+      }
+    }
+    if (policy.kind === "mcp" && policy.presetId) {
+      var byMcpPreset = presets.find(function (preset) {
+        if (preset.id !== policy.presetId || typeof preset.url !== "string") return false;
+        try {
+          var actual = new URL(policy.url);
+          var expected = new URL(preset.url);
+          var actualPath = actual.pathname.endsWith("/") ? actual.pathname.slice(0, -1) : actual.pathname;
+          var expectedPath = expected.pathname.endsWith("/") ? expected.pathname.slice(0, -1) : expected.pathname;
+          return actual.origin === expected.origin && actualPath === expectedPath;
+        } catch (error) { return false; }
+      });
+      if (byMcpPreset) return byMcpPreset;
+    }
+    if (policy.kind === "api" && policy.presetId) {
+      var byApiPreset = presets.find(function (preset) {
+        if (preset.id !== policy.presetId || !preset.api) return false;
+        var expectedHosts = preset.api.hosts || [];
+        var actualHosts = policy.allowedHosts || [];
+        var hostsMatch = actualHosts.length > 0 && actualHosts.every(function (actualHost) {
+          return expectedHosts.some(function (expectedHost) {
+            if (!preset.api.hostTemplate) return actualHost.toLowerCase() === expectedHost.toLowerCase();
+            var marker = "your-subdomain";
+            var index = expectedHost.indexOf(marker);
+            if (index < 0) return false;
+            var prefix = expectedHost.slice(0, index);
+            var suffix = expectedHost.slice(index + marker.length);
+            if (!actualHost.startsWith(prefix) || !actualHost.endsWith(suffix)) return false;
+            var variable = actualHost.slice(prefix.length, actualHost.length - suffix.length);
+            return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(variable);
+          });
+        });
+        var expectedMethods = preset.api.methods || [];
+        var methodsMatch = (policy.allowedMethods || []).every(function (method) {
+          return expectedMethods.indexOf(method) >= 0;
+        });
+        return hostsMatch && methodsMatch;
+      });
+      if (byApiPreset) return byApiPreset;
+    }
+    return null;
   }
 
-  function connectionAccountPolicySummary(account) {
+  function connectionAccountLogoHtml(account) {
+    var preset = connectionAccountPreset(account);
+    if (preset) return connectorLogoHtml(preset);
+    // Do not route a custom account through connectorLogoHtml: that helper
+    // resolves ids against the branded catalog. A caller-controlled provider
+    // id or label must always remain a neutral, clearly custom connection.
+    return '<span class="conn-logo conn-logo-mono" style="background:#8b6b2e">' +
+      esc(connectorMonogram(account.label || "Connection")) + '</span>';
+  }
+
+  function connectionAccountOwnerLabel(account) {
+    return account.ownerKind === "member" ? "Personal" : "Team";
+  }
+
+  function connectionAccountDisplayName(account) {
+    var preset = connectionAccountPreset(account);
+    var label = String(account.label || "Connection").replace(/\\s+·\\s+(?:Personal|Team)$/i, "");
+    if (preset && label.toLowerCase() === preset.name.toLowerCase()) return preset.name;
+    return label;
+  }
+
+  function connectionAccountIdentity(account) {
     var policy = account.policy || {};
-    if (policy.kind === "mcp") {
-      return "MCP · " + connectionHost(policy.url || "") + " · " + (policy.allowedTools || []).length + " tools";
-    }
+    if (policy.kind === "mcp") return connectionHost(policy.url || "") || "";
+    if (policy.kind === "api") return policy.allowedHosts && policy.allowedHosts[0] || "";
+    var identity = account.identity && (account.identity.accountName || account.identity.workspaceName);
+    if (identity) return identity;
+    if (account.policy && account.policy.kind !== "managed" && account.purpose) return account.purpose;
+    return "";
+  }
+
+  function humanizeCapabilityId(id) {
+    var parts = String(id || "").split(".").filter(function (part) { return !!part; });
+    var useful = parts.slice(Math.max(0, parts.length - 2)).join(" ").replace(/[_-]+/g, " ");
+    return useful ? useful.charAt(0).toUpperCase() + useful.slice(1) : "Available action";
+  }
+
+  function connectionAccountCapabilityItems(account) {
+    var policy = account && account.policy || {};
     if (policy.kind === "managed") {
-      var capabilityCount = (policy.allowedCapabilities || []).length;
-      return "Managed · " + (account.providerId || "Provider") + " / " + (policy.toolkit || "Toolkit") + " · " + capabilityCount + " " + (capabilityCount === 1 ? "capability" : "capabilities");
+      var descriptor = managedConnectorDescriptorByToolkit(policy.toolkit);
+      var definitions = descriptor && descriptor.capabilities || [];
+      return (policy.allowedCapabilities || []).map(function (id) {
+        var definition = definitions.find(function (candidate) { return candidate.id === id; });
+        return {
+          id: id,
+          label: definition && definition.description || humanizeCapabilityId(id),
+          lane: definition && (definition.accessLane === "read" || definition.accessLane === "write")
+            ? definition.accessLane
+            : null
+        };
+      });
     }
-    return "API · " + ((policy.allowedHosts || [])[0] || account.providerId || "Custom");
+    if (policy.kind === "mcp") {
+      var discovered = policy.discoveredTools || [];
+      return (policy.allowedTools || []).map(function (name) {
+        var tool = discovered.find(function (candidate) { return candidate.name === name; });
+        return { id: name, label: tool && tool.description || humanizeCapabilityId(name), lane: null };
+      });
+    }
+    return (policy.allowedMethods || []).map(function (method) {
+      var normalizedMethod = String(method || "").toUpperCase();
+      var lane = normalizedMethod === "GET" || normalizedMethod === "HEAD" || normalizedMethod === "OPTIONS"
+        ? "read"
+        : normalizedMethod === "POST" || normalizedMethod === "PUT" || normalizedMethod === "PATCH" || normalizedMethod === "DELETE"
+          ? "write"
+          : null;
+      return { id: method, label: method + " requests to approved paths", lane: lane };
+    });
+  }
+
+  function connectionAccountCapabilitiesHtml(account, capabilityOverride, attached) {
+    var capabilityAccount = account;
+    if (account.policy && account.policy.kind === "managed" && Array.isArray(capabilityOverride)) {
+      capabilityAccount = Object.assign({}, account, {
+        policy: Object.assign({}, account.policy, { allowedCapabilities: capabilityOverride.slice() })
+      });
+    }
+    var items = connectionAccountCapabilityItems(capabilityAccount);
+    if (!items.length) return '<span class="connection-capability-placeholder" aria-hidden="true"></span>';
+    var name = connectionAccountDisplayName(account);
+    var rows = items.map(function (item) {
+      return '<li><span class="connection-capability-description">' + esc(item.label) + '</span>' +
+        (item.lane ? '<span class="connection-capability-effect' + (item.lane === "write" ? " connection-capability-effect-write" : "") + '">' + esc(item.lane === "write" ? "Write" : "Read") + '</span>' : "") + '</li>';
+    }).join("");
+    var grant = managedGrantSummaryHtml(account);
+    return '<details class="connection-capabilities"><summary aria-label="Show ' + items.length + ' ' + esc(name) + ' ' + (items.length === 1 ? "capability" : "capabilities") + '">' +
+      items.length + ' ' + (items.length === 1 ? "capability" : "capabilities") + '</summary>' +
+      '<div class="connection-capabilities-popover"><h4>' + esc(name) + ' capabilities</h4>' +
+      '<p>' + (attached ? "What this Agent can do with this account." : "This is the maximum this account can do. Each Agent can be given less access.") + '</p>' +
+      '<ul class="connection-capability-list">' + rows + '</ul>' +
+      (grant ? '<p class="connection-capability-grant">' + grant + '</p>' : '') + '</div></details>';
   }
 
   function managedGrantSummaryHtml(account) {
@@ -6872,11 +7642,12 @@ button.capability-pill { cursor: pointer; }
 
   function connectionAccountRowHtml(entry, attached) {
     var account = attached ? entry.account : entry;
-    var identity = account.identity && (account.identity.accountName || account.identity.workspaceName);
-    var statusClass = account.lifecycle === "ready" ? "badge-on" : "badge-off";
+    var identity = connectionAccountIdentity(account);
+    var owner = connectionAccountOwnerLabel(account);
+    var displayName = connectionAccountDisplayName(account);
     var oauthAction = account.policy && account.policy.authMode === "oauth" && account.lifecycle !== "ready"
-      ? '<button type="button" class="btn btn-primary btn-sm" data-action="' + (account.policy.kind === "mcp" ? "connection-account-mcp-oauth-start" : "connection-account-oauth-start") + '" data-connection-id="' + esc(account.id) + '">Finish sign-in</button>'
-      : '';
+      ? '<button type="button" class="btn btn-primary btn-sm connection-row-action" data-action="' + (account.policy.kind === "mcp" ? "connection-account-mcp-oauth-start" : "connection-account-oauth-start") + '" data-connection-id="' + esc(account.id) + '">Sign in</button>'
+      : "";
     var managedResources = managedResourceDefinitions(account);
     var bindingResources = attached && entry.binding && entry.binding.resourceConstraints || {};
     var missingRequiredBindingResource = attached && managedResources.some(function (definition) {
@@ -6887,22 +7658,39 @@ button.capability-pill { cursor: pointer; }
     var managedAction = account.policy && account.policy.kind === "managed" &&
       account.lifecycle !== "ready" && account.lifecycle !== "revoked" &&
       (account.lifecycle === "needs_attention" || !pendingResourceSelection)
-      ? '<button type="button" class="btn btn-primary btn-sm" data-action="connection-account-managed-reconnect" data-connection-id="' + esc(account.id) + '">Reconnect</button>'
-      : '';
-    var resourceAction = attached && managedResources.length
-      ? '<button type="button" class="btn ' + (pendingResourceSelection ? "btn-primary" : "btn-soft") + ' btn-sm" data-action="connection-account-resource-open" data-connection-id="' + esc(account.id) + '">' + (pendingResourceSelection ? "Choose " : "Change ") + esc(managedResourceSelectionLabel(account)) + '</button>'
-      : '';
-    var action = attached
-      ? managedAction + resourceAction + oauthAction + '<button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-detach" data-connection-id="' + esc(account.id) + '">Remove from Agent</button>'
-      : managedAction + '<button type="button" class="btn btn-soft btn-sm" data-action="connection-account-attach" data-connection-id="' + esc(account.id) + '">Add to Agent</button>';
-    return '<div class="skill-row conn-row"><div class="sk-body"><span class="sk-name" style="font-family:inherit;">' + esc(account.label) + '</span>' +
-      connectionAccountScopeHtml(account) +
-      '<span class="conn-host">' + esc(connectionAccountPolicySummary(account)) + '</span>' +
-      '<span class="conn-meta"><span class="badge ' + statusClass + '"><span class="dot"></span>' + esc(account.lifecycle === "ready" ? "Ready" : String(account.lifecycle || "Needs attention").replace(/_/g, " ")) + '</span>' +
-      (identity ? '<span>' + esc(identity) + '</span>' : '') +
-      (account.purpose ? '<span>' + esc(account.purpose) + '</span>' : '') +
-      managedGrantSummaryHtml(account) + '</span></div>' + action +
-      '<button type="button" class="link-btn" data-action="connection-account-revoke" data-connection-id="' + esc(account.id) + '">Disconnect account</button>' + managedResourceEditorHtml(account) + '</div>';
+      ? '<button type="button" class="btn btn-primary btn-sm connection-row-action" data-action="connection-account-managed-reconnect" data-connection-id="' + esc(account.id) + '">Reconnect</button>'
+      : "";
+    var pendingResourceAction = attached && pendingResourceSelection
+      ? '<button type="button" class="btn btn-primary btn-sm connection-row-action" data-action="connection-account-resource-open" data-connection-id="' + esc(account.id) + '">Choose</button>'
+      : "";
+    var regularAction = attached
+      ? '<span class="connection-row-action-placeholder" aria-hidden="true"></span>'
+      : '<button type="button" class="btn btn-primary btn-sm connection-row-action" data-action="connection-account-attach" data-connection-id="' + esc(account.id) + '">Add</button>';
+    var action = managedAction || oauthAction || pendingResourceAction || regularAction;
+    var status = account.lifecycle === "ready"
+      ? (attached ? '<span class="connection-account-state-placeholder" aria-hidden="true"></span>' : '<span class="connection-account-state connection-account-state-ready">Account ready</span>')
+      : '<span class="connection-account-state connection-account-state-warn">' + esc({
+          pending: "Setup required",
+          needs_attention: "Needs attention",
+          revoked: "Disconnected"
+        }[account.lifecycle] || "Needs attention") + '</span>';
+    var menuItems = [];
+    if (attached) {
+      menuItems.push('<button type="button" data-action="connection-account-detach" data-connection-id="' + esc(account.id) + '">Remove from this Agent</button>');
+      if (managedResources.length && (!pendingResourceSelection || managedAction || oauthAction)) {
+        menuItems.push('<button type="button" data-action="connection-account-resource-open" data-connection-id="' + esc(account.id) + '">' + (pendingResourceSelection ? "Choose " : "Change ") + esc(managedResourceSelectionLabel(account)) + '</button>');
+      }
+    }
+    menuItems.push('<button type="button" class="danger" data-action="connection-account-revoke" data-connection-id="' + esc(account.id) + '">Disconnect account&hellip;</button>');
+    var menu = '<details class="connection-row-menu"><summary aria-label="More actions for ' + esc(displayName) + '">&#8943;</summary>' +
+      '<div class="connection-row-menu-panel">' + menuItems.join("") + '</div></details>';
+    var resourceEditor = managedResourceEditorHtml(account);
+    return '<div class="connection-account-row connection-account-row-' + (attached ? "attached" : "available") + '">' +
+      connectionAccountLogoHtml(account) +
+      '<span class="connection-account-copy"><span class="connection-account-name">' + esc(displayName) + '</span>' +
+      '<span class="connection-account-identity">' + (identity ? esc(identity) + ' &middot; ' : '') + owner + '</span></span>' +
+      status + connectionAccountCapabilitiesHtml(account, attached && entry.binding ? entry.binding.allowedCapabilities : null, attached) + action + menu +
+      (resourceEditor ? '<div class="connection-row-editor">' + resourceEditor + '</div>' : '') + '</div>';
   }
 
   function connectionAccountEndpointHtml(form, preset, oauth) {
@@ -6980,13 +7768,14 @@ button.capability-pill { cursor: pointer; }
     if (form.kind === "managed") {
       var managedPreset = form.preset;
       var managedDescriptor = managedConnectorDescriptorByToolkit(form.managedToolkit);
-      return '<div class="skill-form"><div class="form-grid"><div class="field"><label class="field-label">Who uses this account?</label><span class="select-wrap"><select class="input" data-action="connection-account-owner"><option value="team"' + (form.ownerKind === "team" ? " selected" : "") + '>Team connection</option><option value="member"' + (form.ownerKind === "member" ? " selected" : "") + '>My connection</option></select></span><p class="hint">Team connections can be reused by Agents across the workspace. Personal connections are available only when you invoke the Agent.</p></div><div></div></div>' +
+      var managedSecurityCopy = managedDescriptor && managedDescriptor.securityDescription &&
+        !/composio/i.test(managedDescriptor.securityDescription)
+        ? managedDescriptor.securityDescription
+        : "Sign-in opens in a secure hosted tab. Chickpea stores the connected-account reference and this Agent’s capability ceiling, not provider refresh tokens.";
+      return '<div class="skill-form"><div class="form-grid"><div class="field"><label class="field-label">Who uses this account?</label><span class="select-wrap"><select class="input" data-action="connection-account-owner"><option value="team"' + (form.ownerKind === "team" ? " selected" : "") + '>Team connection</option><option value="member"' + (form.ownerKind === "member" ? " selected" : "") + '>My connection</option></select>' + icon("chevron-down", "select-caret") + '</span><p class="hint">Team connections can be reused by Agents across the workspace. Personal connections are available only when you invoke the Agent.</p></div><div></div></div>' +
         '<div class="conn-title" style="margin-bottom:16px;">' + connectorLogoHtml(managedPreset) + '<div><strong>' + esc(managedPreset.name) + '</strong><p class="hint">' + esc(managedPreset.description || "") + '</p></div></div>' +
         connectionAccountAccessHtml(form) +
-        '<p class="conn-security">' + esc(managedDescriptor && managedDescriptor.securityDescription || "Sign-in opens through the managed connector provider. Chickpea stores the connected-account reference and this Agent’s capability ceiling, not provider refresh tokens.") + '</p>' +
-        (form.managedToolkit === "notion" && hasNativeNotionConnection()
-          ? '<p class="hint">This adds managed Notion beside Native Notion. Chickpea will not change Agent bindings or disconnect the native account; validate the managed account first, then migrate explicitly.</p>'
-          : '') +
+        '<p class="conn-security">' + esc(managedSecurityCopy) + '</p>' +
         (form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '') +
         '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy ? " disabled" : "") + '>' + (busy ? "Opening sign-in&hellip;" : "Continue to sign in") + '</button></div></div>';
     }
@@ -6994,7 +7783,7 @@ button.capability-pill { cursor: pointer; }
     var mcpOauth = form.kind === "mcp" && form.authMode === "oauth";
     var preset = form.preset;
     var managedGoogleAvailable = state.agentConnections.managedGoogleAvailable !== false;
-    var authHtml = !preset && form.kind === "api" ? '<div class="field"><label class="field-label">Authentication</label><span class="select-wrap"><select class="input" data-action="connection-account-auth"><option value="credential"' + (form.authMode !== "google_oauth" ? " selected" : "") + '>API token</option>' + (!managedGoogleAvailable ? '<option value="google_oauth"' + (form.authMode === "google_oauth" ? " selected" : "") + '>Google OAuth</option>' : '') + '</select></span><p class="hint">' + (managedGoogleAvailable ? 'Use a managed Google connector for Google OAuth.' : 'This deployment uses its own Google OAuth client credentials.') + '</p></div>' : '';
+    var authHtml = !preset && form.kind === "api" ? '<div class="field"><label class="field-label">Authentication</label><span class="select-wrap"><select class="input" data-action="connection-account-auth"><option value="credential"' + (form.authMode !== "google_oauth" ? " selected" : "") + '>API token</option>' + (!managedGoogleAvailable ? '<option value="google_oauth"' + (form.authMode === "google_oauth" ? " selected" : "") + '>Google OAuth</option>' : '') + '</select>' + icon("chevron-down", "select-caret") + '</span><p class="hint">' + (managedGoogleAvailable ? 'Use a managed Google connector for Google OAuth.' : 'This deployment uses its own Google OAuth client credentials.') + '</p></div>' : '';
     var endpointHtml = connectionAccountEndpointHtml(form, preset, oauth);
     var credentialHtml = connectionAccountCredentialHtml(form, preset, oauth, mcpOauth);
     var accessHtml = connectionAccountAccessHtml(form);
@@ -7003,8 +7792,8 @@ button.capability-pill { cursor: pointer; }
     var oauthMigrationHtml = mcpOauth && preset && (preset.id === "sentry" || preset.id === "intercom") && hasLegacyTokenMcpConnection(preset.id)
       ? '<p class="hint">This adds OAuth beside the existing token connection. Review the discovered tools, bind and verify the OAuth account, then explicitly disconnect the token account when migration is complete.</p>'
       : '';
-    return '<div class="skill-form"><div class="form-grid"><div class="field"><label class="field-label">Who uses this account?</label><span class="select-wrap"><select class="input" data-action="connection-account-owner"><option value="team"' + (form.ownerKind === "team" ? " selected" : "") + '>Team connection</option><option value="member"' + (form.ownerKind === "member" ? " selected" : "") + '>My connection</option></select></span><p class="hint">Team connections can be reused by Agents across the workspace. Personal connections are available only when you invoke the Agent.</p></div>' +
-      (!preset ? '<div class="field"><label class="field-label">Connection type</label><span class="select-wrap"><select class="input" data-action="connection-account-kind"><option value="api"' + (form.kind === "api" ? " selected" : "") + '>REST API</option><option value="mcp"' + (form.kind === "mcp" ? " selected" : "") + '>MCP server</option></select></span></div>' : '<div></div>') + '</div>' +
+    return '<div class="skill-form"><div class="form-grid"><div class="field"><label class="field-label">Who uses this account?</label><span class="select-wrap"><select class="input" data-action="connection-account-owner"><option value="team"' + (form.ownerKind === "team" ? " selected" : "") + '>Team connection</option><option value="member"' + (form.ownerKind === "member" ? " selected" : "") + '>My connection</option></select>' + icon("chevron-down", "select-caret") + '</span><p class="hint">Team connections can be reused by Agents across the workspace. Personal connections are available only when you invoke the Agent.</p></div>' +
+      (!preset ? '<div class="field"><label class="field-label">Connection type</label><span class="select-wrap"><select class="input" data-action="connection-account-kind"><option value="api"' + (form.kind === "api" ? " selected" : "") + '>REST API</option><option value="mcp"' + (form.kind === "mcp" ? " selected" : "") + '>MCP server</option></select>' + icon("chevron-down", "select-caret") + '</span></div>' : '<div></div>') + '</div>' +
       presetHead +
       authHtml +
       '<div class="form-grid">' + (!preset ? '<div class="field"><label class="field-label">Provider</label><input class="input" value="' + esc(form.providerId) + '" placeholder="zendesk" data-action="connection-account-provider"></div>' : '') +
@@ -7039,30 +7828,21 @@ button.capability-pill { cursor: pointer; }
     var attached = accounts.attached || [];
     var available = accounts.available || [];
     var attachedHtml = attached.length
-      ? '<div class="skill-list">' + attached.map(function (entry) { return connectionAccountRowHtml(entry, true); }).join("") + '</div>'
-      : '<div class="empty-inline"><strong>No connections yet.</strong><p class="hint">Add a team service or one of your personal accounts.</p></div>';
-    var availableHtml = available.length
-      ? '<div class="section-head" style="margin-top:20px;"><div><h3>Available accounts</h3><p class="hint">Reuse a connection without signing in again.</p></div></div><div class="skill-list">' + available.map(function (account) { return connectionAccountRowHtml(account, false); }).join("") + '</div>'
-      : '';
+      ? '<div class="connection-account-list">' + attached.map(function (entry) { return connectionAccountRowHtml(entry, true); }).join("") + '</div>'
+      : '<div class="connection-empty">No connections in this Agent yet.</div>';
     var notice = accounts.notice ? '<div class="oauth-return ok" role="status">' + esc(accounts.notice) + '</div>' : '';
     var create = connectionAccountFormHtml();
-    var gallery = state.connectionAccountForm ? '' : connectorGalleryHtml(true);
-    return managedReturnNoticeHtml() + oauthReturnNoticeHtml(draft) + notice + '<p class="hint ptab-hint">Connections are configured here on the Agent. Credentials are stored once and can be safely reused.</p>' + attachedHtml + availableHtml + '<div style="margin-top:16px;">' + create + gallery + '</div>';
-  }
-
-  function managedReturnNoticeHtml() {
-    var result = state.managedReturn;
-    if (!result) return "";
-    var descriptor = managedConnectorDescriptorByToolkit(result.toolkit);
-    var label = descriptor ? descriptor.label : "the managed connection";
-    if (result.status === "connected") {
-      var requiresResources = descriptor && descriptor.resources && descriptor.resources.length;
-      return '<div class="oauth-return ok" role="status">' + esc(label) +
-        (requiresResources
-          ? ' is authorized through Composio. Choose the resources this Agent may use to finish.'
-          : ' is connected through Composio and ready for this Agent.') + '</div>';
-    }
-    return '<div class="oauth-return error" role="alert">Sign-in did not finish. Try connecting ' + esc(label) + ' again.</div>';
+    var gallery = connectorGalleryHtml(
+      true,
+      available,
+      attached.map(function (entry) { return entry.account; }),
+      !state.connectionAccountForm
+    );
+    var attachedSection = '<section class="connection-state-section"><div class="connection-section-head"><h3>In this Agent</h3><span class="connection-section-count">' + attached.length + '</span></div>' + attachedHtml + '</section>';
+    var availableSection = gallery ? '<section class="connection-state-section">' + gallery + '</section>' : '';
+    return oauthReturnNoticeHtml(draft) + notice +
+      '<div class="connection-state-stack">' + attachedSection + availableSection + '</div>' +
+      (create ? '<div style="margin-top:16px;">' + create + '</div>' : '');
   }
 
   function legacyConnectionsPanelHtml(draft) {
@@ -9106,6 +9886,9 @@ button.capability-pill { cursor: pointer; }
       return '<div class="section-head"><div><h1 class="page-title">Slack</h1><p class="hint">Manage the workspace installation and transport behavior. Agent handles and avatars live on each Agent.</p></div></div>' +
         slackWorkspaceSettingsHtml();
     }
+    if (state.settingsSection === "connectors") {
+      return '<div class="section-head"><div><h1 class="page-title">Connectors</h1><p class="hint">Configure managed integrations and review connected accounts for this Chickpea installation.</p></div></div>' + connectorsSettingsHtml();
+    }
     var head = '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Settings</h1>' +
       '<p class="hint">Configure GitHub, model providers, and outbound internet access for the sandbox.</p></div>';
@@ -9126,7 +9909,7 @@ button.capability-pill { cursor: pointer; }
     }
     return head +
       settingsPanelHtml("slack", slackWorkspaceSettingsHtml()) +
-      settingsPanelHtml("connections", connectionInventoryHtml()) +
+      settingsPanelHtml("connectors", connectorsSettingsHtml()) +
       settingsPanelHtml("providers", providerSection) +
       settingsPanelHtml("github", githubSectionHtml()) +
       settingsPanelHtml("sandbox", sandboxSectionHtml()) +
@@ -9137,9 +9920,113 @@ button.capability-pill { cursor: pointer; }
     return '<div class="settings-panel" data-settings-panel="' + id + '"' + (state.settingsSection === id ? '' : ' hidden') + '>' + body + '</div>';
   }
 
+  function connectorPresetForToolkit(toolkit) {
+    return (REUSABLE_CONNECTOR_PRESETS || []).find(function (preset) {
+      var managed = managedPresetById(preset.id);
+      var google = googleServicePresetById(preset.id);
+      return (managed && managed.managedToolkit || google && google.managedToolkit) === toolkit;
+    });
+  }
+
+  function connectorSettingsProviderHtml() {
+    var settings = state.connectorSettings;
+    var provider = settings.provider;
+    var providerDescription = settings.canConfigure
+      ? 'Some Chickpea connectors are managed by Composio. Add one project key to use them; Chickpea handles the standard authentication setup.'
+      : 'Some Chickpea connectors use managed authentication. A Chickpea owner or admin can enable them for this installation.';
+    var managedCatalogLabel = settings.canConfigure
+      ? 'Composio-managed connectors'
+      : 'Managed connectors';
+    var head = '<section class="section managed-provider-section"><div class="section-head"><div><h2 class="section-title">Managed connectors</h2><p class="hint">' + providerDescription + '</p></div></div>';
+    if (settings.loading) return head + '<p class="hint">Loading managed connector status&hellip;</p></section>';
+    if (settings.error && !provider && !settings.recoveryMode) {
+      return head + '<div class="callout" role="alert"><span>' + esc(settings.error) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry-load">Retry</button></div></section>';
+    }
+    if (settings.error && !provider) {
+      var recoveryRows = (settings.catalog || []).map(function (descriptor) {
+        var preset = connectorPresetForToolkit(descriptor.toolkit) || { id: descriptor.id, name: descriptor.label, accent: "#8b6b2e" };
+        return '<div class="managed-settings-row">' + connectorLogoHtml(preset) + '<span class="managed-settings-copy"><span class="connection-account-name">' + esc(descriptor.label) + '</span><span class="connection-account-identity">' + esc(descriptor.description || "") + '</span></span><span class="managed-readiness managed-readiness-prerequisite">Needs attention</span></div>';
+      }).join("");
+      var recoveryControls = settings.canConfigure
+        ? '<div class="managed-key-form"><div class="field"><label class="field-label" for="connector-settings-key">Composio project key</label><input class="input mono" id="connector-settings-key" type="password" autocomplete="off" value="' + esc(settings.key || "") + '" data-action="connector-settings-key" aria-describedby="connector-settings-key-help"' + (settings.busy ? ' disabled' : '') + '><p class="hint" id="connector-settings-key-help">Add the current project key to repair this configuration. It is stored encrypted and never shown again. <a class="hint-link" href="https://dashboard.composio.dev" target="_blank" rel="noopener noreferrer">Open Composio &nearr;</a></p></div><div class="managed-provider-actions"><button type="button" class="btn btn-ghost danger-text" data-action="connector-settings-disable-open"' + (settings.busy ? ' disabled' : '') + '>Disable in Chickpea</button><button type="button" class="btn btn-primary" data-action="connector-settings-save"' + (settings.busy || !String(settings.key || "").trim() ? ' disabled' : '') + '>' + (settings.busy === "setup" ? 'Repairing&hellip;' : 'Validate and repair') + '</button></div></div>'
+        : '<p class="managed-provider-guidance">A Chickpea owner or admin can repair this configuration.</p>';
+      return head + '<div class="callout" role="alert"><span>' + esc(settings.error) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry-load">Retry</button></div><div class="managed-provider-card"><div class="managed-provider-status"><span class="managed-provider-dot setup" aria-hidden="true"></span><div><strong>Configuration needs attention</strong><p class="hint">Replace the stored project key or disable managed connectors to recover.</p></div></div>' + recoveryControls + '</div>' + (recoveryRows ? '<div class="managed-settings-list" aria-label="' + managedCatalogLabel + '">' + recoveryRows + '</div>' : '') + '</section>';
+    }
+    if (!provider) return head + '<p class="field-error">Managed connector status is unavailable.</p></section>';
+    var configured = provider.configured && provider.desiredState === "enabled";
+    var statusLabel = provider.readOnly
+      ? (configured ? "Configured by deployment" : "Deployment setup required")
+      : configured
+        ? "Connected"
+        : "Not configured";
+    var statusDetail = provider.readOnly
+      ? (configured
+          ? "This installation reads its project key from deployment configuration. It cannot be replaced or disabled in Admin."
+          : "This hosted installation expects a deployment-managed project key. Add the secret binding before managed connectors can be used.")
+      : configured
+        ? "The project key is stored encrypted. Replace it only when rotating projects or credentials."
+        : settings.canConfigure
+          ? "Create a Composio project, then add its project key here."
+          : "A Chickpea owner or admin can enable managed connectors for this installation.";
+    var deploymentPreparationRequired = provider.readOnly && configured &&
+      (settings.catalog || []).some(function (descriptor) {
+        return !managedConnectorLaneReady(descriptor, "read");
+      });
+    var controls = "";
+    if (!settings.canConfigure) {
+      controls = '<p class="managed-provider-guidance">A Chickpea owner or admin can add or change this project key.</p>';
+    } else if (deploymentPreparationRequired) {
+      controls = '<div class="managed-provider-actions"><button type="button" class="btn btn-primary" data-action="connector-settings-retry">' +
+        (settings.busy === "retry" ? 'Preparing&hellip;' : 'Prepare connector defaults') + '</button></div>';
+    } else if (!provider.readOnly) {
+      if (configured && !settings.editing) {
+        controls = '<div class="managed-provider-actions"><button type="button" class="btn btn-soft" data-action="connector-settings-edit-key">Replace project key</button><button type="button" class="btn btn-ghost danger-text" data-action="connector-settings-disable-open">Disable in Chickpea</button></div>';
+      } else {
+        controls = '<div class="managed-key-form"><div class="field"><label class="field-label" for="connector-settings-key">' + (configured ? 'New Composio project key' : 'Composio project key') + '</label><input class="input mono" id="connector-settings-key" type="password" autocomplete="off" value="' + esc(settings.key || "") + '" data-action="connector-settings-key" aria-describedby="connector-settings-key-help"' + (settings.busy ? ' disabled' : '') + '><p class="hint" id="connector-settings-key-help">Stored encrypted and never shown again. In Composio, open Settings &rarr; Project Settings &rarr; API Keys. <a class="hint-link" href="https://dashboard.composio.dev" target="_blank" rel="noopener noreferrer">Open Composio &nearr;</a></p></div><div class="managed-provider-actions">' +
+          (configured ? '<button type="button" class="btn btn-ghost" data-action="connector-settings-edit-cancel"' + (settings.busy ? ' disabled' : '') + '>Cancel</button>' : '') +
+          '<button type="button" class="btn btn-primary" data-action="connector-settings-save"' + (settings.busy || !String(settings.key || "").trim() ? ' disabled' : '') + '>' + (settings.busy === "setup" ? 'Setting up&hellip;' : configured ? 'Validate and replace' : 'Validate and save') + '</button></div></div>';
+      }
+    }
+    if (provider.reconciliationPending) {
+      controls += '<div class="callout" role="status"><span>Chickpea is finishing connector reconciliation. Managed execution remains paused.</span>' +
+        (settings.canConfigure ? '<button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry</button>' : '') + '</div>';
+    } else if (provider.lastSetupResult && provider.lastSetupResult.status !== "ready" && configured) {
+      controls += '<div class="callout" role="alert"><span>Some connectors still need setup. Ready connectors remain available.</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry setup</button></div>';
+    }
+    var catalogRows = (settings.catalog || []).map(function (descriptor) {
+      var preset = connectorPresetForToolkit(descriptor.toolkit) || { id: descriptor.id, name: descriptor.label, accent: "#8b6b2e" };
+      var readiness = managedConnectorLaneReady(descriptor, "read")
+        ? { label: "Ready", kind: "ready" }
+        : managedConnectorMissingCodes(descriptor, "read").indexOf("provider_prerequisite_missing") >= 0
+          ? { label: "Additional setup required", kind: "prerequisite" }
+          : { label: configured ? "Setup required" : "Add project key", kind: "setup" };
+      return '<div class="managed-settings-row">' + connectorLogoHtml(preset) + '<span class="managed-settings-copy"><span class="connection-account-name">' + esc(descriptor.label) + '</span><span class="connection-account-identity">' + esc(descriptor.description || "") + '</span></span><span class="managed-readiness managed-readiness-' + readiness.kind + '">' + esc(readiness.label) + '</span></div>';
+    }).join("");
+    return head + '<div class="managed-provider-card"><div class="managed-provider-status"><span class="managed-provider-dot ' + (configured ? 'ready' : 'setup') + '" aria-hidden="true"></span><div><strong>' + esc(statusLabel) + '</strong><p class="hint">' + esc(statusDetail) + '</p></div></div>' + controls +
+      (settings.error ? '<div class="callout" role="alert"><span>' + esc(settings.error) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry-load">Retry</button></div>' : '') +
+      (settings.notice ? '<p class="oauth-return ok" role="status">' + esc(settings.notice) + '</p>' : '') + '</div>' +
+      '<div class="managed-settings-list" aria-label="' + managedCatalogLabel + '">' + catalogRows + '</div></section>';
+  }
+
+  function connectorsSettingsHtml() {
+    return connectorSettingsProviderHtml() + connectionInventoryHtml();
+  }
+
+  function connectorSettingsConfirmModalHtml() {
+    var confirm = state.connectorSettings.confirm;
+    if (!confirm) return "";
+    var impact = state.connectorSettings.impact || { accounts: 0, schedules: 0 };
+    var replacing = confirm === "replace";
+    var title = replacing ? "Replace the Composio project key?" : "Disable managed connectors in Chickpea?";
+    var detail = replacing
+      ? "Chickpea will validate the new project before using it. If it belongs to a different project, preserved accounts will need to reconnect."
+      : "Chickpea will pause managed execution and dependent schedules, but it will keep Agent bindings and remote Composio accounts so the same project can be reconnected later. A Runs as member must resume each affected schedule after connections recover.";
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="connector-settings-confirm-title" tabindex="-1" data-role="connector-settings-confirm-dialog"><h2 class="modal-title" id="connector-settings-confirm-title">' + esc(title) + '</h2><p class="modal-body">' + esc(detail) + '</p><p class="managed-impact">Affects ' + Number(impact.accounts || 0) + ' connected account' + (Number(impact.accounts || 0) === 1 ? '' : 's') + ' and ' + Number(impact.schedules || 0) + ' schedule' + (Number(impact.schedules || 0) === 1 ? '' : 's') + '.</p><div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="connector-settings-confirm-cancel">Cancel</button><span class="spacer"></span><button type="button" class="btn ' + (replacing ? 'btn-primary' : 'btn-danger') + '" data-action="connector-settings-confirm-apply">' + (replacing ? 'Validate and replace' : 'Disable in Chickpea') + '</button></div></div></div>';
+  }
+
   function connectionInventoryHtml() {
     var inventory = state.connectionInventory;
-    var head = '<section class="section"><div class="section-head"><div><h2 class="section-title">Connections</h2><p class="hint">A secondary inventory of Team connections and your personal accounts. Add connections and choose access from an Agent.</p></div></div>';
+    var head = '<section class="section"><div class="section-head"><div><h2 class="section-title">Connected accounts</h2><p class="hint">Reconnect or disconnect accounts here. Add accounts and choose Agent access from an Agent.</p></div></div>';
     if (inventory.loading) return head + '<p class="hint">Loading connections&hellip;</p></section>';
     if (inventory.error) return head + '<div class="callout" role="alert"><span>' + esc(inventory.error) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="connection-inventory-retry">Retry</button></div></section>';
     if (!inventory.accounts.length) return head + '<div class="empty-inline"><strong>No connections yet.</strong><span>Open an Agent, choose Connections, and connect the service it needs.</span></div></section>';
@@ -9147,13 +10034,33 @@ button.capability-pill { cursor: pointer; }
       var account = entry.account || {};
       var agents = entry.agents || [];
       var owner = account.ownerKind === "team" ? "Team" : "Personal";
+      var accountLabel = String(account.label || account.providerId || "Connection");
+      var redundantOwnerSuffix = " · " + owner;
+      if (accountLabel.endsWith(redundantOwnerSuffix)) {
+        accountLabel = accountLabel.slice(0, -redundantOwnerSuffix.length);
+      }
       var status = account.lifecycle === "ready" ? "Connected" : "Needs attention";
       var agentLinks = agents.length ? agents.map(function (agent) {
         return '<button type="button" class="capability-pill" data-action="edit-profile" data-agent="' + esc(agent.id) + '">' + esc(agent.name || agent.id) + '</button>';
       }).join("") : '<span class="hint">Not used by an Agent</span>';
-      return '<article class="connection-account-row"><div class="connection-account-copy"><div><strong>' + esc(account.label || account.providerId || "Connection") + '</strong> <span class="badge-src">' + esc(owner) + '</span> <span class="badge ' + (account.lifecycle === "ready" ? "badge-on" : "badge-off") + '">' + esc(status) + '</span></div><p class="hint">' + esc(account.providerId || "Custom") + (account.purpose ? ' &middot; ' + esc(account.purpose) : '') + '</p><div class="where-list" aria-label="Agents using ' + esc(account.label || "this connection") + '">' + agentLinks + '</div></div></article>';
+      var managedNeedsAttention = account.lifecycle !== "ready" && account.policy && account.policy.kind === "managed";
+      var providerConfigured = state.connectorSettings.provider && state.connectorSettings.provider.configured;
+      var managedReconnect = managedNeedsAttention && providerConfigured && entry.reconnectAgentId
+        ? '<button type="button" class="btn btn-soft btn-sm" data-action="connection-inventory-reconnect" data-connection-id="' + esc(account.id) + '" data-agent-id="' + esc(entry.reconnectAgentId) + '">Reconnect</button>'
+        : managedNeedsAttention && !providerConfigured && state.connectorSettings.canConfigure && !(state.connectorSettings.provider && state.connectorSettings.provider.readOnly)
+          ? '<button type="button" class="btn btn-soft btn-sm" data-action="connection-inventory-provider-setup">Add project key</button>'
+          : managedNeedsAttention && providerConfigured && !entry.reconnectAgentId
+            ? '<span class="hint">Add this account to an Agent before reconnecting.</span>'
+          : '';
+      var actions = '<div class="connection-inventory-actions">' + managedReconnect + '<button type="button" class="btn btn-ghost btn-sm danger-text" data-action="connection-account-revoke" data-connection-id="' + esc(account.id) + '">Disconnect</button></div>';
+      var detail = account.purpose
+        ? '<p class="hint">' + esc(account.purpose) + '</p>'
+        : account.policy && account.policy.kind === "managed"
+          ? ''
+          : '<p class="hint">' + esc(account.providerId || "Custom") + '</p>';
+      return '<article class="connection-inventory-row"><div class="connection-account-copy"><div><strong>' + esc(accountLabel) + '</strong> <span class="badge-src">' + esc(owner) + '</span> <span class="badge ' + (account.lifecycle === "ready" ? "badge-on" : "badge-off") + '">' + esc(status) + '</span></div>' + detail + '<div class="where-list" aria-label="Agents using ' + esc(accountLabel) + '">' + agentLinks + '</div></div>' + actions + '</article>';
     }).join("");
-    return head + '<div class="connection-account-list">' + rows + '</div></section>';
+    return head + (inventory.notice ? '<p class="oauth-return ok" role="status">' + esc(inventory.notice) + '</p>' : '') + '<div class="connection-account-list">' + rows + '</div></section>';
   }
 
   function modelCatalogStatusHtml() {
@@ -9474,13 +10381,14 @@ button.capability-pill { cursor: pointer; }
   function normalizeSettingsSection(value) {
     var aliases = {
       "model-settings": "providers",
-      "connection-settings": "connections",
+      "connection-settings": "connectors",
+      "connections": "connectors",
       "github-settings": "github",
       "sandbox-settings": "sandbox",
       "egress-settings": "outbound"
     };
     var section = aliases[String(value || "")] || String(value || "");
-    return ["slack", "connections", "providers", "github", "sandbox", "outbound"].includes(section) ? section : "providers";
+    return ["slack", "connectors", "providers", "github", "sandbox", "outbound"].includes(section) ? section : "providers";
   }
 
   function settingsLoadIsCurrent(generation) {
@@ -9512,10 +10420,13 @@ button.capability-pill { cursor: pointer; }
       render();
       return;
     }
-    if (state.settingsSection === "connections") {
+    if (state.settingsSection === "connectors") {
       state.connectionInventory = { accounts: [], loading: true, error: "" };
+      state.connectorSettings.loading = true;
+      state.connectorSettings.error = "";
       render();
       loadConnectionInventory(generation);
+      loadConnectorSettings(generation);
       return;
     }
     render();
@@ -9537,14 +10448,166 @@ button.capability-pill { cursor: pointer; }
     state.connectionInventory.error = "";
     renderSettingsLoad(generation);
     return api("/admin/api/connections?workspaceId=" + encodeURIComponent(workspaceId), { cache: "no-store" }).then(function (body) {
-      if (!settingsLoadIsCurrent(generation) || state.settingsSection !== "connections") return;
+      if (!settingsLoadIsCurrent(generation) || state.settingsSection !== "connectors") return;
       state.connectionInventory = { accounts: body.accounts || [], loading: false, error: "" };
+      for (var index = 0; index < state.connectionInventory.accounts.length && !state.managedAuthorization; index += 1) {
+        var inventoryEntry = state.connectionInventory.accounts[index];
+        var resumeAgentId = inventoryEntry && (inventoryEntry.reconnectAgentId ||
+          inventoryEntry.agents && inventoryEntry.agents[0] && inventoryEntry.agents[0].id);
+        if (resumeAgentId) restoreManagedAuthorization(resumeAgentId);
+      }
       render();
     }).catch(function (error) {
-      if (!settingsLoadIsCurrent(generation) || state.settingsSection !== "connections") return;
+      if (!settingsLoadIsCurrent(generation) || state.settingsSection !== "connectors") return;
       state.connectionInventory = { accounts: [], loading: false, error: error.serverMessage || error.message || "Could not load connections." };
       render();
     });
+  }
+
+  function loadConnectorSettings(generation) {
+    var current = state.connectorSettings;
+    current.loading = true;
+    current.error = "";
+    current.recoveryMode = false;
+    return api("/admin/api/settings/connectors/composio", { cache: "no-store" }).then(function (body) {
+      if (!settingsLoadIsCurrent(generation) || state.settingsSection !== "connectors") return;
+      current.provider = body.provider || null;
+      current.catalog = body.catalog || [];
+      current.canConfigure = !!body.canConfigure;
+      current.recoveryMode = false;
+      current.impact = body.impact || { accounts: 0, schedules: 0 };
+      current.loading = false;
+      render();
+    }).catch(function (error) {
+      if (!settingsLoadIsCurrent(generation) || state.settingsSection !== "connectors") return;
+      current.loading = false;
+      var recovery = error && error.payload && error.payload.recovery;
+      if (recovery) {
+        current.provider = null;
+        current.recoveryMode = true;
+        current.canConfigure = !!recovery.canConfigure;
+        current.catalog = recovery.catalog || current.catalog || [];
+      }
+      current.error = connectorSettingsErrorMessage(error, "Could not load managed connector settings.");
+      render();
+    });
+  }
+
+  function saveConnectorSettingsKey(confirmed) {
+    var current = state.connectorSettings;
+    if (!current.canConfigure || current.busy || !String(current.key || "").trim()) return;
+    if (current.provider && current.provider.configured && !confirmed) {
+      current.confirm = "replace";
+      render();
+      return;
+    }
+    current.confirm = "";
+    current.busy = "setup";
+    current.error = "";
+    current.notice = "";
+    render();
+    postJson("/admin/api/settings/connectors/composio/setup", "POST", { projectKey: String(current.key).trim() }).then(function (body) {
+      current.provider = body.provider || current.provider;
+      current.key = "";
+      current.editing = false;
+      current.busy = "";
+      current.notice = "Managed connectors are configured. Ready connectors can now be connected from an Agent.";
+      return loadConnectorSettings(state.settingsLoadGeneration);
+    }).catch(function (error) {
+      current.busy = "";
+      current.error = error && error.message === "invalid_composio_project_key"
+        ? "That project key was not accepted. Check it in Composio and try again."
+        : connectorSettingsErrorMessage(error, "Could not configure managed connectors.");
+      render();
+    });
+  }
+
+  function retryConnectorSettingsSetup() {
+    var current = state.connectorSettings;
+    if (!current.canConfigure || current.busy) return;
+    current.busy = "retry";
+    current.error = "";
+    current.notice = "";
+    render();
+    postJson("/admin/api/settings/connectors/composio/retry", "POST", {}).then(function (body) {
+      current.provider = body.provider || current.provider;
+      current.busy = "";
+      current.notice = "Managed connector setup was checked again.";
+      return loadConnectorSettings(state.settingsLoadGeneration);
+    }).catch(function (error) {
+      current.busy = "";
+      current.error = connectorSettingsErrorMessage(error, "Could not retry managed connector setup.");
+      render();
+    });
+  }
+
+  function disableConnectorSettings() {
+    var current = state.connectorSettings;
+    if (!current.canConfigure || current.busy) return;
+    current.confirm = "";
+    current.busy = "disable";
+    current.error = "";
+    current.notice = "";
+    render();
+    postJson("/admin/api/settings/connectors/composio/disable", "POST", {}).then(function (body) {
+      current.provider = body.provider || current.provider;
+      current.busy = "";
+      current.editing = false;
+      current.key = "";
+      current.notice = "Managed connectors are disabled in Chickpea. Remote accounts and Agent bindings were preserved.";
+      return Promise.all([
+        loadConnectorSettings(state.settingsLoadGeneration),
+        loadConnectionInventory(state.settingsLoadGeneration)
+      ]);
+    }).catch(function (error) {
+      current.busy = "";
+      current.error = connectorSettingsErrorMessage(error, "Could not disable managed connectors.");
+      render();
+    });
+  }
+
+  function submitComposioSetup() {
+    var setup = state.composioSetup;
+    var agentId = state.profileDraft && state.profileDraft.id;
+    if (!setup || !setup.canConfigure || !agentId || !String(setup.key || "").trim() ||
+        setup.phase === "validating" || setup.phase === "preparing") return;
+    setup.phase = "validating";
+    setup.error = "";
+    render();
+    window.setTimeout(function () {
+      if (state.composioSetup === setup && setup.phase === "validating") {
+        setup.phase = "preparing";
+        render();
+      }
+    }, 400);
+    postJson("/admin/api/settings/connectors/composio/setup", "POST", {
+      projectKey: String(setup.key).trim(),
+      continuation: { agentId: agentId, toolkit: setup.toolkit }
+    }).then(function () {
+      return loadAgentConnections(agentId);
+    }).then(function () {
+      if (state.composioSetup !== setup) return;
+      var descriptor = managedConnectorDescriptorByToolkit(setup.toolkit);
+      if (!managedConnectorLaneReady(descriptor, "read")) {
+        setup.phase = "selected_unavailable";
+        setup.error = "This connector needs additional setup. Review its status in Settings, then retry.";
+        render();
+        return;
+      }
+      state.composioSetup = null;
+      newConnectionAccountFormFromPreset(setup.presetId, setup.ownerKind);
+    }).catch(function (error) {
+      if (state.composioSetup !== setup) return;
+      setup.phase = error && error.message === "invalid_composio_project_key" ? "invalid_key" : "transient_failure";
+      setup.error = error && error.message === "invalid_composio_project_key"
+        ? "That project key was not accepted. Check it in Composio and try again."
+        : connectorSettingsErrorMessage(error, "Managed connector setup could not finish. Try again.");
+      render();
+    });
+  }
+
+  function connectorSettingsErrorMessage(error, fallback) {
+    return error && error.serverMessage ? error.serverMessage : fallback;
   }
 
   function loadGithubStatus(generation) {
@@ -10903,6 +11966,14 @@ button.capability-pill { cursor: pointer; }
   }
 
   document.addEventListener("click", function (event) {
+    // Connection menus and capability popovers are mutually exclusive. Native
+    // details elements do not close their siblings or dismiss on outside click.
+    if (event.target && event.target.closest && document.querySelectorAll) {
+      var clickedConnectionDetails = event.target.closest(".connection-state-stack details");
+      document.querySelectorAll(".connection-state-stack details[open]").forEach(function (details) {
+        if (details !== clickedConnectionDetails) details.removeAttribute("open");
+      });
+    }
     // Outside-click closes the open Model combobox (F6). A click inside the
     // combo (the input, an option, or the Settings row) is left to the
     // data-action branch below; anything else dismisses the popover. Guarded by
@@ -11166,8 +12237,39 @@ button.capability-pill { cursor: pointer; }
       showProfileTab(target.getAttribute("data-tab") || "instructions");
     }
     if (action === "connection-account-retry" && state.profileDraft) { loadAgentConnections(state.profileDraft.id); }
+    if (action === "composio-setup-close" && state.composioSetup && state.composioSetup.phase !== "validating" && state.composioSetup.phase !== "preparing") {
+      var returnPresetId = state.composioSetup.returnFocusPresetId;
+      state.composioSetup = null;
+      render();
+      var returnPreset = document.querySelector('[data-action="connection-account-preset"][data-preset="' + returnPresetId + '"]');
+      if (returnPreset && returnPreset.focus) returnPreset.focus();
+    }
+    if (action === "composio-setup-settings") {
+      state.composioSetup = null;
+      openSettings("connectors");
+    }
+    if (action === "composio-setup-save") { submitComposioSetup(); }
+    if (action === "managed-auth-open" && state.managedAuthorization) {
+      state.managedAuthorization.popupBlocked = !openManagedAuthorizationTab(state.managedAuthorization.authorizationUrl);
+      persistManagedAuthorization(state.managedAuthorization);
+      render();
+    }
+    if (action === "managed-auth-retry" && state.managedAuthorization) {
+      state.managedAuthorization.status = "waiting";
+      state.managedAuthorization.error = "";
+      state.managedAuthorization.startedAt = Date.now();
+      state.managedAuthorization.pollAttempts = 0;
+      persistManagedAuthorization(state.managedAuthorization);
+      pollManagedAuthorization();
+    }
+    if (action === "managed-auth-cancel") { cancelManagedAuthorization(); }
     if (action === "connection-account-new") { newConnectionAccountForm(); }
-    if (action === "connection-account-preset") { newConnectionAccountFormFromPreset(target.getAttribute("data-preset") || ""); }
+    if (action === "connection-account-preset") {
+      newConnectionAccountFormFromPreset(
+        target.getAttribute("data-preset") || "",
+        target.getAttribute("data-owner-kind") || ""
+      );
+    }
     if (action === "connection-account-cancel") { state.connectionAccountForm = null; render(); }
     if (action === "connection-account-managed-access" && state.connectionAccountForm &&
         state.connectionAccountForm.kind === "managed") {
@@ -11195,6 +12297,16 @@ button.capability-pill { cursor: pointer; }
     if (action === "connection-account-oauth-start") { startConnectionAccountOAuth(target.getAttribute("data-connection-id") || "", false); }
     if (action === "connection-account-mcp-oauth-start") { startConnectionAccountOAuth(target.getAttribute("data-connection-id") || "", false, "mcp"); }
     if (action === "connection-account-managed-reconnect") { reconnectManagedConnection(target.getAttribute("data-connection-id") || ""); }
+    if (action === "connection-inventory-reconnect") {
+      reconnectSettingsConnectionAccount(
+        target.getAttribute("data-connection-id") || "",
+        target.getAttribute("data-agent-id") || ""
+      );
+    }
+    if (action === "connection-inventory-provider-setup") {
+      var connectorSettingsKey = document.getElementById("connector-settings-key");
+      if (connectorSettingsKey && connectorSettingsKey.focus) connectorSettingsKey.focus();
+    }
     if (action === "connection-account-resource-open") { startManagedResourceSelection(target.getAttribute("data-connection-id") || ""); }
     if (action === "connection-account-resource-toggle") {
       toggleManagedResourceSelection(
@@ -11259,13 +12371,41 @@ button.capability-pill { cursor: pointer; }
     if (action === "open-settings") { openSettings(target.getAttribute("data-section") || ""); }
     if (action === "settings-section") {
       var nextSettingsSection = normalizeSettingsSection(target.getAttribute("data-section") || "providers");
-      if (nextSettingsSection === "slack" || nextSettingsSection === "connections" || state.settingsSection === "slack" || state.settingsSection === "connections") openSettings(nextSettingsSection);
+      if (nextSettingsSection === "slack" || nextSettingsSection === "connectors" || state.settingsSection === "slack" || state.settingsSection === "connectors") openSettings(nextSettingsSection);
       else {
         state.settingsSection = nextSettingsSection;
         render();
       }
     }
     if (action === "connection-inventory-retry") { loadConnectionInventory(state.settingsLoadGeneration); }
+    if (action === "connector-settings-retry-load") { loadConnectorSettings(state.settingsLoadGeneration); }
+    if (action === "connector-settings-edit-key") {
+      state.connectorSettings.editing = true;
+      state.connectorSettings.error = "";
+      state.connectorSettings.notice = "";
+      render();
+      focusAction("connector-settings-key");
+    }
+    if (action === "connector-settings-edit-cancel") {
+      state.connectorSettings.editing = false;
+      state.connectorSettings.key = "";
+      state.connectorSettings.error = "";
+      render();
+    }
+    if (action === "connector-settings-save") { saveConnectorSettingsKey(false); }
+    if (action === "connector-settings-retry") { retryConnectorSettingsSetup(); }
+    if (action === "connector-settings-disable-open") {
+      state.connectorSettings.confirm = "disable";
+      render();
+    }
+    if (action === "connector-settings-confirm-cancel") {
+      state.connectorSettings.confirm = "";
+      render();
+    }
+    if (action === "connector-settings-confirm-apply") {
+      if (state.connectorSettings.confirm === "replace") saveConnectorSettingsKey(true);
+      else if (state.connectorSettings.confirm === "disable") disableConnectorSettings();
+    }
     if (action === "usage-retry") { loadUsage(true); }
     if (action === "usage-load-more") { loadMoreUsageOperations(); }
     if (action === "usage-custom-apply") { applyCustomUsageRange(); }
@@ -11791,6 +12931,23 @@ button.capability-pill { cursor: pointer; }
     // spinner) never wipes it; the favorites search re-renders only its own
     // results container to keep the input focused.
     if (action === "prov-key-input") { provUiFor(target.getAttribute("data-provider")).key = target.value; }
+    if (action === "composio-setup-key" && state.composioSetup) {
+      state.composioSetup.key = target.value;
+      state.composioSetup.error = "";
+      if (state.composioSetup.phase === "invalid_key" || state.composioSetup.phase === "transient_failure" || state.composioSetup.phase === "selected_unavailable") state.composioSetup.phase = "idle";
+      var setupSubmit = document.querySelector('[data-action="composio-setup-save"]');
+      if (setupSubmit) setupSubmit.disabled = !String(target.value || "").trim();
+      var setupError = document.getElementById("composio-project-key-error");
+      if (setupError) setupError.textContent = "";
+    }
+    if (action === "connector-settings-key") {
+      state.connectorSettings.key = target.value;
+      state.connectorSettings.error = "";
+      var connectorSettingsSubmit = document.querySelector('[data-action="connector-settings-save"]');
+      if (connectorSettingsSubmit) connectorSettingsSubmit.disabled = !String(target.value || "").trim();
+      var connectorSettingsError = document.getElementById("connector-settings-error");
+      if (connectorSettingsError) connectorSettingsError.textContent = "";
+    }
     if (action === "github-org-input") { state.githubOrg = target.value; }
     if (action === "repo-search") { repoPickerSearch.search(target.value); }
     if (action === "import-browse-search") { skillImportRepoSearch.search(target.value); }
@@ -12207,7 +13364,60 @@ button.capability-pill { cursor: pointer; }
     render();
   }
 
+  function trapModalTab(event, selector) {
+    if (event.key !== "Tab") return false;
+    var dialog = document.querySelector(selector);
+    if (!dialog) return false;
+    var controls = Array.prototype.slice.call(dialog.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'));
+    if (!controls.length) {
+      event.preventDefault();
+      if (dialog.focus) dialog.focus();
+      return true;
+    }
+    var first = controls[0];
+    var last = controls[controls.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+      return true;
+    }
+    if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+      return true;
+    }
+    return false;
+  }
+
   document.addEventListener("keydown", function (event) {
+    if (state.composioSetup) {
+      if (trapModalTab(event, '[data-role="composio-setup-dialog"]')) return;
+      if ((event.key === "Escape" || event.key === "Esc") && state.composioSetup.phase !== "validating" && state.composioSetup.phase !== "preparing") {
+        event.preventDefault();
+        var composioReturnPresetId = state.composioSetup.returnFocusPresetId;
+        state.composioSetup = null;
+        render();
+        var composioReturn = document.querySelector('[data-action="connection-account-preset"][data-preset="' + composioReturnPresetId + '"]');
+        if (composioReturn && composioReturn.focus) composioReturn.focus();
+        return;
+      }
+    }
+    if (state.managedAuthorization) {
+      if (trapModalTab(event, '[data-role="managed-auth-dialog"]')) return;
+      if (event.key === "Escape" || event.key === "Esc") {
+        event.preventDefault();
+        return;
+      }
+    }
+    if (state.connectorSettings.confirm) {
+      if (trapModalTab(event, '[data-role="connector-settings-confirm-dialog"]')) return;
+      if (event.key === "Escape" || event.key === "Esc") {
+        event.preventDefault();
+        state.connectorSettings.confirm = "";
+        render();
+        return;
+      }
+    }
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
       if (state.ownerMemory.dirty) {
         event.preventDefault();
@@ -14440,15 +15650,6 @@ button.capability-pill { cursor: pointer; }
     return { status: status, connectionId: connectionId, lane: lane };
   }
 
-  function managedReturnFromSearch(search) {
-    if (!search) return null;
-    var params = new URLSearchParams(search);
-    var status = params.get("managed");
-    if (status !== "connected" && status !== "failed") return null;
-    var toolkit = params.get("toolkit") || "";
-    return { status: status, toolkit: toolkit };
-  }
-
   function connectorSetupFromPath(pathname) {
     var parts = String(pathname || "").split("/").filter(Boolean).map(function (part) {
       try { return decodeURIComponent(part); } catch (_) { return ""; }
@@ -14475,7 +15676,6 @@ button.capability-pill { cursor: pointer; }
   }
   if (USAGE_ADMIN_UI && initialRoute === "/admin/usage") applyUsageQuery(location.search || "");
   state.oauthReturn = canNavigate ? oauthReturnFromSearch(location.search || "") : null;
-  state.managedReturn = canNavigate ? managedReturnFromSearch(location.search || "") : null;
   var connectorSetup = canNavigate ? connectorSetupFromPath(location.pathname) : null;
   var connectorSetupConsumed = false;
   refreshData().then(async function () {
@@ -14520,11 +15720,6 @@ button.capability-pill { cursor: pointer; }
       render();
       // The callback URL carries status and connection identity only, but it is
       // one-shot UI state. Remove it so a refresh cannot replay a stale banner.
-      history.replaceState(null, "", location.pathname);
-    }
-    if (state.managedReturn && state.profileDraft && state.profileScreen === "edit") {
-      state.profileTab = "connections";
-      render();
       history.replaceState(null, "", location.pathname);
     }
     routeReady = true;

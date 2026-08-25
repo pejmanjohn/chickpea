@@ -65,6 +65,19 @@ export class ChannelRevisionConflictError extends Error {
   }
 }
 
+export class ConnectionAccountRevisionConflictError extends Error {
+  constructor(
+    readonly accountId: string,
+    readonly expectedRevision: number,
+    readonly actualRevision: number,
+  ) {
+    super(
+      `Connection account ${accountId} changed (expected revision ${expectedRevision}, actual ${actualRevision})`,
+    );
+    this.name = 'ConnectionAccountRevisionConflictError';
+  }
+}
+
 // "Nothing enabled answers in this channel" — the resolver's not-found family.
 export class NoAssignmentError extends Error {
   constructor(message: string) {

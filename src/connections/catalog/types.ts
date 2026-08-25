@@ -67,7 +67,6 @@ export type ManagedProviderAvailabilityStatus =
 export type ManagedProviderConfigurationCode =
   | 'api_key_missing'
   | 'auth_config_missing'
-  | 'webhook_missing'
   | 'provider_prerequisite_missing';
 
 export interface ManagedProviderAvailability {

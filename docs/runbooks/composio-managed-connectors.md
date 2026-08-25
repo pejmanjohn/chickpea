@@ -1,6 +1,6 @@
 # Composio-managed connectors
 
-Chickpea can delegate OAuth credentials, refresh, and API execution to Composio while keeping authorization and product behavior inside Chickpea. New Gmail, Google Calendar, Google Drive, Google Sheets, Google Docs, Google Slides, Search Console, and Google Analytics connections use this managed path. Notion is additive while its provider-enforced page boundary is accepted: Native Notion stays available and working until an Admin explicitly migrates. Existing native connection records remain readable so installations can migrate without breaking saved Agents.
+Chickpea can delegate OAuth credentials, refresh, and API execution to Composio while keeping authorization and product behavior inside Chickpea. New Gmail, Google Calendar, Google Drive, Google Sheets, Google Docs, Google Slides, Search Console, Google Analytics, and Notion connections use this managed path. Existing Native Notion connection records remain readable and editable so installations can upgrade without breaking saved Agents, but the native preset is no longer offered for new connections.
 
 Self-hosters opt in by supplying their own Composio project key. Without that key the adapter is dormant and Chickpea's native API and MCP connection lanes continue to work.
 
@@ -21,7 +21,7 @@ Every invocation re-reads the live Chickpea account and Agent binding, pins one 
 
 ## Readiness matrix
 
-Every row also requires `COMPOSIO_API_KEY`, `COMPOSIO_WEBHOOK_SECRET`, and the lane-specific auth-config ID. A missing prerequisite disables only that connector lane.
+Every row requires an active project key plus its deterministic managed-auth configuration. Normal OSS setup prepares those configurations from one key in **Settings → Connectors**; lane-specific environment IDs are compatibility overrides, and the webhook is optional. Every override must belong to the active project and be enabled, Composio-managed, and unrestricted. An invalid or temporarily unverifiable override disables only that lane and emits a safe operator warning naming the environment variable; it does not disable the provider or other connectors.
 
 | Connector/toolkit | Lanes | Admin selection | Additional hosted prerequisite |
 |---|---|---|---|
@@ -33,7 +33,7 @@ Every row also requires `COMPOSIO_API_KEY`, `COMPOSIO_WEBHOOK_SECRET`, and the l
 | Slides / `googleslides` | Read, write | Exact team or personal account | Disposable artifact canary |
 | Search Console / `google_search_console` | Read | One or more sites | Selected/unselected resource denial canary |
 | Analytics / `google_analytics` | Read | One or more GA4 properties | Selected/unselected resource denial canary |
-| Notion / `notion` | Read, write | Provider OAuth page/database picker | Keep Native Notion until sibling-denial acceptance passes |
+| Notion / `notion` | Read, write | Provider OAuth page/database picker | Sibling-denial acceptance is a launch gate |
 | HubSpot / `hubspot` | Read, write | Exact portal | Accept managed-app warning; triggers remain off |
 | Gong / `gong` | Read | One or more workspaces | Accept documented company-wide endpoints |
 | Google Ads / `googleads` | Read, write | One or more non-manager clients | Basic/Standard token plus permissible-use declaration |
@@ -125,7 +125,7 @@ Notion uses the page/database picker in Notion's own OAuth screen as the authori
 
 Search and reads return bounded, normalized data. Page-property writes accept only reviewed scalar property types, and block appends accept a bounded text-oriented block vocabulary. Archive, delete, sharing, permission administration, arbitrary page updates, and raw block trees are absent. Admin may show a bounded list of provider-visible page/database labels after validation; those labels are informational and never treated as a local authorization decision.
 
-When Native Notion and managed Notion are both attached, an unnamed Notion request withholds both account paths and asks the member to choose a label. Naming one account selects only that path. Connecting managed Notion never changes existing bindings or disconnects Native Notion.
+New Notion connections use the managed path. Existing Native Notion records remain readable and editable but do not appear as a new-connection catalog option. If a legacy and managed Notion account are both attached, an unnamed Notion request withholds both account paths and asks the member to choose a label; naming one account selects only that path.
 
 ## Curated HubSpot surface
 
@@ -235,57 +235,29 @@ These local reservations cannot manufacture upstream capacity. Composio warns th
 
 Use separate Composio projects for development, staging, and production. Projects isolate API keys, connected accounts, auth configs, webhooks, and project settings.
 
-1. In the production Composio project, set the callback identity verifier URL to:
+1. Create the environment's Composio project. In Composio, open **Settings → Project Settings → API Keys** and create a project key with the permissions required for connected-account linking and inspection plus direct tool execution. The ordinary project key is the lowest-effort launch choice; if a scoped key is used, keep an end-to-end canary because Composio can add or reclassify endpoint permissions.
 
-   ```text
-   https://<chickpea-host>/admin/connections/composio/callback
-   ```
+2. For a normal self-hosted installation, sign in to Chickpea as an owner or admin and open **Settings → Connectors**. Paste the project key once. Chickpea validates it, stores it in the encrypted credential store, and creates or reuses one deterministic Composio-managed auth configuration per toolkit named `Chickpea default — <toolkit> v1`. The standard flow never asks the operator to copy auth-config IDs.
 
-   Find it under **Settings → General → Configuration**. It must be public HTTPS. Once enabled, Composio redirects with only a single-use `session_uri`; Chickpea authenticates the current member and redeems it with the server-derived Composio user ID. Dashboard-created test connections cannot complete while this verifier is enabled, so start tests from Chickpea.
+3. For deployment-owned configuration, set `COMPOSIO_API_KEY` as a secret and `CHICKPEA_COMPOSIO_CONFIGURATION_MODE=deployment` as a deployment variable. **Settings → Connectors** reports the key as deployment-managed and never displays, replaces, or disables it. An owner/admin must choose **Prepare connector defaults** once after enabling this mode or upgrading a deployment that uses lane-specific `COMPOSIO_*_AUTH_CONFIG_ID` variables. Preparation verifies those optional compatibility overrides against the active project, persists only their non-secret IDs, and creates deterministic defaults for gaps; it never moves the project key into Chickpea's stored-settings lane. Until initial preparation finishes, existing connected accounts can still execute, but new managed authorizations remain unavailable. Chickpea logs the safe environment-variable names when this one-time preparation is required. Rotating `COMPOSIO_API_KEY` is different: Chickpea detects the fingerprint change, increments the provider generation, and pauses managed execution until an owner/admin retries preparation. That retry inspects every preserved connected account with the new key, restores matching accounts under the new lineage, marks accounts from another project for reconnection, and then prepares auth-config defaults for the new generation.
 
-2. Register one production webhook subscription at:
+4. In **Project Settings → General**, set execution log storage to **Don't store data** before sending customer data. Composio still receives tool arguments and upstream responses to execute calls; this setting controls retained payload logs.
 
-   ```text
-   https://<chickpea-host>/webhooks/composio
-   ```
+5. Customize the project's Auth Screen with the Chickpea name and logo if desired. Google consent will still identify Composio's managed OAuth app unless Chickpea later brings its own verified Google OAuth app.
 
-   Store the subscription secret as `COMPOSIO_WEBHOOK_SECRET`. Chickpea verifies the signature over the raw request body, rejects timestamps outside five minutes, and handles only `composio.connected_account.expired`. The verifier follows `@composio/core` exactly: the complete dashboard secret, including its `whsec_` prefix, is the raw UTF-8 HMAC key. Expiry moves the exact account to `needs_attention` and pauses dependent schedules before another tool call can run.
+6. A webhook is optional. When Chickpea has a public HTTPS host, register `https://<chickpea-host>/webhooks/composio` and store its subscription secret as `COMPOSIO_WEBHOOK_SECRET` to receive expiry events sooner. Chickpea verifies the raw-body signature and accepts only the reviewed account-expiry event. Without a webhook, the hostless path still polls authorization, validates the exact account while connecting, pins that account and Chickpea principal on every execution, and moves the account to reconnection after a definitive authorization failure.
 
-3. Create one **Default (Composio-managed)** auth config for each connector you enable. Set that toolkit's read and write auth-config variables independently. Chickpea reports readiness per toolkit and access lane, so one missing config disables only that lane. Recording the same non-secret auth-config ID in both lanes is intentional for launch: Composio owns the OAuth app, approval, scopes, and refresh behavior, while Chickpea keeps the smaller read-only or read/write capability surface presented to Agents.
-
-   This is not OAuth least privilege. Composio's managed Google and HubSpot grants can be broader than Chickpea's curated tool surface; Gmail's default can include full mailbox access, and HubSpot managed auth cannot remove non-optional scopes. The launch tradeoff is accepted to avoid maintaining OAuth apps and integration-specific auth behavior while Chickpea is small. Revisit custom auth configs or Chickpea-owned OAuth credentials when customer requirements, provider approval, or scale justify the work. Scope or auth-config changes affect only new connections, so reconnect existing accounts after changing them.
-
-4. Store a **Full access** project key as `COMPOSIO_API_KEY`. Composio's callback identity-verification flow requires `POST /api/v3.1/connected_accounts/complete_auth`; as of the 2026-08-23 launch canary, Composio returned HTTP 403 for this route even when a scoped key had every visible read/write permission because the route is not assigned to any scoped-key permission. A scoped runtime key therefore makes Google approval succeed remotely but prevents Chickpea from importing the account. Keep this key only in the provider adapter, use a dedicated Composio project per environment, and leave Composio execution log storage disabled. Re-test the current scoped-key reference on rotation: when Composio adds a permission covering `complete_auth`, narrow the key to connected-account read/write, Sessions read/write, Tool execution write, and that callback permission.
-
-5. On Cloudflare, set the secrets and auth-config IDs without putting them in `wrangler.jsonc`:
-
-   ```bash
-   npx wrangler secret put COMPOSIO_API_KEY
-   npx wrangler secret put COMPOSIO_WEBHOOK_SECRET
-   npx wrangler secret put COMPOSIO_GMAIL_READ_AUTH_CONFIG_ID
-   # Repeat for every connector/access lane being enabled.
-   ```
-
-6. In **Project Settings → General**, set execution log storage to **Don't store data** before sending customer data. Composio still receives tool arguments and upstream responses to execute calls; this setting controls retained payload logs.
-
-7. Customize the project's Auth Screen with the Chickpea name and logo if desired. Google consent will still identify Composio's managed OAuth app unless Chickpea later brings its own verified Google OAuth app.
+Composio-managed defaults are intentionally a development-effort tradeoff, not provider-level least privilege. The upstream Google or HubSpot grant can be broader than Chickpea's curated Agent capability ceiling. Revisit custom auth configs or Chickpea-owned OAuth credentials when customer requirements, provider approval, branding, or scale justify the work. Scope or auth-config changes affect only new grants, so reconnect affected accounts after changing them.
 
 ## Authorization and recovery flow
 
-The Admin UI asks the server to start one catalog Google connector authorization for one saved Agent and one team/personal owner. Chickpea derives the Composio user ID from the immutable organization or membership ID, stores a thirty-minute consume-once attempt, and keeps its browser secret in an HttpOnly, Secure, SameSite=Lax cookie. An authorized remote grant becomes eligible for server-side stale recovery after an additional ten-minute grace window, so an abandoned authorization can occupy that member's single in-progress slot for up to forty minutes.
+The Admin UI starts one hosted Connect Link for one saved Agent, connector, and team/personal owner. Chickpea derives the Composio user ID from the immutable organization or membership ID, stores a thirty-minute consume-once attempt, and keeps its browser secret in an HttpOnly, Secure, SameSite=Lax cookie. It opens the hosted sign-in in a new tab, persists only safe resume metadata in `sessionStorage`, and polls the exact request from the original Chickpea tab. No callback URL, temporary tunnel, or public host is required.
 
-After Google approval, the callback verifier:
+Each poll checks the exact pending workspace, Agent, owner, toolkit, capability ceiling, provider generation, project lineage, request ID, and server-derived principal. A pending response schedules another bounded poll. An active exact account is validated, imported, and attached once. Terminal, mismatched, expired, replayed, or stale-project results fail closed. Refreshing the Chickpea tab restores the waiting state; **Cancel** revokes only an unimported remote request and clears the local attempt.
 
-1. authenticates the returning Chickpea member;
-2. checks the exact pending workspace, Agent, owner, toolkit, and capability ceiling;
-3. redeems Composio's single-use `session_uri` with the server-derived user ID;
-4. validates the returned toolkit and active account;
-5. creates the Chickpea connection and binding, or replaces the remote reference on the existing connection during reconnect;
-6. consumes the local attempt and returns to the Agent's Connections tab.
+The Connect Link request ID is the connected-account ID. Chickpea stores it before polling and accepts completion only when Composio returns that exact account, toolkit, and server-derived principal. It does not trust account or user identifiers from browser query parameters. Reconnect and additional-account flows allow multiple accounts because an active account may already exist for the same principal and default auth config; every tool execution still pins one exact account ID.
 
-The Connect Link request ID is the connected-account ID. Chickpea stores it before redirecting and accepts completion only when Composio returns that exact account, toolkit, and server-derived principal. It does not trust account or user identifiers from browser query parameters. Reconnect and additional-account flows set Composio's `allowMultiple` option because an active account may already exist for the same principal and default auth config; every tool execution still pins one exact account ID.
-
-The generic reusable-connection API does not accept managed account references. Managed Google records can enter Chickpea only through this browser-bound Connect Link callback, so a member cannot import another project's or another member's opaque `ca_...` identifier.
+The generic reusable-connection API does not accept managed account references. Managed records can enter Chickpea only through the browser-bound Connect Link completion flow, so a member cannot import another project's or another member's opaque `ca_...` identifier.
 
 An unknown or upgraded authorization-attempt format fails closed and emits `chickpea.managed_connection.invalid_authorization_attempt_blocked` with only any validated `adapterId`, `authorizationRef`, and `accountRef`. The member receives `managed_authorization_recovery_required` instead of being told to finish an unreachable browser flow. The durable key is `connections.managed.authorization.` followed by the first 32 hexadecimal characters of `sha256(actorMembershipId)`.
 
@@ -301,9 +273,9 @@ await fetch('/admin/api/connections/managed/recover', {
 
 This owner-only operation first preserves any reference already imported by a non-revoked Chickpea connection, deletes every other distinct validated Composio account reference with `revoke_on_delete=false`, then compare-and-set deletes the exact malformed setting. A partial provider failure preserves the setting so a retry can finish; Composio 404 responses are treated as already deleted. Success logs `chickpea.managed_connection.invalid_authorization_attempt_recovered`. If the blocked event contains no validated Composio reference, the endpoint returns 409: do not delete the setting directly, because it may be the only handle to a remote account; escalate for manual inspection.
 
-If the project callback identity verifier is disabled or misconfigured, Composio returns ordinary `status` and account query parameters instead of the required `session_uri`. Chickpea treats that as a terminal setup error, deletes the pending Connect Link account, and logs `chickpea.managed_connection.callback_identity_verifier_unavailable`. Do not launch with that event present.
+The legacy public callback endpoint has been removed. Deployments must not configure a Composio project-level callback identity verifier for Chickpea's hostless flow, because it can make dashboard-created links behave differently. Restart any authorization that was already in flight during an upgrade from the Agent's Connections tab, then run the complete link-and-poll canary.
 
-If a callback succeeds remotely but a later local write fails, the authorized remote reference remains in the durable attempt so the same callback can finish the local import without redeeming Composio twice. If Chickpea cannot durably record that single-use redemption, or a retry reaches a permanent authorization conflict, it deletes the otherwise orphaned Composio account before consuming the attempt and logs `chickpea.managed_connection.remote_account_deleted`. A reconnect preserves the Chickpea connection ID and Agent bindings. Schedules paused by an expiry remain `needs_attention` until explicitly reviewed and resumed.
+If authorization succeeds remotely but a later local import fails, the remote reference remains in the durable attempt so polling can retry without creating another grant. If Chickpea cannot preserve or safely import the reference, it deletes the otherwise orphaned Composio account before consuming the attempt and logs only bounded reference metadata. A reconnect preserves the Chickpea connection ID and Agent bindings. Schedules paused by an expiry remain `needs_attention` until explicitly reviewed and resumed.
 
 Chickpea deliberately calls Composio account deletion with `revoke_on_delete=false`. Google revocation is grant-wide for a user/OAuth-client pair: the launch canary connected the same personal Calendar account twice, revoked one Composio account with `revoke_on_delete=true`, and the surviving account immediately began returning Google 401 errors. Chickpea cannot reliably identify shared grants across team and personal lanes because Composio exposes no stable non-secret upstream identity for every Google toolkit. Disconnect therefore removes the exact Composio account and its stored credential without revoking the broader Google grant. A user can revoke Composio from Google Account settings when they intend to invalidate every Chickpea connection sharing that Google OAuth client.
 
@@ -357,7 +329,7 @@ Composio rate limits are organization-wide, use a fixed one-minute window, and c
 
 ## Local and staged verification
 
-The generic live verifier creates an in-memory Chickpea Agent, account, binding, and usage store, then runs one catalog capability through the production adapter. It defaults to the read-only Gmail profile canary and prints only result keys/size plus safe provider and measurement metadata. The key used here may be scoped because this verifier does not redeem an OAuth callback; the deployed Worker's `COMPOSIO_API_KEY` must follow the full-access requirement above:
+The generic live verifier creates an in-memory Chickpea Agent, account, binding, and usage store, then runs one catalog capability through the production adapter. It defaults to the read-only Gmail profile canary and prints only result keys/size plus safe provider and measurement metadata. A scoped key must cover exact connected-account inspection and the selected direct tool execution; verify the complete hosted-link and polling flow separately before relying on a narrowed production key:
 
 ```bash
 read -s COMPOSIO_API_KEY
@@ -402,9 +374,9 @@ Before making managed Notion the recommended path in an environment, run the com
 2. Through the Agent tools, search/read sibling A, create one child page under A with confirmation, and read it back.
 3. Prove sibling B is absent from search and a direct read of B is denied. The tool must not widen the grant or retry with another account.
 4. Reconnect the exact managed account, select only sibling B, and prove B is readable while A is no longer readable.
-5. Disconnect that exact managed account and verify Native Notion still works. Do not grant-wide revoke a shared provider credential during this check.
+5. Disconnect that exact managed account and verify only its Agent bindings are affected. Do not grant-wide revoke a shared provider credential during this check.
 
-Record the account labels, provider log IDs, toolkit version, and pass/fail outcomes without retaining page content or provider object IDs. A failure keeps managed Notion additive; it does not justify disabling or deleting Native Notion.
+Record the account labels, provider log IDs, toolkit version, and pass/fail outcomes without retaining page content or provider object IDs. Treat a failed boundary check as a Notion launch blocker rather than bypassing the managed authorization boundary.
 
 Before enabling Search Console or Analytics for customers, repeat each read canary with one selected and one accessible-but-unselected resource. The selected handle must work and the unselected handle must fail before a provider call. Exercise multi-page resource discovery, then revoke provider access to the selected site/property and verify the next call fails closed and the connection requires attention. Confirm the runtime plan still exposes no Search Console mutation or Analytics administration/event-ingestion capability.
 
@@ -426,7 +398,7 @@ Before enabling a customer workspace, prove in staging:
 
 - read-only and read/write consent for every enabled Google service;
 - personal and team ownership, including two Google accounts for one member;
-- wrong-user callback rejection and callback replay rejection;
+- wrong-user polling rejection, stale-project rejection, and completion replay rejection;
 - expired-account webhook, fail-closed tool calls, reconnect-in-place, and schedule review;
 - exact remote-account deletion, duplicate-account survivor behavior, provider outage behavior, result redaction, and side-effect confirmation;
 - p50/p95 connector latency, Composio operation volume, rate-limit headroom, and hosted cost from the connector usage report.
@@ -436,8 +408,8 @@ Before enabling a customer workspace, prove in staging:
 - The adapter exposes only reviewed Chickpea capabilities. Do not turn the full Composio catalog into an unreviewed model tool catalog.
 - The exact `@composio/core` SDK and every parsed toolkit version are pinned. Contract tests and a staged canary are required before upgrading either or widening capabilities.
 - Direct `tools.execute()` adds Composio's direct-execution unit price after its allowance. Chickpea accepts that charge so programmatically parsed schemas stay pinned and exact-account execution remains explicit.
-- Composio allocates a connected account before returning its ID, so an isolate loss in that narrow response-before-persistence window can leave an account that Chickpea never learned about. Reconcile the Composio project's Connected Accounts inventory at least monthly and after any callback outage: filter to Chickpea principals (`chickpea:` user IDs), compare every `ca_...` ID with non-revoked Chickpea managed accounts and unresolved authorization events, wait at least forty minutes after creation, and delete only IDs absent from both sets with `revoke_on_delete=false`. Never use grant-wide revocation for this cleanup.
-- Keep `COMPOSIO_API_KEY` configured until every managed account is disconnected. Chickpea intentionally refuses a local-only disconnect when the provider key is absent because it cannot delete the remote Composio account; the Admin UI returns an actionable restore-credentials error and leaves the account fail-closed in `needs_attention` with dependent schedules paused.
+- Composio allocates a connected account before returning its ID, so an isolate loss in that narrow response-before-persistence window can leave an account that Chickpea never learned about. Reconcile the Composio project's Connected Accounts inventory at least monthly and after any authorization outage: filter to Chickpea principals (`chickpea:` user IDs), compare every `ca_...` ID with non-revoked Chickpea managed accounts and unresolved authorization events, wait at least forty minutes after creation, and delete only IDs absent from both sets with `revoke_on_delete=false`. Never use grant-wide revocation for this cleanup.
+- Keep the active Composio project configuration available until every managed account is disconnected. Chickpea intentionally refuses a local-only disconnect when the project key is absent because it cannot delete the remote Composio account; the Admin UI returns an actionable restore-credentials error and leaves the account fail-closed in `needs_attention` with dependent schedules paused.
 - The Worker artifact carries the Composio SDK cost even when the adapter is dormant. Keep it within the provider-adapter size budget.
 - Native Google records are a migration fallback only. Do not bulk-delete them until every affected account has been reconnected through Composio and scheduled work has been checked.
 - A native Google account spanning several services is withheld from all of them when any managed connector duplicates one service and the request does not identify a unique account. Migrate Gmail, Calendar, and Drive together when practical; otherwise give the native account a distinctive label that users can name during the transition.

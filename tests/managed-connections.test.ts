@@ -6,10 +6,12 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import type { ConnectionAccountManagedPolicy } from '../src/config/types.ts';
+import { ConnectionAccountRevisionConflictError } from '../src/config/errors.ts';
 import {
   createDefaultManagedConnectionProviderRegistry,
   createManagedConnectionProviderRegistry,
   invokeManagedConnectionCapability,
+  resolveDefaultManagedConnectionProviderRegistry,
   type ManagedConnectionProvider,
 } from '../src/connections/managed.ts';
 import {
@@ -20,9 +22,36 @@ import { createManagedConnectionTools } from '../src/connections/managed-tools.t
 import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
 import { resolveEffectiveConnectionAccounts } from '../src/connections/runtime.ts';
 import {
+  ConnectionScheduleConflictError,
   ConnectionAccountService,
   ManagedConnectionConflictError,
+  markManagedAccountExpired,
+  markManagedProviderAccountsUnavailable,
+  reconcileManagedProviderAccounts,
+  toConnectionAccountView,
 } from '../src/connections/store.ts';
+
+test('browser-safe managed account views omit provider credential lineage', () => {
+  const view = toConnectionAccountView({
+    id: 'connection_safe_view', workspaceId: 'T_MANAGED', ownerKind: 'member',
+    ownerMembershipId: 'membership_alice', createdByMembershipId: 'membership_alice',
+    providerId: 'google', label: 'Work Gmail', lifecycle: 'ready', revision: 1,
+    createdAt: 1, updatedAt: 1,
+    secretRefId: 'secret_safe_view',
+    policy: {
+      ...MANAGED_POLICY,
+      providerGeneration: 9,
+      providerLineage: 'f'.repeat(24),
+    },
+  });
+  assert.equal('secretRefId' in view, false);
+  assert.equal(view.policy.kind, 'managed');
+  if (view.policy.kind !== 'managed') assert.fail('expected managed policy');
+  assert.equal('principalRef' in view.policy, false);
+  assert.equal('accountRef' in view.policy, false);
+  assert.equal('providerGeneration' in view.policy, false);
+  assert.equal('providerLineage' in view.policy, false);
+});
 
 const MANAGED_POLICY: ConnectionAccountManagedPolicy = {
   kind: 'managed',
@@ -48,15 +77,10 @@ test('a partially configured Composio provider warns once without disclosing sec
   assert.ok(provider.availability);
   assert.deepEqual(provider.availability({ toolkit: 'gmail', accessLane: 'read' }), {
     status: 'missing_configuration',
-    missingConfiguration: ['auth_config_missing', 'webhook_missing'],
+    missingConfiguration: ['auth_config_missing'],
   });
-  assert.equal(warnings.length, 2);
+  assert.equal(warnings.length, 1);
   const parsed = warnings.map((warning) => JSON.parse(warning) as Record<string, unknown>);
-  assert.deepEqual(parsed.find(({ event }) =>
-    event === 'chickpea.managed_connection.expiry_webhook_unconfigured'), {
-    event: 'chickpea.managed_connection.expiry_webhook_unconfigured',
-    adapterId: 'composio',
-  });
   assert.deepEqual(parsed.find(({ event }) =>
     event === 'chickpea.managed_connection.authorization_config_unavailable'), {
     event: 'chickpea.managed_connection.authorization_config_unavailable',
@@ -117,7 +141,6 @@ test('a fully configured Composio provider is ready to authorize', () => {
 test('Composio readiness is isolated by toolkit and access lane', () => {
   const provider = new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
-    webhookReady: true,
     authConfigIds: {
       gmail: { read: 'ac_gmail_read' },
       sheets_fixture: { read: 'ac_sheets_read' },
@@ -141,7 +164,7 @@ test('Composio readiness is isolated by toolkit and access lane', () => {
 
 test('Google Ads stays unavailable until the developer token and permissible use are production-capable', () => {
   const testOnly = new ComposioManagedConnectionProvider({
-    apiKey: 'test-key', webhookReady: true,
+    apiKey: 'test-key',
     authConfigIds: { googleads: { read: 'ac_ads', write: 'ac_ads' } },
     googleAdsAccessLevel: 'explorer',
     googleAdsPermissibleUse: 'ad_management',
@@ -152,7 +175,7 @@ test('Google Ads stays unavailable until the developer token and permissible use
   });
 
   const reporting = new ComposioManagedConnectionProvider({
-    apiKey: 'test-key', webhookReady: true,
+    apiKey: 'test-key',
     authConfigIds: { googleads: { read: 'ac_ads', write: 'ac_ads' } },
     googleAdsAccessLevel: 'basic',
     googleAdsPermissibleUse: 'reporting',
@@ -1476,6 +1499,827 @@ test('replayed expiry handling finishes pausing schedules after a partial first 
   }
 });
 
+test('provider reconciliation fails closed, pauses schedules, and restores only matched lineage', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async validate() {},
+    async execute() { return { data: { ok: true } }; },
+    async revoke() { assert.fail('provider lifecycle must not revoke remote accounts'); },
+  };
+  const service = new ConnectionAccountService({
+    config,
+    settings,
+    managedProviders: createManagedConnectionProviderRegistry([provider]),
+    randomId: () => 'provider_reconcile',
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_mail_reconcile', name: 'Mail', instructions: 'Help with mail.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_mail_reconcile',
+    });
+    const account = await service.create({
+      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+      providerId: 'google', label: 'Work Gmail', policy: {
+        ...MANAGED_POLICY,
+        providerGeneration: 4,
+        providerLineage: 'a'.repeat(24),
+      },
+    });
+    await service.attach({
+      principal: principal(), agentId: 'agent_mail_reconcile', connectionAccountId: account.id,
+      allowedCapabilities: ['gmail.messages.search'],
+    });
+    const blocker = await config.putConnectionAccount({
+      id: 'connection_secondary_requirement', workspaceId: 'T_MANAGED', ownerKind: 'team',
+      createdByMembershipId: 'membership_alice', providerId: 'custom', label: 'Secondary API',
+      policy: {
+        kind: 'api', allowedHosts: ['api.example.test'], pathPrefixes: ['/'],
+        headerName: 'authorization', allowedMethods: ['GET'], authMode: 'credential',
+      },
+      secretRefId: 'secret_secondary_requirement', lifecycle: 'ready',
+    }, 0);
+    await config.putAgentConnectionBinding({
+      agentId: 'agent_mail_reconcile', connectionAccountId: blocker.id,
+      providerId: 'custom', allowedCapabilities: [], enabled: true,
+    });
+    await config.putAgentScheduleReference({
+      scheduleId: 'schedule_provider_reconcile', agentId: 'agent_mail_reconcile',
+      workspaceId: 'T_MANAGED', channelId: 'C_MAIL',
+      createdByMembershipId: 'membership_alice', runsAsMembershipId: 'membership_alice',
+      authorityReceiptId: 'authority_provider_reconcile',
+      requiredConnectionAccountIds: [account.id, blocker.id], state: 'active',
+    });
+    await config.putAgentScheduleReference({
+      scheduleId: 'schedule_preexisting_attention', agentId: 'agent_mail_reconcile',
+      workspaceId: 'T_MANAGED', channelId: 'C_MAIL',
+      createdByMembershipId: 'membership_alice', runsAsMembershipId: 'membership_alice',
+      authorityReceiptId: 'authority_preexisting_attention',
+      requiredConnectionAccountIds: [account.id], state: 'needs_attention',
+    });
+    await config.putAgentScheduleReference({
+      scheduleId: 'schedule_archived_connector_pause', agentId: 'agent_mail_reconcile',
+      workspaceId: 'T_MANAGED', channelId: 'C_MAIL',
+      createdByMembershipId: 'membership_alice', runsAsMembershipId: 'membership_alice',
+      authorityReceiptId: 'authority_archived_connector_pause',
+      requiredConnectionAccountIds: [account.id],
+      connectionPauseAccountIds: [account.id],
+      state: 'archived',
+    });
+
+    assert.deepEqual(await markManagedProviderAccountsUnavailable(config, {
+      adapterId: 'composio',
+    }), { accounts: 1, schedules: 1, retryable: 0 });
+    assert.equal(
+      (await config.listConnectionAccounts('T_MANAGED')).find(({ id }) => id === account.id)?.lifecycle,
+      'needs_attention',
+    );
+    const pausedSchedules = await config.listAgentScheduleReferences('agent_mail_reconcile');
+    const paused = pausedSchedules.find(({ scheduleId }) =>
+      scheduleId === 'schedule_provider_reconcile')!;
+    assert.equal(paused.state, 'needs_attention');
+    assert.deepEqual(paused.connectionPauseAccountIds, [account.id]);
+    const preexisting = pausedSchedules.find(({ scheduleId }) =>
+      scheduleId === 'schedule_preexisting_attention')!;
+    assert.equal(preexisting.state, 'needs_attention');
+    assert.deepEqual(preexisting.connectionPauseAccountIds, [account.id]);
+    assert.equal(preexisting.connectionPausePreservesState, true);
+    const archived = pausedSchedules.find(({ scheduleId }) =>
+      scheduleId === 'schedule_archived_connector_pause')!;
+    assert.equal(archived.state, 'archived');
+    assert.deepEqual(archived.connectionPauseAccountIds, [account.id]);
+    const blockerBinding = (await config.listAgentConnectionBindings('agent_mail_reconcile'))
+      .find(({ connectionAccountId }) => connectionAccountId === blocker.id)!;
+    await config.putAgentConnectionBinding({ ...blockerBinding, enabled: false });
+
+    assert.deepEqual(await reconcileManagedProviderAccounts(config, {
+      adapterId: 'composio', generation: 5, lineage: 'b'.repeat(24),
+      inspect: async ({ accountRef, principalRef, toolkit }) => {
+        assert.equal(accountRef, MANAGED_POLICY.accountRef);
+        assert.equal(principalRef, MANAGED_POLICY.principalRef);
+        assert.equal(toolkit, 'gmail');
+        return 'match';
+      },
+    }), { restored: 1, needsAttention: 0, retryable: 0 });
+    const restored = (await config.listConnectionAccounts('T_MANAGED'))
+      .find(({ id }) => id === account.id)!;
+    assert.equal(restored.lifecycle, 'ready');
+    assert.equal(restored.policy.kind, 'managed');
+    if (restored.policy.kind !== 'managed') assert.fail('expected managed policy');
+    assert.equal(restored.policy.providerGeneration, 5);
+    assert.equal(restored.policy.providerLineage, 'b'.repeat(24));
+    const reconciledSchedules = await config.listAgentScheduleReferences('agent_mail_reconcile');
+    const deferred = reconciledSchedules.find(({ scheduleId }) =>
+      scheduleId === 'schedule_provider_reconcile')!;
+    assert.equal(deferred.state, 'needs_attention');
+    assert.deepEqual(
+      deferred.connectionPauseAccountIds,
+      [blocker.id],
+      'a deferred resume must track the connection that is still unavailable',
+    );
+    assert.equal(
+      reconciledSchedules.find(({ scheduleId }) =>
+        scheduleId === 'schedule_preexisting_attention')?.state,
+      'needs_attention',
+      'reconciliation must not reactivate a schedule paused for another reason',
+    );
+    assert.equal(
+      reconciledSchedules.find(({ scheduleId }) =>
+        scheduleId === 'schedule_preexisting_attention')?.connectionPauseAccountIds,
+      undefined,
+    );
+    const putSchedule = config.putAgentScheduleReference.bind(config);
+    let remainingScheduleResumeFailures = 3;
+    config.putAgentScheduleReference = (input, expectedRevision) => {
+      if (remainingScheduleResumeFailures > 0 &&
+          input.scheduleId === 'schedule_provider_reconcile' &&
+          input.state === 'active') {
+        remainingScheduleResumeFailures -= 1;
+        throw new Error('simulated schedule revision conflict');
+      }
+      return putSchedule(input, expectedRevision);
+    };
+    await service.attach({
+      principal: principal(), agentId: 'agent_mail_reconcile',
+      connectionAccountId: blocker.id, allowedCapabilities: [],
+    });
+    assert.equal(
+      (await config.listAgentScheduleReferences('agent_mail_reconcile'))
+        .find(({ scheduleId }) => scheduleId === 'schedule_provider_reconcile')?.state,
+      'needs_attention',
+      'two revision races defer resume without rolling back the valid binding',
+    );
+    let repeatedInspections = 0;
+    assert.deepEqual(await reconcileManagedProviderAccounts(config, {
+      adapterId: 'composio', generation: 5, lineage: 'b'.repeat(24),
+      inspect: async () => { repeatedInspections += 1; return 'match'; },
+    }), { restored: 0, needsAttention: 0, retryable: 1 });
+    assert.equal(repeatedInspections, 0, 'an already reconciled account must be skipped');
+    const conflicted = (await config.listAgentScheduleReferences('agent_mail_reconcile'))
+      .find(({ scheduleId }) => scheduleId === 'schedule_provider_reconcile')!;
+    assert.equal(conflicted.state, 'needs_attention');
+    assert.deepEqual(conflicted.connectionPauseAccountIds, [blocker.id]);
+    config.putAgentScheduleReference = putSchedule;
+    assert.deepEqual(await reconcileManagedProviderAccounts(config, {
+      adapterId: 'composio', generation: 5, lineage: 'b'.repeat(24),
+      inspect: async () => { repeatedInspections += 1; return 'match'; },
+    }), { restored: 0, needsAttention: 0, retryable: 0 });
+    assert.equal(repeatedInspections, 0, 'schedule retries must not repeat provider inspection');
+    assert.equal(
+      (await config.listAgentScheduleReferences('agent_mail_reconcile'))
+        .find(({ scheduleId }) => scheduleId === 'schedule_provider_reconcile')?.state,
+      'active',
+      'an already-reconciled account must retry after another required binding becomes effective',
+    );
+    assert.equal(
+      (await config.listAgentScheduleReferences('agent_mail_reconcile'))
+        .find(({ scheduleId }) => scheduleId === 'schedule_provider_reconcile')
+        ?.connectionPauseAccountIds,
+      undefined,
+    );
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('an archived Agent restores its schedules across a managed provider outage', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async validate() {},
+    async execute() { return { data: { ok: true } }; },
+    async revoke() {},
+  };
+  const service = new ConnectionAccountService({
+    config,
+    settings,
+    managedProviders: createManagedConnectionProviderRegistry([provider]),
+    randomId: () => 'archive_outage',
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_archive_outage', name: 'Archived Mail', instructions: 'Check mail.',
+      enabled: true, creatorMembershipId: 'membership_alice',
+      editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [],
+      repositories: [],
+    });
+    await config.createAgent({
+      id: 'agent_archive_fallback', name: 'Fallback', instructions: 'Stay available.',
+      enabled: true, creatorMembershipId: 'membership_alice',
+      editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [],
+      repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct',
+      defaultAgentId: 'agent_archive_fallback',
+    });
+    const account = await service.create({
+      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+      providerId: 'google', label: 'Archived Gmail', policy: {
+        ...MANAGED_POLICY,
+        providerGeneration: 1,
+        providerLineage: 'a'.repeat(24),
+      },
+    });
+    await service.attach({
+      principal: principal(), agentId: 'agent_archive_outage',
+      connectionAccountId: account.id, allowedCapabilities: ['gmail.messages.search'],
+    });
+    await config.putAgentScheduleReference({
+      scheduleId: 'schedule_archive_outage', agentId: 'agent_archive_outage',
+      workspaceId: 'T_MANAGED', channelId: 'C_MAIL',
+      createdByMembershipId: 'membership_alice', runsAsMembershipId: 'membership_alice',
+      authorityReceiptId: 'authority_archive_outage',
+      requiredConnectionAccountIds: [account.id], state: 'active',
+    });
+
+    await config.archiveAgent('agent_archive_outage');
+    assert.equal(
+      (await config.getAgentScheduleReference('schedule_archive_outage'))?.state,
+      'paused',
+    );
+    assert.deepEqual(await markManagedProviderAccountsUnavailable(config, {
+      adapterId: 'composio',
+    }), { accounts: 1, schedules: 0, retryable: 0 });
+    const parkedDuringOutage = await config.getAgentScheduleReference('schedule_archive_outage');
+    assert.equal(parkedDuringOutage?.state, 'paused');
+    assert.deepEqual(parkedDuringOutage?.connectionPauseAccountIds, [account.id]);
+    assert.equal(parkedDuringOutage?.connectionPausePreservesState, undefined);
+
+    await config.restoreAgent('agent_archive_outage');
+    assert.equal(
+      (await config.getAgentScheduleReference('schedule_archive_outage'))?.state,
+      'needs_attention',
+    );
+    assert.deepEqual(await reconcileManagedProviderAccounts(config, {
+      adapterId: 'composio', generation: 2, lineage: 'b'.repeat(24),
+      inspect: async () => 'match',
+    }), { restored: 1, needsAttention: 0, retryable: 0 });
+    const recovered = await config.getAgentScheduleReference('schedule_archive_outage');
+    assert.equal(recovered?.state, 'active');
+    assert.equal(recovered?.connectionPauseAccountIds, undefined);
+
+    assert.deepEqual(await markManagedProviderAccountsUnavailable(config, {
+      adapterId: 'composio',
+    }), { accounts: 1, schedules: 1, retryable: 0 });
+    assert.equal(
+      (await config.getAgentScheduleReference('schedule_archive_outage'))?.state,
+      'needs_attention',
+    );
+    await config.archiveAgent('agent_archive_outage');
+    assert.equal(
+      (await config.getAgentScheduleReference('schedule_archive_outage'))?.state,
+      'paused',
+    );
+    assert.deepEqual(await reconcileManagedProviderAccounts(config, {
+      adapterId: 'composio', generation: 3, lineage: 'c'.repeat(24),
+      inspect: async () => 'match',
+    }), { restored: 1, needsAttention: 0, retryable: 0 });
+    const recoveredWhileArchived = await config.getAgentScheduleReference(
+      'schedule_archive_outage',
+    );
+    assert.equal(recoveredWhileArchived?.state, 'paused');
+    assert.equal(recoveredWhileArchived?.connectionPauseAccountIds, undefined);
+    assert.equal((await config.getAgent('agent_archive_outage')).lifecycle, 'archived');
+    await config.restoreAgent('agent_archive_outage');
+    assert.equal(
+      (await config.getAgentScheduleReference('schedule_archive_outage'))?.state,
+      'active',
+    );
+
+    await config.archiveAgent('agent_archive_outage');
+    assert.equal(
+      (await config.getAgentScheduleReference('schedule_archive_outage'))?.state,
+      'paused',
+    );
+    assert.equal((await service.revoke({
+      principal: principal(), connectionAccountId: account.id,
+    })).lifecycle, 'revoked');
+    const parkedAfterRevocation = await config.getAgentScheduleReference(
+      'schedule_archive_outage',
+    );
+    assert.equal(parkedAfterRevocation?.state, 'paused');
+    assert.deepEqual(parkedAfterRevocation?.requiredConnectionAccountIds, []);
+    assert.equal(parkedAfterRevocation?.connectionPauseAccountIds, undefined);
+    await config.restoreAgent('agent_archive_outage');
+    assert.equal(
+      (await config.getAgentScheduleReference('schedule_archive_outage'))?.state,
+      'active',
+    );
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('provider reconciliation batches accounts and skips completed work on retry', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async validate() {},
+    async execute() { return { data: { ok: true } }; },
+    async revoke() {},
+  };
+  const service = new ConnectionAccountService({
+    config,
+    settings,
+    managedProviders: createManagedConnectionProviderRegistry([provider]),
+    randomId: () => 'reconcile_batch_first',
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_reconcile_batch', name: 'Batch', instructions: 'Reconcile accounts.',
+      enabled: true, creatorMembershipId: 'membership_alice',
+      editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [],
+      repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_reconcile_batch',
+    });
+    const first = await service.create({
+      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+      providerId: 'google', label: 'First Gmail', policy: {
+        ...MANAGED_POLICY,
+        providerGeneration: 1,
+        providerLineage: 'a'.repeat(24),
+      },
+    });
+    if (first.policy.kind !== 'managed') assert.fail('expected managed policy');
+    await config.putConnectionAccount({
+      ...first,
+      id: 'connection_reconcile_batch_second',
+      label: 'Second Gmail',
+      policy: {
+        ...first.policy,
+        accountRef: 'ca_reconcile_batch_second',
+      },
+    }, 0);
+
+    let inspections = 0;
+    const inspect = async () => { inspections += 1; return 'match' as const; };
+    assert.deepEqual(await reconcileManagedProviderAccounts(config, {
+      adapterId: 'composio', generation: 2, lineage: 'b'.repeat(24),
+      maxInspections: 1,
+      inspect,
+    }), { restored: 1, needsAttention: 0, retryable: 1 });
+    assert.equal(inspections, 1);
+
+    let scheduleReads = 0;
+    let accountReads = 0;
+    let bindingReads = 0;
+    const instrumentedConfig = new Proxy(config, {
+      get(target, property) {
+        const value = Reflect.get(target, property);
+        if (typeof value !== 'function') return value;
+        return (...args: unknown[]) => {
+          if (property === 'listAgentScheduleReferences') scheduleReads += 1;
+          if (property === 'listConnectionAccounts') accountReads += 1;
+          if (property === 'listAgentConnectionBindings') bindingReads += 1;
+          return Reflect.apply(value, target, args);
+        };
+      },
+    });
+    assert.deepEqual(await reconcileManagedProviderAccounts(instrumentedConfig, {
+      adapterId: 'composio', generation: 2, lineage: 'b'.repeat(24),
+      maxInspections: 1,
+      inspect,
+    }), { restored: 1, needsAttention: 0, retryable: 0 });
+    assert.equal(inspections, 2);
+    assert.equal(scheduleReads, 1, 'one reconciliation pass indexes each Agent schedule list once');
+    assert.equal(accountReads, 1, 'one reconciliation pass loads each workspace account list once');
+    assert.equal(bindingReads, 1, 'one reconciliation pass loads each Agent binding list once');
+    const reconciled = await config.listConnectionAccounts('T_MANAGED');
+    assert.equal(reconciled.every((account) => account.policy.kind === 'managed' &&
+      account.policy.providerGeneration === 2 &&
+      account.policy.providerLineage === 'b'.repeat(24)), true);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('provider reconciliation treats account revision races as retryable work', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const service = new ConnectionAccountService({
+    config,
+    settings,
+    managedProviders: createManagedConnectionProviderRegistry([{
+      id: 'composio',
+      async validate() {},
+      async execute() { return { data: {} }; },
+      async revoke() {},
+    }]),
+    randomId: () => 'revision_race',
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_revision_race', name: 'Race', instructions: 'Test reconciliation races.',
+      enabled: true, creatorMembershipId: 'membership_alice',
+      editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [],
+      repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_revision_race',
+    });
+    const account = await service.create({
+      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+      providerId: 'google', label: 'Racing Gmail', policy: {
+        ...MANAGED_POLICY,
+        providerGeneration: 1,
+        providerLineage: 'a'.repeat(24),
+      },
+    });
+    let revisionConflictsRemaining = Number.POSITIVE_INFINITY;
+    let putAttempts = 0;
+    const racingConfig = new Proxy(config, {
+      get(target, property, receiver) {
+        if (property === 'putConnectionAccount') {
+          return async (...arguments_: Parameters<typeof target.putConnectionAccount>) => {
+            putAttempts += 1;
+            if (revisionConflictsRemaining > 0) {
+              revisionConflictsRemaining -= 1;
+              throw new ConnectionAccountRevisionConflictError(
+                account.id,
+                account.revision,
+                account.revision + 1,
+              );
+            }
+            return target.putConnectionAccount(...arguments_);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+
+    assert.deepEqual(await reconcileManagedProviderAccounts(racingConfig, {
+      adapterId: 'composio', generation: 2, lineage: 'b'.repeat(24),
+      inspect: async () => 'match',
+    }), { restored: 0, needsAttention: 0, retryable: 1 });
+    assert.deepEqual(await markManagedProviderAccountsUnavailable(racingConfig, {
+      adapterId: 'composio',
+    }), { accounts: 0, schedules: 0, retryable: 1 });
+
+    revisionConflictsRemaining = 1;
+    putAttempts = 0;
+    assert.equal(await markManagedAccountExpired(racingConfig, {
+      adapterId: 'composio', accountRef: MANAGED_POLICY.accountRef,
+    }), 1);
+    assert.equal(putAttempts, 2);
+    const needsAttention = (await config.listConnectionAccounts('T_MANAGED'))[0];
+    assert.equal(needsAttention?.lifecycle, 'needs_attention');
+
+    assert.ok(needsAttention);
+    await config.putConnectionAccount(
+      { ...needsAttention, lifecycle: 'ready' },
+      needsAttention.revision,
+    );
+    revisionConflictsRemaining = Number.POSITIVE_INFINITY;
+    putAttempts = 0;
+    await assert.rejects(
+      markManagedAccountExpired(racingConfig, {
+        adapterId: 'composio', accountRef: MANAGED_POLICY.accountRef,
+      }),
+      ManagedConnectionConflictError,
+    );
+    assert.equal(putAttempts, 3);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('legacy lineage is adopted only after successful concurrent execution', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let validateCalls = 0;
+  let executeCalls = 0;
+  let failExecution = true;
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async validate() { validateCalls += 1; },
+    async execute({ policy }) {
+      executeCalls += 1;
+      assert.equal(policy.providerGeneration, 2);
+      assert.equal(policy.providerLineage, 'b'.repeat(24));
+      if (failExecution) {
+        throw new ManagedProviderRequestError(
+          'provider_unavailable',
+          'temporary provider failure',
+          { remoteCallCount: 1, providerToolCallCount: 0 },
+        );
+      }
+      return { data: { ok: true } };
+    },
+    async revoke() {},
+  };
+  const providers = createManagedConnectionProviderRegistry([provider], {
+    composio: { generation: 2, lineage: 'b'.repeat(24) },
+  });
+  const service = new ConnectionAccountService({
+    config, settings, managedProviders: providers, randomId: () => 'legacy_lineage',
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_legacy_lineage', name: 'Mail', instructions: 'Help with mail.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_legacy_lineage',
+    });
+    const account = await service.create({
+      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+      providerId: 'google', label: 'Legacy Gmail', policy: MANAGED_POLICY,
+    });
+    await service.attach({
+      principal: principal(), agentId: 'agent_legacy_lineage', connectionAccountId: account.id,
+      allowedCapabilities: ['gmail.messages.search'],
+    });
+    validateCalls = 0;
+
+    await assert.rejects(invokeManagedConnectionCapability({
+      config, identity: activeIdentity(), providers,
+      workspaceId: 'T_MANAGED', agentId: 'agent_legacy_lineage',
+      actorMembershipId: 'membership_alice', connectionAccountId: account.id,
+      capability: 'gmail.messages.search', arguments: { query: 'is:unread' },
+    }), (error: unknown) => error instanceof ManagedProviderRequestError &&
+      error.code === 'provider_unavailable');
+    const unverified = (await config.listConnectionAccounts('T_MANAGED'))[0]!;
+    assert.equal(unverified.policy.kind, 'managed');
+    if (unverified.policy.kind !== 'managed') assert.fail('expected managed policy');
+    assert.equal(unverified.policy.providerGeneration, undefined);
+    assert.equal(unverified.policy.providerLineage, undefined);
+    failExecution = false;
+
+    let lineageWriteFailed = false;
+    const unavailableAdoptionStore = new Proxy(config, {
+      get(target, property, receiver) {
+        if (property === 'putConnectionAccount') {
+          return async () => {
+            lineageWriteFailed = true;
+            throw new Error('simulated lineage write outage');
+          };
+        }
+        if (property === 'listConnectionAccounts') {
+          return async (workspaceId: string) => {
+            if (lineageWriteFailed) throw new Error('simulated lineage recovery read outage');
+            return target.listConnectionAccounts(workspaceId);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const completedDuringStoreOutage = await invokeManagedConnectionCapability({
+      config: unavailableAdoptionStore, identity: activeIdentity(), providers,
+      workspaceId: 'T_MANAGED', agentId: 'agent_legacy_lineage',
+      actorMembershipId: 'membership_alice', connectionAccountId: account.id,
+      capability: 'gmail.messages.search', arguments: { query: 'is:unread' },
+    });
+    assert.deepEqual(completedDuringStoreOutage.data, { ok: true });
+    const stillUnverified = (await config.listConnectionAccounts('T_MANAGED'))[0]!;
+    assert.equal(stillUnverified.policy.kind, 'managed');
+    if (stillUnverified.policy.kind !== 'managed') assert.fail('expected managed policy');
+    assert.equal(stillUnverified.policy.providerGeneration, undefined);
+    assert.equal(stillUnverified.policy.providerLineage, undefined);
+
+    await Promise.all([0, 1].map(() => invokeManagedConnectionCapability({
+      config, identity: activeIdentity(), providers,
+      workspaceId: 'T_MANAGED', agentId: 'agent_legacy_lineage',
+      actorMembershipId: 'membership_alice', connectionAccountId: account.id,
+      capability: 'gmail.messages.search', arguments: { query: 'is:unread' },
+    })));
+
+    assert.equal(validateCalls, 0);
+    assert.equal(executeCalls, 4);
+    const adopted = (await config.listConnectionAccounts('T_MANAGED'))[0]!;
+    assert.equal(adopted.lifecycle, 'ready');
+    assert.equal(adopted.policy.kind, 'managed');
+    if (adopted.policy.kind !== 'managed') assert.fail('expected managed policy');
+    assert.equal(adopted.policy.providerGeneration, 2);
+    assert.equal(adopted.policy.providerLineage, 'b'.repeat(24));
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('execution blocks stale provider lineage before remote account validation or tool dispatch', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let validateCalls = 0;
+  let executeCalls = 0;
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async validate() { validateCalls += 1; },
+    async execute() { executeCalls += 1; return { data: { ok: true } }; },
+    async revoke() {},
+  };
+  const providers = createManagedConnectionProviderRegistry([provider], {
+    composio: { generation: 2, lineage: 'b'.repeat(24) },
+  });
+  const service = new ConnectionAccountService({
+    config, settings, managedProviders: providers, randomId: () => 'stale_lineage',
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_stale_lineage', name: 'Mail', instructions: 'Help with mail.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_stale_lineage',
+    });
+    const account = await service.create({
+      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+      providerId: 'google', label: 'Stale Gmail', policy: {
+        ...MANAGED_POLICY,
+        providerGeneration: 1,
+        providerLineage: 'a'.repeat(24),
+      },
+    });
+    await service.attach({
+      principal: principal(), agentId: 'agent_stale_lineage', connectionAccountId: account.id,
+      allowedCapabilities: ['gmail.messages.search'],
+    });
+    await config.putAgentScheduleReference({
+      scheduleId: 'schedule_stale_lineage', agentId: 'agent_stale_lineage',
+      workspaceId: 'T_MANAGED', channelId: 'C_MAIL',
+      createdByMembershipId: 'membership_alice', runsAsMembershipId: 'membership_alice',
+      authorityReceiptId: 'authority_stale_lineage', requiredConnectionAccountIds: [account.id],
+      state: 'active',
+    });
+    validateCalls = 0;
+
+    await assert.rejects(invokeManagedConnectionCapability({
+      config, identity: activeIdentity(), providers,
+      workspaceId: 'T_MANAGED', agentId: 'agent_stale_lineage',
+      actorMembershipId: 'membership_alice', connectionAccountId: account.id,
+      capability: 'gmail.messages.search', arguments: { query: 'is:unread' },
+    }), ManagedAuthorizationExpiredError);
+    assert.equal(validateCalls, 0);
+    assert.equal(executeCalls, 0);
+    assert.equal((await config.listConnectionAccounts('T_MANAGED'))[0]?.lifecycle, 'needs_attention');
+    assert.equal((await config.listAgentScheduleReferences('agent_stale_lineage'))[0]?.state, 'needs_attention');
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('an unreadable deployment generation fails closed without demoting connected accounts', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const unreadableSettings = new Proxy(settings, {
+    get(target, property, receiver) {
+      if (property === 'getSetting') {
+        return async () => { throw new Error('settings RPC unavailable'); };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  await assert.rejects(resolveDefaultManagedConnectionProviderRegistry({
+    COMPOSIO_API_KEY: 'ak_generation_must_not_be_synthesized',
+  }, { settings: unreadableSettings }), /settings RPC unavailable/);
+  const unavailableProviders = createManagedConnectionProviderRegistry([]);
+  assert.equal(unavailableProviders.get('composio'), undefined);
+  assert.equal(unavailableProviders.configuration('composio'), undefined);
+
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async validate() {},
+    async execute() { assert.fail('an unreadable provider must not execute'); },
+    async revoke() {},
+  };
+  const healthyProviders = createManagedConnectionProviderRegistry([provider], {
+    composio: { generation: 2, lineage: 'b'.repeat(24) },
+  });
+  const service = new ConnectionAccountService({
+    config, settings, managedProviders: healthyProviders, randomId: () => 'unreadable_generation',
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_unreadable_generation', name: 'Mail', instructions: 'Help with mail.',
+      enabled: true, creatorMembershipId: 'membership_alice',
+      editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [],
+      repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct',
+      defaultAgentId: 'agent_unreadable_generation',
+    });
+    const account = await service.create({
+      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+      providerId: 'google', label: 'Work Gmail', policy: {
+        ...MANAGED_POLICY,
+        providerGeneration: 2,
+        providerLineage: 'b'.repeat(24),
+      },
+    });
+    await service.attach({
+      principal: principal(), agentId: 'agent_unreadable_generation',
+      connectionAccountId: account.id, allowedCapabilities: ['gmail.messages.search'],
+    });
+    await config.putAgentScheduleReference({
+      scheduleId: 'schedule_unreadable_generation', agentId: 'agent_unreadable_generation',
+      workspaceId: 'T_MANAGED', channelId: 'C_MAIL',
+      createdByMembershipId: 'membership_alice', runsAsMembershipId: 'membership_alice',
+      authorityReceiptId: 'authority_unreadable_generation',
+      requiredConnectionAccountIds: [account.id], state: 'active',
+    });
+
+    await assert.rejects(invokeManagedConnectionCapability({
+      config, identity: activeIdentity(), providers: unavailableProviders,
+      workspaceId: 'T_MANAGED', agentId: 'agent_unreadable_generation',
+      actorMembershipId: 'membership_alice', connectionAccountId: account.id,
+      capability: 'gmail.messages.search', arguments: { query: 'is:unread' },
+    }), (error: unknown) => error instanceof ManagedProviderRequestError &&
+      error.code === 'provider_unavailable');
+    assert.equal((await config.listConnectionAccounts('T_MANAGED'))[0]?.lifecycle, 'ready');
+    assert.equal(
+      (await config.listAgentScheduleReferences('agent_unreadable_generation'))[0]?.state,
+      'active',
+    );
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('a transient provider execution failure does not demote a healthy local account', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let transient = false;
+  let executeCalls = 0;
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async validate() {},
+    async execute() {
+      executeCalls += 1;
+      if (transient) throw new ManagedProviderRequestError(
+        'provider_unavailable',
+        'temporary provider failure',
+        { remoteCallCount: 1, providerToolCallCount: 0, capabilityToolDispatched: false },
+      );
+      return { data: { ok: true } };
+    },
+    async revoke() {},
+  };
+  const providers = createManagedConnectionProviderRegistry([provider], {
+    composio: { generation: 3, lineage: 'c'.repeat(24) },
+  });
+  const service = new ConnectionAccountService({
+    config, settings, managedProviders: providers, randomId: () => 'transient_preflight',
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_transient_preflight', name: 'Mail', instructions: 'Help with mail.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_transient_preflight',
+    });
+    const account = await service.create({
+      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+      providerId: 'google', label: 'Work Gmail', policy: {
+        ...MANAGED_POLICY,
+        providerGeneration: 3,
+        providerLineage: 'c'.repeat(24),
+      },
+    });
+    await service.attach({
+      principal: principal(), agentId: 'agent_transient_preflight',
+      connectionAccountId: account.id, allowedCapabilities: ['gmail.messages.search'],
+    });
+    transient = true;
+
+    await assert.rejects(invokeManagedConnectionCapability({
+      config, identity: activeIdentity(), providers,
+      workspaceId: 'T_MANAGED', agentId: 'agent_transient_preflight',
+      actorMembershipId: 'membership_alice', connectionAccountId: account.id,
+      capability: 'gmail.messages.search', arguments: { query: 'is:unread' },
+    }), (error: unknown) => error instanceof ManagedProviderRequestError &&
+      error.code === 'provider_unavailable');
+    assert.equal(executeCalls, 1);
+    assert.equal((await config.listConnectionAccounts('T_MANAGED'))[0]?.lifecycle, 'ready');
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
 test('an execution-time authorization failure demotes the account and pauses schedules', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -1718,6 +2562,74 @@ test('failed managed revocation stays fail closed and pauses dependent schedules
       /not available to this actor/,
     );
     assert.equal(executionCalls, 0);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('managed revocation reports a retryable conflict before touching the remote grant', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let revokeCalls = 0;
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async validate() {},
+    async execute() { return { data: { ok: true } }; },
+    async revoke() { revokeCalls += 1; },
+  };
+  const service = new ConnectionAccountService({
+    config,
+    settings,
+    managedProviders: createManagedConnectionProviderRegistry([provider]),
+    randomId: () => 'revoke_schedule_conflict',
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_revoke_conflict', name: 'Mail', instructions: 'Help with mail.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_revoke_conflict',
+    });
+    const account = await service.create({
+      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+      providerId: 'google', label: 'Work Gmail', policy: MANAGED_POLICY,
+    });
+    await service.attach({
+      principal: principal(), agentId: 'agent_revoke_conflict',
+      connectionAccountId: account.id, allowedCapabilities: ['gmail.messages.search'],
+    });
+    await config.putAgentScheduleReference({
+      scheduleId: 'schedule_revoke_conflict', agentId: 'agent_revoke_conflict',
+      workspaceId: 'T_MANAGED', channelId: 'C_MAIL',
+      createdByMembershipId: 'membership_alice', runsAsMembershipId: 'membership_alice',
+      authorityReceiptId: 'authority_revoke_conflict',
+      requiredConnectionAccountIds: [account.id], state: 'active',
+    });
+    const putSchedule = config.putAgentScheduleReference.bind(config);
+    config.putAgentScheduleReference = (input, expectedRevision) => {
+      if (input.scheduleId === 'schedule_revoke_conflict' && input.state === 'needs_attention') {
+        throw new Error('simulated schedule revision conflict');
+      }
+      return putSchedule(input, expectedRevision);
+    };
+
+    await assert.rejects(
+      service.revoke({ principal: principal(), connectionAccountId: account.id }),
+      ConnectionScheduleConflictError,
+    );
+    assert.equal(revokeCalls, 0, 'the provider grant must remain untouched until schedules pause');
+    assert.equal(
+      (await config.listConnectionAccounts('T_MANAGED')).find(({ id }) => id === account.id)
+        ?.lifecycle,
+      'needs_attention',
+    );
+    assert.equal(
+      (await config.listAgentScheduleReferences('agent_revoke_conflict'))[0]?.state,
+      'active',
+    );
   } finally {
     config.close();
     settings.close();

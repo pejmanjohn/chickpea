@@ -103,6 +103,14 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
     assert.equal(research.capabilityPreviews.connectors[0]?.name, 'Linear');
     assert.equal(research.capabilityPreviews.repositories[0]?.name, 'acme/research');
 
+    const releaseConnections = await fixtureJson<{
+      attached: Array<{ account: { label: string; lifecycle: string; ownerKind: string } }>;
+    }>(fixture, '/admin/api/agents/agent_release/connections?workspaceId=TVISUAL');
+    assert.equal(releaseConnections.attached.length, 1);
+    assert.equal(releaseConnections.attached[0]?.account.label, 'Gmail · Team');
+    assert.equal(releaseConnections.attached[0]?.account.lifecycle, 'needs_attention');
+    assert.equal(releaseConnections.attached[0]?.account.ownerKind, 'team');
+
     const channels = await fixtureJson<{ channels: ChannelProjection[] }>(
       fixture,
       '/admin/api/channels',

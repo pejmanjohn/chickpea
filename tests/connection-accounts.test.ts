@@ -11,7 +11,10 @@ import {
 } from '../src/config/api-oauth.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import { ConnectionAccountService } from '../src/connections/store.ts';
+import {
+  ConnectionAccountService,
+  ConnectionScheduleConflictError,
+} from '../src/connections/store.ts';
 import {
   externalActionAuthorityInstructions,
   resolveConnectionAccountContext,
@@ -318,14 +321,39 @@ test('one team account binds to two Agents without copying its credential', asyn
       agentId: 'agent_success',
       connectionAccountId: account.id,
     });
+    for (const [scheduleId, agentId] of [
+      ['schedule_support', 'agent_support'],
+      ['schedule_success', 'agent_success'],
+    ] as const) {
+      await config.putAgentScheduleReference({
+        scheduleId, agentId, workspaceId: 'T_CONNECTIONS', channelId: 'C_SUPPORT',
+        createdByMembershipId: 'membership_creator', runsAsMembershipId: 'membership_creator',
+        authorityReceiptId: `authority_${scheduleId}`,
+        requiredConnectionAccountIds: [account.id], state: 'active',
+      });
+    }
+    await service.detach({
+      principal: principal('membership_creator'),
+      agentId: 'agent_support',
+      connectionAccountId: account.id,
+    });
 
     assert.equal(
       await resolveConnectionAccountSecret({ secretRefId: account.secretRefId }, undefined, settings),
       'shared-token',
     );
     assert.equal((await config.listConnectionAccounts('T_CONNECTIONS')).length, 1);
-    assert.equal((await config.listAgentConnectionBindings('agent_support')).length, 1);
-    assert.equal((await config.listAgentConnectionBindings('agent_success')).length, 1);
+    assert.equal((await config.listAgentConnectionBindings('agent_support'))[0]?.enabled, false);
+    assert.equal((await config.listAgentConnectionBindings('agent_success'))[0]?.enabled, true);
+    assert.deepEqual(
+      (await config.listAgentScheduleReferences('agent_support'))[0]?.requiredConnectionAccountIds,
+      [],
+    );
+    assert.deepEqual(
+      (await config.listAgentScheduleReferences('agent_success'))[0]?.requiredConnectionAccountIds,
+      [account.id],
+      'detaching a shared Team connection must not change another Agent schedule',
+    );
     assert.doesNotMatch(JSON.stringify(await service.listViews('T_CONNECTIONS')), /shared-token|secret_id/i);
   } finally {
     config.close();
@@ -1181,7 +1209,7 @@ test('personal MCP accounts cannot substitute a different credential header poli
   }
 });
 
-test('revocation tombstones the secret and pauses dependent schedules before final state', async () => {
+test('a retry finishes terminal schedule cleanup after revocation already tombstoned the secret', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
@@ -1207,12 +1235,98 @@ test('revocation tombstones the secret and pauses dependent schedules before fin
       runsAsMembershipId: 'membership_creator', authorityReceiptId: 'schedule_authority_creator',
       requiredConnectionAccountIds: [account.id], state: 'active',
     });
+    const putSchedule = config.putAgentScheduleReference.bind(config);
+    config.putAgentScheduleReference = (input, expectedRevision) => {
+      if (input.scheduleId === 'schedule_triage' &&
+          input.requiredConnectionAccountIds.length === 0) {
+        throw new Error('simulated terminal schedule cleanup race');
+      }
+      return putSchedule(input, expectedRevision);
+    };
+    await assert.rejects(
+      service.revoke({
+        principal: principal('membership_creator'), connectionAccountId: account.id,
+      }),
+      ConnectionScheduleConflictError,
+    );
+    assert.equal(
+      (await config.listConnectionAccounts('T_CONNECTIONS'))
+        .find(({ id }) => id === account.id)?.lifecycle,
+      'revoked',
+    );
+    assert.equal(await resolveConnectionAccountSecret({ secretRefId: account.secretRefId }, undefined, settings), undefined);
+    const pendingCleanup = (await config.listAgentScheduleReferences('agent_support'))[0];
+    assert.equal(pendingCleanup?.state, 'needs_attention');
+    assert.deepEqual(pendingCleanup?.requiredConnectionAccountIds, [account.id]);
+    assert.deepEqual(pendingCleanup?.connectionPauseAccountIds, [account.id]);
+    config.putAgentScheduleReference = putSchedule;
     const revoked = await service.revoke({
       principal: principal('membership_creator'), connectionAccountId: account.id,
     });
     assert.equal(revoked.lifecycle, 'revoked');
-    assert.equal(await resolveConnectionAccountSecret({ secretRefId: account.secretRefId }, undefined, settings), undefined);
-    assert.equal((await config.listAgentScheduleReferences('agent_support'))[0]?.state, 'needs_attention');
+    const schedule = (await config.listAgentScheduleReferences('agent_support'))[0];
+    assert.equal(schedule?.state, 'needs_attention');
+    assert.deepEqual(schedule?.requiredConnectionAccountIds, []);
+    assert.equal(schedule?.connectionPauseAccountIds, undefined);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('attaching an account refreshes schedule revisions before retrying a resume conflict', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const service = new ConnectionAccountService({
+    config, settings, randomId: () => 'attach_resume_conflict',
+  });
+  try {
+    await config.createAgent(agent('agent_resume_conflict', 'membership_creator'));
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_CONNECTIONS', transportMode: 'direct',
+      defaultAgentId: 'agent_resume_conflict',
+    });
+    const account = await service.create({
+      principal: principal('membership_creator'), workspaceId: 'T_CONNECTIONS',
+      ownerKind: 'team', providerId: 'zendesk', label: 'Zendesk', policy: {
+        kind: 'api', allowedHosts: ['acme.zendesk.com'], pathPrefixes: ['/api/'],
+        headerName: 'Authorization', allowedMethods: ['GET'], authMode: 'credential',
+      }, credential: 'token',
+    });
+    await config.putAgentConnectionBinding({
+      agentId: 'agent_resume_conflict', connectionAccountId: account.id,
+      providerId: account.providerId, allowedCapabilities: [], enabled: false,
+    });
+    await config.putAgentScheduleReference({
+      scheduleId: 'schedule_resume_conflict', agentId: 'agent_resume_conflict',
+      workspaceId: 'T_CONNECTIONS', channelId: 'C_SUPPORT',
+      createdByMembershipId: 'membership_creator', runsAsMembershipId: 'membership_creator',
+      authorityReceiptId: 'authority_resume_conflict',
+      requiredConnectionAccountIds: [account.id],
+      connectionPauseAccountIds: [account.id], state: 'needs_attention',
+    });
+    const putSchedule = config.putAgentScheduleReference.bind(config);
+    let conflictInjected = false;
+    config.putAgentScheduleReference = async (input, expectedRevision) => {
+      if (!conflictInjected && input.scheduleId === 'schedule_resume_conflict' &&
+          input.state === 'active') {
+        conflictInjected = true;
+        const current = (await config.listAgentScheduleReferences('agent_resume_conflict'))[0]!;
+        await putSchedule(current, current.revision);
+        throw new Error('simulated concurrent schedule revision');
+      }
+      return putSchedule(input, expectedRevision);
+    };
+
+    await service.attach({
+      principal: principal('membership_creator'), agentId: 'agent_resume_conflict',
+      connectionAccountId: account.id,
+    });
+
+    assert.equal(conflictInjected, true);
+    const resumed = (await config.listAgentScheduleReferences('agent_resume_conflict'))[0]!;
+    assert.equal(resumed.state, 'active');
+    assert.equal(resumed.connectionPauseAccountIds, undefined);
   } finally {
     config.close();
     settings.close();

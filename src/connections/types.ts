@@ -8,7 +8,11 @@ import type {
 
 export type ManagedConnectionAccountViewPolicy = Omit<
   ConnectionAccountManagedPolicy,
-  'principalRef' | 'accountRef' | 'resourceConstraints'
+  | 'principalRef'
+  | 'accountRef'
+  | 'resourceConstraints'
+  | 'providerGeneration'
+  | 'providerLineage'
 > & {
   resourceConstraints?: Record<string, Array<{ handle: string; label: string }>>;
 };

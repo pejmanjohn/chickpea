@@ -11,7 +11,11 @@ import {
   CfWorkStore,
 } from './cf-state-proxies.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
-import { SqliteSettingsStore, type SettingsStore } from './settings-store.ts';
+import {
+  SqliteSettingsStore,
+  type EncryptedCredentialStore,
+  type SettingsStore,
+} from './settings-store.ts';
 import { SqliteAgentSnapshotStore, type AgentSnapshotStore } from './snapshot-store.ts';
 import { buildRuntimeDrainStatus, tagStateStub } from './state-rpc.ts';
 import type { RuntimeDrainStatus } from './state-rpc.ts';
@@ -192,7 +196,7 @@ export function getSlackStateStore(env?: PlatformEnv): SlackStateStore {
   return cachedSlackStateStore.store;
 }
 
-export function getSettingsStore(env?: PlatformEnv): SettingsStore {
+export function getSettingsStore(env?: PlatformEnv): SettingsStore & EncryptedCredentialStore {
   if (isCloudflareTarget()) {
     return new CfSettingsStore(tagStateStub(env));
   }

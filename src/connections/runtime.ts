@@ -63,10 +63,33 @@ export async function resolveConnectionAccountContext(input: {
   };
 }
 
-function projectEffectiveConnectionAccounts(
+export function projectEffectiveConnectionAccounts(
   accounts: ConnectionAccount[],
   bindings: AgentConnectionBinding[],
   actorMembershipId: string,
+): EffectiveConnectionAccount[] {
+  return projectConnectionAccounts(accounts, bindings, actorMembershipId, false);
+}
+
+/**
+ * Project accounts the actor can use once their provider authorization
+ * recovers. Accounts that never completed setup and revoked accounts are
+ * intentionally excluded; needs-attention accounts remain visible to
+ * schedule authority bookkeeping.
+ */
+export function projectRecoverableConnectionAccounts(
+  accounts: ConnectionAccount[],
+  bindings: AgentConnectionBinding[],
+  actorMembershipId: string,
+): EffectiveConnectionAccount[] {
+  return projectConnectionAccounts(accounts, bindings, actorMembershipId, true);
+}
+
+function projectConnectionAccounts(
+  accounts: ConnectionAccount[],
+  bindings: AgentConnectionBinding[],
+  actorMembershipId: string,
+  includeUnavailable: boolean,
 ): EffectiveConnectionAccount[] {
   const byId = new Map(accounts.map((account) => [account.id, account]));
   const resolved = bindings.flatMap((binding) => {
@@ -81,7 +104,8 @@ function projectEffectiveConnectionAccounts(
           account.providerId === bound.providerId &&
           compatiblePersonalPolicy(bound.policy, account.policy)
         );
-    return candidates.flatMap((account) => account.lifecycle === 'ready' ? [{
+    return candidates.flatMap((account) =>
+      (account.lifecycle === 'ready' || includeUnavailable && account.lifecycle === 'needs_attention') ? [{
       account,
       binding,
       policy: applyCapabilityCeiling(
@@ -91,7 +115,7 @@ function projectEffectiveConnectionAccounts(
         binding,
       ),
       scope: account.ownerKind === 'member' ? 'personal' as const : 'team' as const,
-    }] : []);
+      }] : []);
   });
   const collapsed = new Map<string, EffectiveConnectionAccount>();
   for (const entry of resolved) {

@@ -1,6 +1,33 @@
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import { promisify } from '../state/async-facade.ts';
 import type { StateDb } from '../state/state-db.ts';
+import type { SlackSecretEnvelope } from '../slack/secret-envelope.ts';
+
+export interface EncryptedCredentialRevision {
+  key: string;
+  revision: string;
+  contextId: string;
+  envelope: SlackSecretEnvelope;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ReplaceEncryptedCredentialRevisionInput {
+  key: string;
+  expectedRevision: string | null;
+  revision: string;
+  contextId: string;
+  envelope: SlackSecretEnvelope;
+}
+
+export interface EncryptedCredentialStore {
+  /** Dedicated encrypted realm; values never enter ordinary app_settings rows. */
+  getEncryptedCredentialRevision(key: string): Promise<EncryptedCredentialRevision | undefined>;
+  replaceEncryptedCredentialRevision(
+    input: ReplaceEncryptedCredentialRevisionInput,
+  ): Promise<EncryptedCredentialRevision | undefined>;
+  deleteEncryptedCredentialRevision(key: string, expectedRevision: string): Promise<boolean>;
+}
 
 /**
  * Operator settings persisted by the app itself. Customer Slack credential
@@ -55,6 +82,20 @@ export class SettingsStoreLogic {
       `CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS app_encrypted_credential_revisions (
+        credential_key TEXT PRIMARY KEY,
+        revision TEXT NOT NULL,
+        context_id TEXT NOT NULL,
+        envelope_version INTEGER NOT NULL,
+        envelope_algorithm TEXT NOT NULL,
+        key_id TEXT NOT NULL,
+        nonce TEXT NOT NULL,
+        ciphertext TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )`,
     );
@@ -135,10 +176,61 @@ export class SettingsStoreLogic {
       return merged;
     });
   }
+
+  getEncryptedCredentialRevision(key: string): EncryptedCredentialRevision | undefined {
+    const normalized = credentialKey(key);
+    const row = this.db.get(
+      'SELECT * FROM app_encrypted_credential_revisions WHERE credential_key = ?',
+      normalized,
+    ) as Record<string, unknown> | undefined;
+    return row ? encryptedCredentialRevisionFromRow(row) : undefined;
+  }
+
+  replaceEncryptedCredentialRevision(
+    input: ReplaceEncryptedCredentialRevisionInput,
+  ): EncryptedCredentialRevision | undefined {
+    const key = credentialKey(input.key);
+    const revision = credentialRevision(input.revision);
+    const contextId = credentialContextId(input.contextId);
+    return this.db.transaction(() => {
+      const current = this.getEncryptedCredentialRevision(key);
+      if ((current?.revision ?? null) !== input.expectedRevision) return undefined;
+      const at = this.now();
+      this.db.run(
+        `INSERT INTO app_encrypted_credential_revisions (
+          credential_key, revision, context_id,
+          envelope_version, envelope_algorithm, key_id, nonce, ciphertext,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(credential_key) DO UPDATE SET
+          revision = excluded.revision,
+          context_id = excluded.context_id,
+          envelope_version = excluded.envelope_version,
+          envelope_algorithm = excluded.envelope_algorithm,
+          key_id = excluded.key_id,
+          nonce = excluded.nonce,
+          ciphertext = excluded.ciphertext,
+          updated_at = excluded.updated_at`,
+        key, revision, contextId,
+        input.envelope.version, input.envelope.algorithm, input.envelope.keyId,
+        input.envelope.nonce, input.envelope.ciphertext,
+        current?.createdAt ?? at, at,
+      );
+      return this.getEncryptedCredentialRevision(key);
+    });
+  }
+
+  deleteEncryptedCredentialRevision(key: string, expectedRevision: string): boolean {
+    return this.db.run(
+      `DELETE FROM app_encrypted_credential_revisions
+       WHERE credential_key = ? AND revision = ?`,
+      credentialKey(key), credentialRevision(expectedRevision),
+    ).changes === 1;
+  }
 }
 
 /** Node backend: the target-neutral logic over `node:sqlite`, async-wrapped. */
-export interface SqliteSettingsStore extends SettingsStore {
+export interface SqliteSettingsStore extends SettingsStore, EncryptedCredentialStore {
   close(): void;
 }
 
@@ -148,9 +240,10 @@ export class SqliteSettingsStore {
     // The Proxy facade drops the `implements` compile check, so this typed
     // binding is the conformance assertion that keeps it: a logic method that
     // stops matching SettingsStore fails typecheck here.
-    const _conforms: SettingsStore = promisify(new SettingsStoreLogic(db, now), {
-      close: () => db.close(),
-    });
+    const _conforms: SettingsStore & EncryptedCredentialStore = promisify(
+      new SettingsStoreLogic(db, now), {
+        close: () => db.close(),
+      });
     return _conforms as unknown as SqliteSettingsStore;
   }
 }
@@ -166,4 +259,44 @@ function parseStringSet(raw: string): string[] {
     throw new Error('Invalid string-set setting');
   }
   return parsed;
+}
+
+function encryptedCredentialRevisionFromRow(
+  row: Record<string, unknown>,
+): EncryptedCredentialRevision {
+  return {
+    key: String(row.credential_key),
+    revision: String(row.revision),
+    contextId: String(row.context_id),
+    envelope: {
+      version: Number(row.envelope_version) as SlackSecretEnvelope['version'],
+      algorithm: String(row.envelope_algorithm) as SlackSecretEnvelope['algorithm'],
+      keyId: String(row.key_id),
+      nonce: String(row.nonce),
+      ciphertext: String(row.ciphertext),
+    },
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function credentialKey(value: string): string {
+  if (!/^[a-z][a-z0-9_.-]{0,127}$/.test(value)) {
+    throw new Error('Encrypted credential key is invalid.');
+  }
+  return value;
+}
+
+function credentialRevision(value: string): string {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+    throw new Error('Encrypted credential revision is invalid.');
+  }
+  return value;
+}
+
+function credentialContextId(value: string): string {
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(value)) {
+    throw new Error('Encrypted credential context is invalid.');
+  }
+  return value;
 }

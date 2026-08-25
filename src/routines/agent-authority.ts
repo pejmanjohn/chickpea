@@ -7,7 +7,11 @@ import type {
   CustomAgentConfig,
   ResolvedAssignment,
 } from '../config/types.ts';
-import { resolveEffectiveConnectionAccounts } from '../connections/runtime.ts';
+import {
+  projectEffectiveConnectionAccounts,
+  projectRecoverableConnectionAccounts,
+  resolveEffectiveConnectionAccounts,
+} from '../connections/runtime.ts';
 import type { EffectiveConnectionAccount } from '../connections/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import type { RoutineDefinition } from './types.ts';
@@ -73,12 +77,29 @@ export async function bindRoutineAgentAuthority(input: {
     );
   }
   const runsAsMembershipId = current?.runsAsMembershipId ?? input.actorMembershipId;
-  const effectiveConnections = await resolveEffectiveConnectionAccounts({
-    config,
-    workspaceId: input.routine.workspaceId,
-    agentId: input.assignment.agentId,
-    actorMembershipId: runsAsMembershipId,
-  });
+  const [accounts, bindings] = await Promise.all([
+    config.listConnectionAccounts(input.routine.workspaceId),
+    config.listAgentConnectionBindings(input.assignment.agentId),
+  ]);
+  const effectiveConnections = projectEffectiveConnectionAccounts(
+    accounts,
+    bindings,
+    runsAsMembershipId,
+  );
+  const recoverableConnectionAccountIds = new Set(
+    projectRecoverableConnectionAccounts(accounts, bindings, runsAsMembershipId)
+      .map(({ account }) => account.id),
+  );
+  const connectionPauseAccountIds = (current?.connectionPauseAccountIds ?? [])
+    .filter((accountId) => recoverableConnectionAccountIds.has(accountId));
+  const requiredConnectionAccountIds = new Set(
+    effectiveConnections.map(({ account }) => account.id),
+  );
+  if (connectionPauseAccountIds.length > 0) {
+    for (const accountId of current?.requiredConnectionAccountIds ?? []) {
+      if (recoverableConnectionAccountIds.has(accountId)) requiredConnectionAccountIds.add(accountId);
+    }
+  }
   return config.putAgentScheduleReference({
     scheduleId: input.routine.id,
     agentId: input.assignment.agentId,
@@ -90,8 +111,14 @@ export async function bindRoutineAgentAuthority(input: {
       input.routine.id,
       input.actorMembershipId,
     ),
-    requiredConnectionAccountIds: effectiveConnections.map(({ account }) => account.id),
-    state: current?.state === 'archived' ? 'archived' : 'active',
+    requiredConnectionAccountIds: [...requiredConnectionAccountIds],
+    ...(connectionPauseAccountIds.length > 0 ? { connectionPauseAccountIds } : {}),
+    ...(connectionPauseAccountIds.length > 0 && current?.connectionPausePreservesState
+      ? { connectionPausePreservesState: true }
+      : {}),
+    state: current?.state === 'archived'
+      ? 'archived'
+      : connectionPauseAccountIds.length > 0 ? 'needs_attention' : 'active',
   }, current?.revision ?? 0);
 }
 
@@ -107,19 +134,63 @@ export async function reassignRoutineAgentAuthority(input: {
   if (!current) {
     throw new RoutineAuthorityError('schedule_authority_missing', 'Schedule authority is unavailable.');
   }
+  const agent = await input.config.getAgent(current.agentId);
+  if (agent.lifecycle === 'archived') {
+    throw new RoutineAuthorityError(
+      'agent_unavailable',
+      'Restore the Agent before changing its Runs as authority.',
+    );
+  }
   await requireActiveMembership(input.identity, input.runsAsMembershipId, current.workspaceId);
-  const effectiveConnections = await resolveEffectiveConnectionAccounts({
-    config: input.config,
-    workspaceId: current.workspaceId,
-    agentId: current.agentId,
-    actorMembershipId: input.runsAsMembershipId,
-  });
+  const [accounts, bindings] = await Promise.all([
+    input.config.listConnectionAccounts(current.workspaceId),
+    input.config.listAgentConnectionBindings(current.agentId),
+  ]);
+  const recoverableConnections = projectRecoverableConnectionAccounts(
+    accounts,
+    bindings,
+    input.runsAsMembershipId,
+  );
+  const currentRecoverableConnections = projectRecoverableConnectionAccounts(
+    accounts,
+    bindings,
+    current.runsAsMembershipId,
+  );
+  const currentRequiredAccountIds = new Set([
+    ...current.requiredConnectionAccountIds,
+    ...(current.connectionPauseAccountIds ?? []),
+  ]);
+  const previouslyRequiredBindingAccountIds = new Set(
+    currentRecoverableConnections
+      .filter(({ account }) => currentRequiredAccountIds.has(account.id))
+      .map(({ binding }) => binding.connectionAccountId),
+  );
+  const requiredConnections = recoverableConnections.filter(({ account, binding }) =>
+    account.lifecycle === 'ready' ||
+    previouslyRequiredBindingAccountIds.has(binding.connectionAccountId)
+  );
+  const connectionPauseAccountIds = requiredConnections
+    .filter(({ account }) => account.lifecycle !== 'ready')
+    .map(({ account }) => account.id);
+  const connectionPausePreservesState = connectionPauseAccountIds.length > 0 && (
+    current.connectionPausePreservesState === true ||
+    (current.connectionPauseAccountIds?.length ?? 0) === 0 && current.state !== 'active'
+  );
+  const {
+    connectionPauseAccountIds: _connectionPauseAccountIds,
+    connectionPausePreservesState: _connectionPausePreservesState,
+    ...currentWithoutPause
+  } = current;
   return input.config.putAgentScheduleReference({
-    ...current,
+    ...currentWithoutPause,
     runsAsMembershipId: input.runsAsMembershipId,
     authorityReceiptId: input.receiptId ?? `schedule_authority_${randomUUID().replaceAll('-', '')}`,
-    requiredConnectionAccountIds: effectiveConnections.map(({ account }) => account.id),
-    state: 'active',
+    requiredConnectionAccountIds: requiredConnections.map(({ account }) => account.id),
+    ...(connectionPauseAccountIds.length > 0 ? { connectionPauseAccountIds } : {}),
+    ...(connectionPausePreservesState ? { connectionPausePreservesState: true } : {}),
+    state: current.state === 'archived'
+      ? 'archived'
+      : connectionPauseAccountIds.length > 0 ? 'needs_attention' : 'active',
   }, current.revision);
 }
 

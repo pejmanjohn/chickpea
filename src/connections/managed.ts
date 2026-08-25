@@ -1,4 +1,10 @@
 import type { PlatformEnv } from '../config/state-backend.ts';
+import {
+  ComposioConfigurationStateError,
+  resolveComposioConfiguration,
+  type ComposioConfigurationOptions,
+  type ResolvedComposioConfiguration,
+} from '../config/composio-settings.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type {
   ConnectionAccountManagedPolicy,
@@ -31,8 +37,8 @@ import {
 } from './providers/composio.ts';
 
 export const MAX_MANAGED_CONNECTION_RESULT_BYTES = 256 * 1024;
-let warnedMissingComposioWebhookSecret = false;
 let warnedInvalidComposioAuthConfigIds = false;
+let warnedUnavailableComposioConfiguration = false;
 
 export interface ManagedConnectionExecutionInput {
   policy: ConnectionAccountManagedPolicy;
@@ -55,11 +61,6 @@ export interface ManagedAuthorizationResult {
   authorizationUrl: URL;
   /** Exact provider connection request that this Connect Link may complete. */
   authorizationRef: string;
-}
-
-export interface ManagedAuthorizationCompletion {
-  accountRef: string;
-  toolkit: string;
 }
 
 export interface ManagedResourceDiscoveryResult {
@@ -89,14 +90,21 @@ export interface ManagedConnectionProvider {
     principalRef: string;
     toolkit: string;
     allowedCapabilities: readonly string[];
-    callbackUrl: string;
     signal?: AbortSignal;
   }): Promise<ManagedAuthorizationResult>;
-  completeAuthorization?(input: {
+  pollAuthorization?(input: {
+    authorizationRef: string;
     principalRef: string;
-    sessionUri: string;
+    toolkit: string;
     signal?: AbortSignal;
-  }): Promise<ManagedAuthorizationCompletion>;
+  }): Promise<
+    | { status: 'pending' }
+    | { status: 'active'; accountRef: string; toolkit: string }
+    | {
+        status: 'terminal';
+        reason: 'disabled' | 'expired' | 'failed' | 'inactive' | 'revoked';
+      }
+  >;
   discoverResources?(input: {
     policy: ConnectionAccountManagedPolicy;
     resourceKey: string;
@@ -123,6 +131,11 @@ export interface ManagedConnectionProvider {
   }): Promise<void>;
 }
 
+export interface ManagedConnectionProviderConfiguration {
+  generation: number;
+  lineage: string;
+}
+
 export function managedProviderAvailability(
   provider: ManagedConnectionProvider | undefined,
   input: { toolkit: string; accessLane: ManagedAccessLane },
@@ -135,8 +148,12 @@ export function managedProviderAvailability(
 
 export class ManagedConnectionProviderRegistry {
   private readonly providers: ReadonlyMap<string, ManagedConnectionProvider>;
+  private readonly configurations: ReadonlyMap<string, ManagedConnectionProviderConfiguration>;
 
-  constructor(providers: readonly ManagedConnectionProvider[]) {
+  constructor(
+    providers: readonly ManagedConnectionProvider[],
+    configurations: Readonly<Record<string, ManagedConnectionProviderConfiguration>> = {},
+  ) {
     const byId = new Map<string, ManagedConnectionProvider>();
     for (const provider of providers) {
       const id = provider.id.trim().toLowerCase();
@@ -144,17 +161,31 @@ export class ManagedConnectionProviderRegistry {
       byId.set(id, provider);
     }
     this.providers = byId;
+    this.configurations = new Map(Object.entries(configurations).map(([id, configuration]) => {
+      const normalizedId = id.trim().toLowerCase();
+      if (!normalizedId || !Number.isSafeInteger(configuration.generation) ||
+          configuration.generation < 1 || !/^[a-f0-9]{24}$/.test(configuration.lineage)) {
+        throw new Error(`Invalid managed connection provider configuration ${id}`);
+      }
+      return [normalizedId, { ...configuration }];
+    }));
   }
 
   get(id: string): ManagedConnectionProvider | undefined {
     return this.providers.get(id.trim().toLowerCase());
   }
+
+  configuration(id: string): ManagedConnectionProviderConfiguration | undefined {
+    const configuration = this.configurations.get(id.trim().toLowerCase());
+    return configuration ? { ...configuration } : undefined;
+  }
 }
 
 export function createManagedConnectionProviderRegistry(
   providers: readonly ManagedConnectionProvider[],
+  configurations: Readonly<Record<string, ManagedConnectionProviderConfiguration>> = {},
 ): ManagedConnectionProviderRegistry {
-  return new ManagedConnectionProviderRegistry(providers);
+  return new ManagedConnectionProviderRegistry(providers, configurations);
 }
 
 export function createDefaultManagedConnectionProviderRegistry(
@@ -257,7 +288,6 @@ export function createDefaultManagedConnectionProviderRegistry(
   ];
   const invalidAuthConfigs = authConfigEntries.flatMap(([name, value]) =>
     isComposioAuthConfigId(value) ? [] : [name]);
-  const webhookReady = Boolean(managedProviderSecret(env, 'COMPOSIO_WEBHOOK_SECRET'));
   if (apiKey && invalidAuthConfigs.length > 0 && !warnedInvalidComposioAuthConfigIds) {
     warnedInvalidComposioAuthConfigIds = true;
     console.warn(JSON.stringify({
@@ -266,19 +296,11 @@ export function createDefaultManagedConnectionProviderRegistry(
       missingAuthConfigs: invalidAuthConfigs,
     }));
   }
-  if (apiKey && !webhookReady && !warnedMissingComposioWebhookSecret) {
-    warnedMissingComposioWebhookSecret = true;
-    console.warn(JSON.stringify({
-      event: 'chickpea.managed_connection.expiry_webhook_unconfigured',
-      adapterId: 'composio',
-    }));
-  }
   return createManagedConnectionProviderRegistry(
     apiKey
       ? [new ComposioManagedConnectionProvider({
           apiKey,
           authConfigIds,
-          webhookReady,
           ...(googleAdsAccessLevel ? { googleAdsAccessLevel } : {}),
           ...(googleAdsPermissibleUse ? { googleAdsPermissibleUse } : {}),
           ...(youtubeGeneralDailyQuota ? { youtubeGeneralDailyQuota } : {}),
@@ -288,6 +310,64 @@ export function createDefaultManagedConnectionProviderRegistry(
         })]
       : [],
   );
+}
+
+/**
+ * Resolve environment or encrypted installation configuration before building
+ * the runtime registry. New request paths should use this async entrypoint;
+ * the synchronous factory remains for environment-only Admin call sites.
+ */
+export async function resolveDefaultManagedConnectionProviderRegistry(
+  env?: PlatformEnv,
+  options: Omit<ComposioConfigurationOptions, 'env'> = {},
+): Promise<ManagedConnectionProviderRegistry> {
+  return buildResolvedManagedConnectionProviderRegistry(env, options);
+}
+
+async function buildResolvedManagedConnectionProviderRegistry(
+  env: PlatformEnv | undefined,
+  options: Omit<ComposioConfigurationOptions, 'env'>,
+): Promise<ManagedConnectionProviderRegistry> {
+  let resolved;
+  try {
+    resolved = await resolveComposioConfiguration({ ...options, ...(env ? { env } : {}) });
+  } catch (error) {
+    if (error instanceof ComposioConfigurationStateError) {
+      if (!warnedUnavailableComposioConfiguration) {
+        warnedUnavailableComposioConfiguration = true;
+        console.warn(JSON.stringify({
+          event: 'chickpea.managed_connection.configuration_unavailable',
+          adapterId: 'composio',
+          errorName: error.name,
+        }));
+      }
+      return createManagedConnectionProviderRegistry([]);
+    }
+    throw error;
+  }
+  return createResolvedManagedConnectionProviderRegistry(resolved, env);
+}
+
+/** Build a request registry from configuration that has already been resolved. */
+export function createResolvedManagedConnectionProviderRegistry(
+  resolved: ResolvedComposioConfiguration,
+  env?: PlatformEnv,
+): ManagedConnectionProviderRegistry {
+  if (!resolved.apiKey || resolved.desiredState !== 'enabled' ||
+      resolved.reconciliationPending) {
+    return createManagedConnectionProviderRegistry([]);
+  }
+  const provider = new ComposioManagedConnectionProvider({
+    apiKey: resolved.apiKey,
+    authConfigIds: resolved.authConfigIds,
+    ...optionalProviderPrerequisites(env),
+  });
+  return createManagedConnectionProviderRegistry([provider], {
+    composio: {
+      generation: resolved.generation,
+      lineage: resolved.keyFingerprint ?? resolved.lastKeyFingerprint ?? '0'.repeat(24),
+    },
+  });
 }
 
 export async function invokeManagedConnectionCapability(input: {
@@ -350,8 +430,35 @@ export async function invokeManagedConnectionCapability(input: {
     }
     const provider = input.providers.get(selected.policy.adapterId);
     if (!provider) {
-      throw new Error(`Managed connection provider ${selected.policy.adapterId} is unavailable`);
+      throw new ManagedProviderRequestError(
+        'provider_unavailable',
+        'Managed connection provider is unavailable',
+        { remoteCallCount: 0, providerToolCallCount: 0, capabilityToolDispatched: false },
+      );
     }
+    const activeConfiguration = input.providers.configuration(selected.policy.adapterId);
+    const hasProviderGeneration = selected.policy.providerGeneration !== undefined;
+    const hasProviderLineage = selected.policy.providerLineage !== undefined;
+    if (activeConfiguration && (hasProviderGeneration || hasProviderLineage)) {
+      if (!hasProviderGeneration || !hasProviderLineage ||
+          selected.policy.providerGeneration !== activeConfiguration.generation ||
+          selected.policy.providerLineage !== activeConfiguration.lineage) {
+        throw new ManagedAuthorizationExpiredError({
+          remoteCallCount: 0,
+          providerToolCallCount: 0,
+          capabilityToolDispatched: false,
+        });
+      }
+    }
+    const executionPolicy: ConnectionAccountManagedPolicy = activeConfiguration &&
+        !hasProviderGeneration && !hasProviderLineage
+      ? {
+          ...selected.policy,
+          providerGeneration: activeConfiguration.generation,
+          providerLineage: activeConfiguration.lineage,
+        }
+      : selected.policy;
+    selectedPolicy = executionPolicy;
     let quotaRemaining: number | undefined;
     if (capabilityDefinition.quota) {
       if (!input.usage) {
@@ -412,11 +519,44 @@ export async function invokeManagedConnectionCapability(input: {
     }
     dispatched = true;
     result = await provider.execute({
-      policy: selected.policy,
+      policy: executionPolicy,
       capability: input.capability,
       arguments: input.arguments,
       ...(input.signal ? { signal: input.signal } : {}),
     });
+    if (executionPolicy !== selected.policy && selected.account.policy.kind === 'managed') {
+      try {
+        await input.config.putConnectionAccount({
+          ...selected.account,
+          policy: {
+            ...selected.account.policy,
+            providerGeneration: activeConfiguration!.generation,
+            providerLineage: activeConfiguration!.lineage,
+          },
+        }, selected.account.revision);
+      } catch {
+        let adoptedByConcurrentInvocation = false;
+        try {
+          const current = (await input.config.listConnectionAccounts(input.workspaceId))
+            .find((account) => account.id === selected.account.id);
+          adoptedByConcurrentInvocation = Boolean(
+            current && current.lifecycle !== 'revoked' && current.policy.kind === 'managed' &&
+            current.policy.providerGeneration === activeConfiguration!.generation &&
+            current.policy.providerLineage === activeConfiguration!.lineage,
+          );
+        } catch {
+          // Provider execution already succeeded. Lineage adoption is best
+          // effort and must never turn a completed remote operation into a
+          // reported tool failure, even when the config store is unavailable.
+        }
+        if (!adoptedByConcurrentInvocation) {
+          console.warn(JSON.stringify({
+            event: 'chickpea.managed_connection.lineage_adoption_deferred',
+            connectionAccountId: selected.account.id,
+          }));
+        }
+      }
+    }
     if (quotaRemaining !== undefined) {
       result.rateLimitRemaining = result.rateLimitRemaining === undefined
         ? quotaRemaining
@@ -620,6 +760,35 @@ function managedProviderSecret(env: PlatformEnv | undefined, name: string): stri
   const value = typeof bound === 'string' ? bound : process.env[name];
   const normalized = value?.trim();
   return normalized || undefined;
+}
+
+function optionalProviderPrerequisites(env: PlatformEnv | undefined): {
+  googleAdsAccessLevel?: string;
+  googleAdsPermissibleUse?: string;
+  youtubeGeneralDailyQuota?: string;
+  youtubeSearchDailyLimit?: string;
+  youtubeUploadDailyLimit?: string;
+  youtubeQuotaAuditApproved?: string;
+} {
+  const values = {
+    googleAdsAccessLevel: managedProviderSecret(env, 'COMPOSIO_GOOGLE_ADS_ACCESS_LEVEL'),
+    googleAdsPermissibleUse: managedProviderSecret(env, 'COMPOSIO_GOOGLE_ADS_PERMISSIBLE_USE'),
+    youtubeGeneralDailyQuota: managedProviderSecret(
+      env, 'COMPOSIO_YOUTUBE_GENERAL_DAILY_QUOTA_UNITS',
+    ),
+    youtubeSearchDailyLimit: managedProviderSecret(
+      env, 'COMPOSIO_YOUTUBE_SEARCH_DAILY_CALL_LIMIT',
+    ),
+    youtubeUploadDailyLimit: managedProviderSecret(
+      env, 'COMPOSIO_YOUTUBE_UPLOAD_DAILY_CALL_LIMIT',
+    ),
+    youtubeQuotaAuditApproved: managedProviderSecret(
+      env, 'COMPOSIO_YOUTUBE_QUOTA_AUDIT_APPROVED',
+    ),
+  };
+  return Object.fromEntries(
+    Object.entries(values).filter((entry): entry is [string, string] => Boolean(entry[1])),
+  );
 }
 
 function dailyQuotaWindow(

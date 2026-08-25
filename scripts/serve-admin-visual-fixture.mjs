@@ -310,6 +310,62 @@ async function seedConfig(store) {
   }, installation.revision);
 }
 
+async function seedConnections(store, ownerMembershipId) {
+  const account = (slug, providerId, label, toolkit, allowedCapabilities, options = {}) => ({
+    id: `connection_${slug}`,
+    workspaceId: WORKSPACE_ID,
+    ownerKind: options.ownerKind ?? 'member',
+    ...(options.ownerKind === 'team' ? {} : { ownerMembershipId }),
+    createdByMembershipId: ownerMembershipId,
+    providerId,
+    label: `${label} · ${options.ownerKind === 'team' ? 'Team' : 'Personal'}`,
+    identity: { accountName: options.accountName ?? 'member@acme.test' },
+    policy: {
+      kind: 'managed',
+      adapterId: 'composio',
+      toolkit,
+      principalRef: options.ownerKind === 'team'
+        ? `chickpea:organization:${WORKSPACE_ID}`
+        : `chickpea:membership:${ownerMembershipId}`,
+      accountRef: `ca_visual_${slug}`,
+      allowedCapabilities,
+    },
+    secretRefId: `secret_visual_${slug}`,
+    lifecycle: options.lifecycle ?? 'ready',
+  });
+  const accounts = [
+    account('drive', 'google', 'Google Drive', 'googledrive', [
+      'drive.files.search', 'drive.files.metadata', 'drive.files.read', 'drive.files.create',
+    ]),
+    account('gmail', 'google', 'Gmail', 'gmail', [
+      'gmail.profile.read', 'gmail.messages.search', 'gmail.drafts.create', 'gmail.messages.send',
+    ]),
+    account('calendar', 'google', 'Google Calendar', 'googlecalendar', [
+      'calendar.calendars.list', 'calendar.events.list', 'calendar.events.create',
+      'calendar.events.update', 'calendar.events.delete',
+    ]),
+    account('team_gmail_needs_attention', 'google', 'Gmail', 'gmail', [
+      'gmail.profile.read', 'gmail.messages.search', 'gmail.drafts.create', 'gmail.messages.send',
+    ], {
+      ownerKind: 'team', lifecycle: 'needs_attention', accountName: 'team@acme.test',
+    }),
+  ];
+  for (const connection of accounts) await store.putConnectionAccount(connection);
+  for (const [agentId, connection] of [
+    ['agent_research', accounts[0]],
+    ['agent_research', accounts[1]],
+    ['agent_release', accounts[3]],
+  ]) {
+    await store.putAgentConnectionBinding({
+      agentId,
+      connectionAccountId: connection.id,
+      providerId: connection.providerId,
+      allowedCapabilities: connection.policy.allowedCapabilities,
+      enabled: true,
+    });
+  }
+}
+
 async function seedSettings(settings) {
   await settings.setSetting('slack.teamName', 'Acme Design');
 }
@@ -547,6 +603,7 @@ export async function startAdminVisualFixture(options = {}) {
     );
     await seedMemory(memory);
     const owner = await seedVisualSlackOwner(identity);
+    await seedConnections(store, owner.membership.id);
     await seedVisualTeam(identity, provisionSlackInteractionMember, owner);
 
     const adminToken = `visual-${randomBytes(18).toString('base64url')}`;

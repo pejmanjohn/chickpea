@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import { validateMcpUrl } from '../src/config/mcp-url.ts';
@@ -80,6 +81,26 @@ test('connector preset catalog entries are valid', () => {
   }
 });
 
+test('managed Google analytics presets embed the official product-icon binaries', () => {
+  const expectedHashes: Record<string, string> = {
+    'google-search-console': '97db2ff60097307843a6f9bfc5b936735873d3cde4262cb0283f327d3040fa46',
+    'google-analytics': '424f3b1b23f36f435f3382363bf6482bfb63d3ce36a4e7ac0536b8698453502f',
+    'google-ads': '5b26cc372386e3fd3cde4fd27e7edbb8d1ef53631456f27f6607880c41110e35',
+  };
+  for (const [logoId, expectedHash] of Object.entries(expectedHashes)) {
+    const logo = CONNECTOR_LOGOS[logoId];
+    assert.equal(logo?.raster, true);
+    const encoded = logo?.svg.match(
+      /^<img src="data:image\/png;base64,([A-Za-z0-9+/=]+)" alt="">$/,
+    )?.[1];
+    assert.ok(encoded, `${logoId} must embed its official PNG`);
+    assert.equal(
+      createHash('sha256').update(Buffer.from(encoded, 'base64')).digest('hex'),
+      expectedHash,
+    );
+  }
+});
+
 test('preset lanes classify the existing MCP catalog, the API additions, and both', () => {
   const existingMcpPresets = CONNECTOR_PRESETS.filter((preset) => !API_PRESET_IDS.has(preset.id));
   assert.equal(existingMcpPresets.length, 21);
@@ -129,12 +150,12 @@ test('the Notion MCP preset keeps the official OAuth-only hosted-server shape', 
   });
 });
 
-test('managed connector presets keep Notion additive and add analytics and HubSpot connectors', () => {
+test('managed connector presets make managed Notion the only reusable Notion option', () => {
   assert.deepEqual(MANAGED_CONNECTOR_PRESETS, [{
     id: 'notion-managed',
     managedToolkit: 'notion',
     providerId: 'notion',
-    name: 'Notion (managed)',
+    name: 'Notion',
     description: 'Search, read, create, and update only the pages and databases you approve.',
     category: 'docs',
     accent: '#000000',
@@ -147,7 +168,7 @@ test('managed connector presets keep Notion additive and add analytics and HubSp
     description: 'Inspect indexing, sitemaps, and search performance for selected sites.',
     category: 'business',
     accent: '#458CF5',
-    logoId: 'google-workspace',
+    logoId: 'google-search-console',
   }, {
     id: 'google-analytics',
     managedToolkit: 'google_analytics',
@@ -156,7 +177,7 @@ test('managed connector presets keep Notion additive and add analytics and HubSp
     description: 'Read metadata, quotas, and bounded GA4 reports for selected properties.',
     category: 'business',
     accent: '#E37400',
-    logoId: 'google-workspace',
+    logoId: 'google-analytics',
   }, {
     id: 'hubspot-managed',
     managedToolkit: 'hubspot',
@@ -183,7 +204,7 @@ test('managed connector presets keep Notion additive and add analytics and HubSp
     description: 'Analyze and manage campaigns for explicitly selected client accounts.',
     category: 'business',
     accent: '#4285F4',
-    logoId: 'google-workspace',
+    logoId: 'google-ads',
   }, {
     id: 'youtube-managed',
     managedToolkit: 'youtube',
@@ -194,12 +215,12 @@ test('managed connector presets keep Notion additive and add analytics and HubSp
     accent: '#FF0000',
     logoId: 'youtube',
   }]);
-  assert.equal(REUSABLE_CONNECTOR_PRESETS.some(({ id }) => id === 'notion'), true);
+  assert.equal(REUSABLE_CONNECTOR_PRESETS.some(({ id }) => id === 'notion'), false);
   assert.equal(REUSABLE_CONNECTOR_PRESETS.some(({ id }) => id === 'notion-managed'), true);
   assert.equal(resolveReusableConnectorPreset('notion-managed')?.id, 'notion-managed');
-  assert.equal(resolveReusableConnectorPreset('Notion')?.id, 'notion');
+  assert.equal(resolveReusableConnectorPreset('Notion')?.id, 'notion-managed');
   assert.equal(resolveReusableConnectorPreset('Notion (managed)')?.id, 'notion-managed');
-  assert.equal(resolveReusableConnectorPreset('Native Notion')?.id, 'notion');
+  assert.equal(resolveReusableConnectorPreset('Native Notion'), undefined);
   for (const preset of [...GOOGLE_WORKSPACE_SERVICE_PRESETS, ...MANAGED_CONNECTOR_PRESETS]) {
     assert.ok(
       CONNECTOR_LOGOS[preset.logoId ?? preset.id],

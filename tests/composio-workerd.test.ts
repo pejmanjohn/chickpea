@@ -76,7 +76,7 @@ test('the real Composio SDK imports and constructs inside workerd', {
     assert.deepEqual(backendRequests[1]?.body, {
       auth_config_id: 'ac_workerd_smoke',
       user_id: 'chickpea:membership:workerd_smoke',
-      callback_url: 'https://chickpea.example.test/admin/connections/composio/callback',
+      callback_url: 'https://example.test/composio/return',
     });
     assert.equal(backendRequests[2]?.query.get('version'), '20260817_00');
     assert.deepEqual(backendRequests[3]?.body, {

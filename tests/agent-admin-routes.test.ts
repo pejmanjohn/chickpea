@@ -7,12 +7,11 @@ import * as v from 'valibot';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
-import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
-import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
-import { AuthorizationError } from '../src/auth/permissions.ts';
 import { provisionSlackInteractionMember } from '../src/auth/slack-admission.ts';
 import {
   ApiOAuthError,
@@ -36,18 +35,29 @@ import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 import { defaultAgentAvatarPng } from '../src/slack/agent-presence/default-avatar-pool.ts';
+import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import {
+  disableStoredComposioConfiguration,
+  recordComposioPreparationResult,
+  resolveComposioConfiguration,
+  saveStoredComposioProjectKey,
+} from '../src/config/composio-settings.ts';
+import type { ComposioClientLike } from '../src/connections/providers/composio.ts';
 import {
   createManagedConnectionProviderRegistry,
+  resolveDefaultManagedConnectionProviderRegistry,
   type ManagedConnectionProvider,
 } from '../src/connections/managed.ts';
 import {
   createManagedConnectorCatalog,
   type ManagedConnectorDefinition,
 } from '../src/connections/catalog/index.ts';
-import { ManagedAuthorizationAllocatedError } from '../src/connections/managed-errors.ts';
+import {
+  ManagedAuthorizationAllocatedError,
+  ManagedProviderRequestError,
+} from '../src/connections/managed-errors.ts';
 import {
   beginManagedAuthorization,
-  recordManagedAuthorizationAccount,
   recordManagedAuthorizationRequest,
 } from '../src/connections/managed-authorization.ts';
 
@@ -55,16 +65,6 @@ const TOKEN = 'agent-admin-token';
 
 function auth(): HeadersInit {
   return testAdminHeaders(TOKEN, { 'content-type': 'application/json' });
-}
-
-async function composioWebhookSignature(secret: string, message: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    'raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
-  );
-  const bytes = new Uint8Array(await crypto.subtle.sign(
-    'HMAC', key, new TextEncoder().encode(message),
-  ));
-  return Buffer.from(bytes).toString('base64');
 }
 
 async function managedAuthorizationSettingKey(actorMembershipId: string): Promise<string> {
@@ -245,6 +245,1313 @@ async function createAgent(app: Hono, name = 'Support Triage') {
   return (await response.json()) as { agent: Record<string, any> };
 }
 
+function composioSetupClient(): ComposioClientLike {
+  const configs = new Map<string, {
+    id: string;
+    name: string;
+    toolkit: { slug: string };
+    status: string;
+    isComposioManaged: boolean;
+    credentials: Record<string, never>;
+    restrictToFollowingTools: string[];
+  }>();
+  return {
+    authConfigs: {
+      async list(query) {
+        return {
+          items: [...configs.values()].filter((item) =>
+            !query?.toolkit || item.toolkit.slug === query.toolkit),
+          nextCursor: null,
+          totalPages: 1,
+        };
+      },
+      async create(toolkit, input) {
+        const id = `ac_${toolkit}_default`;
+        configs.set(toolkit, {
+          id,
+          name: input.name,
+          toolkit: { slug: toolkit },
+          status: 'ENABLED',
+          isComposioManaged: true,
+          credentials: {},
+          restrictToFollowingTools: [],
+        });
+        return { id, authScheme: 'OAUTH2', isComposioManaged: true, toolkit };
+      },
+    },
+    sessions: {
+      async create() { throw new Error('sessions are unused during setup'); },
+    },
+  };
+}
+
+test('owner setup is write-only, returns Agent continuation, and disable reconciliation resumes', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const credentials = {
+    store: settings,
+    keyring: generateCredentialKeyring('admin_route_composio'),
+  };
+  const client = composioSetupClient();
+  const fixture = harness(new FakeTransport(), {
+    composioConfiguration: { credentials },
+    composioCreateClient: async () => client,
+  }, { settings });
+  const sentinel = 'ak_route_secret_must_never_echo_123456789';
+  try {
+    await createAgent(fixture.app);
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/settings/connectors/composio/setup',
+      {
+        method: 'POST', headers: auth(), body: JSON.stringify({
+          projectKey: sentinel,
+          continuation: { agentId: 'agent_support', toolkit: 'gmail' },
+        }),
+      },
+    );
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.equal(text.includes(sentinel), false);
+    const body = JSON.parse(text) as {
+      provider: { configured: boolean; reconciliationPending: boolean };
+      continuation: { agentId: string; toolkit: string; action: string };
+    };
+    assert.equal(body.provider.configured, true);
+    assert.deepEqual(body.continuation, {
+      agentId: 'agent_support', toolkit: 'gmail', action: 'authorize',
+    });
+    assert.equal((await settings.getSetting('managed.composio.configuration'))?.includes(sentinel), false);
+
+    await disableStoredComposioConfiguration({ settings, credentials });
+    assert.equal(
+      JSON.parse((await settings.getSetting('managed.composio.configuration'))!).reconciliationPending,
+      true,
+    );
+    const status = await fixture.app.request(
+      'http://localhost/admin/api/settings/connectors/composio',
+      { headers: auth() },
+    );
+    assert.equal(status.status, 200);
+    const statusBody = await status.json() as {
+      provider: { desiredState: string; reconciliationPending: boolean };
+    };
+    assert.equal(statusBody.provider.desiredState, 'disabled');
+    assert.equal(statusBody.provider.reconciliationPending, true);
+
+    const retry = await fixture.app.request(
+      'http://localhost/admin/api/settings/connectors/composio/retry',
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(retry.status, 409);
+    assert.deepEqual(await retry.json(), {
+      error: 'composio_configuration_missing',
+      message: 'Add a Composio project key before preparing managed connectors.',
+    });
+    const reconciled = await fixture.app.request(
+      'http://localhost/admin/api/settings/connectors/composio',
+      { headers: auth() },
+    );
+    assert.equal(reconciled.status, 200);
+    const reconciledBody = await reconciled.json() as {
+      provider: { reconciliationPending: boolean };
+    };
+    assert.equal(reconciledBody.provider.reconciliationPending, false);
+  } finally {
+    fixture.store.close();
+    settings.close();
+  }
+});
+
+test('setup shares one request deadline and reports a saved key when preparation exhausts it', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const credentials = {
+    store: settings,
+    keyring: generateCredentialKeyring('admin_route_composio_preparation_timeout'),
+  };
+  const validationClient = composioSetupClient();
+  let clientCreations = 0;
+  const fixture = harness(new FakeTransport(), {
+    composioConfiguration: { credentials },
+    composioPreparationTimeoutMs: 5,
+    composioCreateClient: async () => {
+      clientCreations += 1;
+      if (clientCreations === 1) return validationClient;
+      return {
+        authConfigs: {
+          async list(_query, requestOptions) {
+            const signal = requestOptions?.signal;
+            assert.ok(signal);
+            await new Promise<void>((_resolve, reject) => {
+              if (signal.aborted) {
+                reject(signal.reason);
+                return;
+              }
+              signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+            });
+            assert.fail('aborted preparation must not return a list');
+          },
+          async create() {
+            assert.fail('timed-out preparation must not create an auth config');
+          },
+        },
+        sessions: {
+          async create() { throw new Error('sessions are unused during setup'); },
+        },
+      };
+    },
+  }, { settings });
+  const sentinel = 'ak_saved_before_preparation_timeout';
+  try {
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/settings/connectors/composio/setup',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({ projectKey: sentinel }),
+      },
+    );
+    assert.equal(response.status, 503, await response.clone().text());
+    assert.deepEqual(await response.json(), {
+      error: 'composio_setup_unavailable',
+      message: 'The key was saved, but managed connectors could not be prepared. Retry setup.',
+    });
+    assert.equal(clientCreations, 2);
+    assert.equal(
+      (await resolveComposioConfiguration({ settings, credentials })).apiKey,
+      sentinel,
+    );
+  } finally {
+    fixture.store.close();
+    settings.close();
+  }
+});
+
+test('managed reconciliation uses one aggregate admin-request deadline', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const credentials = {
+    store: settings,
+    keyring: generateCredentialKeyring('admin_route_reconciliation_deadline'),
+  };
+  const fixture = harness(new FakeTransport(), {
+    composioConfiguration: { credentials },
+    composioReconciliationTimeoutMs: 5,
+    composioInspectAccount: async () => new Promise(() => undefined),
+  }, { settings });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    await fixture.store.putConnectionAccount({
+      id: 'connection_reconciliation_deadline', workspaceId: 'T_TEST', ownerKind: 'team',
+      createdByMembershipId: 'membership_test_owner', providerId: 'google',
+      label: 'Gmail', lifecycle: 'ready', secretRefId: 'secret_reconciliation_deadline',
+      policy: {
+        kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+        principalRef: 'chickpea:organization:org_oss', accountRef: 'ca_reconciliation_deadline',
+        allowedCapabilities: ['gmail.profile.read'],
+      },
+    }, 0);
+    await saveStoredComposioProjectKey('ak_reconciliation_deadline', {
+      settings,
+      credentials,
+    });
+    const configuration = JSON.parse(
+      (await settings.getSetting('managed.composio.configuration'))!,
+    ) as Record<string, unknown>;
+    await settings.setSetting('managed.composio.configuration', JSON.stringify({
+      ...configuration,
+      reconciliationPending: true,
+    }));
+
+    const startedAt = Date.now();
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/settings/connectors/composio/retry',
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(response.status, 503, await response.clone().text());
+    assert.ok(Date.now() - startedAt < 500);
+    assert.deepEqual(await response.json(), {
+      error: 'composio_reconciliation_incomplete',
+      message: 'Chickpea is still reconciling managed accounts. Try again shortly.',
+    });
+  } finally {
+    fixture.store.close();
+    settings.close();
+  }
+});
+
+test('managed reconciliation uses the production account inspector across a full key rotation', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const credentials = {
+    store: settings,
+    keyring: generateCredentialKeyring('admin_route_reconciliation_batches'),
+  };
+  let inspections = 0;
+  t.mock.method(globalThis, 'fetch', async (
+    input: string | URL | Request,
+  ) => {
+    const url = new URL(String(input));
+    assert.equal(
+      `${url.origin}${url.pathname}`,
+      'https://backend.composio.dev/api/v3.1/connected_accounts',
+    );
+    const accountRef = url.searchParams.get('connected_account_ids');
+    const principalRef = url.searchParams.get('user_ids');
+    assert.ok(accountRef);
+    assert.equal(principalRef, 'chickpea:organization:org_oss');
+    inspections += 1;
+    return Response.json({
+      items: [{
+        id: accountRef,
+        status: 'ACTIVE',
+        is_disabled: false,
+        toolkit: { slug: 'gmail' },
+        user_id: principalRef,
+      }],
+    });
+  });
+  const fixture = harness(new FakeTransport(), {
+    composioConfiguration: { credentials },
+    composioCreateClient: async () => composioSetupClient(),
+  }, { settings });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    const initial = await saveStoredComposioProjectKey(
+      'ak_reconciliation_batches_initial',
+      { settings, credentials },
+    );
+    assert.ok(initial.keyFingerprint);
+    for (let index = 0; index < 26; index += 1) {
+      await fixture.store.putConnectionAccount({
+        id: `connection_reconciliation_batch_${index}`,
+        workspaceId: 'T_TEST', ownerKind: 'team',
+        createdByMembershipId: 'membership_test_owner', providerId: 'google',
+        label: `Gmail ${index}`, lifecycle: 'ready',
+        secretRefId: `secret_reconciliation_batch_${index}`,
+        policy: {
+          kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+          principalRef: 'chickpea:organization:org_oss',
+          accountRef: `ca_reconciliation_batch_${index}`,
+          allowedCapabilities: ['gmail.profile.read'],
+          providerGeneration: initial.generation,
+          providerLineage: initial.keyFingerprint,
+        },
+      }, 0);
+    }
+    const replacement = await saveStoredComposioProjectKey(
+      'ak_reconciliation_batches_replacement',
+      { settings, credentials },
+    );
+    assert.equal(replacement.reconciliationPending, true);
+
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/settings/connectors/composio/retry',
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.json() as {
+      provider: { reconciliationPending: boolean };
+    };
+    assert.equal(body.provider.reconciliationPending, false);
+    assert.equal(inspections, 26);
+    assert.equal(
+      (await fixture.store.listConnectionAccounts('T_TEST')).every((account) =>
+        account.policy.kind === 'managed' &&
+        account.policy.providerGeneration === replacement.generation &&
+        account.policy.providerLineage === replacement.keyFingerprint),
+      true,
+    );
+    const registry = await resolveDefaultManagedConnectionProviderRegistry(undefined, {
+      settings,
+      credentials,
+    });
+    assert.ok(registry.get('composio'));
+  } finally {
+    fixture.store.close();
+    settings.close();
+  }
+});
+
+test('deployment key rotation reconciles existing accounts before reactivating the provider', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const firstEnv = {
+    CHICKPEA_COMPOSIO_CONFIGURATION_MODE: 'deployment',
+    COMPOSIO_API_KEY: 'ak_deployment_rotation_first',
+  };
+  const rotatedEnv = {
+    CHICKPEA_COMPOSIO_CONFIGURATION_MODE: 'deployment',
+    COMPOSIO_API_KEY: 'ak_deployment_rotation_second',
+  };
+  let inspections = 0;
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+    const url = new URL(String(input));
+    assert.equal(
+      `${url.origin}${url.pathname}`,
+      'https://backend.composio.dev/api/v3.1/connected_accounts',
+    );
+    const accountRef = url.searchParams.get('connected_account_ids');
+    const principalRef = url.searchParams.get('user_ids');
+    assert.ok(accountRef);
+    assert.equal(principalRef, 'chickpea:organization:org_oss');
+    inspections += 1;
+    return Response.json({
+      items: [{
+        id: accountRef,
+        status: 'ACTIVE',
+        is_disabled: false,
+        toolkit: { slug: 'gmail' },
+        user_id: principalRef,
+      }],
+    });
+  });
+  const fixture = harness(new FakeTransport(), {
+    composioCreateClient: async () => composioSetupClient(),
+  }, { settings });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    await recordComposioPreparationResult({
+      expectedGeneration: 1,
+      authConfigIds: { gmail: { read: 'ac_deployment_rotation_first' } },
+      status: 'ready',
+      completedAt: 1_900_000_000_100,
+    }, { env: firstEnv, settings });
+    const first = await resolveComposioConfiguration({ env: firstEnv, settings });
+    assert.ok(first.keyFingerprint);
+    for (let index = 0; index < 2; index += 1) {
+      await fixture.store.putConnectionAccount({
+        id: `connection_deployment_rotation_${index}`,
+        workspaceId: 'T_TEST', ownerKind: 'team',
+        createdByMembershipId: 'membership_test_owner', providerId: 'google',
+        label: `Deployment Gmail ${index}`, lifecycle: 'ready',
+        secretRefId: `secret_deployment_rotation_${index}`,
+        policy: {
+          kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+          principalRef: 'chickpea:organization:org_oss',
+          accountRef: `ca_deployment_rotation_${index}`,
+          allowedCapabilities: ['gmail.profile.read'],
+          providerGeneration: first.generation,
+          providerLineage: first.keyFingerprint,
+        },
+      }, 0);
+    }
+
+    const rotated = await resolveComposioConfiguration({ env: rotatedEnv, settings });
+    assert.equal(rotated.generation, 2);
+    assert.equal(rotated.reconciliationPending, true);
+    assert.equal(
+      (await resolveDefaultManagedConnectionProviderRegistry(rotatedEnv, { settings }))
+        .get('composio'),
+      undefined,
+    );
+
+    const response = await fixture.app.fetch(new Request(
+      'http://localhost/admin/api/settings/connectors/composio/retry',
+      { method: 'POST', headers: auth(), body: '{}' },
+    ), rotatedEnv);
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(inspections, 2);
+
+    const reconciled = await resolveComposioConfiguration({ env: rotatedEnv, settings });
+    assert.equal(reconciled.generation, 2);
+    assert.equal(reconciled.reconciliationPending, false);
+    assert.equal(
+      (await fixture.store.listConnectionAccounts('T_TEST')).every((account) =>
+        account.policy.kind === 'managed' &&
+        account.policy.providerGeneration === reconciled.generation &&
+        account.policy.providerLineage === reconciled.keyFingerprint),
+      true,
+    );
+    assert.ok(
+      (await resolveDefaultManagedConnectionProviderRegistry(rotatedEnv, { settings }))
+        .get('composio'),
+    );
+  } finally {
+    fixture.store.close();
+    settings.close();
+  }
+});
+
+test('provider settings use admin.configure and deployment ownership blocks browser mutation', async () => {
+  const adminPrincipal: AuthPrincipal = {
+    userId: 'user_admin', membershipId: 'membership_admin', organizationId: 'org_oss',
+    role: 'admin', authenticatorKind: 'test_slack_session', credentialId: 'session_admin',
+    correlationId: 'request_admin', machine: false,
+  };
+  const memberPrincipal: AuthPrincipal = {
+    ...adminPrincipal,
+    userId: 'user_member', membershipId: 'membership_member', role: 'member',
+    credentialId: 'session_member', correlationId: 'request_member',
+  };
+  const admin = harness(new FakeTransport(), {}, {}, adminPrincipal);
+  const member = harness(new FakeTransport(), {}, {}, memberPrincipal);
+  try {
+    const adminStatus = await admin.app.request(
+      'http://localhost/admin/api/settings/connectors/composio', { headers: auth() },
+    );
+    assert.equal(adminStatus.status, 200);
+    const adminStatusBody = await adminStatus.json() as {
+      canConfigure: boolean;
+      catalog: unknown[];
+      impact: { accounts: number; schedules: number };
+    };
+    assert.equal(adminStatusBody.canConfigure, true);
+    assert.equal(adminStatusBody.catalog.length, 13);
+    assert.deepEqual(adminStatusBody.impact, { accounts: 0, schedules: 0 });
+
+    const memberEnv = {
+      CHICKPEA_COMPOSIO_CONFIGURATION_MODE: 'deployment',
+      COMPOSIO_API_KEY: 'ak_member_status_redaction',
+    };
+    await recordComposioPreparationResult({
+      expectedGeneration: 1,
+      authConfigIds: { gmail: { read: 'ac_member_status_gmail' } },
+      status: 'partial',
+      issueCodes: ['operator_only_detail'],
+      completedAt: 1_900_000_000_000,
+    }, { env: memberEnv, settings: member.settings });
+    const memberStatus = await member.app.fetch(new Request(
+      'http://localhost/admin/api/settings/connectors/composio', { headers: auth() },
+    ), memberEnv);
+    assert.equal(memberStatus.status, 200);
+    const memberStatusBody = await memberStatus.json() as {
+      canConfigure: boolean;
+      catalog: unknown[];
+      provider: Record<string, unknown>;
+    };
+    assert.equal(memberStatusBody.canConfigure, false);
+    assert.equal(memberStatusBody.catalog.length, 13);
+    assert.equal('impact' in memberStatusBody, false);
+    assert.equal(
+      'lastSetupResult' in memberStatusBody.provider,
+      false,
+    );
+    assert.equal((await member.app.request(
+      'http://localhost/admin/api/settings/connectors/composio/disable', {
+        method: 'POST', headers: auth(), body: '{}',
+      },
+    )).status, 403);
+
+    const deploymentResponse = await admin.app.fetch(new Request(
+      'http://localhost/admin/api/settings/connectors/composio/setup',
+      {
+        method: 'POST', headers: auth(), body: JSON.stringify({ projectKey: 'ak_browser_key' }),
+      },
+    ), {
+      CHICKPEA_COMPOSIO_CONFIGURATION_MODE: 'deployment',
+    });
+    assert.equal(deploymentResponse.status, 409);
+    assert.deepEqual(await deploymentResponse.json(), {
+      error: 'composio_configuration_deployment_managed',
+      message: 'This Composio project is managed by deployment configuration and cannot be changed here.',
+    });
+  } finally {
+    admin.store.close();
+    admin.settings.close();
+    member.store.close();
+    member.settings.close();
+  }
+});
+
+test('concurrent Composio setup returns a typed retryable conflict', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const credentials = {
+    store: settings,
+    keyring: generateCredentialKeyring('admin_route_composio_setup_lease'),
+  };
+  const fixture = harness(new FakeTransport(), {
+    composioConfiguration: { credentials },
+    composioCreateClient: async () => composioSetupClient(),
+  }, { settings });
+  try {
+    await settings.setSetting('managed.composio.setup_lease', JSON.stringify({
+      version: 1,
+      attemptId: 'existingroutelease0001',
+      generation: 1,
+      expiresAt: Date.now() + 60_000,
+    }));
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/settings/connectors/composio/setup',
+      {
+        method: 'POST',
+        headers: auth(),
+        body: JSON.stringify({ projectKey: 'ak_valid_but_setup_is_busy' }),
+      },
+    );
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: 'composio_setup_in_progress',
+      message: 'Managed connector setup is already in progress. Try again shortly.',
+    });
+  } finally {
+    fixture.store.close();
+    settings.close();
+  }
+});
+
+test('hostless poll rejects a stale provider generation before calling Composio', async () => {
+  let pollCalls = 0;
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async authorize() { throw new Error('unused'); },
+    async pollAuthorization() { pollCalls += 1; return { status: 'pending' }; },
+    async validate() {},
+    async execute() { return { data: {} }; },
+    async revoke() {},
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    const started = await beginManagedAuthorization({
+      settings: fixture.settings,
+      input: {
+        workspaceId: 'T_TEST', agentId: 'agent_support',
+        actorMembershipId: 'membership_test_owner', ownerKind: 'team',
+        providerId: 'google', adapterId: 'composio', toolkit: 'gmail', label: 'Gmail',
+        principalRef: 'chickpea:organization:org_oss',
+        allowedCapabilities: ['gmail.profile.read'],
+        bindingCapabilities: ['gmail.profile.read'],
+        providerGeneration: 2,
+        providerLineage: 'b'.repeat(24),
+      },
+      randomSecret: () => 'd'.repeat(64),
+    });
+    await recordManagedAuthorizationRequest({
+      settings: fixture.settings,
+      actorMembershipId: 'membership_test_owner',
+      browserSecret: started.browserSecret,
+      authorizationRef: 'ca_stale_generation',
+    });
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections/managed/poll',
+      {
+        method: 'POST',
+        headers: {
+          ...auth(),
+          cookie: `__Secure-chickpea_managed_authorization=${started.browserSecret}`,
+        },
+        body: '{}',
+      },
+    );
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: 'managed_authorization_stale_provider',
+      message: 'The connector configuration changed. Start this sign-in again.',
+    });
+    assert.equal(pollCalls, 0);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('hostless poll and cancel reject an authorization from a previously connected workspace', async () => {
+  let pollCalls = 0;
+  let revokeCalls = 0;
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async pollAuthorization() { pollCalls += 1; return { status: 'pending' }; },
+    async validate() {},
+    async execute() { return { data: {} }; },
+    async revoke() { revokeCalls += 1; },
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await createAgent(fixture.app);
+    const started = await beginManagedAuthorization({
+      settings: fixture.settings,
+      input: {
+        workspaceId: 'T_OLD', agentId: 'agent_support',
+        actorMembershipId: 'membership_test_owner', ownerKind: 'team',
+        providerId: 'google', adapterId: 'composio', toolkit: 'gmail', label: 'Gmail',
+        principalRef: 'chickpea:organization:org_oss',
+        allowedCapabilities: ['gmail.profile.read'],
+        bindingCapabilities: ['gmail.profile.read'],
+        providerGeneration: 1,
+        providerLineage: '0'.repeat(24),
+      },
+      randomSecret: () => 'a'.repeat(64),
+    });
+    await recordManagedAuthorizationRequest({
+      settings: fixture.settings,
+      actorMembershipId: 'membership_test_owner',
+      browserSecret: started.browserSecret,
+      authorizationRef: 'ca_old_workspace_attempt',
+    });
+    const headers = {
+      ...auth(),
+      cookie: `__Secure-chickpea_managed_authorization=${started.browserSecret}`,
+    };
+
+    const poll = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections/managed/poll',
+      { method: 'POST', headers, body: '{}' },
+    );
+    const cancel = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections/managed/cancel',
+      { method: 'POST', headers, body: '{}' },
+    );
+
+    assert.equal(poll.status, 403);
+    assert.equal(cancel.status, 403);
+    assert.equal(pollCalls, 0);
+    assert.equal(revokeCalls, 0);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('concurrent hostless polls remain request-local and import the exact account once', async () => {
+  let pollCalls = 0;
+  let validateCalls = 0;
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async authorize() { throw new Error('unused'); },
+    async pollAuthorization() {
+      pollCalls += 1;
+      await Promise.resolve();
+      return { status: 'active', accountRef: 'ca_poll_once', toolkit: 'gmail' };
+    },
+    async validate() { validateCalls += 1; },
+    async execute() { return { data: {} }; },
+    async revoke() {},
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    const started = await beginManagedAuthorization({
+      settings: fixture.settings,
+      input: {
+        workspaceId: 'T_TEST', agentId: 'agent_support',
+        actorMembershipId: 'membership_test_owner', ownerKind: 'team',
+        providerId: 'google', adapterId: 'composio', toolkit: 'gmail', label: 'Gmail',
+        principalRef: 'chickpea:organization:org_oss',
+        allowedCapabilities: ['gmail.profile.read'],
+        bindingCapabilities: ['gmail.profile.read'],
+        providerGeneration: 1,
+        providerLineage: '0'.repeat(24),
+      },
+      randomSecret: () => 'e'.repeat(64),
+    });
+    await recordManagedAuthorizationRequest({
+      settings: fixture.settings,
+      actorMembershipId: 'membership_test_owner',
+      browserSecret: started.browserSecret,
+      authorizationRef: 'ca_poll_once',
+    });
+    const request = () => fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections/managed/poll',
+      {
+        method: 'POST',
+        headers: {
+          ...auth(),
+          cookie: `__Secure-chickpea_managed_authorization=${started.browserSecret}`,
+        },
+        body: '{}',
+      },
+    );
+    const responses = await Promise.all([request(), request()]);
+    assert.deepEqual(responses.map(({ status }) => status).sort(), [200, 409]);
+    assert.equal(pollCalls, 2);
+    assert.equal(validateCalls, 1);
+    const accounts = await fixture.store.listConnectionAccounts('T_TEST');
+    assert.equal(accounts.length, 1);
+    assert.equal(accounts[0]?.policy.kind, 'managed');
+    if (accounts[0]?.policy.kind !== 'managed') assert.fail('expected managed account');
+    assert.equal(accounts[0].policy.accountRef, 'ca_poll_once');
+    assert.equal(accounts[0].policy.providerGeneration, 1);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('reconnect polling cannot narrow a shared account widened after authorization began', async () => {
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async pollAuthorization() {
+      return { status: 'active', accountRef: 'ca_shared_reconnect', toolkit: 'gmail' };
+    },
+    async validate() {},
+    async execute() { return { data: {} }; },
+    async revoke() { assert.fail('the imported shared account must not be revoked'); },
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.createAgent({
+      id: 'agent_sibling', name: 'Sibling', instructions: 'Use Gmail.', enabled: true,
+      creatorMembershipId: 'membership_test_owner', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    const existing = await fixture.store.putConnectionAccount({
+      id: 'connection_shared_reconnect', workspaceId: 'T_TEST', ownerKind: 'team',
+      createdByMembershipId: 'membership_test_owner', providerId: 'google', label: 'Shared Gmail',
+      policy: {
+        kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+        principalRef: 'chickpea:organization:org_oss', accountRef: 'ca_shared_reconnect',
+        allowedCapabilities: ['gmail.profile.read'],
+        providerGeneration: 1, providerLineage: '0'.repeat(24),
+      },
+      secretRefId: 'secret_shared_reconnect', lifecycle: 'ready',
+    }, 0);
+    const started = await beginManagedAuthorization({
+      settings: fixture.settings,
+      input: {
+        workspaceId: 'T_TEST', agentId: 'agent_support',
+        actorMembershipId: 'membership_test_owner', ownerKind: 'team',
+        providerId: 'google', adapterId: 'composio', toolkit: 'gmail', label: 'Shared Gmail',
+        principalRef: 'chickpea:organization:org_oss',
+        allowedCapabilities: ['gmail.profile.read'],
+        connectionAccountId: existing.id,
+        providerGeneration: 1, providerLineage: '0'.repeat(24),
+      },
+      randomSecret: () => '6'.repeat(64),
+    });
+    await recordManagedAuthorizationRequest({
+      settings: fixture.settings, actorMembershipId: 'membership_test_owner',
+      browserSecret: started.browserSecret, authorizationRef: 'ca_shared_reconnect',
+    });
+    assert.equal(existing.policy.kind, 'managed');
+    if (existing.policy.kind !== 'managed') assert.fail('expected managed policy');
+    const widenedCapabilities = ['gmail.profile.read', 'gmail.messages.send'];
+    const widened = await fixture.store.putConnectionAccount({
+      ...existing,
+      policy: { ...existing.policy, allowedCapabilities: widenedCapabilities },
+    }, existing.revision);
+    await fixture.store.putAgentConnectionBinding({
+      agentId: 'agent_sibling', connectionAccountId: existing.id, providerId: 'google',
+      allowedCapabilities: widenedCapabilities, enabled: true,
+    });
+
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections/managed/poll',
+      {
+        method: 'POST',
+        headers: {
+          ...auth(),
+          cookie: `__Secure-chickpea_managed_authorization=${started.browserSecret}`,
+        },
+        body: '{}',
+      },
+    );
+
+    assert.equal(response.status, 409, await response.clone().text());
+    assert.deepEqual(await response.json(), { error: 'managed_authorization_invalid' });
+    const preserved = (await fixture.store.listConnectionAccounts('T_TEST'))
+      .find(({ id }) => id === existing.id)!;
+    assert.equal(preserved.revision, widened.revision);
+    assert.equal(preserved.policy.kind, 'managed');
+    if (preserved.policy.kind !== 'managed') assert.fail('expected managed policy');
+    assert.deepEqual(preserved.policy.allowedCapabilities, widenedCapabilities);
+    assert.deepEqual(
+      (await fixture.store.listAgentConnectionBindings('agent_sibling'))[0]
+        ?.allowedCapabilities,
+      widenedCapabilities,
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('hostless poll cleans an unimported remote account after a lane conflict', async () => {
+  const cleanedRemoteAccounts: string[] = [];
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async authorize() { throw new Error('unused'); },
+    async pollAuthorization() {
+      return { status: 'active', accountRef: 'ca_poll_lane_conflict', toolkit: 'gmail' };
+    },
+    async validate() {},
+    async execute() { return { data: {} }; },
+    async revoke() {},
+    async cleanupRemoteAccount({ accountRef }) { cleanedRemoteAccounts.push(accountRef); },
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    const existing = await fixture.store.putConnectionAccount({
+      id: 'connection_existing_gmail', workspaceId: 'T_TEST', ownerKind: 'team',
+      createdByMembershipId: 'membership_test_owner', providerId: 'google',
+      label: 'Existing Gmail', policy: {
+        kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+        principalRef: 'chickpea:organization:org_oss', accountRef: 'ca_existing_gmail',
+        allowedCapabilities: ['gmail.profile.read'],
+      },
+      secretRefId: 'secret_existing_gmail', lifecycle: 'ready',
+    }, 0);
+    await fixture.store.putAgentConnectionBinding({
+      agentId: 'agent_support', connectionAccountId: existing.id, providerId: 'google',
+      allowedCapabilities: ['gmail.profile.read'], resourceConstraints: {}, enabled: true,
+    });
+    const started = await beginManagedAuthorization({
+      settings: fixture.settings,
+      input: {
+        workspaceId: 'T_TEST', agentId: 'agent_support',
+        actorMembershipId: 'membership_test_owner', ownerKind: 'team',
+        providerId: 'google', adapterId: 'composio', toolkit: 'gmail', label: 'Gmail',
+        principalRef: 'chickpea:organization:org_oss',
+        allowedCapabilities: ['gmail.profile.read'], bindingCapabilities: ['gmail.profile.read'],
+        providerGeneration: 1, providerLineage: '0'.repeat(24),
+      },
+      randomSecret: () => 'f'.repeat(64),
+    });
+    await recordManagedAuthorizationRequest({
+      settings: fixture.settings, actorMembershipId: 'membership_test_owner',
+      browserSecret: started.browserSecret, authorizationRef: 'ca_poll_lane_conflict',
+    });
+
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections/managed/poll',
+      {
+        method: 'POST', headers: {
+          ...auth(),
+          cookie: `__Secure-chickpea_managed_authorization=${started.browserSecret}`,
+        },
+        body: '{}',
+      },
+    );
+
+    assert.equal(response.status, 409, await response.clone().text());
+    assert.deepEqual(await response.json(), { error: 'managed_authorization_invalid' });
+    assert.deepEqual(cleanedRemoteAccounts, ['ca_poll_lane_conflict']);
+    assert.equal(
+      await fixture.settings.getSetting(await managedAuthorizationSettingKey('membership_test_owner')),
+      undefined,
+    );
+    assert.deepEqual(
+      (await fixture.store.listConnectionAccounts('T_TEST')).map(({ id }) => id),
+      [existing.id],
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('terminal hostless polling deletes the unimported remote account before abandoning', async () => {
+  const cleanedRemoteAccounts: string[] = [];
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async pollAuthorization() { return { status: 'terminal', reason: 'inactive' }; },
+    async validate() {},
+    async execute() { return { data: {} }; },
+    async revoke() {},
+    async cleanupRemoteAccount({ accountRef }) { cleanedRemoteAccounts.push(accountRef); },
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    const started = await beginManagedAuthorization({
+      settings: fixture.settings,
+      input: {
+        workspaceId: 'T_TEST', agentId: 'agent_support',
+        actorMembershipId: 'membership_test_owner', ownerKind: 'team',
+        providerId: 'google', adapterId: 'composio', toolkit: 'gmail', label: 'Gmail',
+        principalRef: 'chickpea:organization:org_oss',
+        allowedCapabilities: ['gmail.profile.read'], bindingCapabilities: ['gmail.profile.read'],
+        providerGeneration: 1, providerLineage: '0'.repeat(24),
+      },
+      randomSecret: () => '1'.repeat(64),
+    });
+    await recordManagedAuthorizationRequest({
+      settings: fixture.settings, actorMembershipId: 'membership_test_owner',
+      browserSecret: started.browserSecret, authorizationRef: 'ca_terminal_poll_cleanup',
+    });
+
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections/managed/poll',
+      {
+        method: 'POST', headers: {
+          ...auth(),
+          cookie: `__Secure-chickpea_managed_authorization=${started.browserSecret}`,
+        },
+        body: '{}',
+      },
+    );
+
+    assert.equal(response.status, 409, await response.clone().text());
+    assert.deepEqual(await response.json(), {
+      error: 'managed_authorization_terminal', reason: 'inactive',
+    });
+    assert.deepEqual(cleanedRemoteAccounts, ['ca_terminal_poll_cleanup']);
+    assert.equal(
+      await fixture.settings.getSetting(await managedAuthorizationSettingKey('membership_test_owner')),
+      undefined,
+    );
+    assert.match(response.headers.get('set-cookie') ?? '', /Max-Age=0/);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('transient import validation preserves active authorization for poll retry', async () => {
+  let validateCalls = 0;
+  const cleanedRemoteAccounts: string[] = [];
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async pollAuthorization() {
+      return { status: 'active', accountRef: 'ca_import_validation_retry', toolkit: 'gmail' };
+    },
+    async validate() {
+      validateCalls += 1;
+      if (validateCalls === 1) {
+        throw new ManagedProviderRequestError(
+          'provider_unavailable',
+          'temporary validation outage',
+          {
+            remoteCallCount: 1,
+            providerToolCallCount: 0,
+            capabilityToolDispatched: false,
+            definiteFailure: false,
+          },
+        );
+      }
+    },
+    async execute() { return { data: {} }; },
+    async revoke({ policy }) { cleanedRemoteAccounts.push(policy.accountRef); },
+    async cleanupRemoteAccount({ accountRef }) { cleanedRemoteAccounts.push(accountRef); },
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    const started = await beginManagedAuthorization({
+      settings: fixture.settings,
+      input: {
+        workspaceId: 'T_TEST', agentId: 'agent_support',
+        actorMembershipId: 'membership_test_owner', ownerKind: 'team',
+        providerId: 'google', adapterId: 'composio', toolkit: 'gmail', label: 'Gmail',
+        principalRef: 'chickpea:organization:org_oss',
+        allowedCapabilities: ['gmail.profile.read'], bindingCapabilities: ['gmail.profile.read'],
+        providerGeneration: 1, providerLineage: '0'.repeat(24),
+      },
+      randomSecret: () => '2'.repeat(64),
+    });
+    await recordManagedAuthorizationRequest({
+      settings: fixture.settings, actorMembershipId: 'membership_test_owner',
+      browserSecret: started.browserSecret, authorizationRef: 'ca_import_validation_retry',
+    });
+    const poll = () => fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections/managed/poll',
+      {
+        method: 'POST', headers: {
+          ...auth(),
+          cookie: `__Secure-chickpea_managed_authorization=${started.browserSecret}`,
+        },
+        body: '{}',
+      },
+    );
+
+    const unavailable = await poll();
+    assert.equal(unavailable.status, 503, await unavailable.clone().text());
+    assert.deepEqual(await unavailable.json(), {
+      error: 'managed_authorization_poll_unavailable',
+      message: 'Managed sign-in could not be checked yet. Chickpea will keep trying.',
+    });
+    assert.doesNotMatch(unavailable.headers.get('set-cookie') ?? '', /Max-Age=0/);
+    assert.deepEqual(cleanedRemoteAccounts, []);
+    assert.ok(
+      await fixture.settings.getSetting(await managedAuthorizationSettingKey('membership_test_owner')),
+    );
+
+    const connected = await poll();
+    assert.equal(connected.status, 200, await connected.clone().text());
+    assert.equal((await connected.json() as { status: string }).status, 'connected');
+    assert.equal(validateCalls, 2);
+    assert.deepEqual(cleanedRemoteAccounts, []);
+    assert.equal(
+      await fixture.settings.getSetting(await managedAuthorizationSettingKey('membership_test_owner')),
+      undefined,
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('definite import validation failure cleans authorization and returns terminal', async () => {
+  const cleanedRemoteAccounts: string[] = [];
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async pollAuthorization() {
+      return { status: 'active', accountRef: 'ca_definite_validation_failure', toolkit: 'gmail' };
+    },
+    async validate() {
+      throw new ManagedProviderRequestError(
+        'validation_failed',
+        'grant verification failed',
+        {
+          remoteCallCount: 2,
+          providerToolCallCount: 1,
+          capabilityToolDispatched: false,
+          definiteFailure: true,
+        },
+      );
+    },
+    async execute() { return { data: {} }; },
+    async revoke({ policy }) { cleanedRemoteAccounts.push(policy.accountRef); },
+    async cleanupRemoteAccount({ accountRef }) { cleanedRemoteAccounts.push(accountRef); },
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    const started = await beginManagedAuthorization({
+      settings: fixture.settings,
+      input: {
+        workspaceId: 'T_TEST', agentId: 'agent_support',
+        actorMembershipId: 'membership_test_owner', ownerKind: 'team',
+        providerId: 'google', adapterId: 'composio', toolkit: 'gmail', label: 'Gmail',
+        principalRef: 'chickpea:organization:org_oss',
+        allowedCapabilities: ['gmail.profile.read'], bindingCapabilities: ['gmail.profile.read'],
+        providerGeneration: 1, providerLineage: '0'.repeat(24),
+      },
+      randomSecret: () => '3'.repeat(64),
+    });
+    await recordManagedAuthorizationRequest({
+      settings: fixture.settings, actorMembershipId: 'membership_test_owner',
+      browserSecret: started.browserSecret, authorizationRef: 'ca_definite_validation_failure',
+    });
+
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections/managed/poll',
+      {
+        method: 'POST', headers: {
+          ...auth(),
+          cookie: `__Secure-chickpea_managed_authorization=${started.browserSecret}`,
+        },
+        body: '{}',
+      },
+    );
+
+    assert.equal(response.status, 409, await response.clone().text());
+    assert.deepEqual(await response.json(), {
+      error: 'managed_authorization_terminal', reason: 'failed',
+    });
+    assert.deepEqual(cleanedRemoteAccounts, ['ca_definite_validation_failure']);
+    assert.equal(
+      await fixture.settings.getSetting(await managedAuthorizationSettingKey('membership_test_owner')),
+      undefined,
+    );
+    assert.match(response.headers.get('set-cookie') ?? '', /Max-Age=0/);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('failed imported-account attachment leaves connector-paused schedules paused', async () => {
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async pollAuthorization() {
+      return { status: 'active', accountRef: 'ca_existing_import', toolkit: 'gmail' };
+    },
+    async validate() {},
+    async execute() { return { data: {} }; },
+    async revoke() { assert.fail('an already imported account must not be revoked'); },
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.createAgent({
+      id: 'agent_existing_import', name: 'Existing import', instructions: 'Use Gmail.', enabled: true,
+      creatorMembershipId: 'membership_test_owner', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    const existing = await fixture.store.putConnectionAccount({
+      id: 'connection_existing_import', workspaceId: 'T_TEST', ownerKind: 'team',
+      createdByMembershipId: 'membership_test_owner', providerId: 'google', label: 'Existing Gmail',
+      policy: {
+        kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+        principalRef: 'chickpea:organization:org_oss', accountRef: 'ca_existing_import',
+        allowedCapabilities: ['gmail.profile.read'],
+        providerGeneration: 1, providerLineage: '0'.repeat(24),
+      },
+      secretRefId: 'secret_existing_import', lifecycle: 'needs_attention',
+    }, 0);
+    await fixture.store.putAgentConnectionBinding({
+      agentId: 'agent_existing_import', connectionAccountId: existing.id, providerId: 'google',
+      allowedCapabilities: ['gmail.profile.read'], enabled: true,
+    });
+    await fixture.store.putAgentScheduleReference({
+      scheduleId: 'schedule_existing_import', agentId: 'agent_existing_import',
+      workspaceId: 'T_TEST', channelId: 'C_IMPORT',
+      createdByMembershipId: 'membership_test_owner', runsAsMembershipId: 'membership_test_owner',
+      authorityReceiptId: 'authority_existing_import',
+      requiredConnectionAccountIds: [existing.id],
+      connectionPauseAccountIds: [existing.id], state: 'needs_attention',
+    });
+    const putBinding = fixture.store.putAgentConnectionBinding.bind(fixture.store);
+    fixture.store.putAgentConnectionBinding = (input) => {
+      if (input.agentId === 'agent_support') throw new Error('simulated attachment failure');
+      return putBinding(input);
+    };
+    const started = await beginManagedAuthorization({
+      settings: fixture.settings,
+      input: {
+        workspaceId: 'T_TEST', agentId: 'agent_support',
+        actorMembershipId: 'membership_test_owner', ownerKind: 'team',
+        providerId: 'google', adapterId: 'composio', toolkit: 'gmail', label: 'Gmail',
+        principalRef: 'chickpea:organization:org_oss',
+        allowedCapabilities: ['gmail.profile.read'], bindingCapabilities: ['gmail.profile.read'],
+        providerGeneration: 1, providerLineage: '0'.repeat(24),
+      },
+      randomSecret: () => '4'.repeat(64),
+    });
+    await recordManagedAuthorizationRequest({
+      settings: fixture.settings, actorMembershipId: 'membership_test_owner',
+      browserSecret: started.browserSecret, authorizationRef: 'ca_existing_import',
+    });
+
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections/managed/poll',
+      {
+        method: 'POST', headers: {
+          ...auth(),
+          cookie: `__Secure-chickpea_managed_authorization=${started.browserSecret}`,
+        },
+        body: '{}',
+      },
+    );
+
+    assert.equal(response.status, 409, await response.clone().text());
+    assert.equal(
+      (await fixture.store.listConnectionAccounts('T_TEST'))
+        .find(({ id }) => id === existing.id)?.lifecycle,
+      'needs_attention',
+    );
+    const schedule = (await fixture.store.listAgentScheduleReferences('agent_existing_import'))[0]!;
+    assert.equal(schedule.state, 'needs_attention');
+    assert.deepEqual(schedule.connectionPauseAccountIds, [existing.id]);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('canceling hostless authorization revokes only the unimported remote grant', async () => {
+  const revokedRefs: string[] = [];
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async authorize() { throw new Error('unused'); },
+    async pollAuthorization() { return { status: 'pending' }; },
+    async validate() {},
+    async execute() { return { data: {} }; },
+    async revoke({ policy }) { revokedRefs.push(policy.accountRef); },
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    const started = await beginManagedAuthorization({
+      settings: fixture.settings,
+      input: {
+        workspaceId: 'T_TEST', agentId: 'agent_support',
+        actorMembershipId: 'membership_test_owner', ownerKind: 'team',
+        providerId: 'google', adapterId: 'composio', toolkit: 'gmail', label: 'Gmail',
+        principalRef: 'chickpea:organization:org_oss',
+        allowedCapabilities: ['gmail.profile.read'],
+        bindingCapabilities: ['gmail.profile.read'],
+      },
+      randomSecret: () => 'f'.repeat(64),
+    });
+    await recordManagedAuthorizationRequest({
+      settings: fixture.settings,
+      actorMembershipId: 'membership_test_owner',
+      browserSecret: started.browserSecret,
+      authorizationRef: 'ca_cancel_exact',
+    });
+
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections/managed/cancel',
+      {
+        method: 'POST',
+        headers: {
+          ...auth(),
+          cookie: `__Secure-chickpea_managed_authorization=${started.browserSecret}`,
+        },
+        body: '{}',
+      },
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { cancelled: true });
+    assert.deepEqual(revokedRefs, ['ca_cancel_exact']);
+    assert.equal(
+      await fixture.settings.getSetting(await managedAuthorizationSettingKey('membership_test_owner')),
+      undefined,
+    );
+    assert.match(response.headers.get('set-cookie') ?? '', /Max-Age=0/);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('Agent create owns its handle, generated avatar, edit policy, and creator', async () => {
   const fixture = harness();
   try {
@@ -390,6 +1697,127 @@ test('managed revoke response strips execution-only provider references', async 
   }
 });
 
+test('workspace connection inventory omits revoked accounts and returns a reconnect Agent', async () => {
+  const fixture = harness();
+  try {
+    await createAgent(fixture.app);
+    const account = (id: string, lifecycle: 'ready' | 'revoked') => ({
+      id,
+      workspaceId: 'T_TEST',
+      ownerKind: 'team' as const,
+      createdByMembershipId: 'membership_test_owner',
+      providerId: 'custom',
+      label: id,
+      policy: {
+        kind: 'api' as const,
+        allowedHosts: ['api.example.com'],
+        pathPrefixes: ['/'],
+        headerName: 'Authorization',
+        allowedMethods: ['GET'],
+        authMode: 'credential' as const,
+      },
+      secretRefId: `secret_${id}`,
+      lifecycle,
+    });
+    const visible = await fixture.store.putConnectionAccount(account('connection_visible', 'ready'), 0);
+    await fixture.store.putConnectionAccount(account('connection_unbound', 'ready'), 0);
+    await fixture.store.putConnectionAccount(account('connection_revoked', 'revoked'), 0);
+    await fixture.store.createAgent({
+      id: 'agent_inventory_bound', name: 'Inventory bound', instructions: 'Use the account.',
+      enabled: true, creatorMembershipId: 'membership_test_owner',
+      editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [],
+      repositories: [],
+    });
+    await fixture.store.putAgentConnectionBinding({
+      agentId: 'agent_inventory_bound', connectionAccountId: visible.id,
+      providerId: visible.providerId, allowedCapabilities: [], resourceConstraints: {},
+      enabled: true,
+    });
+
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/connections?workspaceId=T_TEST',
+      { headers: auth() },
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.json() as {
+      accounts: Array<{
+        account: { id: string };
+        reconnectAgentId?: string;
+      }>;
+    };
+    assert.deepEqual(body.accounts.map(({ account: listed }) => listed.id), [
+      'connection_unbound',
+      'connection_visible',
+    ]);
+    assert.equal(body.accounts[0]?.reconnectAgentId, undefined);
+    assert.equal(body.accounts[1]?.reconnectAgentId, 'agent_inventory_bound');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('corrupt managed credentials do not block native connection inventory, attach, or revoke', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  await saveStoredComposioProjectKey('ak_native_routes_survive_managed_corruption', {
+    settings,
+    credentials: {
+      store: settings,
+      keyring: generateCredentialKeyring('managed_configuration_writer'),
+    },
+  });
+  const fixture = harness(new FakeTransport(), {
+    composioConfiguration: {
+      credentials: {
+        store: settings,
+        keyring: generateCredentialKeyring('managed_configuration_reader'),
+      },
+    },
+  }, { settings });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    const account = await fixture.store.putConnectionAccount({
+      id: 'connection_native_during_managed_failure', workspaceId: 'T_TEST',
+      ownerKind: 'team', createdByMembershipId: 'membership_test_owner',
+      providerId: 'custom', label: 'Native API', lifecycle: 'ready',
+      secretRefId: 'secret_native_during_managed_failure',
+      policy: {
+        kind: 'api', allowedHosts: ['api.example.com'], pathPrefixes: ['/'],
+        headerName: 'Authorization', allowedMethods: ['GET'], authMode: 'credential',
+      },
+    }, 0);
+
+    const listed = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections?workspaceId=T_TEST',
+      { headers: auth() },
+    );
+    assert.equal(listed.status, 200, await listed.clone().text());
+    const listedBody = await listed.json() as {
+      available: Array<{ id: string }>;
+    };
+    assert.deepEqual(listedBody.available.map((item) => item.id), [account.id]);
+
+    const attached = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${account.id}/attach`,
+      { method: 'POST', headers: auth(), body: JSON.stringify({ allowedCapabilities: [] }) },
+    );
+    assert.equal(attached.status, 201, await attached.clone().text());
+
+    const revoked = await fixture.app.request(
+      `http://localhost/admin/api/connections/${account.id}/revoke`,
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(revoked.status, 200, await revoked.clone().text());
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('managed Google setup reports an unconfigured provider without reserving an attempt', async () => {
   const fixture = harness();
   try {
@@ -500,6 +1928,7 @@ test('the reusable connection catalog reports managed readiness per toolkit and 
         composio: boolean;
         catalog: Array<{
           toolkit: string;
+          capabilities: Array<{ id: string; accessLane: string; description: string }>;
           access: { read: { status: string }; write: { status: string } };
         }>;
       };
@@ -523,6 +1952,48 @@ test('the reusable connection catalog reports managed readiness per toolkit and 
       },
     });
     assert.equal(body.managedConnectors.catalog[1]?.access.read.status, 'missing_configuration');
+    assert.deepEqual(body.managedConnectors.catalog[0]?.capabilities[0], {
+      id: 'gmail.profile.read',
+      accessLane: 'read',
+      description: 'Read the email address and mailbox totals for the selected Gmail account.',
+    });
+    assert.deepEqual(
+      Object.keys(body.managedConnectors.catalog[0]?.capabilities[0] ?? {}).sort(),
+      ['accessLane', 'description', 'id'],
+      'the catalog must not expose execution-only capability metadata',
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('revoked connection accounts are excluded from reusable available accounts', async () => {
+  const fixture = harness(new FakeTransport());
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    await fixture.store.putConnectionAccount({
+      id: 'connection_revoked', workspaceId: 'T_TEST', ownerKind: 'member',
+      ownerMembershipId: 'membership_test_owner', createdByMembershipId: 'membership_test_owner',
+      providerId: 'google', label: 'Revoked Gmail', lifecycle: 'revoked',
+      policy: {
+        kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+        principalRef: 'chickpea:membership:membership_test_owner', accountRef: 'ca_revoked',
+        allowedCapabilities: ['gmail.profile.read'],
+      },
+      secretRefId: 'secret_revoked',
+    }, 0);
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections?workspaceId=T_TEST',
+      { headers: auth() },
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.json() as { available: Array<{ id: string }> };
+    assert.deepEqual(body.available, []);
   } finally {
     fixture.store.close();
     fixture.settings.close();
@@ -825,1147 +2296,32 @@ test('a failed Connect Link validates and deletes its allocated remote account',
   }
 });
 
-test('managed Google authorization starts a Connect Link and imports the verified callback account', async () => {
-  const calls: string[] = [];
-  const authorizedCapabilities: string[][] = [];
-  let completedAccountRef = 'ca_connected';
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async authorize(input) {
-      calls.push(`authorize:${input.principalRef}:${input.toolkit}`);
-      authorizedCapabilities.push([...input.allowedCapabilities]);
-      assert.equal(input.callbackUrl, 'http://localhost/admin/connections/composio/callback');
-      return {
-        authorizationUrl: new URL('https://connect.composio.dev/link/lk_test'),
-        authorizationRef: completedAccountRef,
-      };
-    },
-    async completeAuthorization(input) {
-      calls.push(`complete:${input.principalRef}:${input.sessionUri}`);
-      return { accountRef: completedAccountRef, toolkit: 'gmail' };
-    },
-    async validate(input) {
-      calls.push(`validate:${input.policy.accountRef}`);
-    },
-    async execute() { return { data: {} }; },
-    async revoke() {},
-  };
-  const fixture = harness(new FakeTransport(), {
-    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-  });
-  try {
-    await createAgent(fixture.app);
-    await fixture.store.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
-      defaultAgentId: 'agent_support',
-    });
-    const started = await fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'gmail', access: 'write',
-        }),
-      },
-    );
-    assert.equal(started.status, 200, await started.clone().text());
-    assert.deepEqual(await started.clone().json(), {
-      authorizationUrl: 'https://connect.composio.dev/link/lk_test',
-    });
-    const cookie = started.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
-    assert.ok(cookie);
-    assert.match(started.headers.get('set-cookie') ?? '', /HttpOnly/);
-    assert.match(started.headers.get('set-cookie') ?? '', /SameSite=Lax/);
-
-    const callback = await fixture.app.request(
-      'http://localhost/admin/connections/composio/callback?session_uri=session%3A%2F%2Fsigned-once',
-      { headers: testAdminHeaders(TOKEN, { cookie }) },
-    );
-    assert.equal(callback.status, 303, await callback.clone().text());
-    assert.equal(
-      callback.headers.get('location'),
-      '/admin/agents/agent_support/connections?managed=connected&toolkit=gmail',
-    );
-    const accounts = await fixture.store.listConnectionAccounts('T_TEST');
-    assert.equal(accounts.length, 1);
-    assert.equal(accounts[0]?.label, 'Gmail · Personal');
-    assert.deepEqual(accounts[0]?.policy, {
-      kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
-      principalRef: 'chickpea:membership:membership_test_owner',
-      accountRef: 'ca_connected',
-      allowedCapabilities: [
-        'gmail.profile.read', 'gmail.messages.search',
-        'gmail.drafts.create', 'gmail.messages.send',
-      ],
-    });
-    assert.equal(accounts[0]?.lifecycle, 'ready');
-    assert.deepEqual(
-      (await fixture.store.listAgentConnectionBindings('agent_support'))[0]?.allowedCapabilities,
-      [
-        'gmail.profile.read', 'gmail.messages.search',
-        'gmail.drafts.create', 'gmail.messages.send',
-      ],
-    );
-    assert.deepEqual(calls, [
-      'authorize:chickpea:membership:membership_test_owner:gmail',
-      'complete:chickpea:membership:membership_test_owner:session://signed-once',
-      'validate:ca_connected',
-    ]);
-    assert.deepEqual(authorizedCapabilities[0], [
-      'gmail.profile.read', 'gmail.messages.search',
-      'gmail.drafts.create', 'gmail.messages.send',
-    ]);
-
-    const original = accounts[0]!;
-    const originalBinding = (await fixture.store.listAgentConnectionBindings('agent_support'))[0]!;
-    await fixture.store.putAgentConnectionBinding({ ...originalBinding, enabled: false });
-    await fixture.store.putConnectionAccount(
-      { ...original, lifecycle: 'needs_attention' },
-      original.revision,
-    );
-    completedAccountRef = 'ca_reconnected';
-    const restarted = await fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', connectionAccountId: original.id,
-        }),
-      },
-    );
-    assert.equal(restarted.status, 200, await restarted.clone().text());
-    const reconnectCookie = restarted.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
-    assert.ok(reconnectCookie);
-    const reconnected = await fixture.app.request(
-      'http://localhost/admin/connections/composio/callback?session_uri=session%3A%2F%2Freconnect-once',
-      { headers: testAdminHeaders(TOKEN, { cookie: reconnectCookie }) },
-    );
-    assert.equal(reconnected.status, 303, await reconnected.clone().text());
-    const reconnectedAccounts = await fixture.store.listConnectionAccounts('T_TEST');
-    assert.equal(reconnectedAccounts.length, 1);
-    assert.equal(reconnectedAccounts[0]?.id, original.id);
-    assert.equal(reconnectedAccounts[0]?.lifecycle, 'ready');
-    assert.equal(
-      (await fixture.store.listAgentConnectionBindings('agent_support'))[0]?.enabled,
-      false,
-      'an unattached managed account must reconnect without silently reattaching',
-    );
-    assert.equal(
-      reconnectedAccounts[0]?.policy.kind === 'managed'
-        ? reconnectedAccounts[0].policy.accountRef
-        : undefined,
-      'ca_reconnected',
-    );
-    assert.deepEqual(calls.slice(-3), [
-      'authorize:chickpea:membership:membership_test_owner:gmail',
-      'complete:chickpea:membership:membership_test_owner:session://reconnect-once',
-      'validate:ca_reconnected',
-    ]);
-    await fixture.store.putAgentConnectionBinding({ ...originalBinding, enabled: true });
-
-    await fixture.store.putAgentScheduleReference({
-      scheduleId: 'schedule_managed_gmail', agentId: 'agent_support', workspaceId: 'T_TEST',
-      channelId: 'C_TEST', createdByMembershipId: 'membership_test_owner',
-      runsAsMembershipId: 'membership_test_owner', authorityReceiptId: 'authority_managed_gmail',
-      requiredConnectionAccountIds: [original.id], state: 'active',
-    });
-    const secret = 'whsec_route_test';
-    const webhookId = 'msg_expired_test';
-    const webhookEventId = 'evt_expired_test';
-    const webhookTimestamp = String(Math.floor(Date.now() / 1_000));
-    const webhookBody = JSON.stringify({
-      id: webhookEventId,
-      timestamp: new Date().toISOString(),
-      type: 'composio.connected_account.expired',
-      metadata: {},
-      data: { id: 'ca_reconnected', toolkit: { slug: 'gmail' } },
-    });
-    const webhookSignature = await composioWebhookSignature(
-      secret,
-      `${webhookId}.${webhookTimestamp}.${webhookBody}`,
-    );
-    const unconfiguredWebhook = await fixture.app.request(
-      'http://localhost/webhooks/composio',
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: webhookBody,
-      },
-    );
-    assert.equal(unconfiguredWebhook.status, 503, await unconfiguredWebhook.clone().text());
-    assert.deepEqual(await unconfiguredWebhook.json(), { error: 'not_configured' });
-    const invalidWebhook = await fixture.app.request(
-      'http://localhost/webhooks/composio',
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'webhook-id': webhookId,
-          'webhook-timestamp': webhookTimestamp,
-          'webhook-signature': 'v1,invalid',
-        },
-        body: webhookBody,
-      },
-      { COMPOSIO_WEBHOOK_SECRET: secret },
-    );
-    assert.equal(invalidWebhook.status, 401, await invalidWebhook.clone().text());
-    assert.deepEqual(await invalidWebhook.json(), { error: 'invalid_webhook' });
-    const oversizedWebhook = await fixture.app.request(
-      'http://localhost/webhooks/composio',
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: 'x'.repeat(256 * 1024 + 1),
-      },
-      { COMPOSIO_WEBHOOK_SECRET: secret },
-    );
-    assert.equal(oversizedWebhook.status, 413, await oversizedWebhook.clone().text());
-    assert.equal(
-      (await fixture.store.listConnectionAccounts('T_TEST'))[0]?.lifecycle,
-      'ready',
-    );
-    const ignoredWebhookId = 'msg_trigger_test';
-    const ignoredWebhookBody = JSON.stringify({
-      id: 'evt_trigger_test',
-      timestamp: new Date().toISOString(),
-      type: 'composio.trigger.message',
-      metadata: {},
-      data: {},
-    });
-    const ignoredWebhookSignature = await composioWebhookSignature(
-      secret,
-      `${ignoredWebhookId}.${webhookTimestamp}.${ignoredWebhookBody}`,
-    );
-    const ignoredWebhook = await fixture.app.request(
-      'http://localhost/webhooks/composio',
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'webhook-id': ignoredWebhookId,
-          'webhook-timestamp': webhookTimestamp,
-          'webhook-signature': `v1,${ignoredWebhookSignature}`,
-        },
-        body: ignoredWebhookBody,
-      },
-      { COMPOSIO_WEBHOOK_SECRET: secret },
-    );
-    assert.equal(ignoredWebhook.status, 204, await ignoredWebhook.clone().text());
-    assert.equal(
-      (await fixture.store.listConnectionAccounts('T_TEST'))[0]?.lifecycle,
-      'ready',
-    );
-    const expired = await fixture.app.request(
-      'http://localhost/webhooks/composio',
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'webhook-id': webhookId,
-          'webhook-timestamp': webhookTimestamp,
-          'webhook-signature': `v1,${webhookSignature}`,
-        },
-        body: webhookBody,
-      },
-      { COMPOSIO_WEBHOOK_SECRET: secret },
-    );
-    assert.equal(expired.status, 204, await expired.clone().text());
-    assert.equal(
-      (await fixture.store.listConnectionAccounts('T_TEST'))[0]?.lifecycle,
-      'needs_attention',
-    );
-    assert.equal(
-      (await fixture.store.listAgentScheduleReferences('agent_support'))[0]?.state,
-      'needs_attention',
-    );
-
-    // Reauthorization uses the existing lane so the callback can revalidate
-    // the same account and restore Chickpea readiness without creating an
-    // ambiguous second Personal Gmail connection on this Agent.
-    const freshRestart = await fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', connectionAccountId: original.id,
-        }),
-      },
-    );
-    assert.equal(freshRestart.status, 200, await freshRestart.clone().text());
-    const freshCookie = freshRestart.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
-    assert.ok(freshCookie);
-    const freshCallback = await fixture.app.request(
-      'http://localhost/admin/connections/composio/callback?session_uri=session%3A%2F%2Ffresh-reauthorize',
-      { headers: testAdminHeaders(TOKEN, { cookie: freshCookie }) },
-    );
-    assert.equal(freshCallback.status, 303, await freshCallback.clone().text());
-    assert.equal(
-      (await fixture.store.listConnectionAccounts('T_TEST'))[0]?.lifecycle,
-      'ready',
-    );
-    const freshAccount = (await fixture.store.listConnectionAccounts('T_TEST'))[0];
-    assert.equal(
-      freshAccount?.policy.kind === 'managed'
-        ? freshAccount.policy.allowedCapabilities.length
-        : 0,
-      4,
-      'a narrower Agent binding must not narrow the shared account ceiling',
-    );
-    assert.deepEqual(
-      (await fixture.store.listAgentConnectionBindings('agent_support'))[0]?.allowedCapabilities,
-      [
-        'gmail.profile.read', 'gmail.messages.search',
-        'gmail.drafts.create', 'gmail.messages.send',
-      ],
-    );
-    assert.deepEqual(authorizedCapabilities.at(-1), [
-      'gmail.profile.read', 'gmail.messages.search',
-      'gmail.drafts.create', 'gmail.messages.send',
-    ]);
-    assert.deepEqual(calls.slice(-3), [
-      'authorize:chickpea:membership:membership_test_owner:gmail',
-      'complete:chickpea:membership:membership_test_owner:session://fresh-reauthorize',
-      'validate:ca_reconnected',
-    ]);
-  } finally {
-    fixture.store.close();
-    fixture.settings.close();
-  }
-});
-
-test('a finalize race after durable managed import still reports the working connection', async (t) => {
-  const baseSettings = new SqliteSettingsStore(':memory:');
-  let finalizeAttempts = 0;
-  const racingSettings = new Proxy(baseSettings as SettingsStore, {
-    get(target, property) {
-      if (property === 'applySettingsPatch') return async (
-        patch: Parameters<SettingsStore['applySettingsPatch']>[0],
-      ) => {
-        if (patch.delete && patch.delete.length > 0) {
-          finalizeAttempts += 1;
-          return false;
-        }
-        return target.applySettingsPatch(patch);
-      };
-      const value = Reflect.get(target, property, target) as unknown;
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
-  const warnings: string[] = [];
-  t.mock.method(console, 'warn', (message: string) => { warnings.push(message); });
+test('hostless authorization polling survives a transient provider outage', async () => {
+  let pollCalls = 0;
   const provider: ManagedConnectionProvider = {
     id: 'composio',
     async authorize() {
-      return {
-        authorizationUrl: new URL('https://connect.composio.dev/link/finalize-race'),
-        authorizationRef: 'ca_finalize_race',
-      };
-    },
-    async completeAuthorization() {
-      return { accountRef: 'ca_finalize_race', toolkit: 'gmail' };
-    },
-    async validate() {},
-    async execute() { return { data: {} }; },
-    async revoke() {},
-  };
-  const fixture = harness(new FakeTransport(), {
-    settings: racingSettings,
-    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-  }, { settings: baseSettings });
-  try {
-    await createAgent(fixture.app);
-    await fixture.store.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
-      defaultAgentId: 'agent_support',
-    });
-    const started = await fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'gmail', access: 'read',
-        }),
-      },
-    );
-    assert.equal(started.status, 200, await started.clone().text());
-    const cookie = started.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
-    assert.ok(cookie);
-
-    const callback = await fixture.app.request(
-      'http://localhost/admin/connections/composio/callback?session_uri=session%3A%2F%2Ffinalize-race',
-      { headers: testAdminHeaders(TOKEN, { cookie }) },
-    );
-    assert.equal(callback.status, 303, await callback.clone().text());
-    assert.equal(
-      callback.headers.get('location'),
-      '/admin/agents/agent_support/connections?managed=connected&toolkit=gmail',
-    );
-    assert.match(callback.headers.get('set-cookie') ?? '', /Max-Age=0/);
-    assert.equal(finalizeAttempts, 1);
-    const accounts = await fixture.store.listConnectionAccounts('T_TEST');
-    assert.equal(accounts.length, 1);
-    assert.equal(accounts[0]?.lifecycle, 'ready');
-    assert.equal((await fixture.store.listAgentConnectionBindings('agent_support')).length, 1);
-    assert.ok(warnings.some((message) =>
-      message.includes('chickpea.managed_connection.finalization_deferred')));
-  } finally {
-    fixture.store.close();
-    fixture.settings.close();
-  }
-});
-
-test('a transient local import failure can retry without redeeming or revoking twice', async () => {
-  const calls: string[] = [];
-  let validationAttempts = 0;
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async authorize() {
-      calls.push('authorize');
       return {
         authorizationUrl: new URL('https://connect.composio.dev/link/lk_retry'),
-        authorizationRef: 'ca_retry',
+        authorizationRef: 'ca_poll_retry',
       };
     },
-    async completeAuthorization() {
-      calls.push('complete');
-      return { accountRef: 'ca_retry', toolkit: 'gmail' };
-    },
-    async validate() {
-      validationAttempts += 1;
-      calls.push(`validate:${validationAttempts}`);
-      if (validationAttempts === 1) throw new Error('transient provider lookup failure');
-    },
-    async execute() { return { data: {} }; },
-    async revoke() { calls.push('revoke'); },
-  };
-  const fixture = harness(new FakeTransport(), {
-    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-  });
-  try {
-    await createAgent(fixture.app);
-    await fixture.store.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
-      defaultAgentId: 'agent_support',
-    });
-    const started = await fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'gmail', access: 'read',
-        }),
-      },
-    );
-    assert.equal(started.status, 200, await started.clone().text());
-    const cookie = started.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
-    assert.ok(cookie);
-    const callbackUrl =
-      'http://localhost/admin/connections/composio/callback?session_uri=session%3A%2F%2Fretry-once';
-
-    const failed = await fixture.app.request(callbackUrl, {
-      headers: testAdminHeaders(TOKEN, { cookie }),
-    });
-    assert.equal(failed.status, 303, await failed.clone().text());
-    assert.equal(
-      failed.headers.get('location'),
-      '/admin/agents/agent_support/connections?managed=failed',
-    );
-    assert.doesNotMatch(failed.headers.get('set-cookie') ?? '', /Max-Age=0/);
-    assert.deepEqual(await fixture.store.listConnectionAccounts('T_TEST'), []);
-
-    const retried = await fixture.app.request(callbackUrl, {
-      headers: testAdminHeaders(TOKEN, { cookie }),
-    });
-    assert.equal(retried.status, 303, await retried.clone().text());
-    assert.equal(
-      retried.headers.get('location'),
-      '/admin/agents/agent_support/connections?managed=connected&toolkit=gmail',
-    );
-    assert.equal((await fixture.store.listConnectionAccounts('T_TEST')).length, 1);
-    assert.deepEqual(calls, ['authorize', 'complete', 'validate:1', 'validate:2']);
-  } finally {
-    fixture.store.close();
-    fixture.settings.close();
-  }
-});
-
-test('the same browser revokes an unimported authorized grant before starting over', async () => {
-  const calls: string[] = [];
-  let authorizationNumber = 0;
-  let currentAccountRef = '';
-  let rejectRevocation = true;
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async authorize() {
-      currentAccountRef = `ca_cleanup_${++authorizationNumber}`;
-      calls.push(`authorize:${currentAccountRef}`);
-      return {
-        authorizationUrl: new URL(`https://connect.composio.dev/link/${currentAccountRef}`),
-        authorizationRef: currentAccountRef,
-      };
-    },
-    async completeAuthorization() {
-      calls.push(`complete:${currentAccountRef}`);
-      return { accountRef: currentAccountRef, toolkit: 'gmail' };
-    },
-    async validate() {
-      calls.push('validate:failed');
-      throw new Error('transient import failure');
-    },
-    async execute() { return { data: {} }; },
-    async revoke(input) {
-      calls.push(`revoke:${input.policy.accountRef}`);
-      if (rejectRevocation) throw new Error('remote account deletion failed');
-    },
-  };
-  const fixture = harness(new FakeTransport(), {
-    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-  });
-  try {
-    await createAgent(fixture.app);
-    await fixture.store.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
-      defaultAgentId: 'agent_support',
-    });
-    const start = (cookie?: string) => fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST',
-        headers: testAdminHeaders(TOKEN, {
-          'content-type': 'application/json',
-          ...(cookie ? { cookie } : {}),
-        }),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'gmail', access: 'read',
-        }),
-      },
-    );
-    const first = await start();
-    assert.equal(first.status, 200, await first.clone().text());
-    const cookie = first.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
-    assert.ok(cookie);
-    const failedImport = await fixture.app.request(
-      'http://localhost/admin/connections/composio/callback?session_uri=session%3A%2F%2Fcleanup',
-      { headers: testAdminHeaders(TOKEN, { cookie }) },
-    );
-    assert.equal(failedImport.status, 303, await failedImport.clone().text());
-    assert.deepEqual(await fixture.store.listConnectionAccounts('T_TEST'), []);
-
-    const cleanupFailed = await start(cookie);
-    assert.equal(cleanupFailed.status, 500, await cleanupFailed.clone().text());
-    assert.equal(authorizationNumber, 1, 'failed cleanup must not issue another Connect Link');
-
-    rejectRevocation = false;
-    const restarted = await start(cookie);
-    assert.equal(restarted.status, 200, await restarted.clone().text());
-    assert.equal(authorizationNumber, 2);
-    assert.deepEqual(calls, [
-      'authorize:ca_cleanup_1',
-      'complete:ca_cleanup_1',
-      'validate:failed',
-      'revoke:ca_cleanup_1',
-      'revoke:ca_cleanup_1',
-      'authorize:ca_cleanup_2',
-    ]);
-  } finally {
-    fixture.store.close();
-    fixture.settings.close();
-  }
-});
-
-test('a stale authorized grant is revoked and replaced after its browser cookie is gone', async () => {
-  const calls: string[] = [];
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async authorize() {
-      calls.push('authorize:ca_recovered');
-      return {
-        authorizationUrl: new URL('https://connect.composio.dev/link/ca_recovered'),
-        authorizationRef: 'ca_recovered',
-      };
-    },
-    async completeAuthorization() {
-      return { accountRef: 'ca_recovered', toolkit: 'gmail' };
+    async pollAuthorization() {
+      pollCalls += 1;
+      if (pollCalls === 1) {
+        throw new ManagedProviderRequestError(
+          'provider_unavailable',
+          'temporary outage',
+          {
+            remoteCallCount: 1,
+            providerToolCallCount: 0,
+            capabilityToolDispatched: false,
+          },
+        );
+      }
+      return { status: 'active', accountRef: 'ca_poll_retry', toolkit: 'gmail' };
     },
     async validate() {},
-    async execute() { return { data: {} }; },
-    async revoke(input) { calls.push(`revoke:${input.policy.accountRef}`); },
-  };
-  const fixture = harness(new FakeTransport(), {
-    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-  });
-  try {
-    await createAgent(fixture.app);
-    await fixture.store.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
-      defaultAgentId: 'agent_support',
-    });
-    const startedAt = Date.now() - 40 * 60_000;
-    const stale = await beginManagedAuthorization({
-      settings: fixture.settings,
-      input: {
-        workspaceId: 'T_TEST',
-        agentId: 'agent_support',
-        actorMembershipId: 'membership_test_owner',
-        ownerKind: 'member',
-        providerId: 'google',
-        adapterId: 'composio',
-        toolkit: 'gmail',
-        label: 'Gmail · Personal',
-        principalRef: 'chickpea:membership:membership_test_owner',
-        allowedCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
-        bindingCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
-      },
-      now: () => startedAt,
-      randomSecret: () => '9'.repeat(64),
-    });
-    await recordManagedAuthorizationRequest({
-      settings: fixture.settings,
-      actorMembershipId: 'membership_test_owner',
-      browserSecret: stale.browserSecret,
-      authorizationRef: 'ca_orphaned',
-      now: () => startedAt + 1,
-    });
-    await recordManagedAuthorizationAccount({
-      settings: fixture.settings,
-      actorMembershipId: 'membership_test_owner',
-      browserSecret: stale.browserSecret,
-      accountRef: 'ca_orphaned',
-      toolkit: 'gmail',
-      now: () => startedAt + 2,
-    });
-
-    // No Cookie header: the browser-bound secret has expired and disappeared.
-    const recovered = await fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'gmail', access: 'read',
-        }),
-      },
-    );
-    assert.equal(recovered.status, 200, await recovered.clone().text());
-    assert.deepEqual(calls, ['revoke:ca_orphaned', 'authorize:ca_recovered']);
-  } finally {
-    fixture.store.close();
-    fixture.settings.close();
-  }
-});
-
-test('concurrent stale-grant recovery returns only success or in-progress, never 500', async () => {
-  const baseStore = new SqliteConfigStore(':memory:');
-  const baseSettings = new SqliteSettingsStore(':memory:');
-  let staleDeleteCalls = 0;
-  let releaseStaleDeletes!: () => void;
-  const staleDeleteBarrier = new Promise<void>((resolve) => {
-    releaseStaleDeletes = resolve;
-  });
-  const delayedSettings = new Proxy(baseSettings as SettingsStore, {
-    get(target, property) {
-      if (property === 'getSetting') return async (key: string) => {
-        await new Promise<void>((resolve) => setTimeout(resolve, 2));
-        return target.getSetting(key);
-      };
-      if (property === 'applySettingsPatch') return async (
-        patch: Parameters<SettingsStore['applySettingsPatch']>[0],
-      ) => {
-        if (patch.delete && patch.delete.length > 0) {
-          staleDeleteCalls += 1;
-          if (staleDeleteCalls === 2) releaseStaleDeletes();
-          await staleDeleteBarrier;
-        }
-        return target.applySettingsPatch(patch);
-      };
-      const value = Reflect.get(target, property, target) as unknown;
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
-  const calls: string[] = [];
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async authorize() {
-      calls.push('authorize');
-      return {
-        authorizationUrl: new URL('https://connect.composio.dev/link/concurrent-recovery'),
-        authorizationRef: 'ca_concurrent_recovery',
-      };
-    },
-    async completeAuthorization() {
-      return { accountRef: 'ca_concurrent_recovery', toolkit: 'gmail' };
-    },
-    async validate() {},
-    async execute() { return { data: {} }; },
-    async revoke(input) {
-      calls.push(`revoke:${input.policy.accountRef}`);
-      await new Promise<void>((resolve) => setTimeout(resolve, 2));
-    },
-  };
-  const fixture = harness(new FakeTransport(), {
-    settings: delayedSettings,
-    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-  }, { store: baseStore, settings: baseSettings });
-  try {
-    await createAgent(fixture.app);
-    await fixture.store.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
-      defaultAgentId: 'agent_support',
-    });
-    const startedAt = Date.now() - 40 * 60_000;
-    const stale = await beginManagedAuthorization({
-      settings: baseSettings,
-      input: {
-        workspaceId: 'T_TEST', agentId: 'agent_support',
-        actorMembershipId: 'membership_test_owner', ownerKind: 'member',
-        providerId: 'google', adapterId: 'composio', toolkit: 'gmail',
-        label: 'Gmail · Personal',
-        principalRef: 'chickpea:membership:membership_test_owner',
-        allowedCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
-        bindingCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
-      },
-      now: () => startedAt,
-      randomSecret: () => '8'.repeat(64),
-    });
-    await recordManagedAuthorizationRequest({
-      settings: baseSettings,
-      actorMembershipId: 'membership_test_owner',
-      browserSecret: stale.browserSecret,
-      authorizationRef: 'ca_stale_concurrent',
-      now: () => startedAt + 1,
-    });
-    await recordManagedAuthorizationAccount({
-      settings: baseSettings,
-      actorMembershipId: 'membership_test_owner',
-      browserSecret: stale.browserSecret,
-      accountRef: 'ca_stale_concurrent',
-      toolkit: 'gmail',
-      now: () => startedAt + 2,
-    });
-    const start = () => fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'gmail', access: 'read',
-        }),
-      },
-    );
-    const responses = await Promise.all([start(), start()]);
-    assert.deepEqual(responses.map(({ status }) => status).sort(), [200, 409]);
-    assert.equal(responses.some(({ status }) => status === 500), false);
-    assert.equal(calls.filter((call) => call === 'authorize').length, 1);
-    assert.equal(staleDeleteCalls, 2, 'the test must exercise the lost cleanup CAS');
-  } finally {
-    fixture.store.close();
-    fixture.settings.close();
-  }
-});
-
-test('concurrent same-cookie recovery returns only success or in-progress, never 500', async () => {
-  const baseStore = new SqliteConfigStore(':memory:');
-  const baseSettings = new SqliteSettingsStore(':memory:');
-  let cookieDeleteCalls = 0;
-  let releaseCookieDeletes!: () => void;
-  const cookieDeleteBarrier = new Promise<void>((resolve) => {
-    releaseCookieDeletes = resolve;
-  });
-  const delayedSettings = new Proxy(baseSettings as SettingsStore, {
-    get(target, property) {
-      if (property === 'getSetting') return async (key: string) => {
-        await new Promise<void>((resolve) => setTimeout(resolve, 2));
-        return target.getSetting(key);
-      };
-      if (property === 'applySettingsPatch') return async (
-        patch: Parameters<SettingsStore['applySettingsPatch']>[0],
-      ) => {
-        if (patch.delete && patch.delete.length > 0) {
-          cookieDeleteCalls += 1;
-          if (cookieDeleteCalls === 2) releaseCookieDeletes();
-          await cookieDeleteBarrier;
-        }
-        return target.applySettingsPatch(patch);
-      };
-      const value = Reflect.get(target, property, target) as unknown;
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
-  const calls: string[] = [];
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async authorize() {
-      calls.push('authorize');
-      return {
-        authorizationUrl: new URL('https://connect.composio.dev/link/cookie-recovery'),
-        authorizationRef: 'ca_cookie_recovery',
-      };
-    },
-    async completeAuthorization() {
-      return { accountRef: 'ca_cookie_recovery', toolkit: 'gmail' };
-    },
-    async validate() {},
-    async execute() { return { data: {} }; },
-    async revoke(input) {
-      calls.push(`revoke:${input.policy.accountRef}`);
-      await new Promise<void>((resolve) => setTimeout(resolve, 2));
-    },
-  };
-  const fixture = harness(new FakeTransport(), {
-    settings: delayedSettings,
-    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-  }, { store: baseStore, settings: baseSettings });
-  try {
-    await createAgent(fixture.app);
-    await fixture.store.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
-      defaultAgentId: 'agent_support',
-    });
-    const browserSecret = '7'.repeat(64);
-    const started = await beginManagedAuthorization({
-      settings: baseSettings,
-      input: {
-        workspaceId: 'T_TEST', agentId: 'agent_support',
-        actorMembershipId: 'membership_test_owner', ownerKind: 'member',
-        providerId: 'google', adapterId: 'composio', toolkit: 'gmail',
-        label: 'Gmail · Personal',
-        principalRef: 'chickpea:membership:membership_test_owner',
-        allowedCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
-        bindingCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
-      },
-      randomSecret: () => browserSecret,
-    });
-    await recordManagedAuthorizationRequest({
-      settings: baseSettings,
-      actorMembershipId: 'membership_test_owner',
-      browserSecret: started.browserSecret,
-      authorizationRef: 'ca_cookie_orphan',
-    });
-    await recordManagedAuthorizationAccount({
-      settings: baseSettings,
-      actorMembershipId: 'membership_test_owner',
-      browserSecret: started.browserSecret,
-      accountRef: 'ca_cookie_orphan',
-      toolkit: 'gmail',
-    });
-    const cookie = `__Secure-chickpea_managed_authorization=${browserSecret}`;
-    const start = () => fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST',
-        headers: testAdminHeaders(TOKEN, { 'content-type': 'application/json', cookie }),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'gmail', access: 'read',
-        }),
-      },
-    );
-    const responses = await Promise.all([start(), start()]);
-    assert.deepEqual(responses.map(({ status }) => status).sort(), [200, 409]);
-    assert.equal(responses.some(({ status }) => status === 500), false);
-    assert.equal(calls.filter((call) => call === 'authorize').length, 1);
-    assert.deepEqual(
-      calls.filter((call) => call === 'revoke:ca_cookie_orphan'),
-      ['revoke:ca_cookie_orphan', 'revoke:ca_cookie_orphan'],
-    );
-    assert.equal(cookieDeleteCalls, 2, 'the test must exercise the lost cookie cleanup CAS');
-  } finally {
-    fixture.store.close();
-    fixture.settings.close();
-  }
-});
-
-test('a terminal failure on callback retry revokes the durable remote grant and frees the attempt', async () => {
-  const calls: string[] = [];
-  let validationAttempts = 0;
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async authorize() {
-      calls.push('authorize');
-      return {
-        authorizationUrl: new URL('https://connect.composio.dev/link/lk_terminal_retry'),
-        authorizationRef: 'ca_terminal_retry',
-      };
-    },
-    async completeAuthorization() {
-      calls.push('complete');
-      return { accountRef: 'ca_terminal_retry', toolkit: 'gmail' };
-    },
-    async validate() {
-      validationAttempts += 1;
-      calls.push(`validate:${validationAttempts}`);
-      if (validationAttempts === 1) throw new Error('transient provider lookup failure');
-      throw new AuthorizationError();
-    },
-    async execute() { return { data: {} }; },
-    async revoke(input) { calls.push(`revoke:${input.policy.accountRef}`); },
-  };
-  const fixture = harness(new FakeTransport(), {
-    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-  });
-  try {
-    await createAgent(fixture.app);
-    await fixture.store.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
-      defaultAgentId: 'agent_support',
-    });
-    const start = () => fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'gmail', access: 'read',
-        }),
-      },
-    );
-    const started = await start();
-    assert.equal(started.status, 200, await started.clone().text());
-    const cookie = started.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
-    assert.ok(cookie);
-    const callbackUrl =
-      'http://localhost/admin/connections/composio/callback?session_uri=session%3A%2F%2Fterminal-retry';
-
-    const failed = await fixture.app.request(callbackUrl, {
-      headers: testAdminHeaders(TOKEN, { cookie }),
-    });
-    assert.equal(failed.status, 303, await failed.clone().text());
-    const terminal = await fixture.app.request(callbackUrl, {
-      headers: testAdminHeaders(TOKEN, { cookie }),
-    });
-    assert.equal(terminal.status, 303, await terminal.clone().text());
-    assert.match(terminal.headers.get('set-cookie') ?? '', /Max-Age=0/);
-    assert.deepEqual(calls, [
-      'authorize', 'complete', 'validate:1', 'validate:2', 'revoke:ca_terminal_retry',
-    ]);
-    assert.equal((await start()).status, 200, 'terminal cleanup must free the attempt slot');
-  } finally {
-    fixture.store.close();
-    fixture.settings.close();
-  }
-});
-
-test('team authorization rejects overlap and revokes both allocated and redeemed remote accounts', async () => {
-  const calls: string[] = [];
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async authorize(input) {
-      calls.push(`authorize:${input.toolkit}`);
-      assert.equal(input.principalRef, 'chickpea:organization:org_oss');
-      return {
-        authorizationUrl: new URL('https://connect.composio.dev/link/lk_overlap'),
-        authorizationRef: 'ca_expected_request',
-      };
-    },
-    async completeAuthorization() {
-      calls.push('complete:ca_rejected');
-      return { accountRef: 'ca_rejected', toolkit: 'googledrive' };
-    },
-    async validate() {},
-    async execute() { return { data: {} }; },
-    async revoke(input) { calls.push(`revoke:${input.policy.accountRef}`); },
-  };
-  const fixture = harness(new FakeTransport(), {
-    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-  });
-  try {
-    await createAgent(fixture.app);
-    await fixture.store.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
-      defaultAgentId: 'agent_support',
-    });
-    const started = await fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'team', toolkit: 'gmail', access: 'read',
-        }),
-      },
-    );
-    assert.equal(started.status, 200, await started.clone().text());
-    const cookie = started.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
-    assert.ok(cookie);
-
-    const overlapping = await fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'team', toolkit: 'googlecalendar', access: 'read',
-        }),
-      },
-    );
-    assert.equal(overlapping.status, 409, await overlapping.clone().text());
-    assert.deepEqual(await overlapping.json(), {
-      error: 'managed_authorization_in_progress',
-      message: 'A Google sign-in is already in progress in another browser. Finish that sign-in before starting another.',
-    });
-
-    const callback = await fixture.app.request(
-      'http://localhost/admin/connections/composio/callback?session_uri=session%3A%2F%2Fmismatch',
-      { headers: testAdminHeaders(TOKEN, { cookie }) },
-    );
-    assert.equal(callback.status, 303, await callback.clone().text());
-    assert.equal(
-      callback.headers.get('location'),
-      '/admin/agents/agent_support/connections?managed=failed',
-    );
-    assert.deepEqual(await fixture.store.listConnectionAccounts('T_TEST'), []);
-    assert.deepEqual(calls, [
-      'authorize:gmail',
-      'complete:ca_rejected',
-      'revoke:ca_expected_request',
-      'revoke:ca_rejected',
-    ]);
-
-    const retried = await fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'team', toolkit: 'googlecalendar', access: 'read',
-        }),
-      },
-    );
-    assert.equal(retried.status, 200, await retried.clone().text());
-    assert.equal(calls.at(-1), 'authorize:googlecalendar');
-  } finally {
-    fixture.store.close();
-    fixture.settings.close();
-  }
-});
-
-test('the same browser can replace an abandoned pending managed authorization', async () => {
-  const calls: string[] = [];
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async authorize(input) {
-      calls.push(input.toolkit);
-      return {
-        authorizationUrl: new URL(`https://connect.composio.dev/link/${input.toolkit}`),
-        authorizationRef: `ca_${input.toolkit}`,
-      };
-    },
-    async completeAuthorization() { return { accountRef: 'ca_unused', toolkit: 'gmail' }; },
-    async validate() {},
-    async execute() { return { data: {} }; },
-    async revoke(input) { calls.push(`revoke:${input.policy.accountRef}`); },
-  };
-  const fixture = harness(new FakeTransport(), {
-    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-  });
-  try {
-    await createAgent(fixture.app);
-    await fixture.store.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
-      defaultAgentId: 'agent_support',
-    });
-    const start = (toolkit: string, cookie?: string) => fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST',
-        headers: testAdminHeaders(TOKEN, {
-          'content-type': 'application/json',
-          ...(cookie ? { cookie } : {}),
-        }),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'member', toolkit, access: 'read',
-        }),
-      },
-    );
-    const first = await start('gmail');
-    assert.equal(first.status, 200, await first.clone().text());
-    const cookie = first.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
-    assert.ok(cookie);
-
-    const replacement = await start('googlecalendar', cookie);
-    assert.equal(replacement.status, 200, await replacement.clone().text());
-    assert.deepEqual(calls, ['gmail', 'revoke:ca_gmail', 'googlecalendar']);
-  } finally {
-    fixture.store.close();
-    fixture.settings.close();
-  }
-});
-
-test('a callback without identity verification revokes the pending Connect Link account', async (t) => {
-  const calls: string[] = [];
-  const errors: string[] = [];
-  t.mock.method(console, 'error', (message: string) => { errors.push(message); });
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async authorize() {
-      calls.push('authorize');
-      return {
-        authorizationUrl: new URL('https://connect.composio.dev/link/verifier-required'),
-        authorizationRef: 'ca_verifier_required',
-      };
-    },
-    async completeAuthorization() {
-      calls.push('complete');
-      return { accountRef: 'ca_verifier_required', toolkit: 'gmail' };
-    },
-    async validate() {},
-    async execute() { return { data: {} }; },
-    async revoke(input) { calls.push(`revoke:${input.policy.accountRef}`); },
-  };
-  const fixture = harness(new FakeTransport(), {
-    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-  });
-  try {
-    await createAgent(fixture.app);
-    await fixture.store.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
-      defaultAgentId: 'agent_support',
-    });
-    const started = await fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'gmail', access: 'read',
-        }),
-      },
-    );
-    const cookie = started.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
-    assert.equal(started.status, 200, await started.clone().text());
-    assert.ok(cookie);
-
-    const callback = await fixture.app.request(
-      'http://localhost/admin/connections/composio/callback?status=success&connected_account_id=ca_verifier_required',
-      { headers: testAdminHeaders(TOKEN, { cookie }) },
-    );
-    assert.equal(callback.status, 303, await callback.clone().text());
-    assert.equal(
-      callback.headers.get('location'),
-      '/admin/agents/agent_support/connections?managed=failed',
-    );
-    assert.deepEqual(calls, ['authorize', 'revoke:ca_verifier_required']);
-    assert.ok(errors.some((message) =>
-      message.includes('callback_identity_verifier_unavailable')));
-  } finally {
-    fixture.store.close();
-    fixture.settings.close();
-  }
-});
-
-test('managed Google owner lanes allow Team plus Personal and reject duplicates', async () => {
-  const calls: string[] = [];
-  let nextAccount = 0;
-  let completingAccountRef = '';
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async authorize(input) {
-      completingAccountRef = `ca_lane_${++nextAccount}`;
-      calls.push(`authorize:${input.principalRef}:${input.allowedCapabilities.length}`);
-      return {
-        authorizationUrl: new URL('https://connect.composio.dev/link/access-level'),
-        authorizationRef: completingAccountRef,
-      };
-    },
-    async completeAuthorization() {
-      calls.push(`complete:${completingAccountRef}`);
-      return { accountRef: completingAccountRef, toolkit: 'gmail' };
-    },
-    async validate(input) {
-      calls.push(`validate:${input.policy.accountRef}`);
-    },
     async execute() { return { data: {} }; },
     async revoke() {},
   };
@@ -1978,115 +2334,8 @@ test('managed Google owner lanes allow Team plus Personal and reject duplicates'
       workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
       defaultAgentId: 'agent_support',
     });
-    const connect = async (
-      app: Hono,
-      ownerKind: 'team' | 'member',
-      access: 'read' | 'write',
-      suffix: string,
-    ) => {
-      const started = await app.request(
-        'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-        {
-          method: 'POST', headers: auth(),
-          body: JSON.stringify({
-            workspaceId: 'T_TEST', ownerKind, toolkit: 'gmail', access,
-          }),
-        },
-      );
-      assert.equal(started.status, 200, await started.clone().text());
-      const cookie = started.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
-      assert.ok(cookie);
-      const callback = await app.request(
-        `http://localhost/admin/connections/composio/callback?session_uri=session%3A%2F%2F${suffix}`,
-        { headers: testAdminHeaders(TOKEN, { cookie }) },
-      );
-      assert.equal(callback.status, 303, await callback.clone().text());
-    };
-
-    await connect(fixture.app, 'member', 'read', 'personal');
-    const duplicatePersonal = await fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'gmail', access: 'write',
-        }),
-      },
-    );
-    assert.equal(duplicatePersonal.status, 409, await duplicatePersonal.clone().text());
-    assert.equal((await duplicatePersonal.json() as { error: string }).error,
-      'managed_connection_already_attached');
-
-    const bobPrincipal: AuthPrincipal = {
-      userId: 'user_test_bob',
-      membershipId: 'membership_test_bob',
-      organizationId: 'org_oss',
-      role: 'admin',
-      authenticatorKind: 'test_slack_session',
-      credentialId: 'session_test_bob',
-      correlationId: 'request_test_bob',
-      machine: false,
-    };
-    const bobFixture = harness(
-      new FakeTransport(),
-      { managedConnectionProviders: createManagedConnectionProviderRegistry([provider]) },
-      { store: fixture.store, settings: fixture.settings },
-      bobPrincipal,
-    );
-    await connect(bobFixture.app, 'member', 'write', 'bob-personal');
-    await connect(fixture.app, 'team', 'read', 'team');
-    const accounts = await fixture.store.listConnectionAccounts('T_TEST');
-    assert.deepEqual(accounts.map(({ label }) => label).sort(), [
-      'Gmail · Personal', 'Gmail · Personal', 'Gmail · Team',
-    ]);
-    assert.equal((await fixture.store.listAgentConnectionBindings('agent_support')).length, 3);
-    assert.deepEqual(calls, [
-      'authorize:chickpea:membership:membership_test_owner:2',
-      'complete:ca_lane_1',
-      'validate:ca_lane_1',
-      'authorize:chickpea:membership:membership_test_bob:4',
-      'complete:ca_lane_2',
-      'validate:ca_lane_2',
-      'authorize:chickpea:organization:org_oss:2',
-      'complete:ca_lane_3',
-      'validate:ca_lane_3',
-    ]);
-  } finally {
-    fixture.store.close();
-    fixture.settings.close();
-  }
-});
-
-test('a competing owner lane at callback revokes the newly authorized remote account', async () => {
-  const calls: string[] = [];
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async authorize() {
-      calls.push('authorize:ca_callback_race');
-      return {
-        authorizationUrl: new URL('https://connect.composio.dev/link/callback-race'),
-        authorizationRef: 'ca_callback_race',
-      };
-    },
-    async completeAuthorization() {
-      calls.push('complete:ca_callback_race');
-      return { accountRef: 'ca_callback_race', toolkit: 'gmail' };
-    },
-    async validate(input) { calls.push(`validate:${input.policy.accountRef}`); },
-    async execute() { return { data: {} }; },
-    async revoke(input) { calls.push(`revoke:${input.policy.accountRef}`); },
-  };
-  const fixture = harness(new FakeTransport(), {
-    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-  });
-  try {
-    await createAgent(fixture.app);
-    await fixture.store.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
-      defaultAgentId: 'agent_support',
-    });
     const started = await fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
+      'https://chickpea.example/admin/api/agents/agent_support/connections/managed/start',
       {
         method: 'POST', headers: auth(),
         body: JSON.stringify({
@@ -2097,244 +2346,21 @@ test('a competing owner lane at callback revokes the newly authorized remote acc
     assert.equal(started.status, 200, await started.clone().text());
     const cookie = started.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
     assert.ok(cookie);
-
-    const competing = await fixture.store.putConnectionAccount({
-      id: 'connection_competing_lane',
-      workspaceId: 'T_TEST', ownerKind: 'member',
-      ownerMembershipId: 'membership_test_owner',
-      createdByMembershipId: 'membership_test_owner',
-      providerId: 'google', label: 'Existing Personal Gmail',
-      policy: {
-        kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
-        principalRef: 'chickpea:membership:membership_test_owner',
-        accountRef: 'ca_competing_lane',
-        allowedCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
-      },
-      secretRefId: 'secret_competing_lane', lifecycle: 'ready',
-    }, 0);
-    await fixture.store.putAgentConnectionBinding({
-      agentId: 'agent_support', connectionAccountId: competing.id, providerId: 'google',
-      allowedCapabilities: ['gmail.messages.search'], enabled: true,
-    });
-
-    const callback = await fixture.app.request(
-      'http://localhost/admin/connections/composio/callback?session_uri=session%3A%2F%2Fcallback-race',
-      { headers: testAdminHeaders(TOKEN, { cookie }) },
-    );
-    assert.equal(callback.status, 303, await callback.clone().text());
-    assert.equal(
-      callback.headers.get('location'),
-      '/admin/agents/agent_support/connections?managed=failed',
-    );
-    const activeManagedRefs = (await fixture.store.listConnectionAccounts('T_TEST'))
-      .filter(({ lifecycle }) => lifecycle !== 'revoked')
-      .flatMap((account) => account.policy.kind === 'managed' ? [account.policy.accountRef] : []);
-    assert.deepEqual(activeManagedRefs, ['ca_competing_lane']);
-    assert.deepEqual(calls, [
-      'authorize:ca_callback_race',
-      'complete:ca_callback_race',
-      'revoke:ca_callback_race',
-    ]);
-  } finally {
-    fixture.store.close();
-    fixture.settings.close();
-  }
-});
-
-test('callback compensation revokes a fresh import when binding persistence fails', async () => {
-  const baseStore = new SqliteConfigStore(':memory:');
-  const baseSettings = new SqliteSettingsStore(':memory:');
-  let failNextBinding = false;
-  const failingStore = new Proxy(baseStore as ConfigStore, {
-    get(target, property) {
-      if (property === 'putAgentConnectionBinding') return async (
-        input: Parameters<ConfigStore['putAgentConnectionBinding']>[0],
-      ) => {
-        if (failNextBinding) {
-          failNextBinding = false;
-          throw new Error('injected binding persistence failure');
-        }
-        return target.putAgentConnectionBinding(input);
-      };
-      const value = Reflect.get(target, property, target) as unknown;
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
-  const calls: string[] = [];
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async authorize() {
-      calls.push('authorize');
-      return {
-        authorizationUrl: new URL('https://connect.composio.dev/link/fresh-compensation'),
-        authorizationRef: 'ca_fresh_compensation',
-      };
-    },
-    async completeAuthorization() {
-      calls.push('complete');
-      return { accountRef: 'ca_fresh_compensation', toolkit: 'gmail' };
-    },
-    async validate(input) { calls.push(`validate:${input.policy.accountRef}`); },
-    async execute() { return { data: {} }; },
-    async revoke(input) { calls.push(`revoke:${input.policy.accountRef}`); },
-  };
-  const fixture = harness(new FakeTransport(), {
-    store: failingStore,
-    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-  }, { store: baseStore, settings: baseSettings });
-  try {
-    await createAgent(fixture.app);
-    await fixture.store.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
-      defaultAgentId: 'agent_support',
-    });
-    const started = await fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'gmail', access: 'read',
-        }),
-      },
-    );
-    const cookie = started.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
-    assert.equal(started.status, 200, await started.clone().text());
-    assert.ok(cookie);
-    failNextBinding = true;
-    const callback = await fixture.app.request(
-      'http://localhost/admin/connections/composio/callback?session_uri=session%3A%2F%2Ffresh-compensation',
-      { headers: testAdminHeaders(TOKEN, { cookie }) },
-    );
-    assert.equal(callback.status, 303, await callback.clone().text());
-    const compensated = (await fixture.store.listConnectionAccounts('T_TEST')).find(
-      (account) => account.policy.kind === 'managed' &&
-        account.policy.accountRef === 'ca_fresh_compensation',
-    );
-    assert.equal(compensated?.lifecycle, 'revoked');
-    assert.deepEqual(await fixture.store.listAgentConnectionBindings('agent_support'), []);
-    assert.deepEqual(calls, [
-      'authorize', 'complete', 'validate:ca_fresh_compensation',
-      'revoke:ca_fresh_compensation',
-    ]);
-  } finally {
-    fixture.store.close();
-    fixture.settings.close();
-  }
-});
-
-test('callback compensation restores a known account when a new binding fails', async () => {
-  const baseStore = new SqliteConfigStore(':memory:');
-  const baseSettings = new SqliteSettingsStore(':memory:');
-  let failNextBinding = false;
-  const failingStore = new Proxy(baseStore as ConfigStore, {
-    get(target, property) {
-      if (property === 'putAgentConnectionBinding') return async (
-        input: Parameters<ConfigStore['putAgentConnectionBinding']>[0],
-      ) => {
-        if (failNextBinding) {
-          failNextBinding = false;
-          throw new Error('injected binding persistence failure');
-        }
-        return target.putAgentConnectionBinding(input);
-      };
-      const value = Reflect.get(target, property, target) as unknown;
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
-  const calls: string[] = [];
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async authorize(input) {
-      calls.push(`authorize:${input.allowedCapabilities.length}`);
-      return {
-        authorizationUrl: new URL('https://connect.composio.dev/link/known-compensation'),
-        authorizationRef: 'ca_known_compensation',
-      };
-    },
-    async completeAuthorization() {
-      calls.push('complete');
-      return { accountRef: 'ca_known_compensation', toolkit: 'gmail' };
-    },
-    async validate(input) {
-      calls.push(`validate:${input.policy.accountRef}:${input.policy.allowedCapabilities.length}`);
-    },
-    async execute() { return { data: {} }; },
-    async revoke(input) { calls.push(`revoke:${input.policy.accountRef}`); },
-  };
-  const fixture = harness(new FakeTransport(), {
-    store: failingStore,
-    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-  }, { store: baseStore, settings: baseSettings });
-  try {
-    await createAgent(fixture.app);
-    await fixture.store.createAgent({
-      id: 'agent_archive', name: 'Archive', instructions: 'Archive mail.', enabled: true,
-      creatorMembershipId: 'membership_test_owner', editPolicy: 'creator_and_admins',
-      skills: [], mcpServers: [], apiConnections: [], repositories: [],
-    });
-    await fixture.store.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
-      defaultAgentId: 'agent_support',
-    });
-    const original = await fixture.store.putConnectionAccount({
-      id: 'connection_known_compensation',
-      workspaceId: 'T_TEST', ownerKind: 'member',
-      ownerMembershipId: 'membership_test_owner',
-      createdByMembershipId: 'membership_test_owner',
-      providerId: 'google', label: 'Known Personal Gmail',
-      policy: {
-        kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
-        principalRef: 'chickpea:membership:membership_test_owner',
-        accountRef: 'ca_known_compensation',
-        allowedCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
-      },
-      secretRefId: 'secret_known_compensation', lifecycle: 'ready',
-    }, 0);
-    await fixture.store.putAgentConnectionBinding({
-      agentId: 'agent_archive', connectionAccountId: original.id, providerId: 'google',
-      allowedCapabilities: ['gmail.messages.search'], enabled: true,
-    });
-    const prior = await fixture.store.putConnectionAccount(
-      { ...original, lifecycle: 'needs_attention' },
-      original.revision,
+    const poll = () => fixture.app.request(
+      'https://chickpea.example/admin/api/agents/agent_support/connections/managed/poll',
+      { method: 'POST', headers: { ...auth(), cookie }, body: '{}' },
     );
 
-    const started = await fixture.app.request(
-      'http://localhost/admin/api/agents/agent_support/connections/managed/start',
-      {
-        method: 'POST', headers: auth(),
-        body: JSON.stringify({
-          workspaceId: 'T_TEST', ownerKind: 'member', toolkit: 'gmail', access: 'write',
-        }),
-      },
-    );
-    const cookie = started.headers.get('set-cookie')?.match(/^[^;]+/)?.[0];
-    assert.equal(started.status, 200, await started.clone().text());
-    assert.ok(cookie);
-    failNextBinding = true;
-    const callback = await fixture.app.request(
-      'http://localhost/admin/connections/composio/callback?session_uri=session%3A%2F%2Fknown-compensation',
-      { headers: testAdminHeaders(TOKEN, { cookie }) },
-    );
-    assert.equal(callback.status, 303, await callback.clone().text());
-    const restored = (await fixture.store.listConnectionAccounts('T_TEST')).find(
-      ({ id }) => id === prior.id,
-    );
-    assert.equal(restored?.lifecycle, 'needs_attention');
-    assert.deepEqual(
-      restored?.policy.kind === 'managed' ? restored.policy.allowedCapabilities : [],
-      ['gmail.profile.read', 'gmail.messages.search'],
-    );
-    assert.equal(
-      (await fixture.store.listAgentConnectionBindings('agent_archive'))[0]?.enabled,
-      true,
-    );
-    assert.deepEqual(await fixture.store.listAgentConnectionBindings('agent_support'), []);
-    assert.deepEqual(calls, [
-      'authorize:4',
-      'complete',
-      'validate:ca_known_compensation:4',
-    ]);
+    const unavailable = await poll();
+    assert.equal(unavailable.status, 503, await unavailable.clone().text());
+    assert.deepEqual(await unavailable.json(), {
+      error: 'managed_authorization_poll_unavailable',
+      message: 'Managed sign-in could not be checked yet. Chickpea will keep trying.',
+    });
+    const connected = await poll();
+    assert.equal(connected.status, 200, await connected.clone().text());
+    assert.equal((await connected.json() as { status: string }).status, 'connected');
+    assert.equal(pollCalls, 2);
   } finally {
     fixture.store.close();
     fixture.settings.close();
