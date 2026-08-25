@@ -324,7 +324,8 @@ try {
       pageHtml.includes('function revalidateCurrentVisibleResources()') &&
       pageHtml.includes('window.addEventListener("focus"') &&
       pageHtml.includes('document.addEventListener("visibilitychange"') &&
-      pageHtml.includes('function setVisibleResourceDirty(name, ownerKey, dirty)') &&
+      pageHtml.includes('function invalidateVisibleResource(name, ownerKey)') &&
+      pageHtml.includes('promise.finally(function ()') &&
       pageHtml.includes('requestGeneration') &&
       !pageHtml.includes('setInterval(function () {\n      revalidateCurrentVisibleResources()'),
   );

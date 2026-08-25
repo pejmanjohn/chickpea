@@ -6864,7 +6864,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!routineContentReadable(access)) return c.json({ error: 'forbidden' }, 403);
 
       const action = parsed.output.action;
-      const operationKey = `admin:agent:${agent.id}:schedule:${action}:${idempotencyKey}`;
+      const operationKey = `admin:agent:${agent.id}:schedule:${routine.id}:${action}:${idempotencyKey}`;
       if (action === 'delete') {
         if (parsed.output.acknowledgeIrreversible !== true) return invalidRequest(c);
         const token = createHash('sha256').update(`agent-schedule-delete\0${operationKey}`).digest('hex');

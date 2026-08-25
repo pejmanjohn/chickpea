@@ -404,6 +404,11 @@ function runAdminPageHarness(
     memorySaveError?: { status: number; error: string; currentVersion?: number };
     agentSchedules?: Array<Record<string, unknown>>;
     agentSchedulesFetch?: (agentId: string, call: number) => Promise<FakeResponse>;
+    agentScheduleControlFetch?: (
+      agentId: string,
+      scheduleId: string,
+      body: Record<string, unknown>,
+    ) => Promise<FakeResponse>;
     agentScheduleControlError?: { status: number; error: string; message?: string };
     agentDetailFetch?: (agentId: string, call: number) => Promise<FakeResponse>;
     memoryGetFetch?: (agentId: string, call: number) => Promise<FakeResponse>;
@@ -1579,6 +1584,9 @@ function runAdminPageHarness(
         body,
         idempotencyKey: options?.headers?.['idempotency-key'] ?? '',
       });
+      if (harnessOptions.agentScheduleControlFetch) {
+        return harnessOptions.agentScheduleControlFetch(agentId, scheduleId, body);
+      }
       if (harnessOptions.agentScheduleControlError) {
         return Promise.resolve(jsonResponse(
           harnessOptions.agentScheduleControlError,
@@ -4011,6 +4019,50 @@ test('failed Agent schedule control reloads the latest row and reports a safe er
   assert.match(harness.app.innerHTML, /Conflict canary/);
   assert.match(harness.app.innerHTML, /This schedule changed elsewhere\. Review the latest state before trying again\./);
   assert.doesNotMatch(harness.app.innerHTML, /SECRET_SERVER_DETAIL_MUST_NOT_RENDER/);
+});
+
+test('schedule revalidation preserves an in-flight control and completion cannot reload a stale Agent', async () => {
+  let resolveControl!: (response: FakeResponse) => void;
+  const controlResponse = new Promise<FakeResponse>((resolve) => {
+    resolveControl = resolve;
+  });
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedules: [{
+      id: 'routine_pending', name: 'Pending control canary', contentAccess: 'readable', status: 'active', version: 1,
+      cadence: { triggerKind: 'schedule', scheduleInput: '*/5 * * * *', timezone: 'UTC' },
+      channelLabel: 'schedule-lab', nextRunAt: 1_785_168_000_000, lastFinishedAt: null,
+      actions: { pause: true, resume: false, delete: true },
+    }],
+    agentScheduleControlFetch: () => controlResponse,
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'agent-schedule-control',
+      'data-control': 'pause',
+      'data-schedule-id': 'routine_pending',
+    }),
+  });
+  assert.match(harness.app.innerHTML, /Pausing&hellip;/);
+
+  harness.focusWindow();
+  await flushAsync();
+  assert.equal(harness.agentScheduleGets(), 2);
+  assert.match(harness.app.innerHTML, /Pausing&hellip;/);
+  assert.match(harness.app.innerHTML, /aria-label="Pause Pending control canary" disabled/);
+
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'open-profiles', 'data-agent': 'agent_ops' }),
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /class="page-title">Ops Profile<\/h1>/);
+  resolveControl(jsonResponse({ schedule: { id: 'routine_pending', status: 'paused', version: 2 } }));
+  await flushAsync();
+  assert.equal(harness.agentScheduleGets(), 2);
+  assert.match(harness.app.innerHTML, /class="page-title">Ops Profile<\/h1>/);
 });
 
 test('opening an editable Agent view revalidates its visible detail without loading hidden tabs', async () => {

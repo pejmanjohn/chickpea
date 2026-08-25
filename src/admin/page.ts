@@ -2901,7 +2901,7 @@ button.capability-pill { cursor: pointer; }
     agentConnections: { agentId: "", workspaceId: "", attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" },
     composioSetup: null,
     managedAuthorization: null,
-    agentSchedules: { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" },
+    agentSchedules: { agentId: "", schedules: [], loading: false, busy: "", error: "", notice: "" },
     agentScheduleDeleteConfirm: null,
     connectionAccountsSupported: null,
     connectionAccountForm: null,
@@ -3097,20 +3097,12 @@ button.capability-pill { cursor: pointer; }
       resource = visibleResources[name] = {
         ownerKey: key,
         requestGeneration: 0,
-        loadGeneration: 0,
-        loadedAt: 0,
-        dirty: false,
-        invalidated: true,
         loading: false,
         promise: null
       };
     } else if (resource.ownerKey !== key) {
       resource.ownerKey = key;
       resource.requestGeneration += 1;
-      resource.loadGeneration = 0;
-      resource.loadedAt = 0;
-      resource.dirty = false;
-      resource.invalidated = true;
       resource.loading = false;
       resource.promise = null;
     }
@@ -3119,11 +3111,7 @@ button.capability-pill { cursor: pointer; }
 
   function beginVisibleResourceLoad(name, ownerKey, dirty) {
     var resource = visibleResource(name, ownerKey);
-    resource.dirty = !!dirty;
-    if (resource.dirty) {
-      resource.invalidated = true;
-      return null;
-    }
+    if (dirty) return null;
     if (resource.loading) return null;
     resource.requestGeneration += 1;
     resource.loading = true;
@@ -3144,19 +3132,17 @@ button.capability-pill { cursor: pointer; }
   }
 
   function trackVisibleResourcePromise(ticket, promise) {
-    if (ticket) ticket.resource.promise = promise;
-    return promise;
+    var tracked = promise.finally(function () {
+      finishVisibleResourceLoad(ticket);
+    });
+    if (ticket) ticket.resource.promise = tracked;
+    return tracked;
   }
 
-  function finishVisibleResourceLoad(ticket, applied) {
+  function finishVisibleResourceLoad(ticket) {
     if (!visibleResourceLoadIsCurrent(ticket)) return false;
     ticket.resource.loading = false;
     ticket.resource.promise = null;
-    if (applied) {
-      ticket.resource.loadGeneration = ticket.generation;
-      ticket.resource.loadedAt = Date.now();
-      ticket.resource.invalidated = false;
-    }
     return true;
   }
 
@@ -3167,7 +3153,6 @@ button.capability-pill { cursor: pointer; }
 
   function invalidateVisibleResource(name, ownerKey) {
     var resource = visibleResource(name, ownerKey);
-    resource.invalidated = true;
     // A local mutation makes an older response unsafe even when its HTTP call
     // is already in flight. The next visible load receives a fresh ticket.
     resource.requestGeneration += 1;
@@ -3175,25 +3160,11 @@ button.capability-pill { cursor: pointer; }
     resource.promise = null;
   }
 
-  function setVisibleResourceDirty(name, ownerKey, dirty) {
-    var resource = visibleResource(name, ownerKey);
-    resource.dirty = !!dirty;
-    if (dirty) {
-      resource.invalidated = true;
-      resource.requestGeneration += 1;
-      resource.loading = false;
-      resource.promise = null;
-    }
-  }
-
   function markVisibleResourceCurrent(name, ownerKey) {
     var resource = visibleResource(name, ownerKey);
+    resource.requestGeneration += 1;
     resource.loading = false;
     resource.promise = null;
-    resource.loadGeneration = resource.requestGeneration;
-    resource.loadedAt = Date.now();
-    resource.invalidated = false;
-    resource.dirty = false;
   }
   var lastRenderedPath = "";
   var egressDraft = { mode: "allowlist", domains: [""] };
@@ -3491,7 +3462,7 @@ button.capability-pill { cursor: pointer; }
 
   function prepareReadOnlyAgentState(agentId) {
     state.agentConnections = { agentId: agentId, workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "", legacyFallback: true };
-    state.agentSchedules = { agentId: agentId, viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
+    state.agentSchedules = { agentId: agentId, schedules: [], loading: false, busy: "", error: "", notice: "" };
     state.ownerMemory = {
       ownerKind: "agent", workspaceId: connectedTeamId() || "workspace", ownerId: agentId,
       detail: null, draft: null, dirty: false, loading: false, busy: "", error: "", notice: "", conflict: null,
@@ -3507,7 +3478,7 @@ button.capability-pill { cursor: pointer; }
     state.editingAgentId = null;
     resetProfileTransientState();
     state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" };
-    state.agentSchedules = { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
+    state.agentSchedules = { agentId: "", schedules: [], loading: false, busy: "", error: "", notice: "" };
     render();
   }
 
@@ -3544,7 +3515,7 @@ button.capability-pill { cursor: pointer; }
     state.editingAgentId = null;
     resetProfileTransientState();
     state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" };
-    state.agentSchedules = { agentId: "", viewerMembershipId: "", schedules: [], members: [], loading: false, busy: "", error: "", notice: "" };
+    state.agentSchedules = { agentId: "", schedules: [], loading: false, busy: "", error: "", notice: "" };
     render();
   }
 
@@ -5328,7 +5299,7 @@ button.capability-pill { cursor: pointer; }
     if (!resourceTicket) return coalescedVisibleResourcePromise("connections", resourceOwner);
     if (state.connectionAccountsSupported === false) {
       state.agentConnections = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "", legacyFallback: true };
-      finishVisibleResourceLoad(resourceTicket, true);
+      finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
       return Promise.resolve();
     }
@@ -5338,7 +5309,7 @@ button.capability-pill { cursor: pointer; }
     if (!workspaceId) {
       state.agentConnections.loading = false;
       state.agentConnections.error = "Connect Slack before adding Agent connections.";
-      finishVisibleResourceLoad(resourceTicket, true);
+      finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
       return Promise.resolve();
     }
@@ -5358,7 +5329,7 @@ button.capability-pill { cursor: pointer; }
       state.agentConnections.error = "";
       state.connectionAccountsSupported = true;
       restoreManagedAuthorization(agentId);
-      finishVisibleResourceLoad(resourceTicket, true);
+      finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
     }).catch(function (error) {
       if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentConnections !== requestState) return;
@@ -5366,7 +5337,7 @@ button.capability-pill { cursor: pointer; }
       state.agentConnections.legacyFallback = !!(error && error.status === 404);
       if (state.agentConnections.legacyFallback) state.connectionAccountsSupported = false;
       state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not load connections.";
-      finishVisibleResourceLoad(resourceTicket, false);
+      finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
     });
     return trackVisibleResourcePromise(resourceTicket, request);
@@ -5376,26 +5347,33 @@ button.capability-pill { cursor: pointer; }
     invalidateVisibleResource("connections", agentId + ":" + connectedTeamId());
   }
 
-  function loadAgentSchedules(agentId) {
+  function loadAgentSchedules(agentId, terminalState) {
     var resourceTicket = beginVisibleResourceLoad("schedules", agentId, false);
     if (!resourceTicket) return coalescedVisibleResourcePromise("schedules", agentId);
-    var requestState = { agentId: agentId, viewerMembershipId: "", schedules: [], members: [], loading: true, busy: "", error: "", notice: "" };
+    var current = state.agentSchedules;
+    var requestState = {
+      agentId: agentId,
+      schedules: [],
+      loading: true,
+      busy: terminalState ? "" : (current.agentId === agentId ? current.busy : ""),
+      error: "",
+      notice: ""
+    };
     state.agentSchedules = requestState;
     renderPreservingPagePosition();
     var request = api("/admin/api/agents/" + encodeURIComponent(agentId) + "/schedules", { cache: "no-store" }).then(function (body) {
       if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentSchedules !== requestState) return;
       state.agentSchedules.schedules = body.schedules || [];
-      state.agentSchedules.members = body.members || [];
-      state.agentSchedules.viewerMembershipId = body.viewerMembershipId || "";
       state.agentSchedules.loading = false;
-      state.agentSchedules.error = "";
-      finishVisibleResourceLoad(resourceTicket, true);
+      state.agentSchedules.error = terminalState && terminalState.error || "";
+      state.agentSchedules.notice = terminalState && terminalState.notice || "";
+      finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
     }).catch(function (error) {
       if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentSchedules !== requestState) return;
       state.agentSchedules.loading = false;
       state.agentSchedules.error = (error && (error.serverMessage || error.message)) || "Could not load schedules.";
-      finishVisibleResourceLoad(resourceTicket, false);
+      finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
     });
     return trackVisibleResourcePromise(resourceTicket, request);
@@ -5443,13 +5421,17 @@ button.capability-pill { cursor: pointer; }
     var schedule = agentScheduleById(scheduleId);
     if (!schedule || schedules.busy || !(schedule.actions && schedule.actions.delete)) return;
     state.agentScheduleDeleteConfirm = {
-      agentId: schedules.agentId,
       scheduleId: schedule.id,
       name: schedule.name || "Restricted schedule"
     };
     schedules.error = "";
     schedules.notice = "";
     render();
+  }
+
+  function agentSchedulesVisibleFor(agentId) {
+    return state.view === "profiles" && state.profileScreen === "edit" &&
+      state.profileTab === "schedules" && state.profileDraft && state.profileDraft.id === agentId;
   }
 
   function controlAgentSchedule(scheduleId, action) {
@@ -5481,13 +5463,15 @@ button.capability-pill { cursor: pointer; }
     ).then(function () {
       state.agentScheduleDeleteConfirm = null;
       invalidateAgentSchedules(agentId);
-      return loadAgentSchedules(agentId).then(function () {
-        if (state.agentSchedules.agentId !== agentId) return;
-        state.agentSchedules.busy = "";
-        state.agentSchedules.notice = action === "delete"
-          ? "Schedule deleted."
-          : "Schedule " + (action === "pause" ? "paused." : "resumed.");
-        renderPreservingPagePosition();
+      var notice = action === "delete"
+        ? "Schedule deleted."
+        : "Schedule " + (action === "pause" ? "paused." : "resumed.");
+      if (!agentSchedulesVisibleFor(agentId)) {
+        if (state.agentSchedules.agentId === agentId) state.agentSchedules.busy = "";
+        return;
+      }
+      return loadAgentSchedules(agentId, { notice: notice }).then(function () {
+        if (!agentSchedulesVisibleFor(agentId)) return;
         if (action === "delete") {
           var schedulesTab = document.getElementById("ptab-schedules");
           if (schedulesTab && schedulesTab.focus) schedulesTab.focus();
@@ -5497,11 +5481,12 @@ button.capability-pill { cursor: pointer; }
       var message = agentScheduleControlError(error);
       state.agentScheduleDeleteConfirm = null;
       invalidateAgentSchedules(agentId);
-      return loadAgentSchedules(agentId).then(function () {
-        if (state.agentSchedules.agentId !== agentId) return;
-        state.agentSchedules.busy = "";
-        state.agentSchedules.error = message;
-        renderPreservingPagePosition();
+      if (!agentSchedulesVisibleFor(agentId)) {
+        if (state.agentSchedules.agentId === agentId) state.agentSchedules.busy = "";
+        return;
+      }
+      return loadAgentSchedules(agentId, { error: message }).then(function () {
+        if (!agentSchedulesVisibleFor(agentId)) return;
         if (action === "delete") focusAgentScheduleDelete(scheduleId);
       });
     });
@@ -6834,12 +6819,14 @@ button.capability-pill { cursor: pointer; }
       var scheduleStatus = agentScheduleStatusView(entry.status);
       var name = entry.name || "Restricted schedule";
       var channel = normalizeChannelLabel(entry.channelLabel || "");
-      var busy = String(schedules.busy || "").indexOf(entry.id + ":") === 0;
+      var busyAction = String(schedules.busy || "").indexOf(entry.id + ":") === 0
+        ? String(schedules.busy).slice(entry.id.length + 1)
+        : "";
       var actions = entry.actions || {};
       var control = actions.pause
-        ? '<button type="button" id="agent-schedule-control-' + esc(entry.id) + '" class="btn btn-soft btn-sm" data-action="agent-schedule-control" data-control="pause" data-schedule-id="' + esc(entry.id) + '" aria-label="Pause ' + esc(name) + '"' + (schedules.busy ? " disabled" : "") + '>' + (busy ? "Pausing&hellip;" : "Pause") + '</button>'
+        ? '<button type="button" id="agent-schedule-control-' + esc(entry.id) + '" class="btn btn-soft btn-sm" data-action="agent-schedule-control" data-control="pause" data-schedule-id="' + esc(entry.id) + '" aria-label="Pause ' + esc(name) + '"' + (schedules.busy ? " disabled" : "") + '>' + (busyAction === "pause" ? "Pausing&hellip;" : "Pause") + '</button>'
         : actions.resume
-          ? '<button type="button" id="agent-schedule-control-' + esc(entry.id) + '" class="btn btn-soft btn-sm" data-action="agent-schedule-control" data-control="resume" data-schedule-id="' + esc(entry.id) + '" aria-label="Resume ' + esc(name) + '"' + (schedules.busy ? " disabled" : "") + '>' + (busy ? "Resuming&hellip;" : "Resume") + '</button>'
+          ? '<button type="button" id="agent-schedule-control-' + esc(entry.id) + '" class="btn btn-soft btn-sm" data-action="agent-schedule-control" data-control="resume" data-schedule-id="' + esc(entry.id) + '" aria-label="Resume ' + esc(name) + '"' + (schedules.busy ? " disabled" : "") + '>' + (busyAction === "resume" ? "Resuming&hellip;" : "Resume") + '</button>'
           : "";
       var remove = actions.delete
         ? '<button type="button" id="agent-schedule-delete-' + esc(entry.id) + '" class="btn btn-ghost btn-sm agent-schedule-delete" data-action="agent-schedule-delete-open" data-schedule-id="' + esc(entry.id) + '" aria-label="Delete ' + esc(name) + '"' + (schedules.busy ? " disabled" : "") + '>Delete</button>'
@@ -9717,14 +9704,14 @@ button.capability-pill { cursor: pointer; }
       state.scheduledCapability = body.capability || null;
       state.scheduledLimits = body.limits || null;
       state.scheduledLoading = false;
-      finishVisibleResourceLoad(resourceTicket, true);
+      finishVisibleResourceLoad(resourceTicket);
       render();
       if (state.scheduledSelection) return loadScheduledDetail(state.scheduledSelection);
     }).catch(function (error) {
       if (!visibleResourceLoadIsCurrent(resourceTicket) || state.view !== "audit") return;
       state.scheduledLoading = false;
       state.scheduledError = error.serverMessage || error.message || "Could not load scheduled work.";
-      finishVisibleResourceLoad(resourceTicket, false);
+      finishVisibleResourceLoad(resourceTicket);
       render();
     });
     return trackVisibleResourcePromise(resourceTicket, request);
@@ -9805,13 +9792,13 @@ button.capability-pill { cursor: pointer; }
       state.scheduledCapability = body.capability || state.scheduledCapability;
       state.scheduledLimits = body.limits || state.scheduledLimits;
       state.scheduledDetailLoading = false;
-      finishVisibleResourceLoad(resourceTicket, true);
+      finishVisibleResourceLoad(resourceTicket);
       render();
     }).catch(function (error) {
       if (!visibleResourceLoadIsCurrent(resourceTicket) || state.scheduledSelection !== routineId || state.view !== "audit") return;
       state.scheduledDetailLoading = false;
       state.scheduledError = error.serverMessage || error.message || "Could not load this routine.";
-      finishVisibleResourceLoad(resourceTicket, false);
+      finishVisibleResourceLoad(resourceTicket);
       render();
     });
     return trackVisibleResourcePromise(resourceTicket, request);
@@ -9904,7 +9891,7 @@ button.capability-pill { cursor: pointer; }
       current.draft = { description: entry.description, type: entry.type, body: entry.body };
       current.loading = false;
       current.busy = "";
-      finishVisibleResourceLoad(resourceTicket, true);
+      finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
     }).catch(function (error) {
       var current = state.ownerMemory;
@@ -9912,7 +9899,7 @@ button.capability-pill { cursor: pointer; }
       current.loading = false;
       current.busy = "";
       current.error = error.serverMessage || error.message || "Could not load memory.";
-      finishVisibleResourceLoad(resourceTicket, false);
+      finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
     });
     return trackVisibleResourcePromise(resourceTicket, request);
@@ -9928,7 +9915,7 @@ button.capability-pill { cursor: pointer; }
     memory.error = "";
     memory.notice = "";
     memory.conflict = null;
-    setVisibleResourceDirty("memory", memory.ownerKind + ":" + memory.workspaceId + ":" + memory.ownerId, true);
+    invalidateVisibleResource("memory", memory.ownerKind + ":" + memory.workspaceId + ":" + memory.ownerId);
     var save = document.querySelector('[data-action="owner-memory-save"]');
     var discard = document.querySelector('[data-action="owner-memory-discard"]');
     if (save) save.disabled = false;
@@ -9987,7 +9974,6 @@ button.capability-pill { cursor: pointer; }
     memory.error = "";
     memory.notice = "Draft discarded.";
     memory.conflict = null;
-    setVisibleResourceDirty("memory", memory.ownerKind + ":" + memory.workspaceId + ":" + memory.ownerId, false);
     render();
   }
 
@@ -12087,7 +12073,7 @@ button.capability-pill { cursor: pointer; }
         state.view !== "profiles" || state.profileScreen !== "edit" ||
         !state.profileDraft || state.profileDraft.id !== agentId || state.profileDirty
       ) {
-        finishVisibleResourceLoad(resourceTicket, false);
+        finishVisibleResourceLoad(resourceTicket);
         return;
       }
       var latest = body && body.agent;
@@ -12097,11 +12083,11 @@ button.capability-pill { cursor: pointer; }
       else state.agents.push(latest);
       state.profileDraft = cloneAgent(latest);
       state.profileConflict = false;
-      finishVisibleResourceLoad(resourceTicket, true);
+      finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
     }).catch(function (error) {
       if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
-      finishVisibleResourceLoad(resourceTicket, false);
+      finishVisibleResourceLoad(resourceTicket);
       if (
         state.view === "profiles" && state.profileScreen === "edit" &&
         state.profileDraft && state.profileDraft.id === agentId && !state.profileDirty
@@ -12118,7 +12104,7 @@ button.capability-pill { cursor: pointer; }
     if (!resourceTicket) return coalescedVisibleResourcePromise("repositories", agentId);
     var request = loadGithubStatus().then(function () {
       if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
-      finishVisibleResourceLoad(resourceTicket, true);
+      finishVisibleResourceLoad(resourceTicket);
       if (
         state.view === "profiles" && state.profileScreen === "edit" &&
         state.profileDraft && state.profileDraft.id === agentId && state.profileTab === "repositories"
@@ -12174,7 +12160,7 @@ button.capability-pill { cursor: pointer; }
     var wasDirty = state.profileDirty;
     state.profileDirty = true;
     if (state.profileDraft && state.profileDraft.id) {
-      setVisibleResourceDirty("agent-detail", state.profileDraft.id, true);
+      invalidateVisibleResource("agent-detail", state.profileDraft.id);
     }
     var discard = document.querySelector('[data-action="discard-profile"]');
     if (discard) discard.disabled = false;
@@ -14329,12 +14315,12 @@ button.capability-pill { cursor: pointer; }
     var request = api("/admin/api/slack-connection", { cache: "no-store" }).then(function (body) {
       if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
       state.slack = body;
-      finishVisibleResourceLoad(resourceTicket, true);
+      finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
     }).catch(function (error) {
       if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
       if (error && error.status === 404) state.slack = null;
-      finishVisibleResourceLoad(resourceTicket, error && error.status === 404);
+      finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
     });
     return trackVisibleResourcePromise(resourceTicket, request);

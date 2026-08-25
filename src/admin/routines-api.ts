@@ -86,7 +86,7 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
         routines: await Promise.all(page.routines.map(async (routine) => {
           const access = await accessFor(c).resolve(routine);
           return routineContentReadable(access)
-            ? publicRoutineSummary(routine, access)
+            ? readableRoutineSummary(routine, access)
             : redactedRoutineSummary(routine, access);
         })),
         nextCursor: page.nextCursor === null ? null : String(page.nextCursor),
@@ -135,10 +135,10 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
       const isReadable = routineContentReadable(access);
       return c.json({
         projection: isReadable ? access : 'redacted',
-        routine: isReadable ? publicRoutineDetail(routine, access) : redactedRoutineDetail(routine, access),
+        routine: isReadable ? readableRoutineDetail(routine, access) : redactedRoutineDetail(routine, access),
         runs: await Promise.all(runs.map((run) => runDetail(run, usage, isReadable))),
         revisions: revisions.map((revision) => isReadable
-          ? publicRoutineRevision(revision)
+          ? readableRoutineRevision(revision)
           : redactedRoutineRevision(revision)),
         events: events.map(safeAuditEvent),
         capability: capabilityFor(c, options),
@@ -207,7 +207,7 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
         const isReadable = routineContentReadable(access);
         return c.json({
           projection: isReadable ? access : 'redacted',
-          routine: isReadable ? publicRoutineDetail(deleted, access) : redactedRoutineDetail(deleted, access),
+          routine: isReadable ? readableRoutineDetail(deleted, access) : redactedRoutineDetail(deleted, access),
           irreversible: true,
         });
       }
@@ -224,7 +224,7 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
       const isReadable = routineContentReadable(access);
       return c.json({
         projection: isReadable ? access : 'redacted',
-        routine: isReadable ? publicRoutineDetail(updated, access) : redactedRoutineDetail(updated, access),
+        routine: isReadable ? readableRoutineDetail(updated, access) : redactedRoutineDetail(updated, access),
       });
     } catch (error) {
       return routineError(c, error);
@@ -257,7 +257,7 @@ function routineSafeIdentity(routine: RoutineDefinition): Record<string, unknown
   };
 }
 
-function publicRoutineSummary(
+function readableRoutineSummary(
   routine: RoutineDefinition,
   access: Extract<RoutineContentAccess, 'public' | 'private_member'>,
 ): Record<string, unknown> {
@@ -281,12 +281,12 @@ function redactedRoutineSummary(
   };
 }
 
-function publicRoutineDetail(
+function readableRoutineDetail(
   routine: RoutineDefinition,
   access: Extract<RoutineContentAccess, 'public' | 'private_member'>,
 ): Record<string, unknown> {
   return {
-    ...publicRoutineSummary(routine, access),
+    ...readableRoutineSummary(routine, access),
     taskText: routine.deletedAt === null ? routine.taskText : null,
     triggerKind: routine.triggerKind,
     scheduleJson: routine.scheduleJson,
@@ -318,7 +318,7 @@ function redactedRoutineDetail(
   };
 }
 
-function publicRoutineRevision(
+function readableRoutineRevision(
   revision: Awaited<ReturnType<RoutineStore['listRevisions']>>[number],
 ): Record<string, unknown> {
   return {

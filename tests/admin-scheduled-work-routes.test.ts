@@ -489,9 +489,11 @@ test('private schedule projections are readable only to proven Channel members a
       ]);
       assert.equal(globalResponse.status, 200, await globalResponse.clone().text());
       assert.equal(agentResponse.status, 200, await agentResponse.clone().text());
+      const globalBody = await globalResponse.json() as Record<string, any>;
+      const agentBody = await agentResponse.json() as Record<string, any>;
       return {
-        global: (await globalResponse.json() as Record<string, any>).routines[0],
-        agent: (await agentResponse.json() as Record<string, any>).schedules[0],
+        global: globalBody.routines.find((entry: Record<string, any>) => entry.id === routine.id),
+        agent: agentBody.schedules.find((entry: Record<string, any>) => entry.id === routine.id),
       };
     };
 
@@ -560,6 +562,56 @@ test('private schedule projections are readable only to proven Channel members a
     });
     assert.equal(replayedPause.status, 200, await replayedPause.clone().text());
     assert.equal((await replayedPause.json() as Record<string, any>).schedule.version, 2);
+    const secondRoutine = await new RoutineService(routines, {
+      now: Date.now,
+      routineId: () => 'routine_private_member_second',
+    }).save({
+      action: 'create',
+      actorId: 'U_CREATOR',
+      workspaceId: 'T_TEST',
+      channelId: 'C_TEST',
+      definition: { ...definition(), name: 'Second private member routine' },
+      nextRunAt: nextRunAt + 60_000,
+      projectedDailyStarts: 5,
+      reservations: [{ windowStart: nextRunAt + 60_000, count: 1 }],
+      sourceVisibility: 'private',
+    }, 'seed-private-member-routine-second');
+    await config.putAgentScheduleReference({
+      scheduleId: secondRoutine.id,
+      agentId: agent.id,
+      workspaceId: secondRoutine.workspaceId,
+      channelId: secondRoutine.channelId,
+      createdByMembershipId: 'membership_member',
+      runsAsMembershipId: 'membership_member',
+      authorityReceiptId: 'receipt_private_member_second',
+      requiredConnectionAccountIds: [],
+      state: 'active',
+    });
+    const secondPause = await memberApp.request(
+      `http://localhost/admin/api/agents/${agent.id}/schedules/${secondRoutine.id}/control`,
+      {
+        method: 'POST',
+        headers: controlHeaders('member-pause'),
+        body: JSON.stringify({ action: 'pause', expectedVersion: 1 }),
+      },
+    );
+    assert.equal(secondPause.status, 200, await secondPause.clone().text());
+    assert.deepEqual((await secondPause.json() as Record<string, any>).schedule, {
+      id: secondRoutine.id,
+      status: 'paused',
+      version: 2,
+    });
+    const secondDelete = await memberApp.request(
+      `http://localhost/admin/api/agents/${agent.id}/schedules/${secondRoutine.id}/control`,
+      {
+        method: 'POST',
+        headers: controlHeaders('cleanup-second-routine'),
+        body: JSON.stringify({
+          action: 'delete', expectedVersion: 2, acknowledgeIrreversible: true,
+        }),
+      },
+    );
+    assert.equal(secondDelete.status, 200, await secondDelete.clone().text());
     assert.equal((await routines.getRoutine(routine.id))?.pausedReason, 'admin_control');
     const pausedView = await requestBoth(true);
     assert.equal(pausedView.global.name, canary);
