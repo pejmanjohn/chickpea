@@ -116,7 +116,7 @@ import {
 // Slack app identity; the wizard deep-link below substitutes the request host
 // so users never hand-edit a request_url.
 import slackAppManifest from '../../slack-app-manifest.json' with { type: 'json' };
-import { AGENT_ID_PATTERN } from '../config/agent-id.ts';
+import { AGENT_ID_PATTERN, CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import {
   apiOAuthSettingKeys,
   connectionAccountIdFromOAuthRef,
@@ -138,8 +138,11 @@ import { isValidApiOAuthConnectionPolicy } from '../config/api-oauth-policy.ts';
 import {
   beginOnboardingJourney,
   completeOnboardingJourney,
+  ONBOARDING_PROVIDER_IDS,
   readOnboardingJourney,
+  selectOnboardingProvider,
   startOnboardingTry,
+  type OnboardingProviderId,
   type OnboardingSnapshot,
 } from '../config/onboarding-state.ts';
 import {
@@ -1149,11 +1152,15 @@ const composioProjectSetupSchema = v.strictObject({
   })),
 });
 
+const onboardingProviderSchema = v.strictObject({
+  expectedRevision: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
+  providerId: v.picklist(ONBOARDING_PROVIDER_IDS),
+});
+
 const onboardingTrySchema = v.strictObject({
   expectedRevision: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
-  workspaceId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9]{2,32}$/i)),
-  channelId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9]{2,32}$/i)),
-  channelName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
+  modelId: modelSpecifier,
+  expectedDefaultRevision: v.pipe(v.number(), v.integer(), v.minValue(0)),
 });
 
 const onboardingCompleteSchema = v.strictObject({
@@ -7461,6 +7468,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         teamId: gatewayInstallation.teamId ?? gatewayInstallation.workspaceId,
         teamName: descriptor?.teamName ??
           await settingsStore.getSetting(SLACK_SETTING_KEYS.teamName) ?? undefined,
+        appId: gatewayInstallation.appId,
       };
     }
     const [credentials, teamInfo, installations] = await Promise.all([
@@ -7487,7 +7495,56 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       connected,
       teamId: teamInfo.teamId ?? installation?.workspaceId,
       teamName: teamInfo.teamName,
+      appId: installation?.appId,
     };
+  };
+
+  const onboardingProviderReady = async (
+    c: Context,
+    providerId: OnboardingProviderId,
+  ): Promise<boolean> => {
+    if (providerId === 'cloudflare') {
+      return await getWorkersAiEnabled(settings(c)) &&
+        workersAiStatus(c.env as PlatformEnv | undefined) !== 'missing';
+    }
+    if (!isProviderKeyId(providerId)) return false;
+    return (await resolveProviderApiKey(
+      providerId,
+      c.env as PlatformEnv | undefined,
+      settings(c),
+    )).source !== 'missing';
+  };
+
+  const onboardingModelOptions = async (
+    c: Context,
+    providerId: OnboardingProviderId,
+  ): Promise<string[]> => {
+    await loadModelCatalog(settings(c));
+    const runtime = modelProviders().find((provider) => provider.id === providerId);
+    if (providerId === 'anthropic') {
+      return uniqueStrings([
+        ...activeCatalogModels('anthropic_api_key').map((model) => model.canonical),
+        ...(runtime?.suggestions ?? []),
+      ]);
+    }
+    if (providerId === 'openai') {
+      return uniqueStrings([
+        ...activeCatalogModels('openai_api_key').map((model) => model.canonical),
+        ...(runtime?.suggestions ?? []),
+      ]);
+    }
+    if (providerId === 'openrouter') {
+      const favorites = await getProviderFavorites('openrouter', settings(c));
+      return uniqueStrings([
+        ...favorites.map((model) => `openrouter/${model}`),
+        ...(runtime?.suggestions ?? []),
+      ]);
+    }
+    const favorites = await getProviderFavorites('workers-ai', settings(c));
+    return uniqueStrings([
+      ...favorites.map((model) => `cloudflare/${model}`),
+      ...(runtime?.suggestions ?? []),
+    ]);
   };
 
   const onboardingResponse = async (
@@ -7498,19 +7555,24 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     let snapshot = initial;
     const { journey } = snapshot;
     if (journey.state === 'complete') {
+      const installation = journey.selectedWorkspaceId
+        ? await store(c).getWorkspaceInstallation(journey.selectedWorkspaceId)
+        : undefined;
       return c.json({
         stage: 'complete',
         revision: snapshot.revision,
         agentId: journey.agentId ?? null,
-        redirectTo: journey.agentId
-          ? `/admin/agents/${encodeURIComponent(journey.agentId)}`
-          : null,
+        redirectTo: '/admin/agents',
         workspace: journey.selectedWorkspaceId
           ? { id: journey.selectedWorkspaceId, name: null }
           : null,
         channel: journey.selectedChannelId
           ? { id: journey.selectedChannelId, name: journey.selectedChannelName }
           : null,
+        providerId: journey.selectedProviderId ?? null,
+        modelId: journey.selectedModelId ?? null,
+        models: [],
+        slackAppId: installation?.appId ?? null,
         tryStartedAt: journey.tryStartedAt ?? null,
         completedAt: journey.completedAt ?? null,
       });
@@ -7525,18 +7587,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         redirectTo: null,
         workspace: null,
         channel: null,
+        providerId: null,
+        modelId: null,
+        models: [],
+        slackAppId: null,
         tryStartedAt: null,
         completedAt: null,
       });
     }
 
-    if (journey.selectedWorkspaceId && journey.selectedChannelId &&
-        journey.selectedChannelName && journey.tryStartedAt) {
+    if (journey.selectedWorkspaceId && journey.selectedProviderId &&
+        journey.selectedModelId && journey.trySlackUserId && journey.tryStartedAt) {
       const delivered = await hasDeliveredOnboardingReply(work(c), {
-        workspaceId: journey.selectedWorkspaceId,
-        channelId: journey.selectedChannelId,
-        tryStartedAt: journey.tryStartedAt,
-      });
+          workspaceId: journey.selectedWorkspaceId,
+          slackUserId: journey.trySlackUserId,
+          tryStartedAt: journey.tryStartedAt,
+        });
       if (delivered) {
         try {
           snapshot = await completeOnboardingJourney(settings(c), snapshot.revision);
@@ -7550,26 +7616,39 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         stage: snapshot.journey.state === 'complete' ? 'complete' : 'try',
         revision: snapshot.revision,
         agentId: journey.agentId ?? null,
-        redirectTo: snapshot.journey.state === 'complete' && journey.agentId
-          ? `/admin/agents/${encodeURIComponent(journey.agentId)}`
-          : null,
+        redirectTo: snapshot.journey.state === 'complete' ? '/admin/agents' : null,
         workspace: {
           id: journey.selectedWorkspaceId,
           name: slack.teamId === journey.selectedWorkspaceId ? (slack.teamName ?? null) : null,
         },
-        channel: { id: journey.selectedChannelId, name: journey.selectedChannelName },
+        channel: null,
+        providerId: journey.selectedProviderId ?? null,
+        modelId: journey.selectedModelId ?? null,
+        models: [],
+        slackAppId: slack.appId ?? null,
         tryStartedAt: journey.tryStartedAt,
         completedAt: snapshot.journey.completedAt ?? null,
       });
     }
 
     return c.json({
-      stage: 'choose_channel',
+      stage: journey.selectedProviderId ? 'choose_model' : 'choose_provider',
       revision: snapshot.revision,
-      agentId: null,
+      agentId: journey.agentId ?? null,
       redirectTo: null,
-      workspace: { id: slack.teamId, name: slack.teamName ?? null },
+      workspace: {
+        id: journey.selectedWorkspaceId ?? slack.teamId,
+        name: slack.teamId === (journey.selectedWorkspaceId ?? slack.teamId)
+          ? (slack.teamName ?? null)
+          : null,
+      },
       channel: null,
+      providerId: journey.selectedProviderId ?? null,
+      modelId: null,
+      models: journey.selectedProviderId
+        ? await onboardingModelOptions(c, journey.selectedProviderId)
+        : [],
+      slackAppId: slack.appId ?? null,
       tryStartedAt: null,
       completedAt: null,
     });
@@ -7585,8 +7664,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.post('/admin/api/onboarding/try', async (c) => {
-    const parsed = v.safeParse(onboardingTrySchema, await readJson(c.req));
+  app.post('/admin/api/onboarding/provider', async (c) => {
+    const parsed = v.safeParse(onboardingProviderSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
       const snapshot = await readOnboardingJourney(settings(c));
@@ -7595,75 +7674,130 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return c.json({ error: 'onboarding_changed' }, 409);
       }
       if (snapshot.journey.state === 'complete') return onboardingResponse(c, snapshot);
-
       const slack = await onboardingSlackContext(c);
       if (!slack.connected || !slack.teamId) {
         return c.json({ error: 'slack_not_connected' }, 409);
       }
-      if (slack.teamId !== parsed.output.workspaceId) {
+      if (!await onboardingProviderReady(c, parsed.output.providerId)) {
+        return c.json({ error: 'onboarding_provider_not_configured' }, 409);
+      }
+      const selected = await selectOnboardingProvider(settings(c), {
+        expectedRevision: snapshot.revision,
+        workspaceId: slack.teamId,
+        providerId: parsed.output.providerId,
+      });
+      return onboardingResponse(c, selected);
+    } catch (error) {
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/onboarding/try', async (c) => {
+    const parsed = v.safeParse(onboardingTrySchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const principal = principalByContext.get(c)!;
+      const snapshot = await readOnboardingJourney(settings(c));
+      if (!snapshot) return c.json({ error: 'onboarding_not_found' }, 404);
+      if (snapshot.revision !== parsed.output.expectedRevision) {
+        return c.json({ error: 'onboarding_changed' }, 409);
+      }
+      if (snapshot.journey.state === 'complete') return onboardingResponse(c, snapshot);
+      const journey = snapshot.journey;
+      const providerId = journey.selectedProviderId;
+      const workspaceId = journey.selectedWorkspaceId;
+      if (!providerId || !workspaceId) {
+        return c.json({ error: 'onboarding_provider_required' }, 409);
+      }
+      const modelOptions = await onboardingModelOptions(c, providerId);
+      if (!modelOptions.includes(parsed.output.modelId)) {
+        return invalidRequest(c, 'Choose a model from the selected provider.');
+      }
+      if (!await onboardingProviderReady(c, providerId)) {
+        return c.json({ error: 'onboarding_provider_not_configured' }, 409);
+      }
+      const compatibilityError = activeCatalogCompatibilityError(
+        parsed.output.modelId,
+        await resolveOpenAiAuthMethod(settings(c)),
+      );
+      if (compatibilityError) return invalidRequest(c, compatibilityError);
+      const slack = await onboardingSlackContext(c);
+      if (!slack.connected || !slack.teamId) {
+        return c.json({ error: 'slack_not_connected' }, 409);
+      }
+      if (slack.teamId !== workspaceId) {
         return c.json({ error: 'workspace_mismatch' }, 400);
       }
-      const installation = await store(c).getWorkspaceInstallation(parsed.output.workspaceId);
-      const defaultAgentId = installation?.defaultAgentId ?? 'agent_default';
-      const grant = (await store(c).listAgentChannelGrants(
-        parsed.output.workspaceId,
-        parsed.output.channelId,
-      )).find((candidate) =>
-        candidate.agentId === defaultAgentId && candidate.status === 'active'
-      );
-      if (!grant) {
-        return c.json({ error: 'onboarding_grant_missing' }, 409);
+      const actor = await agentActor(c);
+      if (actor.slackTeamId !== workspaceId) {
+        return c.json({ error: 'workspace_mismatch' }, 400);
       }
-      if (installation?.transportMode === 'gateway') {
-        try {
-          const channel = await (await agentSlackTransport(
-            c,
-            parsed.output.workspaceId,
-          )).lookupChannel(parsed.output.channelId);
-          if (channel.member !== true) {
-            return c.json({ error: 'slack_channel_membership_required' }, 409);
-          }
-        } catch (error) {
-          if (error instanceof SlackTransportError && error.code === 'channel_not_found') {
-            return c.json({ error: 'channel_not_found' }, 400);
-          }
-          return c.json({ error: 'slack_channel_check_failed' }, 502);
-        }
-      } else {
-        const { botToken } = await resolveSlackCredentials(
-          c.env as PlatformEnv | undefined,
-          settings(c),
-          slackCredentialResolutionDependencies(c),
-        );
-        if (!botToken) return c.json({ error: 'slack_not_connected' }, 409);
-        let membership: Awaited<ReturnType<typeof slackConversationsInfo>>;
-        try {
-          membership = await (options.slackConversationsInfo ?? slackConversationsInfo)(
-            botToken,
-            parsed.output.channelId,
-          );
-        } catch {
-          return c.json({ error: 'slack_channel_check_failed' }, 502);
-        }
-        if (!membership.ok || !membership.channel) {
+      const installation = await store(c).getWorkspaceInstallation(workspaceId);
+      if (!installation) {
+        return c.json({ error: 'workspace_installation_required' }, 409);
+      }
+      if (!(slack.appId ?? installation.appId)) {
+        return c.json({ error: 'slack_app_id_required' }, 409);
+      }
+      try {
+        await store(c).putWorkspaceModelDefault({
+          workspaceId,
+          modelId: parsed.output.modelId,
+          provenance: 'admin_selected',
+          lastChangedByMembershipId: principal.membershipId,
+        }, parsed.output.expectedDefaultRevision);
+      } catch (error) {
+        if (!(error instanceof WorkspaceModelDefaultRevisionConflictError)) throw error;
+        const current = await store(c).getWorkspaceModelDefault(workspaceId);
+        if (current?.modelId !== parsed.output.modelId) {
           return c.json({
-            error: membership.error === 'channel_not_found'
-              ? 'channel_not_found'
-              : 'slack_channel_check_failed',
-          }, membership.error === 'channel_not_found' ? 400 : 502);
+            error: 'workspace_model_default_revision_conflict',
+            expectedRevision: error.expectedRevision,
+            actualRevision: error.actualRevision,
+            workspaceDefault: await workspaceModelDefaultProjection({
+              installation,
+              configStore: store(c),
+              settingsStore: settings(c),
+              platformEnv: c.env as PlatformEnv | undefined,
+              runtimeProviders: modelProviders(),
+            }),
+          }, 409);
         }
-        if (membership.channel.isMember !== true) {
-          return c.json({ error: 'slack_channel_membership_required' }, 409);
+      }
+      const [currentInstallation, currentDefault] = await Promise.all([
+        store(c).getWorkspaceInstallation(workspaceId),
+        store(c).getWorkspaceModelDefault(workspaceId),
+      ]);
+      if (!currentInstallation || !currentDefault?.modelId) {
+        return c.json({ error: 'workspace_installation_required' }, 409);
+      }
+      if (currentInstallation.runtimeContract !== 'chickpea-v1') {
+        const preflight = await store(c).preflightChickpeaCutover(workspaceId);
+        if (preflight.blockers.length) {
+          return c.json({
+            error: 'chickpea_cutover_preflight_failed',
+            blockers: preflight.blockers,
+          }, 409);
+        }
+        try {
+          await store(c).activateChickpeaCutover({
+            workspaceId,
+            expectedInstallationRevision: currentInstallation.revision,
+            expectedDefaultRevision: currentDefault.revision,
+            defaultReady: true,
+          });
+        } catch (error) {
+          if (error instanceof WorkspaceModelDefaultRevisionConflictError) {
+            return c.json({ error: 'workspace_model_default_revision_conflict' }, 409);
+          }
+          throw error;
         }
       }
       const started = await startOnboardingTry(settings(c), {
         expectedRevision: snapshot.revision,
-        agentId: defaultAgentId,
-        workspaceId: parsed.output.workspaceId,
-        channelId: parsed.output.channelId,
-        channelName:
-          (await store(c).getChannel(parsed.output.workspaceId, parsed.output.channelId))?.label ??
-          parsed.output.channelName,
+        agentId: CHICKPEA_AGENT_ID,
+        modelId: parsed.output.modelId,
+        slackUserId: actor.slackUserId,
       });
       return onboardingResponse(c, started);
     } catch (error) {

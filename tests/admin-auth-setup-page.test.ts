@@ -66,12 +66,16 @@ test('setup leads with Add to Slack and keeps the customer-owned app as a fallba
   });
   const creation = render('awaiting_app_creation');
   assert.match(creation, /Add Chickpea to Slack/);
+  assert.match(creation, /<p class="auth-eyebrow">Slack setup<\/p>/);
+  assert.doesNotMatch(creation, /<p class="auth-eyebrow">Private Slack setup<\/p>/);
   assert.match(creation, /data-primary-action="gateway-install"/);
   assert.match(
     creation,
     /<button class="auth-button slack-provider-button"[^>]*data-primary-action="gateway-install"[^>]*><span class="slack-provider-logo slack-logo-image" aria-hidden="true"><\/span>Add to Slack<\/button>/,
   );
-  assert.match(creation, /No app configuration token or Slack credentials to copy/);
+  assert.doesNotMatch(creation, /auth-progress|Create app<\/li>|Verify Owner<\/li>/);
+  assert.doesNotMatch(creation, /No app configuration token or Slack credentials to copy/);
+  assert.doesNotMatch(creation, /Slack app creation is the only required action now/);
   assert.match(creation, /<details[^>]*data-secondary-action="customer-owned-app"/);
   assert.match(creation, /Use your own Slack app instead/);
   assert.match(creation, /Generate an App Configuration token in Slack/);
@@ -80,12 +84,19 @@ test('setup leads with Add to Slack and keeps the customer-owned app as a fallba
   assert.match(creation, /xoxe\.xoxp-/);
   assert.match(creation, /refresh token beginning xoxe-/i);
   assert.match(creation, /href="\/admin\/setup\/manual"/);
+  assert.doesNotMatch(creation, /<p class="setup-token-note"|Sent once to Slack|▢/);
   assert.doesNotMatch(creation, /href="\/admin\/setup\/manual"[^>]*target="_blank"/);
   assert.doesNotMatch(creation, /name="(?:appId|clientId|clientSecret|signingSecret|observedManifest)"/);
   assert.doesNotMatch(creation, /Install Chickpea in Slack|Become the first Owner/);
+  assert.match(creation, /data-slack-setup-state="awaiting_app_creation"/);
+  assert.match(creation, /\.auth-card\{padding-block:56px\}/);
+  assert.match(creation, /\.auth-intro\+form\{margin-top:28px\}/);
 
   const connected = render('awaiting_app_creation', 'connected');
   assert.match(connected, /Slack is connected/);
+  assert.match(connected, /<p class="auth-eyebrow">Slack setup<\/p>/);
+  assert.match(connected, /class="auth-title-success"[^>]*aria-hidden="true"/);
+  assert.doesNotMatch(connected, /Slack app creation is the only required action now|auth-progress/);
   assert.match(
     connected,
     /<button class="auth-button slack-provider-button"[^>]*data-primary-action="gateway-owner"[^>]*><span class="slack-provider-logo slack-logo-image" aria-hidden="true"><\/span>Continue with Slack<\/button>/,
@@ -193,9 +204,11 @@ test('wrong-account denial explains automatic provisioning and gives a Slack ret
 test('first-Owner completion returns directly to the exact safe view', () => {
   const html = renderSlackOwnerCompletePage(DESTINATION);
   assert.match(html, /data-slack-auth-surface="owner-complete"/);
-  assert.match(html, /You’re the first Owner/);
+  assert.match(html, /🎉 Installation successful/);
+  assert.doesNotMatch(html, /You’re the first Owner|Your requested control-plane view is ready/);
   assert.doesNotMatch(html, /add a second Owner|destructive fresh reset|invite an Admin/i);
   assert.match(html, /href="\/admin\/channels"/);
+  assert.match(html, /html\[data-slack-auth-surface="owner-complete"\] \.auth-actions\{margin-top:32px\}/);
   assert.doesNotMatch(html, /password|admin token|cloudflare access/i);
 });
 

@@ -3,7 +3,7 @@ import type { WorkRunListItem, WorkStore } from '../work/types.ts';
 
 export interface OnboardingReplyTarget {
   workspaceId: string;
-  channelId: string;
+  slackUserId: string;
   tryStartedAt: number;
 }
 
@@ -35,12 +35,14 @@ export function isDeliveredOnboardingReply(
 ): boolean {
   const { run, binding } = item;
   return run.createdAt >= target.tryStartedAt &&
-    run.triggerKind === 'slack_app_mention' &&
+    (run.triggerKind === 'slack_dm_message' || run.triggerKind === 'slack_app_mention') &&
+    run.actorRef === opaqueId('actor', `slack:${target.workspaceId}:${target.slackUserId}`) &&
     run.status === 'settled' &&
     run.terminalDisposition === 'succeeded' &&
     run.deliveryStatus === 'delivered' &&
     run.deliveryMethod !== 'slack_reaction_add' &&
     binding.adapterKind === 'slack' &&
+    binding.configMode === 'resolve_each_run' &&
     binding.externalAccountId === opaqueId('account', `slack:${target.workspaceId}`) &&
-    run.deliveryRef?.startsWith(`slack:${target.channelId}:`) === true;
+    run.deliveryRef?.startsWith('slack:D') === true;
 }

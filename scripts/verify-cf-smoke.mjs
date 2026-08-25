@@ -66,6 +66,7 @@ const WORKSPACE = 'T0SMOKE';
 const APP_ID = 'A0SMOKE';
 const BOT_USER_ID = 'UBOTSMOKE';
 const OWNER_USER_ID = 'UOWNERSMOKE';
+const ONBOARDING_DM_CHANNEL = 'DSMOKEONBOARDING';
 const OAUTH_CLIENT_ID = '123456.789012';
 const OAUTH_CLIENT_SECRET = 'fake-confidential-client-secret';
 const OAUTH_CONFIGURATION_TOKEN = 'xoxe.fake-workerd-configuration-token';
@@ -819,6 +820,27 @@ function mentionEvent(eventId = 'Ev_SMOKE_MENTION_1') {
   };
 }
 
+function onboardingDmEvent() {
+  const ts = '1782770399.000001';
+  return {
+    token: 'verification-token-not-a-secret',
+    team_id: WORKSPACE,
+    api_app_id: APP_ID,
+    event_id: 'Ev_SMOKE_ONBOARDING_DM_1',
+    event_time: 1782770399,
+    type: 'event_callback',
+    event: {
+      type: 'message',
+      channel_type: 'im',
+      user: OWNER_USER_ID,
+      text: 'Give me three useful ways you can help me.',
+      ts,
+      channel: ONBOARDING_DM_CHANNEL,
+      event_ts: ts,
+    },
+  };
+}
+
 function memoryRememberEvent() {
   return {
     ...mentionEvent('Ev_SMOKE_MEMORY_1'),
@@ -1065,9 +1087,10 @@ async function main() {
     );
     const connectedAdmin = await renderAdminWithWorkerdState(baseUrl, '/admin/onboarding');
     check(
-      connectedAdmin.html.includes('Choose where Chickpea should start') &&
-        connectedAdmin.html.includes('data-action="onboarding-channel-form"'),
-      'fresh Slack-native onboarding resumes at the first-channel picker',
+      connectedAdmin.html.includes('Choose your model provider') &&
+        connectedAdmin.html.includes('data-action="onboarding-provider-continue"') &&
+        !connectedAdmin.html.includes('Choose where Chickpea should start'),
+      'fresh Slack-native onboarding resumes at provider selection without a channel picker',
     );
     check(
       connectedAdmin.html.length > 0 &&
@@ -1315,26 +1338,59 @@ async function main() {
       'Agent publication created the active Channel grant and Slack handle',
       `HTTP ${put.status}`,
     );
-    const onboardingBeforeTry = await adminFetch(baseUrl, '/admin/api/onboarding');
+    const onboardingBeforeProvider = await adminFetch(baseUrl, '/admin/api/onboarding');
     check(
-      onboardingBeforeTry.status === 200 && onboardingBeforeTry.body?.stage === 'choose_channel',
-      'onboarding resumes at the channel picker after Slack connects',
+      onboardingBeforeProvider.status === 200 && onboardingBeforeProvider.body?.stage === 'choose_provider',
+      'onboarding resumes at provider selection after Slack connects',
+      `HTTP ${onboardingBeforeProvider.status} stage=${String(onboardingBeforeProvider.body?.stage)}`,
+    );
+    const onboardingBeforeTry = await adminFetch(baseUrl, '/admin/api/onboarding/provider', {
+      method: 'POST',
+      body: JSON.stringify({
+        expectedRevision: onboardingBeforeProvider.body?.revision,
+        providerId: 'cloudflare',
+      }),
+    });
+    check(
+      onboardingBeforeTry.status === 200 && onboardingBeforeTry.body?.stage === 'choose_model',
+      'provider selection advances onboarding to model selection',
       `HTTP ${onboardingBeforeTry.status} stage=${String(onboardingBeforeTry.body?.stage)}`,
     );
+    const onboardingWorkspaceDefault = await adminFetch(baseUrl, '/admin/api/workspace-model-default');
     const onboardingTry = await adminFetch(baseUrl, '/admin/api/onboarding/try', {
       method: 'POST',
       body: JSON.stringify({
         expectedRevision: onboardingBeforeTry.body?.revision,
-        workspaceId: WORKSPACE,
-        channelId: CHANNEL,
-        channelName: 'smoke-mentions',
+        modelId: 'cloudflare/@cf/zai-org/glm-5.2',
+        expectedDefaultRevision: onboardingWorkspaceDefault.body?.workspaceDefault?.revision,
       }),
     });
     check(
-      onboardingTry.status === 200 && onboardingTry.body?.stage === 'try',
-      'one Default Agent grant advances onboarding to Try Chickpea',
+      onboardingTry.status === 200 &&
+        onboardingTry.body?.stage === 'try' &&
+        onboardingTry.body?.agentId === 'agent_chickpea' &&
+        onboardingTry.body?.slackAppId === APP_ID,
+      'model selection activates Chickpea and advances onboarding to its Slack DM',
       `HTTP ${onboardingTry.status} stage=${String(onboardingTry.body?.stage)}`,
     );
+    const onboardingDmAdmission = await postSignedEvent(eventsUrl, onboardingDmEvent());
+    check(
+      onboardingDmAdmission.status === 200 || onboardingDmAdmission.status === 202,
+      'plain installer DM admitted without an @Chickpea mention',
+      `HTTP ${onboardingDmAdmission.status}`,
+    );
+    const onboardingFinals = await waitForFinalCount(backend, 1, 90_000);
+    check(
+      onboardingFinals.some((final) => final.channel === ONBOARDING_DM_CHANNEL),
+      'Chickpea delivered the onboarding reply in the installer DM',
+    );
+    const completedOnboarding = await adminFetch(baseUrl, '/admin/api/onboarding');
+    check(
+      completedOnboarding.status === 200 && completedOnboarding.body?.stage === 'complete',
+      'a delivered installer DM completes onboarding',
+      `HTTP ${completedOnboarding.status} stage=${String(completedOnboarding.body?.stage)}`,
+    );
+    backend.reset();
 
     // Signature is enforced from the WIZARD-STORED secret: tampered → rejected.
     const tampered = await postSignedEvent(eventsUrl, mentionEvent('Ev_SMOKE_TAMPERED'), {
@@ -1425,12 +1481,6 @@ async function main() {
       'final carries the stub provider reply',
     );
     check(finals[0]?.channel === CHANNEL, 'final landed in the mention channel');
-    const completedOnboarding = await adminFetch(baseUrl, '/admin/api/onboarding');
-    check(
-      completedOnboarding.status === 200 && completedOnboarding.body?.stage === 'complete',
-      'a delivered selected-channel mention completes onboarding',
-      `HTTP ${completedOnboarding.status} stage=${String(completedOnboarding.body?.stage)}`,
-    );
     console.log(`• measured turn wall-time: ${turnWallTimeMs}ms (signed POST → final on the wire)`);
 
     // Dedupe: the identical event (same event_id, same channel:ts) must not

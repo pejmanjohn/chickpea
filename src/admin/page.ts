@@ -1,5 +1,6 @@
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
+import { MODEL_PROVIDER_LOGOS } from './model-provider-logos.ts';
 import {
   CONNECTOR_PRESETS,
   GOOGLE_WORKSPACE_SERVICE_PRESETS,
@@ -526,7 +527,7 @@ button, input, textarea, select { font: inherit; }
 .onboarding-brand .avatar, .onboarding-brand .avatar .pea { height: 36px; width: 36px; }
 .onboarding-brand .brand-name { font-size: 1.625rem; line-height: 1; }
 .onboarding-environment { color: var(--text-3); font-family: var(--mono); font-size: .8125rem; }
-.onboarding-orientation { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); list-style: none; margin: 26px auto 0; max-width: 560px; padding: 0; width: 100%; }
+.onboarding-orientation { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); list-style: none; margin: 26px auto 0; max-width: 820px; padding: 0; width: 100%; }
 .onboarding-orientation li { min-width: 0; position: relative; text-align: center; }
 .onboarding-orientation li:not(:first-child)::before { background: var(--line-strong); content: ""; height: 2px; position: absolute; right: 50%; top: 18px; width: 100%; z-index: -1; }
 .onboarding-orientation li.complete:not(:first-child)::before,
@@ -591,26 +592,54 @@ button, input, textarea, select { font: inherit; }
 .onboarding-panel > details.advanced { margin-top: 18px; padding-top: 12px; }
 .onboarding-error { align-items: flex-start; display: grid; gap: 10px; grid-column: 1 / -1; width: 100%; }
 .onboarding-error-scopes { color: var(--text-2); font-family: var(--mono); font-size: .75rem; overflow-wrap: anywhere; }
-.onboarding-workspace-row { align-items: center; border: 1px solid var(--line); border-radius: 13px; display: flex; gap: 16px; justify-content: space-between; margin-top: 26px; padding: 13px 15px; }
-.onboarding-workspace-label { color: var(--text); font-weight: 700; }
-.onboarding-workspace-meta { color: var(--text-3); font-size: .8125rem; }
-.onboarding-channel-list { display: grid; gap: 9px; margin-top: 24px; }
-.onboarding-channel-choice { display: block; position: relative; }
-.onboarding-channel-choice input { opacity: 0; pointer-events: none; position: absolute; }
-.onboarding-channel-card { align-items: center; background: var(--bg); border: 1px solid var(--line); border-radius: 13px; cursor: pointer; display: flex; gap: 16px; justify-content: space-between; min-height: 58px; padding: 12px 15px; }
-.onboarding-channel-card:hover { background: #fff9e9; }
-.onboarding-channel-choice input:focus-visible + .onboarding-channel-card { outline: 3px solid rgba(138, 100, 16, .42); outline-offset: 2px; }
-.onboarding-channel-choice input:checked + .onboarding-channel-card { background: var(--ember-tint); border-color: var(--ember); box-shadow: inset 0 0 0 1px var(--ember); }
-.onboarding-channel-name { color: var(--text); display: block; font-weight: 700; }
-.onboarding-channel-description { color: var(--text-3); display: block; font-size: .8125rem; margin-top: 2px; }
-.onboarding-radio-dot { background: var(--bg); border: 2px solid var(--line-strong); border-radius: 50%; flex: 0 0 auto; height: 17px; width: 17px; }
-.onboarding-channel-choice input:checked + .onboarding-channel-card .onboarding-radio-dot { border: 5px solid var(--ember); }
-.onboarding-reversible { color: var(--text-3); font-size: .8125rem; margin: 17px 0 0; }
+.onboarding-provider-tabs { border: 1px solid var(--line-strong); border-radius: 13px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 28px; overflow: hidden; }
+.onboarding-provider-tab { align-items: center; background: var(--bg); border: 0; border-radius: 0; color: var(--text-2); cursor: pointer; display: flex; font: inherit; font-size: .875rem; font-weight: 700; gap: 10px; justify-content: center; min-height: 78px; padding: 12px 10px; }
+.onboarding-provider-tab + .onboarding-provider-tab { border-left: 1px solid var(--line); }
+.onboarding-provider-tab:hover { background: #fff9e9; border-color: rgba(138, 100, 16, .35); }
+.onboarding-provider-tab.selected { background: #fffaf0; box-shadow: inset 0 0 0 2px var(--ember); color: var(--text); }
+.onboarding-provider-logo { display: block; height: 30px; object-fit: contain; width: 30px; }
+.onboarding-provider-tab-copy { display: grid; gap: 2px; text-align: left; }
+.onboarding-provider-tab-status { align-items: center; color: var(--ok); display: inline-flex; font-size: .75rem; font-weight: 700; gap: 5px; }
+.onboarding-provider-tab-status::before, .onboarding-model-provider-status::before { background: var(--ok-solid); border-radius: 50%; content: ""; height: 7px; width: 7px; }
+.onboarding-provider-config { border-top: 1px solid var(--line); display: grid; gap: 8px; margin-top: 32px; padding-top: 28px; }
+.onboarding-provider-config h2 { font-family: var(--display); font-size: 1.625rem; line-height: 1.1; margin: 0 0 2px; }
+.onboarding-provider-config .field { display: grid; gap: 7px; margin: 0; }
+.onboarding-provider-config .input { background: var(--bg); min-height: 54px; }
+.onboarding-provider-secret-note { color: var(--text-3); font-size: .8125rem; margin: 0; }
+.onboarding-provider-ready { align-items: center; color: #36592a; display: flex; font-size: .875rem; font-weight: 700; gap: 9px; margin: 0; }
+.onboarding-provider-ready::before { background: var(--ok-solid); border-radius: 50%; color: white; content: "✓"; display: grid; flex: 0 0 auto; font-size: .6875rem; height: 20px; place-items: center; width: 20px; }
+.onboarding-model-provider { align-items: center; background: var(--bg); border: 1px solid var(--line-strong); border-radius: 15px; display: flex; gap: 12px; justify-content: space-between; margin-top: 26px; padding: 20px 22px; }
+.onboarding-model-provider-identity { align-items: center; display: flex; font-weight: 700; gap: 10px; }
+.onboarding-model-provider .onboarding-provider-logo { height: 48px; width: 48px; }
+.onboarding-model-provider-copy { display: grid; gap: 3px; }
+.onboarding-model-provider-status { align-items: center; color: var(--ok); display: inline-flex; font-size: .8125rem; font-weight: 700; gap: 6px; }
+.onboarding-model-form { border-top: 1px solid var(--line); display: grid; gap: 8px; margin-top: 30px; padding-top: 28px; }
+.onboarding-model-select-wrap { display: block; position: relative; }
+.onboarding-model-form .input {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background: var(--bg);
+  cursor: pointer;
+  min-height: 54px;
+  padding-right: 56px;
+}
+.onboarding-model-select-icon {
+  color: var(--text-2);
+  height: 18px;
+  pointer-events: none;
+  position: absolute;
+  right: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+}
+.onboarding-model-form .field-label { font-size: .875rem; }
+.onboarding-model-actions .btn-primary { min-width: 260px; }
 .onboarding-success { align-items: flex-start; display: flex; gap: 14px; }
 .onboarding-success-icon { background: var(--ok-solid); border-radius: 50%; color: white; display: grid; flex: 0 0 auto; font-size: 1.3125rem; font-weight: 700; height: 42px; place-items: center; width: 42px; }
 .onboarding-success-badge { align-items: center; background: var(--ok-tint); border-radius: 999px; color: #36592a; display: inline-flex; font-size: .8125rem; font-weight: 700; gap: 7px; margin-bottom: 16px; padding: 8px 12px; }
 .onboarding-success-badge::before { background: var(--ok-solid); border-radius: 50%; color: white; content: "✓"; display: grid; font-size: .6875rem; height: 18px; place-items: center; width: 18px; }
-.onboarding-success-summary { background: var(--ok-tint); border-radius: 15px; color: #466a38; font-size: .9375rem; font-weight: 700; line-height: 1.45; margin-top: 26px; padding: 16px 18px; }
 .onboarding-prompt-box { background: var(--well); border-radius: 15px; box-shadow: inset 0 0 0 1px var(--line); margin-top: 30px; padding: 19px; }
 .onboarding-prompt-label { color: var(--text-3); font-family: var(--mono); font-size: .6875rem; letter-spacing: .06em; margin: 0 0 9px; text-transform: uppercase; }
 .onboarding-prompt { color: var(--text); font-size: 1rem; font-weight: 600; line-height: 1.65; margin: 0; }
@@ -621,7 +650,10 @@ button, input, textarea, select { font: inherit; }
   .onboarding-orientation { margin-top: 34px; }
   .onboarding-step-dot { font-size: .75rem; height: 34px; width: 34px; }
   .onboarding-orientation li:not(:first-child)::before { top: 16px; }
-  .onboarding-step-label { font-size: .6875rem; }
+  .onboarding-step-label { display: none; }
+  .onboarding-provider-tabs { border: 0; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; }
+  .onboarding-provider-tab { border: 1px solid var(--line-strong); border-radius: 12px; }
+  .onboarding-provider-tab + .onboarding-provider-tab { border-left: 1px solid var(--line-strong); }
   .onboarding-stage { min-height: 520px; padding-top: 28px; }
   .onboarding-panel, .onboarding-panel-wide { border-radius: 22px; padding: 30px 22px; width: 100%; }
   .onboarding-brand .avatar, .onboarding-brand .avatar .pea { height: 34px; width: 34px; }
@@ -639,7 +671,6 @@ button, input, textarea, select { font: inherit; }
   .onboarding-actions, .onboarding-form-actions { align-items: stretch; flex-direction: column-reverse; }
   .onboarding-completion-actions { flex-direction: column; }
   .onboarding-actions .btn, .onboarding-form-actions .btn { font-size: .9375rem; min-height: 44px; width: 100%; }
-  .onboarding-workspace-row { align-items: flex-start; }
 }
 .slack-overview { gap: 22px; max-width: 990px; }
 .slack-head { align-items: center; display: flex; gap: 16px; }
@@ -2746,6 +2777,7 @@ button.capability-pill { cursor: pointer; }
   var MANAGED_CONNECTOR_PRESETS = ${JSON.stringify(MANAGED_CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var REUSABLE_CONNECTOR_PRESETS = ${JSON.stringify(REUSABLE_CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var CONNECTOR_LOGOS = ${JSON.stringify(CONNECTOR_LOGOS).replace(/</g, '\\u003c')};
+  var MODEL_PROVIDER_LOGOS = ${JSON.stringify(MODEL_PROVIDER_LOGOS).replace(/</g, '\\u003c')};
   var SUGGESTED_SKILL_CATEGORIES = ${JSON.stringify(SUGGESTED_SKILL_CATEGORIES).replace(/</g, '\\u003c')};
   var SUGGESTED_SKILLS = ${JSON.stringify(SUGGESTED_SKILLS).replace(/</g, '\\u003c')};
   var SUGGESTED_SKILL_CATEGORY_COUNTS = {};
@@ -2757,7 +2789,8 @@ button.capability-pill { cursor: pointer; }
   });
   var API_CONNECTION_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
   var GOOGLE_WORKSPACE_SCOPES = ${JSON.stringify(GOOGLE_WORKSPACE_SCOPE_OPTIONS)};
-  var ONBOARDING_PROMPT = "@Chickpea Give me three useful ways you can help this channel, each with an example prompt I could try next.";
+  var ONBOARDING_PROMPT = "Give me three useful ways you can help me, each with an example prompt I could try next.";
+  var CHANNEL_TRY_PROMPT = "@Chickpea Give me three useful ways you can help this channel, each with an example prompt I could try next.";
   var state = {
     agents: [],
     grants: [],
@@ -2893,12 +2926,9 @@ button.capability-pill { cursor: pointer; }
     onboardingError: "",
     onboardingBusy: false,
     onboardingNotice: "",
-    onboardingChannelSelected: "",
-    // A successful first Slack connection gets one calm acknowledgement before
-    // channel selection. This is intentionally page-local: a reload resumes at
-    // the durable onboarding stage instead of replaying a celebration.
-    onboardingSlackConnected: false,
-    slackOnboardingFocus: "",
+    onboardingProviderSelected: "",
+    onboardingProviderKey: "",
+    onboardingModelSelected: "",
     // Set from a just-completed connect (POST result carries team + botName);
     // drives the dismissable success toast in the connected funnel.
     slackToast: null,
@@ -3528,16 +3558,6 @@ button.capability-pill { cursor: pointer; }
       app.className = "frame" + (isPrimaryAdminSurface() ? " primary-admin-shell" : "") + adminSurfaceClass;
       app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + overlays;
     }
-    if (state.view === "onboarding" && state.slackOnboardingFocus) {
-      var pendingOnboardingFocus = state.slackOnboardingFocus;
-      var onboardingFocus = document.getElementById(state.slackOnboardingFocus) ||
-        document.querySelector('[data-action="' + state.slackOnboardingFocus + '"]');
-      state.slackOnboardingFocus = "";
-      if (onboardingFocus && onboardingFocus.focus) onboardingFocus.focus();
-      if (pendingOnboardingFocus === "onboarding-channel-heading" && !state.slackChannels) {
-        state.slackOnboardingFocus = pendingOnboardingFocus;
-      }
-    }
     if (state.mobileAgentRosterFocus) {
       var mobileRosterFocus = state.mobileAgentRosterFocus === "close"
         ? document.querySelector('[data-action="mobile-agents-close"]')
@@ -3887,8 +3907,11 @@ button.capability-pill { cursor: pointer; }
 
   function onboardingRailHtml() {
     var stage = state.onboarding && state.onboarding.stage;
-    var current = stage === "connect_slack" ? 0 : stage === "choose_channel" ? 1 : 2;
-    var labels = ["Connect Slack", "Choose a channel", "Try Chickpea"];
+    var current = stage === "connect_slack" ? 0
+      : stage === "choose_provider" ? 1
+        : stage === "choose_model" ? 2
+          : 3;
+    var labels = ["Connect Slack", "Choose provider", "Choose model", "Try Chickpea"];
     return '<nav class="rail" aria-label="Setup progress"><div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Get started</span></div>' +
       labels.map(function (label, index) {
@@ -4561,74 +4584,113 @@ button.capability-pill { cursor: pointer; }
       '<p class="hint">Chickpea never asks you to paste a bot token into the Admin control plane.</p></section>';
   }
 
-  function onboardingSlackConnectedHtml() {
-    var workspace = state.onboarding && state.onboarding.workspace;
-    var workspaceName = (workspace && workspace.name) || (state.slack && state.slack.teamName) || "your workspace";
-    return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Slack connected</span>' +
-      '<h1 class="onboarding-title" id="onboarding-connected-heading" tabindex="-1">Everything worked</h1>' +
-      '<p class="onboarding-lede">Chickpea is connected to ' + esc(workspaceName) + ' and ready for a channel.</p>' +
-      '<div class="onboarding-success-summary">Workspace, permissions, and event delivery are ready.</div>' +
-      '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-continue-to-channel">Choose a channel</button></div></section>';
+  var ONBOARDING_PROVIDERS = [
+    { id: "cloudflare", name: "Cloudflare", keyLabel: "", description: "Use the Workers AI binding included with this deployment." },
+    { id: "anthropic", name: "Anthropic", keyLabel: "Anthropic API key", description: "Use Claude models with an Anthropic API key." },
+    { id: "openai", name: "OpenAI", keyLabel: "OpenAI API key", description: "Use OpenAI models with a Platform API key." },
+    { id: "openrouter", name: "OpenRouter", keyLabel: "OpenRouter API key", description: "Use models available through OpenRouter." }
+  ];
+
+  function onboardingProviderDefinition(id) {
+    return ONBOARDING_PROVIDERS.find(function (provider) { return provider.id === id; }) || ONBOARDING_PROVIDERS[0];
   }
 
-  function onboardingChannelChoicesHtml() {
-    var channels = state.slackChannels && state.slackChannels.channels ? state.slackChannels.channels : [];
-    if (!channels.length) return '<p class="hint">No channels are available yet.</p>';
-    return channels.map(function (channel) {
-      var selected = channel.id === state.onboardingChannelSelected;
-      var description = channel.isPrivate
-        ? 'Private channel · @Chickpea is already a member'
-        : (channel.isMember ? '@Chickpea is already a member' : 'Chickpea will join this public channel');
-      return '<label class="onboarding-channel-choice"><input type="radio" name="channelSelect" value="' + esc(channel.id) + '" data-action="onboarding-channel-select"' + (selected ? ' checked' : '') + '>' +
-        '<span class="onboarding-channel-card"><span><span class="onboarding-channel-name"># ' + esc(channel.name + (channel.isPrivate ? ' (private)' : '')) + '</span>' +
-        '<span class="onboarding-channel-description">' + esc(description) + '</span></span><span class="onboarding-radio-dot" aria-hidden="true"></span></span></label>';
+  function onboardingRuntimeProvider(id) {
+    return (state.models && state.models.providers ? state.models.providers : []).find(function (provider) {
+      return provider.id === id;
+    });
+  }
+
+  function onboardingProviderConfigured(id) {
+    var provider = onboardingRuntimeProvider(id);
+    return !!(provider && provider.configured);
+  }
+
+  function initialOnboardingProviderId() {
+    if (onboardingProviderConfigured("cloudflare")) return "cloudflare";
+    var configured = ONBOARDING_PROVIDERS.find(function (provider) {
+      return onboardingProviderConfigured(provider.id);
+    });
+    return configured ? configured.id : "anthropic";
+  }
+
+  function onboardingProviderLogoHtml(provider) {
+    return '<img class="onboarding-provider-logo" src="' + esc(MODEL_PROVIDER_LOGOS[provider.id] || "") + '" alt="">';
+  }
+
+  function onboardingProviderHtml() {
+    var selectedId = state.onboardingProviderSelected || initialOnboardingProviderId();
+    var selected = onboardingProviderDefinition(selectedId);
+    var configured = onboardingProviderConfigured(selected.id);
+    var tabs = ONBOARDING_PROVIDERS.map(function (provider) {
+      var active = provider.id === selected.id;
+      var ready = onboardingProviderConfigured(provider.id);
+      return '<button type="button" class="onboarding-provider-tab' + (active ? ' selected' : '') + '" data-action="onboarding-provider-select" data-provider="' + esc(provider.id) + '" aria-pressed="' + String(active) + '">' +
+        onboardingProviderLogoHtml(provider) + '<span class="onboarding-provider-tab-copy"><span>' + esc(provider.name) + '</span>' +
+        (ready ? '<span class="onboarding-provider-tab-status">Ready</span>' : '') + '</span></button>';
     }).join("");
+    var configuration = configured
+      ? '<p class="onboarding-provider-ready">' + esc(selected.name) + ' is ready to use.</p>'
+      : selected.id === "cloudflare"
+        ? '<p class="field-error" role="alert">Cloudflare Workers AI is not available for this deployment.</p>'
+        : '<label class="field" for="onboarding-provider-key"><span class="field-label">' + esc(selected.keyLabel) + '</span><input class="input" id="onboarding-provider-key" type="password" autocomplete="off" spellcheck="false" data-action="onboarding-provider-key" data-provider="' + esc(selected.id) + '" value="' + esc(state.onboardingProviderKey) + '" placeholder="Paste your key"></label><p class="onboarding-provider-secret-note">Stored encrypted and never shown again.</p>';
+    var canContinue = configured || (selected.id !== "cloudflare" && !!String(state.onboardingProviderKey || "").trim());
+    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of 4</p>' +
+      '<h1 class="onboarding-title">Choose your model provider</h1>' +
+      '<p class="onboarding-lede">Choose a provider, then finish the setup it needs.</p>' +
+      '<div class="onboarding-provider-tabs" role="group" aria-label="Model provider">' + tabs + '</div>' +
+      '<div class="onboarding-provider-config"><h2>' + (configured ? 'Use ' : 'Connect ') + esc(selected.name) + '</h2><p class="hint">' + esc(selected.description) + '</p>' + configuration + '</div>' +
+      (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') +
+      '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-provider-continue"' + (!canContinue || state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Validating&hellip;' : 'Validate and Continue') + '</button>' +
+      (selected.id !== "cloudflare" && onboardingProviderConfigured("cloudflare") ? '<button type="button" class="btn btn-ghost" data-action="onboarding-use-cloudflare">Use Cloudflare instead</button>' : '') + '</div></section>';
   }
 
-  function onboardingChooseChannelHtml() {
-    var workspace = state.onboarding && state.onboarding.workspace;
-    var loading = state.slackChannelsLoading || !state.slackChannels;
-    var picker = loading
-      ? '<p class="hint">Loading public channels&hellip;</p>'
-      : state.slackChannelsError
-        ? '<p class="field-error" role="alert">' + esc(state.slackChannelsError.text) + '</p>'
-        : '<div class="onboarding-channel-list" role="radiogroup" aria-label="Choose a Slack channel">' + onboardingChannelChoicesHtml() + '</div>';
-    var selected = findSlackChannel(state.onboardingChannelSelected);
-    var buttonLabel = selected ? 'Add @Chickpea to #' + selected.name : 'Choose a channel';
-    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of 3</p>' +
-      '<h1 class="onboarding-title" id="onboarding-channel-heading" tabindex="-1">Choose where Chickpea should start</h1>' +
-      '<p class="onboarding-lede">Pick one channel for the first conversation. You can add or remove channels anytime.</p>' +
-      '<div class="onboarding-workspace-row"><div><div class="onboarding-workspace-label">' + esc((workspace && workspace.name) || "Slack") + '</div>' +
-      '<div class="onboarding-workspace-meta">' + esc((workspace && workspace.id) || "") + '</div></div><span class="badge badge-on"><span class="dot"></span>Slack connected</span></div>' +
-      '<form data-action="onboarding-channel-form">' + picker +
-      '<p class="onboarding-reversible">Chickpea will only answer in channels you choose. For a private channel, invite @Chickpea there first, then refresh.</p>' +
+  function onboardingModelOptions() {
+    if (!state.onboarding || !state.onboarding.providerId) return [];
+    var responseModels = Array.isArray(state.onboarding.models) ? state.onboarding.models : [];
+    var runtime = onboardingRuntimeProvider(state.onboarding.providerId);
+    var values = responseModels.length ? responseModels : (runtime && runtime.suggestions ? runtime.suggestions : []);
+    return values.filter(function (value, index) { return value && values.indexOf(value) === index; });
+  }
+
+  function onboardingModelHtml() {
+    var provider = onboardingProviderDefinition(state.onboarding.providerId);
+    var options = onboardingModelOptions();
+    var selectOptions = '<option value="">Choose a model</option>' + options.map(function (model) {
+      var slash = model.indexOf("/");
+      var label = slash >= 0 ? model.slice(slash + 1) : model;
+      return '<option value="' + esc(model) + '"' + (model === state.onboardingModelSelected ? ' selected' : '') + '>' + esc(label) + '</option>';
+    }).join("");
+    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 3 of 4</p>' +
+      '<h1 class="onboarding-title">Choose your model</h1>' +
+      '<p class="onboarding-lede">Pick the ' + esc(provider.name) + ' model Chickpea should use for replies. You can change this later.</p>' +
+      '<div class="onboarding-model-provider"><span class="onboarding-model-provider-identity">' + onboardingProviderLogoHtml(provider) + '<span class="onboarding-model-provider-copy"><span>' + esc(provider.name) + '</span><span class="onboarding-model-provider-status">Connected</span></span></span><button type="button" class="btn btn-soft" data-action="onboarding-change-provider">Change provider</button></div>' +
+      '<label class="onboarding-model-form" for="onboarding-model"><span class="field-label">Model</span><span class="onboarding-model-select-wrap"><select class="input" id="onboarding-model" data-action="onboarding-model-select">' + selectOptions + '</select>' + icon("chevron-down", "onboarding-model-select-icon") + '</span></label>' +
+      (!options.length ? '<p class="field-error" role="alert">No models are available from this provider yet.</p>' : '') +
       (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') +
-      '<div class="onboarding-actions"><button type="submit" class="btn btn-primary"' + (loading || state.onboardingBusy || !selected ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Adding&hellip;' : esc(buttonLabel)) + '</button>' +
-      '<button type="button" class="btn btn-soft" data-action="refresh-onboarding-channels">' + icon("arrow-path") + 'Refresh channels</button></div></form></section>';
+      '<div class="onboarding-actions onboarding-model-actions"><button type="button" class="btn btn-primary" data-action="onboarding-model-continue"' + (!state.onboardingModelSelected || state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Selecting&hellip;' : 'Select Model') + '</button></div></section>';
   }
 
   function onboardingTryHtml(complete) {
     var workspace = state.onboarding && state.onboarding.workspace;
-    var channel = state.onboarding && state.onboarding.channel;
-    if (!workspace || !channel) return '<div class="empty"><p class="field-error">The onboarding channel is unavailable.</p></div>';
-    var deepLink = 'https://app.slack.com/client/' + encodeURIComponent(workspace.id) + '/' + encodeURIComponent(channel.id);
+    var slackAppId = state.onboarding && state.onboarding.slackAppId;
+    if (!workspace || !slackAppId) return '<div class="empty"><p class="field-error">The Chickpea conversation is unavailable. Reconnect Slack and try again.</p></div>';
+    var deepLink = 'https://slack.com/app_redirect?app=' + encodeURIComponent(slackAppId) + '&team=' + encodeURIComponent(workspace.id);
     if (complete) {
-      var completedAgentId = (state.onboarding && state.onboarding.agentId) || ((firstAgent() && firstAgent().id) || "");
-      var completedAgent = agentById(completedAgentId) || firstAgent();
-      return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Reply confirmed in #' + esc(channel.name) + '</span>' +
+      return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Reply confirmed in Slack</span>' +
         '<h1 class="onboarding-title">Chickpea is ready</h1>' +
-        '<p class="onboarding-lede">Your setup is working. Continue in ' + esc((completedAgent && completedAgent.name) || "your Agent") + ' to shape what Chickpea knows and can do.</p>' +
-        '<div class="onboarding-actions onboarding-completion-actions"><button type="button" class="btn btn-primary" data-action="open-profiles" data-agent="' + esc(completedAgentId) + '">Open ' + esc((completedAgent && completedAgent.name) || "Default Agent") + '</button>' +
-        '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Open #' + esc(channel.name) + ' in Slack</a></div></section>';
+        '<p class="onboarding-lede">Your setup is working. Open the dashboard to manage Chickpea, or keep chatting in Slack.</p>' +
+        '<div class="onboarding-actions onboarding-completion-actions"><button type="button" class="btn btn-primary" data-action="onboarding-open-dashboard">Open dashboard</button>' +
+        '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Keep chatting in Slack</a></div></section>';
     }
     return '<section class="onboarding-panel onboarding-panel-wide"><div class="onboarding-success"><span class="onboarding-success-icon" aria-hidden="true">&#10003;</span><div>' +
-      '<p class="onboarding-eyebrow">Step 3 of 3</p><h1 class="onboarding-title">Try Chickpea in #' + esc(channel.name) + '</h1>' +
-      '<p class="onboarding-lede">Open the channel and try one useful request. Your first reply confirms that everything is working.</p></div></div>' +
+      '<p class="onboarding-eyebrow">Step 4 of 4</p><h1 class="onboarding-title">Try Chickpea in Slack</h1>' +
+      '<p class="onboarding-lede">Open a direct message with Chickpea and try one useful request. Your first reply confirms that everything is working.</p></div></div>' +
       '<div class="onboarding-prompt-box"><p class="onboarding-prompt-label">Suggested first message</p><p class="onboarding-prompt">' + esc(ONBOARDING_PROMPT) + '</p>' +
       '<input id="onboarding-prompt" type="text" hidden readonly value="' + esc(ONBOARDING_PROMPT) + '">' +
       '<p class="onboarding-status" role="status">' + esc(state.onboardingNotice || 'Waiting for Chickpea to reply…') + '</p></div>' +
       (state.onboardingError ? '<div class="onboarding-actions"><span class="field-error" role="alert">' + esc(state.onboardingError) + '</span><button type="button" class="btn btn-soft" data-action="retry-onboarding">Check again</button></div>' : '') +
-      '<div class="onboarding-actions"><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Open #' + esc(channel.name) + ' in Slack</a>' +
+      '<div class="onboarding-actions"><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Message Chickpea in Slack</a>' +
       '<button type="button" class="btn btn-soft" data-action="copy-onboarding-prompt">Copy message</button>' +
       '<button type="button" class="btn btn-ghost" data-action="onboarding-proceed-dashboard"' + (state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Opening dashboard&hellip;' : 'Proceed to Dashboard') + '</button></div></section>';
   }
@@ -4639,22 +4701,24 @@ button.capability-pill { cursor: pointer; }
     }
     if (!state.onboarding) return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Loading setup&hellip;</h1></section>';
     if (state.onboarding.stage === "connect_slack") return onboardingConnectHtml();
-    if (state.onboarding.stage === "choose_channel") return state.onboardingSlackConnected ? onboardingSlackConnectedHtml() : onboardingChooseChannelHtml();
+    if (state.onboarding.stage === "choose_provider") return onboardingProviderHtml();
+    if (state.onboarding.stage === "choose_model") return onboardingModelHtml();
     if (state.onboarding.stage === "try") return onboardingTryHtml(false);
     return onboardingTryHtml(true);
   }
 
   function onboardingStepNumber() {
     var stage = state.onboarding && state.onboarding.stage;
-    if (stage === "choose_channel") return 2;
-    if (stage === "try" || stage === "complete") return 3;
+    if (stage === "choose_provider") return 2;
+    if (stage === "choose_model") return 3;
+    if (stage === "try" || stage === "complete") return 4;
     return 1;
   }
 
   function onboardingOrientationHtml() {
     var current = onboardingStepNumber();
     var journeyComplete = state.onboarding && state.onboarding.stage === "complete";
-    var labels = ["Connect Slack", "Choose a channel", "Try Chickpea"];
+    var labels = ["Connect Slack", "Choose provider", "Choose model", "Try Chickpea"];
     return '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' + labels.map(function (label, index) {
       var step = index + 1;
       var isComplete = journeyComplete || step < current;
@@ -6095,7 +6159,7 @@ button.capability-pill { cursor: pointer; }
   function channelTryHtml(assignment) {
     var deepLink = "https://app.slack.com/client/" + encodeURIComponent(assignment.workspaceId) + "/" + encodeURIComponent(assignment.channelId);
     var noticeClass = state.channelTryError ? " error" : "";
-    return '<section class="section channel-try-section"><div class="channel-try-card"><div class="channel-try-copy"><span class="agent-kicker">Try it in Slack</span><p class="channel-try-prompt">' + esc(ONBOARDING_PROMPT) + '</p><span class="hint">A real Slack reply is the proof that these Channel grants are ready.</span><span class="channel-try-status' + noticeClass + '" role="status">' + esc(state.channelTryNotice) + '</span></div>' +
+    return '<section class="section channel-try-section"><div class="channel-try-card"><div class="channel-try-copy"><span class="agent-kicker">Try it in Slack</span><p class="channel-try-prompt">' + esc(CHANNEL_TRY_PROMPT) + '</p><span class="hint">A real Slack reply is the proof that these Channel grants are ready.</span><span class="channel-try-status' + noticeClass + '" role="status">' + esc(state.channelTryNotice) + '</span></div>' +
       '<div class="channel-try-actions"><button type="button" class="btn btn-soft" data-action="copy-channel-prompt">Copy prompt</button><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Open ' + esc(channelLabel(assignment)) + '</a></div></div></section>';
   }
 
@@ -11400,26 +11464,52 @@ button.capability-pill { cursor: pointer; }
     render();
   }
 
-  function applyProviderKeyError(id, ui, error) {
+  function providerKeyErrorMessage(id, error) {
     var meta = providerMeta(id);
     var code = error && error.message;
     if (code === "provider_key_rejected") {
-      ui.error = meta.name + " rejected the key. Nothing was stored — re-copy it and try again.";
+      return meta.name + " rejected the key. Nothing was stored — re-copy it and try again.";
+    }
+    if (code === "provider_unreachable") {
+      return "Couldn't reach " + meta.name + " to validate the key. Check the connection and try again — nothing was stored.";
+    }
+    if (code === "provider_models_failed" || code === "provider_key_missing") {
+      return meta.name + " accepted the request but its model list failed to load. Nothing was stored — try again.";
+    }
+    if (code === "provider_key_read_only") {
+      return "An environment variable already provides this key, so it is read-only here.";
+    }
+    return (error && error.serverMessage) || "Could not validate the key.";
+  }
+
+  function applyProviderKeyError(id, ui, error) {
+    ui.error = providerKeyErrorMessage(id, error);
+    if (error && error.message === "provider_key_rejected") {
       var status = error.providerStatus != null ? error.providerStatus : "";
       ui.raw = validateEndpointPath(id) + " → " + (status ? status + " " : "") + (error.detail || "");
-    } else if (code === "provider_unreachable") {
-      ui.error = "Couldn't reach " + meta.name + " to validate the key. Check the connection and try again — nothing was stored.";
-      ui.raw = "";
-    } else if (code === "provider_models_failed" || code === "provider_key_missing") {
-      ui.error = meta.name + " accepted the request but its model list failed to load. Nothing was stored — try again.";
-      ui.raw = "";
-    } else if (code === "provider_key_read_only") {
-      ui.error = "An environment variable already provides this key, so it is read-only here.";
-      ui.raw = "";
     } else {
-      ui.error = (error && (error.serverMessage || error.message)) || "Could not validate the key.";
       ui.raw = "";
     }
+  }
+
+  function onboardingMutationErrorText(error, fallback, providerId) {
+    if (error && error.serverMessage) return error.serverMessage;
+    var code = error && error.message;
+    if (providerId && (
+      code === "provider_key_rejected" || code === "provider_unreachable" ||
+      code === "provider_models_failed" || code === "provider_key_missing" ||
+      code === "provider_key_read_only"
+    )) return providerKeyErrorMessage(providerId, error);
+    if (code === "onboarding_changed") return "Setup changed in another window. Refresh to continue from the latest step.";
+    if (code === "onboarding_provider_not_configured") return "That provider is no longer connected. Go back, reconnect it, and try again.";
+    if (code === "workspace_model_default_revision_conflict") return "The workspace model changed in another window. Review the current choice and try again.";
+    if (code === "slack_not_connected") return "Slack is no longer connected. Reconnect Slack, then continue setup.";
+    if (code === "workspace_mismatch") return "The connected Slack workspace changed. Refresh to continue with the current workspace.";
+    if (code === "workspace_installation_required") return "The Slack installation is unavailable. Reconnect Slack, then continue setup.";
+    if (code === "slack_app_id_required") return "Chickpea could not open its Slack conversation. Reconnect Slack and try again.";
+    if (code === "chickpea_cutover_preflight_failed") return "Chickpea could not finish preparing the workspace. Review the workspace setup and try again.";
+    if (code === "forbidden") return "Only a workspace owner or admin can finish setup.";
+    return fallback;
   }
 
   function validateProviderKey(id) {
@@ -11779,7 +11869,7 @@ button.capability-pill { cursor: pointer; }
 
   function onboardingResponseSignature(value) {
     if (!value) return "";
-    return [value.revision, value.stage, value.tryStartedAt, value.completedAt, value.agentId, value.redirectTo].join("|");
+    return [value.revision, value.stage, value.providerId, value.modelId, value.tryStartedAt, value.completedAt, value.agentId, value.slackAppId, value.redirectTo].join("|");
   }
 
   function loadOnboarding(shouldRender) {
@@ -11788,12 +11878,12 @@ button.capability-pill { cursor: pointer; }
       var changed = onboardingResponseSignature(state.onboarding) !== onboardingResponseSignature(body) || !!state.onboardingError;
       state.onboarding = body;
       state.onboardingError = "";
-      if (previousStage === "try" && body.stage === "complete") {
-        var destination = agentById(body.agentId) || firstAgent();
-        if (destination) {
-          openProfileEditor(destination);
-          return body;
-        }
+      if (previousStage !== body.stage && body.stage === "choose_provider") {
+        state.onboardingProviderSelected = body.providerId || initialOnboardingProviderId();
+        state.onboardingProviderKey = "";
+      }
+      if (previousStage !== body.stage && body.stage === "choose_model") {
+        state.onboardingModelSelected = "";
       }
       if (shouldRender !== false && changed) render();
       return body;
@@ -11810,12 +11900,9 @@ button.capability-pill { cursor: pointer; }
   }
 
   function syncOnboardingActivity() {
-    var choose = state.view === "onboarding" && state.onboarding && state.onboarding.stage === "choose_channel";
-    if (choose && !state.onboardingSlackConnected && isSlackConnected() && !state.slackChannels && !state.slackChannelsLoading) {
-      loadSlackChannels(false);
-    }
     var shouldPoll = state.view === "onboarding" && state.onboarding &&
-      state.onboarding.stage === "try" && !state.onboardingError;
+      state.onboarding.stage === "try" && !state.onboardingError &&
+      (typeof document === "undefined" || document.visibilityState !== "hidden");
     if (!shouldPoll) {
       if (onboardingPollTimer && typeof clearTimeout === "function") clearTimeout(onboardingPollTimer);
       onboardingPollTimer = null;
@@ -11832,49 +11919,79 @@ button.capability-pill { cursor: pointer; }
     }, 2500);
   }
 
-  function startOnboardingTry(formData) {
-    if (state.onboardingBusy || !state.onboarding || state.onboarding.stage !== "choose_channel") return;
-    var channelId = String(formData.get("channelSelect") || state.onboardingChannelSelected || "").trim();
-    var channel = findSlackChannel(channelId);
-    var workspace = state.onboarding.workspace;
-    var agent = state.agents.find(function (candidate) { return candidate.id === "agent_default"; }) || firstAgent();
-    if (!channel) {
-      state.onboardingError = "Choose a channel.";
-      render();
-      return;
-    }
-    if (!workspace || !workspace.id || !agent) {
-      state.onboardingError = "Setup is missing its workspace or base Agent. Refresh and try again.";
+  function continueOnboardingProvider() {
+    if (state.onboardingBusy || !state.onboarding || state.onboarding.stage !== "choose_provider") return;
+    var providerId = state.onboardingProviderSelected || initialOnboardingProviderId();
+    var configured = onboardingProviderConfigured(providerId);
+    var key = String(state.onboardingProviderKey || "").trim();
+    if (!configured && (providerId === "cloudflare" || !key)) {
+      state.onboardingError = providerId === "cloudflare"
+        ? "Cloudflare Workers AI is not available for this deployment."
+        : "Add your " + onboardingProviderDefinition(providerId).name + " API key.";
       render();
       return;
     }
     state.onboardingBusy = true;
     state.onboardingError = "";
     render();
-    publishAgentToChannel(agent.id, workspace.id, channel.id).then(function (result) {
-      if (!result || !result.grant || result.grant.status !== "active") {
-        state.onboardingBusy = false;
-        state.onboardingError = "Chickpea could not finish publishing the Agent to #" + channel.name + ". Review the recovery steps and retry.";
-        render();
-        return null;
-      }
-      if (result.agent) applyAgentMutation(result.agent, ["whereItWorks", "slackPresence", "slackPresenceRecovery"]);
-      return postJson("/admin/api/onboarding/try", "POST", {
+    var validate = configured
+      ? Promise.resolve(null)
+      : postJson("/admin/api/providers/" + encodeURIComponent(providerId) + "/key", "POST", { key: key });
+    validate.then(function () {
+      var runtime = onboardingRuntimeProvider(providerId);
+      if (runtime) configured = runtime.configured = true;
+      return postJson("/admin/api/onboarding/provider", "POST", {
         expectedRevision: state.onboarding.revision,
-        workspaceId: workspace.id,
-        channelId: channel.id,
-        channelName: channel.name
+        providerId: providerId
       });
     }).then(function (body) {
-      if (!body) return;
       state.onboarding = body;
       state.onboardingBusy = false;
-      state.onboardingChannelSelected = "";
+      state.onboardingProviderKey = "";
+      state.onboardingModelSelected = "";
+      render();
+    }).catch(function (error) {
+      state.onboardingBusy = false;
+      state.onboardingError = onboardingMutationErrorText(
+        error,
+        "Could not validate this provider.",
+        providerId
+      );
+      render();
+    });
+  }
+
+  function selectOnboardingModel() {
+    if (state.onboardingBusy || !state.onboarding || state.onboarding.stage !== "choose_model") return;
+    var modelId = String(state.onboardingModelSelected || "").trim();
+    if (!modelId) {
+      state.onboardingError = "Choose a model.";
+      render();
+      return;
+    }
+    if (!state.workspaceDefault || !Number.isInteger(state.workspaceDefault.revision)) {
+      state.onboardingError = "The workspace model settings are unavailable. Refresh and try again.";
+      render();
+      return;
+    }
+    state.onboardingBusy = true;
+    state.onboardingError = "";
+    render();
+    postJson("/admin/api/onboarding/try", "POST", {
+      expectedRevision: state.onboarding.revision,
+      modelId: modelId,
+      expectedDefaultRevision: state.workspaceDefault.revision
+    }).then(function (body) {
+      state.onboarding = body;
+      state.onboardingBusy = false;
       state.onboardingNotice = "";
       render();
     }).catch(function (error) {
       state.onboardingBusy = false;
-      state.onboardingError = addChannelErrorText(error);
+      if (error && error.payload && error.payload.workspaceDefault) {
+        applyWorkspaceDefault(error.payload.workspaceDefault, false);
+      }
+      state.onboardingError = onboardingMutationErrorText(error, "Could not select this model.");
       render();
     });
   }
@@ -11889,9 +12006,7 @@ button.capability-pill { cursor: pointer; }
     }).then(function (body) {
       state.onboarding = body;
       state.onboardingBusy = false;
-      var destination = agentById(body.agentId) || firstAgent();
-      if (destination) openProfileEditor(destination);
-      else render();
+      enterProfiles(null);
     }).catch(function (error) {
       state.onboardingBusy = false;
       state.onboardingError = (error && (error.serverMessage || error.message)) || "Could not open the dashboard.";
@@ -11932,7 +12047,7 @@ button.capability-pill { cursor: pointer; }
     };
     if (!navigator.clipboard || !navigator.clipboard.writeText) { copyFailed(); return; }
     try {
-      Promise.resolve(navigator.clipboard.writeText(ONBOARDING_PROMPT)).then(function () {
+      Promise.resolve(navigator.clipboard.writeText(CHANNEL_TRY_PROMPT)).then(function () {
         if (!isCurrentChannel()) return;
         state.channelTryNotice = "Prompt copied.";
         state.channelTryError = false;
@@ -12289,14 +12404,31 @@ button.capability-pill { cursor: pointer; }
     if (action === "open-audit") { openAuditLogs("", "", ""); }
     // Brand-as-home: the reliable exit to the canonical Agent.
     if (action === "go-home") { openHome(); }
-    if (action === "onboarding-continue-to-channel" && state.view === "onboarding") {
-      state.onboardingSlackConnected = false;
-      state.slackOnboardingFocus = "onboarding-channel-heading";
+    if (action === "retry-onboarding") { state.onboardingError = ""; loadOnboarding(true); }
+    if (action === "onboarding-provider-select" && !state.onboardingBusy) {
+      state.onboardingProviderSelected = target.getAttribute("data-provider") || "cloudflare";
+      state.onboardingProviderKey = "";
+      state.onboardingError = "";
       render();
     }
-    if (action === "refresh-onboarding-channels") { loadSlackChannels(true); }
-    if (action === "retry-onboarding") { state.onboardingError = ""; loadOnboarding(true); }
+    if (action === "onboarding-provider-continue") { continueOnboardingProvider(); }
+    if (action === "onboarding-use-cloudflare" && !state.onboardingBusy) {
+      state.onboardingProviderSelected = "cloudflare";
+      state.onboardingProviderKey = "";
+      state.onboardingError = "";
+      render();
+    }
+    if (action === "onboarding-change-provider" && state.onboarding && state.onboarding.stage === "choose_model") {
+      state.onboardingProviderSelected = state.onboarding.providerId || "cloudflare";
+      state.onboardingProviderKey = "";
+      state.onboardingModelSelected = "";
+      state.onboardingError = "";
+      state.onboarding.stage = "choose_provider";
+      render();
+    }
+    if (action === "onboarding-model-continue") { selectOnboardingModel(); }
     if (action === "onboarding-proceed-dashboard") { proceedFromOnboardingTry(); }
+    if (action === "onboarding-open-dashboard") { enterProfiles(null); }
     if (action === "copy-onboarding-prompt") { copyOnboardingPrompt(); }
     if (action === "copy-channel-prompt") { copyChannelPrompt(); }
     if (action === "select-channel") { state.view = "channels"; state.channelScreen = "detail"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
@@ -13034,6 +13166,12 @@ button.capability-pill { cursor: pointer; }
     // spinner) never wipes it; the favorites search re-renders only its own
     // results container to keep the input focused.
     if (action === "prov-key-input") { provUiFor(target.getAttribute("data-provider")).key = target.value; }
+    if (action === "onboarding-provider-key") {
+      state.onboardingProviderKey = target.value;
+      state.onboardingError = "";
+      var providerContinue = document.querySelector('[data-action="onboarding-provider-continue"]');
+      if (providerContinue) providerContinue.disabled = !String(target.value || "").trim();
+    }
     if (action === "composio-setup-key" && state.composioSetup) {
       state.composioSetup.key = target.value;
       state.composioSetup.error = "";
@@ -13209,8 +13347,9 @@ button.capability-pill { cursor: pointer; }
     if (action === "profile-avatar-upload" && target.files && target.files[0]) {
       uploadProfileAvatar(target.files[0]);
     }
-    if (action === "onboarding-channel-select") {
-      state.onboardingChannelSelected = target.value;
+    if (action === "onboarding-model-select") {
+      state.onboardingModelSelected = target.value;
+      state.onboardingError = "";
       render();
     }
     if (action === "workers-ai-enabled") setWorkersAiEnabled(!!target.checked);
@@ -13446,7 +13585,6 @@ button.capability-pill { cursor: pointer; }
     if (!action) return;
     event.preventDefault();
     if (action === "add-channel-form") addChannel(new FormData(form));
-    if (action === "onboarding-channel-form") startOnboardingTry(new FormData(form));
     if (action === "github-manifest-form") submitGithubManifest(new FormData(form));
   });
 
@@ -13685,6 +13823,14 @@ button.capability-pill { cursor: pointer; }
   // navigation leaves a profile editor with unsaved changes. window is absent
   // in the unit-test VM context, so registration is skipped there.
   if (typeof window !== "undefined" && window.addEventListener) {
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState !== "hidden" && state.view === "onboarding" &&
+          state.onboarding && state.onboarding.stage === "try") {
+        loadOnboarding(true).finally(syncOnboardingActivity);
+        return;
+      }
+      syncOnboardingActivity();
+    });
     window.addEventListener("beforeunload", function (event) {
       if (
         (state.profileScreen === "edit" && state.profileDirty) ||
@@ -13914,16 +14060,6 @@ button.capability-pill { cursor: pointer; }
       if (state.slack) {
         if (body.teamId) state.slack.teamId = body.teamId;
         if (body.teamName) state.slack.teamName = body.teamName;
-      }
-      if (
-        state.view === "onboarding" &&
-        state.onboarding &&
-        state.onboarding.stage === "choose_channel" &&
-        !state.onboardingChannelSelected &&
-        body.channels &&
-        body.channels.length
-      ) {
-        state.onboardingChannelSelected = body.channels[0].id;
       }
       renderSlackChannelCatalogState(preserveAgentId);
     }).catch(function (error) {
@@ -15811,7 +15947,8 @@ function renderSlackJourneyPage(input: {
   surface: string;
   eyebrow: string;
   title: string;
-  intro: string;
+  intro?: string;
+  titleSuccess?: boolean;
   status?: string;
   statusId?: string;
   body: string;
@@ -15824,12 +15961,18 @@ function renderSlackJourneyPage(input: {
   const status = input.status
     ? `<p class="auth-status"${input.statusId ? ` id="${escapeHtmlAttribute(input.statusId)}"` : ''} role="status" aria-live="polite">${escapeHtmlAttribute(input.status)}</p>`
     : '';
+  const title = input.titleSuccess
+    ? `<div class="auth-title-line"><span class="auth-title-success" aria-hidden="true">&#10003;</span><h1 class="auth-title" id="auth-title">${escapeHtmlAttribute(input.title)}</h1></div>`
+    : `<h1 class="auth-title" id="auth-title">${escapeHtmlAttribute(input.title)}</h1>`;
+  const intro = input.intro
+    ? `<p class="auth-intro">${escapeHtmlAttribute(input.intro)}</p>`
+    : '';
   return `<!doctype html><html lang="en" data-slack-auth-surface="${escapeHtmlAttribute(input.surface)}"${input.rootAttributes ? ` ${input.rootAttributes}` : ''}><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">
 <title>Chickpea · ${escapeHtmlAttribute(input.title)}</title>${ADMIN_FAVICON}
 <style>
-:root{--canvas:#f4ebd8;--card:#fffdf6;--well:#f8f1df;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--gold-press:#b27e1f;--line:rgba(59,50,32,.16);--danger:#a83f34;--focus:#b05415}*{box-sizing:border-box}html{color-scheme:light}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:clamp(12px,4vw,32px);overflow-wrap:anywhere}.auth-card{width:min(600px,100%);background:var(--card);border:1px solid var(--line);border-radius:22px;padding:clamp(22px,6vw,46px);box-shadow:0 14px 38px rgba(59,50,32,.1)}.auth-brand{display:flex;align-items:center;gap:10px;margin-bottom:30px}.auth-brand-mark{width:42px;height:42px;display:block}.auth-brand-name{font-weight:850;font-size:1.15rem}.auth-eyebrow{margin:0;color:var(--muted);font-size:.76rem;font-weight:850;letter-spacing:.09em;text-transform:uppercase}.auth-title{margin:8px 0 10px;font-size:clamp(1.75rem,7vw,2.7rem);line-height:1.05;letter-spacing:-.035em}.auth-intro,.auth-status,.auth-help{color:var(--muted);line-height:1.55}.auth-status{min-height:1.5em;margin:14px 0}.auth-alert{margin:18px 0;border-left:4px solid var(--danger);border-radius:8px;background:#fff3ee;color:var(--danger);padding:12px 14px;font-weight:750;line-height:1.45}.auth-section{margin-top:24px;padding:20px;border:1px solid var(--line);border-radius:15px;background:var(--well)}.auth-section h2{margin:0 0 8px;font-size:1.08rem}.auth-progress{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin:24px 0 6px;padding:0;list-style:none}.auth-progress li{border-top:4px solid var(--line);padding-top:7px;color:var(--muted);font-size:.73rem;font-weight:750}.auth-progress li[data-current="true"]{border-color:var(--gold-press);color:var(--ink)}label{display:block;margin:17px 0 6px;font-weight:750}label span{display:block;margin-top:2px;color:var(--muted);font-size:.78rem;font-weight:500}input,textarea{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;color:var(--ink);padding:11px 12px;font:inherit}textarea{min-height:220px;resize:vertical}details{margin-top:20px;border-top:1px solid var(--line);padding-top:17px}summary{cursor:pointer;font-weight:800}.auth-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}.auth-button,.auth-link{display:inline-flex;align-items:center;justify-content:center;min-height:48px;border:0;border-radius:12px;padding:11px 17px;background:var(--gold);box-shadow:0 3px 0 var(--gold-press);color:var(--ink);font:inherit;font-weight:850;text-decoration:none;cursor:pointer}.auth-button{width:100%}.slack-provider-button{gap:12px;background:#fff;border:1px solid #858488;box-shadow:0 1px 2px rgba(45,44,47,.04);color:#2d2c2f;font-weight:750}.slack-provider-button:hover{background:#fbfbfb;border-color:#656468;box-shadow:0 2px 7px rgba(45,44,47,.09)}.slack-provider-logo{width:24px;height:24px}.auth-button.secondary,.auth-link.secondary{background:transparent;border:1px solid var(--line);box-shadow:none}.auth-button:active,.auth-link:active{transform:translateY(2px);box-shadow:none}.auth-button:focus-visible,.auth-link:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible,.auth-alert:focus-visible{outline:3px solid color-mix(in srgb,var(--focus) 48%,transparent);outline-offset:3px}.auth-warning{margin-top:22px;border:1px solid rgba(168,63,52,.25);border-radius:13px;background:#fff3ee;padding:15px}.auth-warning strong{display:block;margin-bottom:5px}.auth-meta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.83rem}.auth-manifest{max-height:280px;overflow:auto;white-space:pre-wrap;font-size:.75rem}.slack-logo-image{background:url("${SLACK_LOGO_DATA_URL}") center/contain no-repeat;display:inline-block}.setup-token-callout{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center;margin:22px 0;padding:15px 17px;border-left:3px solid var(--gold-press);border-radius:12px;background:var(--well)}.setup-token-callout strong{display:block;margin-bottom:3px}.setup-token-callout p{margin:0;color:var(--muted);font-size:.86rem;line-height:1.45}.setup-slack-link{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:9px 13px;border:1px solid var(--line);border-radius:11px;background:var(--card);color:var(--ink);font-weight:800;text-decoration:none;white-space:nowrap}.setup-slack-logo{width:22px;height:22px}.setup-token-note{display:flex;gap:8px;align-items:flex-start;margin:13px 0 0;color:var(--muted);font-size:.8rem;line-height:1.45}.setup-manual-choice p{margin-bottom:14px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:440px){body{padding:8px}.auth-card{border-radius:14px;padding:21px 16px}.auth-progress{gap:4px}.auth-progress li{font-size:.66rem}.auth-actions{display:grid}.auth-link,.auth-button{width:100%}.auth-section{padding:16px 13px}.setup-token-callout{grid-template-columns:1fr}.setup-slack-link{width:100%;justify-content:center}}
-</style></head><body><main class="auth-card" aria-labelledby="auth-title">${AUTH_BRAND_HTML}<p class="auth-eyebrow">${escapeHtmlAttribute(input.eyebrow)}</p><h1 class="auth-title" id="auth-title">${escapeHtmlAttribute(input.title)}</h1><p class="auth-intro">${escapeHtmlAttribute(input.intro)}</p>${alert}${status}${input.body}</main></body></html>`;
+:root{--canvas:#f4ebd8;--card:#fffdf6;--well:#f8f1df;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--gold-press:#b27e1f;--line:rgba(59,50,32,.16);--danger:#a83f34;--focus:#b05415;--success:#4f8a3f}*{box-sizing:border-box}html{color-scheme:light}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:clamp(12px,4vw,32px);overflow-wrap:anywhere}.auth-card{width:min(600px,100%);background:var(--card);border:1px solid var(--line);border-radius:22px;padding:clamp(22px,6vw,46px);box-shadow:0 14px 38px rgba(59,50,32,.1)}.auth-brand{display:flex;align-items:center;gap:10px;margin-bottom:30px}.auth-brand-mark{width:42px;height:42px;display:block}.auth-brand-name{font-weight:850;font-size:1.15rem}.auth-eyebrow{margin:0;color:var(--muted);font-size:.76rem;font-weight:850;letter-spacing:.09em;text-transform:uppercase}.auth-title-line{align-items:center;display:flex;gap:13px;margin:8px 0 10px}.auth-title{margin:8px 0 10px;font-size:clamp(1.75rem,7vw,2.7rem);line-height:1.05;letter-spacing:-.035em}.auth-title-line .auth-title{margin:0}.auth-title-success{align-items:center;background:var(--success);border-radius:50%;color:#fff;display:inline-flex;flex:0 0 auto;font-size:1.15rem;font-weight:850;height:36px;justify-content:center;width:36px}.auth-intro,.auth-status,.auth-help{color:var(--muted);line-height:1.55}.auth-status{min-height:1.5em;margin:14px 0}.auth-alert{margin:18px 0;border-left:4px solid var(--danger);border-radius:8px;background:#fff3ee;color:var(--danger);padding:12px 14px;font-weight:750;line-height:1.45}.auth-section{margin-top:24px;padding:20px;border:1px solid var(--line);border-radius:15px;background:var(--well)}.auth-section h2{margin:0 0 8px;font-size:1.08rem}label{display:block;margin:17px 0 6px;font-weight:750}label span{display:block;margin-top:2px;color:var(--muted);font-size:.78rem;font-weight:500}input,textarea{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;color:var(--ink);padding:11px 12px;font:inherit}textarea{min-height:220px;resize:vertical}details{margin-top:20px;border-top:1px solid var(--line);padding-top:17px}summary{cursor:pointer;font-weight:800}.auth-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}.auth-button,.auth-link{display:inline-flex;align-items:center;justify-content:center;min-height:48px;border:0;border-radius:12px;padding:11px 17px;background:var(--gold);box-shadow:0 3px 0 var(--gold-press);color:var(--ink);font:inherit;font-weight:850;text-decoration:none;cursor:pointer}.auth-button{width:100%}.slack-provider-button{gap:12px;background:#fff;border:1px solid var(--line);box-shadow:0 1px 2px rgba(45,44,47,.04);color:#2d2c2f;font-weight:750}.slack-provider-button:hover{background:#fbfbfb;border-color:rgba(59,50,32,.32);box-shadow:0 2px 7px rgba(45,44,47,.09)}.slack-provider-logo{width:24px;height:24px}.auth-button.secondary,.auth-link.secondary{background:transparent;border:1px solid var(--line);box-shadow:none}.auth-button:active,.auth-link:active{transform:translateY(2px);box-shadow:none}.auth-button:focus-visible,.auth-link:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible,.auth-alert:focus-visible{outline:3px solid color-mix(in srgb,var(--focus) 48%,transparent);outline-offset:3px}.slack-provider-button:focus-visible{outline:2px solid #656468;outline-offset:2px}.auth-warning{margin-top:22px;border:1px solid rgba(168,63,52,.25);border-radius:13px;background:#fff3ee;padding:15px}.auth-warning strong{display:block;margin-bottom:5px}.auth-meta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.83rem}.auth-manifest{max-height:280px;overflow:auto;white-space:pre-wrap;font-size:.75rem}.slack-logo-image{background:url("${SLACK_LOGO_DATA_URL}") center/contain no-repeat;display:inline-block}.setup-token-callout{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center;margin:22px 0;padding:15px 17px;border-left:3px solid var(--gold-press);border-radius:12px;background:var(--well)}.setup-token-callout strong{display:block;margin-bottom:3px}.setup-token-callout p{margin:0;color:var(--muted);font-size:.86rem;line-height:1.45}.setup-slack-link{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:9px 13px;border:1px solid var(--line);border-radius:11px;background:var(--card);color:var(--ink);font-weight:800;text-decoration:none;white-space:nowrap}.setup-slack-logo{width:22px;height:22px}.setup-token-note{display:flex;gap:8px;align-items:flex-start;margin:13px 0 0;color:var(--muted);font-size:.8rem;line-height:1.45}.setup-manual-choice p{margin-bottom:14px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-card,html[data-slack-auth-surface="owner-complete"] .auth-card{padding-block:56px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-brand,html[data-slack-auth-surface="owner-complete"] .auth-brand{margin-bottom:38px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title,html[data-slack-auth-surface="owner-complete"] .auth-title{margin:14px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title-line{margin:14px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title-line .auth-title{margin:0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-intro{margin:18px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-intro+form{margin-top:28px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] form+details{margin-top:30px}html[data-slack-auth-surface="owner-complete"] .auth-actions{margin-top:32px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:440px){body{padding:8px}.auth-card{border-radius:14px;padding:21px 16px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-card,html[data-slack-auth-surface="owner-complete"] .auth-card{padding-block:32px}.auth-actions{display:grid}.auth-link,.auth-button{width:100%}.auth-section{padding:16px 13px}.setup-token-callout{grid-template-columns:1fr}.setup-slack-link{width:100%;justify-content:center}}
+</style></head><body><main class="auth-card" aria-labelledby="auth-title">${AUTH_BRAND_HTML}<p class="auth-eyebrow">${escapeHtmlAttribute(input.eyebrow)}</p>${title}${intro}${alert}${status}${input.body}</main></body></html>`;
 }
 
 /** Complete a same-origin POST before navigating across the strict form-action CSP boundary. */
@@ -15902,9 +16045,7 @@ export function renderSlackOwnerCompletePage(destination: string): string {
   return renderSlackJourneyPage({
     surface: 'owner-complete',
     eyebrow: 'Setup complete',
-    title: 'You’re the first Owner',
-    intro: 'Slack installation and your exact identity are verified. Chickpea is ready to configure.',
-    status: 'Your requested control-plane view is ready.',
+    title: '🎉 Installation successful',
     body: `<div class="auth-actions"><a class="auth-link" href="${escapeHtmlAttribute(safeDestination)}" autofocus>Open Chickpea</a></div>`,
   });
 }
@@ -15981,7 +16122,7 @@ export function renderSlackManualSetupPage(input: {
     : state === 'awaiting_app_creation'
       ? `${createPanel}${finishPanel}${eventsPanel}${credentialsPanel}`
       : `<section class="onboarding-panel" data-manual-step-panel="create"><p class="onboarding-eyebrow">Manual setup</p><h1 class="onboarding-title" tabindex="-1">Continue shared setup</h1><p class="onboarding-lede">The app is ready. Continue with the encrypted Slack installation and Owner verification.</p><div class="onboarding-actions"><a class="btn btn-primary" href="/admin/setup">Continue setup</a></div></section>`;
-  return `<!doctype html><html lang="en" data-slack-manual-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}" data-manual-initial-step="${initialStep}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Chickpea · Manual Slack setup</title>${ADMIN_FAVICON}<style>${SLACK_MANUAL_SETUP_CSS}</style></head><body><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row">${AUTH_BRAND_HTML}<span class="onboarding-environment">private setup</span></div><ol class="onboarding-orientation" role="list" aria-label="Onboarding progress"><li class="active" aria-current="step"><span class="onboarding-step-dot">1</span><span class="onboarding-step-label">Connect Slack</span></li><li><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Choose a channel</span></li><li><span class="onboarding-step-dot">3</span><span class="onboarding-step-label">Try Chickpea</span></li></ol><div class="onboarding-stage" aria-live="polite">${panels}</div></div></main><script src="/admin/setup/manual/client.js" defer></script></body></html>`;
+  return `<!doctype html><html lang="en" data-slack-manual-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}" data-manual-initial-step="${initialStep}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Chickpea · Manual Slack setup</title>${ADMIN_FAVICON}<style>${SLACK_MANUAL_SETUP_CSS}</style></head><body><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row">${AUTH_BRAND_HTML}<span class="onboarding-environment">private setup</span></div><ol class="onboarding-orientation" role="list" aria-label="Onboarding progress"><li class="active" aria-current="step"><span class="onboarding-step-dot">1</span><span class="onboarding-step-label">Connect Slack</span></li><li><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Choose provider</span></li><li><span class="onboarding-step-dot">3</span><span class="onboarding-step-label">Choose model</span></li><li><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol><div class="onboarding-stage" aria-live="polite">${panels}</div></div></main><script src="/admin/setup/manual/client.js" defer></script></body></html>`;
 }
 
 function manualSlackInstruction(
@@ -16024,14 +16165,15 @@ export function renderSlackSetupPage(input: {
   } else if (state === 'awaiting_app_creation') {
     title = input.gatewayState === 'connected' ? 'Slack is connected' : 'Add Chickpea to Slack';
     intro = input.gatewayState === 'connected'
-      ? 'The shared Chickpea app is bound to this deployment. Verify your Slack identity to become the first Owner.'
+      ? 'Your Slack workspace is ready. Continue to finish installing Chickpea.'
       : 'The recommended install uses Chickpea’s shared Slack app. Your deployment keeps its own data and never receives a Slack bot token.';
     const primary = input.gatewayState === 'connected'
       ? `<form method="post" action="/auth/slack/oidc/start">${hidden}<input type="hidden" name="purpose" value="first_owner"><button class="auth-button slack-provider-button" data-primary-action="gateway-owner" type="submit" autofocus><span class="slack-provider-logo slack-logo-image" aria-hidden="true"></span>Continue with Slack</button></form>`
       : input.gatewayState === 'pending'
         ? `<form method="post" action="/admin/setup"><input type="hidden" name="action" value="gateway_refresh">${hidden}<button class="auth-button" data-primary-action="gateway-refresh" type="submit" autofocus>Check Slack installation</button></form>`
         : `<form method="post" action="/admin/setup"><input type="hidden" name="action" value="gateway_begin">${hidden}<button class="auth-button slack-provider-button" data-primary-action="gateway-install" type="submit" autofocus><span class="slack-provider-logo slack-logo-image" aria-hidden="true"></span>Add to Slack</button></form>`;
-    body = `${primary}<p class="setup-token-note"><span aria-hidden="true">▢</span><span>No app configuration token or Slack credentials to copy.</span></p><details class="setup-manual-choice" data-secondary-action="customer-owned-app"><summary>Use your own Slack app instead</summary><p class="auth-help">For isolated or regulated deployments, create a customer-owned app with a short-lived Slack configuration token.</p><aside class="setup-token-callout"><div><strong>Generate an App Configuration token in Slack</strong><p>Under Your App Configuration Tokens, choose Generate Token and select your workspace.</p></div><a class="setup-slack-link" href="https://api.slack.com/apps#:~:text=Your%20App%20Configuration%20Tokens" target="_blank" rel="noreferrer"><span class="setup-slack-logo slack-logo-image" aria-hidden="true"></span>Open Slack <span class="sr-only">(opens in a new tab)</span></a></aside><form method="post" action="/admin/setup"><input type="hidden" name="action" value="create">${hidden}<label for="configuration-token">Slack configuration access token<span>Paste the xoxe.xoxp- token here.</span></label><input id="configuration-token" type="password" name="configurationToken" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" maxlength="512" placeholder="xoxe.xoxp-…" required><p class="auth-help">Slack also shows a refresh token beginning xoxe-. Chickpea does not need it.</p><button class="auth-button secondary" data-primary-action="create-app" type="submit">Create my Slack app</button><p class="setup-token-note"><span aria-hidden="true">▢</span><span>Sent once to Slack and never stored by Chickpea.</span></p></form><p class="auth-help"><a class="auth-link secondary" href="/admin/setup/manual">Can’t create an app configuration token? Use guided manual setup.</a></p></details>`;
+    const customerOwnedFallback = `<details class="setup-manual-choice" data-secondary-action="customer-owned-app"><summary>Use your own Slack app instead</summary><p class="auth-help">For isolated or regulated deployments, create a customer-owned app with a short-lived Slack configuration token.</p><aside class="setup-token-callout"><div><strong>Generate an App Configuration token in Slack</strong><p>Under Your App Configuration Tokens, choose Generate Token and select your workspace.</p></div><a class="setup-slack-link" href="https://api.slack.com/apps#:~:text=Your%20App%20Configuration%20Tokens" target="_blank" rel="noreferrer"><span class="setup-slack-logo slack-logo-image" aria-hidden="true"></span>Open Slack <span class="sr-only">(opens in a new tab)</span></a></aside><form method="post" action="/admin/setup"><input type="hidden" name="action" value="create">${hidden}<label for="configuration-token">Slack configuration access token<span>Paste the xoxe.xoxp- token here.</span></label><input id="configuration-token" type="password" name="configurationToken" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" maxlength="512" placeholder="xoxe.xoxp-…" required><p class="auth-help">Slack also shows a refresh token beginning xoxe-. Chickpea does not need it.</p><button class="auth-button secondary" data-primary-action="create-app" type="submit">Create my Slack app</button></form><p class="auth-help"><a class="auth-link secondary" href="/admin/setup/manual">Can’t create an app configuration token? Use guided manual setup.</a></p></details>`;
+    body = `${primary}${input.gatewayState === 'connected' ? '' : customerOwnedFallback}`;
   } else if (state === 'app_creation_pending') {
     title = 'Check the interrupted creation';
     intro = 'Slack may have created the app even though Chickpea did not receive a final response.';
@@ -16068,20 +16210,19 @@ export function renderSlackSetupPage(input: {
     intro = 'The setup capability no longer grants any action.';
     body = `<div class="auth-actions"><a class="auth-link" href="${escapeHtmlAttribute(destination)}" autofocus>Open Chickpea</a></div>`;
   }
-  const progress = slackSetupProgress(state);
-  const progressHtml = `<ol class="auth-progress" aria-label="Setup progress"><li data-current="${String(progress === 1)}">Create app</li><li data-current="${String(progress === 2)}">Install</li><li data-current="${String(progress === 3)}">Verify Owner</li></ol>`;
+  const eyebrow = state === 'awaiting_app_creation'
+    ? 'Slack setup'
+    : 'Private Slack setup';
   return renderSlackJourneyPage({
-    surface: 'setup', eyebrow: 'Private Slack setup', title, intro,
-    status: slackSetupPageMessage(state), alert: error ?? notice,
+    surface: 'setup', eyebrow, title, intro,
+    ...(state === 'awaiting_app_creation' && input.gatewayState === 'connected'
+      ? { titleSuccess: true }
+      : {}),
+    ...(state === 'awaiting_app_creation' ? {} : { status: slackSetupPageMessage(state) }),
+    alert: error ?? notice,
     rootAttributes: `data-slack-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}"`,
-    body: `${progressHtml}${body}<script src="/admin/setup/client.js" defer></script>`,
+    body: `${body}<script src="/admin/setup/client.js" defer></script>`,
   });
-}
-
-function slackSetupProgress(state: string): 1 | 2 | 3 {
-  if (['app_created', 'approval_pending', 'bot_install_pending', 'install_failed'].includes(state)) return 2;
-  if (['bot_installed', 'consumed'].includes(state)) return 3;
-  return 1;
 }
 
 function slackSetupPageMessage(code: string): string {

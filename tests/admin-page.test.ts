@@ -89,10 +89,13 @@ type SlackChannelsFixture = {
   truncated?: boolean;
 };
 type OnboardingFixture = {
-  stage: 'connect_slack' | 'choose_channel' | 'try' | 'complete';
+  stage: 'connect_slack' | 'choose_provider' | 'choose_model' | 'try' | 'complete';
   revision: string;
   workspace: { id: string; name: string | null } | null;
   channel: { id: string; name: string } | null;
+  providerId?: 'cloudflare' | 'anthropic' | 'openai' | 'openrouter' | null;
+  modelId?: string | null;
+  slackAppId?: string | null;
   tryStartedAt: number | null;
   completedAt: number | null;
   agentId?: string;
@@ -339,6 +342,8 @@ function runAdminPageHarness(
     channelIndex?: Array<Record<string, unknown>>;
     channelIndexError?: { status: number; error: string; message?: string };
     onboarding?: OnboardingFixture | null;
+    onboardingProviderError?: { status: number; error: string; message?: string };
+    onboardingTryError?: { status: number; error: string; message?: string; workspaceDefault?: WorkspaceDefaultFixture };
     slackChannelFailures?: number;
     putIsMember?: boolean;
     putAssignmentError?: { status: number; error: string; message?: string };
@@ -445,6 +450,7 @@ function runAdminPageHarness(
   putAssignments: unknown[];
   agentChannelPosts: Array<{ agentId: string; body: Record<string, unknown> }>;
   agentChannelDeletes: Array<{ agentId: string; workspaceId: string; channelId: string }>;
+  onboardingProviderPosts: Array<Record<string, unknown>>;
   onboardingTryPosts: Array<Record<string, unknown>>;
   onboardingCompletePosts: Array<Record<string, unknown>>;
   slackBehaviorPuts: Array<Record<string, boolean>>;
@@ -641,6 +647,7 @@ function runAdminPageHarness(
   const putAssignments: unknown[] = [];
   const agentChannelPosts: Array<{ agentId: string; body: Record<string, unknown> }> = [];
   const agentChannelDeletes: Array<{ agentId: string; workspaceId: string; channelId: string }> = [];
+  const onboardingProviderPosts: Array<Record<string, unknown>> = [];
   const onboardingTryPosts: Array<Record<string, unknown>> = [];
   const onboardingCompletePosts: Array<Record<string, unknown>> = [];
   const slackBehaviorPuts: Array<Record<string, boolean>> = [];
@@ -744,6 +751,8 @@ function runAdminPageHarness(
   const slackChannels = options.slackChannels;
   const slackChannelsFetch = options.slackChannelsFetch;
   let onboarding = options.onboarding ?? null;
+  const onboardingProviderError = options.onboardingProviderError;
+  const onboardingTryError = options.onboardingTryError;
   const putIsMember = options.putIsMember;
   const putAssignmentError = options.putAssignmentError;
   let slackChannelFailures = options.slackChannelFailures ?? 0;
@@ -1915,15 +1924,50 @@ function runAdminPageHarness(
           : jsonResponse({ error: 'onboarding_not_found' }, 404),
       );
     }
+    if (path === '/admin/api/onboarding/provider' && method === 'POST') {
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      onboardingProviderPosts.push(body);
+      if (onboardingProviderError) {
+        return Promise.resolve(jsonResponse({
+          error: onboardingProviderError.error,
+          ...(onboardingProviderError.message ? { message: onboardingProviderError.message } : {}),
+        }, onboardingProviderError.status));
+      }
+      onboarding = {
+        ...(onboarding ?? {
+          workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+          channel: null,
+          slackAppId: 'A_CHICKPEA',
+        }),
+        stage: 'choose_model',
+        revision: JSON.stringify({ ...body, selectedProviderAt: 1_800_000_000_100 }),
+        providerId: String(body.providerId) as NonNullable<OnboardingFixture['providerId']>,
+        modelId: null,
+        tryStartedAt: null,
+        completedAt: null,
+      };
+      return Promise.resolve(jsonResponse(onboarding));
+    }
     if (path === '/admin/api/onboarding/try' && method === 'POST') {
       const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
       onboardingTryPosts.push(body);
+      if (onboardingTryError) {
+        return Promise.resolve(jsonResponse({
+          error: onboardingTryError.error,
+          ...(onboardingTryError.message ? { message: onboardingTryError.message } : {}),
+          ...(onboardingTryError.workspaceDefault ? { workspaceDefault: onboardingTryError.workspaceDefault } : {}),
+        }, onboardingTryError.status));
+      }
       onboarding = {
+        ...(onboarding ?? {}),
         stage: 'try',
         revision: JSON.stringify({ ...body, tryStartedAt: 1_800_000_000_000 }),
-        workspace: { id: String(body.workspaceId), name: 'Acme Inc' },
-        channel: { id: String(body.channelId), name: String(body.channelName) },
-        agentId: 'agent_default',
+        workspace: onboarding?.workspace ?? { id: 'T_DESIGN', name: 'Acme Inc' },
+        channel: null,
+        slackAppId: onboarding?.slackAppId ?? 'A_CHICKPEA',
+        providerId: onboarding?.providerId ?? null,
+        modelId: String(body.modelId),
+        agentId: 'agent_chickpea',
         tryStartedAt: 1_800_000_000_000,
         completedAt: null,
       };
@@ -1935,14 +1979,15 @@ function runAdminPageHarness(
       onboarding = {
         ...(onboarding ?? {
           workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
-          channel: { id: 'C_NEW', name: 'new-channel' },
+          channel: null,
+          slackAppId: 'A_CHICKPEA',
           tryStartedAt: 1_800_000_000_000,
         }),
         stage: 'complete',
         revision: JSON.stringify({ state: 'complete', completedAt: 1_800_000_005_000 }),
         completedAt: 1_800_000_005_000,
-        agentId: 'agent_default',
-        redirectTo: '/admin/agents/agent_default',
+        agentId: 'agent_chickpea',
+        redirectTo: '/admin/agents',
       };
       return Promise.resolve(jsonResponse(onboarding));
     }
@@ -2020,7 +2065,14 @@ function runAdminPageHarness(
       return Promise.resolve(jsonResponse({
         providers: (modelProviders ?? []).filter(
           (provider) => workersAiEnabled || provider.id !== 'cloudflare',
-        ),
+        ).map((provider) => {
+          const summaryId = provider.id === 'cloudflare' ? 'workers-ai' : provider.id;
+          const summary = providerState.find((candidate) => candidate.id === summaryId);
+          return {
+            ...provider,
+            configured: provider.configured || summary?.status === 'stored' || summary?.status === 'env',
+          };
+        }),
       }));
     }
     if (path === '/admin/api/workspace-model-default') {
@@ -2439,6 +2491,7 @@ function runAdminPageHarness(
     putAssignments,
     agentChannelPosts,
     agentChannelDeletes,
+    onboardingProviderPosts,
     onboardingTryPosts,
     onboardingCompletePosts,
     slackBehaviorPuts,
@@ -10255,56 +10308,170 @@ test('onboarding never paints normal Admin navigation before its first routed re
   );
 });
 
-test('onboarding publishes the base Agent into one Slack channel and lands directly in Try Chickpea', async () => {
+test('onboarding skips channel publication, validates a provider, requires a model, and opens a Chickpea DM', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding',
     agents: [seededAgents[0]],
-    slackChannels: channelsFixture([
-      { id: 'C_NEW', name: 'new-channel', isPrivate: false, isMember: false },
-      { id: 'C_PRIVATE', name: 'invited-secret', isPrivate: true, isMember: true },
-    ]),
-    putIsMember: true,
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'env', modelCount: null, enabled: true },
+    ],
+    modelProviders: [
+      { id: 'anthropic', configured: false, source: 'missing', suggestions: ['anthropic/claude-sonnet-5', 'anthropic/claude-opus-5'] },
+      { id: 'openai', configured: false, source: 'missing', suggestions: ['openai/gpt-5.6-terra'] },
+      { id: 'openrouter', configured: false, source: 'missing', suggestions: ['openrouter/anthropic/claude-sonnet-5'] },
+      { id: 'cloudflare', configured: true, source: 'Workers AI binding', suggestions: ['cloudflare/@cf/zai-org/glm-5.2'] },
+    ],
     onboarding: {
-      stage: 'choose_channel',
+      stage: 'choose_provider',
       revision: '{"version":1,"state":"active"}',
       workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
       channel: null,
+      slackAppId: 'A_CHICKPEA',
       tryStartedAt: null,
       completedAt: null,
     },
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /Choose where Chickpea should start/);
-  assert.match(harness.app.innerHTML, /# new-channel/);
-  assert.match(harness.app.innerHTML, /# invited-secret \(private\)/);
-  assert.doesNotMatch(harness.app.innerHTML, /unreturned-secret/);
+  assert.doesNotMatch(harness.app.innerHTML, /Choose where Chickpea should start|Choose a channel/);
+  assert.equal(harness.agentChannelPosts.length, 0);
+  assert.equal(harness.onboardingTryPosts.length, 0);
+  assert.match(harness.app.innerHTML, /Choose your model provider/);
+  assert.match(harness.app.innerHTML, /Cloudflare/);
+  assert.match(harness.app.innerHTML, /Anthropic/);
+  assert.match(harness.app.innerHTML, /OpenAI/);
+  assert.match(harness.app.innerHTML, /OpenRouter/);
+  assert.equal((harness.app.innerHTML.match(/class="onboarding-provider-logo"/g) ?? []).length, 4);
 
-  harness.listeners.submit?.({
-    target: submitTarget({ 'data-action': 'onboarding-channel-form' }, { channelSelect: 'C_NEW' }),
-    preventDefault() {},
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' }),
+  });
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'onboarding-provider-key', 'data-provider': 'anthropic' }, 'sk-ant-onboarding'),
+  });
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-provider-continue' }),
   });
   await flushAsync();
 
-  assert.deepEqual(harness.agentChannelPosts.at(-1), {
-    agentId: 'agent_default',
-    body: { workspaceId: 'T_DESIGN', channelId: 'C_NEW' },
+  assert.deepEqual(harness.providerKeyPosts.at(-1), { id: 'anthropic', key: 'sk-ant-onboarding' });
+  assert.equal(harness.onboardingProviderPosts.at(-1)?.providerId, 'anthropic');
+  assert.match(harness.app.innerHTML, /Choose your model/);
+  assert.match(harness.app.innerHTML, /Choose a model/);
+  assert.match(harness.app.innerHTML, /class="onboarding-model-select-wrap"/);
+  assert.match(harness.app.innerHTML, /class="ic onboarding-model-select-icon"/);
+  assert.doesNotMatch(harness.app.innerHTML, /Recommended|default for Anthropic/);
+  assert.match(harness.app.innerHTML, /data-action="onboarding-model-continue" disabled>Select Model<\/button>/);
+
+  harness.listeners.change?.({
+    target: inputTarget({ 'data-action': 'onboarding-model-select' }, 'anthropic/claude-sonnet-5'),
   });
-  assert.deepEqual(harness.onboardingTryPosts, [{
-    expectedRevision: '{"version":1,"state":"active"}',
-    workspaceId: 'T_DESIGN',
-    channelId: 'C_NEW',
-    channelName: 'new-channel',
-  }]);
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-model-continue' }),
+  });
+  await flushAsync();
+
+  assert.equal(harness.onboardingTryPosts.at(-1)?.modelId, 'anthropic/claude-sonnet-5');
+  assert.equal(harness.onboardingTryPosts.at(-1)?.expectedDefaultRevision, 2);
   assert.match(harness.app.innerHTML, /Try Chickpea/);
-  assert.match(harness.app.innerHTML, /https:\/\/app\.slack\.com\/client\/T_DESIGN\/C_NEW/);
+  assert.match(harness.app.innerHTML, /https:\/\/slack\.com\/app_redirect\?app=A_CHICKPEA&amp;team=T_DESIGN/);
   assert.match(harness.app.innerHTML, /Waiting for Chickpea to reply…/);
   assert.doesNotMatch(harness.app.innerHTML, /Waiting for Chickpea to reply&amp;hellip;/);
   assert.match(
     harness.app.innerHTML,
-    /@Chickpea Give me three useful ways you can help this channel, each with an example prompt I could try next\./,
+    /Give me three useful ways you can help me, each with an example prompt I could try next\./,
   );
   assert.match(harness.app.innerHTML, /data-action="onboarding-proceed-dashboard"[^>]*>Proceed to Dashboard<\/button>/);
+  assert.match(harness.app.innerHTML, /Step 4 of 4/);
+});
+
+test('onboarding translates provider and model conflicts into recovery copy', async () => {
+  const rejectedKey = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    providerKeyReject: { status: 401, detail: 'authentication_error: invalid x-api-key' },
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'env', modelCount: null, enabled: true },
+    ],
+    modelProviders: [
+      { id: 'anthropic', configured: false, source: 'missing', suggestions: ['anthropic/claude-sonnet-5'] },
+      { id: 'cloudflare', configured: true, source: 'Workers AI binding', suggestions: ['cloudflare/@cf/zai-org/glm-5.2'] },
+    ],
+    onboarding: {
+      stage: 'choose_provider',
+      revision: '{"version":2,"state":"active"}',
+      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+      channel: null,
+      slackAppId: 'A_CHICKPEA',
+      tryStartedAt: null,
+      completedAt: null,
+    },
+  });
+  await flushAsync();
+
+  rejectedKey.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' }),
+  });
+  rejectedKey.listeners.input?.({
+    target: inputTarget({ 'data-action': 'onboarding-provider-key', 'data-provider': 'anthropic' }, 'sk-ant-invalid'),
+  });
+  rejectedKey.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-provider-continue' }),
+  });
+  await flushAsync();
+
+  assert.match(rejectedKey.app.innerHTML, /Anthropic rejected the key/);
+  assert.doesNotMatch(rejectedKey.app.innerHTML, /provider_key_rejected/);
+
+  const currentDefault: WorkspaceDefaultFixture = {
+    workspaceId: 'T_DESIGN',
+    modelId: 'openai/gpt-5.6',
+    revision: 3,
+    provenance: 'admin_selected',
+    runtimeContract: 'chickpea-v1',
+    live: true,
+    inheritingAgentCount: 1,
+    health: { status: 'ready', providerId: 'openai' },
+  };
+  const modelConflict = runAdminPageHarness({
+    initialPath: '/admin/onboarding',
+    onboardingTryError: {
+      status: 409,
+      error: 'workspace_model_default_revision_conflict',
+      workspaceDefault: { ...currentDefault, revision: currentDefault.revision + 1 },
+    },
+    modelProviders: [
+      { id: 'anthropic', configured: true, source: 'stored', suggestions: ['anthropic/claude-sonnet-5'] },
+    ],
+    onboarding: {
+      stage: 'choose_model',
+      revision: '{"version":3,"state":"active"}',
+      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+      channel: null,
+      slackAppId: 'A_CHICKPEA',
+      providerId: 'anthropic',
+      modelId: null,
+      tryStartedAt: null,
+      completedAt: null,
+    },
+  });
+  await flushAsync();
+
+  modelConflict.listeners.change?.({
+    target: inputTarget({ 'data-action': 'onboarding-model-select' }, 'anthropic/claude-sonnet-5'),
+  });
+  modelConflict.listeners.click?.({
+    target: actionTarget({ 'data-action': 'onboarding-model-continue' }),
+  });
+  await flushAsync();
+
+  assert.match(modelConflict.app.innerHTML, /workspace model changed in another window/i);
+  assert.doesNotMatch(modelConflict.app.innerHTML, /workspace_model_default_revision_conflict/);
 });
 
 test('onboarding can finish from Try Chickpea without waiting for a Slack reply', async () => {
@@ -10315,10 +10482,11 @@ test('onboarding can finish from Try Chickpea without waiting for a Slack reply'
       stage: 'try',
       revision: '{"version":2,"state":"active","tryStartedAt":1800000000000}',
       workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
-      channel: { id: 'C_NEW', name: 'new-channel' },
+      channel: null,
+      slackAppId: 'A_CHICKPEA',
       tryStartedAt: 1_800_000_000_000,
       completedAt: null,
-      agentId: 'agent_default',
+      agentId: 'agent_chickpea',
     },
   });
   await flushAsync();
@@ -10329,98 +10497,36 @@ test('onboarding can finish from Try Chickpea without waiting for a Slack reply'
   assert.deepEqual(harness.onboardingCompletePosts, [{
     expectedRevision: '{"version":2,"state":"active","tryStartedAt":1800000000000}',
   }]);
-  assert.equal(harness.locationPath(), '/admin/agents/agent_default');
-  assert.match(harness.app.innerHTML, /class="agent-profile-page"/);
+  assert.equal(harness.locationPath(), '/admin/agents');
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Agents<\/h1>/);
 });
 
-test('onboarding stays on channel selection until Slack membership is positively verified', async () => {
-  const harness = runAdminPageHarness({
-    initialPath: '/admin/onboarding',
-    agents: [seededAgents[0]],
-    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
-    putAssignmentError: {
-      status: 409,
-      error: 'private_channel_invite_required',
-      message: 'Invite Chickpea to #new-channel, then retry.',
-    },
-    onboarding: {
-      stage: 'choose_channel',
-      revision: '{"version":1,"state":"active"}',
-      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
-      channel: null,
-      tryStartedAt: null,
-      completedAt: null,
-    },
-  });
-  await flushAsync();
-
-  harness.listeners.submit?.({
-    target: submitTarget({ 'data-action': 'onboarding-channel-form' }, { channelSelect: 'C_NEW' }),
-    preventDefault() {},
-  });
-  await flushAsync();
-
-  assert.equal(harness.onboardingTryPosts.length, 0);
-  assert.match(harness.app.innerHTML, /Invite Chickpea to #new-channel, then retry\./);
-  assert.match(harness.app.innerHTML, /Choose where Chickpea should start/);
-});
-
-test('onboarding carries the saved Slack channel name into the immediate Agent handoff', async () => {
-  const harness = runAdminPageHarness({
-    initialPath: '/admin/onboarding',
-    agents: [seededAgents[0]],
-    putIsMember: true,
-    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
-    onboarding: {
-      stage: 'choose_channel',
-      revision: '{"version":1,"state":"active"}',
-      workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
-      channel: null,
-      tryStartedAt: null,
-      completedAt: null,
-    },
-  });
-  await flushAsync();
-
-  harness.listeners.submit?.({
-    target: submitTarget({ 'data-action': 'onboarding-channel-form' }, { channelSelect: 'C_NEW' }),
-    preventDefault() {},
-  });
-  await flushAsync();
-  harness.listeners.click?.({
-    target: actionTarget({ 'data-action': 'open-profiles', 'data-agent': 'agent_default' }),
-  });
-
-  assert.match(harness.app.innerHTML, /class="where-channel-name">new-channel<\/span>/);
-  assert.doesNotMatch(harness.app.innerHTML, /class="where-channel-name">C_NEW<\/span>/);
-});
-
-test('completed onboarding confirms the reply and hands off to the canonical Agent', async () => {
+test('completed onboarding confirms the DM and hands off to the dashboard', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding',
     onboarding: {
       stage: 'complete',
       revision: '{"version":1,"state":"complete"}',
       workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
-      channel: { id: 'C_NEW', name: 'new-channel' },
+      channel: null,
+      slackAppId: 'A_CHICKPEA',
       tryStartedAt: 1_800_000_000_000,
       completedAt: 1_800_000_005_000,
-      agentId: 'agent_release',
-      redirectTo: '/admin/agents/agent_release',
+      agentId: 'agent_chickpea',
+      redirectTo: '/admin/agents',
     },
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /Reply confirmed in #new-channel/);
+  assert.match(harness.app.innerHTML, /Reply confirmed in Slack/);
   assert.match(harness.app.innerHTML, /<h1 class="onboarding-title">Chickpea is ready<\/h1>/);
-  assert.match(harness.app.innerHTML, /Continue in Release Profile/);
   assert.doesNotMatch(harness.app.innerHTML, /aria-label="Admin navigation"/);
-  assert.match(harness.app.innerHTML, /class="btn btn-primary" data-action="open-profiles" data-agent="agent_release">Open Release Profile/);
-  assert.match(harness.app.innerHTML, /class="btn btn-soft" href="https:\/\/app\.slack\.com\/client\/T_DESIGN\/C_NEW"/);
-  assert.doesNotMatch(harness.app.innerHTML, /readonly value="@Chickpea summarize|Copy message/);
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-profiles', 'data-agent': 'agent_release' }) });
+  assert.match(harness.app.innerHTML, /data-action="onboarding-open-dashboard"[^>]*>Open dashboard<\/button>/);
+  assert.match(harness.app.innerHTML, /href="https:\/\/slack\.com\/app_redirect\?app=A_CHICKPEA&amp;team=T_DESIGN"/);
+  assert.doesNotMatch(harness.app.innerHTML, /readonly value=|Copy message/);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-open-dashboard' }) });
   assert.match(harness.app.innerHTML, /aria-label="Admin navigation"/);
-  assert.equal(harness.locationPath(), '/admin/agents/agent_release');
+  assert.equal(harness.locationPath(), '/admin/agents');
 });
 
 test('admin page renders a credential-free recovery boundary when Slack is missing', async () => {
