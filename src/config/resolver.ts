@@ -1,10 +1,12 @@
 import { DisabledAgentError, NoAssignmentError } from './errors.ts';
+import { resolveModelPolicyForAssignment } from './model-policy.ts';
 import {
   type AgentChannelGrant,
   type ChannelConfig,
   type CustomAgentConfig,
   type ResolvedAssignment,
   type WorkspaceInstallation,
+  type WorkspaceModelDefault,
 } from './types.ts';
 
 // Store readers are async — the Cloudflare backend answers over Durable
@@ -22,6 +24,7 @@ export type AssignmentSurface = 'channel' | 'direct';
 
 export interface AssignmentLookupOptions {
   surface?: AssignmentSurface;
+  env?: NodeJS.ProcessEnv;
 }
 
 // Infer the surface from a channel id, for the paths that resolve from a thread
@@ -48,6 +51,7 @@ export interface GrantReader {
     channelId?: string,
   ): Promise<AgentChannelGrant[]>;
   getWorkspaceInstallation(workspaceId: string): Promise<WorkspaceInstallation | undefined>;
+  getWorkspaceModelDefault?(workspaceId: string): Promise<WorkspaceModelDefault | undefined>;
 }
 
 export interface ConfigStores {
@@ -92,7 +96,7 @@ export async function resolveAssignment(
     throw new NoAssignmentError(`Channel ${workspaceId}/${channelId} is archived`);
   }
 
-  return {
+  const assignment: ResolvedAssignment = {
     workspaceId,
     channelId,
     agentId: agent.id,
@@ -100,6 +104,11 @@ export async function resolveAssignment(
     ...(channel?.revision ? { channelRevision: channel.revision } : {}),
     agent,
   };
+  return resolveModelPolicyForAssignment(assignment, {
+    getWorkspaceInstallation: (id) => stores.grants.getWorkspaceInstallation(id),
+    getWorkspaceModelDefault: (id) =>
+      stores.grants.getWorkspaceModelDefault?.(id) ?? Promise.resolve(undefined),
+  }, options.env, installation);
 }
 
 function channelReaderFromGrants(grants: GrantReader): ChannelReader | undefined {

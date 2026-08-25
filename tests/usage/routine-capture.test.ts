@@ -49,11 +49,12 @@ const config = {
   channelLabel: 'usage-lab',
   agentId: 'agent_usage',
   agent: {
-    id: 'agent_usage', revision: 1, name: 'Usage profile', instructions: 'Be useful.', enabled: true,
+    id: 'agent_usage', kind: 'user', revision: 1, name: 'Usage profile', instructions: 'Be useful.', enabled: true,
     model: 'anthropic/claude-haiku-4-5', skills: [], mcpServers: [], apiConnections: [], repositories: [],
   },
   model: 'anthropic/claude-haiku-4-5',
   provider: 'anthropic',
+  modelAttribution: { source: 'pinned', providerId: 'anthropic' },
   instructions: 'Be useful.',
   instructionLayers: [],
 } satisfies EffectiveSlackConfig;

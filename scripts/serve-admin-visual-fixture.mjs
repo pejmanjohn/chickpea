@@ -27,6 +27,7 @@ const ENV_KEYS = [
 ];
 
 export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
+  settingsProviders: Object.freeze({ path: '/admin/settings/providers', actions: Object.freeze([]) }),
   agentInstructions: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze([]) }),
   agentBlankDescription: Object.freeze({ path: '/admin/agents/agent_customer', actions: Object.freeze([]) }),
   agentMemory: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze(['Memory']) }),
@@ -179,7 +180,6 @@ function visualAgents() {
       description: '',
       instructions: 'Summarize customer feedback and distinguish recurring evidence from anecdotes.',
       enabled: false,
-      model: 'local-stub/visual-review',
       slackPresence: slackPresence('agent_customer', 'customer-insights', 'b6a1f4b55c4c81e3da8a5f3c12f2ef7f'),
       skills: [],
       mcpServers: [],
@@ -193,7 +193,6 @@ function visualAgents() {
       description: 'Keeps launches concise, decision-ready, and explicit about risk.',
       instructions: 'Turn release activity into concise, decision-ready updates with explicit risks.',
       enabled: true,
-      model: 'local-stub/visual-review',
       slackPresence: slackPresence('agent_release', 'release-scribe', '205e460b479e2e5b48aec07710c08d50'),
       skills: [{
         name: 'release-readiness',
@@ -246,7 +245,7 @@ function visualAgents() {
   ];
 }
 
-async function seedConfig(store) {
+async function seedConfig(store, runtimeContract) {
   const channels = [
     {
       workspaceId: WORKSPACE_ID,
@@ -300,6 +299,7 @@ async function seedConfig(store) {
   const installation = await store.ensureWorkspaceInstallation({
     workspaceId: WORKSPACE_ID,
     transportMode: 'direct',
+    ...(runtimeContract === 'chickpea-v1' ? { runtimeContract } : {}),
     defaultAgentId: 'agent_research',
     teamId: WORKSPACE_ID,
     appId: 'AVISUAL',
@@ -494,9 +494,13 @@ function closeServer(server) {
 export async function startAdminVisualFixture(options = {}) {
   const host = options.host ?? DEFAULT_HOST;
   const port = options.port ?? 0;
+  const runtimeContract = options.runtimeContract ?? 'legacy';
   assertLoopbackHost(host);
   if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) {
     throw new Error(`Admin visual fixture port must be an integer from 0 to 65535, received ${port}.`);
+  }
+  if (runtimeContract !== 'legacy' && runtimeContract !== 'chickpea-v1') {
+    throw new Error(`Admin visual fixture runtime contract must be legacy or chickpea-v1, received ${runtimeContract}.`);
   }
   if (activeFixture) throw new Error('Only one Admin visual fixture can run in a process at a time.');
   activeFixture = true;
@@ -583,7 +587,7 @@ export async function startAdminVisualFixture(options = {}) {
     const identity = new SqliteIdentityStore(stateDbPath);
     stores.push(store, settings, memory, routines, usage, work, slackState, snapshots, identity);
 
-    await seedConfig(store);
+    await seedConfig(store, runtimeContract);
     await seedSettings(settings);
     const slackCredentials = {
       state: identity,
@@ -731,6 +735,7 @@ export async function startAdminVisualFixture(options = {}) {
       address: bound.address,
       adminToken,
       baseUrl,
+      runtimeContract,
       authStates: CANONICAL_SLACK_AUTH_VISUAL_STATES,
       canonicalStates: CANONICAL_ADMIN_VISUAL_STATES,
       stateDbPath,
@@ -744,11 +749,12 @@ export async function startAdminVisualFixture(options = {}) {
 }
 
 function parseCliArgs(args) {
-  const parsed = { host: DEFAULT_HOST, port: 0 };
+  const parsed = { host: DEFAULT_HOST, port: 0, runtimeContract: 'legacy' };
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
     if (value === '--host') parsed.host = args[++index];
     else if (value === '--port') parsed.port = Number(args[++index]);
+    else if (value === '--runtime-contract') parsed.runtimeContract = args[++index];
     else throw new Error(`Unknown argument: ${value}`);
   }
   return parsed;
@@ -757,6 +763,7 @@ function parseCliArgs(args) {
 async function runCli() {
   const fixture = await startAdminVisualFixture(parseCliArgs(process.argv.slice(2)));
   console.log(`Admin visual fixture: ${fixture.baseUrl}`);
+  console.log(`Runtime contract: ${fixture.runtimeContract}`);
   console.log(`Local login token: ${fixture.adminToken}`);
   console.log('Canonical states (production URLs; perform the listed UI actions after load):');
   for (const [name, state] of Object.entries(fixture.canonicalStates)) {

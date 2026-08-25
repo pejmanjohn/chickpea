@@ -22,6 +22,7 @@ export function safeSetupDestination(value: string | null | undefined): string {
 export function safeSlackLoginDestination(value: string | null | undefined): string {
   const candidate = value?.trim() ?? '';
   if (/^\/auth\/mcp\/resume\/[A-Za-z0-9_-]{43,128}$/.test(candidate)) return candidate;
+  if (/^\/setup\/setup_[A-Za-z0-9_-]{1,128}$/.test(candidate)) return candidate;
   return safeSetupDestination(candidate);
 }
 

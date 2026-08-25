@@ -1577,6 +1577,165 @@ test('Agent create owns its handle, generated avatar, edit policy, and creator',
   }
 });
 
+test('activated Agents inherit the Workspace default and a pinned Agent can reset to it', async () => {
+  const fixture = harness();
+  try {
+    const base = (await fixture.store.listAgents())[0]!;
+    const installation = await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST',
+      transportMode: 'direct',
+      defaultAgentId: base.id,
+    });
+    await fixture.store.putWorkspaceModelDefault({
+      workspaceId: installation.workspaceId,
+      modelId: 'local-stub/workspace',
+      provenance: 'admin_selected',
+      lastChangedByMembershipId: 'membership_test_owner',
+    }, 1);
+    await fixture.store.updateWorkspaceInstallation(
+      installation.workspaceId,
+      { runtimeContract: 'chickpea-v1' },
+      installation.revision,
+    );
+
+    const createdResponse = await fixture.app.request('http://localhost/admin/api/agents', {
+      method: 'POST',
+      headers: auth(),
+      body: JSON.stringify({
+        id: 'agent_inheriting',
+        name: 'Inheriting',
+        instructions: 'Use the shared model.',
+        enabled: true,
+      }),
+    });
+    assert.equal(createdResponse.status, 201);
+    const created = (await createdResponse.json() as { agent: Record<string, any> }).agent;
+    assert.equal(created.model, undefined);
+    assert.deepEqual(created.modelPolicy, {
+      source: 'workspace_default',
+      effectiveModel: 'local-stub/workspace',
+      live: true,
+      workspaceDefaultRevision: 2,
+    });
+
+    const pinnedResponse = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_inheriting',
+      {
+        method: 'PATCH',
+        headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: created.revision,
+          model: 'local-stub/pinned',
+        }),
+      },
+    );
+    assert.equal(pinnedResponse.status, 200);
+    const pinned = (await pinnedResponse.json() as { agent: Record<string, any> }).agent;
+    assert.deepEqual(pinned.modelPolicy, {
+      source: 'pinned',
+      effectiveModel: 'local-stub/pinned',
+      live: true,
+      workspaceDefaultRevision: 2,
+    });
+
+    const resetResponse = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_inheriting',
+      {
+        method: 'PATCH',
+        headers: auth(),
+        body: JSON.stringify({ expectedRevision: pinned.revision, model: null }),
+      },
+    );
+    assert.equal(resetResponse.status, 200);
+    const reset = (await resetResponse.json() as { agent: Record<string, any> }).agent;
+    assert.equal(reset.model, undefined);
+    assert.deepEqual(reset.modelPolicy, {
+      source: 'workspace_default',
+      effectiveModel: 'local-stub/workspace',
+      live: true,
+      workspaceDefaultRevision: 2,
+    });
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('the Chickpea system Agent stays hidden across direct and nested Admin routes', async () => {
+  const fixture = harness();
+  try {
+    const base = (await fixture.store.listAgents())[0]!;
+    const installation = await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST',
+      transportMode: 'direct',
+      defaultAgentId: base.id,
+    });
+    const workspaceDefault = await fixture.store.putWorkspaceModelDefault({
+      workspaceId: installation.workspaceId,
+      modelId: 'local-stub/workspace',
+      provenance: 'admin_selected',
+      lastChangedByMembershipId: 'membership_test_owner',
+    }, 1);
+    await fixture.store.activateChickpeaCutover({
+      workspaceId: installation.workspaceId,
+      expectedInstallationRevision: installation.revision,
+      expectedDefaultRevision: workspaceDefault.revision,
+      defaultReady: true,
+    });
+
+    const requests: Array<[string, RequestInit?]> = [
+      ['http://localhost/admin/api/agents/agent_chickpea'],
+      ['http://localhost/admin/api/agents/agent_chickpea/memory'],
+      ['http://localhost/admin/api/agents/agent_chickpea/schedules'],
+      ['http://localhost/admin/api/agents/agent_chickpea/connections?workspaceId=T_TEST'],
+      ['http://localhost/admin/api/agents/agent_chickpea', {
+        method: 'PATCH',
+        body: JSON.stringify({ expectedRevision: 1, instructions: 'Changed' }),
+      }],
+    ];
+    for (const [url, init] of requests) {
+      const response = await fixture.app.request(url, {
+        ...init,
+        headers: auth(),
+      });
+      assert.equal(response.status, 404, `${init?.method ?? 'GET'} ${url}`);
+      assert.equal((await response.json() as { error: string }).error, 'not_found');
+    }
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('Agent creation reserves Chickpea system identities across id, name, and handle', async () => {
+  const fixture = harness();
+  try {
+    const cases = [
+      { id: 'agent_chickpea', name: 'Helper', handle: 'helper' },
+      { id: 'chick-pea', name: 'Helper', handle: 'helper' },
+      { id: 'agent_helper', name: 'CHICK_PEA', handle: 'helper' },
+      { id: 'agent_helper', name: 'Helper', handle: 'Chick pea!!' },
+    ];
+    for (const candidate of cases) {
+      const response = await fixture.app.request('http://localhost/admin/api/agents', {
+        method: 'POST',
+        headers: auth(),
+        body: JSON.stringify({
+          ...candidate,
+          instructions: 'Help people.',
+          enabled: true,
+          model: 'local-stub/admin-agent',
+        }),
+      });
+      assert.equal(response.status, 400, JSON.stringify(candidate));
+      assert.equal((await response.json() as { error: string }).error, 'invalid_request');
+    }
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('reusable MCP credentials cannot target an undeclared header', async () => {
   const fixture = harness();
   try {

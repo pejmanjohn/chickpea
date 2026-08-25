@@ -7,6 +7,8 @@
 // the args and reconstruct the identical error on the other side — never by
 // parsing them back out of the message.
 
+import type { AgentIdentityField } from './agent-id.ts';
+
 export class UnknownAgentError extends Error {
   constructor(readonly agentId: string) {
     super(`Unknown agent ${agentId}`);
@@ -31,6 +33,27 @@ export class AgentRevisionConflictError extends Error {
       `Agent ${agentId} changed (expected revision ${expectedRevision}, actual ${actualRevision})`,
     );
     this.name = 'AgentRevisionConflictError';
+  }
+}
+
+export class ReservedAgentIdentityError extends Error {
+  constructor(readonly field: AgentIdentityField) {
+    super(`The Agent ${field} is reserved for Chickpea`);
+    this.name = 'ReservedAgentIdentityError';
+  }
+}
+
+export class WorkspaceModelDefaultRevisionConflictError extends Error {
+  constructor(
+    readonly workspaceId: string,
+    readonly expectedRevision: number,
+    readonly actualRevision: number,
+  ) {
+    super(
+      `Workspace default ${workspaceId} changed ` +
+      `(expected revision ${expectedRevision}, actual ${actualRevision})`,
+    );
+    this.name = 'WorkspaceModelDefaultRevisionConflictError';
   }
 }
 
@@ -96,7 +119,14 @@ export class DisabledAgentError extends NoAssignmentError {
 }
 
 export class ModelResolutionError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly repair?: {
+      status: 'provider_setup_required' | 'unsupported';
+      providerId: string;
+      path: string;
+    },
+  ) {
     super(message);
     this.name = 'ModelResolutionError';
   }

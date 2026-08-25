@@ -11,7 +11,7 @@ import {
 
 function agent(id: string, name: string): CustomAgentConfig {
   return {
-    id, revision: 1, name, description: `${name} description`, instructions: 'Help.', enabled: true,
+    id, kind: 'user', revision: 1, name, description: `${name} description`, instructions: 'Help.', enabled: true,
     lifecycle: 'active', configurationGeneration: 1, skills: [], mcpServers: [],
     apiConnections: [], repositories: [],
     slackPresence: {
@@ -63,6 +63,6 @@ test('only the exact App Home Agent action produces a trusted selection', () => 
 test('App Home starts a native Agent thread without leaking the routing handle into the message', () => {
   assert.equal(
     agentAppHomeStarterMessage('Sprout'),
-    'Sprout is ready. Reply in this thread to start.',
+    'Sprout is ready.',
   );
 });

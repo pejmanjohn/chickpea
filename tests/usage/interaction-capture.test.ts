@@ -17,6 +17,9 @@ test('interaction classifier usage is assignment-scoped and content-free', async
       agentId: 'agent_default',
       agentLabel: 'Default',
       requestedModel: 'openai/gpt-5.2',
+      requesterMembershipId: 'membership_test',
+      executionPrincipalId: 'agent_default',
+      modelAttribution: { source: 'pinned', providerId: 'openai' },
       credentialRefId: null,
       credentialVersion: null,
       store,
@@ -38,6 +41,10 @@ test('interaction classifier usage is assignment-scoped and content-free', async
     assert.equal(detail?.operation.operationKind, 'interaction_classification');
     assert.equal(detail?.operation.runId, undefined);
     assert.equal(detail?.operation.channelId, 'C_TEST');
+    assert.equal(detail?.operation.requesterMembershipId, 'membership_test');
+    assert.equal(detail?.operation.executionPrincipalId, 'agent_default');
+    assert.equal(detail?.operation.modelSource, 'pinned');
+    assert.equal(detail?.operation.workspaceDefaultRevision, null);
     assert.equal(detail?.measurements[0]?.cacheReadTokens, 8);
     assert.equal(detail?.measurements[0]?.cacheWriteTokens, 2);
     assert.equal(detail?.measurements[0]?.totalTokens, 34);

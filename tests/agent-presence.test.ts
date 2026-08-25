@@ -70,6 +70,33 @@ test('publishing verifies actor membership, joins a public Channel, and creates 
   }
 });
 
+test('publishing activates a private Chickpea-created draft before enabling its Channel grant', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent({
+      ...agent('agent_support', 'Support Triage', 'support'),
+      enabled: false,
+      lifecycle: 'draft',
+    });
+
+    const result = await new AgentPresenceReconciler({ config, transport, now: () => NOW }).publish({
+      workspaceId: 'TACME',
+      agentId: 'agent_support',
+      channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada',
+      actorSlackUserId: 'UADA',
+    });
+
+    assert.equal(result.agent.enabled, true);
+    assert.equal(result.agent.lifecycle, 'active');
+    assert.equal(result.grant.status, 'active');
+    assert.equal(transport.createCalls, 1);
+  } finally {
+    config.close();
+  }
+});
+
 test('publication fails closed when the actor is not a member or Chickpea needs a private invite', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   try {
@@ -530,6 +557,7 @@ function crc32(value: Uint8Array): number {
 function agent(id: string, name: string, handle: string): CustomAgentConfig {
   return {
     id,
+    kind: 'user',
     revision: 1,
     name,
     instructions: `You are ${name}.`,

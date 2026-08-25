@@ -25,11 +25,12 @@ const enabled: RoutineCapability = {
 const config: EffectiveSlackConfig = {
   workspaceId: 'T_ACCEPT', channelId: 'C_ACCEPT', agentId: 'agent_accept',
   agent: {
-    id: 'agent_accept', revision: 1, name: 'Acceptance', instructions: 'Use current channel authority.',
+    id: 'agent_accept', kind: 'user', revision: 1, name: 'Acceptance', instructions: 'Use current channel authority.',
     enabled: true, model: 'anthropic/claude-haiku-4-5', skills: [], mcpServers: [],
     apiConnections: [], repositories: [],
   },
   model: 'anthropic/claude-haiku-4-5', provider: 'anthropic',
+  modelAttribution: { source: 'pinned', providerId: 'anthropic' },
   instructions: 'Use current channel authority.', instructionLayers: [],
 };
 const assignment: ResolvedAssignment = {

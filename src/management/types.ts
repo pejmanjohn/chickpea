@@ -39,6 +39,8 @@ export interface ManagementActorContext {
   userId: string;
   membershipId: string;
   organizationId: string;
+  /** Trusted executing Agent. Adapters derive this from routing, never model text. */
+  actingAgentId?: string;
   origin: ManagementOrigin;
 }
 
@@ -202,8 +204,24 @@ export type ManagementDisposition =
   | 'applied'
   | 'confirmation_required'
   | 'setup_required'
+  | 'chickpea_handoff'
   | 'failed'
   | 'skipped';
+
+export interface ChickpeaManagementHandoff {
+  kind: 'chickpea_handoff';
+  chickpeaAgentId: 'agent_chickpea';
+  actingAgentId: string;
+  requestedAction: ManagementOperation['kind'] | 'prepare_connector_setup' |
+    'discover_slack_channels' | 'test_mcp_connection' | 'inspect_routines' |
+    'inspect_memory' | 'export_workspace_recipe' | 'preview_workspace_recipe' |
+    'revoke_setup_link';
+  target: {
+    kind: 'agent' | 'workspace' | 'channel' | 'membership' | 'provider' | 'routine' | 'setup';
+    id: string;
+  };
+  instruction: string;
+}
 
 export interface ManagementObjectRef {
   kind: 'agent' | 'channel' | 'channel_grant' | 'membership' | 'provider' | 'memory' | 'routine';
@@ -220,6 +238,7 @@ export interface ManagementItemOutcome {
   setupOperationId?: string;
   setupUrl?: string;
   handoffUrl?: string;
+  handoff?: ChickpeaManagementHandoff;
   undoAvailable?: boolean;
   code?: string;
   warning?: string;
@@ -395,6 +414,8 @@ export interface ManagementWorkspaceSnapshot {
     id: 'anthropic' | 'openai' | 'openrouter';
     source: 'env' | 'stored' | 'missing';
     mutable: boolean;
+    workspaceDefaultAffected: boolean;
+    inheritingAgentCount: number;
     affectedAgents: Array<{ id: string; name: string }>;
   }>;
   team?: {
@@ -556,6 +577,15 @@ export class ManagementError extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+/** A successful, non-mutating transfer instruction for a user Agent. */
+export class ChickpeaHandoffRequired extends Error {
+  readonly name = 'ChickpeaHandoffRequired';
+
+  constructor(readonly handoff: ChickpeaManagementHandoff) {
+    super('Address Chickpea to continue this workspace-management request.');
   }
 }
 

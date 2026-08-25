@@ -4,6 +4,7 @@ import {
   type EffectiveSlackConfig,
 } from './effective-config.ts';
 import {
+  type AgentModelAttribution,
   type AgentSnapshot,
   type AgentSnapshotRootReference,
 } from './types.ts';
@@ -24,7 +25,8 @@ interface SnapshotRootRow {
   last_activity_at: number;
 }
 
-export const AGENT_SNAPSHOT_SCHEMA_VERSION = 2;
+export const AGENT_SNAPSHOT_SCHEMA_VERSION = 3;
+const READABLE_AGENT_SNAPSHOT_SCHEMA_VERSIONS = new Set([2, 3]);
 
 /**
  * Public async snapshot store. The write path is `putIfAbsent`, not a plain
@@ -80,9 +82,10 @@ export class SnapshotStoreLogic {
     }
     const snapshot = parseSnapshot(row.snapshot_json);
     if (
-      row.schema_version !== AGENT_SNAPSHOT_SCHEMA_VERSION ||
+      row.schema_version === null ||
+      !READABLE_AGENT_SNAPSHOT_SCHEMA_VERSIONS.has(row.schema_version) ||
       row.agent_id === null ||
-      snapshot?.schemaVersion !== AGENT_SNAPSHOT_SCHEMA_VERSION ||
+      snapshot?.schemaVersion !== row.schema_version ||
       snapshot.agentId !== row.agent_id
     ) {
       this.db.run('DELETE FROM agent_snapshots WHERE thread_key = ?', threadKey);
@@ -161,9 +164,8 @@ export class SnapshotStoreLogic {
       .all(
         `SELECT thread_key, agent_id, last_activity_at
          FROM agent_snapshots
-         WHERE schema_version = ? AND agent_id = ?
+         WHERE schema_version IN (2, 3) AND agent_id = ?
          ORDER BY last_activity_at DESC, thread_key`,
-        AGENT_SNAPSHOT_SCHEMA_VERSION,
         agentId,
       )
       .map((row) => {
@@ -203,8 +205,7 @@ export class SnapshotStoreLogic {
       'CREATE INDEX IF NOT EXISTS agent_snapshots_agent_live_idx ON agent_snapshots(agent_id, last_activity_at)',
     );
     this.db.run(
-      'DELETE FROM agent_snapshots WHERE schema_version IS NULL OR schema_version != ?',
-      AGENT_SNAPSHOT_SCHEMA_VERSION,
+      'DELETE FROM agent_snapshots WHERE schema_version IS NULL OR schema_version NOT IN (2, 3)',
     );
   }
 }
@@ -254,7 +255,11 @@ export async function getOrCreateSnapshot(
 export async function getOrReplaceSnapshotForRoute(
   store: AgentSnapshotStore,
   threadKey: string,
-  route: { agentId: string; agentGeneration: number },
+  route: {
+    agentId: string;
+    agentGeneration: number;
+    modelAttribution?: AgentModelAttribution;
+  },
   resolve: () => EffectiveSlackConfig | Promise<EffectiveSlackConfig>,
   now: () => number = Date.now,
 ): Promise<AgentSnapshot> {
@@ -262,7 +267,11 @@ export async function getOrReplaceSnapshotForRoute(
   const existingGeneration = existing?.agent.configurationGeneration ?? existing?.agent.revision;
   if (
     existing && existing.agentId === route.agentId &&
-    existingGeneration === route.agentGeneration
+    existingGeneration === route.agentGeneration &&
+    (!route.modelAttribution || sameModelAttribution(
+      existing.modelAttribution,
+      route.modelAttribution,
+    ))
   ) return existing;
   return store.replace(threadKey, snapshotFromEffectiveConfig(await resolve(), now()));
 }
@@ -274,6 +283,7 @@ export function snapshotFromEffectiveConfig(
   return {
     schemaVersion: AGENT_SNAPSHOT_SCHEMA_VERSION,
     ...resolvedAssignmentFromEffectiveConfig(config),
+    modelAttribution: config.modelAttribution,
     model: config.model,
     providerId: config.provider,
     instructions: config.instructions,
@@ -290,4 +300,14 @@ function parseSnapshot(raw: string): AgentSnapshot | undefined {
   } catch {
     return undefined;
   }
+}
+
+function sameModelAttribution(
+  left: AgentModelAttribution | undefined,
+  right: AgentModelAttribution,
+): boolean {
+  return left?.source === right.source &&
+    left.providerId === right.providerId &&
+    left.workspaceDefaultRevision === right.workspaceDefaultRevision &&
+    left.catalogRevision === right.catalogRevision;
 }

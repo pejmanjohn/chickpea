@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { hydrateSlackContextViaWebClient } from '../src/slack/web-client-context.ts';
+import {
+  hydrateSlackContextViaWebClient,
+  hydrateSlackPublicHandoffFallback,
+} from '../src/slack/web-client-context.ts';
+import {
+  boundedSlackPublicHandoff,
+  MAX_SLACK_PUBLIC_HANDOFF_CHARS,
+  reconcileSlackPublicContextMutation,
+} from '../src/slack/public-context.ts';
+import type { SlackPublicContextEntry } from '../src/config/types.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
 // Minimal WebClient stand-in: only conversations.replies is exercised for a
@@ -109,4 +119,106 @@ test('thread hydration rejects messages newer than the admitted trigger watermar
   assert.ok(texts.includes('msg 2'));
   assert.ok(!texts.includes('msg 3'));
   assert.ok(!texts.includes('msg 4'));
+});
+
+test('public handoff keeps the newest 20 visible messages within 12,000 characters', () => {
+  const entries: SlackPublicContextEntry[] = Array.from({ length: 25 }, (_, index) => ({
+    workspaceId: 'T1', channelId: 'C1', rootTs: '1000.0000',
+    messageTs: `${1001 + index}.0000`, role: 'human', text: `message ${index + 1}`,
+    updatedAt: index,
+  }));
+  entries.push({
+    workspaceId: 'T1', channelId: 'C1', rootTs: '1000.0000', messageTs: '2000.0000',
+    role: 'agent', agentId: 'agent_support', text: 'x'.repeat(20_000), updatedAt: 30,
+  });
+
+  const bounded = boundedSlackPublicHandoff(entries);
+  assert.ok(bounded.length <= 20);
+  assert.equal(bounded.at(-1)?.messageTs, '2000.0000');
+  assert.match(bounded.at(-1)?.text ?? '', /\[truncated\]$/);
+  assert.ok(
+    bounded.reduce((sum, message) => sum + message.text.length, 0) <=
+      MAX_SLACK_PUBLIC_HANDOFF_CHARS,
+  );
+});
+
+test('Slack edits and deletes reconcile only already-recorded public messages', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  try {
+    await store.putSlackPublicContext({
+      workspaceId: 'T1', channelId: 'C1', rootTs: '1000.0000',
+      messageTs: '1001.0000', role: 'human', text: 'Before edit',
+    });
+    assert.equal(await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', subtype: 'message_changed', channel: 'C1', ts: '1002.0000',
+      message: {
+        type: 'message', channel: 'C1', ts: '1001.0000', thread_ts: '1000.0000',
+        text: 'After edit',
+      },
+    }), true);
+    assert.equal(
+      (await store.listSlackPublicContext('T1', 'C1', '1000.0000'))[0]?.text,
+      'After edit',
+    );
+
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', subtype: 'message_changed', channel: 'C1', ts: '1003.0000',
+      message: {
+        type: 'message', channel: 'C1', ts: '1002.5000', thread_ts: '1000.0000',
+        text: 'Never admitted',
+      },
+    });
+    assert.equal(
+      (await store.listSlackPublicContext('T1', 'C1', '1000.0000')).length,
+      1,
+    );
+
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', subtype: 'message_deleted', channel: 'C1', ts: '1004.0000',
+      deleted_ts: '1001.0000',
+      previous_message: {
+        type: 'message', channel: 'C1', ts: '1001.0000', thread_ts: '1000.0000',
+      },
+    });
+    assert.deepEqual(await store.listSlackPublicContext('T1', 'C1', '1000.0000'), []);
+  } finally {
+    store.close();
+  }
+});
+
+test('legacy handoff fallback makes one request, excludes the trigger, and degrades empty', async () => {
+  let calls = 0;
+  const client = {
+    conversations: {
+      async replies() {
+        calls += 1;
+        return {
+          messages: [
+            { user: 'U1', text: 'Visible question', ts: '1001.0000' },
+            { bot_id: 'B1', text: 'Visible answer', ts: '1002.0000' },
+            { user: 'U1', text: 'Transfer now', ts: '2000.0000' },
+          ],
+          response_metadata: { next_cursor: 'ignored' },
+        };
+      },
+    },
+  };
+  const handoff = await hydrateSlackPublicHandoffFallback(
+    client as never,
+    threadTurn({ messageTs: '2000.0000', text: 'Transfer now' }),
+    'agent_previous',
+  );
+  assert.equal(calls, 1);
+  assert.deepEqual(handoff, [
+    { messageTs: '1001.0000', role: 'human', text: 'Visible question' },
+    {
+      messageTs: '1002.0000', role: 'agent', agentId: 'agent_previous',
+      text: 'Visible answer',
+    },
+  ]);
+
+  const failed = await hydrateSlackPublicHandoffFallback({
+    conversations: { replies: async () => { throw new Error('rate_limited'); } },
+  } as never, threadTurn(), 'agent_previous');
+  assert.deepEqual(failed, []);
 });

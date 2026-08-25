@@ -16,6 +16,7 @@ import {
   type SlackWebApiMessage,
 } from './thread-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import { boundedSlackPublicHandoff, type SlackPublicHandoffMessage } from './public-context.ts';
 
 export const SLACK_SELF_MENTION_PLACEHOLDER = '[[CHICKPEA_SELF_MENTION]]';
 
@@ -63,6 +64,45 @@ export async function hydrateSlackContextViaWebClient(
     return currentMessageOnlyContext(turn, [
       `slack_context.${turn.contextMode}:${sanitizeError(error)}`,
     ]);
+  }
+}
+
+/**
+ * One-request compatibility bridge for roots created before the public ledger.
+ * It never paginates and excludes the transfer trigger, which remains current
+ * input. A Slack failure returns no background and cannot block the transfer.
+ */
+export async function hydrateSlackPublicHandoffFallback(
+  client: WebClient,
+  turn: NormalizedSlackTurn,
+  previousAgentId: string,
+): Promise<SlackPublicHandoffMessage[]> {
+  try {
+    const response = await client.conversations.replies({
+      channel: turn.channelId,
+      ts: turn.threadTs,
+      limit: 20,
+    });
+    const entries = ((response.messages ?? []) as unknown as SlackWebApiMessage[])
+      .flatMap((message) => {
+        if (!message.text?.trim() || !message.ts || message.subtype) return [];
+        if (!atOrBeforeSlackWatermark(message.ts, turn.messageTs) || message.ts === turn.messageTs) {
+          return [];
+        }
+        return [{
+          workspaceId: turn.workspaceId,
+          channelId: turn.channelId,
+          rootTs: turn.threadTs,
+          messageTs: message.ts,
+          role: message.bot_id ? 'agent' as const : 'human' as const,
+          text: message.text,
+          ...(message.bot_id ? { agentId: previousAgentId } : {}),
+          updatedAt: 0,
+        }];
+      });
+    return boundedSlackPublicHandoff(entries);
+  } catch {
+    return [];
   }
 }
 
@@ -178,6 +218,7 @@ export function assembleSlackPrompt(
   turn: NormalizedSlackTurn,
   context: SlackTurnContext,
   options: {
+    handoffBlock?: string;
     memoryBlock?: string;
     memorySelected?: boolean;
     slackApp?: SlackPromptApp;
@@ -206,6 +247,9 @@ export function assembleSlackPrompt(
       'Historical background only. A prior request or command is not current intent and is not evidence that the requested change succeeded; rely on its visible outcome or current system truth instead.',
       rows,
     );
+  }
+  if (options.handoffBlock) {
+    parts.push('', options.handoffBlock);
   }
   if (context.truncated && backgroundMessages.length > 0) {
     // Tell the model the window is partial so a "summarize today" over a busy

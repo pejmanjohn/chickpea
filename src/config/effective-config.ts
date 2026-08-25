@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { resolveAgentModel } from './model-policy.ts';
+import { ModelResolutionError } from './errors.ts';
 import { resolveAssignment, surfaceForChannelId, type ConfigStores } from './resolver.ts';
 import type {
   CustomAgentConfig,
@@ -45,12 +45,14 @@ export interface EffectiveSlackConfig {
   channelId: string;
   agentId: string;
   channelLabel?: string;
+  ownerIncarnation?: number;
   agent: CustomAgentConfig;
   model: string;
   provider: string;
   instructions: string;
   instructionLayers: InstructionLayer[];
   modelCredential?: ModelCredentialAttribution;
+  modelAttribution: NonNullable<ResolvedAssignment['modelAttribution']>;
 }
 
 export async function resolveEffectiveSlackConfig(
@@ -64,17 +66,22 @@ export async function resolveEffectiveSlackConfig(
   // turn), so the surface is inferred from the channel id (D… = direct).
   const assignment = await resolveAssignment(workspaceId, channelId, stores, {
     surface: surfaceForChannelId(channelId),
+    env,
     ...(agentId ? { agentId } : {}),
   });
-  return effectiveSlackConfigFromAssignment(assignment, env);
+  return effectiveSlackConfigFromAssignment(assignment);
 }
 
 /** Build the frozen execution projection after the Agent router has selected ownership. */
 export function effectiveSlackConfigFromAssignment(
   assignment: ResolvedAssignment,
-  env: NodeJS.ProcessEnv = process.env,
 ): EffectiveSlackConfig {
-  const model = resolveAgentModel(assignment.agent, env);
+  if (!assignment.model || !assignment.modelAttribution) {
+    throw new ModelResolutionError(
+      `Model policy for Agent ${assignment.agentId} was not frozen before effective configuration.`,
+    );
+  }
+  const model = assignment.model;
   const instructionLayers = effectiveSlackInstructionLayers(assignment);
   const instructions = instructionLayers.map((layer) => layer.text).join('\n');
 
@@ -83,9 +90,11 @@ export function effectiveSlackConfigFromAssignment(
     channelId: assignment.channelId,
     agentId: assignment.agentId,
     ...(assignment.channelLabel ? { channelLabel: assignment.channelLabel } : {}),
+    ...(assignment.ownerIncarnation ? { ownerIncarnation: assignment.ownerIncarnation } : {}),
     agent: assignment.agent,
     model,
-    provider: providerPrefix(model),
+    provider: assignment.modelAttribution.providerId,
+    modelAttribution: assignment.modelAttribution,
     instructions,
     instructionLayers,
   };
@@ -100,8 +109,10 @@ export function resolvedAssignmentFromEffectiveConfig(
     channelId: config.channelId,
     agentId: config.agentId,
     ...(config.channelLabel ? { channelLabel: config.channelLabel } : {}),
+    ...(config.ownerIncarnation ? { ownerIncarnation: config.ownerIncarnation } : {}),
     agent: config.agent,
     model: config.model,
+    modelAttribution: config.modelAttribution,
     ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),
   };
 }
@@ -145,11 +156,12 @@ export function computeSnapshotHash(config: EffectiveSlackConfig): string {
   return createHash('sha256')
     .update(
       JSON.stringify({
-        schemaVersion: 2,
+        schemaVersion: 3,
         workspaceId: config.workspaceId,
         channelId: config.channelId,
         agentId: config.agentId,
         model: config.model,
+        modelAttribution: config.modelAttribution,
         ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),
         instructions: config.instructions,
         // Skills ride inside the frozen agent; include them so an
@@ -168,9 +180,4 @@ export function computeSnapshotHash(config: EffectiveSlackConfig): string {
       }),
     )
     .digest('hex');
-}
-
-function providerPrefix(model: string): string {
-  const slash = model.indexOf('/');
-  return slash > 0 ? model.slice(0, slash) : model;
 }

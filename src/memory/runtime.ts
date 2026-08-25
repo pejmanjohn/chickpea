@@ -12,7 +12,7 @@ import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 import {
   memoryEpochThreadKey,
   memoryQuarantineThreadKey,
-  slackThreadKey,
+  slackAgentThreadKey,
   workspaceManagementThreadKey,
 } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
@@ -110,7 +110,7 @@ export async function prepareMemoryTurn(input: {
   botUserId?: string;
   assignment: ResolvedAssignment;
 }): Promise<PreparedMemoryTurn> {
-  const baseKey = slackThreadKey(input.turn);
+  const baseKey = slackAgentThreadKey(input.turn, input.assignment);
   try {
     if (await isWorkspaceManagementTurn(input)) {
       return await prepareWorkspaceManagementTurn(input, baseKey);

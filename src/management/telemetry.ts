@@ -43,7 +43,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
   ]),
   outcome: new Set([
     'admitted', 'applied', 'completed', 'confirmation_required', 'delivered',
-    'denied', 'error', 'failed', 'partial', 'retry', 'setup_required',
+    'chickpea_handoff', 'denied', 'error', 'failed', 'partial', 'retry', 'setup_required',
     'skipped', 'success',
   ]),
   stage: new Set([
@@ -62,6 +62,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
 
 const REASON_TOKENS = new Set([
   'capability_scope_expansion', 'credential_replacement', 'dependency_not_applied',
+  'chickpea_handoff',
   'forbidden', 'idempotency_conflict', 'insufficient_scope', 'invalid_request',
   'invalid_state', 'invalid_token', 'live_access_denied', 'management_error',
   'missing_token', 'operation_in_progress', 'operation_not_found', 'other',

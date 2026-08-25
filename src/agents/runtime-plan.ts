@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
-import { resolveAgentModel } from '../config/model-policy.ts';
 import {
+  type AgentModelAttribution,
   type ApiConnectionConfig,
   type McpConnectionConfig,
   type ManagedBindingResourceConstraints,
@@ -10,8 +10,13 @@ import {
   type SkillConfig,
 } from '../config/types.ts';
 import { opaqueId } from '../work/admission.ts';
-import { slackThreadKey } from '../slack/thread-key.ts';
+import { slackAgentThreadKey } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
+import {
+  MAX_SLACK_PUBLIC_HANDOFF_CHARS,
+  MAX_SLACK_PUBLIC_HANDOFF_MESSAGES,
+  type SlackPublicHandoffMessage,
+} from '../slack/public-context.ts';
 import {
   projectEffectiveApiConnections,
   projectEffectiveManagedConnections,
@@ -20,7 +25,7 @@ import {
 import type { EffectiveConnectionAccount } from '../connections/types.ts';
 import type { PersonalConnectionAuthorizationOption } from '../connections/types.ts';
 
-export const RUNTIME_PLAN_SCHEMA_VERSION = 2 as const;
+export const RUNTIME_PLAN_SCHEMA_VERSION = 3 as const;
 export const DEFAULT_CONTINUITY_POLICY = 'slack-runtime-v3' as const;
 
 export type RuntimePlanSurface = 'channel_thread' | 'direct_message';
@@ -94,8 +99,15 @@ export interface RuntimePlanConnectionChoiceV2 {
   choices: Array<{ label: string; purpose?: string; scope: 'team' | 'personal' }>;
 }
 
+export interface RuntimePlanModelCredentialV3 {
+  credentialRefId: string;
+  version: number;
+  providerId: string;
+}
+
 export interface RuntimePlanV2 {
-  schemaVersion: typeof RUNTIME_PLAN_SCHEMA_VERSION;
+  /** V2 remains readable for already-admitted TurnJobs; new plans are V3. */
+  schemaVersion: 2 | typeof RUNTIME_PLAN_SCHEMA_VERSION;
   continuityPolicy: string;
   /** Durable profile identity used only by trusted live resource resolvers. */
   agentId: string;
@@ -112,8 +124,16 @@ export interface RuntimePlanV2 {
     agent: number;
     channel?: number;
   };
+  /** Ownership epoch frozen with the admitted turn. Required on V3. */
+  ownerIncarnation?: number;
+  /** Slack-visible history only, frozen when a new owner begins. */
+  handoffContext?: SlackPublicHandoffMessage[];
   conversation: RuntimePlanConversationV2;
   model: string;
+  /** Non-secret model policy facts frozen with the admitted turn. Required on V3. */
+  modelAttribution?: AgentModelAttribution;
+  /** Frozen credential epoch; values and labels never cross the boundary. */
+  modelCredential?: RuntimePlanModelCredentialV3;
   instructions: string;
   memoryEpoch: number;
   skills: RuntimePlanSkillV2[];
@@ -150,8 +170,10 @@ export interface CompileRuntimePlanV2Input {
  * trusted request-time resolvers own the current credential material.
  */
 export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimePlanV2 {
-  const conversationThreadTs = input.turn.sessionThreadTs ?? input.turn.threadTs;
-  const continuityKey = opaqueId('agent', slackThreadKey(input.turn));
+  const conversationThreadTs = input.assignment.runtimeContract === 'chickpea-v1'
+    ? input.turn.threadTs
+    : input.turn.sessionThreadTs ?? input.turn.threadTs;
+  const continuityKey = opaqueId('agent', slackAgentThreadKey(input.turn, input.assignment));
   const effectiveConnections = input.effectiveConnections ?? [];
   const mcpConnections = projectEffectiveMcpConnections(effectiveConnections);
   const apiConnections = projectEffectiveApiConnections(effectiveConnections);
@@ -177,6 +199,10 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
         ? { channel: input.assignment.channelRevision }
         : {}),
     },
+    ownerIncarnation: input.assignment.ownerIncarnation ?? 1,
+    ...(input.assignment.handoffContext?.length
+      ? { handoffContext: input.assignment.handoffContext.map((message) => ({ ...message })) }
+      : {}),
     conversation: {
       workspaceId: input.turn.workspaceId,
       channelId: input.turn.channelId,
@@ -184,7 +210,17 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
       surface: surfaceForTurn(input.turn),
       continuityKey,
     },
-    model: input.assignment.model ?? resolveAgentModel(input.assignment.agent),
+    model: requireFrozenModel(input.assignment),
+    modelAttribution: frozenModelAttribution(input.assignment),
+    ...(input.assignment.modelCredential
+      ? {
+          modelCredential: {
+            credentialRefId: input.assignment.modelCredential.credentialRefId,
+            version: input.assignment.modelCredential.version,
+            providerId: input.assignment.modelCredential.providerId,
+          },
+        }
+      : {}),
     instructions: input.instructions,
     memoryEpoch: input.memoryEpoch,
     skills: compileSkills(input.assignment.agent.skills),
@@ -257,8 +293,12 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'connectionAuthorizations',
     'connectionChoices',
     'configurationRevision',
+    'ownerIncarnation',
+    'handoffContext',
     'conversation',
     'model',
+    'modelAttribution',
+    'modelCredential',
     'instructions',
     'memoryEpoch',
     'skills',
@@ -276,10 +316,15 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'connectionAuthorizations',
     'connectionChoices',
     'managedConnections',
+    'ownerIncarnation',
+    'handoffContext',
+    'modelAttribution',
+    'modelCredential',
   ]);
-  if (record.schemaVersion !== RUNTIME_PLAN_SCHEMA_VERSION) {
-    throw new Error('Runtime plan schemaVersion must be 2.');
+  if (record.schemaVersion !== 2 && record.schemaVersion !== RUNTIME_PLAN_SCHEMA_VERSION) {
+    throw new Error('Runtime plan schemaVersion must be 2 or 3.');
   }
+  const schemaVersion = record.schemaVersion;
   const continuityPolicy = boundedString(record.continuityPolicy, 'continuityPolicy', 1, 80);
   const agentId = boundedString(record.agentId, 'agentId', 1, 128);
   const actorMembershipId = record.actorMembershipId === undefined
@@ -307,6 +352,21 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
   const configurationRevision = record.configurationRevision === undefined
     ? undefined
     : parseConfigurationRevision(record.configurationRevision);
+  const ownerIncarnation = record.ownerIncarnation === undefined
+    ? undefined
+    : positiveInteger(record.ownerIncarnation, 'ownerIncarnation');
+  const handoffContext = record.handoffContext === undefined
+    ? undefined
+    : parseHandoffContext(record.handoffContext);
+  const modelAttribution = record.modelAttribution === undefined
+    ? undefined
+    : parseModelAttribution(record.modelAttribution);
+  const modelCredential = record.modelCredential === undefined
+    ? undefined
+    : parseModelCredential(record.modelCredential);
+  if (schemaVersion === RUNTIME_PLAN_SCHEMA_VERSION && (!ownerIncarnation || !modelAttribution)) {
+    throw new Error('Runtime plan V3 requires ownerIncarnation and modelAttribution.');
+  }
   const conversationRecord = exactRecord(record.conversation, 'conversation', [
     'workspaceId',
     'channelId',
@@ -377,7 +437,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
   }
   const harnessRevision = sha256(record.harnessRevision, 'harnessRevision');
   const parsed: RuntimePlanV2 = {
-    schemaVersion: RUNTIME_PLAN_SCHEMA_VERSION,
+    schemaVersion,
     continuityPolicy,
     agentId,
     ...(actorMembershipId ? { actorMembershipId } : {}),
@@ -385,8 +445,12 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     ...(record.connectionAuthorizations === undefined ? {} : { connectionAuthorizations }),
     ...(record.connectionChoices === undefined ? {} : { connectionChoices }),
     ...(configurationRevision ? { configurationRevision } : {}),
+    ...(ownerIncarnation ? { ownerIncarnation } : {}),
+    ...(handoffContext?.length ? { handoffContext } : {}),
     conversation,
     model,
+    ...(modelAttribution ? { modelAttribution } : {}),
+    ...(modelCredential ? { modelCredential } : {}),
     instructions,
     memoryEpoch,
     skills,
@@ -556,7 +620,11 @@ function computeHarnessRevision(
       ...(plan.configurationRevision
         ? { configurationRevision: plan.configurationRevision }
         : {}),
+      ...(plan.ownerIncarnation ? { ownerIncarnation: plan.ownerIncarnation } : {}),
+      ...(plan.handoffContext?.length ? { handoffContext: plan.handoffContext } : {}),
       model: plan.model,
+      ...(plan.modelAttribution ? { modelAttribution: plan.modelAttribution } : {}),
+      ...(plan.modelCredential ? { modelCredential: plan.modelCredential } : {}),
       instructions: plan.instructions,
       memoryEpoch: plan.memoryEpoch,
       skills: plan.skills,
@@ -570,6 +638,35 @@ function computeHarnessRevision(
       artifactDestinationKind: plan.artifactDestination.kind,
     }))
     .digest('hex');
+}
+
+function parseHandoffContext(value: unknown): SlackPublicHandoffMessage[] {
+  const messages = arrayOf(value, 'handoffContext', (candidate) => {
+    const record = exactRecord(candidate, 'handoff context message', [
+      'messageTs',
+      'role',
+      'text',
+      'agentId',
+    ], ['agentId']);
+    const role = oneOf(record.role, 'handoff context role', ['human', 'agent'] as const);
+    const agentId = record.agentId === undefined
+      ? undefined
+      : boundedString(record.agentId, 'handoff context agentId', 1, 128);
+    if ((role === 'agent') !== Boolean(agentId)) {
+      throw new Error('Handoff Agent messages require exactly one Agent identity.');
+    }
+    return {
+      messageTs: boundedString(record.messageTs, 'handoff context messageTs', 1, 64),
+      role,
+      text: boundedString(record.text, 'handoff context text', 1, MAX_SLACK_PUBLIC_HANDOFF_CHARS),
+      ...(agentId ? { agentId } : {}),
+    };
+  }, MAX_SLACK_PUBLIC_HANDOFF_MESSAGES);
+  const total = messages.reduce((sum, message) => sum + message.text.length, 0);
+  if (total > MAX_SLACK_PUBLIC_HANDOFF_CHARS) {
+    throw new Error('Handoff context exceeds its character limit.');
+  }
+  return messages;
 }
 
 function parseConnectionAuthorization(value: unknown): RuntimePlanConnectionAuthorizationV2 {
@@ -639,6 +736,70 @@ function parseConfigurationRevision(
     ...(record.channel === undefined
       ? {}
       : { channel: positiveInteger(record.channel, 'configurationRevision.channel') }),
+  };
+}
+
+function parseModelAttribution(value: unknown): AgentModelAttribution {
+  const record = exactRecord(value, 'modelAttribution', [
+    'source',
+    'providerId',
+    'workspaceDefaultRevision',
+    'catalogRevision',
+  ], ['workspaceDefaultRevision', 'catalogRevision']);
+  const source = oneOf(record.source, 'modelAttribution.source', [
+    'workspace_default',
+    'pinned',
+    'legacy_environment',
+  ] as const);
+  const workspaceDefaultRevision = record.workspaceDefaultRevision === undefined
+    ? undefined
+    : positiveInteger(record.workspaceDefaultRevision, 'modelAttribution.workspaceDefaultRevision');
+  if (source === 'workspace_default' && !workspaceDefaultRevision) {
+    throw new Error('Workspace-default model attribution requires its revision.');
+  }
+  if (source !== 'workspace_default' && workspaceDefaultRevision) {
+    throw new Error('Only Workspace-default model attribution may carry its revision.');
+  }
+  return {
+    source,
+    providerId: boundedString(record.providerId, 'modelAttribution.providerId', 1, 128),
+    ...(workspaceDefaultRevision ? { workspaceDefaultRevision } : {}),
+    ...(record.catalogRevision === undefined
+      ? {}
+      : { catalogRevision: boundedString(record.catalogRevision, 'modelAttribution.catalogRevision', 1, 128) }),
+  };
+}
+
+function parseModelCredential(value: unknown): RuntimePlanModelCredentialV3 {
+  const record = exactRecord(value, 'modelCredential', [
+    'credentialRefId',
+    'version',
+    'providerId',
+  ]);
+  return {
+    credentialRefId: boundedString(record.credentialRefId, 'modelCredential.credentialRefId', 1, 256),
+    version: positiveInteger(record.version, 'modelCredential.version'),
+    providerId: boundedString(record.providerId, 'modelCredential.providerId', 1, 128),
+  };
+}
+
+function requireFrozenModel(assignment: ResolvedAssignment): string {
+  if (!assignment.model) {
+    throw new Error('Runtime plan compilation requires a frozen model.');
+  }
+  return assignment.model;
+}
+
+function frozenModelAttribution(assignment: ResolvedAssignment): AgentModelAttribution {
+  if (assignment.modelAttribution) return assignment.modelAttribution;
+  // Compatibility for a pre-V3 persisted TurnJob whose assignment predates
+  // source attribution. The already-frozen model remains authoritative; a
+  // retry must not re-run current Workspace policy to guess its old source.
+  const model = requireFrozenModel(assignment);
+  const separator = model.indexOf('/');
+  return {
+    source: 'legacy_environment',
+    providerId: separator > 0 ? model.slice(0, separator) : model,
   };
 }
 

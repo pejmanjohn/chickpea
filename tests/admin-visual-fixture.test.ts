@@ -14,13 +14,18 @@ interface VisualFixture {
   authStates: Record<string, { path: string }>;
   baseUrl: string;
   canonicalStates: Record<string, { path: string; actions: readonly string[] }>;
+  runtimeContract: 'legacy' | 'chickpea-v1';
   stateDbPath: string;
   stateDirectory: string;
   close(): Promise<void>;
 }
 
 interface VisualFixtureModule {
-  startAdminVisualFixture(options?: { host?: string; port?: number }): Promise<VisualFixture>;
+  startAdminVisualFixture(options?: {
+    host?: string;
+    port?: number;
+    runtimeContract?: 'legacy' | 'chickpea-v1';
+  }): Promise<VisualFixture>;
 }
 
 interface ChannelProjection {
@@ -202,6 +207,7 @@ test('canonical visual states use authenticated production URLs and UI actions o
     const authorization = `Bearer ${fixture.adminToken}`;
 
     assert.deepEqual(fixture.canonicalStates, {
+      settingsProviders: { path: '/admin/settings/providers', actions: [] },
       agentInstructions: { path: '/admin/agents/agent_research', actions: [] },
       agentBlankDescription: { path: '/admin/agents/agent_customer', actions: [] },
       agentMemory: { path: '/admin/agents/agent_research', actions: ['Memory'] },
@@ -227,6 +233,43 @@ test('canonical visual states use authenticated production URLs and UI actions o
     }
   } finally {
     await fixture.close();
+  }
+});
+
+test('visual fixture repeats pending and live Workspace-default contracts without exposing Chickpea', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+  for (const runtimeContract of ['legacy', 'chickpea-v1'] as const) {
+    const fixture = await startAdminVisualFixture({ runtimeContract });
+    try {
+      assert.equal(fixture.runtimeContract, runtimeContract);
+      const workspaceDefault = await fixtureJson<{
+        workspaceDefault: {
+          runtimeContract: string;
+          live: boolean;
+          modelId: string;
+          inheritingAgentCount: number;
+          health: { status: string };
+        };
+      }>(fixture, '/admin/api/workspace-model-default');
+      assert.deepEqual(workspaceDefault.workspaceDefault, {
+        runtimeContract,
+        live: runtimeContract === 'chickpea-v1',
+        modelId: 'local-stub/visual-review',
+        inheritingAgentCount: 1,
+        health: { status: 'ready', providerId: 'local-stub' },
+        provenance: 'installation_bootstrap',
+        revision: 1,
+        workspaceId: 'TVISUAL',
+      });
+
+      const agents = await fixtureJson<{ agents: AgentProjection[] }>(fixture, '/admin/api/agents');
+      assert.deepEqual(
+        agents.agents.map(({ id }) => id),
+        ['agent_customer', 'agent_release', 'agent_research'],
+      );
+    } finally {
+      await fixture.close();
+    }
   }
 });
 

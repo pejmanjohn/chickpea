@@ -1,7 +1,7 @@
 import type { AgentDispatchResult } from '../slack/flue-dispatch.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
-import type { ResolvedAssignment } from '../config/types.ts';
+import type { AgentModelAttribution, ResolvedAssignment } from '../config/types.ts';
 import type {
   AdmitUsageOperationInput,
   RecordUsageTerminalInput,
@@ -71,6 +71,9 @@ export class InteractiveUsageRecorder {
       channelId: options.turn.channelId,
       channelLabel: direct ? null : (options.assignment.channelLabel ?? options.turn.channelId),
       conversationKind: direct ? 'direct_message' : 'named_channel',
+      requesterMembershipId: options.turn.actorMembershipId ?? null,
+      executionPrincipalId: options.assignment.agentId,
+      ...modelPolicyUsage(options.assignment.modelAttribution),
       requestedProvider: requested.provider,
       requestedModel: requested.model,
       credentialRefId: options.assignment.modelCredential?.credentialRefId ?? null,
@@ -216,6 +219,9 @@ export interface RoutineUsageRecorderOptions {
   routineId: string;
   routineLabel: string;
   requestedModel: string | null;
+  requesterMembershipId?: string | null;
+  executionPrincipalId?: string | null;
+  modelAttribution?: AgentModelAttribution;
   credentialRefId: string | null;
   credentialVersion: number | null;
   store: UsageStore;
@@ -247,6 +253,9 @@ export interface InteractionUsageRecorderOptions {
   agentId: string | null;
   agentLabel: string | null;
   requestedModel: string | null;
+  requesterMembershipId?: string | null;
+  executionPrincipalId?: string | null;
+  modelAttribution?: AgentModelAttribution;
   credentialRefId: string | null;
   credentialVersion: number | null;
   store: UsageStore;
@@ -292,6 +301,9 @@ export class InteractionUsageRecorder {
       channelId: options.channelId,
       channelLabel: options.channelLabel ?? options.channelId,
       conversationKind: options.conversationKind ?? 'named_channel',
+      requesterMembershipId: options.requesterMembershipId ?? null,
+      executionPrincipalId: options.executionPrincipalId ?? options.agentId,
+      ...modelPolicyUsage(options.modelAttribution),
       requestedProvider: requested.provider,
       requestedModel: requested.model,
       credentialRefId: options.credentialRefId,
@@ -406,6 +418,9 @@ export class RoutineUsageRecorder {
       routineId: options.routineId,
       routineLabel: options.routineLabel,
       routineRunId: options.operationId,
+      requesterMembershipId: options.requesterMembershipId ?? null,
+      executionPrincipalId: options.executionPrincipalId ?? options.agentId,
+      ...modelPolicyUsage(options.modelAttribution),
       requestedProvider: requested.provider,
       requestedModel: requested.model,
       credentialRefId: options.credentialRefId,
@@ -509,6 +524,17 @@ function splitModelSpecifier(value: string | null): { provider: string | null; m
   const slash = value.indexOf('/');
   if (slash <= 0 || slash === value.length - 1) return { provider: value, model: value };
   return { provider: value.slice(0, slash), model: value.slice(slash + 1) };
+}
+
+function modelPolicyUsage(attribution: AgentModelAttribution | undefined): Pick<
+  AdmitUsageOperationInput,
+  'modelSource' | 'workspaceDefaultRevision' | 'catalogRevision'
+> {
+  return {
+    modelSource: attribution?.source ?? null,
+    workspaceDefaultRevision: attribution?.workspaceDefaultRevision ?? null,
+    catalogRevision: attribution?.catalogRevision ?? null,
+  };
 }
 
 function installationId(

@@ -334,6 +334,11 @@ test('every Agent receives shared Slack teammate defaults before voice overrides
       status: 'active', createdByMembershipId: 'membership_test',
     }],
   });
+  await store.ensureWorkspaceInstallation({
+    workspaceId: 'T_TEST',
+    transportMode: 'direct',
+    defaultAgentId: 'agent_custom',
+  });
   const config = await resolveEffectiveSlackConfig('T_TEST', 'C_TEST', {
     agents: store,
     grants: store,

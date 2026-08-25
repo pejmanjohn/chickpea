@@ -41,6 +41,15 @@ test('Slack sign-in is the only visible login path and preserves a safe Admin de
   assert.doesNotMatch(html, /password|forgot|sign up|cloudflare access|admin token|migrate/i);
 });
 
+test('Slack sign-in may resume one exact authenticated management setup path', () => {
+  const html = renderSlackSignInPage('/setup/setup_connector_123');
+  assert.match(html, /name="destination" value="\/setup\/setup_connector_123"/);
+  assert.doesNotMatch(
+    renderSlackSignInPage('/setup/setup_connector_123/complete'),
+    /value="\/setup\/setup_connector_123\/complete"/,
+  );
+});
+
 test('setup leads with Add to Slack and keeps the customer-owned app as a fallback', () => {
   const render = (state: SlackSetupTransaction['state']) => renderSlackSetupPage({
     setup: setup(state), destination: DESTINATION, manifest: MANIFEST,

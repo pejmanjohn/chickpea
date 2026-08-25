@@ -1105,6 +1105,16 @@ details[open].advanced summary::before {
 .badge-src.import-scripts { text-transform: none; letter-spacing: 0; }
 
 /* ---- settings: model-provider rows + favorites ---- */
+.workspace-default-card { background: var(--well); border-radius: 18px; display: flex; flex-direction: column; gap: 15px; padding: 18px; }
+.workspace-default-head { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 10px 14px; justify-content: space-between; }
+.workspace-default-copy { display: flex; flex-direction: column; gap: 4px; max-width: 650px; }
+.workspace-default-control { align-items: flex-end; display: grid; gap: 10px; grid-template-columns: minmax(260px, 1fr) auto; }
+.workspace-default-control .field { margin: 0; }
+.workspace-default-meta { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 12px; }
+@media (max-width: 620px) {
+  .workspace-default-control { align-items: stretch; grid-template-columns: 1fr; }
+  .workspace-default-control .btn { width: 100%; }
+}
 .prov-row { background: var(--well); border-radius: 18px; box-shadow: none; display: flex; flex-direction: column; }
 .prov-row + .prov-row { margin-top: 12px; }
 .prov-head { align-items: center; display: flex; flex-wrap: wrap; gap: 10px 12px; padding: 15px 18px; }
@@ -2930,6 +2940,13 @@ button.capability-pill { cursor: pointer; }
     connectorSettings: { provider: null, catalog: [], canConfigure: false, recoveryMode: false, impact: { accounts: 0, schedules: 0 }, loading: false, busy: "", error: "", notice: "", key: "", editing: false, confirm: "" },
     providerSettingsRequestId: 0,
     settingsError: "",
+    workspaceDefault: null,
+    workspaceDefaultLoaded: false,
+    workspaceDefaultDraft: "",
+    workspaceDefaultBusy: false,
+    workspaceDefaultError: "",
+    workspaceDefaultNotice: "",
+    workspaceDefaultRequestId: 0,
     modelCatalog: null,
     modelCatalogLoaded: false,
     modelCatalogError: "",
@@ -3266,7 +3283,7 @@ button.capability-pill { cursor: pointer; }
     return state.grants.filter(function (grant) { return grant.agentId === agentId; });
   }
 
-  function defaultAgent() {
+  function firstAgent() {
     return state.agents[0] || null;
   }
 
@@ -3812,7 +3829,7 @@ button.capability-pill { cursor: pointer; }
 
   function agentPlacementMeta(agent) {
     var channelCount = channelGrantsForAgent(agent.id).length;
-    return channelCountLabel(channelCount) + (agentHasDmDefault(agent.id) ? " + Direct messages" : "");
+    return channelCountLabel(channelCount);
   }
 
   function agentRosterAvatarHtml(agent) {
@@ -4610,8 +4627,8 @@ button.capability-pill { cursor: pointer; }
     if (!workspace || !channel) return '<div class="empty"><p class="field-error">The onboarding channel is unavailable.</p></div>';
     var deepLink = 'https://app.slack.com/client/' + encodeURIComponent(workspace.id) + '/' + encodeURIComponent(channel.id);
     if (complete) {
-      var completedAgentId = (state.onboarding && state.onboarding.agentId) || ((defaultAgent() && defaultAgent().id) || "");
-      var completedAgent = agentById(completedAgentId) || defaultAgent();
+      var completedAgentId = (state.onboarding && state.onboarding.agentId) || ((firstAgent() && firstAgent().id) || "");
+      var completedAgent = agentById(completedAgentId) || firstAgent();
       return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Reply confirmed in #' + esc(channel.name) + '</span>' +
         '<h1 class="onboarding-title">Chickpea is ready</h1>' +
         '<p class="onboarding-lede">Your setup is working. Continue in ' + esc((completedAgent && completedAgent.name) || "your Agent") + ' to shape what Chickpea knows and can do.</p>' +
@@ -5965,8 +5982,8 @@ button.capability-pill { cursor: pointer; }
     return connectedTeamId() || "your workspace";
   }
 
-  function defaultAgentName() {
-    var agent = defaultAgent();
+  function firstAgentName() {
+    var agent = firstAgent();
     return agent ? agent.name : "an Agent";
   }
 
@@ -5974,7 +5991,7 @@ button.capability-pill { cursor: pointer; }
   // profile page's "Add a new channel with this profile", else the Default.
   function addChannelAgentName() {
     var carried = agentById(state.addChannelAgentId);
-    return carried ? carried.name : defaultAgentName();
+    return carried ? carried.name : firstAgentName();
   }
 
   function findSlackChannel(channelId) {
@@ -6142,7 +6159,7 @@ button.capability-pill { cursor: pointer; }
     return profileOverviewHtml();
   }
 
-  function agentHasDmDefault(agentId) {
+  function agentHasLegacyDefaultReference(agentId) {
     var agent = agentById(agentId);
     return !!(agent && agent.isWorkspaceDefault);
   }
@@ -6193,17 +6210,17 @@ button.capability-pill { cursor: pointer; }
   }
 
   function profileCardHtml(agent) {
-    var dm = agentHasDmDefault(agent.id);
     var concrete = channelGrantsForAgent(agent.id);
-    var roleBadge = dm ? '<span class="badge badge-role"><span class="dot"></span>DM default</span>' : "";
     var stateBadge = agent.enabled
       ? '<span class="badge badge-on"><span class="dot"></span>Enabled</span>'
       : '<span class="badge badge-off"><span class="dot"></span>Disabled</span>';
-    var modelPart = agent.model ? '<span class="mono">' + esc(agent.model) + '</span>' : "No model pinned";
-    var usage = "used in " + channelCountLabel(concrete.length) + (dm ? " + DMs" : "");
+    var policy = agent.modelPolicy || {};
+    var source = agent.model ? "Pinned" : "Workspace default";
+    var modelPart = '<span class="badge-src">' + source + '</span> <span class="mono">' + esc(policy.effectiveModel || agent.model || "Not selected") + '</span>';
+    var usage = "used in " + channelCountLabel(concrete.length);
     var handle = (agent.slackPresence && agent.slackPresence.normalizedHandle) || handleFromAgentName(agent.name);
     var meta = modelPart + " &middot; " + usage + " &middot; @" + esc(handle);
-    return '<div class="pcard"><div class="pcard-head"><span class="pcard-name">' + esc(agent.name) + '</span>' + roleBadge + stateBadge + '</div>' +
+    return '<div class="pcard"><div class="pcard-head"><span class="pcard-name">' + esc(agent.name) + '</span>' + stateBadge + '</div>' +
       '<div class="pcard-foot"><span class="hint">' + meta + '</span><span class="spacer"></span>' +
       '<button type="button" class="btn btn-soft btn-sm" data-action="edit-profile" data-agent="' + esc(agent.id) + '">' + (agent.canEdit === false ? "View" : "Edit") + '</button></div></div>';
   }
@@ -6212,21 +6229,27 @@ button.capability-pill { cursor: pointer; }
 
   function modelFieldHtml(draft) {
     var model = draft.model || "";
+    var projected = draft.modelPolicy || {};
+    var workspaceModel = (state.workspaceDefault && state.workspaceDefault.modelId) ||
+      (projected.source === "workspace_default" ? projected.effectiveModel : "") || "";
+    var source = model ? "Pinned" : "Workspace default";
+    var effective = model || workspaceModel || "Not selected";
+    var sourceSummary = '<div class="workspace-default-meta"><span class="badge-src">' + source + '</span><span class="mono hint">' + esc(effective) + '</span></div>';
     if (draft.canEdit === false) {
-      return '<div class="field"><span class="field-label">Model</span><div class="input mono" aria-label="Agent model">' + esc(model || "No model pinned") + '</div></div>';
+      return '<div class="field"><span class="field-label">Model</span>' + sourceSummary + '<div class="input mono" aria-label="Agent model">' + esc(effective) + '</div></div>';
     }
     var warning = modelWarning(model);
     var open = state.modelPickerOpen;
     // Click-to-open combobox (F6): the input is always the current pin; clicking
     // or focusing it opens the grouped options popover below, and typing filters.
     // The popover is a positioned overlay so it never reflows the form.
-    return '<div class="field"><label class="field-label" for="p-model">Model</label>' +
+    return '<div class="field"><label class="field-label" for="p-model">Model</label>' + sourceSummary +
       '<div class="model-combo">' +
-      '<input class="input mono model-combo-input" id="p-model" name="model" type="text" value="' + esc(model) + '" autocomplete="off" role="combobox" aria-expanded="' + (open ? "true" : "false") + '" aria-haspopup="listbox" placeholder="Pick a model &mdash; none pinned" data-action="profile-model">' +
+      '<input class="input mono model-combo-input" id="p-model" name="model" type="text" value="' + esc(model) + '" autocomplete="off" role="combobox" aria-expanded="' + (open ? "true" : "false") + '" aria-haspopup="listbox" placeholder="' + esc(workspaceModel ? "Workspace default — " + workspaceModel : "Workspace default") + '" data-action="profile-model">' +
       icon("chevron-down", "model-combo-caret") +
       (open ? modelPickerHtml(model) : "") +
       '</div>' +
-      '<p class="hint">Suggestions come from your providers in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button></p>' +
+      '<p class="hint">' + (model ? 'This Agent stays on its pinned model until you <button type="button" class="link-btn" data-action="profile-model-reset">use the Workspace default</button>.' : 'This Agent follows live Workspace default changes.') + ' Manage choices in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button></p>' +
       (warning ? '<p class="field-error">' + esc(warning) + '</p>' : "") +
       '</div>';
   }
@@ -8589,16 +8612,16 @@ button.capability-pill { cursor: pointer; }
   // ---- Edit (card 11) + edge states (card 12) ------------------------------
 
   function profileDeletionState(draft) {
-    var dm = agentHasDmDefault(draft.id);
+    var legacyDefault = agentHasLegacyDefaultReference(draft.id);
     var concrete = channelGrantsForAgent(draft.id);
     var liveRoots = draft.deletion && Array.isArray(draft.deletion.liveSnapshotRoots) ? draft.deletion.liveSnapshotRoots.length : 0;
     var projectedBlocked = !!(draft.deletion && draft.deletion.blocked);
-    var blocked = dm || concrete.length > 0 || projectedBlocked;
+    var blocked = legacyDefault || concrete.length > 0 || projectedBlocked;
     var title = "This can\u2019t be undone.";
     var guidance = "Deleting this Agent cannot be undone.";
-    if (dm) {
-      title = "The DM default can\u2019t be deleted. Detach it everywhere first.";
-      guidance = "Choose another workspace Default Agent and remove every Channel grant before deleting this Agent.";
+    if (legacyDefault) {
+      title = "Move the legacy routing reference before deleting this Agent.";
+      guidance = "Choose another legacy default Agent and remove every Channel grant before deleting this Agent.";
     } else if (concrete.length) {
       title = "Detach it from every channel first.";
       guidance = "Detach it from every Channel before deleting this Agent.";
@@ -8624,7 +8647,7 @@ button.capability-pill { cursor: pointer; }
       state.profileReplacementDefaultAgentId = replacementCandidates[0].id;
     }
     var replacement = !archived && draft.isWorkspaceDefault
-      ? '<label class="agent-overflow-guidance" for="replacement-default-agent">Default Agent after archive</label>' +
+      ? '<label class="agent-overflow-guidance" for="replacement-default-agent">Legacy default Agent after archive</label>' +
         '<span class="select-wrap"><select class="input" id="replacement-default-agent" data-action="replacement-default-agent">' +
         (replacementCandidates.length
           ? replacementCandidates.map(function (agent) {
@@ -8804,15 +8827,10 @@ button.capability-pill { cursor: pointer; }
 
   function disableConfirmHtml(draft) {
     if (!state.disableConfirm) return "";
-    var dm = agentHasDmDefault(draft.id);
     var concrete = channelGrantsForAgent(draft.id);
     var scope;
-    if (concrete.length && dm) {
-      scope = "It stops answering in " + joinChannelNames(concrete, false) + " and in direct messages right away.";
-    } else if (concrete.length) {
+    if (concrete.length) {
       scope = "It stops answering in " + joinChannelNames(concrete, false) + " right away.";
-    } else if (dm) {
-      scope = "It stops answering direct messages right away.";
     } else {
       scope = "It stops answering right away.";
     }
@@ -8914,7 +8932,7 @@ button.capability-pill { cursor: pointer; }
       if (sawConfigured) {
         return html + '<div class="combo-foot">Star models in Settings to add picker shortcuts, or type any provider/model specifier.</div>' + settingsRow + '</div>';
       }
-      return html + '<div class="combo-group">no providers configured</div><div class="combo-foot">No provider keys on this install yet. Type any provider/model specifier to pin one now, or set <span class="mono" style="color:var(--text-2);">SLACK_TAG_MODEL</span> (<span class="mono" style="color:var(--text-2);">provider/model</span>) as an offline/dev fallback so an unpinned Agent still replies.</div>' + settingsRow + '</div>';
+      return html + '<div class="combo-group">no providers configured</div><div class="combo-foot">This Agent keeps following the Workspace default. Add or connect a provider in Settings before pinning a different model.</div>' + settingsRow + '</div>';
     }
     return html + settingsRow + '</div>';
   }
@@ -9892,6 +9910,7 @@ button.capability-pill { cursor: pointer; }
     var head = '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Settings</h1>' +
       '<p class="hint">Configure GitHub, model providers, and outbound internet access for the sandbox.</p></div>';
+    var workspaceDefaultSection = workspaceDefaultSectionHtml();
     var providerSection;
     if (state.settingsError) {
       providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2></div></div>' + modelCatalogStatusHtml() + '<p class="field-error">' + esc(state.settingsError) + '</p></section>';
@@ -9910,7 +9929,7 @@ button.capability-pill { cursor: pointer; }
     return head +
       settingsPanelHtml("slack", slackWorkspaceSettingsHtml()) +
       settingsPanelHtml("connectors", connectorsSettingsHtml()) +
-      settingsPanelHtml("providers", providerSection) +
+      settingsPanelHtml("providers", workspaceDefaultSection + providerSection) +
       settingsPanelHtml("github", githubSectionHtml()) +
       settingsPanelHtml("sandbox", sandboxSectionHtml()) +
       settingsPanelHtml("outbound", egressSectionHtml());
@@ -10022,6 +10041,64 @@ button.capability-pill { cursor: pointer; }
       ? "Chickpea will validate the new project before using it. If it belongs to a different project, preserved accounts will need to reconnect."
       : "Chickpea will pause managed execution and dependent schedules, but it will keep Agent bindings and remote Composio accounts so the same project can be reconnected later. A Runs as member must resume each affected schedule after connections recover.";
     return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="connector-settings-confirm-title" tabindex="-1" data-role="connector-settings-confirm-dialog"><h2 class="modal-title" id="connector-settings-confirm-title">' + esc(title) + '</h2><p class="modal-body">' + esc(detail) + '</p><p class="managed-impact">Affects ' + Number(impact.accounts || 0) + ' connected account' + (Number(impact.accounts || 0) === 1 ? '' : 's') + ' and ' + Number(impact.schedules || 0) + ' schedule' + (Number(impact.schedules || 0) === 1 ? '' : 's') + '.</p><div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="connector-settings-confirm-cancel">Cancel</button><span class="spacer"></span><button type="button" class="btn ' + (replacing ? 'btn-primary' : 'btn-danger') + '" data-action="connector-settings-confirm-apply">' + (replacing ? 'Validate and replace' : 'Disable in Chickpea') + '</button></div></div></div>';
+  }
+
+  function workspaceDefaultModelOptions() {
+    var values = [];
+    (state.models && state.models.providers ? state.models.providers : []).forEach(function (provider) {
+      if (!provider.configured) return;
+      if (provider.id === "cloudflare" && providerSummaryById("workers-ai").enabled === false) return;
+      var adminId = pickerAdminIdFor(provider.id);
+      var models = adminId == null ? (provider.suggestions || []) : pickerModelsFor(provider, adminId);
+      models.forEach(function (model) {
+        if (values.indexOf(model) < 0) values.push(model);
+      });
+    });
+    var current = String(state.workspaceDefaultDraft || "");
+    if (current && values.indexOf(current) < 0) values.unshift(current);
+    return values;
+  }
+
+  function workspaceDefaultSectionHtml() {
+    var current = state.workspaceDefault;
+    var head = '<section class="section workspace-default-section" aria-labelledby="workspace-default-heading"><div class="section-head"><div><h2 class="section-title" id="workspace-default-heading">Default model</h2><p class="hint">The shared model for Chickpea and every Agent that is not pinned.</p></div></div>';
+    if (!state.workspaceDefaultLoaded) {
+      return head + '<div class="workspace-default-card"><p class="hint">Loading Workspace default&hellip;</p></div></section>';
+    }
+    if (!current) {
+      return head + '<div class="workspace-default-card"><p class="field-error" role="alert">' + esc(state.workspaceDefaultError || "Connect Slack before choosing a Workspace default.") + '</p><a class="btn btn-soft btn-sm" href="/admin/settings/slack">Review Slack setup</a></div></section>';
+    }
+    var options = workspaceDefaultModelOptions();
+    var optionHtml = options.map(function (model) {
+      return '<option value="' + esc(model) + '"' + (model === state.workspaceDefaultDraft ? ' selected' : '') + '>' + esc(model) + '</option>';
+    }).join("");
+    if (!optionHtml) optionHtml = '<option value="">No configured models</option>';
+    var count = Number(current.inheritingAgentCount || 0);
+    var inheritors = count === 0
+      ? "Chickpea uses this model. No active Agents currently inherit it."
+      : "Chickpea and " + count + " active " + (count === 1 ? "Agent" : "Agents") + " use this model.";
+    var timing = current.live
+      ? "Changes apply to the next admitted message, including replies in existing threads."
+      : "Pending activation. Slack keeps its legacy model routing until this workspace is activated.";
+    var health = current.health || { status: "repair_required", providerId: null };
+    var healthBadge = health.status === "ready"
+      ? '<span class="badge badge-on"><span class="dot"></span>Ready</span>'
+      : health.status === "selection_required"
+        ? '<span class="badge badge-off"><span class="dot"></span>Choose a model</span>'
+        : '<span class="badge badge-off"><span class="dot"></span>Repair required</span>';
+    var repair = health.status === "repair_required"
+      ? '<a class="link-btn" href="/admin/settings/providers">Review ' + esc(health.providerId || "model") + ' provider settings</a>'
+      : "";
+    var changed = String(state.workspaceDefaultDraft || "") !== String(current.modelId || "");
+    var disabled = state.workspaceDefaultBusy ? " disabled" : "";
+    var status = state.workspaceDefaultError
+      ? '<p class="field-error" role="alert" aria-live="assertive">' + esc(state.workspaceDefaultError) + '</p>'
+      : state.workspaceDefaultNotice
+        ? '<p class="inline-status ok" role="status" aria-live="polite">' + esc(state.workspaceDefaultNotice) + '</p>'
+        : '<span class="sr-only" role="status" aria-live="polite"></span>';
+    return head + '<div class="workspace-default-card"><div class="workspace-default-head"><div class="workspace-default-copy"><span class="field-label">Workspace default</span><span class="hint">' + esc(inheritors) + '</span></div><div class="workspace-default-meta">' + healthBadge + (current.live ? '<span class="badge-src">Live</span>' : '<span class="badge-src">Pending activation</span>') + repair + '</div></div>' +
+      '<div class="workspace-default-control"><label class="field" for="workspace-default-model"><span class="field-label">Model</span><span class="select-wrap"><select class="input mono" id="workspace-default-model" data-action="workspace-default-model"' + disabled + '>' + optionHtml + '</select>' + icon("chevron-down", "select-caret") + '</span></label><button type="button" class="btn btn-primary" data-action="workspace-default-save"' + (!changed || state.workspaceDefaultBusy || !state.workspaceDefaultDraft ? " disabled" : "") + '>' + (state.workspaceDefaultBusy ? '<span class="spinner"></span>Saving&hellip;' : "Save default") + '</button></div>' +
+      '<p class="hint">' + esc(timing) + '</p>' + status + '</div></section>';
   }
 
   function connectionInventoryHtml() {
@@ -10265,19 +10342,32 @@ button.capability-pill { cursor: pointer; }
     var meta = providerMeta(id);
     var pinned = pinnedProfilesForProvider(id);
     var count = pinned.length;
+    var workspaceDefaultAffected = !!(state.workspaceDefault && state.workspaceDefault.live &&
+      modelBelongsToProvider(state.workspaceDefault.modelId, id));
+    var inheritingCount = workspaceDefaultAffected
+      ? Number(state.workspaceDefault.inheritingAgentCount || 0)
+      : 0;
     var names = joinNames(pinned.map(function (agent) {
       return '<span class="mono" style="color:var(--text);">' + esc(agent.name) + '</span>';
     }));
     var envNote = 'An <span class="mono" style="color:var(--text);">' + esc(meta.env) + '</span> in the environment, if set, still applies.';
     var lead = 'Remove the stored ' + esc(meta.name) + ' key? ';
-    var consequence;
-    if (count === 0) {
-      consequence = lead + 'No Agents are pinned to an ' + esc(meta.name) + ' model right now, so nothing stops answering. ' + envNote;
-    } else {
-      consequence = lead + '<b style="font-weight:500; color:var(--text);">' + count + ' Agent' + (count === 1 ? "" : "s") + '</b> ' + (count === 1 ? "is" : "are") +
-        ' pinned to an ' + esc(meta.name) + ' model &mdash; ' + names + '. They keep their pin, but until an ' + esc(meta.name) +
-        ' key returns each fails at reply time: the thread gets one sanitized line &mdash; <i>&ldquo;I reached the Slack thread, but the model provider call failed before completion.&rdquo;</i> &mdash; and no provider error leaks to Slack. Re-pin them to another provider to keep answering. ' + envNote;
+    var impacts = [];
+    if (workspaceDefaultAffected) {
+      impacts.push('<b style="font-weight:500; color:var(--text);">Workspace default</b> uses an ' + esc(meta.name) +
+        ' model. Chickpea' + (inheritingCount > 0
+          ? ' and <b style="font-weight:500; color:var(--text);">' + inheritingCount + ' active Agent' + (inheritingCount === 1 ? '' : 's') + '</b> inheriting it'
+          : '') + ' will stop answering until that default or credential is repaired.');
     }
+    if (count > 0) {
+      impacts.push('<b style="font-weight:500; color:var(--text);">' + count + ' Agent' + (count === 1 ? "" : "s") + '</b> ' + (count === 1 ? "is" : "are") +
+        ' pinned to an ' + esc(meta.name) + ' model &mdash; ' + names + '. ' + (count === 1 ? 'It keeps its pin' : 'They keep their pins') +
+        ', but each will fail at reply time until the credential returns or the Agent is re-pinned.');
+    }
+    var consequence = lead + (impacts.length
+      ? impacts.join(' ')
+      : 'No Agent pin or Workspace default currently depends on ' + esc(meta.name) + '.') +
+      ' Provider failures stay sanitized in Slack. ' + envNote;
     var errLine = summary && provUiFor(id).removeError ? '<p class="field-error">' + esc(provUiFor(id).removeError) + '</p>' : "";
     return '<div class="callout">' + icon("exclamation-triangle", "ic-l g") + '<span>' + consequence + '</span></div>' + errLine +
       '<div style="display:flex; gap:10px;">' +
@@ -10416,6 +10506,8 @@ button.capability-pill { cursor: pointer; }
     state.sandboxError = "";
     state.modelCatalogLoaded = false;
     state.modelCatalogError = "";
+    state.workspaceDefaultError = "";
+    state.workspaceDefaultNotice = "";
     if (state.settingsSection === "slack") {
       render();
       return;
@@ -10431,6 +10523,7 @@ button.capability-pill { cursor: pointer; }
     }
     render();
     loadSettings(generation).then(function () { renderSettingsLoad(generation); });
+    loadWorkspaceDefault(generation).then(function () { renderSettingsLoad(generation); });
     loadModelCatalogStatus(generation).then(function () { renderSettingsLoad(generation); });
     loadGithubStatus(generation).then(function () { renderSettingsLoad(generation); });
     loadEgress(generation).then(function () { renderSettingsLoad(generation); });
@@ -10886,6 +10979,65 @@ button.capability-pill { cursor: pointer; }
       if (requestId !== state.providerSettingsRequestId || !settingsLoadIsCurrent(generation)) return;
       state.settingsError = error.message;
       state.settingsLoaded = true;
+    });
+  }
+
+  function applyWorkspaceDefault(value, preserveDraft) {
+    state.workspaceDefault = value || null;
+    state.workspaceDefaultLoaded = true;
+    if (!preserveDraft) state.workspaceDefaultDraft = (value && value.modelId) || "";
+  }
+
+  function loadWorkspaceDefault(generation) {
+    var requestId = ++state.workspaceDefaultRequestId;
+    state.workspaceDefaultError = "";
+    return api("/admin/api/workspace-model-default", { cache: "no-store" }).then(function (body) {
+      if (requestId !== state.workspaceDefaultRequestId || !settingsLoadIsCurrent(generation)) return;
+      applyWorkspaceDefault(body.workspaceDefault, false);
+    }).catch(function (error) {
+      if (requestId !== state.workspaceDefaultRequestId || !settingsLoadIsCurrent(generation)) return;
+      state.workspaceDefaultLoaded = true;
+      state.workspaceDefaultError = (error && (error.serverMessage || error.message)) || "Could not load the Workspace default.";
+    });
+  }
+
+  function saveWorkspaceDefault() {
+    var current = state.workspaceDefault;
+    var modelId = String(state.workspaceDefaultDraft || "").trim();
+    if (state.workspaceDefaultBusy || !current) return;
+    if (!/^[^/]+[/].+$/.test(modelId)) {
+      state.workspaceDefaultError = "Choose a provider/model value.";
+      state.workspaceDefaultNotice = "";
+      render();
+      focusAction("workspace-default-model");
+      return;
+    }
+    state.workspaceDefaultBusy = true;
+    state.workspaceDefaultError = "";
+    state.workspaceDefaultNotice = "";
+    render();
+    postJson("/admin/api/workspace-model-default", "PUT", {
+      modelId: modelId,
+      expectedRevision: current.revision
+    }).then(function (body) {
+      applyWorkspaceDefault(body.workspaceDefault, false);
+      state.workspaceDefaultBusy = false;
+      state.workspaceDefaultNotice = body.workspaceDefault.live
+        ? "Workspace default saved. New messages use it when their turn is admitted."
+        : "Provisional Workspace default saved. It becomes live when this workspace is activated.";
+      render();
+      focusAction("workspace-default-model");
+    }).catch(function (error) {
+      state.workspaceDefaultBusy = false;
+      var conflict = error && error.payload && error.payload.error === "workspace_model_default_revision_conflict";
+      if (conflict && error.payload.workspaceDefault) {
+        applyWorkspaceDefault(error.payload.workspaceDefault, true);
+        state.workspaceDefaultError = "The Workspace default changed in another session. Your selection is preserved; save again to replace the current value.";
+      } else {
+        state.workspaceDefaultError = (error && (error.serverMessage || error.message)) || "Could not save the Workspace default.";
+      }
+      render();
+      focusAction("workspace-default-model");
     });
   }
 
@@ -11456,6 +11608,7 @@ button.capability-pill { cursor: pointer; }
       instructions: agent.instructions,
       enabled: agent.enabled,
       model: agent.model || "",
+      modelPolicy: agent.modelPolicy ? JSON.parse(JSON.stringify(agent.modelPolicy)) : null,
       // Deep-copy each skill so the inline editor never mutates the shared
       // state.agents entry — a discard/reopen must show the persisted values.
       skills: (agent.skills || []).map(function (skill) {
@@ -11688,7 +11841,7 @@ button.capability-pill { cursor: pointer; }
       state.onboarding = body;
       state.onboardingError = "";
       if (previousStage === "try" && body.stage === "complete") {
-        var destination = agentById(body.agentId) || defaultAgent();
+        var destination = agentById(body.agentId) || firstAgent();
         if (destination) {
           openProfileEditor(destination);
           return body;
@@ -11736,7 +11889,7 @@ button.capability-pill { cursor: pointer; }
     var channelId = String(formData.get("channelSelect") || state.onboardingChannelSelected || "").trim();
     var channel = findSlackChannel(channelId);
     var workspace = state.onboarding.workspace;
-    var agent = state.agents.find(function (candidate) { return candidate.id === "agent_default"; }) || defaultAgent();
+    var agent = state.agents.find(function (candidate) { return candidate.id === "agent_default"; }) || firstAgent();
     if (!channel) {
       state.onboardingError = "Choose a channel.";
       render();
@@ -11788,7 +11941,7 @@ button.capability-pill { cursor: pointer; }
     }).then(function (body) {
       state.onboarding = body;
       state.onboardingBusy = false;
-      var destination = agentById(body.agentId) || defaultAgent();
+      var destination = agentById(body.agentId) || firstAgent();
       if (destination) openProfileEditor(destination);
       else render();
     }).catch(function (error) {
@@ -11866,7 +12019,8 @@ button.capability-pill { cursor: pointer; }
         return { channels: body.channels || [], error: "" };
       }).catch(function (error) {
         return { channels: [], error: (error && (error.serverMessage || error.message)) || "Could not load Channels." };
-      })
+      }),
+      api("/admin/api/workspace-model-default", { cache: "no-store" }).catch(function () { return null; })
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
       state.grants = [];
@@ -11888,6 +12042,7 @@ button.capability-pill { cursor: pointer; }
         });
       });
       state.channelIndexError = parts[5].error;
+      if (parts[6] && parts[6].workspaceDefault) applyWorkspaceDefault(parts[6].workspaceDefault, false);
       syncChannelFormWorkspacePrefill();
       if (renderAfterRefresh) renderAfterRefresh();
       else render();
@@ -12533,6 +12688,7 @@ button.capability-pill { cursor: pointer; }
     }
     if (action === "egress-save") { saveEgress(); }
     if (action === "model-catalog-refresh") { refreshModelCatalogFromSettings(); }
+    if (action === "workspace-default-save") { saveWorkspaceDefault(); }
     if (action === "prov-add-key") { openProviderPaste(target.getAttribute("data-provider"), "add"); }
     if (action === "prov-change-key") { openProviderPaste(target.getAttribute("data-provider"), "change"); }
     if (action === "prov-cancel-key") { closeProviderPaste(target.getAttribute("data-provider")); }
@@ -12557,6 +12713,14 @@ button.capability-pill { cursor: pointer; }
     // the filter in the input listener below.
     if (action === "profile-model") { openModelPicker(); }
     if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); state.profileDirty = true; closeModelPicker(); }
+    if (action === "profile-model-reset" && state.profileDraft) {
+      state.profileDraft.model = "";
+      state.modelPickerOpen = false;
+      state.modelPickerFilter = "";
+      markProfileDirty();
+      render();
+      focusAction("profile-model");
+    }
     if (action === "agent-overflow-toggle" && state.profileDraft) {
       state.profileOverflowOpen = !state.profileOverflowOpen;
       var overflowOpening = state.profileOverflowOpen;
@@ -13111,6 +13275,13 @@ button.capability-pill { cursor: pointer; }
       render();
     }
     if (action === "workers-ai-enabled") setWorkersAiEnabled(!!target.checked);
+    if (action === "workspace-default-model" && !state.workspaceDefaultBusy) {
+      state.workspaceDefaultDraft = target.value;
+      state.workspaceDefaultError = "";
+      state.workspaceDefaultNotice = "";
+      render();
+      focusAction("workspace-default-model");
+    }
     if (action === "team-member-status") {
       updateTeamMembership(target.getAttribute("data-membership") || "", "status", target.value);
     }
@@ -13668,7 +13839,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function openHome() {
-    var homeAgent = defaultAgent();
+    var homeAgent = firstAgent();
     if (homeAgent) openProfileEditor(homeAgent);
     else enterProfiles(null);
   }
@@ -13909,7 +14080,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function addChannel(formData) {
-    var agent = agentById(state.addChannelAgentId) || defaultAgent();
+    var agent = agentById(state.addChannelAgentId) || firstAgent();
     var fail = function (message) { state.addChannelError = message; render(); };
     if (!agent) { fail("Create an Agent before adding a Channel."); return; }
     if (!isSlackConnected()) { fail("Connect @Chickpea first."); return; }
@@ -15170,7 +15341,7 @@ button.capability-pill { cursor: pointer; }
     } else if (action === "new-profile") {
       openNewProfile();
     } else if (action === "open-profiles") {
-      enterProfiles((pending && pending.agent) || state.profileLastAgentId || ((defaultAgent() && defaultAgent().id) || ""));
+      enterProfiles((pending && pending.agent) || state.profileLastAgentId || ((firstAgent() && firstAgent().id) || ""));
     } else if (action === "open-settings") {
       openSettings((pending && pending.section) || "");
     } else if (action === "open-audit") {
@@ -16052,6 +16223,7 @@ function slackWorkspaceLabel(workspace?: SlackAuthWorkspace): string {
 }
 
 function safeSlackPageDestination(value: string): string {
+  if (/^\/setup\/setup_[A-Za-z0-9_-]{1,128}$/.test(value)) return value;
   if (!/^\/admin(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/.test(value)) return '/admin';
   try {
     const parsed = new URL(value, 'https://chickpea.invalid');

@@ -30,6 +30,10 @@ test('Slack login accepts only Admin pages or an opaque MCP continuation', () =>
   );
   assert.equal(safeSlackLoginDestination('/admin/team'), '/admin/team');
   assert.equal(
+    safeSlackLoginDestination('/setup/setup_connector_123'),
+    '/setup/setup_connector_123',
+  );
+  assert.equal(
     safeSlackLoginDestination('/admin/agents/agent_support/connections/new/gmail/member'),
     '/admin/agents/agent_support/connections/new/gmail/member',
   );

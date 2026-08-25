@@ -80,6 +80,11 @@ interface OperationRow {
   routine_id: string | null;
   routine_label: string | null;
   routine_run_id: string | null;
+  requester_membership_id: string | null;
+  execution_principal_id: string | null;
+  model_source: UsageOperation['modelSource'];
+  workspace_default_revision: number | null;
+  catalog_revision: string | null;
   requested_provider: string | null;
   requested_model: string | null;
   credential_ref_id: string | null;
@@ -166,6 +171,8 @@ const OPERATION_COLUMNS = `
   operation_id, operation_kind, source_id, run_id, status, started_at, finished_at,
   installation_id, workspace_id, profile_id, profile_label, channel_id,
   channel_label, conversation_kind, routine_id, routine_label, routine_run_id,
+  requester_membership_id, execution_principal_id, model_source,
+  workspace_default_revision, catalog_revision,
   requested_provider, requested_model, credential_ref_id, credential_version,
   coverage, telemetry_schema_version, created_at, updated_at`;
 
@@ -208,7 +215,7 @@ export class UsageStoreLogic {
       const recordedAt = this.now();
       this.db.run(
         `INSERT INTO usage_operations (${OPERATION_COLUMNS}) VALUES (
-          ?, ?, ?, ?, 'admitted', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, 'admitted', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
           'aggregate_only', ?, ?, ?
         )`,
         input.operationId,
@@ -226,6 +233,11 @@ export class UsageStoreLogic {
         input.routineId ?? null,
         input.routineLabel ?? null,
         input.routineRunId ?? null,
+        input.requesterMembershipId ?? null,
+        input.executionPrincipalId ?? null,
+        input.modelSource ?? null,
+        input.workspaceDefaultRevision ?? null,
+        input.catalogRevision ?? null,
         input.requestedProvider,
         input.requestedModel,
         input.credentialRefId,
@@ -1127,6 +1139,11 @@ export class UsageStoreLogic {
         routine_id TEXT,
         routine_label TEXT,
         routine_run_id TEXT,
+        requester_membership_id TEXT,
+        execution_principal_id TEXT,
+        model_source TEXT,
+        workspace_default_revision INTEGER,
+        catalog_revision TEXT,
         requested_provider TEXT,
         requested_model TEXT,
         credential_ref_id TEXT,
@@ -1303,6 +1320,20 @@ export class UsageStoreLogic {
     if (!measurementColumns.some((row) => row.name === 'cache_write_tokens')) {
       this.db.exec('ALTER TABLE usage_measurements ADD COLUMN cache_write_tokens INTEGER');
     }
+    const operationColumns = new Set(
+      this.db.all('PRAGMA table_info(usage_operations)').map((row) => String(row.name)),
+    );
+    for (const [name, definition] of [
+      ['requester_membership_id', 'TEXT'],
+      ['execution_principal_id', 'TEXT'],
+      ['model_source', 'TEXT'],
+      ['workspace_default_revision', 'INTEGER'],
+      ['catalog_revision', 'TEXT'],
+    ] as const) {
+      if (!operationColumns.has(name)) {
+        this.db.exec(`ALTER TABLE usage_operations ADD COLUMN ${name} ${definition}`);
+      }
+    }
     const rollupColumns = this.db.all('PRAGMA table_info(usage_daily_rollups)');
     if (!rollupColumns.some((row) => row.name === 'cache_read_tokens')) {
       this.db.exec('ALTER TABLE usage_daily_rollups ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0');
@@ -1446,6 +1477,11 @@ function mapOperation(row: OperationRow): UsageOperation {
     routineId: row.routine_id,
     routineLabel: row.routine_label,
     routineRunId: row.routine_run_id,
+    requesterMembershipId: row.requester_membership_id,
+    executionPrincipalId: row.execution_principal_id,
+    modelSource: row.model_source,
+    workspaceDefaultRevision: nullableNumber(row.workspace_default_revision),
+    catalogRevision: row.catalog_revision,
     requestedProvider: row.requested_provider,
     requestedModel: row.requested_model,
     credentialRefId: row.credential_ref_id,
@@ -1584,6 +1620,11 @@ function sameAdmission(operation: UsageOperation, input: AdmitUsageOperationInpu
     operation.routineId === (input.routineId ?? null) &&
     operation.routineLabel === (input.routineLabel ?? null) &&
     operation.routineRunId === (input.routineRunId ?? null) &&
+    operation.requesterMembershipId === (input.requesterMembershipId ?? null) &&
+    operation.executionPrincipalId === (input.executionPrincipalId ?? null) &&
+    operation.modelSource === (input.modelSource ?? null) &&
+    operation.workspaceDefaultRevision === (input.workspaceDefaultRevision ?? null) &&
+    operation.catalogRevision === (input.catalogRevision ?? null) &&
     operation.requestedProvider === input.requestedProvider &&
     operation.requestedModel === input.requestedModel &&
     operation.credentialRefId === input.credentialRefId &&

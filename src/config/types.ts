@@ -120,6 +120,7 @@ export interface AgentReferenceSummary {
 }
 
 export type AgentLifecycle = 'draft' | 'active' | 'needs_attention' | 'archived';
+export type AgentKind = 'user' | 'system';
 export type AgentEditPolicy = 'creator_and_admins' | 'all_workspace_members';
 export type AgentPresenceDesiredState = 'unpublished' | 'active' | 'disabled';
 export type AgentPresenceHealth =
@@ -164,6 +165,8 @@ export interface AgentSlackPresence {
 
 export interface CustomAgentConfig {
   id: string;
+  /** System Agents are product-owned and never appear in user-Agent administration. */
+  kind: AgentKind;
   /** Durable optimistic-concurrency token. Persisted agents always expose it. */
   revision: number;
   name: string;
@@ -186,12 +189,109 @@ export interface CustomAgentConfig {
 
 export type SlackTransportMode = 'direct' | 'gateway';
 export type InstallationHealth = 'pending' | 'healthy' | 'needs_attention' | 'revoked';
+export type WorkspaceRuntimeContract = 'legacy' | 'chickpea-v1';
+
+export type WorkspaceModelDefaultProvenance =
+  | 'installation_bootstrap'
+  | 'migrated_agent'
+  | 'migrated_environment'
+  | 'migration_pending'
+  | 'admin_selected';
+
+/** Live Workspace model policy. Provider readiness is derived, not persisted here. */
+export interface WorkspaceModelDefault {
+  workspaceId: string;
+  /** Missing while migration or installation requires an administrator to choose a model. */
+  modelId?: string;
+  revision: number;
+  provenance: WorkspaceModelDefaultProvenance;
+  lastChangedByMembershipId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface WorkspaceModelDefaultInput {
+  workspaceId: string;
+  modelId?: string;
+  provenance: WorkspaceModelDefaultProvenance;
+  lastChangedByMembershipId?: string;
+}
+
+export type ChickpeaCutoverModelClassification =
+  | 'untouched_cloudflare_starter'
+  | 'explicit_agent_pin'
+  | 'environment_default'
+  | 'model_missing';
+
+export type ChickpeaCutoverState = 'prepared' | 'activated' | 'rolled_back';
+
+/** Non-secret Stage 1 evidence. Provider health is joined at the operator boundary. */
+export interface ChickpeaCutoverPreflight {
+  workspaceId: string;
+  state: ChickpeaCutoverState;
+  runtimeContract: WorkspaceRuntimeContract;
+  installationRevision: number;
+  defaultModelId?: string;
+  defaultRevision: number;
+  defaultProvenance: WorkspaceModelDefaultProvenance;
+  modelClassification: ChickpeaCutoverModelClassification;
+  systemPrincipalCount: number;
+  validChickpeaPrincipalCount: number;
+  routeCount: number;
+  routeBackfillCount: number;
+  pinnedAgentCount: number;
+  inheritingAgentCount: number;
+  starterPinClearCount: number;
+  uncertainStarterPinCount: number;
+  collisions: Array<{
+    agentId: string;
+    field: 'id' | 'name' | 'handle' | 'system_principal';
+  }>;
+  blockers: Array<
+    | 'workspace_default_missing'
+    | 'reserved_identity_collision'
+    | 'system_principal_invalid'
+  >;
+}
+
+export interface PrepareChickpeaCutoverInput {
+  workspaceId: string;
+  /** Captured once during Stage 1; never consulted by activated runtime policy. */
+  legacyEnvironmentModel?: string;
+}
+
+export interface ActivateChickpeaCutoverInput {
+  workspaceId: string;
+  expectedInstallationRevision: number;
+  expectedDefaultRevision: number;
+  /** Static catalog and credential preflight result from the trusted operator boundary. */
+  defaultReady: boolean;
+}
+
+export interface ChickpeaCutoverActivation {
+  workspaceId: string;
+  runtimeContract: WorkspaceRuntimeContract;
+  installationRevision: number;
+  defaultRevision: number;
+  systemAgentId: string;
+  routeCount: number;
+  routeBackfillCount: number;
+  starterPinCleared: boolean;
+  starterPinPreserved: boolean;
+  activatedAt: number;
+}
+
+export interface RollbackChickpeaCutoverInput {
+  workspaceId: string;
+  expectedInstallationRevision: number;
+}
 
 /** One Slack installation per deployed workspace; never a user-facing identity. */
 export interface WorkspaceInstallation {
   workspaceId: string;
   revision: number;
   transportMode: SlackTransportMode;
+  runtimeContract: WorkspaceRuntimeContract;
   defaultAgentId: string;
   teamId?: string;
   appId?: string;
@@ -211,10 +311,14 @@ export interface EnsureWorkspaceInstallationInput {
   appId?: string;
   botUserId?: string;
   gatewayBindingId?: string;
+  /** Internal fleet gate. Omitted by the Stage 1 compatibility build. */
+  runtimeContract?: WorkspaceRuntimeContract;
 }
 
 export interface WorkspaceInstallationPatch {
   transportMode?: SlackTransportMode;
+  /** Internal rollout gate; Admin never writes this directly. */
+  runtimeContract?: WorkspaceRuntimeContract;
   teamId?: string | null;
   appId?: string | null;
   botUserId?: string | null;
@@ -250,11 +354,49 @@ export interface AgentThreadRoute {
   threadTs: string;
   agentId: string;
   agentGeneration: number;
+  /** Positive tenure counter for this owner within the Slack root. */
+  ownerIncarnation: number;
+  /** Frozen retry receipt for the message that most recently changed owners. */
+  handoff?: AgentThreadHandoff;
   revision: number;
   updatedAt: number;
 }
 
-export type AgentThreadRouteInput = Omit<AgentThreadRoute, 'revision' | 'updatedAt'>;
+export interface AgentThreadHandoff {
+  transferMessageTs: string;
+  previousAgentId: string;
+  /** Undefined until the bounded legacy fallback has been attempted. */
+  context?: Array<{
+    messageTs: string;
+    role: 'human' | 'agent';
+    text: string;
+    agentId?: string;
+  }>;
+}
+
+export type AgentThreadRouteInput = Omit<
+  AgentThreadRoute,
+  'revision' | 'updatedAt' | 'ownerIncarnation'
+> & {
+  /** Optional only during the Stage 1 compatibility window; defaults to 1. */
+  ownerIncarnation?: number;
+};
+
+export type SlackPublicContextRole = 'human' | 'agent';
+
+/** Internal Slack-visible context used only when a thread transfers owners. */
+export interface SlackPublicContextEntry {
+  workspaceId: string;
+  channelId: string;
+  rootTs: string;
+  messageTs: string;
+  role: SlackPublicContextRole;
+  text: string;
+  agentId?: string;
+  updatedAt: number;
+}
+
+export type SlackPublicContextEntryInput = Omit<SlackPublicContextEntry, 'updatedAt'>;
 
 export type ConnectionAccountOwnerKind = 'team' | 'member';
 export type ConnectionAccountLifecycle = 'pending' | 'ready' | 'needs_attention' | 'revoked';
@@ -431,7 +573,11 @@ export type AgentScheduleReferenceInput = Omit<
 >;
 
 /** Create/seed input. Persistence assigns revision 1 regardless of caller input. */
-export type AgentCreateInput = Omit<CustomAgentConfig, 'revision'> & { revision?: number };
+export type AgentCreateInput = Omit<CustomAgentConfig, 'revision' | 'kind'> & {
+  revision?: number;
+  /** User is the only accepted public default; system creation uses a dedicated gate. */
+  kind?: AgentKind;
+};
 
 export type ChannelLifecycle = 'active' | 'archived';
 
@@ -459,28 +605,49 @@ export interface ModelCredentialAttribution {
   unknownRotation: boolean;
 }
 
+export type AgentModelSource = 'workspace_default' | 'pinned' | 'legacy_environment';
+
+/** Non-secret policy facts frozen when a message is admitted. */
+export interface AgentModelAttribution {
+  source: AgentModelSource;
+  providerId: string;
+  /** Present only when source is Workspace default. */
+  workspaceDefaultRevision?: number;
+  /** Active model-catalog revision when one governed this route. */
+  catalogRevision?: string;
+}
+
 export interface ResolvedAssignment {
   workspaceId: string;
   channelId: string;
   agentId: string;
+  /** Routing contract frozen when Slack admits the message. */
+  runtimeContract?: WorkspaceRuntimeContract;
   /** Explicit base-app channel mentions are a memoryless workspace-management entry point. */
   interactionMode?: 'workspace_management';
   channelLabel?: string;
   /** Live Channel inventory revision; missing on direct conversations. */
   channelRevision?: number;
+  /** Persisted ownership epoch; later handoffs increment it. */
+  ownerIncarnation?: number;
+  /** Bounded Slack-visible history frozen only for an ownership handoff. */
+  handoffContext?: Array<Pick<
+    SlackPublicContextEntry,
+    'messageTs' | 'role' | 'text' | 'agentId'
+  >>;
   agent: CustomAgentConfig;
   // Optional pre-resolved model label. Set only when the assignment is served
   // from a frozen thread snapshot; undefined means resolve from the agent via
   // model policy at turn time.
   model?: string;
+  modelAttribution?: AgentModelAttribution;
   modelCredential?: ModelCredentialAttribution;
 }
 
 // A snapshot IS a resolved assignment frozen at a thread's first turn, plus the
 // resolved model/provider/instructions. Declaring the relation lets a
 // snapshot be used directly wherever a ResolvedAssignment is expected.
-export interface AgentSnapshot extends ResolvedAssignment {
-  schemaVersion: 2;
+interface AgentSnapshotBase extends ResolvedAssignment {
   model: string;
   providerId: string;
   instructions: string;
@@ -488,6 +655,18 @@ export interface AgentSnapshot extends ResolvedAssignment {
   snapshotHash: string;
   createdAt: number;
 }
+
+/** Read compatibility for work admitted before Workspace-default attribution existed. */
+export interface AgentSnapshotV2 extends AgentSnapshotBase {
+  schemaVersion: 2;
+}
+
+export interface AgentSnapshotV3 extends AgentSnapshotBase {
+  schemaVersion: 3;
+  modelAttribution: AgentModelAttribution;
+}
+
+export type AgentSnapshot = AgentSnapshotV2 | AgentSnapshotV3;
 
 export interface AgentSnapshotRootReference {
   threadKey: string;

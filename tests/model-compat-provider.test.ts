@@ -9,7 +9,11 @@ import {
   type Model,
 } from '@earendil-works/pi-ai';
 
-import { resolveRuntimeModel, canonicalRuntimeModel } from '../src/config/runtime-model.ts';
+import {
+  resolveRuntimeModel,
+  canonicalRuntimeModel,
+  RuntimeModelReadinessError,
+} from '../src/config/runtime-model.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { catalogModelForLane } from '../src/model-catalog/index.ts';
 import {
@@ -178,5 +182,21 @@ test('runtime routing is native-first, lane-isolated, and explicit for unsupport
   assert.equal(
     canonicalRuntimeModel(`${ANTHROPIC_COMPAT_PROVIDER_ID}/claude-opus-5`),
     'anthropic/claude-opus-5',
+  );
+});
+
+test('a supported model with no configured provider returns static repair metadata', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+
+  await assert.rejects(
+    () => resolveRuntimeModel('agent', 'openai/gpt-5.6-sol', {
+      settings,
+      resolveProviderKey: async () => ({ apiKey: undefined, source: 'missing' }),
+    }),
+    (error: unknown) => error instanceof RuntimeModelReadinessError &&
+      error.status === 'provider_setup_required' &&
+      error.providerId === 'openai' &&
+      error.repairPath === '/admin/settings#model-providers',
   );
 });

@@ -4,6 +4,7 @@ import { resolveOpenAiAuthMethod } from './openai-auth.ts';
 import {
   applyResolvedProviderKey,
   isProviderKeyId,
+  resolveProviderApiKey,
   type ProviderKeyId,
 } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
@@ -35,6 +36,19 @@ export interface ResolvedRuntimeModel {
   model: string;
   /** Safe billing-lane fact for traces and product audit state. */
   providerAuthRoute?: ProviderAuthRoute;
+}
+
+export class RuntimeModelReadinessError extends Error {
+  readonly repairPath = '/admin/settings#model-providers';
+
+  constructor(
+    readonly status: 'provider_setup_required' | 'unsupported',
+    readonly providerId: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'RuntimeModelReadinessError';
+  }
 }
 
 export type SafeRuntimeModelRouteEvidence = Omit<
@@ -105,6 +119,7 @@ interface RuntimeModelDependencies {
   ) => Promise<void>;
   bindSubscription?: typeof bindOpenAiSubscriptionProvider;
   loadCatalog?: (settings: SettingsStore) => Promise<ModelCatalogLoadResult>;
+  resolveProviderKey?: typeof resolveProviderApiKey;
 }
 
 /**
@@ -127,6 +142,7 @@ export async function resolveRuntimeModel(
   }
   if (providerId === 'anthropic') {
     const model = resolveApiKeyModelSpecifier(canonicalModel, 'anthropic');
+    await requireProviderKey('anthropic', dependencies);
     await (dependencies.applyProviderKey ?? applyResolvedProviderKey)(
       'anthropic',
       dependencies.env,
@@ -136,6 +152,7 @@ export async function resolveRuntimeModel(
   }
   if (providerId !== 'openai') {
     if (isProviderKeyId(providerId)) {
+      await requireProviderKey(providerId, dependencies);
       await (dependencies.applyProviderKey ?? applyResolvedProviderKey)(
         providerId,
         dependencies.env,
@@ -150,6 +167,7 @@ export async function resolveRuntimeModel(
   )(dependencies.settings);
   if (authorization === 'api_key') {
     const model = resolveApiKeyModelSpecifier(canonicalModel, 'openai');
+    await requireProviderKey('openai', dependencies);
     await (dependencies.applyProviderKey ?? applyResolvedProviderKey)(
       'openai',
       dependencies.env,
@@ -187,4 +205,26 @@ export function canonicalRuntimeModel(model: string): string {
 function providerPrefix(model: string): string {
   const separator = model.indexOf('/');
   return separator > 0 ? model.slice(0, separator) : model;
+}
+
+async function requireProviderKey(
+  providerId: ProviderKeyId,
+  dependencies: RuntimeModelDependencies,
+): Promise<void> {
+  // Tests and alternate runtimes that inject the provider binding own its
+  // readiness contract. Production uses the same settings/environment reader
+  // as the binding itself, without probing the vendor or invoking a model.
+  if (dependencies.applyProviderKey) return;
+  const key = await (dependencies.resolveProviderKey ?? resolveProviderApiKey)(
+    providerId,
+    dependencies.env,
+    dependencies.settings,
+  );
+  if (!key.apiKey) {
+    throw new RuntimeModelReadinessError(
+      'provider_setup_required',
+      providerId,
+      `Provider ${providerId} needs setup before this model can run.`,
+    );
+  }
 }

@@ -25,10 +25,11 @@ const NOW = Date.UTC(2026, 6, 27, 12);
 const config = {
   workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: 'agent_default',
   agent: {
-    id: 'agent_default', revision: 1, name: 'Chickpea', instructions: 'Be useful.', enabled: true,
+    id: 'agent_default', kind: 'user', revision: 1, name: 'Chickpea', instructions: 'Be useful.', enabled: true,
     model: 'anthropic/claude-sonnet-4-6', skills: [], mcpServers: [], apiConnections: [], repositories: [],
   },
   model: 'anthropic/claude-sonnet-4-6', provider: 'anthropic', instructions: 'Be useful.', instructionLayers: [],
+  modelAttribution: { source: 'pinned', providerId: 'anthropic' },
 } satisfies EffectiveSlackConfig;
 
 async function admittedFixture(store: SqliteRoutineStore, suffix: string) {

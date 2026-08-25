@@ -164,6 +164,7 @@ import {
   ModelResolutionError,
   NoAssignmentError,
   UnknownAgentError,
+  WorkspaceModelDefaultRevisionConflictError,
 } from '../config/errors.ts';
 import {
   EGRESS_SETTING_KEY,
@@ -226,7 +227,11 @@ import {
 } from '../config/mcp-connection-lifecycle.ts';
 import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
 import { validateMcpUrl } from '../config/mcp-url.ts';
-import { resolveAgentModel, type ModelResolvableAgent } from '../config/model-policy.ts';
+import {
+  resolveAgentModel,
+  resolveAgentModelPolicy,
+  type ModelResolvableAgent,
+} from '../config/model-policy.ts';
 import {
   resolveOpenAiAuthMethod,
   saveOpenAiAuthMethod,
@@ -257,7 +262,12 @@ import {
   validateProviderApiKey,
   type AdminProviderId,
 } from '../config/provider-models.ts';
-import { knownProviderIds, listRuntimeModelProviders } from '../config/providers.ts';
+import {
+  knownProviderIds,
+  listRuntimeModelProviders,
+  type RuntimeModelProvider,
+} from '../config/providers.ts';
+import { resolveProviderRuntimeImpact } from '../config/provider-impact.ts';
 import {
   resolveSandboxSettings,
   SANDBOX_PACKAGE_REGISTRY_HOSTS,
@@ -287,7 +297,10 @@ import {
 import type { AgentSnapshotStore } from '../config/snapshot-store.ts';
 import type { RuntimeDrainStatus } from '../config/state-rpc.ts';
 import type { ConfigStore } from '../config/store.ts';
-import type { AgentCreateInput } from '../config/types.ts';
+import type {
+  AgentCreateInput,
+  WorkspaceModelDefault,
+} from '../config/types.ts';
 import { MemoryStateError, type MemoryStateStore } from '../memory/types.ts';
 import type { RoutineStore } from '../routines/types.ts';
 import { RoutineService } from '../routines/service.ts';
@@ -393,6 +406,7 @@ import {
   classifyAgentPresenceError,
 } from '../slack/agent-presence/errors.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import { reservedAgentIdentityField } from '../config/agent-id.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
 import { discoverableAgents } from '../slack/agent-routing.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
@@ -596,6 +610,23 @@ const openAiAuthMethodSchema = v.object({
 });
 const workersAiEnabledSchema = v.object({
   enabled: v.boolean(),
+});
+const workspaceModelDefaultSchema = v.strictObject({
+  modelId: modelSpecifier,
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(0)),
+});
+const chickpeaCutoverPrepareSchema = v.strictObject({
+  confirm: v.literal('prepare-stage-1'),
+});
+const chickpeaCutoverActivateSchema = v.strictObject({
+  confirm: v.literal('activate-chickpea-v1'),
+  compatibilityTrafficConfirmed: v.literal(true),
+  expectedInstallationRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  expectedDefaultRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+});
+const chickpeaCutoverRollbackSchema = v.strictObject({
+  confirm: v.literal('rollback-to-legacy'),
+  expectedInstallationRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
 });
 const modelCatalogModeSchema = v.strictObject({
   mode: v.picklist(['hosted', 'bundled']),
@@ -1168,7 +1199,7 @@ async function sandboxStatus(
   const [resolved, github, agents] = await Promise.all([
     resolveSandboxSettings(settingsStore),
     getGithubConnection(settingsStore),
-    configStore.listAgents(),
+    configStore.listUserAgents(),
   ]);
   const cloudflare = isCloudflareTarget();
   const installed = cloudflare && sandboxBindingInstalled(env);
@@ -2001,20 +2032,24 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     maxSize: MAX_ADMIN_MUTATION_BODY_BYTES,
     onError: (c) => c.json({ error: 'request_too_large' }, 413),
   });
-  const enforceAgentMutationAuthority = async (
+  const requireAdminUserAgent = async (
+    c: Context,
+    agentId: string,
+  ): Promise<CustomAgentConfig> => {
+    const agent = await store(c).getAgent(agentId);
+    if (agent.kind !== 'user') throw new UnknownAgentError(agentId);
+    return agent;
+  };
+  const enforceAgentRouteAuthority = async (
     c: Context,
     principal: AuthPrincipal,
   ): Promise<void> => {
-    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) return;
     const match = c.req.path.match(/^\/admin\/api\/agents\/([^/]+)/);
     if (!match) return;
     const agentId = decodeURIComponent(match[1]!);
-    try {
-      requireAgentEdit(principal, await store(c).getAgent(agentId));
-    } catch (error) {
-      // Preserve each route's stable 404 response for a missing Agent. Every
-      // existing Agent, including nested connector routes, is fenced here.
-      if (!(error instanceof UnknownAgentError)) throw error;
+    const agent = await requireAdminUserAgent(c, agentId);
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
+      requireAgentEdit(principal, agent);
     }
   };
   const enforceAgentMemoryAuthority = async (
@@ -2029,7 +2064,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (ownerKind !== 'agent') {
       throw new AuthorizationError();
     }
-    requireAgentEdit(principal, await store(c).getAgent(decodeURIComponent(match[2]!)));
+    requireAgentEdit(
+      principal,
+      await requireAdminUserAgent(c, decodeURIComponent(match[2]!)),
+    );
   };
 
   const adminGate = async (c: Context, next: Next) => {
@@ -2053,7 +2091,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         try {
           if (principal.machine && !machinePrincipalAllowed(c)) throw new AuthorizationError();
           requirePermission(principal, permission);
-          await enforceAgentMutationAuthority(c, principal);
+          await enforceAgentRouteAuthority(c, principal);
           await enforceAgentMemoryAuthority(c, principal);
           await identity(c).recordAuthAudit({
             event: 'authorization',
@@ -2113,6 +2151,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         return next();
       } catch (error) {
+        if (error instanceof UnknownAgentError) {
+          return c.json({ error: 'not_found' }, 404);
+        }
         if (error instanceof AuthorizationError) {
           return c.json({ error: 'forbidden' }, 403);
         }
@@ -4874,7 +4915,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const settingsStore = settings(c);
     const configStore = store(c);
     const [allAgents, grants, installations] = await Promise.all([
-      configStore.listAgents(),
+      configStore.listUserAgents(),
       configStore.listAgentChannelGrants(),
       configStore.listWorkspaceInstallations(),
     ]);
@@ -5025,6 +5066,231 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }),
     );
     return c.json({ providers });
+  });
+
+  app.get('/admin/api/workspace-model-default', async (c) => {
+    const configStore = store(c);
+    const installation = await modelDefaultInstallation(configStore);
+    if (!installation) {
+      return c.json({ error: 'workspace_installation_required' }, 409);
+    }
+    await loadModelCatalog(settings(c));
+    return c.json({
+      workspaceDefault: await workspaceModelDefaultProjection({
+        installation,
+        configStore,
+        settingsStore: settings(c),
+        platformEnv: c.env as PlatformEnv | undefined,
+        runtimeProviders: modelProviders(),
+      }),
+    });
+  });
+
+  app.put('/admin/api/workspace-model-default', async (c) => {
+    const parsed = v.safeParse(workspaceModelDefaultSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const configStore = store(c);
+    const installation = await modelDefaultInstallation(configStore);
+    if (!installation) {
+      return c.json({ error: 'workspace_installation_required' }, 409);
+    }
+    const principal = principalByContext.get(c);
+    if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    await loadModelCatalog(settings(c));
+    const compatibilityError = activeCatalogCompatibilityError(
+      parsed.output.modelId,
+      await resolveOpenAiAuthMethod(settings(c)),
+    );
+    if (compatibilityError) return invalidRequest(c, compatibilityError);
+    try {
+      await configStore.putWorkspaceModelDefault({
+        workspaceId: installation.workspaceId,
+        modelId: parsed.output.modelId,
+        provenance: 'admin_selected',
+        lastChangedByMembershipId: principal.membershipId,
+      }, parsed.output.expectedRevision);
+      return c.json({
+        workspaceDefault: await workspaceModelDefaultProjection({
+          installation,
+          configStore,
+          settingsStore: settings(c),
+          platformEnv: c.env as PlatformEnv | undefined,
+          runtimeProviders: modelProviders(),
+        }),
+      });
+    } catch (error) {
+      if (error instanceof WorkspaceModelDefaultRevisionConflictError) {
+        return c.json({
+          error: 'workspace_model_default_revision_conflict',
+          expectedRevision: error.expectedRevision,
+          actualRevision: error.actualRevision,
+          workspaceDefault: await workspaceModelDefaultProjection({
+            installation,
+            configStore,
+            settingsStore: settings(c),
+            platformEnv: c.env as PlatformEnv | undefined,
+            runtimeProviders: modelProviders(),
+          }),
+        }, 409);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  app.get('/admin/api/chickpea-cutover/preflight', async (c) => {
+    const principal = principalByContext.get(c);
+    if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    const configStore = store(c);
+    const installation = await modelDefaultInstallation(configStore);
+    if (!installation) return c.json({ error: 'workspace_installation_required' }, 409);
+    await loadModelCatalog(settings(c));
+    const [cutover, workspaceDefault] = await Promise.all([
+      configStore.preflightChickpeaCutover(installation.workspaceId),
+      workspaceModelDefaultProjection({
+        installation,
+        configStore,
+        settingsStore: settings(c),
+        platformEnv: c.env as PlatformEnv | undefined,
+        runtimeProviders: modelProviders(),
+      }),
+    ]);
+    return c.json({
+      cutover: {
+        ...cutover,
+        defaultHealth: workspaceDefault.health,
+        readyForActivation: cutover.blockers.length === 0 &&
+          workspaceDefault.health.status === 'ready',
+      },
+    });
+  });
+
+  app.post('/admin/api/chickpea-cutover/prepare', async (c) => {
+    const parsed = v.safeParse(chickpeaCutoverPrepareSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const principal = principalByContext.get(c);
+    if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    const configStore = store(c);
+    const installation = await modelDefaultInstallation(configStore);
+    if (!installation) return c.json({ error: 'workspace_installation_required' }, 409);
+    const legacyEnvironmentModel = cutoverEnvironmentModel(c.env as PlatformEnv | undefined);
+    const cutover = await configStore.prepareChickpeaCutover({
+      workspaceId: installation.workspaceId,
+      ...(legacyEnvironmentModel ? { legacyEnvironmentModel } : {}),
+    });
+    await loadModelCatalog(settings(c));
+    const workspaceDefault = await workspaceModelDefaultProjection({
+      installation,
+      configStore,
+      settingsStore: settings(c),
+      platformEnv: c.env as PlatformEnv | undefined,
+      runtimeProviders: modelProviders(),
+    });
+    return c.json({
+      cutover: {
+        ...cutover,
+        defaultHealth: workspaceDefault.health,
+        readyForActivation: cutover.blockers.length === 0 &&
+          workspaceDefault.health.status === 'ready',
+      },
+    });
+  });
+
+  app.post('/admin/api/chickpea-cutover/activate', async (c) => {
+    const parsed = v.safeParse(chickpeaCutoverActivateSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const principal = principalByContext.get(c);
+    if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    const configStore = store(c);
+    const installation = await modelDefaultInstallation(configStore);
+    if (!installation) return c.json({ error: 'workspace_installation_required' }, 409);
+    await loadModelCatalog(settings(c));
+    const [cutover, workspaceDefault] = await Promise.all([
+      configStore.preflightChickpeaCutover(installation.workspaceId),
+      workspaceModelDefaultProjection({
+        installation,
+        configStore,
+        settingsStore: settings(c),
+        platformEnv: c.env as PlatformEnv | undefined,
+        runtimeProviders: modelProviders(),
+      }),
+    ]);
+    if (cutover.blockers.length > 0 || workspaceDefault.health.status !== 'ready') {
+      return c.json({
+        error: 'chickpea_cutover_preflight_failed',
+        blockers: cutover.blockers,
+        defaultHealth: workspaceDefault.health,
+      }, 409);
+    }
+    if (cutover.installationRevision !== parsed.output.expectedInstallationRevision) {
+      return c.json({
+        error: 'chickpea_cutover_revision_conflict',
+        expectedRevision: parsed.output.expectedInstallationRevision,
+        actualRevision: cutover.installationRevision,
+      }, 409);
+    }
+    if (cutover.defaultRevision !== parsed.output.expectedDefaultRevision) {
+      return c.json({
+        error: 'workspace_model_default_revision_conflict',
+        expectedRevision: parsed.output.expectedDefaultRevision,
+        actualRevision: cutover.defaultRevision,
+      }, 409);
+    }
+    try {
+      return c.json({
+        activation: await configStore.activateChickpeaCutover({
+          workspaceId: installation.workspaceId,
+          expectedInstallationRevision: parsed.output.expectedInstallationRevision,
+          expectedDefaultRevision: parsed.output.expectedDefaultRevision,
+          defaultReady: true,
+        }),
+      });
+    } catch (error) {
+      if (error instanceof WorkspaceModelDefaultRevisionConflictError) {
+        return c.json({
+          error: 'workspace_model_default_revision_conflict',
+          expectedRevision: error.expectedRevision,
+          actualRevision: error.actualRevision,
+        }, 409);
+      }
+      return internalError(c, error);
+    }
+  });
+
+  app.post('/admin/api/chickpea-cutover/rollback', async (c) => {
+    const parsed = v.safeParse(chickpeaCutoverRollbackSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const principal = principalByContext.get(c);
+    if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    const configStore = store(c);
+    const installation = await modelDefaultInstallation(configStore);
+    if (!installation) return c.json({ error: 'workspace_installation_required' }, 409);
+    if (installation.revision !== parsed.output.expectedInstallationRevision) {
+      return c.json({
+        error: 'chickpea_cutover_revision_conflict',
+        expectedRevision: parsed.output.expectedInstallationRevision,
+        actualRevision: installation.revision,
+      }, 409);
+    }
+    try {
+      return c.json({
+        cutover: await configStore.rollbackChickpeaCutover({
+          workspaceId: installation.workspaceId,
+          expectedInstallationRevision: parsed.output.expectedInstallationRevision,
+        }),
+      });
+    } catch (error) {
+      return internalError(c, error);
+    }
   });
 
   app.get('/admin/api/providers', async (c) => {
@@ -5247,10 +5513,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       await service.confirmWorkspaceChange({ context, proposalId });
       const source = (await describeProviderKeySources(platformEnv, settingsStore))[id];
+      const impact = await providerRemovalImpact(store(c), id);
       return c.json({
         ok: true,
         provider: providerSummary(id, source),
-        pinnedAgentCount: await countPinnedAgents(store(c), id),
+        ...impact,
       });
     }
     const resolved = await deleteProviderApiKey(
@@ -5259,10 +5526,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       settingsStore,
       usage(c),
     );
+    const impact = await providerRemovalImpact(store(c), id);
     return c.json({
       ok: true,
       provider: providerSummary(id, resolved.source),
-      pinnedAgentCount: await countPinnedAgents(store(c), id),
+      ...impact,
     });
   });
 
@@ -5449,7 +5717,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const connection = await getGithubConnection(settings(c));
       // Agents holding grants are reported up front so the UI can warn
       // before a disconnect, not after (DELETE also reports, but too late).
-      const referencingAgents = (await store(c).listAgents())
+      const referencingAgents = (await store(c).listUserAgents())
         .filter((agent) => agent.repositories.length > 0)
         .map(({ id, name }) => ({ id, name }));
       if (connection.mode !== 'app') {
@@ -5559,7 +5827,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.delete('/admin/api/github', async (c) => {
     try {
-      const referencingAgents = (await store(c).listAgents())
+      const referencingAgents = (await store(c).listUserAgents())
         .filter((agent) => agent.repositories.length > 0)
         .map(({ id, name }) => ({ id, name }));
       await settings(c).applySettingsPatch({
@@ -5614,6 +5882,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
     const requestedHandle = parsed.output.handle ?? parsed.output.name;
+    if (reservedAgentIdentityField({
+      id: parsed.output.id,
+      name: parsed.output.name,
+      handle: requestedHandle,
+    })) {
+      return invalidRequest(c);
+    }
     const principal = principalByContext.get(c);
     let agent: AgentCreateInput = {
       ...toAgentConfig(parsed.output),
@@ -5640,13 +5915,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       await resolveOpenAiAuthMethod(settings(c)),
     );
     if (modelCompatibilityError) return invalidRequest(c, modelCompatibilityError);
-    const modelError = modelResolutionError(agent);
+    const modelError = await configuredModelResolutionError(store(c), {
+      ...agent,
+      kind: 'user',
+    });
     if (modelError) {
       return modelNotResolvable(c, modelError);
     }
     try {
       const configStore = store(c);
-      const existingGeneratedSeeds = (await configStore.listAgents()).flatMap((existing) => {
+      const existingGeneratedSeeds = (await configStore.listUserAgents()).flatMap((existing) => {
         const avatar = existing.slackPresence?.avatar;
         return avatar?.kind === 'generated' ? [avatar.seed ?? existing.id] : [];
       });
@@ -5672,7 +5950,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       };
       const created = await configStore.createAgent(agent);
       return c.json({
-        agent: created,
+        agent: await agentAdminProjection(created, configStore, snapshots(c)),
         ...providerWarnings(agent.model, providerIds()),
       }, 201);
     } catch (err) {
@@ -6161,7 +6439,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (organization?.slackTeamId !== workspaceId) throw new AuthorizationError();
       const [views, agents] = await Promise.all([
         connectionAccounts(c).listViews(workspaceId),
-        store(c).listAgents(),
+        store(c).listUserAgents(),
       ]);
       const visibleAccounts = views.filter(
         (account) => account.lifecycle !== 'revoked' && (
@@ -6673,6 +6951,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) {
       return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
+    if (reservedAgentIdentityField({
+      id: c.req.param('id'),
+      name: parsed.output.name ?? '',
+      ...(parsed.output.handle !== undefined ? { handle: parsed.output.handle } : {}),
+    })) {
+      return invalidRequest(c);
+    }
     try {
       const configStore = store(c);
       const agentId = c.req.param('id');
@@ -6717,7 +7002,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         await resolveOpenAiAuthMethod(settings(c)),
       );
       if (modelCompatibilityError) return invalidRequest(c, modelCompatibilityError);
-      const modelError = modelResolutionError(next);
+      const modelError = await configuredModelResolutionError(configStore, {
+        ...next,
+        kind: current.kind,
+      });
       if (modelError) {
         return modelNotResolvable(c, modelError);
       }
@@ -7412,7 +7700,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const [configuredChannels, grants, agents] = await Promise.all([
       configStore.listChannels(),
       configStore.listAgentChannelGrants(),
-      configStore.listAgents(),
+      configStore.listUserAgents(),
     ]);
     let discoveredChannels: Awaited<ReturnType<typeof listSlackChannels>>['channels'] = [];
     let discoveryError: string | null = null;
@@ -9145,11 +9433,126 @@ function modelResolutionError(agent: ModelResolvableAgent): ModelResolutionError
   }
 }
 
+async function configuredModelResolutionError(
+  configStore: ConfigStore,
+  agent: ModelResolvableAgent & Pick<CustomAgentConfig, 'kind'>,
+): Promise<ModelResolutionError | undefined> {
+  const installations = await configStore.listWorkspaceInstallations();
+  const installation = installations.length === 1 ? installations[0] : undefined;
+  if (!installation || installation.runtimeContract === 'legacy') {
+    return modelResolutionError(agent);
+  }
+  const workspaceDefault = await configStore.getWorkspaceModelDefault(installation.workspaceId);
+  try {
+    resolveAgentModelPolicy({
+      agent,
+      runtimeContract: installation.runtimeContract,
+      ...(workspaceDefault ? { workspaceDefault } : {}),
+    });
+    return undefined;
+  } catch (error) {
+    if (error instanceof ModelResolutionError) return error;
+    throw error;
+  }
+}
+
 function modelNotResolvable(
   c: { json(body: { error: string; message: string }, status: 422): Response },
   err: ModelResolutionError,
 ): Response {
   return c.json({ error: 'model_not_resolvable', message: err.message }, 422);
+}
+
+async function modelDefaultInstallation(
+  configStore: ConfigStore,
+): Promise<WorkspaceInstallation | undefined> {
+  const installations = await configStore.listWorkspaceInstallations();
+  return installations.length === 1 ? installations[0] : undefined;
+}
+
+function cutoverEnvironmentModel(platformEnv: PlatformEnv | undefined): string | undefined {
+  const platformValue = (platformEnv as unknown as Record<string, unknown> | undefined)
+    ?.SLACK_TAG_MODEL;
+  const raw = typeof platformValue === 'string' ? platformValue : process.env.SLACK_TAG_MODEL;
+  const model = raw?.trim();
+  return model && /^[^/]+\/.+$/.test(model) ? model : undefined;
+}
+
+interface WorkspaceModelDefaultProjection {
+  workspaceId: string;
+  modelId: string | null;
+  revision: number;
+  provenance: WorkspaceModelDefault['provenance'];
+  runtimeContract: WorkspaceInstallation['runtimeContract'];
+  live: boolean;
+  inheritingAgentCount: number;
+  health: {
+    status: 'ready' | 'selection_required' | 'repair_required';
+    providerId: string | null;
+    code?: 'workspace_default_missing' | 'model_unsupported' | 'provider_unavailable';
+    repairPath?: '/admin/settings/providers';
+  };
+}
+
+async function workspaceModelDefaultProjection(input: {
+  installation: WorkspaceInstallation;
+  configStore: ConfigStore;
+  settingsStore: SettingsStore;
+  platformEnv: PlatformEnv | undefined;
+  runtimeProviders: RuntimeModelProvider[];
+}): Promise<WorkspaceModelDefaultProjection> {
+  const [workspaceDefault, agents, openAiAuthMethod, workersAiEnabled] = await Promise.all([
+    input.configStore.getWorkspaceModelDefault(input.installation.workspaceId),
+    input.configStore.listUserAgents(),
+    resolveOpenAiAuthMethod(input.settingsStore),
+    getWorkersAiEnabled(input.settingsStore),
+  ]);
+  const modelId = workspaceDefault?.modelId ?? null;
+  const separator = modelId?.indexOf('/') ?? -1;
+  const providerId = modelId && separator > 0 ? modelId.slice(0, separator) : null;
+  let health: WorkspaceModelDefaultProjection['health'];
+  if (!workspaceDefault || !modelId) {
+    health = {
+      status: 'selection_required',
+      providerId: null,
+      code: 'workspace_default_missing',
+      repairPath: '/admin/settings/providers',
+    };
+  } else if (!providerId || activeCatalogCompatibilityError(modelId, openAiAuthMethod)) {
+    health = {
+      status: 'repair_required',
+      providerId,
+      code: 'model_unsupported',
+      repairPath: '/admin/settings/providers',
+    };
+  } else {
+    const provider = input.runtimeProviders.find(({ id }) => id === providerId);
+    const workersAiReady = providerId !== 'cloudflare' ||
+      (workersAiEnabled && workersAiStatus(input.platformEnv) !== 'missing');
+    health = provider?.configured && workersAiReady
+      ? { status: 'ready', providerId }
+      : {
+          status: 'repair_required',
+          providerId,
+          code: 'provider_unavailable',
+          repairPath: '/admin/settings/providers',
+        };
+  }
+  return {
+    workspaceId: input.installation.workspaceId,
+    modelId,
+    revision: workspaceDefault?.revision ?? 0,
+    provenance: workspaceDefault?.provenance ?? 'migration_pending',
+    runtimeContract: input.installation.runtimeContract,
+    live: input.installation.runtimeContract === 'chickpea-v1',
+    inheritingAgentCount: agents.filter((agent) =>
+      agent.kind === 'user' &&
+      agent.lifecycle === 'active' &&
+      agent.enabled &&
+      !agent.model
+    ).length,
+    health,
+  };
 }
 
 async function readJson(req: { json(): Promise<unknown> }): Promise<unknown> {
@@ -9402,19 +9805,20 @@ function normalizeEgressDomain(domain: string): string {
   return new URL(result.url).hostname.toLowerCase();
 }
 
-async function countPinnedAgents(configStore: ConfigStore, provider: string): Promise<number> {
-  const agents = await configStore.listAgents();
-  return agents.filter((agent) => modelBelongsToProvider(agent.model, provider)).length;
-}
-
-function modelBelongsToProvider(model: string | undefined, provider: string): boolean {
-  if (!model) {
-    return false;
-  }
-  if (provider === 'workers-ai') {
-    return model.startsWith('cloudflare/') || model.startsWith('cloudflare-workers-ai/');
-  }
-  return model.startsWith(`${provider}/`);
+async function providerRemovalImpact(
+  configStore: ConfigStore,
+  provider: string,
+): Promise<{
+  pinnedAgentCount: number;
+  workspaceDefaultAffected: boolean;
+  inheritingAgentCount: number;
+}> {
+  const impact = await resolveProviderRuntimeImpact(configStore, provider);
+  return {
+    pinnedAgentCount: impact.pinnedAgents.length,
+    workspaceDefaultAffected: impact.workspaceDefaultAffected,
+    inheritingAgentCount: impact.activeInheritingAgentCount,
+  };
 }
 
 // Never echo internal error text (raw SQLite messages) to API clients; log it
@@ -9500,9 +9904,25 @@ async function agentAdminProjection(
   })();
   const { references, grants, installations, snapshotRoots } = projectionData;
   const workspaceId = grants[0]?.workspaceId ?? installations[0]?.workspaceId;
+  const installation = workspaceId
+    ? installations.find((candidate) => candidate.workspaceId === workspaceId)
+    : undefined;
+  const workspaceDefault = workspaceId
+    ? await configStore.getWorkspaceModelDefault(workspaceId)
+    : undefined;
+  const legacyDefaultInstallations = installations.filter(
+    ({ defaultAgentId, runtimeContract }) =>
+      runtimeContract === 'legacy' && defaultAgentId === agent.id,
+  );
   return {
     ...agent,
     canEdit: access.canEdit,
+    modelPolicy: {
+      source: agent.model ? 'pinned' : 'workspace_default',
+      effectiveModel: agent.model ?? workspaceDefault?.modelId ?? null,
+      live: installation?.runtimeContract === 'chickpea-v1',
+      ...(workspaceDefault ? { workspaceDefaultRevision: workspaceDefault.revision } : {}),
+    },
     slackPresenceRecovery: agent.slackPresence?.health === 'needs_attention' &&
         agent.slackPresence.errorCode
       ? agentPresenceRecovery(
@@ -9540,9 +9960,8 @@ async function agentAdminProjection(
         enabled,
       })),
     },
-    isWorkspaceDefault: installations.some(({ defaultAgentId }) => defaultAgentId === agent.id),
-    defaultForWorkspaces: installations
-      .filter(({ defaultAgentId }) => defaultAgentId === agent.id)
+    isWorkspaceDefault: legacyDefaultInstallations.length > 0,
+    defaultForWorkspaces: legacyDefaultInstallations
       .map(({ workspaceId: installedWorkspaceId }) => installedWorkspaceId),
     whereItWorks: {
       channels: grants.map((grant) => ({

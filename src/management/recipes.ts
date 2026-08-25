@@ -119,10 +119,10 @@ export interface WorkspaceRecipePreview {
 }
 
 export async function exportWorkspaceRecipe(
-  config: Pick<ConfigStore, 'listAgents'>,
+  config: Pick<ConfigStore, 'listUserAgents'>,
   input: { agentIds?: string[] | undefined },
 ): Promise<WorkspaceRecipe> {
-  const allAgents = await config.listAgents();
+  const allAgents = await config.listUserAgents();
   const selected = input.agentIds?.length
     ? allAgents.filter(({ id }) => input.agentIds!.includes(id))
     : allAgents;
@@ -139,13 +139,13 @@ export async function exportWorkspaceRecipe(
 }
 
 export async function previewWorkspaceRecipe(
-  config: Pick<ConfigStore, 'listAgents'>,
+  config: Pick<ConfigStore, 'listUserAgents'>,
   providerSource: (providerId: 'anthropic' | 'openai' | 'openrouter') => Promise<'env' | 'stored' | 'missing'>,
   input: PreviewWorkspaceRecipeInput,
 ): Promise<WorkspaceRecipePreview> {
   const recipe = parseWorkspaceRecipe(input.recipe);
   const digest = createHash('sha256').update(canonicalJson(recipe)).digest('hex');
-  const currentAgents = await config.listAgents();
+  const currentAgents = await config.listUserAgents();
   const strategy = input.agentStrategy;
   const operations: ManagementOperation[] = [];
   const allocatedAgentIds = new Set(currentAgents.map(({ id }) => id));

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  ModelCredentialRevisionError,
+  revalidateModelCredentialAttribution,
   resolveModelCredentialAttribution,
   storedCredentialMetadata,
 } from '../src/config/model-credential-refs.ts';
@@ -59,6 +61,46 @@ test('stored provider-key replacement advances an opaque epoch without changing 
     const serialized = JSON.stringify({ first, second, rows: await usage.listCredentials() });
     assert.doesNotMatch(serialized, /first-secret|second-secret|sk-/);
     assert.doesNotMatch(serialized, /[a-f0-9]{32,}/i, 'no key-derived digest is serialized');
+  } finally {
+    invalidateProviderKeyCache();
+    settings.close();
+    usage.close();
+  }
+});
+
+test('a frozen credential epoch survives retries but rejects rotation or revocation', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const usage = new SqliteUsageStore(':memory:');
+  try {
+    await saveProviderApiKey('openai', 'sk-first-secret-value', undefined, settings, usage);
+    const frozen = await resolveModelCredentialAttribution(
+      'openai/gpt-5.6-sol',
+      undefined,
+      settings,
+      usage,
+    );
+    assert.ok(frozen);
+    await revalidateModelCredentialAttribution(
+      'openai/gpt-5.6-sol',
+      frozen,
+      undefined,
+      settings,
+      usage,
+    );
+
+    await saveProviderApiKey('openai', 'sk-second-secret-value', undefined, settings, usage);
+    await assert.rejects(
+      revalidateModelCredentialAttribution(
+        'openai/gpt-5.6-sol',
+        frozen,
+        undefined,
+        settings,
+        usage,
+      ),
+      (error: unknown) => error instanceof ModelCredentialRevisionError &&
+        error.credentialRefId === frozen.credentialRefId &&
+        error.expectedVersion === frozen.version,
+    );
   } finally {
     invalidateProviderKeyCache();
     settings.close();

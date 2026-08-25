@@ -124,6 +124,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     apiConnections: [],
     repositories: [],
     ...overrides,
+    kind: overrides.kind ?? 'user',
   };
 }
 

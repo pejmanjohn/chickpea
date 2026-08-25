@@ -52,6 +52,18 @@ async function fixture() {
   return { store, first, support, finance };
 }
 
+async function activateChickpea(store: SqliteConfigStore) {
+  const chickpea = await store.materializeChickpeaAgent();
+  const installation = await store.getWorkspaceInstallation('T1');
+  assert.ok(installation);
+  await store.updateWorkspaceInstallation(
+    'T1',
+    { runtimeContract: 'chickpea-v1' },
+    installation.revision,
+  );
+  return chickpea;
+}
+
 test('an Agent user-group mention opens a route and an unmentioned reply continues it', async () => {
   const { store, support } = await fixture();
   try {
@@ -120,6 +132,110 @@ test('a permitted explicit handle visibly hands an owned thread to another Agent
     assert.equal(handedOff.assignment.agentId, finance.id);
     assert.equal(handedOff.handoff, true);
     assert.equal(handedOff.route.revision, 2);
+    assert.equal(handedOff.route.ownerIncarnation, 2);
+    assert.equal(handedOff.assignment.ownerIncarnation, 2);
+  } finally {
+    store.close();
+  }
+});
+
+test('activated transfers freeze only bounded Slack-visible context before the trigger', async () => {
+  const { store, finance } = await fixture();
+  try {
+    await activateChickpea(store);
+    await store.putSlackPublicContext({
+      workspaceId: 'T1', channelId: 'C1', rootTs: '100.1', messageTs: '100.1',
+      role: 'human', text: 'Need support help.',
+    });
+    await store.putSlackPublicContext({
+      workspaceId: 'T1', channelId: 'C1', rootTs: '100.1', messageTs: '100.15',
+      role: 'agent', agentId: 'agent_support', text: 'Here is the visible answer.',
+    });
+    await resolveAgentRoute({
+      turn: turn(), surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+    });
+    const transferred = await resolveAgentRoute({
+      turn: turn({
+        eventId: 'Ev2', messageTs: '100.2', text: '<!subteam^SFINANCE> take over',
+        source: 'implicit_thread_reply', contextMode: 'thread',
+      }),
+      surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+    });
+    assert.equal(transferred.kind, 'routed');
+    if (transferred.kind !== 'routed') return;
+    assert.equal(transferred.assignment.agentId, finance.id);
+    assert.deepEqual(transferred.assignment.handoffContext, [
+      { messageTs: '100.1', role: 'human', text: 'Need support help.' },
+      {
+        messageTs: '100.15', role: 'agent', agentId: 'agent_support',
+        text: 'Here is the visible answer.',
+      },
+    ]);
+    assert.equal(
+      transferred.assignment.handoffContext?.some(({ messageTs }) => messageTs === '100.2'),
+      false,
+    );
+    const retried = await resolveAgentRoute({
+      turn: turn({
+        eventId: 'Ev2', messageTs: '100.2', text: '<!subteam^SFINANCE> take over',
+        source: 'implicit_thread_reply', contextMode: 'thread',
+      }),
+      surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+    });
+    assert.equal(retried.kind, 'routed');
+    if (retried.kind === 'routed') {
+      assert.equal(retried.handoff, true);
+      assert.equal(retried.route.ownerIncarnation, 2);
+      assert.deepEqual(retried.assignment.handoffContext, transferred.assignment.handoffContext);
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test('an empty handoff fallback is receipted once for retry stability', async () => {
+  const { store, finance } = await fixture();
+  try {
+    await activateChickpea(store);
+    await resolveAgentRoute({
+      turn: turn(), surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+    });
+    const transferred = await resolveAgentRoute({
+      turn: turn({
+        eventId: 'Ev2', messageTs: '100.2', text: '<!subteam^SFINANCE> take over',
+        source: 'implicit_thread_reply', contextMode: 'thread',
+      }),
+      surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+    });
+    assert.equal(transferred.kind, 'routed');
+    if (transferred.kind !== 'routed') return;
+    assert.equal(transferred.handoffFallbackRequired, true);
+    assert.equal(transferred.route.handoff?.context, undefined);
+
+    const receipted = await store.putAgentThreadRoute({
+      workspaceId: transferred.route.workspaceId,
+      channelId: transferred.route.channelId,
+      threadTs: transferred.route.threadTs,
+      agentId: finance.id,
+      agentGeneration: transferred.route.agentGeneration,
+      ownerIncarnation: transferred.route.ownerIncarnation,
+      handoff: { ...transferred.route.handoff!, context: [] },
+    }, transferred.route.revision);
+    assert.deepEqual(receipted.handoff?.context, []);
+
+    const retried = await resolveAgentRoute({
+      turn: turn({
+        eventId: 'Ev2', messageTs: '100.2', text: '<!subteam^SFINANCE> take over',
+        source: 'implicit_thread_reply', contextMode: 'thread',
+      }),
+      surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+    });
+    assert.equal(retried.kind, 'routed');
+    if (retried.kind === 'routed') {
+      assert.equal(retried.handoff, true);
+      assert.equal(retried.handoffFallbackRequired, undefined);
+      assert.equal(retried.route.ownerIncarnation, 2);
+    }
   } finally {
     store.close();
   }
@@ -200,6 +316,195 @@ test('@Chickpea and direct-message roots use the normal workspace default Agent'
     if (dm.kind === 'routed') {
       assert.equal(dm.assignment.agentId, first.id);
       assert.equal(dm.assignment.interactionMode, undefined);
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test('activated plain base-app DMs and mentions route to the Chickpea system Agent', async () => {
+  const { store } = await fixture();
+  try {
+    const chickpea = await activateChickpea(store);
+    const dm = await resolveAgentRoute({
+      turn: turn({
+        channelId: 'D1', text: 'hey', source: 'dm_message', channelType: 'im',
+        contextMode: 'dm_history',
+      }),
+      surface: 'direct', actor: { channelMember: false, fullMember: true }, config: store,
+    });
+    assert.equal(dm.kind, 'routed');
+    if (dm.kind !== 'routed') return;
+    assert.equal(dm.assignment.agentId, chickpea.id);
+    assert.equal(dm.assignment.ownerIncarnation, 1);
+
+    const channel = await resolveAgentRoute({
+      turn: turn({
+        eventId: 'Ev2', messageTs: '200.1', threadTs: '200.1',
+        text: '<@U_BOT> help', source: 'app_mention',
+      }),
+      surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+    });
+    assert.equal(channel.kind, 'routed');
+    if (channel.kind === 'routed') {
+      assert.equal(channel.assignment.agentId, chickpea.id);
+      assert.equal(channel.assignment.interactionMode, 'workspace_management');
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test('activated addressed DM roots are sticky and explicit addresses transfer ownership', async () => {
+  const { store, support, finance } = await fixture();
+  try {
+    const chickpea = await activateChickpea(store);
+    const actor = {
+      channelMember: false,
+      fullMember: true,
+      discoverableAgentIds: new Set([support.id, finance.id]),
+    };
+    const opened = await resolveAgentRoute({
+      turn: turn({
+        channelId: 'D1', text: '<!subteam^SSUPPORT|@support> hey', source: 'dm_message',
+        channelType: 'im', contextMode: 'dm_history',
+      }),
+      surface: 'direct', actor, config: store,
+    });
+    assert.equal(opened.kind, 'routed');
+    if (opened.kind !== 'routed') return;
+    assert.equal(opened.assignment.agentId, support.id);
+    assert.equal(opened.route.ownerIncarnation, 1);
+
+    const continued = await resolveAgentRoute({
+      turn: turn({
+        channelId: 'D1', eventId: 'Ev2', messageTs: '100.2', text: 'more',
+        source: 'dm_message', channelType: 'im', contextMode: 'thread',
+      }),
+      surface: 'direct', actor, config: store,
+    });
+    assert.equal(continued.kind, 'routed');
+    if (continued.kind !== 'routed') return;
+    assert.equal(continued.assignment.agentId, support.id);
+    assert.equal(continued.route.ownerIncarnation, 1);
+
+    const transferred = await resolveAgentRoute({
+      turn: turn({
+        channelId: 'D1', eventId: 'Ev3', messageTs: '100.3',
+        text: '<!subteam^SFINANCE|@finance> take over', source: 'dm_message',
+        channelType: 'im', contextMode: 'thread',
+      }),
+      surface: 'direct', actor, config: store,
+    });
+    assert.equal(transferred.kind, 'routed');
+    if (transferred.kind !== 'routed') return;
+    assert.equal(transferred.assignment.agentId, finance.id);
+    assert.equal(transferred.route.ownerIncarnation, 2);
+
+    const returned = await resolveAgentRoute({
+      turn: turn({
+        channelId: 'D1', eventId: 'Ev4', messageTs: '100.4',
+        text: '<@U_BOT> help', source: 'app_mention', channelType: 'im', contextMode: 'thread',
+      }),
+      surface: 'direct', actor, config: store,
+    });
+    assert.equal(returned.kind, 'routed');
+    if (returned.kind === 'routed') {
+      assert.equal(returned.assignment.agentId, chickpea.id);
+      assert.equal(returned.route.ownerIncarnation, 3);
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test('ambiguous, unknown, and unauthorized DM addresses do not mutate ownership', async () => {
+  const { store, support } = await fixture();
+  try {
+    await activateChickpea(store);
+    const actor = {
+      channelMember: false,
+      fullMember: true,
+      discoverableAgentIds: new Set([support.id]),
+    };
+    await resolveAgentRoute({
+      turn: turn({
+        channelId: 'D1', text: '<!subteam^SSUPPORT> hey', source: 'dm_message',
+        channelType: 'im', contextMode: 'dm_history',
+      }),
+      surface: 'direct', actor, config: store,
+    });
+    const before = await store.getAgentThreadRoute('T1', 'D1', '100.1');
+    assert.ok(before);
+
+    for (const text of [
+      '<!subteam^SSUPPORT> and <!subteam^SFINANCE>',
+      '<!subteam^SUNKNOWN> help',
+      '<!subteam^SFINANCE> help',
+    ]) {
+      const result = await resolveAgentRoute({
+        turn: turn({
+          channelId: 'D1', eventId: `Ev-${text}`, messageTs: '100.2', text,
+          source: 'dm_message', channelType: 'im', contextMode: 'thread',
+        }),
+        surface: 'direct', actor, config: store,
+      });
+      assert.notEqual(result.kind, 'routed');
+      assert.deepEqual(
+        await store.getAgentThreadRoute('T1', 'D1', '100.1'),
+        before,
+      );
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test('repeating the current owner and editing its profile do not rotate owner incarnation', async () => {
+  const { store, support } = await fixture();
+  try {
+    await activateChickpea(store);
+    const actor = {
+      channelMember: false,
+      fullMember: true,
+      discoverableAgentIds: new Set([support.id]),
+    };
+    const opened = await resolveAgentRoute({
+      turn: turn({
+        channelId: 'D1', text: '<!subteam^SSUPPORT> hey', source: 'dm_message',
+        channelType: 'im', contextMode: 'dm_history',
+      }),
+      surface: 'direct', actor, config: store,
+    });
+    assert.equal(opened.kind, 'routed');
+
+    const repeated = await resolveAgentRoute({
+      turn: turn({
+        channelId: 'D1', eventId: 'Ev2', messageTs: '100.2',
+        text: '<!subteam^SSUPPORT> still you', source: 'dm_message',
+        channelType: 'im', contextMode: 'thread',
+      }),
+      surface: 'direct', actor, config: store,
+    });
+    assert.equal(repeated.kind, 'routed');
+    if (repeated.kind !== 'routed') return;
+    assert.equal(repeated.route.ownerIncarnation, 1);
+
+    const edited = await store.updateAgent(support.id, {
+      configurationGeneration: 2,
+    }, support.revision);
+    assert.equal(edited.configurationGeneration, 2);
+    const afterEdit = await resolveAgentRoute({
+      turn: turn({
+        channelId: 'D1', eventId: 'Ev3', messageTs: '100.3', text: 'continue',
+        source: 'dm_message', channelType: 'im', contextMode: 'thread',
+      }),
+      surface: 'direct', actor, config: store,
+    });
+    assert.equal(afterEdit.kind, 'routed');
+    if (afterEdit.kind === 'routed') {
+      assert.equal(afterEdit.route.ownerIncarnation, 1);
+      assert.equal(afterEdit.route.revision, 2);
     }
   } finally {
     store.close();

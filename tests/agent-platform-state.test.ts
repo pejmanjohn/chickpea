@@ -8,7 +8,11 @@ import type {
   AgentChannelGrant,
   AgentScheduleReference,
   AgentThreadRoute,
+  ChickpeaCutoverActivation,
+  ChickpeaCutoverPreflight,
   ConnectionAccount,
+  SlackPublicContextEntry,
+  WorkspaceModelDefault,
   WorkspaceInstallation,
 } from '../src/config/types.ts';
 
@@ -298,6 +302,7 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
     workspaceId: 'T_PLATFORM',
     revision: 1,
     transportMode: 'gateway',
+    runtimeContract: 'legacy',
     defaultAgentId: 'agent_support',
     health: 'pending',
     createdAt: 1,
@@ -319,6 +324,7 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
     threadTs: '1700000000.000100',
     agentId: 'agent_support',
     agentGeneration: 4,
+    ownerIncarnation: 1,
     revision: 1,
     updatedAt: 1,
   };
@@ -357,8 +363,62 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
     createdAt: 1,
     updatedAt: 1,
   };
+  const modelDefault: WorkspaceModelDefault = {
+    workspaceId: 'T_PLATFORM',
+    modelId: 'openai/gpt-5.6',
+    revision: 2,
+    provenance: 'admin_selected',
+    lastChangedByMembershipId: 'membership_owner',
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  const cutoverPreflight: ChickpeaCutoverPreflight = {
+    workspaceId: 'T_PLATFORM',
+    state: 'prepared',
+    runtimeContract: 'legacy',
+    installationRevision: 1,
+    defaultModelId: 'openai/gpt-5.6',
+    defaultRevision: modelDefault.revision,
+    defaultProvenance: modelDefault.provenance,
+    modelClassification: 'explicit_agent_pin',
+    systemPrincipalCount: 0,
+    validChickpeaPrincipalCount: 0,
+    routeCount: 1,
+    routeBackfillCount: 1,
+    pinnedAgentCount: 1,
+    inheritingAgentCount: 0,
+    starterPinClearCount: 0,
+    uncertainStarterPinCount: 0,
+    collisions: [],
+    blockers: [],
+  };
+  const cutoverActivation: ChickpeaCutoverActivation = {
+    workspaceId: 'T_PLATFORM',
+    runtimeContract: 'chickpea-v1',
+    installationRevision: 2,
+    defaultRevision: modelDefault.revision,
+    systemAgentId: 'agent_chickpea',
+    routeCount: 1,
+    routeBackfillCount: 1,
+    starterPinCleared: false,
+    starterPinPreserved: false,
+    activatedAt: 3,
+  };
+  const publicContext: SlackPublicContextEntry = {
+    workspaceId: 'T_PLATFORM',
+    channelId: 'D_OWNER',
+    rootTs: '1700000000.000100',
+    messageTs: '1700000001.000100',
+    role: 'human',
+    text: 'Please ask Support.',
+    updatedAt: 2,
+  };
   const ok = <T>(value: T): Promise<StateRpcResult<T>> => Promise.resolve({ ok: true, value });
   const stub = {
+    configListUserAgents: () => ok([{ ...agent('agent_support', 'Support'), kind: 'user' as const, revision: 1 }]),
+    configMaterializeChickpeaAgent: () => ok({
+      ...agent('agent_chickpea', 'Chickpea'), kind: 'system' as const, revision: 1,
+    }),
     configEnsureWorkspaceInstallation: () => ok(installation),
     configUpdateWorkspaceInstallation: () => ok({
       ...installation,
@@ -367,6 +427,19 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
     }),
     configListAgentChannelGrants: () => ok([grant]),
     configGetAgentThreadRoute: () => ok(route),
+    configGetWorkspaceModelDefault: () => ok(modelDefault),
+    configPutWorkspaceModelDefault: () => ok(modelDefault),
+    configPrepareChickpeaCutover: () => ok(cutoverPreflight),
+    configPreflightChickpeaCutover: () => ok(cutoverPreflight),
+    configActivateChickpeaCutover: () => ok(cutoverActivation),
+    configRollbackChickpeaCutover: () => ok({
+      ...cutoverPreflight,
+      state: 'rolled_back' as const,
+    }),
+    configListSlackPublicContext: () => ok([publicContext]),
+    configPutSlackPublicContext: () => ok(publicContext),
+    configDeleteSlackPublicContextMessage: () => ok(true),
+    configDeleteSlackPublicContextRoot: () => ok(1),
     configListConnectionAccounts: () => ok([account]),
     configListAgentScheduleReferences: () => ok([schedule]),
     configArchiveAgent: () => ok({
@@ -400,6 +473,42 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
     route,
   );
   assert.deepEqual(await store.listConnectionAccounts('T_PLATFORM'), [account]);
+  assert.deepEqual((await store.listUserAgents()).map(({ id }) => id), ['agent_support']);
+  assert.equal((await store.materializeChickpeaAgent()).kind, 'system');
+  assert.deepEqual(await store.getWorkspaceModelDefault('T_PLATFORM'), modelDefault);
+  assert.deepEqual(await store.putWorkspaceModelDefault({
+    workspaceId: 'T_PLATFORM', modelId: 'openai/gpt-5.6', provenance: 'admin_selected',
+  }, 1), modelDefault);
+  assert.deepEqual(await store.prepareChickpeaCutover({ workspaceId: 'T_PLATFORM' }), cutoverPreflight);
+  assert.deepEqual(await store.preflightChickpeaCutover('T_PLATFORM'), cutoverPreflight);
+  assert.deepEqual(await store.activateChickpeaCutover({
+    workspaceId: 'T_PLATFORM',
+    expectedInstallationRevision: 1,
+    expectedDefaultRevision: modelDefault.revision,
+    defaultReady: true,
+  }), cutoverActivation);
+  assert.equal((await store.rollbackChickpeaCutover({
+    workspaceId: 'T_PLATFORM',
+    expectedInstallationRevision: 2,
+  })).state, 'rolled_back');
+  assert.deepEqual(
+    await store.listSlackPublicContext('T_PLATFORM', 'D_OWNER', publicContext.rootTs),
+    [publicContext],
+  );
+  assert.deepEqual(await store.putSlackPublicContext({
+    workspaceId: publicContext.workspaceId,
+    channelId: publicContext.channelId,
+    rootTs: publicContext.rootTs,
+    messageTs: publicContext.messageTs,
+    role: publicContext.role,
+    text: publicContext.text,
+  }), publicContext);
+  assert.equal(await store.deleteSlackPublicContextMessage(
+    'T_PLATFORM', 'D_OWNER', publicContext.rootTs, publicContext.messageTs,
+  ), true);
+  assert.equal(await store.deleteSlackPublicContextRoot(
+    'T_PLATFORM', 'D_OWNER', publicContext.rootTs,
+  ), 1);
   assert.deepEqual(await store.listAgentScheduleReferences('agent_support'), [schedule]);
   assert.equal((await store.archiveAgent('agent_support')).lifecycle, 'archived');
   assert.equal((await store.restoreAgent('agent_support')).lifecycle, 'active');

@@ -15,13 +15,16 @@ import {
   AgentStillReferencedError,
   ChannelRevisionConflictError,
   ConnectionAccountRevisionConflictError,
+  ReservedAgentIdentityError,
   UnknownAgentError,
+  WorkspaceModelDefaultRevisionConflictError,
 } from './config/errors.ts';
 import {
   getCachedInstallationToken,
   getGithubConnection,
 } from './config/github-app.ts';
-import { slackThreadKey } from './slack/thread-key.ts';
+import { slackAgentThreadKey } from './slack/thread-key.ts';
+import { recordDeliveredSlackAgentMessage } from './slack/public-context.ts';
 import {
   cacheSlackInstallationExecutionContexts,
   effectiveTurnSlackInstallationId,
@@ -70,8 +73,9 @@ import {
   type ConfigAgentPatch,
   type OAuthReauthorizationTarget,
 } from './config/store.ts';
-import type { AgentCreateInput } from './config/types.ts';
 import type {
+  ActivateChickpeaCutoverInput,
+  AgentCreateInput,
   AgentChannelGrant,
   AgentChannelGrantInput,
   AgentConnectionBinding,
@@ -84,10 +88,18 @@ import type {
   AgentThreadRoute,
   AgentThreadRouteInput,
   ChannelConfig,
+  ChickpeaCutoverActivation,
+  ChickpeaCutoverPreflight,
   CustomAgentConfig,
   ConnectionAccount,
   ConnectionAccountInput,
   EnsureWorkspaceInstallationInput,
+  PrepareChickpeaCutoverInput,
+  RollbackChickpeaCutoverInput,
+  SlackPublicContextEntry,
+  SlackPublicContextEntryInput,
+  WorkspaceModelDefault,
+  WorkspaceModelDefaultInput,
   WorkspaceInstallation,
   WorkspaceInstallationPatch,
 } from './config/types.ts';
@@ -619,8 +631,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.config.listAgents());
   }
 
+  async configListUserAgents(): Promise<StateRpcResult<CustomAgentConfig[]>> {
+    return this.call((stores) => stores.config.listUserAgents());
+  }
+
   async configGetAgent(agentId: string): Promise<StateRpcResult<CustomAgentConfig>> {
     return this.call((stores) => stores.config.getAgent(agentId));
+  }
+
+  async configMaterializeChickpeaAgent(): Promise<StateRpcResult<CustomAgentConfig>> {
+    return this.call((stores) => stores.config.materializeChickpeaAgent());
   }
 
   async configCreateAgent(agent: AgentCreateInput): Promise<StateRpcResult<CustomAgentConfig>> {
@@ -709,6 +729,43 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     );
   }
 
+  async configGetWorkspaceModelDefault(
+    workspaceId: string,
+  ): Promise<StateRpcResult<WorkspaceModelDefault | null>> {
+    return this.call((stores) => stores.config.getWorkspaceModelDefault(workspaceId) ?? null);
+  }
+
+  async configPutWorkspaceModelDefault(
+    input: WorkspaceModelDefaultInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<WorkspaceModelDefault>> {
+    return this.call((stores) => stores.config.putWorkspaceModelDefault(input, expectedRevision));
+  }
+
+  async configPrepareChickpeaCutover(
+    input: PrepareChickpeaCutoverInput,
+  ): Promise<StateRpcResult<ChickpeaCutoverPreflight>> {
+    return this.call((stores) => stores.config.prepareChickpeaCutover(input));
+  }
+
+  async configPreflightChickpeaCutover(
+    workspaceId: string,
+  ): Promise<StateRpcResult<ChickpeaCutoverPreflight>> {
+    return this.call((stores) => stores.config.preflightChickpeaCutover(workspaceId));
+  }
+
+  async configActivateChickpeaCutover(
+    input: ActivateChickpeaCutoverInput,
+  ): Promise<StateRpcResult<ChickpeaCutoverActivation>> {
+    return this.call((stores) => stores.config.activateChickpeaCutover(input));
+  }
+
+  async configRollbackChickpeaCutover(
+    input: RollbackChickpeaCutoverInput,
+  ): Promise<StateRpcResult<ChickpeaCutoverPreflight>> {
+    return this.call((stores) => stores.config.rollbackChickpeaCutover(input));
+  }
+
   async configListAgentChannelGrants(
     workspaceId?: string,
     channelId?: string,
@@ -748,6 +805,56 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     expectedRevision?: number,
   ): Promise<StateRpcResult<AgentThreadRoute>> {
     return this.call((stores) => stores.config.putAgentThreadRoute(input, expectedRevision));
+  }
+
+  async configDeleteAgentThreadRoute(
+    workspaceId: string,
+    channelId: string,
+    threadTs: string,
+  ): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) =>
+      stores.config.deleteAgentThreadRoute(workspaceId, channelId, threadTs)
+    );
+  }
+
+  async configListSlackPublicContext(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+  ): Promise<StateRpcResult<SlackPublicContextEntry[]>> {
+    return this.call((stores) =>
+      stores.config.listSlackPublicContext(workspaceId, channelId, rootTs)
+    );
+  }
+
+  async configPutSlackPublicContext(
+    input: SlackPublicContextEntryInput,
+  ): Promise<StateRpcResult<SlackPublicContextEntry>> {
+    return this.call((stores) => stores.config.putSlackPublicContext(input));
+  }
+
+  async configDeleteSlackPublicContextMessage(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+    messageTs: string,
+  ): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) => stores.config.deleteSlackPublicContextMessage(
+      workspaceId,
+      channelId,
+      rootTs,
+      messageTs,
+    ));
+  }
+
+  async configDeleteSlackPublicContextRoot(
+    workspaceId: string,
+    channelId: string,
+    rootTs: string,
+  ): Promise<StateRpcResult<number>> {
+    return this.call((stores) =>
+      stores.config.deleteSlackPublicContextRoot(workspaceId, channelId, rootTs)
+    );
   }
 
   async configListConnectionAccounts(
@@ -1249,7 +1356,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         }
         stores.turnJobs.markRecoveryRequired(job.id, 'slack_installation_unavailable');
         if (job.turn.interactionIntent?.disposition === 'work') {
-          stores.slack.setActiveWork(slackThreadKey(job.turn), job.id, false);
+          stores.slack.setActiveWork(
+            slackAgentThreadKey(job.turn, job.assignment),
+            job.id,
+            false,
+          );
         }
         return false;
       }
@@ -1257,7 +1368,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       const attempt = job.attempts + 1;
       let delivered = false;
       let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
-        ? slackThreadKey(job.turn)
+        ? slackAgentThreadKey(job.turn, job.assignment)
         : undefined;
       // Advance the attempt count before running the turn: a crash mid-turn
       // then re-fires with the count already committed, bounding retries.
@@ -1282,7 +1393,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           const binding =
             (this.env as PlatformEnv).SANDBOX ?? (this.env as PlatformEnv).Sandbox;
           if (!binding) return undefined;
-          const conversationKey = slackThreadKey(job.turn);
+          const conversationKey = slackAgentThreadKey(job.turn, job.assignment);
           for (const options of cloudflareSandboxOptionVariants(conversationKey)) {
             try {
               const sandbox = getSandbox(
@@ -1337,7 +1448,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           onInteractionIntent: (intent) => {
             stores.turnJobs.recordInteractionIntent(job.id, intent);
             if (intent.disposition !== 'work') return;
-            activeWorkKey = slackThreadKey(job.turn);
+            activeWorkKey = slackAgentThreadKey(job.turn, job.assignment);
             stores.slack.setActiveWork(activeWorkKey, job.id, true);
           },
           ...(job.progress.slackInteraction
@@ -1346,6 +1457,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           onInteractionProgress: (patch) => {
             stores.turnJobs.recordSlackInteractionProgress(job.id, patch);
           },
+          onPublicMessageDelivered: (delivery) =>
+            recordDeliveredSlackAgentMessage(stores.config, job.turn, job.assignment, delivery),
           ...(replayText === undefined ? {} : { replayText }),
           beforeDelivery: persistSandboxProgress,
           // Record terminal delivery before runTurn's post-delivery Sandbox
@@ -1400,6 +1513,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
             job.assignment,
             client,
             this.env as PlatformEnv,
+            (delivery) =>
+              recordDeliveredSlackAgentMessage(
+                stores.config,
+                job.turn,
+                job.assignment,
+                delivery,
+              ),
           ).catch((finalErr) => {
             console.error('[chickpea] relay terminal final failed:', sanitizeError(finalErr));
           });
@@ -1424,7 +1544,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // single-threaded DO is safe; storage writes stay per-job and atomic.
     const groups = new Map<string, (typeof pending)[number][]>();
     for (const job of pending) {
-      const key = slackThreadKey(job.turn);
+      const key = slackAgentThreadKey(job.turn, job.assignment);
       const list = groups.get(key);
       if (list) {
         list.push(job);
@@ -1537,6 +1657,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (err instanceof AgentRevisionConflictError) {
         return rpcError('agent_revision_conflict', err.message, {
           agentId: err.agentId,
+          expectedRevision: String(err.expectedRevision),
+          actualRevision: String(err.actualRevision),
+        });
+      }
+      if (err instanceof ReservedAgentIdentityError) {
+        return rpcError('reserved_agent_identity', err.message, { field: err.field });
+      }
+      if (err instanceof WorkspaceModelDefaultRevisionConflictError) {
+        return rpcError('workspace_model_default_revision_conflict', err.message, {
+          workspaceId: err.workspaceId,
           expectedRevision: String(err.expectedRevision),
           actualRevision: String(err.actualRevision),
         });
@@ -1730,6 +1860,8 @@ async function drainLedgerRuns(
       presentationState: localSlackPresentationState(stores),
       setActiveWork: (key, generation, active) =>
         stores.slack.setActiveWork(key, generation, active),
+      onPublicMessageDelivered: (turn, assignment, delivery) =>
+        recordDeliveredSlackAgentMessage(stores.config, turn, assignment, delivery),
     }),
   }).drain();
 }

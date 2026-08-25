@@ -36,6 +36,7 @@ import {
   isValidApiOAuthConnectionPolicy,
 } from '../config/api-oauth-policy.ts';
 import { resolveConnectorCredential } from '../config/connector-secrets.ts';
+import { revalidateModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import { connectorSkillsForConnections } from '../config/connector-skills.ts';
@@ -79,6 +80,7 @@ import {
   getIdentityStore,
   getMemoryStateStore,
   getSettingsStore,
+  getUsageStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import {
@@ -161,6 +163,7 @@ import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
 import {
   parseRuntimePlanV2,
+  type RuntimePlanModelCredentialV3,
   type RuntimePlanRepositoryV2,
   type RuntimePlanV2,
 } from './runtime-plan.ts';
@@ -599,6 +602,7 @@ export interface SlackAgentRuntimeInput {
   channelId?: string;
   liveConfig?: EffectiveSlackConfig;
   runtimeModel?: ResolvedRuntimeModel;
+  frozenModelCredential?: RuntimePlanModelCredentialV3;
   freezeChannel?: boolean;
   artifactThreadTs?: string | null;
   threadTs?: string;
@@ -656,6 +660,16 @@ export async function createSlackAgentRuntime(
   const frozenLiveAgent = !isDirect && input.freezeChannel !== false
     ? await requireLiveFrozenAgent(store, config.agent.id)
     : undefined;
+  const frozenModelCredential = input.frozenModelCredential ?? config.modelCredential;
+  if (frozenModelCredential) {
+    await revalidateModelCredentialAttribution(
+      config.model,
+      frozenModelCredential,
+      env,
+      settingsStore,
+      getUsageStore(env),
+    );
+  }
   const runtimeModel = input.runtimeModel ?? await resolveRuntimeModel(
     config.agentId,
     config.model,
@@ -1203,6 +1217,7 @@ function createRuntimePlanSandbox(
         workspaceId: plan.conversation.workspaceId,
         channelId: plan.conversation.channelId,
         threadTs: plan.conversation.threadTs,
+        ...(plan.modelCredential ? { frozenModelCredential: plan.modelCredential } : {}),
         liveConfig: {
           workspaceId: plan.conversation.workspaceId,
           channelId: plan.conversation.channelId,
@@ -1210,6 +1225,10 @@ function createRuntimePlanSandbox(
           agent,
           model: plan.model,
           provider: plan.model.split('/', 1)[0] ?? plan.model,
+          modelAttribution: plan.modelAttribution ?? {
+            source: 'legacy_environment',
+            providerId: plan.model.split('/', 1)[0] ?? plan.model,
+          },
           instructions: plan.instructions,
           instructionLayers: [],
         },
@@ -1244,6 +1263,7 @@ function projectRuntimePlanAgent(
   const mcpServers: CustomAgentConfig['mcpServers'] = [];
   return {
     id: current.id,
+    kind: current.kind,
     revision: current.revision,
     name: current.name,
     instructions: plan.instructions,

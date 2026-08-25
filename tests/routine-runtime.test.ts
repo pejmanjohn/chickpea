@@ -16,11 +16,12 @@ const config: EffectiveSlackConfig = {
   channelId: 'C_TEST',
   agentId: 'agent_default',
   agent: {
-    id: 'agent_default', revision: 1, name: 'Chickpea', instructions: 'Be useful.', enabled: true,
+    id: 'agent_default', kind: 'user', revision: 1, name: 'Chickpea', instructions: 'Be useful.', enabled: true,
     model: 'anthropic/claude-sonnet-4-6', skills: [], mcpServers: [], apiConnections: [], repositories: [],
   },
   model: 'anthropic/claude-sonnet-4-6',
   provider: 'anthropic',
+  modelAttribution: { source: 'pinned', providerId: 'anthropic' },
   instructions: 'Be useful.\nRuntime guardrail.',
   instructionLayers: [],
 };

@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import { canEditAgent } from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
-import { isAgentId } from '../config/agent-id.ts';
+import { CHICKPEA_AGENT_ID, isAgentId } from '../config/agent-id.ts';
 import {
   REUSABLE_CONNECTOR_PRESETS,
   resolveReusableConnectorPreset,
@@ -15,6 +15,10 @@ import {
   UnknownAgentError,
 } from '../config/errors.ts';
 import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
+import {
+  resolveProviderRuntimeImpact,
+  resolveProviderRuntimeImpacts,
+} from '../config/provider-impact.ts';
 import {
   type AgentChannelGrant,
   type AgentCreateInput,
@@ -56,11 +60,13 @@ import {
 import type { ManagementStore } from './store.ts';
 import { emitManagementMetric } from './telemetry.ts';
 import {
+  ChickpeaHandoffRequired,
   ManagementError,
   type ApplyWorkspaceChangesInput,
   type ConfirmWorkspaceChangeInput,
   type LiveManagementActor,
   type ManagementApplyResult,
+  type ChickpeaManagementHandoff,
   type ManagementItemOutcome,
   type ManagementMemorySnapshot,
   type ManagementAgentCreateInput,
@@ -101,7 +107,7 @@ export interface WorkspaceManagementServiceInput {
   >;
   config: Pick<
     ConfigStore,
-    | 'listAgents'
+    | 'listUserAgents'
     | 'getAgent'
     | 'createAgent'
     | 'updateAgent'
@@ -110,6 +116,7 @@ export interface WorkspaceManagementServiceInput {
     | 'restoreAgent'
     | 'getWorkspaceInstallation'
     | 'listWorkspaceInstallations'
+    | 'getWorkspaceModelDefault'
     | 'listChannels'
     | 'getChannel'
     | 'putChannel'
@@ -221,6 +228,10 @@ export class WorkspaceManagementService {
     if (!isAgentId(input.agentId)) {
       throw new ManagementError('invalid_request', 'Choose a valid Agent before preparing connector setup.');
     }
+    this.requireChickpeaAgent(actor, 'prepare_connector_setup', {
+      kind: 'agent',
+      id: input.agentId,
+    });
     const agent = await this.requireEditableAgent(actor, input.agentId);
     const connector = resolveReusableConnectorPreset(input.connector);
     if (!connector) {
@@ -250,6 +261,10 @@ export class WorkspaceManagementService {
     refresh = false,
   ): Promise<unknown> {
     const actor = await this.requireLiveActor(context);
+    this.requireChickpeaAgent(actor, 'discover_slack_channels', {
+      kind: 'workspace',
+      id: actor.organizationId,
+    });
     if (!this.stores.discoverSlackChannels) {
       throw new ManagementError('invalid_request', 'Slack Channel discovery is unavailable.');
     }
@@ -262,6 +277,10 @@ export class WorkspaceManagementService {
     connectionId: string,
   ): Promise<unknown> {
     const actor = await this.requireLiveActor(context);
+    this.requireChickpeaAgent(actor, 'test_mcp_connection', {
+      kind: 'agent',
+      id: agentId,
+    });
     await this.requireEditableAgent(actor, agentId);
     if (!this.stores.testMcpConnection) {
       throw new ManagementError('invalid_request', 'MCP connection testing is unavailable.');
@@ -274,6 +293,14 @@ export class WorkspaceManagementService {
     agentId: string,
   ): Promise<ManagementMemorySnapshot> {
     const actor = await this.requireLiveActor(context);
+    if (actor.actingAgentId && actor.actingAgentId !== CHICKPEA_AGENT_ID &&
+        actor.actingAgentId !== agentId) {
+      throw new ChickpeaHandoffRequired(chickpeaHandoff(
+        actor,
+        'inspect_memory',
+        { kind: 'agent', id: agentId },
+      ));
+    }
     await this.requireEditableAgent(actor, agentId);
     await this.requireAgentMemory(agentId);
     return this.stores.memory!.getAgentMemory(agentId);
@@ -284,6 +311,10 @@ export class WorkspaceManagementService {
     input: ManagementRoutineInspectionInput,
   ): Promise<ManagementRoutineSnapshot> {
     const actor = await this.requireLiveActor(context);
+    this.requireChickpeaAgent(actor, 'inspect_routines', {
+      kind: 'workspace',
+      id: input.workspaceId,
+    });
     await this.requireWorkspaceScope(actor, input.workspaceId);
     if (!this.stores.routines) {
       throw new ManagementError('invalid_request', 'Routine management is unavailable.');
@@ -331,8 +362,12 @@ export class WorkspaceManagementService {
     input: { agentIds?: string[] | undefined },
   ): Promise<WorkspaceRecipe> {
     const actor = await this.requireLiveActor(context);
+    this.requireChickpeaAgent(actor, 'export_workspace_recipe', {
+      kind: 'workspace',
+      id: actor.organizationId,
+    });
     const editable = await this.editableAgents(actor);
-    return exportWorkspaceRecipe({ listAgents: async () => editable }, input);
+    return exportWorkspaceRecipe({ listUserAgents: async () => editable }, input);
   }
 
   async previewRecipe(
@@ -340,9 +375,13 @@ export class WorkspaceManagementService {
     input: PreviewWorkspaceRecipeInput,
   ): Promise<WorkspaceRecipePreview> {
     const actor = await this.requireLiveActor(context);
+    this.requireChickpeaAgent(actor, 'preview_workspace_recipe', {
+      kind: 'workspace',
+      id: actor.organizationId,
+    });
     const editable = await this.editableAgents(actor);
     const preview = await previewWorkspaceRecipe(
-      { listAgents: async () => editable },
+      { listUserAgents: async () => editable },
       actor.role === 'member'
         ? async () => 'missing'
         : async (providerId) => this.stores.providerCredentialSource?.(providerId) ?? 'missing',
@@ -366,14 +405,15 @@ export class WorkspaceManagementService {
   async applyWorkspaceChanges(input: ApplyWorkspaceChangesInput): Promise<ManagementApplyResult> {
     const actor = await this.requireLiveActor(input.context);
     const operations = validateManagementOperations(input.operations);
+    const storageIdempotencyKey = managementStorageIdempotencyKey(actor, input.idempotencyKey);
     const at = this.now();
     const reservation = await this.stores.management.reserveRequest({
       operationId: `management_${this.randomId()}`,
       organizationId: actor.organizationId,
       actorUserId: actor.userId,
       actorMembershipId: actor.membershipId,
-      originKey: managementOriginKey(actor.origin),
-      idempotencyKey: input.idempotencyKey,
+      originKey: managementActorOriginKey(actor),
+      idempotencyKey: storageIdempotencyKey,
       digest: managementOperationDigest(operations),
       operations,
       at,
@@ -417,9 +457,38 @@ export class WorkspaceManagementService {
       }
 
       try {
-        const facts = await this.policyFacts(actor, operation, request.operations, clientRefs);
+        const actingAgentHandoff = this.userAgentOperationHandoff(actor, operation);
+        if (actingAgentHandoff) {
+          progress = appendOutcome(progress, index, {
+            itemId: operation.itemId,
+            operationKind: operation.kind,
+            disposition: 'chickpea_handoff',
+            handoff: actingAgentHandoff,
+          });
+          request = await this.stores.management.saveRequestProgress(
+            request.operationId,
+            withoutSetupCapabilitiesFromProgress(progress),
+            this.now(),
+          );
+          continue;
+        }
+        const facts = await this.policyFacts(actor, operation);
         const policy = classifyManagementOperation(facts);
         if (!policy.allowed) {
+          if (policy.reason === 'chickpea_handoff_required') {
+            progress = appendOutcome(progress, index, {
+              itemId: operation.itemId,
+              operationKind: operation.kind,
+              disposition: 'chickpea_handoff',
+              handoff: chickpeaHandoffForOperation(actor, operation),
+            });
+            request = await this.stores.management.saveRequestProgress(
+              request.operationId,
+              withoutSetupCapabilitiesFromProgress(progress),
+              this.now(),
+            );
+            continue;
+          }
           progress = appendOutcome(progress, index, {
             itemId: operation.itemId,
             operationKind: operation.kind,
@@ -540,7 +609,7 @@ export class WorkspaceManagementService {
       organizationId: actor.organizationId,
       actorUserId: actor.userId,
       actorMembershipId: actor.membershipId,
-      originKey: managementOriginKey(actor.origin),
+      originKey: managementActorOriginKey(actor),
       at: this.now(),
     });
     try {
@@ -602,7 +671,7 @@ export class WorkspaceManagementService {
     const request = await this.stores.management.getRequest(proposal.requestOperationId);
     if (!request || request.organizationId !== actor.organizationId ||
         request.actorUserId !== actor.userId || request.actorMembershipId !== actor.membershipId ||
-        request.originKey !== managementOriginKey(actor.origin)) {
+        request.originKey !== managementActorOriginKey(actor)) {
       throw new ManagementError('proposal_binding_mismatch', 'The parent request is unavailable.');
     }
     if (request.status === 'completed' && request.result) return request.result;
@@ -626,7 +695,7 @@ export class WorkspaceManagementService {
     );
     const resumed = await this.applyWorkspaceChanges({
       context,
-      idempotencyKey: request.idempotencyKey,
+      idempotencyKey: publicManagementIdempotencyKey(actor, request.idempotencyKey),
       operations: request.operations,
     });
     // Setup capabilities are response-only bearer secrets. Restore the one
@@ -663,20 +732,28 @@ export class WorkspaceManagementService {
     const actor = await this.requireLiveActor(context);
     const request = await this.stores.management.getRequest(operationId);
     if (request) {
-      if (request.organizationId !== actor.organizationId || request.actorUserId !== actor.userId) {
+      if (request.organizationId !== actor.organizationId || request.actorUserId !== actor.userId ||
+          request.actorMembershipId !== actor.membershipId ||
+          request.originKey !== managementActorOriginKey(actor)) {
         throw new ManagementError('operation_not_found', 'The management operation was not found.');
       }
       return request.result;
     }
     const proposal = await this.stores.management.getProposal(operationId);
     if (proposal) {
-      if (proposal.organizationId !== actor.organizationId || proposal.actorUserId !== actor.userId) {
+      if (proposal.organizationId !== actor.organizationId || proposal.actorUserId !== actor.userId ||
+          proposal.actorMembershipId !== actor.membershipId ||
+          proposal.originKey !== managementActorOriginKey(actor)) {
         throw new ManagementError('operation_not_found', 'The management operation was not found.');
       }
       return proposal.result;
     }
     const setup = await this.stores.management.getSetup(operationId, this.now());
-    if (!setup || setup.organizationId !== actor.organizationId || setup.actorUserId !== actor.userId) {
+    if (!setup || setup.organizationId !== actor.organizationId || setup.actorUserId !== actor.userId ||
+        setup.actorMembershipId !== actor.membershipId ||
+        managementOriginKey(setup.origin) !== managementOriginKey(actor.origin) ||
+        (actor.actingAgentId &&
+          (setup.origin.kind !== 'slack' || setup.origin.agentId !== actor.actingAgentId))) {
       throw new ManagementError('operation_not_found', 'The management operation was not found.');
     }
     return this.setupPublicStatus(setup);
@@ -688,6 +765,10 @@ export class WorkspaceManagementService {
     reissue = false,
   ): Promise<{ revoked: ManagementSetupPublicStatus; replacement?: { setupOperationId: string; setupUrl: string } }> {
     const actor = await this.requireLiveActor(context);
+    this.requireChickpeaAgent(actor, 'revoke_setup_link', {
+      kind: 'setup',
+      id: setupOperationId,
+    });
     const existing = await this.stores.management.getSetup(setupOperationId, this.now());
     if (!existing || existing.organizationId !== actor.organizationId ||
         existing.actorUserId !== actor.userId) {
@@ -795,6 +876,12 @@ export class WorkspaceManagementService {
     url.search = '';
     url.hash = '';
     return url.href;
+  }
+
+  private async agentEditorUrl(agentId: string): Promise<string | undefined> {
+    if (!this.stores.setupBaseUrl) return undefined;
+    const baseUrl = await this.resolveSetupBaseUrl();
+    return new URL(`/admin/agents/${encodeURIComponent(agentId)}`, baseUrl).href;
   }
 
   private async resolveSetupTarget(
@@ -913,7 +1000,63 @@ export class WorkspaceManagementService {
     if (options.cleanupRetention !== false) {
       await this.stores.management.cleanupRetention(this.now(), 100).catch(() => 0);
     }
-    return { ...context, role: membership.role };
+    if (context.origin.kind !== 'slack') {
+      if (context.actingAgentId) {
+        throw new ManagementError('forbidden', 'The acting Agent route is unavailable.');
+      }
+      return { ...context, role: membership.role };
+    }
+    const installation = await this.stores.config.getWorkspaceInstallation(
+      context.origin.workspaceId,
+    );
+    if (installation?.runtimeContract !== 'chickpea-v1') {
+      const { actingAgentId: _legacyActingAgentId, ...legacyContext } = context;
+      return {
+        ...legacyContext,
+        origin: context.origin,
+        role: membership.role,
+      };
+    }
+    const routedAgentId = context.origin.agentId;
+    const actingAgentId = context.actingAgentId ?? routedAgentId;
+    if (!actingAgentId || !isAgentId(actingAgentId) ||
+        (routedAgentId && routedAgentId !== actingAgentId)) {
+      throw new ManagementError('forbidden', 'The acting Agent route is unavailable.');
+    }
+    const actingAgent = await optionalAgent(this.stores.config, actingAgentId);
+    if (!actingAgent ||
+        (actingAgentId === CHICKPEA_AGENT_ID && actingAgent.kind !== 'system') ||
+        (actingAgentId !== CHICKPEA_AGENT_ID && actingAgent.kind !== 'user')) {
+      throw new ManagementError('forbidden', 'The acting Agent route is unavailable.');
+    }
+    return {
+      ...context,
+      actingAgentId,
+      origin: { ...context.origin, agentId: actingAgentId },
+      role: membership.role,
+    };
+  }
+
+  private requireChickpeaAgent(
+    actor: LiveManagementActor,
+    requestedAction: ChickpeaManagementHandoff['requestedAction'],
+    target: ChickpeaManagementHandoff['target'],
+  ): void {
+    if (!actor.actingAgentId || actor.actingAgentId === CHICKPEA_AGENT_ID) return;
+    throw new ChickpeaHandoffRequired(chickpeaHandoff(actor, requestedAction, target));
+  }
+
+  private userAgentOperationHandoff(
+    actor: LiveManagementActor,
+    operation: ManagementOperation,
+  ): ChickpeaManagementHandoff | undefined {
+    if (!actor.actingAgentId || actor.actingAgentId === CHICKPEA_AGENT_ID) return undefined;
+    if (operation.kind === 'update_agent' && operation.agentId === actor.actingAgentId &&
+        safeUserAgentSelfPatch(operation.patch)) return undefined;
+    if (operation.kind === 'update_agent_memory' && operation.agentId === actor.actingAgentId) {
+      return undefined;
+    }
+    return chickpeaHandoffForOperation(actor, operation);
   }
 
   private actorCanEditAgent(actor: LiveManagementActor, agent: CustomAgentConfig): boolean {
@@ -932,10 +1075,13 @@ export class WorkspaceManagementService {
   }
 
   private async editableAgents(actor: LiveManagementActor): Promise<CustomAgentConfig[]> {
-    const agents = await this.stores.config.listAgents();
-    return actor.role === 'member'
+    const agents = await this.stores.config.listUserAgents();
+    const editable = actor.role === 'member'
       ? agents.filter((agent) => this.actorCanEditAgent(actor, agent))
       : agents;
+    return actor.actingAgentId && actor.actingAgentId !== CHICKPEA_AGENT_ID
+      ? editable.filter(({ id }) => id === actor.actingAgentId)
+      : editable;
   }
 
   private assertProposalBinding(
@@ -945,7 +1091,7 @@ export class WorkspaceManagementService {
     if (proposal.organizationId !== actor.organizationId ||
         proposal.actorUserId !== actor.userId ||
         proposal.actorMembershipId !== actor.membershipId ||
-        proposal.originKey !== managementOriginKey(actor.origin)) {
+        proposal.originKey !== managementActorOriginKey(actor)) {
       throw new ManagementError(
         'proposal_binding_mismatch',
         'The confirmation does not match its initiating user and origin.',
@@ -960,30 +1106,41 @@ export class WorkspaceManagementService {
     const facts = await this.policyFacts(
       actor,
       proposal.operation,
-      [proposal.operation],
-      agentClientRefs([proposal.operation]),
     );
     const policy = classifyManagementOperation(facts);
     if (!policy.allowed) {
+      if (policy.reason === 'chickpea_handoff_required') {
+        throw new ChickpeaHandoffRequired(chickpeaHandoffForOperation(actor, proposal.operation));
+      }
       throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
     }
   }
 
   private async snapshot(actor: LiveManagementActor): Promise<ManagementWorkspaceSnapshot> {
+    const userAgentScoped = Boolean(
+      actor.actingAgentId && actor.actingAgentId !== CHICKPEA_AGENT_ID,
+    );
     const [allAgents, channels, allGrants, providerSources] = await Promise.all([
-      this.stores.config.listAgents(),
+      this.stores.config.listUserAgents(),
       this.stores.config.listChannels(),
       this.stores.config.listAgentChannelGrants(),
-      actor.role === 'member'
+      actor.role === 'member' || userAgentScoped
         ? Promise.resolve([] as Array<readonly [ManagedProviderId, ManagedProviderSource]>)
         : Promise.all(MANAGED_PROVIDER_IDS.map(async (id) => [
             id,
             await this.stores.providerCredentialSource?.(id) ?? 'missing',
           ] as const)),
     ]);
-    const agents = actor.role === 'member'
+    const providerImpacts = await resolveProviderRuntimeImpacts(
+      this.stores.config,
+      providerSources.map(([id]) => id),
+    );
+    const editable = actor.role === 'member'
       ? allAgents.filter((agent) => this.actorCanEditAgent(actor, agent))
       : allAgents;
+    const agents = userAgentScoped
+      ? editable.filter(({ id }) => id === actor.actingAgentId)
+      : editable;
     const visibleAgentIds = new Set(agents.map(({ id }) => id));
     const grants = allGrants.filter((grant) => visibleAgentIds.has(grant.agentId));
     const grantsByChannel = new Map<string, Array<{ agentId: string; status: typeof grants[number]['status'] }>>();
@@ -993,7 +1150,9 @@ export class WorkspaceManagementService {
       entries.push({ agentId: grant.agentId, status: grant.status });
       grantsByChannel.set(key, entries);
     }
-    const visibleChannels = actor.role === 'member'
+    const visibleChannels = userAgentScoped
+      ? []
+      : actor.role === 'member'
       ? channels.filter((channel) => grantsByChannel.has(channelKey(
           channel.workspaceId,
           channel.channelId,
@@ -1012,7 +1171,7 @@ export class WorkspaceManagementService {
         revision: grant.revision,
       })),
     ];
-    const team = actor.role === 'owner'
+    const team = actor.role === 'owner' && !userAgentScoped
       ? await this.teamSnapshot(actor.organizationId)
       : undefined;
     return {
@@ -1020,11 +1179,13 @@ export class WorkspaceManagementService {
       ...(actor.origin.kind === 'slack' && actor.origin.agentId
         ? { currentAgentId: actor.origin.agentId }
         : {}),
-      connectors: REUSABLE_CONNECTOR_PRESETS.map(({ id, name, description }) => ({
-        id,
-        name,
-        description,
-      })),
+      connectors: userAgentScoped
+        ? []
+        : REUSABLE_CONNECTOR_PRESETS.map(({ id, name, description }) => ({
+            id,
+            name,
+            description,
+          })),
       agents: agents.map(({
         id,
         revision,
@@ -1080,14 +1241,19 @@ export class WorkspaceManagementService {
         grants: (grantsByChannel.get(channelKey(channel.workspaceId, channel.channelId)) ?? [])
           .sort((left, right) => left.agentId.localeCompare(right.agentId)),
       })),
-      providers: providerSources.map(([id, source]) => ({
-        id,
-        source,
-        mutable: source !== 'env',
-        affectedAgents: agents
-          .filter((agent) => modelBelongsToProvider(agent.model, id))
-          .map(({ id: agentId, name }) => ({ id: agentId, name })),
-      })),
+      providers: providerSources.map(([id, source]) => {
+        const impact = providerImpacts.get(id)!;
+        return {
+          id,
+          source,
+          mutable: source !== 'env',
+          workspaceDefaultAffected: impact.workspaceDefaultAffected,
+          inheritingAgentCount: impact.activeInheritingAgentCount,
+          affectedAgents: [...impact.pinnedAgents, ...impact.inheritingAgents]
+            .filter((agent) => visibleAgentIds.has(agent.id))
+            .map(({ id: agentId, name }) => ({ id: agentId, name })),
+        };
+      }),
       ...(team ? { team } : {}),
       effectiveRevision: effectiveConfigurationRevision(refs),
     };
@@ -1210,7 +1376,7 @@ export class WorkspaceManagementService {
     const effectiveRevision = await this.effectiveRevision();
     const hasConfirmation = outcomes.some(({ disposition }) => disposition === 'confirmation_required');
     const hasFailure = outcomes.some(({ disposition }) =>
-      disposition === 'failed' || disposition === 'skipped');
+      disposition === 'failed' || disposition === 'skipped' || disposition === 'chickpea_handoff');
     return {
       operationId,
       idempotencyKey,
@@ -1223,7 +1389,7 @@ export class WorkspaceManagementService {
 
   private async effectiveRevision(): Promise<string> {
     const [agents, channels, grants] = await Promise.all([
-      this.stores.config.listAgents(),
+      this.stores.config.listUserAgents(),
       this.stores.config.listChannels(),
       this.stores.config.listAgentChannelGrants(),
     ]);
@@ -1245,8 +1411,6 @@ export class WorkspaceManagementService {
   private async policyFacts(
     actor: LiveManagementActor,
     operation: ManagementOperation,
-    requestOperations: ManagementOperation[],
-    clientRefs: Map<string, string>,
   ) {
     if (operation.kind === 'update_member') return { actor, operation, adminRequired: true };
     if (operation.kind === 'update_agent_memory') {
@@ -1302,6 +1466,8 @@ export class WorkspaceManagementService {
         currentAgent,
         agentReferences,
         capabilityScopeExpanded: capabilityScopeExpanded(currentAgent, operation.patch),
+        userAgentSelfEditAllowed: operation.agentId === actor.actingAgentId &&
+          safeUserAgentSelfPatch(operation.patch),
         agentEditable: true,
       };
     }
@@ -1329,12 +1495,7 @@ export class WorkspaceManagementService {
     }
     if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
       await this.requireEditableAgent(actor, operation.agentId!);
-      const initialAgentBundle = operation.kind === 'grant_agent_channel' && Boolean(
-        operation.agentClientRef &&
-        clientRefs.has(operation.agentClientRef) &&
-        requestOperations.some((candidate) =>
-          candidate.kind === 'create_agent' && candidate.clientRef === operation.agentClientRef));
-      return { actor, operation, initialAgentBundle, agentEditable: true };
+      return { actor, operation, agentEditable: true };
     }
     return { actor, operation };
   }
@@ -1358,7 +1519,7 @@ export class WorkspaceManagementService {
       organizationId: actor.organizationId,
       actorUserId: actor.userId,
       actorMembershipId: actor.membershipId,
-      originKey: managementOriginKey(actor.origin),
+      originKey: managementActorOriginKey(actor),
       operation,
       summary,
       targetRevisions,
@@ -1372,10 +1533,12 @@ export class WorkspaceManagementService {
     providerId: ManagedProviderId,
     reason: string,
   ): Promise<string> {
-    const affected = (await this.stores.config.listAgents())
-      .filter((agent) => modelBelongsToProvider(agent.model, providerId))
+    const impact = await resolveProviderRuntimeImpact(this.stores.config, providerId);
+    const affected = [...impact.pinnedAgents, ...impact.inheritingAgents]
       .map(({ id, name }) => `${name} (${id})`);
-    return `${reason}:remove_provider_credential:provider:${providerId}:affected=${
+    return `${reason}:remove_provider_credential:provider:${providerId}:workspace_default=${
+      impact.workspaceDefaultAffected ? 'affected' : 'unaffected'
+    }:affected=${
       affected.length ? affected.join(', ') : 'none'
     }`;
   }
@@ -1526,7 +1689,7 @@ export class WorkspaceManagementService {
   ): Promise<ManagementPreparedItem> {
     switch (operation.kind) {
       case 'create_agent': {
-        const existingGeneratedSeeds = (await this.stores.config.listAgents()).flatMap((agent) => {
+        const existingGeneratedSeeds = (await this.stores.config.listUserAgents()).flatMap((agent) => {
           const avatar = agent.slackPresence?.avatar;
           return avatar?.kind === 'generated' ? [avatar.seed ?? agent.id] : [];
         });
@@ -1689,7 +1852,7 @@ export class WorkspaceManagementService {
         const intended = prepared.intendedAfter as CustomAgentConfig;
         const { revision: _revision, ...createInput } = intended;
         const agent = await this.stores.config.createAgent(createInput);
-        return mutationForAgent(agent, prepared.inverse);
+        return mutationForAgent(agent, prepared.inverse, await this.agentEditorUrl(agent.id));
       }
       case 'update_agent': {
         const current = await this.stores.config.getAgent(operation.agentId);
@@ -1798,7 +1961,11 @@ export class WorkspaceManagementService {
       const agentId = operation.agent.id;
       const current = await optionalAgent(this.stores.config, agentId);
       if (current && canonicalJson(current) === canonicalJson(prepared.intendedAfter)) {
-        return mutationForAgent(current, prepared.inverse);
+        return mutationForAgent(
+          current,
+          prepared.inverse,
+          await this.agentEditorUrl(current.id),
+        );
       }
       return undefined;
     }
@@ -2274,9 +2441,27 @@ function actorPrincipal(actor: LiveManagementActor): AuthPrincipal {
     role: actor.role,
     authenticatorKind: actor.origin.kind,
     credentialId: `management:${actor.membershipId}`,
-    correlationId: managementOriginKey(actor.origin),
+    correlationId: managementActorOriginKey(actor),
     machine: false,
   };
+}
+
+function managementActorOriginKey(actor: LiveManagementActor): string {
+  const origin = managementOriginKey(actor.origin);
+  return actor.actingAgentId ? `${origin}:agent:${actor.actingAgentId}` : origin;
+}
+
+function managementStorageIdempotencyKey(actor: LiveManagementActor, publicKey: string): string {
+  return actor.actingAgentId ? `agent.${actor.actingAgentId}.${publicKey}` : publicKey;
+}
+
+function publicManagementIdempotencyKey(actor: LiveManagementActor, storageKey: string): string {
+  if (!actor.actingAgentId) return storageKey;
+  const prefix = `agent.${actor.actingAgentId}.`;
+  if (!storageKey.startsWith(prefix)) {
+    throw new ManagementError('idempotency_conflict', 'The management request Agent changed.');
+  }
+  return storageKey.slice(prefix.length);
 }
 
 function emitOperationOutcomes(
@@ -2341,13 +2526,19 @@ function materializeManagedAgent(
   actor: LiveManagementActor,
   input: ManagementAgentCreateInput,
   avatarSeed: string,
-): AgentCreateInput {
+): AgentCreateInput & { kind: 'user' } {
   const { requestedHandle, ...agent } = input;
   const handle = requestedHandle ?? input.name;
   const normalizedHandle = normalizeAgentHandle(handle);
+  const privateChickpeaDraft = actor.actingAgentId === CHICKPEA_AGENT_ID;
   return {
     ...agent,
+    kind: 'user',
     lifecycle: 'draft',
+    enabled: privateChickpeaDraft ? false : agent.enabled,
+    mcpServers: privateChickpeaDraft ? [] : agent.mcpServers,
+    apiConnections: privateChickpeaDraft ? [] : agent.apiConnections,
+    repositories: privateChickpeaDraft ? [] : agent.repositories,
     creatorMembershipId: actor.membershipId,
     editPolicy: input.editPolicy ?? 'creator_and_admins',
     configurationGeneration: 1,
@@ -2414,11 +2605,13 @@ function fullAgentPatch(agent: CustomAgentConfig): ConfigAgentPatch {
 function mutationForAgent(
   agent: CustomAgentConfig,
   inverse?: ManagementOperation,
+  handoffUrl?: string,
 ): ImmediateMutation {
   const changed = [{ kind: 'agent' as const, id: agent.id, revision: agent.revision }];
   return {
     changed,
     ...(inverse ? { inverse } : {}),
+    ...(handoffUrl ? { handoffUrl } : {}),
     resultingRevisions: { [`agent:${agent.id}`]: agent.revision },
   };
 }
@@ -2479,6 +2672,84 @@ function capabilityScopeExpanded(agent: CustomAgentConfig, patch: ManagementAgen
   if (patch.mcpServers && containsExpandedMcp(agent.mcpServers, patch.mcpServers)) return true;
   if (patch.apiConnections && containsExpandedApi(agent.apiConnections, patch.apiConnections)) return true;
   return false;
+}
+
+function safeUserAgentSelfPatch(patch: ManagementAgentPatch): boolean {
+  const allowed = new Set(['name', 'description', 'instructions', 'model']);
+  return Object.keys(patch).every((key) => allowed.has(key));
+}
+
+function chickpeaHandoffForOperation(
+  actor: LiveManagementActor,
+  operation: ManagementOperation,
+): ChickpeaManagementHandoff {
+  if (operation.kind === 'create_agent') {
+    return chickpeaHandoff(actor, operation.kind, { kind: 'agent', id: operation.agent.id });
+  }
+  if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
+      operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
+      operation.kind === 'update_agent_memory') {
+    return chickpeaHandoff(actor, operation.kind, { kind: 'agent', id: operation.agentId });
+  }
+  if (operation.kind === 'put_channel') {
+    return chickpeaHandoff(actor, operation.kind, {
+      kind: 'channel',
+      id: channelKey(operation.channel.workspaceId, operation.channel.channelId),
+    });
+  }
+  if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
+    return chickpeaHandoff(actor, operation.kind, {
+      kind: 'channel',
+      id: channelKey(operation.workspaceId, operation.channelId),
+    });
+  }
+  if (operation.kind === 'update_member') {
+    return chickpeaHandoff(actor, operation.kind, {
+      kind: 'membership',
+      id: operation.membershipId,
+    });
+  }
+  if (operation.kind === 'remove_provider_credential') {
+    return chickpeaHandoff(actor, operation.kind, {
+      kind: 'provider',
+      id: operation.providerId,
+    });
+  }
+  if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+      operation.kind === 'delete_routine') {
+    return chickpeaHandoff(actor, operation.kind, {
+      kind: 'routine',
+      id: operation.routineId ?? channelKey(operation.workspaceId, operation.channelId),
+    });
+  }
+  if (operation.target.kind === 'provider_credential') {
+    return chickpeaHandoff(actor, operation.kind, {
+      kind: 'provider',
+      id: operation.target.providerId,
+    });
+  }
+  return chickpeaHandoff(actor, operation.kind, {
+    kind: 'agent',
+    id: operation.target.agentId ?? operation.target.agentClientRef ?? 'unresolved_agent',
+  });
+}
+
+function chickpeaHandoff(
+  actor: LiveManagementActor,
+  requestedAction: ChickpeaManagementHandoff['requestedAction'],
+  target: ChickpeaManagementHandoff['target'],
+): ChickpeaManagementHandoff {
+  if (!actor.actingAgentId || actor.actingAgentId === CHICKPEA_AGENT_ID) {
+    throw new ManagementError('forbidden', 'The acting Agent handoff is unavailable.');
+  }
+  return {
+    kind: 'chickpea_handoff',
+    chickpeaAgentId: CHICKPEA_AGENT_ID,
+    actingAgentId: actor.actingAgentId,
+    requestedAction,
+    target,
+    instruction: 'Mention @Chickpea in this thread to continue.',
+  };
 }
 
 function containsExpandedRepositories(
@@ -2622,16 +2893,11 @@ async function routineContentAccess(
   }
 }
 
-function modelBelongsToProvider(model: string | undefined, provider: ManagedProviderId): boolean {
-  return Boolean(model?.startsWith(`${provider}/`));
-}
-
 function withoutSetupCapabilities(result: ManagementApplyResult): ManagementApplyResult {
   return {
     ...result,
     outcomes: result.outcomes.map(({
       setupUrl: _setupUrl,
-      handoffUrl: _handoffUrl,
       ...outcome
     }) => outcome),
   };
@@ -2644,7 +2910,6 @@ function withoutSetupCapabilitiesFromProgress(
     ...progress,
     outcomes: progress.outcomes.map(({
       setupUrl: _setupUrl,
-      handoffUrl: _handoffUrl,
       ...outcome
     }) => outcome),
   };

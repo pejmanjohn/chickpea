@@ -3,6 +3,12 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 
+import { BetterAuthDirectory, BetterAuthSessionAuthenticator } from '../auth/better-auth-principal.ts';
+import { resolveBetterAuthEnvironment } from '../auth/better-auth-environment.ts';
+import { setCookieValues } from '../auth/cookies.ts';
+import { AuthService } from '../auth/service.ts';
+import type { AuthPrincipal } from '../auth/types.ts';
+
 import {
   completeApiOAuthAuthorization,
   saveApiOAuthClient,
@@ -85,6 +91,8 @@ export interface ManagementSetupRoutesOptions {
   randomCapability?: () => string;
   validateProviderKey?: typeof validateProviderApiKey;
   deliverReceipt?: typeof deliverManagementReceiptToSlack;
+  /** Test seam; production resolves the current Better Auth browser session. */
+  authenticatePrincipal?: (request: Request) => Promise<AuthPrincipal | undefined>;
 }
 
 export function createManagementSetupRoutes(
@@ -107,9 +115,15 @@ export function createManagementSetupRoutes(
     const setupId = setupIdFromContext(c);
     if (!setupId) return unavailablePage(c);
     const setup = await dependencies.management.getSetup(setupId, now());
-    if (setup?.status === 'completed') return terminalPage(c, setup);
+    const principal = await authenticateSetupPrincipal(c, options);
+    if (setup?.status === 'completed' && principalMatchesSetup(principal, setup)) {
+      return terminalPage(c, setup);
+    }
+    if (setup && principal && !principalMatchesSetup(principal, setup)) {
+      return unavailablePage(c);
+    }
     const session = setupSession(c, setupId);
-    if (!setup || !session || !sessionMatches(setup, session)) {
+    if (!setup || !principal || !session || !sessionMatches(setup, session)) {
       return c.html(renderClaimPage(setupId));
     }
     if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
@@ -122,6 +136,10 @@ export function createManagementSetupRoutes(
     const dependencies = setupDependencies(c, options);
     const setupId = setupIdFromContext(c);
     if (!setupId || !sameOriginMutation(c)) return genericDenied(c);
+    const setup = await dependencies.management.getSetup(setupId, now());
+    const principal = await authenticateSetupPrincipal(c, options);
+    if (!principal) return authenticationRequired(c);
+    if (!setup || !principalMatchesSetup(principal, setup)) return genericDenied(c);
     const body = await readJsonBody(c);
     const capability = isRecord(body) && typeof body.capability === 'string'
       ? body.capability
@@ -155,7 +173,11 @@ export function createManagementSetupRoutes(
     const dependencies = setupDependencies(c, options);
     const setupId = setupIdFromContext(c);
     if (!setupId || !sameOriginMutation(c)) return genericDenied(c);
-    const setup = await requireBrowserSetup(c, dependencies.management, setupId, now());
+    const principal = await authenticateSetupPrincipal(c, options);
+    if (!principal) return authenticationRequired(c);
+    const setup = await requireBrowserSetup(
+      c, dependencies.management, setupId, principal, now(),
+    );
     if (!setup) return genericDenied(c);
     const fields = await readFormFields(c);
     if (!fields) return formFailure(c, setup, 'invalid_form');
@@ -179,7 +201,11 @@ export function createManagementSetupRoutes(
     const dependencies = setupDependencies(c, options);
     const setupId = setupIdFromContext(c);
     if (!setupId || !sameOriginMutation(c)) return genericDenied(c);
-    const setup = await requireBrowserSetup(c, dependencies.management, setupId, now());
+    const principal = await authenticateSetupPrincipal(c, options);
+    if (!principal) return authenticationRequired(c);
+    const setup = await requireBrowserSetup(
+      c, dependencies.management, setupId, principal, now(),
+    );
     if (!setup) return genericDenied(c);
     const fields = await readFormFields(c);
     if (!fields) return formFailure(c, setup, 'invalid_form');
@@ -227,8 +253,9 @@ export function createManagementSetupRoutes(
   app.get('/setup/:setupOperationId/oauth/api/callback', async (c) => {
     const dependencies = setupDependencies(c, options);
     const setupId = setupIdFromContext(c);
-    const setup = setupId
-      ? await requireBrowserSetup(c, dependencies.management, setupId, now())
+    const principal = await authenticateSetupPrincipal(c, options);
+    const setup = setupId && principal
+      ? await requireBrowserSetup(c, dependencies.management, setupId, principal, now())
       : undefined;
     const state = c.req.query('state') ?? '';
     const code = c.req.query('code') ?? '';
@@ -270,8 +297,9 @@ export function createManagementSetupRoutes(
   app.get('/setup/:setupOperationId/oauth/mcp/callback', async (c) => {
     const dependencies = setupDependencies(c, options);
     const setupId = setupIdFromContext(c);
-    const setup = setupId
-      ? await requireBrowserSetup(c, dependencies.management, setupId, now())
+    const principal = await authenticateSetupPrincipal(c, options);
+    const setup = setupId && principal
+      ? await requireBrowserSetup(c, dependencies.management, setupId, principal, now())
       : undefined;
     const state = c.req.query('state') ?? '';
     const code = c.req.query('code') ?? '';
@@ -300,8 +328,9 @@ export function createManagementSetupRoutes(
   app.get('/setup/:setupOperationId/github/callback', async (c) => {
     const dependencies = setupDependencies(c, options);
     const setupId = setupIdFromContext(c);
-    const setup = setupId
-      ? await requireBrowserSetup(c, dependencies.management, setupId, now())
+    const principal = await authenticateSetupPrincipal(c, options);
+    const setup = setupId && principal
+      ? await requireBrowserSetup(c, dependencies.management, setupId, principal, now())
       : undefined;
     const code = c.req.query('code') ?? '';
     const state = c.req.query('state') ?? '';
@@ -339,8 +368,9 @@ export function createManagementSetupRoutes(
   app.get('/setup/:setupOperationId/repository/finish', async (c) => {
     const dependencies = setupDependencies(c, options);
     const setupId = setupIdFromContext(c);
-    const setup = setupId
-      ? await requireBrowserSetup(c, dependencies.management, setupId, now())
+    const principal = await authenticateSetupPrincipal(c, options);
+    const setup = setupId && principal
+      ? await requireBrowserSetup(c, dependencies.management, setupId, principal, now())
       : undefined;
     if (!setup || setup.action !== 'repository_access') return genericDenied(c);
     try {
@@ -399,6 +429,58 @@ function setupDependencies(c: Context, options: ManagementSetupRoutesOptions): S
     usage: options.usage ?? getUsageStore(platformEnv),
     ...(platformEnv ? { platformEnv } : {}),
   };
+}
+
+async function authenticateSetupPrincipal(
+  c: Context,
+  options: ManagementSetupRoutesOptions,
+): Promise<AuthPrincipal | undefined> {
+  if (options.authenticatePrincipal) {
+    return options.authenticatePrincipal(c.req.raw);
+  }
+  const platformEnv = options.platformEnv ?? c.env as PlatformEnv | undefined;
+  const identity = getIdentityStore(platformEnv);
+  const control = await identity.getAuthControl();
+  if (control?.authMode !== 'slack_active' || control.healthGate !== 'normal' ||
+      !control.betterAuthOrganizationId || !control.canonicalAdminOrigin) return undefined;
+  const environment = await resolveBetterAuthEnvironment({ control, platformEnv });
+  if (!environment || environment.baseURL !== control.canonicalAdminOrigin) return undefined;
+  const directory = new BetterAuthDirectory({
+    backend: environment.backend,
+    access: identity,
+    organizationId: control.betterAuthOrganizationId,
+    canonicalAdminOrigin: control.canonicalAdminOrigin,
+  });
+  const auth = new AuthService({
+    identity,
+    sessionAuthenticator: new BetterAuthSessionAuthenticator({
+      ...environment,
+      directory,
+      organizationId: control.betterAuthOrganizationId,
+    }),
+  });
+  try {
+    const principal = await auth.authenticateRequest(c.req.raw);
+    const headers = auth.takeResponseHeaders(c.req.raw);
+    if (headers) {
+      for (const cookie of setCookieValues(headers)) {
+        c.header('Set-Cookie', cookie, { append: true });
+      }
+    }
+    return principal.machine ? undefined : principal;
+  } catch {
+    return undefined;
+  }
+}
+
+function principalMatchesSetup(
+  principal: AuthPrincipal | undefined,
+  setup: ManagementSetupRecord,
+): principal is AuthPrincipal {
+  return Boolean(principal && !principal.machine &&
+    principal.userId === setup.actorUserId &&
+    principal.membershipId === setup.actorMembershipId &&
+    principal.organizationId === setup.organizationId);
 }
 
 async function completeFormAction(
@@ -746,12 +828,15 @@ async function requireBrowserSetup(
   c: Context,
   management: ManagementStore,
   setupId: string,
+  principal: AuthPrincipal,
   at: number,
 ): Promise<ManagementSetupRecord | undefined> {
   const session = setupSession(c, setupId);
   if (!session) return undefined;
   const setup = await management.getSetup(setupId, at);
-  return setup && sessionMatches(setup, session) ? setup : undefined;
+  return setup && principalMatchesSetup(principal, setup) && sessionMatches(setup, session)
+    ? setup
+    : undefined;
 }
 
 async function markSetupFailure(
@@ -778,17 +863,21 @@ async function markSetupFailure(
 
 function renderClaimPage(setupId: string): string {
   const exchangePath = `/setup/${encodeURIComponent(setupId)}/exchange`;
+  const storageKey = `chickpea.management-setup.${setupId}`;
+  const signInPath = `/auth/slack/sign-in?destination=${encodeURIComponent(`/setup/${setupId}`)}`;
   return pageShell('Secure Chickpea setup', `
     <main><h1>Secure Chickpea setup</h1>
     <p id="status">Checking this one-use setup link…</p></main>
     <script nonce="setup">(function(){"use strict";
       var token="";
       try{var f=new URLSearchParams(location.hash.slice(1));token=f.get("setup")||"";
-      if(location.hash)history.replaceState(null,"",location.pathname+location.search);}catch(_){}
+      if(/^[A-Za-z0-9_-]{43}$/.test(token))sessionStorage.setItem(${JSON.stringify(storageKey)},token);
+      if(location.hash)history.replaceState(null,"",location.pathname+location.search);
+      if(!token)token=sessionStorage.getItem(${JSON.stringify(storageKey)})||"";}catch(_){}
       if(!/^[A-Za-z0-9_-]{43}$/.test(token)){document.getElementById("status").textContent="This setup link is unavailable. Ask the person who created it for a new link.";return;}
       fetch(${JSON.stringify(exchangePath)},{method:"POST",credentials:"same-origin",headers:{"content-type":"application/json"},body:JSON.stringify({capability:token})})
-      .then(function(r){token="";if(!r.ok)throw new Error();return r.json();})
-      .then(function(){location.replace(location.pathname);})
+      .then(function(r){if(r.status===401){location.replace(${JSON.stringify(signInPath)});return null;}token="";if(!r.ok)throw new Error();return r.json();})
+      .then(function(result){if(!result)return;try{sessionStorage.removeItem(${JSON.stringify(storageKey)});}catch(_){}location.replace(location.pathname);})
       .catch(function(){token="";document.getElementById("status").textContent="This setup link is unavailable. Ask the person who created it for a new link.";});
     })();</script>`);
 }
@@ -981,6 +1070,10 @@ function safeFailureCode(error: unknown): string {
 
 function genericDenied(c: Context): Response {
   return c.json({ error: 'setup_unavailable' }, 403);
+}
+
+function authenticationRequired(c: Context): Response {
+  return c.json({ error: 'authentication_required' }, 401);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
