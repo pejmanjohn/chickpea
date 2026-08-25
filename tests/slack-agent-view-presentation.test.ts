@@ -23,6 +23,7 @@ function harness(input: {
   tasks?: string[];
   progressive?: boolean;
   native?: boolean;
+  schemaVersion?: 1 | 2;
   onNativeStarted?: () => Promise<void>;
   persona?: { name: string; avatarUrl: string; avatarRevision: number };
 } = {}) {
@@ -37,6 +38,7 @@ function harness(input: {
     workBindingGeneration: 1,
     runFencingToken: 0,
     root: ROOT,
+    ...(input.schemaVersion ? { schemaVersion: input.schemaVersion } : {}),
     features: {
       progressiveStreaming: input.progressive ?? true,
       nativeTasks: input.native ?? false,
@@ -276,7 +278,7 @@ test('a late-attached plan opens a native task card and supersedes the interim c
 });
 
 test('adoptLatePlan is a no-op without native tasks and never overwrites an existing plan', async () => {
-  const off = harness({ native: false });
+  const off = harness({ schemaVersion: 1, native: false });
   try {
     await off.presentation.adoptLatePlan(['Mention result artifact']);
     assert.equal(off.store.get(off.runId)?.plan, undefined);
@@ -293,6 +295,31 @@ test('adoptLatePlan is a no-op without native tasks and never overwrites an exis
     );
   } finally {
     withPlan.db.close();
+  }
+});
+
+test('a V1 progressive-off presentation stays terminal-only after the V2 deploy', async () => {
+  const h = harness({ schemaVersion: 1, progressive: false, native: false });
+  try {
+    const relay = await h.presentation.prepareReceipt({
+      instanceId: 'instance_v1_terminal',
+      receipt: { submissionId: 'submission_v1_terminal', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    assert.equal(relay, undefined);
+    assert.equal(h.calls.some((call) => call.method === 'chat.startStream'), false);
+
+    assert.deepEqual(
+      await h.presentation.finalize('Legacy terminal answer.', 'markdown', 'complete', observer([])),
+      { handled: true, messageTs: '1785700100.000201' },
+    );
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.schemaVersion, 1);
+    if (stored?.schemaVersion === 1) {
+      assert.deepEqual(stored.features, { progressiveStreaming: false, nativeTasks: false });
+    }
+  } finally {
+    h.db.close();
   }
 });
 

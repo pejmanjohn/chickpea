@@ -35,16 +35,18 @@ function createInput(runId = 'run_presentation_1') {
   } as const;
 }
 
-test('presentation creation freezes identity and stable native tasks', () => {
+test('presentation creation writes V2 with stable native tasks and feature-free identity', () => {
   let clock = 1_800_000_000_000;
   const db = openStateDb(':memory:');
   try {
     const store = new SlackRunPresentationStoreLogic(db, () => clock++);
     const created = store.create(createInput());
 
-    assert.equal(created.schemaVersion, 1);
+    assert.equal(created.schemaVersion, 2);
     assert.equal(created.projectionVersion, 1);
     assert.deepEqual(created.progressiveEligibility, { status: 'pending' });
+    assert.deepEqual(created.progressiveIntent, { status: 'unresolved' });
+    assert.equal('features' in created, false);
     assert.equal(created.stream.state, 'absent');
     assert.deepEqual(created.persona, createInput().persona);
     assert.equal(created.plan?.displayMode, 'plan');
@@ -54,7 +56,10 @@ test('presentation creation freezes identity and stable native tasks', () => {
     ]);
     assert.notEqual(created.plan?.tasks[0]?.id, created.plan?.tasks[1]?.id);
 
-    const replay = store.create(createInput());
+    const replay = store.create({
+      ...createInput(),
+      features: { progressiveStreaming: false, nativeTasks: false },
+    });
     assert.deepEqual(replay, created, 'idempotent admission must not replace frozen state');
 
     assert.throws(
@@ -70,6 +75,34 @@ test('presentation creation freezes identity and stable native tasks', () => {
       (error: unknown) =>
         error instanceof SlackPresentationStateError && error.code === 'identity_conflict',
     );
+  } finally {
+    db.close();
+  }
+});
+
+test('V1 rows retain frozen features and adopt under V1 identity after the default changes', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => 1_800_000_000_000);
+    const { taskLabels: _legacyTaskLabels, ...legacyBase } = createInput(
+      'run_v1_deploy_boundary',
+    );
+    const legacyInput = {
+      ...legacyBase,
+      schemaVersion: 1 as const,
+      features: { progressiveStreaming: true, nativeTasks: false },
+    };
+    const legacy = store.create(legacyInput);
+    assert.equal(legacy.schemaVersion, 1);
+    assert.deepEqual(legacy.features, {
+      progressiveStreaming: true,
+      nativeTasks: false,
+    });
+
+    const adopted = store.create({
+      ...legacyBase,
+    });
+    assert.deepEqual(adopted, legacy);
   } finally {
     db.close();
   }
@@ -325,6 +358,7 @@ test('adopt_plan attaches a late plan only when absent, native, and plan-free', 
       bindingId: 'binding_presentation',
       workBindingGeneration: 7,
       runFencingToken: 0,
+      schemaVersion: 1,
       root: ROOT,
       features: { progressiveStreaming: false, nativeTasks: true },
     });
@@ -375,6 +409,7 @@ test('adopt_plan is refused when native tasks are disabled', () => {
       bindingId: 'binding_presentation',
       workBindingGeneration: 7,
       runFencingToken: 0,
+      schemaVersion: 1,
       root: ROOT,
       features: { progressiveStreaming: false, nativeTasks: false },
     });
@@ -452,35 +487,52 @@ test('maintenance purges finalized rows early and tombstones unresolved rows wit
       if (result.outcome === 'applied') current = result.presentation;
     }
 
-    const unresolved = store.create(createInput('run_unresolved'));
-    const unknown = store.transition({
-      runId: unresolved.runId,
-      workBindingGeneration: unresolved.workBindingGeneration,
-      runFencingToken: unresolved.runFencingToken,
-      expectedProjectionVersion: unresolved.projectionVersion,
-      expectedStreamState: 'absent',
-      mutation: { kind: 'mark_unknown', degradationReason: 'unknown_effect' },
-    });
-    assert.equal(unknown.outcome, 'applied');
-    assert.deepEqual(store.listRepairRequired(10).map((row) => row.runId), ['run_unresolved']);
+    for (const unresolved of [
+      store.create(createInput('run_unresolved_v2')),
+      store.create({
+        ...createInput('run_unresolved_v1'),
+        schemaVersion: 1,
+        features: { progressiveStreaming: true, nativeTasks: true },
+      }),
+    ]) {
+      const unknown = store.transition({
+        runId: unresolved.runId,
+        workBindingGeneration: unresolved.workBindingGeneration,
+        runFencingToken: unresolved.runFencingToken,
+        expectedProjectionVersion: unresolved.projectionVersion,
+        expectedStreamState: 'absent',
+        mutation: { kind: 'mark_unknown', degradationReason: 'unknown_effect' },
+      });
+      assert.equal(unknown.outcome, 'applied');
+      if (unknown.outcome === 'applied') {
+        assert.equal(unknown.presentation.schemaVersion, unresolved.schemaVersion);
+      }
+    }
+    assert.deepEqual(
+      store.listRepairRequired(10).map((row) => row.runId),
+      ['run_unresolved_v1', 'run_unresolved_v2'],
+    );
 
     clock += SLACK_PRESENTATION_FINALIZED_TTL_MS + 1;
     assert.deepEqual(store.maintain(10), { finalizedPurged: 1, expiredTombstoned: 0 });
     assert.equal(store.get('run_finalized'), undefined);
-    assert.ok(store.get('run_unresolved'), 'repair state must outlive normal terminal TTL');
+    assert.ok(store.get('run_unresolved_v1'), 'V1 repair state must outlive normal terminal TTL');
+    assert.ok(store.get('run_unresolved_v2'), 'V2 repair state must outlive normal terminal TTL');
 
     clock = 1_800_000_000_000 + SLACK_PRESENTATION_RETENTION_MS + 1;
-    assert.deepEqual(store.maintain(10), { finalizedPurged: 0, expiredTombstoned: 1 });
-    assert.equal(store.get('run_unresolved'), undefined);
-    assert.deepEqual(store.listRetentionTombstones(10), [{
+    assert.deepEqual(store.maintain(10), { finalizedPurged: 0, expiredTombstoned: 2 });
+    assert.equal(store.get('run_unresolved_v1'), undefined);
+    assert.equal(store.get('run_unresolved_v2'), undefined);
+    assert.deepEqual(store.listRetentionTombstones(10), Array.from({ length: 2 }, () => ({
       streamState: 'unknown',
       repairRequired: true,
       expiredAt: 1_800_000_000_000 + SLACK_PRESENTATION_RETENTION_MS,
       tombstonedAt: clock,
-    }]);
+    })));
     const serialized = JSON.stringify(store.listRetentionTombstones(10));
     for (const identifier of [
-      'run_unresolved',
+      'run_unresolved_v1',
+      'run_unresolved_v2',
       ROOT.workspaceId,
       ROOT.channelId,
       ROOT.requesterUserId,

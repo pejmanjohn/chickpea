@@ -20,18 +20,20 @@ import {
   type SlackProgressiveReadRelay,
 } from './progressive-relay.ts';
 import type { ProgressiveEligibilityDecision } from './progressive-eligibility.ts';
-import type {
-  SlackAppendReservation,
-  SlackPresentationMutation,
-  SlackPresentationTransitionInput,
-  SlackPresentationTransitionResult,
-  SlackRunPresentationV1,
+import {
+  presentationAllowsProgressive,
+  presentationUsesNativeTasks,
+  type SlackAppendReservation,
+  type SlackPresentationMutation,
+  type SlackPresentationTransitionInput,
+  type SlackPresentationTransitionResult,
+  type SlackRunPresentation,
 } from './run-presentations.ts';
 
 type MaybePromise<T> = T | Promise<T>;
 
 export interface SlackPresentationStatePort {
-  getRunPresentation(runId: string): MaybePromise<SlackRunPresentationV1 | undefined>;
+  getRunPresentation(runId: string): MaybePromise<SlackRunPresentation | undefined>;
   transitionRunPresentation(
     input: SlackPresentationTransitionInput,
   ): MaybePromise<SlackPresentationTransitionResult>;
@@ -145,7 +147,7 @@ export class SlackAgentViewPresentation {
       return undefined;
     }
     presentation = await this.advanceFenceIfRequired(presentation);
-    const allowed = input.eligibility.allowed && presentation.features.progressiveStreaming;
+    const allowed = input.eligibility.allowed && presentationAllowsProgressive(presentation);
     const decision = allowed
       ? input.eligibility
       : {
@@ -171,7 +173,7 @@ export class SlackAgentViewPresentation {
       return undefined;
     }
 
-    if (presentation.plan && presentation.features.nativeTasks) {
+    if (presentation.plan && presentationUsesNativeTasks(presentation)) {
       presentation = await this.startNativePlan(
         presentation,
         input.instanceId,
@@ -218,7 +220,7 @@ export class SlackAgentViewPresentation {
       ? canonicalSlackMarkdownText(text)
       : text.replace(/\r\n?/g, '\n').trim();
     const footerBlocks = [this.footerBlock()];
-    const taskChunks = presentation.features.nativeTasks
+    const taskChunks = presentationUsesNativeTasks(presentation)
       ? terminalTaskChunks(presentation, terminalTaskStatus)
       : [];
 
@@ -361,7 +363,7 @@ export class SlackAgentViewPresentation {
   async adoptLatePlan(taskLabels: readonly string[]): Promise<void> {
     if (taskLabels.length < 1 || taskLabels.length > 4) return;
     const presentation = await this.requirePresentation();
-    if (!presentation.features.nativeTasks) return;
+    if (!presentationUsesNativeTasks(presentation)) return;
     if (presentation.plan) return;
     if (presentation.stream.state !== 'absent') return;
     await this.transition(presentation, { kind: 'adopt_plan', taskLabels });
@@ -476,7 +478,7 @@ export class SlackAgentViewPresentation {
   }
 
   private async recordAcknowledgedPrefix(
-    presentation: SlackRunPresentationV1,
+    presentation: SlackRunPresentation,
     position: { batch: number; index: number },
     prefix: string,
   ): Promise<void> {
@@ -496,10 +498,10 @@ export class SlackAgentViewPresentation {
   }
 
   private async startNativePlan(
-    presentation: SlackRunPresentationV1,
+    presentation: SlackRunPresentation,
     instanceId: string,
     submissionId: string,
-  ): Promise<SlackRunPresentationV1> {
+  ): Promise<SlackRunPresentation> {
     if (presentation.stream.state === 'streaming') return presentation;
     if (presentation.stream.state !== 'absent' || !presentation.plan) return presentation;
     if (presentation.plan.tasks.every((task) => task.status === 'pending')) {
@@ -535,7 +537,7 @@ export class SlackAgentViewPresentation {
   }
 
   private async stopKnownStream(
-    presentation: SlackRunPresentationV1,
+    presentation: SlackRunPresentation,
     approvedOutput: string,
     attemptId: string | undefined,
     observer: SlackPresentationDeliveryObserver,
@@ -548,7 +550,7 @@ export class SlackAgentViewPresentation {
       outcome: presentation.stream.acknowledgedByteLength > 0 ? 'progressive' : 'terminal_only',
       ...(this.degradedReason ? { degradationReason: this.degradedReason } : {}),
     });
-    if (presentation.plan && presentation.features.nativeTasks) {
+    if (presentation.plan && presentationUsesNativeTasks(presentation)) {
       presentation = await this.transition(presentation, {
         kind: 'set_task_status',
         status: terminalTaskStatus,
@@ -585,7 +587,7 @@ export class SlackAgentViewPresentation {
   }
 
   private async correctDivergentStream(
-    presentation: SlackRunPresentationV1,
+    presentation: SlackRunPresentation,
     approvedOutput: string,
     approved: string,
     terminalTaskStatus: 'complete' | 'error',
@@ -621,7 +623,7 @@ export class SlackAgentViewPresentation {
       outcome: 'corrected',
       degradationReason: 'unknown_effect',
     });
-    if (presentation.plan && presentation.features.nativeTasks) {
+    if (presentation.plan && presentationUsesNativeTasks(presentation)) {
       presentation = await this.transition(presentation, {
         kind: 'set_task_status',
         status: terminalTaskStatus,
@@ -661,8 +663,8 @@ export class SlackAgentViewPresentation {
   }
 
   private async advanceFenceIfRequired(
-    presentation: SlackRunPresentationV1,
-  ): Promise<SlackRunPresentationV1> {
+    presentation: SlackRunPresentation,
+  ): Promise<SlackRunPresentation> {
     if (presentation.runFencingToken === this.options.runFencingToken) return presentation;
     if (presentation.runFencingToken > this.options.runFencingToken) {
       throw new Error('Slack Agent View presentation fence is stale.');
@@ -673,17 +675,17 @@ export class SlackAgentViewPresentation {
     }, presentation.runFencingToken);
   }
 
-  private async requirePresentation(): Promise<SlackRunPresentationV1> {
+  private async requirePresentation(): Promise<SlackRunPresentation> {
     const presentation = await this.options.state.getRunPresentation(this.options.runId);
     if (!presentation) throw new Error('Slack Agent View presentation is missing.');
     return presentation;
   }
 
   private async transition(
-    presentation: SlackRunPresentationV1,
+    presentation: SlackRunPresentation,
     mutation: SlackPresentationMutation,
     fence = presentation.runFencingToken,
-  ): Promise<SlackRunPresentationV1> {
+  ): Promise<SlackRunPresentation> {
     const result = await this.options.state.transitionRunPresentation({
       runId: presentation.runId,
       workBindingGeneration: presentation.workBindingGeneration,
@@ -699,7 +701,7 @@ export class SlackAgentViewPresentation {
   }
 
   private async markUnknown(
-    presentation: SlackRunPresentationV1,
+    presentation: SlackRunPresentation,
     degradationReason: 'unknown_effect',
   ): Promise<void> {
     try {
@@ -747,7 +749,7 @@ export function deriveSlackThreadTitle(message: string, workLabel?: string): str
 }
 
 function streamStartPayload(
-  presentation: SlackRunPresentationV1,
+  presentation: SlackRunPresentation,
   input: { markdownText?: string; taskChunks?: AnyChunk[] },
 ): Parameters<WebClient['chat']['startStream']>[0] {
   const taskChunks = input.taskChunks ?? [];
@@ -770,7 +772,7 @@ function streamStartPayload(
   } as unknown as Parameters<WebClient['chat']['startStream']>[0];
 }
 
-function taskChunks(presentation: SlackRunPresentationV1): AnyChunk[] {
+function taskChunks(presentation: SlackRunPresentation): AnyChunk[] {
   return presentation.plan?.tasks.map((task) => ({
     type: 'task_update',
     id: task.id,
@@ -780,7 +782,7 @@ function taskChunks(presentation: SlackRunPresentationV1): AnyChunk[] {
 }
 
 function terminalTaskChunks(
-  presentation: SlackRunPresentationV1,
+  presentation: SlackRunPresentation,
   status: 'complete' | 'error',
 ): AnyChunk[] {
   return presentation.plan?.tasks.map((task) => ({
@@ -792,8 +794,8 @@ function terminalTaskChunks(
 }
 
 function terminalFlueIdentity(
-  presentation: SlackRunPresentationV1,
-): NonNullable<SlackRunPresentationV1['stream']['flue']> {
+  presentation: SlackRunPresentation,
+): NonNullable<SlackRunPresentation['stream']['flue']> {
   return presentation.stream.flue ?? {
     instanceId: `terminal_${hash(presentation.runId).slice(0, 24)}`,
     submissionId: `terminal_${hash(presentation.turnJobId).slice(0, 24)}`,
@@ -853,6 +855,6 @@ function retryAfterMs(error: { retryAfter: number }): number {
   return Math.min(15 * 60_000, Math.max(1_000, Math.floor(seconds * 1_000)));
 }
 
-function deliveryRef(presentation: SlackRunPresentationV1): string {
+function deliveryRef(presentation: SlackRunPresentation): string {
   return `slack:${presentation.root.channelId}:${presentation.stream.messageTs ?? 'acknowledged'}`;
 }

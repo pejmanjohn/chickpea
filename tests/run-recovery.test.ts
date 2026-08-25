@@ -16,7 +16,7 @@ import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import {
   SlackRunPresentationStoreLogic,
   type SlackPresentationMutation,
-  type SlackRunPresentationV1,
+  type SlackRunPresentation,
 } from '../src/slack/run-presentations.ts';
 import type { SlackPresentationStatePort } from '../src/slack/agent-view-presentation.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
@@ -553,9 +553,9 @@ function lifecycleFor(
 
 function transitionPresentation(
   store: SlackRunPresentationStoreLogic,
-  current: SlackRunPresentationV1,
+  current: SlackRunPresentation,
   mutation: SlackPresentationMutation,
-): SlackRunPresentationV1 {
+): SlackRunPresentation {
   const result = store.transition({
     runId: current.runId,
     workBindingGeneration: current.workBindingGeneration,
