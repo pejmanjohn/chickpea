@@ -57,7 +57,15 @@ export class RoutineContentAccessResolver {
       if (work.maximumSensitivity === 'public' && binding.sourceVisibility === 'public') {
         return 'public';
       }
-      if (work.maximumSensitivity !== 'private' || binding.sourceVisibility !== 'private') {
+      // Visibility resolution is best-effort at schedule creation time. Older
+      // schedules, and schedules created while Slack visibility lookup is
+      // temporarily unavailable, carry `unknown`. Treat that value as private
+      // rather than making a proven Channel member lose all controls. This is
+      // still fail-closed: only a live Slack membership check below can reveal
+      // the content, and public content still requires an exact public/public
+      // integrity match above.
+      if (work.maximumSensitivity !== 'private' ||
+          !['private', 'unknown'].includes(binding.sourceVisibility)) {
         return 'authorization_unknown';
       }
     } catch {

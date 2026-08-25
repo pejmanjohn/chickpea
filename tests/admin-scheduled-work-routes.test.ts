@@ -748,6 +748,82 @@ test('private schedule projections are readable only to proven Channel members a
   }
 });
 
+test('unknown schedule visibility stays private but remains readable to a proven Channel member', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-routine-unknown-member-')), 'state.db');
+  const routines = new SqliteRoutineStore(path);
+  const work = new SqliteWorkStore(path);
+  const config = new SqliteConfigStore(path, { agents: [] });
+  const settings = new SqliteSettingsStore(path);
+  const canary = 'UNKNOWN_VISIBILITY_MEMBER_CANARY';
+  const identity = {
+    getMembership: async () => ({
+      id: 'membership_member', organizationId: 'org_oss', userId: 'user_member',
+      role: 'owner', status: 'active', createdAt: 1, updatedAt: 1,
+    }),
+    getUser: async () => ({
+      id: 'user_member', slackTeamId: 'T_TEST', slackUserId: 'U_MEMBER',
+      displayName: 'Member', contactEmail: null, createdAt: 1, updatedAt: 1,
+    }),
+    recordAuthAudit: async () => undefined,
+  } as unknown as IdentityStore;
+  const principal: AuthPrincipal = {
+    userId: 'user_member', membershipId: 'membership_member', organizationId: 'org_oss',
+    role: 'owner', authenticatorKind: 'test_slack_session', credentialId: 'session_member',
+    correlationId: 'request_member', machine: false,
+  };
+  try {
+    const nextRunAt = Date.now() + 3_600_000;
+    const routine = await new RoutineService(routines, {
+      routineId: () => 'routine_unknown_visibility_member',
+    }).save({
+      action: 'create', actorId: 'U_CREATOR', workspaceId: 'T_TEST', channelId: 'C_TEST',
+      definition: { ...definition(), name: canary },
+      nextRunAt, projectedDailyStarts: 5,
+      reservations: [{ windowStart: nextRunAt, count: 1 }], sourceVisibility: 'unknown',
+    }, 'seed-unknown-visibility-member');
+    const agent = await config.createAgent({
+      id: 'agent_unknown_visibility', name: 'Unknown visibility Agent',
+      instructions: 'Run schedules.', enabled: true, lifecycle: 'active',
+      creatorMembershipId: 'membership_member', editPolicy: 'all_workspace_members',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.putChannel({
+      workspaceId: 'T_TEST', channelId: 'C_TEST', label: 'unknown-visibility-lab', lifecycle: 'active',
+    });
+    await config.putAgentScheduleReference({
+      scheduleId: routine.id, agentId: agent.id, workspaceId: 'T_TEST', channelId: 'C_TEST',
+      createdByMembershipId: 'membership_member', runsAsMembershipId: 'membership_member',
+      authorityReceiptId: 'receipt_unknown_visibility', requiredConnectionAccountIds: [], state: 'active',
+    });
+    const app = createAdminRoutes({
+      store: config,
+      settings,
+      routines,
+      work,
+      slackTransport: {
+        mode: 'direct',
+        listMemberChannels: async () => new Set(['C_TEST']),
+      } as unknown as SlackTransport,
+      ...testAdminAuthority(TOKEN, undefined, identity, principal),
+    });
+    const response = await app.request(
+      `http://localhost/admin/api/agents/${agent.id}/schedules`,
+      { headers: testAdminHeaders(TOKEN) },
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    const schedule = (await response.json() as Record<string, any>).schedules[0];
+    assert.equal(schedule.name, canary);
+    assert.equal(schedule.contentAccess, 'private_member');
+    assert.equal(schedule.channelLabel, 'unknown-visibility-lab');
+    assert.deepEqual(schedule.actions, { pause: true, resume: false, delete: true });
+  } finally {
+    routines.close();
+    work.close();
+    config.close();
+    settings.close();
+  }
+});
+
 test('private schedule authorization fails closed with one Slack membership lookup per request', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-routine-private-failure-')), 'state.db');
   const routines = new SqliteRoutineStore(path, () => NOW);
