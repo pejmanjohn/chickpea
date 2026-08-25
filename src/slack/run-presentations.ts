@@ -128,6 +128,11 @@ export interface SlackPresentationPlan {
   }>;
 }
 
+export interface SlackPresentationTelemetry {
+  eligibilityDecidedAt?: number;
+  firstProgressiveEffectAt?: number;
+}
+
 interface SlackRunPresentationBase {
   runId: string;
   turnJobId: string;
@@ -142,6 +147,8 @@ interface SlackRunPresentationBase {
   stream: SlackPresentationStream;
   plan?: SlackPresentationPlan;
   title?: { valueHash: string; outcome: 'pending' | 'set' | 'failed' };
+  /** Content-free event times used only for aggregate delivery evidence. */
+  telemetry?: SlackPresentationTelemetry;
   repairRequired: boolean;
   createdAt: number;
   updatedAt: number;
@@ -284,6 +291,40 @@ export interface SlackPresentationSummary {
   eligibility: Record<string, number>;
   outcomes: Record<string, number>;
   degradations: Record<string, number>;
+  offers: Record<string, number>;
+  intents: Record<string, number>;
+  policyOutcomes: Record<string, number>;
+  acceptedBytes: { total: number; max: number };
+  latencyMs: {
+    offerToRequest: SlackPresentationLatencySummary;
+    requestToFirstEffect: SlackPresentationLatencySummary;
+    total: SlackPresentationLatencySummary;
+  };
+}
+
+export interface SlackPresentationLatencySummary {
+  count: number;
+  min: number | null;
+  p50: number | null;
+  p90: number | null;
+  max: number | null;
+}
+
+export interface SlackPresentationFinalizationRecord {
+  schemaVersion: 1;
+  runRef: string;
+  presentationSchemaVersion: 1 | 2;
+  offer: string;
+  intent: string;
+  policyOutcome: string;
+  deliveryOutcome: SlackPresentationOutcome | 'pending';
+  degradation: SlackPresentationDegradationReason | 'none';
+  acceptedBytes: number;
+  timingMs: {
+    offerToRequest?: number;
+    requestToFirstEffect?: number;
+    total: number;
+  };
 }
 
 export type SlackPresentationStateErrorCode =
@@ -730,7 +771,19 @@ export class SlackRunPresentationStoreLogic {
       eligibility: {},
       outcomes: {},
       degradations: {},
+      offers: {},
+      intents: {},
+      policyOutcomes: {},
+      acceptedBytes: { total: 0, max: 0 },
+      latencyMs: {
+        offerToRequest: emptyLatencySummary(),
+        requestToFirstEffect: emptyLatencySummary(),
+        total: emptyLatencySummary(),
+      },
     };
+    const offerToRequest: number[] = [];
+    const requestToFirstEffect: number[] = [];
+    const totalLatency: number[] = [];
     for (const row of rows) {
       const presentation = JSON.parse(String(row.presentation_json)) as SlackRunPresentation;
       increment(summary.streamStates, presentation.stream.state);
@@ -742,7 +795,24 @@ export class SlackRunPresentationStoreLogic {
       increment(summary.eligibility, eligibility);
       increment(summary.outcomes, presentation.stream.presentationOutcome ?? 'pending');
       increment(summary.degradations, presentation.stream.degradationReason ?? 'none');
+      increment(summary.offers, presentationOffer(presentation));
+      increment(summary.intents, presentationIntent(presentation));
+      increment(summary.policyOutcomes, presentationPolicyOutcome(presentation));
+      summary.acceptedBytes.total += presentation.stream.acknowledgedByteLength;
+      summary.acceptedBytes.max = Math.max(
+        summary.acceptedBytes.max,
+        presentation.stream.acknowledgedByteLength,
+      );
+      collectPresentationLatencies(
+        presentation,
+        offerToRequest,
+        requestToFirstEffect,
+        totalLatency,
+      );
     }
+    summary.latencyMs.offerToRequest = summarizeLatency(offerToRequest);
+    summary.latencyMs.requestToFirstEffect = summarizeLatency(requestToFirstEffect);
+    summary.latencyMs.total = summarizeLatency(totalLatency);
     return summary;
   }
 
@@ -784,6 +854,7 @@ function applyMutation(
         status: 'frozen',
         ...mutation.eligibility,
       };
+      next.telemetry = { ...current.telemetry, eligibilityDecidedAt: at };
       return next;
     case 'advance_run_fence':
       if (!Number.isSafeInteger(mutation.runFencingToken) ||
@@ -903,6 +974,13 @@ function applyMutation(
       next.stream.acknowledgedPrefixHash = mutation.acknowledgedPrefixHash;
       delete next.stream.pendingAppend;
       next.repairRequired = false;
+      // This transition happens only after Slack accepted the answer bytes, so
+      // it is visibility evidence rather than merely a stream-start attempt.
+      // It also covers prose appended to an already-open native task stream.
+      if (current.schemaVersion === 2 && current.progressiveIntent.status === 'requested' &&
+          current.telemetry?.firstProgressiveEffectAt === undefined) {
+        next.telemetry = { ...current.telemetry, firstProgressiveEffectAt: at };
+      }
       return next;
     }
     case 'append_rejected': {
@@ -1024,6 +1102,123 @@ function applyMutation(
       next.title = { ...current.title, outcome: mutation.outcome };
       return next;
   }
+}
+
+/** One bounded, content-free record emitted after canonical finalization. */
+export function slackPresentationFinalizationRecord(
+  presentation: SlackRunPresentation,
+): SlackPresentationFinalizationRecord {
+  if (presentation.stream.state !== 'finalized') {
+    throw stateError('invalid_transition', 'Only a finalized presentation can emit evidence.');
+  }
+  const timing = presentationTiming(presentation);
+  return {
+    schemaVersion: 1,
+    runRef: `run_${createHash('sha256').update(presentation.runId).digest('hex').slice(0, 24)}`,
+    presentationSchemaVersion: presentation.schemaVersion,
+    offer: presentationOffer(presentation),
+    intent: presentationIntent(presentation),
+    policyOutcome: presentationPolicyOutcome(presentation),
+    deliveryOutcome: presentation.stream.presentationOutcome ?? 'pending',
+    degradation: presentation.stream.degradationReason ?? 'none',
+    acceptedBytes: presentation.stream.acknowledgedByteLength,
+    timingMs: {
+      ...(timing.offerToRequest === undefined
+        ? {}
+        : { offerToRequest: timing.offerToRequest }),
+      ...(timing.requestToFirstEffect === undefined
+        ? {}
+        : { requestToFirstEffect: timing.requestToFirstEffect }),
+      total: Math.max(0, presentation.updatedAt - presentation.createdAt),
+    },
+  };
+}
+
+function presentationOffer(presentation: SlackRunPresentation): string {
+  const eligibility = presentation.progressiveEligibility;
+  if (eligibility.status === 'pending') return 'pending';
+  return eligibility.allowed ? 'offered' : `denied:${eligibility.reason}`;
+}
+
+function presentationIntent(presentation: SlackRunPresentation): string {
+  if (presentation.schemaVersion === 1) return 'legacy';
+  const intent = presentation.progressiveIntent;
+  return intent.status === 'denied' ? `denied:${intent.reason}` : intent.status;
+}
+
+function presentationPolicyOutcome(presentation: SlackRunPresentation): string {
+  const eligibility = presentation.progressiveEligibility;
+  if (eligibility.status === 'pending') return 'pending';
+  if (!eligibility.allowed) {
+    return eligibility.reason === 'operations_disabled'
+      ? 'operationally_disabled'
+      : `runtime_denied:${eligibility.reason}`;
+  }
+  if (presentation.schemaVersion === 1) return 'legacy';
+  const intent = presentation.progressiveIntent;
+  if (intent.status === 'not_requested') return 'offered_not_requested';
+  if (intent.status === 'denied') return `requested_denied:${intent.reason}`;
+  if (intent.status !== 'requested') return `offered_${intent.status}`;
+  const outcome = presentation.stream.presentationOutcome;
+  if (outcome === 'progressive') return 'requested_progressive';
+  if (outcome === 'corrected') return 'requested_corrected';
+  if (outcome === 'fallback') return 'requested_fallback';
+  return 'requested_terminal';
+}
+
+function presentationTiming(presentation: SlackRunPresentation): {
+  offerToRequest?: number;
+  requestToFirstEffect?: number;
+} {
+  if (presentation.schemaVersion !== 2 ||
+      presentation.progressiveIntent.status !== 'requested') return {};
+  const offeredAt = presentation.telemetry?.eligibilityDecidedAt;
+  const requestedAt = presentation.progressiveIntent.requestedAt;
+  const firstEffectAt = presentation.telemetry?.firstProgressiveEffectAt;
+  return {
+    ...(offeredAt === undefined
+      ? {}
+      : { offerToRequest: Math.max(0, requestedAt - offeredAt) }),
+    ...(firstEffectAt === undefined
+      ? {}
+      : { requestToFirstEffect: Math.max(0, firstEffectAt - requestedAt) }),
+  };
+}
+
+function collectPresentationLatencies(
+  presentation: SlackRunPresentation,
+  offerToRequest: number[],
+  requestToFirstEffect: number[],
+  total: number[],
+): void {
+  const timing = presentationTiming(presentation);
+  if (timing.offerToRequest !== undefined) offerToRequest.push(timing.offerToRequest);
+  if (timing.requestToFirstEffect !== undefined) {
+    requestToFirstEffect.push(timing.requestToFirstEffect);
+  }
+  if (presentation.stream.state === 'finalized') {
+    total.push(Math.max(0, presentation.updatedAt - presentation.createdAt));
+  }
+}
+
+function emptyLatencySummary(): SlackPresentationLatencySummary {
+  return { count: 0, min: null, p50: null, p90: null, max: null };
+}
+
+function summarizeLatency(values: readonly number[]): SlackPresentationLatencySummary {
+  if (values.length === 0) return emptyLatencySummary();
+  const ordered = [...values].sort((left, right) => left - right);
+  return {
+    count: ordered.length,
+    min: ordered[0]!,
+    p50: percentile(ordered, 0.5),
+    p90: percentile(ordered, 0.9),
+    max: ordered.at(-1)!,
+  };
+}
+
+function percentile(ordered: readonly number[], quantile: number): number {
+  return ordered[Math.max(0, Math.ceil(ordered.length * quantile) - 1)]!;
 }
 
 function increment(target: Record<string, number>, key: string): void {
@@ -1181,7 +1376,8 @@ function decodePresentation(row: PresentationRow): SlackRunPresentation {
     presentation.root?.workspaceId !== row.workspace_id ||
     presentation.root?.channelId !== row.channel_id ||
     (presentation.stream.messageTs ?? null) !== row.message_ts ||
-    presentation.repairRequired !== (row.repair_required === 1)
+    presentation.repairRequired !== (row.repair_required === 1) ||
+    !isPresentationTelemetry(presentation.telemetry)
   ) {
     throw stateError('invalid_input', 'Stored presentation columns do not match payload.');
   }
@@ -1194,6 +1390,18 @@ function decodePresentation(row: PresentationRow): SlackRunPresentation {
     throw stateError('invalid_input', 'Stored presentation version payload is invalid.');
   }
   return structuredClone(presentation);
+}
+
+function isPresentationTelemetry(value: unknown): value is SlackPresentationTelemetry | undefined {
+  if (value === undefined) return true;
+  if (!value || typeof value !== 'object') return false;
+  const telemetry = value as Record<string, unknown>;
+  return Object.keys(telemetry).every((key) =>
+    key === 'eligibilityDecidedAt' || key === 'firstProgressiveEffectAt'
+  ) && [telemetry.eligibilityDecidedAt, telemetry.firstProgressiveEffectAt].every((entry) =>
+    entry === undefined ||
+    (typeof entry === 'number' && Number.isSafeInteger(entry) && entry >= 0)
+  );
 }
 
 function requireState(

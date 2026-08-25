@@ -167,10 +167,19 @@ See [.env.example](.env.example) for the complete offline-safe environment surfa
 npm run typecheck
 npm test
 npm run build
+npm run verify:slack-streaming-policy
 npm run verify:admin-ui
 npm run verify:cf-smoke
 npm run verify:oss-export
 ```
+
+`verify:slack-streaming-policy` validates the content-free model-decision fixture corpus. A
+provider evaluation is deliberately separate and opt-in: run
+`npm run verify:slack-streaming-policy:live -- --live --lane <lane> --model <id>` only when
+quota use has been approved. It compares the exact `stream_answer` prompt/tool contract against
+clear positive, clear negative, and ambiguous Slack requests, including paired terminal-delivery
+latency controls. It never calls Slack or prints model output. Re-run it for each supported model
+when the model, system instruction, or tool protocol changes.
 
 The repository includes parity fixtures for direct Slack transport and the shared-gateway protocol. Live Slack acceptance should use a disposable paid workspace to verify user-group policy, handle collisions, public auto-join, private invitation, App Home, avatar updates, archive, and restore.
 

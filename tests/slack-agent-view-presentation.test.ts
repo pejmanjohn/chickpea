@@ -11,6 +11,7 @@ import {
   type SlackPresentationStatePort,
 } from '../src/slack/agent-view-presentation.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
+import type { SlackPresentationFinalizationRecord } from '../src/slack/run-presentations.ts';
 
 const ROOT = {
   workspaceId: 'T_AGENT_VIEW',
@@ -49,6 +50,7 @@ function harness(input: {
     ...(input.tasks ? { taskLabels: input.tasks } : {}),
   });
   const calls: Array<{ method: string; input: Record<string, unknown> }> = [];
+  const finalizationRecords: SlackPresentationFinalizationRecord[] = [];
   let stream = 0;
   const client = {
     assistant: {
@@ -112,9 +114,10 @@ function harness(input: {
     minAppendIntervalMs: 750,
     now: () => clock,
     wait: async (milliseconds) => { clock += milliseconds; },
+    onFinalized: (record) => { finalizationRecords.push(structuredClone(record)); },
     ...(input.onNativeStarted ? { onNativeStarted: input.onNativeStarted } : {}),
   });
-  return { db, store, runId, calls, presentation };
+  return { db, store, runId, calls, finalizationRecords, presentation };
 }
 
 function observer(events: Array<Record<string, unknown>>): SlackPresentationDeliveryObserver {
@@ -204,6 +207,7 @@ test('ordinary eligible answers start once, append ordered suffixes, and stop on
       { handled: true, messageTs: '1785700100.000201' },
     );
     await h.presentation.markCanonicalFinalized();
+    await h.presentation.markCanonicalFinalized();
 
     assert.equal(h.calls.filter((call) => call.method === 'chat.startStream').length, 1);
     assert.equal(
@@ -235,6 +239,10 @@ test('ordinary eligible answers start once, append ordered suffixes, and stop on
       ['before', undefined],
       ['after', 'delivered'],
     ]);
+    assert.equal(h.finalizationRecords.length, 1);
+    assert.equal(h.finalizationRecords[0]?.policyOutcome, 'requested_progressive');
+    assert.equal(h.finalizationRecords[0]?.acceptedBytes, 24);
+    assert.equal(JSON.stringify(h.finalizationRecords).includes('Hello progressive world.'), false);
   } finally {
     h.db.close();
   }

@@ -8,6 +8,9 @@ import {
   SLACK_PRESENTATION_RETENTION_MS,
   SlackRunPresentationStoreLogic,
   SlackPresentationStateError,
+  slackPresentationFinalizationRecord,
+  type SlackPresentationMutation,
+  type SlackRunPresentation,
 } from '../src/slack/run-presentations.ts';
 import { TURN_JOB_TTL_MS, TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 
@@ -33,6 +36,24 @@ function createInput(runId = 'run_presentation_1') {
     root: ROOT,
     taskLabels: ['Inspect the record', 'Prepare the recommendation'],
   } as const;
+}
+
+function advance(
+  store: SlackRunPresentationStoreLogic,
+  current: SlackRunPresentation,
+  mutation: SlackPresentationMutation,
+): SlackRunPresentation {
+  const result = store.transition({
+    runId: current.runId,
+    workBindingGeneration: current.workBindingGeneration,
+    runFencingToken: current.runFencingToken,
+    expectedProjectionVersion: current.projectionVersion,
+    expectedStreamState: current.stream.state,
+    mutation,
+  });
+  assert.equal(result.outcome, 'applied');
+  if (result.outcome !== 'applied') throw new Error('synthetic transition was not applied');
+  return result.presentation;
 }
 
 test('presentation creation writes V2 with stable native tasks and feature-free identity', () => {
@@ -219,7 +240,139 @@ test('presentation diagnostics aggregate only content-free workspace outcomes', 
       eligibility: { pending: 1 },
       outcomes: { pending: 1 },
       degradations: { none: 1 },
+      offers: { pending: 1 },
+      intents: { unresolved: 1 },
+      policyOutcomes: { pending: 1 },
+      acceptedBytes: { total: 0, max: 0 },
+      latencyMs: {
+        offerToRequest: { count: 0, min: null, p50: null, p90: null, max: null },
+        requestToFirstEffect: { count: 0, min: null, p50: null, p90: null, max: null },
+        total: { count: 0, min: null, p50: null, p90: null, max: null },
+      },
     });
+  } finally {
+    db.close();
+  }
+});
+
+test('presentation evidence separates offer, intent, delivery, bytes, and latency without content', () => {
+  let clock = 1_800_000_000_000;
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => (clock += 10));
+    const withoutTasks = (runId: string, threadTs: string) => {
+      const { taskLabels: _taskLabels, ...input } = createInput(runId);
+      return store.create({ ...input, root: { ...ROOT, threadTs } });
+    };
+
+    let progressive = withoutTasks('run_evidence_progressive', '1785700010.000100');
+    progressive = advance(store, progressive, {
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    progressive = advance(store, progressive, {
+      kind: 'progressive_intent_candidate', toolCallId: 'stream_evidence',
+    });
+    progressive = advance(store, progressive, {
+      kind: 'progressive_intent_requested', toolCallId: 'stream_evidence',
+    });
+    progressive = advance(store, progressive, { kind: 'stream_start_intent' });
+    progressive = advance(store, progressive, {
+      kind: 'stream_started',
+      messageTs: '1785700010.000200',
+      flue: {
+        instanceId: 'instance_evidence',
+        submissionId: 'submission_evidence',
+        messageId: 'message_evidence',
+      },
+    });
+    assert.equal(progressive.telemetry?.firstProgressiveEffectAt, undefined);
+    progressive = advance(store, progressive, {
+      kind: 'append_intent',
+      position: { batch: 5, index: 0 },
+      from: 0,
+      to: 5,
+      hash: 'a'.repeat(64),
+    });
+    progressive = advance(store, progressive, {
+      kind: 'append_acknowledged',
+      cursor: 1,
+      acknowledgedPrefixHash: 'a'.repeat(64),
+    });
+    assert.equal(typeof progressive.telemetry?.firstProgressiveEffectAt, 'number');
+    progressive = advance(store, progressive, {
+      kind: 'close_stream', outcome: 'progressive',
+    });
+    progressive = advance(store, progressive, { kind: 'mark_finalizing' });
+    progressive = advance(store, progressive, {
+      kind: 'mark_artifact_delivered', outcome: 'progressive',
+    });
+    progressive = advance(store, progressive, { kind: 'mark_finalized' });
+
+    let declined = withoutTasks('run_evidence_declined', '1785700011.000100');
+    declined = advance(store, declined, {
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    declined = advance(store, declined, { kind: 'progressive_intent_not_requested' });
+    declined = advance(store, declined, { kind: 'mark_non_stream_finalized' });
+
+    let disabled = withoutTasks('run_evidence_disabled', '1785700012.000100');
+    disabled = advance(store, disabled, {
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: false, reason: 'operations_disabled' },
+    });
+    disabled = advance(store, disabled, { kind: 'mark_non_stream_finalized' });
+
+    let denied = withoutTasks('run_evidence_denied', '1785700013.000100');
+    denied = advance(store, denied, {
+      kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    denied = advance(store, denied, {
+      kind: 'progressive_intent_candidate', toolCallId: 'stream_denied',
+    });
+    denied = advance(store, denied, {
+      kind: 'progressive_intent_denied', reason: 'non_presentation_tool',
+    });
+    denied = advance(store, denied, { kind: 'mark_non_stream_finalized' });
+
+    const summary = store.summarize(ROOT.workspaceId);
+    assert.deepEqual(summary.offers, { offered: 3, 'denied:operations_disabled': 1 });
+    assert.deepEqual(summary.intents, {
+      requested: 1,
+      not_requested: 1,
+      unresolved: 1,
+      'denied:non_presentation_tool': 1,
+    });
+    assert.deepEqual(summary.policyOutcomes, {
+      requested_progressive: 1,
+      offered_not_requested: 1,
+      operationally_disabled: 1,
+      'requested_denied:non_presentation_tool': 1,
+    });
+    assert.deepEqual(summary.acceptedBytes, { total: 5, max: 5 });
+    assert.equal(summary.latencyMs.offerToRequest.count, 1);
+    assert.equal(summary.latencyMs.requestToFirstEffect.count, 1);
+    assert.equal(summary.latencyMs.total.count, 4);
+
+    const record = slackPresentationFinalizationRecord(progressive);
+    assert.match(record.runRef, /^run_[a-f0-9]{24}$/);
+    assert.equal(record.policyOutcome, 'requested_progressive');
+    assert.equal(record.acceptedBytes, 5);
+    const serialized = JSON.stringify(record);
+    for (const privateValue of [
+      progressive.runId,
+      progressive.root.workspaceId,
+      progressive.root.channelId,
+      progressive.root.threadTs,
+      progressive.root.requesterUserId,
+      'instance_evidence',
+      'submission_evidence',
+      'message_evidence',
+    ]) {
+      assert.equal(serialized.includes(privateValue), false, privateValue);
+    }
   } finally {
     db.close();
   }

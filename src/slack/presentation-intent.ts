@@ -8,6 +8,8 @@ import {
 export const SLACK_STREAM_ANSWER_TOOL_NAME = 'stream_answer';
 export const SLACK_STREAM_ANSWER_ACKNOWLEDGEMENT =
   'Delivery preference noted. Continue with the answer.';
+export const SLACK_STREAM_ANSWER_TOOL_DESCRIPTION =
+  'Declare before answer text that progressive delivery would improve this direct response.';
 
 export const SLACK_STREAM_ANSWER_INSTRUCTION = [
   'You may call stream_answer once, before writing any answer text, only for a direct answer whose stable early prose would be useful to read before the response is complete.',
@@ -19,8 +21,7 @@ export const SLACK_STREAM_ANSWER_INSTRUCTION = [
 export function createSlackStreamAnswerTool() {
   return {
     name: SLACK_STREAM_ANSWER_TOOL_NAME,
-    description:
-      'Declare before answer text that progressive delivery would improve this direct response.',
+    description: SLACK_STREAM_ANSWER_TOOL_DESCRIPTION,
     output: v.string(),
     run: () => ({ output: SLACK_STREAM_ANSWER_ACKNOWLEDGEMENT }),
   };

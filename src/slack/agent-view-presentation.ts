@@ -24,6 +24,8 @@ import type { ProgressiveEligibilityDecision } from './progressive-eligibility.t
 import {
   presentationAllowsProgressive,
   presentationUsesNativeTasks,
+  slackPresentationFinalizationRecord,
+  type SlackPresentationFinalizationRecord,
   type SlackAppendReservation,
   type SlackPresentationMutation,
   type SlackPresentationTransitionInput,
@@ -81,6 +83,7 @@ export interface AgentViewPresentationOptions {
   now?: () => number;
   wait?: (milliseconds: number) => Promise<void>;
   onNativeStarted?: () => Promise<void>;
+  onFinalized?: (record: SlackPresentationFinalizationRecord) => MaybePromise<void>;
 }
 
 const MAX_PROGRESSIVE_BUFFER_BYTES = 128 * 1_024;
@@ -368,11 +371,13 @@ export class SlackAgentViewPresentation {
   async markCanonicalFinalized(): Promise<void> {
     const presentation = await this.requirePresentation();
     if (presentation.stream.state === 'absent') {
-      await this.transition(presentation, { kind: 'mark_non_stream_finalized' });
+      const finalized = await this.transition(presentation, { kind: 'mark_non_stream_finalized' });
+      this.emitFinalizationRecord(finalized);
       return;
     }
     if (presentation.stream.state !== 'artifact_delivered') return;
-    await this.transition(presentation, { kind: 'mark_finalized' });
+    const finalized = await this.transition(presentation, { kind: 'mark_finalized' });
+    this.emitFinalizationRecord(finalized);
   }
 
   /**
@@ -793,6 +798,20 @@ export class SlackAgentViewPresentation {
       await this.transition(presentation, { kind: 'mark_unknown', degradationReason });
     } catch {
       // The original uncertain Slack effect is the primary recovery signal.
+    }
+  }
+
+  private emitFinalizationRecord(presentation: SlackRunPresentation): void {
+    const record = slackPresentationFinalizationRecord(presentation);
+    try {
+      const emitted = this.options.onFinalized
+        ? this.options.onFinalized(record)
+        : console.info('[chickpea] Slack presentation finalized', JSON.stringify(record));
+      if (emitted && typeof (emitted as Promise<void>).catch === 'function') {
+        void (emitted as Promise<void>).catch(() => undefined);
+      }
+    } catch {
+      // Delivery is already canonical. Observability cannot reopen it.
     }
   }
 
