@@ -120,6 +120,99 @@ test('an explicit base-app management mention stays memoryless without a default
   }
 });
 
+test('an activated Chickpea management mention stays memoryless with a valid delivery lease', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-activated-management-memory-'));
+  const statePath = join(directory, 'state.sqlite');
+  const previousStatePath = process.env.SLACK_STATE_DB_PATH;
+  process.env.SLACK_STATE_DB_PATH = statePath;
+  closeNodeStateStores();
+  try {
+    const config = getConfigStore();
+    const userAgent = await config.getAgent('agent_default');
+    const installed = await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_ACTIVATED',
+      teamId: 'T_ACTIVATED',
+      transportMode: 'direct',
+      defaultAgentId: userAgent.id,
+      botUserId: 'U_CHICKPEA',
+    });
+    const healthy = await config.updateWorkspaceInstallation('T_ACTIVATED', {
+      health: 'healthy',
+    }, installed.revision);
+    const workspaceDefault = await config.putWorkspaceModelDefault({
+      workspaceId: 'T_ACTIVATED',
+      modelId: 'local-stub/activated-management',
+      provenance: 'admin_selected',
+    }, 1);
+    await config.activateChickpeaCutover({
+      workspaceId: 'T_ACTIVATED',
+      expectedInstallationRevision: healthy.revision,
+      expectedDefaultRevision: workspaceDefault.revision,
+      defaultReady: true,
+    });
+    await getMemoryStateStore().putAgentMemory({
+      agentId: userAgent.id,
+      body: 'Private user-Agent memory must not enter Chickpea management.',
+      expectedRevision: 0,
+    });
+
+    const turn: NormalizedSlackTurn = {
+      workspaceId: 'T_ACTIVATED',
+      channelId: 'C_AGENT_ONLY',
+      eventId: 'Ev-activated-management',
+      text: '<@U_CHICKPEA> help',
+      userId: 'U_MEMBER',
+      messageTs: '200.1',
+      threadTs: '200.1',
+      source: 'app_mention',
+      channelType: 'channel',
+      contextMode: 'channel_history',
+    };
+    const routed = await resolveAgentRoute({
+      turn,
+      surface: 'channel',
+      actor: { channelMember: true, fullMember: true },
+      config,
+    });
+    assert.equal(routed.kind, 'routed');
+    if (routed.kind !== 'routed') return;
+    assert.equal(routed.assignment.agentId, 'agent_chickpea');
+
+    const client = {
+      auth: { test: async () => ({ user_id: 'U_CHICKPEA' }) },
+      conversations: {
+        info: async () => ({
+          channel: {
+            id: turn.channelId,
+            context_team_id: turn.workspaceId,
+            is_member: true,
+          },
+        }),
+        members: async () => ({ members: [turn.userId, 'U_CHICKPEA'] }),
+      },
+      users: {
+        info: async () => ({ user: { id: turn.userId, team_id: turn.workspaceId } }),
+      },
+    } as unknown as WebClient;
+    const prepared = await prepareMemoryTurn({
+      turn,
+      assignment: routed.assignment,
+      client,
+      botUserId: 'U_CHICKPEA',
+      platformEnv: undefined,
+    });
+    assert.equal(prepared.promptBlock, undefined);
+    assert.deepEqual(prepared.selection, { entries: [] });
+    assert.match(prepared.conversationKey, /:workspace-management$/);
+    assert.equal(await prepared.validateLease(), true);
+  } finally {
+    closeNodeStateStores();
+    if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;
+    else process.env.SLACK_STATE_DB_PATH = previousStatePath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('an ordinary stale Slack group mapping repairs into the Agent memory path', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-agent-memory-repair-'));
   const statePath = join(directory, 'state.sqlite');

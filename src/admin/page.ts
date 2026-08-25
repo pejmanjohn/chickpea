@@ -3443,7 +3443,18 @@ button.capability-pill { cursor: pointer; }
 
   // Open a profile's edit screen (from a click or a route), resetting every
   // transient editor state.
-  function openProfileEditor(selected) {
+  function normalizedProfileTab(tab) {
+    return ["instructions", "skills", "connections", "repositories", "memory", "schedules"].includes(tab)
+      ? tab
+      : "instructions";
+  }
+
+  function requestedProfileTab(search) {
+    if (!search || typeof URLSearchParams === "undefined") return "instructions";
+    return normalizedProfileTab(new URLSearchParams(search).get("tab") || "instructions");
+  }
+
+  function openProfileEditor(selected, initialTab) {
     state.mobileAgentRosterOpen = false;
     state.view = "profiles";
     state.profileScreen = "edit";
@@ -3451,6 +3462,7 @@ button.capability-pill { cursor: pointer; }
     state.profileLastAgentId = selected.id;
     state.profileDraft = cloneAgent(selected);
     resetProfileTransientState();
+    state.profileTab = normalizedProfileTab(initialTab || "instructions");
     markVisibleResourceCurrent("agent-detail", selected.id);
     render();
     if (selected.canEdit === false) {
@@ -3602,7 +3614,12 @@ button.capability-pill { cursor: pointer; }
       }
       if (parts[2]) {
         var routedAgent = agentById(parts[2]);
-        if (routedAgent) return openProfileEditor(routedAgent);
+        if (routedAgent) {
+          return openProfileEditor(
+            routedAgent,
+            requestedProfileTab(canNavigate ? location.search : "")
+          );
+        }
       }
       enterProfiles(null);
       return;
@@ -12141,10 +12158,15 @@ button.capability-pill { cursor: pointer; }
   }
 
   function showProfileTab(tab) {
+    tab = normalizedProfileTab(tab);
     var changed = state.profileTab !== tab;
     if (changed) {
       if (tab !== "skills") resetSkillImportBrowseTransientState();
       state.profileTab = tab;
+      if (canNavigate && routeReady) {
+        var tabSearch = tab === "instructions" ? "" : "?tab=" + encodeURIComponent(tab);
+        history.replaceState(null, "", canonicalPath() + tabSearch);
+      }
       render();
     }
     revalidateProfileTab(tab);

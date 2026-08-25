@@ -12135,6 +12135,30 @@ test('initial deep-link routing leaves browser-restored document position intact
   assert.equal(harness.documentScrollTop(), 900);
 });
 
+test('an Agent schedules deep link opens the schedules tab and keeps tab navigation canonical', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    initialSearch: '?tab=schedules',
+  });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /id="ptab-schedules" class="ptab on" role="tab" aria-selected="true"/,
+  );
+  assert.match(harness.app.innerHTML, /<h2>Schedules<\/h2>/);
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({
+    target: actionTarget({
+      'data-action': 'profile-tab',
+      'data-tab': 'memory',
+    }),
+  });
+  assert.equal(harness.historyReplaces.at(-1), '/admin/agents/agent_release?tab=memory');
+});
+
 test('deep-linked Scheduled Work summaries preserve the underlying list position', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin/audit-logs/scheduled-work' });
   await flushAsync();
