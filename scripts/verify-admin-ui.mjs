@@ -318,6 +318,17 @@ try {
       !pageHtml.includes('id="onboarding-bot-token"'),
   );
 
+  record(
+    'visible Admin resources revalidate without polling or full-page reloads',
+    pageHtml.includes('var visibleResources = {};') &&
+      pageHtml.includes('function revalidateCurrentVisibleResources()') &&
+      pageHtml.includes('window.addEventListener("focus"') &&
+      pageHtml.includes('document.addEventListener("visibilitychange"') &&
+      pageHtml.includes('function setVisibleResourceDirty(name, ownerKey, dirty)') &&
+      pageHtml.includes('requestGeneration') &&
+      !pageHtml.includes('setInterval(function () {\n      revalidateCurrentVisibleResources()'),
+  );
+
   const usageOverview = await adminJson(
     app,
     `/admin/api/usage/overview?from=${usageNow - 86_400_000}&to=${usageNow + 1}&groupBy=channel&currency=USD`,

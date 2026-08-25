@@ -402,6 +402,10 @@ function runAdminPageHarness(
     skillBrowseDom?: boolean;
     mcpTestResult?: { ok: true; tools: Array<{ name: string; title?: string; description?: string }> } | { ok: false; code: string; message: string };
     memorySaveError?: { status: number; error: string; currentVersion?: number };
+    agentSchedules?: Array<Record<string, unknown>>;
+    agentSchedulesFetch?: (agentId: string, call: number) => Promise<FakeResponse>;
+    agentDetailFetch?: (agentId: string, call: number) => Promise<FakeResponse>;
+    memoryGetFetch?: (agentId: string, call: number) => Promise<FakeResponse>;
     scheduledWork?: ScheduledWorkFixture;
     redactScheduledName?: boolean;
     scheduledControlError?: { status: number; error: string; message?: string };
@@ -528,6 +532,14 @@ function runAdminPageHarness(
   apiConnectionSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   memoryPuts: Array<Record<string, unknown>>;
   ownerMemoryGetCaches: Array<string | undefined>;
+  agentScheduleGets(): number;
+  agentDetailGets(): number;
+  agentConnectionGets(): number;
+  slackStatusGets(): number;
+  setAgentSchedules(schedules: Array<Record<string, unknown>>): void;
+  setMemoryEntry(body: string, version: number): void;
+  focusWindow(): void;
+  setVisibility(state: 'hidden' | 'visible'): void;
   scheduledControlPosts: Array<{ routineId: string; body: Record<string, unknown>; idempotencyKey: string }>;
   clipboardWrites: string[];
   resolveClipboardWrite(): void;
@@ -656,6 +668,7 @@ function runAdminPageHarness(
   const slackBehaviorPuts: Array<Record<string, boolean>> = [];
   let slackBehaviorGets = 0;
   let slackTestCalls = 0;
+  let slackStatusGets = 0;
   let slackDisconnectCalls = 0;
   const slackGatewayRefreshResult = options.slackGatewayRefreshResult;
   const channelListCalls: string[] = [];
@@ -725,6 +738,10 @@ function runAdminPageHarness(
   const apiConnectionSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const memoryPuts: Array<Record<string, unknown>> = [];
   const ownerMemoryGetCaches: Array<string | undefined> = [];
+  let agentScheduleGets = 0;
+  let agentDetailGets = 0;
+  let agentConnectionGets = 0;
+  let memoryGetCalls = 0;
   const scheduledControlPosts: Array<{ routineId: string; body: Record<string, unknown>; idempotencyKey: string }> = [];
   const clipboardWrites: string[] = [];
   let clipboardWriteResolver: (() => void) | null = null;
@@ -799,6 +816,7 @@ function runAdminPageHarness(
     body: 'Run <script>alert(1)</script> before release.',
     version: 1, modifiedAt: 1753444800000,
   };
+  let agentSchedules = (options.agentSchedules ?? []).map((schedule) => ({ ...schedule }));
   const scheduledFixture: ScheduledWorkFixture = options.scheduledWork ?? {
     routine: {
       id: 'routine_release_digest', workspaceId: 'T_DESIGN', channelId: 'C0EXR3L9T',
@@ -873,6 +891,7 @@ function runAdminPageHarness(
     },
   };
   const windowListeners: Record<string, (event: Record<string, unknown>) => void> = {};
+  let documentVisibilityState: 'hidden' | 'visible' = 'visible';
   let documentScrollLeft = 0;
   let documentScrollTop = 0;
   const window = {
@@ -991,6 +1010,9 @@ function runAdminPageHarness(
   };
 
   const document = {
+    get visibilityState() {
+      return documentVisibilityState;
+    },
     get activeElement() {
       return activeElement;
     },
@@ -1281,6 +1303,13 @@ function runAdminPageHarness(
     const agentMemoryMatch = path.match(/^\/admin\/api\/agents\/([^/]+)\/memory$/);
     if (agentMemoryMatch && method === 'GET') {
       ownerMemoryGetCaches.push(options?.cache);
+      memoryGetCalls += 1;
+      if (harnessOptions.memoryGetFetch) {
+        return harnessOptions.memoryGetFetch(
+          decodeURIComponent(agentMemoryMatch[1] as string),
+          memoryGetCalls,
+        );
+      }
       return Promise.resolve(jsonResponse({
         memory: {
           agentId: decodeURIComponent(agentMemoryMatch[1] as string),
@@ -1453,11 +1482,31 @@ function runAdminPageHarness(
       });
       return Promise.resolve(jsonResponse({ account: { lifecycle: 'ready' }, binding: {} }));
     }
+    const agentConnectionAttachMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/connections\/([^/]+)\/attach$/,
+    );
+    if (agentConnectionAttachMatch && method === 'POST') {
+      const agentId = decodeURIComponent(agentConnectionAttachMatch[1] as string);
+      const accountId = decodeURIComponent(agentConnectionAttachMatch[2] as string);
+      const accounts = harnessOptions.connectionAccounts;
+      const availableIndex = accounts?.available.findIndex((account) => account.id === accountId) ?? -1;
+      if (accounts && availableIndex >= 0) {
+        const [account] = accounts.available.splice(availableIndex, 1);
+        accounts.attached.push({
+          account,
+          binding: { agentId, connectionAccountId: accountId, allowedCapabilities: [], enabled: true },
+        });
+      }
+      return Promise.resolve(jsonResponse({ ok: true }));
+    }
     const agentConnectionsMatch = path.match(
       /^\/admin\/api\/agents\/([^/]+)\/connections(?:\?workspaceId=([^&]+))?$/,
     );
-    if (agentConnectionsMatch && method === 'GET' && harnessOptions.connectionAccounts) {
-      return Promise.resolve(jsonResponse(harnessOptions.connectionAccounts));
+    if (agentConnectionsMatch && method === 'GET') {
+      agentConnectionGets += 1;
+      if (harnessOptions.connectionAccounts) {
+        return Promise.resolve(jsonResponse(harnessOptions.connectionAccounts));
+      }
     }
     if (agentConnectionsMatch && method === 'POST') {
       const agentId = decodeURIComponent(agentConnectionsMatch[1] as string);
@@ -1484,6 +1533,19 @@ function runAdminPageHarness(
         },
       }, 201));
     }
+    const agentSchedulesMatch = path.match(/^\/admin\/api\/agents\/([^/]+)\/schedules$/);
+    if (agentSchedulesMatch && method === 'GET') {
+      agentScheduleGets += 1;
+      if (harnessOptions.agentSchedulesFetch) {
+        return harnessOptions.agentSchedulesFetch(
+          decodeURIComponent(agentSchedulesMatch[1] as string),
+          agentScheduleGets,
+        );
+      }
+      return Promise.resolve(jsonResponse({
+        schedules: agentSchedules.map((schedule) => ({ ...schedule })),
+      }));
+    }
     if (path === '/admin/api/agents' && method === 'GET') {
       if (harnessOptions.agentsGetError) {
         return Promise.resolve(jsonResponse(
@@ -1496,6 +1558,10 @@ function runAdminPageHarness(
     const agentGetMatch = path.match(/^\/admin\/api\/agents\/([^/]+)$/);
     if (agentGetMatch && method === 'GET') {
       const id = decodeURIComponent(agentGetMatch[1] as string);
+      agentDetailGets += 1;
+      if (harnessOptions.agentDetailFetch) {
+        return harnessOptions.agentDetailFetch(id, agentDetailGets);
+      }
       const agent = agentsList.find((candidate) => candidate.id === id);
       return Promise.resolve(agent ? jsonResponse({ agent }) : jsonResponse({ error: 'not_found' }, 404));
     }
@@ -2394,6 +2460,7 @@ function runAdminPageHarness(
       );
     }
     if (path === '/admin/api/slack-connection') {
+      slackStatusGets += 1;
       // Without a fixture, mirror an endpoint failure: the page must render
       // everything else and simply omit the card (resilience contract).
       return slackConnection
@@ -2558,6 +2625,23 @@ function runAdminPageHarness(
     apiConnectionSecretDeletes,
     memoryPuts,
     ownerMemoryGetCaches,
+    agentScheduleGets: () => agentScheduleGets,
+    agentDetailGets: () => agentDetailGets,
+    agentConnectionGets: () => agentConnectionGets,
+    slackStatusGets: () => slackStatusGets,
+    setAgentSchedules(schedules) {
+      agentSchedules = schedules.map((schedule) => ({ ...schedule }));
+    },
+    setMemoryEntry(body, version) {
+      memoryEntry = { ...memoryEntry, body, version };
+    },
+    focusWindow() {
+      windowListeners.focus?.({});
+    },
+    setVisibility(nextState) {
+      documentVisibilityState = nextState;
+      listeners.visibilitychange?.({ target: actionTarget({}) });
+    },
     scheduledControlPosts,
     clipboardWrites,
     resolveClipboardWrite() {
@@ -3667,6 +3751,221 @@ test('profile capability tabs switch the visible panel on click', async () => {
   assert.equal((harness.app.innerHTML.match(/class="save-bar-sticky/g) ?? []).length, 1);
 });
 
+test('opening Schedules revalidates work created after the Agent editor opened', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedules: [],
+  });
+  await flushAsync();
+  assert.equal(harness.agentScheduleGets(), 0);
+
+  harness.setAgentSchedules([{
+    id: 'routine_added_after_open',
+    name: 'Fresh schedule from Slack',
+    contentAccess: 'readable',
+    status: 'active',
+    version: 1,
+    cadence: { triggerKind: 'schedule', scheduleInput: '0 9 * * 1-5', timezone: 'America/Los_Angeles' },
+    channelLabel: 'eng-releases',
+    nextRunAt: 1_785_168_000_000,
+    lastFinishedAt: null,
+    actions: { pause: true, resume: false, delete: true },
+  }]);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentScheduleGets(), 1);
+  assert.match(harness.app.innerHTML, /Fresh schedule from Slack/);
+});
+
+test('opening an editable Agent view revalidates its visible detail without loading hidden tabs', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentDetailFetch() {
+      return Promise.resolve(jsonResponse({
+        agent: { ...releaseAgent, name: 'Release Profile from server' },
+      }));
+    },
+  });
+  await flushAsync();
+
+  assert.equal(harness.agentDetailGets(), 1);
+  assert.match(harness.app.innerHTML, /Release Profile from server/);
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.equal(harness.agentScheduleGets(), 0);
+  assert.deepEqual(harness.ownerMemoryGetCaches, []);
+});
+
+test('focus revalidates only the current Agent surface and active data tab', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
+  await flushAsync();
+  const initialSlackGets = harness.slackStatusGets();
+  const initialDetailGets = harness.agentDetailGets();
+
+  harness.focusWindow();
+  await flushAsync();
+
+  assert.equal(harness.agentDetailGets(), initialDetailGets + 1);
+  assert.equal(harness.slackStatusGets(), initialSlackGets + 1);
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.equal(harness.agentScheduleGets(), 0);
+  assert.deepEqual(harness.ownerMemoryGetCaches, []);
+});
+
+test('focus and visibility coalesce while the active schedule request is loading', async () => {
+  let resolveSchedules: ((response: FakeResponse) => void) | undefined;
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedulesFetch() {
+      return new Promise((resolve) => { resolveSchedules = resolve; });
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  assert.equal(harness.agentScheduleGets(), 1);
+
+  harness.focusWindow();
+  harness.setVisibility('visible');
+  await flushAsync();
+  assert.equal(harness.agentScheduleGets(), 1);
+
+  assert.ok(resolveSchedules);
+  resolveSchedules(jsonResponse({ schedules: [] }));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /No scheduled work/);
+});
+
+test('a stale schedule response cannot overwrite a newer owner generation', async () => {
+  let resolveFirstRelease: ((response: FakeResponse) => void) | undefined;
+  const compactSchedule = (id: string, name: string) => ({
+    id,
+    name,
+    contentAccess: 'readable',
+    status: 'active',
+    version: 1,
+    cadence: { triggerKind: 'schedule', scheduleInput: '0 9 * * *', timezone: 'UTC' },
+    channelLabel: 'eng-releases',
+    nextRunAt: 1_785_168_000_000,
+    lastFinishedAt: null,
+    actions: { pause: true, resume: false, delete: true },
+  });
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedulesFetch(agentId, call) {
+      if (agentId === 'agent_release' && call === 1) {
+        return new Promise((resolve) => { resolveFirstRelease = resolve; });
+      }
+      return Promise.resolve(jsonResponse({
+        schedules: [compactSchedule(
+          agentId === 'agent_release' ? 'routine_release_new' : 'routine_ops',
+          agentId === 'agent_release' ? 'Newest release schedule' : 'Ops schedule',
+        )],
+      }));
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_ops' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Newest release schedule/);
+
+  assert.ok(resolveFirstRelease);
+  resolveFirstRelease(jsonResponse({ schedules: [compactSchedule('routine_release_old', 'Stale release schedule')] }));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Newest release schedule/);
+  assert.doesNotMatch(harness.app.innerHTML, /Stale release schedule/);
+});
+
+test('read-only Agent tabs do not start edit-only resource loads', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agents: [{ ...releaseAgent, canEdit: false }],
+  });
+  await flushAsync();
+  for (const tab of ['connections', 'repositories', 'memory', 'schedules']) {
+    harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': tab }) });
+  }
+  await flushAsync();
+  harness.focusWindow();
+  await flushAsync();
+
+  assert.equal(harness.agentDetailGets(), 0);
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.equal(harness.agentScheduleGets(), 0);
+  assert.deepEqual(harness.ownerMemoryGetCaches, []);
+});
+
+test('a connection mutation refreshes Connections without loading hidden Agent resources', async () => {
+  const account = {
+    id: 'connection_linear', workspaceId: 'T_DESIGN', ownerKind: 'team',
+    providerId: 'linear', label: 'Linear', lifecycle: 'ready', credentialConfigured: true,
+    policy: { kind: 'api', allowedCapabilities: ['issues.read'] },
+  };
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    connectionAccounts: { attached: [], available: [account] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  assert.equal(harness.agentConnectionGets(), 1);
+
+  click({
+    target: actionTarget({
+      'data-action': 'connection-account-attach',
+      'data-connection-id': 'connection_linear',
+    }),
+  });
+  await flushAsync();
+
+  assert.equal(harness.agentConnectionGets(), 2);
+  assert.equal(harness.agentScheduleGets(), 0);
+  assert.deepEqual(harness.ownerMemoryGetCaches, []);
+  assert.match(harness.app.innerHTML, /Linear is connected to this Agent|In this Agent/);
+});
+
+test('a repository draft mutation revalidates only Repositories on focus', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agents: [{
+      ...releaseAgent,
+      repositories: [{
+        id: 'repo_acme_release', installationId: 77, accountLogin: 'acme',
+        fullName: 'acme/release', enabled: true,
+      }],
+    }],
+    githubStatus: {
+      mode: 'app',
+      installations: [{ id: 77, accountLogin: 'acme', accountType: 'Organization', repoCount: 1 }],
+      referencingProfiles: [],
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'repositories' }) });
+  await flushAsync();
+  assert.equal(harness.settingsGetCalls.filter((path) => path === '/admin/api/github/status').length, 1);
+
+  click({ target: actionTarget({ 'data-action': 'repo-remove', 'data-repository-id': 'repo_acme_release' }) });
+  harness.focusWindow();
+  await flushAsync();
+
+  assert.equal(harness.settingsGetCalls.filter((path) => path === '/admin/api/github/status').length, 2);
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.equal(harness.agentScheduleGets(), 0);
+  assert.deepEqual(harness.ownerMemoryGetCaches, []);
+  assert.doesNotMatch(harness.app.innerHTML, /acme\/release/);
+});
+
 test('Agent description lives under the title and is edited with its pencil', async () => {
   const richHarness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_intro',
@@ -4469,6 +4768,7 @@ test('Agent owner memory exposes one directly editable current body without file
   const harness = runAdminPageHarness({ initialPath: '/admin' });
   await flushAsync();
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  await flushAsync();
   assert.deepEqual(harness.ownerMemoryGetCaches, ['no-store']);
   assert.match(harness.app.innerHTML, /One shared memory follows Release Profile everywhere it works/);
   assert.match(harness.app.innerHTML, /<label class="field-label" for="owner-memory-body">Memory<\/label>/);
@@ -4489,6 +4789,7 @@ test('shared Agent memory stays a simple responsive editor', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
   await flushAsync();
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  await flushAsync();
 
   const page = renderAdminPage();
   assert.match(harness.app.innerHTML, /class="owner-memory-editor"/);
@@ -4497,10 +4798,115 @@ test('shared Agent memory stays a simple responsive editor', async () => {
   assert.match(page, /@container \(max-width: 750px\)[\s\S]*?\.owner-memory-editor\s*\{[^}]*padding:\s*20px;/s);
 });
 
+test('a clean Memory tab adopts the newest server body when reopened', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Run &lt;script&gt;alert\(1\)&lt;\/script&gt; before release\./);
+
+  harness.setMemoryEntry('Use the server-side launch checklist.', 2);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'instructions' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.ownerMemoryGetCaches, ['no-store', 'no-store']);
+  assert.match(harness.app.innerHTML, /Use the server-side launch checklist\./);
+});
+
+test('a dirty Memory draft survives tab changes, focus, and visibility restoration', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  await flushAsync();
+  harness.listeners.input?.({
+    target: valueTarget({ 'data-action': 'owner-memory-body' }, 'Keep this unsaved local memory draft.'),
+  });
+  harness.setMemoryEntry('Newer server memory must not replace the draft.', 2);
+
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'instructions' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  harness.focusWindow();
+  harness.setVisibility('hidden');
+  harness.setVisibility('visible');
+  await flushAsync();
+
+  assert.deepEqual(harness.ownerMemoryGetCaches, ['no-store']);
+  assert.match(harness.app.innerHTML, /Keep this unsaved local memory draft\./);
+  assert.doesNotMatch(harness.app.innerHTML, /Newer server memory must not replace the draft/);
+  assert.match(harness.app.innerHTML, /Unsaved memory changes/);
+});
+
+test('typing during a Memory revalidation retires the in-flight server response', async () => {
+  let resolveRevalidation: ((response: FakeResponse) => void) | undefined;
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    memoryGetFetch(agentId, call) {
+      if (call === 1) {
+        return Promise.resolve(jsonResponse({ memory: { agentId, body: 'Initial memory.', revision: 1 } }));
+      }
+      return new Promise((resolve) => { resolveRevalidation = resolve; });
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  await flushAsync();
+  harness.focusWindow();
+  await flushAsync();
+  assert.ok(resolveRevalidation);
+
+  harness.listeners.input?.({
+    target: valueTarget({ 'data-action': 'owner-memory-body' }, 'Draft typed while refresh was pending.'),
+  });
+  resolveRevalidation(jsonResponse({
+    memory: { agentId: 'agent_release', body: 'Late server memory.', revision: 2 },
+  }));
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'instructions' }) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+
+  assert.match(harness.app.innerHTML, /Draft typed while refresh was pending\./);
+  assert.doesNotMatch(harness.app.innerHTML, /Late server memory/);
+  assert.match(harness.app.innerHTML, /data-action="owner-memory-save"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="owner-memory-save" disabled/);
+});
+
+test('a dirty profile draft blocks focus refresh and keeps focus, caret, and scroll', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    resetDocumentScrollOnRender: true,
+  });
+  await flushAsync();
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'profile-instructions' }, 'Unsaved profile instructions.'),
+  });
+  harness.focusModelInput(5);
+  harness.setMainScrollTop(486);
+  harness.setDocumentScrollTop(486);
+  const detailGetsBeforeFocus = harness.agentDetailGets();
+
+  harness.focusWindow();
+  harness.setVisibility('visible');
+  await flushAsync();
+
+  assert.equal(harness.agentDetailGets(), detailGetsBeforeFocus);
+  assert.match(harness.app.innerHTML, /Unsaved profile instructions\./);
+  assert.equal(harness.focusedAction(), 'p-model');
+  assert.deepEqual(harness.modelSelectionRanges.at(-1), [5, 5]);
+  assert.equal(harness.mainScrollTop(), 486);
+  assert.equal(harness.documentScrollTop(), 486);
+  assert.match(harness.app.innerHTML, /data-action="save-profile">Save changes<\/button>/);
+});
+
 test('saving Agent memory writes the one canonical body', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin' });
   await flushAsync();
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }) });
+  await flushAsync();
   harness.listeners.input?.({ target: valueTarget({ 'data-action': 'owner-memory-body' }, '# Launch context\nShip safely.') });
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'owner-memory-save' }) });
   await flushAsync();
@@ -4511,6 +4917,12 @@ test('saving Agent memory writes the one canonical body', async () => {
   });
   assert.match(harness.app.innerHTML, /# Launch context\nShip safely\./);
   assert.doesNotMatch(harness.app.innerHTML, /agent-memory\.md|memory files/i);
+
+  harness.focusWindow();
+  await flushAsync();
+  assert.deepEqual(harness.ownerMemoryGetCaches, ['no-store', 'no-store']);
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.equal(harness.agentScheduleGets(), 0);
 });
 
 test('Agent saves use the projected revision and preserve a draft on concurrent edit conflict', async () => {
@@ -6189,6 +6601,7 @@ test('managed resource picker removes stale handles and warns when discovery is 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
   click({ target: actionTarget({
     'data-action': 'connection-account-resource-open',
     'data-connection-id': account.id,
@@ -10204,6 +10617,10 @@ test('Home opens the canonical Agent and keeps Agent and owner-memory draft guar
 
   const memoryHarness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
   await flushAsync();
+  memoryHarness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'memory' }),
+  });
+  await flushAsync();
   memoryHarness.listeners.input?.({
     target: inputTarget({ 'data-action': 'owner-memory-body' }, 'Unsaved Agent memory.'),
   });
@@ -11320,6 +11737,7 @@ test('leaving Settings while its shared loads are pending ignores their stale co
   click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'github' }) });
   assert.equal(pending.size, deferredPaths.size);
   click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'slack' }) });
+  await flushAsync();
   const renderCountAfterLeaving = harness.renderHistory.length;
 
   pending.get('/admin/api/providers')?.(jsonResponse({ providers: [] }));

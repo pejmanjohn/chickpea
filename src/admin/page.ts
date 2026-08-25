@@ -3059,6 +3059,117 @@ button.capability-pill { cursor: pointer; }
       requestId: 0
     }
   };
+  // Every server-backed surface owns one small freshness record. The record is
+  // separate from its rendered data so returning to one visible surface never
+  // causes unrelated hidden tabs to load. A request ticket also gives every
+  // loader the same stale-response and focus/visibility coalescing contract.
+  var visibleResources = {};
+
+  function visibleResource(name, ownerKey) {
+    var key = String(ownerKey || "");
+    var resource = visibleResources[name];
+    if (!resource) {
+      resource = visibleResources[name] = {
+        ownerKey: key,
+        requestGeneration: 0,
+        loadGeneration: 0,
+        loadedAt: 0,
+        dirty: false,
+        invalidated: true,
+        loading: false,
+        promise: null
+      };
+    } else if (resource.ownerKey !== key) {
+      resource.ownerKey = key;
+      resource.requestGeneration += 1;
+      resource.loadGeneration = 0;
+      resource.loadedAt = 0;
+      resource.dirty = false;
+      resource.invalidated = true;
+      resource.loading = false;
+      resource.promise = null;
+    }
+    return resource;
+  }
+
+  function beginVisibleResourceLoad(name, ownerKey, dirty) {
+    var resource = visibleResource(name, ownerKey);
+    resource.dirty = !!dirty;
+    if (resource.dirty) {
+      resource.invalidated = true;
+      return null;
+    }
+    if (resource.loading) return null;
+    resource.requestGeneration += 1;
+    resource.loading = true;
+    return {
+      name: name,
+      ownerKey: resource.ownerKey,
+      generation: resource.requestGeneration,
+      resource: resource
+    };
+  }
+
+  function visibleResourceLoadIsCurrent(ticket) {
+    if (!ticket) return false;
+    var current = visibleResources[ticket.name];
+    return current === ticket.resource &&
+      current.ownerKey === ticket.ownerKey &&
+      current.requestGeneration === ticket.generation;
+  }
+
+  function trackVisibleResourcePromise(ticket, promise) {
+    if (ticket) ticket.resource.promise = promise;
+    return promise;
+  }
+
+  function finishVisibleResourceLoad(ticket, applied) {
+    if (!visibleResourceLoadIsCurrent(ticket)) return false;
+    ticket.resource.loading = false;
+    ticket.resource.promise = null;
+    if (applied) {
+      ticket.resource.loadGeneration = ticket.generation;
+      ticket.resource.loadedAt = Date.now();
+      ticket.resource.invalidated = false;
+    }
+    return true;
+  }
+
+  function coalescedVisibleResourcePromise(name, ownerKey) {
+    var resource = visibleResource(name, ownerKey);
+    return resource.loading && resource.promise ? resource.promise : Promise.resolve();
+  }
+
+  function invalidateVisibleResource(name, ownerKey) {
+    var resource = visibleResource(name, ownerKey);
+    resource.invalidated = true;
+    // A local mutation makes an older response unsafe even when its HTTP call
+    // is already in flight. The next visible load receives a fresh ticket.
+    resource.requestGeneration += 1;
+    resource.loading = false;
+    resource.promise = null;
+  }
+
+  function setVisibleResourceDirty(name, ownerKey, dirty) {
+    var resource = visibleResource(name, ownerKey);
+    resource.dirty = !!dirty;
+    if (dirty) {
+      resource.invalidated = true;
+      resource.requestGeneration += 1;
+      resource.loading = false;
+      resource.promise = null;
+    }
+  }
+
+  function markVisibleResourceCurrent(name, ownerKey) {
+    var resource = visibleResource(name, ownerKey);
+    resource.loading = false;
+    resource.promise = null;
+    resource.loadGeneration = resource.requestGeneration;
+    resource.loadedAt = Date.now();
+    resource.invalidated = false;
+    resource.dirty = false;
+  }
   var lastRenderedPath = "";
   var egressDraft = { mode: "allowlist", domains: [""] };
   var sandboxDraft = {
@@ -3343,17 +3454,13 @@ button.capability-pill { cursor: pointer; }
     state.profileLastAgentId = selected.id;
     state.profileDraft = cloneAgent(selected);
     resetProfileTransientState();
+    markVisibleResourceCurrent("agent-detail", selected.id);
     render();
     if (selected.canEdit === false) {
       prepareReadOnlyAgentState(selected.id);
       render();
-      return Promise.resolve();
-    } else {
-      var connectionsLoad = loadAgentConnections(selected.id);
-      loadAgentSchedules(selected.id);
-      loadOwnerMemory("agent", connectedTeamId(), selected.id);
-      return connectionsLoad;
     }
+    return revalidateCurrentVisibleResources();
   }
 
   function prepareReadOnlyAgentState(agentId) {
@@ -3653,9 +3760,18 @@ button.capability-pill { cursor: pointer; }
     var pageY = typeof window !== "undefined" ? (window.scrollY || window.pageYOffset || 0) : 0;
     var active = document.activeElement;
     var activeId = active && active.id ? active.id : "";
-    var caret = null;
+    var selectionStart = null;
+    var selectionEnd = null;
+    var selectionDirection = "none";
     if (activeId) {
-      try { caret = active.selectionStart; } catch (error) { caret = null; }
+      try {
+        selectionStart = active.selectionStart;
+        selectionEnd = active.selectionEnd == null ? selectionStart : active.selectionEnd;
+        selectionDirection = active.selectionDirection || "none";
+      } catch (error) {
+        selectionStart = null;
+        selectionEnd = null;
+      }
     }
     render();
     var nextMain = document.querySelector(".main");
@@ -3667,8 +3783,8 @@ button.capability-pill { cursor: pointer; }
       var nextActive = document.getElementById(activeId);
       if (nextActive && nextActive.focus) {
         try { nextActive.focus({ preventScroll: true }); } catch (error) { nextActive.focus(); }
-        if (caret != null && nextActive.setSelectionRange) {
-          try { nextActive.setSelectionRange(caret, caret); } catch (error) { /* ignore */ }
+        if (selectionStart != null && nextActive.setSelectionRange) {
+          try { nextActive.setSelectionRange(selectionStart, selectionEnd, selectionDirection); } catch (error) { /* ignore */ }
         }
       }
     }
@@ -5170,9 +5286,13 @@ button.capability-pill { cursor: pointer; }
 
   function loadAgentConnections(agentId) {
     var workspaceId = connectedTeamId();
+    var resourceOwner = agentId + ":" + workspaceId;
+    var resourceTicket = beginVisibleResourceLoad("connections", resourceOwner, false);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("connections", resourceOwner);
     if (state.connectionAccountsSupported === false) {
       state.agentConnections = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "", legacyFallback: true };
-      render();
+      finishVisibleResourceLoad(resourceTicket, true);
+      renderPreservingPagePosition();
       return Promise.resolve();
     }
     var requestState = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: true, error: "", notice: "" };
@@ -5181,11 +5301,12 @@ button.capability-pill { cursor: pointer; }
     if (!workspaceId) {
       state.agentConnections.loading = false;
       state.agentConnections.error = "Connect Slack before adding Agent connections.";
-      render();
+      finishVisibleResourceLoad(resourceTicket, true);
+      renderPreservingPagePosition();
       return Promise.resolve();
     }
-    return api("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections?workspaceId=" + encodeURIComponent(workspaceId)).then(function (body) {
-      if (state.agentConnections !== requestState) return;
+    var request = api("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections?workspaceId=" + encodeURIComponent(workspaceId)).then(function (body) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentConnections !== requestState) return;
       state.agentConnections.attached = body.attached || [];
       state.agentConnections.available = body.available || [];
       state.agentConnections.managedCatalog = body.managedConnectors && body.managedConnectors.catalog || [];
@@ -5200,35 +5321,51 @@ button.capability-pill { cursor: pointer; }
       state.agentConnections.error = "";
       state.connectionAccountsSupported = true;
       restoreManagedAuthorization(agentId);
-      render();
+      finishVisibleResourceLoad(resourceTicket, true);
+      renderPreservingPagePosition();
     }).catch(function (error) {
-      if (state.agentConnections !== requestState) return;
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentConnections !== requestState) return;
       state.agentConnections.loading = false;
       state.agentConnections.legacyFallback = !!(error && error.status === 404);
       if (state.agentConnections.legacyFallback) state.connectionAccountsSupported = false;
       state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not load connections.";
-      render();
+      finishVisibleResourceLoad(resourceTicket, false);
+      renderPreservingPagePosition();
     });
+    return trackVisibleResourcePromise(resourceTicket, request);
+  }
+
+  function invalidateAgentConnections(agentId) {
+    invalidateVisibleResource("connections", agentId + ":" + connectedTeamId());
   }
 
   function loadAgentSchedules(agentId) {
+    var resourceTicket = beginVisibleResourceLoad("schedules", agentId, false);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("schedules", agentId);
     var requestState = { agentId: agentId, viewerMembershipId: "", schedules: [], members: [], loading: true, busy: "", error: "", notice: "" };
     state.agentSchedules = requestState;
-    render();
-    return api("/admin/api/agents/" + encodeURIComponent(agentId) + "/schedules", { cache: "no-store" }).then(function (body) {
-      if (state.agentSchedules !== requestState) return;
+    renderPreservingPagePosition();
+    var request = api("/admin/api/agents/" + encodeURIComponent(agentId) + "/schedules", { cache: "no-store" }).then(function (body) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentSchedules !== requestState) return;
       state.agentSchedules.schedules = body.schedules || [];
       state.agentSchedules.members = body.members || [];
       state.agentSchedules.viewerMembershipId = body.viewerMembershipId || "";
       state.agentSchedules.loading = false;
       state.agentSchedules.error = "";
-      render();
+      finishVisibleResourceLoad(resourceTicket, true);
+      renderPreservingPagePosition();
     }).catch(function (error) {
-      if (state.agentSchedules !== requestState) return;
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentSchedules !== requestState) return;
       state.agentSchedules.loading = false;
       state.agentSchedules.error = (error && (error.serverMessage || error.message)) || "Could not load schedules.";
-      render();
+      finishVisibleResourceLoad(resourceTicket, false);
+      renderPreservingPagePosition();
     });
+    return trackVisibleResourcePromise(resourceTicket, request);
+  }
+
+  function invalidateAgentSchedules(agentId) {
+    invalidateVisibleResource("schedules", agentId);
   }
 
   function reassignAgentSchedule(scheduleId, expectedRevision) {
@@ -5247,6 +5384,7 @@ button.capability-pill { cursor: pointer; }
       var notice = body && body.routine && body.routine.state === "paused"
         ? "Schedule authority updated. This routine is still paused."
         : "Schedule authority updated and paused work resumed.";
+      invalidateAgentSchedules(schedules.agentId);
       return loadAgentSchedules(schedules.agentId).then(function () {
         if (state.agentSchedules.agentId !== schedules.agentId) return;
         state.agentSchedules.notice = notice;
@@ -5597,6 +5735,7 @@ button.capability-pill { cursor: pointer; }
         return startConnectionAccountOAuth(mcpAccountId, true, "mcp");
       }
       state.connectionAccountForm = null;
+      invalidateAgentConnections(agentId);
       return loadAgentConnections(agentId);
     }).then(function (result) {
       if (result && result.oauthStarted) return;
@@ -5614,6 +5753,7 @@ button.capability-pill { cursor: pointer; }
     var agentId = state.profileDraft && state.profileDraft.id;
     if (!agentId) return;
     postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId) + "/attach", "POST", { allowedCapabilities: [] }).then(function () {
+      invalidateAgentConnections(agentId);
       return loadAgentConnections(agentId);
     }).catch(function (error) {
       state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not add that connection.";
@@ -5801,6 +5941,7 @@ button.capability-pill { cursor: pointer; }
             render();
           });
         }
+        invalidateAgentConnections(agentId);
         return loadAgentConnections(agentId).then(function () {
           if (state.agentConnections.agentId !== agentId) return;
           var connectedEntry = state.agentConnections.attached.find(function (entry) {
@@ -5917,6 +6058,7 @@ button.capability-pill { cursor: pointer; }
       });
     }
     detachWithCleanupRetry(true).then(function () {
+      invalidateAgentConnections(agentId);
       return loadAgentConnections(agentId);
     }).catch(function (error) {
       state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not remove that connection from the Agent.";
@@ -6534,6 +6676,15 @@ button.capability-pill { cursor: pointer; }
       return status + '<div class="empty"><p class="field-label">No scheduled work</p><p class="hint">Ask this Agent in Slack to schedule a recurring or one-time task. The destination, required connections, and Runs as authority are saved together.</p></div>';
     }
     var rows = schedules.schedules.map(function (entry) {
+      // U4 projects a compact, authorization-filtered schedule. Keep this
+      // compatibility row deliberately small; U6 owns the final Flat List
+      // treatment and controls.
+      if (!entry.reference && entry.id) {
+        return '<article class="connection-account-row"><div class="connection-account-copy"><div><strong>' +
+          esc(entry.name || "Restricted schedule") + '</strong> <span class="badge ' +
+          (entry.status === "active" ? "badge-on" : "badge-off") + '">' + esc(entry.status || "unknown") +
+          '</span></div></div></article>';
+      }
       var reference = entry.reference || {};
       var routine = entry.routine || {};
       var runsAs = entry.runsAs || {};
@@ -7635,6 +7786,7 @@ button.capability-pill { cursor: pointer; }
     ).then(function () {
       state.managedResourceEditor = null;
       state.agentConnections.notice = "Resource access saved. The selected connector is ready for this Agent.";
+      invalidateAgentConnections(state.agentConnections.agentId);
       return loadAgentConnections(state.agentConnections.agentId);
     }).catch(function (error) {
       if (state.managedResourceEditor !== editor) return;
@@ -9406,22 +9558,29 @@ button.capability-pill { cursor: pointer; }
   }
 
   function loadScheduledRoutines() {
-    if (state.scheduledLoading) return Promise.resolve();
+    var resourceOwner = scheduledListPath();
+    var resourceTicket = beginVisibleResourceLoad("audit", resourceOwner, false);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("audit", resourceOwner);
     state.scheduledLoading = true;
     state.scheduledError = "";
     render();
-    return api(scheduledListPath()).then(function (body) {
+    var request = api(resourceOwner, { cache: "no-store" }).then(function (body) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.view !== "audit") return;
       state.scheduledRoutines = body.routines || [];
       state.scheduledCapability = body.capability || null;
       state.scheduledLimits = body.limits || null;
       state.scheduledLoading = false;
+      finishVisibleResourceLoad(resourceTicket, true);
       render();
       if (state.scheduledSelection) return loadScheduledDetail(state.scheduledSelection);
     }).catch(function (error) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.view !== "audit") return;
       state.scheduledLoading = false;
       state.scheduledError = error.serverMessage || error.message || "Could not load scheduled work.";
+      finishVisibleResourceLoad(resourceTicket, false);
       render();
     });
+    return trackVisibleResourcePromise(resourceTicket, request);
   }
 
   function selectScheduledRoutine(routineId) {
@@ -9462,6 +9621,7 @@ button.capability-pill { cursor: pointer; }
       state.scheduledBusy = "";
       state.scheduledNotice = "Routine " + action + (action.endsWith("e") ? "d" : "ed") + ".";
       state.scheduledRoutines = null;
+      invalidateVisibleResource("audit", scheduledListPath());
       render();
       return loadScheduledRoutines();
     }).catch(function (error) {
@@ -9470,6 +9630,7 @@ button.capability-pill { cursor: pointer; }
         ? "This routine changed in another session. The list has been refreshed."
         : error.serverMessage || error.message || "Could not update this routine.";
       state.scheduledRoutines = null;
+      invalidateVisibleResource("audit", scheduledListPath());
       render();
       return loadScheduledRoutines();
     });
@@ -9486,22 +9647,27 @@ button.capability-pill { cursor: pointer; }
 
   function loadScheduledDetail(routineId) {
     if (!routineId) return Promise.resolve();
+    var resourceTicket = beginVisibleResourceLoad("audit-detail", routineId, false);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("audit-detail", routineId);
     state.scheduledDetailLoading = true;
     state.scheduledError = "";
     render();
-    return api("/admin/api/audit/scheduled_work/routines/" + encodeURIComponent(routineId)).then(function (body) {
-      if (state.scheduledSelection !== routineId) return;
+    var request = api("/admin/api/audit/scheduled_work/routines/" + encodeURIComponent(routineId), { cache: "no-store" }).then(function (body) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.scheduledSelection !== routineId || state.view !== "audit") return;
       state.scheduledDetail = body;
       state.scheduledCapability = body.capability || state.scheduledCapability;
       state.scheduledLimits = body.limits || state.scheduledLimits;
       state.scheduledDetailLoading = false;
+      finishVisibleResourceLoad(resourceTicket, true);
       render();
     }).catch(function (error) {
-      if (state.scheduledSelection !== routineId) return;
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || state.scheduledSelection !== routineId || state.view !== "audit") return;
       state.scheduledDetailLoading = false;
       state.scheduledError = error.serverMessage || error.message || "Could not load this routine.";
+      finishVisibleResourceLoad(resourceTicket, false);
       render();
     });
+    return trackVisibleResourcePromise(resourceTicket, request);
   }
 
   function scheduledMutationKey(action) {
@@ -9536,6 +9702,8 @@ button.capability-pill { cursor: pointer; }
         if (state.scheduledDetail) state.scheduledDetail.routine = body.routine;
       }
       state.scheduledRoutines = null;
+      invalidateVisibleResource("audit", scheduledListPath());
+      invalidateVisibleResource("audit-detail", routine.id);
       render();
       return loadScheduledRoutines();
     }).catch(function (error) {
@@ -9554,14 +9722,16 @@ button.capability-pill { cursor: pointer; }
     if (!ownerKind || !ownerId) return Promise.resolve();
     var memory = state.ownerMemory;
     var sameOwner = ownerMemoryMatches(ownerKind, workspaceId, ownerId);
-    if (sameOwner && memory.dirty) return Promise.resolve();
+    var resourceOwner = ownerKind + ":" + workspaceId + ":" + ownerId;
+    var resourceTicket = beginVisibleResourceLoad("memory", resourceOwner, sameOwner && memory.dirty);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("memory", resourceOwner);
     var requestId = memory.requestId + 1;
     state.ownerMemory = {
       ownerKind: ownerKind,
       workspaceId: workspaceId,
       ownerId: ownerId,
-      detail: null,
-      draft: null,
+      detail: sameOwner ? memory.detail : null,
+      draft: sameOwner ? memory.draft : null,
       dirty: false,
       loading: true,
       busy: "load",
@@ -9570,10 +9740,10 @@ button.capability-pill { cursor: pointer; }
       conflict: null,
       requestId: requestId
     };
-    render();
-    return api("/admin/api/agents/" + encodeURIComponent(ownerId) + "/memory", { cache: "no-store" }).then(function (body) {
+    renderPreservingPagePosition();
+    var request = api("/admin/api/agents/" + encodeURIComponent(ownerId) + "/memory", { cache: "no-store" }).then(function (body) {
       var current = state.ownerMemory;
-      if (current.requestId !== requestId || !ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || current.requestId !== requestId || !ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
       var saved = body.memory || { agentId: ownerId, body: "", revision: 0 };
       var entry = {
         entryId: "memory",
@@ -9587,23 +9757,31 @@ button.capability-pill { cursor: pointer; }
       current.draft = { description: entry.description, type: entry.type, body: entry.body };
       current.loading = false;
       current.busy = "";
-      render();
+      finishVisibleResourceLoad(resourceTicket, true);
+      renderPreservingPagePosition();
     }).catch(function (error) {
       var current = state.ownerMemory;
-      if (current.requestId !== requestId || !ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
+      if (!visibleResourceLoadIsCurrent(resourceTicket) || current.requestId !== requestId || !ownerMemoryMatches(ownerKind, workspaceId, ownerId)) return;
       current.loading = false;
       current.busy = "";
       current.error = error.serverMessage || error.message || "Could not load memory.";
-      render();
+      finishVisibleResourceLoad(resourceTicket, false);
+      renderPreservingPagePosition();
     });
+    return trackVisibleResourcePromise(resourceTicket, request);
   }
 
   function markOwnerMemoryDirty() {
     var memory = state.ownerMemory;
     memory.dirty = true;
+    if (memory.busy === "load") {
+      memory.busy = "";
+      memory.loading = false;
+    }
     memory.error = "";
     memory.notice = "";
     memory.conflict = null;
+    setVisibleResourceDirty("memory", memory.ownerKind + ":" + memory.workspaceId + ":" + memory.ownerId, true);
     var save = document.querySelector('[data-action="owner-memory-save"]');
     var discard = document.querySelector('[data-action="owner-memory-discard"]');
     if (save) save.disabled = false;
@@ -9619,6 +9797,7 @@ button.capability-pill { cursor: pointer; }
     memory.busy = "save";
     memory.error = "";
     memory.notice = "";
+    invalidateVisibleResource("memory", ownerKey);
     render();
     return api("/admin/api/agents/" + encodeURIComponent(memory.ownerId) + "/memory", {
       method: "PUT",
@@ -9633,6 +9812,7 @@ button.capability-pill { cursor: pointer; }
       current.dirty = false;
       current.busy = "";
       current.notice = "Memory saved.";
+      markVisibleResourceCurrent("memory", ownerKey);
       render();
     }).catch(function (error) {
       var current = state.ownerMemory;
@@ -9660,6 +9840,7 @@ button.capability-pill { cursor: pointer; }
     memory.error = "";
     memory.notice = "Draft discarded.";
     memory.conflict = null;
+    setVisibleResourceDirty("memory", memory.ownerKind + ":" + memory.workspaceId + ":" + memory.ownerId, false);
     render();
   }
 
@@ -10511,6 +10692,7 @@ button.capability-pill { cursor: pointer; }
     state.workspaceDefaultNotice = "";
     if (state.settingsSection === "slack") {
       render();
+      revalidateCurrentVisibleResources();
       return;
     }
     if (state.settingsSection === "connectors") {
@@ -10678,6 +10860,7 @@ button.capability-pill { cursor: pointer; }
       projectKey: String(setup.key).trim(),
       continuation: { agentId: agentId, toolkit: setup.toolkit }
     }).then(function () {
+      invalidateAgentConnections(agentId);
       return loadAgentConnections(agentId);
     }).then(function () {
       if (state.composioSetup !== setup) return;
@@ -10802,6 +10985,14 @@ button.capability-pill { cursor: pointer; }
     render();
   }
 
+  function invalidateProfileRepositories(agentId) {
+    invalidateVisibleResource("repositories", agentId || "new");
+    // loadGithubStatus owns its own request fence because Settings also uses it.
+    // Retire an in-flight profile status request when a local repository edit
+    // makes that response older than the draft now on screen.
+    state.githubStatusRequestId += 1;
+  }
+
   function applyRepositoryPicker() {
     var picker = state.repositoryPicker;
     var draft = state.profileDraft;
@@ -10849,6 +11040,7 @@ button.capability-pill { cursor: pointer; }
     });
     draft.repositories = next;
     resetRepositoryTransientState();
+    invalidateProfileRepositories(draft.id);
     markProfileDirty();
     render();
     // Apply reads as a commit but only edits the draft — pulse the save bar
@@ -10862,6 +11054,7 @@ button.capability-pill { cursor: pointer; }
     var next = repositories.filter(function (grant) { return grant.id !== id; });
     if (next.length === repositories.length) return;
     state.profileDraft.repositories = next;
+    invalidateProfileRepositories(state.profileDraft.id);
     markProfileDirty();
     render();
   }
@@ -10886,6 +11079,7 @@ button.capability-pill { cursor: pointer; }
         return !(grant.installationId === installationId && grant.allRepos === true);
       });
     }
+    invalidateProfileRepositories(state.profileDraft.id);
     markProfileDirty();
     render();
   }
@@ -11736,6 +11930,69 @@ button.capability-pill { cursor: pointer; }
 
   // Bring a capability tab into view after a validation failure elsewhere on
   // the page, so the inline error is never hidden behind an inactive tab.
+  function loadVisibleAgentDetail(agentId) {
+    if (!agentId) return Promise.resolve();
+    var resourceTicket = beginVisibleResourceLoad("agent-detail", agentId, state.profileDirty);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("agent-detail", agentId);
+    var request = api("/admin/api/agents/" + encodeURIComponent(agentId), { cache: "no-store" }).then(function (body) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
+      if (
+        state.view !== "profiles" || state.profileScreen !== "edit" ||
+        !state.profileDraft || state.profileDraft.id !== agentId || state.profileDirty
+      ) {
+        finishVisibleResourceLoad(resourceTicket, false);
+        return;
+      }
+      var latest = body && body.agent;
+      if (!latest) throw new Error("Agent response was missing.");
+      var index = state.agents.findIndex(function (agent) { return agent.id === latest.id; });
+      if (index >= 0) state.agents[index] = latest;
+      else state.agents.push(latest);
+      state.profileDraft = cloneAgent(latest);
+      state.profileConflict = false;
+      finishVisibleResourceLoad(resourceTicket, true);
+      renderPreservingPagePosition();
+    }).catch(function (error) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
+      finishVisibleResourceLoad(resourceTicket, false);
+      if (
+        state.view === "profiles" && state.profileScreen === "edit" &&
+        state.profileDraft && state.profileDraft.id === agentId && !state.profileDirty
+      ) {
+        state.profileError = (error && (error.serverMessage || error.message)) || "Could not refresh this Agent.";
+        renderPreservingPagePosition();
+      }
+    });
+    return trackVisibleResourcePromise(resourceTicket, request);
+  }
+
+  function loadProfileRepositories(agentId) {
+    var resourceTicket = beginVisibleResourceLoad("repositories", agentId, false);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("repositories", agentId);
+    var request = loadGithubStatus().then(function () {
+      if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
+      finishVisibleResourceLoad(resourceTicket, true);
+      if (
+        state.view === "profiles" && state.profileScreen === "edit" &&
+        state.profileDraft && state.profileDraft.id === agentId && state.profileTab === "repositories"
+      ) renderPreservingPagePosition();
+    });
+    return trackVisibleResourcePromise(resourceTicket, request);
+  }
+
+  function revalidateProfileTab(tab) {
+    var draft = state.profileDraft;
+    if (
+      state.view !== "profiles" || state.profileScreen !== "edit" ||
+      !draft || !draft.id || draft.canEdit === false
+    ) return Promise.resolve();
+    if (tab === "connections") return loadAgentConnections(draft.id);
+    if (tab === "repositories") return loadProfileRepositories(draft.id);
+    if (tab === "memory") return loadOwnerMemory("agent", connectedTeamId(), draft.id, true);
+    if (tab === "schedules") return loadAgentSchedules(draft.id);
+    return Promise.resolve();
+  }
+
   function showProfileTab(tab) {
     var changed = state.profileTab !== tab;
     if (changed) {
@@ -11743,9 +12000,7 @@ button.capability-pill { cursor: pointer; }
       state.profileTab = tab;
       render();
     }
-    if (changed && tab === "repositories" && !state.githubStatusLoaded) {
-      loadGithubStatus().then(render);
-    }
+    revalidateProfileTab(tab);
   }
 
   function collectProfileDraft() {
@@ -11771,6 +12026,9 @@ button.capability-pill { cursor: pointer; }
   function markProfileDirty() {
     var wasDirty = state.profileDirty;
     state.profileDirty = true;
+    if (state.profileDraft && state.profileDraft.id) {
+      setVisibleResourceDirty("agent-detail", state.profileDraft.id, true);
+    }
     var discard = document.querySelector('[data-action="discard-profile"]');
     if (discard) discard.disabled = false;
     if (state.profileScreen === "edit") {
@@ -12713,7 +12971,7 @@ button.capability-pill { cursor: pointer; }
     // carries data-action="profile-model"; the same action feeds keystrokes to
     // the filter in the input listener below.
     if (action === "profile-model") { openModelPicker(); }
-    if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); state.profileDirty = true; closeModelPicker(); }
+    if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); markProfileDirty(); closeModelPicker(); }
     if (action === "profile-model-reset" && state.profileDraft) {
       state.profileDraft.model = "";
       state.modelPickerOpen = false;
@@ -12753,7 +13011,7 @@ button.capability-pill { cursor: pointer; }
     if (action === "delete-profile") { deleteProfile(); }
     if (action === "open-channel-from-profile") { state.view = "channels"; state.channelScreen = "detail"; state.profileScreen = "list"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
     if (action === "disable-keep") { state.disableConfirm = false; render(); focusAction("agent-overflow-toggle"); }
-    if (action === "disable-confirm") { if (state.profileDraft) state.profileDraft.enabled = false; state.disableConfirm = false; state.profileDirty = true; render(); focusAction("agent-overflow-toggle"); }
+    if (action === "disable-confirm") { if (state.profileDraft) state.profileDraft.enabled = false; state.disableConfirm = false; markProfileDirty(); render(); focusAction("agent-overflow-toggle"); }
     // Custom-skills editor: open blank / open seeded / remove / save / cancel.
     // Each editor open captures the current field text off state.skillEditor so
     // the inline error survives a re-render (input handlers mirror keystrokes).
@@ -13750,6 +14008,9 @@ button.capability-pill { cursor: pointer; }
   // navigation leaves a profile editor with unsaved changes. window is absent
   // in the unit-test VM context, so registration is skipped there.
   if (typeof window !== "undefined" && window.addEventListener) {
+    window.addEventListener("focus", function () {
+      revalidateCurrentVisibleResources();
+    });
     window.addEventListener("beforeunload", function (event) {
       if (
         (state.profileScreen === "edit" && state.profileDirty) ||
@@ -13810,6 +14071,13 @@ button.capability-pill { cursor: pointer; }
       applyRoute(targetPath);
     });
   }
+  if (typeof document !== "undefined" && document.addEventListener) {
+    document.addEventListener("visibilitychange", function () {
+      if (!document.visibilityState || document.visibilityState === "visible") {
+        revalidateCurrentVisibleResources();
+      }
+    });
+  }
 
   // Land on the Profiles overview (topbar / channel-page "Manage profiles"), or
   // directly on a profile's edit detail when a target id is supplied (the
@@ -13828,15 +14096,14 @@ button.capability-pill { cursor: pointer; }
       state.editingAgentId = target.id;
       state.profileLastAgentId = target.id;
       state.profileDraft = cloneAgent(target);
-      loadAgentConnections(target.id);
-      loadAgentSchedules(target.id);
-      loadOwnerMemory("agent", connectedTeamId(), target.id);
+      markVisibleResourceCurrent("agent-detail", target.id);
     } else {
       state.profileScreen = "list";
       state.profileDraft = null;
       state.editingAgentId = null;
     }
     render();
+    return revalidateCurrentVisibleResources();
   }
 
   function openHome() {
@@ -13857,6 +14124,7 @@ button.capability-pill { cursor: pointer; }
       if (!state.slackChannels && !state.slackChannelsLoading) loadSlackChannels(false);
     }
     render();
+    revalidateCurrentVisibleResources();
   }
 
   function openAddChannel(agentId) {
@@ -13885,6 +14153,45 @@ button.capability-pill { cursor: pointer; }
       render();
       return null;
     });
+  }
+
+  function loadVisibleSlackStatus() {
+    var resourceOwner = connectedTeamId() || "installation";
+    var resourceTicket = beginVisibleResourceLoad("slack-status", resourceOwner, false);
+    if (!resourceTicket) return coalescedVisibleResourcePromise("slack-status", resourceOwner);
+    var request = api("/admin/api/slack-connection", { cache: "no-store" }).then(function (body) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
+      state.slack = body;
+      finishVisibleResourceLoad(resourceTicket, true);
+      renderPreservingPagePosition();
+    }).catch(function (error) {
+      if (!visibleResourceLoadIsCurrent(resourceTicket)) return;
+      if (error && error.status === 404) state.slack = null;
+      finishVisibleResourceLoad(resourceTicket, error && error.status === 404);
+      renderPreservingPagePosition();
+    });
+    return trackVisibleResourcePromise(resourceTicket, request);
+  }
+
+  function revalidateCurrentVisibleResources() {
+    if (typeof document !== "undefined" && document.visibilityState && document.visibilityState !== "visible") {
+      return Promise.resolve();
+    }
+    var loads = [];
+    if (state.view === "profiles" && state.profileScreen === "edit" && state.profileDraft) {
+      if (state.profileDraft.canEdit !== false) {
+        loads.push(loadVisibleAgentDetail(state.profileDraft.id));
+        loads.push(revalidateProfileTab(state.profileTab));
+      }
+      loads.push(loadVisibleSlackStatus());
+    } else if (state.view === "channels") {
+      loads.push(loadVisibleSlackStatus());
+    } else if (state.view === "settings" && state.settingsSection === "slack") {
+      loads.push(loadVisibleSlackStatus());
+    } else if (state.view === "audit" && state.auditDomain === "scheduled-work") {
+      loads.push(loadScheduledRoutines());
+    }
+    return Promise.all(loads);
   }
 
   function saveSlackBehavior(key, value) {
@@ -15862,6 +16169,10 @@ button.capability-pill { cursor: pointer; }
     await applyRoute(initialRoute);
     if (connectorSetup && state.profileDraft && state.profileScreen === "edit") {
       state.profileTab = "connections";
+      // The one-shot handoff lands directly on Connections, so this is the
+      // visible resource even though the editor normally opens on Instructions.
+      // Wait for its catalog before choosing native versus managed setup.
+      await revalidateProfileTab("connections");
       newConnectionAccountFormFromPreset(connectorSetup.connector);
       if (state.connectionAccountForm) {
         state.connectionAccountForm.ownerKind = connectorSetup.ownerKind;
