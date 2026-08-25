@@ -142,11 +142,26 @@ export class GatewayInboxStoreLogic {
          FROM gateway_inbox`,
       );
       if (
-        Number(totals?.total_rows ?? 0) >= this.limits.maxTotalRows ||
         Number(totals?.active_rows ?? 0) >= this.limits.maxActiveRows ||
         Number(totals?.active_bytes ?? 0) + payloadBytes > this.limits.maxActiveBytes
       ) {
         throw new GatewayInboxCapacityError('Gateway inbox capacity is exhausted.');
+      }
+      const rowsToFree = Number(totals?.total_rows ?? 0) - this.limits.maxTotalRows + 1;
+      if (rowsToFree > 0) {
+        const deleted = this.db.run(
+          `DELETE FROM gateway_inbox
+           WHERE id IN (
+             SELECT id FROM gateway_inbox
+             WHERE status IN ('completed', 'recovery_required')
+             ORDER BY terminal_at, accepted_at, id
+             LIMIT ?
+          )`,
+          rowsToFree,
+        );
+        if (deleted.changes < rowsToFree) {
+          throw new GatewayInboxCapacityError('Gateway inbox capacity is exhausted.');
+        }
       }
       const inserted = this.db.run(
         `INSERT INTO gateway_inbox (
@@ -337,5 +352,8 @@ function validateLimits(limits: GatewayInboxLimits): void {
   }
   if (limits.maxInFlight > limits.maxActiveRows) {
     throw new Error('Gateway inbox in-flight limit cannot exceed its active-row limit.');
+  }
+  if (limits.maxActiveRows > limits.maxTotalRows) {
+    throw new Error('Gateway inbox active-row limit cannot exceed its total-row limit.');
   }
 }

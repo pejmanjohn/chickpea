@@ -317,6 +317,11 @@ import {
   type RoutineStore,
 } from '../routines/types.ts';
 import { RoutineService } from '../routines/service.ts';
+import {
+  requireRoutineScheduling,
+  resolveRoutineCapability,
+  type RoutineCapability,
+} from '../routines/scheduler-adapter.ts';
 import { hashRoutineValue } from '../routines/ids.ts';
 import {
   reassignRoutineAgentAuthority,
@@ -507,6 +512,7 @@ interface AdminRoutesOptions {
   routines?: RoutineStore | undefined;
   usage?: UsageStore | undefined;
   work?: WorkStore | undefined;
+  routineCapability?: ((c: Context) => RoutineCapability) | undefined;
   slackState?: SlackStateStore | undefined;
   runtimeDrain?: ((env?: PlatformEnv) => Promise<RuntimeDrainStatus>) | undefined;
   usageAdminUi?: boolean | undefined;
@@ -4871,6 +4877,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     usage,
     work,
     contentAccess: routineContentAccess,
+    ...(options.routineCapability ? { capability: options.routineCapability } : {}),
   }));
   app.route('/admin/api', createUsageAdminApi({ store: usage, work }));
   app.route('/admin/api', createWorkAdminApi({ store: work, usage }));
@@ -6807,6 +6814,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             ? await config.getChannel(routine.workspaceId, routine.channelId)
             : undefined;
           const status = agentScheduleStatus(reference.state, routine.state);
+          const actions = agentScheduleActions(readable, reference.state, routine.state);
           return {
             id: routine.id,
             name: readable ? routine.name : null,
@@ -6823,11 +6831,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             channelLabel: readable ? channel?.label ?? null : null,
             nextRunAt: routine.nextRunAt,
             lastFinishedAt: routine.lastFinishedAt,
-            actions: {
-              pause: readable && reference.state === 'active' && routine.state === 'active',
-              resume: readable && reference.state === 'active' && routine.state === 'paused',
-              delete: readable,
-            },
+            actions,
           };
         }))).filter((schedule) => schedule !== null),
       });
@@ -6908,9 +6912,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (routine.deletedAt !== null || reference.state === 'archived') {
         return c.json({ error: 'not_found' }, 404);
       }
+      const expectedVersion = parsed.output.expectedVersion;
+      if (expectedVersion === routine.version) {
+        const allowed = agentScheduleActions(true, reference.state, routine.state);
+        if (!allowed[action]) {
+          return c.json({ error: 'routine_action_unavailable' }, 409);
+        }
+      }
+      if (action === 'resume') {
+        requireRoutineScheduling(
+          options.routineCapability?.(c) ??
+            resolveRoutineCapability({ cloudflare: isCloudflareTarget() }),
+        );
+      }
       const updated = await new RoutineService(state).control({
         routineId: routine.id,
-        expectedVersion: parsed.output.expectedVersion,
+        expectedVersion,
         action,
         actorId: principal.membershipId,
         actorClass: 'operator',
@@ -10030,6 +10047,18 @@ function agentScheduleStatus(
   if (routineState === 'paused' || authorityState === 'paused') return 'paused';
   if (routineState === 'active') return 'active';
   return 'completed';
+}
+
+function agentScheduleActions(
+  readable: boolean,
+  authorityState: AgentScheduleState,
+  routineState: RoutineDefinition['state'],
+): { pause: boolean; resume: boolean; delete: boolean } {
+  return {
+    pause: readable && authorityState === 'active' && routineState === 'active',
+    resume: readable && authorityState === 'active' && routineState === 'paused',
+    delete: readable,
+  };
 }
 
 function agentStillReferenced(c: Context, error: AgentStillReferencedError): Response {

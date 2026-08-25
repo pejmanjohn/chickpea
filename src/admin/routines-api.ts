@@ -14,6 +14,7 @@ import {
 import { RoutineService } from '../routines/service.ts';
 import { routineOperatorLimits } from '../routines/limits.ts';
 import {
+  requireRoutineScheduling,
   resolveRoutineCapability,
   type RoutineCapability,
 } from '../routines/scheduler-adapter.ts';
@@ -210,6 +211,9 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
           routine: isReadable ? readableRoutineDetail(deleted, access) : redactedRoutineDetail(deleted, access),
           irreversible: true,
         });
+      }
+      if (parsed.output.action === 'resume') {
+        requireRoutineScheduling(capabilityFor(c, options));
       }
       const updated = await service.control({
         routineId,

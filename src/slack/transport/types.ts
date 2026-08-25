@@ -118,6 +118,8 @@ export interface SlackTransport {
     text: string;
     blocks?: unknown[];
     persona?: SlackMessagePersona;
+    /** Stable write identity for retries that must not create another message. */
+    idempotencyKey?: string;
   }): Promise<SlackMessageReference>;
 }
 

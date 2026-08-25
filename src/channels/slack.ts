@@ -61,6 +61,7 @@ import {
   agentAppHomeStarterMessage,
   agentDirectoryAppHome,
   parseAgentAppHomeSelection,
+  type AgentAppHomeSelection,
 } from '../slack/app-home.ts';
 import {
   classifySlackInteraction,
@@ -579,6 +580,7 @@ async function seedAgentAppHomeThread(input: {
   transport: SlackTransport;
   platformEnv?: PlatformEnv;
   botUserId?: string;
+  deliveryId?: string;
 }): Promise<void> {
   if (!input.botUserId) return;
   const installation = await input.stores.config.getWorkspaceInstallation(input.workspaceId);
@@ -600,6 +602,9 @@ async function seedAgentAppHomeThread(input: {
     channelId: dm.id,
     text: agentAppHomeStarterMessage(agent.name),
     persona: { name: agent.name, avatarUrl },
+    ...(input.deliveryId
+      ? { idempotencyKey: input.deliveryId }
+      : {}),
   });
   const synthetic: NormalizedSlackTurn = {
     workspaceId: input.workspaceId,
@@ -835,7 +840,7 @@ export async function processGatewaySlackEnvelope(
 }
 
 export async function processGatewayAgentSelection(
-  selection: { workspaceId: string; userId: string; agentId: string },
+  selection: AgentAppHomeSelection,
   platformEnv?: PlatformEnv,
   providedClient?: GatewayDeploymentClient,
   providedStores?: AppStores,
@@ -1347,6 +1352,9 @@ async function processSlackEvent(
         // transaction rolled its claims back, so Slack may safely redeliver.
         console.error('[chickpea] ledger Work admission failed:', sanitizeError(err));
         if (promotedDecisionKey) await state.release(promotedDecisionKey);
+        if (execution?.enqueueTurn) {
+          throw new SlackDurableEnqueueError('Canonical Work admission failed.');
+        }
         return;
       }
       // U3 is deliberately observational. Preserve the existing product path

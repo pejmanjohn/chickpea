@@ -122,6 +122,32 @@ test('gateway inbox bounds in-flight work, scrubs completion, and retains dedup 
   }
 });
 
+test('terminal tombstone capacity cannot block a new active delivery', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const inbox = new GatewayInboxStoreLogic(db, () => NOW, {
+      maxTotalRows: 2,
+      maxActiveRows: 2,
+      maxInFlight: 2,
+    });
+    for (const id of ['delivery:Ev_OLD', 'delivery:Ev_RECENT']) {
+      assert.equal(inbox.admit(eventDelivery(id, id)), 'accepted');
+      assert.equal(inbox.complete(inbox.claimPending(1)[0]!.id), true);
+    }
+
+    assert.equal(inbox.admit(eventDelivery('delivery:Ev_NEW', 'new body')), 'accepted');
+    assert.equal(inbox.admit(eventDelivery('delivery:Ev_RECENT', 'retry body')), 'duplicate');
+    assert.equal(db.get('SELECT COUNT(*) AS count FROM gateway_inbox')?.count, 2);
+    const active = db.get(
+      "SELECT status, payload_json FROM gateway_inbox WHERE id = 'delivery:Ev_NEW'",
+    );
+    assert.equal(active?.status, 'pending');
+    assert.match(String(active?.payload_json), /new body/);
+  } finally {
+    db.close();
+  }
+});
+
 test('gateway inbox bounds attempts and scrubs recovery-required bodies', () => {
   const db = openStateDb(':memory:');
   try {
@@ -161,6 +187,40 @@ test('gateway inbox ages abandoned accepted work into body-free recovery state',
     assert.equal(row?.payload_json, null);
     assert.equal(row?.status, 'recovery_required');
     assert.equal(row?.recovery_reason, 'active_age_exceeded');
+  } finally {
+    db.close();
+  }
+});
+
+test('gateway inbox reclaims expired leases and scrubs the body at the attempt cap', () => {
+  let now = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const inbox = new GatewayInboxStoreLogic(db, () => now, {
+      maxAttempts: 2,
+      leaseMs: 100,
+    });
+    assert.equal(inbox.admit(eventDelivery('delivery:Ev_LEASE', 'sensitive')), 'accepted');
+    assert.equal(inbox.claimPending(1)[0]?.attempts, 1);
+
+    now += 101;
+    assert.equal(inbox.maintain().expiredLeasesRecovered, 1);
+    const reclaimed = db.get(
+      "SELECT status, payload_json FROM gateway_inbox WHERE id = 'delivery:Ev_LEASE'",
+    );
+    assert.equal(reclaimed?.status, 'pending');
+    assert.match(String(reclaimed?.payload_json), /sensitive/);
+    assert.equal(inbox.claimPending(1)[0]?.attempts, 2);
+
+    now += 101;
+    assert.equal(inbox.maintain().agedToRecovery, 1);
+    const capped = db.get(
+      "SELECT status, payload_json, payload_bytes, recovery_reason FROM gateway_inbox WHERE id = 'delivery:Ev_LEASE'",
+    );
+    assert.equal(capped?.status, 'recovery_required');
+    assert.equal(capped?.payload_json, null);
+    assert.equal(capped?.payload_bytes, 0);
+    assert.equal(capped?.recovery_reason, 'attempt_limit_exceeded');
   } finally {
     db.close();
   }

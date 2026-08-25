@@ -4023,17 +4023,24 @@ test('failed Agent schedule control reloads the latest row and reports a safe er
 
 test('schedule revalidation preserves an in-flight control and completion cannot reload a stale Agent', async () => {
   let resolveControl!: (response: FakeResponse) => void;
+  let resolveOpsSchedules!: (response: FakeResponse) => void;
   const controlResponse = new Promise<FakeResponse>((resolve) => {
     resolveControl = resolve;
   });
+  const pendingSchedule = {
+    id: 'routine_pending', name: 'Pending control canary', contentAccess: 'readable', status: 'active', version: 1,
+    cadence: { triggerKind: 'schedule', scheduleInput: '*/5 * * * *', timezone: 'UTC' },
+    channelLabel: 'schedule-lab', nextRunAt: 1_785_168_000_000, lastFinishedAt: null,
+    actions: { pause: true, resume: false, delete: true },
+  };
   const harness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_release',
-    agentSchedules: [{
-      id: 'routine_pending', name: 'Pending control canary', contentAccess: 'readable', status: 'active', version: 1,
-      cadence: { triggerKind: 'schedule', scheduleInput: '*/5 * * * *', timezone: 'UTC' },
-      channelLabel: 'schedule-lab', nextRunAt: 1_785_168_000_000, lastFinishedAt: null,
-      actions: { pause: true, resume: false, delete: true },
-    }],
+    agentSchedulesFetch(agentId) {
+      if (agentId === 'agent_ops') {
+        return new Promise((resolve) => { resolveOpsSchedules = resolve; });
+      }
+      return Promise.resolve(jsonResponse({ schedules: [pendingSchedule] }));
+    },
     agentScheduleControlFetch: () => controlResponse,
   });
   await flushAsync();
@@ -4055,14 +4062,54 @@ test('schedule revalidation preserves an in-flight control and completion cannot
   assert.match(harness.app.innerHTML, /aria-label="Pause Pending control canary" disabled/);
 
   harness.listeners.click?.({
-    target: actionTarget({ 'data-action': 'open-profiles', 'data-agent': 'agent_ops' }),
+    target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_ops' }),
   });
-  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
   assert.match(harness.app.innerHTML, /class="page-title">Ops Profile<\/h1>/);
+  assert.match(harness.app.innerHTML, /Loading Agent schedules/);
   resolveControl(jsonResponse({ schedule: { id: 'routine_pending', status: 'paused', version: 2 } }));
   await flushAsync();
-  assert.equal(harness.agentScheduleGets(), 2);
+  assert.equal(harness.agentScheduleGets(), 3);
+  resolveOpsSchedules(jsonResponse({ schedules: [{
+    ...pendingSchedule,
+    id: 'routine_ops',
+    name: 'Ops schedule from current response',
+  }] }));
+  await flushAsync();
   assert.match(harness.app.innerHTML, /class="page-title">Ops Profile<\/h1>/);
+  assert.match(harness.app.innerHTML, /Ops schedule from current response/);
+  assert.doesNotMatch(harness.app.innerHTML, /Loading Agent schedules/);
+});
+
+test('schedule refresh closes a delete confirmation whose row disappeared', async () => {
+  const schedule = {
+    id: 'routine_disappears', name: 'Disappearing schedule', contentAccess: 'readable', status: 'active', version: 1,
+    cadence: { triggerKind: 'schedule', scheduleInput: '*/5 * * * *', timezone: 'UTC' },
+    channelLabel: 'schedule-lab', nextRunAt: 1_785_168_000_000, lastFinishedAt: null,
+    actions: { pause: true, resume: false, delete: true },
+  };
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedulesFetch(_agentId, call) {
+      return Promise.resolve(jsonResponse({ schedules: call === 1 ? [schedule] : [] }));
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+  harness.listeners.click?.({
+    target: actionTarget({
+      'data-action': 'agent-schedule-delete-open',
+      'data-schedule-id': schedule.id,
+    }),
+  });
+  assert.match(harness.app.innerHTML, /Delete Disappearing schedule/);
+
+  harness.focusWindow();
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /agent-schedule-delete-title/);
+  assert.match(harness.app.innerHTML, /No scheduled work/);
+  assert.equal(harness.focusedAction(), 'ptab-schedules');
 });
 
 test('opening an editable Agent view revalidates its visible detail without loading hidden tabs', async () => {

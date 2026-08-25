@@ -45,6 +45,7 @@ async function admittedFixture(
   suffix: string,
   beforeOccurrence?: (routine: RoutineDefinition) => Promise<void>,
   sourceVisibility?: 'public' | 'private' | 'unknown',
+  deadlineAt = NOW + 60_000,
 ) {
   const definition: RoutineDefinitionContent = {
     name: 'Execution fixture', description: '', taskText: 'Inspect current state.',
@@ -71,7 +72,7 @@ async function admittedFixture(
     scheduledFor: NOW,
     triggerSource: 'schedule',
     queuedAt: NOW,
-    deadlineAt: NOW + 60_000,
+    deadlineAt,
   });
   const attempt = await store.startAdmissionAttempt({
     occurrenceId: run.id,
@@ -691,6 +692,44 @@ test('routine Usage repairs failed admission and terminal persistence before com
   }
 });
 
+test('routine deadline bounds a stalled durable Usage owner before dispatch', async () => {
+  const routines = new SqliteRoutineStore(':memory:', () => NOW);
+  const telemetry = telemetrySink();
+  const events: string[] = [];
+  const deadlineAt = Date.now() + 50;
+  const stalledUsage = {
+    admitOperation: async () => new Promise<never>(() => undefined),
+  } as unknown as UsageStore;
+  try {
+    const fixture = await admittedFixture(
+      routines,
+      'usage_deadline',
+      undefined,
+      undefined,
+      deadlineAt,
+    );
+    const startedAt = Date.now();
+    assert.equal(await executeRoutineOccurrence({
+      env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(),
+      now: Date.now,
+      usageRecordingEnabled: true,
+      usageStore: stalledUsage,
+      persistenceTelemetrySink: telemetry.sink,
+      handle: fakeHandle({ events }),
+    }), 'completed');
+
+    assert.ok(Date.now() - startedAt < 500);
+    assert.equal(events.filter((event) => event === 'dispatch').length, 0);
+    assert.equal(telemetry.errors.length, 1);
+    assert.match(telemetry.errors[0]!, /"usage":"unrepaired"/);
+    assert.doesNotMatch(telemetry.errors[0]!, /usage_deadline|C_TEST/);
+  } finally {
+    routines.close();
+  }
+});
+
 test('routine Usage and Work settle with the same canonical execution correlation', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-correlation-'));
   const path = join(directory, 'state.sqlite');
@@ -778,6 +817,49 @@ test('permanent Work initialization failure is one gap and never redispatches', 
   }
 });
 
+test('routine deadline bounds a stalled durable Work owner before dispatch', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-work-deadline-'));
+  const path = join(directory, 'state.sqlite');
+  const routines = new SqliteRoutineStore(path, () => NOW);
+  const configuration = new SqliteConfigStore(path);
+  const telemetry = telemetrySink();
+  const events: string[] = [];
+  const deadlineAt = Date.now() + 50;
+  try {
+    const fixture = await admittedFixture(
+      routines,
+      'work_deadline',
+      (routine) => linkAgentSchedule(configuration, routine),
+      'public',
+      deadlineAt,
+    );
+    const stalledWork = {
+      getRun: async () => new Promise<never>(() => undefined),
+    } as unknown as WorkStore;
+    const startedAt = Date.now();
+    assert.equal(await executeRoutineOccurrence({
+      env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(),
+      now: Date.now,
+      usageRecordingEnabled: false,
+      workStore: stalledWork,
+      persistenceTelemetrySink: telemetry.sink,
+      handle: fakeHandle({ events }),
+    }), 'completed');
+
+    assert.ok(Date.now() - startedAt < 500);
+    assert.equal(events.filter((event) => event === 'dispatch').length, 0);
+    assert.equal(telemetry.errors.length, 1);
+    assert.match(telemetry.errors[0]!, /"phase":"work","outcome":"unrepaired"/);
+    assert.doesNotMatch(telemetry.errors[0]!, /work_deadline|C_TEST/);
+  } finally {
+    configuration.close();
+    routines.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('Work terminal failure after Slack delivery cannot post or replay twice', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-terminal-gap-'));
   const path = join(directory, 'state.sqlite');
@@ -838,5 +920,62 @@ test('Work terminal failure after Slack delivery cannot post or replay twice', a
     configuration.close();
     routines.close();
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('permanent Usage terminal failure after Slack delivery cannot post or replay twice', async () => {
+  const routines = new SqliteRoutineStore(':memory:', () => NOW);
+  const usage = new SqliteUsageStore(':memory:');
+  const telemetry = telemetrySink();
+  let posts = 0;
+  const client = {
+    chat: {
+      postMessage: async () => {
+        posts += 1;
+        return { ok: true, channel: 'C_TEST', ts: '1900000000.000002' };
+      },
+    },
+  };
+  const failingTerminalUsage = new Proxy(usage, {
+    get(target, property, receiver) {
+      if (property === 'recordTerminal') {
+        return async () => { throw new Error('terminal Usage persistence unavailable'); };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as UsageStore;
+  try {
+    const fixture = await admittedFixture(routines, 'usage_terminal_gap');
+    const access = dependencies().resolveAccess;
+    const executionInput = {
+      env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    };
+    const executionDependencies = {
+      ...dependencies(),
+      usageRecordingEnabled: true,
+      usageStore: failingTerminalUsage,
+      persistenceTelemetrySink: telemetry.sink,
+      resolveAccess: async (run: RoutineRun, routine: RoutineDefinition) => ({
+        ...(await access(run, routine)),
+        client: client as never,
+      }),
+      handle: fakeHandle({ reply: successfulReply() }),
+    };
+    assert.equal(await executeRoutineOccurrence(executionInput, executionDependencies), 'completed');
+    assert.equal(await executeRoutineOccurrence(executionInput, executionDependencies), 'superseded');
+
+    assert.equal(posts, 1);
+    assert.equal((await routines.getRun(fixture.run.id))?.status, 'succeeded');
+    assert.equal((await routines.getRun(fixture.run.id))?.deliveryStatus, 'delivered');
+    assert.equal(telemetry.errors.length, 1);
+    assert.match(telemetry.errors[0]!, /"usage":"unrepaired"/);
+    assert.doesNotMatch(
+      telemetry.errors[0]!,
+      /terminal Usage persistence|usage_terminal_gap|C_TEST/,
+    );
+  } finally {
+    usage.close();
+    routines.close();
   }
 });

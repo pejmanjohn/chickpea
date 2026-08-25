@@ -12,6 +12,7 @@ import {
   type SlackTransport,
 } from '../src/slack/transport/types.ts';
 import { createGatewaySlackTransport } from '../src/slack/transport/gateway.ts';
+import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 
 interface RecordedCall {
   method: string;
@@ -91,6 +92,7 @@ test('direct transport maps Slack operations without exposing credentials or a r
     threadTs: '1700.1',
     text: 'Handled',
     persona: { name: 'Support Triage', avatarUrl: 'https://cdn.example/avatar.png' },
+    idempotencyKey: 'interaction:selection-one',
   }), { channelId: 'C123', ts: '1700.2' });
 
   assert.deepEqual(calls.map((entry) => entry.method), [
@@ -117,6 +119,7 @@ test('direct transport maps Slack operations without exposing credentials or a r
     text: 'Handled',
     username: 'Support Triage',
     icon_url: 'https://cdn.example/avatar.png',
+    client_msg_id: slackClientMessageId('interaction:selection-one'),
   });
   assert.equal(transport.mode, 'direct');
   assert.deepEqual(Object.keys(transport).sort(), [
@@ -160,6 +163,32 @@ test('gateway transport resolves a user group only by authenticated Slack id', a
     { operation: 'usergroups.list', input: { include_disabled: true } },
     { operation: 'usergroups.list', input: { include_disabled: true } },
   ]);
+});
+
+test('gateway transport forwards a stable Slack message identity for retries', async () => {
+  const calls: Array<{ operation: string; input: Record<string, unknown> }> = [];
+  const transport = createGatewaySlackTransport({
+    workspaceId: 'T123',
+    async call(operation, input) {
+      calls.push({ operation, input });
+      return { channel: 'D123', ts: '1700.2' };
+    },
+  });
+
+  await transport.postMessage({
+    channelId: 'D123',
+    text: 'Agent is ready.',
+    idempotencyKey: 'interaction:selection-one',
+  });
+  assert.deepEqual(calls, [{
+    operation: 'chat.postMessage',
+    input: {
+      channel: 'D123',
+      text: 'Agent is ready.',
+      client_msg_id: slackClientMessageId('interaction:selection-one'),
+    },
+  }]);
+  assert.match(slackClientMessageId('interaction:selection-one'), /^[0-9a-f-]{36}$/);
 });
 
 test('gateway transport follows Slack cursors for Channels and membership', async () => {

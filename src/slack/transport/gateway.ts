@@ -1,6 +1,7 @@
 import type { View } from '@slack/types';
 
 import type { GatewayOperationClient } from '../gateway/client.ts';
+import { slackClientMessageId } from './message-id.ts';
 import {
   SlackTransportError,
   type SlackAppHomeReference,
@@ -162,6 +163,9 @@ export function createGatewaySlackTransport(client: GatewayOperationClient): Sla
           username: input.persona.name,
           icon_url: input.persona.avatarUrl,
         } : {}),
+        ...(input.idempotencyKey
+          ? { client_msg_id: slackClientMessageId(input.idempotencyKey) }
+          : {}),
       });
       return {
         channelId: requiredString(result.channel, 'chat.postMessage'),

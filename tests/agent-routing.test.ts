@@ -150,17 +150,17 @@ test('an authenticated unknown group repairs a proven interrupted-create mapping
   }
 });
 
-test('an authenticated group id never trusts a forged message handle or an unproven collision', async () => {
+test('an authenticated directory handle overrides a forged message label for one unique claim', async () => {
   const { store, support } = await fixture();
   try {
     const resolved = await resolveAgentRoute({
-      turn: turn({ text: '<!subteam^SATTACKER|@support> help' }),
+      turn: turn({ text: '<!subteam^SAUTHENTICATED|@forged-label> help' }),
       surface: 'channel',
       actor: { channelMember: true, fullMember: true },
       config: store,
       transport: {
         lookupUserGroup: async () => ({
-          id: 'SATTACKER',
+          id: 'SAUTHENTICATED',
           name: support.name,
           handle: 'support',
           description: support.description!,
@@ -170,8 +170,10 @@ test('an authenticated group id never trusts a forged message handle or an unpro
       },
     });
 
-    assert.equal(resolved.kind, 'denied');
-    assert.equal((await store.getAgent(support.id)).slackPresence?.userGroupId, 'SSUPPORT');
+    assert.equal(resolved.kind, 'routed');
+    if (resolved.kind !== 'routed') return;
+    assert.equal(resolved.assignment.agentId, support.id);
+    assert.equal((await store.getAgent(support.id)).slackPresence?.userGroupId, 'SAUTHENTICATED');
   } finally {
     store.close();
   }

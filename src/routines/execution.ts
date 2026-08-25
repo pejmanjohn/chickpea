@@ -223,6 +223,12 @@ export async function executeRoutineOccurrence(
   let retainPreparedSandbox = false;
   try {
     if (!receipt) {
+      if (now() >= prepared.run.deadlineAt) {
+        throw new RoutineRuntimeError(
+          'deadline_exceeded',
+          'The routine occurrence exceeded its execution deadline.',
+        );
+      }
       let admitted: DispatchReceipt;
       try {
         admitted = await handle.dispatch({
@@ -497,6 +503,7 @@ async function prepareExecution(
         store: usageStore,
         platformEnv: input.env,
         persistenceMode: 'durable',
+        deadlineAt: run.deadlineAt,
         now,
         onPersistence: (event) => persistence.recordUsage(event),
       })
@@ -535,6 +542,7 @@ async function prepareExecution(
     modelCredential: modelCredential ?? undefined,
     workStore: dependencies.workStore ?? getWorkStore(input.env),
     attemptNumber: input.attempt,
+    now,
     onGap: () => persistence.recordWorkGap(),
   });
   if (workLifecycle) {
@@ -645,6 +653,7 @@ async function createRoutineShadowLifecycle(
       | undefined;
     workStore: WorkStore;
     attemptNumber?: number;
+    now?: () => number;
     onGap?: () => void;
   },
 ): Promise<ShadowWorkLifecycle | undefined> {
@@ -656,31 +665,63 @@ async function createRoutineShadowLifecycle(
     modelCredential,
     workStore,
     attemptNumber = 1,
+    now = Date.now,
     onGap,
   } = input;
   if (!run.canonicalRunId) return undefined;
   try {
-    const lifecycle = await createWorkExecutionLifecycle(workStore, {
-      runId: run.canonicalRunId,
-      attemptNumber,
-      executorKind: 'agent',
-      agentName: access.config.agentId,
-      canonicalModel: access.config.model,
-      flueInstanceRef: opaqueId('flueinstance', envelope.instanceId),
-      routeEvidence: safeRuntimeModelRouteEvidence(
-        access.config.model,
-        providerAuthRoute,
-        modelCredential,
-      ),
-    }, {
-      mode: 'observe',
-      persistenceMode: 'durable',
-      ...(onGap ? { onGap } : {}),
-    });
+    const lifecycle = await beforeOccurrenceDeadline(
+      () => createWorkExecutionLifecycle(workStore, {
+        runId: run.canonicalRunId!,
+        attemptNumber,
+        executorKind: 'agent',
+        agentName: access.config.agentId,
+        canonicalModel: access.config.model,
+        flueInstanceRef: opaqueId('flueinstance', envelope.instanceId),
+        routeEvidence: safeRuntimeModelRouteEvidence(
+          access.config.model,
+          providerAuthRoute,
+          modelCredential,
+        ),
+      }, {
+        mode: 'observe',
+        persistenceMode: 'durable',
+        deadlineAt: run.deadlineAt,
+        now,
+        ...(onGap ? { onGap } : {}),
+      }),
+      run.deadlineAt,
+      now,
+    );
+    if (!lifecycle) {
+      onGap?.();
+      return undefined;
+    }
     return await lifecycle.prepareExecution(envelope.message) ? lifecycle : undefined;
   } catch {
     onGap?.();
     return undefined;
+  }
+}
+
+async function beforeOccurrenceDeadline<T>(
+  work: () => Promise<T>,
+  deadlineAt: number,
+  now: () => number,
+): Promise<T | undefined> {
+  const remainingMs = deadlineAt - now();
+  if (remainingMs <= 0) return undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      work().then((value) => ({ kind: 'value' as const, value })),
+      new Promise<{ kind: 'expired' }>((resolve) => {
+        timer = setTimeout(() => resolve({ kind: 'expired' }), remainingMs);
+      }),
+    ]);
+    return result.kind === 'value' ? result.value : undefined;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

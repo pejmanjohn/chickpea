@@ -5367,8 +5367,20 @@ button.capability-pill { cursor: pointer; }
       state.agentSchedules.loading = false;
       state.agentSchedules.error = terminalState && terminalState.error || "";
       state.agentSchedules.notice = terminalState && terminalState.notice || "";
+      var clearedDeleteConfirmation = false;
+      if (state.agentScheduleDeleteConfirm) {
+        var confirmedSchedule = agentScheduleById(state.agentScheduleDeleteConfirm.scheduleId);
+        if (!confirmedSchedule || !(confirmedSchedule.actions && confirmedSchedule.actions.delete)) {
+          state.agentScheduleDeleteConfirm = null;
+          clearedDeleteConfirmation = true;
+        }
+      }
       finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
+      if (clearedDeleteConfirmation) {
+        var schedulesTab = document.getElementById("ptab-schedules");
+        if (schedulesTab && schedulesTab.focus) schedulesTab.focus();
+      }
     }).catch(function (error) {
       if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentSchedules !== requestState) return;
       state.agentSchedules.loading = false;
@@ -5461,15 +5473,16 @@ button.capability-pill { cursor: pointer; }
         })
       }
     ).then(function () {
+      if (state.agentSchedules.agentId !== agentId) return;
       state.agentScheduleDeleteConfirm = null;
-      invalidateAgentSchedules(agentId);
       var notice = action === "delete"
         ? "Schedule deleted."
         : "Schedule " + (action === "pause" ? "paused." : "resumed.");
       if (!agentSchedulesVisibleFor(agentId)) {
-        if (state.agentSchedules.agentId === agentId) state.agentSchedules.busy = "";
+        state.agentSchedules.busy = "";
         return;
       }
+      invalidateAgentSchedules(agentId);
       return loadAgentSchedules(agentId, { notice: notice }).then(function () {
         if (!agentSchedulesVisibleFor(agentId)) return;
         if (action === "delete") {
@@ -5479,12 +5492,13 @@ button.capability-pill { cursor: pointer; }
       });
     }).catch(function (error) {
       var message = agentScheduleControlError(error);
+      if (state.agentSchedules.agentId !== agentId) return;
       state.agentScheduleDeleteConfirm = null;
-      invalidateAgentSchedules(agentId);
       if (!agentSchedulesVisibleFor(agentId)) {
-        if (state.agentSchedules.agentId === agentId) state.agentSchedules.busy = "";
+        state.agentSchedules.busy = "";
         return;
       }
+      invalidateAgentSchedules(agentId);
       return loadAgentSchedules(agentId, { error: message }).then(function () {
         if (!agentSchedulesVisibleFor(agentId)) return;
         if (action === "delete") focusAgentScheduleDelete(scheduleId);

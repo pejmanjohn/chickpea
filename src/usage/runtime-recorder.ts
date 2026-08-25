@@ -160,7 +160,7 @@ export class InteractiveUsageRecorder {
     write: () => Promise<unknown>,
   ): Promise<UsagePersistenceOutcome> {
     return persistUsage(
-      write(),
+      write,
       this.budgetMs,
       {
         phase,
@@ -232,6 +232,8 @@ export interface RoutineUsageRecorderOptions {
   processEnv?: NodeJS.ProcessEnv;
   writeBudgetMs?: number;
   persistenceMode?: UsagePersistenceMode;
+  /** Outer occurrence wall-time boundary for durable owner writes. */
+  deadlineAt?: number;
   now?: () => number;
   onPersistence?: (event: UsagePersistenceEvent) => void;
 }
@@ -317,7 +319,7 @@ export class InteractionUsageRecorder {
 
   async admit(): Promise<void> {
     const outcome = await persistUsage(
-      this.options.store.admitOperation(this.admission),
+      () => this.options.store.admitOperation(this.admission),
       this.budgetMs,
       {
         phase: 'admission',
@@ -368,7 +370,7 @@ export class InteractionUsageRecorder {
       ...estimateForRuntime(terminal, this.options.platformEnv, this.options.processEnv),
     };
     const outcome = await persistUsage(
-      this.options.store.recordTerminal(this.terminalInput),
+      () => this.options.store.recordTerminal(this.terminalInput!),
       this.budgetMs,
       {
         phase: 'terminal',
@@ -383,10 +385,10 @@ export class InteractionUsageRecorder {
     if (!this.terminalInput || !this.needsRepair || this.repairAttempted) return;
     this.repairAttempted = true;
     const outcome = await persistUsage(
-      (async () => {
+      async () => {
         await this.options.store.admitOperation(this.admission);
         await this.options.store.recordTerminal(this.terminalInput!);
-      })(),
+      },
       this.budgetMs,
       {
         phase: 'repair',
@@ -442,13 +444,15 @@ export class RoutineUsageRecorder {
 
   async admit(): Promise<void> {
     const outcome = await persistUsage(
-      this.options.store.admitOperation(this.admission),
+      () => this.options.store.admitOperation(this.admission),
       this.budgetMs,
       {
         phase: 'admission',
         executionId: this.options.executionId,
         onPersistence: this.options.onPersistence,
         mode: this.persistenceMode,
+        deadlineAt: this.options.deadlineAt,
+        now: this.now,
       },
     );
     this.needsRepair ||= outcome !== 'recorded';
@@ -500,13 +504,15 @@ export class RoutineUsageRecorder {
     };
     this.terminalInput = terminalInput;
     const outcome = await persistUsage(
-      this.options.store.recordTerminal(terminalInput),
+      () => this.options.store.recordTerminal(terminalInput),
       this.budgetMs,
       {
         phase: 'terminal',
         executionId: this.options.executionId,
         onPersistence: this.options.onPersistence,
         mode: this.persistenceMode,
+        deadlineAt: this.options.deadlineAt,
+        now: this.now,
       },
     );
     this.needsRepair ||= outcome !== 'recorded';
@@ -516,16 +522,18 @@ export class RoutineUsageRecorder {
     if (!this.terminalInput || !this.needsRepair || this.repairAttempted) return;
     this.repairAttempted = true;
     const outcome = await persistUsage(
-      (async () => {
+      async () => {
         await this.options.store.admitOperation(this.admission);
         await this.options.store.recordTerminal(this.terminalInput!);
-      })(),
+      },
       this.budgetMs,
       {
         phase: 'repair',
         executionId: this.options.executionId,
         onPersistence: this.options.onPersistence,
         mode: this.persistenceMode,
+        deadlineAt: this.options.deadlineAt,
+        now: this.now,
       },
     );
     if (outcome === 'recorded') this.needsRepair = false;
@@ -598,19 +606,29 @@ async function withinBudget(
 }
 
 async function persistUsage(
-  promise: Promise<unknown>,
+  write: () => Promise<unknown>,
   budgetMs: number,
   options: {
     phase: UsagePersistencePhase;
     executionId: string;
     onPersistence?: ((event: UsagePersistenceEvent) => void) | undefined;
     mode?: UsagePersistenceMode;
+    deadlineAt?: number | undefined;
+    now?: (() => number) | undefined;
   },
 ): Promise<UsagePersistenceOutcome> {
   const mode = options.mode ?? 'bounded';
-  const outcome = mode === 'durable'
-    ? await promise.then(() => 'recorded' as const, () => 'failed' as const)
-    : await withinBudget(promise, budgetMs);
+  let outcome: UsagePersistenceOutcome;
+  if (mode !== 'durable') {
+    outcome = await withinBudget(write(), budgetMs);
+  } else if (options.deadlineAt === undefined) {
+    outcome = await write().then(() => 'recorded' as const, () => 'failed' as const);
+  } else {
+    const remainingMs = options.deadlineAt - (options.now ?? Date.now)();
+    outcome = remainingMs <= 0
+      ? 'timed_out'
+      : await withinBudget(write(), remainingMs);
+  }
   options.onPersistence?.({
     phase: options.phase,
     outcome,

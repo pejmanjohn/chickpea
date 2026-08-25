@@ -120,7 +120,7 @@ test('an explicit base-app management mention stays memoryless without a default
   }
 });
 
-test('a lease-proven Slack group repair reaches the ordinary Agent memory path', async () => {
+test('an ordinary stale Slack group mapping repairs into the Agent memory path', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-agent-memory-repair-'));
   const statePath = join(directory, 'state.sqlite');
   const previousStatePath = process.env.SLACK_STATE_DB_PATH;
@@ -128,19 +128,14 @@ test('a lease-proven Slack group repair reaches the ordinary Agent memory path',
   closeNodeStateStores();
   try {
     const config = getConfigStore();
-    const startedAt = 1_800_000_000_000;
     const agent = await config.createAgent({
       id: 'agent_support', name: 'Support', description: 'Answers support questions',
-      instructions: 'Help customers.', enabled: true, lifecycle: 'needs_attention',
+      instructions: 'Help customers.', enabled: true, lifecycle: 'active',
       creatorMembershipId: 'membership_owner', editPolicy: 'creator_and_admins',
       model: 'local-stub/support', skills: [], mcpServers: [], apiConnections: [], repositories: [],
       slackPresence: {
         requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active',
-        health: 'needs_attention', userGroupId: 'SOLD',
-        errorCode: 'user_group_create_ambiguous',
-        pendingCreate: {
-          name: 'Support', handle: 'support', description: 'Answers support questions', startedAt,
-        },
+        health: 'healthy', userGroupId: 'SOLD',
         avatar: { kind: 'generated', revision: 1, seed: 'support' },
       },
     });
@@ -176,7 +171,7 @@ test('a lease-proven Slack group repair reaches the ordinary Agent memory path',
         lookupUserGroup: async () => ({
           id: 'SREPAIRED', name: 'Support', handle: 'support',
           description: 'Answers support questions', disabled: false,
-          updatedAt: Math.floor(startedAt / 1_000),
+          updatedAt: 1_800_000_000,
         }),
       },
       userGroupLookupLimiter: new AgentUserGroupLookupLimiter(),

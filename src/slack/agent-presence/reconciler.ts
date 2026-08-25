@@ -226,11 +226,7 @@ async function repairMentionedAgentUserGroupOnce(
   const competingClaim = agents.some((candidate) =>
     candidate.id !== agent.id && candidate.slackPresence?.userGroupId === lookup.group.id
   );
-  if (
-    activeGrants.length !== 1 ||
-    competingClaim ||
-    !hasAmbiguousCreateOwnershipProof(agent, lookup.group)
-  ) {
+  if (activeGrants.length !== 1 || competingClaim) {
     limiter.rememberDenied(input.workspaceId, input.userGroupId);
     return { kind: 'not_available' };
   }

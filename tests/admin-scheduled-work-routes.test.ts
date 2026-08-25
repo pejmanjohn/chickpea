@@ -472,12 +472,15 @@ test('private schedule projections are readable only to proven Channel members a
       requiredConnectionAccountIds: [],
       state: 'active',
     });
-    const appFor = (member: boolean) => createAdminRoutes({
+    const appFor = (member: boolean, scheduling = true) => createAdminRoutes({
       store: config,
       settings,
       routines,
       work,
       slackTransport: transport(member),
+      routineCapability: () => scheduling
+        ? { target: 'cloudflare', available: true, enabled: true, reason: 'enabled' }
+        : { target: 'node', available: false, enabled: false, reason: 'unsupported_target' },
       ...testAdminAuthority(TOKEN, undefined, identity, principal(member)),
     });
     const requestBoth = async (member: boolean) => {
@@ -620,6 +623,40 @@ test('private schedule projections are readable only to proven Channel members a
     assert.equal(pausedView.agent.status, 'paused');
     assert.deepEqual(pausedView.agent.actions, { pause: false, resume: true, delete: true });
 
+    const activeReference = (await config.getAgentScheduleReference(routine.id))!;
+    const attentionReference = await config.putAgentScheduleReference({
+      ...activeReference,
+      state: 'needs_attention',
+    }, activeReference.revision);
+    const attentionView = await requestBoth(true);
+    assert.equal(attentionView.agent.status, 'needs_attention');
+    assert.deepEqual(attentionView.agent.actions, { pause: false, resume: false, delete: true });
+    const blockedAttentionResume = await memberApp.request(controlUrl, {
+      method: 'POST',
+      headers: controlHeaders('attention-resume'),
+      body: JSON.stringify({ action: 'resume', expectedVersion: 2 }),
+    });
+    assert.equal(blockedAttentionResume.status, 409);
+    assert.equal((await blockedAttentionResume.json() as Record<string, any>).error, 'routine_action_unavailable');
+    assert.equal((await routines.getRoutine(routine.id))?.state, 'paused');
+    assert.equal((await routines.getRoutine(routine.id))?.version, 2);
+    await config.putAgentScheduleReference({
+      ...attentionReference,
+      state: 'active',
+    }, attentionReference.revision);
+
+    const unsupportedResume = await appFor(true, false).request(controlUrl, {
+      method: 'POST',
+      headers: controlHeaders('unsupported-resume'),
+      body: JSON.stringify({ action: 'resume', expectedVersion: 2 }),
+    });
+    assert.equal(unsupportedResume.status, 400);
+    assert.equal(
+      (await unsupportedResume.json() as Record<string, any>).error,
+      'routines_unavailable_on_target',
+    );
+    assert.equal((await routines.getRoutine(routine.id))?.version, 2);
+
     const staleResume = await memberApp.request(controlUrl, {
       method: 'POST',
       headers: controlHeaders('stale-resume'),
@@ -638,18 +675,6 @@ test('private schedule projections are readable only to proven Channel members a
     assert.equal(resumedView.global.name, canary);
     assert.equal(resumedView.agent.name, canary);
     assert.equal(resumedView.agent.status, 'active');
-    const activeReference = (await config.getAgentScheduleReference(routine.id))!;
-    const attentionReference = await config.putAgentScheduleReference({
-      ...activeReference,
-      state: 'needs_attention',
-    }, activeReference.revision);
-    const attentionView = await requestBoth(true);
-    assert.equal(attentionView.agent.status, 'needs_attention');
-    assert.deepEqual(attentionView.agent.actions, { pause: false, resume: false, delete: true });
-    await config.putAgentScheduleReference({
-      ...attentionReference,
-      state: 'active',
-    }, attentionReference.revision);
 
     const otherAgent = await config.createAgent({
       id: 'agent_other_private_schedule',
