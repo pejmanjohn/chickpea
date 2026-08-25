@@ -146,6 +146,9 @@ class FakeTransport implements SlackTransport {
     this.channel = { ...this.channel, member: true };
     return this.channel;
   }
+  async lookupUserGroup(userGroupId: string): Promise<SlackUserGroup | undefined> {
+    return this.groups.find((group) => group.id === userGroupId);
+  }
   async listUserGroups(): Promise<SlackUserGroup[]> { return this.groups.slice(); }
   async createUserGroup(input: { name: string; handle: string; description?: string }): Promise<SlackUserGroup> {
     if (this.createError) throw this.createError;

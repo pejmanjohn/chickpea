@@ -127,6 +127,18 @@ export function createDirectSlackTransportFromClient(
       return mapChannel(requiredRecord(result.channel, 'conversations.join'));
     },
 
+    async lookupUserGroup(userGroupId): Promise<SlackUserGroup | undefined> {
+      const result = await call(client.usergroups.list, 'usergroups.list', {
+        include_disabled: true,
+      });
+      if (!Array.isArray(result.usergroups)) return undefined;
+      for (const candidate of result.usergroups) {
+        const group = mapUserGroup(requiredRecord(candidate, 'usergroups.list'));
+        if (group.id === userGroupId) return group;
+      }
+      return undefined;
+    },
+
     async listUserGroups(options = {}): Promise<SlackUserGroup[]> {
       const result = await call(client.usergroups.list, 'usergroups.list', {
         include_disabled: options.includeDisabled ?? false,

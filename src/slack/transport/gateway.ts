@@ -93,6 +93,16 @@ export function createGatewaySlackTransport(client: GatewayOperationClient): Sla
       return mapChannel(requiredRecord(result.channel, 'conversations.join'));
     },
 
+    async lookupUserGroup(userGroupId): Promise<SlackUserGroup | undefined> {
+      const result = await client.call('usergroups.list', { include_disabled: true });
+      if (!Array.isArray(result.usergroups)) return undefined;
+      for (const candidate of result.usergroups) {
+        const group = mapUserGroup(requiredRecord(candidate, 'usergroups.list'));
+        if (group.id === userGroupId) return group;
+      }
+      return undefined;
+    },
+
     async listUserGroups(options = {}): Promise<SlackUserGroup[]> {
       const result = await client.call('usergroups.list', {
         include_disabled: options.includeDisabled ?? false,

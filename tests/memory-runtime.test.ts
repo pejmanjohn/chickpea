@@ -13,6 +13,8 @@ import {
 } from '../src/config/state-backend.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { prepareMemoryTurn } from '../src/memory/runtime.ts';
+import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
+import { AgentUserGroupLookupLimiter } from '../src/slack/agent-presence/reconciler.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
 test('an explicit base-app management mention stays memoryless without a default-Agent Channel grant', async () => {
@@ -110,6 +112,100 @@ test('an explicit base-app management mention stays memoryless without a default
     });
     assert.equal(ordinary.promptBlock, undefined);
     assert.equal(await ordinary.validateLease(), false);
+  } finally {
+    closeNodeStateStores();
+    if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;
+    else process.env.SLACK_STATE_DB_PATH = previousStatePath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a lease-proven Slack group repair reaches the ordinary Agent memory path', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-agent-memory-repair-'));
+  const statePath = join(directory, 'state.sqlite');
+  const previousStatePath = process.env.SLACK_STATE_DB_PATH;
+  process.env.SLACK_STATE_DB_PATH = statePath;
+  closeNodeStateStores();
+  try {
+    const config = getConfigStore();
+    const startedAt = 1_800_000_000_000;
+    const agent = await config.createAgent({
+      id: 'agent_support', name: 'Support', description: 'Answers support questions',
+      instructions: 'Help customers.', enabled: true, lifecycle: 'needs_attention',
+      creatorMembershipId: 'membership_owner', editPolicy: 'creator_and_admins',
+      model: 'local-stub/support', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      slackPresence: {
+        requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active',
+        health: 'needs_attention', userGroupId: 'SOLD',
+        errorCode: 'user_group_create_ambiguous',
+        pendingCreate: {
+          name: 'Support', handle: 'support', description: 'Answers support questions', startedAt,
+        },
+        avatar: { kind: 'generated', revision: 1, seed: 'support' },
+      },
+    });
+    const installation = await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_REPAIR', teamId: 'T_REPAIR', transportMode: 'direct',
+      defaultAgentId: 'agent_default', botUserId: 'U_CHICKPEA',
+    });
+    await config.updateWorkspaceInstallation(
+      'T_REPAIR', { health: 'healthy' }, installation.revision,
+    );
+    await config.putAgentChannelGrant({
+      workspaceId: 'T_REPAIR', channelId: 'C_SUPPORT', agentId: agent.id,
+      status: 'active', createdByMembershipId: 'membership_owner',
+      channelLabel: 'support', channelIsPrivate: false,
+    });
+    await getMemoryStateStore().putAgentMemory({
+      agentId: agent.id,
+      body: 'QA memory canary: use the blue response.',
+      expectedRevision: 0,
+    });
+    const turn: NormalizedSlackTurn = {
+      workspaceId: 'T_REPAIR', channelId: 'C_SUPPORT', eventId: 'Ev-repair',
+      text: '<!subteam^SREPAIRED|@forged-label> answer', userId: 'U_MEMBER',
+      messageTs: '100.1', threadTs: '100.1', source: 'agent_mention',
+      channelType: 'channel', contextMode: 'channel_history',
+    };
+    const routed = await resolveAgentRoute({
+      turn,
+      surface: 'channel',
+      actor: { channelMember: true, fullMember: true },
+      config,
+      transport: {
+        lookupUserGroup: async () => ({
+          id: 'SREPAIRED', name: 'Support', handle: 'support',
+          description: 'Answers support questions', disabled: false,
+          updatedAt: Math.floor(startedAt / 1_000),
+        }),
+      },
+      userGroupLookupLimiter: new AgentUserGroupLookupLimiter(),
+    });
+    assert.equal(routed.kind, 'routed');
+    if (routed.kind !== 'routed') return;
+    assert.equal(routed.assignment.agentId, agent.id);
+
+    const client = {
+      auth: { test: async () => ({ user_id: 'U_CHICKPEA' }) },
+      conversations: {
+        info: async () => ({
+          channel: { id: turn.channelId, context_team_id: turn.workspaceId, is_member: true },
+        }),
+        members: async () => ({ members: [turn.userId, 'U_CHICKPEA'] }),
+      },
+      users: {
+        info: async () => ({ user: { id: turn.userId, team_id: turn.workspaceId } }),
+      },
+    } as unknown as WebClient;
+    const prepared = await prepareMemoryTurn({
+      turn, assignment: routed.assignment, client,
+      botUserId: 'U_CHICKPEA', platformEnv: undefined,
+    });
+    assert.match(prepared.promptBlock ?? '', /QA memory canary: use the blue response\./);
+    assert.ok(prepared.selection);
+    assert.equal(prepared.selection.entries[0]?.entry.agentId, agent.id);
+    assert.equal((await config.getAgent(agent.id)).slackPresence?.userGroupId, 'SREPAIRED');
+    assert.equal(await prepared.validateLease(), true);
   } finally {
     closeNodeStateStores();
     if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;

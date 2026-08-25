@@ -656,6 +656,8 @@ async function postAgentRoutingFeedback(input: {
     ? `Mention one Agent at a time.${alternatives}`
     : input.result.reason === 'member_required'
       ? 'Only full workspace members can start private Agent conversations.'
+      : input.result.reason === 'temporarily_unavailable'
+        ? 'That Agent address could not be verified right now. Try again.'
       : `That Agent is not available here.${alternatives}`;
   if (input.surface === 'channel') {
     // Explicit base-app and Agent-handle mentions receive a private denial.
@@ -972,6 +974,7 @@ async function processSlackEvent(
         surface,
         actor: agentRoutingActor.routing,
         config: store,
+        transport: runtimeTransport,
       });
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed') {

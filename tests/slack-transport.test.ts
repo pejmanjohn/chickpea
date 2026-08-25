@@ -63,6 +63,8 @@ test('direct transport maps Slack operations without exposing credentials or a r
     archived: false,
   });
 
+  assert.equal((await transport.lookupUserGroup('S123'))?.handle, 'support');
+  assert.equal(await transport.lookupUserGroup('S404'), undefined);
   assert.deepEqual(await transport.listUserGroups({ includeDisabled: true }), [
     {
       id: 'S123',
@@ -100,6 +102,8 @@ test('direct transport maps Slack operations without exposing credentials or a r
     'conversations.open',
     'conversations.join',
     'usergroups.list',
+    'usergroups.list',
+    'usergroups.list',
     'usergroups.create',
     'usergroups.update',
     'usergroups.disable',
@@ -126,6 +130,7 @@ test('direct transport maps Slack operations without exposing credentials or a r
     'listUserGroups',
     'lookupChannel',
     'lookupMember',
+    'lookupUserGroup',
     'mode',
     'openDirectConversation',
     'postMessage',
@@ -133,6 +138,28 @@ test('direct transport maps Slack operations without exposing credentials or a r
     'updateUserGroup',
   ]);
   assert.doesNotMatch(JSON.stringify(transport), /xoxb|token|client/i);
+});
+
+test('gateway transport resolves a user group only by authenticated Slack id', async () => {
+  const calls: Array<{ operation: string; input: Record<string, unknown> }> = [];
+  const transport = createGatewaySlackTransport({
+    workspaceId: 'T123',
+    async call(operation, input) {
+      calls.push({ operation, input });
+      return {
+        usergroups: [
+          { id: 'SOTHER', name: 'Other', handle: 'forged-label', date_update: 40 },
+          { id: 'STARGET', name: 'Target', handle: 'trusted-handle', date_update: 42 },
+        ],
+      };
+    },
+  });
+  assert.equal((await transport.lookupUserGroup('STARGET'))?.handle, 'trusted-handle');
+  assert.equal(await transport.lookupUserGroup('SMISSING'), undefined);
+  assert.deepEqual(calls, [
+    { operation: 'usergroups.list', input: { include_disabled: true } },
+    { operation: 'usergroups.list', input: { include_disabled: true } },
+  ]);
 });
 
 test('gateway transport follows Slack cursors for Channels and membership', async () => {
@@ -407,6 +434,7 @@ function stubTransport(mode: 'direct' | 'gateway'): SlackTransport {
     channelHasMember: unsupported,
     openDirectConversation: unsupported,
     joinPublicChannel: unsupported,
+    lookupUserGroup: unsupported,
     listUserGroups: unsupported,
     createUserGroup: unsupported,
     updateUserGroup: unsupported,
