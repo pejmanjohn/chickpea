@@ -121,6 +121,14 @@ function observer(events: Array<Record<string, unknown>>): SlackPresentationDeli
   };
 }
 
+async function prepareReceipt(
+  h: ReturnType<typeof harness>,
+  input: Parameters<SlackAgentViewPresentation['prepareReceipt']>[0],
+) {
+  await h.presentation.freezeProgressiveEligibility(input.eligibility);
+  return h.presentation.prepareReceipt(input);
+}
+
 test('ordinary eligible answers start once, append ordered suffixes, and stop once', async () => {
   const h = harness({
     persona: {
@@ -130,7 +138,7 @@ test('ordinary eligible answers start once, append ordered suffixes, and stop on
     },
   });
   try {
-    const relay = await h.presentation.prepareReceipt({
+    const relay = await prepareReceipt(h, {
       instanceId: 'instance_progressive',
       receipt: { submissionId: 'submission_progressive', acceptedAt: 'now', uid: 'uid' },
       eligibility: { allowed: true, reason: 'safe_early_release' },
@@ -204,7 +212,7 @@ test('effect-capable Work starts honest native tasks but emits no progressive an
     native: true,
   });
   try {
-    const relay = await h.presentation.prepareReceipt({
+    const relay = await prepareReceipt(h, {
       instanceId: 'instance_native',
       receipt: { submissionId: 'submission_native', acceptedAt: 'now', uid: 'uid' },
       eligibility: { allowed: false, reason: 'effect_capable' },
@@ -256,7 +264,7 @@ test('a late-attached plan opens a native task card and supersedes the interim c
       ['pending'],
     );
 
-    await h.presentation.prepareReceipt({
+    await prepareReceipt(h, {
       instanceId: 'instance_late_plan',
       receipt: { submissionId: 'submission_late_plan', acceptedAt: 'now', uid: 'uid' },
       eligibility: { allowed: false, reason: 'effect_capable' },
@@ -301,7 +309,7 @@ test('adoptLatePlan is a no-op without native tasks and never overwrites an exis
 test('a V1 progressive-off presentation stays terminal-only after the V2 deploy', async () => {
   const h = harness({ schemaVersion: 1, progressive: false, native: false });
   try {
-    const relay = await h.presentation.prepareReceipt({
+    const relay = await prepareReceipt(h, {
       instanceId: 'instance_v1_terminal',
       receipt: { submissionId: 'submission_v1_terminal', acceptedAt: 'now', uid: 'uid' },
       eligibility: { allowed: true, reason: 'safe_early_release' },
@@ -323,6 +331,29 @@ test('a V1 progressive-off presentation stays terminal-only after the V2 deploy'
   }
 });
 
+test('a retry reuses frozen eligibility after the operations environment changes', async () => {
+  const h = harness();
+  try {
+    assert.deepEqual(
+      await h.presentation.freezeProgressiveEligibility({
+        allowed: true,
+        reason: 'safe_early_release',
+      }),
+      { allowed: true, reason: 'safe_early_release' },
+    );
+    assert.deepEqual(
+      await h.presentation.freezeProgressiveEligibility({
+        allowed: false,
+        reason: 'operations_disabled',
+      }),
+      { allowed: true, reason: 'safe_early_release' },
+    );
+    assert.equal(h.store.get(h.runId)?.projectionVersion, 2);
+  } finally {
+    h.db.close();
+  }
+});
+
 test('legacy checklist cleanup cannot make a proven native stream ambiguous', async () => {
   const h = harness({
     tasks: ['Inspect the customer'],
@@ -330,7 +361,7 @@ test('legacy checklist cleanup cannot make a proven native stream ambiguous', as
     onNativeStarted: async () => { throw new Error('cleanup unavailable'); },
   });
   try {
-    await h.presentation.prepareReceipt({
+    await prepareReceipt(h, {
       instanceId: 'instance_native_cleanup',
       receipt: { submissionId: 'submission_native_cleanup', acceptedAt: 'now', uid: 'uid' },
       eligibility: { allowed: false, reason: 'effect_capable' },
@@ -347,7 +378,7 @@ test('legacy checklist cleanup cannot make a proven native stream ambiguous', as
 test('a divergent terminal answer corrects the exact stream instead of posting a second answer', async () => {
   const h = harness();
   try {
-    const relay = await h.presentation.prepareReceipt({
+    const relay = await prepareReceipt(h, {
       instanceId: 'instance_correction',
       receipt: { submissionId: 'submission_correction', acceptedAt: 'now', uid: 'uid' },
       eligibility: { allowed: true, reason: 'safe_early_release' },

@@ -59,6 +59,7 @@ import {
   decideProgressiveEligibility,
   type ProgressiveEligibilityDecision,
 } from './progressive-eligibility.ts';
+import { slackProgressiveStreamingEnabled } from './progressive-ops-flag.ts';
 import {
   resolveSandboxSelection,
   sandboxBindingInstalled,
@@ -741,6 +742,31 @@ export async function runTurn(
     );
     void statusTurn.setStatus(hydratedContextStatus(context));
     const handoffBlock = formatSlackPublicHandoff(frozenHandoff);
+    const progressiveRelayFactory = options.prepareProgressiveRelay ??
+      (agentViewPresentation
+        ? (input: Parameters<NonNullable<RunTurnOptions['prepareProgressiveRelay']>>[0]) =>
+            agentViewPresentation.prepareReceipt(input)
+        : undefined);
+    let frozenProgressiveEligibility: ProgressiveEligibilityDecision | undefined;
+    if (
+      options.replayText === undefined &&
+      progressiveRelayFactory &&
+      options.runId &&
+      runtimePlanDecision
+    ) {
+      const candidate = decideProgressiveEligibility({
+        runtimePlan: runtimePlanDecision.runtimePlan,
+        operationsEnabled: slackProgressiveStreamingEnabled(platformEnv),
+        memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
+        recoveryRequired: false,
+        concurrentAttributionProven: options.progressiveAttributionProven === true,
+        replacementCapable: options.beforeDelivery !== undefined &&
+          runtimePlanDecision.runtimePlan.sandbox.mode === 'cloudflare',
+      });
+      frozenProgressiveEligibility = agentViewPresentation
+        ? await agentViewPresentation.freezeProgressiveEligibility(candidate)
+        : candidate;
+    }
     const prompt = assembleSlackPrompt(turn, context, {
       ...(handoffBlock ? { handoffBlock } : {}),
       ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
@@ -792,30 +818,18 @@ export async function runTurn(
         let prepareProgressiveRelay:
           | NonNullable<Parameters<typeof promptSlackThreadAgent>[0]['prepareProgressiveRelay']>
           | undefined;
-        const progressiveRelayFactory = options.prepareProgressiveRelay ??
-          (agentViewPresentation
-            ? (input: Parameters<NonNullable<RunTurnOptions['prepareProgressiveRelay']>>[0]) =>
-                agentViewPresentation.prepareReceipt(input)
-            : undefined);
         if (
           progressiveRelayFactory &&
           options.runId &&
-          runtimePlanDecision
+          frozenProgressiveEligibility
         ) {
-          const frozenEligibility = decideProgressiveEligibility({
-            runtimePlan: runtimePlanDecision.runtimePlan,
-            memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
-            recoveryRequired: false,
-            concurrentAttributionProven: options.progressiveAttributionProven === true,
-            replacementCapable: options.beforeDelivery !== undefined,
-          });
           prepareProgressiveRelay = ({ instanceId, receipt }) =>
             progressiveRelayFactory({
               runId: options.runId!,
               runFencingToken: options.runFencingToken ?? 0,
               instanceId,
               receipt,
-              eligibility: frozenEligibility,
+              eligibility: frozenProgressiveEligibility,
             });
         }
         agentResult = await (options.agentPrompt ?? promptSlackThreadAgent)({

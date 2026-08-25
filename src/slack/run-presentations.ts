@@ -13,6 +13,7 @@ export const DEFAULT_SLACK_APPEND_BUDGET = {
 
 export type SlackProgressiveEligibilityReason =
   | 'safe_early_release'
+  | 'operations_disabled'
   | 'memory'
   | 'sandbox'
   | 'recovery'

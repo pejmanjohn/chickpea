@@ -9,6 +9,7 @@ import {
   type ProgressiveTextChunk,
 } from '../src/slack/progressive-relay.ts';
 import { decideProgressiveEligibility } from '../src/slack/progressive-eligibility.ts';
+import { slackProgressiveStreamingEnabled } from '../src/slack/progressive-ops-flag.ts';
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 
 function event(
@@ -242,6 +243,7 @@ test('progressive eligibility closes every replacement and external-effect path'
   const decide = (overrides: Partial<Parameters<typeof decideProgressiveEligibility>[0]> = {}) =>
     decideProgressiveEligibility({
       runtimePlan: basePlan,
+      operationsEnabled: true,
       memorySelected: false,
       recoveryRequired: false,
       concurrentAttributionProven: true,
@@ -250,6 +252,9 @@ test('progressive eligibility closes every replacement and external-effect path'
     });
 
   assert.deepEqual(decide(), { allowed: true, reason: 'safe_early_release' });
+  assert.deepEqual(decide({ operationsEnabled: false }), {
+    allowed: false, reason: 'operations_disabled',
+  });
   assert.deepEqual(decide({ memorySelected: true }), { allowed: false, reason: 'memory' });
   assert.deepEqual(decide({ recoveryRequired: true }), {
     allowed: false, reason: 'recovery',
@@ -260,6 +265,13 @@ test('progressive eligibility closes every replacement and external-effect path'
   assert.deepEqual(decide({ replacementCapable: true }), {
     allowed: false, reason: 'other',
   });
+  assert.deepEqual(decideProgressiveEligibility({
+    operationsEnabled: true,
+    memorySelected: false,
+    recoveryRequired: false,
+    concurrentAttributionProven: true,
+    replacementCapable: false,
+  }), { allowed: false, reason: 'other' });
   assert.deepEqual(decide({
     runtimePlan: { ...basePlan, sandbox: { mode: 'cloudflare' } },
   }), { allowed: false, reason: 'sandbox' });
@@ -276,4 +288,29 @@ test('progressive eligibility closes every replacement and external-effect path'
   ]) {
     assert.deepEqual(decide({ runtimePlan }), { allowed: false, reason: 'effect_capable' });
   }
+});
+
+test('the deployment-only progressive gate defaults on and recognizes explicit false values', () => {
+  assert.equal(slackProgressiveStreamingEnabled(undefined, {}), true);
+  for (const raw of ['false', 'FALSE', ' 0 ', 'off', 'NO']) {
+    assert.equal(
+      slackProgressiveStreamingEnabled(undefined, { SLACK_TAG_PROGRESSIVE_STREAMING: raw }),
+      false,
+      raw,
+    );
+  }
+  for (const raw of ['', 'true', '1', 'on', 'yes', 'unexpected']) {
+    assert.equal(
+      slackProgressiveStreamingEnabled(undefined, { SLACK_TAG_PROGRESSIVE_STREAMING: raw }),
+      true,
+      raw,
+    );
+  }
+  assert.equal(
+    slackProgressiveStreamingEnabled(
+      { SLACK_TAG_PROGRESSIVE_STREAMING: 'off' },
+      { SLACK_TAG_PROGRESSIVE_STREAMING: 'true' },
+    ),
+    false,
+  );
 });

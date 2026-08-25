@@ -101,6 +101,27 @@ export class SlackAgentViewPresentation {
 
   constructor(private readonly options: AgentViewPresentationOptions) {}
 
+  /** Freeze once before prompt persistence; retries reuse the stored decision. */
+  async freezeProgressiveEligibility(
+    candidate: ProgressiveEligibilityDecision,
+  ): Promise<ProgressiveEligibilityDecision> {
+    let presentation = await this.requirePresentation();
+    presentation = await this.advanceFenceIfRequired(presentation);
+    if (presentation.progressiveEligibility.status === 'pending') {
+      presentation = await this.transition(presentation, {
+        kind: 'freeze_progressive_eligibility',
+        eligibility: candidate,
+      });
+    }
+    if (presentation.progressiveEligibility.status !== 'frozen') {
+      throw new Error('Slack progressive eligibility did not freeze.');
+    }
+    return {
+      allowed: presentation.progressiveEligibility.allowed,
+      reason: presentation.progressiveEligibility.reason,
+    };
+  }
+
   async setTitle(candidate: string): Promise<void> {
     let presentation = await this.requirePresentation();
     const title = deriveSlackThreadTitle(candidate, presentation.plan?.tasks[0]?.title);
@@ -147,32 +168,21 @@ export class SlackAgentViewPresentation {
       return undefined;
     }
     presentation = await this.advanceFenceIfRequired(presentation);
-    const allowed = input.eligibility.allowed && presentationAllowsProgressive(presentation);
-    const decision = allowed
-      ? input.eligibility
-      : {
-          allowed: false,
-          reason: input.eligibility.allowed ? ('other' as const) : input.eligibility.reason,
-        };
+    const frozenEligibility = presentation.progressiveEligibility;
+    if (frozenEligibility.status !== 'frozen' ||
+        frozenEligibility.allowed !== input.eligibility.allowed ||
+        frozenEligibility.reason !== input.eligibility.reason) {
+      return undefined;
+    }
+    const allowed = frozenEligibility.allowed && presentationAllowsProgressive(presentation);
     if (!allowed) {
-      this.degradedReason = input.eligibility.allowed
+      this.degradedReason = input.eligibility.allowed ||
+        input.eligibility.reason === 'operations_disabled'
         ? 'runtime_gate_disabled'
         : input.eligibility.reason === 'effect_capable'
           ? 'effect_capable'
           : 'policy_ineligible';
     }
-    if (presentation.progressiveEligibility.status === 'pending') {
-      presentation = await this.transition(presentation, {
-        kind: 'freeze_progressive_eligibility',
-        eligibility: decision,
-      });
-    } else if (
-      presentation.progressiveEligibility.allowed !== decision.allowed ||
-      presentation.progressiveEligibility.reason !== decision.reason
-    ) {
-      return undefined;
-    }
-
     if (presentation.plan && presentationUsesNativeTasks(presentation)) {
       presentation = await this.startNativePlan(
         presentation,

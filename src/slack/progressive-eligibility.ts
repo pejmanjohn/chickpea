@@ -3,6 +3,7 @@ import type { SlackProgressiveEligibilityReason } from './run-presentations.ts';
 
 export interface ProgressiveEligibilityInput {
   runtimePlan?: RuntimePlanV2;
+  operationsEnabled: boolean;
   memorySelected: boolean;
   recoveryRequired: boolean;
   concurrentAttributionProven: boolean;
@@ -19,6 +20,9 @@ export interface ProgressiveEligibilityDecision {
 export function decideProgressiveEligibility(
   input: ProgressiveEligibilityInput,
 ): ProgressiveEligibilityDecision {
+  if (!input.operationsEnabled) {
+    return { allowed: false, reason: 'operations_disabled' };
+  }
   if (input.recoveryRequired) return { allowed: false, reason: 'recovery' };
   if (input.memorySelected) return { allowed: false, reason: 'memory' };
   if (input.replacementCapable) return { allowed: false, reason: 'other' };
