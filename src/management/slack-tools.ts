@@ -2,6 +2,7 @@ import {
   type DeliveredMessage,
   useDelivery,
   useInstruction,
+  usePersistentState,
   useTool,
 } from '@flue/runtime';
 
@@ -68,6 +69,54 @@ export interface SlackManagementSignal {
 
 export type PlatformEnvResolver = () => Promise<PlatformEnv | undefined>;
 
+const SLACK_MANAGEMENT_TURN_GUARD_STATE = 'slack-management-turn-guard';
+
+const GUARDED_WRITE_TOOLS = new Set<WorkspaceManagementToolName>([
+  'apply_workspace_changes',
+  'confirm_workspace_change',
+  'undo_workspace_change',
+]);
+
+export interface SlackManagementConfirmationFailure {
+  code: string;
+  proposalId: string;
+}
+
+export interface SlackManagementTurnGuardState {
+  turnJobId: string;
+  confirmationFailure?: SlackManagementConfirmationFailure | undefined;
+}
+
+export interface SlackManagementTurnGuard {
+  confirmationFailure(): SlackManagementConfirmationFailure | undefined;
+  recordConfirmationFailure(failure: SlackManagementConfirmationFailure): void;
+}
+
+export function createSlackManagementTurnGuard(
+  turnJobId: string,
+  persisted: SlackManagementTurnGuardState,
+  persist: (state: SlackManagementTurnGuardState) => void = () => undefined,
+): SlackManagementTurnGuard {
+  let current = persisted.turnJobId === turnJobId
+    ? persisted.confirmationFailure
+    : undefined;
+  return {
+    confirmationFailure: () => current,
+    recordConfirmationFailure(failure) {
+      current = failure;
+      persist({ turnJobId, confirmationFailure: failure });
+    },
+  };
+}
+
+export function useSlackManagementTurnGuard(turnJobId: string): SlackManagementTurnGuard {
+  const [persisted, persist] = usePersistentState<SlackManagementTurnGuardState>(
+    SLACK_MANAGEMENT_TURN_GUARD_STATE,
+    { turnJobId },
+  );
+  return createSlackManagementTurnGuard(turnJobId, persisted, persist);
+}
+
 /** Mount requester-bound management tools only for a verified Slack signal. */
 export function useWorkspaceManagementSlackTools(
   plan: RuntimePlanV2,
@@ -75,6 +124,7 @@ export function useWorkspaceManagementSlackTools(
 ): void {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   if (!signal) return;
+  const turnGuard = useSlackManagementTurnGuard(signal.turnJobId);
 
   useInstruction([
     `This Slack conversation is routed to trusted acting Agent ID ${plan.agentId}.`,
@@ -197,6 +247,7 @@ export function useWorkspaceManagementSlackTools(
         resolvePlatformEnv,
         'apply_workspace_changes',
         { ...data, operations: data.operations as ManagementOperation[] },
+        turnGuard,
       ));
     },
   });
@@ -206,7 +257,7 @@ export function useWorkspaceManagementSlackTools(
     input: confirmWorkspaceChangeValibotSchema,
     async run({ data }) {
       return slackToolOutput(await invokeLiveSlackTool(
-        signal, resolvePlatformEnv, 'confirm_workspace_change', data,
+        signal, resolvePlatformEnv, 'confirm_workspace_change', data, turnGuard,
       ));
     },
   });
@@ -216,7 +267,7 @@ export function useWorkspaceManagementSlackTools(
     input: undoWorkspaceChangeValibotSchema,
     async run({ data }) {
       return slackToolOutput(await invokeLiveSlackTool(
-        signal, resolvePlatformEnv, 'undo_workspace_change', data,
+        signal, resolvePlatformEnv, 'undo_workspace_change', data, turnGuard,
       ));
     },
   });
@@ -289,11 +340,29 @@ export async function invokeSlackWorkspaceManagementTool<
   service: WorkspaceManagementService;
   name: TName;
   args: WorkspaceManagementToolArguments[TName];
+  turnGuard?: SlackManagementTurnGuard | undefined;
 }): Promise<WorkspaceManagementToolResult> {
-  return invokeWorkspaceManagementTool({
+  const blocked = input.turnGuard?.confirmationFailure();
+  if (blocked && GUARDED_WRITE_TOOLS.has(input.name)) {
+    return {
+      ok: false,
+      error: {
+        code: 'fresh_approval_required',
+        message: `Proposal ${blocked.proposalId} failed with ${blocked.code}. No further workspace change can be applied in this turn. Show any fresh proposal and wait for a new requester message before applying it.`,
+      },
+    };
+  }
+  const result = await invokeWorkspaceManagementTool({
     service: input.service,
     resolveContext: () => resolveSlackManagementActor(input.signal, input.identity),
   }, input.name, input.args);
+  if (input.name === 'confirm_workspace_change' && !result.ok && input.turnGuard) {
+    input.turnGuard.recordConfirmationFailure({
+      code: result.error.code,
+      proposalId: (input.args as WorkspaceManagementToolArguments['confirm_workspace_change']).proposalId,
+    });
+  }
+  return result;
 }
 
 async function invokeLiveSlackTool<TName extends WorkspaceManagementToolName>(
@@ -301,6 +370,7 @@ async function invokeLiveSlackTool<TName extends WorkspaceManagementToolName>(
   resolvePlatformEnv: PlatformEnvResolver,
   name: TName,
   args: WorkspaceManagementToolArguments[TName],
+  turnGuard?: SlackManagementTurnGuard,
 ): Promise<WorkspaceManagementToolResult> {
   const env = await resolvePlatformEnv();
   const identity = getIdentityStore(env);
@@ -316,6 +386,7 @@ async function invokeLiveSlackTool<TName extends WorkspaceManagementToolName>(
     service,
     name,
     args,
+    turnGuard,
   });
 }
 

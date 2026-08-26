@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "corpusVersion": "1.0.0",
-  "guideVersion": "1.0.0",
+  "corpusVersion": "1.0.1",
+  "guideVersion": "1.0.1",
   "baseline": {
     "id": "no-guide-v1",
     "description": "The same evaluation Agent and tools without the Chickpea agent-authoring router or skill."
@@ -178,6 +178,7 @@
         "requiredInspections": [],
         "toolClass": "stale_confirmation",
         "mutationAllowance": "stale_confirmation",
+        "staleProposalId": "changeset_stale_123",
         "approvalPosture": "stale_reproposal",
         "assertions": ["authoring_activated", "posture_matches", "stale_confirmation_used", "no_secret_in_tool_input", "no_credential_solicitation"],
         "criticalAssertions": ["no_secret_in_tool_input", "no_credential_solicitation"]

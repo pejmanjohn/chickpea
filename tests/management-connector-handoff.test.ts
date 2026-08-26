@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import {
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+} from '@earendil-works/pi-ai';
+import { init, useModel, useTool } from '@flue/runtime';
+import { start } from '@flue/runtime/node';
+
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { UnknownAgentError } from '../src/config/errors.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import {
+  createSlackManagementTurnGuard,
   invokeSlackWorkspaceManagementTool,
   parseSlackManagementSignal,
+  useSlackManagementTurnGuard,
+  type SlackManagementTurnGuardState,
 } from '../src/management/slack-tools.ts';
 import { safeSlackLoginDestination } from '../src/auth/setup-handoff.ts';
 import type { ManagementActorContext, ManagementOperation } from '../src/management/types.ts';
@@ -29,6 +40,85 @@ test('connector setup handoff resolves the current Slack Agent and opens its con
     mcpServers: [],
     apiConnections: [],
     repositories: [],
+  });
+  const personalDrive = await f.config.putConnectionAccount({
+    id: 'connection_personal_drive',
+    workspaceId: f.admin.binding.slackTeamId,
+    ownerKind: 'member',
+    ownerMembershipId: f.admin.membership.id,
+    createdByMembershipId: f.admin.membership.id,
+    providerId: 'google-drive',
+    label: 'Personal Google Drive',
+    purpose: 'Search support files',
+    policy: {
+      kind: 'managed',
+      adapterId: 'composio',
+      toolkit: 'googledrive',
+      principalRef: 'principal_personal_drive',
+      accountRef: 'account_personal_drive',
+      allowedCapabilities: ['drive.files.search'],
+    },
+    secretRefId: 'secret_personal_drive',
+    lifecycle: 'ready',
+  });
+  await f.config.putAgentConnectionBinding({
+    agentId: agent.id,
+    connectionAccountId: personalDrive.id,
+    providerId: personalDrive.providerId,
+    allowedCapabilities: ['drive.files.search'],
+    enabled: true,
+  });
+  const legacyPersonalCalendar = await f.config.putConnectionAccount({
+    id: 'connection_personal_calendar_legacy',
+    workspaceId: f.admin.binding.slackTeamId,
+    ownerKind: 'member',
+    ownerMembershipId: f.admin.membership.id,
+    createdByMembershipId: f.admin.membership.id,
+    providerId: 'google-calendar',
+    label: 'Legacy personal Google Calendar',
+    policy: {
+      kind: 'managed',
+      adapterId: 'composio',
+      toolkit: 'googlecalendar',
+      principalRef: 'principal_personal_calendar',
+      accountRef: 'account_personal_calendar',
+      allowedCapabilities: ['calendar.events.list'],
+    },
+    secretRefId: 'secret_personal_calendar',
+    lifecycle: 'ready',
+  });
+  await f.config.putAgentConnectionBinding({
+    agentId: agent.id,
+    connectionAccountId: legacyPersonalCalendar.id,
+    providerId: legacyPersonalCalendar.providerId,
+    allowedCapabilities: [],
+    enabled: true,
+  });
+  const otherMembersGmail = await f.config.putConnectionAccount({
+    id: 'connection_other_members_gmail',
+    workspaceId: f.admin.binding.slackTeamId,
+    ownerKind: 'member',
+    ownerMembershipId: f.owner.membership.id,
+    createdByMembershipId: f.owner.membership.id,
+    providerId: 'gmail',
+    label: 'Other member Gmail',
+    policy: {
+      kind: 'managed',
+      adapterId: 'composio',
+      toolkit: 'gmail',
+      principalRef: 'principal_other_gmail',
+      accountRef: 'account_other_gmail',
+      allowedCapabilities: ['gmail.messages.search'],
+    },
+    secretRefId: 'secret_other_gmail',
+    lifecycle: 'ready',
+  });
+  await f.config.putAgentConnectionBinding({
+    agentId: agent.id,
+    connectionAccountId: otherMembersGmail.id,
+    providerId: otherMembersGmail.providerId,
+    allowedCapabilities: [],
+    enabled: true,
   });
   const context: ManagementActorContext = {
     userId: f.admin.user.id,
@@ -72,6 +162,85 @@ test('connector setup handoff resolves the current Slack Agent and opens its con
       connectors: Array<{ id: string; name: string; description: string }>;
     } }).result.connectors.some(({ id, name, description }) =>
       id === 'gmail' && name === 'Gmail' && description.length > 0));
+    const snapshot = (inspected as { ok: true; result: {
+      effectiveRevision: string;
+      agents: Array<{ id: string; connections?: Array<{
+        id: string;
+        label: string;
+        ownerKind: string;
+        lifecycle: string;
+        enabled: boolean;
+        allowedCapabilities: string[];
+      }> }>;
+    } }).result;
+    assert.deepEqual(snapshot.agents.find(({ id }) => id === agent.id)?.connections, [
+      {
+        id: legacyPersonalCalendar.id,
+        providerId: legacyPersonalCalendar.providerId,
+        label: legacyPersonalCalendar.label,
+        ownerKind: 'member',
+        lifecycle: 'ready',
+        enabled: true,
+        allowedCapabilities: [],
+      },
+      {
+        id: personalDrive.id,
+        providerId: personalDrive.providerId,
+        label: personalDrive.label,
+        purpose: personalDrive.purpose,
+        ownerKind: 'member',
+        lifecycle: 'ready',
+        enabled: true,
+        allowedCapabilities: ['drive.files.search'],
+      },
+    ]);
+    assert.doesNotMatch(JSON.stringify(snapshot), /Other member Gmail|connection_other_members_gmail/);
+
+    const refreshedDrive = await f.config.putConnectionAccount({
+      ...personalDrive,
+      label: 'Personal Google Drive needs attention',
+      lifecycle: 'needs_attention',
+    }, personalDrive.revision);
+    const reinspection = await invokeWorkspaceManagementTool({
+      service: f.service,
+      resolveContext: async () => context,
+    }, 'inspect_workspace', {});
+    assert.equal(reinspection.ok, true);
+    const refreshedSnapshot = (reinspection as { ok: true; result: {
+      effectiveRevision: string;
+      agents: Array<{ id: string; connections?: Array<{
+        id: string;
+        lifecycle: string;
+      }> }>;
+    } }).result;
+    assert.notEqual(refreshedSnapshot.effectiveRevision, snapshot.effectiveRevision);
+    assert.equal(
+      refreshedSnapshot.agents.find(({ id }) => id === agent.id)?.connections
+        ?.find(({ id }) => id === refreshedDrive.id)?.lifecycle,
+      'needs_attention',
+    );
+    await f.config.putAgentConnectionBinding({
+      agentId: agent.id,
+      connectionAccountId: refreshedDrive.id,
+      providerId: refreshedDrive.providerId,
+      allowedCapabilities: ['drive.files.search'],
+      enabled: false,
+    });
+    const bindingReinspection = await invokeWorkspaceManagementTool({
+      service: f.service,
+      resolveContext: async () => context,
+    }, 'inspect_workspace', {});
+    assert.equal(bindingReinspection.ok, true);
+    const bindingSnapshot = (bindingReinspection as { ok: true; result: {
+      effectiveRevision: string;
+      agents: Array<{ id: string; connections?: Array<{ id: string; enabled: boolean }> }>;
+    } }).result;
+    assert.notEqual(bindingSnapshot.effectiveRevision, refreshedSnapshot.effectiveRevision);
+    assert.equal(
+      bindingSnapshot.agents.find(({ id }) => id === agent.id)?.connections
+        ?.find(({ id }) => id === refreshedDrive.id)?.enabled,
+      false,
+    );
 
     const teamOwner = await invokeWorkspaceManagementTool({
       service: f.service,
@@ -320,6 +489,271 @@ test('Slack management lets a member create an Agent and edit it through its spe
     f.close();
   }
 });
+
+test('a stale Slack confirmation blocks same-turn writes until the requester reviews again', async () => {
+  const f = await createManagementAdapterFixture('slack-stale-turn-guard');
+  const agent = await f.config.createAgent({
+    id: 'agent_stale_guard',
+    name: 'Stale guard',
+    description: 'Original description.',
+    creatorMembershipId: f.admin.membership.id,
+    editPolicy: 'creator_and_admins',
+    lifecycle: 'active',
+    configurationGeneration: 1,
+    instructions: 'Stay safe.',
+    enabled: true,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  });
+  const signal = {
+    agentId: agent.id,
+    workspaceId: f.admin.binding.slackTeamId,
+    channelId: 'C_STALE_GUARD',
+    threadTs: '400.1',
+    slackUserId: f.admin.user.slackUserId,
+    eventId: 'Ev_STALE_GUARD',
+    messageTs: '400.1',
+    turnJobId: 'turn_STALE_GUARD',
+  };
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    actingAgentId: agent.id,
+    origin: {
+      kind: 'slack',
+      workspaceId: signal.workspaceId,
+      channelId: signal.channelId,
+      threadTs: signal.threadTs,
+      agentId: signal.agentId,
+    },
+  };
+  let persistedGuard: SlackManagementTurnGuardState = { turnJobId: signal.turnJobId };
+  const renderGuard = (turnJobId: string) => createSlackManagementTurnGuard(
+    turnJobId,
+    persistedGuard,
+    (next) => { persistedGuard = next; },
+  );
+  try {
+    const proposed = await f.service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('stale-description-proposal'),
+      operations: [{
+        itemId: 'description',
+        kind: 'update_agent',
+        agentId: agent.id,
+        expectedRevision: agent.revision,
+        patch: { description: 'Requested description.' },
+      }],
+    });
+    await f.config.updateAgent(agent.id, { description: 'Interleaving description.' }, agent.revision);
+
+    const stale = await invokeSlackWorkspaceManagementTool({
+      signal,
+      identity: f.identity,
+      service: f.service,
+      turnGuard: renderGuard(signal.turnJobId),
+      name: 'confirm_workspace_change',
+      args: { proposalId: proposed.proposalId },
+    });
+    assert.deepEqual(stale, {
+      ok: false,
+      error: {
+        code: 'revision_conflict',
+        message: 'The target revision changed.',
+      },
+    });
+
+    const bypass = await invokeSlackWorkspaceManagementTool({
+      signal,
+      identity: f.identity,
+      service: f.service,
+      turnGuard: renderGuard(signal.turnJobId),
+      name: 'apply_workspace_changes',
+      args: {
+        idempotencyKey: 'same-turn-bypass',
+        operations: [{
+          itemId: 'description-bypass',
+          kind: 'update_agent',
+          agentId: agent.id,
+          expectedRevision: agent.revision + 1,
+          patch: { description: 'Requested description.' },
+        }],
+      },
+    });
+    assert.equal(bypass.ok, false);
+    assert.equal((bypass as { ok: false; error: { code: string } }).error.code, 'fresh_approval_required');
+    assert.equal((await f.config.getAgent(agent.id)).description, 'Interleaving description.');
+
+    const nextTurn = await invokeSlackWorkspaceManagementTool({
+      signal: { ...signal, eventId: 'Ev_STALE_GUARD_NEXT', messageTs: '400.2', turnJobId: 'turn_STALE_GUARD_NEXT' },
+      identity: f.identity,
+      service: f.service,
+      turnGuard: renderGuard('turn_STALE_GUARD_NEXT'),
+      name: 'apply_workspace_changes',
+      args: {
+        idempotencyKey: 'next-turn-edit',
+        operations: [{
+          itemId: 'description-next-turn',
+          kind: 'update_agent',
+          agentId: agent.id,
+          expectedRevision: agent.revision + 1,
+          patch: { description: 'Requester approved next turn.' },
+        }],
+      },
+    });
+    assert.equal(nextTurn.ok, true);
+  } finally {
+    f.close();
+  }
+});
+
+test('the Flue render lifecycle preserves the stale-confirmation barrier across model calls',
+  { timeout: 15_000 },
+  async () => {
+    const f = await createManagementAdapterFixture('slack-stale-flue-lifecycle');
+    const agent = await f.config.createAgent({
+      id: 'agent_stale_flue',
+      name: 'Stale Flue guard',
+      description: 'Original description.',
+      creatorMembershipId: f.admin.membership.id,
+      editPolicy: 'creator_and_admins',
+      lifecycle: 'active',
+      configurationGeneration: 1,
+      instructions: 'Stay safe.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const signal = {
+      agentId: agent.id,
+      workspaceId: f.admin.binding.slackTeamId,
+      channelId: 'C_STALE_FLUE',
+      threadTs: '410.1',
+      slackUserId: f.admin.user.slackUserId,
+      eventId: 'Ev_STALE_FLUE',
+      messageTs: '410.1',
+      turnJobId: 'turn_STALE_FLUE',
+    };
+    const context: ManagementActorContext = {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      actingAgentId: agent.id,
+      origin: {
+        kind: 'slack',
+        workspaceId: signal.workspaceId,
+        channelId: signal.channelId,
+        threadTs: signal.threadTs,
+        agentId: signal.agentId,
+      },
+    };
+    const proposed = await f.service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('stale-flue-description-proposal'),
+      operations: [{
+        itemId: 'description',
+        kind: 'update_agent',
+        agentId: agent.id,
+        expectedRevision: agent.revision,
+        patch: { description: 'Requested description.' },
+      }],
+    });
+    await f.config.updateAgent(
+      agent.id,
+      { description: 'Interleaving description.' },
+      agent.revision,
+    );
+
+    const model = 'faux/management-turn-guard';
+    const results: Array<{ ok: boolean; error?: { code: string } }> = [];
+    function TurnGuardProbe() {
+      useModel(model);
+      const turnGuard = useSlackManagementTurnGuard(signal.turnJobId);
+      useTool({
+        name: 'confirm_stale_proposal',
+        description: 'Confirm the stale proposal.',
+        async run() {
+          const result = await invokeSlackWorkspaceManagementTool({
+            signal,
+            identity: f.identity,
+            service: f.service,
+            turnGuard,
+            name: 'confirm_workspace_change',
+            args: { proposalId: proposed.proposalId },
+          });
+          results.push(result);
+          return JSON.stringify(result);
+        },
+      });
+      useTool({
+        name: 'attempt_unapproved_write',
+        description: 'Attempt a same-turn unapproved write.',
+        async run() {
+          const result = await invokeSlackWorkspaceManagementTool({
+            signal,
+            identity: f.identity,
+            service: f.service,
+            turnGuard,
+            name: 'apply_workspace_changes',
+            args: {
+              idempotencyKey: 'stale-flue-bypass',
+              operations: [{
+                itemId: 'description-bypass',
+                kind: 'update_agent',
+                agentId: agent.id,
+                expectedRevision: agent.revision + 1,
+                patch: { description: 'Requested description.' },
+              }],
+            },
+          });
+          results.push(result);
+          return JSON.stringify(result);
+        },
+      });
+      return 'Run the scripted guard lifecycle.';
+    }
+
+    const faux = fauxProvider({
+      models: [{ id: 'management-turn-guard' }],
+      tokensPerSecond: 1_000,
+    });
+    const flue = await start({
+      agents: [{ agent: TurnGuardProbe, name: 'management-turn-guard-probe' }],
+      providers: [faux.provider],
+    });
+    try {
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall('confirm_stale_proposal', {})], {
+          stopReason: 'toolUse',
+        }),
+        fauxAssistantMessage([fauxToolCall('attempt_unapproved_write', {})], {
+          stopReason: 'toolUse',
+        }),
+        fauxAssistantMessage('The guarded lifecycle is complete.'),
+      ]);
+      const handle = init(TurnGuardProbe, { id: 'management-turn-guard-instance' });
+      const receipt = await handle.dispatch('Exercise the stale proposal guard.');
+      await handle.read(receipt);
+
+      assert.equal(results.length, 2);
+      assert.equal(results[0]?.ok, false);
+      assert.equal(results[0]?.error?.code, 'revision_conflict');
+      assert.equal(results[1]?.ok, false);
+      assert.equal(results[1]?.error?.code, 'fresh_approval_required');
+      assert.equal(
+        (await f.config.getAgent(agent.id)).description,
+        'Interleaving description.',
+      );
+    } finally {
+      await flue.stop();
+      f.close();
+    }
+  });
 
 test('activated user Agents fully self-manage while cross-Agent authority stays with Chickpea', async () => {
   const f = await createManagementAdapterFixture('activated-agent-authority');

@@ -1,4 +1,5 @@
 import type { ManagementOperation } from './types.ts';
+import { AGENT_AUTHORING_GUIDE_VERSION } from './agent-authoring/index.ts';
 
 export type ManagementMetricValue = boolean | number | string;
 
@@ -69,7 +70,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'identity', 'instructions', 'skill', 'memory', 'connection', 'repository',
     'schedule', 'model', 'slack_presence', 'reach', 'edit_authority', 'mixed', 'other',
   ]),
-  guideVersion: new Set(['1.0.0']),
+  guideVersion: new Set([AGENT_AUTHORING_GUIDE_VERSION]),
   handoffClass: new Set(['cross_agent', 'workspace_authority', 'none']),
   outcome: new Set([
     'admitted', 'applied', 'completed', 'confirmation_required', 'delivered',

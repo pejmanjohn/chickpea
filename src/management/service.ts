@@ -21,11 +21,18 @@ import {
 } from '../config/provider-impact.ts';
 import {
   type AgentChannelGrant,
+  type AgentConnectionBinding,
   type AgentCreateInput,
   type ChannelConfig,
+  type ConnectionAccount,
+  type ConnectionAccountPolicy,
   type CustomAgentConfig,
   type ResolvedAssignment,
 } from '../config/types.ts';
+import {
+  applyConnectionCapabilityCeiling,
+  projectRecoverableConnectionAccounts,
+} from '../connections/runtime.ts';
 import type { IdentityStore, Membership } from '../identity/types.ts';
 import type {
   AgentMemory,
@@ -102,6 +109,7 @@ import {
 } from './types.ts';
 
 const PROPOSAL_TTL_MS = 15 * 60_000;
+const CHANGE_SET_APPLY_LEASE_MS = 30_000;
 const SETUP_TTL_MS = 24 * 60 * 60_000;
 const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
 type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];
@@ -613,6 +621,12 @@ export class WorkspaceManagementService {
     }
     const operations = validateManagementOperations(input.operations);
     assertBaseAgentCreationContract(operations);
+    if (operations.some(({ kind }) => kind === 'request_setup')) {
+      throw new ManagementError(
+        'invalid_request',
+        'Prepare connector or repository setup separately after the reviewed Agent change.',
+      );
+    }
     if (operations.some(({ kind }) => kind === 'create_agent') && operations.length !== 1) {
       throw new ManagementError(
         'base_agent_capabilities_require_setup',
@@ -796,42 +810,66 @@ export class WorkspaceManagementService {
     if (existing.status === 'completed' && existing.result) {
       return emitOperationOutcomes(actor.origin.kind, existing.result);
     }
-    if (existing.status === 'applying') {
-      throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
-    }
     if (managementOperationDigest(existing.operations) !== existing.digest) {
       await this.stores.management.markChangeSetProposalStale(existing.proposalId, this.now());
       throw new ManagementError('proposal_stale', 'The reviewed change set no longer matches its digest.');
     }
-    try {
-      for (const operation of existing.operations) {
-        const handoff = await this.actingAgentOperationHandoff(actor, operation);
-        if (handoff) throw new ChickpeaHandoffRequired(handoff);
-        const policy = classifyManagementOperation(await this.policyFacts(actor, operation));
-        if (!policy.allowed) {
-          throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
-        }
-        await this.preflightProposalItem(actor, operation, existing.proposalId);
+    let proposal = existing;
+    let recovered = false;
+    if (proposal.status === 'applying') {
+      if (this.now() - proposal.updatedAt < CHANGE_SET_APPLY_LEASE_MS) {
+        throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
       }
-      await this.assertRevisionMap(existing.targetRevisions);
-    } catch (error) {
-      await this.stores.management.markChangeSetProposalStale(existing.proposalId, this.now());
-      throw error;
+      proposal = await this.stores.management.reclaimChangeSetProposal({
+        proposalId: proposal.proposalId,
+        organizationId: actor.organizationId,
+        actorUserId: actor.userId,
+        actorMembershipId: actor.membershipId,
+        originKey: managementActorOriginKey(actor),
+        expectedUpdatedAt: proposal.updatedAt,
+        at: this.now(),
+      });
+      recovered = true;
+    } else {
+      try {
+        for (const operation of proposal.operations) {
+          const handoff = await this.actingAgentOperationHandoff(actor, operation);
+          if (handoff) throw new ChickpeaHandoffRequired(handoff);
+          const policy = classifyManagementOperation(await this.policyFacts(actor, operation));
+          if (!policy.allowed) {
+            throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
+          }
+          await this.preflightProposalItem(actor, operation, proposal.proposalId);
+        }
+        await this.assertRevisionMap(proposal.targetRevisions);
+      } catch (error) {
+        if (invalidatesChangeSetProposal(error)) {
+          await this.stores.management.markChangeSetProposalStale(proposal.proposalId, this.now());
+        }
+        throw error;
+      }
+      proposal = await this.stores.management.claimChangeSetProposal({
+        proposalId: proposal.proposalId,
+        organizationId: actor.organizationId,
+        actorUserId: actor.userId,
+        actorMembershipId: actor.membershipId,
+        originKey: managementActorOriginKey(actor),
+        at: this.now(),
+      });
+      if (proposal.status === 'completed' && proposal.result) {
+        return emitOperationOutcomes(actor.origin.kind, proposal.result);
+      }
     }
 
-    const proposal = await this.stores.management.claimChangeSetProposal({
-      proposalId: existing.proposalId,
-      organizationId: actor.organizationId,
-      actorUserId: actor.userId,
-      actorMembershipId: actor.membershipId,
-      originKey: managementActorOriginKey(actor),
-      at: this.now(),
-    });
-    if (proposal.status === 'completed' && proposal.result) {
-      return emitOperationOutcomes(actor.origin.kind, proposal.result);
+    const outcomes: ManagementItemOutcome[] = [...proposal.result?.outcomes ?? []];
+    if (!outcomes.every((outcome, index) =>
+      outcome.itemId === proposal.operations[index]?.itemId)) {
+      await this.stores.management.markChangeSetProposalStale(proposal.proposalId, this.now());
+      throw new ManagementError('proposal_stale', 'The saved confirmation progress is invalid.');
     }
-    const outcomes: ManagementItemOutcome[] = [];
-    for (const operation of proposal.operations) {
+    const progressEffectiveRevision = proposal.result?.effectiveRevision ?? await this.effectiveRevision();
+    for (let index = outcomes.length; index < proposal.operations.length; index += 1) {
+      const operation = proposal.operations[index]!;
       const dependencyFailed = (operation.dependsOn ?? []).some((itemId) =>
         outcomes.find((outcome) => outcome.itemId === itemId)?.disposition !== 'applied');
       if (dependencyFailed) {
@@ -841,37 +879,78 @@ export class WorkspaceManagementService {
           disposition: 'skipped',
           code: 'dependency_not_applied',
         });
-        continue;
-      }
-      try {
-        if (operation.kind === 'request_setup') {
-          const setup = await this.issueSetup(actor, operation);
-          outcomes.push({
-            itemId: operation.itemId,
-            operationKind: operation.kind,
-            disposition: 'setup_required',
-            setupOperationId: setup.record.setupOperationId,
-            setupUrl: setup.url,
-          });
-          continue;
+      } else {
+        let mutation = recovered
+          ? await this.reconcileChangeSetOperation(actor, proposal, operation)
+          : undefined;
+        let recoveryDenied = false;
+        if (recovered && !mutation) {
+          try {
+            await this.assertChangeSetResumeAuthority(actor, operation);
+          } catch (error) {
+            if (outcomes.length === 0) {
+              if (invalidatesChangeSetProposal(error)) {
+                await this.stores.management.markChangeSetProposalStale(
+                  proposal.proposalId,
+                  this.now(),
+                );
+              }
+              throw error;
+            }
+            outcomes.push({
+              itemId: operation.itemId,
+              operationKind: operation.kind,
+              disposition: 'failed',
+              code: isExpectedMutationError(error) ? mutationErrorCode(error) : 'operation_failed',
+            });
+            recoveryDenied = true;
+          }
         }
-        const mutation = await this.executeConfirmed(actor, operation, proposal.proposalId);
-        outcomes.push({
-          itemId: operation.itemId,
-          operationKind: operation.kind,
-          disposition: 'applied',
-          changed: mutation.changed,
-          ...(mutation.handoffUrl ? { handoffUrl: mutation.handoffUrl } : {}),
-        });
-      } catch (error) {
-        if (!isExpectedMutationError(error)) throw error;
-        outcomes.push({
-          itemId: operation.itemId,
-          operationKind: operation.kind,
-          disposition: 'failed',
-          code: mutationErrorCode(error),
-        });
+        if (!recoveryDenied) {
+          try {
+            mutation ??= await this.executeChangeSetOperation(actor, proposal, operation);
+            outcomes.push({
+              itemId: operation.itemId,
+              operationKind: operation.kind,
+              disposition: 'applied',
+              changed: mutation.changed,
+              ...(mutation.handoffUrl ? { handoffUrl: mutation.handoffUrl } : {}),
+            });
+          } catch (error) {
+            const reconciled = await this.reconcileChangeSetOperation(
+              actor,
+              proposal,
+              operation,
+            ).catch(() => undefined);
+            outcomes.push(reconciled
+              ? {
+                  itemId: operation.itemId,
+                  operationKind: operation.kind,
+                  disposition: 'applied',
+                  changed: reconciled.changed,
+                  ...(reconciled.handoffUrl ? { handoffUrl: reconciled.handoffUrl } : {}),
+                }
+              : {
+                  itemId: operation.itemId,
+                  operationKind: operation.kind,
+                  disposition: 'failed',
+                  code: isExpectedMutationError(error) ? mutationErrorCode(error) : 'operation_failed',
+                });
+          }
+        }
       }
+      const progress = await this.resultFor(
+        proposal.proposalId,
+        `confirmation:${proposal.proposalId}`,
+        outcomes,
+        progressEffectiveRevision,
+      );
+      proposal = await this.stores.management.saveChangeSetProposalProgress(
+        proposal.proposalId,
+        withoutSetupCapabilities(progress),
+        proposal.updatedAt,
+        this.now(),
+      );
     }
     const result = await this.resultFor(
       proposal.proposalId,
@@ -882,8 +961,142 @@ export class WorkspaceManagementService {
       proposal.proposalId,
       withoutSetupCapabilities(result),
       this.now(),
+      proposal.updatedAt,
     );
     return emitOperationOutcomes(actor.origin.kind, result);
+  }
+
+  private async executeChangeSetOperation(
+    actor: LiveManagementActor,
+    proposal: ManagementChangeSetProposalRecord,
+    operation: ManagementOperation,
+  ): Promise<ImmediateMutation> {
+    const reconciled = await this.reconcileChangeSetOperation(actor, proposal, operation);
+    if (reconciled) return reconciled;
+    const prepared = changeSetPreparedItem(proposal, operation);
+    if (canExecuteImmediately(operation)) {
+      return this.executeImmediate(actor, proposal.proposalId, operation, prepared);
+    }
+    return this.executeConfirmed(actor, operation, proposal.proposalId);
+  }
+
+  private async reconcileChangeSetOperation(
+    actor: LiveManagementActor,
+    proposal: ManagementChangeSetProposalRecord,
+    operation: ManagementOperation,
+  ): Promise<ImmediateMutation | undefined> {
+    const prepared = changeSetPreparedItem(proposal, operation);
+    const preparedResult = await this.reconcilePrepared(actor, prepared);
+    if (preparedResult) return preparedResult;
+    const changed = await this.reconcileChangeSetConfirmedOperation(actor, operation);
+    if (!changed) return undefined;
+    return {
+      changed,
+      resultingRevisions: Object.fromEntries(changed.map((ref) =>
+        [objectRevisionKey(ref), ref.revision ?? 0])),
+    };
+  }
+
+  private async reconcileChangeSetConfirmedOperation(
+    actor: LiveManagementActor,
+    operation: ManagementOperation,
+  ): Promise<ManagementObjectRef[] | undefined> {
+    if (operation.kind === 'delete_agent') {
+      return await optionalAgent(this.stores.config, operation.agentId)
+        ? undefined
+        : [{ kind: 'agent', id: operation.agentId }];
+    }
+    if (operation.kind === 'archive_agent') {
+      const current = await optionalAgent(this.stores.config, operation.agentId);
+      return current?.lifecycle === 'archived'
+        ? [{ kind: 'agent', id: current.id, revision: current.revision }]
+        : undefined;
+    }
+    if (operation.kind === 'restore_agent') {
+      const current = await optionalAgent(this.stores.config, operation.agentId);
+      const presenceSettled = current?.slackPresence?.desiredState === 'active' &&
+        (current.slackPresence.health === 'healthy' || current.slackPresence.health === 'unpublished');
+      return current && current.lifecycle !== 'archived' && presenceSettled
+        ? [{ kind: 'agent', id: current.id, revision: current.revision }]
+        : undefined;
+    }
+    if (operation.kind === 'grant_agent_channel') {
+      const current = (await this.stores.config.listAgentChannelGrants(
+        operation.workspaceId,
+        operation.channelId,
+      )).find((grant) => grant.agentId === operation.agentId);
+      return current?.status === 'active' && current.createdByMembershipId === actor.membershipId
+        ? mutationForGrant(current).changed
+        : undefined;
+    }
+    if (operation.kind === 'revoke_agent_channel') {
+      const current = (await this.stores.config.listAgentChannelGrants(
+        operation.workspaceId,
+        operation.channelId,
+      )).find((grant) => grant.agentId === operation.agentId);
+      return current ? undefined : [{
+        kind: 'channel_grant',
+        id: grantKey(operation.workspaceId, operation.channelId, operation.agentId),
+        revision: 0,
+      }];
+    }
+    if (operation.kind === 'update_member') {
+      const membership = await this.stores.identity.getMembership(operation.membershipId);
+      return membership && (!operation.role || membership.role === operation.role) &&
+        (!operation.status || membership.status === operation.status)
+        ? [{ kind: 'membership', id: membership.id, revision: membershipRevision(membership) }]
+        : undefined;
+    }
+    if (operation.kind === 'remove_provider_credential') {
+      const source = await this.stores.providerCredentialSource?.(operation.providerId) ?? 'missing';
+      return source === 'missing'
+        ? [{ kind: 'provider', id: operation.providerId, revision: providerRevision(source) }]
+        : undefined;
+    }
+    if (operation.kind === 'delete_routine') {
+      const routine = await this.stores.routines?.getRoutine(operation.routineId);
+      return routine && routine.deletedAt !== null
+        ? [{ kind: 'routine', id: routine.id, revision: routine.version }]
+        : undefined;
+    }
+    return undefined;
+  }
+
+  private async assertChangeSetResumeAuthority(
+    actor: LiveManagementActor,
+    operation: ManagementOperation,
+  ): Promise<void> {
+    const handoff = await this.actingAgentOperationHandoff(actor, operation);
+    if (handoff) throw new ChickpeaHandoffRequired(handoff);
+    if (operation.kind === 'update_member') {
+      if (actor.role !== 'owner') {
+        throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
+      }
+      return;
+    }
+    if (operation.kind === 'remove_provider_credential' ||
+        (operation.kind === 'put_channel' && operation.channel.lifecycle === 'archived')) {
+      if (actor.role === 'member') {
+        throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
+      }
+      return;
+    }
+    let agentId: string | undefined;
+    if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
+        operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
+        operation.kind === 'update_agent_memory') {
+      agentId = operation.agentId;
+    } else if (operation.kind === 'grant_agent_channel' ||
+        operation.kind === 'revoke_agent_channel' || operation.kind === 'save_routine') {
+      agentId = operation.agentId;
+    } else if (operation.kind === 'control_routine' || operation.kind === 'delete_routine') {
+      agentId = (await this.stores.config.getAgentScheduleReference(operation.routineId))?.agentId;
+    }
+    if (!agentId) return;
+    const agent = await optionalAgent(this.stores.config, agentId);
+    if (!agent || !this.actorCanEditAgent(actor, agent)) {
+      throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
+    }
   }
 
   private async resumeConfirmedRequest(
@@ -1428,10 +1641,11 @@ export class WorkspaceManagementService {
 
   private async snapshot(actor: LiveManagementActor): Promise<ManagementWorkspaceSnapshot> {
     const userAgentScoped = isUserAgentScoped(actor);
-    const [allAgents, channels, allGrants, providerSources] = await Promise.all([
+    const [allAgents, channels, allGrants, organization, providerSources] = await Promise.all([
       this.stores.config.listUserAgents(),
       this.stores.config.listChannels(),
       this.stores.config.listAgentChannelGrants(),
+      this.stores.identity.getOrganization(),
       actor.role === 'member' || userAgentScoped
         ? Promise.resolve([] as Array<readonly [ManagedProviderId, ManagedProviderSource]>)
         : Promise.all(MANAGED_PROVIDER_IDS.map(async (id) => [
@@ -1449,6 +1663,53 @@ export class WorkspaceManagementService {
     const agents = userAgentScoped
       ? editable.filter(({ id }) => id === actor.actingAgentId)
       : editable;
+    const workspaceIds = actor.origin.kind === 'slack'
+      ? [actor.origin.workspaceId]
+      : organization?.id === actor.organizationId && organization.slackTeamId
+        ? [organization.slackTeamId]
+        : [];
+    const [allConnectionAccounts, agentBindingEntries] = await Promise.all([
+      Promise.all(workspaceIds.map((workspaceId) =>
+        this.stores.config.listConnectionAccounts(workspaceId))).then((groups) => groups.flat()),
+      Promise.all(agents.map(async (agent) => [
+        agent.id,
+        await this.stores.config.listAgentConnectionBindings(agent.id),
+      ] as const)),
+    ]);
+    const visibleConnectionAccounts = new Map(allConnectionAccounts
+      .filter((account): account is ConnectionAccount & {
+        lifecycle: Exclude<ConnectionAccount['lifecycle'], 'revoked'>;
+      } => account.lifecycle !== 'revoked' && (
+        account.ownerKind === 'team' || account.ownerMembershipId === actor.membershipId
+      ))
+      .map((account) => [account.id, account]));
+    const connectionsByAgent = new Map(agentBindingEntries.map(([agentId, bindings]) => {
+      const recoverable = projectRecoverableConnectionAccounts(
+        allConnectionAccounts,
+        bindings,
+        actor.membershipId,
+      );
+      const projectedBindingIds = new Set(recoverable.map(({ binding }) =>
+        binding.connectionAccountId));
+      const projected = new Map(recoverable.flatMap(({ account, binding, policy }) =>
+        account.lifecycle === 'revoked' ? [] : [[
+          account.id,
+          managementConnectionProjection(account, binding, policy),
+        ] as const]));
+      for (const binding of bindings) {
+        if (projectedBindingIds.has(binding.connectionAccountId)) continue;
+        const account = visibleConnectionAccounts.get(binding.connectionAccountId);
+        if (!account || account.providerId !== binding.providerId ||
+            binding.enabled && account.lifecycle !== 'pending') continue;
+        projected.set(account.id, managementConnectionProjection(
+          account,
+          binding,
+          applyConnectionCapabilityCeiling(account.policy, binding),
+        ));
+      }
+      return [agentId, [...projected.values()].sort((left, right) =>
+        left.id.localeCompare(right.id))] as const;
+    }));
     const visibleAgentIds = new Set(agents.map(({ id }) => id));
     const grants = allGrants.filter((grant) => visibleAgentIds.has(grant.agentId));
     const grantsByChannel = new Map<string, Array<{ agentId: string; status: typeof grants[number]['status'] }>>();
@@ -1476,6 +1737,16 @@ export class WorkspaceManagementService {
         id: grantKey(grant.workspaceId, grant.channelId, grant.agentId),
         revision: grant.revision,
       })),
+      ...[...connectionsByAgent.entries()].flatMap(([agentId, connections]) =>
+        connections.flatMap((connection) => [{
+          kind: 'connection' as const,
+          id: `${agentId}:${connection.id}:account`,
+          revision: connection.accountRevision,
+        }, {
+          kind: 'connection' as const,
+          id: `${agentId}:${connection.bindingAccountId}:binding`,
+          revision: connection.bindingRevision,
+        }])),
     ];
     const team = actor.role === 'owner' && !userAgentScoped
       ? await this.teamSnapshot(actor.organizationId)
@@ -1549,6 +1820,14 @@ export class WorkspaceManagementService {
         skills,
         mcpServers,
         apiConnections,
+        ...((connectionsByAgent.get(id)?.length ?? 0) > 0
+          ? { connections: connectionsByAgent.get(id)!.map(({
+              accountRevision: _accountRevision,
+              bindingAccountId: _bindingAccountId,
+              bindingRevision: _bindingRevision,
+              ...connection
+            }) => connection) }
+          : {}),
         repositories,
       })),
       channels: visibleChannels.map((channel) => ({
@@ -1578,7 +1857,11 @@ export class WorkspaceManagementService {
             selfManagement: {
               availableModels,
               routineSchedulingAvailable,
-              capabilityHealth: selfCapabilityHealth(selfAgent, grants),
+              capabilityHealth: selfCapabilityHealth(
+                selfAgent,
+                grants,
+                connectionsByAgent.get(selfAgent.id) ?? [],
+              ),
             },
           }
         : {}),
@@ -1704,8 +1987,9 @@ export class WorkspaceManagementService {
     operationId: string,
     idempotencyKey: string,
     outcomes: ManagementItemOutcome[],
+    knownEffectiveRevision?: string,
   ): Promise<ManagementApplyResult> {
-    const effectiveRevision = await this.effectiveRevision();
+    const effectiveRevision = knownEffectiveRevision ?? await this.effectiveRevision();
     const hasConfirmation = outcomes.some(({ disposition }) => disposition === 'confirmation_required');
     const hasFailure = outcomes.some(({ disposition }) =>
       disposition === 'failed' || disposition === 'skipped' || disposition === 'chickpea_handoff');
@@ -2239,6 +2523,11 @@ export class WorkspaceManagementService {
         return mutationForChannel(channel, prepared.inverse);
       }
       case 'grant_agent_channel': {
+        await this.stores.assertAgentChannelMembership?.({
+          actor,
+          workspaceId: operation.workspaceId,
+          channelId: operation.channelId,
+        });
         const current = (await this.stores.config.listAgentChannelGrants(
           operation.workspaceId,
           operation.channelId,
@@ -3103,6 +3392,7 @@ function uniqueModelChoices(
 function selfCapabilityHealth(
   agent: CustomAgentConfig,
   grants: AgentChannelGrant[],
+  reusableConnections: NonNullable<ManagementWorkspaceSnapshot['agents'][number]['connections']>,
 ): NonNullable<ManagementWorkspaceSnapshot['selfManagement']>['capabilityHealth'] {
   const mcpConnections = { ready: 0, pending: 0, failed: 0 };
   for (const connection of agent.mcpServers) mcpConnections[connection.lifecycleStatus] += 1;
@@ -3113,6 +3403,15 @@ function selfCapabilityHealth(
   return {
     mcpConnections,
     apiConnections,
+    reusableConnections: {
+      ready: reusableConnections.filter(({ enabled, lifecycle }) =>
+        enabled && lifecycle === 'ready').length,
+      pending: reusableConnections.filter(({ enabled, lifecycle }) =>
+        enabled && lifecycle === 'pending').length,
+      needsAttention: reusableConnections.filter(({ enabled, lifecycle }) =>
+        enabled && lifecycle === 'needs_attention').length,
+      disabled: reusableConnections.filter(({ enabled }) => !enabled).length,
+    },
     repositories: {
       enabled: agent.repositories.filter(({ enabled }) => enabled).length,
       setupRequired: agent.repositories.filter(({ enabled, installationId }) =>
@@ -3123,6 +3422,48 @@ function selfCapabilityHealth(
       pending: grants.filter(({ status }) => status === 'pending').length,
       needsAttention: grants.filter(({ status }) => status === 'needs_attention').length,
     },
+  };
+}
+
+function managementConnectionProjection(
+  account: ConnectionAccount,
+  binding: AgentConnectionBinding,
+  policy: ConnectionAccountPolicy,
+): NonNullable<ManagementWorkspaceSnapshot['agents'][number]['connections']>[number] & {
+  accountRevision: number;
+  bindingAccountId: string;
+  bindingRevision: number;
+} {
+  if (account.lifecycle === 'revoked') {
+    throw new Error('Revoked connections cannot enter a management snapshot.');
+  }
+  const allowedCapabilities = policy.kind === 'managed'
+    ? policy.allowedCapabilities
+    : policy.kind === 'mcp'
+      ? policy.allowedTools
+      : policy.authMode === 'oauth'
+        ? policy.oauthScopes ?? []
+        : policy.allowedMethods;
+  return {
+    id: account.id,
+    providerId: account.providerId,
+    label: account.label,
+    ...(account.purpose ? { purpose: account.purpose } : {}),
+    ownerKind: account.ownerKind,
+    lifecycle: account.lifecycle,
+    enabled: binding.enabled,
+    allowedCapabilities,
+    accountRevision: account.revision,
+    bindingAccountId: binding.connectionAccountId,
+    bindingRevision: Number.parseInt(createHash('sha256')
+      .update(canonicalJson({
+        providerId: binding.providerId,
+        allowedCapabilities: [...binding.allowedCapabilities].sort(),
+        resourceConstraints: binding.resourceConstraints,
+        enabled: binding.enabled,
+      }))
+      .digest('hex')
+      .slice(0, 12), 16),
   };
 }
 
@@ -3370,6 +3711,34 @@ function boundedChangeSetPreview(preview: ManagementChangeSetPreview): Managemen
     );
   }
   return preview;
+}
+
+function changeSetPreparedItem(
+  proposal: ManagementChangeSetProposalRecord,
+  operation: ManagementOperation,
+): ManagementPreparedItem {
+  const change = proposal.preview.changes.find(({ itemId }) => itemId === operation.itemId);
+  if (!change || change.operationKind !== operation.kind) {
+    throw new ManagementError('proposal_stale', 'The reviewed change preview is unavailable.');
+  }
+  return {
+    itemId: operation.itemId,
+    operation,
+    ...('before' in change ? { before: change.before } : {}),
+    ...('after' in change ? { intendedAfter: change.after } : {}),
+  };
+}
+
+function canExecuteImmediately(operation: ManagementOperation): boolean {
+  return operation.kind === 'create_agent' ||
+    (operation.kind === 'update_agent' && operation.patch.enabled !== false) ||
+    operation.kind === 'put_channel' || operation.kind === 'grant_agent_channel' ||
+    operation.kind === 'revoke_agent_channel' || operation.kind === 'update_agent_memory' ||
+    operation.kind === 'save_routine' || operation.kind === 'control_routine';
+}
+
+function invalidatesChangeSetProposal(error: unknown): boolean {
+  return error instanceof ChickpeaHandoffRequired || error instanceof ManagementError;
 }
 
 function publicChangeSetProposal(

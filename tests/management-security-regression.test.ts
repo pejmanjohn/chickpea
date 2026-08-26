@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
 import { exportWorkspaceRecipe } from '../src/management/recipes.ts';
 import {
   agentAuthoringArtifactClass,
@@ -49,7 +50,7 @@ test('Agent-authoring telemetry keeps only versioned outcome classes', () => {
   const lines: string[] = [];
   emitManagementMetric('agent_authoring.outcome', {
     surface: 'slack',
-    guideVersion: '1.0.0',
+    guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
     posture: 'commit',
     artifactClass: 'skill',
     proposalOutcome: 'created',
@@ -61,7 +62,7 @@ test('Agent-authoring telemetry keeps only versioned outcome classes', () => {
   assert.deepEqual(JSON.parse(lines[0]!.replace('[chickpea:management] ', '')), {
     event: 'agent_authoring.outcome',
     surface: 'slack',
-    guideVersion: '1.0.0',
+    guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
     posture: 'commit',
     artifactClass: 'skill',
     proposalOutcome: 'created',

@@ -983,13 +983,43 @@ export class CfManagementStore implements ManagementStore {
     return response.proposal;
   }
 
+  async reclaimChangeSetProposal(
+    input: Parameters<ManagementStore['reclaimChangeSetProposal']>[0],
+  ) {
+    const response = await this.execute({ kind: 'reclaim_change_set_proposal', input });
+    if (response.kind !== 'change_set_proposal' || !response.proposal) {
+      throw unexpectedManagementResponse();
+    }
+    return response.proposal;
+  }
+
+  async saveChangeSetProposalProgress(
+    proposalId: string,
+    result: Parameters<ManagementStore['saveChangeSetProposalProgress']>[1],
+    expectedUpdatedAt: number,
+    at: number,
+  ) {
+    const response = await this.execute({
+      kind: 'save_change_set_proposal_progress', proposalId, result, expectedUpdatedAt, at,
+    });
+    if (response.kind !== 'change_set_proposal' || !response.proposal) {
+      throw unexpectedManagementResponse();
+    }
+    return response.proposal;
+  }
+
   async completeChangeSetProposal(
     proposalId: string,
     result: Parameters<ManagementStore['completeChangeSetProposal']>[1],
     at: number,
+    expectedUpdatedAt?: number,
   ) {
     const response = await this.execute({
-      kind: 'complete_change_set_proposal', proposalId, result, at,
+      kind: 'complete_change_set_proposal',
+      proposalId,
+      result,
+      at,
+      ...(expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt }),
     });
     if (response.kind !== 'change_set_proposal' || !response.proposal) {
       throw unexpectedManagementResponse();

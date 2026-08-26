@@ -47,6 +47,7 @@ test('router covers all authoring postures while leaving detailed judgment lazy'
     'explore',
     'capability',
     'create or revise a skill',
+    'without asking for separate permission',
   ]) assert.match(AGENT_AUTHORING_ROUTER_INSTRUCTION, new RegExp(phrase, 'i'));
   assert.doesNotMatch(AGENT_AUTHORING_ROUTER_INSTRUCTION, /chief of staff|Sentry|bug-to-PR/i);
 });
@@ -130,4 +131,14 @@ test('behavioral evaluation corpus is versioned, synthetic, and guide-bound', as
 
   const prompts = corpus.cases.map(({ prompt }) => prompt).join('\n');
   assert.doesNotMatch(prompts, /northstar|PRIVATE_|T_PRIVATE|C_PRIVATE/i);
+});
+
+test('the deployed MCP verifier stays pinned to the canonical guide version', async () => {
+  const verifierSource = await readFile(
+    new URL('../scripts/verify-management-mcp.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.ok(verifierSource.includes(
+    `const AGENT_AUTHORING_GUIDE_VERSION = '${AGENT_AUTHORING_GUIDE_VERSION}';`,
+  ));
 });

@@ -13,6 +13,8 @@ Classify the current turn semantically before selecting fields or tools:
 
 An `explore`, `capability_question`, or unresolved `clarify` turn must not mutate configuration. Inspect live state when useful, answer or offer options, and make the next decision easy. A detailed request is not automatically authorization to commit.
 
+Activating this skill, reading its references, inspecting live state, and drafting a proposal are read-only. Do those steps when needed without asking the requester for separate permission. Ask for approval only at the configuration boundary required by this guide and the management service.
+
 ## Inspect before recommending
 
 Use `inspect_workspace` before claiming a connector, repository, model, schedule facility, or other capability is available. Use the dedicated inspection tools for memory, routines, and Slack Channels when those details matter. Recommend only what the live result supports. Describe missing or unhealthy access as setup still needed; never imply that access exists because a tool or service is familiar.

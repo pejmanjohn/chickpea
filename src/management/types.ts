@@ -225,7 +225,7 @@ export interface ChickpeaManagementHandoff {
 }
 
 export interface ManagementObjectRef {
-  kind: 'agent' | 'channel' | 'channel_grant' | 'membership' | 'provider' | 'memory' | 'routine';
+  kind: 'agent' | 'channel' | 'channel_grant' | 'connection' | 'membership' | 'provider' | 'memory' | 'routine';
   id: string;
   revision?: number;
 }
@@ -364,6 +364,7 @@ export interface ManagementApplyResult {
   idempotencyKey: string;
   status: 'completed' | 'partial' | 'confirmation_required';
   outcomes: ManagementItemOutcome[];
+  /** Workspace mutation receipt token; it is not comparable to an actor-scoped inspection token. */
   effectiveRevision: string;
   activation: 'next_turn';
 }
@@ -401,6 +402,17 @@ export interface ManagementWorkspaceSnapshot {
     skills: AgentCreateInput['skills'];
     mcpServers: AgentCreateInput['mcpServers'];
     apiConnections: AgentCreateInput['apiConnections'];
+    /** Secret-free reusable accounts available through this Agent's bindings and visible to the requester. */
+    connections?: Array<{
+      id: string;
+      providerId: string;
+      label: string;
+      purpose?: string;
+      ownerKind: ConnectionAccountOwnerKind;
+      lifecycle: 'pending' | 'ready' | 'needs_attention';
+      enabled: boolean;
+      allowedCapabilities: string[];
+    }>;
     repositories: AgentCreateInput['repositories'];
   }>;
   channels: Array<{
@@ -426,6 +438,7 @@ export interface ManagementWorkspaceSnapshot {
     capabilityHealth: {
       mcpConnections: { ready: number; pending: number; failed: number };
       apiConnections: { ready: number; pending: number; failed: number };
+      reusableConnections: { ready: number; pending: number; needsAttention: number; disabled: number };
       repositories: { enabled: number; setupRequired: number };
       channelGrants: { active: number; pending: number; needsAttention: number };
     };
@@ -442,6 +455,7 @@ export interface ManagementWorkspaceSnapshot {
       revision: number;
     }>;
   };
+  /** Revision of this actor-visible snapshot, including its visible reusable connections. */
   effectiveRevision: string;
 }
 
@@ -745,6 +759,10 @@ export interface ClaimManagementProposalInput {
   at: number;
 }
 
+export interface ReclaimManagementChangeSetProposalInput extends ClaimManagementProposalInput {
+  expectedUpdatedAt: number;
+}
+
 export type ManagementRpcRequest =
   | { kind: 'reserve_request'; input: ReserveManagementRequestInput }
   | { kind: 'get_request'; operationId: string }
@@ -774,10 +792,19 @@ export type ManagementRpcRequest =
   | { kind: 'put_change_set_proposal'; input: PutManagementChangeSetProposalInput }
   | { kind: 'get_change_set_proposal'; proposalId: string }
   | { kind: 'claim_change_set_proposal'; input: ClaimManagementProposalInput }
+  | { kind: 'reclaim_change_set_proposal'; input: ReclaimManagementChangeSetProposalInput }
+  | {
+      kind: 'save_change_set_proposal_progress';
+      proposalId: string;
+      result: ManagementApplyResult;
+      expectedUpdatedAt: number;
+      at: number;
+    }
   | {
       kind: 'complete_change_set_proposal';
       proposalId: string;
       result: ManagementApplyResult;
+      expectedUpdatedAt?: number;
       at: number;
     }
   | { kind: 'mark_change_set_proposal_stale'; proposalId: string; at: number }

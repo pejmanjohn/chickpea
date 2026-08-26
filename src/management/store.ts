@@ -23,6 +23,7 @@ import {
   type PutManagementSetupInput,
   type PutManagementProposalInput,
   type PutManagementChangeSetProposalInput,
+  type ReclaimManagementChangeSetProposalInput,
   type RevokeManagementSetupInput,
   type ReserveManagementRequestInput,
 } from './types.ts';
@@ -188,10 +189,20 @@ export interface ManagementStore {
   claimChangeSetProposal(
     input: ClaimManagementProposalInput,
   ): Promise<ManagementChangeSetProposalRecord>;
+  reclaimChangeSetProposal(
+    input: ReclaimManagementChangeSetProposalInput,
+  ): Promise<ManagementChangeSetProposalRecord>;
+  saveChangeSetProposalProgress(
+    proposalId: string,
+    result: ManagementApplyResult,
+    expectedUpdatedAt: number,
+    at: number,
+  ): Promise<ManagementChangeSetProposalRecord>;
   completeChangeSetProposal(
     proposalId: string,
     result: ManagementApplyResult,
     at: number,
+    expectedUpdatedAt?: number,
   ): Promise<ManagementChangeSetProposalRecord>;
   markChangeSetProposalStale(
     proposalId: string,
@@ -292,6 +303,21 @@ export class ManagementStoreLogic {
           kind: 'change_set_proposal',
           proposal: this.claimChangeSetProposal(request.input),
         };
+      case 'reclaim_change_set_proposal':
+        return {
+          kind: 'change_set_proposal',
+          proposal: this.reclaimChangeSetProposal(request.input),
+        };
+      case 'save_change_set_proposal_progress':
+        return {
+          kind: 'change_set_proposal',
+          proposal: this.saveChangeSetProposalProgress(
+            request.proposalId,
+            request.result,
+            request.expectedUpdatedAt,
+            request.at,
+          ),
+        };
       case 'complete_change_set_proposal':
         return {
           kind: 'change_set_proposal',
@@ -299,6 +325,7 @@ export class ManagementStoreLogic {
             request.proposalId,
             request.result,
             request.at,
+            request.expectedUpdatedAt,
           ),
         };
       case 'mark_change_set_proposal_stale':
@@ -628,6 +655,27 @@ export class ManagementStoreLogic {
           'The proposal idempotency key was reused for different content.',
         );
       }
+      if (replay.status === 'applying') {
+        throw new ManagementError(
+          'operation_in_progress',
+          'The prior proposal confirmation is still applying.',
+        );
+      }
+      if (replay.status !== 'pending') {
+        throw new ManagementError(
+          'proposal_stale',
+          'The prior proposal is no longer pending. Use a new idempotency key after reviewing fresh state.',
+        );
+      }
+      if (replay.expiresAt <= input.at) {
+        this.db.run(
+          `UPDATE management_change_set_proposals SET status = 'expired', updated_at = ?
+           WHERE proposal_id = ? AND status = 'pending'`,
+          input.at,
+          replay.proposalId,
+        );
+        throw new ManagementError('proposal_expired', 'The prior proposal has expired.');
+      }
       return replay;
     }
     this.db.run(
@@ -692,10 +740,69 @@ export class ManagementStoreLogic {
     return this.requireChangeSetProposal(input.proposalId);
   }
 
+  reclaimChangeSetProposal(
+    input: ReclaimManagementChangeSetProposalInput,
+  ): ManagementChangeSetProposalRecord {
+    const proposal = this.requireChangeSetProposal(input.proposalId);
+    assertProposalClaimBinding(proposal, input);
+    if (proposal.status === 'completed') return proposal;
+    if (proposal.status !== 'applying' || proposal.updatedAt !== input.expectedUpdatedAt) {
+      throw new ManagementError('operation_in_progress', 'The confirmation recovery lease changed.');
+    }
+    const renewedAt = Math.max(input.at, proposal.updatedAt + 1);
+    if (proposal.expiresAt <= input.at) {
+      const expired = this.db.run(
+        `UPDATE management_change_set_proposals SET status = 'expired', updated_at = ?
+         WHERE proposal_id = ? AND status = 'applying' AND updated_at = ?`,
+        renewedAt,
+        input.proposalId,
+        input.expectedUpdatedAt,
+      );
+      if (expired.changes !== 1) {
+        throw new ManagementError('operation_in_progress', 'The confirmation recovery lease changed.');
+      }
+      throw new ManagementError('proposal_expired', 'The confirmation has expired.');
+    }
+    const updated = this.db.run(
+      `UPDATE management_change_set_proposals SET updated_at = ?
+       WHERE proposal_id = ? AND status = 'applying' AND updated_at = ?`,
+      renewedAt,
+      input.proposalId,
+      input.expectedUpdatedAt,
+    );
+    if (updated.changes !== 1) {
+      throw new ManagementError('operation_in_progress', 'The confirmation recovery lease changed.');
+    }
+    return this.requireChangeSetProposal(input.proposalId);
+  }
+
+  saveChangeSetProposalProgress(
+    proposalId: string,
+    result: ManagementApplyResult,
+    expectedUpdatedAt: number,
+    at: number,
+  ): ManagementChangeSetProposalRecord {
+    const renewedAt = Math.max(at, expectedUpdatedAt + 1);
+    const updated = this.db.run(
+      `UPDATE management_change_set_proposals
+       SET result_json = ?, updated_at = ?
+       WHERE proposal_id = ? AND status = 'applying' AND updated_at = ?`,
+      JSON.stringify(result),
+      renewedAt,
+      proposalId,
+      expectedUpdatedAt,
+    );
+    if (updated.changes !== 1) {
+      throw new ManagementError('operation_in_progress', 'The confirmation recovery lease changed.');
+    }
+    return this.requireChangeSetProposal(proposalId);
+  }
+
   completeChangeSetProposal(
     proposalId: string,
     result: ManagementApplyResult,
     at: number,
+    expectedUpdatedAt?: number,
   ): ManagementChangeSetProposalRecord {
     return this.db.transaction(() => {
       const proposal = this.requireChangeSetProposal(proposalId);
@@ -703,13 +810,15 @@ export class ManagementStoreLogic {
       const updated = this.db.run(
         `UPDATE management_change_set_proposals
          SET status = 'completed', result_json = ?, updated_at = ?
-         WHERE proposal_id = ? AND status = 'applying'`,
+         WHERE proposal_id = ? AND status = 'applying'
+           ${expectedUpdatedAt === undefined ? '' : 'AND updated_at = ?'}`,
         JSON.stringify(result),
-        at,
+        Math.max(at, proposal.updatedAt + 1),
         proposalId,
+        ...(expectedUpdatedAt === undefined ? [] : [expectedUpdatedAt]),
       );
       if (updated.changes !== 1) {
-        throw new ManagementError('proposal_stale', 'The confirmation is no longer applicable.');
+        throw new ManagementError('operation_in_progress', 'The confirmation recovery lease changed.');
       }
       this.audit.appendIdempotent({
         eventId: `management-change-set:${proposalId}`,
@@ -745,7 +854,7 @@ export class ManagementStoreLogic {
     this.requireChangeSetProposal(proposalId);
     this.db.run(
       `UPDATE management_change_set_proposals SET status = 'stale', updated_at = ?
-       WHERE proposal_id = ? AND status = 'pending'`,
+       WHERE proposal_id = ? AND status IN ('pending', 'applying')`,
       at,
       proposalId,
     );
@@ -1107,9 +1216,11 @@ export class ManagementStoreLogic {
       remove(
         `DELETE FROM management_change_set_proposals WHERE proposal_id IN (
            SELECT proposal_id FROM management_change_set_proposals
-           WHERE status IN ('completed', 'stale', 'expired') AND updated_at < ?
+           WHERE (status IN ('completed', 'stale', 'expired') AND updated_at < ?)
+              OR (status IN ('pending', 'applying') AND expires_at < ?)
            ORDER BY updated_at LIMIT ?
          )`,
+        cutoff,
         cutoff,
         boundedLimit,
       );

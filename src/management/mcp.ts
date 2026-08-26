@@ -168,7 +168,7 @@ export function createWorkspaceManagementMcpServer(
     title: 'Propose Chickpea workspace changes',
     description: workspaceManagementToolDescription('propose_workspace_changes'),
     inputSchema: proposeWorkspaceChangesZodSchema,
-    annotations: { readOnlyHint: true, idempotentHint: false },
+    annotations: { readOnlyHint: false, idempotentHint: false },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'propose_workspace_changes',

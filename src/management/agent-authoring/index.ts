@@ -3,7 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { defineSkill, useInstruction, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
-export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.0' as const;
+export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.1' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
@@ -16,6 +16,7 @@ export type AgentAuthoringReason = typeof AGENT_AUTHORING_REASONS[number];
 
 export const AGENT_AUTHORING_ROUTER_INSTRUCTION = [
   'Activate the `agent-authoring` skill before helping a requester create an Agent, edit an Agent, explore possible Agent roles or workflows, ask a capability question about Agent configuration, or create or revise a skill.',
+  'Skill activation, reference reading, live inspection, and proposal drafting are read-only; do them without asking for separate permission.',
   'Exploration and unresolved questions are read-only. Use the management tools only after the activated guide establishes the correct posture and target.',
 ].join(' ');
 
@@ -33,6 +34,8 @@ Classify the current turn semantically before selecting fields or tools:
 - \`clarify\`: the request is too ambiguous to design safely or an answer would materially change the design.
 
 An \`explore\`, \`capability_question\`, or unresolved \`clarify\` turn must not mutate configuration. Inspect live state when useful, answer or offer options, and make the next decision easy. A detailed request is not automatically authorization to commit.
+
+Activating this skill, reading its references, inspecting live state, and drafting a proposal are read-only. Do those steps when needed without asking the requester for separate permission. Ask for approval only at the configuration boundary required by this guide and the management service.
 
 ## Inspect before recommending
 

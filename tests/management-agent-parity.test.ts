@@ -424,7 +424,7 @@ test('authoring proposals reject capability-bearing creation and remain origin-b
   }
 });
 
-test('admitted change sets return a content-free partial receipt when a later item fails', async () => {
+test('admitted change sets durably complete with a content-free failure when an unexpected later error occurs', async () => {
   const f = await createManagementAdapterFixture('proposal-partial');
   const context: ManagementActorContext = {
     userId: f.admin.user.id,
@@ -447,7 +447,7 @@ test('admitted change sets return a content-free partial receipt when a later it
     randomId: () => `partial_${++sequence}`,
     prepareAgentUpdate: async (agent) => {
       if (agent.id === 'agent_second') {
-        throw new ManagementError('invalid_request', 'Synthetic downstream denial.');
+        throw new Error('Synthetic unexpected downstream failure.');
       }
     },
   });
@@ -473,12 +473,517 @@ test('admitted change sets return a content-free partial receipt when a later it
     assert.equal(confirmed.status, 'partial');
     assert.equal(confirmed.outcomes[0]?.disposition, 'applied');
     assert.equal(confirmed.outcomes[1]?.disposition, 'failed');
-    assert.equal(confirmed.outcomes[1]?.code, 'invalid_request');
+    assert.equal(confirmed.outcomes[1]?.code, 'operation_failed');
     assert.equal((await f.config.getAgent('agent_first')).description, 'Reviewed first.');
     assert.equal((await f.config.getAgent('agent_second')).description, undefined);
-    assert.doesNotMatch(JSON.stringify(
-      await f.management.getChangeSetProposal(proposed.proposalId),
-    ), /Synthetic downstream denial/);
+    const persisted = await f.management.getChangeSetProposal(proposed.proposalId);
+    assert.equal(persisted?.status, 'completed');
+    assert.doesNotMatch(JSON.stringify(persisted), /Synthetic unexpected downstream failure/);
+  } finally {
+    f.close();
+  }
+});
+
+test('an abandoned applying change set resumes by reconciling the frozen mutation after its lease', async () => {
+  const f = await createManagementAdapterFixture('proposal-crash-recovery');
+  let now = 1_800_000_000_000;
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'crash-recovery-client' },
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    now: () => now,
+  });
+  try {
+    const agent = await f.config.createAgent({
+      id: 'agent_recovery', name: 'Recovery', instructions: 'Recover safely.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: f.admin.membership.id,
+      configurationGeneration: 1, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const operation: ManagementOperation = {
+      itemId: 'description', kind: 'update_agent', agentId: agent.id,
+      expectedRevision: agent.revision, patch: { description: 'Recovered exactly once.' },
+    };
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('crash-recovery'),
+      operations: [operation],
+    });
+    await f.management.claimChangeSetProposal({
+      proposalId: proposed.proposalId,
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      actorMembershipId: context.membershipId,
+      originKey: 'mcp:crash-recovery-client',
+      at: now,
+    });
+    await f.config.updateAgent(
+      agent.id,
+      { description: 'Recovered exactly once.' },
+      agent.revision,
+    );
+
+    now += 30_001;
+    const recovered = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(recovered.status, 'completed');
+    assert.equal(recovered.outcomes[0]?.disposition, 'applied');
+    assert.equal((await f.config.getAgent(agent.id)).revision, agent.revision + 1);
+    assert.equal(
+      (await f.management.getChangeSetProposal(proposed.proposalId))?.status,
+      'completed',
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test('an unexpected preflight outage leaves the reviewed change set pending for a safe retry', async () => {
+  const f = await createManagementAdapterFixture('proposal-transient-preflight');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'transient-preflight-client' },
+  };
+  let membershipChecks = 0;
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    assertAgentChannelMembership: async () => {
+      membershipChecks += 1;
+      if (membershipChecks === 2) throw new Error('Synthetic Slack outage.');
+    },
+  });
+  try {
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('transient-preflight'),
+      operations: [{
+        itemId: 'channel',
+        kind: 'put_channel',
+        channel: {
+          workspaceId: f.admin.binding.slackTeamId,
+          channelId: 'C_TRANSIENT',
+          label: 'transient',
+          lifecycle: 'active',
+        },
+        expectedRevision: 0,
+      }],
+    });
+    await assert.rejects(
+      () => service.confirmWorkspaceChange({ context, proposalId: proposed.proposalId }),
+      /Synthetic Slack outage/,
+    );
+    assert.equal(
+      (await f.management.getChangeSetProposal(proposed.proposalId))?.status,
+      'pending',
+    );
+    assert.equal(await f.config.getChannel(f.admin.binding.slackTeamId, 'C_TRANSIENT'), undefined);
+  } finally {
+    f.close();
+  }
+});
+
+test('change-set confirmation preserves the cascading disable behavior for an Agent with Channel reach', async () => {
+  const f = await createManagementAdapterFixture('proposal-disable-agent');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'disable-agent-client' },
+  };
+  try {
+    const agent = await f.config.createAgent({
+      id: 'agent_disable', name: 'Disable', instructions: 'Disable safely.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: f.admin.membership.id,
+      configurationGeneration: 1, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await f.config.putChannel({
+      workspaceId: f.admin.binding.slackTeamId,
+      channelId: 'C_DISABLE',
+      label: 'disable',
+      lifecycle: 'active',
+    }, 0);
+    await f.config.putAgentChannelGrant({
+      workspaceId: f.admin.binding.slackTeamId,
+      channelId: 'C_DISABLE',
+      agentId: agent.id,
+      status: 'active',
+      createdByMembershipId: f.admin.membership.id,
+    });
+    const proposed = await f.service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('disable-agent'),
+      operations: [{
+        itemId: 'disable', kind: 'update_agent', agentId: agent.id,
+        expectedRevision: agent.revision, patch: { enabled: false },
+      }],
+    });
+    const confirmed = await f.service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(confirmed.status, 'completed');
+    assert.equal((await f.config.getAgent(agent.id)).enabled, false);
+    assert.deepEqual(
+      await f.config.listAgentChannelGrants(f.admin.binding.slackTeamId, 'C_DISABLE'),
+      [],
+    );
+    assert.ok(confirmed.outcomes[0]?.changed?.some(({ kind }) => kind === 'channel_grant'));
+  } finally {
+    f.close();
+  }
+});
+
+test('an applying change set cannot resume after the requester loses Agent edit authority', async () => {
+  const f = await createManagementAdapterFixture('proposal-recovery-authority');
+  let now = 1_800_000_000_000;
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'recovery-authority-client' },
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    now: () => now,
+  });
+  try {
+    const agent = await f.config.createAgent({
+      id: 'agent_owner_created', name: 'Owner Created', instructions: 'Owner controlled.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: f.owner.membership.id,
+      editPolicy: 'creator_and_admins', configurationGeneration: 1,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('recovery-authority'),
+      operations: [{
+        itemId: 'description', kind: 'update_agent', agentId: agent.id,
+        expectedRevision: agent.revision, patch: { description: 'Must not be written.' },
+      }],
+    });
+    await f.management.claimChangeSetProposal({
+      proposalId: proposed.proposalId,
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      actorMembershipId: context.membershipId,
+      originKey: 'mcp:recovery-authority-client',
+      at: now,
+    });
+    await f.identity.updateMembershipAuthority({
+      membershipId: f.admin.membership.id,
+      role: 'member',
+      actorMembershipId: f.owner.membership.id,
+      correlationId: 'recovery-authority-demotion',
+      authenticationSurface: 'better_auth',
+      reasonCode: 'recovery_authority_test',
+    });
+    now += 30_001;
+    await assert.rejects(
+      () => service.confirmWorkspaceChange({ context, proposalId: proposed.proposalId }),
+      (error: unknown) => error instanceof ManagementError && error.code === 'forbidden',
+    );
+    assert.equal((await f.config.getAgent(agent.id)).description, undefined);
+    assert.equal(
+      (await f.management.getChangeSetProposal(proposed.proposalId))?.status,
+      'stale',
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test('an applying change set cannot resume after its confirmation expires', async () => {
+  const f = await createManagementAdapterFixture('proposal-recovery-expiry');
+  let now = 1_800_000_000_000;
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'recovery-expiry-client' },
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    now: () => now,
+  });
+  try {
+    const agent = await f.config.createAgent({
+      id: 'agent_expiry', name: 'Expiry', instructions: 'Expire safely.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: f.admin.membership.id,
+      configurationGeneration: 1, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('recovery-expiry'),
+      operations: [{
+        itemId: 'description', kind: 'update_agent', agentId: agent.id,
+        expectedRevision: agent.revision, patch: { description: 'Expired write.' },
+      }],
+    });
+    await f.management.claimChangeSetProposal({
+      proposalId: proposed.proposalId,
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      actorMembershipId: context.membershipId,
+      originKey: 'mcp:recovery-expiry-client',
+      at: now,
+    });
+    now += 15 * 60_000 + 1;
+    await assert.rejects(
+      () => service.confirmWorkspaceChange({ context, proposalId: proposed.proposalId }),
+      (error: unknown) => error instanceof ManagementError && error.code === 'proposal_expired',
+    );
+    assert.equal((await f.config.getAgent(agent.id)).description, undefined);
+    assert.equal(
+      (await f.management.getChangeSetProposal(proposed.proposalId))?.status,
+      'expired',
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test('recovery returns a truthful partial receipt when authority changes after a saved prefix', async () => {
+  const f = await createManagementAdapterFixture('proposal-recovery-partial-authority');
+  let now = 1_800_000_000_000;
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'recovery-partial-authority-client' },
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    now: () => now,
+  });
+  try {
+    const first = await f.config.createAgent({
+      id: 'agent_recovery_prefix', name: 'Recovery Prefix', instructions: 'Apply first.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: f.owner.membership.id,
+      editPolicy: 'creator_and_admins', configurationGeneration: 1,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const second = await f.config.createAgent({
+      id: 'agent_recovery_denied', name: 'Recovery Denied', instructions: 'Protect second.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: f.owner.membership.id,
+      editPolicy: 'creator_and_admins', configurationGeneration: 1,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('recovery-partial-authority'),
+      operations: [
+        {
+          itemId: 'first', kind: 'update_agent', agentId: first.id,
+          expectedRevision: first.revision, patch: { description: 'Applied before interruption.' },
+        },
+        {
+          itemId: 'second', kind: 'update_agent', agentId: second.id,
+          expectedRevision: second.revision, patch: { description: 'Must remain protected.' },
+        },
+      ],
+    });
+    const claimed = await f.management.claimChangeSetProposal({
+      proposalId: proposed.proposalId,
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      actorMembershipId: context.membershipId,
+      originKey: 'mcp:recovery-partial-authority-client',
+      at: now,
+    });
+    const appliedFirst = await f.config.updateAgent(
+      first.id,
+      { description: 'Applied before interruption.' },
+      first.revision,
+    );
+    await f.management.saveChangeSetProposalProgress(
+      proposed.proposalId,
+      {
+        operationId: proposed.proposalId,
+        idempotencyKey: `confirmation:${proposed.proposalId}`,
+        status: 'completed',
+        outcomes: [{
+          itemId: 'first',
+          operationKind: 'update_agent',
+          disposition: 'applied',
+          changed: [{ kind: 'agent', id: first.id, revision: appliedFirst.revision }],
+        }],
+        effectiveRevision: 'a'.repeat(64),
+        activation: 'next_turn',
+      },
+      claimed.updatedAt,
+      now + 1,
+    );
+    await f.identity.updateMembershipAuthority({
+      membershipId: f.admin.membership.id,
+      role: 'member',
+      actorMembershipId: f.owner.membership.id,
+      correlationId: 'recovery-partial-authority-demotion',
+      authenticationSurface: 'better_auth',
+      reasonCode: 'recovery_partial_authority_test',
+    });
+    now += 30_002;
+    const recovered = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(recovered.status, 'partial');
+    assert.equal(recovered.outcomes[0]?.disposition, 'applied');
+    assert.equal(recovered.outcomes[1]?.disposition, 'failed');
+    assert.equal(recovered.outcomes[1]?.code, 'forbidden');
+    assert.equal((await f.config.getAgent(first.id)).description, 'Applied before interruption.');
+    assert.equal((await f.config.getAgent(second.id)).description, undefined);
+    assert.equal(
+      (await f.management.getChangeSetProposal(proposed.proposalId))?.status,
+      'completed',
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test('recovery rechecks live Slack membership before applying a Channel grant', async () => {
+  const f = await createManagementAdapterFixture('proposal-recovery-channel-membership');
+  let now = 1_800_000_000_000;
+  let membershipChecks = 0;
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'recovery-channel-membership-client' },
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    now: () => now,
+    assertAgentChannelMembership: async () => {
+      membershipChecks += 1;
+      if (membershipChecks > 1) {
+        throw new ManagementError('forbidden', 'Requester left the Slack Channel.');
+      }
+    },
+  });
+  try {
+    const agent = await f.config.createAgent({
+      id: 'agent_recovery_channel', name: 'Recovery Channel', instructions: 'Publish safely.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: f.admin.membership.id,
+      configurationGeneration: 1, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await f.config.putChannel({
+      workspaceId: f.admin.binding.slackTeamId,
+      channelId: 'C_RECOVERY_MEMBERSHIP',
+      label: 'recovery-membership',
+      lifecycle: 'active',
+    }, 0);
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('recovery-channel-membership'),
+      operations: [{
+        itemId: 'grant',
+        kind: 'grant_agent_channel',
+        workspaceId: f.admin.binding.slackTeamId,
+        channelId: 'C_RECOVERY_MEMBERSHIP',
+        agentId: agent.id,
+        expectedRevision: 0,
+      }],
+    });
+    await f.management.claimChangeSetProposal({
+      proposalId: proposed.proposalId,
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      actorMembershipId: context.membershipId,
+      originKey: 'mcp:recovery-channel-membership-client',
+      at: now,
+    });
+    now += 30_001;
+    const recovered = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(membershipChecks, 2);
+    assert.equal(recovered.status, 'partial');
+    assert.equal(recovered.outcomes[0]?.disposition, 'failed');
+    assert.equal(recovered.outcomes[0]?.code, 'forbidden');
+    assert.deepEqual(
+      await f.config.listAgentChannelGrants(
+        f.admin.binding.slackTeamId,
+        'C_RECOVERY_MEMBERSHIP',
+      ),
+      [],
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test('concurrent expired-lease recovery admits one executor and preserves one truthful receipt', async () => {
+  const f = await createManagementAdapterFixture('proposal-recovery-race');
+  let now = 1_800_000_000_000;
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'recovery-race-client' },
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    now: () => now,
+  });
+  try {
+    const agent = await f.config.createAgent({
+      id: 'agent_recovery_race', name: 'Recovery Race', instructions: 'Race safely.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: f.admin.membership.id,
+      configurationGeneration: 1, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('recovery-race'),
+      operations: [{
+        itemId: 'description', kind: 'update_agent', agentId: agent.id,
+        expectedRevision: agent.revision, patch: { description: 'Applied once.' },
+      }],
+    });
+    await f.management.claimChangeSetProposal({
+      proposalId: proposed.proposalId,
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      actorMembershipId: context.membershipId,
+      originKey: 'mcp:recovery-race-client',
+      at: now,
+    });
+    now += 30_001;
+    const confirmations = await Promise.allSettled([
+      service.confirmWorkspaceChange({ context, proposalId: proposed.proposalId }),
+      service.confirmWorkspaceChange({ context, proposalId: proposed.proposalId }),
+    ]);
+    assert.equal(confirmations.filter(({ status }) => status === 'fulfilled').length, 1);
+    assert.equal(confirmations.filter(({ status }) => status === 'rejected').length, 1);
+    const fulfilled = confirmations.find(({ status }) => status === 'fulfilled');
+    assert.equal(fulfilled?.status === 'fulfilled' ? fulfilled.value.status : undefined, 'completed');
+    assert.equal((await f.config.getAgent(agent.id)).revision, agent.revision + 1);
+    assert.equal(
+      (await f.management.getChangeSetProposal(proposed.proposalId))?.status,
+      'completed',
+    );
   } finally {
     f.close();
   }

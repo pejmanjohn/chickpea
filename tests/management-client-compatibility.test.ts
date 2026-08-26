@@ -82,7 +82,11 @@ test('supported coding clients share public PKCE registration and stateless MCP 
 
       const listed = await mcpCall(handler.fetch, client.protocol, 'tools/list', {});
       const listedTools = (listed.result as {
-        tools: Array<{ name: string; inputSchema?: { required?: string[] } }>;
+        tools: Array<{
+          name: string;
+          inputSchema?: { required?: string[] };
+          annotations?: { readOnlyHint?: boolean; idempotentHint?: boolean };
+        }>;
       }).tools;
       assert.deepEqual(
         listedTools.map(({ name }) => name),
@@ -103,6 +107,11 @@ test('supported coding clients share public PKCE registration and stateless MCP 
           `${client.name} must require proposal ${field}`,
         );
       }
+      assert.deepEqual(
+        listedTools.find(({ name }) => name === 'propose_workspace_changes')?.annotations,
+        { readOnlyHint: false, idempotentHint: false },
+        `${client.name} must disclose that proposals persist reviewed state`,
+      );
       assert.ok(
         listedTools.find(({ name }) => name === 'prepare_connector_setup')
           ?.inputSchema?.required?.includes('ownerKind'),
