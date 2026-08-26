@@ -19,14 +19,18 @@ import type { SkillConfig } from './types.ts';
  *
  * Only `enabled` skills are materialized.
  */
-export function resolveProfileSkills(skills: readonly SkillConfig[] | undefined): Skill[] {
+export function resolveProfileSkills(
+  skills: readonly SkillConfig[] | undefined,
+  options: { reservedNames?: readonly string[] } = {},
+): Skill[] {
   if (!skills || skills.length === 0) {
     return [];
   }
   // Last-writer-wins dedupe by name; preserves first-seen order otherwise.
   const byName = new Map<string, SkillConfig>();
+  const reservedNames = new Set(options.reservedNames ?? []);
   for (const skill of skills) {
-    if (skill.enabled) {
+    if (skill.enabled && !reservedNames.has(skill.name)) {
       byName.set(skill.name, skill);
     }
   }

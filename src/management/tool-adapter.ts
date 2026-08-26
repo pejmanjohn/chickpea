@@ -10,6 +10,7 @@ import {
 } from './types.ts';
 import type { PreviewWorkspaceRecipeInput } from './recipes.ts';
 import { emitManagementMetric } from './telemetry.ts';
+import type { AgentAuthoringReason } from './agent-authoring/index.ts';
 
 export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'inspect_workspace',
@@ -20,6 +21,7 @@ export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'inspect_routines',
   'export_workspace_recipe',
   'preview_workspace_recipe',
+  'propose_workspace_changes',
   'apply_workspace_changes',
   'confirm_workspace_change',
   'undo_workspace_change',
@@ -30,7 +32,7 @@ export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
 export type WorkspaceManagementToolName = typeof WORKSPACE_MANAGEMENT_TOOL_NAMES[number];
 
 const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
-  inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority.',
+  inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority. Required before recommending specific capabilities for Agent design or answering what services an Agent can use.',
   prepare_connector_setup: 'Create a safe browser handoff URL for adding a catalog connector to an editable Agent. Set ownerKind to "member" for a personal connection or "team" for a shared connection. In a specific Agent Slack conversation, agentId may be omitted to target that Agent.',
   discover_slack_channels: 'Discover Channels in the connected Slack workspace before publishing a Chickpea Agent.',
   test_mcp_connection: 'Test one saved Agent MCP connection with its write-only credentials and return a sanitized result plus discovered tools.',
@@ -38,8 +40,9 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, or routine.',
   export_workspace_recipe: 'Export selected Agents and their connection requirements as a versioned, secret-free portable recipe.',
   preview_workspace_recipe: 'Preview a portable recipe against live workspace state and compile chosen outcomes into ordinary typed changes.',
+  propose_workspace_changes: 'Create a read-only, exact, requester-bound Agent configuration proposal. Read chickpea://guide/agent-authoring/v1 before proposing creation or a complex edit. The returned proposalId is an opaque control token: copy it byte-for-byte and never retype or normalize it.',
   apply_workspace_changes: 'Apply one or more typed Chickpea workspace changes with durable idempotency and per-item outcomes.',
-  confirm_workspace_change: 'Confirm one requester- and client-bound destructive or capability-expanding change proposal.',
+  confirm_workspace_change: 'Confirm one requester- and client-bound destructive or capability-expanding change proposal. After this tool returns, always send visible final text with the terminal status and what changed or why nothing changed; never end on the tool call or progress UI.',
   undo_workspace_change: 'Undo one eligible operation at the exact resulting revision.',
   get_operation: 'Read the durable result of one operation or confirmation proposal owned by the requester.',
   revoke_setup_link: 'Revoke one unused requester-owned setup link and optionally issue a fresh 24-hour link.',
@@ -60,6 +63,12 @@ export type WorkspaceManagementToolArguments = {
   inspect_routines: ManagementRoutineInspectionInput;
   export_workspace_recipe: { agentIds?: string[] | undefined };
   preview_workspace_recipe: PreviewWorkspaceRecipeInput;
+  propose_workspace_changes: {
+    idempotencyKey: string;
+    guideVersion: string;
+    authoringReason: AgentAuthoringReason;
+    operations: ManagementOperation[];
+  };
   apply_workspace_changes: { idempotencyKey: string; operations: ManagementOperation[] };
   confirm_workspace_change: { proposalId: string };
   undo_workspace_change: { operationId: string; idempotencyKey: string };
@@ -188,6 +197,10 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
       case 'preview_workspace_recipe': {
         const value = args as WorkspaceManagementToolArguments['preview_workspace_recipe'];
         return service.previewRecipe(context, value);
+      }
+      case 'propose_workspace_changes': {
+        const value = args as WorkspaceManagementToolArguments['propose_workspace_changes'];
+        return service.proposeWorkspaceChanges({ context, ...value });
       }
       case 'apply_workspace_changes': {
         const value = args as WorkspaceManagementToolArguments['apply_workspace_changes'];

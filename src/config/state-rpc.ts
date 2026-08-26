@@ -43,6 +43,12 @@ import type { UsageRpcRequest, UsageRpcResponse } from '../usage/types.ts';
 import type { WorkRpcRequest, WorkRpcResponse } from '../work/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from '../identity/types.ts';
 import type { ManagementRpcRequest, ManagementRpcResponse } from '../management/types.ts';
+import type { SlackManagementSignal } from '../management/slack-tools.ts';
+import type {
+  WorkspaceManagementToolArguments,
+  WorkspaceManagementToolName,
+  WorkspaceManagementToolResult,
+} from '../management/tool-adapter.ts';
 import type {
   SlackCanonicalAdmissionInput,
   SlackCanonicalAdmissionResult,
@@ -146,6 +152,15 @@ export interface RuntimeDrainStatus {
   categories: RuntimeDrainCategories;
 }
 
+/** One trusted Slack management invocation. On Cloudflare this crosses into
+ * the state owner once, then runs against its local stores instead of issuing
+ * one Durable Object RPC for every service read and write. */
+export interface SlackWorkspaceManagementRpcRequest {
+  signal: SlackManagementSignal;
+  name: WorkspaceManagementToolName;
+  args: WorkspaceManagementToolArguments[WorkspaceManagementToolName];
+}
+
 export function buildRuntimeDrainStatus(
   categories: RuntimeDrainCategories,
 ): RuntimeDrainStatus {
@@ -213,6 +228,9 @@ export interface TurnProgress {
  * operation, promise-returning as seen from the caller side of the stub.
  */
 export interface TagStateRpc {
+  workspaceManagementInvoke(
+    request: SlackWorkspaceManagementRpcRequest,
+  ): Promise<WorkspaceManagementToolResult>;
   // -- identity and organization authorization ----------------------------
   identityExecute(request: IdentityRpcRequest): Promise<StateRpcResult<IdentityRpcResponse>>;
   // -- requester-bound workspace management ledger -----------------------

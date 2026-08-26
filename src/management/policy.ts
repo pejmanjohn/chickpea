@@ -11,25 +11,16 @@ export interface ManagementPolicyFacts {
   credentialReplacement?: boolean;
   agentEditable?: boolean;
   adminRequired?: boolean;
-  userAgentSelfEditAllowed?: boolean;
 }
 
 export type ManagementPolicyDecision =
-  | { allowed: false; reason: 'owner_required' | 'operational_access_required' | 'chickpea_handoff_required' }
+  | { allowed: false; reason: 'owner_required' | 'operational_access_required' }
   | { allowed: true; posture: 'immediate' | 'confirmation'; reason: string };
 
 export function classifyManagementOperation(
   facts: ManagementPolicyFacts,
 ): ManagementPolicyDecision {
   const { actor, operation } = facts;
-  if (actor.actingAgentId && actor.actingAgentId !== 'agent_chickpea') {
-    const safeSelfEdit = operation.kind === 'update_agent' && facts.userAgentSelfEditAllowed;
-    const safeSelfMemory = operation.kind === 'update_agent_memory' &&
-      operation.agentId === actor.actingAgentId;
-    if (!safeSelfEdit && !safeSelfMemory) {
-      return { allowed: false, reason: 'chickpea_handoff_required' };
-    }
-  }
   if (facts.adminRequired && actor.role !== 'admin' && actor.role !== 'owner') {
     return { allowed: false, reason: 'operational_access_required' };
   }
@@ -49,6 +40,12 @@ export function classifyManagementOperation(
   }
   if (operation.kind === 'delete_routine') {
     return { allowed: true, posture: 'confirmation', reason: 'irreversible_routine_delete' };
+  }
+  if (operation.kind === 'create_agent') {
+    return { allowed: true, posture: 'confirmation', reason: 'agent_creation' };
+  }
+  if (operation.kind === 'save_routine') {
+    return { allowed: true, posture: 'confirmation', reason: 'schedule_change' };
   }
   if (operation.kind === 'delete_agent') {
     return { allowed: true, posture: 'confirmation', reason: 'agent_deletion' };
@@ -74,6 +71,18 @@ export function classifyManagementOperation(
     }
     if (facts.capabilityScopeExpanded) {
       return { allowed: true, posture: 'confirmation', reason: 'capability_scope_expansion' };
+    }
+    const fields = Object.keys(operation.patch);
+    if (fields.includes('skills')) {
+      return { allowed: true, posture: 'confirmation', reason: 'skill_change' };
+    }
+    if (fields.some((field) => [
+      'apiConnections', 'mcpServers', 'repositories', 'editPolicy', 'slackPresence',
+    ].includes(field))) {
+      return { allowed: true, posture: 'confirmation', reason: 'capability_or_authority_change' };
+    }
+    if (fields.length > 1) {
+      return { allowed: true, posture: 'confirmation', reason: 'compound_agent_change' };
     }
   }
   if (operation.kind === 'put_channel' &&

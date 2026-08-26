@@ -19,13 +19,18 @@ import {
 } from '../config/provider-keys.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import { storedCredentialMetadata } from '../config/model-credential-refs.ts';
+import { getProviderFavorites } from '../config/provider-models.ts';
 import { clearRepointedMcpCredentials } from '../config/mcp-connection-lifecycle.ts';
+import { activeModelCatalogSnapshot } from '../model-catalog/index.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
 import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
-import { resolveSlackInstallationCredentials } from '../slack/installation-credentials.ts';
+import {
+  resolveSlackInstallationCredentials,
+  type SlackCredentialDependencies,
+} from '../slack/installation-credentials.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import type { SlackTransport } from '../slack/transport/types.ts';
@@ -39,6 +44,7 @@ export interface LiveWorkspaceManagementServiceOptions {
   identity?: IdentityStore;
   settings?: SettingsStore;
   usage?: UsageStore;
+  slackCredentials?: SlackCredentialDependencies;
   overrides?: Partial<WorkspaceManagementServiceInput>;
 }
 
@@ -51,6 +57,7 @@ export function createLiveWorkspaceManagementService(
   const settings = options.settings ?? getSettingsStore(env);
   const identity = options.identity ?? getIdentityStore(env);
   const config = overrides.config ?? getConfigStore(env);
+  const slackCredentials = options.slackCredentials ?? getSlackCredentialDependencies(env);
   const slackTransport = async (workspaceId: string): Promise<SlackTransport> => {
     const installation = await config.getWorkspaceInstallation(workspaceId);
     if (!installation || installation.health === 'revoked') {
@@ -65,7 +72,7 @@ export function createLiveWorkspaceManagementService(
     const credentials = await resolveSlackInstallationCredentials(
       WORKSPACE_SLACK_INSTALLATION_ID,
       env,
-      getSlackCredentialDependencies(env),
+      slackCredentials,
     );
     if (!credentials.botToken) {
       throw new AgentPresenceError(
@@ -168,6 +175,27 @@ export function createLiveWorkspaceManagementService(
       config,
       settings,
     }),
+    listAvailableModels: async () => {
+      const sources = await describeProviderKeySources(env, settings);
+      const entries: Array<{ id: string; name?: string }> =
+        activeModelCatalogSnapshot().entries.flatMap((entry) => {
+          if (entry.id.startsWith('anthropic/') &&
+              entry.lanes.anthropic_api_key && sources.anthropic !== 'missing') {
+            return [{ id: entry.id, ...(entry.displayName ? { name: entry.displayName } : {}) }];
+          }
+          if (entry.id.startsWith('openai/') &&
+              entry.lanes.openai_api_key && sources.openai !== 'missing') {
+            return [{ id: entry.id, ...(entry.displayName ? { name: entry.displayName } : {}) }];
+          }
+          return [];
+        });
+      if (sources.openrouter !== 'missing') {
+        entries.push(...(await getProviderFavorites('openrouter', settings)).map((id) => ({
+          id: `openrouter/${id}`,
+        })));
+      }
+      return entries;
+    },
     publishAgentChannel: async ({ actor, workspaceId, channelId, agentId }) => {
       const user = await actorSlackUser(actor, workspaceId);
       return (await presenceReconciler(workspaceId)).publish({

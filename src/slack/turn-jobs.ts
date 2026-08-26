@@ -367,11 +367,13 @@ export class TurnJobStoreLogic {
       const row = this.db.get('SELECT turn_json FROM turn_jobs WHERE id = ?', id);
       if (!row?.turn_json) throw new Error('TurnJob is unavailable for Flue dispatch.');
       const turn = JSON.parse(String(row.turn_json)) as NormalizedSlackTurn;
-      const signalThreadTs = turn.sessionThreadTs ?? turn.threadTs;
+      const signalThreadTs = decision.runtimePlan.conversation.threadTs;
+      const signalThreadMatchesTurn = signalThreadTs === turn.threadTs ||
+        signalThreadTs === turn.sessionThreadTs;
       if (
         turn.workspaceId !== decision.runtimePlan.conversation.workspaceId ||
         turn.channelId !== decision.runtimePlan.conversation.channelId ||
-        signalThreadTs !== decision.runtimePlan.conversation.threadTs
+        !signalThreadMatchesTurn
       ) {
         throw new Error('Slack signal coordinates do not match RuntimePlanV2.');
       }
@@ -1173,6 +1175,9 @@ function parseFlueSettlement(value: unknown): FlueSettlementCheckpointV1 {
     'settledAt',
     'result',
     'failureKind',
+    // Read compatibility for the bounded diagnostic briefly written by the
+    // disposable authoring investigation. New checkpoints never write it.
+    'debugDiagnostic',
   ]);
   const settledAt = Number(record.settledAt);
   if (!Number.isSafeInteger(settledAt) || settledAt < 0) {
@@ -1181,9 +1186,17 @@ function parseFlueSettlement(value: unknown): FlueSettlementCheckpointV1 {
   if (record.outcome === 'failed' || record.outcome === 'aborted') {
     const failureKind = oneOf(record.failureKind, FLUE_FAILURE_KINDS, 'failure kind');
     if (record.result !== undefined) throw new Error('Failed Flue settlement cannot carry a result.');
-    return { outcome: record.outcome, settledAt, failureKind };
+    if (record.debugDiagnostic !== undefined) {
+      validateBoundedString(record.debugDiagnostic, 'legacy failure diagnostic', 2_000);
+    }
+    return {
+      outcome: record.outcome,
+      settledAt,
+      failureKind,
+    };
   }
-  if (record.outcome !== 'completed' || record.failureKind !== undefined) {
+  if (record.outcome !== 'completed' || record.failureKind !== undefined ||
+      record.debugDiagnostic !== undefined) {
     throw new Error('Flue settlement outcome is invalid.');
   }
   return {

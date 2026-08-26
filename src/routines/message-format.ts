@@ -101,15 +101,15 @@ export function renderRoutineHelp(): string {
     '`!routines pause|resume|disable|run|clone|delete <id>`',
     '`!routines confirm|cancel <token>` — only after a delete request',
     '',
-    '**Create naturally**',
+    '**Conversational Agent authoring**',
     '“Every weekday at 9am Pacific, summarize new support requests and post the digest here.”',
     '“Tomorrow at 2pm PT, post the launch report here.”',
+    'Natural-language creation, editing, and management go through the Agent, which inspects current scheduled work and uses the normal management safeguards. Use the exact ID commands above when you want the deterministic control surface.',
     'You can also use an exact IANA timezone such as `America/Los_Angeles`.',
     'Recurring schedules must be at least five minutes apart.',
     '',
     '**How routines run**',
     'The saved task can request the same actions as a live tag in its Channel. Current membership, Agent, connections, repositories, credentials, policy, and resource limits are rechecked for each run.',
-    'Manage by an exact name: “Pause the routine “Support digest”.” If names collide, use the ID command.',
   ].join('\n');
 }
 

@@ -15,6 +15,7 @@ import type {
   RoutineOutputPolicy,
   RoutineState,
 } from '../routines/types.ts';
+import type { AgentAuthoringReason } from './agent-authoring/index.ts';
 
 export type ManagementOrigin =
   | {
@@ -224,7 +225,7 @@ export interface ChickpeaManagementHandoff {
 }
 
 export interface ManagementObjectRef {
-  kind: 'agent' | 'channel' | 'channel_grant' | 'membership' | 'provider' | 'memory' | 'routine';
+  kind: 'agent' | 'channel' | 'channel_grant' | 'connection' | 'membership' | 'provider' | 'memory' | 'routine';
   id: string;
   revision?: number;
 }
@@ -363,6 +364,7 @@ export interface ManagementApplyResult {
   idempotencyKey: string;
   status: 'completed' | 'partial' | 'confirmation_required';
   outcomes: ManagementItemOutcome[];
+  /** Workspace mutation receipt token; it is not comparable to an actor-scoped inspection token. */
   effectiveRevision: string;
   activation: 'next_turn';
 }
@@ -400,6 +402,17 @@ export interface ManagementWorkspaceSnapshot {
     skills: AgentCreateInput['skills'];
     mcpServers: AgentCreateInput['mcpServers'];
     apiConnections: AgentCreateInput['apiConnections'];
+    /** Secret-free reusable accounts available through this Agent's bindings and visible to the requester. */
+    connections?: Array<{
+      id: string;
+      providerId: string;
+      label: string;
+      purpose?: string;
+      ownerKind: ConnectionAccountOwnerKind;
+      lifecycle: 'pending' | 'ready' | 'needs_attention';
+      enabled: boolean;
+      allowedCapabilities: string[];
+    }>;
     repositories: AgentCreateInput['repositories'];
   }>;
   channels: Array<{
@@ -408,7 +421,12 @@ export interface ManagementWorkspaceSnapshot {
     revision: number;
     label?: string;
     lifecycle: ChannelConfig['lifecycle'];
-    grants: Array<{ agentId: string; status: AgentChannelGrantStatus }>;
+    grants: Array<{
+      agentId: string;
+      status: AgentChannelGrantStatus;
+      /** Revision of this Agent-to-Channel grant, distinct from the parent Channel revision. */
+      revision: number;
+    }>;
   }>;
   providers: Array<{
     id: 'anthropic' | 'openai' | 'openrouter';
@@ -418,6 +436,18 @@ export interface ManagementWorkspaceSnapshot {
     inheritingAgentCount: number;
     affectedAgents: Array<{ id: string; name: string }>;
   }>;
+  /** Additional secret-free context exposed only to a trusted routed user Agent. */
+  selfManagement?: {
+    availableModels: Array<{ id: string; name?: string }>;
+    routineSchedulingAvailable: boolean;
+    capabilityHealth: {
+      mcpConnections: { ready: number; pending: number; failed: number };
+      apiConnections: { ready: number; pending: number; failed: number };
+      reusableConnections: { ready: number; pending: number; needsAttention: number; disabled: number };
+      repositories: { enabled: number; setupRequired: number };
+      channelGrants: { active: number; pending: number; needsAttention: number };
+    };
+  };
   team?: {
     members: Array<{
       id: string;
@@ -430,6 +460,7 @@ export interface ManagementWorkspaceSnapshot {
       revision: number;
     }>;
   };
+  /** Revision of this actor-visible snapshot, including its visible reusable connections. */
   effectiveRevision: string;
 }
 
@@ -483,6 +514,28 @@ export interface ApplyWorkspaceChangesInput {
   context: ManagementActorContext;
   idempotencyKey: string;
   operations: ManagementOperation[];
+}
+
+export interface ProposeWorkspaceChangesInput {
+  context: ManagementActorContext;
+  idempotencyKey: string;
+  guideVersion: string;
+  authoringReason: AgentAuthoringReason;
+  operations: ManagementOperation[];
+}
+
+export interface ProposeWorkspaceChangesResult {
+  proposalId: string;
+  status: 'pending';
+  digest: string;
+  guide: {
+    version: string;
+    uri: string;
+    digest: string;
+  };
+  preview: ManagementChangeSetPreview;
+  expiresAt: number;
+  confirmationTool: 'confirm_workspace_change';
 }
 
 export interface ConfirmWorkspaceChangeInput {
@@ -543,6 +596,43 @@ export interface ManagementProposalRecord {
   updatedAt: number;
 }
 
+export interface ManagementChangeSetPreview {
+  summary: string;
+  changes: Array<{
+    itemId: string;
+    operationKind: ManagementOperation['kind'];
+    target: string;
+    before?: unknown;
+    after?: unknown;
+  }>;
+  missingSetup: Array<{
+    itemId: string;
+    kind: ManagementSetupRequestTarget['kind'];
+    target: string;
+  }>;
+}
+
+/** Durable exact multi-operation proposal. Kept separate from the legacy single-op row. */
+export interface ManagementChangeSetProposalRecord {
+  proposalId: string;
+  organizationId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  originKey: string;
+  idempotencyKey: string;
+  guideVersion: string;
+  authoringReason: AgentAuthoringReason;
+  operations: ManagementOperation[];
+  digest: string;
+  preview: ManagementChangeSetPreview;
+  targetRevisions: Record<string, number>;
+  status: 'pending' | 'applying' | 'completed' | 'stale' | 'expired';
+  result?: ManagementApplyResult;
+  expiresAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface ManagementUndoRecord {
   operationId: string;
   organizationId: string;
@@ -567,6 +657,7 @@ export class ManagementError extends Error {
       | 'proposal_binding_mismatch'
       | 'proposal_expired'
       | 'proposal_stale'
+      | 'base_agent_capabilities_require_setup'
       | 'undo_unavailable'
       | 'operation_in_progress'
       | 'revision_conflict'
@@ -615,6 +706,23 @@ export interface PutManagementProposalInput {
   at: number;
 }
 
+export interface PutManagementChangeSetProposalInput {
+  proposalId: string;
+  organizationId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  originKey: string;
+  idempotencyKey: string;
+  guideVersion: string;
+  authoringReason: AgentAuthoringReason;
+  operations: ManagementOperation[];
+  digest: string;
+  preview: ManagementChangeSetPreview;
+  targetRevisions: Record<string, number>;
+  expiresAt: number;
+  at: number;
+}
+
 export interface PutManagementSetupInput {
   record: ManagementSetupRecord;
 }
@@ -656,6 +764,10 @@ export interface ClaimManagementProposalInput {
   at: number;
 }
 
+export interface ReclaimManagementChangeSetProposalInput extends ClaimManagementProposalInput {
+  expectedUpdatedAt: number;
+}
+
 export type ManagementRpcRequest =
   | { kind: 'reserve_request'; input: ReserveManagementRequestInput }
   | { kind: 'get_request'; operationId: string }
@@ -682,6 +794,25 @@ export type ManagementRpcRequest =
       at: number;
     }
   | { kind: 'mark_proposal_stale'; proposalId: string; at: number }
+  | { kind: 'put_change_set_proposal'; input: PutManagementChangeSetProposalInput }
+  | { kind: 'get_change_set_proposal'; proposalId: string }
+  | { kind: 'claim_change_set_proposal'; input: ClaimManagementProposalInput }
+  | { kind: 'reclaim_change_set_proposal'; input: ReclaimManagementChangeSetProposalInput }
+  | {
+      kind: 'save_change_set_proposal_progress';
+      proposalId: string;
+      result: ManagementApplyResult;
+      expectedUpdatedAt: number;
+      at: number;
+    }
+  | {
+      kind: 'complete_change_set_proposal';
+      proposalId: string;
+      result: ManagementApplyResult;
+      expectedUpdatedAt?: number;
+      at: number;
+    }
+  | { kind: 'mark_change_set_proposal_stale'; proposalId: string; at: number }
   | { kind: 'put_undo'; record: ManagementUndoRecord }
   | { kind: 'get_undo'; operationId: string }
   | { kind: 'consume_undo'; operationId: string; at: number }
@@ -715,6 +846,7 @@ export type ManagementRpcResponse =
   | { kind: 'request_reservation'; request: ManagementRequestRecord; created: boolean }
   | { kind: 'request'; request: ManagementRequestRecord | null }
   | { kind: 'proposal'; proposal: ManagementProposalRecord | null }
+  | { kind: 'change_set_proposal'; proposal: ManagementChangeSetProposalRecord | null }
   | { kind: 'undo'; undo: ManagementUndoRecord | null }
   | { kind: 'setup'; setup: ManagementSetupRecord | null }
   | { kind: 'outbox'; outbox: ManagementReceiptOutboxRecord | null }

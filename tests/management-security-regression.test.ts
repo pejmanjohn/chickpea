@@ -2,8 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
 import { exportWorkspaceRecipe } from '../src/management/recipes.ts';
-import { emitManagementMetric } from '../src/management/telemetry.ts';
+import {
+  agentAuthoringArtifactClass,
+  emitManagementMetric,
+} from '../src/management/telemetry.ts';
 import {
   WORKSPACE_MANAGEMENT_TOOL_NAMES,
   workspaceManagementToolDescription,
@@ -26,6 +30,11 @@ test('management telemetry accepts only content-free dimensions', () => {
     tool: 'PRIVATE_INSTRUCTION_SENTINEL',
     reason: 'alex-private@northstar.example',
     outcome: 'oauth-code-private-123456',
+    guideVersion: 'PRIVATE_INSTRUCTION_SENTINEL',
+    artifactClass: 'northstar/research',
+    proposalOutcome: 'sk-proj-abcdefghijklmnopqrstuvwxyz123456',
+    staleReason: 'T_PRIVATE_WORKSPACE',
+    handoffClass: 'C_PRIVATE_CHANNEL',
     operationCount: 2,
     ignored: 'sk-proj-abcdefghijklmnopqrstuvwxyz123456',
   }, { info: (line) => lines.push(line) });
@@ -35,6 +44,46 @@ test('management telemetry accepts only content-free dimensions', () => {
   assert.match(lines[0]!, /"event":"other"/);
   assert.match(lines[0]!, /"operationCount":2/);
   assert.doesNotMatch(lines[0]!, /ignored/);
+});
+
+test('Agent-authoring telemetry keeps only versioned outcome classes', () => {
+  const lines: string[] = [];
+  emitManagementMetric('agent_authoring.outcome', {
+    surface: 'slack',
+    guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+    posture: 'commit',
+    artifactClass: 'skill',
+    proposalOutcome: 'created',
+    staleReason: 'target_revision',
+    handoffClass: 'cross_agent',
+    operationCount: 1,
+  }, { info: (line) => lines.push(line) });
+
+  assert.deepEqual(JSON.parse(lines[0]!.replace('[chickpea:management] ', '')), {
+    event: 'agent_authoring.outcome',
+    surface: 'slack',
+    guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+    posture: 'commit',
+    artifactClass: 'skill',
+    proposalOutcome: 'created',
+    staleReason: 'target_revision',
+    handoffClass: 'cross_agent',
+    operationCount: 1,
+  });
+  assert.equal(agentAuthoringArtifactClass([{
+    kind: 'update_agent',
+    itemId: 'skill-edit',
+    agentId: 'agent_support',
+    expectedRevision: 1,
+    patch: { skills: [{ name: 'triage', description: 'Triage requests.', instructions: 'Inspect.', enabled: true }] },
+  }]), 'skill');
+  assert.equal(agentAuthoringArtifactClass([{
+    kind: 'update_agent',
+    itemId: 'mixed-edit',
+    agentId: 'agent_support',
+    expectedRevision: 1,
+    patch: { description: 'Support requests.', instructions: 'Resolve support requests.' },
+  }]), 'mixed');
 });
 
 test('tool discovery and portable recipe exports exclude secret and authority corpus', async () => {

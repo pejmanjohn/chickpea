@@ -74,6 +74,21 @@ test('Cloudflare management proxy preserves the canonical ledger contract and ty
       'get_request',
       'reserve_request',
     ]);
+
+    const changeSet = await proxy.putChangeSetProposal({
+      proposalId: 'changeset_rpc',
+      organizationId: 'org_rpc', actorUserId: 'user_rpc', actorMembershipId: 'member_rpc',
+      originKey: 'mcp:client_rpc', idempotencyKey: 'changeset-rpc', guideVersion: '1.0.0',
+      authoringReason: 'agent_creation', operations: input.operations, digest: 'c'.repeat(64),
+      preview: { summary: 'RPC change set', changes: [], missingSetup: [] },
+      targetRevisions: {}, expiresAt: NOW + 1_000, at: NOW,
+    });
+    assert.equal(changeSet.proposalId, 'changeset_rpc');
+    assert.equal((await proxy.getChangeSetProposal(changeSet.proposalId))?.digest, 'c'.repeat(64));
+    assert.deepEqual(calls.slice(-2).map(({ kind }) => kind), [
+      'put_change_set_proposal',
+      'get_change_set_proposal',
+    ]);
   } finally {
     direct.close();
   }

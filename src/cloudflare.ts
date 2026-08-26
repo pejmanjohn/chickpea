@@ -50,6 +50,7 @@ import { SnapshotStoreLogic } from './config/snapshot-store.ts';
 import type {
   StateRpcResult,
   StateRpcErrorCode,
+  SlackWorkspaceManagementRpcRequest,
   TagStateRpc,
   TurnJob,
   TurnProgress,
@@ -57,6 +58,8 @@ import type {
   RuntimeDrainStatus,
 } from './config/state-rpc.ts';
 import { buildRuntimeDrainStatus, tagStateStub } from './config/state-rpc.ts';
+import { promiseBackedStatePort } from './config/local-state-port.ts';
+import { localSlackStateStore } from './slack/local-state-store.ts';
 import {
   getIdentityStore,
   getRoutineStore,
@@ -187,12 +190,16 @@ import { IdentityStoreLogic } from './identity/store.ts';
 import type { IdentityStore } from './identity/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from './identity/types.ts';
 import { ManagementStoreLogic } from './management/store.ts';
+import { createLiveWorkspaceManagementService } from './management/live-service.ts';
+import { invokeSlackWorkspaceManagementTool } from './management/slack-tools.ts';
+import type { WorkspaceManagementToolResult } from './management/tool-adapter.ts';
 import { formatManagementSetupReceipt } from './management/receipts.ts';
 import {
   ManagementError,
   type ManagementRpcRequest,
   type ManagementRpcResponse,
 } from './management/types.ts';
+import { resolveSlackPublicUrl } from './slack/credentials.ts';
 import {
   DurableRunDriver,
   runDriverRetryDelayMs,
@@ -575,6 +582,64 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
     this.stores = this.tryInit();
+  }
+
+  /** Execute one requester-bound management tool inside the state owner. The
+   * service and policy are identical to MCP/Admin/Node; only the Cloudflare
+   * transport changes so a compound Agent turn does not spend its Worker-loop
+   * budget on dozens of same-state proxy calls. */
+  async workspaceManagementInvoke(
+    request: SlackWorkspaceManagementRpcRequest,
+  ): Promise<WorkspaceManagementToolResult> {
+    this.stores ??= this.tryInit();
+    const stores = this.stores;
+    if (!stores) return workspaceManagementRpcFailure();
+    try {
+      const platformEnv = this.env as PlatformEnv;
+      const local = localGatewayAppStores(stores);
+      const settings = localSettingsStore(stores);
+      const service = createLiveWorkspaceManagementService(platformEnv, {
+        identity: local.identity,
+        settings,
+        usage: local.usage,
+        slackCredentials: {
+          state: local.identity,
+          keyring: loadCredentialKeyring(platformEnv),
+        },
+        overrides: {
+          identity: local.identity,
+          config: local.config,
+          management: local.management,
+          memory: local.memory,
+          routines: local.routines,
+          work: local.work,
+          setupBaseUrl: () => resolveSlackPublicUrl(platformEnv, settings),
+        },
+      });
+      const result = await invokeSlackWorkspaceManagementTool({
+        signal: request.signal,
+        identity: local.identity,
+        service,
+        name: request.name,
+        args: request.args,
+      });
+      try {
+        const outboxDueAt = stores.management.nextOutboxDueAt();
+        if (outboxDueAt !== undefined) {
+          await this.armAlarmNoLaterThan(Math.max(Date.now(), outboxDueAt));
+        }
+      } catch {
+        // The management operation has already reached a terminal service
+        // result. Outbox inspection and alarm delivery are retryable follow-up
+        // work and must not rewrite a successful mutation into an ambiguous
+        // transport error.
+        console.error('[chickpea] Workspace management receipt alarm failed');
+      }
+      return result;
+    } catch {
+      console.error('[chickpea] Workspace management state RPC failed');
+      return workspaceManagementRpcFailure();
+    }
   }
 
   /**
@@ -1474,6 +1539,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           workStore: stores.work as unknown as WorkStore,
           settingsStore: localSettingsStore(stores),
           usageStore,
+          appStores: localGatewayAppStores(stores),
           ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
           onRuntimePlan: (candidate) => stores.turnJobs.freezeRuntimePlan(job.id, candidate),
           flueDispatch,
@@ -1964,20 +2030,20 @@ async function drainGatewayInbox(
 }
 
 function localGatewayAppStores(stores: TagStateStores): AppStores {
-  // Store logic methods are synchronous inside the owning DO. The public
-  // ports are promise-shaped, and `await` safely accepts these immediate
-  // values while avoiding a self-RPC back into TAG_STATE from its alarm.
+  // Store logic methods are synchronous inside the owning DO, while every
+  // public port is Promise-shaped. Adapt the methods instead of casting them:
+  // callers may attach `.catch(...)` directly rather than awaiting first.
   return {
-    identity: stores.identity,
-    config: stores.config,
-    snapshots: stores.snapshots,
-    slackState: stores.slack,
-    settings: stores.settings,
-    memory: stores.memory,
-    routines: stores.routines,
-    usage: stores.usage,
-    work: stores.work,
-    management: stores.management,
+    identity: promiseBackedStatePort(stores.identity),
+    config: promiseBackedStatePort(stores.config),
+    snapshots: promiseBackedStatePort(stores.snapshots),
+    slackState: localSlackStateStore(stores),
+    settings: promiseBackedStatePort(stores.settings),
+    memory: promiseBackedStatePort(stores.memory),
+    routines: promiseBackedStatePort(stores.routines),
+    usage: promiseBackedStatePort(stores.usage),
+    work: promiseBackedStatePort(stores.work),
+    management: promiseBackedStatePort(stores.management),
   } as unknown as AppStores;
 }
 
@@ -2030,6 +2096,16 @@ function localUsageStore(stores: TagStateStores): UsageStore {
 function earliestDefined(...values: Array<number | undefined>): number | undefined {
   const defined = values.filter((value): value is number => value !== undefined);
   return defined.length ? Math.min(...defined) : undefined;
+}
+
+function workspaceManagementRpcFailure(): WorkspaceManagementToolResult {
+  return {
+    ok: false,
+    error: {
+      code: 'management_error',
+      message: 'The workspace management request failed.',
+    },
+  };
 }
 
 function rpcError(

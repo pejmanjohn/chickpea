@@ -10,7 +10,13 @@ import { resolveAgentModel } from '../config/model-policy.ts';
 import { getGithubConnection } from '../config/github-app.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
-import { getConfigStore, getSettingsStore, getUsageStore, getWorkStore } from '../config/state-backend.ts';
+import {
+  getConfigStore,
+  getSettingsStore,
+  getUsageStore,
+  getWorkStore,
+  type AppStores,
+} from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type {
@@ -28,6 +34,7 @@ import {
   handleRoutineSlackRequest,
   parseRoutineCommand,
   routineResponseVisibility,
+  shouldHandleRoutineCommandTurn,
 } from '../routines/commands.ts';
 import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import {
@@ -187,6 +194,8 @@ export interface RunTurnOptions {
   settingsStore?: SettingsStore;
   /** Local override avoids a Durable Object calling its own Usage RPC. */
   usageStore?: UsageStore;
+  /** Local state ports when the turn already runs inside their owning DO. */
+  appStores?: AppStores;
   /** Test/rollout override; otherwise USAGE_RUNTIME_RECORDING controls capture. */
   usageRecordingEnabled?: boolean;
   /** Test override, bounded to the product's 250 ms maximum. */
@@ -259,10 +268,15 @@ export async function runTurn(
   // resolve it from the agent via policy.
   const resolvedModel = resolvedAssignmentModel(assignment);
   const ledgerAuthority = options.executionAuthority === 'ledger';
+  const commandAddress = {
+    botUserId: installationContext?.botUserId,
+    agentUserGroupId: assignment.agent.slackPresence?.userGroupId,
+  };
+  const settingsStore = options.settingsStore ?? options.appStores?.settings;
   // env (SLACK_TAG_PUBLIC_URL) → stored slack.publicUrl (the origin the admin
   // pinned): on a button deploy nobody sets the env var, so without the stored
   // fallback the footer's "Configure" link would be dead.
-  const publicUrl = await resolveSlackPublicUrl(platformEnv);
+  const publicUrl = await resolveSlackPublicUrl(platformEnv, settingsStore);
   const agentAvatarUrl = agentAvatarUrlForPresentation(assignment.agent, publicUrl);
   // Once the Chickpea contract is active, the frozen Workspace default is the
   // only fallback for an unpinned Agent. Never reintroduce SLACK_TAG_MODEL (or
@@ -288,13 +302,20 @@ export async function runTurn(
     await repairPresenter.markCanonicalPresentationFinalized();
     return;
   }
-  // Natural-language Routine intent runs through a fresh, tool-less v2 agent.
-  // A selected ledger canary deliberately skips that pre-parser;
-  // explicit Routine commands are kept off this lane at admission.
-  if (!ledgerAuthority && isRoutineSlackTurn(turn)) {
+  // Exact `!routines` controls stay deterministic. All natural-language
+  // schedule creation and editing reaches the interactive Flue Agent, where
+  // agent-authoring decides placement and uses management proposals.
+  if (shouldHandleRoutineCommandTurn(turn, commandAddress)) {
     const routineText = await handleRoutineSlackRequest(turn, platformEnv, {
       ...(installationContext ? { installationContext } : {}),
       assignment,
+      ...(options.appStores
+        ? {
+            store: options.appStores.routines,
+            config: options.appStores.config,
+            identity: options.appStores.identity,
+          }
+        : {}),
     });
     if (routineText !== undefined) {
       const routinePresenter = new WebClientPresenter(client, {
@@ -314,7 +335,7 @@ export async function runTurn(
           ? { onPublicDelivery: options.onPublicMessageDelivered }
           : {}),
       });
-      if (routineResponseVisibility(turn.text, turn.channelId) === 'requester') {
+      if (routineResponseVisibility(turn.text, turn.channelId, commandAddress) === 'requester') {
         await routinePresenter.deliverRequesterOnly(routineText, 'markdown');
       } else {
         await routinePresenter.deliverFinal(routineText, 'markdown');
@@ -325,7 +346,7 @@ export async function runTurn(
   }
   const memoryCommand = parseMemoryCommand(turn.text);
   const deterministicCommand = Boolean(memoryCommand) ||
-    (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text)));
+    (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress)));
   let interactionIntent = turn.interactionIntent;
   if (!deterministicCommand && !interactionIntent) {
     const classification = await classifySlackInteraction({
@@ -343,7 +364,9 @@ export async function runTurn(
           ? assignment.instructions
           : assignment.agent.instructions,
       requestedModel: resolvedModel ?? null,
-    }, platformEnv);
+    }, platformEnv, undefined, undefined, {
+      ...(settingsStore ? { settings: settingsStore } : {}),
+    });
     interactionIntent = classification.intent;
     turn.interactionIntent = interactionIntent;
     await options.onInteractionIntent?.(interactionIntent);
@@ -369,6 +392,15 @@ export async function runTurn(
         ...(installationContext
           ? { botToken: installationContext.botToken, botUserId: installationContext.botUserId }
           : {}),
+        ...(options.appStores
+          ? {
+              dependencies: {
+                config: options.appStores.config,
+                identity: options.appStores.identity,
+                state: options.appStores.memory,
+              },
+            }
+          : {}),
       });
   const conversationKey = preparedMemory?.conversationKey ?? slackAgentThreadKey(turn, assignment);
   let sandboxUnavailableFallback = false;
@@ -379,7 +411,8 @@ export async function runTurn(
           assignment,
           platformEnv,
           memoryEpoch: preparedMemory.memoryEpoch,
-          ...(options.settingsStore ? { settingsStore: options.settingsStore } : {}),
+          ...(settingsStore ? { settingsStore } : {}),
+          ...(options.appStores?.config ? { configStore: options.appStores.config } : {}),
           ...(options.onRuntimePlan ? { persist: options.onRuntimePlan } : {}),
         });
     runtimePlanDecision = frozen.decision;
@@ -412,7 +445,7 @@ export async function runTurn(
         ),
         platformEnv,
         ...(options.workStore ? { workStore: options.workStore } : {}),
-        ...(options.settingsStore ? { settingsStore: options.settingsStore } : {}),
+        ...(settingsStore ? { settingsStore } : {}),
         mode: ledgerAuthority ? 'enforce' : 'observe',
       })
     : undefined;
@@ -608,6 +641,15 @@ export async function runTurn(
         ...(installationContext
           ? { botToken: installationContext.botToken, botUserId: installationContext.botUserId }
           : {}),
+        ...(options.appStores
+          ? {
+              dependencies: {
+                config: options.appStores.config,
+                identity: options.appStores.identity,
+                state: options.appStores.memory,
+              },
+            }
+          : {}),
       });
       if (handled) {
         await finishDelivery();
@@ -644,7 +686,7 @@ export async function runTurn(
         requestedModel: resolvedModel ?? null,
         operationId: statusGeneration,
         executionId: options.usageExecutionId ?? `exec:${statusGeneration}:1`,
-        store: options.usageStore ?? getUsageStore(platformEnv),
+        store: options.usageStore ?? options.appStores?.usage ?? getUsageStore(platformEnv),
         ...(options.runId ? { runId: options.runId } : {}),
         ...(platformEnv ? { platformEnv } : {}),
         ...(options.usageWriteBudgetMs === undefined
@@ -1210,6 +1252,7 @@ async function freezeRuntimePlanForTurn(input: {
   assignment: ResolvedAssignment;
   platformEnv: PlatformEnv | undefined;
   settingsStore?: SettingsStore;
+  configStore?: ReturnType<typeof getConfigStore>;
   memoryEpoch: number;
   persist?: (candidate: RuntimePlanV2) => FrozenRuntimePlanDecision | Promise<FrozenRuntimePlanDecision>;
 }): Promise<{
@@ -1231,7 +1274,7 @@ async function freezeRuntimePlanForTurn(input: {
   ].join('\n');
   const actorConnectionContext = input.turn.actorMembershipId
     ? {
-        config: getConfigStore(input.platformEnv),
+        config: input.configStore ?? getConfigStore(input.platformEnv),
         workspaceId: input.turn.workspaceId,
         agentId: input.assignment.agentId,
         actorMembershipId: input.turn.actorMembershipId,

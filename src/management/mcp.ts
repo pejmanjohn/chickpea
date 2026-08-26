@@ -6,6 +6,7 @@ import {
 } from '../config/state-backend.ts';
 import {
   applyWorkspaceChangesZodSchema,
+  proposeWorkspaceChangesZodSchema,
   confirmWorkspaceChangeZodSchema,
   getOperationZodSchema,
   inspectWorkspaceZodSchema,
@@ -20,6 +21,13 @@ import {
   revokeSetupLinkZodSchema,
   undoWorkspaceChangeZodSchema,
 } from './schemas.ts';
+import {
+  AGENT_AUTHORING_GUIDE,
+  AGENT_AUTHORING_GUIDE_DIGEST,
+  AGENT_AUTHORING_GUIDE_URI,
+  AGENT_AUTHORING_GUIDE_VERSION,
+  AGENT_SKILL_CREATION_GUIDE,
+} from './agent-authoring/index.ts';
 import { WorkspaceManagementService } from './service.ts';
 import { createLiveWorkspaceManagementService } from './live-service.ts';
 import {
@@ -33,10 +41,12 @@ import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '2.0.0',
+  version: '2.1.0',
 } as const;
 export const WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI =
   'chickpea://schema/operations/v2' as const;
+export const WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI =
+  AGENT_AUTHORING_GUIDE_URI;
 export interface WorkspaceManagementMcpServerInput {
   principal: McpAuthenticatedPrincipal;
   service: WorkspaceManagementService;
@@ -154,6 +164,17 @@ export function createWorkspaceManagementMcpServer(
     args,
   )));
 
+  server.registerTool('propose_workspace_changes', {
+    title: 'Propose Chickpea workspace changes',
+    description: workspaceManagementToolDescription('propose_workspace_changes'),
+    inputSchema: proposeWorkspaceChangesZodSchema,
+    annotations: { readOnlyHint: false, idempotentHint: false },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'propose_workspace_changes',
+    { ...args, operations: args.operations as ManagementOperation[] },
+  )));
+
   server.registerTool('apply_workspace_changes', {
     title: 'Apply Chickpea workspace changes',
     description: workspaceManagementToolDescription('apply_workspace_changes'),
@@ -245,6 +266,28 @@ export function createWorkspaceManagementMcpServer(
       }),
     }],
   }));
+
+  server.registerResource(
+    'agent-authoring-guide',
+    WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
+    {
+      title: 'Chickpea Agent-authoring guide',
+      description: 'Canonical versioned guidance for exploring, creating, and editing Chickpea Agents.',
+      mimeType: 'application/json',
+    },
+    async (uri) => ({
+      contents: [{
+        uri: uri.href,
+        mimeType: 'application/json',
+        text: JSON.stringify({
+          version: AGENT_AUTHORING_GUIDE_VERSION,
+          digest: AGENT_AUTHORING_GUIDE_DIGEST,
+          guide: AGENT_AUTHORING_GUIDE,
+          files: { 'skill-creation.md': AGENT_SKILL_CREATION_GUIDE },
+        }),
+      }],
+    }),
+  );
 
   return server;
 }

@@ -108,7 +108,7 @@ function projectConnectionAccounts(
       (account.lifecycle === 'ready' || includeUnavailable && account.lifecycle === 'needs_attention') ? [{
       account,
       binding,
-      policy: applyCapabilityCeiling(
+      policy: applyConnectionCapabilityCeiling(
         bound.ownerKind === 'member' && account.id !== bound.id
           ? applyPersonalTemplateCeiling(bound.policy, account.policy)
           : account.policy,
@@ -185,7 +185,7 @@ function projectPersonalConnectionAuthorizationOptions(
     return [{
       providerId: template.providerId,
       templateAccountId: template.id,
-      policy: applyCapabilityCeiling(template.policy, binding),
+      policy: applyConnectionCapabilityCeiling(template.policy, binding),
       allowedCapabilities: [...binding.allowedCapabilities],
       accounts: actorAccounts.map(({ id, label, purpose, lifecycle }) => ({
         id,
@@ -522,7 +522,7 @@ export function externalActionAuthorityInstructions(persistedAgentInstructions: 
   ].join('\n');
 }
 
-function applyCapabilityCeiling(
+export function applyConnectionCapabilityCeiling(
   policy: ConnectionAccountPolicy,
   binding: AgentConnectionBinding,
 ): ConnectionAccountPolicy {

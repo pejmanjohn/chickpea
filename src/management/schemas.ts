@@ -2,6 +2,10 @@ import * as v from 'valibot';
 import { z } from 'zod';
 
 import { AGENT_ID_PATTERN } from '../config/agent-id.ts';
+import {
+  AGENT_AUTHORING_GUIDE_VERSION,
+  AGENT_AUTHORING_REASONS,
+} from './agent-authoring/index.ts';
 
 export const MANAGEMENT_OPERATION_KINDS = [
   'create_agent',
@@ -261,6 +265,12 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
 
 export const applyWorkspaceChangesZodSchema = z.strictObject({
   idempotencyKey: zText(256),
+  operations: z.array(managementOperationZodSchema).min(1).max(25),
+});
+export const proposeWorkspaceChangesZodSchema = z.strictObject({
+  idempotencyKey: zText(256),
+  guideVersion: z.literal(AGENT_AUTHORING_GUIDE_VERSION),
+  authoringReason: z.enum(AGENT_AUTHORING_REASONS),
   operations: z.array(managementOperationZodSchema).min(1).max(25),
 });
 export const confirmWorkspaceChangeZodSchema = z.strictObject({ proposalId: zId });
@@ -543,6 +553,12 @@ export const managementOperationValibotSchema = v.variant('kind', [
 
 export const applyWorkspaceChangesValibotSchema = v.strictObject({
   idempotencyKey: vt(256),
+  operations: v.pipe(v.array(managementOperationValibotSchema), v.minLength(1), v.maxLength(25)),
+});
+export const proposeWorkspaceChangesValibotSchema = v.strictObject({
+  idempotencyKey: vt(256),
+  guideVersion: v.literal(AGENT_AUTHORING_GUIDE_VERSION),
+  authoringReason: v.picklist(AGENT_AUTHORING_REASONS),
   operations: v.pipe(v.array(managementOperationValibotSchema), v.minLength(1), v.maxLength(25)),
 });
 export const confirmWorkspaceChangeValibotSchema = v.strictObject({ proposalId: vid });

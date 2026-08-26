@@ -2,6 +2,9 @@
 import { readFileSync } from 'node:fs';
 
 const REQUEST_TIMEOUT_MS = 15_000;
+const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1';
+const AGENT_AUTHORING_GUIDE_VERSION = '1.0.10';
+const MANAGEMENT_MCP_SERVER_VERSION = '2.1.0';
 
 function fetchWithDeadline(input, init = {}) {
   return fetch(input, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
@@ -58,16 +61,92 @@ async function main(rawBaseUrl) {
     return;
   }
 
+  if (protocolVersion() !== '2026-07-28') {
+    const initialized = await mcpCall(base, token, 'initialize', {
+      protocolVersion: protocolVersion(),
+      capabilities: {},
+      clientInfo: { name: 'chickpea-management-canary', version: '1.0.0' },
+    });
+    requireEqual(
+      initialized?.serverInfo?.version,
+      MANAGEMENT_MCP_SERVER_VERSION,
+      'workspace-management MCP server version',
+    );
+  }
   const listed = await mcpCall(base, token, 'tools/list', {});
   const names = listed?.tools?.map?.((tool) => tool?.name).filter(Boolean) ?? [];
-  for (const expected of ['inspect_workspace', 'apply_workspace_changes', 'get_operation']) {
+  for (const expected of [
+    'inspect_workspace',
+    'propose_workspace_changes',
+    'apply_workspace_changes',
+    'get_operation',
+  ]) {
     if (!names.includes(expected)) throw new Error(`MCP tool inventory omitted ${expected}.`);
+  }
+  const resources = await mcpCall(base, token, 'resources/list', {});
+  if (!(resources?.resources ?? []).some((resource) => resource?.uri === AGENT_AUTHORING_GUIDE_URI)) {
+    throw new Error('MCP resource inventory omitted the Agent-authoring guide.');
+  }
+  const guideResult = await mcpCall(base, token, 'resources/read', {
+    uri: AGENT_AUTHORING_GUIDE_URI,
+  });
+  const guide = JSON.parse(guideResult?.contents?.[0]?.text ?? '{}');
+  requireEqual(guide.version, AGENT_AUTHORING_GUIDE_VERSION, 'Agent-authoring guide version');
+  if (typeof guide.digest !== 'string' || !/^[a-f0-9]{64}$/.test(guide.digest) ||
+      typeof guide.guide !== 'string' || guide.guide.length < 1 ||
+      typeof guide.files?.['skill-creation.md'] !== 'string' ||
+      guide.files['skill-creation.md'].length < 1) {
+    throw new Error('Agent-authoring guide content or digest is invalid.');
   }
   const inspected = await mcpCall(base, token, 'tools/call', {
     name: 'inspect_workspace',
     arguments: {},
   });
-  assertSuccessfulToolResult(inspected, 'workspace inspection');
+  const snapshot = assertSuccessfulToolResult(inspected, 'workspace inspection');
+
+  const canaryAgentId = `agent_canary_${Date.now().toString(36)}`;
+  const proposed = await mcpCall(base, token, 'tools/call', {
+    name: 'propose_workspace_changes',
+    arguments: {
+      idempotencyKey: `canary-${Date.now().toString(36)}`,
+      guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+      authoringReason: 'agent_creation',
+      operations: [{
+        itemId: 'canary',
+        kind: 'create_agent',
+        agent: {
+          id: canaryAgentId,
+          name: 'Unconfirmed MCP canary',
+          description: 'Verifies proposal behavior without creating an Agent.',
+          instructions: 'This proposal is never confirmed.',
+          enabled: true,
+          skills: [],
+          mcpServers: [],
+          apiConnections: [],
+          repositories: [],
+        },
+      }],
+    },
+  });
+  const proposal = assertSuccessfulToolResult(proposed, 'workspace-change proposal');
+  if (proposal?.guide?.version !== AGENT_AUTHORING_GUIDE_VERSION ||
+      proposal?.guide?.uri !== AGENT_AUTHORING_GUIDE_URI ||
+      proposal?.guide?.digest !== guide.digest ||
+      !String(proposal?.proposalId ?? '').startsWith('changeset_')) {
+    throw new Error('Workspace-change proposal omitted canonical guide metadata.');
+  }
+  const reinspected = assertSuccessfulToolResult(await mcpCall(base, token, 'tools/call', {
+    name: 'inspect_workspace',
+    arguments: {},
+  }), 'post-proposal workspace inspection');
+  requireEqual(
+    reinspected?.effectiveRevision,
+    snapshot?.effectiveRevision,
+    'configuration revision after unconfirmed proposal',
+  );
+  if ((reinspected?.agents ?? []).some((agent) => agent?.id === canaryAgentId)) {
+    throw new Error('Unconfirmed proposal created an Agent.');
+  }
 
   // A second stateless call exercises disconnect/reconnect semantics without
   // retaining a server session or printing the private workspace snapshot.
@@ -75,7 +154,7 @@ async function main(rawBaseUrl) {
   if ((relisted?.tools?.length ?? 0) !== names.length) {
     throw new Error('Stateless reconnect returned a different tool inventory.');
   }
-  console.log(`ok authenticated inspect and stateless reconnect (${names.length} tools)`);
+  console.log(`ok authenticated guide, no-write proposal, and stateless reconnect (${names.length} tools)`);
 
   const applyPath = process.env.MANAGEMENT_MCP_CANARY_APPLY_PATH?.trim();
   if (!applyPath) return;
@@ -117,6 +196,7 @@ function assertSuccessfulToolResult(result, label) {
   if (typeof text !== 'string') throw new Error(`${label} returned no text result.`);
   const envelope = JSON.parse(text);
   if (envelope?.ok !== true) throw new Error(`${label} returned a tool error.`);
+  return envelope.result;
 }
 
 function mcpHeaders(method, params) {
@@ -128,6 +208,9 @@ function mcpHeaders(method, params) {
     ...(protocol === '2026-07-28' ? { 'mcp-method': method } : {}),
     ...(protocol === '2026-07-28' && method === 'tools/call' && typeof params.name === 'string'
       ? { 'mcp-name': params.name }
+      : {}),
+    ...(protocol === '2026-07-28' && method === 'resources/read' && typeof params.uri === 'string'
+      ? { 'mcp-name': params.uri }
       : {}),
   };
 }

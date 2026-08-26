@@ -10,15 +10,15 @@ The compact tool surface is:
 
 - `inspect_workspace`, `prepare_connector_setup`, `discover_slack_channels`, `test_mcp_connection`, `inspect_memory`, and `inspect_routines`
 - `export_workspace_recipe` and `preview_workspace_recipe`
-- `apply_workspace_changes`
+- `propose_workspace_changes` and `apply_workspace_changes`
 - `confirm_workspace_change` and `undo_workspace_change`
 - `get_operation` and `revoke_setup_link`
 
-The server advertises contract version `2.0.0`; the versioned operation inventory is available at `chickpea://schema/operations/v2`.
+The server advertises contract version `2.1.0`. The typed operation inventory remains backward-compatible at `chickpea://schema/operations/v2`; Agent-authoring guidance is an additive resource at `chickpea://guide/agent-authoring/v1`. Read the guide before translating conversational intent into configuration. The resource includes both the main guide and its packaged `skill-creation.md` procedure. A proposal result repeats its guide version, URI, and digest so a client can prove which guidance produced the preview.
 
 `prepare_connector_setup` is the credential-safe connector entry point for MCP and Slack. Give it an editable Agent plus a connector catalog id or display name (for example `gmail` or `Gmail`). It returns an authenticated Admin handoff URL that opens the requested Agent's reusable connection form. In a Slack conversation routed through a specific Agent handle, the adapter supplies that current Agent as the default target; credentials must never be requested in Slack or model context.
 
-`apply_workspace_changes` accepts at most 25 ordered typed operations. `dependsOn` gives a progressive batch explicit prerequisites; a failed prerequisite skips only its dependents. `clientRef` lets later operations address an Agent created earlier in the same request. A batch is not globally atomic, and every item returns its own durable disposition.
+`propose_workspace_changes` accepts exact typed operations and writes no configuration. Each call must include a requester-chosen `idempotencyKey`, the current guide version, and an `authoringReason` (`agent_creation`, `agent_edit`, `skill_creation`, `skill_edit`, or `onboarding`). Retrying the same bound key and exact operation digest returns the original proposal; reusing it for different content fails closed. `apply_workspace_changes` remains for explicit direct edits and backward-compatible clients; it routes any confirmation-required operation into the existing proposal lifecycle instead of bypassing review. Apply requests accept at most 25 ordered operations. `dependsOn` gives a progressive batch explicit prerequisites; a failed prerequisite skips only its dependents. `clientRef` lets later operations address an Agent created earlier in the same admitted request. A progressive apply batch is not globally atomic, and every item returns its own durable disposition.
 
 ## Connect a coding agent
 
@@ -39,7 +39,17 @@ Dynamic Client Registration is an intentionally bounded compatibility window for
 
 Slack workspace roles are not Chickpea roles. Every call re-resolves the live Chickpea membership and access overlay. Tool arguments cannot select a user, organization, membership, Slack requester, or credential scope.
 
-Safe creation and ordinary reversible edits apply immediately. Chickpea returns a bound proposal before:
+The adapter also supplies the acting scope; model-authored arguments cannot forge it:
+
+| Surface | Authoring scope |
+|---|---|
+| User Agent in Slack | Its own complete configuration only, when the requester may edit it |
+| Base Chickpea Agent in Slack | Create Agents and edit requester-permitted Agents |
+| External MCP client | Requester-permitted Agents, with no implied acting Agent |
+
+A user Agent may self-manage instructions, skills, model, presence, edit policy, connections, repositories, memory, reach, setup, routines, and lifecycle. Existing setup, membership, revision, Channel, destructive-confirmation, and audit gates still apply. Cross-Agent or workspace-authority work returns a bounded Chickpea handoff or a permission-safe denial without exposing the target configuration. An archived Agent cannot process another Slack turn; restoration must enter through an active authorized surface.
+
+An explicit reversible single-field edit may apply directly when current policy permits it. New-Agent creation and generated, inferred, compound, multi-field, skill-bearing, capability-expanding, reach-changing, scheduled, destructive, or otherwise consequential changes use `propose_workspace_changes`. The legacy apply tool also returns a bound proposal for any operation whose policy requires confirmation, including:
 
 - deleting an Agent, routine, or durable memory entry;
 - changing member authority;
@@ -49,15 +59,17 @@ Safe creation and ordinary reversible edits apply immediately. Chickpea returns 
 - archiving or restoring an Agent, or granting or revoking Channel reach; or
 - overwriting an existing Agent from a recipe.
 
-The same live requester must confirm from the same MCP client or Slack thread before the proposal expires. A target revision change invalidates it. Preview again instead of retrying a stale proposal.
+The same live requester must confirm from the same MCP client or Slack thread before the proposal expires. `confirm_workspace_change` accepts only the proposal handle and applies the frozen operations; it cannot reinterpret them. A changed target revision, digest, permission, requester, acting Agent, or origin makes the whole change set stale or denied before its first write. Inspect again and present a newly calculated diff instead of retrying the old handle.
 
 ## Clean Agent creation
 
-A coding agent or the Chickpea Slack agent can translate a short request such as “Create a research Agent and give it our synthesis skill and Notion” into one progressive batch:
+During exploration, keep the Agent blueprint in the conversation and create no record. Once the requester approves a coherent base Agent, propose that base creation by itself:
 
 ```json
 {
-  "idempotencyKey": "create-research-v1",
+  "idempotencyKey": "agent-research-v1",
+  "guideVersion": "1.0.10",
+  "authoringReason": "agent_creation",
   "operations": [
     {
       "itemId": "agent",
@@ -82,7 +94,9 @@ A coding agent or the Chickpea Slack agent can translate a short request such as
 }
 ```
 
-The adapter, not the model, supplies requester authority. The acting membership is always recorded as the Agent creator; tool arguments cannot forge it. Use IDs and current revisions returned by `inspect_workspace`; do not guess them. Reuse the idempotency key only for byte-equivalent intent. If the same key is sent with a different digest, Chickpea rejects it. Channel publication remains a separate, confirmation-gated operation: `put_channel` records the Slack Channel and `grant_agent_channel` performs live Slack membership, bot-membership, and Agent-presence reconciliation before activating the additive grant. `revoke_agent_channel` also rechecks the acting Slack member before removing reach.
+Show the returned exact preview and approve it with `confirm_workspace_change`. Confirmed creation produces only the reviewed active base Agent. It must not silently add a connector, repository grant, Channel grant, separate Slack identity, or routine. Add each later capability through its normal setup and authority path. If the desired blueprint contains an inline skill, its full generated content remains proposal-reviewed; external capabilities still cannot ride inside the create operation.
+
+The adapter, not the model, supplies requester authority. The acting membership is recorded as the Agent creator; tool arguments cannot forge it. Use current IDs and revisions returned by inspection rather than guessing them. Channel publication remains a separate, confirmation-gated operation: `put_channel` records the Slack Channel and `grant_agent_channel` performs live Slack membership, bot-membership, and Agent-presence reconciliation before activating the additive grant. `revoke_agent_channel` also rechecks the acting Slack member before removing reach.
 
 Successful configuration is active on the next newly admitted Slack event, including a reply in an existing thread. An already admitted response and all of its retries keep their frozen runtime plan.
 
@@ -125,6 +139,8 @@ Apply the returned `operations` with the ordinary `apply_workspace_changes` tool
 
 Every mutation has a durable operation ID. `get_operation` returns only records owned by the same requester and organization. Setup URLs are returned once when issued and are not stored in pollable operation results. Polling reveals lifecycle and non-secret receipts, not raw capabilities.
 
+Exact proposals return a bounded preview, missing-setup list, target revisions, expiry, and canonical guide metadata. Confirmation results report `applied`, `setup_required`, `stale`, `denied`, `failed`, or `partial` outcomes without returning authored bodies in telemetry. A `partial` result means the admitted change set encountered a downstream per-item failure after an earlier item applied; dependents are skipped and the receipt identifies item and operation classes. It is not permission to replay the whole set.
+
 `undo_workspace_change` is available only for an eligible single safe mutation at its exact resulting revision. If the inverse has become risky, undo returns a proposal instead of bypassing confirmation.
 
 ## Client acceptance matrix
@@ -137,11 +153,11 @@ Every mutation has a durable operation ID. `get_operation` returns only records 
 
 `tests/management-client-compatibility.test.ts` covers public-client metadata and stateless tool discovery for these profiles. `tests/management-oauth.test.ts` covers discovery, DCR, PKCE/resource binding, live membership denial, continuation safety, registration limits, and revocation behavior. These fixtures do not claim that a particular installed desktop build completed a real browser authorization.
 
-Run `npm run verify:management-mcp` against a disposable deployment for read-only live acceptance. Supply a bearer token only through the environment; the verifier never prints it or response bodies. A live mutation or third-party connector canary requires separate explicit authorization and the manual evidence procedure below.
+Run `npm run verify:management-mcp` against a disposable deployment for read-only live acceptance. Supply a bearer token only through the environment; the verifier never prints it or response bodies. The authenticated default path reads the guide, creates one unconfirmed base-Agent proposal, and proves the effective revision and Agent inventory did not change. A live mutation or third-party connector canary requires separate explicit authorization, `MANAGEMENT_MCP_ALLOW_MUTATION=1`, and a supplied canary payload.
 
 ## Diagnostics and telemetry
 
-Content-free log envelopes use the `[chickpea:management]` prefix. Events cover OAuth discovery/DCR/token/request outcomes, tool calls, operation kind and disposition, policy/stale outcomes, setup lifecycle, receipt delivery, live-versus-snapshot admission, and recipe preview counts. Dimensions are fixed machine tokens and counts; unknown values become `other`. Actor IDs, Slack coordinates, object IDs, names, prompts, instructions, recipes, URLs, account labels, credentials, and error text are not accepted.
+Content-free log envelopes use the `[chickpea:management]` prefix. Events cover OAuth discovery/DCR/token/request outcomes, tool calls, operation kind and disposition, Agent-authoring guide version, posture, artifact class, proposal outcome, stale reason, handoff class, setup lifecycle, receipt delivery, live-versus-snapshot admission, and recipe preview counts. Dimensions are fixed machine tokens and counts; unknown values become `other`. Actor IDs, Slack coordinates, object IDs, names, prompts, instructions, memory bodies, recipes, repository names, URLs, account labels, credentials, setup capabilities, and error text are not accepted.
 
 For support:
 

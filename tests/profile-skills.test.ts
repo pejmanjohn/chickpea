@@ -64,3 +64,11 @@ test('resolveProfileSkills skips an invalid row instead of throwing', () => {
     ['valid-skill'],
   );
 });
+
+test('resolveProfileSkills skips names reserved by product-owned skills', () => {
+  const refs = resolveProfileSkills([
+    skill({ name: 'agent-authoring' }),
+    skill({ name: 'incident-scribe' }),
+  ], { reservedNames: ['agent-authoring'] });
+  assert.deepEqual(refs.map((ref) => ref.name), ['incident-scribe']);
+});
