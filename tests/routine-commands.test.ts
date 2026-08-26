@@ -119,9 +119,26 @@ async function seedRoutine(store: RoutineStore, name = 'Support steward'): Promi
 
 test('exact Routine commands parse without model interpretation', () => {
   assert.deepEqual(parseRoutineCommand('!routines'), { kind: 'list' });
-  assert.deepEqual(parseRoutineCommand('<@UBOT> !routines <#C_OTHER|ops>'), {
+  assert.deepEqual(parseRoutineCommand('<@UBOT> !routines <#C_OTHER|ops>', {
+    botUserId: 'UBOT',
+  }), {
     kind: 'list', channelMention: '<#C_OTHER|ops>',
   });
+  assert.deepEqual(parseRoutineCommand('<@UBOT>: !routines help', {
+    botUserId: 'UBOT',
+  }), { kind: 'help' });
+  assert.deepEqual(
+    parseRoutineCommand('<!subteam^S012345|@sprout>: !routines help', {
+      agentUserGroupId: 'S012345',
+    }),
+    { kind: 'help' },
+  );
+  assert.equal(parseRoutineCommand('<@U_TEAMMATE>: !routines help', {
+    botUserId: 'UBOT',
+  }), undefined);
+  assert.equal(parseRoutineCommand('<!subteam^S999999|@oncall>: !routines help', {
+    agentUserGroupId: 'S012345',
+  }), undefined);
   assert.deepEqual(parseRoutineCommand('!routines pause routine_one'), {
     kind: 'control', action: 'pause', routineId: 'routine_one',
   });

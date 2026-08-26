@@ -6,9 +6,15 @@ import { createHash } from 'node:crypto';
 
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { getConfigStore, getIdentityStore, getMemoryStateStore } from '../config/state-backend.ts';
+import type { ConfigStore } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { currentHumanIdentityDirectory } from '../identity/current-directory.ts';
+import type { IdentityStore } from '../identity/types.ts';
 import { resolveSlackCredentials } from '../slack/credentials.ts';
+import {
+  hasLeadingSlackCommandAddress,
+  hasLeadingSlackUserAddress,
+} from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 import {
   memoryEpochThreadKey,
@@ -45,11 +51,19 @@ export interface PreparedMemoryTurn {
 
 interface AgentMemoryRuntime {
   state: MemoryStateStore;
+  config: ConfigStore;
+  identity: IdentityStore;
   slack: MemoryScopeSlack | null;
   surface: 'dm' | 'channel';
   botUserId: string | null;
   assignment: ResolvedAssignment;
   platformEnv: PlatformEnv | undefined;
+}
+
+export interface AgentMemoryRuntimeDependencies {
+  state?: MemoryStateStore;
+  config?: ConfigStore;
+  identity?: IdentityStore;
 }
 
 export async function handleMemoryCommand(input: {
@@ -60,19 +74,27 @@ export async function handleMemoryCommand(input: {
   botToken?: string;
   botUserId?: string;
   assignment: ResolvedAssignment;
+  dependencies?: AgentMemoryRuntimeDependencies;
 }): Promise<boolean> {
-  const leadingMention = /^\s*<@[^>\s]+>/.test(input.turn.text);
-  const resolvedBotUserId = leadingMention
+  const leadingAddress = hasLeadingSlackCommandAddress(input.turn.text);
+  const leadingUserAddress = hasLeadingSlackUserAddress(input.turn.text);
+  const resolvedBotUserId = leadingUserAddress
     ? await resolveCommandBotUserId(input.platformEnv, input.client, input.botToken, input.botUserId)
     : undefined;
-  if (leadingMention && !resolvedBotUserId) return false;
-  const command = parseMemoryCommand(input.turn.text, resolvedBotUserId);
+  if (leadingUserAddress && !resolvedBotUserId) return false;
+  const resolvedAgentUserGroupId = input.assignment.agent.slackPresence?.userGroupId;
+  if (leadingAddress && !resolvedBotUserId && !resolvedAgentUserGroupId) return false;
+  const command = parseMemoryCommand(
+    input.turn.text,
+    resolvedBotUserId ?? '',
+    resolvedAgentUserGroupId ?? '',
+  );
   if (!command || command.kind === 'candidate') return false;
 
   let responseText: string;
   let responseFormat: 'markdown' | 'plain_text' = 'markdown';
   try {
-    const state = getMemoryStateStore(input.platformEnv);
+    const state = input.dependencies?.state ?? getMemoryStateStore(input.platformEnv);
     const runtime = await resolveAgentMemoryRuntime(
       input.turn,
       input.assignment,
@@ -82,6 +104,7 @@ export async function handleMemoryCommand(input: {
       resolvedBotUserId,
       input.botToken,
       input.botUserId,
+      input.dependencies,
     );
     responseText = await executeAgentMemoryCommand(command, input.turn, runtime);
     emitMemoryMetric('command', { action: command.kind, outcome: 'success' });
@@ -110,13 +133,14 @@ export async function prepareMemoryTurn(input: {
   botToken?: string;
   botUserId?: string;
   assignment: ResolvedAssignment;
+  dependencies?: AgentMemoryRuntimeDependencies;
 }): Promise<PreparedMemoryTurn> {
   const baseKey = slackAgentThreadKey(input.turn, input.assignment);
   try {
     if (await isWorkspaceManagementTurn(input)) {
       return await prepareWorkspaceManagementTurn(input, baseKey);
     }
-    const state = getMemoryStateStore(input.platformEnv);
+    const state = input.dependencies?.state ?? getMemoryStateStore(input.platformEnv);
     const runtime = await resolveAgentMemoryRuntime(
       input.turn,
       input.assignment,
@@ -126,6 +150,7 @@ export async function prepareMemoryTurn(input: {
       undefined,
       input.botToken,
       input.botUserId,
+      input.dependencies,
     );
     const memory = await state.getAgentMemory(input.assignment.agentId);
     const selection = { entries: memory.body.trim() ? [{ entry: memory }] : [] };
@@ -183,6 +208,7 @@ async function isWorkspaceManagementTurn(input: {
   platformEnv: PlatformEnv | undefined;
   botUserId?: string;
   assignment: ResolvedAssignment;
+  dependencies?: AgentMemoryRuntimeDependencies;
 }): Promise<boolean> {
   if (input.assignment.interactionMode === 'workspace_management') return true;
   if (input.turn.source !== 'app_mention') return false;
@@ -192,7 +218,7 @@ async function isWorkspaceManagementTurn(input: {
   // leading mention of this installation's base bot, routed to its default
   // Agent. Ordinary Agent mentions and synthetic app-mention turns continue
   // through the normal Channel-grant and memory lease checks.
-  const installation = await getConfigStore(input.platformEnv)
+  const installation = await (input.dependencies?.config ?? getConfigStore(input.platformEnv))
     .getWorkspaceInstallation(input.turn.workspaceId);
   if (
     !installation ||
@@ -211,6 +237,7 @@ async function prepareWorkspaceManagementTurn(
     client: WebClient;
     botUserId?: string;
     assignment: ResolvedAssignment;
+    dependencies?: AgentMemoryRuntimeDependencies;
   },
   baseKey: string,
 ): Promise<PreparedMemoryTurn> {
@@ -227,7 +254,7 @@ async function prepareWorkspaceManagementTurn(
       'The workspace management entry point is unavailable.',
     );
   }
-  const config = getConfigStore(input.platformEnv);
+  const config = input.dependencies?.config ?? getConfigStore(input.platformEnv);
   const [agent, installation] = await Promise.all([
     config.getAgent(assignment.agentId),
     config.getWorkspaceInstallation(turn.workspaceId),
@@ -268,6 +295,7 @@ async function prepareWorkspaceManagementTurn(
         input.platformEnv,
         slack,
         botUserId,
+        config,
       );
       emitMemoryMetric('delivery_lease', { outcome: valid ? 'valid' : 'rejected' });
       return valid;
@@ -281,9 +309,9 @@ async function validateWorkspaceManagementLease(
   platformEnv: PlatformEnv | undefined,
   slack: MemoryScopeSlack,
   botUserId: string,
+  config: ConfigStore = getConfigStore(platformEnv),
 ): Promise<boolean> {
   try {
-    const config = getConfigStore(platformEnv);
     const [agent, installation, conversation, actor, members] = await Promise.all([
       config.getAgent(assignment.agentId),
       config.getWorkspaceInstallation(turn.workspaceId),
@@ -329,6 +357,7 @@ async function resolveAgentMemoryRuntime(
   resolvedBotUserId?: string,
   resolvedBotToken?: string,
   identityBotUserId?: string,
+  dependencies: AgentMemoryRuntimeDependencies = {},
 ): Promise<AgentMemoryRuntime> {
   if (
     assignment.workspaceId !== turn.workspaceId ||
@@ -338,7 +367,8 @@ async function resolveAgentMemoryRuntime(
   ) {
     throw new MemoryStateError('memory_owner_invalid', 'The admitted Agent is unavailable.');
   }
-  const config = getConfigStore(platformEnv);
+  const config = dependencies.config ?? getConfigStore(platformEnv);
+  const identity = dependencies.identity ?? getIdentityStore(platformEnv);
   const liveAgent = await config.getAgent(assignment.agentId);
   if (!liveAgent.enabled || liveAgent.lifecycle === 'archived') {
     throw new MemoryStateError('memory_owner_unavailable', 'The admitted Agent is disabled.');
@@ -346,6 +376,8 @@ async function resolveAgentMemoryRuntime(
   if (turn.source === 'dm_message') {
     return {
       state,
+      config,
+      identity,
       slack: null,
       surface: 'dm',
       botUserId: identityBotUserId ?? null,
@@ -370,6 +402,8 @@ async function resolveAgentMemoryRuntime(
   }
   return {
     state,
+    config,
+    identity,
     slack: credentials.botToken
       ? createMemoryScopeSlack(credentials.botToken, turn.workspaceId)
       : createMemoryScopeSlackFromWebClient(client, turn.workspaceId),
@@ -386,7 +420,7 @@ async function validateAgentMemoryLease(
   selected: AgentMemory,
 ): Promise<boolean> {
   try {
-    const config = getConfigStore(runtime.platformEnv);
+    const config = runtime.config;
     const [agent, installation, current] = await Promise.all([
       config.getAgent(runtime.assignment.agentId),
       config.getWorkspaceInstallation(turn.workspaceId),
@@ -441,7 +475,7 @@ async function executeAgentMemoryCommand(
       : 'This Agent has no saved memory yet.';
   }
   if (runtime.surface === 'dm') {
-    if (!(await isAuthorizedAgentMemoryMember(turn, runtime.platformEnv))) {
+    if (!(await isAuthorizedAgentMemoryMember(turn, runtime.platformEnv, runtime.identity))) {
       throw new MemoryStateError('memory_actor_forbidden', 'Only an active Chickpea member can change this Agent memory.');
     }
   } else if (!runtime.slack ||
@@ -495,8 +529,9 @@ function memoryMutationDigest(command: MemoryCommand): string {
 export async function isAuthorizedAgentMemoryMember(
   turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'userId'>,
   platformEnv: PlatformEnv | undefined,
+  store?: IdentityStore,
 ): Promise<boolean> {
-  const identity = getIdentityStore(platformEnv);
+  const identity = store ?? getIdentityStore(platformEnv);
   const resolution = await identity.resolveSlackIdentity(turn.workspaceId, turn.userId);
   const binding = resolution?.binding;
   if (!binding) return false;

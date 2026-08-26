@@ -22,13 +22,6 @@ import { start } from '@flue/runtime/node';
 import * as v from 'valibot';
 
 import {
-  AUTONOMOUS_MEMORY_RESULT_DATA_NAME,
-  AutonomousMemoryResultSchema,
-  createAutonomousAgentMemoryTool,
-} from '../src/memory/autonomous.ts';
-import { MemoryStateError } from '../src/memory/types.ts';
-import { resultFromAgentReply } from '../src/slack/flue-dispatch.ts';
-import {
   SLACK_STREAM_ANSWER_ACKNOWLEDGEMENT,
   SLACK_STREAM_ANSWER_TOOL_NAME,
 } from '../src/slack/presentation-intent.ts';
@@ -89,20 +82,6 @@ function StructuredProbe() {
     },
   });
   return 'Submit the scripted structured result.';
-}
-
-function DeniedMemoryProbe() {
-  useModel(MODEL);
-  const finishDenied = useDataWriter(AUTONOMOUS_MEMORY_RESULT_DATA_NAME, {
-    schema: AutonomousMemoryResultSchema,
-  });
-  useTool(createAutonomousAgentMemoryTool(async () => {
-    throw new MemoryStateError(
-      'memory_actor_forbidden',
-      'Only an active workspace member currently permitted to use this Agent can change its memory.',
-    );
-  }, { finishDenied }));
-  return 'Use remember_memory for the scripted request.';
 }
 
 interface TimedChunk {
@@ -276,7 +255,6 @@ test(
         { agent: ProgressiveProbe, name: 'progressive-characterization' },
         { agent: ToolProbe, name: 'tool-characterization' },
         { agent: StructuredProbe, name: 'structured-characterization' },
-        { agent: DeniedMemoryProbe, name: 'denied-memory-characterization' },
       ],
       providers: [faux.provider],
     });
@@ -429,24 +407,6 @@ test(
         ).length,
         0,
       );
-
-      faux.setResponses([
-        fauxAssistantMessage([fauxToolCall('remember_memory', {
-          name: 'Release approval convention',
-          description: 'Pejman approves production releases.',
-          type: 'preference',
-          body: 'Wait for Pejman to explicitly approve every production release.',
-        })], { stopReason: 'toolUse' }),
-      ]);
-      const deniedMemory = init(DeniedMemoryProbe, { id: 'denied-memory-result' });
-      const deniedMemoryReceipt = await deniedMemory.dispatch('Remember the convention.');
-      const deniedMemoryRead = await capture(deniedMemory, deniedMemoryReceipt);
-      assert.equal(deniedMemoryRead.reply.text, '');
-      assert.equal(
-        resultFromAgentReply(deniedMemoryRead.reply, MODEL).text,
-        'Memory was not saved: Only an active workspace member currently permitted to use this Agent can change its memory.',
-      );
-      assert.equal(faux.state.callCount, 9, 'denial terminates without a second model call');
 
       assert.ok(firstRead.events.some(({ chunk }) => chunk.type === 'conversation-reset'));
       assert.ok(firstRead.events.every(({ chunk }) =>

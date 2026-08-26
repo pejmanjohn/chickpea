@@ -1727,12 +1727,31 @@ export class WorkspaceManagementService {
       });
       grantsByChannel.set(key, entries);
     }
+    // Active Agent grants are the durable reach authority. Older workspaces
+    // can legitimately contain a grant without the optional Channel metadata
+    // row, and routine execution already honors that shape. Surface a minimal
+    // Channel projection so inspection and authoring agree with routing.
+    const projectedChannels = [...channels];
+    const projectedChannelKeys = new Set(channels.map((channel) =>
+      channelKey(channel.workspaceId, channel.channelId)));
+    for (const grant of grants) {
+      const key = channelKey(grant.workspaceId, grant.channelId);
+      if (projectedChannelKeys.has(key)) continue;
+      projectedChannels.push({
+        workspaceId: grant.workspaceId,
+        channelId: grant.channelId,
+        revision: 0,
+        ...(grant.channelLabel ? { label: grant.channelLabel } : {}),
+        lifecycle: 'active',
+      });
+      projectedChannelKeys.add(key);
+    }
     const visibleChannels = userAgentScoped || actor.role === 'member'
-      ? channels.filter((channel) => grantsByChannel.has(channelKey(
+      ? projectedChannels.filter((channel) => grantsByChannel.has(channelKey(
           channel.workspaceId,
           channel.channelId,
         )))
-      : channels;
+      : projectedChannels;
     const refs: ManagementObjectRef[] = [
       ...agents.map((agent) => ({ kind: 'agent' as const, id: agent.id, revision: agent.revision })),
       ...visibleChannels.map((channel) => ({
@@ -1941,7 +1960,7 @@ export class WorkspaceManagementService {
     }
     await this.requireWorkspaceScope(actor, operation.workspaceId);
     const channel = await this.stores.config.getChannel(operation.workspaceId, operation.channelId);
-    if (!channel || channel.lifecycle !== 'active') {
+    if (channel?.lifecycle === 'archived') {
       throw new ManagementError('invalid_request', 'The routine Channel was not found.');
     }
     if (operation.kind === 'save_routine') {

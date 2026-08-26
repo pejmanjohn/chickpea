@@ -53,6 +53,9 @@ test('router covers all authoring postures while leaving detailed judgment lazy'
     'without asking for separate permission',
     'inspect_workspace',
     'do not answer from general knowledge or defer inspection',
+    'before calling any configuration mutation tool',
+    'remember or edit Agent memory',
+    'compound request as one Agent-authoring request',
   ]) assert.match(AGENT_AUTHORING_ROUTER_INSTRUCTION, new RegExp(phrase, 'i'));
   assert.doesNotMatch(AGENT_AUTHORING_ROUTER_INSTRUCTION, /chief of staff|Sentry|bug-to-PR/i);
 });
@@ -64,8 +67,14 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     'All natural-language requests to create, edit, inspect, run, clone, pause, resume, disable, or delete scheduled work are Agent authoring',
     'Slack presence', 'Channel reach', 'editing authority',
     'inspect_workspace', 'propose_workspace_changes', 'confirm_workspace_change',
+    'opaque control token', 'Copy it byte-for-byte', 'never retype',
+    'visible plain-language final text', 'Do not end on a tool call',
     'inspection is mandatory in that turn', 'do not offer to inspect later',
     'channels\\[\\]\\.grants\\[\\]\\.revision', 'Never substitute the parent Channel revision',
+    'reuse that destination', 'do not add `put_channel`', 'already-satisfied destination',
+    'All requests to remember or edit durable Agent memory are Agent authoring',
+    '`update_agent_memory`', 'exact `expectedRevision`',
+    '`request_chickpea_handoff`', 'mention `@Chickpea`',
     'no Agent record', 'one highest-value next step',
   ]) assert.match(AGENT_AUTHORING_GUIDE, new RegExp(phrase, 'i'));
 });
@@ -95,9 +104,30 @@ test('interactive Slack Agent mounts authoring while routine execution does not'
     slackSource.indexOf('/** Compose the declarations shared by Slack'),
   );
   assert.match(chickpeaSlackBody, /useAgentAuthoring\(\)/);
+  assert.doesNotMatch(chickpeaSlackBody, /remember_memory|autonomousMemoryRequest/);
   assert.doesNotMatch(routineSource, /useAgentAuthoring/);
   assert.doesNotMatch(slackSource.slice(slackSource.indexOf('export function useRuntimePlanAgent')),
-    /useAgentAuthoring/);
+    /useAgentAuthoring|remember_memory|autonomousMemoryRequest/);
+});
+
+test('a frozen bash plan still rechecks live Agent execution authority', async () => {
+  const slackSource = await readFile(
+    new URL('../src/agents/slack-thread.ts', import.meta.url),
+    'utf8',
+  );
+  const sandboxFactory = slackSource.slice(
+    slackSource.indexOf('function createRuntimePlanSandbox'),
+    slackSource.indexOf('function projectRuntimePlanAgent'),
+  );
+  const bashBranch = sandboxFactory.slice(
+    sandboxFactory.indexOf("if (plan.sandbox.mode === 'bash')"),
+    sandboxFactory.indexOf("  return {\n    async createSessionEnv({ id })"),
+  );
+  assert.match(bashBranch, /requireLiveFrozenAgent\(getConfigStore\(env\), plan\.agentId\)/);
+  assert.ok(
+    bashBranch.indexOf('requireLiveFrozenAgent') < bashBranch.indexOf('resolveRuntimeModel'),
+    'Agent execution authority must be checked before model credential resolution.',
+  );
 });
 
 test('conversational schedules cannot enter the exact Routine command lane', async () => {
@@ -105,7 +135,7 @@ test('conversational schedules cannot enter the exact Routine command lane', asy
     readFile(new URL('../src/slack/run-turn.ts', import.meta.url), 'utf8'),
     readFile(new URL('../src/routines/commands.ts', import.meta.url), 'utf8'),
   ]);
-  assert.match(runTurnSource, /if \(shouldHandleRoutineCommandTurn\(turn\)\)/);
+  assert.match(runTurnSource, /if \(shouldHandleRoutineCommandTurn\(turn, commandAddress\)\)/);
   assert.doesNotMatch(runTurnSource, /isRoutineIntentCandidate|parseRoutineIntent/);
   assert.doesNotMatch(commandSource, /isRoutineIntentCandidate|parseRoutineIntent|saveRoutineIntent/);
   const handler = commandSource.slice(commandSource.indexOf('export async function handleRoutineSlackRequest'));

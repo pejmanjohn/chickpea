@@ -2,8 +2,14 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import type { WebClient } from '@slack/web-api';
 import { getRoutineStore } from '../config/state-backend.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
+import type { ConfigStore } from '../config/store.ts';
+import type { IdentityStore } from '../identity/types.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
+import {
+  stripResolvedSlackCommandAddress,
+  type SlackCommandAddress,
+} from '../slack/command-address.ts';
 import type { SlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import {
   createRoutineRunId,
@@ -72,8 +78,11 @@ interface RoutineCommandExecutionContext {
 const OPAQUE = '[A-Za-z0-9_-]{1,200}';
 const TOKEN = '[A-Za-z0-9._-]{4,512}';
 
-export function parseRoutineCommand(rawText: string): RoutineCommand | undefined {
-  const text = rawText.replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '').trim();
+export function parseRoutineCommand(
+  rawText: string,
+  address: SlackCommandAddress = {},
+): RoutineCommand | undefined {
+  const text = stripResolvedSlackCommandAddress(rawText, address).trim();
   if (/^!routines?\s*$/i.test(text)) return { kind: 'list' };
   if (/^!routines?\s+help\s*$/i.test(text)) return { kind: 'help' };
   let match = text.match(/^!routines?\s+(<#[^>]+>)\s*$/i);
@@ -97,8 +106,11 @@ export function parseRoutineCommand(rawText: string): RoutineCommand | undefined
 }
 
 /** The complete deterministic routing boundary: an admitted Channel turn plus an exact command. */
-export function shouldHandleRoutineCommandTurn(turn: NormalizedSlackTurn): boolean {
-  return isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text));
+export function shouldHandleRoutineCommandTurn(
+  turn: NormalizedSlackTurn,
+  address: SlackCommandAddress = {},
+): boolean {
+  return isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, address));
 }
 
 export type RoutineResponseVisibility = 'channel' | 'requester';
@@ -112,8 +124,9 @@ export type RoutineResponseVisibility = 'channel' | 'requester';
 export function routineResponseVisibility(
   rawText: string,
   currentChannelId: string,
+  address: SlackCommandAddress = {},
 ): RoutineResponseVisibility {
-  const command = parseRoutineCommand(rawText);
+  const command = parseRoutineCommand(rawText, address);
   if (command?.kind !== 'list' || !command.channelMention) return 'channel';
   return parseSlackChannelMention(command.channelMention) === currentChannelId
     ? 'channel'
@@ -126,6 +139,8 @@ export async function handleRoutineSlackRequest(
   env: PlatformEnv | undefined,
   dependencies: {
     store?: RoutineStore;
+    config?: ConfigStore;
+    identity?: IdentityStore;
     now?: () => number;
     capability?: RoutineCapability;
     canManageChannel?: typeof canManageRoutineChannel;
@@ -139,9 +154,15 @@ export async function handleRoutineSlackRequest(
     isActiveActor?: typeof isActiveRoutineActor;
   } = {},
 ): Promise<string | undefined> {
-  const command = parseRoutineCommand(turn.text);
+  const command = parseRoutineCommand(turn.text, {
+    botUserId: dependencies.installationContext?.botUserId,
+    agentUserGroupId: dependencies.assignment?.agent.slackPresence?.userGroupId,
+  });
   if (!command) return undefined;
-  const activeActor = dependencies.isActiveActor ?? isActiveRoutineActor;
+  const activeActor = dependencies.isActiveActor ?? ((input) =>
+    isActiveRoutineActor(input, {
+      ...(dependencies.identity ? { identity: dependencies.identity } : {}),
+    }));
   if (
     !turn.actorMembershipId ||
     !(await activeActor({
@@ -161,8 +182,16 @@ export async function handleRoutineSlackRequest(
   const slackClient = dependencies.installationContext?.client;
   const commandContext: RoutineCommandExecutionContext = {
     turn, store, env, capability, now, canManageChannel,
-    bindAuthority: dependencies.bindAuthority ?? bindRoutineAgentAuthority,
-    resolveAuthority: dependencies.resolveAuthority ?? resolveRoutineAgentAuthority,
+    bindAuthority: dependencies.bindAuthority ?? ((input) =>
+      bindRoutineAgentAuthority(input, {
+        ...(dependencies.config ? { config: dependencies.config } : {}),
+        ...(dependencies.identity ? { identity: dependencies.identity } : {}),
+      })),
+    resolveAuthority: dependencies.resolveAuthority ?? ((routine, runtimeEnv) =>
+      resolveRoutineAgentAuthority(routine, runtimeEnv, {
+        ...(dependencies.config ? { config: dependencies.config } : {}),
+        ...(dependencies.identity ? { identity: dependencies.identity } : {}),
+      })),
     ...(botToken ? { botToken } : {}),
     ...(slackClient ? { slackClient } : {}),
     ...(dependencies.assignment ? { assignment: dependencies.assignment } : {}),

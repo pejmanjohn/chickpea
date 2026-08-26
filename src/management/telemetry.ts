@@ -103,6 +103,7 @@ const REASON_TOKENS = new Set([
   'chickpea_handoff',
   'forbidden', 'idempotency_conflict', 'insufficient_scope', 'invalid_request',
   'invalid_state', 'invalid_token', 'live_access_denied', 'management_error',
+  'management_outcome_unknown',
   'missing_token', 'operation_in_progress', 'operation_not_found', 'other',
   'operational_access_required', 'owner_required', 'proposal_binding_mismatch', 'proposal_expired',
   'proposal_not_found', 'proposal_stale', 'revision_conflict', 'setup_expired',

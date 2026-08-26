@@ -1,26 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import {
-  autonomousMemoryInstruction,
-  createAutonomousAgentMemoryTool,
-  saveAutonomousMemory,
-} from '../src/memory/autonomous.ts';
 import { parseMemoryCommand } from '../src/memory/commands.ts';
 import { MemoryStoreLogic, SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { MemoryStateError } from '../src/memory/types.ts';
 import { renderMemoryContent } from '../src/memory/validation.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
-
-const coordinates = {
-  surface: 'channel_thread' as const,
-  workspaceId: 'T_MEMORY',
-  channelId: 'C_ONE',
-  threadTs: '1800000000.000100',
-  messageTs: '1800000000.000200',
-  agentId: 'agent_support',
-  slackUserId: 'U_MEMBER',
-};
 
 test('one Agent memory body is shared independently of Slack conversation coordinates', async () => {
   const store = new SqliteMemoryStateStore(':memory:');
@@ -48,7 +33,9 @@ test('one Agent memory body is shared independently of Slack conversation coordi
 
 test('Slack commands expose exactly one Agent memory and reject obsolete multi-memory operations', () => {
   assert.deepEqual(parseMemoryCommand('!memory'), { kind: 'list' });
-  assert.deepEqual(parseMemoryCommand('what do you remember?'), { kind: 'list' });
+  assert.equal(parseMemoryCommand('What do you remember?'), undefined);
+  assert.equal(parseMemoryCommand('Remember that Acme renews in October.'), undefined);
+  assert.equal(parseMemoryCommand('Please update the memory to say Acme renews in October.'), undefined);
   assert.deepEqual(parseMemoryCommand('!memory show memory'), { kind: 'show', target: 'memory' });
   assert.deepEqual(parseMemoryCommand('!forget memory'), { kind: 'clear_request' });
   assert.deepEqual(parseMemoryCommand('!memory merge one two as three — old model'), {
@@ -59,6 +46,19 @@ test('Slack commands expose exactly one Agent memory and reject obsolete multi-m
     kind: 'invalid',
     hint: 'Use `!memory help` to see the exact memory commands.',
   });
+  assert.deepEqual(parseMemoryCommand('<@U_CHICKPEA>: !memory list'), { kind: 'candidate' });
+  assert.deepEqual(parseMemoryCommand('<@U_CHICKPEA>: !memory list', 'U_CHICKPEA', ''), {
+    kind: 'list',
+  });
+  assert.equal(parseMemoryCommand('<@U_TEAMMATE>: !memory list', 'U_CHICKPEA', ''), undefined);
+  assert.deepEqual(
+    parseMemoryCommand('<!subteam^S012345|@sprout>: !memory list', '', 'S012345'),
+    { kind: 'list' },
+  );
+  assert.equal(
+    parseMemoryCommand('<!subteam^S999999|@oncall>: !memory list', '', 'S012345'),
+    undefined,
+  );
 });
 
 test('single-memory rendering preserves a distinct description and avoids duplicate one-line content', () => {
@@ -145,97 +145,4 @@ test('Agent memory bounds retained idempotency receipts per Agent', () => {
   } finally {
     db.close();
   }
-});
-
-test('authorized autonomous writes append durable context to the same Agent body', async () => {
-  const store = new SqliteMemoryStateStore(':memory:');
-  try {
-    const first = await saveAutonomousMemory(coordinates, {
-      name: 'Support voice',
-      description: 'Use concise replies.',
-      type: 'preference',
-      body: 'Use concise replies.',
-    }, { state: store, authorize: async () => true });
-    const second = await saveAutonomousMemory({
-      ...coordinates,
-      channelId: 'D_MEMBER',
-      surface: 'direct_message',
-    }, {
-      name: 'Escalation rule',
-      description: 'Escalate refunds.',
-      type: 'decision',
-      body: 'Escalate refunds over $100.',
-    }, { state: store, authorize: async () => true });
-
-    assert.equal(first.entry.version, 1);
-    assert.equal(second.entry.version, 2);
-    const memory = await store.getAgentMemory('agent_support');
-    assert.match(memory.body, /## Support voice/);
-    assert.match(memory.body, /## Escalation rule/);
-    assert.doesNotMatch(memory.body, /C_ONE|D_MEMBER|U_MEMBER|timestamp|source/i);
-  } finally {
-    store.close();
-  }
-});
-
-test('an autonomous memory retry produces one durable revision', async () => {
-  const store = new SqliteMemoryStateStore(':memory:');
-  const memory = {
-    name: 'Support voice',
-    description: 'Use concise replies.',
-    type: 'preference' as const,
-    body: 'Use concise replies.',
-  };
-  try {
-    await saveAutonomousMemory(coordinates, memory, {
-      state: store,
-      authorize: async () => true,
-    });
-    const retried = await saveAutonomousMemory(coordinates, memory, {
-      state: store,
-      authorize: async () => true,
-    });
-    assert.equal(retried.entry.version, 1);
-    assert.equal((await store.getAgentMemory('agent_support')).revision, 1);
-  } finally {
-    store.close();
-  }
-});
-
-test('autonomous memory fails closed when the actor is not authorized', async () => {
-  const store = new SqliteMemoryStateStore(':memory:');
-  try {
-    await assert.rejects(
-      saveAutonomousMemory(coordinates, {
-        name: 'Denied',
-        description: 'Should not save.',
-        type: 'fact',
-        body: 'Should not save.',
-      }, { state: store, authorize: async () => false }),
-      (error: unknown) => error instanceof MemoryStateError &&
-        error.code === 'memory_actor_forbidden',
-    );
-    assert.equal((await store.getAgentMemory('agent_support')).revision, 0);
-  } finally {
-    store.close();
-  }
-});
-
-test('the model-facing memory tool explains silent durable writes without expanding authority', async () => {
-  const instruction = autonomousMemoryInstruction();
-  assert.match(instruction, /follows this Agent wherever it works/i);
-  assert.match(instruction, /never save secrets/i);
-  assert.match(instruction, /only save claims the current user directly states or approves/i);
-  const tool = createAutonomousAgentMemoryTool(async () => ({
-    slug: 'memory',
-    version: 3,
-  }));
-  assert.deepEqual(await tool.run({
-    data: {
-      name: 'Preference',
-      description: 'Use bullets.',
-      type: 'preference',
-      body: 'Use bullets.',
-    },
-  }), { output: 'Saved Agent memory `memory` (v3).' });
 });

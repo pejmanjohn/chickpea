@@ -13,7 +13,7 @@ import { createManagementAdapterFixture } from './helpers/management-adapter-fix
 
 const NOW = Date.UTC(2026, 7, 21, 12);
 
-test('management-created schedules bind one active Agent and runs-as member', async () => {
+test('management-created schedules accept active grant-only destinations and bind authority', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const owner = await createSlackOwner(identity, {
     now: NOW,
@@ -44,19 +44,15 @@ test('management-created schedules bind one active Agent and runs-as member', as
         avatar: { kind: 'generated', seed: 'support', revision: 1 },
       },
     });
-    await config.putChannel({
-      workspaceId: 'T_MANAGEMENT_ROUTINE',
-      channelId: 'C_SUPPORT',
-      label: 'support',
-      lifecycle: 'active',
-    });
     await config.putAgentChannelGrant({
       workspaceId: 'T_MANAGEMENT_ROUTINE',
       channelId: 'C_SUPPORT',
       agentId: 'agent_support',
       status: 'active',
       createdByMembershipId: owner.membership.id,
+      channelLabel: 'support',
     });
+    assert.equal(await config.getChannel('T_MANAGEMENT_ROUTINE', 'C_SUPPORT'), undefined);
     const service = new WorkspaceManagementService({
       identity,
       config,
@@ -106,6 +102,14 @@ test('management-created schedules bind one active Agent and runs-as member', as
     assert.equal(snapshot.agents[0]?.slackPresence?.normalizedHandle, 'support');
     assert.equal(snapshot.agents[0]?.slackPresence?.avatar.revision, 1);
     assert.ok(snapshot.effectiveRevision);
+    assert.deepEqual(snapshot.channels, [{
+      workspaceId: 'T_MANAGEMENT_ROUTINE',
+      channelId: 'C_SUPPORT',
+      revision: 0,
+      label: 'support',
+      lifecycle: 'active',
+      grants: [{ agentId: 'agent_support', status: 'active', revision: 1 }],
+    }]);
   } finally {
     identity.close();
     config.close();

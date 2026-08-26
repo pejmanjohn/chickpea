@@ -49,6 +49,16 @@ test('only exact Routine commands bypass the interactive Agent authoring loop', 
   }), true);
   assert.equal(shouldHandleRoutineCommandTurn({
     ...base,
+    source: 'agent_mention',
+    text: '<!subteam^S012345|@sprout>: !routines help',
+  }, { agentUserGroupId: 'S012345' }), true);
+  assert.equal(shouldHandleRoutineCommandTurn({
+    ...base,
+    source: 'agent_mention',
+    text: '<!subteam^S999999|@oncall>: !routines help',
+  }, { agentUserGroupId: 'S012345' }), false);
+  assert.equal(shouldHandleRoutineCommandTurn({
+    ...base,
     source: 'dm_message', channelType: 'im',
     text: '!routines pause routine_one',
   }), false);

@@ -9,6 +9,7 @@ import {
   type ProviderKeyId,
 } from '../config/provider-keys.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
+import type { SettingsStore } from '../config/settings-store.ts';
 import { hasCredentialLikeContent, hasDisallowedControlCharacter } from '../security/content-validation.ts';
 import type { AgentDispatchResult } from './flue-dispatch.ts';
 
@@ -188,15 +189,21 @@ export interface SlackInteractionClassification {
 export async function classifySlackInteraction(
   context: SlackInteractionIntentContext,
   env: PlatformEnv | undefined,
-  prompt: InteractionIntentPrompt = promptSlackInteractionIntentAgent,
+  prompt: InteractionIntentPrompt | undefined = undefined,
   timeoutMs = DEFAULT_INTERACTION_TIMEOUT_MS,
+  dependencies: { settings?: SettingsStore } = {},
 ): Promise<SlackInteractionClassification> {
   const deterministic = resolveImmediateSlackInteractionIntent(context);
   if (deterministic) {
     return { intent: deterministic, failed: false };
   }
   try {
-    const response = await withTimeout(prompt(context, env), timeoutMs);
+    const response = await withTimeout(
+      prompt
+        ? prompt(context, env)
+        : promptSlackInteractionIntentAgent(context, env, dependencies),
+      timeoutMs,
+    );
     const raw = typeof response === 'string' ? response : response.text;
     const parsed = parseSlackInteractionIntent(raw, { guaranteed: context.guaranteed });
     return {
@@ -341,16 +348,17 @@ export type InteractionIntentPrompt = (
 async function promptSlackInteractionIntentAgent(
   context: SlackInteractionIntentContext,
   env: PlatformEnv | undefined,
+  dependencies: { settings?: SettingsStore } = {},
 ): Promise<AgentDispatchResult> {
   const requestedModel = context.requestedModel;
   if (!requestedModel) throw new Error('Slack interaction classifier model was unavailable.');
-  const settings = getSettingsStore(env);
+  const settings = dependencies.settings ?? getSettingsStore(env);
   const runtimeModel = await resolveRuntimeModel('slack-interaction-intent', requestedModel, {
     settings,
     ...(env ? { env } : {}),
   });
   const model = resolveModel(runtimeModel.model);
-  const apiKey = await statelessClassifierApiKey(requestedModel, env);
+  const apiKey = await statelessClassifierApiKey(requestedModel, env, settings);
   const response = await completeSimple(
     model,
     interactionClassifierContext(context),
@@ -406,10 +414,11 @@ function interactionClassifierContext(context: SlackInteractionIntentContext): C
 async function statelessClassifierApiKey(
   requestedModel: string,
   env: PlatformEnv | undefined,
+  settings?: SettingsStore,
 ): Promise<string | undefined> {
   const provider = requestedModel.split('/', 1)[0] ?? '';
   if (isProviderKeyId(provider)) {
-    return (await resolveProviderApiKey(provider as ProviderKeyId, env)).apiKey;
+    return (await resolveProviderApiKey(provider as ProviderKeyId, env, settings)).apiKey;
   }
   if (provider === 'cloudflare-workers-ai') return process.env.CLOUDFLARE_API_TOKEN;
   if (provider === 'local-stub') return process.env.LOCAL_STUB_API_KEY ?? 'offline-stub-key';

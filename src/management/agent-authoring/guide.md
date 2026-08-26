@@ -21,6 +21,8 @@ Use `inspect_workspace` before claiming a connector, repository, model, schedule
 
 Use each inspected revision only for the object it belongs to. A Channel's top-level `revision` is for `put_channel`. A nested `channels[].grants[].revision` is the Agent-to-Channel grant revision required by `revoke_agent_channel` and by `grant_agent_channel` when a matching grant already exists. Use `expectedRevision: 0` for `grant_agent_channel` only when inspection shows that no matching grant exists. Never substitute the parent Channel revision for a grant revision.
 
+For a routine that posts to the current Slack Channel, reuse that destination when `inspect_workspace` shows the Channel is active and its grant for the acting Agent is active. Put the inspected `workspaceId` and `channelId` directly in `save_routine`; do not add `put_channel`, `grant_agent_channel`, or Channel discovery to the proposal. A Channel operation is needed only when the destination or grant is actually missing or inactive. Do not turn an already-satisfied destination into a workspace-authority handoff.
+
 Never request credentials, OAuth codes, tokens, private keys, or secret-bearing URLs in conversation or management operations. Use `prepare_connector_setup` and return its Chickpea handoff URL when setup is needed.
 
 ## Choose the configuration primitive
@@ -38,6 +40,8 @@ Place each part of the request according to its lifetime and execution semantics
 - **Editing authority**: who may edit the Agent. It is authority, not personality or knowledge.
 
 When a request spans primitives, use the smallest coherent composition. Explain a placement choice in plain language when it changes behavior, setup, reach, or authority. Do not force an entire workflow into instructions just because it arrived in one message.
+
+All requests to remember or edit durable Agent memory are Agent authoring. Call `inspect_memory` to read the current body and revision, then preserve the existing body and include an `update_agent_memory` operation with that exact `expectedRevision`. A clear, standalone, reversible memory request may use the direct-apply path when policy permits. If the same turn also asks for standing behavior, a skill, access, identity, model, reach, editing authority, or scheduled work, include the memory operation in the same read-only proposal as the other primitives; never partially apply the turn.
 
 All natural-language requests to create, edit, inspect, run, clone, pause, resume, disable, or delete scheduled work are Agent authoring. Inspect and handle the request through this guide even when the schedule is the only primitive. Exact `!routines` commands remain a separate deterministic control surface. When one request also contains a durable fact, standing behavior, skill, access change, identity change, or model change, inspect and place every part together; never save only the cadence and discard the rest.
 
@@ -64,11 +68,13 @@ Do not repeatedly re-ask settled details. Fill obvious blanks, show the assumpti
 
 Use `propose_workspace_changes` for new-Agent creation and for generated, inferred, compound, multi-field, skill-bearing, capability-expanding, reach-changing, scheduled, destructive, or otherwise consequential edits. A proposal is read-only: it normalizes the exact typed operations, shows a bounded visible diff and missing setup, records the guide version, and returns a requester- and origin-bound handle.
 
+Treat every returned proposal handle as an opaque control token. Copy it byte-for-byte from the tool result when showing it or passing it to `confirm_workspace_change`; never retype, shorten, normalize, or invent a handle. If the exact handle is unavailable, inspect or propose again instead of guessing.
+
 Ask the requester to approve the exact visible proposal. Only then call `confirm_workspace_change` with its proposal handle. Never reconstruct or reinterpret operations during confirmation. If the proposal is stale, expired, denied, or bound to a different requester, conversation, client, or acting Agent, make no configuration write and offer a fresh inspection and proposal.
 
 A direct, explicit, reversible single-field edit may use `apply_workspace_changes` immediately when the current edit policy permits it. If the value was inferred or generated, or if there is any material uncertainty, use a proposal. Existing setup, permission, revision, reach, and destructive confirmation gates always win.
 
-Report the receipt accurately: applied, confirmation required, setup required, stale, denied, failed, or partially completed after admission. Do not claim success from intent alone.
+Report the receipt accurately: applied, confirmation required, setup required, stale, denied, failed, or partially completed after admission. After any confirmation attempt, always finish the same turn with visible plain-language final text that names the terminal status and what changed or why nothing changed. Do not end on a tool call or leave a progress card or checklist as the only response. Do not claim success from intent alone.
 
 ## Acting scope
 
@@ -78,7 +84,7 @@ The host supplies the authenticated requester and trusted acting Agent identity;
 - System Chickpea may create Agents and author Agents the requester is permitted to edit. System identity never overrides requester permission.
 - An external MCP client acts with the authenticated requester's permissions and the same proposal, setup, revision, confirmation, idempotency, and audit rules.
 
-For a cross-Agent request from a user Agent, use a bounded Chickpea handoff when the service offers one. Otherwise refuse without revealing the other Agent's private configuration.
+For a cross-Agent request from a user Agent, do not inspect, infer, or expose the other Agent's configuration. Call `request_chickpea_handoff` with reason `cross_agent`, then tell the requester to mention `@Chickpea` in the same thread so Chickpea can re-check their permission and continue. Use reason `workspace_authority` for Channel, team, or provider administration outside the acting Agent's scope. A handoff is read-only and does not reserve or mutate anything.
 
 ## Onboard progressively
 
@@ -92,4 +98,4 @@ Confirmed creation produces only the approved base Agent: active and addressable
 
 ## Final check
 
-Before any write, verify: posture is `commit`; target and acting scope are valid; live capabilities were inspected; the primitives match their intended semantics; credentials stay outside model context; consequential content has a visible proposal; and the user is approving the exact change that will be applied.
+Before any write, verify: the complete request was considered before selecting a mutation tool; posture is `commit`; target and acting scope are valid; live capabilities were inspected; the primitives match their intended semantics; credentials stay outside model context; consequential content has a visible proposal; and the user is approving the exact change that will be applied.

@@ -5,7 +5,6 @@ import {
   type AgentProps,
   type AgentRuntimeConfig,
   type SandboxFactory,
-  useDataWriter,
   useDelivery,
   useInitialData,
   useInstruction,
@@ -78,7 +77,6 @@ import {
   getAgentSnapshotStore,
   getConfigStore,
   getIdentityStore,
-  getMemoryStateStore,
   getSettingsStore,
   getUsageStore,
   type PlatformEnv,
@@ -142,18 +140,6 @@ import { createWorkspaceArtifactCapability } from '../sandbox/artifact-tool.ts';
 import { createWorkspaceArtifactTool } from '../sandbox/artifact-tool.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
-import {
-  AUTONOMOUS_MEMORY_RESULT_DATA_NAME,
-  AutonomousMemoryResultSchema,
-  autonomousMemoryInstruction,
-  createAutonomousAgentMemoryTool,
-  saveAutonomousMemory,
-  type AutonomousMemoryInput,
-} from '../memory/autonomous.ts';
-import {
-  isAuthorizedAgentMemoryMember,
-} from '../memory/runtime.ts';
-import { createMemoryScopeSlackFromWebClient, verifyMemoryMutationMembership } from '../memory/scope.ts';
 import { parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { slackPresentationIntentCapability } from '../slack/presentation-intent.ts';
@@ -1076,14 +1062,6 @@ export function ChickpeaSlack({ id }: AgentProps) {
   const presentationIntent = slackPresentationIntentCapability(currentRequest);
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
-    ...(currentRequest?.slackActorId && currentRequest.slackMessageTs
-      ? {
-          autonomousMemoryRequest: {
-            slackUserId: currentRequest.slackActorId,
-            messageTs: currentRequest.slackMessageTs,
-          },
-        }
-      : {}),
   });
   useAgentAuthoring();
   useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv);
@@ -1103,26 +1081,12 @@ export function useRuntimePlanAgent(
     responseMetadataModel?: string;
     sandboxConversationKey?: string;
     connectorUsageCorrelation?: import('../connections/managed-tools.ts').ManagedToolUsageCorrelation;
-    /** Current host-validated Slack request. Never source this from model tool input. */
-    autonomousMemoryRequest?: { slackUserId: string; messageTs: string };
   } = {},
 ): void {
   const thinkingLevel = thinkingLevelForModel(plan.model);
   useModel(plan.model, thinkingLevel ? { thinkingLevel } : {});
   if (options.responseMetadataModel) {
     useChickpeaResponseMetadata(options.responseMetadataModel);
-  }
-  if (options.autonomousMemoryRequest) {
-    const finishDeniedMemory = useDataWriter(AUTONOMOUS_MEMORY_RESULT_DATA_NAME, {
-      schema: AutonomousMemoryResultSchema,
-    });
-    useInstruction(autonomousMemoryInstruction());
-    useTool(createAutonomousAgentMemoryTool(
-      (input) =>
-        saveRuntimePlanAutonomousMemory(plan, options.autonomousMemoryRequest!, input)
-          .then(({ entry }) => ({ slug: entry.slug, version: entry.version })),
-      { finishDenied: finishDeniedMemory },
-    ));
   }
   useInstruction('Never invent facts or claim access to context and tools you do not have.');
   useManagedConnectionTools(
@@ -1154,60 +1118,6 @@ export function useRuntimePlanAgent(
   }
 }
 
-async function saveRuntimePlanAutonomousMemory(
-  plan: RuntimePlanV2,
-  request: { slackUserId: string; messageTs: string },
-  input: AutonomousMemoryInput,
-) {
-  const { slackUserId, messageTs } = request;
-  const env = await resolveAgentPlatformEnv();
-  const config = getConfigStore(env);
-  return saveAutonomousMemory({
-    surface: plan.conversation.surface,
-    workspaceId: plan.conversation.workspaceId,
-    channelId: plan.conversation.channelId,
-    threadTs: plan.conversation.threadTs,
-    messageTs,
-    agentId: plan.agentId,
-    slackUserId,
-  }, input, {
-    state: getMemoryStateStore(env),
-    authorize: async () => {
-      const [agent, installation] = await Promise.all([
-        config.getAgent(plan.agentId),
-        config.getWorkspaceInstallation(plan.conversation.workspaceId),
-      ]);
-      const installationIsValid = agent.enabled && agent.lifecycle !== 'archived' &&
-        installation?.workspaceId === plan.conversation.workspaceId &&
-        installation.health !== 'revoked';
-      if (!installationIsValid) return false;
-      if (plan.conversation.surface === 'direct_message') {
-        return isAuthorizedAgentMemoryMember({
-          workspaceId: plan.conversation.workspaceId,
-          userId: slackUserId,
-        }, env);
-      }
-      const [grants, execution] = await Promise.all([
-        config.listAgentChannelGrants(
-          plan.conversation.workspaceId,
-          plan.conversation.channelId,
-        ),
-        resolveSlackInstallationExecutionContext(plan.conversation.workspaceId, env, {
-          config,
-          settings: getSettingsStore(env),
-        }),
-      ]);
-      if (!grants.some((grant) => grant.agentId === plan.agentId && grant.status === 'active') ||
-          execution.workspaceId !== plan.conversation.workspaceId) return false;
-      return verifyMemoryMutationMembership(
-        plan.conversation.channelId,
-        slackUserId,
-        createMemoryScopeSlackFromWebClient(execution.client, plan.conversation.workspaceId),
-      );
-    },
-  });
-}
-
 // Must stay a static literal — see the note on ChickpeaRoutineExecution.
 ChickpeaSlack.agentName = 'chickpea-slack-v2';
 ChickpeaSlack.initialData = v.custom<RuntimePlanV2>((value) => {
@@ -1223,6 +1133,41 @@ function createRuntimePlanSandbox(
   plan: RuntimePlanV2,
   sandboxConversationKey?: string,
 ): SandboxFactory {
+  // RuntimePlanV2 has already frozen the sandbox decision and stripped legacy
+  // arbitrary API connections from the Agent projection. A bash-only plan
+  // therefore needs only Flue's local, content-free workspace. Rebuilding the
+  // full live Agent runtime here is both semantically redundant and, on
+  // Cloudflare, creates a deep Agent DO -> state DO call chain before the
+  // provider can even start. Repository-backed plans retain the live
+  // revocation and credential checks below.
+  if (plan.sandbox.mode === 'bash') {
+    const localSandbox = bash(() => new Bash({ fs: new InMemoryFs() }));
+    return {
+      async createSessionEnv(options) {
+        const env = await resolveAgentPlatformEnv();
+        // Runtime plans freeze behavior, but they do not preserve execution
+        // authority after an Agent is disabled or archived.
+        await requireLiveFrozenAgent(getConfigStore(env), plan.agentId);
+        const settings = getSettingsStore(env);
+        if (plan.modelCredential) {
+          await revalidateModelCredentialAttribution(
+            plan.model,
+            plan.modelCredential,
+            env,
+            settings,
+            getUsageStore(env),
+          );
+        }
+        // useModel owns the frozen public model id; resolving here binds only
+        // its current credential lane/provider in this Flue Agent isolate.
+        await resolveRuntimeModel(plan.agentId, plan.model, {
+          settings,
+          ...(env ? { env } : {}),
+        });
+        return localSandbox.createSessionEnv(options);
+      },
+    };
+  }
   return {
     async createSessionEnv({ id }) {
       const env = await resolveAgentPlatformEnv();

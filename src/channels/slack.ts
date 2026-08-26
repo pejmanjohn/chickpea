@@ -1122,8 +1122,12 @@ async function processSlackEvent(
   }
   threadKey = slackAgentThreadKey(turn, assignment);
   turn.activeWorkAtAdmission = await state.isActiveWork(threadKey);
+  const commandAddress = {
+    botUserId: resolvedBotUserId,
+    agentUserGroupId: assignment.agent.slackPresence?.userGroupId,
+  };
   const deterministicCommand = Boolean(parseMemoryCommand(turn.text)) ||
-    (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text)));
+    (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress)));
   if (!deterministicCommand && !candidateTurn) {
     const immediateIntent = resolveImmediateSlackInteractionIntent({
       workspaceId: turn.workspaceId,
@@ -1292,7 +1296,7 @@ async function processSlackEvent(
       ...(egressPolicy ? { egressPolicy } : {}),
       legacyOnlyTurn:
         Boolean(parseMemoryCommand(turn.text)) ||
-        (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text))),
+        (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress))),
       ...(platformEnv ? { env: platformEnv } : {}),
     });
     const admission = prepareSlackShadowAdmission({

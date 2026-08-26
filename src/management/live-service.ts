@@ -27,7 +27,10 @@ import type { UsageStore } from '../usage/types.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
 import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
-import { resolveSlackInstallationCredentials } from '../slack/installation-credentials.ts';
+import {
+  resolveSlackInstallationCredentials,
+  type SlackCredentialDependencies,
+} from '../slack/installation-credentials.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import type { SlackTransport } from '../slack/transport/types.ts';
@@ -41,6 +44,7 @@ export interface LiveWorkspaceManagementServiceOptions {
   identity?: IdentityStore;
   settings?: SettingsStore;
   usage?: UsageStore;
+  slackCredentials?: SlackCredentialDependencies;
   overrides?: Partial<WorkspaceManagementServiceInput>;
 }
 
@@ -53,6 +57,7 @@ export function createLiveWorkspaceManagementService(
   const settings = options.settings ?? getSettingsStore(env);
   const identity = options.identity ?? getIdentityStore(env);
   const config = overrides.config ?? getConfigStore(env);
+  const slackCredentials = options.slackCredentials ?? getSlackCredentialDependencies(env);
   const slackTransport = async (workspaceId: string): Promise<SlackTransport> => {
     const installation = await config.getWorkspaceInstallation(workspaceId);
     if (!installation || installation.health === 'revoked') {
@@ -67,7 +72,7 @@ export function createLiveWorkspaceManagementService(
     const credentials = await resolveSlackInstallationCredentials(
       WORKSPACE_SLACK_INSTALLATION_ID,
       env,
-      getSlackCredentialDependencies(env),
+      slackCredentials,
     );
     if (!credentials.botToken) {
       throw new AgentPresenceError(
