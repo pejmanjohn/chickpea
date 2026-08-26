@@ -1,4 +1,4 @@
-# <img src="assets/chickpea-mark.svg" alt="" width="34" height="34"> Chickpea
+# <img src="assets/chickpea-mark.png" alt="" width="34" height="34"> Chickpea
 
 **Self-hosted, model-agnostic Slack Agents with distinct handles, avatars, memory, connections, and schedules.**
 

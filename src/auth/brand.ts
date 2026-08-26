@@ -1,1 +1,6 @@
-export const AUTH_BRAND_HTML = `<div class="auth-brand" aria-label="Chickpea"><svg class="auth-brand-mark" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><circle cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle><path d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><circle cx="15.5" cy="28.5" r="2" fill="#DC8A4F" opacity="0.4"></circle><circle cx="32.5" cy="28.5" r="2" fill="#DC8A4F" opacity="0.4"></circle></svg><span class="auth-brand-name">Chickpea</span></div>`;
+import {
+  CHICKPEA_MARK_DATA_URL,
+  CHICKPEA_WORDMARK_HTML,
+} from '../brand/chickpea-mark.ts';
+
+export const AUTH_BRAND_HTML = `<div class="auth-brand"><img class="auth-brand-mark" src="${CHICKPEA_MARK_DATA_URL}" alt="" width="42" height="42" draggable="false">${CHICKPEA_WORDMARK_HTML}</div>`;

@@ -10,13 +10,32 @@ guide records the design rules that should remain consistent as the UI evolves.
 
 - Product name: **Chickpea** (capitalized in UI copy); the default install-wide
   Slack bot display name is **@Chickpea**.
-- Mark: single smiling chickpea — gold pea, highlight top-left, two dot eyes,
-  smile, faint blush. Canonical source: [`assets/chickpea-mark.svg`](../../assets/chickpea-mark.svg).
-  The admin page renders an inline SVG variant inside `.avatar` so its face can
-  animate; the canonical asset remains the static reference.
+- Mark: one chunky, smiling gold Chickpea with a broad, softly flattened body,
+  a gentle asymmetrical bump, two cocoa eyes, and a small curved smile. Its
+  surface is matte felt / fine flocking with soft diffuse shading—never smooth,
+  shiny, plastic, or glossy. Canonical source:
+  [`assets/chickpea-mark.png`](../../assets/chickpea-mark.png).
+- Product surfaces use that same standalone character without a doorway,
+  background tile, floor, or cast shadow. The 128px web asset and 32px favicon
+  are size-optimized derivatives of the canonical mark and are embedded from
+  `src/brand/chickpea-mark.generated.ts`.
+- Wordmark: custom medium-bold rounded lettering with open counters and a
+  subtle smile-shaped lift on the open terminals and final `a`. The canonical
+  design master is the transparent monochrome alpha mask
+  [`assets/chickpea-wordmark-mask.png`](../../assets/chickpea-wordmark-mask.png).
+  `npm run brand:build` creates the size-optimized 512px runtime derivative
+  `assets/chickpea-wordmark-512.png` and embeds it in the shared brand module.
+  Product UI renders the mask with `currentColor`: cocoa `#3B3220` on light
+  surfaces and white on dark or photographic surfaces. Do not redraw it with a
+  nearby font or maintain separate cocoa and white artwork.
+- Use the full mark-and-wordmark lockup in Admin navigation, onboarding, and
+  authentication/setup headers. Keep the standalone mark for the favicon,
+  Slack avatars, square icons, and any compact state where the wordmark would
+  render below 18px tall.
 - Never add the sprout leaf back; never put faces on more than one pea in a
   lockup. Secondary peas (marketing/illustration) are faceless.
-- Minimum sizes: mark alone ≥ 14px; with face ≥ 20px.
+- Minimum sizes: the full mark is preferred at ≥ 20px. The approved 32px
+  favicon derivative is the smallest product rendering; do not redraw it.
 - Slack avatars are one soft-clay family: a large matte Chickpea sits inside a
   warm, moonless architectural portal. The square background runs to
   every edge so Slack owns the corner treatment. The install-wide bot keeps
@@ -48,8 +67,8 @@ Status
 - Green text: `#4E7A3E`
 - Danger text `#B5473A` · danger well `#FBE3DC` · danger deep `#8F3428`
 
-Logo-only golds: pea `#E3AC45`, highlight `#F4D084`, deep pea `#D9962C`,
-light pea `#F0C566`, blush `#DC8A4F @ 40%`.
+Logo color is baked into the raster asset. Do not recolor it with CSS filters
+or introduce gradients on top of the felt texture.
 
 ## Type
 
