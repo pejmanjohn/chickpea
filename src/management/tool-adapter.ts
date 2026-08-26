@@ -32,7 +32,7 @@ export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
 export type WorkspaceManagementToolName = typeof WORKSPACE_MANAGEMENT_TOOL_NAMES[number];
 
 const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
-  inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority.',
+  inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority. Required before recommending specific capabilities for Agent design or answering what services an Agent can use.',
   prepare_connector_setup: 'Create a safe browser handoff URL for adding a catalog connector to an editable Agent. Set ownerKind to "member" for a personal connection or "team" for a shared connection. In a specific Agent Slack conversation, agentId may be omitted to target that Agent.',
   discover_slack_channels: 'Discover Channels in the connected Slack workspace before publishing a Chickpea Agent.',
   test_mcp_connection: 'Test one saved Agent MCP connection with its write-only credentials and return a sanitized result plus discovered tools.',

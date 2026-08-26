@@ -68,7 +68,7 @@ During exploration, keep the Agent blueprint in the conversation and create no r
 ```json
 {
   "idempotencyKey": "agent-research-v1",
-  "guideVersion": "1.0.2",
+  "guideVersion": "1.0.3",
   "authoringReason": "agent_creation",
   "operations": [
     {

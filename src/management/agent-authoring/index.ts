@@ -3,7 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { defineSkill, useInstruction, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
-export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.2' as const;
+export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.3' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
@@ -15,8 +15,9 @@ export const AGENT_AUTHORING_REASONS = [
 export type AgentAuthoringReason = typeof AGENT_AUTHORING_REASONS[number];
 
 export const AGENT_AUTHORING_ROUTER_INSTRUCTION = [
-  'Activate the `agent-authoring` skill before helping a requester create an Agent, edit an Agent, explore possible Agent roles or workflows, ask a capability question about Agent configuration, or create or revise a skill.',
+  'Always activate the `agent-authoring` skill before answering a request to create an Agent, edit an Agent, explore possible Agent roles or workflows, ask a capability question about Agent configuration, or create or revise a skill.',
   'Skill activation, reference reading, live inspection, and proposal drafting are read-only; do them without asking for separate permission.',
+  'For Agent brainstorming or capability questions about Agent configuration that mention capabilities, services, or connections, call `inspect_workspace` in the same turn before naming specific services or describing availability; do not answer from general knowledge or defer inspection until a later turn.',
   'Exploration and unresolved questions are read-only. Use the management tools only after the activated guide establishes the correct posture and target.',
 ].join(' ');
 
@@ -39,7 +40,7 @@ Activating this skill, reading its references, inspecting live state, and drafti
 
 ## Inspect before recommending
 
-Use \`inspect_workspace\` before claiming a connector, repository, model, schedule facility, or other capability is available. Use the dedicated inspection tools for memory, routines, and Slack Channels when those details matter. Recommend only what the live result supports. Describe missing or unhealthy access as setup still needed; never imply that access exists because a tool or service is familiar.
+Use \`inspect_workspace\` before claiming a connector, repository, model, schedule facility, or other capability is available. When the requester asks what an Agent could do or what to connect, inspection is mandatory in that turn before naming specific services or describing availability; do not offer to inspect later after giving generic recommendations. Use the dedicated inspection tools for memory, routines, and Slack Channels when those details matter. Recommend only what the live result supports. Describe missing or unhealthy access as setup still needed; never imply that access exists because a tool or service is familiar.
 
 Use each inspected revision only for the object it belongs to. A Channel's top-level \`revision\` is for \`put_channel\`. A nested \`channels[].grants[].revision\` is the Agent-to-Channel grant revision required by \`revoke_agent_channel\` and by \`grant_agent_channel\` when a matching grant already exists. Use \`expectedRevision: 0\` for \`grant_agent_channel\` only when inspection shows that no matching grant exists. Never substitute the parent Channel revision for a grant revision.
 
@@ -167,7 +168,7 @@ export const AGENT_AUTHORING_GUIDE_DIGEST = bytesToHex(sha256(new TextEncoder().
 
 const agentAuthoringSkill = defineSkill({
   name: AGENT_AUTHORING_SKILL_NAME,
-  description: 'Explore, create, onboard, or edit a Chickpea Agent, answer Agent capability questions, and create or revise reusable Agent skills. Activate before proposing Agent configuration changes.',
+  description: 'Explore, create, onboard, or edit a Chickpea Agent, answer Agent capability questions, or create or revise reusable Agent skills. Required before answering any such request.',
   instructions: AGENT_AUTHORING_GUIDE,
   metadata: {
     'chickpea-guide-version': AGENT_AUTHORING_GUIDE_VERSION,

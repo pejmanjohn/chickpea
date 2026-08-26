@@ -19,6 +19,8 @@ test('canonical Agent-authoring package is versioned, complete, and digest-bound
   assert.match(AGENT_AUTHORING_GUIDE_VERSION, /^1\./);
   assert.equal(AGENT_AUTHORING_GUIDE_URI, 'chickpea://guide/agent-authoring/v1');
   assert.ok(AGENT_AUTHORING_PACKAGE.skill.description.length > 80);
+  assert.match(AGENT_AUTHORING_PACKAGE.skill.description, /Explore, create, onboard, or edit/i);
+  assert.match(AGENT_AUTHORING_PACKAGE.skill.description, /Required before answering/i);
   assert.ok(AGENT_AUTHORING_GUIDE.length > 4_000);
   assert.ok(AGENT_SKILL_CREATION_GUIDE.length > 2_000);
   assert.ok(AGENT_AUTHORING_ROUTER_INSTRUCTION.length < AGENT_AUTHORING_GUIDE.length / 8);
@@ -48,6 +50,8 @@ test('router covers all authoring postures while leaving detailed judgment lazy'
     'capability',
     'create or revise a skill',
     'without asking for separate permission',
+    'inspect_workspace',
+    'do not answer from general knowledge or defer inspection',
   ]) assert.match(AGENT_AUTHORING_ROUTER_INSTRUCTION, new RegExp(phrase, 'i'));
   assert.doesNotMatch(AGENT_AUTHORING_ROUTER_INSTRUCTION, /chief of staff|Sentry|bug-to-PR/i);
 });
@@ -58,6 +62,7 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     'instructions', 'skills', 'memory', 'connections', 'repositories', 'schedules',
     'Slack presence', 'Channel reach', 'editing authority',
     'inspect_workspace', 'propose_workspace_changes', 'confirm_workspace_change',
+    'inspection is mandatory in that turn', 'do not offer to inspect later',
     'channels\\[\\]\\.grants\\[\\]\\.revision', 'Never substitute the parent Channel revision',
     'no Agent record', 'one highest-value next step',
   ]) assert.match(AGENT_AUTHORING_GUIDE, new RegExp(phrase, 'i'));

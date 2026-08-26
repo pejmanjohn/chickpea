@@ -17,7 +17,7 @@ Activating this skill, reading its references, inspecting live state, and drafti
 
 ## Inspect before recommending
 
-Use `inspect_workspace` before claiming a connector, repository, model, schedule facility, or other capability is available. Use the dedicated inspection tools for memory, routines, and Slack Channels when those details matter. Recommend only what the live result supports. Describe missing or unhealthy access as setup still needed; never imply that access exists because a tool or service is familiar.
+Use `inspect_workspace` before claiming a connector, repository, model, schedule facility, or other capability is available. When the requester asks what an Agent could do or what to connect, inspection is mandatory in that turn before naming specific services or describing availability; do not offer to inspect later after giving generic recommendations. Use the dedicated inspection tools for memory, routines, and Slack Channels when those details matter. Recommend only what the live result supports. Describe missing or unhealthy access as setup still needed; never imply that access exists because a tool or service is familiar.
 
 Use each inspected revision only for the object it belongs to. A Channel's top-level `revision` is for `put_channel`. A nested `channels[].grants[].revision` is the Agent-to-Channel grant revision required by `revoke_agent_channel` and by `grant_agent_channel` when a matching grant already exists. Use `expectedRevision: 0` for `grant_agent_channel` only when inspection shows that no matching grant exists. Never substitute the parent Channel revision for a grant revision.
 
