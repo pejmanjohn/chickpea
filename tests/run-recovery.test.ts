@@ -29,6 +29,55 @@ import { captureSlackIdentityOperationalEvents } from './helpers/slack-identity-
 
 const NOW = 1_940_000_000_000;
 
+test('activated direct-message dispatch uses the frozen Slack root coordinate', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const dmTurn: NormalizedSlackTurn = {
+      ...turn(),
+      channelId: 'D_canary',
+      messageTs: '100.009',
+      threadTs: '100.009',
+      sessionThreadTs: 'dm',
+      source: 'dm_message',
+      channelType: 'im',
+    };
+    const dmAssignment: ResolvedAssignment = {
+      ...assignment(),
+      channelId: 'D_canary',
+      runtimeContract: 'chickpea-v1',
+      ownerIncarnation: 2,
+    };
+    turns.enqueue({
+      id: 'turn_activated-dm',
+      evtKey: 'evt_activated-dm',
+      msgKey: 'msg_activated-dm',
+      turn: dmTurn,
+      assignment: dmAssignment,
+    });
+    turns.freezeRuntimePlan('turn_activated-dm', compileRuntimePlanV2({
+      turn: dmTurn,
+      assignment: dmAssignment,
+      instructions: 'Frozen DM instructions.',
+      memoryEpoch: 1,
+      sandboxMode: 'bash',
+    }));
+
+    const envelope = turns.prepareFlueDispatch(
+      'turn_activated-dm',
+      'Answer the direct message.',
+      { generation: 'dm-generation' },
+    );
+
+    assert.equal(envelope.schemaVersion, 2);
+    if (envelope.schemaVersion !== 2) throw new Error('expected a signal dispatch');
+    assert.equal(envelope.message.attributes.threadTs, '100.009');
+    assert.equal(envelope.initialData?.conversation.threadTs, '100.009');
+  } finally {
+    db.close();
+  }
+});
+
 test('delivery-only recovery replays the exact persisted Slack payload without executing again', async () => {
   let clock = NOW;
   const db = openStateDb(':memory:');

@@ -367,11 +367,13 @@ export class TurnJobStoreLogic {
       const row = this.db.get('SELECT turn_json FROM turn_jobs WHERE id = ?', id);
       if (!row?.turn_json) throw new Error('TurnJob is unavailable for Flue dispatch.');
       const turn = JSON.parse(String(row.turn_json)) as NormalizedSlackTurn;
-      const signalThreadTs = turn.sessionThreadTs ?? turn.threadTs;
+      const signalThreadTs = decision.runtimePlan.conversation.threadTs;
+      const signalThreadMatchesTurn = signalThreadTs === turn.threadTs ||
+        signalThreadTs === turn.sessionThreadTs;
       if (
         turn.workspaceId !== decision.runtimePlan.conversation.workspaceId ||
         turn.channelId !== decision.runtimePlan.conversation.channelId ||
-        signalThreadTs !== decision.runtimePlan.conversation.threadTs
+        !signalThreadMatchesTurn
       ) {
         throw new Error('Slack signal coordinates do not match RuntimePlanV2.');
       }
