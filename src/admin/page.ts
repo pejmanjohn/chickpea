@@ -3863,7 +3863,13 @@ button.capability-pill { cursor: pointer; }
     var title = "Set up " + setup.label;
     var providerLink = 'In Composio, open Settings &rarr; Project Settings &rarr; API Keys. <a class="hint-link" href="https://dashboard.composio.dev" target="_blank" rel="noopener noreferrer">Open Composio &nearr;</a>';
     var body;
-    if (!setup.canConfigure) {
+    if (setup.providerPrerequisiteMissing) {
+      var prerequisiteCopy = setup.toolkit === "googleads"
+        ? '<p>' + esc(setup.label) + ' sign-in is blocked by this installation&rsquo;s Google Ads policy.</p><p class="hint">A deployment operator must allow Composio managed OAuth or configure an eligible Google Ads API access tier (Explorer, Basic, or Standard). Preparing connector defaults will not change this setting.</p>'
+        : '<p>' + esc(setup.label) + ' sign-in is blocked by this installation&rsquo;s provider policy.</p><p class="hint">A deployment operator must update this connector&rsquo;s provider requirements. Preparing connector defaults will not change this setting.</p>';
+      body = '<div class="managed-setup-intro">' + prerequisiteCopy + '</div>' +
+        '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="composio-setup-close">Close</button><span class="spacer"></span><button type="button" class="btn btn-soft" data-action="composio-setup-settings">View connector status</button></div>';
+    } else if (!setup.canConfigure) {
       body = '<div class="managed-setup-intro"><p>' + esc(setup.label) + ' is available in Chickpea, but managed connectors must first be enabled by a Chickpea owner or admin.</p>' +
         '<p class="hint">Ask an owner or admin to open Settings &rarr; Connectors and enable managed connectors for this installation.</p></div>' +
         '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="composio-setup-close">Close</button><span class="spacer"></span><button type="button" class="btn btn-soft" data-action="composio-setup-settings">View Connectors settings</button></div>';
@@ -7112,11 +7118,14 @@ button.capability-pill { cursor: pointer; }
     return availability && availability.missingConfiguration || [];
   }
 
+  function managedConnectorMissingCode(descriptor, lane, code) {
+    return managedConnectorMissingCodes(descriptor, lane).indexOf(code) >= 0;
+  }
+
   function managedConnectorReadiness(descriptor, lane) {
     if (managedConnectorLaneReady(descriptor, lane)) return { label: "Ready", kind: "ready" };
-    var codes = managedConnectorMissingCodes(descriptor, lane);
-    if (codes.indexOf("provider_prerequisite_missing") >= 0) {
-      return { label: "Additional setup required", kind: "prerequisite" };
+    if (managedConnectorMissingCode(descriptor, lane, "provider_prerequisite_missing")) {
+      return { label: "Blocked by deployment policy", kind: "prerequisite" };
     }
     return {
       label: state.agentConnections.managedCanConfigure
@@ -7136,6 +7145,9 @@ button.capability-pill { cursor: pointer; }
       ownerKind: preferredOwnerKind === "member" ? "member" : "team",
       canConfigure: !!state.agentConnections.managedCanConfigure,
       deploymentManaged: !!state.agentConnections.managedConfigurationReadOnly,
+      providerPrerequisiteMissing: managedConnectorMissingCode(
+        descriptor, "read", "provider_prerequisite_missing"
+      ),
       key: "",
       phase: "idle",
       error: "",
@@ -10347,8 +10359,13 @@ button.capability-pill { cursor: pointer; }
           : "A Chickpea owner or admin can enable managed connectors for this installation.";
     var deploymentPreparationRequired = provider.readOnly && configured &&
       (settings.catalog || []).some(function (descriptor) {
-        return !managedConnectorLaneReady(descriptor, "read");
+        return managedConnectorMissingCode(descriptor, "read", "auth_config_missing") &&
+          !managedConnectorMissingCode(descriptor, "read", "provider_prerequisite_missing");
       });
+    var googleAdsPolicyBlocked = (settings.catalog || []).some(function (descriptor) {
+      return descriptor.toolkit === "googleads" &&
+        managedConnectorMissingCode(descriptor, "read", "provider_prerequisite_missing");
+    });
     var controls = "";
     if (!settings.canConfigure) {
       controls = '<p class="managed-provider-guidance">A Chickpea owner or admin can add or change this project key.</p>';
@@ -10370,12 +10387,15 @@ button.capability-pill { cursor: pointer; }
     } else if (provider.lastSetupResult && provider.lastSetupResult.status !== "ready" && configured) {
       controls += '<div class="callout" role="alert"><span>Some connectors still need setup. Ready connectors remain available.</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry setup</button></div>';
     }
+    if (googleAdsPolicyBlocked) {
+      controls += '<div class="callout" role="status"><span>Google Ads is blocked by deployment policy. A deployment operator must allow Composio managed OAuth or configure Explorer, Basic, or Standard API access. Preparing connector defaults will not change this setting.</span></div>';
+    }
     var catalogRows = (settings.catalog || []).map(function (descriptor) {
       var preset = connectorPresetForToolkit(descriptor.toolkit) || { id: descriptor.id, name: descriptor.label, accent: "#8b6b2e" };
       var readiness = managedConnectorLaneReady(descriptor, "read")
         ? { label: "Ready", kind: "ready" }
-        : managedConnectorMissingCodes(descriptor, "read").indexOf("provider_prerequisite_missing") >= 0
-          ? { label: "Additional setup required", kind: "prerequisite" }
+        : managedConnectorMissingCode(descriptor, "read", "provider_prerequisite_missing")
+          ? { label: "Blocked by deployment policy", kind: "prerequisite" }
           : { label: configured ? "Setup required" : "Add project key", kind: "setup" };
       return '<div class="managed-settings-row">' + connectorLogoHtml(preset) + '<span class="managed-settings-copy"><span class="connection-account-name">' + esc(descriptor.label) + '</span><span class="connection-account-identity">' + esc(descriptor.description || "") + '</span></span><span class="managed-readiness managed-readiness-' + readiness.kind + '">' + esc(readiness.label) + '</span></div>';
     }).join("");

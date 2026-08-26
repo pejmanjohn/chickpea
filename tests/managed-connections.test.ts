@@ -162,18 +162,30 @@ test('Composio readiness is isolated by toolkit and access lane', () => {
   );
 });
 
-test('Google Ads stays unavailable until the developer token and permissible use are production-capable', () => {
-  const testOnly = new ComposioManagedConnectionProvider({
+test('Google Ads accepts Composio managed auth and Explorer access without operator-only assertions', () => {
+  const managedDefault = new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    authConfigIds: { googleads: { read: 'ac_ads', write: 'ac_ads' } },
+  });
+  assert.equal(
+    managedDefault.availability({ toolkit: 'googleads', accessLane: 'read' }).status,
+    'ready',
+  );
+  assert.equal(
+    managedDefault.availability({ toolkit: 'googleads', accessLane: 'write' }).status,
+    'ready',
+  );
+
+  const explorer = new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
     authConfigIds: { googleads: { read: 'ac_ads', write: 'ac_ads' } },
     googleAdsAccessLevel: 'explorer',
-    googleAdsPermissibleUse: 'ad_management',
   });
-  assert.deepEqual(testOnly.availability({ toolkit: 'googleads', accessLane: 'read' }), {
-    status: 'missing_configuration',
-    missingConfiguration: ['provider_prerequisite_missing'],
-  });
+  assert.equal(explorer.availability({ toolkit: 'googleads', accessLane: 'read' }).status, 'ready');
+  assert.equal(explorer.availability({ toolkit: 'googleads', accessLane: 'write' }).status, 'ready');
+});
 
+test('Google Ads keeps explicit restricted developer-token configurations fail closed', () => {
   const reporting = new ComposioManagedConnectionProvider({
     apiKey: 'test-key',
     authConfigIds: { googleads: { read: 'ac_ads', write: 'ac_ads' } },
@@ -185,6 +197,16 @@ test('Google Ads stays unavailable until the developer token and permissible use
     'ready',
   );
   assert.deepEqual(reporting.availability({ toolkit: 'googleads', accessLane: 'write' }), {
+    status: 'missing_configuration',
+    missingConfiguration: ['provider_prerequisite_missing'],
+  });
+
+  const testOnly = new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    authConfigIds: { googleads: { read: 'ac_ads', write: 'ac_ads' } },
+    googleAdsAccessLevel: 'test',
+  });
+  assert.deepEqual(testOnly.availability({ toolkit: 'googleads', accessLane: 'read' }), {
     status: 'missing_configuration',
     missingConfiguration: ['provider_prerequisite_missing'],
   });

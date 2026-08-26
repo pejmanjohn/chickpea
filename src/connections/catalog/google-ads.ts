@@ -101,7 +101,7 @@ export const MANAGED_GOOGLE_ADS_CONNECTORS: readonly ManagedConnectorDefinition[
   label: 'Google Ads',
   description: 'Analyze and manage campaigns for explicitly selected client accounts.',
   securityDescription:
-    'Google sign-in opens through Composio. An Admin must select one or more client customer accounts before Agents receive tools. Developer tokens stay in operator auth configuration. Reports are structured rather than free-form GAQL; billing, access administration, conversion upload, delete, bulk, and raw mutation tools are absent.',
+    'Google sign-in opens through Composio managed OAuth. An Admin must select one or more client customer accounts before Agents receive tools. Chickpea never receives the Google Ads developer token. Reports are structured rather than free-form GAQL; billing, access administration, conversion upload, delete, bulk, and raw mutation tools are absent.',
   resources: [{
     key: 'customerIds',
     label: 'Google Ads client accounts',

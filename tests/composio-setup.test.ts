@@ -145,6 +145,13 @@ test('setup creates missing defaults, retains partial successes, and persists sa
       type: 'use_composio_managed_auth',
       name: `Chickpea default — ${created[0]?.toolkit} v1`,
     });
+    assert.deepEqual(created.find(({ toolkit }) => toolkit === 'googleads'), {
+      toolkit: 'googleads',
+      options: {
+        type: 'use_composio_managed_auth',
+        name: 'Chickpea default — googleads v1',
+      },
+    });
     const status = await describeComposioConfiguration(dependencies);
     assert.deepEqual(status.lastSetupResult?.issueCodes, ['auth_config_prepare_failed.gong']);
     assert.equal(JSON.stringify(status).includes('sentinel'), false);

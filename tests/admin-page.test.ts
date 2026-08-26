@@ -7104,6 +7104,53 @@ test('deployment-managed connector setup sends owners to preparation without ask
   assert.doesNotMatch(harness.app.innerHTML, /id="composio-project-key"/);
 });
 
+test('provider policy blocks explain the operator fix instead of sending owners to preparation', async () => {
+  const descriptor = {
+    ...managedCatalogFixture('google-ads', 'googleads', 'Google Ads'),
+    access: {
+      read: {
+        status: 'missing_configuration',
+        missingConfiguration: ['provider_prerequisite_missing'],
+      },
+      write: {
+        status: 'missing_configuration',
+        missingConfiguration: ['provider_prerequisite_missing'],
+      },
+    },
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: {
+      attached: [],
+      available: [],
+      managedConnectors: {
+        composio: true,
+        canConfigure: true,
+        configurationReadOnly: true,
+        catalog: [descriptor],
+      },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Google Ads[\s\S]*?Blocked by deployment policy/);
+  click({
+    target: actionTarget({
+      'data-action': 'connection-account-preset',
+      'data-preset': 'google-ads',
+    }),
+  });
+
+  assert.match(harness.app.innerHTML, /sign-in is blocked by this installation&rsquo;s Google Ads policy/);
+  assert.match(harness.app.innerHTML, /allow Composio managed OAuth or configure an eligible Google Ads API access tier/);
+  assert.doesNotMatch(harness.app.innerHTML, /prepare the standard connector defaults/i);
+});
+
 test('connector handoff deep link opens the requested reusable account form', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_conn/connections/new/gmail/member',
@@ -11916,6 +11963,44 @@ test('deployment-managed connector settings are visible but immutable in Admin',
   assert.match(harness.app.innerHTML, /Prepare connector defaults/);
   assert.doesNotMatch(harness.app.innerHTML, /id="connector-settings-key"|Replace project key|Disable in Chickpea/);
   assert.equal((harness.app.innerHTML.match(/class="managed-settings-row"/g) ?? []).length, 13);
+});
+
+test('deployment policy blocks do not offer connector preparation as a false fix', async () => {
+  const catalog = managedSettingsCatalogFixture().map((entry) => entry.toolkit === 'googleads'
+    ? {
+        ...entry,
+        access: {
+          read: {
+            status: 'missing_configuration',
+            missingConfiguration: ['auth_config_missing', 'provider_prerequisite_missing'],
+          },
+          write: {
+            status: 'missing_configuration',
+            missingConfiguration: ['auth_config_missing', 'provider_prerequisite_missing'],
+          },
+        },
+      }
+    : entry);
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    composioSettings: {
+      provider: {
+        source: 'deployment', configured: true, readOnly: true,
+        desiredState: 'enabled', generation: 1, reconciliationPending: false,
+        connectors: catalog.map((entry) => ({
+          toolkit: entry.toolkit,
+          status: entry.toolkit === 'googleads' ? 'setup_required' : 'ready',
+        })),
+      },
+      canConfigure: true,
+      impact: { accounts: 0, schedules: 0 },
+      catalog,
+    },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Google Ads[\s\S]*?Blocked by deployment policy/);
+  assert.doesNotMatch(harness.app.innerHTML, /Prepare connector defaults/);
 });
 
 test('invalid project keys stay masked and return an inline correction', async () => {
