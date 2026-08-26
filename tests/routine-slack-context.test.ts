@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { WebClient } from '@slack/web-api';
 
+import { shouldHandleRoutineCommandTurn } from '../src/routines/commands.ts';
 import {
   canManageRoutineChannel,
   isRoutineSlackTurn,
@@ -26,6 +27,31 @@ test('routine handling admits channel mentions and their implicit thread replies
   assert.equal(isRoutineSlackTurn({ ...base, source: 'agent_mention' }), true);
   assert.equal(isRoutineSlackTurn({ ...base, source: 'implicit_thread_reply', channelType: 'im' }), false);
   assert.equal(isRoutineSlackTurn({ ...base, source: 'dm_message', channelType: 'im' }), false);
+});
+
+test('only exact Routine commands bypass the interactive Agent authoring loop', () => {
+  const base = {
+    workspaceId: 'T_TEST', channelId: 'C_TEST', userId: 'U_MEMBER', eventId: 'Ev_TEST',
+    messageTs: '1.1', threadTs: '1.0', source: 'app_mention' as const,
+    contextMode: 'thread' as const,
+  };
+  assert.equal(shouldHandleRoutineCommandTurn({
+    ...base,
+    text: 'Every weekday at 9 AM, summarize support and post it here.',
+  }), false);
+  assert.equal(shouldHandleRoutineCommandTurn({
+    ...base,
+    text: 'Remember that Acme renews September 30. Every Monday, check renewal risk.',
+  }), false);
+  assert.equal(shouldHandleRoutineCommandTurn({
+    ...base,
+    text: '!routines pause routine_one',
+  }), true);
+  assert.equal(shouldHandleRoutineCommandTurn({
+    ...base,
+    source: 'dm_message', channelType: 'im',
+    text: '!routines pause routine_one',
+  }), false);
 });
 
 test('mentioned-channel controls require current bot and actor membership', async () => {

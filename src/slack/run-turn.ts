@@ -28,6 +28,7 @@ import {
   handleRoutineSlackRequest,
   parseRoutineCommand,
   routineResponseVisibility,
+  shouldHandleRoutineCommandTurn,
 } from '../routines/commands.ts';
 import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import {
@@ -288,10 +289,10 @@ export async function runTurn(
     await repairPresenter.markCanonicalPresentationFinalized();
     return;
   }
-  // Natural-language Routine intent runs through a fresh, tool-less v2 agent.
-  // A selected ledger canary deliberately skips that pre-parser;
-  // explicit Routine commands are kept off this lane at admission.
-  if (!ledgerAuthority && isRoutineSlackTurn(turn)) {
+  // Exact `!routines` controls stay deterministic. All natural-language
+  // schedule creation and editing reaches the interactive Flue Agent, where
+  // agent-authoring decides placement and uses management proposals.
+  if (shouldHandleRoutineCommandTurn(turn)) {
     const routineText = await handleRoutineSlackRequest(turn, platformEnv, {
       ...(installationContext ? { installationContext } : {}),
       assignment,

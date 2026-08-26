@@ -3,7 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { defineSkill, useInstruction, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
-export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.3' as const;
+export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.4' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
@@ -15,15 +15,16 @@ export const AGENT_AUTHORING_REASONS = [
 export type AgentAuthoringReason = typeof AGENT_AUTHORING_REASONS[number];
 
 export const AGENT_AUTHORING_ROUTER_INSTRUCTION = [
-  'Always activate the `agent-authoring` skill before answering a request to create an Agent, edit an Agent, explore possible Agent roles or workflows, ask a capability question about Agent configuration, or create or revise a skill.',
+  'Always activate the `agent-authoring` skill before answering a request to create an Agent, edit an Agent, explore possible Agent roles or workflows, ask a capability question about Agent configuration, create or revise a skill, or conversationally create, edit, or manage scheduled work for an Agent.',
   'Skill activation, reference reading, live inspection, and proposal drafting are read-only; do them without asking for separate permission.',
   'For Agent brainstorming or capability questions about Agent configuration that mention capabilities, services, or connections, call `inspect_workspace` in the same turn before naming specific services or describing availability; do not answer from general knowledge or defer inspection until a later turn.',
+  'All natural-language scheduled-work changes and controls are Agent authoring; only exact `!routines` commands use the deterministic control surface. Use management inspection and proportional approval, and place every primitive in a compound request together instead of saving only its cadence.',
   'Exploration and unresolved questions are read-only. Use the management tools only after the activated guide establishes the correct posture and target.',
 ].join(' ');
 
 export const AGENT_AUTHORING_GUIDE = `# Chickpea Agent authoring
 
-Use this guide when a requester wants to explore, create, onboard, or edit a Chickpea Agent, asks what an Agent could do, or wants to create or revise a reusable Agent skill. The management service is the only mutation authority. This guide helps you reason and compose; tools validate, authorize, preview, confirm, and apply.
+Use this guide when a requester wants to explore, create, onboard, or edit a Chickpea Agent, asks what an Agent could do, wants to create or revise a reusable Agent skill, or conversationally creates, edits, or manages scheduled work for an Agent. The management service is the only mutation authority. This guide helps you reason and compose; tools validate, authorize, preview, confirm, and apply.
 
 ## Start with posture
 
@@ -61,6 +62,8 @@ Place each part of the request according to its lifetime and execution semantics
 - **Editing authority**: who may edit the Agent. It is authority, not personality or knowledge.
 
 When a request spans primitives, use the smallest coherent composition. Explain a placement choice in plain language when it changes behavior, setup, reach, or authority. Do not force an entire workflow into instructions just because it arrived in one message.
+
+All natural-language requests to create, edit, inspect, run, clone, pause, resume, disable, or delete scheduled work are Agent authoring. Inspect and handle the request through this guide even when the schedule is the only primitive. Exact \`!routines\` commands remain a separate deterministic control surface. When one request also contains a durable fact, standing behavior, skill, access change, identity change, or model change, inspect and place every part together; never save only the cadence and discard the rest.
 
 ## Explore and design conversationally
 
@@ -168,7 +171,7 @@ export const AGENT_AUTHORING_GUIDE_DIGEST = bytesToHex(sha256(new TextEncoder().
 
 const agentAuthoringSkill = defineSkill({
   name: AGENT_AUTHORING_SKILL_NAME,
-  description: 'Explore, create, onboard, or edit a Chickpea Agent, answer Agent capability questions, or create or revise reusable Agent skills. Required before answering any such request.',
+  description: 'Explore, create, onboard, or edit a Chickpea Agent, answer Agent capability questions, create or revise reusable Agent skills, or create, edit, or manage scheduled Agent work. Required before answering any such request.',
   instructions: AGENT_AUTHORING_GUIDE,
   metadata: {
     'chickpea-guide-version': AGENT_AUTHORING_GUIDE_VERSION,

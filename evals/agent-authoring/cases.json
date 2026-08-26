@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "corpusVersion": "1.0.3",
-  "guideVersion": "1.0.3",
+  "corpusVersion": "1.0.4",
+  "guideVersion": "1.0.4",
   "baseline": {
     "id": "no-guide-v1",
     "description": "The same evaluation Agent and tools without the Chickpea agent-authoring router or skill."
@@ -101,6 +101,54 @@
         "approvalPosture": "none",
         "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "required_inspections_complete", "no_mutation"],
         "criticalAssertions": ["no_mutation"]
+      }
+    },
+    {
+      "id": "mixed-memory-instruction-schedule",
+      "prompt": "Remember that Acme contract renewal is September 30. Always answer renewal questions in short bullets. Every Monday, check Zendesk for renewal-risk tickets and post them here.",
+      "expected": {
+        "activation": "required",
+        "skillCreation": "forbidden",
+        "posture": "clarify",
+        "placements": ["memory", "instructions", "connection", "schedule"],
+        "requiredInspections": ["inspect_workspace", "inspect_routines"],
+        "toolClass": "inspect",
+        "mutationAllowance": "none",
+        "approvalPosture": "proposal_required",
+        "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "required_inspections_complete", "no_mutation"],
+        "criticalAssertions": ["no_mutation"]
+      }
+    },
+    {
+      "id": "focused-schedule-creation",
+      "prompt": "Every weekday at 9 AM Pacific, summarize urgent support tickets and post the digest here. Always include links in the scheduled digest.",
+      "expected": {
+        "activation": "required",
+        "skillCreation": "forbidden",
+        "posture": "commit",
+        "placements": ["schedule"],
+        "requiredInspections": ["inspect_workspace", "inspect_routines"],
+        "toolClass": "proposal",
+        "mutationAllowance": "proposal_only",
+        "approvalPosture": "proposal_required",
+        "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "required_inspections_complete", "proposal_used", "no_apply_before_approval"],
+        "criticalAssertions": ["no_apply_before_approval"]
+      }
+    },
+    {
+      "id": "conversational-schedule-pause",
+      "prompt": "Pause the weekday support digest routine.",
+      "expected": {
+        "activation": "required",
+        "skillCreation": "forbidden",
+        "posture": "commit",
+        "placements": ["schedule"],
+        "requiredInspections": ["inspect_routines"],
+        "toolClass": "direct_apply",
+        "mutationAllowance": "direct_apply",
+        "approvalPosture": "direct_allowed",
+        "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "required_inspections_complete", "direct_apply_used", "confirmation_not_required"],
+        "criticalAssertions": []
       }
     },
     {

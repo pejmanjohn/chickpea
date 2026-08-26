@@ -9,15 +9,14 @@ import type { AgentInstanceHandle } from '@flue/runtime';
 import { createRoutineAdminApi } from '../src/admin/routines-api.ts';
 import { ROUTINE_RESULT_DATA_NAME } from '../src/agents/routine-execution.ts';
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
-import type { AgentScheduleReference, ResolvedAssignment } from '../src/config/types.ts';
 import { RoutineAdmissionController } from '../src/routines/admission.ts';
-import { handleRoutineSlackRequest } from '../src/routines/commands.ts';
 import { executeRoutineOccurrence } from '../src/routines/execution.ts';
+import { normalizeRoutineSchedule } from '../src/routines/schedule.ts';
 import { RoutineScheduler } from '../src/routines/scheduler.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineCapability } from '../src/routines/scheduler-adapter.ts';
+import { RoutineService } from '../src/routines/service.ts';
 import type { RoutineDefinition, RoutineRun, RoutineStore } from '../src/routines/types.ts';
-import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
 const enabled: RoutineCapability = {
   target: 'cloudflare', available: true, enabled: true, reason: 'enabled',
@@ -33,22 +32,6 @@ const config: EffectiveSlackConfig = {
   modelAttribution: { source: 'pinned', providerId: 'anthropic' },
   instructions: 'Use current channel authority.', instructionLayers: [],
 };
-const assignment: ResolvedAssignment = {
-  workspaceId: config.workspaceId,
-  channelId: config.channelId,
-  agentId: config.agentId,
-  agent: config.agent,
-};
-
-function turn(text: string, eventId: string): NormalizedSlackTurn {
-  return {
-    workspaceId: 'T_ACCEPT', channelId: 'C_ACCEPT', userId: 'U_CREATOR', eventId, text,
-    actorMembershipId: 'membership_creator',
-    messageTs: '1785100000.000100', threadTs: '1785100000.000100',
-    source: 'app_mention', contextMode: 'channel_history',
-  };
-}
-
 function executionDependencies(now: () => number) {
   return {
     now,
@@ -103,38 +86,27 @@ test('scheduled work crosses creation, v2 receipt, restart, reattached read, and
   let now = new Date().setUTCMinutes(59, 0, 0);
   let store = new SqliteRoutineStore(statePath, () => now);
   try {
-    const createdText = await handleRoutineSlackRequest(
-      turn('Every hour, inspect unresolved blockers and report only when needed.', 'Ev_ACCEPT_CREATE'),
-      undefined,
-      {
-        store, capability: enabled, now: () => now, canManageChannel: async () => true,
-        isActiveActor: async () => true,
-        assignment,
-        bindAuthority: async ({ routine }): Promise<AgentScheduleReference> => ({
-          scheduleId: routine.id,
-          agentId: assignment.agentId,
-          workspaceId: routine.workspaceId,
-          channelId: routine.channelId,
-          createdByMembershipId: 'membership_creator',
-          runsAsMembershipId: 'membership_creator',
-          authorityReceiptId: 'receipt_acceptance',
-          requiredConnectionAccountIds: [],
-          state: 'active',
-          revision: 1,
-          createdAt: now,
-          updatedAt: now,
-        }),
-        parseIntent: async () => ({
-          action: 'create', name: 'Blocker steward', description: '',
-          taskText: 'inspect unresolved blockers and report only when needed.',
-          scheduleExpression: '0 * * * *', timezone: 'UTC', timezoneWasDefaulted: false,
-          outputPolicy: 'post',
-        }),
+    const projection = normalizeRoutineSchedule('0 * * * *', 'UTC', now);
+    const routine = await new RoutineService(store, { now: () => now }).save({
+      action: 'create',
+      actorId: 'U_CREATOR',
+      workspaceId: 'T_ACCEPT',
+      channelId: 'C_ACCEPT',
+      definition: {
+        name: 'Blocker steward',
+        description: 'Inspects unresolved blockers.',
+        taskText: 'inspect unresolved blockers and report only when needed.',
+        triggerKind: 'schedule',
+        scheduleInput: '0 * * * *',
+        scheduleJson: projection.scheduleJson,
+        timezone: 'UTC',
+        outputPolicy: 'post',
+        authorityMode: 'live_channel_v1',
       },
-    );
-    assert.match(createdText ?? '', /Routine created/i);
-    const [routine] = await store.listRoutines('T_ACCEPT', 'C_ACCEPT');
-    assert.ok(routine);
+      nextRunAt: projection.nextRunAt,
+      projectedDailyStarts: projection.projectedDailyStarts,
+      reservations: projection.reservations,
+    }, 'acceptance:seed');
 
     now += 60_000;
     const interrupted = handle(new DOMException('reader restarted', 'AbortError'));

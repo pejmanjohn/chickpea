@@ -49,6 +49,7 @@ test('router covers all authoring postures while leaving detailed judgment lazy'
     'explore',
     'capability',
     'create or revise a skill',
+    'scheduled work',
     'without asking for separate permission',
     'inspect_workspace',
     'do not answer from general knowledge or defer inspection',
@@ -60,6 +61,7 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
   for (const phrase of [
     '`commit`', '`explore`', '`capability_question`', '`clarify`',
     'instructions', 'skills', 'memory', 'connections', 'repositories', 'schedules',
+    'All natural-language requests to create, edit, inspect, run, clone, pause, resume, disable, or delete scheduled work are Agent authoring',
     'Slack presence', 'Channel reach', 'editing authority',
     'inspect_workspace', 'propose_workspace_changes', 'confirm_workspace_change',
     'inspection is mandatory in that turn', 'do not offer to inspect later',
@@ -96,6 +98,18 @@ test('interactive Slack Agent mounts authoring while routine execution does not'
   assert.doesNotMatch(routineSource, /useAgentAuthoring/);
   assert.doesNotMatch(slackSource.slice(slackSource.indexOf('export function useRuntimePlanAgent')),
     /useAgentAuthoring/);
+});
+
+test('conversational schedules cannot enter the exact Routine command lane', async () => {
+  const [runTurnSource, commandSource] = await Promise.all([
+    readFile(new URL('../src/slack/run-turn.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../src/routines/commands.ts', import.meta.url), 'utf8'),
+  ]);
+  assert.match(runTurnSource, /if \(shouldHandleRoutineCommandTurn\(turn\)\)/);
+  assert.doesNotMatch(runTurnSource, /isRoutineIntentCandidate|parseRoutineIntent/);
+  assert.doesNotMatch(commandSource, /isRoutineIntentCandidate|parseRoutineIntent|saveRoutineIntent/);
+  const handler = commandSource.slice(commandSource.indexOf('export async function handleRoutineSlackRequest'));
+  assert.ok(handler.indexOf('if (!command) return undefined') < handler.indexOf('const activeActor'));
 });
 
 test('behavioral evaluation corpus is versioned, synthetic, and guide-bound', async () => {

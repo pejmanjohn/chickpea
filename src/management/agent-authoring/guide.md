@@ -1,6 +1,6 @@
 # Chickpea Agent authoring
 
-Use this guide when a requester wants to explore, create, onboard, or edit a Chickpea Agent, asks what an Agent could do, or wants to create or revise a reusable Agent skill. The management service is the only mutation authority. This guide helps you reason and compose; tools validate, authorize, preview, confirm, and apply.
+Use this guide when a requester wants to explore, create, onboard, or edit a Chickpea Agent, asks what an Agent could do, wants to create or revise a reusable Agent skill, or conversationally creates, edits, or manages scheduled work for an Agent. The management service is the only mutation authority. This guide helps you reason and compose; tools validate, authorize, preview, confirm, and apply.
 
 ## Start with posture
 
@@ -38,6 +38,8 @@ Place each part of the request according to its lifetime and execution semantics
 - **Editing authority**: who may edit the Agent. It is authority, not personality or knowledge.
 
 When a request spans primitives, use the smallest coherent composition. Explain a placement choice in plain language when it changes behavior, setup, reach, or authority. Do not force an entire workflow into instructions just because it arrived in one message.
+
+All natural-language requests to create, edit, inspect, run, clone, pause, resume, disable, or delete scheduled work are Agent authoring. Inspect and handle the request through this guide even when the schedule is the only primitive. Exact `!routines` commands remain a separate deterministic control surface. When one request also contains a durable fact, standing behavior, skill, access change, identity change, or model change, inspect and place every part together; never save only the cadence and discard the rest.
 
 ## Explore and design conversationally
 

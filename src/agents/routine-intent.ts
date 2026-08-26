@@ -34,6 +34,11 @@ const instructions = [
   'Shape: {"action":"none"|"create"|"edit"|"show"|"pause"|"resume"|"disable"|"run"|"clone"|"delete","routineId"?:string,"routineName"?:string,"name"?:string,"description"?:string,"taskText"?:string,"triggerKind"?:"schedule"|"once","scheduleExpression"?:string,"timezone"?:string,"timezoneWasDefaulted"?:boolean,"outputPolicy"?:"post"|"post_on_change"}.',
 ].join('\n');
 
+/**
+ * Deployment-compatibility class for already-migrated Cloudflare Durable Objects.
+ * Interactive Slack code must not initialize or dispatch it: conversational
+ * scheduled work belongs to the Agent-authoring skill and management tools.
+ */
 export function ChickpeaRoutineIntent() {
   const { model } = useInitialData<RoutineIntentInitialData>();
   useModel(model);
