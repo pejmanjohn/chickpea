@@ -1598,7 +1598,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
     if (!this.authConfigId(input.toolkit, input.accessLane)) {
       missingConfiguration.push('auth_config_missing');
     }
-    if (input.toolkit === 'googleads' && !this.googleAdsLaneIsProductionReady(input.accessLane)) {
+    if (input.toolkit === 'googleads' && !this.googleAdsLaneIsAvailable(input.accessLane)) {
       missingConfiguration.push('provider_prerequisite_missing');
     }
     if (input.toolkit === 'youtube' && !this.youtubeQuotaIsProductionReady()) {
@@ -2313,9 +2313,16 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
     return isComposioAuthConfigId(value) ? value : undefined;
   }
 
-  private googleAdsLaneIsProductionReady(accessLane: ManagedAccessLane): boolean {
+  private googleAdsLaneIsAvailable(accessLane: ManagedAccessLane): boolean {
     const accessLevel = this.options.googleAdsAccessLevel?.trim().toLowerCase();
     const permissibleUse = this.options.googleAdsPermissibleUse?.trim().toLowerCase();
+    // Standard auth configs use Composio's managed Google Ads app, so there is
+    // no operator-owned developer-token tier for Chickpea to assert. Explorer
+    // also covers every operation in Chickpea's curated surface; Google blocks
+    // its restricted account, user, planning, and billing methods upstream and
+    // Chickpea does not expose those methods in the first place.
+    if (!accessLevel && !permissibleUse) return true;
+    if (accessLevel === 'explorer') return true;
     if (!['basic', 'standard'].includes(accessLevel ?? '')) return false;
     return accessLane === 'read'
       ? ['reporting', 'ad_management'].includes(permissibleUse ?? '')

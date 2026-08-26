@@ -201,12 +201,15 @@ Every create is single-entity and paused. Rename and pause are reversible writes
 
 Billing, user/access management, account creation, conversion upload, customer lists, labels, bidding-strategy/asset/targeting passthrough, remove/delete, partial-failure bulk mutation, raw GAQL, and arbitrary API calls are absent.
 
-Hosted readiness is deliberately fail closed:
+The standard path uses Composio managed OAuth and asks the user only to sign in with Google. Leave both Google Ads policy variables unset for this path: Composio's managed auth configuration owns the OAuth app and developer token, while Chickpea keeps its narrower capability and account-selection controls.
 
-- `COMPOSIO_GOOGLE_ADS_ACCESS_LEVEL` must be `basic` or `standard`. Test Account and Explorer are reported as `provider_prerequisite_missing` even if OAuth works.
-- `COMPOSIO_GOOGLE_ADS_PERMISSIBLE_USE=reporting` enables only the read lane. The write lane requires `ad_management`.
-- Google currently documents Basic as 15,000 operations per sliding 24 hours with a typical five-business-day review, and Standard as unlimited for most services with a typical ten-business-day review. Standard applications for external-user tools must be ready to provide demo access and meet Required Minimum Functionality.
-- Access level and permissible use are operator assertions because Composio does not expose them through the connection. Verify them in the Google Ads API Center before setting these values.
+Optional Google Ads policy declarations remain fail closed when supplied:
+
+- `COMPOSIO_GOOGLE_ADS_ACCESS_LEVEL=explorer` enables both Chickpea lanes. Google's Explorer tier allows production accounts with 2,880 operations per day. Google still prohibits account creation, user management, planning, and billing methods at this tier; none of those methods are present in Chickpea's curated connector.
+- `COMPOSIO_GOOGLE_ADS_ACCESS_LEVEL=basic` or `standard` also requires `COMPOSIO_GOOGLE_ADS_PERMISSIBLE_USE`. `reporting` enables only the read lane; the write lane requires `ad_management`.
+- `test` remains unavailable in a production installation because it can access only Google Ads test accounts. Unknown or partially declared policy values are also reported as `provider_prerequisite_missing`.
+- Google currently documents Basic as 15,000 operations per sliding 24 hours and Standard as unlimited for most services. Basic and Standard applicants must declare a permissible-use category; Standard applications for external-user tools must be ready to provide demo access and meet Required Minimum Functionality.
+- These environment values are operator assertions because Composio does not expose the developer-token tier through a connected account. Verify the tier in the Google Ads API Center before setting them. They do not enable custom auth configs: compatibility overrides must still be Composio-managed and unrestricted. Do not set them for the ordinary Composio-managed path.
 
 As of 2026-08-23, Google lists v25 as current with a tentative August 2027 sunset, while v22 has a tentative October 2026 sunset. The Composio toolkit pin does not expose which Google Ads API version its implementation calls. For each toolkit upgrade and at least monthly, inspect the Google Cloud API method metrics for the actual `google.ads.googleads.v*` version and block release if it is on the next sunset path.
 
