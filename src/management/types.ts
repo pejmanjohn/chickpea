@@ -421,7 +421,12 @@ export interface ManagementWorkspaceSnapshot {
     revision: number;
     label?: string;
     lifecycle: ChannelConfig['lifecycle'];
-    grants: Array<{ agentId: string; status: AgentChannelGrantStatus }>;
+    grants: Array<{
+      agentId: string;
+      status: AgentChannelGrantStatus;
+      /** Revision of this Agent-to-Channel grant, distinct from the parent Channel revision. */
+      revision: number;
+    }>;
   }>;
   providers: Array<{
     id: 'anthropic' | 'openai' | 'openrouter';

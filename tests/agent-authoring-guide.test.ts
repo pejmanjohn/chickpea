@@ -58,6 +58,7 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     'instructions', 'skills', 'memory', 'connections', 'repositories', 'schedules',
     'Slack presence', 'Channel reach', 'editing authority',
     'inspect_workspace', 'propose_workspace_changes', 'confirm_workspace_change',
+    'channels\\[\\]\\.grants\\[\\]\\.revision', 'Never substitute the parent Channel revision',
     'no Agent record', 'one highest-value next step',
   ]) assert.match(AGENT_AUTHORING_GUIDE, new RegExp(phrase, 'i'));
 });

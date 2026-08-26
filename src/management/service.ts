@@ -1712,11 +1712,19 @@ export class WorkspaceManagementService {
     }));
     const visibleAgentIds = new Set(agents.map(({ id }) => id));
     const grants = allGrants.filter((grant) => visibleAgentIds.has(grant.agentId));
-    const grantsByChannel = new Map<string, Array<{ agentId: string; status: typeof grants[number]['status'] }>>();
+    const grantsByChannel = new Map<string, Array<{
+      agentId: string;
+      status: typeof grants[number]['status'];
+      revision: number;
+    }>>();
     for (const grant of grants) {
       const key = channelKey(grant.workspaceId, grant.channelId);
       const entries = grantsByChannel.get(key) ?? [];
-      entries.push({ agentId: grant.agentId, status: grant.status });
+      entries.push({
+        agentId: grant.agentId,
+        status: grant.status,
+        revision: grant.revision,
+      });
       grantsByChannel.set(key, entries);
     }
     const visibleChannels = userAgentScoped || actor.role === 'member'

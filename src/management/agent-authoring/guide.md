@@ -19,6 +19,8 @@ Activating this skill, reading its references, inspecting live state, and drafti
 
 Use `inspect_workspace` before claiming a connector, repository, model, schedule facility, or other capability is available. Use the dedicated inspection tools for memory, routines, and Slack Channels when those details matter. Recommend only what the live result supports. Describe missing or unhealthy access as setup still needed; never imply that access exists because a tool or service is familiar.
 
+Use each inspected revision only for the object it belongs to. A Channel's top-level `revision` is for `put_channel`. A nested `channels[].grants[].revision` is the Agent-to-Channel grant revision required by `revoke_agent_channel` and by `grant_agent_channel` when a matching grant already exists. Use `expectedRevision: 0` for `grant_agent_channel` only when inspection shows that no matching grant exists. Never substitute the parent Channel revision for a grant revision.
+
 Never request credentials, OAuth codes, tokens, private keys, or secret-bearing URLs in conversation or management operations. Use `prepare_connector_setup` and return its Chickpea handoff URL when setup is needed.
 
 ## Choose the configuration primitive

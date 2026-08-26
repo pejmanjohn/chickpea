@@ -21,6 +21,7 @@ import type {
   ManagementActorContext,
   ManagementAgentPatch,
   ManagementOperation,
+  ManagementWorkspaceSnapshot,
 } from '../src/management/types.ts';
 import { ManagementError } from '../src/management/types.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
@@ -1367,6 +1368,93 @@ test('members inspect and mutate only Agents permitted by canEditAgent', async (
     assert.equal(denied.status, 'partial');
     assert.equal(denied.outcomes[0]?.disposition, 'failed');
     assert.equal(denied.outcomes[0]?.code, 'forbidden');
+  } finally {
+    f.close();
+  }
+});
+
+test('inspection exposes the Agent Channel grant revision separately from its Channel revision', async () => {
+  const f = await createManagementAdapterFixture('inspect-channel-grant-revision');
+  try {
+    const agent = await f.config.createAgent({
+      ...agentInput,
+      id: 'agent_grant_revision',
+      creatorMembershipId: f.admin.membership.id,
+      lifecycle: 'active',
+      configurationGeneration: 1,
+    });
+    const channel = await f.config.putChannel({
+      workspaceId: f.admin.binding.slackTeamId,
+      channelId: 'C_GRANT_REVISION',
+      label: 'grant-revision',
+      lifecycle: 'active',
+    }, 0);
+    const updatedChannel = await f.config.putChannel({
+      ...channel,
+      label: 'grant-revision-updated',
+    }, channel.revision);
+    const grant = await f.config.putAgentChannelGrant({
+      workspaceId: f.admin.binding.slackTeamId,
+      channelId: updatedChannel.channelId,
+      agentId: agent.id,
+      status: 'active',
+      createdByMembershipId: f.admin.membership.id,
+    }, 0);
+
+    const snapshot = await f.service.inspectWorkspace({
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      origin: { kind: 'mcp', clientId: 'inspect-grant-revision-client' },
+    });
+    const inspectedChannel = snapshot.channels.find(({ channelId }) =>
+      channelId === updatedChannel.channelId);
+    assert.equal(inspectedChannel?.revision, updatedChannel.revision);
+    assert.notEqual(updatedChannel.revision, grant.revision);
+    assert.deepEqual(inspectedChannel?.grants, [{
+      agentId: agent.id,
+      status: 'active',
+      revision: grant.revision,
+    }]);
+
+    const mcpInspection = await invokeWorkspaceManagementTool({
+      service: f.service,
+      resolveContext: async () => ({
+        userId: f.admin.user.id,
+        membershipId: f.admin.membership.id,
+        organizationId: f.admin.membership.organizationId,
+        origin: { kind: 'mcp', clientId: 'inspect-grant-revision-client' },
+      }),
+    }, 'inspect_workspace', {});
+    assert.equal(mcpInspection.ok, true);
+    const mcpChannel = mcpInspection.ok
+      ? (mcpInspection.result as ManagementWorkspaceSnapshot).channels.find(({ channelId }) =>
+          channelId === updatedChannel.channelId)
+      : undefined;
+    assert.equal(mcpChannel?.grants[0]?.revision, grant.revision);
+
+    const slackInspection = await invokeSlackWorkspaceManagementTool({
+      signal: {
+        agentId: CHICKPEA_AGENT_ID,
+        workspaceId: f.admin.binding.slackTeamId,
+        channelId: 'C_GRANT_REVISION',
+        threadTs: '200.1',
+        slackUserId: f.admin.binding.slackUserId,
+        eventId: 'Ev_GRANT_REVISION',
+        messageTs: '200.2',
+        turnJobId: 'turn_GRANT_REVISION',
+      },
+      identity: f.identity,
+      service: f.service,
+      name: 'inspect_workspace',
+      args: {},
+    });
+    assert.equal(slackInspection.ok, true);
+    const slackChannel = slackInspection.ok
+      ? (slackInspection.result as ManagementWorkspaceSnapshot).channels.find(({ channelId }) =>
+          channelId === updatedChannel.channelId)
+      : undefined;
+    assert.equal(slackChannel?.grants[0]?.revision, grant.revision);
   } finally {
     f.close();
   }

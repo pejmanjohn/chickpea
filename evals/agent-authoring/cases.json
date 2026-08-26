@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "corpusVersion": "1.0.1",
-  "guideVersion": "1.0.1",
+  "corpusVersion": "1.0.2",
+  "guideVersion": "1.0.2",
   "baseline": {
     "id": "no-guide-v1",
     "description": "The same evaluation Agent and tools without the Chickpea agent-authoring router or skill."
@@ -101,6 +101,28 @@
         "approvalPosture": "none",
         "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "required_inspections_complete", "no_mutation"],
         "criticalAssertions": ["no_mutation"]
+      }
+    },
+    {
+      "id": "revoke-channel-grant-revision",
+      "prompt": "Remove this Agent from the support Channel after inspecting the current Channel reach, and show me the exact proposal without applying it yet.",
+      "expected": {
+        "activation": "required",
+        "skillCreation": "forbidden",
+        "posture": "commit",
+        "placements": ["reach"],
+        "requiredInspections": ["inspect_workspace"],
+        "toolClass": "proposal",
+        "mutationAllowance": "proposal_only",
+        "approvalPosture": "proposal_required",
+        "expectedReachOperation": {
+          "kind": "revoke_agent_channel",
+          "channelId": "C_SUPPORT",
+          "agentId": "agent_support",
+          "expectedRevision": 3
+        },
+        "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "required_inspections_complete", "proposal_used", "grant_revision_selected", "no_apply_before_approval"],
+        "criticalAssertions": ["grant_revision_selected", "no_apply_before_approval"]
       }
     },
     {
