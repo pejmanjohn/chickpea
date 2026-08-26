@@ -109,6 +109,26 @@ const forbiddenBinaryExtensions = new Set([
 
 const allowedBinaryFiles = new Map([
   [
+    exportPath('assets', 'chickpea-mark.png'),
+    '84864d6d3323f7d9d5491a139c0e9e0b0d92b1e076c742d5f4d50e75148b65fb',
+  ],
+  [
+    exportPath('assets', 'chickpea-mark-128.png'),
+    'bf7cc48a855350e04559c13ec5736f7ca8eceff6ae4d562ee86009540413924e',
+  ],
+  [
+    exportPath('assets', 'chickpea-favicon-32.png'),
+    '201aece87c3bfeb89cb98b61d22a5593b0b862076683d5cd177a7d129c374bb9',
+  ],
+  [
+    exportPath('assets', 'chickpea-wordmark-mask.png'),
+    '28bcd4897b6a7dc9513024c206648e21618c0d4a1adaa6608cfca24678e23dbb',
+  ],
+  [
+    exportPath('assets', 'chickpea-wordmark-512.png'),
+    'f29e8f737ea742dc0cdf3410f8d59a2159c802abd98bc0d82693ac3a694b1799',
+  ],
+  [
     exportPath('assets', 'bot-avatar.png'),
     '7f0be0ca98c55c387533ac9d72a6e54382d683c4f9a5d015dbcf3eb0367f83e4',
   ],
@@ -517,7 +537,11 @@ function verifyNpmPackManifest() {
     'SETUP_AGENT.md',
     'assets/admin-page.png',
     'assets/bot-avatar.png',
-    'assets/chickpea-mark.svg',
+    'assets/chickpea-favicon-32.png',
+    'assets/chickpea-mark-128.png',
+    'assets/chickpea-mark.png',
+    'assets/chickpea-wordmark-512.png',
+    'assets/chickpea-wordmark-mask.png',
     'scripts/cloudflare-deployment-profile.mjs',
     'scripts/deploy-with-epilogue.mjs',
     'scripts/recover-auth.mjs',

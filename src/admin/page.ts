@@ -13,10 +13,15 @@ import {
   SUGGESTED_SKILLS,
 } from '../config/suggested-skills.ts';
 import { AUTH_BRAND_HTML } from '../auth/brand.ts';
+import {
+  CHICKPEA_FAVICON_HTML,
+  CHICKPEA_MARK_HTML,
+  CHICKPEA_WORDMARK_CSS,
+  CHICKPEA_WORDMARK_HTML,
+} from '../brand/chickpea-mark.ts';
 import type { SlackSetupTransaction } from '../identity/types.ts';
 import type { SlackAppManifest } from '../slack/app-manifest.ts';
 
-const ADMIN_FAVICON = `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">`;
 const SLACK_LOGO_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAA/CAMAAABnwz74AAAAn1BMVEX///+j3++a2+rw5M3n2tOk0K7L3L54xrXI0sftyHSPxZqLwZSp07HI6/RkzOpz0uyJ09tmtHlirnNwtH59z+ZZyOpdrXFbqm1dsnOPxppNxej23qjupqThYIDldY3yr7rodJPx0Ibz0YreSW3dO2XjMV7kVnv43qzzyXbvuE/ttUXyyHfjNmPjKVrbJVXwsTvusj3aG1DbLFLhH1PvscJL5pvlAAAAAXRSTlMAQObYZgAABDtJREFUSMe9lw1vokAQhvkQVsFCEUFbRVBEQUWl9v//tpuZ3QU8bW97l9ybaAI4z843UdOeSTdAendtDizLGtiaonSdIYAN5Y2R7TjMdZyxIuDF8FD+q7zhsmACCl01wnDqRREhXqX9JI4n8Ww2USNMo0gAvNch2ccxegCEwDUVMmBEkhD5L5o2tlg8D8AHAMwchUTqfhQJROQZNgACHsCPAcgAwNAhQDxDF5QAxj1gDACKABkqAE2nInQhOAFo8gOAZvh3HlhBIBCqgDfm9T0QACCoAjAP0+nUgC/jrQOgD6qAvsZWOBGEvwZ0Hrj/Aph8DdC/0O+ALonmeDx+M+Vg6FNMehR1Q8THear3AZMewHVcFrqOZQr76F0q6nVh5BEBhknYI4BMYD/MQYFr0Xi39tG9wAlca48Al83JHggI0L0HU+lC5Bsm9sGE1gEAZrgPbAdMA/jM5yEzNZ1Fz+17rRz3AablzmVrBY6lDYwo+haA44ze0z5wTRkSKgwB8PI9wETALIbDSU8ANL0U8KPePUoihBtz+8DhgDDkpeUAn6+vR/P3d6yCbmHS+UoMGVUlZGHI0A/Xxq3LvD4ASwIfqqvPsMy2C/kWDoxFWUMeAeOdyHzqvN7JBHn3xHObcQLkHAALCiFgjLmunAV6k5GmrXx/yuRzeLO5ILKHMuKFA+oNFkQyBOEXXQ6H+os+7J6PRvB+tEfixyO41OjrOw21/ytzuVyaZjvg2jJJlnfPzQXIvFPv8WiVZlmWghJ+YwWX2aoNMllvnmidyMdplm9BeV5k/N4qL0DbneDty+pwqB51PCbCfou/L06nekd3VkVd10VRn3MOPFYX0BV1aMUR+DzJ8uJEJ54KAqxOaA6AuqHrdXW4cKMegOwP1RoykeyKFoAnJjtuD4QmX0HnYQAPElGUezAQDqDwxCSXgKLZpuYXACIcDuVGS7PWvKj7gHNRfOQc8JQADAIMskIeWNxagMgCepCUPN5WkJCrJAAgWW0loOY5yG91TWUoaulBHyAKcqHEUg52wgWwx+5K8kYS6lNqYxWqPgId4IDLpTpiFdIcCfWt2KXUF9sOkCNAEEQl5fmo6rgQnXQ6QRtlqSYAzRn18SEA2roUgF4rgQdVuRCjkHymaZaI1n4C0OzNppTqhmG/6E9bO1w9wFkCNPOpnk82AhoOaFrAT9TzoAPgOvg7AHeT9oEqoQWcOWCxL49i/uW++QMg/w2wkW1QlUqEFiBCSEo5vNC5KmEAAM1rBJw6wAEBlRrgXNcIgO4WgIvYAIdqo/CPRQLqFnDhk0cAhb5IdgRAUQiLEidYbEUlD7LzTQLyzwSrcJGEaj36M0DLtjdOaM601vcQw5UvIaUq4HuhaW44EGLA9yXN8fVaKXbjKNuhB9tM9k3KF7OqPRA+6d2YtH23WMIiWC+UOplkDkB3P98PBs+P/wV/Ze9+4cPjFgAAAABJRU5ErkJggg==';
 
@@ -35,11 +40,12 @@ export function renderAdminPage(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chickpea · /admin</title>
-${ADMIN_FAVICON}
+${CHICKPEA_FAVICON_HTML}
 <style>
 @import url("https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Quicksand:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
 
 :root {
+  ${CHICKPEA_WORDMARK_CSS}
   /* surfaces */
   --bg: #fffdf6;            /* card cream (was white) */
   --canvas: #f4ebd8;        /* NEW: page tan behind the cards */
@@ -352,7 +358,7 @@ button, input, textarea, select { font: inherit; }
   position: relative;
 }
 .brand { align-items: center; display: flex; flex: 1; gap: 10px; min-width: 0; }
-.brand-home { align-items: center; background: none; border: 0; border-radius: 10px; cursor: pointer; display: flex; gap: 10px; min-width: 0; padding: 0; }
+.brand-home { align-items: center; background: none; border: 0; border-radius: 10px; color: inherit; cursor: pointer; display: flex; gap: 10px; min-width: 0; padding: 0; }
 .brand-home:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
 .avatar {
   align-items: center;
@@ -365,21 +371,10 @@ button, input, textarea, select { font: inherit; }
   justify-content: center;
   width: 32px;
 }
-/* The mark is inline SVG (see topbarHtml) so the face can react: JS sets
-   --prox (0 at >=420px from the cursor, 1 at the mark) and lerps the pupil
-   translate inline; everything below is driven by those two inputs. */
-.avatar .pea { display: block; height: 32px; overflow: visible; width: 32px; }
-.pea-eyes { transform: scale(calc(1 + var(--prox, 0) * 0.14)); transform-box: fill-box; transform-origin: center; transition: transform 0.25s ease; }
-.pea-smile { opacity: calc(1 - clamp(0, (var(--prox, 0) - 0.55) * 3.3, 1)); transition: opacity 0.2s ease; }
-.pea-grin { opacity: clamp(0, (var(--prox, 0) - 0.55) * 3.3, 1); transition: opacity 0.2s ease; }
-.pea-blush { opacity: calc(0.4 + var(--prox, 0) * 0.45); transition: opacity 0.25s ease; }
-.pea-lids { opacity: 0; }
+/* All product surfaces share the same raster mark. The wrapper keeps the
+   existing click-boop delight without substituting a second mascot drawing. */
+.avatar .pea { display: block; height: 32px; object-fit: contain; width: 32px; }
 .avatar.is-boop .pea { animation: pea-boop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1); transform-origin: 50% 88%; }
-.avatar.is-boop .pea-eyes { opacity: 0; }
-.avatar.is-boop .pea-lids { opacity: 1; }
-.avatar.is-boop .pea-smile { opacity: 0; }
-.avatar.is-boop .pea-grin { opacity: 1; }
-.avatar.is-boop .pea-blush { opacity: 0.9; }
 @keyframes pea-boop {
   0% { transform: scale(1, 1); }
   30% { transform: scale(1.18, 0.8); }
@@ -387,10 +382,22 @@ button, input, textarea, select { font: inherit; }
   100% { transform: scale(1, 1); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .pea-eyes, .pea-smile, .pea-grin, .pea-blush { transition: none; }
   .avatar.is-boop .pea { animation: none; }
 }
-.brand-name { color: var(--text); font-family: var(--display); font-size: 1.125rem; font-weight: 700; }
+.brand-wordmark {
+  aspect-ratio: 2106 / 518;
+  background-color: currentColor;
+  display: block;
+  flex: 0 0 auto;
+  height: 28px;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+  -webkit-mask: var(--chickpea-wordmark-image) center / contain no-repeat;
+  mask: var(--chickpea-wordmark-image) center / contain no-repeat;
+}
+@media (forced-colors: active) {
+  .brand-wordmark { background-color: CanvasText; forced-color-adjust: none; }
+}
 .topbar .actions { align-items: center; display: flex; gap: 9px; }
 .body { display: flex; flex: 1; gap: 14px; min-height: 0; padding: 8px 16px 16px; }
 .rail {
@@ -525,7 +532,7 @@ button, input, textarea, select { font: inherit; }
 .onboarding-brand-row { align-items: center; display: flex; gap: 20px; justify-content: space-between; }
 .onboarding-brand { align-items: center; color: var(--text); display: inline-flex; gap: 11px; min-width: 0; text-decoration: none; }
 .onboarding-brand .avatar, .onboarding-brand .avatar .pea { height: 36px; width: 36px; }
-.onboarding-brand .brand-name { font-size: 1.625rem; line-height: 1; }
+.onboarding-brand .brand-wordmark { height: 31px; }
 .onboarding-environment { color: var(--text-3); font-family: var(--mono); font-size: .8125rem; }
 .onboarding-orientation { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); list-style: none; margin: 26px auto 0; max-width: 820px; padding: 0; width: 100%; }
 .onboarding-orientation li { min-width: 0; position: relative; text-align: center; }
@@ -657,7 +664,7 @@ button, input, textarea, select { font: inherit; }
   .onboarding-stage { min-height: 520px; padding-top: 28px; }
   .onboarding-panel, .onboarding-panel-wide { border-radius: 22px; padding: 30px 22px; width: 100%; }
   .onboarding-brand .avatar, .onboarding-brand .avatar .pea { height: 34px; width: 34px; }
-  .onboarding-brand .brand-name { font-size: 1.625rem; }
+  .onboarding-brand .brand-wordmark { height: 31px; }
   .onboarding-title { font-size: 2.125rem; }
   .onboarding-lede { font-size: 1.0625rem; }
   .onboarding-instruction-title { font-size: 1rem; gap: 11px; grid-template-columns: 32px minmax(0, 1fr); }
@@ -1373,12 +1380,13 @@ details[open].advanced summary::before {
 }
 .primary-admin-shell .primary-shell-brand {
   align-items: center;
+  color: var(--text);
   display: flex;
   gap: 11px;
   padding: 0 3px 25px;
 }
 .primary-admin-shell .primary-shell-brand .brand-home { flex: 1; }
-.primary-admin-shell .primary-shell-brand .brand-name { font-size: 1.25rem; }
+.primary-admin-shell .primary-shell-brand .brand-wordmark { height: 28px; }
 .primary-admin-shell .primary-shell-sidebar .rail-context { padding-bottom: 14px; }
 .primary-admin-shell .primary-shell-sidebar .rail-head { padding-left: 3px; padding-right: 3px; }
 .primary-admin-shell .primary-shell-sidebar .section-switcher { border-color: var(--admin-visual-line); }
@@ -2774,15 +2782,15 @@ button.capability-pill { cursor: pointer; }
 <div id="app" class="frame primary-admin-shell" aria-busy="true">
   <header class="topbar">
     <div class="brand">
-      <span class="avatar"><svg class="pea" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><g class="pea-eyes"><circle class="pea-eye" cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle class="pea-eye" cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle></g><g class="pea-lids"><path d="M16.4 24.2 Q18.5 22 20.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path d="M27.4 24.2 Q29.5 22 31.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path></g><path class="pea-smile" d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path class="pea-grin" d="M18.5 28.5 Q24 35.5 29.5 28.5 Z" fill="#3B3220"></path><circle class="pea-blush" cx="15.5" cy="28.5" r="2" fill="#DC8A4F"></circle><circle class="pea-blush" cx="32.5" cy="28.5" r="2" fill="#DC8A4F"></circle></svg></span>
-      <span class="brand-name">Chickpea</span>
+      ${CHICKPEA_MARK_HTML}
+      ${CHICKPEA_WORDMARK_HTML}
     </div>
     <details class="topbar-menu"><summary aria-label="Menu"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"></path></svg></summary></details>
     <div class="actions actions-list"><span class="hint">Loading workspace&hellip;</span></div>
   </header>
   <div class="body">
     <nav class="rail primary-shell-sidebar" aria-label="Loading Chickpea">
-      <div class="primary-shell-brand"><span class="brand-home"><span class="avatar"><svg class="pea" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><circle cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle><path d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path></svg></span><span class="brand-name">Chickpea</span></span></div>
+      <div class="primary-shell-brand"><span class="brand-home">${CHICKPEA_MARK_HTML}${CHICKPEA_WORDMARK_HTML}</span></div>
       <div class="rail-context"><div class="rail-head"><span class="section-eyebrow">Loading workspace</span></div></div>
     </nav>
     <main class="main"><div class="main-inner"><div class="empty" role="status"><h1 class="page-title">Loading Chickpea&hellip;</h1><p class="hint">Reading your workspace configuration.</p></div></div></main>
@@ -2801,6 +2809,10 @@ button.capability-pill { cursor: pointer; }
   var MANAGED_CONNECTOR_PRESETS = ${JSON.stringify(MANAGED_CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var REUSABLE_CONNECTOR_PRESETS = ${JSON.stringify(REUSABLE_CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var CONNECTOR_LOGOS = ${JSON.stringify(CONNECTOR_LOGOS).replace(/</g, '\\u003c')};
+  // Reuse the server-painted mascot after the first render instead of embedding
+  // its raster data URL a third time inside this client script.
+  var initialPeaMarkNode = document.querySelector(".avatar");
+  var INITIAL_PEA_MARK_HTML = initialPeaMarkNode ? initialPeaMarkNode.outerHTML : "";
   var MODEL_PROVIDER_LOGOS = ${JSON.stringify(MODEL_PROVIDER_LOGOS).replace(/</g, '\\u003c')};
   var SUGGESTED_SKILL_CATEGORIES = ${JSON.stringify(SUGGESTED_SKILL_CATEGORIES).replace(/</g, '\\u003c')};
   var SUGGESTED_SKILLS = ${JSON.stringify(SUGGESTED_SKILLS).replace(/</g, '\\u003c')};
@@ -3938,14 +3950,18 @@ button.capability-pill { cursor: pointer; }
         '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>';
     // The brand doubles as a home affordance to the canonical Agent.
     return '<header class="topbar' + (scoped ? ' admin-mobile-topbar' : '') + '">' +
-      '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + '<span class="brand-name">Chickpea</span></button></div>' +
+      '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button></div>' +
       '<details class="topbar-menu"' + (mobileRoster ? ' open' : '') + '><summary aria-label="Menu" data-role="mobile-menu-trigger">' + icon("bars-3") + '</summary></details>' +
       '<div class="actions actions-list">' + actions + '</div>' +
       "</header>";
   }
 
   function peaMarkHtml() {
-    return '<span class="avatar"><svg class="pea" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><g class="pea-eyes"><circle class="pea-eye" cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle class="pea-eye" cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle></g><g class="pea-lids"><path d="M16.4 24.2 Q18.5 22 20.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path d="M27.4 24.2 Q29.5 22 31.6 24.2" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path></g><path class="pea-smile" d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><path class="pea-grin" d="M18.5 28.5 Q24 35.5 29.5 28.5 Z" fill="#3B3220"></path><circle class="pea-blush" cx="15.5" cy="28.5" r="2" fill="#DC8A4F"></circle><circle class="pea-blush" cx="32.5" cy="28.5" r="2" fill="#DC8A4F"></circle></svg></span>';
+    return INITIAL_PEA_MARK_HTML;
+  }
+
+  function wordmarkHtml() {
+    return ${JSON.stringify(CHICKPEA_WORDMARK_HTML)};
   }
 
   function primarySection() {
@@ -4043,7 +4059,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function primaryShellBrandHtml() {
-    return '<div class="primary-shell-brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + '<span class="brand-name">Chickpea</span></button></div>';
+    return '<div class="primary-shell-brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button></div>';
   }
 
   function onboardingRailHtml() {
@@ -4871,7 +4887,7 @@ button.capability-pill { cursor: pointer; }
 
   function onboardingShellHtml() {
     return '<main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row">' +
-      '<div class="onboarding-brand">' + peaMarkHtml() + '<span class="brand-name">Chickpea</span></div><span class="onboarding-environment">${targetChip}</span></div>' +
+      '<div class="onboarding-brand">' + peaMarkHtml() + wordmarkHtml() + '</div><span class="onboarding-environment">${targetChip}</span></div>' +
       onboardingOrientationHtml() + '<div class="onboarding-stage" aria-live="polite">' + onboardingMainHtml() + '</div></div></main>';
   }
 
@@ -12541,43 +12557,8 @@ button.capability-pill { cursor: pointer; }
     });
   }
 
-  // ---- pea mascot: eye tracking, proximity expression, click boop ----------
-  // The tick re-queries .pea every frame because render() rebuilds the topbar
-  // wholesale; all transient state lives in this closure, not the DOM. The
-  // CSS drives expression from the --prox custom property; JS only supplies
-  // --prox and the lerped pupil translate.
+  // ---- pea mascot: click boop -----------------------------------------------
   var peaMotionOk = typeof window === "undefined" || !window.matchMedia || !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  var peaMouseX = -1;
-  var peaMouseY = -1;
-  var peaEyeX = 0;
-  var peaEyeY = 0;
-  var peaRaf = 0;
-  function peaTick() {
-    peaRaf = 0;
-    var pea = document.querySelector(".avatar .pea");
-    if (!pea || !pea.getBoundingClientRect || peaMouseX < 0) return;
-    var rect = pea.getBoundingClientRect();
-    if (!rect.width) return;
-    var dx = peaMouseX - (rect.left + rect.width / 2);
-    var dy = peaMouseY - (rect.top + rect.height / 2);
-    var dist = Math.sqrt(dx * dx + dy * dy);
-    // Expression ramps from neutral to grin as the cursor closes within 420px.
-    var prox = Math.max(0, Math.min(1, 1 - dist / 420));
-    // Pupils hit full travel (1.3 SVG units) once the cursor is 60px out.
-    var reach = Math.min(1, dist / 60) * 1.3;
-    var targetX = dist > 0 ? (dx / dist) * reach : 0;
-    var targetY = dist > 0 ? (dy / dist) * reach : 0;
-    peaEyeX += (targetX - peaEyeX) * 0.22;
-    peaEyeY += (targetY - peaEyeY) * 0.22;
-    var eyes = pea.querySelectorAll(".pea-eye");
-    for (var i = 0; i < eyes.length; i++) {
-      eyes[i].style.transform = "translate(" + peaEyeX.toFixed(2) + "px, " + peaEyeY.toFixed(2) + "px)";
-    }
-    pea.style.setProperty("--prox", prox.toFixed(3));
-    if (Math.abs(targetX - peaEyeX) > 0.02 || Math.abs(targetY - peaEyeY) > 0.02) {
-      peaRaf = requestAnimationFrame(peaTick);
-    }
-  }
   function peaBoop() {
     // Deferred a frame so it lands on the avatar the go-home re-render just
     // built (a class added before render() would be wiped with the old DOM).
@@ -12593,11 +12574,6 @@ button.capability-pill { cursor: pointer; }
     });
   }
   if (peaMotionOk && typeof requestAnimationFrame === "function") {
-    document.addEventListener("mousemove", function (event) {
-      peaMouseX = event.clientX;
-      peaMouseY = event.clientY;
-      if (!peaRaf) peaRaf = requestAnimationFrame(peaTick);
-    }, { passive: true });
     document.addEventListener("click", function (event) {
       if (event.target && event.target.closest && event.target.closest(".brand-home")) peaBoop();
     });
@@ -16475,9 +16451,11 @@ function renderSlackJourneyPage(input: {
     : '';
   return `<!doctype html><html lang="en" data-slack-auth-surface="${escapeHtmlAttribute(input.surface)}"${input.rootAttributes ? ` ${input.rootAttributes}` : ''}><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">
-<title>Chickpea · ${escapeHtmlAttribute(input.title)}</title>${ADMIN_FAVICON}
+<title>Chickpea · ${escapeHtmlAttribute(input.title)}</title>${CHICKPEA_FAVICON_HTML}
 <style>
+:root{${CHICKPEA_WORDMARK_CSS}}
 :root{--canvas:#f4ebd8;--card:#fffdf6;--well:#f8f1df;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--gold-press:#b27e1f;--line:rgba(59,50,32,.16);--danger:#a83f34;--focus:#b05415;--success:#4f8a3f}*{box-sizing:border-box}html{color-scheme:light}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:clamp(12px,4vw,32px);overflow-wrap:anywhere}.auth-card{width:min(600px,100%);background:var(--card);border:1px solid var(--line);border-radius:22px;padding:clamp(22px,6vw,46px);box-shadow:0 14px 38px rgba(59,50,32,.1)}.auth-brand{display:flex;align-items:center;gap:10px;margin-bottom:30px}.auth-brand-mark{width:42px;height:42px;display:block}.auth-brand-name{font-weight:850;font-size:1.15rem}.auth-eyebrow{margin:0;color:var(--muted);font-size:.76rem;font-weight:850;letter-spacing:.09em;text-transform:uppercase}.auth-title-line{align-items:center;display:flex;gap:13px;margin:8px 0 10px}.auth-title{margin:8px 0 10px;font-size:clamp(1.75rem,7vw,2.7rem);line-height:1.05;letter-spacing:-.035em}.auth-title-line .auth-title{margin:0}.auth-title-success{align-items:center;background:var(--success);border-radius:50%;color:#fff;display:inline-flex;flex:0 0 auto;font-size:1.15rem;font-weight:850;height:36px;justify-content:center;width:36px}.auth-intro,.auth-status,.auth-help{color:var(--muted);line-height:1.55}.auth-status{min-height:1.5em;margin:14px 0}.auth-alert{margin:18px 0;border-left:4px solid var(--danger);border-radius:8px;background:#fff3ee;color:var(--danger);padding:12px 14px;font-weight:750;line-height:1.45}.auth-section{margin-top:24px;padding:20px;border:1px solid var(--line);border-radius:15px;background:var(--well)}.auth-section h2{margin:0 0 8px;font-size:1.08rem}label{display:block;margin:17px 0 6px;font-weight:750}label span{display:block;margin-top:2px;color:var(--muted);font-size:.78rem;font-weight:500}input,textarea{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;color:var(--ink);padding:11px 12px;font:inherit}textarea{min-height:220px;resize:vertical}details{margin-top:20px;border-top:1px solid var(--line);padding-top:17px}summary{cursor:pointer;font-weight:800}.auth-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}.auth-button,.auth-link{display:inline-flex;align-items:center;justify-content:center;min-height:48px;border:0;border-radius:12px;padding:11px 17px;background:var(--gold);box-shadow:0 3px 0 var(--gold-press);color:var(--ink);font:inherit;font-weight:850;text-decoration:none;cursor:pointer}.auth-button{width:100%}.slack-provider-button{gap:12px;background:#fff;border:1px solid var(--line);box-shadow:0 1px 2px rgba(45,44,47,.04);color:#2d2c2f;font-weight:750}.slack-provider-button:hover{background:#fbfbfb;border-color:rgba(59,50,32,.32);box-shadow:0 2px 7px rgba(45,44,47,.09)}.slack-provider-logo{width:24px;height:24px}.auth-button.secondary,.auth-link.secondary{background:transparent;border:1px solid var(--line);box-shadow:none}.auth-button:active,.auth-link:active{transform:translateY(2px);box-shadow:none}.auth-button:focus-visible,.auth-link:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible,.auth-alert:focus-visible{outline:3px solid color-mix(in srgb,var(--focus) 48%,transparent);outline-offset:3px}.slack-provider-button:focus-visible{outline:2px solid #656468;outline-offset:2px}.auth-warning{margin-top:22px;border:1px solid rgba(168,63,52,.25);border-radius:13px;background:#fff3ee;padding:15px}.auth-warning strong{display:block;margin-bottom:5px}.auth-meta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.83rem}.auth-manifest{max-height:280px;overflow:auto;white-space:pre-wrap;font-size:.75rem}.slack-logo-image{background:url("${SLACK_LOGO_DATA_URL}") center/contain no-repeat;display:inline-block}.setup-token-callout{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center;margin:22px 0;padding:15px 17px;border-left:3px solid var(--gold-press);border-radius:12px;background:var(--well)}.setup-token-callout strong{display:block;margin-bottom:3px}.setup-token-callout p{margin:0;color:var(--muted);font-size:.86rem;line-height:1.45}.setup-slack-link{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:9px 13px;border:1px solid var(--line);border-radius:11px;background:var(--card);color:var(--ink);font-weight:800;text-decoration:none;white-space:nowrap}.setup-slack-logo{width:22px;height:22px}.setup-token-note{display:flex;gap:8px;align-items:flex-start;margin:13px 0 0;color:var(--muted);font-size:.8rem;line-height:1.45}.setup-manual-choice p{margin-bottom:14px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-card,html[data-slack-auth-surface="owner-complete"] .auth-card{padding-block:56px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-brand,html[data-slack-auth-surface="owner-complete"] .auth-brand{margin-bottom:38px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title,html[data-slack-auth-surface="owner-complete"] .auth-title{margin:14px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title-line{margin:14px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title-line .auth-title{margin:0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-intro{margin:18px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-intro+form{margin-top:28px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] form+details{margin-top:30px}html[data-slack-auth-surface="owner-complete"] .auth-actions{margin-top:32px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:440px){body{padding:8px}.auth-card{border-radius:14px;padding:21px 16px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-card,html[data-slack-auth-surface="owner-complete"] .auth-card{padding-block:32px}.auth-actions{display:grid}.auth-link,.auth-button{width:100%}.auth-section{padding:16px 13px}.setup-token-callout{grid-template-columns:1fr}.setup-slack-link{width:100%;justify-content:center}}
+.brand-wordmark{aspect-ratio:2106/518;background-color:currentColor;display:block;flex:0 0 auto;height:36px;-webkit-print-color-adjust:exact;print-color-adjust:exact;-webkit-mask:var(--chickpea-wordmark-image) center/contain no-repeat;mask:var(--chickpea-wordmark-image) center/contain no-repeat}@media(forced-colors:active){.brand-wordmark{background-color:CanvasText;forced-color-adjust:none}}
 </style></head><body><main class="auth-card" aria-labelledby="auth-title">${AUTH_BRAND_HTML}<p class="auth-eyebrow">${escapeHtmlAttribute(input.eyebrow)}</p>${title}${intro}${alert}${status}${input.body}</main></body></html>`;
 }
 
@@ -16628,7 +16606,7 @@ export function renderSlackManualSetupPage(input: {
     : state === 'awaiting_app_creation'
       ? `${createPanel}${finishPanel}${eventsPanel}${credentialsPanel}`
       : `<section class="onboarding-panel" data-manual-step-panel="create"><p class="onboarding-eyebrow">Manual setup</p><h1 class="onboarding-title" tabindex="-1">Continue shared setup</h1><p class="onboarding-lede">The app is ready. Continue with the encrypted Slack installation and Owner verification.</p><div class="onboarding-actions"><a class="btn btn-primary" href="/admin/setup">Continue setup</a></div></section>`;
-  return `<!doctype html><html lang="en" data-slack-manual-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}" data-manual-initial-step="${initialStep}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Chickpea · Manual Slack setup</title>${ADMIN_FAVICON}<style>${SLACK_MANUAL_SETUP_CSS}</style></head><body><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row">${AUTH_BRAND_HTML}<span class="onboarding-environment">private setup</span></div><ol class="onboarding-orientation" role="list" aria-label="Onboarding progress"><li class="active" aria-current="step"><span class="onboarding-step-dot">1</span><span class="onboarding-step-label">Connect Slack</span></li><li><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Choose provider</span></li><li><span class="onboarding-step-dot">3</span><span class="onboarding-step-label">Choose model</span></li><li><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol><div class="onboarding-stage" aria-live="polite">${panels}</div></div></main><script src="/admin/setup/manual/client.js" defer></script></body></html>`;
+  return `<!doctype html><html lang="en" data-slack-manual-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}" data-manual-initial-step="${initialStep}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Chickpea · Manual Slack setup</title>${CHICKPEA_FAVICON_HTML}<style>${SLACK_MANUAL_SETUP_CSS}</style></head><body><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row">${AUTH_BRAND_HTML}<span class="onboarding-environment">private setup</span></div><ol class="onboarding-orientation" role="list" aria-label="Onboarding progress"><li class="active" aria-current="step"><span class="onboarding-step-dot">1</span><span class="onboarding-step-label">Connect Slack</span></li><li><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Choose provider</span></li><li><span class="onboarding-step-dot">3</span><span class="onboarding-step-label">Choose model</span></li><li><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol><div class="onboarding-stage" aria-live="polite">${panels}</div></div></main><script src="/admin/setup/manual/client.js" defer></script></body></html>`;
 }
 
 function manualSlackInstruction(
@@ -16644,7 +16622,9 @@ function manualSlackInstruction(
 
 const SLACK_MANUAL_SETUP_CSS = `
 @import url("https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Quicksand:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+:root{${CHICKPEA_WORDMARK_CSS}}
 :root{--bg:#fffdf6;--canvas:#f4ebd8;--well:#f8f1df;--line:rgba(59,50,32,.1);--line-strong:rgba(59,50,32,.16);--text:#3b3220;--text-2:#6b5c42;--text-3:#9f8f72;--ember:#dda033;--ember-deep:#8a6410;--ember-tint:rgba(221,160,51,.18);--ember-press:#b27e1f;--danger:#b5473a;--font:Quicksand,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--display:"Baloo 2",var(--font);--mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace}*{box-sizing:border-box}html{color-scheme:light;background:var(--canvas)}body{margin:0;background:var(--canvas);color:var(--text);font-family:var(--font)}button,input,textarea{font:inherit}.onboarding-shell{isolation:isolate;min-height:100dvh;width:100%}.onboarding-shell-inner{margin:0 auto;max-width:1500px;padding:24px 28px 64px;width:100%}.onboarding-brand-row{align-items:center;display:flex;gap:20px;justify-content:space-between}.auth-brand{align-items:center;display:flex;gap:11px}.auth-brand-mark{height:36px;width:36px}.auth-brand-name{font-family:var(--display);font-size:1.625rem;font-weight:700}.onboarding-environment{color:var(--text-3);font-family:var(--mono);font-size:.8125rem}.onboarding-orientation{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));list-style:none;margin:26px auto 0;max-width:560px;padding:0;width:100%}.onboarding-orientation li{min-width:0;position:relative;text-align:center}.onboarding-orientation li:not(:first-child)::before{background:var(--line-strong);content:"";height:2px;position:absolute;right:50%;top:18px;width:100%;z-index:-1}.onboarding-step-dot{background:var(--canvas);border:2px solid var(--line-strong);border-radius:50%;color:var(--text-3);display:grid;font-family:var(--mono);font-size:.875rem;height:38px;margin:0 auto 9px;place-items:center;width:38px}.active .onboarding-step-dot{background:var(--bg);border-color:var(--ember);box-shadow:0 0 0 5px var(--ember-tint);color:var(--ember-deep)}.onboarding-step-label{color:var(--text-3);display:block;font-size:.875rem;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.active .onboarding-step-label{color:var(--text)}.onboarding-stage{display:grid;min-height:590px;padding-top:32px;place-items:start center}.onboarding-panel{background:var(--bg);border-radius:28px;box-shadow:0 4px 0 rgba(59,50,32,.11);padding:42px 44px;width:min(82%,1280px)}.onboarding-eyebrow{color:var(--ember-deep);font-family:var(--mono);font-size:.75rem;font-weight:700;letter-spacing:.09em;margin:0 0 12px;text-transform:uppercase}.onboarding-title{color:var(--text);font-family:var(--display);font-size:clamp(2.25rem,3.4vw,2.875rem);font-weight:700;letter-spacing:-.025em;line-height:1;margin:0;max-width:24ch;text-wrap:balance}.onboarding-lede{color:var(--text-2);font-size:1.125rem;line-height:1.5;margin:14px 0 0;max-width:58ch}.onboarding-instructions{display:grid;gap:32px;margin-top:32px}.onboarding-instruction{display:grid;gap:13px}.onboarding-instruction-title{align-items:center;color:var(--text);display:grid;font-size:1.125rem;font-weight:700;gap:12px;grid-template-columns:36px minmax(0,1fr);line-height:1.35;margin:0}.onboarding-instruction-number{background:#faedca;border-radius:50%;color:var(--ember-deep);display:grid;font-family:var(--mono);font-size:.875rem;font-weight:700;height:36px;place-items:center;width:36px}.onboarding-instruction-note{color:var(--text-2);font-size:.9375rem;line-height:1.45;margin:-3px 0 0 48px}.onboarding-shot{background:white;border:1px solid var(--line-strong);border-radius:16px;box-shadow:0 2px 0 rgba(59,50,32,.07);overflow:hidden}.onboarding-shot img{display:block;height:auto;width:100%}.onboarding-shot-viewport{height:380px}.onboarding-shot-viewport img{height:100%;object-fit:cover;object-position:center bottom}.onboarding-shot-focused{margin-left:53px;width:min(700px,calc(100% - 53px))}.onboarding-shot-ready{margin-left:53px;width:min(760px,calc(100% - 53px))}.onboarding-shot-wide{margin-left:53px;width:min(920px,calc(100% - 53px))}.onboarding-shot-events{aspect-ratio:1.25;position:relative}.onboarding-shot-events img{height:auto;left:0;position:absolute;top:-7%;width:100%}.onboarding-guide-actions{align-items:center;border-top:1px solid var(--line);display:flex;gap:16px;justify-content:space-between;margin-top:36px;padding-top:22px}.btn{align-items:center;border:0;border-radius:12px;color:var(--text);cursor:pointer;display:inline-flex;font-weight:700;justify-content:center;min-height:46px;padding:10px 17px;text-decoration:none}.btn-primary{background:var(--ember);box-shadow:0 3px 0 var(--ember-press)}.btn-ghost{background:transparent;border:1px solid var(--line-strong)}.slack-logo-image{background:url("${SLACK_LOGO_DATA_URL}") center/contain no-repeat;display:inline-block}.onboarding-slack-logo{height:23px;margin-right:7px;width:23px}.onboarding-inline-recovery{margin-top:10px}.onboarding-credential-form{display:grid;gap:32px;margin-top:32px}.onboarding-credential{display:grid;gap:13px}.onboarding-credential-grid{align-items:start;display:grid;gap:26px;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.onboarding-credential-help{display:grid;gap:9px}.field{display:grid;gap:7px}.field-label{font-weight:700}.input{background:var(--well);border:1px solid var(--line-strong);border-radius:11px;color:var(--text);min-height:48px;padding:11px 12px;width:100%}textarea.input{min-height:230px;resize:vertical}.mono{font-family:var(--mono)}.onboarding-credential-subtext,.hint{color:var(--text-3);font-size:.8125rem}.onboarding-shot-secret{width:min(420px,100%)}.onboarding-error{background:#fff3ee;border-left:4px solid var(--danger);border-radius:8px;padding:12px 14px}.field-error{color:var(--danger);font-weight:700;margin:0 0 4px}.onboarding-actions{display:flex;gap:10px;margin-top:30px}[hidden]{display:none!important}:focus-visible{outline:3px solid rgba(176,84,21,.48);outline-offset:3px}
+.brand-wordmark{aspect-ratio:2106/518;background-color:currentColor;display:block;flex:0 0 auto;height:31px;-webkit-print-color-adjust:exact;print-color-adjust:exact;-webkit-mask:var(--chickpea-wordmark-image) center/contain no-repeat;mask:var(--chickpea-wordmark-image) center/contain no-repeat}@media(forced-colors:active){.brand-wordmark{background-color:CanvasText;forced-color-adjust:none}}
 @media(max-width:720px){.onboarding-shell-inner{padding:20px 16px 45px}.onboarding-environment{display:none}.onboarding-orientation{margin-top:34px}.onboarding-step-dot{font-size:.75rem;height:34px;width:34px}.onboarding-orientation li:not(:first-child)::before{top:16px}.onboarding-step-label{font-size:.6875rem}.onboarding-stage{min-height:520px;padding-top:28px}.onboarding-panel{border-radius:22px;padding:30px 22px;width:100%}.onboarding-title{font-size:2.125rem}.onboarding-lede{font-size:1.0625rem}.onboarding-shot-viewport{height:250px}.onboarding-shot-focused,.onboarding-shot-ready,.onboarding-shot-wide{margin-left:0;width:100%}.onboarding-credential-grid{grid-template-columns:1fr}.onboarding-guide-actions{align-items:stretch;flex-direction:column-reverse}.onboarding-guide-actions .btn{width:100%}}
 `;
 
