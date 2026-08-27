@@ -973,6 +973,16 @@ export class CfManagementStore implements ManagementStore {
     return orUndefined(response.proposal);
   }
 
+  async hasPendingChangeSetProposal(
+    input: Parameters<ManagementStore['hasPendingChangeSetProposal']>[0],
+  ) {
+    const response = await this.execute({ kind: 'has_pending_change_set_proposal', input });
+    if (response.kind !== 'pending_change_set_proposal') {
+      throw unexpectedManagementResponse();
+    }
+    return response.pending;
+  }
+
   async claimChangeSetProposal(
     input: Parameters<ManagementStore['claimChangeSetProposal']>[0],
   ) {

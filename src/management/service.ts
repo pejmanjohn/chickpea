@@ -57,6 +57,7 @@ import {
 import {
   canonicalJson,
   effectiveConfigurationRevision,
+  managementActorOriginKey,
   managementOperationDigest,
   managementOriginKey,
   validateManagementOperations,
@@ -70,6 +71,7 @@ import {
   type WorkspaceRecipePreview,
 } from './recipes.ts';
 import type { ManagementStore } from './store.ts';
+import { formatSlackChangeSetProposal } from './slack-presentation.ts';
 import {
   agentAuthoringArtifactClass,
   emitManagementMetric,
@@ -3124,11 +3126,6 @@ function actorPrincipal(actor: LiveManagementActor): AuthPrincipal {
   };
 }
 
-function managementActorOriginKey(actor: LiveManagementActor): string {
-  const origin = managementOriginKey(actor.origin);
-  return actor.actingAgentId ? `${origin}:agent:${actor.actingAgentId}` : origin;
-}
-
 function managementStorageIdempotencyKey(actor: LiveManagementActor, publicKey: string): string {
   return actor.actingAgentId ? `agent.${actor.actingAgentId}.${publicKey}` : publicKey;
 }
@@ -3781,6 +3778,9 @@ function publicChangeSetProposal(
       digest: AGENT_AUTHORING_GUIDE_DIGEST,
     },
     preview: proposal.preview,
+    presentation: {
+      slack: formatSlackChangeSetProposal(proposal.preview),
+    },
     expiresAt: proposal.expiresAt,
     confirmationTool: 'confirm_workspace_change',
   };

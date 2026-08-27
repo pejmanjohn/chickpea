@@ -40,7 +40,7 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, or routine.',
   export_workspace_recipe: 'Export selected Agents and their connection requirements as a versioned, secret-free portable recipe.',
   preview_workspace_recipe: 'Preview a portable recipe against live workspace state and compile chosen outcomes into ordinary typed changes.',
-  propose_workspace_changes: 'Create a read-only, exact, requester-bound Agent configuration proposal. Read chickpea://guide/agent-authoring/v1 before proposing creation or a complex edit. The returned proposalId is an opaque control token: copy it byte-for-byte and never retype or normalize it.',
+  propose_workspace_changes: 'Create a read-only, exact, requester-bound Agent configuration proposal. Read chickpea://guide/agent-authoring/v1 before proposing creation or a complex edit. Show the returned presentation.slack verbatim as the human-facing preview; it clearly marks any Slack truncation while confirmation retains the full frozen proposal. Keep proposalId as opaque control data for confirm_workspace_change; do not use it as the human-facing proposal.',
   apply_workspace_changes: 'Apply one or more typed Chickpea workspace changes with durable idempotency and per-item outcomes.',
   confirm_workspace_change: 'Confirm one requester- and client-bound destructive or capability-expanding change proposal. After this tool returns, always send visible final text with the terminal status and what changed or why nothing changed; never end on the tool call or progress UI.',
   undo_workspace_change: 'Undo one eligible operation at the exact resulting revision.',

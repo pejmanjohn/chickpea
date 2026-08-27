@@ -136,6 +136,13 @@ export function managementOriginKey(origin: ManagementOrigin): string {
   return `admin:${origin.sessionId}`;
 }
 
+export function managementActorOriginKey(
+  context: Pick<ManagementActorContext, 'origin' | 'actingAgentId'>,
+): string {
+  const origin = managementOriginKey(context.origin);
+  return context.actingAgentId ? `${origin}:agent:${context.actingAgentId}` : origin;
+}
+
 export function managementActorKey(context: ManagementActorContext): string {
   return `${context.organizationId}:${context.userId}:${context.membershipId}`;
 }

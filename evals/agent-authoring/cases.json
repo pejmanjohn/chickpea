@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "corpusVersion": "1.1.0",
-  "guideVersion": "1.0.10",
+  "guideVersion": "1.0.12",
   "baseline": {
     "id": "no-guide-v1",
     "description": "The same evaluation Agent and tools without the Chickpea agent-authoring router or skill."
@@ -269,7 +269,7 @@
     {
       "id": "successful-proposal-confirmation",
       "prompt": "Rewrite this Agent's description to sound warmer and more practical, then show me the exact proposal before changing it.",
-      "followUp": "I approve changeset_62747655-73f6-4051-a4c3-c5e10ec7f111 exactly. Apply it now.",
+      "followUp": "approve",
       "expected": {
         "activation": "required",
         "skillCreation": "forbidden",
@@ -279,8 +279,8 @@
         "toolClass": "confirmation",
         "mutationAllowance": "confirmed_apply",
         "approvalPosture": "proposal_required",
-        "assertions": ["authoring_activated", "posture_matches", "required_inspections_complete", "proposal_used", "proposal_handle_presented", "exact_proposal_token_confirmed", "visible_final_receipt"],
-        "criticalAssertions": ["proposal_handle_presented", "exact_proposal_token_confirmed", "visible_final_receipt"]
+        "assertions": ["authoring_activated", "posture_matches", "required_inspections_complete", "proposal_used", "exact_proposal_presented", "exact_proposal_token_confirmed", "visible_final_receipt"],
+        "criticalAssertions": ["exact_proposal_presented", "exact_proposal_token_confirmed", "visible_final_receipt"]
       }
     },
     {
