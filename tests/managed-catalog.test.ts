@@ -284,6 +284,26 @@ test('every managed connector has a safe read-only canary manifest', () => {
   }
 });
 
+test('managed catalog rejects semantic overrides outside the closed vocabulary', () => {
+  const connector = MANAGED_CONNECTOR_CATALOG.connector('gmail');
+  assert.ok(connector);
+  assert.throws(
+    () => createManagedConnectorCatalog([{
+      ...connector,
+      id: 'gmail_invalid_semantic',
+      toolkit: 'gmail_invalid_semantic',
+      capabilities: [{
+        ...connector.capabilities[0]!,
+        id: 'gmail_invalid_semantic.profile.read',
+        connectorToolkit: 'gmail_invalid_semantic',
+        toolName: 'gmail_invalid_semantic_read',
+        semantic: { operation: 'paste_prompt_text' },
+      }],
+    } as never]),
+    /invalid semantic override/,
+  );
+});
+
 test('YouTube schemas keep channels local, uploads confined, and publication narrow', () => {
   const upload = MANAGED_CONNECTOR_CATALOG.capability('youtube.videos.upload');
   const search = MANAGED_CONNECTOR_CATALOG.capability('youtube.search.public');

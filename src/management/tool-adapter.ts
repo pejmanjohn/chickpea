@@ -11,6 +11,13 @@ import {
 import type { PreviewWorkspaceRecipeInput } from './recipes.ts';
 import { emitManagementMetric } from './telemetry.ts';
 import type { AgentAuthoringReason } from './agent-authoring/index.ts';
+import {
+  genericSemanticDescriptor,
+  semanticInvocationFact,
+  unknownSemanticDescriptor,
+  type SemanticActivityDescriptor,
+  type SemanticInvocationFact,
+} from '../activity/semantic.ts';
 
 export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'inspect_workspace',
@@ -30,6 +37,43 @@ export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
 ] as const;
 
 export type WorkspaceManagementToolName = typeof WORKSPACE_MANAGEMENT_TOOL_NAMES[number];
+
+const WORKSPACE_MANAGEMENT_SEMANTICS: Record<
+  WorkspaceManagementToolName,
+  SemanticActivityDescriptor
+> = {
+  inspect_workspace: genericSemanticDescriptor('workspace'),
+  prepare_connector_setup: unknownSemanticDescriptor(),
+  discover_slack_channels: unknownSemanticDescriptor(),
+  test_mcp_connection: unknownSemanticDescriptor(),
+  inspect_memory: unknownSemanticDescriptor(),
+  inspect_routines: unknownSemanticDescriptor(),
+  export_workspace_recipe: unknownSemanticDescriptor(),
+  preview_workspace_recipe: unknownSemanticDescriptor(),
+  propose_workspace_changes: unknownSemanticDescriptor(),
+  apply_workspace_changes: unknownSemanticDescriptor(),
+  confirm_workspace_change: unknownSemanticDescriptor(),
+  undo_workspace_change: unknownSemanticDescriptor(),
+  get_operation: unknownSemanticDescriptor(),
+  revoke_setup_link: unknownSemanticDescriptor(),
+};
+
+export function workspaceManagementSemanticDescriptor(
+  name: WorkspaceManagementToolName,
+): SemanticActivityDescriptor {
+  return { ...WORKSPACE_MANAGEMENT_SEMANTICS[name] };
+}
+
+/**
+ * KTD10 owner seam: the already-normalized tool name selects a closed fact.
+ * Operation arguments and bodies never enter the emitted value.
+ */
+export function workspaceManagementSemanticInvocation(
+  toolCallId: string,
+  name: WorkspaceManagementToolName,
+): SemanticInvocationFact {
+  return semanticInvocationFact(toolCallId, workspaceManagementSemanticDescriptor(name));
+}
 
 const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority. Required before recommending specific capabilities for Agent design or answering what services an Agent can use.',

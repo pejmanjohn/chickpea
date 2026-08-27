@@ -6,44 +6,20 @@ import {
   type ParsedShellCommand,
 } from './curl-request-urls.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../slack/presentation-intent.ts';
-import { hasCredentialLikeContent } from '../security/content-validation.ts';
+import {
+  activityStatus,
+  safeActivityLabel,
+  type ActivityStatus,
+  type TypedActivityStatus,
+} from './semantic.ts';
 
-export type ActivityKind =
-  | 'preparing'
-  | 'checking'
-  | 'reading'
-  | 'writing'
-  | 'updating'
-  | 'running'
-  | 'waiting'
-  | 'finishing';
-
-export interface ActivityStatus {
-  /** Present on all production-derived activity; optional only for legacy relays/tests. */
-  kind?: ActivityKind;
-  action?: string;
-  object?: string;
-  text: string;
-}
-
-export interface TypedActivityStatus extends ActivityStatus {
-  kind: ActivityKind;
-  action: string;
-  object: string;
-}
-
-/**
- * Activity crosses an isolate boundary on Cloudflare. Accept only the canonical
- * typed form there so an RPC cannot turn an internal label into user-visible
- * copy or discard the structured action/object needed by durable presentation.
- */
-export function isSafeTypedActivityStatus(value: unknown): value is TypedActivityStatus {
-  if (!value || typeof value !== 'object') return false;
-  const status = value as Record<string, unknown>;
-  if (!isActivityKind(status.kind) || typeof status.action !== 'string' ||
-      typeof status.object !== 'string' || typeof status.text !== 'string') return false;
-  return activityStatus(status.kind, status.action, status.object).text === status.text;
-}
+export {
+  activityStatus,
+  isSafeTypedActivityStatus,
+  type ActivityKind,
+  type ActivityStatus,
+  type TypedActivityStatus,
+} from './semantic.ts';
 
 export interface ActivitySkill {
   name: string;
@@ -505,46 +481,6 @@ function objectString(value: unknown, key: string): string | undefined {
   if (typeof value !== 'object' || value === null || !(key in value)) return undefined;
   const candidate = (value as Record<string, unknown>)[key];
   return typeof candidate === 'string' ? candidate : undefined;
-}
-
-export function activityStatus(
-  kind: ActivityKind,
-  action: string,
-  object: string,
-): TypedActivityStatus {
-  const safeAction = safeActivityLabel(action) || 'Working on';
-  const candidateObject = safeActivityLabel(object);
-  const safeObject = hasCredentialLikeContent(candidateObject)
-    ? 'the current item'
-    : candidateObject || 'the request';
-  const maxObjectLength = Math.max(1, 50 - safeAction.length - 2);
-  const boundedObject = truncate(safeObject, maxObjectLength);
-  return {
-    kind,
-    action: safeAction,
-    object: boundedObject,
-    text: `${safeAction} ${boundedObject}…`,
-  };
-}
-
-function isActivityKind(value: unknown): value is ActivityKind {
-  return value === 'preparing' || value === 'checking' || value === 'reading' ||
-    value === 'writing' || value === 'updating' || value === 'running' ||
-    value === 'waiting' || value === 'finishing';
-}
-
-function safeActivityLabel(value: string): string {
-  const normalized = value
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/[<>&*_~`]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return normalized || 'connection';
-}
-
-function truncate(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value;
-  return `${value.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
 }
 
 function humanizeIdentifier(value: string): string {

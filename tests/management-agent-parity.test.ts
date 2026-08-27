@@ -12,7 +12,11 @@ import {
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
 import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
-import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
+import {
+  invokeWorkspaceManagementTool,
+  workspaceManagementSemanticInvocation,
+} from '../src/management/tool-adapter.ts';
+import { narrateSemanticActivity } from '../src/activity/semantic.ts';
 import {
   managementOperationValibotSchema,
   managementOperationZodSchema,
@@ -41,6 +45,27 @@ const agentInput = {
   apiConnections: [],
   repositories: [],
 };
+
+test('workspace management emits a closed inspection fact without operation bodies', () => {
+  const secret = 'Agent instructions xoxb-do-not-leak';
+  const fact = workspaceManagementSemanticInvocation('call_workspace_1', 'inspect_workspace');
+  assert.deepEqual(narrateSemanticActivity(fact.descriptor, { phase: 'started' }), {
+    kind: 'checking',
+    action: 'Inspecting',
+    object: 'workspace settings',
+    text: 'Inspecting workspace settings…',
+  });
+  assert.deepEqual(narrateSemanticActivity(fact.descriptor, {
+    phase: 'settled', outcome: 'succeeded',
+  }), {
+    kind: 'reading',
+    action: 'Reviewing',
+    object: 'workspace settings',
+    text: 'Reviewing workspace settings…',
+  });
+  assert.doesNotMatch(JSON.stringify(fact), new RegExp(secret));
+  assert.deepEqual(Object.keys(fact).sort(), ['descriptor', 'toolCallId']);
+});
 
 test('management operation schemas expose Agent presence, Channel reach, and lifecycle operations', () => {
   const operations: ManagementOperation[] = [
