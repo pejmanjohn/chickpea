@@ -3,7 +3,11 @@ import { test } from 'node:test';
 import type { WebClient } from '@slack/web-api';
 
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
-import { RoutineAuthorityError } from '../src/routines/agent-authority.ts';
+import {
+  RoutineAuthorityError,
+  type ResolvedRoutineAuthority,
+} from '../src/routines/agent-authority.ts';
+import { routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import {
   resolveRoutineRuntimeAccess,
   RoutineRuntimeError,
@@ -61,6 +65,53 @@ const run = {
   revisionHash: 'a'.repeat(64),
 } satisfies RoutineRun;
 
+const directRoutine = {
+  ...routine,
+  id: 'routine_direct_runtime',
+  channelId: 'D_TEST',
+  destination: {
+    kind: 'direct_thread' as const,
+    conversationId: 'D_TEST',
+    threadTs: '1787853827.722389',
+    ownerMembershipId: 'membership_direct',
+  },
+  authorityMode: 'live_direct_member_v1' as const,
+} satisfies RoutineDefinition;
+
+const directAuthority: ResolvedRoutineAuthority = {
+  reference: {
+    scheduleId: directRoutine.id,
+    agentId: config.agentId,
+    workspaceId: directRoutine.workspaceId,
+    channelId: directRoutine.channelId,
+    destinationKind: 'direct_thread',
+    destinationBindingDigest: routineDestinationBindingDigest(
+      directRoutine.id,
+      directRoutine.workspaceId,
+      directRoutine.destination,
+    ),
+    createdByMembershipId: directRoutine.destination.ownerMembershipId,
+    runsAsMembershipId: directRoutine.destination.ownerMembershipId,
+    authorityReceiptId: 'receipt_direct_runtime',
+    requiredConnectionAccountIds: [],
+    state: 'active',
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  },
+  agent: config.agent,
+  assignment: {
+    workspaceId: directRoutine.workspaceId,
+    channelId: directRoutine.channelId,
+    agentId: config.agentId,
+    agent: config.agent,
+    model: config.model,
+    modelAttribution: config.modelAttribution!,
+  },
+  actorSlackUserId: 'U_DIRECT',
+  effectiveConnections: [],
+};
+
 function dependencies(overrides: Record<string, unknown> = {}) {
   return {
     credentials: async () => ({ botToken: 'xoxb-secret', signingSecret: undefined, botUserId: 'UBOT' }),
@@ -96,6 +147,116 @@ test('runtime access resolves current channel membership and hashes only non-sec
     config: async () => ({ ...config, model: 'openai/gpt-5', provider: 'openai' }),
   }));
   assert.notEqual(changed.accessHash, access.accessHash);
+});
+
+test('direct runtime verifies the full Slack member and exact DM without Channel membership calls', async () => {
+  const calls: string[] = [];
+  const client = {
+    users: {
+      info: async () => {
+        calls.push('users.info');
+        return {
+          ok: true,
+          user: {
+            id: 'U_DIRECT', team_id: 'T_TEST', deleted: false, is_bot: false,
+            is_app_user: false, is_restricted: false, is_ultra_restricted: false,
+            is_stranger: false,
+          },
+        };
+      },
+    },
+    conversations: {
+      open: async () => {
+        calls.push('conversations.open');
+        return { ok: true, channel: { id: 'D_TEST', is_im: true } };
+      },
+      info: async () => { throw new Error('direct authority must not call conversations.info'); },
+      members: async () => { throw new Error('direct authority must not call conversations.members'); },
+    },
+  } as unknown as WebClient;
+  const access = await resolveRoutineRuntimeAccess(
+    { ...run, routineId: directRoutine.id, revision: { ...run.revision!, authorityMode: 'live_direct_member_v1' } },
+    directRoutine,
+    undefined,
+    dependencies({
+      authority: async () => directAuthority,
+      installationExecution: async () => ({
+        workspaceId: 'T_TEST', transportMode: 'gateway', botUserId: 'UBOT', client,
+      }),
+    }),
+  );
+
+  assert.deepEqual(calls, ['users.info', 'conversations.open']);
+  assert.equal(access.actorSlackUserId, 'U_DIRECT');
+  assert.equal(access.config.channelId, 'D_TEST');
+  assert.match(access.accessHash, /^[a-f0-9]{64}$/);
+});
+
+test('direct runtime rejects ineligible Slack identities and a mismatched DM', async () => {
+  const cases = [
+    { label: 'guest', user: { is_restricted: true } },
+    { label: 'deleted', user: { deleted: true } },
+    { label: 'bot', user: { is_bot: true } },
+    { label: 'foreign', user: { team_id: 'T_OTHER' } },
+  ];
+  for (const candidate of cases) {
+    const client = {
+      users: {
+        info: async () => ({
+          ok: true,
+          user: {
+            id: 'U_DIRECT', team_id: 'T_TEST', deleted: false, is_bot: false,
+            is_app_user: false, is_restricted: false, is_ultra_restricted: false,
+            is_stranger: false, ...candidate.user,
+          },
+        }),
+      },
+      conversations: { open: async () => ({ ok: true, channel: { id: 'D_TEST', is_im: true } }) },
+    } as unknown as WebClient;
+    await assert.rejects(
+      resolveRoutineRuntimeAccess(
+        { ...run, routineId: directRoutine.id, revision: { ...run.revision!, authorityMode: 'live_direct_member_v1' } },
+        directRoutine,
+        undefined,
+        dependencies({
+          authority: async () => directAuthority,
+          installationExecution: async () => ({
+            workspaceId: 'T_TEST', transportMode: 'gateway', botUserId: 'UBOT', client,
+          }),
+        }),
+      ),
+      (error: unknown) => error instanceof RoutineRuntimeError &&
+        error.failureClass === 'creator_ineligible',
+      candidate.label,
+    );
+  }
+
+  const mismatchClient = {
+    users: { info: async () => ({
+      ok: true,
+      user: {
+        id: 'U_DIRECT', team_id: 'T_TEST', deleted: false, is_bot: false,
+        is_app_user: false, is_restricted: false, is_ultra_restricted: false,
+        is_stranger: false,
+      },
+    }) },
+    conversations: { open: async () => ({ ok: true, channel: { id: 'D_OTHER', is_im: true } }) },
+  } as unknown as WebClient;
+  await assert.rejects(
+    resolveRoutineRuntimeAccess(
+      { ...run, routineId: directRoutine.id, revision: { ...run.revision!, authorityMode: 'live_direct_member_v1' } },
+      directRoutine,
+      undefined,
+      dependencies({
+        authority: async () => directAuthority,
+        installationExecution: async () => ({
+          workspaceId: 'T_TEST', transportMode: 'gateway', botUserId: 'UBOT', client: mismatchClient,
+        }),
+      }),
+    ),
+    (error: unknown) => error instanceof RoutineRuntimeError &&
+      error.failureClass === 'channel_ineligible',
+  );
 });
 
 test('runtime access resolves the one workspace Slack installation', async () => {

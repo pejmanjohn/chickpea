@@ -10,15 +10,21 @@ import type { SourceVisibility } from '../work/types.ts';
 
 const MAX_MEMBER_PAGES = 5;
 
-/** Routine controls and natural-language requests work in mentions and their channel threads. */
+/** Routine controls and natural-language requests work in Channels and one-to-one DMs. */
 export function isRoutineSlackTurn(turn: NormalizedSlackTurn): boolean {
+  if (turn.channelType === 'mpim') return false;
+  if (turn.channelType === 'im') {
+    return (
+      turn.source === 'dm_message' ||
+      turn.source === 'agent_mention' ||
+      turn.source === 'implicit_thread_reply'
+    );
+  }
   return (
     turn.source === 'app_mention' ||
     turn.source === 'agent_mention' ||
     turn.source === 'implicit_thread_reply'
-  ) &&
-    turn.channelType !== 'im' &&
-    turn.channelType !== 'mpim';
+  );
 }
 
 /** Reauthorize a mentioned channel without revealing private-channel existence on failure. */

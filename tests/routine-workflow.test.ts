@@ -12,7 +12,7 @@ import {
   executeRoutineOccurrence,
 } from '../src/routines/execution.ts';
 import { RoutineRuntimeError } from '../src/routines/runtime.ts';
-import { hashRoutineValue } from '../src/routines/ids.ts';
+import { hashRoutineValue, routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type {
   RoutineDefinition,
@@ -324,6 +324,82 @@ test('an unresolved initial assignment records a skip without model or Agent sid
     assert.equal(skipped?.flueAgentEnvelope, null);
   } finally {
     store.close();
+  }
+});
+
+test('a direct schedule with permanently missing Agent authority fails and auto-disables', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-direct-authority-loss-'));
+  const path = join(dir, 'state.db');
+  const store = new SqliteRoutineStore(path, () => NOW);
+  const configStore = new SqliteConfigStore(path, { agents: [] });
+  const destination = {
+    kind: 'direct_thread' as const,
+    conversationId: 'D_DIRECT',
+    threadTs: '1787853827.722389',
+    ownerMembershipId: 'membership_direct',
+  };
+  try {
+    await configStore.createAgent({
+      id: 'agent_direct', name: 'Direct', instructions: 'Run private work.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: destination.ownerMembershipId,
+      editPolicy: 'creator_and_admins', model: config.model,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const routine = await store.save({
+      actorId: 'U_DIRECT', actorClass: 'member', workspaceId: 'T_TEST',
+      channelId: destination.conversationId, destination,
+      draft: {
+        action: 'create', routineId: 'routine_direct_assignment_missing',
+        definition: {
+          name: 'Direct fixture', description: '', taskText: 'Inspect current state.',
+          triggerKind: 'schedule', scheduleInput: '0 * * * *',
+          scheduleJson: JSON.stringify({ version: 1, kind: 'cron', expression: '0 * * * *' }),
+          timezone: 'UTC', outputPolicy: 'post', authorityMode: 'live_direct_member_v1',
+        },
+        nextRunAt: NOW, projectedDailyStarts: 1,
+        reservations: [{ windowStart: NOW, count: 1 }],
+      },
+      idempotencyKey: 'create:direct-assignment-missing', sourceVisibility: 'private',
+    });
+    const digest = routineDestinationBindingDigest(routine.id, routine.workspaceId, destination);
+    const reference = await configStore.putAgentScheduleReference({
+      scheduleId: routine.id, agentId: 'agent_direct', workspaceId: routine.workspaceId,
+      channelId: destination.conversationId, destinationKind: 'direct_thread',
+      destinationBindingDigest: digest, createdByMembershipId: destination.ownerMembershipId,
+      runsAsMembershipId: destination.ownerMembershipId,
+      authorityReceiptId: 'receipt_direct', requiredConnectionAccountIds: [], state: 'active',
+    });
+    await store.activateDirectRoutine({
+      routineId: routine.id, expectedVersion: routine.version,
+      expectedReferenceRevision: reference.revision, destinationBindingDigest: digest,
+    });
+    const run = await store.createOccurrence({
+      runId: 'rrun_direct_assignment_missing', idempotencyKey: 'run:direct-assignment-missing',
+      routineId: routine.id, routineVersion: routine.version, scheduledFor: NOW,
+      triggerSource: 'schedule', queuedAt: NOW, deadlineAt: NOW + 60_000,
+    });
+    const attempt = await store.startAdmissionAttempt({
+      occurrenceId: run.id, owner: 'heartbeat', invokeStartedAt: NOW, leaseUntil: NOW + 30_000,
+    });
+
+    const outcome = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: run.id, attempt: attempt.attempt,
+    }, {
+      ...dependencies(),
+      resolveAccess: async () => {
+        throw new RoutineRuntimeError('assignment_missing', 'The direct Agent is unavailable.');
+      },
+    });
+
+    assert.equal(outcome, 'completed');
+    assert.equal((await store.getRun(run.id))?.status, 'failed');
+    const disabled = await store.getRoutine(routine.id);
+    assert.equal(disabled?.state, 'disabled');
+    assert.equal(disabled?.disabledReason, 'assignment_missing');
+  } finally {
+    configStore.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

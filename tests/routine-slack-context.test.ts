@@ -16,7 +16,7 @@ test('channel mentions parse exactly', () => {
   assert.equal(parseSlackChannelMention('C_TEST'), undefined);
 });
 
-test('routine handling admits channel mentions and their implicit thread replies only', () => {
+test('routine handling admits Channels and one-to-one DMs but never group DMs', () => {
   const base = {
     workspaceId: 'T_TEST', channelId: 'C_TEST', userId: 'U_MEMBER', eventId: 'Ev_TEST',
     text: '!routines confirm token', messageTs: '1.1', threadTs: '1.0',
@@ -25,8 +25,10 @@ test('routine handling admits channel mentions and their implicit thread replies
   assert.equal(isRoutineSlackTurn({ ...base, source: 'app_mention' }), true);
   assert.equal(isRoutineSlackTurn({ ...base, source: 'implicit_thread_reply' }), true);
   assert.equal(isRoutineSlackTurn({ ...base, source: 'agent_mention' }), true);
-  assert.equal(isRoutineSlackTurn({ ...base, source: 'implicit_thread_reply', channelType: 'im' }), false);
-  assert.equal(isRoutineSlackTurn({ ...base, source: 'dm_message', channelType: 'im' }), false);
+  assert.equal(isRoutineSlackTurn({ ...base, source: 'implicit_thread_reply', channelType: 'im' }), true);
+  assert.equal(isRoutineSlackTurn({ ...base, source: 'dm_message', channelType: 'im' }), true);
+  assert.equal(isRoutineSlackTurn({ ...base, source: 'agent_mention', channelType: 'im' }), true);
+  assert.equal(isRoutineSlackTurn({ ...base, source: 'dm_message', channelType: 'mpim' }), false);
 });
 
 test('only exact Routine commands bypass the interactive Agent authoring loop', () => {
@@ -61,7 +63,7 @@ test('only exact Routine commands bypass the interactive Agent authoring loop', 
     ...base,
     source: 'dm_message', channelType: 'im',
     text: '!routines pause routine_one',
-  }), false);
+  }), true);
 });
 
 test('mentioned-channel controls require current bot and actor membership', async () => {

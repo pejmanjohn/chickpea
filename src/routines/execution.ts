@@ -189,7 +189,11 @@ export async function executeRoutineOccurrence(
         }).catch(() => undefined),
       ]);
     }
-    if (failure.failureClass === 'assignment_missing' && current.status === 'admitting') {
+    if (
+      failure.failureClass === 'assignment_missing' &&
+      current.status === 'admitting' &&
+      routine.destination.kind === 'channel'
+    ) {
       await skipUnresolvedRun(input.store, current.id, failure.publicError, now());
     } else {
       await failUnsettledRun(
