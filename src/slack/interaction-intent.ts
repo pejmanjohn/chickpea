@@ -48,6 +48,7 @@ export const SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS = [
   'Investigation, searching, building, debugging, changing, or finding something is never react_only. Choose reply for substantive answers that need no longer work, and work for tasks expected to take more than a few seconds.',
   'Set memoryIntent to "possible" whenever the message could semantically be asking Chickpea to retain durable information, change stored memory, or forget stored memory, regardless of wording. Otherwise set it to "none". Do not rely on keywords or exact command grammar.',
   'A possible memory intent is always substantive: choose reply or work, never ignore or react_only. The main Agent will decide whether a memory write is actually appropriate and authorized.',
+  'Approval of a pending workspace-management proposal is consequential. Choose reply, never react_only, so the main Agent can apply the exact reviewed proposal and report its terminal receipt.',
   'For work, return one to four short checklist labels naming an artifact, result, or question. Never use generic activity labels such as working, investigating, thinking, or checking.',
   'Messages addressed to another person or bot and people working something out themselves default to ignore unless the contribution prevents a meaningful error or adds information they cannot easily get.',
   'A guaranteed input may never be ignored. The host will enforce this.',
@@ -81,6 +82,8 @@ export interface SlackInteractionIntentContext {
   recentContext?: string[];
   reactionTargetText?: string;
   activeWork?: boolean;
+  /** Exact requester, Slack thread, and acting-Agent binding has a live proposal. */
+  pendingManagementProposal?: boolean;
   requestedModel?: string | null;
 }
 
@@ -241,6 +244,12 @@ export function resolveImmediateSlackInteractionIntent(
   context: SlackInteractionIntentContext,
 ): SlackInteractionIntent | null {
   const text = normalizedInteractionText(context.text);
+  if (
+    explicitManagementApproval(text) ||
+    (context.pendingManagementProposal && pendingProposalApproval(text))
+  ) {
+    return { disposition: 'reply', reason: 'substantive_request' };
+  }
   if (context.guaranteed) {
     const acknowledgment = obviousAcknowledgment(text, Boolean(context.activeWork));
     if (acknowledgment) return acknowledgment;
@@ -260,6 +269,23 @@ export function resolveImmediateSlackInteractionIntent(
     };
   }
   return null;
+}
+
+/** Short agreement is substantive only for an exact pending management binding. */
+export function shouldLookupPendingManagementProposal(text: string): boolean {
+  return pendingProposalApproval(normalizedInteractionText(text));
+}
+
+function explicitManagementApproval(text: string): boolean {
+  const approval = text.toLowerCase().replace(/[.!]+$/g, '').trim();
+  return /^(?:approve|approved|confirm|apply it|apply this|go ahead|do it)$/.test(approval);
+}
+
+function pendingProposalApproval(text: string): boolean {
+  const approval = text.toLowerCase().replace(/[.!]+$/g, '').trim();
+  return /^(?:yes|yep|yeah|agreed|sounds good|works for me|sgtm|ok|okay|perfect|great|\+1|confirmed)$/.test(
+    approval,
+  );
 }
 
 function normalizedInteractionText(text: string): string {
