@@ -252,26 +252,45 @@ test('a definitive private failure-notice rejection carries the terminal thread 
 
 test('unknown private-thread Slack errors remain ambiguous and never fall back', async () => {
   const events: string[] = [];
+  const logs: string[] = [];
   let requests = 0;
+  const rawSlackCanary = 'RAW_PRIVATE_SLACK_ERROR_MUST_NOT_LOG';
   const client = {
     chat: {
       postMessage: async () => {
         requests += 1;
-        throw { data: { error: 'some_future_slack_error' } };
+        throw { data: { error: 'some_future_slack_error', detail: rawSlackCanary } };
       },
     },
   } as unknown as WebClient;
-
-  await assert.rejects(
-    () => deliverRoutineResult({
-      store: store(events), run, routine: directRoutine, access, message: 'Private result.',
-      changeKeyHash: null, now: () => 1_000,
-    }, client),
-    (error: unknown) => error instanceof RoutineRuntimeError &&
-      error.failureClass === 'delivery_unknown',
-  );
+  const originalConsole = {
+    error: console.error,
+    warn: console.warn,
+    log: console.log,
+  };
+  console.error = (...args: unknown[]) => { logs.push(args.join(' ')); };
+  console.warn = (...args: unknown[]) => { logs.push(args.join(' ')); };
+  console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+  try {
+    await assert.rejects(
+      () => deliverRoutineResult({
+        store: store(events), run, routine: directRoutine, access, message: 'Private result.',
+        changeKeyHash: null, now: () => 1_000,
+      }, client),
+      (error: unknown) => error instanceof RoutineRuntimeError &&
+        error.failureClass === 'delivery_unknown',
+    );
+  } finally {
+    console.error = originalConsole.error;
+    console.warn = originalConsole.warn;
+    console.log = originalConsole.log;
+  }
   assert.equal(requests, 1);
   assert.deepEqual(events, ['claim', 'record:unknown::']);
+  assert.doesNotMatch(
+    logs.join('\n'),
+    /RAW_PRIVATE_SLACK_ERROR_MUST_NOT_LOG|D_TEST|1784000000\.000100|Private result/,
+  );
 });
 
 test('private recovery posts one sanitized Chickpea notice at the verified DM root', async () => {
