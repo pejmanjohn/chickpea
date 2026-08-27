@@ -58,6 +58,12 @@ interface FakeTarget {
   getAttribute(name: string): string | null;
 }
 
+interface FakeDetailsElement extends FakeTarget {
+  open: boolean;
+  removeAttribute(name: string): void;
+  querySelector(selector: string): { focus(): void } | null;
+}
+
 interface FakeSubmitTarget extends FakeTarget {
   __formData: Record<string, string>;
 }
@@ -450,6 +456,7 @@ function runAdminPageHarness(
     resetDocumentScrollOnRender?: boolean;
     modelFocusScrollTop?: number;
     initialSessionStorage?: Record<string, string>;
+    providerActionMenuCount?: number;
   } = {},
 ): {
   app: FakeElement;
@@ -469,6 +476,7 @@ function runAdminPageHarness(
   slackDisconnectCalls(): number;
   topbarRegion: FakeRegion;
   bodyRegion: FakeRegion;
+  providerActionMenus: FakeDetailsElement[];
   focusedAction(): string | null;
   locationPath(): string;
   popstate(path: string): void;
@@ -608,6 +616,24 @@ function runAdminPageHarness(
     }
     return focusElements[name];
   };
+  const providerActionMenus: FakeDetailsElement[] = Array.from(
+    { length: options.providerActionMenuCount ?? 0 },
+    (_, index) => ({
+      open: false,
+      closest(selector: string) {
+        return selector === '.provider-action-menu' ? this : null;
+      },
+      getAttribute() {
+        return null;
+      },
+      removeAttribute(name: string) {
+        if (name === 'open') this.open = false;
+      },
+      querySelector(selector: string) {
+        return selector === 'summary' ? focusElement(`provider-action-menu-${index}-summary`) : null;
+      },
+    }),
+  );
   let modelInputGeneration = -1;
   let modelDomEnabled = false;
   let modelSelectionStart = 0;
@@ -1078,6 +1104,9 @@ function runAdminPageHarness(
       if (selector === '.topbar') return topbarRegion;
       if (selector === '.body') return bodyRegion;
       if (selector === '.main') return mainRegion;
+      if (selector === '.provider-action-menu[open]') {
+        return providerActionMenus.find((menu) => menu.open) ?? null;
+      }
       if (selector === '.import-browse-host' && options.skillBrowseDom && appHtml.includes('import-browse-host')) {
         return {
           get innerHTML() {
@@ -1130,6 +1159,12 @@ function runAdminPageHarness(
         return { value: options.swapSelectionValue };
       }
       return null;
+    },
+    querySelectorAll(selector: string) {
+      if (selector === '.provider-action-menu[open]') {
+        return providerActionMenus.filter((menu) => menu.open);
+      }
+      return [];
     },
     addEventListener(type: string, listener: Listener) {
       listeners[type] = listener;
@@ -2640,6 +2675,7 @@ function runAdminPageHarness(
     slackDisconnectCalls: () => slackDisconnectCalls,
     topbarRegion,
     bodyRegion,
+    providerActionMenus,
     focusedAction: () => focusedAction,
     locationPath: () => location.pathname,
     popstate(path: string) {
@@ -11182,7 +11218,7 @@ test('onboarding skips channel publication, validates a provider, requires a mod
   assert.equal(harness.agentChannelPosts.length, 0);
   assert.equal(harness.onboardingTryPosts.length, 0);
   assert.match(harness.app.innerHTML, /Choose your model provider/);
-  assert.match(harness.app.innerHTML, /Cloudflare/);
+  assert.match(harness.app.innerHTML, /Cloudflare Workers AI/);
   assert.match(harness.app.innerHTML, /Anthropic/);
   assert.match(harness.app.innerHTML, /OpenAI/);
   assert.match(harness.app.innerHTML, /OpenRouter/);
@@ -11467,6 +11503,7 @@ test('Settings places the live Workspace default before provider configuration',
   assert.match(html, /Chickpea and 1 active Agent use this model/);
   assert.match(html, /<span class="badge-src">Live<\/span>/);
   assert.match(html, /Changes apply to the next admitted message, including replies in existing threads/);
+  assert.match(html, /class="workspace-default-card workspace-default-shelf"/);
   assert.doesNotMatch(html, /Direct messages|\+ DMs|DM default/);
 });
 
@@ -12283,7 +12320,7 @@ test('legacy Sessions page URLs return to the default Agent without loading Run 
   assert.doesNotMatch(harness.app.innerHTML, /Sessions|open-sessions|Run inspector/);
 });
 
-test('Settings shows an unobtrusive model-list status and refreshes it on demand', async () => {
+test('Settings labels the revision as compatibility rules and refreshes it on demand', async () => {
   const harness = runAdminPageHarness({
     modelCatalogStatus: {
       mode: 'hosted',
@@ -12303,16 +12340,16 @@ test('Settings shows an unobtrusive model-list status and refreshes it on demand
   await flushAsync();
 
   const html = harness.app.innerHTML;
-  assert.match(html, /<span class="field-label">Model list<\/span>/);
-  assert.match(html, /Models up to date &middot; revision 12/);
-  assert.match(html, /data-action="model-catalog-refresh"[^>]*>[\s\S]*Refresh models<\/button>/);
+  assert.match(html, /<span class="model-catalog-copy">Compatibility rules up to date/);
+  assert.match(html, /Compatibility rules up to date &middot; revision 12/);
+  assert.match(html, /data-action="model-catalog-refresh"[^>]*>[\s\S]*Refresh<\/button>/);
   assert.doesNotMatch(html, /experimental|I understand|risk warning/i);
 
   click({ target: actionTarget({ 'data-action': 'model-catalog-refresh' }) });
   await flushAsync();
   await flushAsync();
   assert.equal(harness.modelCatalogRefreshCalls(), 1);
-  assert.match(harness.app.innerHTML, /Models up to date &middot; revision 12/);
+  assert.match(harness.app.innerHTML, /Compatibility rules up to date &middot; revision 12/);
 });
 
 test('a stale model-list status response cannot overwrite a completed refresh', async () => {
@@ -12338,7 +12375,7 @@ test('a stale model-list status response cannot overwrite a completed refresh', 
   click({ target: actionTarget({ 'data-action': 'model-catalog-refresh' }) });
   await flushAsync();
   await flushAsync();
-  assert.match(harness.app.innerHTML, /Models up to date &middot; revision 12/);
+  assert.match(harness.app.innerHTML, /Compatibility rules up to date &middot; revision 12/);
 
   harness.resolveModelCatalogStatus({
     ...currentStatus,
@@ -12346,7 +12383,7 @@ test('a stale model-list status response cannot overwrite a completed refresh', 
     generatedAt: '2026-07-01T20:00:00Z',
   });
   await flushAsync();
-  assert.match(harness.app.innerHTML, /Models up to date &middot; revision 12/);
+  assert.match(harness.app.innerHTML, /Compatibility rules up to date &middot; revision 12/);
   assert.doesNotMatch(harness.app.innerHTML, /revision 3/);
 });
 
@@ -13170,7 +13207,10 @@ test('Usage keeps an invalid custom range in place and explains what to fix', as
   assert.match(harness.app.innerHTML, /id="usage-custom-from"[^>]*value="2026-07-10"/);
 });
 
-test('Settings renders the three key-provider rows and hides Workers AI on the Node target', async () => {
+test('Settings renders all four providers in the Shelf grid on every target', async () => {
+  const page = renderAdminPage();
+  assert.match(page, /\.settings-providers-page\[hidden\] \{ display: none; \}/);
+  assert.match(page, /@container provider-settings \(max-width: 480px\)[\s\S]*?\.provider-card \.prov-sub \{ grid-column: 2 \/ 4; grid-row: 2; \}/);
   const harness = runAdminPageHarness();
   await flushAsync();
   const click = harness.listeners.click;
@@ -13179,24 +13219,36 @@ test('Settings renders the three key-provider rows and hides Workers AI on the N
   await flushAsync();
 
   const html = harness.app.innerHTML;
+  assert.match(html, /class="provider-grid"/);
+  assert.equal((html.match(/class="prov-row provider-card/g) ?? []).length, 4);
+  assert.equal((html.match(/class="provider-card-logo"/g) ?? []).length, 4);
+  assert.match(html, /data-provider-card="anthropic"/);
+  assert.match(html, /data-provider-card="openai"/);
+  assert.match(html, /data-provider-card="openrouter"/);
+  assert.match(html, /data-provider-card="workers-ai"/);
   // Anthropic (stored) shows the Stored chip + model count; OpenAI exposes only API-key billing.
   assert.match(html, /<span class="prov-name">Anthropic<\/span>/);
-  assert.match(html, /Stored<\/span><span class="hint">Saved here · 10 models available<\/span>/);
+  assert.match(html, /data-provider-card="anthropic"[\s\S]*?<span class="dot"><\/span>Connected<\/span>/);
+  assert.match(html, /10 models available\./);
   assert.match(html, /<span class="prov-name">OpenAI<\/span>/);
   assert.doesNotMatch(html, /of 1 connected/);
   assert.match(html, /Connect the API credentials Chickpea can use/);
   assert.match(html, /<span class="openai-auth-title">API key<\/span>/);
-  assert.match(html, /Not connected<\/span>/);
+  assert.match(html, /data-provider-card="openai"[\s\S]*?<span class="dot"><\/span>Key needed<\/span>/);
   assert.doesNotMatch(html, /ChatGPT subscription|Connect subscription|openai-subscription|Use for OpenAI calls|Selected:/);
   assert.match(html, /data-action="prov-add-key" data-provider="openai"/);
   // OpenRouter (env) is read-only and starts in the compact selected-model summary.
-  assert.match(html, /<span class="prov-name">OpenRouter<\/span><span class="badge badge-on"><span class="dot"><\/span>Connected<\/span>/);
+  assert.match(html, /data-provider-card="openrouter"[\s\S]*?<span class="dot"><\/span>Connected<\/span>/);
   assert.match(html, /<span class="fav-summary-title">Models<\/span><span class="fav-summary-count">2 selected<\/span>/);
+  assert.match(html, /class="fav-selected provider-model-chips"/);
+  assert.match(html, /<span class="provider-model-chip" title="anthropic\/claude-sonnet-4"><button type="button" class="provider-model-unstar" data-action="fav-star"[^>]*aria-label="Remove anthropic\/claude-sonnet-4 from the model picker">/);
+  assert.doesNotMatch(html, /<button[^>]*class="provider-model-chip"[^>]*data-action="fav-star"/);
   assert.match(html, /data-action="fav-manager-toggle" data-provider="openrouter"[^>]*>Manage models<\/button>/);
   assert.doesNotMatch(html, /Models in your picker|OpenRouter serves|Star adds a model|data-action="fav-search" data-provider="openrouter"/);
   assert.doesNotMatch(html, /data-action="prov-remove" data-provider="openrouter"/);
-  // Workers AI is binding-only: absent on Node.
-  assert.doesNotMatch(html, /<span class="prov-name">Workers AI<\/span>/);
+  // Cloudflare remains visible on Node so the provider set is stable and easy
+  // to scan. Its controls explain that the binding is deployment-specific.
+  assert.match(html, /<span class="prov-name">Cloudflare Workers AI<\/span>/);
 });
 
 test('Settings hides legacy OpenAI subscription state and exposes only API-key billing', async () => {
@@ -13228,7 +13280,42 @@ test('Settings hides legacy OpenAI subscription state and exposes only API-key b
   assert.doesNotMatch(harness.app.innerHTML, /of 1 connected/);
   assert.match(harness.app.innerHTML, /<span class="openai-auth-title">API key<\/span>/);
   assert.match(harness.app.innerHTML, /Saved in Chickpea/);
+  assert.match(harness.app.innerHTML, /<details class="provider-action-menu">/);
+  assert.match(harness.app.innerHTML, /<summary[^>]*aria-label="Manage OpenAI API key"/);
   assert.doesNotMatch(harness.app.innerHTML, /ChatGPT subscription|openai-subscription|Use for OpenAI calls|>Selected</);
+});
+
+test('Settings provider action menus dismiss on sibling, outside click, and Escape', async () => {
+  const harness = runAdminPageHarness({ providerActionMenuCount: 2 });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const keydown = harness.listeners.keydown;
+  assert.ok(click && keydown);
+
+  const [firstMenu, secondMenu] = harness.providerActionMenus;
+  assert.ok(firstMenu && secondMenu);
+  firstMenu.open = true;
+  secondMenu.open = true;
+
+  click({ target: secondMenu });
+  assert.equal(firstMenu.open, false);
+  assert.equal(secondMenu.open, true);
+
+  click({ target: actionTarget({}) });
+  assert.equal(secondMenu.open, false);
+
+  firstMenu.open = true;
+  let prevented = false;
+  keydown({
+    target: actionTarget({}),
+    key: 'Escape',
+    preventDefault() {
+      prevented = true;
+    },
+  });
+  assert.equal(prevented, true);
+  assert.equal(firstMenu.open, false);
+  assert.equal(harness.focusedAction(), 'provider-action-menu-0-summary');
 });
 
 test('Settings renders the outbound-access mode control and allowlist domain input', async () => {
@@ -13416,8 +13503,8 @@ test('Settings surfaces a rejected key verbatim in the raw-error block and store
   const html = harness.app.innerHTML;
   assert.match(html, /Anthropic rejected the key\. Nothing was stored/);
   assert.match(html, /<div class="raw-error">GET \/v1\/models → 401 authentication_error: invalid x-api-key<\/div>/);
-  // Provider still Missing (nothing stored) and the paste field is still open.
-  assert.match(html, /Missing<\/span>/);
+  // Provider still needs a key (nothing stored) and the paste field is still open.
+  assert.match(html, /Key needed<\/span>/);
 });
 
 test('Settings remove-key confirmation names the pinned profiles and the honest consequence', async () => {
@@ -13522,7 +13609,7 @@ test('Settings OpenRouter favorites manager searches, stars, and persists to the
   assert.match(harness.app.innerHTML, /<span class="fav-summary-count">3 selected<\/span>/);
 });
 
-test('Settings shows the Workers AI row on the Cloudflare target with no per-row metas', async () => {
+test('Settings shows the Cloudflare provider card on the Cloudflare target with no per-row metas', async () => {
   const harness = runAdminPageHarness({
     cloudflare: true,
     modelProviders: [{
@@ -13540,16 +13627,19 @@ test('Settings shows the Workers AI row on the Cloudflare target with no per-row
   await flushAsync();
 
   let html = harness.app.innerHTML;
-  assert.match(html, /<span class="prov-name">Workers AI<\/span>/);
-  assert.match(html, /<span class="badge badge-on"><span class="dot"><\/span>On<\/span>/);
+  assert.match(html, /<span class="prov-name">Cloudflare Workers AI<\/span>/);
+  assert.match(html, /data-provider-card="workers-ai"/);
+  assert.match(html, /class="fav-selected provider-model-chips"/);
+  assert.match(html, /<span class="provider-toggle-label">On<\/span>/);
   assert.match(html, /data-action="workers-ai-enabled" checked aria-label="Use Workers AI in Agent model pickers"/);
   assert.match(html, /<span class="fav-summary-title">Models<\/span><span class="fav-summary-count">2 selected<\/span>/);
   assert.match(html, /data-action="fav-manager-toggle" data-provider="workers-ai"[^>]*>Manage models<\/button>/);
-  assert.doesNotMatch(html, /Keyless|billed in Neurons|via the Workers AI binding|No key to manage|binding lists|Star adds a model|data-action="fav-search" data-provider="workers-ai"/);
+  assert.match(html, /Runs Cloudflare-hosted models\. No API key needed\./);
+  assert.doesNotMatch(html, /billed in Neurons|No key to manage|binding lists|Star adds a model|data-action="fav-search" data-provider="workers-ai"/);
   assert.doesNotMatch(html, /data-action="prov-add-key" data-provider="workers-ai"/);
   assert.doesNotMatch(html, /declares no context window|auto-compaction stays off/);
   // Seed default renders as a starred favorite, provider-native, with NO meta.
-  assert.match(html, /<span class="fav-model">@cf\/zai-org\/glm-5\.2<\/span><\/div>/);
+  assert.match(html, /<span class="fav-model">@cf\/zai-org\/glm-5\.2<\/span><\/span>/);
 
   change({
     target: Object.assign(
@@ -13561,7 +13651,7 @@ test('Settings shows the Workers AI row on the Cloudflare target with no per-row
 
   assert.deepEqual(harness.workersAiEnabledPuts, [false]);
   html = harness.app.innerHTML;
-  assert.match(html, /<span class="badge badge-off"><span class="dot"><\/span>Off<\/span>/);
+  assert.match(html, /<span class="provider-toggle-label">Off<\/span>/);
   assert.match(html, /data-action="workers-ai-enabled" aria-label="Use Workers AI in Agent model pickers"/);
   assert.doesNotMatch(html, /data-action="workers-ai-enabled" checked/);
 
@@ -13631,7 +13721,7 @@ test('Workers AI renders Off on a fresh load and recovers a failed model refresh
   click({ target: actionTarget({ 'data-action': 'open-settings' }) });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /<span class="badge badge-off"><span class="dot"><\/span>Off<\/span>/);
+  assert.match(harness.app.innerHTML, /<span class="provider-toggle-label">Off<\/span>/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="workers-ai-enabled" checked/);
 
   change({
@@ -13696,7 +13786,7 @@ test('Workers AI toggle ignores an older providers response that resolves after 
   }));
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /<span class="badge badge-off"><span class="dot"><\/span>Off<\/span>/);
+  assert.match(harness.app.innerHTML, /<span class="provider-toggle-label">Off<\/span>/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="workers-ai-enabled" checked/);
 });
 

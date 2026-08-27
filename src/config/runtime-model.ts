@@ -37,6 +37,11 @@ import type {
 } from '../model-catalog/types.ts';
 import type { ModelCredentialAttribution } from './types.ts';
 import type { RunExecutionRouteInput } from '../work/types.ts';
+import { ensureOpenRouterRuntimeModel } from './openrouter-runtime-model.ts';
+import {
+  ProviderModelsUnavailableError,
+  ProviderUnreachableError,
+} from './provider-models.ts';
 
 export type ProviderAuthRoute = 'openai_api_key' | 'openai_subscription';
 
@@ -268,6 +273,35 @@ export async function resolveRuntimeModel(
         dependencies.env,
         dependencies.settings,
       );
+      if (providerId === 'openrouter' && !dependencies.applyProviderKey) {
+        let available: boolean;
+        try {
+          available = await ensureOpenRouterRuntimeModel(
+            canonicalModel,
+            dependencies.env,
+            dependencies.settings,
+          );
+        } catch (error) {
+          if (
+            error instanceof ProviderModelsUnavailableError ||
+            error instanceof ProviderUnreachableError
+          ) {
+            throw new RuntimeModelReadinessError(
+              'provider_setup_required',
+              'openrouter',
+              'OpenRouter model availability could not be refreshed. Try again.',
+            );
+          }
+          throw error;
+        }
+        if (!available) {
+          throw new RuntimeModelReadinessError(
+            'unsupported',
+            'openrouter',
+            `OpenRouter no longer lists ${canonicalModel.slice('openrouter/'.length)}.`,
+          );
+        }
+      }
     }
     return { model: canonicalModel };
   }

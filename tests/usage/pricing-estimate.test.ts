@@ -70,6 +70,33 @@ test('Workers AI estimates include cached input at the provider-specific rate', 
   });
 });
 
+test('the current GLM 5.3 price applies to both Cloudflare execution routes', () => {
+  const observedAt = Date.UTC(2026, 7, 27, 12);
+  for (const [provider, version] of [
+    ['cloudflare', 'cloudflare-binding-glm-5.3_2026-08-27'],
+    ['cloudflare-workers-ai', 'cloudflare-workers-ai-glm-5.3_2026-08-27'],
+  ] as const) {
+    assert.deepEqual(estimateUsage(measurement(
+      provider,
+      '@cf/zai-org/glm-5.3-flash',
+      1_000_000,
+      1_000_000,
+      {
+        observedAt,
+        cacheReadTokens: 1_000_000,
+        cacheWriteTokens: 0,
+        totalTokens: 3_000_000,
+      },
+    )), {
+      estimateCompleteness: 'complete',
+      estimateAmountMicros: 680_000,
+      estimateCurrency: 'USD',
+      priceVersionId: version,
+      priceUnknownReason: null,
+    });
+  }
+});
+
 test('non-zero cache usage without a matching price dimension stays partial', () => {
   assert.deepEqual(
     estimateUsage(measurement('openai', 'gpt-4.1-mini', 10, 5, {
