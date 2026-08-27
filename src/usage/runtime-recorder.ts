@@ -216,7 +216,8 @@ export interface RoutineUsageRecorderOptions {
   startedAt: number;
   workspaceId: string;
   channelId: string;
-  channelLabel?: string;
+  channelLabel?: string | null;
+  conversationKind?: UsageConversationKind;
   agentId: string | null;
   agentLabel: string | null;
   routineId: string;
@@ -427,8 +428,8 @@ export class RoutineUsageRecorder {
       agentId: options.agentId,
       agentLabel: options.agentLabel,
       channelId: options.channelId,
-      channelLabel: options.channelLabel ?? options.channelId,
-      conversationKind: 'named_channel',
+      channelLabel: options.channelLabel === undefined ? options.channelId : options.channelLabel,
+      conversationKind: options.conversationKind ?? 'named_channel',
       routineId: options.routineId,
       routineLabel: options.routineLabel,
       routineRunId: options.operationId,

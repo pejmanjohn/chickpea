@@ -39,7 +39,11 @@ test('Cloudflare routine proxy preserves the typed execute request and response'
   const store = new CfRoutineStore(stub);
 
   assert.deepEqual(await store.getRoutine(routine.id), routine);
-  assert.deepEqual(requests, [{ kind: 'get_routine', routineId: routine.id }]);
+  assert.deepEqual(await store.getRoutineByWorkId('work_rpc'), routine);
+  assert.deepEqual(requests, [
+    { kind: 'get_routine', routineId: routine.id },
+    { kind: 'get_routine_by_work', workId: 'work_rpc' },
+  ]);
 });
 
 test('Cloudflare routine proxy carries the drain count across the RPC seam', async () => {

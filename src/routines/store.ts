@@ -308,6 +308,8 @@ export class RoutineStoreLogic {
         return { kind: 'maintenance', result: this.cleanupRetention() };
       case 'get_routine':
         return { kind: 'routine', routine: this.getRoutine(request.routineId) ?? null };
+      case 'get_routine_by_work':
+        return { kind: 'routine', routine: this.getRoutineByWorkId(request.workId) ?? null };
       case 'list_routines':
         return {
           kind: 'routines',
@@ -1005,6 +1007,14 @@ export class RoutineStoreLogic {
 
   getRoutine(routineId: string): RoutineDefinition | undefined {
     const row = this.db.get('SELECT * FROM routines WHERE id = ?', routineId);
+    return row ? rowToRoutine(row as unknown as RoutineRow) : undefined;
+  }
+
+  getRoutineByWorkId(workId: string): RoutineDefinition | undefined {
+    if (!isOpaqueRoutineId(workId)) {
+      throw routineError('routine_invalid_id', 'Routine identifier is invalid.');
+    }
+    const row = this.db.get('SELECT * FROM routines WHERE work_id = ?', workId);
     return row ? rowToRoutine(row as unknown as RoutineRow) : undefined;
   }
 
@@ -2133,6 +2143,10 @@ export class RoutineStoreLogic {
        ON routines (workspace_id, channel_id, state, created_at)`,
     );
     this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routines_work_idx
+       ON routines (work_id)`,
+    );
+    this.db.exec(
       `CREATE TABLE IF NOT EXISTS routine_revisions (
         routine_id TEXT NOT NULL, version INTEGER NOT NULL, definition_json TEXT,
         definition_hash TEXT NOT NULL, actor_id TEXT, actor_class TEXT NOT NULL,
@@ -2434,15 +2448,18 @@ export class RoutineStoreLogic {
     const reference = this.config.getAgentScheduleReference(routine.id);
     if (!reference || reference.workspaceId !== routine.workspaceId ||
         reference.channelId !== routine.channelId || reference.state !== 'active') return;
-    const grant = this.config.listAgentChannelGrants(routine.workspaceId, routine.channelId)
-      .find((candidate) => candidate.agentId === reference.agentId && candidate.status === 'active');
-    if (!grant) return;
     let assignment: ResolvedAssignment;
     try {
       const agent = this.config.getAgent(reference.agentId);
-      if (!agent.enabled) return;
-      const channel = this.config.getChannel(routine.workspaceId, routine.channelId);
-      if (channel?.lifecycle === 'archived') return;
+      if (!agent.enabled || (routine.destination.kind === 'direct_thread' && agent.kind !== 'user')) return;
+      const channel = routine.destination.kind === 'channel'
+        ? this.config.getChannel(routine.workspaceId, routine.channelId)
+        : undefined;
+      if (routine.destination.kind === 'channel') {
+        const grant = this.config.listAgentChannelGrants(routine.workspaceId, routine.channelId)
+          .find((candidate) => candidate.agentId === reference.agentId && candidate.status === 'active');
+        if (!grant || channel?.lifecycle === 'archived') return;
+      }
       assignment = {
         workspaceId: routine.workspaceId,
         channelId: routine.channelId,

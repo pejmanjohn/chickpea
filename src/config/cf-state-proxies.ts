@@ -1679,6 +1679,11 @@ export class CfRoutineStore implements RoutineStore {
     if (response.kind !== 'routine') throw unexpectedRoutineResponse();
     return response.routine ? withRoutineDestination(response.routine) : undefined;
   }
+  async getRoutineByWorkId(workId: string): Promise<RoutineDefinition | undefined> {
+    const response = await this.execute({ kind: 'get_routine_by_work', workId });
+    if (response.kind !== 'routine') throw unexpectedRoutineResponse();
+    return response.routine ? withRoutineDestination(response.routine) : undefined;
+  }
   async listRoutines(workspaceId?: string, channelId?: string): Promise<RoutineDefinition[]> {
     const response = await this.execute({
       kind: 'list_routines',

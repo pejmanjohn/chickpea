@@ -502,6 +502,9 @@ async function prepareExecution(
         startedAt: run.startedAt ?? run.queuedAt,
         workspaceId: input.routine.workspaceId,
         channelId: input.routine.channelId,
+        ...(input.routine.destination.kind === 'direct_thread'
+          ? { channelLabel: null, conversationKind: 'direct_message' as const }
+          : {}),
         agentId: access.config.agentId,
         agentLabel: access.config.agent.name,
         routineId: input.routine.id,

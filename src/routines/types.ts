@@ -548,6 +548,7 @@ export interface RoutineStore {
   purgeConfirmations(): Promise<number>;
   cleanupRetention(): Promise<RoutineMaintenanceResult>;
   getRoutine(routineId: string): Promise<RoutineDefinition | undefined>;
+  getRoutineByWorkId(workId: string): Promise<RoutineDefinition | undefined>;
   listRoutines(workspaceId?: string, channelId?: string): Promise<RoutineDefinition[]>;
   listAdminRoutinePage(input: RoutineAdminPageInput): Promise<RoutineAdminPage>;
   listRevisions(routineId: string): Promise<RoutineRevision[]>;
@@ -604,6 +605,7 @@ export type RoutineRpcRequest =
   | { kind: 'purge_confirmations' }
   | { kind: 'cleanup_retention' }
   | { kind: 'get_routine'; routineId: string }
+  | { kind: 'get_routine_by_work'; workId: string }
   | { kind: 'list_routines'; workspaceId?: string; channelId?: string }
   | { kind: 'list_admin_routine_page'; input: RoutineAdminPageInput }
   | { kind: 'list_revisions'; routineId: string }
