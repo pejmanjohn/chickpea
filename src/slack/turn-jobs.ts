@@ -391,6 +391,9 @@ export class TurnJobStoreLogic {
             workspaceId: turn.workspaceId,
             channelId: turn.channelId,
             threadTs: signalThreadTs,
+            conversationKind: turn.channelType === 'im'
+              ? 'im'
+              : turn.channelType === 'mpim' ? 'mpim' : 'channel',
             slackUserId: turn.userId,
             eventId: turn.eventId,
             messageTs: turn.messageTs,
@@ -1127,6 +1130,7 @@ function parseSlackSignalMessage(
   }
   const attributes = exactObject(message.attributes, 'Flue Slack signal attributes', [
     'workspaceId', 'channelId', 'threadTs', 'slackUserId', 'eventId', 'messageTs', 'turnJobId',
+    'conversationKind',
     'attachmentFileIds',
     'attachmentIntakeStatus', 'attachmentCount',
   ]);
@@ -1134,6 +1138,9 @@ function parseSlackSignalMessage(
     workspaceId: validateBoundedString(attributes.workspaceId, 'Slack workspace id', 128),
     channelId: validateBoundedString(attributes.channelId, 'Slack channel id', 128),
     threadTs: validateBoundedString(attributes.threadTs, 'Slack thread timestamp', 80),
+    ...(attributes.conversationKind === undefined
+      ? {}
+      : { conversationKind: validateConversationKind(attributes.conversationKind) }),
     slackUserId: validateBoundedString(attributes.slackUserId, 'Slack user id', 128),
     eventId: validateBoundedString(attributes.eventId, 'Slack event id', 256),
     messageTs: validateBoundedString(attributes.messageTs, 'Slack message timestamp', 80),
@@ -1178,6 +1185,11 @@ function parseSlackSignalMessage(
     tagName: 'slack_message',
     attributes: parsed,
   };
+}
+
+function validateConversationKind(value: unknown): 'channel' | 'im' | 'mpim' {
+  if (value === 'channel' || value === 'im' || value === 'mpim') return value;
+  throw new Error('Slack conversation kind is invalid.');
 }
 
 function validateAttachmentFileIds(value: unknown): string {

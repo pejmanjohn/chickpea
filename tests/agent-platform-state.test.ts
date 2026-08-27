@@ -251,6 +251,7 @@ test('connection accounts bind once and schedule references retain creator autho
   const store = new SqliteConfigStore(':memory:', { agents: [] });
   try {
     await store.createAgent(agent('agent_support', 'Support'));
+    await store.createAgent(agent('agent_sales', 'Sales'));
     const account = await store.putConnectionAccount({
       id: 'connection_zendesk',
       workspaceId: 'T_PLATFORM',
@@ -294,6 +295,20 @@ test('connection accounts bind once and schedule references retain creator autho
     assert.deepEqual(schedule.requiredConnectionAccountIds, [account.id]);
     assert.equal(schedule.destinationKind, 'channel');
     assert.equal(schedule.destinationBindingDigest, null);
+    await assert.rejects(
+      store.putAgentScheduleReference({
+        scheduleId: schedule.scheduleId,
+        agentId: 'agent_sales',
+        workspaceId: schedule.workspaceId,
+        channelId: schedule.channelId,
+        createdByMembershipId: schedule.createdByMembershipId,
+        runsAsMembershipId: schedule.runsAsMembershipId,
+        authorityReceiptId: schedule.authorityReceiptId,
+        requiredConnectionAccountIds: schedule.requiredConnectionAccountIds,
+        state: schedule.state,
+      }, schedule.revision),
+      /reassignment requires a new receipt/,
+    );
   } finally {
     store.close();
   }

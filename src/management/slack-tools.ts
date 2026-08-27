@@ -58,6 +58,7 @@ const SIGNAL_ATTRIBUTE_KEYS = [
   'turnJobId',
 ] as const;
 const SIGNAL_OPTIONAL_ATTRIBUTE_KEYS = [
+  'conversationKind',
   'attachmentFileIds',
   'attachmentIntakeStatus',
   'attachmentCount',
@@ -73,6 +74,8 @@ export interface SlackManagementSignal {
   workspaceId: string;
   channelId: string;
   threadTs: string;
+  /** Trusted normalized Slack surface. Missing legacy signals are never DM-authorized. */
+  conversationKind?: 'channel' | 'im' | 'mpim';
   slackUserId: string;
   eventId: string;
   messageTs: string;
@@ -347,12 +350,21 @@ export function parseSlackManagementSignal(
     boundedAttribute(delivery.attributes?.[key], key, key.endsWith('Ts') ? 80 : 256),
   ])) as unknown as Omit<SlackManagementSignal, 'agentId'>;
   if (Object.values(values).some((value) => !value)) return undefined;
+  const conversationKind = delivery.attributes.conversationKind;
+  if (conversationKind !== undefined &&
+      conversationKind !== 'channel' && conversationKind !== 'im' && conversationKind !== 'mpim') {
+    return undefined;
+  }
   if (
     values.workspaceId !== plan.conversation.workspaceId ||
     values.channelId !== plan.conversation.channelId ||
     values.threadTs !== plan.conversation.threadTs
   ) return undefined;
-  return { ...values, agentId: plan.agentId };
+  return {
+    ...values,
+    ...(conversationKind ? { conversationKind } : {}),
+    agentId: plan.agentId,
+  };
 }
 
 export async function resolveSlackManagementActor(
@@ -378,6 +390,7 @@ export async function resolveSlackManagementActor(
       workspaceId: signal.workspaceId,
       channelId: signal.channelId,
       threadTs: signal.threadTs,
+      ...(signal.conversationKind ? { conversationKind: signal.conversationKind } : {}),
       agentId: signal.agentId,
     },
   };

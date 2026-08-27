@@ -254,6 +254,58 @@ export async function reassignRoutineAgentAuthority(input: {
   }, current.revision);
 }
 
+/** Chickpea-only ownership change for a direct schedule; the private destination stays immutable. */
+export async function reassignDirectRoutineAgent(input: {
+  scheduleId: string;
+  agentId: string;
+  ownerMembershipId: string;
+  receiptId?: string;
+  config: ConfigStore;
+  identity: IdentityStore;
+}): Promise<AgentScheduleReference> {
+  const current = await input.config.getAgentScheduleReference(input.scheduleId);
+  if (!current || current.destinationKind !== 'direct_thread' ||
+      current.createdByMembershipId !== input.ownerMembershipId ||
+      current.runsAsMembershipId !== input.ownerMembershipId) {
+    throw new RoutineAuthorityError('schedule_authority_missing', 'Direct schedule authority is unavailable.');
+  }
+  await requireActiveMembership(input.identity, input.ownerMembershipId, current.workspaceId);
+  const agent = await input.config.getAgent(input.agentId).catch(() => undefined);
+  if (!agent || !isActiveUserAgent(agent)) {
+    throw new RoutineAuthorityError('agent_unavailable', 'The replacement user Agent is unavailable.');
+  }
+  const [accounts, bindings] = await Promise.all([
+    input.config.listConnectionAccounts(current.workspaceId),
+    input.config.listAgentConnectionBindings(agent.id),
+  ]);
+  const recoverable = projectRecoverableConnectionAccounts(
+    accounts,
+    bindings,
+    input.ownerMembershipId,
+  );
+  const requiredConnectionAccountIds = recoverable
+    .filter(({ account }) => account.lifecycle === 'ready')
+    .map(({ account }) => account.id);
+  const connectionPauseAccountIds = recoverable
+    .filter(({ account }) => account.lifecycle !== 'ready')
+    .map(({ account }) => account.id);
+  const {
+    connectionPauseAccountIds: _connectionPauseAccountIds,
+    connectionPausePreservesState: _connectionPausePreservesState,
+    ...stable
+  } = current;
+  return input.config.putAgentScheduleReference({
+    ...stable,
+    agentId: agent.id,
+    authorityReceiptId: input.receiptId ?? `schedule_authority_${randomUUID().replaceAll('-', '')}`,
+    requiredConnectionAccountIds,
+    ...(connectionPauseAccountIds.length > 0 ? { connectionPauseAccountIds } : {}),
+    state: current.state === 'archived'
+      ? 'archived'
+      : connectionPauseAccountIds.length > 0 ? 'needs_attention' : 'active',
+  }, current.revision);
+}
+
 /** Re-read every authority input immediately before an unattended run. */
 export async function resolveRoutineAgentAuthority(
   routine: RoutineDefinition,

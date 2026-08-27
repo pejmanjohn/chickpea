@@ -47,6 +47,9 @@ export function classifyManagementOperation(
   if (operation.kind === 'save_routine') {
     return { allowed: true, posture: 'confirmation', reason: 'schedule_change' };
   }
+  if (operation.kind === 'reassign_routine_agent') {
+    return { allowed: true, posture: 'confirmation', reason: 'schedule_agent_reassignment' };
+  }
   if (operation.kind === 'delete_agent') {
     return { allowed: true, posture: 'confirmation', reason: 'agent_deletion' };
   }

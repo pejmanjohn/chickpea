@@ -1,6 +1,7 @@
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { WebClient } from '@slack/web-api';
-import { getRoutineStore } from '../config/state-backend.ts';
+import { getConfigStore, getRoutineStore } from '../config/state-backend.ts';
+import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { IdentityStore } from '../identity/types.ts';
@@ -15,6 +16,7 @@ import {
   createRoutineRunId,
   hashRoutineValue,
   runNowOccurrenceKey,
+  routineDestinationBindingDigest,
 } from './ids.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
 import {
@@ -64,6 +66,7 @@ export type RoutineCommand =
 interface RoutineCommandExecutionContext {
   turn: NormalizedSlackTurn;
   store: RoutineStore;
+  config: ConfigStore;
   env: PlatformEnv | undefined;
   capability: RoutineCapability;
   now: () => number;
@@ -73,6 +76,7 @@ interface RoutineCommandExecutionContext {
   assignment?: ResolvedAssignment;
   bindAuthority: typeof bindRoutineAgentAuthority;
   resolveAuthority: typeof resolveRoutineAgentAuthority;
+  directCreationAvailable: boolean;
 }
 
 const OPAQUE = '[A-Za-z0-9_-]{1,200}';
@@ -152,6 +156,8 @@ export async function handleRoutineSlackRequest(
     resolveAuthority?: typeof resolveRoutineAgentAuthority;
     /** Test seam; production always revalidates the canonical member. */
     isActiveActor?: typeof isActiveRoutineActor;
+    /** Test seam; production stays closed unless the deployment enables it. */
+    directCreationAvailable?: boolean;
   } = {},
 ): Promise<string | undefined> {
   const command = parseRoutineCommand(turn.text, {
@@ -159,6 +165,7 @@ export async function handleRoutineSlackRequest(
     agentUserGroupId: dependencies.assignment?.agent.slackPresence?.userGroupId,
   });
   if (!command) return undefined;
+  if (!isRoutineSlackTurn(turn)) return undefined;
   const activeActor = dependencies.isActiveActor ?? ((input) =>
     isActiveRoutineActor(input, {
       ...(dependencies.identity ? { identity: dependencies.identity } : {}),
@@ -175,13 +182,16 @@ export async function handleRoutineSlackRequest(
     return 'Only an active Chickpea member can manage schedules.';
   }
   const store = dependencies.store ?? getRoutineStore(env);
+  const config = dependencies.config ?? getConfigStore(env);
   const now = dependencies.now ?? Date.now;
   const capability = dependencies.capability ?? routineCapability();
   const canManageChannel = dependencies.canManageChannel ?? canManageRoutineChannel;
   const botToken = dependencies.installationContext?.botToken;
   const slackClient = dependencies.installationContext?.client;
   const commandContext: RoutineCommandExecutionContext = {
-    turn, store, env, capability, now, canManageChannel,
+    turn, store, config, env, capability, now, canManageChannel,
+    directCreationAvailable: dependencies.directCreationAvailable ??
+      env?.PRIVATE_DM_SCHEDULES_ENABLED === 'true',
     bindAuthority: dependencies.bindAuthority ?? ((input) =>
       bindRoutineAgentAuthority(input, {
         ...(dependencies.config ? { config: dependencies.config } : {}),
@@ -209,11 +219,24 @@ async function executeRoutineCommand(
 ): Promise<string> {
   const {
     turn, store, env, capability, now, canManageChannel, botToken, slackClient, assignment,
-    bindAuthority, resolveAuthority,
+    bindAuthority, resolveAuthority, directCreationAvailable,
   } = context;
   const service = new RoutineService(store, { now });
   if (command.kind === 'help' || command.kind === 'invalid') return renderRoutineHelp();
   if (command.kind === 'list') {
+    if (turn.channelType === 'im') {
+      if (command.channelMention) return notFoundText();
+      const routines = await scopedDirectRoutines(
+        store,
+        context.config,
+        turn,
+        assignment,
+      );
+      const suffix = capability.enabled
+        ? ''
+        : `\n\n_${capability.reason === 'unsupported_target' ? 'Scheduling is currently Cloudflare-only.' : 'Scheduling is disabled by the deployment operator.'}_`;
+      return renderRoutineList(routines, turn.channelId, { destinationKind: 'direct_thread' }) + suffix;
+    }
     const mentionedId = command.channelMention
       ? parseSlackChannelMention(command.channelMention)
       : undefined;
@@ -232,7 +255,7 @@ async function executeRoutineCommand(
       : `\n\n_${capability.reason === 'unsupported_target' ? 'Scheduling is currently Cloudflare-only.' : 'Scheduling is disabled by the deployment operator.'}_`;
     return renderRoutineList(await store.listRoutines(turn.workspaceId, channelId), channelId) + suffix;
   }
-  if (!(await canManageChannel(
+  if (turn.channelType !== 'im' && !(await canManageChannel(
     turn.workspaceId,
     turn.channelId,
     turn.userId,
@@ -245,6 +268,13 @@ async function executeRoutineCommand(
   if (command.kind === 'confirm') {
     const confirmation = await store.getConfirmation(hashRoutineValue(command.token));
     if (!confirmation) return 'That routine confirmation was not found or is no longer available.';
+    if (confirmation.draft.action === 'delete' && turn.channelType === 'im') {
+      const scope = await scopedRoutine(
+        store, context.config, confirmation.draft.routineId, turn, assignment,
+      );
+      if (scope.kind === 'handoff') return directAgentHandoffText();
+      if (scope.kind !== 'allowed') return notFoundText();
+    }
     // New flows only create deletion confirmations. Accept any unexpired
     // pre-upgrade create/edit receipt until normal retention removes it.
     if (confirmation.draft.action !== 'delete') requireRoutineScheduling(capability);
@@ -261,6 +291,14 @@ async function executeRoutineCommand(
       : renderRoutineSaved(routine, { action: confirmation.draft.action });
   }
   if (command.kind === 'cancel') {
+    const confirmation = await store.getConfirmation(hashRoutineValue(command.token));
+    if (confirmation?.draft.action === 'delete' && turn.channelType === 'im') {
+      const scope = await scopedRoutine(
+        store, context.config, confirmation.draft.routineId, turn, assignment,
+      );
+      if (scope.kind === 'handoff') return directAgentHandoffText();
+      if (scope.kind !== 'allowed') return notFoundText();
+    }
     const cancelled = await store.cancelConfirmation({
       tokenHash: hashRoutineValue(command.token),
       actorId: turn.userId,
@@ -273,8 +311,12 @@ async function executeRoutineCommand(
       : 'That routine confirmation was not found or is no longer available.';
   }
 
-  const routine = await scopedRoutine(store, command.routineId, turn);
-  if (!routine) return notFoundText();
+  const scope = await scopedRoutine(
+    store, context.config, command.routineId, turn, assignment,
+  );
+  if (scope.kind === 'handoff') return directAgentHandoffText();
+  if (scope.kind !== 'allowed') return notFoundText();
+  const routine = scope.routine;
   if (command.kind === 'show') {
     const [runs, revisions] = await Promise.all([
       store.listRuns({ routineId: routine.id, limit: 5 }),
@@ -300,7 +342,8 @@ async function executeRoutineCommand(
   if (command.kind === 'run') {
     requireRoutineScheduling(capability);
     const authority = await resolveAuthority(routine, env);
-    if (assignment && authority.reference.agentId !== assignment.agentId) return notFoundText();
+    if (assignment && !isChickpeaAssignment(assignment) &&
+        authority.reference.agentId !== assignment.agentId) return notFoundText();
     if (routine.triggerKind === 'once') {
       throw new RoutineStateError(
         'routine_one_time_run_unsupported',
@@ -323,6 +366,12 @@ async function executeRoutineCommand(
   }
   if (command.kind === 'clone') {
     requireRoutineScheduling(capability);
+    if (routine.destination.kind === 'direct_thread' && !directCreationAvailable) {
+      throw new RoutineStateError(
+        'routine_direct_creation_disabled',
+        'Private DM schedule creation is not enabled on this deployment.',
+      );
+    }
     if (routine.triggerKind === 'once') {
       throw new RoutineStateError(
         'routine_one_time_clone_unsupported',
@@ -330,11 +379,23 @@ async function executeRoutineCommand(
       );
     }
     const projection = normalizeRoutineSchedule(routine.scheduleInput, routine.timezone, now());
+    const owningAssignment = routine.destination.kind === 'direct_thread'
+      ? (await resolveAuthority(routine, env)).assignment
+      : assignment;
+    const destination = turn.channelType === 'im' && turn.actorMembershipId
+      ? {
+          kind: 'direct_thread' as const,
+          conversationId: turn.channelId,
+          threadTs: turn.threadTs,
+          ownerMembershipId: turn.actorMembershipId,
+        }
+      : undefined;
     const created = await service.save({
       action: 'create',
       actorId: turn.userId,
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
+      ...(destination ? { destination } : {}),
       definition: definitionFromRoutine(routine, {
         name: `${routine.name} copy`.slice(0, ROUTINE_LIMITS.maxNameCodePoints),
         scheduleJson: projection.scheduleJson,
@@ -352,16 +413,20 @@ async function executeRoutineCommand(
         sourceRoutineId: routine.id,
         sourceRoutineVersion: routine.version,
       },
-      sourceVisibility: await resolveRoutineSourceVisibility(
-        turn.workspaceId,
-        turn.channelId,
-        env,
-        botToken,
-        slackClient,
-      ),
+      sourceVisibility: destination
+        ? 'private'
+        : await resolveRoutineSourceVisibility(
+            turn.workspaceId,
+            turn.channelId,
+            env,
+            botToken,
+            slackClient,
+          ),
     }, `routine:slack:${turn.eventId}:clone:${routine.id}`);
-    await bindSavedRoutineAuthority(created, assignment, turn, env, service, bindAuthority);
-    return renderRoutineSaved(created, { action: 'create' });
+    const activated = await bindSavedRoutineAuthority(
+      created, owningAssignment, turn, env, service, store, bindAuthority,
+    );
+    return renderRoutineSaved(activated, { action: 'create' });
   }
   const receipt = await service.createConfirmation({
     action: 'delete',
@@ -380,60 +445,118 @@ async function bindSavedRoutineAuthority(
   turn: NormalizedSlackTurn,
   env: PlatformEnv | undefined,
   service: RoutineService,
+  store: RoutineStore,
   bindAuthority: typeof bindRoutineAgentAuthority,
-): Promise<void> {
+): Promise<RoutineDefinition> {
   if (!assignment || !turn.actorMembershipId) {
-    await service.control({
-      routineId: routine.id,
-      expectedVersion: routine.version,
-      action: 'pause',
-      actorId: turn.userId,
-      actorClass: 'member',
-      reasonCode: 'schedule_authority_missing',
-      idempotencyKey: `routine:authority-missing:${routine.id}:${routine.version}`,
-    });
+    if (routine.destination.kind === 'channel') {
+      await service.control({
+        routineId: routine.id,
+        expectedVersion: routine.version,
+        action: 'pause',
+        actorId: turn.userId,
+        actorClass: 'member',
+        reasonCode: 'schedule_authority_missing',
+        idempotencyKey: `routine:authority-missing:${routine.id}:${routine.version}`,
+      });
+    }
     throw new RoutineStateError(
       'routine_access_denied',
       'The schedule was saved paused because its Agent or Runs as member was unavailable.',
     );
   }
   try {
-    await bindAuthority({
+    const reference = await bindAuthority({
       routine,
       assignment,
       actorMembershipId: turn.actorMembershipId,
       env,
     });
+    if (routine.destination.kind === 'direct_thread') {
+      return store.activateDirectRoutine({
+        routineId: routine.id,
+        expectedVersion: routine.version,
+        expectedReferenceRevision: reference.revision,
+        destinationBindingDigest: routineDestinationBindingDigest(
+          routine.id,
+          routine.workspaceId,
+          routine.destination,
+        ),
+      });
+    }
+    return routine;
   } catch (error) {
-    await service.control({
-      routineId: routine.id,
-      expectedVersion: routine.version,
-      action: 'pause',
-      actorId: turn.userId,
-      actorClass: 'member',
-      reasonCode: 'schedule_authority_missing',
-      idempotencyKey: `routine:authority-failed:${routine.id}:${routine.version}`,
-    }).catch(() => undefined);
+    if (routine.destination.kind === 'channel') {
+      await service.control({
+        routineId: routine.id,
+        expectedVersion: routine.version,
+        action: 'pause',
+        actorId: turn.userId,
+        actorClass: 'member',
+        reasonCode: 'schedule_authority_missing',
+        idempotencyKey: `routine:authority-failed:${routine.id}:${routine.version}`,
+      }).catch(() => undefined);
+    }
     throw error;
   }
 }
 
 async function scopedRoutine(
   store: RoutineStore,
+  config: ConfigStore,
   routineId: string,
   turn: NormalizedSlackTurn,
-): Promise<RoutineDefinition | undefined> {
+  assignment: ResolvedAssignment | undefined,
+): Promise<
+  | { kind: 'allowed'; routine: RoutineDefinition }
+  | { kind: 'handoff' }
+  | { kind: 'missing' }
+> {
   const routine = await store.getRoutine(routineId);
-  return routine &&
-    routine.deletedAt === null &&
-    routine.workspaceId === turn.workspaceId &&
-    routine.channelId === turn.channelId
-    ? routine
-    : undefined;
+  if (!routine || routine.deletedAt !== null || routine.workspaceId !== turn.workspaceId ||
+      routine.channelId !== turn.channelId) return { kind: 'missing' };
+  if (routine.destination.kind === 'channel') return { kind: 'allowed', routine };
+  if (turn.channelType !== 'im' || !turn.actorMembershipId || !assignment ||
+      routine.destination.conversationId !== turn.channelId ||
+      routine.destination.ownerMembershipId !== turn.actorMembershipId) {
+    return { kind: 'missing' };
+  }
+  const reference = await config.getAgentScheduleReference(routine.id);
+  if (!reference || reference.destinationKind !== 'direct_thread' ||
+      reference.createdByMembershipId !== turn.actorMembershipId) {
+    return { kind: 'missing' };
+  }
+  if (!isChickpeaAssignment(assignment) && reference.agentId !== assignment.agentId) {
+    return { kind: 'handoff' };
+  }
+  return { kind: 'allowed', routine };
+}
+
+async function scopedDirectRoutines(
+  store: RoutineStore,
+  config: ConfigStore,
+  turn: NormalizedSlackTurn,
+  assignment: ResolvedAssignment | undefined,
+): Promise<RoutineDefinition[]> {
+  if (turn.channelType !== 'im' || !turn.actorMembershipId || !assignment) return [];
+  const routines = await store.listRoutines(turn.workspaceId, turn.channelId);
+  const visible = await Promise.all(routines.map(async (routine) => {
+    const scope = await scopedRoutine(store, config, routine.id, turn, assignment);
+    return scope.kind === 'allowed' ? scope.routine : undefined;
+  }));
+  return visible.filter((routine): routine is RoutineDefinition => routine !== undefined);
 }
 
 function routineCapability(): RoutineCapability {
   return resolveRoutineCapability({ cloudflare: isCloudflareTarget() });
+}
+
+function isChickpeaAssignment(assignment: ResolvedAssignment): boolean {
+  return assignment.agentId === CHICKPEA_AGENT_ID && assignment.agent.kind === 'system';
+}
+
+function directAgentHandoffText(): string {
+  return 'Mention @Chickpea in this DM to manage scheduled work owned by another Agent.';
 }
 
 function definitionFromRoutine(

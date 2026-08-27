@@ -37,7 +37,7 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   discover_slack_channels: 'Discover Channels in the connected Slack workspace before publishing a Chickpea Agent.',
   test_mcp_connection: 'Test one saved Agent MCP connection with its write-only credentials and return a sanitized result plus discovered tools.',
   inspect_memory: 'Inspect the single durable memory body owned by one Agent.',
-  inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, or routine.',
+  inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, current one-to-one DM, or routine. In a DM, omit channelId so the server derives the private conversation from the trusted Slack origin.',
   export_workspace_recipe: 'Export selected Agents and their connection requirements as a versioned, secret-free portable recipe.',
   preview_workspace_recipe: 'Preview a portable recipe against live workspace state and compile chosen outcomes into ordinary typed changes.',
   propose_workspace_changes: 'Create a read-only, exact, requester-bound Agent configuration proposal. Read chickpea://guide/agent-authoring/v1 before proposing creation or a complex edit. The returned proposalId is an opaque control token: copy it byte-for-byte and never retype or normalize it.',

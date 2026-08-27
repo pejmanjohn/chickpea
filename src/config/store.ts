@@ -1479,7 +1479,8 @@ export class ConfigStoreLogic {
         throw new Error('A schedule creator is immutable');
       }
       if (
-        input.runsAsMembershipId !== current.runs_as_membership_id &&
+        (input.runsAsMembershipId !== current.runs_as_membership_id ||
+          input.agentId !== current.agent_id) &&
         input.authorityReceiptId === current.authority_receipt_id
       ) {
         throw new Error('Schedule authority reassignment requires a new receipt');

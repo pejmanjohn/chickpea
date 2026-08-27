@@ -44,9 +44,15 @@ export function slackWebClientUserFacts(raw: unknown): SlackUserFacts | undefine
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const user = raw as Record<string, unknown>;
   if (typeof user.id !== 'string') return undefined;
+  const profile = user.profile && typeof user.profile === 'object' && !Array.isArray(user.profile)
+    ? user.profile as Record<string, unknown>
+    : {};
   return {
     id: user.id,
     teamId: typeof user.team_id === 'string' ? user.team_id : undefined,
+    ...(typeof profile.display_name === 'string' ? { displayName: profile.display_name } : {}),
+    ...(typeof profile.email === 'string' ? { email: profile.email } : {}),
+    ...(typeof user.tz === 'string' ? { timezone: user.tz } : {}),
     deleted: user.deleted === true,
     bot: user.is_bot === true,
     appUser: user.is_app_user === true,
