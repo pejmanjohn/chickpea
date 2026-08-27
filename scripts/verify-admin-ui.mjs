@@ -282,6 +282,12 @@ try {
       },
       knownProviders: new Set(['local-stub']),
       slackTransport,
+      routineCapability: () => ({
+        target: 'cloudflare',
+        available: true,
+        enabled: true,
+        reason: 'enabled',
+      }),
     }),
   );
 
