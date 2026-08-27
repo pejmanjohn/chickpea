@@ -23,6 +23,19 @@ test('the Cloudflare-only helper has no registration side effect when merely imp
   assert.equal(hasProvider('cloudflare'), false);
 });
 
+test('the binding provider includes the current reviewed Cloudflare model', () => {
+  const provider = createCloudflareBindingProvider({ run: async () => ({ response: 'ok' }) });
+  const model = provider.getModels().find(
+    (candidate) => candidate.id === '@cf/zai-org/glm-5.3-flash',
+  );
+
+  assert.ok(model);
+  assert.equal(model.provider, 'cloudflare');
+  assert.equal(model.contextWindow, 32_768);
+  assert.equal(model.maxTokens, 2_048);
+  assert.deepEqual(model.input, ['text', 'image']);
+});
+
 test('the Workers AI binding registration opts out of the default AI Gateway', () => {
   const binding: CloudflareAIBinding = {
     run: async () => ({ response: 'ok' }),
@@ -34,7 +47,7 @@ test('the Workers AI binding registration opts out of the default AI Gateway', (
   assert.equal(options.gateway, false);
 });
 
-test('the seeded keyless GLM binding explicitly disables server-side thinking', async () => {
+test('the reviewed keyless GLM bindings explicitly disable server-side thinking', async () => {
   const calls: Array<{
     modelId: string;
     inputs: Record<string, unknown>;
@@ -49,30 +62,38 @@ test('the seeded keyless GLM binding explicitly disables server-side thinking', 
   const registeredBinding = cloudflareBindingProviderOptions(binding).binding;
   const options = { returnRawResponse: true };
 
-  await registeredBinding.run(
+  for (const modelId of [
     '@cf/zai-org/glm-5.2',
-    {
-      messages: [{ role: 'user', content: 'hello' }],
-      reasoning_effort: 'medium',
-      max_completion_tokens: 8_192,
-      chat_template_kwargs: { clear_thinking: false },
-    },
-    options,
-  );
+    '@cf/zai-org/glm-5.3-flash',
+  ]) {
+    await registeredBinding.run(
+      modelId,
+      {
+        messages: [{ role: 'user', content: 'hello' }],
+        reasoning_effort: 'medium',
+        max_completion_tokens: 8_192,
+        chat_template_kwargs: { clear_thinking: false },
+      },
+      options,
+    );
+  }
 
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
   assert.deepEqual(calls[0]?.modelId, '@cf/zai-org/glm-5.2');
-  assert.deepEqual(calls[0]?.inputs, {
-    messages: [{ role: 'user', content: 'hello' }],
-    max_completion_tokens: 2_048,
-    chat_template_kwargs: {
-      clear_thinking: false,
-      enable_thinking: false,
-    },
-  });
-  assert.equal(calls[0]?.options?.returnRawResponse, true);
-  assert.ok(calls[0]?.options?.signal instanceof AbortSignal);
-  assert.equal((calls[0]?.options?.signal as AbortSignal).aborted, false);
+  assert.deepEqual(calls[1]?.modelId, '@cf/zai-org/glm-5.3-flash');
+  for (const call of calls) {
+    assert.deepEqual(call.inputs, {
+      messages: [{ role: 'user', content: 'hello' }],
+      max_completion_tokens: 2_048,
+      chat_template_kwargs: {
+        clear_thinking: false,
+        enable_thinking: false,
+      },
+    });
+    assert.equal(call.options?.returnRawResponse, true);
+    assert.ok(call.options?.signal instanceof AbortSignal);
+    assert.equal((call.options?.signal as AbortSignal).aborted, false);
+  }
 });
 
 test('a caller abort reaches the active Workers AI model request', async () => {

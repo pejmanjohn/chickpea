@@ -233,6 +233,27 @@ test('change-set proposals coexist with legacy proposals and preserve exact type
     assert.equal(changeSet.guideVersion, '1.0.0');
     assert.equal(changeSet.authoringReason, 'agent_creation');
     assert.equal(changeSet.status, 'pending');
+    assert.equal(await store.hasPendingChangeSetProposal({
+      organizationId: changeSet.organizationId,
+      actorUserId: changeSet.actorUserId,
+      actorMembershipId: changeSet.actorMembershipId,
+      originKey: changeSet.originKey,
+      at: NOW,
+    }), true);
+    assert.equal(await store.hasPendingChangeSetProposal({
+      organizationId: changeSet.organizationId,
+      actorUserId: changeSet.actorUserId,
+      actorMembershipId: changeSet.actorMembershipId,
+      originKey: 'mcp:another-client',
+      at: NOW,
+    }), false);
+    assert.equal(await store.hasPendingChangeSetProposal({
+      organizationId: changeSet.organizationId,
+      actorUserId: changeSet.actorUserId,
+      actorMembershipId: changeSet.actorMembershipId,
+      originKey: changeSet.originKey,
+      at: changeSet.expiresAt,
+    }), false);
     const replay = await store.putChangeSetProposal({
       ...changeSetInput,
       proposalId: 'changeset_retry',
@@ -263,6 +284,13 @@ test('change-set proposals coexist with legacy proposals and preserve exact type
       actorMembershipId: 'member_1', originKey: 'mcp:client_1', at: NOW + 1,
     });
     assert.equal(applying.status, 'applying');
+    assert.equal(await store.hasPendingChangeSetProposal({
+      organizationId: applying.organizationId,
+      actorUserId: applying.actorUserId,
+      actorMembershipId: applying.actorMembershipId,
+      originKey: applying.originKey,
+      at: NOW + 1,
+    }), false);
     await assert.rejects(
       () => store.claimChangeSetProposal({
         proposalId: 'changeset_1', organizationId: 'org_1', actorUserId: 'user_1',

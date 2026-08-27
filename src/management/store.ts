@@ -9,6 +9,7 @@ import {
   type AuthorizeManagementSetupInput,
   type CompleteManagementSetupInput,
   type ExchangeManagementSetupInput,
+  type HasPendingManagementChangeSetProposalInput,
   type ManagementApplyResult,
   type ManagementChangeSetProposalRecord,
   type ManagementOperation,
@@ -48,8 +49,8 @@ function managementAuditTarget(operation: ManagementOperation): string {
   if (operation.kind === 'update_member') return `membership:${operation.membershipId}`;
   if (operation.kind === 'remove_provider_credential') return `provider:${operation.providerId}`;
   if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-      operation.kind === 'delete_routine') {
-    return `routine:${operation.routineId ?? `${operation.workspaceId}:${operation.channelId}`}`;
+      operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
+    return `routine:${operation.routineId ?? `${operation.workspaceId}:${'channelId' in operation ? operation.channelId : 'current_dm_thread'}`}`;
   }
   return operation.target.kind === 'provider_credential'
     ? `provider:${operation.target.providerId}`
@@ -186,6 +187,9 @@ export interface ManagementStore {
     input: PutManagementChangeSetProposalInput,
   ): Promise<ManagementChangeSetProposalRecord>;
   getChangeSetProposal(proposalId: string): Promise<ManagementChangeSetProposalRecord | undefined>;
+  hasPendingChangeSetProposal(
+    input: HasPendingManagementChangeSetProposalInput,
+  ): Promise<boolean>;
   claimChangeSetProposal(
     input: ClaimManagementProposalInput,
   ): Promise<ManagementChangeSetProposalRecord>;
@@ -297,6 +301,11 @@ export class ManagementStoreLogic {
         return {
           kind: 'change_set_proposal',
           proposal: this.getChangeSetProposal(request.proposalId) ?? null,
+        };
+      case 'has_pending_change_set_proposal':
+        return {
+          kind: 'pending_change_set_proposal',
+          pending: this.hasPendingChangeSetProposal(request.input),
         };
       case 'claim_change_set_proposal':
         return {
@@ -710,6 +719,21 @@ export class ManagementStoreLogic {
       proposalId,
     ) as unknown as ManagementChangeSetProposalRow | undefined;
     return row ? changeSetProposalFromRow(row) : undefined;
+  }
+
+  hasPendingChangeSetProposal(input: HasPendingManagementChangeSetProposalInput): boolean {
+    const row = this.db.get(
+      `SELECT 1 AS found FROM management_change_set_proposals
+       WHERE organization_id = ? AND actor_user_id = ? AND actor_membership_id = ?
+         AND origin_key = ? AND status = 'pending' AND expires_at > ?
+       LIMIT 1`,
+      input.organizationId,
+      input.actorUserId,
+      input.actorMembershipId,
+      input.originKey,
+      input.at,
+    ) as { found: number } | undefined;
+    return row?.found === 1;
   }
 
   claimChangeSetProposal(input: ClaimManagementProposalInput): ManagementChangeSetProposalRecord {

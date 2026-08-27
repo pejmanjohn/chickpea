@@ -12,6 +12,7 @@ import {
   resolveRoutineAgentAuthority,
   RoutineAuthorityError,
 } from '../src/routines/agent-authority.ts';
+import { routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import {
   ConnectionAccountService,
   markManagedProviderAccountsUnavailable,
@@ -23,6 +24,130 @@ import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const WORKSPACE = 'T_AUTHORITY';
 const CHANNEL = 'C_SUPPORT';
+
+test('direct schedules bind and resolve a full member without any Channel grant', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const identity = new SqliteIdentityStore(':memory:');
+  try {
+    const owner = await createSlackOwner(identity, {
+      teamId: WORKSPACE,
+      userId: 'U_DIRECT_OWNER',
+      suffix: 'routine_direct_authority_owner',
+    });
+    const member = await provisionSlackInteractionMember({
+      identity,
+      slackTeamId: WORKSPACE,
+      botUserId: 'U_BOT',
+      user: {
+        id: 'U_DIRECT_MEMBER', teamId: WORKSPACE, displayName: 'Direct member',
+        email: 'direct-member@acme.test', deleted: false, bot: false, appUser: false,
+        restricted: false, ultraRestricted: false, stranger: false,
+      },
+    });
+    assert.ok(member.resolution);
+    const agent = await config.createAgent({
+      id: 'agent_direct', name: 'Direct', instructions: 'Run private work.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [],
+      repositories: [], model: 'local-stub/routine-direct-authority',
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: WORKSPACE,
+      transportMode: 'direct',
+      defaultAgentId: agent.id,
+    });
+    const destination = {
+      kind: 'direct_thread' as const,
+      conversationId: 'D_DIRECT',
+      threadTs: '1787853827.722389',
+      ownerMembershipId: member.resolution.membership.id,
+    };
+    const routine = {
+      ...routineDefinition(),
+      id: 'routine_direct_authority',
+      channelId: destination.conversationId,
+      destination,
+      authorityMode: 'live_direct_member_v1' as const,
+    };
+    const assignment: ResolvedAssignment = {
+      workspaceId: WORKSPACE,
+      channelId: destination.conversationId,
+      agentId: agent.id,
+      agent,
+    };
+
+    const reference = await bindRoutineAgentAuthority({
+      routine,
+      assignment,
+      actorMembershipId: member.resolution.membership.id,
+      env: undefined,
+    }, { config, identity });
+    assert.deepEqual(await config.listAgentChannelGrants(WORKSPACE), []);
+    assert.equal(reference.destinationKind, 'direct_thread');
+    assert.equal(
+      reference.destinationBindingDigest,
+      routineDestinationBindingDigest(routine.id, routine.workspaceId, destination),
+    );
+    assert.equal(reference.createdByMembershipId, destination.ownerMembershipId);
+    assert.equal(reference.runsAsMembershipId, destination.ownerMembershipId);
+    const resolved = await resolveRoutineAgentAuthority(routine, undefined, { config, identity });
+    assert.equal(resolved.agent.id, agent.id);
+    assert.equal(resolved.actorSlackUserId, 'U_DIRECT_MEMBER');
+
+    await assert.rejects(
+      reassignRoutineAgentAuthority({
+        scheduleId: routine.id,
+        runsAsMembershipId: owner.membership.id,
+        config,
+        identity,
+      }),
+      (error: unknown) => error instanceof RoutineAuthorityError &&
+        error.reason === 'creator_ineligible',
+    );
+
+    await assert.rejects(
+      bindRoutineAgentAuthority({
+        routine: { ...routine, id: 'routine_direct_wrong_member' },
+        assignment,
+        actorMembershipId: owner.membership.id,
+        env: undefined,
+      }, { config, identity }),
+      (error: unknown) => error instanceof RoutineAuthorityError &&
+        error.reason === 'creator_ineligible',
+    );
+
+    const chickpea = await config.materializeChickpeaAgent();
+    await assert.rejects(
+      bindRoutineAgentAuthority({
+        routine: { ...routine, id: 'routine_direct_chickpea' },
+        assignment: {
+          workspaceId: WORKSPACE,
+          channelId: destination.conversationId,
+          agentId: chickpea.id,
+          agent: chickpea,
+        },
+        actorMembershipId: destination.ownerMembershipId,
+        env: undefined,
+      }, { config, identity }),
+      (error: unknown) => error instanceof RoutineAuthorityError &&
+        error.reason === 'agent_unavailable',
+    );
+
+    await identity.setMembershipAccessOverlay({
+      membershipId: member.resolution.membership.id,
+      organizationId: member.resolution.membership.organizationId,
+      accessStatus: 'suspended',
+    });
+    await assert.rejects(
+      resolveRoutineAgentAuthority(routine, undefined, { config, identity }),
+      (error: unknown) => error instanceof RoutineAuthorityError &&
+        error.reason === 'creator_ineligible',
+    );
+  } finally {
+    config.close();
+    identity.close();
+  }
+});
 
 test('Agent schedules capture one Runs as authority and safely reassign future runs', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
@@ -518,6 +643,7 @@ async function putConnection(
 function routineDefinition(): RoutineDefinition {
   return {
     id: 'routine_support', workspaceId: WORKSPACE, channelId: CHANNEL, creatorUserId: 'U_OWNER',
+    destination: { kind: 'channel', channelId: CHANNEL },
     name: 'Support check', description: '', taskText: 'Review support.', triggerKind: 'schedule',
     scheduleInput: '0 * * * *',
     scheduleJson: '{"version":1,"kind":"cron","expression":"0 * * * *"}',

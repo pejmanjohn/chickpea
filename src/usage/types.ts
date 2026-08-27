@@ -210,6 +210,8 @@ export interface UsageCursor {
 export interface UsageQuery {
   from: number;
   to: number;
+  /** Internal shared-surface privacy boundary; never derived from a customer query parameter. */
+  excludePrivateRoutines?: boolean;
   filters?: UsageFilters;
   groupBy?: UsageGroupBy;
   currency?: string;
@@ -220,6 +222,7 @@ export interface UsageQuery {
 export interface NormalizedUsageQuery {
   from: number;
   to: number;
+  excludePrivateRoutines: boolean;
   filters: UsageFilters;
   groupBy: UsageGroupBy | null;
   currency: string | null;

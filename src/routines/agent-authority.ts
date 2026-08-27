@@ -15,6 +15,7 @@ import {
 } from '../connections/runtime.ts';
 import type { EffectiveConnectionAccount } from '../connections/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
+import { routineDestinationBindingDigest } from './ids.ts';
 import type { RoutineDefinition } from './types.ts';
 
 export type RoutineAuthorityFailure =
@@ -58,15 +59,44 @@ export async function bindRoutineAgentAuthority(input: {
   }
   const config = dependencies.config ?? getConfigStore(input.env);
   const identity = dependencies.identity ?? getIdentityStore(input.env);
-  await requireActiveMembership(identity, input.actorMembershipId, input.routine.workspaceId);
-  const grants = await config.listAgentChannelGrants(input.routine.workspaceId, input.routine.channelId);
-  if (!grants.some((grant) =>
-    grant.agentId === input.assignment.agentId && grant.status === 'active'
-  )) {
+  const directDestination = input.routine.destination.kind === 'direct_thread'
+    ? input.routine.destination
+    : undefined;
+  const direct = directDestination !== undefined;
+  if (
+    directDestination && (
+      input.routine.channelId !== directDestination.conversationId ||
+      input.actorMembershipId !== directDestination.ownerMembershipId
+    )
+  ) {
     throw new RoutineAuthorityError(
-      'destination_unavailable',
-      'The Agent no longer has access to the schedule destination.',
+      'creator_ineligible',
+      'A direct schedule stays bound to the member who owns its destination.',
     );
+  }
+  await requireActiveMembership(identity, input.actorMembershipId, input.routine.workspaceId);
+  if (direct) {
+    const agent = await config.getAgent(input.assignment.agentId).catch(() => undefined);
+    if (
+      !agent || !isActiveUserAgent(agent) ||
+      !isActiveUserAgent(input.assignment.agent) ||
+      agent.id !== input.assignment.agent.id
+    ) {
+      throw new RoutineAuthorityError(
+        'agent_unavailable',
+        'Direct schedules require an active user Agent.',
+      );
+    }
+  } else {
+    const grants = await config.listAgentChannelGrants(input.routine.workspaceId, input.routine.channelId);
+    if (!grants.some((grant) =>
+      grant.agentId === input.assignment.agentId && grant.status === 'active'
+    )) {
+      throw new RoutineAuthorityError(
+        'destination_unavailable',
+        'The Agent no longer has access to the schedule destination.',
+      );
+    }
   }
   const current = await config.getAgentScheduleReference(input.routine.id);
   if (current && current.agentId !== input.assignment.agentId) {
@@ -76,6 +106,26 @@ export async function bindRoutineAgentAuthority(input: {
     throw new RoutineAuthorityError(
       'creator_ineligible',
       'Only the Runs as member can edit this schedule until its authority is explicitly reassigned.',
+    );
+  }
+  const destinationBindingDigest = direct
+    ? routineDestinationBindingDigest(
+        input.routine.id,
+        input.routine.workspaceId,
+        directDestination!,
+      )
+    : null;
+  if (current && (
+    current.destinationKind !== input.routine.destination.kind ||
+    current.destinationBindingDigest !== destinationBindingDigest ||
+    (directDestination && (
+      current.createdByMembershipId !== directDestination.ownerMembershipId ||
+      current.runsAsMembershipId !== directDestination.ownerMembershipId
+    ))
+  )) {
+    throw new RoutineAuthorityError(
+      'destination_unavailable',
+      'The saved schedule authority no longer matches its destination.',
     );
   }
   const runsAsMembershipId = current?.runsAsMembershipId ?? input.actorMembershipId;
@@ -107,6 +157,8 @@ export async function bindRoutineAgentAuthority(input: {
     agentId: input.assignment.agentId,
     workspaceId: input.routine.workspaceId,
     channelId: input.routine.channelId,
+    destinationKind: input.routine.destination.kind,
+    destinationBindingDigest,
     createdByMembershipId: current?.createdByMembershipId ?? input.actorMembershipId,
     runsAsMembershipId,
     authorityReceiptId: current?.authorityReceiptId ?? input.authorityReceiptId ?? authorityReceiptId(
@@ -135,6 +187,12 @@ export async function reassignRoutineAgentAuthority(input: {
   const current = await input.config.getAgentScheduleReference(input.scheduleId);
   if (!current) {
     throw new RoutineAuthorityError('schedule_authority_missing', 'Schedule authority is unavailable.');
+  }
+  if (current.destinationKind === 'direct_thread') {
+    throw new RoutineAuthorityError(
+      'creator_ineligible',
+      'A direct schedule cannot move to another Runs as member.',
+    );
   }
   const agent = await input.config.getAgent(current.agentId);
   if (agent.lifecycle === 'archived') {
@@ -196,6 +254,58 @@ export async function reassignRoutineAgentAuthority(input: {
   }, current.revision);
 }
 
+/** Chickpea-only ownership change for a direct schedule; the private destination stays immutable. */
+export async function reassignDirectRoutineAgent(input: {
+  scheduleId: string;
+  agentId: string;
+  ownerMembershipId: string;
+  receiptId?: string;
+  config: ConfigStore;
+  identity: IdentityStore;
+}): Promise<AgentScheduleReference> {
+  const current = await input.config.getAgentScheduleReference(input.scheduleId);
+  if (!current || current.destinationKind !== 'direct_thread' ||
+      current.createdByMembershipId !== input.ownerMembershipId ||
+      current.runsAsMembershipId !== input.ownerMembershipId) {
+    throw new RoutineAuthorityError('schedule_authority_missing', 'Direct schedule authority is unavailable.');
+  }
+  await requireActiveMembership(input.identity, input.ownerMembershipId, current.workspaceId);
+  const agent = await input.config.getAgent(input.agentId).catch(() => undefined);
+  if (!agent || !isActiveUserAgent(agent)) {
+    throw new RoutineAuthorityError('agent_unavailable', 'The replacement user Agent is unavailable.');
+  }
+  const [accounts, bindings] = await Promise.all([
+    input.config.listConnectionAccounts(current.workspaceId),
+    input.config.listAgentConnectionBindings(agent.id),
+  ]);
+  const recoverable = projectRecoverableConnectionAccounts(
+    accounts,
+    bindings,
+    input.ownerMembershipId,
+  );
+  const requiredConnectionAccountIds = recoverable
+    .filter(({ account }) => account.lifecycle === 'ready')
+    .map(({ account }) => account.id);
+  const connectionPauseAccountIds = recoverable
+    .filter(({ account }) => account.lifecycle !== 'ready')
+    .map(({ account }) => account.id);
+  const {
+    connectionPauseAccountIds: _connectionPauseAccountIds,
+    connectionPausePreservesState: _connectionPausePreservesState,
+    ...stable
+  } = current;
+  return input.config.putAgentScheduleReference({
+    ...stable,
+    agentId: agent.id,
+    authorityReceiptId: input.receiptId ?? `schedule_authority_${randomUUID().replaceAll('-', '')}`,
+    requiredConnectionAccountIds,
+    ...(connectionPauseAccountIds.length > 0 ? { connectionPauseAccountIds } : {}),
+    state: current.state === 'archived'
+      ? 'archived'
+      : connectionPauseAccountIds.length > 0 ? 'needs_attention' : 'active',
+  }, current.revision);
+}
+
 /** Re-read every authority input immediately before an unattended run. */
 export async function resolveRoutineAgentAuthority(
   routine: RoutineDefinition,
@@ -214,13 +324,33 @@ export async function resolveRoutineAgentAuthority(
   ) {
     throw new RoutineAuthorityError('destination_unavailable', 'The schedule destination changed.');
   }
+  const directDestination = routine.destination.kind === 'direct_thread'
+    ? routine.destination
+    : undefined;
+  const direct = directDestination !== undefined;
+  const destinationBindingDigest = direct
+    ? routineDestinationBindingDigest(routine.id, routine.workspaceId, directDestination!)
+    : null;
+  if (
+    reference.destinationKind !== routine.destination.kind ||
+    reference.destinationBindingDigest !== destinationBindingDigest ||
+    (directDestination && (
+      routine.channelId !== directDestination.conversationId ||
+      reference.createdByMembershipId !== directDestination.ownerMembershipId ||
+      reference.runsAsMembershipId !== directDestination.ownerMembershipId
+    ))
+  ) {
+    throw new RoutineAuthorityError('destination_unavailable', 'The schedule destination changed.');
+  }
   const agent = await config.getAgent(reference.agentId).catch(() => undefined);
-  if (!agent || !agent.enabled || agent.lifecycle === 'archived') {
+  if (!agent || !agent.enabled || agent.lifecycle === 'archived' || (direct && !isActiveUserAgent(agent))) {
     throw new RoutineAuthorityError('agent_unavailable', 'The schedule Agent is unavailable.');
   }
-  const grants = await config.listAgentChannelGrants(reference.workspaceId, reference.channelId);
-  if (!grants.some((grant) => grant.agentId === reference.agentId && grant.status === 'active')) {
-    throw new RoutineAuthorityError('destination_unavailable', 'The Agent no longer has access to the destination Channel.');
+  if (!direct) {
+    const grants = await config.listAgentChannelGrants(reference.workspaceId, reference.channelId);
+    if (!grants.some((grant) => grant.agentId === reference.agentId && grant.status === 'active')) {
+      throw new RoutineAuthorityError('destination_unavailable', 'The Agent no longer has access to the destination Channel.');
+    }
   }
   const actorSlackUserId = await requireActiveMembership(
     identity,
@@ -318,4 +448,8 @@ function authorityReceiptId(scheduleId: string, membershipId: string): string {
     .update(`${scheduleId}\0${membershipId}`)
     .digest('hex')
     .slice(0, 32)}`;
+}
+
+function isActiveUserAgent(agent: CustomAgentConfig): boolean {
+  return agent.kind === 'user' && agent.enabled && agent.lifecycle !== 'draft' && agent.lifecycle !== 'archived';
 }

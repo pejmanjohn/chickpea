@@ -4882,10 +4882,27 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     usage,
     work,
     contentAccess: routineContentAccess,
+    privateOwner: async (c, routine) => {
+      const reference = await store(c).getAgentScheduleReference(routine.id);
+      if (!reference || reference.destinationKind !== 'direct_thread') {
+        return { agentId: null, displayName: null };
+      }
+      try {
+        const agent = await store(c).getAgent(reference.agentId);
+        return { agentId: agent.id, displayName: agent.name };
+      } catch {
+        return { agentId: reference.agentId, displayName: null };
+      }
+    },
     ...(options.routineCapability ? { capability: options.routineCapability } : {}),
   }));
   app.route('/admin/api', createUsageAdminApi({ store: usage, work }));
-  app.route('/admin/api', createWorkAdminApi({ store: work, usage }));
+  app.route('/admin/api', createWorkAdminApi({
+    store: work,
+    usage,
+    privateWork: async (c, workId) =>
+      (await routines(c).getRoutineByWorkId(workId))?.destination.kind === 'direct_thread',
+  }));
 
   app.get('/admin/api/runtime/drain', async (c) => {
     try {
@@ -6806,7 +6823,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       requireAgentEdit(principal, agent);
       const config = store(c);
       const references = (await config.listAgentScheduleReferences(agent.id))
-        .filter((reference) => reference.state !== 'archived');
+        .filter((reference) =>
+          reference.state !== 'archived' && reference.destinationKind !== 'direct_thread');
       return c.json({
         schedules: (await Promise.all(references.map(async (reference) => {
           const routine = await routines(c).getRoutine(reference.scheduleId);
@@ -6860,7 +6878,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const agent = await config.getAgent(c.req.param('id'));
       requireAgentEdit(principal, agent);
       const reference = await config.getAgentScheduleReference(c.req.param('scheduleId'));
-      if (!reference || reference.agentId !== agent.id) {
+      if (!reference || reference.agentId !== agent.id ||
+          reference.destinationKind === 'direct_thread') {
         return c.json({ error: 'not_found' }, 404);
       }
       const state = routines(c);
@@ -6970,7 +6989,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const agent = await config.getAgent(c.req.param('id'));
       requireAgentEdit(principal, agent);
       const current = await config.getAgentScheduleReference(c.req.param('scheduleId'));
-      if (!current || current.agentId !== agent.id) return c.json({ error: 'not_found' }, 404);
+      if (!current || current.agentId !== agent.id ||
+          current.destinationKind === 'direct_thread') {
+        return c.json({ error: 'not_found' }, 404);
+      }
       if (current.revision !== parsed.output.expectedAuthorityRevision) {
         return c.json({ error: 'schedule_authority_conflict', currentRevision: current.revision }, 409);
       }
@@ -9516,7 +9538,8 @@ async function managedProviderImpact(
   if (accountIds.size > 0) {
     for (const agent of await config.listAgents()) {
       for (const reference of await config.listAgentScheduleReferences(agent.id)) {
-        if (reference.requiredConnectionAccountIds.some((id) => accountIds.has(id))) {
+        if (reference.destinationKind !== 'direct_thread' &&
+            reference.requiredConnectionAccountIds.some((id) => accountIds.has(id))) {
           schedules += 1;
         }
       }

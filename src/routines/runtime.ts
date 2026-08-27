@@ -17,6 +17,11 @@ import {
   resolveSlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from '../slack/installation-execution.ts';
+import {
+  classifySlackUserForAdmission,
+  slackWebClientUserFacts,
+} from '../slack/user-classification.ts';
+import { createSlackWebClient } from '../slack/web-client.ts';
 import { hashRoutineValue } from './ids.ts';
 import {
   resolveRoutineAgentAuthority,
@@ -145,6 +150,75 @@ export async function resolveRoutineRuntimeAccess(
       'credential_unavailable',
       'The Slack connection is unavailable for this routine.',
     );
+  }
+  if (routine.destination.kind === 'direct_thread') {
+    if (!authority || routine.authorityMode !== 'live_direct_member_v1') {
+      throw new RoutineRuntimeError(
+        'assignment_missing',
+        'The direct schedule authority is unavailable.',
+      );
+    }
+    const directClient = client ?? createSlackWebClient(botToken);
+    const actorSlackUserId = authority.actorSlackUserId;
+    let rawUser: unknown;
+    let directConversation: Record<string, unknown> | undefined;
+    try {
+      const userResponse = await directClient.users.info({ user: actorSlackUserId });
+      if (userResponse.ok === true) rawUser = userResponse.user;
+      const openResponse = await directClient.conversations.open({ users: actorSlackUserId });
+      if (openResponse.ok === true && openResponse.channel && typeof openResponse.channel === 'object') {
+        directConversation = openResponse.channel as Record<string, unknown>;
+      }
+    } catch {
+      throw new RoutineRuntimeError(
+        'access_denied',
+        'Current direct-message access could not be verified.',
+      );
+    }
+    const user = slackWebClientUserFacts(rawUser);
+    if (
+      user?.id !== actorSlackUserId ||
+      actorSlackUserId === botUserId ||
+      classifySlackUserForAdmission(user, routine.workspaceId, botUserId) !== 'eligible_human'
+    ) {
+      throw new RoutineRuntimeError(
+        'creator_ineligible',
+        'The direct schedule owner is no longer eligible.',
+      );
+    }
+    if (
+      !directConversation ||
+      directConversation.id !== routine.destination.conversationId ||
+      directConversation.is_mpim === true ||
+      directConversation.is_im !== true
+    ) {
+      throw new RoutineRuntimeError(
+        'channel_ineligible',
+        'The direct-message destination is no longer eligible.',
+      );
+    }
+    const accessHash = hashRoutineValue(JSON.stringify({
+      config: computeSnapshotHash(config),
+      workspaceId: routine.workspaceId,
+      actorSlackUserId,
+      actorMembershipId: authority.reference.runsAsMembershipId,
+      authorityReceiptId: authority.reference.authorityReceiptId,
+      botUserId,
+      destinationKind: routine.destination.kind,
+      destinationBindingDigest: authority.reference.destinationBindingDigest,
+    }));
+    return {
+      config,
+      accessHash,
+      ...(botToken ? { botToken } : {}),
+      botUserId,
+      client: directClient,
+      publicUrl: await resolveSlackPublicUrl(env).catch(() => undefined),
+      actorMembershipId: authority.reference.runsAsMembershipId,
+      actorSlackUserId,
+      authorityReceiptId: authority.reference.authorityReceiptId,
+      effectiveConnections: authority.effectiveConnections,
+    };
   }
   const conversation = botToken
     ? await getConversation(botToken, routine.channelId)

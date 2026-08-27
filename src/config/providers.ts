@@ -56,7 +56,7 @@ const BUILTIN_ENV_PROVIDERS: readonly ProviderCatalogEntry[] = [
   {
     id: 'cloudflare-workers-ai',
     envVars: ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID'],
-    suggestions: ['cloudflare-workers-ai/@cf/zai-org/glm-5.2'],
+    suggestions: ['cloudflare-workers-ai/@cf/zai-org/glm-5.3-flash'],
   },
 ];
 
@@ -67,7 +67,7 @@ const BUILTIN_ENV_PROVIDERS: readonly ProviderCatalogEntry[] = [
 const CF_BINDING_PROVIDER: ProviderCatalogEntry = {
   id: 'cloudflare',
   envVars: [],
-  suggestions: ['cloudflare/@cf/zai-org/glm-5.2'],
+  suggestions: ['cloudflare/@cf/zai-org/glm-5.3-flash'],
 };
 
 export function knownProviderIds(env: NodeJS.ProcessEnv = process.env): Set<string> {

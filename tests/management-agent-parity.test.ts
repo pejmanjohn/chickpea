@@ -11,6 +11,8 @@ import {
 } from '../src/management/agent-authoring/index.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
+import { classifySlackInteraction } from '../src/slack/interaction-intent.ts';
+import { slackMarkdownBlockTextLimit } from '../src/slack/message-format.ts';
 import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
 import {
   invokeWorkspaceManagementTool,
@@ -177,7 +179,10 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
       kind: 'update_agent',
       agentId: agent.id,
       expectedRevision: agent.revision,
-      patch: { description: 'Handles escalated support.' },
+      patch: {
+        description: 'Handles escalated support.',
+        instructions: 'Triage support requests and coordinate the right follow-up.',
+      },
     };
     const proposed = await invokeSlackWorkspaceManagementTool({
       signal,
@@ -193,13 +198,34 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
     const result = (proposed as { ok: true; result: {
       proposalId: string;
       guide: { version: string; uri: string; digest: string };
+      presentation: { slack: string };
     } }).result;
     assert.deepEqual(result.guide, {
       version: AGENT_AUTHORING_GUIDE_VERSION,
       uri: AGENT_AUTHORING_GUIDE_URI,
       digest: AGENT_AUTHORING_GUIDE_DIGEST,
     });
+    assert.match(result.presentation.slack, /Description/);
+    assert.match(result.presentation.slack, /Handles support triage\./);
+    assert.match(result.presentation.slack, /Handles escalated support\./);
+    assert.match(result.presentation.slack, /Instructions/);
+    assert.match(result.presentation.slack, /Triage support requests\./);
+    assert.match(
+      result.presentation.slack,
+      /Triage support requests and coordinate the right follow-up\./,
+    );
+    assert.doesNotMatch(result.presentation.slack, /changeset_/);
+    assert.match(result.presentation.slack, /Reply `approve`/);
     assert.equal((await f.config.getAgent(agent.id)).revision, agent.revision);
+    const pending = await f.management.getChangeSetProposal(result.proposalId);
+    assert.ok(pending);
+    assert.equal(await f.management.hasPendingChangeSetProposal({
+      organizationId: pending.organizationId,
+      actorUserId: pending.actorUserId,
+      actorMembershipId: pending.actorMembershipId,
+      originKey: pending.originKey,
+      at: 1_800_000_000_000,
+    }), true);
 
     const mcpConfirmation = await invokeWorkspaceManagementTool({
       service: f.service,
@@ -228,6 +254,26 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
     assert.equal(wrongThread.ok, false);
     assert.equal((await f.config.getAgent(agent.id)).revision, agent.revision);
 
+    const approval = await classifySlackInteraction({
+      workspaceId: signal.workspaceId,
+      channelId: signal.channelId,
+      eventId: 'Ev_APPROVE',
+      text: 'approve',
+      source: 'implicit_thread_reply',
+      guaranteed: true,
+      profileInstructions: agent.instructions,
+      pendingManagementProposal: true,
+    }, undefined, async () => JSON.stringify({
+      disposition: 'react_only',
+      reason: 'state_change',
+      reaction: 'approved',
+      target: 'trigger',
+    }));
+    assert.deepEqual(approval.intent, {
+      disposition: 'reply',
+      reason: 'substantive_request',
+    });
+
     const confirmed = await invokeSlackWorkspaceManagementTool({
       signal,
       identity: f.identity,
@@ -236,7 +282,52 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
       args: { proposalId: result.proposalId },
     });
     assert.equal(confirmed.ok, true);
-    assert.equal((await f.config.getAgent(agent.id)).description, 'Handles escalated support.');
+    const updated = await f.config.getAgent(agent.id);
+    assert.equal(updated.revision, agent.revision + 1);
+    assert.equal(updated.description, 'Handles escalated support.');
+    assert.equal(
+      updated.instructions,
+      'Triage support requests and coordinate the right follow-up.',
+    );
+
+    const longInstruction = 'Long instruction. '.repeat(1_000);
+    const oversized = await invokeSlackWorkspaceManagementTool({
+      signal,
+      identity: f.identity,
+      service: f.service,
+      name: 'propose_workspace_changes',
+      args: {
+        ...authoringProposalMetadata('surface-parity-oversized'),
+        operations: [{
+          ...operation,
+          expectedRevision: updated.revision,
+          patch: { instructions: longInstruction },
+        }],
+      },
+    });
+    assert.equal(oversized.ok, true);
+    const oversizedResult = (oversized as { ok: true; result: {
+      proposalId: string;
+      presentation: { slack: string };
+    } }).result;
+    assert.ok(oversizedResult.presentation.slack.length <= slackMarkdownBlockTextLimit);
+    assert.match(oversizedResult.presentation.slack, /Preview truncated to fit Slack/);
+    assert.match(oversizedResult.presentation.slack, /Reply `approve`/);
+    assert.equal(oversizedResult.presentation.slack.includes(longInstruction), false);
+    assert.equal((await f.config.getAgent(agent.id)).instructions, updated.instructions);
+
+    const oversizedConfirmed = await invokeSlackWorkspaceManagementTool({
+      signal,
+      identity: f.identity,
+      service: f.service,
+      name: 'confirm_workspace_change',
+      args: { proposalId: oversizedResult.proposalId },
+    });
+    assert.equal(oversizedConfirmed.ok, true);
+    assert.equal(
+      (await f.config.getAgent(agent.id)).instructions,
+      longInstruction,
+    );
 
     const secret = 'sk-proj-abcdefghijklmnopqrstuvwxyz123456';
     const rejected = await invokeSlackWorkspaceManagementTool({

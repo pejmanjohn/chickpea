@@ -13,10 +13,12 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { RoutineService } from '../src/routines/service.ts';
+import { routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineDefinitionContent } from '../src/routines/types.ts';
 import type { SlackTransport } from '../src/slack/transport/types.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
+import { SqliteUsageStore } from '../src/usage/store.ts';
 import type { SourceVisibility } from '../src/work/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
@@ -375,6 +377,267 @@ test('Scheduled Work structurally redacts private and unlinked definition conten
   } finally {
     routines.close();
     work.close();
+  }
+});
+
+test('direct schedules expose only anonymous health and are absent from shared detail and mutation surfaces', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-routine-direct-private-')), 'state.db');
+  const routines = new SqliteRoutineStore(path, () => NOW);
+  const work = new SqliteWorkStore(path, { now: () => NOW });
+  const usage = new SqliteUsageStore(path, () => NOW);
+  const config = new SqliteConfigStore(path, { agents: [] });
+  const settings = new SqliteSettingsStore(path);
+  const destination = {
+    kind: 'direct_thread' as const,
+    conversationId: 'D_PRIVATE_DESTINATION_CANARY',
+    threadTs: '1787853827.722389',
+    ownerMembershipId: 'membership_test_owner',
+  };
+  const privateCanary = 'PRIVATE_DM_SCHEDULE_CANARY';
+  try {
+    const agent = await config.createAgent({
+      id: 'agent_private_dm_health',
+      name: 'Private DM Agent',
+      instructions: 'Run private scheduled work.',
+      enabled: true,
+      lifecycle: 'active',
+      creatorMembershipId: destination.ownerMembershipId,
+      editPolicy: 'creator_and_admins',
+      model: 'local-stub/private-dm',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const pending = await routines.save({
+      actorId: 'U_PRIVATE',
+      actorClass: 'member',
+      workspaceId: 'T_TEST',
+      channelId: destination.conversationId,
+      destination,
+      draft: {
+        action: 'create',
+        routineId: 'routine_private_dm_admin',
+        definition: {
+          ...definition(),
+          name: privateCanary,
+          description: `description ${privateCanary}`,
+          taskText: `task ${privateCanary}`,
+          authorityMode: 'live_direct_member_v1',
+        },
+        nextRunAt: NOW + 3_600_000,
+        projectedDailyStarts: 5,
+        reservations: [{ windowStart: NOW + 3_600_000, count: 1 }],
+      },
+      idempotencyKey: 'seed-direct-private-admin',
+      sourceVisibility: 'private',
+    });
+    const digest = routineDestinationBindingDigest(pending.id, pending.workspaceId, destination);
+    const reference = await config.putAgentScheduleReference({
+      scheduleId: pending.id,
+      agentId: agent.id,
+      workspaceId: pending.workspaceId,
+      channelId: destination.conversationId,
+      destinationKind: 'direct_thread',
+      destinationBindingDigest: digest,
+      createdByMembershipId: destination.ownerMembershipId,
+      runsAsMembershipId: destination.ownerMembershipId,
+      authorityReceiptId: 'receipt_private_dm_admin',
+      requiredConnectionAccountIds: [],
+      state: 'active',
+    });
+    const routine = await routines.activateDirectRoutine({
+      routineId: pending.id,
+      expectedVersion: pending.version,
+      expectedReferenceRevision: reference.revision,
+      destinationBindingDigest: digest,
+    });
+    const run = await routines.createOccurrence({
+      runId: 'rrun_private_dm_admin',
+      idempotencyKey: 'run-private-dm-admin',
+      routineId: routine.id,
+      routineVersion: routine.version,
+      scheduledFor: NOW,
+      triggerSource: 'schedule',
+      queuedAt: NOW,
+      deadlineAt: NOW + 900_000,
+    });
+    assert.ok(run.canonicalRunId, 'direct schedules should retain canonical Work parity');
+    await usage.admitOperation({
+      operationId: 'usage_private_dm_admin',
+      operationKind: 'routine_run',
+      sourceId: 'usage_private_dm_admin',
+      runId: run.canonicalRunId,
+      startedAt: NOW,
+      installationId: 'installation_test',
+      workspaceId: routine.workspaceId,
+      agentId: agent.id,
+      agentLabel: agent.name,
+      channelId: destination.conversationId,
+      channelLabel: null,
+      conversationKind: 'direct_message',
+      routineId: routine.id,
+      routineLabel: privateCanary,
+      routineRunId: run.id,
+      requestedProvider: 'local-stub',
+      requestedModel: 'private-dm',
+      credentialRefId: null,
+      credentialVersion: null,
+    });
+    await usage.recordConnectorUsage({
+      attemptId: 'connector_private_dm_admin',
+      workspaceId: routine.workspaceId,
+      agentId: agent.id,
+      connectionAccountId: 'connection_private_dm_admin',
+      operationId: 'usage_private_dm_admin',
+      runId: run.canonicalRunId,
+      runExecutionId: null,
+      adapterId: 'composio',
+      toolkit: 'gmail',
+      capability: 'gmail.profile.read',
+      providerTool: 'GMAIL_GET_PROFILE',
+      providerVersion: '20260817_00',
+      effectClass: 'read',
+      outcome: 'success',
+      retryClassification: 'none',
+      startedAt: NOW,
+      finishedAt: NOW + 1,
+      latencyMs: 1,
+      remoteCallCount: 1,
+      providerToolCallCount: 1,
+      resultBytes: 64,
+      httpStatus: null,
+      rateLimitRemaining: null,
+      retryAfterMs: null,
+      providerLogId: null,
+      priceVersionId: null,
+      estimatedCostMicros: null,
+      estimateCurrency: null,
+    });
+    const app = createAdminRoutes({
+      store: config,
+      settings,
+      routines,
+      work,
+      usage,
+      ...testAdminAuthority(TOKEN),
+      knownProviders: new Set(['local-stub']),
+    });
+    const headers = testAdminHeaders(TOKEN, { 'content-type': 'application/json' });
+
+    const listResponse = await app.request('/admin/api/audit/scheduled_work/routines', { headers });
+    assert.equal(listResponse.status, 200);
+    const listText = await listResponse.text();
+    assert.doesNotMatch(
+      listText,
+      /PRIVATE_DM_SCHEDULE_CANARY|D_PRIVATE_DESTINATION_CANARY|1787853827|membership_test_owner|routine_private_dm_admin|rrun_private_dm_admin/,
+    );
+    const list = JSON.parse(listText) as Record<string, any>;
+    assert.deepEqual(list.routines, []);
+    assert.equal(list.privateScheduleHealth.length, 1);
+    assert.deepEqual(Object.keys(list.privateScheduleHealth[0]).sort(), [
+      'lastFinishedAt', 'lastRun', 'nextRunAt', 'owner', 'state',
+    ]);
+    assert.deepEqual(list.privateScheduleHealth[0].owner, {
+      agentId: agent.id,
+      displayName: agent.name,
+    });
+    assert.deepEqual(Object.keys(list.privateScheduleHealth[0].lastRun).sort(), [
+      'deliveryStatus', 'failureClass', 'finishedAt', 'scheduledFor', 'startedAt', 'status',
+    ]);
+
+    const channelScoped = await app.request(
+      `/admin/api/audit/scheduled_work/routines?channelId=${destination.conversationId}`,
+      { headers },
+    );
+    assert.deepEqual((await channelScoped.json() as Record<string, any>).privateScheduleHealth, []);
+
+    for (const pathName of [
+      `/admin/api/audit/scheduled_work/routines/${routine.id}`,
+      `/admin/api/audit/scheduled_work/runs/${run.id}`,
+      `/admin/api/sessions/${run.canonicalRunId}`,
+      `/admin/api/usage/operations/usage_private_dm_admin`,
+    ]) {
+      const response = await app.request(pathName, { headers });
+      assert.equal(response.status, 404, `${pathName}: ${await response.clone().text()}`);
+    }
+
+    const agentSchedules = await app.request(`/admin/api/agents/${agent.id}/schedules`, { headers });
+    assert.deepEqual((await agentSchedules.json() as Record<string, any>).schedules, []);
+    const agentControl = await app.request(
+      `/admin/api/agents/${agent.id}/schedules/${routine.id}/control`,
+      {
+        method: 'POST', headers: { ...headers, 'idempotency-key': 'private-agent-control' },
+        body: JSON.stringify({ action: 'pause', expectedVersion: routine.version }),
+      },
+    );
+    assert.equal(agentControl.status, 404);
+    const agentReassign = await app.request(
+      `/admin/api/agents/${agent.id}/schedules/${routine.id}/reassign`,
+      {
+        method: 'POST', headers,
+        body: JSON.stringify({
+          runsAsMembershipId: destination.ownerMembershipId,
+          expectedAuthorityRevision: reference.revision,
+        }),
+      },
+    );
+    assert.equal(agentReassign.status, 404);
+    const globalControl = await app.request(
+      `/admin/api/audit/scheduled_work/routines/${routine.id}/control`,
+      {
+        method: 'POST', headers: { ...headers, 'idempotency-key': 'private-global-control' },
+        body: JSON.stringify({ action: 'pause', expectedVersion: routine.version }),
+      },
+    );
+    assert.equal(globalControl.status, 404);
+
+    const eventResponse = await app.request(
+      `/admin/api/audit/scheduled_work/events?subjectId=${routine.id}`,
+      { headers },
+    );
+    assert.deepEqual((await eventResponse.json() as Record<string, any>).events, []);
+    const sessions = await app.request('/admin/api/sessions', { headers });
+    assert.deepEqual((await sessions.json() as Record<string, any>).items, []);
+    const quarantine = await app.request(`/admin/api/sessions/${run.canonicalRunId}/quarantine`, {
+      method: 'POST',
+      headers: { ...headers, 'idempotency-key': 'private-work-quarantine' },
+      body: JSON.stringify({
+        confirm: true,
+        operatorLabel: 'Test operator',
+        safeReasonCode: 'accepted_unknown',
+      }),
+    });
+    assert.equal(quarantine.status, 404);
+    const retire = await app.request(`/admin/api/sessions/${run.canonicalRunId}/retire-stale`, {
+      method: 'POST',
+      headers: { ...headers, 'idempotency-key': 'private-work-retire' },
+      body: JSON.stringify({
+        confirm: true,
+        operatorLabel: 'Test operator',
+        safeReasonCode: 'accepted_unknown',
+      }),
+    });
+    assert.equal(retire.status, 404);
+    const usageList = await app.request(
+      `/admin/api/usage/operations?from=${NOW - 1}&to=${NOW + 1}&limit=10`,
+      { headers },
+    );
+    assert.deepEqual((await usageList.json() as Record<string, any>).items, []);
+    const usageSummary = await app.request(
+      `/admin/api/usage/summary?from=${NOW - 1}&to=${NOW + 1}`,
+      { headers },
+    );
+    assert.equal((await usageSummary.json() as Record<string, any>).totals.operationCount, 0);
+    const connectorSummary = await app.request(
+      `/admin/api/usage/connectors?from=${NOW - 1}&to=${NOW + 2}&workspace=T_TEST`,
+      { headers },
+    );
+    assert.equal((await connectorSummary.json() as Record<string, any>).attemptCount, 0);
+    assert.equal((await routines.getRoutine(routine.id))?.state, 'active');
+  } finally {
+    routines.close();
+    work.close();
+    usage.close();
+    config.close();
+    settings.close();
   }
 });
 

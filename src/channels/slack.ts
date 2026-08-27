@@ -65,6 +65,7 @@ import {
 import {
   classifySlackInteraction,
   resolveImmediateSlackInteractionIntent,
+  shouldLookupPendingManagementProposal,
 } from '../slack/interaction-intent.ts';
 import {
   InteractionUsageRecorder,
@@ -132,6 +133,7 @@ import {
 } from '../slack/types.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
+import { managementActorOriginKey } from '../management/contracts.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import { initialActivityStatus } from '../activity/status.ts';
 
@@ -1134,24 +1136,6 @@ async function processSlackEvent(
   };
   const deterministicCommand = Boolean(parseMemoryCommand(turn.text)) ||
     (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress)));
-  if (!deterministicCommand && !candidateTurn) {
-    const immediateIntent = resolveImmediateSlackInteractionIntent({
-      workspaceId: turn.workspaceId,
-      channelId: turn.channelId,
-      eventId: turn.eventId,
-      text: turn.text,
-      source: turn.source,
-      guaranteed: true,
-      ...(turn.activeWorkAtAdmission === undefined
-        ? {}
-        : { activeWork: turn.activeWorkAtAdmission }),
-      profileInstructions:
-        'instructions' in assignment && typeof assignment.instructions === 'string'
-          ? assignment.instructions
-          : assignment.agent.instructions,
-    });
-    if (immediateIntent) turn.interactionIntent = immediateIntent;
-  }
   let admissionTruth: SlackAdmissionTruth = {
     eligible: false,
     reason: 'slack_truth_unavailable',
@@ -1199,6 +1183,34 @@ async function processSlackEvent(
   }
   if (admissionTruth.eligible && admittedActorMembershipId) {
     turn.actorMembershipId = admittedActorMembershipId;
+  }
+
+  if (!deterministicCommand && !candidateTurn) {
+    const pendingManagementProposal = shouldLookupPendingManagementProposal(turn.text)
+      ? await hasPendingSlackManagementProposal(
+          turn,
+          assignment,
+          agentRoutingActor?.principal,
+          stores,
+        )
+      : false;
+    const immediateIntent = resolveImmediateSlackInteractionIntent({
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      eventId: turn.eventId,
+      text: turn.text,
+      source: turn.source,
+      guaranteed: true,
+      ...(turn.activeWorkAtAdmission === undefined
+        ? {}
+        : { activeWork: turn.activeWorkAtAdmission }),
+      ...(pendingManagementProposal ? { pendingManagementProposal: true } : {}),
+      profileInstructions:
+        'instructions' in assignment && typeof assignment.instructions === 'string'
+          ? assignment.instructions
+          : assignment.agent.instructions,
+    });
+    if (immediateIntent) turn.interactionIntent = immediateIntent;
   }
 
   // Inbound reactions are candidates, not durable work.
@@ -1668,6 +1680,41 @@ async function classifyCandidateTurn(
       : {}),
   }, platformEnv);
   return { classification, requestedModel };
+}
+
+async function hasPendingSlackManagementProposal(
+  turn: NormalizedSlackTurn,
+  assignment: ResolvedAssignment,
+  principal: AuthPrincipal | undefined,
+  stores: AppStores,
+): Promise<boolean> {
+  try {
+    if (
+      !principal ||
+      (turn.actorMembershipId !== undefined && principal.membershipId !== turn.actorMembershipId)
+    ) return false;
+    const originKey = managementActorOriginKey({
+      actingAgentId: assignment.agent.id,
+      origin: {
+        kind: 'slack',
+        workspaceId: turn.workspaceId,
+        channelId: turn.channelId,
+        threadTs: turn.threadTs,
+        agentId: assignment.agent.id,
+      },
+    });
+    return stores.management.hasPendingChangeSetProposal({
+      organizationId: principal.organizationId,
+      actorUserId: principal.userId,
+      actorMembershipId: principal.membershipId,
+      originKey,
+      at: Date.now(),
+    });
+  } catch {
+    // Explicit approval verbs still route substantively without this lookup.
+    // Ambiguous acknowledgments remain low-noise when durable state is unavailable.
+    return false;
+  }
 }
 
 async function resolveReactionTargetContext(

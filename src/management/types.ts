@@ -23,6 +23,8 @@ export type ManagementOrigin =
       workspaceId: string;
       channelId: string;
       threadTs: string;
+      /** Trusted normalized Slack surface. Missing legacy origins are Channels. */
+      conversationKind?: 'channel' | 'im' | 'mpim';
       /** Trusted Agent selected by Slack routing, never by model text. */
       agentId?: string;
     }
@@ -144,7 +146,9 @@ export type ManagementOperation =
       kind: 'save_routine';
       agentId: string;
       workspaceId: string;
-      channelId: string;
+      /** Required for Channel work. Direct work resolves only from trusted Slack origin. */
+      channelId?: string;
+      destination?: { kind: 'current_dm_thread' };
       routineId?: string;
       expectedVersion?: number;
       name: string;
@@ -159,7 +163,7 @@ export type ManagementOperation =
   | (ManagementOperationBase & {
       kind: 'control_routine';
       workspaceId: string;
-      channelId: string;
+      channelId?: string;
       routineId: string;
       expectedVersion: number;
       action: 'pause' | 'resume' | 'disable';
@@ -167,9 +171,16 @@ export type ManagementOperation =
   | (ManagementOperationBase & {
       kind: 'delete_routine';
       workspaceId: string;
-      channelId: string;
+      channelId?: string;
       routineId: string;
       expectedVersion: number;
+    })
+  | (ManagementOperationBase & {
+      kind: 'reassign_routine_agent';
+      workspaceId: string;
+      routineId: string;
+      expectedVersion: number;
+      agentId: string;
     })
   | (ManagementOperationBase & {
       kind: 'request_setup';
@@ -507,6 +518,7 @@ export interface ManagementRoutineSnapshot {
     outputPolicy: RoutineOutputPolicy;
     nextRunAt: number | null;
     contentAccess: 'public' | 'private' | 'authorization_unknown';
+    owningAgentId: string;
   }>;
 }
 
@@ -534,6 +546,10 @@ export interface ProposeWorkspaceChangesResult {
     digest: string;
   };
   preview: ManagementChangeSetPreview;
+  presentation: {
+    /** Human-readable Slack copy; the opaque proposal id remains control data. */
+    slack: string;
+  };
   expiresAt: number;
   confirmationTool: 'confirm_workspace_change';
 }
@@ -723,6 +739,14 @@ export interface PutManagementChangeSetProposalInput {
   at: number;
 }
 
+export interface HasPendingManagementChangeSetProposalInput {
+  organizationId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  originKey: string;
+  at: number;
+}
+
 export interface PutManagementSetupInput {
   record: ManagementSetupRecord;
 }
@@ -796,6 +820,10 @@ export type ManagementRpcRequest =
   | { kind: 'mark_proposal_stale'; proposalId: string; at: number }
   | { kind: 'put_change_set_proposal'; input: PutManagementChangeSetProposalInput }
   | { kind: 'get_change_set_proposal'; proposalId: string }
+  | {
+      kind: 'has_pending_change_set_proposal';
+      input: HasPendingManagementChangeSetProposalInput;
+    }
   | { kind: 'claim_change_set_proposal'; input: ClaimManagementProposalInput }
   | { kind: 'reclaim_change_set_proposal'; input: ReclaimManagementChangeSetProposalInput }
   | {
@@ -847,6 +875,7 @@ export type ManagementRpcResponse =
   | { kind: 'request'; request: ManagementRequestRecord | null }
   | { kind: 'proposal'; proposal: ManagementProposalRecord | null }
   | { kind: 'change_set_proposal'; proposal: ManagementChangeSetProposalRecord | null }
+  | { kind: 'pending_change_set_proposal'; pending: boolean }
   | { kind: 'undo'; undo: ManagementUndoRecord | null }
   | { kind: 'setup'; setup: ManagementSetupRecord | null }
   | { kind: 'outbox'; outbox: ManagementReceiptOutboxRecord | null }

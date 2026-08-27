@@ -210,6 +210,48 @@ test('high-confidence acknowledgments stay reaction-only even when a small model
   );
 });
 
+test('workspace proposal approvals always reach the main Agent instead of ending as reactions', async () => {
+  let promptCalls = 0;
+  for (const text of ['approve', 'confirm', 'apply it', 'go ahead']) {
+    assert.deepEqual(
+      (await classifySlackInteraction(
+        { ...baseContext, text },
+        undefined,
+        async () => {
+          promptCalls += 1;
+          return JSON.stringify({
+            disposition: 'react_only',
+            reason: 'state_change',
+            reaction: 'approved',
+            target: 'trigger',
+          });
+        },
+      )).intent,
+      { disposition: 'reply', reason: 'substantive_request' },
+      text,
+    );
+  }
+  assert.equal(promptCalls, 0);
+
+  assert.deepEqual(
+    resolveImmediateSlackInteractionIntent({
+      ...baseContext,
+      text: 'yes',
+      pendingManagementProposal: true,
+    }),
+    { disposition: 'reply', reason: 'substantive_request' },
+  );
+  assert.deepEqual(
+    resolveImmediateSlackInteractionIntent({ ...baseContext, text: 'yes' }),
+    {
+      disposition: 'react_only',
+      reason: 'pure_ack',
+      reaction: 'agreement',
+      target: 'trigger',
+    },
+  );
+});
+
 test('admission recognizes obvious work without invoking the classifier provider', () => {
   assert.deepEqual(
     resolveImmediateSlackInteractionIntent({

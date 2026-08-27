@@ -130,10 +130,20 @@ export function managementOperationDigest(operations: readonly ManagementOperati
 
 export function managementOriginKey(origin: ManagementOrigin): string {
   if (origin.kind === 'slack') {
-    return `slack:${origin.workspaceId}:${origin.channelId}:${origin.threadTs}`;
+    const base = `slack:${origin.workspaceId}:${origin.channelId}:${origin.threadTs}`;
+    return origin.conversationKind === 'im' || origin.conversationKind === 'mpim'
+      ? `${base}:${origin.conversationKind}`
+      : base;
   }
   if (origin.kind === 'mcp') return `mcp:${origin.clientId}`;
   return `admin:${origin.sessionId}`;
+}
+
+export function managementActorOriginKey(
+  context: Pick<ManagementActorContext, 'origin' | 'actingAgentId'>,
+): string {
+  const origin = managementOriginKey(context.origin);
+  return context.actingAgentId ? `${origin}:agent:${context.actingAgentId}` : origin;
 }
 
 export function managementActorKey(context: ManagementActorContext): string {

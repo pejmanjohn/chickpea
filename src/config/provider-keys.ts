@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import type { Api, Model } from '@earendil-works/pi-ai';
+
 import { forgetRegisteredProvider, recordRegisteredProvider } from './providers.ts';
 import { setBuiltinPiProvider } from './pi-provider.ts';
 import { rotateStoredModelCredential } from './model-credential-refs.ts';
@@ -47,6 +49,7 @@ type ProviderRegistrationOptions = { apiKey?: string; baseUrl?: string };
 
 let storedCache: { expiresAt: number; values: StoredProviderKeys } | undefined;
 const appliedProviderFingerprints = new Map<ProviderKeyId, string>();
+const appliedProviderModelOverlays = new Map<ProviderKeyId, Map<string, Model<Api>>>();
 
 export function isProviderKeyId(id: string): id is ProviderKeyId {
   return (PROVIDER_KEY_IDS as readonly string[]).includes(id);
@@ -143,13 +146,21 @@ export async function applyResolvedProviderKey(
  * in the current isolate. Flue replaces the previous registration per provider
  * id, so `{}` deliberately clears a previously stored key after deletion.
  */
-export function rebindBuiltinProvider(id: ProviderKeyId, apiKey: string | undefined): void {
+export function rebindBuiltinProvider(
+  id: ProviderKeyId,
+  apiKey: string | undefined,
+  modelOverlays: readonly Model<Api>[] = [],
+): void {
   const options = providerRegistrationOptions(id, apiKey);
-  const fingerprint = keyFingerprint(JSON.stringify(options));
+  const overlays = appliedProviderModelOverlays.get(id) ?? new Map<string, Model<Api>>();
+  for (const model of modelOverlays) overlays.set(model.id, model);
+  if (overlays.size > 0) appliedProviderModelOverlays.set(id, overlays);
+  const models = [...overlays.values()];
+  const fingerprint = keyFingerprint(JSON.stringify({ options, models }));
   if (appliedProviderFingerprints.get(id) === fingerprint) {
     return;
   }
-  setBuiltinPiProvider(id, options);
+  setBuiltinPiProvider(id, options, models);
   if (id === 'anthropic' || id === 'openai') {
     bindModelCompatibilityProvider(id, apiKey, {
       ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
@@ -163,9 +174,17 @@ export function rebindBuiltinProvider(id: ProviderKeyId, apiKey: string | undefi
   }
 }
 
+export function hasBuiltinProviderModelOverlay(
+  id: ProviderKeyId,
+  modelId: string,
+): boolean {
+  return appliedProviderModelOverlays.get(id)?.has(modelId) === true;
+}
+
 export function invalidateProviderKeyCache(): void {
   storedCache = undefined;
   appliedProviderFingerprints.clear();
+  appliedProviderModelOverlays.clear();
 }
 
 async function readStoredProviderKeys(

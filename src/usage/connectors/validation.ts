@@ -95,15 +95,20 @@ export function normalizeConnectorQuotaReservation(
 export function normalizeConnectorSummaryQuery(
   input: ConnectorUsageSummaryQuery,
 ): Required<Pick<ConnectorUsageSummaryQuery, 'from' | 'to'>> &
-  Pick<ConnectorUsageSummaryQuery, 'workspaceId' | 'agentId' | 'toolkit'> {
+  Pick<ConnectorUsageSummaryQuery,
+    'excludePrivateRoutines' | 'workspaceId' | 'agentId' | 'toolkit'> {
   const from = timestamp(input.from, 'from');
   const to = timestamp(input.to, 'to');
   if (to <= from || to - from > 366 * 24 * 60 * 60 * 1_000) {
     invalid('Connector summary range is invalid.');
   }
+  if (input.excludePrivateRoutines !== undefined && input.excludePrivateRoutines !== true) {
+    invalid('Connector private routine exclusion is invalid.');
+  }
   return {
     from,
     to,
+    ...(input.excludePrivateRoutines ? { excludePrivateRoutines: true } : {}),
     ...(input.workspaceId ? { workspaceId: opaque(input.workspaceId, 'workspace ID') } : {}),
     ...(input.agentId ? { agentId: opaque(input.agentId, 'Agent ID') } : {}),
     ...(input.toolkit ? { toolkit: slug(input.toolkit, 'toolkit') } : {}),

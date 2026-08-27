@@ -551,6 +551,9 @@ export interface AgentScheduleReference {
   agentId: string;
   workspaceId: string;
   channelId: string;
+  destinationKind: 'channel' | 'direct_thread';
+  /** Internal consistency checksum. Never expose it as an authority credential. */
+  destinationBindingDigest: string | null;
   createdByMembershipId: string;
   /** The current trusted actor whose personal accounts and authority are used. */
   runsAsMembershipId: string;
@@ -569,8 +572,16 @@ export interface AgentScheduleReference {
 
 export type AgentScheduleReferenceInput = Omit<
   AgentScheduleReference,
-  'revision' | 'createdAt' | 'updatedAt'
->;
+  | 'destinationKind'
+  | 'destinationBindingDigest'
+  | 'revision'
+  | 'createdAt'
+  | 'updatedAt'
+> & {
+  /** Omitted legacy callers remain Channel references. */
+  destinationKind?: AgentScheduleReference['destinationKind'];
+  destinationBindingDigest?: string | null;
+};
 
 /** Create/seed input. Persistence assigns revision 1 regardless of caller input. */
 export type AgentCreateInput = Omit<CustomAgentConfig, 'revision' | 'kind'> & {

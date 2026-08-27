@@ -37,6 +37,7 @@ export interface FlueDispatchEnvelopeV2 extends FlueDispatchEnvelopeBase {
       workspaceId: string;
       channelId: string;
       threadTs: string;
+      conversationKind?: 'channel' | 'im' | 'mpim';
       slackUserId: string;
       eventId: string;
       messageTs: string;

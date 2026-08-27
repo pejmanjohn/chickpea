@@ -1158,13 +1158,7 @@ details[open].advanced summary::before {
 .prov-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
 .prov-body { border-top: 1.5px solid var(--bg); display: flex; flex-direction: column; gap: 12px; padding: 15px 18px; }
 .prov-body .input { background: var(--bg); }
-.openai-auth-list { display: flex; flex-direction: column; gap: 10px; }
-.openai-auth-option { background: var(--bg); border-radius: 14px; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; }
-.openai-auth-head { align-items: center; display: flex; flex-wrap: wrap; gap: 10px 12px; }
-.openai-auth-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 190px; }
 .openai-auth-title { color: var(--text); font-size: 0.875rem; font-weight: 700; }
-.openai-auth-meta { color: var(--text-3); font-size: 0.75rem; }
-.openai-auth-option .input { background: var(--well); }
 .paste-row { display: flex; flex-wrap: wrap; gap: 9px; }
 .paste-row .input { flex: 1; min-width: 220px; }
 .github-installations { display: flex; flex-direction: column; gap: 10px; }
@@ -1198,6 +1192,147 @@ details[open].advanced summary::before {
 .fav-selected .fav-row { background: transparent; border-radius: 0; box-shadow: none; min-height: 44px; padding: 10px 2px; }
 .fav-selected .fav-row + .fav-row { border-top: 1px solid var(--line); }
 .fav-provider-editor { padding-top: 15px; }
+
+/* Shelf: the provider destination uses one balanced hero and four equal cards.
+   Existing editors stay inside their card so key and model behavior is unchanged. */
+.main:has(.settings-providers-page:not([hidden])) { background: var(--canvas); box-shadow: none; }
+.main-inner:has(.settings-providers-page:not([hidden])) { max-width: 1080px; }
+.settings-providers-page { container-name: provider-settings; container-type: inline-size; display: flex; flex-direction: column; gap: 30px; }
+.settings-providers-page[hidden] { display: none; }
+.settings-providers-page > .section { border-top: 0; padding-top: 0; }
+.workspace-default-card.workspace-default-shelf {
+  align-items: center;
+  background: #fff4d5;
+  border: 1px solid rgba(178, 126, 31, .24);
+  border-radius: 20px;
+  box-shadow: 0 2px 0 rgba(59, 50, 32, .08);
+  display: grid;
+  gap: 24px 34px;
+  grid-template-columns: minmax(250px, .9fr) minmax(360px, 1.35fr);
+  padding: 22px 24px;
+}
+.workspace-default-shelf .workspace-default-summary { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.workspace-default-shelf .workspace-default-title-row { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 10px; }
+.workspace-default-shelf .workspace-default-title-row .section-title { font-size: 1.125rem; }
+.workspace-default-shelf .workspace-default-copy { gap: 5px; }
+.workspace-default-shelf .workspace-default-control { align-items: center; grid-template-columns: minmax(0, 1fr) auto; }
+.workspace-default-shelf .workspace-default-control .field { gap: 0; }
+.workspace-default-shelf .workspace-default-control .sr-only { clip: rect(0, 0, 0, 0); height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap; width: 1px; }
+.workspace-default-shelf .workspace-default-control .input { background: var(--bg); min-height: 44px; }
+.workspace-default-shelf .workspace-default-control .btn { min-height: 44px; padding-inline: 18px; }
+.workspace-default-shelf .workspace-default-timing { margin-top: 2px; }
+.provider-section { gap: 16px; }
+.provider-section-head { align-items: flex-end; display: flex; flex-wrap: wrap; gap: 12px 20px; justify-content: space-between; }
+.provider-section-title { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.provider-section-title .hint { align-self: baseline; }
+.model-catalog-status { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 12px; justify-content: flex-end; }
+.model-catalog-copy { color: var(--text-3); font-size: .75rem; }
+.provider-grid { align-items: stretch; display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.provider-grid .prov-row + .prov-row { margin-top: 0; }
+.provider-card {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  box-shadow: 0 2px 0 rgba(59, 50, 32, .09), 0 12px 28px -24px rgba(59, 50, 32, .34);
+  display: flex;
+  min-height: 252px;
+  overflow: visible;
+  position: relative;
+}
+.provider-card .prov-head { align-items: flex-start; flex-wrap: nowrap; padding: 20px 20px 0; }
+.provider-card-title { align-items: flex-start; display: flex; flex: 1; gap: 12px; min-width: 0; }
+.provider-logo-tile {
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 2px 0 rgba(59, 50, 32, .06);
+  display: flex;
+  flex: 0 0 auto;
+  height: 50px;
+  justify-content: center;
+  width: 50px;
+}
+.provider-card-logo { display: block; height: 29px; object-fit: contain; width: 29px; }
+.provider-card .prov-id { padding-top: 3px; }
+.provider-card .prov-name { font-size: 1.125rem; }
+.provider-card .prov-status { flex: 0 0 auto; margin-left: auto; }
+.provider-card .prov-status > .hint { display: none; }
+.provider-card .badge { font-size: .75rem; padding: 5px 12px; }
+.provider-card .badge-off { background: #fbedc8; color: var(--ember-deep); }
+.provider-card .badge-neutral { background: rgba(59, 50, 32, .08); color: var(--text-2); }
+.provider-card .prov-body { border-top: 0; flex: 1; gap: 14px; padding: 16px 20px 20px; }
+.provider-card-copy { color: var(--text-2); display: flex; flex-direction: column; font-size: .875rem; gap: 4px; line-height: 1.5; }
+.provider-card-copy p { margin: 0; }
+.provider-card-copy .provider-card-muted { color: var(--text-3); }
+.provider-card-footer { align-items: flex-end; display: flex; flex: 1; flex-wrap: wrap; gap: 9px; margin-top: auto; }
+.provider-card-footer .prov-actions { margin-left: 0; }
+.provider-card-footer .btn-primary { font-size: .8125rem; min-height: 40px; padding: 8px 14px; }
+.provider-card .openai-auth-title { font-size: .8125rem; }
+.provider-action-menu { margin: 0 0 0 auto; padding: 0; position: relative; }
+.provider-action-menu > summary { align-items: center; display: flex; height: 36px; justify-content: center; list-style: none; min-width: 38px; padding: 0 10px; }
+.provider-action-menu > summary::-webkit-details-marker { display: none; }
+.provider-action-menu[open] > summary { background: var(--well); }
+.provider-action-popover {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  box-shadow: var(--pop-shadow);
+  display: flex;
+  flex-direction: column;
+  min-width: 170px;
+  padding: 7px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 7px);
+  z-index: 4;
+}
+.provider-action-popover .btn { box-shadow: none; justify-content: flex-start; width: 100%; }
+.provider-action-popover .btn + .btn { margin-top: 3px; }
+.provider-step-list { display: flex; flex-direction: column; gap: 9px; }
+.provider-step { align-items: flex-start; color: var(--text-2); display: grid; font-size: .875rem; gap: 9px; grid-template-columns: 22px minmax(0, 1fr); line-height: 1.45; }
+.provider-step-number { align-items: center; background: #faedca; border-radius: 50%; color: var(--ember-deep); display: flex; font-family: var(--mono); font-size: .6875rem; font-weight: 700; height: 22px; justify-content: center; width: 22px; }
+.provider-step.complete .provider-step-number { background: var(--ok-tint); color: var(--ok); }
+.provider-step.pending { color: var(--text-3); }
+.provider-model-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.provider-model-chip {
+  align-items: center;
+  background: #fbf2dc;
+  border: 1px solid rgba(138, 100, 16, .16);
+  border-radius: 9px;
+  color: var(--text-2);
+  display: inline-flex;
+  font: inherit;
+  gap: 5px;
+  max-width: 100%;
+  padding: 5px 8px;
+  text-align: left;
+}
+.provider-model-unstar { align-items: center; background: transparent; border: 0; border-radius: 5px; color: inherit; cursor: pointer; display: inline-flex; flex: 0 0 auto; padding: 1px; }
+.provider-model-unstar:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.provider-model-chip .star { color: #d9962c; padding: 0; }
+.provider-model-chip .fav-model { font-size: .6875rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.provider-card .fav-summary { align-items: center; min-height: 0; }
+.provider-card .fav-provider-body { gap: 12px; padding: 16px 20px 20px; }
+.provider-card .fav-selected { border-top: 0; }
+.provider-card .fav-manager { margin-top: 2px; }
+.provider-card .fav-provider-error { padding: 12px 18px 0; }
+@container provider-settings (max-width: 760px) {
+  .workspace-default-card.workspace-default-shelf { align-items: stretch; grid-template-columns: 1fr; }
+  .provider-grid { grid-template-columns: 1fr; }
+  .provider-card { min-height: 0; }
+}
+@container provider-settings (max-width: 480px) {
+  .workspace-default-shelf .workspace-default-control { align-items: stretch; grid-template-columns: 1fr; }
+  .workspace-default-shelf .workspace-default-control .btn { width: 100%; }
+  .provider-section-head, .model-catalog-status { align-items: flex-start; flex-direction: column; }
+  .provider-card .prov-head { display: grid; gap: 5px 12px; grid-template-columns: 50px minmax(0, 1fr) auto; }
+  .provider-card .provider-card-title, .provider-card .prov-id { display: contents; }
+  .provider-card .provider-logo-tile { grid-column: 1; grid-row: 1 / span 2; }
+  .provider-card .prov-name { align-self: center; grid-column: 2; grid-row: 1; }
+  .provider-card .prov-sub { grid-column: 2 / 4; grid-row: 2; }
+  .provider-card .prov-status, .provider-card .fav-provider-controls { grid-column: 3; grid-row: 1; margin-left: 0; }
+}
 @media (max-width: 620px) {
   .fav-summary { align-items: flex-start; flex-direction: column; padding: 14px 0; }
 }
@@ -1872,6 +2007,7 @@ button.capability-pill { cursor: pointer; }
 .agent-schedule-delete:hover:not(:disabled) { background: var(--danger-well); }
 .agent-schedule-live { color: var(--text-3); font-size: .75rem; margin: 0; min-height: 18px; }
 .agent-schedule-live.error { color: var(--danger); }
+.agent-schedule-privacy-note { margin: 12px 0 0; }
 .owner-memory-editor-head { align-items: flex-start; border-bottom: 1px solid #eee4d1; display: flex; gap: 18px; justify-content: space-between; padding-bottom: 16px; }
 .owner-memory-form { display: grid; gap: 13px; }
 .owner-memory-editor textarea { line-height: 1.65; min-height: 300px; resize: vertical; }
@@ -3060,6 +3196,7 @@ button.capability-pill { cursor: pointer; }
     // owns its own route and loading state so switching tabs cannot mix data.
     auditDomain: "scheduled-work",
     scheduledRoutines: null,
+    scheduledPrivateHealth: null,
     scheduledLoading: false,
     scheduledError: "",
     scheduledSelection: "",
@@ -4748,7 +4885,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   var ONBOARDING_PROVIDERS = [
-    { id: "cloudflare", name: "Cloudflare", keyLabel: "", description: "Use the Workers AI binding included with this deployment." },
+    { id: "cloudflare", name: "Cloudflare Workers AI", keyLabel: "", description: "Use Cloudflare-hosted models included with this deployment. No API key needed." },
     { id: "anthropic", name: "Anthropic", keyLabel: "Anthropic API key", description: "Use Claude models with an Anthropic API key." },
     { id: "openai", name: "OpenAI", keyLabel: "OpenAI API key", description: "Use OpenAI models with a Platform API key." },
     { id: "openrouter", name: "OpenRouter", keyLabel: "OpenRouter API key", description: "Use models available through OpenRouter." }
@@ -4805,7 +4942,7 @@ button.capability-pill { cursor: pointer; }
       '<div class="onboarding-provider-config"><h2>' + (configured ? 'Use ' : 'Connect ') + esc(selected.name) + '</h2><p class="hint">' + esc(selected.description) + '</p>' + configuration + '</div>' +
       (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') +
       '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-provider-continue"' + (!canContinue || state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Validating&hellip;' : 'Validate and Continue') + '</button>' +
-      (selected.id !== "cloudflare" && onboardingProviderConfigured("cloudflare") ? '<button type="button" class="btn btn-ghost" data-action="onboarding-use-cloudflare">Use Cloudflare instead</button>' : '') + '</div></section>';
+      (selected.id !== "cloudflare" && onboardingProviderConfigured("cloudflare") ? '<button type="button" class="btn btn-ghost" data-action="onboarding-use-cloudflare">Use Cloudflare Workers AI instead</button>' : '') + '</div></section>';
   }
 
   function onboardingModelOptions() {
@@ -6877,8 +7014,9 @@ button.capability-pill { cursor: pointer; }
       (schedules.error ? 'role="alert" aria-live="assertive"' : 'role="status" aria-live="polite"') + '>' +
       esc(schedules.error || schedules.notice || "") +
       (schedules.error ? ' <button type="button" class="btn btn-soft btn-sm" data-action="agent-schedules-retry">Retry</button>' : "") + '</p>';
+    var privacyNote = '<p class="hint agent-schedule-privacy-note">Private DM schedules are not shown here. Manage them in the Chickpea DM where they were created.</p>';
     if (!schedules.schedules.length) {
-      return live + '<div class="empty"><p class="field-label">No scheduled work</p><p class="hint">Ask this Agent in Slack to schedule a recurring or one-time task.</p></div>';
+      return live + '<div class="empty"><p class="field-label">No scheduled work</p><p class="hint">Ask this Agent in Slack to schedule a recurring or one-time task.</p></div>' + privacyNote;
     }
     var rows = schedules.schedules.map(function (entry) {
       var scheduleStatus = agentScheduleStatusView(entry.status);
@@ -6904,7 +7042,7 @@ button.capability-pill { cursor: pointer; }
         '<div class="agent-schedule-meta">' + meta + '</div></div>' +
         ((control || remove) ? '<div class="agent-schedule-actions">' + control + remove + '</div>' : "") + '</article>';
     }).join("");
-    return live + '<div class="agent-schedule-list">' + rows + '</div>';
+    return live + '<div class="agent-schedule-list">' + rows + '</div>' + privacyNote;
   }
 
   // ---- Capability tabs (Instructions / Skills / Connections / Repositories / Memory / Schedules) -
@@ -6947,7 +7085,7 @@ button.capability-pill { cursor: pointer; }
         html = '<p class="hint">Only Agent editors can view or change durable memory for this Agent.</p>';
       }
       if (readOnly && tab.id === "schedules") {
-        html = '<p class="hint">Only Agent editors can manage schedules and Runs as authority for this Agent.</p>';
+        html = '<p class="hint">Only Agent editors can manage schedules and Runs as authority for this Agent. Private DM schedules are not shown here.</p>';
       }
       var body = readOnly
         ? '<fieldset class="agent-readonly-fields" disabled>' + html + '</fieldset>'
@@ -9453,7 +9591,9 @@ button.capability-pill { cursor: pointer; }
     var capability = scheduledCapabilityHtml(state.scheduledCapability);
     if (state.scheduledLoading && !state.scheduledRoutines) return head + '<div class="empty"><p class="hint">Loading scheduled work&hellip;</p></div>' + capability;
     if (state.scheduledError && !state.scheduledRoutines) return head + '<div class="empty"><p class="field-error">' + esc(state.scheduledError) + '</p><button type="button" class="btn btn-ghost" data-action="scheduled-retry">Retry</button></div>' + capability;
-    if (!state.scheduledInspector) return head + scheduledFiltersHtml() + scheduledRoutineListHtml(state.scheduledRoutines || []) + capability + scheduledLiveHtml();
+    if (!state.scheduledInspector) return head + scheduledFiltersHtml() +
+      scheduledRoutineListHtml(state.scheduledRoutines || []) +
+      scheduledPrivateHealthHtml(state.scheduledPrivateHealth || []) + capability + scheduledLiveHtml();
     if (state.scheduledDetailLoading || !state.scheduledDetail) {
       return head + '<button type="button" class="btn btn-ghost btn-sm scheduled-detail-back" data-action="scheduled-back-summary">&larr; Back to routine summary</button>' +
         '<div class="empty"><p class="hint">Loading routine detail&hellip;</p></div>' + scheduledLiveHtml();
@@ -9500,6 +9640,26 @@ button.capability-pill { cursor: pointer; }
     }).join("");
     return '<section aria-label="Scheduled work"><div class="scheduled-table-wrap"><table class="scheduled-table"><thead><tr><th>Name</th><th>Scope</th><th>Schedule</th><th>Status</th><th>Last run</th><th>Next run</th><th aria-label="Actions"></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
       '<div class="scheduled-table-footer"><span>Showing 1&ndash;' + Number(routines.length) + ' of ' + Number(routines.length) + '</span><span>Page 1 of 1</span></div></section>';
+  }
+
+  function scheduledPrivateHealthHtml(entries) {
+    if (!entries.length) return '';
+    var rows = entries.map(function (entry) {
+      var owner = entry.owner || {};
+      var ownerName = owner.displayName || "Agent unavailable";
+      var ownerId = owner.agentId ? '<span class="mono">' + esc(owner.agentId) + '</span>' : "Unknown Agent";
+      var run = entry.lastRun || {};
+      var delivery = run.deliveryStatus || "not attempted";
+      var failure = run.failureClass || "—";
+      return '<tr><td><strong>' + esc(ownerName) + '</strong><br><span class="hint">' + ownerId + '</span></td>' +
+        '<td><span class="scheduled-table-state ' + esc(entry.state || "unknown") + '">' + esc(String(entry.state || "unknown").replace(/_/g, " ")) + '</span></td>' +
+        '<td>' + esc(entry.lastFinishedAt ? formatScheduledDate(entry.lastFinishedAt, "UTC") : "Never") + '</td>' +
+        '<td>' + esc(entry.nextRunAt ? formatScheduledDate(entry.nextRunAt, "UTC") : "—") + '</td>' +
+        '<td>' + esc(String(delivery).replace(/_/g, " ")) + '</td>' +
+        '<td>' + esc(String(failure).replace(/_/g, " ")) + '</td></tr>';
+    }).join("");
+    return '<section aria-label="Private DM schedule health" style="margin-top:18px;"><div class="section-head"><div><h2 class="section-title">Private DM schedule health</h2><p class="hint">Operational status only. Private schedule details, destinations, and identifiers are never shown here.</p></div></div>' +
+      '<div class="scheduled-table-wrap"><table class="scheduled-table"><thead><tr><th>Owning Agent</th><th>Status</th><th>Last run</th><th>Next run</th><th>Delivery</th><th>Failure</th></tr></thead><tbody>' + rows + '</tbody></table></div></section>';
   }
 
   function scheduledRoutineSummaryModalHtml() {
@@ -9728,6 +9888,7 @@ button.capability-pill { cursor: pointer; }
       state: "current"
     };
     state.scheduledRoutines = null;
+    state.scheduledPrivateHealth = null;
     openScheduledWork("");
   }
 
@@ -9772,6 +9933,7 @@ button.capability-pill { cursor: pointer; }
     var request = api(resourceOwner, { cache: "no-store" }).then(function (body) {
       if (!visibleResourceLoadIsCurrent(resourceTicket) || state.view !== "audit") return;
       state.scheduledRoutines = body.routines || [];
+      state.scheduledPrivateHealth = body.privateScheduleHealth || [];
       state.scheduledCapability = body.capability || null;
       state.scheduledLimits = body.limits || null;
       state.scheduledLoading = false;
@@ -9826,6 +9988,7 @@ button.capability-pill { cursor: pointer; }
       state.scheduledBusy = "";
       state.scheduledNotice = "Routine " + action + (action.endsWith("e") ? "d" : "ed") + ".";
       state.scheduledRoutines = null;
+      state.scheduledPrivateHealth = null;
       invalidateVisibleResource("audit", scheduledListPath());
       render();
       return loadScheduledRoutines();
@@ -9835,6 +9998,7 @@ button.capability-pill { cursor: pointer; }
         ? "This routine changed in another session. The list has been refreshed."
         : error.serverMessage || error.message || "Could not update this routine.";
       state.scheduledRoutines = null;
+      state.scheduledPrivateHealth = null;
       invalidateVisibleResource("audit", scheduledListPath());
       render();
       return loadScheduledRoutines();
@@ -9907,6 +10071,7 @@ button.capability-pill { cursor: pointer; }
         if (state.scheduledDetail) state.scheduledDetail.routine = body.routine;
       }
       state.scheduledRoutines = null;
+      state.scheduledPrivateHealth = null;
       invalidateVisibleResource("audit", scheduledListPath());
       invalidateVisibleResource("audit-detail", routine.id);
       render();
@@ -10076,7 +10241,7 @@ button.capability-pill { cursor: pointer; }
     if (id === "anthropic") return { name: "Anthropic", sub: "Claude models", frag: "anthropic/*", suffix: "", env: "ANTHROPIC_API_KEY" };
     if (id === "openai") return { name: "OpenAI", sub: "GPT models", frag: "openai/*", suffix: "", env: "OPENAI_API_KEY" };
     if (id === "openrouter") return { name: "OpenRouter", sub: "Any model", frag: "openrouter/*", suffix: "", env: "OPENROUTER_API_KEY" };
-    if (id === "workers-ai") return { name: "Workers AI", sub: "Cloudflare models", frag: "cloudflare/*", suffix: " via the Workers AI binding", env: "" };
+    if (id === "workers-ai") return { name: "Cloudflare Workers AI", sub: "Cloudflare-hosted models", frag: "cloudflare/*", suffix: "", env: "" };
     return { name: id, sub: "Custom provider", frag: id + "/*", suffix: "", env: "" };
   }
 
@@ -10303,14 +10468,11 @@ button.capability-pill { cursor: pointer; }
     } else if (!state.settingsLoaded || !state.settings) {
       providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2></div></div>' + modelCatalogStatusHtml() + '<p class="hint">Loading providers&hellip;</p></section>';
     } else {
-      var providers = (state.settings.providers || []).filter(function (provider) {
-        // Workers AI is binding-only — shown on Cloudflare, hidden on Node.
-        return provider.id !== "workers-ai" || IS_CLOUDFLARE;
-      });
+      var providers = state.settings.providers || [];
       var rows = providers.map(providerRowHtml).join("");
-      providerSection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Model providers</h2>' +
-        '<p class="hint">Connect the API credentials Chickpea can use.</p></div></div>' +
-        modelCatalogStatusHtml() + rows + '</section>';
+      providerSection = '<section class="section provider-section"><div class="provider-section-head"><div class="provider-section-title"><h2 class="section-title">Model providers</h2>' +
+        '<p class="hint">Connect the API credentials Chickpea can use.</p></div>' + modelCatalogStatusHtml() + '</div>' +
+        '<div class="provider-grid">' + rows + '</div></section>';
     }
     return head +
       settingsPanelHtml("slack", slackWorkspaceSettingsHtml()) +
@@ -10322,7 +10484,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function settingsPanelHtml(id, body) {
-    return '<div class="settings-panel" data-settings-panel="' + id + '"' + (state.settingsSection === id ? '' : ' hidden') + '>' + body + '</div>';
+    return '<div class="settings-panel' + (id === "providers" ? ' settings-providers-page' : '') + '" data-settings-panel="' + id + '"' + (state.settingsSection === id ? '' : ' hidden') + '>' + body + '</div>';
   }
 
   function connectorPresetForToolkit(toolkit) {
@@ -10455,12 +10617,13 @@ button.capability-pill { cursor: pointer; }
 
   function workspaceDefaultSectionHtml() {
     var current = state.workspaceDefault;
-    var head = '<section class="section workspace-default-section" aria-labelledby="workspace-default-heading"><div class="section-head"><div><h2 class="section-title" id="workspace-default-heading">Default model</h2><p class="hint">The shared model for Chickpea and every Agent that is not pinned.</p></div></div>';
+    var head = '<section class="section workspace-default-section" aria-labelledby="workspace-default-heading">';
+    var title = '<h2 class="section-title" id="workspace-default-heading">Default model</h2>';
     if (!state.workspaceDefaultLoaded) {
-      return head + '<div class="workspace-default-card"><p class="hint">Loading Workspace default&hellip;</p></div></section>';
+      return head + '<div class="workspace-default-card workspace-default-shelf"><div class="workspace-default-summary"><div class="workspace-default-title-row">' + title + '</div><p class="hint">Loading Workspace default&hellip;</p></div></div></section>';
     }
     if (!current) {
-      return head + '<div class="workspace-default-card"><p class="field-error" role="alert">' + esc(state.workspaceDefaultError || "Connect Slack before choosing a Workspace default.") + '</p><a class="btn btn-soft btn-sm" href="/admin/settings/slack">Review Slack setup</a></div></section>';
+      return head + '<div class="workspace-default-card workspace-default-shelf"><div class="workspace-default-summary"><div class="workspace-default-title-row">' + title + '</div><p class="field-error" role="alert">' + esc(state.workspaceDefaultError || "Connect Slack before choosing a Workspace default.") + '</p></div><a class="btn btn-soft btn-sm" href="/admin/settings/slack">Review Slack setup</a></div></section>';
     }
     var options = workspaceDefaultModelOptions();
     var optionHtml = options.map(function (model) {
@@ -10490,9 +10653,9 @@ button.capability-pill { cursor: pointer; }
       : state.workspaceDefaultNotice
         ? '<p class="inline-status ok" role="status" aria-live="polite">' + esc(state.workspaceDefaultNotice) + '</p>'
         : '<span class="sr-only" role="status" aria-live="polite"></span>';
-    return head + '<div class="workspace-default-card"><div class="workspace-default-head"><div class="workspace-default-copy"><span class="field-label">Workspace default</span><span class="hint">' + esc(inheritors) + '</span></div><div class="workspace-default-meta">' + healthBadge + (current.live ? '<span class="badge-src">Live</span>' : '<span class="badge-src">Pending activation</span>') + repair + '</div></div>' +
-      '<div class="workspace-default-control"><label class="field" for="workspace-default-model"><span class="field-label">Model</span><span class="select-wrap"><select class="input mono" id="workspace-default-model" data-action="workspace-default-model"' + disabled + '>' + optionHtml + '</select>' + icon("chevron-down", "select-caret") + '</span></label><button type="button" class="btn btn-primary" data-action="workspace-default-save"' + (!changed || state.workspaceDefaultBusy || !state.workspaceDefaultDraft ? " disabled" : "") + '>' + (state.workspaceDefaultBusy ? '<span class="spinner"></span>Saving&hellip;' : "Save default") + '</button></div>' +
-      '<p class="hint">' + esc(timing) + '</p>' + status + '</div></section>';
+    return head + '<div class="workspace-default-card workspace-default-shelf"><div class="workspace-default-summary"><div class="workspace-default-title-row">' + title + healthBadge + (current.live ? '<span class="badge-src">Live</span>' : '<span class="badge-src">Pending activation</span>') + '</div><div class="workspace-default-copy"><p class="hint">The shared model for Chickpea and every Agent that is not pinned.</p><p class="hint">' + esc(inheritors) + '</p></div>' + repair + '</div>' +
+      '<div><div class="workspace-default-control"><label class="field" for="workspace-default-model"><span class="sr-only">Model</span><span class="select-wrap"><select class="input mono" id="workspace-default-model" data-action="workspace-default-model"' + disabled + '>' + optionHtml + '</select>' + icon("chevron-down", "select-caret") + '</span></label><button type="button" class="btn btn-primary" data-action="workspace-default-save"' + (!changed || state.workspaceDefaultBusy || !state.workspaceDefaultDraft ? " disabled" : "") + '>' + (state.workspaceDefaultBusy ? '<span class="spinner"></span>Saving&hellip;' : "Save default") + '</button></div>' +
+      '<p class="hint workspace-default-timing">' + esc(timing) + '</p>' + status + '</div></div></section>';
   }
 
   function connectionInventoryHtml() {
@@ -10536,18 +10699,17 @@ button.capability-pill { cursor: pointer; }
 
   function modelCatalogStatusHtml() {
     var status = state.modelCatalog;
-    var copy = "Loading model list status&hellip;";
+    var copy = "loading&hellip;";
     if (state.modelCatalogLoaded) {
       if (status) {
-        if (status.mode === "bundled") copy = "Included with this Chickpea release";
-        else if (status.source === "hosted") copy = "Models up to date &middot; revision " + Number(status.revision || 0);
-        else copy = "Using models included with this Chickpea release";
-      } else copy = "Model list status unavailable";
+        if (status.mode === "bundled") copy = "included with this Chickpea release";
+        else if (status.source === "hosted") copy = "up to date &middot; revision " + Number(status.revision || 0);
+        else copy = "using models included with this Chickpea release";
+      } else copy = "status unavailable";
     }
-    return '<div class="bundle-row model-catalog-status"><div class="danger-copy"><span class="field-label">Model list</span>' +
-      '<span class="hint">' + copy + '</span></div>' +
+    return '<div class="model-catalog-status"><span class="model-catalog-copy">Compatibility rules ' + copy + '</span>' +
       '<button type="button" class="btn btn-ghost btn-sm i-lead" data-action="model-catalog-refresh"' + (state.modelCatalogBusy ? " disabled" : "") + '>' +
-      (state.modelCatalogBusy ? '<span class="spinner"></span>Refreshing&hellip;' : icon("arrow-path") + 'Refresh models') + '</button>' +
+      (state.modelCatalogBusy ? '<span class="spinner"></span>Refreshing&hellip;' : icon("arrow-path") + 'Refresh') + '</button>' +
       (state.modelCatalogError ? '<span class="inline-status error" role="alert">' + esc(state.modelCatalogError) + '</span>' : "") + '</div>';
   }
 
@@ -10580,6 +10742,40 @@ button.capability-pill { cursor: pointer; }
       '<div><button type="button" class="btn btn-primary" data-action="egress-save"' + (state.egressSaving ? " disabled" : "") + '>' + (state.egressSaving ? "Saving&hellip;" : "Save") + '</button></div></section>';
   }
 
+  function providerLogoHtml(id) {
+    var logoId = id === "workers-ai" ? "cloudflare" : id;
+    return '<span class="provider-logo-tile" aria-hidden="true"><img class="provider-card-logo" src="' + esc(MODEL_PROVIDER_LOGOS[logoId] || "") + '" alt=""></span>';
+  }
+
+  function providerCardIdentityHtml(id, meta) {
+    return '<div class="provider-card-title">' + providerLogoHtml(id) + '<div class="prov-id"><span class="prov-name">' + esc(meta.name) + '</span>' +
+      '<span class="prov-sub">' + esc(meta.sub) + ' &middot; <span class="mono-frag">' + esc(meta.frag) + '</span>' + (meta.suffix ? esc(meta.suffix) : "") + '</span></div></div>';
+  }
+
+  function providerCardStatusHtml(summary) {
+    var connected = summary.status === "stored" || summary.status === "env";
+    return '<div class="prov-status"><span class="badge ' + (connected ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (connected ? "Connected" : "Key needed") + '</span></div>';
+  }
+
+  function providerCardCopyHtml(id, summary, meta) {
+    var connected = summary.status === "stored" || summary.status === "env";
+    var count = providerModelCount(id, summary);
+    if (!connected) {
+      var article = /^[aeiou]/i.test(meta.name) ? "an " : "a ";
+      var billing = id === "openai" ? '<p class="provider-card-muted">Platform billing requires an API key here.</p>' : "";
+      return '<div class="provider-card-copy"><p>Add ' + article + esc(meta.name) + ' API key to use ' + esc(meta.sub) + ' in every model picker.</p>' + billing + '<p class="provider-card-muted">Validated once against <span class="mono">' + esc(validateEndpointPath(id)) + '</span> and stored like your Slack credentials.</p></div>';
+    }
+    var source = summary.status === "env" ? "Environment managed" : "Saved in Chickpea";
+    var availability = count == null ? "Models available after the next catalog refresh." : count + " models available.";
+    return '<div class="provider-card-copy"><p><span class="openai-auth-title">API key</span> &middot; ' + esc(source) + '</p><p class="provider-card-muted">' + esc(availability) + '</p></div>';
+  }
+
+  function standardProviderCardBodyHtml(id, summary, ui, meta, editor) {
+    return '<div class="prov-body">' + providerCardCopyHtml(id, summary, meta) +
+      (editor ? '<div class="provider-card-editor">' + editor + '</div>' : '') +
+      '<div class="provider-card-footer">' + providerActionsHtml(id, summary, ui) + '</div></div>';
+  }
+
   function providerRowHtml(summary) {
     var id = summary.id;
     var meta = providerMeta(id);
@@ -10588,14 +10784,8 @@ button.capability-pill { cursor: pointer; }
     var body = "";
     if (ui.removeOpen) body = removeConfirmHtml(id, summary);
     else if (ui.open) body = pasteBodyHtml(id, ui, meta);
-    if (id === "openai") return openAiProviderRowHtml(summary, ui, body, meta);
-    var head = '<div class="prov-head">' +
-      '<div class="prov-id"><span class="prov-name">' + esc(meta.name) + '</span>' +
-      '<span class="prov-sub">' + esc(meta.sub) + ' &middot; <span class="mono-frag">' + esc(meta.frag) + '</span>' + (meta.suffix ? esc(meta.suffix) : "") + '</span></div>' +
-      providerStatusHtml(id, summary) +
-      providerActionsHtml(id, summary, ui) +
-      '</div>';
-    return '<div class="prov-row">' + head + (body ? '<div class="prov-body">' + body + '</div>' : "") + '</div>';
+    var head = '<div class="prov-head">' + providerCardIdentityHtml(id, meta) + providerCardStatusHtml(summary) + '</div>';
+    return '<article class="prov-row provider-card" data-provider-card="' + esc(id) + '">' + head + standardProviderCardBodyHtml(id, summary, ui, meta, body) + '</article>';
   }
 
   function favoriteProviderRowHtml(summary, ui, meta) {
@@ -10603,70 +10793,18 @@ button.capability-pill { cursor: pointer; }
     var editor = "";
     if (ui.removeOpen) editor = removeConfirmHtml(id, summary);
     else if (ui.open) editor = pasteBodyHtml(id, ui, meta);
-    var actions = id === "workers-ai"
-      ? '<div class="fav-provider-controls"><label class="toggle"><span class="thumb"></span><input type="checkbox" data-action="workers-ai-enabled"' + (summary.enabled !== false ? " checked" : "") + ' aria-label="Use Workers AI in Agent model pickers"' + (ui.enabledBusy ? " disabled" : "") + '></label></div>'
-      : providerActionsHtml(id, summary, ui);
-    var head = '<div class="prov-head"><div class="prov-id fav-provider-id"><span class="prov-name">' + esc(meta.name) + '</span>' +
-      favoriteProviderStatusHtml(id, summary) + '</div>' + actions + '</div>';
+    var actions = id === "workers-ai" && !IS_CLOUDFLARE
+      ? '<div class="prov-status"><span class="badge badge-neutral"><span class="dot"></span>Cloudflare only</span></div>'
+      : id === "workers-ai"
+      ? '<div class="fav-provider-controls"><span class="provider-toggle-label">' + (summary.enabled !== false ? "On" : "Off") + '</span><label class="toggle"><span class="thumb"></span><input type="checkbox" data-action="workers-ai-enabled"' + (summary.enabled !== false ? " checked" : "") + ' aria-label="Use Workers AI in Agent model pickers"' + (ui.enabledBusy ? " disabled" : "") + '></label></div>'
+      : providerCardStatusHtml(summary);
+    var head = '<div class="prov-head">' + providerCardIdentityHtml(id, meta) + actions + '</div>';
     var error = ui.enabledError
       ? '<div class="fav-provider-error"><p class="field-error" role="alert">' + esc(ui.enabledError) + '</p>' +
         (ui.enabledRetry ? '<button type="button" class="btn btn-ghost btn-sm" data-action="workers-ai-refresh"' + (ui.enabledBusy ? " disabled" : "") + '>Try again</button>' : "") + '</div>'
       : "";
-    var body = editor
-      ? '<div class="prov-body fav-provider-body fav-provider-editor">' + editor + '</div>'
-      : favoriteProviderBodyHtml(id);
-    return '<div class="prov-row fav-provider">' + head + error + body + '</div>';
-  }
-
-  function favoriteProviderStatusHtml(id, summary) {
-    if (id === "workers-ai") {
-      var enabled = summary.enabled !== false;
-      return '<span class="badge ' + (enabled ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (enabled ? "On" : "Off") + '</span>';
-    }
-    if (summary.status === "stored" || summary.status === "env") {
-      return '<span class="badge badge-on"><span class="dot"></span>Connected</span>';
-    }
-    return '<span class="badge badge-off"><span class="dot"></span>API key required</span>';
-  }
-
-  function openAiProviderRowHtml(summary, ui, apiEditor, meta) {
-    var apiConnected = summary.status === "stored" || summary.status === "env";
-    var apiBadge = '<span class="badge ' + (apiConnected ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (apiConnected ? "Connected" : "Not connected") + '</span>';
-    var apiSource = summary.status === "env" ? "Environment managed" : summary.status === "stored" ? "Saved in Chickpea" : "Platform billing";
-    var apiOption = '<div class="openai-auth-option"><div class="openai-auth-head">' +
-      '<div class="openai-auth-copy"><span class="openai-auth-title">API key</span><span class="openai-auth-meta">' + esc(apiSource) + '</span></div>' +
-      apiBadge + providerActionsHtml("openai", summary, ui) + '</div>' +
-      (apiEditor ? '<div class="openai-auth-editor">' + apiEditor + '</div>' : "") + '</div>';
-    var head = '<div class="prov-head"><div class="prov-id"><span class="prov-name">' + esc(meta.name) + '</span>' +
-      '<span class="prov-sub">' + esc(meta.sub) + ' &middot; <span class="mono-frag">' + esc(meta.frag) + '</span></span></div></div>';
-    return '<div class="prov-row">' + head + '<div class="prov-body"><div class="openai-auth-list">' + apiOption + '</div></div></div>';
-  }
-
-  function providerStatusHtml(id, summary) {
-    var status = summary.status;
-    var favCount = isFavoriteProvider(id) ? favoritesFor(id).length : null;
-    var count = providerModelCount(id, summary);
-    var chip;
-    var parts;
-    if (status === "env") {
-      if (id === "workers-ai") {
-        chip = '<span class="badge badge-on"><span class="dot"></span>Always available</span>';
-        parts = ["Keyless", "billed in Neurons"];
-      } else {
-        chip = '<span class="badge badge-on"><span class="dot"></span>' + (id === "openai" ? "API key via environment" : "Via environment") + '</span>';
-        parts = ["Read-only"];
-      }
-      if (count != null) parts.push(count + " models");
-      if (favCount != null) parts.push(favCount + " in your picker");
-    } else if (status === "stored") {
-      chip = '<span class="badge badge-on"><span class="dot"></span>' + (id === "openai" ? "API key stored" : "Stored") + '</span>';
-      parts = ["Saved here"];
-      if (count != null) parts.push(count + " models available");
-      if (favCount != null) parts.push(favCount + " in your picker");
-    } else {
-      return '<div class="prov-status"><span class="badge badge-off"><span class="dot"></span>' + (id === "openai" ? "API key missing" : "Missing") + '</span></div>';
-    }
-    return '<div class="prov-status">' + chip + '<span class="hint">' + esc(parts.join(" · ")) + '</span></div>';
+    var body = favoriteProviderBodyHtml(id, summary, editor);
+    return '<article class="prov-row provider-card fav-provider" data-provider-card="' + esc(id) + '">' + head + error + body + '</article>';
   }
 
   function providerActionsHtml(id, summary, ui) {
@@ -10677,11 +10815,12 @@ button.capability-pill { cursor: pointer; }
       return '<div class="prov-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="prov-cancel-key" data-provider="' + esc(id) + '">Cancel</button></div>';
     }
     if (summary.status === "stored") {
-      return '<div class="prov-actions">' +
-        '<button type="button" class="btn btn-soft btn-sm" data-action="prov-change-key" data-provider="' + esc(id) + '">Change key</button>' +
-        '<button type="button" class="btn btn-danger btn-sm" data-action="prov-remove" data-provider="' + esc(id) + '">Remove</button></div>';
+      var name = providerMeta(id).name;
+      return '<details class="provider-action-menu"><summary class="btn btn-ghost btn-sm" aria-label="Manage ' + esc(name) + ' API key">&hellip;</summary><div class="provider-action-popover">' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="prov-change-key" data-provider="' + esc(id) + '">Change key&hellip;</button>' +
+        '<button type="button" class="btn btn-danger btn-sm" data-action="prov-remove" data-provider="' + esc(id) + '">Remove key&hellip;</button></div></details>';
     }
-    return '<div class="prov-actions"><button type="button" class="btn btn-soft btn-sm" data-action="prov-add-key" data-provider="' + esc(id) + '">Add key</button></div>';
+    return '<div class="prov-actions"><button type="button" class="btn btn-primary btn-sm" data-action="prov-add-key" data-provider="' + esc(id) + '">Add key</button></div>';
   }
 
   function validateEndpointPath(id) {
@@ -10769,16 +10908,33 @@ button.capability-pill { cursor: pointer; }
       '<button type="button" class="btn btn-danger btn-sm" data-action="prov-remove-confirm" data-provider="' + esc(id) + '">Remove key</button></div>';
   }
 
-  function favoriteProviderBodyHtml(id) {
+  function favoriteProviderBodyHtml(id, providerSummary, editor) {
     var ui = favUiFor(id);
     var favs = favoritesFor(id);
     var open = !!ui.open;
     var buttonLabel = open ? "Done" : (favs.length ? "Manage models" : "Choose models");
-    var summary = '<div class="fav-summary"><div class="fav-summary-copy"><span class="fav-summary-title">Models</span>' +
+    var summaryHtml = '<div class="fav-summary"><div class="fav-summary-copy"><span class="fav-summary-title">Models</span>' +
       '<span class="fav-summary-count">' + favs.length + ' selected</span></div>' +
       '<button type="button" class="btn btn-soft btn-sm" data-action="fav-manager-toggle" data-provider="' + esc(id) + '" aria-expanded="' + (open ? "true" : "false") + '" aria-controls="fav-manager-' + esc(id) + '">' + buttonLabel + '</button></div>';
-    return '<div class="prov-body fav-provider-body">' + summary +
-      (open ? favManagerHtml(id) : "") + favSelectedHtml(id) + '</div>';
+    if (id === "workers-ai" && !IS_CLOUDFLARE) {
+      return '<div class="prov-body fav-provider-body"><div class="provider-card-copy"><p>Included by default on Cloudflare deployments.</p><p class="provider-card-muted">This Node installation has no Workers AI binding, so its model controls are unavailable here.</p></div></div>';
+    }
+    if (editor) {
+      return '<div class="prov-body fav-provider-body fav-provider-editor">' + editor + '<div class="provider-card-footer">' + providerActionsHtml(id, providerSummary, state.provUi[id] || {}) + '</div></div>';
+    }
+    var intro = "";
+    if (id === "openrouter") {
+      var connected = providerSummary.status === "stored" || providerSummary.status === "env";
+      intro = '<div class="provider-step-list"><div class="provider-step' + (connected ? ' complete' : '') + '"><span class="provider-step-number">' + (connected ? '&#10003;' : '1') + '</span><span>Add your OpenRouter key. Chickpea validates it with <span class="mono">GET /auth/key</span>.</span></div>' +
+        '<div class="provider-step' + (favs.length ? ' complete' : ' pending') + '"><span class="provider-step-number">' + (favs.length ? '&#10003;' : '2') + '</span><span>Choose the models to show in pickers' + (favs.length ? '.' : ' &middot; 0 chosen.') + '</span></div></div>';
+    } else {
+      intro = '<div class="provider-card-copy"><p>Runs Cloudflare-hosted models. No API key needed.</p><p class="provider-card-muted">' + favs.length + ' models in your picker.</p></div>';
+    }
+    var keyActions = id === "openrouter" ? providerActionsHtml(id, providerSummary, state.provUi[id] || {}) : "";
+    var showModelSummary = id !== "openrouter" || connected || favs.length > 0 || open;
+    return '<div class="prov-body fav-provider-body">' + intro + (showModelSummary ? summaryHtml : "") +
+      (open ? favManagerHtml(id) : "") + favSelectedHtml(id) +
+      (keyActions ? '<div class="provider-card-footer">' + keyActions + '</div>' : '') + '</div>';
   }
 
   function favManagerHtml(id) {
@@ -10812,11 +10968,10 @@ button.capability-pill { cursor: pointer; }
   function favSelectedHtml(id) {
     var favs = favoritesFor(id);
     if (favs.length === 0) return "";
-    var models = state.providerModels[id] || [];
-    var byId = {};
-    models.forEach(function (model) { byId[model.id] = model; });
-    var rows = favs.map(function (mid) { return favRowHtml(id, byId[mid] || { id: mid }, true, false); }).join("");
-    return '<div class="fav-selected" id="fav-starred-' + esc(id) + '">' + rows + '</div>';
+    var chips = favs.map(function (mid) {
+      return '<span class="provider-model-chip" title="' + esc(mid) + '"><button type="button" class="provider-model-unstar" data-action="fav-star" data-provider="' + esc(id) + '" data-model="' + esc(mid) + '" aria-label="Remove ' + esc(mid) + ' from the model picker"><span class="star on" aria-hidden="true">' + starIcon(true) + '</span></button><span class="fav-model">' + esc(mid) + '</span></span>';
+    }).join("");
+    return '<div class="fav-selected provider-model-chips" id="fav-starred-' + esc(id) + '">' + chips + '</div>';
   }
 
   function favRowHtml(id, model, on, showMeta) {
@@ -12607,6 +12762,10 @@ button.capability-pill { cursor: pointer; }
       document.querySelectorAll(".connection-state-stack details[open]").forEach(function (details) {
         if (details !== clickedConnectionDetails) details.removeAttribute("open");
       });
+      var clickedProviderDetails = event.target.closest(".provider-action-menu");
+      document.querySelectorAll(".provider-action-menu[open]").forEach(function (details) {
+        if (details !== clickedProviderDetails) details.removeAttribute("open");
+      });
     }
     // Outside-click closes the open Model combobox (F6). A click inside the
     // combo (the input, an option, or the Settings row) is left to the
@@ -13841,6 +14000,7 @@ button.capability-pill { cursor: pointer; }
       state.scheduledDetail = null;
       state.scheduledInspector = false;
       state.scheduledRoutines = null;
+      state.scheduledPrivateHealth = null;
       loadScheduledRoutines();
     }
     if (action === "scheduled-filter-state") {
@@ -13850,6 +14010,7 @@ button.capability-pill { cursor: pointer; }
       state.scheduledDetail = null;
       state.scheduledInspector = false;
       state.scheduledRoutines = null;
+      state.scheduledPrivateHealth = null;
       loadScheduledRoutines();
     }
     if (action === "sandbox-ready-attestation" && !state.sandboxSaving) {
@@ -14096,6 +14257,16 @@ button.capability-pill { cursor: pointer; }
         event.preventDefault();
         state.connectorSettings.confirm = "";
         render();
+        return;
+      }
+    }
+    if ((event.key === "Escape" || event.key === "Esc") && document.querySelector) {
+      var openProviderActionMenu = document.querySelector(".provider-action-menu[open]");
+      if (openProviderActionMenu) {
+        event.preventDefault();
+        var providerActionSummary = openProviderActionMenu.querySelector("summary");
+        openProviderActionMenu.removeAttribute("open");
+        if (providerActionSummary && providerActionSummary.focus) providerActionSummary.focus();
         return;
       }
     }

@@ -32,6 +32,9 @@ export class RoutineContentAccessResolver {
   constructor(private readonly options: RoutineContentAccessResolverOptions) {}
 
   resolve(routine: RoutineDefinition): Promise<RoutineContentAccess> {
+    if (routine.destination.kind === 'direct_thread') {
+      return Promise.resolve('authorization_unknown');
+    }
     const key = `${routine.id}\0${routine.version}\0${routine.workId ?? ''}\0${routine.bindingId ?? ''}`;
     const current = this.accessResults.get(key);
     if (current) return current;

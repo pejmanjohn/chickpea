@@ -9,13 +9,17 @@ import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 export function renderRoutineList(
   routines: readonly RoutineDefinition[],
   channelId: string,
+  options: { destinationKind?: RoutineDefinition['destination']['kind'] } = {},
 ): string {
   const visible = routines.filter((routine) => routine.deletedAt === null);
+  const heading = options.destinationKind === 'direct_thread'
+    ? '**Scheduled work in this DM**'
+    : `**Scheduled work for <#${channelId}>**`;
   if (visible.length === 0) {
-    return `**Scheduled work for <#${channelId}>**\n\nNo routines are configured for this channel.`;
+    return `${heading}\n\nNo routines are configured here.`;
   }
   return [
-    `**Scheduled work for <#${channelId}>**`,
+    heading,
     '',
     ...visible.flatMap((routine) => [
       `- **${escapeSlackControlCharacters(routine.name)}** · ${stateLabel(routine.state)}`,

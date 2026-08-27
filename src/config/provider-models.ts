@@ -11,6 +11,9 @@ export interface ProviderModel {
   id: string;
   display_name?: string;
   context_length?: number;
+  max_completion_tokens?: number;
+  input_modalities?: string[];
+  supported_parameters?: string[];
   pricing?: Record<string, string>;
 }
 
@@ -49,7 +52,7 @@ export class ProviderModelsUnavailableError extends Error {
 }
 
 export const WORKERS_AI_DEFAULT_FAVORITES = [
-  '@cf/zai-org/glm-5.2',
+  '@cf/zai-org/glm-5.3-flash',
   '@cf/moonshotai/kimi-k2.7-code',
   '@cf/openai/gpt-oss-120b',
   '@cf/meta/llama-4-scout-17b-16e-instruct',
@@ -287,9 +290,25 @@ async function fetchOpenRouterModels(timeoutMs?: number): Promise<ProviderModel[
   return readModelArray(body).map((model) => {
     const pricing = recordOfStrings(model.pricing);
     const contextLength = numberField(model, 'context_length');
+    const architecture = recordField(model, 'architecture');
+    const topProvider = recordField(model, 'top_provider');
+    const displayName = optionalStringField(model, 'name');
+    const maxCompletionTokens = topProvider
+      ? numberField(topProvider, 'max_completion_tokens')
+      : undefined;
+    const inputModalities = architecture
+      ? stringArrayField(architecture, 'input_modalities')
+      : undefined;
+    const supportedParameters = stringArrayField(model, 'supported_parameters');
     return {
       id: stringField(model, 'id'),
+      ...(displayName ? { display_name: displayName } : {}),
       ...(contextLength !== undefined ? { context_length: contextLength } : {}),
+      ...(maxCompletionTokens !== undefined
+        ? { max_completion_tokens: maxCompletionTokens }
+        : {}),
+      ...(inputModalities ? { input_modalities: inputModalities } : {}),
+      ...(supportedParameters ? { supported_parameters: supportedParameters } : {}),
       ...(pricing ? { pricing } : {}),
     };
   });
@@ -512,6 +531,21 @@ function recordOfStrings(value: unknown): Record<string, string> | undefined {
     (entry): entry is [string, string] => typeof entry[1] === 'string',
   );
   return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+function recordField(
+  record: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> | undefined {
+  const value = record[key];
+  return isRecord(value) && !Array.isArray(value) ? value : undefined;
+}
+
+function stringArrayField(record: Record<string, unknown>, key: string): string[] | undefined {
+  const value = record[key];
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((entry): entry is string => typeof entry === 'string');
+  return strings.length ? strings : undefined;
 }
 
 function aiBinding(env: PlatformEnv | undefined):

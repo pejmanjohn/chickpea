@@ -23,6 +23,8 @@ Use each inspected revision only for the object it belongs to. A Channel's top-l
 
 For a routine that posts to the current Slack Channel, reuse that destination when `inspect_workspace` shows the Channel is active and its grant for the acting Agent is active. Put the inspected `workspaceId` and `channelId` directly in `save_routine`; do not add `put_channel`, `grant_agent_channel`, or Channel discovery to the proposal. A Channel operation is needed only when the destination or grant is actually missing or inactive. Do not turn an already-satisfied destination into a workspace-authority handoff.
 
+In a one-to-one Chickpea DM, call `inspect_routines` with the workspace and let the trusted Slack origin supply the private conversation. Create private scheduled work with `destination: { kind: "current_dm_thread" }` and omit `channelId`; never copy or invent a DM ID, thread timestamp, or member ID. A user Agent may create and manage only schedules it owns. Chickpea may manage every schedule belonging to that member in the same DM, but must name an eligible user Agent as owner and never use itself. Use `reassign_routine_agent` only through Chickpea when the member explicitly changes the owning Agent. Group DMs cannot contain scheduled work.
+
 Never request credentials, OAuth codes, tokens, private keys, or secret-bearing URLs in conversation or management operations. Use `prepare_connector_setup` and return its Chickpea handoff URL when setup is needed.
 
 ## Choose the configuration primitive
@@ -43,7 +45,7 @@ When a request spans primitives, use the smallest coherent composition. Explain 
 
 All requests to remember or edit durable Agent memory are Agent authoring. Call `inspect_memory` to read the current body and revision, then preserve the existing body and include an `update_agent_memory` operation with that exact `expectedRevision`. A clear, standalone, reversible memory request may use the direct-apply path when policy permits. If the same turn also asks for standing behavior, a skill, access, identity, model, reach, editing authority, or scheduled work, include the memory operation in the same read-only proposal as the other primitives; never partially apply the turn.
 
-All natural-language requests to create, edit, inspect, run, clone, pause, resume, disable, or delete scheduled work are Agent authoring. Inspect and handle the request through this guide even when the schedule is the only primitive. Exact `!routines` commands remain a separate deterministic control surface. When one request also contains a durable fact, standing behavior, skill, access change, identity change, or model change, inspect and place every part together; never save only the cadence and discard the rest.
+All natural-language requests to create, edit, inspect, run, clone, pause, resume, disable, reassign, or delete scheduled work are Agent authoring. Inspect and handle the request through this guide even when the schedule is the only primitive. Exact `!routines` commands remain a separate deterministic control surface. When one request also contains a durable fact, standing behavior, skill, access change, identity change, or model change, inspect and place every part together; never save only the cadence and discard the rest.
 
 ## Explore and design conversationally
 
@@ -68,9 +70,9 @@ Do not repeatedly re-ask settled details. Fill obvious blanks, show the assumpti
 
 Use `propose_workspace_changes` for new-Agent creation and for generated, inferred, compound, multi-field, skill-bearing, capability-expanding, reach-changing, scheduled, destructive, or otherwise consequential edits. A proposal is read-only: it normalizes the exact typed operations, shows a bounded visible diff and missing setup, records the guide version, and returns a requester- and origin-bound handle.
 
-Treat every returned proposal handle as an opaque control token. Copy it byte-for-byte from the tool result when showing it or passing it to `confirm_workspace_change`; never retype, shorten, normalize, or invent a handle. If the exact handle is unavailable, inspect or propose again instead of guessing.
+Treat every returned proposal handle as an opaque control token. Preserve it byte-for-byte for `confirm_workspace_change`; never retype, shorten, normalize, or invent it. The handle is not the human-facing proposal and should not replace the visible preview. If the exact handle is unavailable, inspect or propose again instead of guessing.
 
-Ask the requester to approve the exact visible proposal. Only then call `confirm_workspace_change` with its proposal handle. Never reconstruct or reinterpret operations during confirmation. If the proposal is stale, expired, denied, or bound to a different requester, conversation, client, or acting Agent, make no configuration write and offer a fresh inspection and proposal.
+For Slack, copy the tool's `presentation.slack` value verbatim. It shows the before and after details that fit in Slack and clearly labels a truncated preview. Ask the requester to approve the proposed changes. Confirmation applies the full frozen proposal, including details omitted from a truncated preview. Only then call `confirm_workspace_change` with its proposal handle. Never reconstruct or reinterpret operations during confirmation. If the proposal is stale, expired, denied, or bound to a different requester, conversation, client, or acting Agent, make no configuration write and offer a fresh inspection and proposal.
 
 A direct, explicit, reversible single-field edit may use `apply_workspace_changes` immediately when the current edit policy permits it. If the value was inferred or generated, or if there is any material uncertainty, use a proposal. Existing setup, permission, revision, reach, and destructive confirmation gates always win.
 
@@ -82,6 +84,7 @@ The host supplies the authenticated requester and trusted acting Agent identity;
 
 - A user Agent may inspect and author its own complete configuration when the requester may edit it. It must not create another Agent, inspect or edit another Agent, or change workspace or provider authority.
 - System Chickpea may create Agents and author Agents the requester is permitted to edit. System identity never overrides requester permission.
+- In a one-to-one DM, the acting user Agent sees only its own private schedules. Chickpea can administer all of that member's schedules in that DM, including run-now and explicit owner reassignment, while the stored user Agent remains the execution identity.
 - An external MCP client acts with the authenticated requester's permissions and the same proposal, setup, revision, confirmation, idempotency, and audit rules.
 
 For a cross-Agent request from a user Agent, do not inspect, infer, or expose the other Agent's configuration. Call `request_chickpea_handoff` with reason `cross_agent`, then tell the requester to mention `@Chickpea` in the same thread so Chickpea can re-check their permission and continue. Use reason `workspace_authority` for Channel, team, or provider administration outside the acting Agent's scope. A handoff is read-only and does not reserve or mutate anything.
