@@ -23,6 +23,8 @@ export type ManagementOrigin =
       workspaceId: string;
       channelId: string;
       threadTs: string;
+      /** Trusted normalized Slack surface. Missing legacy origins are Channels. */
+      conversationKind?: 'channel' | 'im' | 'mpim';
       /** Trusted Agent selected by Slack routing, never by model text. */
       agentId?: string;
     }
@@ -144,7 +146,9 @@ export type ManagementOperation =
       kind: 'save_routine';
       agentId: string;
       workspaceId: string;
-      channelId: string;
+      /** Required for Channel work. Direct work resolves only from trusted Slack origin. */
+      channelId?: string;
+      destination?: { kind: 'current_dm_thread' };
       routineId?: string;
       expectedVersion?: number;
       name: string;
@@ -159,7 +163,7 @@ export type ManagementOperation =
   | (ManagementOperationBase & {
       kind: 'control_routine';
       workspaceId: string;
-      channelId: string;
+      channelId?: string;
       routineId: string;
       expectedVersion: number;
       action: 'pause' | 'resume' | 'disable';
@@ -167,9 +171,16 @@ export type ManagementOperation =
   | (ManagementOperationBase & {
       kind: 'delete_routine';
       workspaceId: string;
-      channelId: string;
+      channelId?: string;
       routineId: string;
       expectedVersion: number;
+    })
+  | (ManagementOperationBase & {
+      kind: 'reassign_routine_agent';
+      workspaceId: string;
+      routineId: string;
+      expectedVersion: number;
+      agentId: string;
     })
   | (ManagementOperationBase & {
       kind: 'request_setup';
@@ -507,6 +518,7 @@ export interface ManagementRoutineSnapshot {
     outputPolicy: RoutineOutputPolicy;
     nextRunAt: number | null;
     contentAccess: 'public' | 'private' | 'authorization_unknown';
+    owningAgentId: string;
   }>;
 }
 

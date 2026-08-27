@@ -414,6 +414,7 @@ function runAdminPageHarness(
     agentDetailFetch?: (agentId: string, call: number) => Promise<FakeResponse>;
     memoryGetFetch?: (agentId: string, call: number) => Promise<FakeResponse>;
     scheduledWork?: ScheduledWorkFixture;
+    scheduledPrivateHealth?: Array<Record<string, unknown>>;
     redactScheduledName?: boolean;
     scheduledControlError?: { status: number; error: string; message?: string };
     oauthStartResult?: { authorizationUrl: string };
@@ -1325,6 +1326,9 @@ function runAdminPageHarness(
       }
       return Promise.resolve(jsonResponse({
         routines: included ? [summary] : [],
+        privateScheduleHealth: channelFilter
+          ? []
+          : (harnessOptions.scheduledPrivateHealth ?? []).map((entry) => ({ ...entry })),
         nextCursor: null,
         capability: { ...scheduledFixture.capability },
         limits: { ...scheduledFixture.limits },
@@ -3810,6 +3814,21 @@ test('opening Schedules revalidates work created after the Agent editor opened',
   assert.match(harness.app.innerHTML, /Fresh schedule from Slack/);
 });
 
+test('Agent Schedules explains that private DM schedules stay in Slack even when no Channel schedules exist', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agentSchedules: [],
+  });
+  await flushAsync();
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /No scheduled work/);
+  assert.match(harness.app.innerHTML, /Private DM schedules are not shown here\. Manage them in the Chickpea DM where they were created\./);
+  assert.doesNotMatch(harness.app.innerHTML, /id="ptab-schedules"[^>]*>Schedules<span class="ptab-count">/);
+});
+
 test('Agent Schedules is a compact controllable flat list with authoritative refreshes', async () => {
   const schedule = (
     id: string,
@@ -3884,6 +3903,8 @@ test('Agent Schedules is a compact controllable flat list with authoritative ref
   assert.match(initial, /aria-label="Pause Daily launch readiness digest/);
   assert.match(initial, /aria-label="Resume Weekly customer summary"/);
   assert.match(initial, /aria-label="Delete One-time migration reminder"/);
+  assert.match(initial, /Private DM schedules are not shown here\. Manage them in the Chickpea DM where they were created\./);
+  assert.match(initial, /id="ptab-schedules"[^>]*>Schedules<span class="ptab-count">4<\/span>/);
   assert.doesNotMatch(initial, /SECRET_PROMPT_MUST_NOT_RENDER|SECRET_DESCRIPTION_MUST_NOT_RENDER|SECRET_RUNS_AS_MUST_NOT_RENDER|SECRET_HISTORY_MUST_NOT_RENDER|C_RAW_MUST_NOT_RENDER|member_pause/);
   assert.doesNotMatch(initial, /Runs as:|Connections:|Create schedule|Edit timing|data-action="agent-schedule-reassign"/);
 
@@ -12787,6 +12808,42 @@ test('Scheduled Work matches the compact audit inventory before loading routine-
   assert.match(harness.app.innerHTML, /View run history and activity/);
   assert.doesNotMatch(harness.app.innerHTML, /Source Slack request/);
   assert.doesNotMatch(harness.app.innerHTML, /One independent Flue Workflow run per trigger/);
+});
+
+test('Scheduled Work renders private DM health without private schedule content or identifiers', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/scheduled-work',
+    scheduledPrivateHealth: [{
+      owner: { agentId: 'agent_private_owner', displayName: 'Private Work Agent' },
+      state: 'paused',
+      nextRunAt: 1_785_168_000_000,
+      lastFinishedAt: 1_785_081_600_000,
+      lastRun: {
+        scheduledFor: 1_785_081_540_000,
+        startedAt: 1_785_081_550_000,
+        finishedAt: 1_785_081_600_000,
+        status: 'failed',
+        deliveryStatus: 'rejected',
+        failureClass: 'delivery_thread_rejected',
+      },
+      routineId: 'PRIVATE_ROUTINE_ID_MUST_NOT_RENDER',
+      runId: 'PRIVATE_RUN_ID_MUST_NOT_RENDER',
+      taskText: 'PRIVATE_TASK_MUST_NOT_RENDER',
+      name: 'PRIVATE_NAME_MUST_NOT_RENDER',
+      channelId: 'PRIVATE_DM_MUST_NOT_RENDER',
+      threadTs: 'PRIVATE_THREAD_MUST_NOT_RENDER',
+    }],
+  });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /Private DM schedule health/);
+  assert.match(html, /Operational status only\. Private schedule details, destinations, and identifiers are never shown here\./);
+  assert.match(html, /Private Work Agent/);
+  assert.match(html, /agent_private_owner/);
+  assert.match(html, /delivery thread rejected/);
+  assert.doesNotMatch(html, /PRIVATE_ROUTINE_ID_MUST_NOT_RENDER|PRIVATE_RUN_ID_MUST_NOT_RENDER|PRIVATE_TASK_MUST_NOT_RENDER|PRIVATE_NAME_MUST_NOT_RENDER|PRIVATE_DM_MUST_NOT_RENDER|PRIVATE_THREAD_MUST_NOT_RENDER/);
+  assert.doesNotMatch(html, /data-action="select-private|data-routine="PRIVATE_ROUTINE/);
 });
 
 test('Scheduled Work status filter defaults to Current and reloads explicit states', async () => {

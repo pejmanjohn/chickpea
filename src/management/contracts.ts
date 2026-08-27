@@ -130,7 +130,10 @@ export function managementOperationDigest(operations: readonly ManagementOperati
 
 export function managementOriginKey(origin: ManagementOrigin): string {
   if (origin.kind === 'slack') {
-    return `slack:${origin.workspaceId}:${origin.channelId}:${origin.threadTs}`;
+    const base = `slack:${origin.workspaceId}:${origin.channelId}:${origin.threadTs}`;
+    return origin.conversationKind === 'im' || origin.conversationKind === 'mpim'
+      ? `${base}:${origin.conversationKind}`
+      : base;
   }
   if (origin.kind === 'mcp') return `mcp:${origin.clientId}`;
   return `admin:${origin.sessionId}`;

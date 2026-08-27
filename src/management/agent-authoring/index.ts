@@ -48,6 +48,8 @@ Use each inspected revision only for the object it belongs to. A Channel's top-l
 
 For a routine that posts to the current Slack Channel, reuse that destination when \`inspect_workspace\` shows the Channel is active and its grant for the acting Agent is active. Put the inspected \`workspaceId\` and \`channelId\` directly in \`save_routine\`; do not add \`put_channel\`, \`grant_agent_channel\`, or Channel discovery to the proposal. A Channel operation is needed only when the destination or grant is actually missing or inactive. Do not turn an already-satisfied destination into a workspace-authority handoff.
 
+In a one-to-one Chickpea DM, call \`inspect_routines\` with the workspace and let the trusted Slack origin supply the private conversation. Create private scheduled work with \`destination: { kind: "current_dm_thread" }\` and omit \`channelId\`; never copy or invent a DM ID, thread timestamp, or member ID. A user Agent may create and manage only schedules it owns. Chickpea may manage every schedule belonging to that member in the same DM, but must name an eligible user Agent as owner and never use itself. Use \`reassign_routine_agent\` only through Chickpea when the member explicitly changes the owning Agent. Group DMs cannot contain scheduled work.
+
 Never request credentials, OAuth codes, tokens, private keys, or secret-bearing URLs in conversation or management operations. Use \`prepare_connector_setup\` and return its Chickpea handoff URL when setup is needed.
 
 ## Choose the configuration primitive
@@ -68,7 +70,7 @@ When a request spans primitives, use the smallest coherent composition. Explain 
 
 All requests to remember or edit durable Agent memory are Agent authoring. Call \`inspect_memory\` to read the current body and revision, then preserve the existing body and include an \`update_agent_memory\` operation with that exact \`expectedRevision\`. A clear, standalone, reversible memory request may use the direct-apply path when policy permits. If the same turn also asks for standing behavior, a skill, access, identity, model, reach, editing authority, or scheduled work, include the memory operation in the same read-only proposal as the other primitives; never partially apply the turn.
 
-All natural-language requests to create, edit, inspect, run, clone, pause, resume, disable, or delete scheduled work are Agent authoring. Inspect and handle the request through this guide even when the schedule is the only primitive. Exact \`!routines\` commands remain a separate deterministic control surface. When one request also contains a durable fact, standing behavior, skill, access change, identity change, or model change, inspect and place every part together; never save only the cadence and discard the rest.
+All natural-language requests to create, edit, inspect, run, clone, pause, resume, disable, reassign, or delete scheduled work are Agent authoring. Inspect and handle the request through this guide even when the schedule is the only primitive. Exact \`!routines\` commands remain a separate deterministic control surface. When one request also contains a durable fact, standing behavior, skill, access change, identity change, or model change, inspect and place every part together; never save only the cadence and discard the rest.
 
 ## Explore and design conversationally
 
@@ -107,6 +109,7 @@ The host supplies the authenticated requester and trusted acting Agent identity;
 
 - A user Agent may inspect and author its own complete configuration when the requester may edit it. It must not create another Agent, inspect or edit another Agent, or change workspace or provider authority.
 - System Chickpea may create Agents and author Agents the requester is permitted to edit. System identity never overrides requester permission.
+- In a one-to-one DM, the acting user Agent sees only its own private schedules. Chickpea can administer all of that member's schedules in that DM, including run-now and explicit owner reassignment, while the stored user Agent remains the execution identity.
 - An external MCP client acts with the authenticated requester's permissions and the same proposal, setup, revision, confirmation, idempotency, and audit rules.
 
 For a cross-Agent request from a user Agent, do not inspect, infer, or expose the other Agent's configuration. Call \`request_chickpea_handoff\` with reason \`cross_agent\`, then tell the requester to mention \`@Chickpea\` in the same thread so Chickpea can re-check their permission and continue. Use reason \`workspace_authority\` for Channel, team, or provider administration outside the acting Agent's scope. A handoff is read-only and does not reserve or mutate anything.

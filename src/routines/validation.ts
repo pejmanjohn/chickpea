@@ -9,6 +9,7 @@ import { ROUTINE_LIMITS } from './limits.ts';
 import {
   RoutineStateError,
   type RoutineDefinitionContent,
+  type RoutineDestination,
   type RoutineOutputPolicy,
 } from './types.ts';
 
@@ -21,7 +22,7 @@ const DefinitionSchema = v.object({
   scheduleJson: v.string(),
   timezone: v.string(),
   outputPolicy: v.picklist(['post', 'post_on_change'] satisfies RoutineOutputPolicy[]),
-  authorityMode: v.literal('live_channel_v1'),
+  authorityMode: v.picklist(['live_channel_v1', 'live_direct_member_v1']),
 });
 
 export function validateRoutineDefinition(input: unknown): RoutineDefinitionContent {
@@ -81,6 +82,29 @@ export function validateRoutineScope(workspaceId: string, channelId: string, act
   if (![workspaceId, channelId, actorId].every(isOpaqueRoutineId)) {
     throw invalid('routine_invalid_scope', 'Routine scope is invalid.');
   }
+}
+
+export function validateRoutineDestination(
+  input: RoutineDestination | undefined,
+  channelId: string,
+): RoutineDestination {
+  const destination = input ?? { kind: 'channel' as const, channelId };
+  if (destination.kind === 'channel') {
+    if (!isOpaqueRoutineId(destination.channelId) || destination.channelId !== channelId) {
+      throw invalid('routine_invalid_destination', 'Routine destination is invalid.');
+    }
+    return destination;
+  }
+  if (
+    destination.kind !== 'direct_thread' ||
+    !isOpaqueRoutineId(destination.conversationId) ||
+    destination.conversationId !== channelId ||
+    !/^\d{1,20}\.\d{1,12}$/.test(destination.threadTs) ||
+    !isOpaqueRoutineId(destination.ownerMembershipId)
+  ) {
+    throw invalid('routine_invalid_destination', 'Routine destination is invalid.');
+  }
+  return destination;
 }
 
 export function validatePublicRoutineError(value: string | null | undefined): string | null {

@@ -21,6 +21,7 @@ import {
 } from '../config/provider-impact.ts';
 import {
   type AgentChannelGrant,
+  type AgentScheduleReference,
   type AgentConnectionBinding,
   type AgentCreateInput,
   type ChannelConfig,
@@ -43,7 +44,11 @@ import {
   normalizeRoutineSchedule,
 } from '../routines/schedule.ts';
 import { RoutineService } from '../routines/service.ts';
-import { bindRoutineAgentAuthority } from '../routines/agent-authority.ts';
+import {
+  bindRoutineAgentAuthority,
+  reassignDirectRoutineAgent,
+} from '../routines/agent-authority.ts';
+import { routineDestinationBindingDigest } from '../routines/ids.ts';
 import type { RoutineDefinition, RoutineStore } from '../routines/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
@@ -93,6 +98,7 @@ import {
   type ManagementAgentPatch,
   type ManagementObjectRef,
   type ManagementOperation,
+  type ManagementOrigin,
   type ManagementOperationResult,
   type ManagementPreparedItem,
   type ManagementProposalRecord,
@@ -161,6 +167,8 @@ export interface WorkspaceManagementServiceInput {
   routines?: RoutineStore;
   work?: Pick<WorkStore, 'getWork' | 'getBinding'>;
   routineSchedulingAvailable?: boolean | (() => boolean | Promise<boolean>);
+  /** Server-side gate for private DM creation. Defaults closed. */
+  directRoutineSchedulingAvailable?: boolean | (() => boolean | Promise<boolean>);
   setupBaseUrl?: string | (() => string | undefined | Promise<string | undefined>);
   providerCredentialSource?: (
     providerId: ManagedProviderId,
@@ -357,26 +365,37 @@ export class WorkspaceManagementService {
     if (!this.stores.routines) {
       throw new ManagementError('invalid_request', 'Routine management is unavailable.');
     }
-    let routines = await this.stores.routines.listRoutines(input.workspaceId, input.channelId);
-    if (input.routineId) routines = routines.filter(({ id }) => id === input.routineId);
-    if (actor.role === 'member' || isUserAgentScoped(actor)) {
-      const visible = await Promise.all(routines.map(async (routine) => {
-        const reference = await this.stores.config.getAgentScheduleReference(routine.id);
-        if (!reference) return undefined;
-        const agent = await optionalAgent(this.stores.config, reference.agentId);
-        if (agent && this.actorCanEditAgent(actor, agent) &&
-            (!isUserAgentScoped(actor) || reference.agentId === actor.actingAgentId)) {
-          return routine;
-        }
-        return undefined;
-      }));
-      routines = visible.filter((routine): routine is NonNullable<typeof routine> =>
-        routine !== undefined);
+    const directOrigin = slackDirectOrigin(actor);
+    const inspectedChannelId = directOrigin ? directOrigin.channelId : input.channelId;
+    if (directOrigin && input.channelId && input.channelId !== directOrigin.channelId) {
+      return { routines: [] };
     }
+    let routines = await this.stores.routines.listRoutines(input.workspaceId, inspectedChannelId);
+    if (input.routineId) routines = routines.filter(({ id }) => id === input.routineId);
+    const visible = await Promise.all(routines.map(async (routine) => {
+      const reference = await this.stores.config.getAgentScheduleReference(routine.id);
+      if (!reference) return undefined;
+      if (routine.destination.kind === 'direct_thread') {
+        return this.directRoutineIsVisible(actor, routine, reference)
+          ? { routine, reference }
+          : undefined;
+      }
+      if (directOrigin) return undefined;
+      if (actor.role !== 'member' && !isUserAgentScoped(actor)) return { routine, reference };
+      const agent = await optionalAgent(this.stores.config, reference.agentId);
+      return agent && this.actorCanEditAgent(actor, agent) &&
+        (!isUserAgentScoped(actor) || reference.agentId === actor.actingAgentId)
+        ? { routine, reference }
+        : undefined;
+    }));
+    const visibleRoutines = visible.filter((entry): entry is NonNullable<typeof entry> =>
+      entry !== undefined);
     return {
-      routines: await Promise.all(routines.map(async (routine) => {
-        const contentAccess = await routineContentAccess(this.stores.work, routine);
-        const readable = contentAccess === 'public';
+      routines: await Promise.all(visibleRoutines.map(async ({ routine, reference }) => {
+        const contentAccess = routine.destination.kind === 'direct_thread'
+          ? 'private' as const
+          : await routineContentAccess(this.stores.work, routine);
+        const readable = contentAccess === 'public' || routine.destination.kind === 'direct_thread';
         return {
           id: routine.id,
           workspaceId: routine.workspaceId,
@@ -394,6 +413,7 @@ export class WorkspaceManagementService {
           outputPolicy: routine.outputPolicy,
           nextRunAt: routine.nextRunAt,
           contentAccess,
+          owningAgentId: reference.agentId,
         };
       })),
     };
@@ -1539,6 +1559,14 @@ export class WorkspaceManagementService {
     operation: ManagementOperation,
   ): Promise<ChickpeaManagementHandoff | undefined> {
     if (!isUserAgentScoped(actor)) return undefined;
+    if ((operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+        operation.kind === 'delete_routine') && operation.routineId && this.stores.routines) {
+      const routine = await this.stores.routines.getRoutine(operation.routineId);
+      if (routine?.destination.kind === 'direct_thread') {
+        const reference = await this.stores.config.getAgentScheduleReference(routine.id);
+        if (!this.directRoutineIsVisible(actor, routine, reference)) return undefined;
+      }
+    }
     const target = await this.managementOperationScopeTarget(operation);
     return this.actingAgentScopeHandoff(actor, target);
   }
@@ -1562,8 +1590,14 @@ export class WorkspaceManagementService {
     if (operation.kind === 'save_routine') {
       return operationAgentScopeTarget(operation.kind, operation.agentId, {
         kind: 'routine',
-        id: operation.routineId ?? channelKey(operation.workspaceId, operation.channelId),
+        id: operation.routineId ?? channelKey(
+          operation.workspaceId,
+          operation.channelId ?? 'current_dm_thread',
+        ),
       });
+    }
+    if (operation.kind === 'reassign_routine_agent') {
+      return operationAuthorityScopeTarget(operation);
     }
     if (operation.kind === 'control_routine' || operation.kind === 'delete_routine') {
       const reference = operation.routineId
@@ -1954,16 +1988,25 @@ export class WorkspaceManagementService {
   private async requireRoutineMutation(
     actor: LiveManagementActor,
     operation: Extract<ManagementOperation, {
-      kind: 'save_routine' | 'control_routine' | 'delete_routine';
+      kind: 'save_routine' | 'control_routine' | 'delete_routine' | 'reassign_routine_agent';
     }>,
   ): Promise<void> {
     if (!this.stores.routines) {
       throw new ManagementError('invalid_request', 'Routine management is unavailable.');
     }
     await this.requireWorkspaceScope(actor, operation.workspaceId);
-    const channel = await this.stores.config.getChannel(operation.workspaceId, operation.channelId);
-    if (channel?.lifecycle === 'archived') {
-      throw new ManagementError('invalid_request', 'The routine Channel was not found.');
+    const channelId = this.routineMutationChannelId(actor, operation);
+    const directRequest = operation.kind === 'save_routine' &&
+      operation.destination?.kind === 'current_dm_thread';
+    const existingRoutine = operation.routineId
+      ? await this.stores.routines.getRoutine(operation.routineId)
+      : undefined;
+    const directRoutine = directRequest || existingRoutine?.destination.kind === 'direct_thread';
+    if (!directRoutine) {
+      const channel = await this.stores.config.getChannel(operation.workspaceId, channelId);
+      if (channel?.lifecycle === 'archived') {
+        throw new ManagementError('invalid_request', 'The routine Channel was not found.');
+      }
     }
     if (operation.kind === 'save_routine') {
       const available = await this.isRoutineSchedulingAvailable();
@@ -1971,19 +2014,37 @@ export class WorkspaceManagementService {
         throw new ManagementError('invalid_request', 'Routine scheduling is unavailable on this deployment.');
       }
       const agent = await optionalAgent(this.stores.config, operation.agentId);
-      const grants = await this.stores.config.listAgentChannelGrants(
-        operation.workspaceId,
-        operation.channelId,
-      );
-      if (!agent || !agent.enabled || agent.lifecycle === 'archived' ||
-          !grants.some((grant) => grant.agentId === agent.id && grant.status === 'active')) {
-        throw new ManagementError(
-          'invalid_request',
-          'The schedule Agent is not active in this Channel.',
+      if (directRoutine) {
+        if (!operation.routineId && !(await this.isDirectRoutineSchedulingAvailable())) {
+          throw new ManagementError(
+            'invalid_request',
+            'Private DM scheduling is not enabled on this deployment.',
+          );
+        }
+        if (!agent || agent.kind !== 'user' || !agent.enabled ||
+            agent.lifecycle === 'draft' || agent.lifecycle === 'archived') {
+          throw new ManagementError('invalid_request', 'The schedule Agent is not available.');
+        }
+        if (isUserAgentScoped(actor) && operation.agentId !== actor.actingAgentId) {
+          throw new ChickpeaHandoffRequired(chickpeaHandoff(actor, operation.kind, {
+            kind: 'agent', id: operation.agentId,
+          }));
+        }
+      } else {
+        const grants = await this.stores.config.listAgentChannelGrants(
+          operation.workspaceId,
+          channelId,
         );
-      }
-      if (!this.actorCanEditAgent(actor, agent)) {
-        throw new ManagementError('forbidden', 'The schedule Agent is not available to this member.');
+        if (!agent || !agent.enabled || agent.lifecycle === 'archived' ||
+            !grants.some((grant) => grant.agentId === agent.id && grant.status === 'active')) {
+          throw new ManagementError(
+            'invalid_request',
+            'The schedule Agent is not active in this Channel.',
+          );
+        }
+        if (!this.actorCanEditAgent(actor, agent)) {
+          throw new ManagementError('forbidden', 'The schedule Agent is not available to this member.');
+        }
       }
     }
     if (operation.kind === 'save_routine' && !operation.routineId) {
@@ -1996,12 +2057,31 @@ export class WorkspaceManagementService {
     if (!routineId) throw new ManagementError('invalid_request', 'The routine was not found.');
     const routine = await this.stores.routines.getRoutine(routineId);
     if (!routine || routine.deletedAt !== null || routine.workspaceId !== operation.workspaceId ||
-        routine.channelId !== operation.channelId || routine.version !== operation.expectedVersion) {
+        routine.channelId !== channelId || routine.version !== operation.expectedVersion) {
       throw new ManagementError('revision_conflict', 'The routine changed.');
     }
     const reference = await this.stores.config.getAgentScheduleReference(routineId);
     if (!reference) {
       throw new ManagementError('invalid_request', 'The schedule Agent binding was not found.');
+    }
+    if (routine.destination.kind === 'direct_thread') {
+      if ('channelId' in operation && operation.channelId !== undefined) {
+        throw new ManagementError('invalid_request', 'The private DM destination is unavailable.');
+      }
+      if (!this.directRoutineIsVisible(actor, routine, reference)) {
+        throw new ManagementError('invalid_request', 'The routine was not found.');
+      }
+      if (operation.kind === 'save_routine' && operation.agentId !== reference.agentId) {
+        throw new ManagementError(
+          'invalid_request',
+          'Use Chickpea Agent reassignment instead of changing schedule ownership during an edit.',
+        );
+      }
+      if (operation.kind === 'reassign_routine_agent' &&
+          (actor.actingAgentId !== CHICKPEA_AGENT_ID || actor.origin.kind !== 'slack')) {
+        throw new ManagementError('forbidden', 'Mention Chickpea in the private DM to reassign this schedule.');
+      }
+      return;
     }
     await this.requireEditableAgent(actor, reference.agentId);
   }
@@ -2010,6 +2090,51 @@ export class WorkspaceManagementService {
     return typeof this.stores.routineSchedulingAvailable === 'function'
       ? this.stores.routineSchedulingAvailable()
       : this.stores.routineSchedulingAvailable ?? true;
+  }
+
+  private async isDirectRoutineSchedulingAvailable(): Promise<boolean> {
+    return typeof this.stores.directRoutineSchedulingAvailable === 'function'
+      ? this.stores.directRoutineSchedulingAvailable()
+      : this.stores.directRoutineSchedulingAvailable ?? false;
+  }
+
+  private routineMutationChannelId(
+    actor: LiveManagementActor,
+    operation: Extract<ManagementOperation, {
+      kind: 'save_routine' | 'control_routine' | 'delete_routine' | 'reassign_routine_agent';
+    }>,
+  ): string {
+    const directOrigin = slackDirectOrigin(actor);
+    if (operation.kind === 'save_routine' && operation.destination) {
+      if (!directOrigin || operation.workspaceId !== directOrigin.workspaceId ||
+          operation.channelId !== undefined) {
+        throw new ManagementError('invalid_request', 'The private DM destination is unavailable.');
+      }
+      return directOrigin.channelId;
+    }
+    if ('channelId' in operation && operation.channelId) return operation.channelId;
+    if (directOrigin && operation.workspaceId === directOrigin.workspaceId) {
+      return directOrigin.channelId;
+    }
+    throw new ManagementError('invalid_request', 'The routine destination is required.');
+  }
+
+  private directRoutineIsVisible(
+    actor: LiveManagementActor,
+    routine: RoutineDefinition,
+    reference: AgentScheduleReference | undefined,
+  ): boolean {
+    const origin = slackDirectOrigin(actor);
+    return Boolean(
+      origin && reference &&
+      routine.destination.kind === 'direct_thread' &&
+      reference.destinationKind === 'direct_thread' &&
+      routine.workspaceId === origin.workspaceId &&
+      routine.destination.conversationId === origin.channelId &&
+      routine.destination.ownerMembershipId === actor.membershipId &&
+      reference.createdByMembershipId === actor.membershipId &&
+      (!isUserAgentScoped(actor) || reference.agentId === actor.actingAgentId)
+    );
   }
 
   private async resultFor(
@@ -2067,7 +2192,7 @@ export class WorkspaceManagementService {
       return { actor, operation, currentAgent: agent, agentEditable: true };
     }
     if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-        operation.kind === 'delete_routine') {
+        operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
       await this.requireRoutineMutation(actor, operation);
       return { actor, operation, agentEditable: true };
     }
@@ -2233,6 +2358,13 @@ export class WorkspaceManagementService {
       const projection = operation.schedule.kind === 'cron'
         ? normalizeRoutineSchedule(operation.schedule.expression, operation.timezone, this.now())
         : normalizeOneTimeSchedule(operation.schedule.localDateTime, operation.timezone, this.now());
+      const channelId = this.routineMutationChannelId(actor, operation);
+      const existing = operation.routineId
+        ? await this.stores.routines!.getRoutine(operation.routineId)
+        : undefined;
+      const directOrigin = slackDirectOrigin(actor);
+      const direct = operation.destination?.kind === 'current_dm_thread' ||
+        existing?.destination.kind === 'direct_thread';
       const definition = {
         name: operation.name,
         description: operation.description,
@@ -2244,7 +2376,7 @@ export class WorkspaceManagementService {
         scheduleJson: projection.scheduleJson,
         timezone: operation.timezone,
         outputPolicy: operation.outputPolicy,
-        authorityMode: 'live_channel_v1' as const,
+        authorityMode: direct ? 'live_direct_member_v1' as const : 'live_channel_v1' as const,
       };
       const request = operation.routineId
         ? {
@@ -2261,21 +2393,31 @@ export class WorkspaceManagementService {
         actorId: actor.userId,
         actorClass: 'operator',
         workspaceId: operation.workspaceId,
-        channelId: operation.channelId,
+        channelId,
+        ...(!existing && direct && directOrigin
+          ? {
+              destination: {
+                kind: 'direct_thread' as const,
+                conversationId: channelId,
+                threadTs: directOrigin.threadTs,
+                ownerMembershipId: actor.membershipId,
+              },
+            }
+          : {}),
         nextRunAt: projection.nextRunAt,
         projectedDailyStarts: projection.projectedDailyStarts,
         reservations: projection.reservations,
-        sourceVisibility: 'unknown',
+        sourceVisibility: direct ? 'private' : 'unknown',
       }, `management:routine:save:${mutationId}:${operation.itemId}`);
       const agent = await this.stores.config.getAgent(operation.agentId);
       const assignment: ResolvedAssignment = {
         workspaceId: operation.workspaceId,
-        channelId: operation.channelId,
+        channelId,
         agentId: agent.id,
         agent,
       };
       try {
-        await bindRoutineAgentAuthority({
+        const reference = await bindRoutineAgentAuthority({
           routine,
           assignment,
           actorMembershipId: actor.membershipId,
@@ -2284,19 +2426,39 @@ export class WorkspaceManagementService {
           config: this.stores.config as ConfigStore,
           identity: this.stores.identity as IdentityStore,
         });
+        if (!existing && routine.destination.kind === 'direct_thread') {
+          const digest = routineDestinationBindingDigest(
+            routine.id,
+            routine.workspaceId,
+            routine.destination,
+          );
+          const activated = await this.stores.routines!.activateDirectRoutine({
+            routineId: routine.id,
+            expectedVersion: routine.version,
+            expectedReferenceRevision: reference.revision,
+            destinationBindingDigest: digest,
+          });
+          return routineMutation(activated);
+        }
       } catch {
-        await service.control({
-          routineId: routine.id,
-          expectedVersion: routine.version,
-          action: 'pause',
-          actorId: actor.userId,
-          actorClass: 'operator',
-          reasonCode: 'schedule_authority_missing',
-          idempotencyKey: `management:routine:authority-failed:${mutationId}:${operation.itemId}`,
-        }).catch(() => undefined);
+        const pendingDirect = routine.destination.kind === 'direct_thread' &&
+          routine.state === 'pending_authority';
+        if (!pendingDirect) {
+          await service.control({
+            routineId: routine.id,
+            expectedVersion: routine.version,
+            action: 'pause',
+            actorId: actor.userId,
+            actorClass: 'operator',
+            reasonCode: 'schedule_authority_missing',
+            idempotencyKey: `management:routine:authority-failed:${mutationId}:${operation.itemId}`,
+          }).catch(() => undefined);
+        }
         throw new ManagementError(
           'invalid_request',
-          'The schedule was saved paused because its Agent authority could not be bound.',
+          pendingDirect
+            ? 'The private schedule was saved inactive because its Agent authority could not be bound.'
+            : 'The schedule was saved paused because its Agent authority could not be bound.',
         );
       }
       return routineMutation(routine);
@@ -2797,6 +2959,7 @@ export class WorkspaceManagementService {
     }
     if (operation.kind === 'delete_routine') {
       await this.requireRoutineMutation(actor, operation);
+      const channelId = this.routineMutationChannelId(actor, operation);
       const seed = createHash('sha256').update(proposalId).digest('hex');
       const service = new RoutineService(this.stores.routines!, {
         now: this.now,
@@ -2811,19 +2974,43 @@ export class WorkspaceManagementService {
           actorId: actor.userId,
           actorClass: 'operator',
           workspaceId: operation.workspaceId,
-          channelId: operation.channelId,
+          channelId,
         });
         return routineMutation(await service.confirm({
           token: confirmation.token,
           actorId: actor.userId,
           workspaceId: operation.workspaceId,
-          channelId: operation.channelId,
+          channelId,
           previewHash: confirmation.previewHash,
           idempotencyKey: `management:routine:delete:${proposalId}:${operation.itemId}`,
         }));
       } catch (error) {
         if (error instanceof ManagementError) throw error;
         throw new ManagementError('revision_conflict', 'The routine changed.');
+      }
+    }
+    if (operation.kind === 'reassign_routine_agent') {
+      await this.requireRoutineMutation(actor, operation);
+      const routine = await this.stores.routines!.getRoutine(operation.routineId);
+      if (!routine || routine.version !== operation.expectedVersion ||
+          routine.destination.kind !== 'direct_thread') {
+        throw new ManagementError('revision_conflict', 'The routine changed.');
+      }
+      try {
+        await reassignDirectRoutineAgent({
+          scheduleId: routine.id,
+          agentId: operation.agentId,
+          ownerMembershipId: actor.membershipId,
+          receiptId: `schedule_authority_${createHash('sha256')
+            .update(`${proposalId}:${operation.itemId}:${operation.agentId}`)
+            .digest('hex')
+            .slice(0, 32)}`,
+          config: this.stores.config as ConfigStore,
+          identity: this.stores.identity as IdentityStore,
+        });
+        return routineMutation(routine);
+      } catch {
+        throw new ManagementError('invalid_request', 'The schedule Agent could not be reassigned.');
       }
     }
     if (operation.kind === 'update_agent' && operation.patch.enabled === false) {
@@ -2871,7 +3058,7 @@ export class WorkspaceManagementService {
     }
     if (operation.kind === 'save_routine' && !operation.routineId) return {};
     if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-        operation.kind === 'delete_routine') {
+        operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
       const routineId = operation.routineId!;
       const routine = await this.stores.routines?.getRoutine(routineId);
       return { [`routine:${routineId}`]: routine?.version ?? 0 };
@@ -3497,6 +3684,14 @@ function isUserAgentScoped(actor: LiveManagementActor): actor is LiveManagementA
   return Boolean(actor.actingAgentId && actor.actingAgentId !== CHICKPEA_AGENT_ID);
 }
 
+function slackDirectOrigin(
+  actor: LiveManagementActor,
+): Extract<ManagementOrigin, { kind: 'slack' }> | undefined {
+  return actor.origin.kind === 'slack' && actor.origin.conversationKind === 'im'
+    ? actor.origin
+    : undefined;
+}
+
 function operationAgentScopeTarget(
   requestedAction: ChickpeaManagementHandoff['requestedAction'],
   agentId: string,
@@ -3551,10 +3746,13 @@ function handoffTargetForOperation(
     };
   }
   if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-      operation.kind === 'delete_routine') {
+      operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
     return {
       kind: 'routine',
-      id: operation.routineId ?? channelKey(operation.workspaceId, operation.channelId),
+      id: operation.routineId ?? channelKey(
+        operation.workspaceId,
+        'channelId' in operation ? operation.channelId ?? 'current_dm_thread' : 'current_dm_thread',
+      ),
     };
   }
   if (operation.target.kind === 'provider_credential') {
@@ -3658,8 +3856,8 @@ function proposalSummary(operation: ManagementOperation, reason: string): string
     : operation.kind === 'update_agent_memory'
       ? `memory:${operation.agentId}`
     : operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-        operation.kind === 'delete_routine'
-      ? `routine:${operation.routineId ?? operation.channelId}`
+        operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent'
+      ? `routine:${operation.routineId ?? ('channelId' in operation ? operation.channelId : undefined)}`
     : operation.kind === 'put_channel'
       ? channelKey(operation.channel.workspaceId, operation.channel.channelId)
       : operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel'
@@ -3719,8 +3917,8 @@ function managementPreviewTarget(operation: ManagementOperation): string {
   if (operation.kind === 'update_member') return `membership:${operation.membershipId}`;
   if (operation.kind === 'remove_provider_credential') return `provider:${operation.providerId}`;
   if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-      operation.kind === 'delete_routine') {
-    return `routine:${operation.routineId ?? `${operation.workspaceId}:${operation.channelId}`}`;
+      operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
+    return `routine:${operation.routineId ?? `${operation.workspaceId}:${'channelId' in operation ? operation.channelId : 'current_dm_thread'}`}`;
   }
   return operation.target.kind === 'provider_credential'
     ? `provider:${operation.target.providerId}`

@@ -60,6 +60,8 @@ export interface ConnectorUsageRecord extends RecordConnectorUsageInput {
 export interface ConnectorUsageSummaryQuery {
   from: number;
   to: number;
+  /** Internal shared-surface privacy boundary; never derived from a customer query parameter. */
+  excludePrivateRoutines?: boolean;
   workspaceId?: string;
   agentId?: string;
   toolkit?: string;

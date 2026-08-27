@@ -1,5 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
+import type { RoutineDestination } from './types.ts';
+
 const OPAQUE_ROUTINE_ID = /^[A-Za-z0-9_-]{1,200}$/;
 
 export function createRoutineId(): string {
@@ -20,6 +22,22 @@ export function createConfirmationToken(): string {
 
 export function hashRoutineValue(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+export function routineDestinationBindingDigest(
+  routineId: string,
+  workspaceId: string,
+  destination: Extract<RoutineDestination, { kind: 'direct_thread' }>,
+): string {
+  return hashRoutineValue([
+    'routine-destination-v1',
+    routineId,
+    workspaceId,
+    destination.kind,
+    destination.conversationId,
+    destination.threadTs,
+    destination.ownerMembershipId,
+  ].join('\0'));
 }
 
 export function scheduledOccurrenceKey(routineId: string, scheduledFor: number): string {

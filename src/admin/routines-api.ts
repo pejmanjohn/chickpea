@@ -40,6 +40,10 @@ interface RoutineAdminApiOptions {
   usage?: (c: Context) => UsageStore;
   work?: (c: Context) => WorkStore;
   contentAccess?: (c: Context) => RoutineContentAccessResolver;
+  privateOwner?: (
+    c: Context,
+    routine: RoutineDefinition,
+  ) => Promise<{ agentId: string | null; displayName: string | null }>;
 }
 
 const opaqueId = v.pipe(v.string(), v.regex(/^[A-Za-z0-9_-]{1,200}$/));
@@ -83,13 +87,21 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
         cursor: offset,
         limit,
       });
+      const channelRoutines = page.routines.filter(
+        (routine) => routine.destination.kind === 'channel',
+      );
+      const directRoutines = channelId
+        ? []
+        : page.routines.filter((routine) => routine.destination.kind === 'direct_thread');
       return c.json({
-        routines: await Promise.all(page.routines.map(async (routine) => {
+        routines: await Promise.all(channelRoutines.map(async (routine) => {
           const access = await accessFor(c).resolve(routine);
           return routineContentReadable(access)
             ? readableRoutineSummary(routine, access)
             : redactedRoutineSummary(routine, access);
         })),
+        privateScheduleHealth: await Promise.all(directRoutines.map((routine) =>
+          privateRoutineHealth(c, routine, options))),
         nextCursor: page.nextCursor === null ? null : String(page.nextCursor),
         capability: capabilityFor(c, options),
         limits: routineOperatorLimits(),
@@ -111,7 +123,12 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
         limit,
       });
       if (workspaceId) events = events.filter((event) => event.workspaceId === workspaceId);
-      return c.json({ events: events.map(safeAuditEvent) });
+      const state = options.store(c);
+      const visible = [];
+      for (const event of events) {
+        if (!await directRoutineAuditSubject(state, event.subjectId)) visible.push(event);
+      }
+      return c.json({ events: visible.map(safeAuditEvent) });
     } catch (error) {
       return routineError(c, error);
     }
@@ -122,7 +139,9 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
       const routineId = parseId(c.req.param('routineId'));
       const state = options.store(c);
       const routine = await state.getRoutine(routineId);
-      if (!routine) return c.json({ error: 'routine_not_found' }, 404);
+      if (!routine || routine.destination.kind === 'direct_thread') {
+        return c.json({ error: 'routine_not_found' }, 404);
+      }
       const [runs, revisions] = await Promise.all([
         state.listRuns({ routineId, limit: 100 }),
         state.listRevisions(routineId),
@@ -155,6 +174,9 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
       const run = await options.store(c).getRun(parseId(c.req.param('runId')));
       if (!run) return c.json({ error: 'routine_run_not_found' }, 404);
       const routine = await options.store(c).getRoutine(run.routineId);
+      if (routine?.destination.kind === 'direct_thread') {
+        return c.json({ error: 'routine_run_not_found' }, 404);
+      }
       const access = routine
         ? await accessFor(c).resolve(routine)
         : 'authorization_unknown';
@@ -178,7 +200,9 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
       const routineId = parseId(c.req.param('routineId'));
       const state = options.store(c);
       const routine = await state.getRoutine(routineId);
-      if (!routine || routine.deletedAt !== null) return c.json({ error: 'routine_not_found' }, 404);
+      if (!routine || routine.deletedAt !== null || routine.destination.kind === 'direct_thread') {
+        return c.json({ error: 'routine_not_found' }, 404);
+      }
       const actorId = adminActor(c);
       const service = new RoutineService(state, {
         now,
@@ -236,6 +260,46 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
   });
 
   return app;
+}
+
+async function privateRoutineHealth(
+  c: Context,
+  routine: RoutineDefinition,
+  options: RoutineAdminApiOptions,
+): Promise<Record<string, unknown>> {
+  const [owner, latest] = await Promise.all([
+    options.privateOwner?.(c, routine) ?? Promise.resolve({ agentId: null, displayName: null }),
+    options.store(c).listRuns({ routineId: routine.id, limit: 1 }),
+  ]);
+  const run = latest[0];
+  return {
+    owner,
+    state: routine.deletedAt !== null ? 'deleted' : routine.state,
+    nextRunAt: routine.nextRunAt,
+    lastFinishedAt: routine.lastFinishedAt,
+    lastRun: run
+      ? {
+          scheduledFor: run.scheduledFor,
+          startedAt: run.startedAt,
+          finishedAt: run.finishedAt,
+          status: run.status,
+          deliveryStatus: run.deliveryStatus,
+          failureClass: run.failureClass,
+        }
+      : null,
+  };
+}
+
+async function directRoutineAuditSubject(
+  store: RoutineStore,
+  subjectId: string | null,
+): Promise<boolean> {
+  if (!subjectId) return false;
+  const routine = await store.getRoutine(subjectId);
+  if (routine) return routine.destination.kind === 'direct_thread';
+  const run = await store.getRun(subjectId);
+  if (!run) return false;
+  return (await store.getRoutine(run.routineId))?.destination.kind === 'direct_thread';
 }
 
 function routineSafeIdentity(routine: RoutineDefinition): Record<string, unknown> {

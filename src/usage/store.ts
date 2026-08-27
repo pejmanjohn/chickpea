@@ -439,6 +439,14 @@ export class UsageStoreLogic {
       clauses.push('toolkit = ?');
       parameters.push(query.toolkit);
     }
+    if (query.excludePrivateRoutines) {
+      clauses.push(`NOT EXISTS (
+        SELECT 1 FROM usage_operations private_operation
+        WHERE private_operation.operation_id = usage_connector_attempts.operation_id
+          AND private_operation.operation_kind = 'routine_run'
+          AND private_operation.conversation_kind = 'direct_message'
+      )`);
+    }
     const rows = this.db.all(
       `SELECT workspace_id, profile_id, toolkit, capability, outcome,
               COUNT(*) AS attempt_count,

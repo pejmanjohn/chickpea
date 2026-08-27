@@ -64,7 +64,7 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
   for (const phrase of [
     '`commit`', '`explore`', '`capability_question`', '`clarify`',
     'instructions', 'skills', 'memory', 'connections', 'repositories', 'schedules',
-    'All natural-language requests to create, edit, inspect, run, clone, pause, resume, disable, or delete scheduled work are Agent authoring',
+    'All natural-language requests to create, edit, inspect, run, clone, pause, resume, disable, reassign, or delete scheduled work are Agent authoring',
     'Slack presence', 'Channel reach', 'editing authority',
     'inspect_workspace', 'propose_workspace_changes', 'confirm_workspace_change',
     'opaque control token', 'Preserve it byte-for-byte', 'never retype',
@@ -74,6 +74,8 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     'inspection is mandatory in that turn', 'do not offer to inspect later',
     'channels\\[\\]\\.grants\\[\\]\\.revision', 'Never substitute the parent Channel revision',
     'reuse that destination', 'do not add `put_channel`', 'already-satisfied destination',
+    'one-to-one Chickpea DM', 'trusted Slack origin', 'current_dm_thread',
+    '`reassign_routine_agent`', 'Group DMs cannot contain scheduled work',
     'All requests to remember or edit durable Agent memory are Agent authoring',
     '`update_agent_memory`', 'exact `expectedRevision`',
     '`request_chickpea_handoff`', 'mention `@Chickpea`',

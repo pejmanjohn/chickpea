@@ -197,7 +197,19 @@ export function normalizeUsageQuery(input: UsageQuery): NormalizedUsageQuery {
         startedAt: timestamp(input.cursor.startedAt, 'cursor time', true),
         operationId: opaqueId(input.cursor.operationId, 'cursor operation ID', true),
       };
-  return { from, to, filters, groupBy, currency, limit, cursor };
+  if (input.excludePrivateRoutines !== undefined && input.excludePrivateRoutines !== true) {
+    queryInvalid('Private routine exclusion must be enabled or omitted.');
+  }
+  return {
+    from,
+    to,
+    excludePrivateRoutines: input.excludePrivateRoutines === true,
+    filters,
+    groupBy,
+    currency,
+    limit,
+    cursor,
+  };
 }
 
 function normalizeFilters(filters: UsageFilters): UsageFilters {

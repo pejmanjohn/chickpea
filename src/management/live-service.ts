@@ -104,6 +104,8 @@ export function createLiveWorkspaceManagementService(
     routines: getRoutineStore(env),
     work: getWorkStore(env),
     routineSchedulingAvailable: isCloudflareTarget(),
+    directRoutineSchedulingAvailable: () =>
+      isCloudflareTarget() && env?.PRIVATE_DM_SCHEDULES_ENABLED === 'true',
     providerCredentialSource: async (providerId) =>
       (await describeProviderKeySources(env, settings))[providerId],
     providerCredentialRevision: async (providerId) =>

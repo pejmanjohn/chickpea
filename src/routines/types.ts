@@ -2,10 +2,18 @@ import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import type { ProviderAuthRoute } from '../config/runtime-model.ts';
 import type { SourceVisibility } from '../work/types.ts';
 
-export type RoutineState = 'active' | 'paused' | 'disabled' | 'completed';
+export type RoutineState = 'pending_authority' | 'active' | 'paused' | 'disabled' | 'completed';
 export type RoutineTriggerKind = 'schedule' | 'once';
 export type RoutineOutputPolicy = 'post' | 'post_on_change';
-export type RoutineAuthorityMode = 'live_channel_v1';
+export type RoutineAuthorityMode = 'live_channel_v1' | 'live_direct_member_v1';
+export type RoutineDestination =
+  | { kind: 'channel'; channelId: string }
+  | {
+      kind: 'direct_thread';
+      conversationId: string;
+      threadTs: string;
+      ownerMembershipId: string;
+    };
 export type RoutineActorClass = 'member' | 'operator' | 'system';
 export type RoutineControlAction = 'pause' | 'resume' | 'disable';
 export type RoutineRunStatus =
@@ -43,6 +51,7 @@ export type RoutineFailureClass =
   | 'unknown_external_outcome'
   | 'result_invalid'
   | 'slack_rate_limited'
+  | 'direct_thread_unavailable'
   | 'delivery_unknown'
   | 'internal_error';
 
@@ -70,6 +79,7 @@ export interface RoutineDefinition extends RoutineDefinitionContent {
   bindingId?: string | null;
   workspaceId: string;
   channelId: string;
+  destination: RoutineDestination;
   creatorUserId: string;
   state: RoutineState;
   version: number;
@@ -200,11 +210,47 @@ export interface SaveRoutineInput {
   actorClass: RoutineActorClass;
   workspaceId: string;
   channelId: string;
+  /** Omitted legacy callers retain the existing Channel destination. */
+  destination?: RoutineDestination;
   draft: Exclude<RoutineConfirmationDraft, { action: 'delete' }>;
   provenance?: RoutineRequestProvenanceInput | null;
   idempotencyKey: string;
   /** Resolved at Slack creation time; omitted callers fail closed to unknown. */
   sourceVisibility?: SourceVisibility;
+}
+
+export interface ActivateDirectRoutineInput {
+  routineId: string;
+  expectedVersion: number;
+  expectedReferenceRevision: number;
+  destinationBindingDigest: string;
+}
+
+export type RoutineRecoveryDeliveryStatus =
+  | 'pending'
+  | 'accepted'
+  | 'definitive_failure'
+  | 'unknown';
+
+export interface RoutineRecoveryDelivery {
+  occurrenceId: string;
+  claimedAt: number | null;
+  status: RoutineRecoveryDeliveryStatus;
+  messageTs: string | null;
+  failureClass: 'direct_thread_unavailable';
+  updatedAt: number;
+}
+
+export interface ClaimRoutineRecoveryDeliveryInput {
+  occurrenceId: string;
+  at: number;
+}
+
+export interface RecordRoutineRecoveryDeliveryInput {
+  occurrenceId: string;
+  outcome: Exclude<RoutineRecoveryDeliveryStatus, 'pending'>;
+  at: number;
+  messageTs?: string;
 }
 
 export interface ControlRoutineInput {
@@ -465,6 +511,7 @@ export interface RecordRoutineDeliveryInput {
   occurrenceId: string;
   outcome: 'delivered' | 'unknown' | 'failed';
   at: number;
+  failureClass?: Extract<RoutineFailureClass, 'direct_thread_unavailable'>;
   channelId?: string;
   messageTs?: string;
   changeKeyHash?: string | null;
@@ -497,9 +544,11 @@ export interface RoutineStore {
   cancelConfirmation(input: CancelRoutineConfirmationInput): Promise<boolean>;
   confirm(input: ConfirmRoutineInput): Promise<RoutineDefinition>;
   save(input: SaveRoutineInput): Promise<RoutineDefinition>;
+  activateDirectRoutine(input: ActivateDirectRoutineInput): Promise<RoutineDefinition>;
   purgeConfirmations(): Promise<number>;
   cleanupRetention(): Promise<RoutineMaintenanceResult>;
   getRoutine(routineId: string): Promise<RoutineDefinition | undefined>;
+  getRoutineByWorkId(workId: string): Promise<RoutineDefinition | undefined>;
   listRoutines(workspaceId?: string, channelId?: string): Promise<RoutineDefinition[]>;
   listAdminRoutinePage(input: RoutineAdminPageInput): Promise<RoutineAdminPage>;
   listRevisions(routineId: string): Promise<RoutineRevision[]>;
@@ -524,6 +573,13 @@ export interface RoutineStore {
   transitionRun(input: TransitionRoutineRunInput): Promise<RoutineRun>;
   claimDelivery(input: ClaimRoutineDeliveryInput): Promise<'claimed' | 'superseded'>;
   recordDelivery(input: RecordRoutineDeliveryInput): Promise<RoutineRun>;
+  getRecoveryDelivery(occurrenceId: string): Promise<RoutineRecoveryDelivery | undefined>;
+  claimRecoveryDelivery(
+    input: ClaimRoutineRecoveryDeliveryInput,
+  ): Promise<'claimed' | 'superseded'>;
+  recordRecoveryDelivery(
+    input: RecordRoutineRecoveryDeliveryInput,
+  ): Promise<RoutineRecoveryDelivery>;
   listAdmissions(occurrenceId: string): Promise<RoutineAdmissionAttempt[]>;
   listAuditEvents(filter?: AuditEventFilter): Promise<AuditEvent[]>;
 }
@@ -545,9 +601,11 @@ export type RoutineRpcRequest =
   | { kind: 'cancel_confirmation'; input: CancelRoutineConfirmationInput }
   | { kind: 'confirm'; input: ConfirmRoutineInput }
   | { kind: 'save'; input: SaveRoutineInput }
+  | { kind: 'activate_direct_routine'; input: ActivateDirectRoutineInput }
   | { kind: 'purge_confirmations' }
   | { kind: 'cleanup_retention' }
   | { kind: 'get_routine'; routineId: string }
+  | { kind: 'get_routine_by_work'; workId: string }
   | { kind: 'list_routines'; workspaceId?: string; channelId?: string }
   | { kind: 'list_admin_routine_page'; input: RoutineAdminPageInput }
   | { kind: 'list_revisions'; routineId: string }
@@ -572,6 +630,9 @@ export type RoutineRpcRequest =
   | { kind: 'transition_run'; input: TransitionRoutineRunInput }
   | { kind: 'claim_delivery'; input: ClaimRoutineDeliveryInput }
   | { kind: 'record_delivery'; input: RecordRoutineDeliveryInput }
+  | { kind: 'get_recovery_delivery'; occurrenceId: string }
+  | { kind: 'claim_recovery_delivery'; input: ClaimRoutineRecoveryDeliveryInput }
+  | { kind: 'record_recovery_delivery'; input: RecordRoutineRecoveryDeliveryInput }
   | { kind: 'list_admissions'; occurrenceId: string }
   | { kind: 'count_admitting_or_running_occurrences' }
   | { kind: 'list_audit_events'; filter: AuditEventFilter };
@@ -589,6 +650,8 @@ export type RoutineRpcResponse =
   | { kind: 'admissions'; admissions: RoutineAdmissionAttempt[] }
   | { kind: 'begin'; outcome: 'started' | 'superseded' }
   | { kind: 'delivery_claim'; outcome: 'claimed' | 'superseded' }
+  | { kind: 'recovery_delivery'; delivery: RoutineRecoveryDelivery | null }
+  | { kind: 'recovery_delivery_claim'; outcome: 'claimed' | 'superseded' }
   | { kind: 'boolean'; value: boolean }
   | { kind: 'purged'; count: number }
   | { kind: 'count'; count: number }

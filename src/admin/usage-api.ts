@@ -75,6 +75,7 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
       return c.json(await options.store(c).summarizeConnectorUsage({
         from: numberQuery(c, 'from'),
         to: numberQuery(c, 'to'),
+        excludePrivateRoutines: true,
         ...(workspaceId ? { workspaceId } : {}),
         ...(agentId ? { agentId } : {}),
         ...(toolkit ? { toolkit } : {}),
@@ -148,6 +149,9 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
     try {
       const detail = await options.store(c).getOperation(c.req.param('operationId'));
       if (!detail) return c.json({ error: 'usage_operation_not_found' }, 404);
+      if (privateRoutineUsage(detail)) {
+        return c.json({ error: 'usage_operation_not_found' }, 404);
+      }
       const visibility = await usageRunVisibility(options.work?.(c), [detail]);
       return c.json(usageDetailProjection(
         detail,
@@ -177,6 +181,11 @@ function usageDetailProjection(
   publicLabels: boolean,
 ): Record<string, unknown> {
   return publicLabels ? publicUsageDetail(detail) : redactedUsageDetail(detail);
+}
+
+function privateRoutineUsage(detail: UsageOperationDetail): boolean {
+  return detail.operation.operationKind === 'routine_run' &&
+    detail.operation.conversationKind === 'direct_message';
 }
 
 function publicUsageDetail(detail: UsageOperationDetail): Record<string, unknown> {
@@ -280,6 +289,7 @@ function parseCustomerUsageQuery(c: Context, includeGroup: boolean): UsageQuery 
   return {
     from,
     to,
+    excludePrivateRoutines: true,
     ...(limit === undefined ? {} : { limit }),
     ...(groupBy === undefined ? {} : { groupBy: groupBy as UsageGroupBy }),
     ...(currency === undefined ? {} : { currency }),

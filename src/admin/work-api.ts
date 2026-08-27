@@ -28,6 +28,7 @@ import {
 interface WorkAdminApiOptions {
   store: (c: Context) => WorkStore;
   usage?: (c: Context) => UsageStore;
+  privateWork?: (c: Context, workId: WorkId) => Promise<boolean>;
   now?: () => number;
 }
 
@@ -64,8 +65,9 @@ export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
     try {
       const store = options.store(c);
       const page = await store.listRuns(parseListInput(c));
+      const visible = await excludePrivateWork(c, page.items, options);
       return c.json({
-        items: page.items.map(sessionSummary),
+        items: visible.map(sessionSummary),
         nextCursor: page.nextCursor ? encodeCursor(page.nextCursor) : null,
       });
     } catch (error) {
@@ -79,6 +81,9 @@ export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
       const store = options.store(c);
       const run = await store.getRun(runId);
       if (!run) return c.json({ error: 'session_not_found' }, 404);
+      if (await privateWork(c, run.workId, options)) {
+        return c.json({ error: 'session_not_found' }, 404);
+      }
       const [work, binding, executions, events, config, usage] = await Promise.all([
         store.getWork(run.workId),
         store.getBinding(run.bindingId),
@@ -111,9 +116,14 @@ export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
     if (!parsed.success) return c.json({ error: 'invalid_request' }, 400);
     try {
       const runId = parseRunId(c.req.param('runId'));
+      const store = options.store(c);
+      const current = await store.getRun(runId);
+      if (!current || await privateWork(c, current.workId, options)) {
+        return c.json({ error: 'session_not_found' }, 404);
+      }
       const credential = adminCredential(c);
       const requestId = `request_${sha256(`quarantine\0${idempotencyKey}`).slice(0, 32)}`;
-      const run = await options.store(c).quarantineRun({
+      const run = await store.quarantineRun({
         runId,
         adminCredentialId: credential.id,
         operatorLabel: parsed.output.operatorLabel,
@@ -146,6 +156,9 @@ export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
       const store = options.store(c);
       const run = await store.getRun(runId);
       if (!run) return c.json({ error: 'session_not_found' }, 404);
+      if (await privateWork(c, run.workId, options)) {
+        return c.json({ error: 'session_not_found' }, 404);
+      }
 
       const retiredAt = now();
       const identity = sha256(`retire-stale\0${idempotencyKey}`).slice(0, 32);
@@ -197,6 +210,31 @@ export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
   });
 
   return app;
+}
+
+async function excludePrivateWork(
+  c: Context,
+  items: WorkRunListItem[],
+  options: WorkAdminApiOptions,
+): Promise<WorkRunListItem[]> {
+  if (!options.privateWork) return items;
+  const privateByWork = new Map<WorkId, boolean>();
+  return (await Promise.all(items.map(async (item) => {
+    let hidden = privateByWork.get(item.work.id);
+    if (hidden === undefined) {
+      hidden = await privateWork(c, item.work.id, options);
+      privateByWork.set(item.work.id, hidden);
+    }
+    return hidden ? null : item;
+  }))).filter((item): item is WorkRunListItem => item !== null);
+}
+
+async function privateWork(
+  c: Context,
+  workId: WorkId,
+  options: WorkAdminApiOptions,
+): Promise<boolean> {
+  return options.privateWork ? options.privateWork(c, workId) : false;
 }
 
 interface SessionContext {

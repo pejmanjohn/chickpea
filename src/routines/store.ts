@@ -10,6 +10,7 @@ import {
   hashRoutineValue,
   isOpaqueRoutineId,
   routineAuditId,
+  routineDestinationBindingDigest,
   scheduledOccurrenceKey,
 } from './ids.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
@@ -26,8 +27,10 @@ import {
 } from './schedule.ts';
 import {
   RoutineStateError,
+  type ActivateDirectRoutineInput,
   type BeginRoutineOccurrenceInput,
   type CancelRoutineConfirmationInput,
+  type ClaimRoutineRecoveryDeliveryInput,
   type ClaimRoutineDeliveryInput,
   type ClaimDueRoutinesInput,
   type ConfirmRoutineInput,
@@ -38,6 +41,7 @@ import {
   type RecordRoutineAgentReceiptInput,
   type RecordRoutineAgentSettlementInput,
   type RecordRoutineDeliveryInput,
+  type RecordRoutineRecoveryDeliveryInput,
   type RoutineAdmissionAttempt,
   type RoutineAdminPage,
   type RoutineAdminPageInput,
@@ -46,11 +50,13 @@ import {
   type RoutineConfirmationDraft,
   type RoutineDefinition,
   type RoutineDefinitionContent,
+  type RoutineDestination,
   type RoutineDueClaimBatch,
   type RoutineMaintenanceResult,
   type RoutineRevision,
   type RoutineRequestProvenance,
   type RoutineRequestProvenanceInput,
+  type RoutineRecoveryDelivery,
   type RoutineRpcRequest,
   type RoutineRpcResponse,
   type RoutineRun,
@@ -66,6 +72,7 @@ import {
 import {
   validatePublicRoutineError,
   validateRoutineDefinition,
+  validateRoutineDestination,
   validateRoutineScope,
 } from './validation.ts';
 import { opaqueId, safeConfigForAssignment } from '../work/admission.ts';
@@ -84,6 +91,9 @@ interface RoutineRow {
   source_visibility?: SourceVisibility;
   workspace_id: string;
   channel_id: string;
+  destination_kind?: string;
+  direct_thread_ts?: string | null;
+  direct_owner_membership_id?: string | null;
   creator_user_id: string;
   name: string;
   description: string;
@@ -115,6 +125,25 @@ interface RoutineRow {
   disabled_reason: string | null;
   deleted_at: number | null;
   deleted_by: string | null;
+}
+
+interface PendingAuthorityRow {
+  routine_id: string;
+  routine_version: number;
+  destination_binding_digest: string;
+  next_run_at: number;
+  projected_daily_starts: number;
+  reservation_windows_json: string;
+  created_at: number;
+}
+
+interface RecoveryDeliveryRow {
+  occurrence_id: string;
+  claimed_at: number;
+  status: RoutineRecoveryDelivery['status'];
+  message_ts: string | null;
+  failure_class: RoutineRecoveryDelivery['failureClass'];
+  updated_at: number;
 }
 
 interface ConfirmationRow {
@@ -271,12 +300,16 @@ export class RoutineStoreLogic {
         return { kind: 'routine', routine: this.confirm(request.input) };
       case 'save':
         return { kind: 'routine', routine: this.save(request.input) };
+      case 'activate_direct_routine':
+        return { kind: 'routine', routine: this.activateDirectRoutine(request.input) };
       case 'purge_confirmations':
         return { kind: 'purged', count: this.purgeConfirmations() };
       case 'cleanup_retention':
         return { kind: 'maintenance', result: this.cleanupRetention() };
       case 'get_routine':
         return { kind: 'routine', routine: this.getRoutine(request.routineId) ?? null };
+      case 'get_routine_by_work':
+        return { kind: 'routine', routine: this.getRoutineByWorkId(request.workId) ?? null };
       case 'list_routines':
         return {
           kind: 'routines',
@@ -324,6 +357,21 @@ export class RoutineStoreLogic {
         return { kind: 'delivery_claim', outcome: this.claimDelivery(request.input) };
       case 'record_delivery':
         return { kind: 'run', run: this.recordDelivery(request.input) };
+      case 'get_recovery_delivery':
+        return {
+          kind: 'recovery_delivery',
+          delivery: this.getRecoveryDelivery(request.occurrenceId) ?? null,
+        };
+      case 'claim_recovery_delivery':
+        return {
+          kind: 'recovery_delivery_claim',
+          outcome: this.claimRecoveryDelivery(request.input),
+        };
+      case 'record_recovery_delivery':
+        return {
+          kind: 'recovery_delivery',
+          delivery: this.recordRecoveryDelivery(request.input),
+        };
       case 'list_admissions':
         return { kind: 'admissions', admissions: this.listAdmissions(request.occurrenceId) };
       case 'count_admitting_or_running_occurrences':
@@ -417,6 +465,94 @@ export class RoutineStoreLogic {
         return required(this.getRoutine(replay.subjectId), 'Saved routine replay was unavailable.');
       }
       return this.applySavedDraft(draft, input, null, this.now());
+    });
+  }
+
+  activateDirectRoutine(input: ActivateDirectRoutineInput): RoutineDefinition {
+    if (
+      !isOpaqueRoutineId(input.routineId) ||
+      !Number.isSafeInteger(input.expectedVersion) ||
+      input.expectedVersion < 1 ||
+      !Number.isSafeInteger(input.expectedReferenceRevision) ||
+      input.expectedReferenceRevision < 1 ||
+      !/^[a-f0-9]{64}$/.test(input.destinationBindingDigest)
+    ) {
+      throw routineError('routine_authority_binding_invalid', 'Routine authority binding is invalid.');
+    }
+    return this.db.transaction(() => {
+      const routine = this.requiredMutableRoutine(input.routineId, input.expectedVersion);
+      if (routine.destination.kind !== 'direct_thread') {
+        throw routineError('routine_authority_binding_invalid', 'Routine authority binding is invalid.');
+      }
+      const canonicalDigest = routineDestinationBindingDigest(
+        routine.id,
+        routine.workspaceId,
+        routine.destination,
+      );
+      const reference = this.config.getAgentScheduleReference(routine.id);
+      if (
+        canonicalDigest !== input.destinationBindingDigest ||
+        !reference ||
+        reference.revision !== input.expectedReferenceRevision ||
+        reference.workspaceId !== routine.workspaceId ||
+        reference.channelId !== routine.destination.conversationId ||
+        reference.createdByMembershipId !== routine.destination.ownerMembershipId ||
+        reference.destinationKind !== 'direct_thread' ||
+        reference.destinationBindingDigest !== canonicalDigest ||
+        reference.state !== 'active'
+      ) {
+        throw routineError('routine_authority_binding_invalid', 'Routine authority binding is invalid.');
+      }
+      const pending = this.db.get(
+        'SELECT * FROM routine_pending_authority WHERE routine_id = ?',
+        routine.id,
+      ) as unknown as PendingAuthorityRow | undefined;
+      if (routine.state === 'active' && !pending) return routine;
+      if (
+        routine.state !== 'pending_authority' ||
+        !pending ||
+        pending.routine_version !== routine.version ||
+        pending.destination_binding_digest !== canonicalDigest
+      ) {
+        throw routineError('routine_authority_binding_invalid', 'Routine authority binding is invalid.');
+      }
+      const reservations = JSON.parse(
+        pending.reservation_windows_json,
+      ) as RoutineScheduleReservation[];
+      this.assertCapacity(
+        routine.workspaceId,
+        routine.channelId,
+        routine.triggerKind,
+        pending.projected_daily_starts,
+        reservations,
+        routine.id,
+      );
+      const at = this.now();
+      this.db.run(
+        `UPDATE routines SET state = 'active', next_run_at = ?, projected_daily_starts = ?,
+           reservation_windows_json = ?, updated_at = ?
+         WHERE id = ? AND version = ? AND state = 'pending_authority'`,
+        pending.next_run_at,
+        pending.projected_daily_starts,
+        pending.reservation_windows_json,
+        at,
+        routine.id,
+        routine.version,
+      );
+      this.replaceReservations(routine.id, reservations);
+      this.db.run('DELETE FROM routine_pending_authority WHERE routine_id = ?', routine.id);
+      const active = required(this.getRoutine(routine.id), 'Activated routine was not readable.');
+      this.appendRoutineAudit(
+        `routine:activate:${routine.id}:${routine.version}:${reference.revision}`,
+        'routine.activated',
+        active,
+        null,
+        'system',
+        definitionHash(routine),
+        definitionHash(active),
+        at,
+      );
+      return active;
     });
   }
 
@@ -540,6 +676,7 @@ export class RoutineStoreLogic {
       | 'actorClass'
       | 'workspaceId'
       | 'channelId'
+      | 'destination'
       | 'idempotencyKey'
       | 'provenance'
       | 'sourceVisibility'
@@ -551,6 +688,14 @@ export class RoutineStoreLogic {
       if (this.getRoutine(draft.routineId)) {
         throw routineError('routine_exists', 'Routine already exists.');
       }
+      const destination = validateRoutineDestination(input.destination, input.channelId);
+      assertDestinationAuthority(destination, draft.definition.authorityMode);
+      if (destination.kind === 'direct_thread' && input.sourceVisibility === 'public') {
+        throw routineError('routine_invalid_destination', 'A direct routine must remain private.');
+      }
+      const sourceVisibility = destination.kind === 'direct_thread'
+        ? 'private'
+        : (input.sourceVisibility ?? 'unknown');
       this.assertCapacity(
         input.workspaceId,
         input.channelId,
@@ -563,6 +708,7 @@ export class RoutineStoreLogic {
         id: draft.routineId,
         workspaceId: input.workspaceId,
         channelId: input.channelId,
+        destination,
         creatorUserId: input.actorId,
         definition,
         nextRunAt: draft.nextRunAt,
@@ -570,16 +716,28 @@ export class RoutineStoreLogic {
         reservations: draft.reservations,
         actorId: input.actorId,
         at,
-        sourceVisibility: input.sourceVisibility ?? 'unknown',
+        sourceVisibility,
       });
       this.ensureRoutineWorkBinding(
         draft.routineId,
         input.workspaceId,
         input.channelId,
-        input.sourceVisibility ?? 'unknown',
+        sourceVisibility,
         at,
       );
-      this.replaceReservations(draft.routineId, draft.reservations);
+      if (destination.kind === 'channel') {
+        this.replaceReservations(draft.routineId, draft.reservations);
+      } else {
+        this.insertPendingAuthority(
+          draft.routineId,
+          1,
+          routineDestinationBindingDigest(draft.routineId, input.workspaceId, destination),
+          draft.nextRunAt,
+          draft.projectedDailyStarts,
+          draft.reservations,
+          at,
+        );
+      }
       this.insertRevision(
         draft.routineId,
         1,
@@ -614,6 +772,19 @@ export class RoutineStoreLogic {
     if (current.workspaceId !== input.workspaceId || current.channelId !== input.channelId) {
       throw routineError('routine_not_found', 'Routine was not found.');
     }
+    if (current.state === 'pending_authority') {
+      throw routineError(
+        'routine_authority_pending',
+        'Routine authority must be repaired before editing this schedule.',
+      );
+    }
+    const requestedDestination = input.destination
+      ? validateRoutineDestination(input.destination, input.channelId)
+      : current.destination;
+    if (!sameRoutineDestination(current.destination, requestedDestination)) {
+      throw routineError('routine_invalid_destination', 'A routine destination is immutable.');
+    }
+    assertDestinationAuthority(current.destination, draft.definition.authorityMode);
     if (
       current.triggerKind === 'once' &&
       Number(
@@ -808,6 +979,15 @@ export class RoutineStoreLogic {
        )`,
       retentionCutoff,
     );
+    this.db.run(
+      `DELETE FROM routine_recovery_deliveries
+       WHERE occurrence_id IN (
+         SELECT id FROM routine_runs
+         WHERE status IN ('succeeded', 'no_op', 'failed', 'skipped', 'cancelled', 'superseded')
+           AND finished_at IS NOT NULL AND finished_at < ?
+       )`,
+      retentionCutoff,
+    );
     const runsDeleted = this.db.run(
       `DELETE FROM routine_runs
        WHERE status IN ('succeeded', 'no_op', 'failed', 'skipped', 'cancelled', 'superseded')
@@ -827,6 +1007,14 @@ export class RoutineStoreLogic {
 
   getRoutine(routineId: string): RoutineDefinition | undefined {
     const row = this.db.get('SELECT * FROM routines WHERE id = ?', routineId);
+    return row ? rowToRoutine(row as unknown as RoutineRow) : undefined;
+  }
+
+  getRoutineByWorkId(workId: string): RoutineDefinition | undefined {
+    if (!isOpaqueRoutineId(workId)) {
+      throw routineError('routine_invalid_id', 'Routine identifier is invalid.');
+    }
+    const row = this.db.get('SELECT * FROM routines WHERE work_id = ?', workId);
     return row ? rowToRoutine(row as unknown as RoutineRow) : undefined;
   }
 
@@ -945,6 +1133,9 @@ export class RoutineStoreLogic {
       const routine = this.requiredMutableRoutine(input.routineId, input.expectedVersion);
       const target = targetState(input.action);
       if (routine.state === target) return routine;
+      if (routine.state === 'pending_authority' && input.action !== 'disable') {
+        throw routineError('routine_transition_invalid', 'Routine state transition is invalid.');
+      }
       if (
         (input.action === 'pause' && routine.state !== 'active') ||
         (input.action === 'disable' && (routine.state === 'disabled' || routine.state === 'completed')) ||
@@ -1053,7 +1244,12 @@ export class RoutineStoreLogic {
         ((input.triggerSource === 'schedule' || input.triggerSource === 'once') && routine.state !== 'active') ||
         (input.triggerSource === 'schedule' && routine.triggerKind !== 'schedule') ||
         (input.triggerSource === 'once' && routine.triggerKind !== 'once') ||
-        (input.triggerSource === 'run_now' && (routine.state === 'disabled' || routine.state === 'completed' || routine.triggerKind === 'once'))
+        (input.triggerSource === 'run_now' && (
+          routine.state === 'pending_authority' ||
+          routine.state === 'disabled' ||
+          routine.state === 'completed' ||
+          routine.triggerKind === 'once'
+        ))
       ) {
         throw routineError('routine_state_ineligible', 'Routine cannot create this occurrence.');
       }
@@ -1660,6 +1856,12 @@ export class RoutineStoreLogic {
       if (!input.from.includes(run.status) || !validTransition(run.status, input.to)) {
         throw routineError('routine_run_transition_invalid', 'Routine occurrence transition is invalid.');
       }
+      if (input.failureClass === 'direct_thread_unavailable') {
+        const routine = this.getRoutine(run.routineId);
+        if (!routine || routine.destination.kind !== 'direct_thread' || input.to !== 'failed') {
+          throw routineError('routine_run_transition_invalid', 'Routine occurrence transition is invalid.');
+        }
+      }
       const publicError = validatePublicRoutineError(input.publicError);
       const skipReason = validateRoutineSkipReason(input.skipReason);
       const finishedAt = TERMINAL_RUN_STATUSES.has(input.to) ? input.at : null;
@@ -1740,6 +1942,8 @@ export class RoutineStoreLogic {
       !isOpaqueRoutineId(input.occurrenceId) ||
       !Number.isSafeInteger(input.at) ||
       !['delivered', 'unknown', 'failed'].includes(input.outcome) ||
+      (input.failureClass !== undefined &&
+        (input.failureClass !== 'direct_thread_unavailable' || input.outcome !== 'failed')) ||
       (input.channelId !== undefined && !isOpaqueRoutineId(input.channelId)) ||
       (input.messageTs !== undefined && !/^\d{1,20}\.\d{1,12}$/.test(input.messageTs)) ||
       (input.changeKeyHash !== undefined &&
@@ -1753,6 +1957,12 @@ export class RoutineStoreLogic {
       const run = required(this.getRun(input.occurrenceId), 'Routine occurrence was not found.');
       if (!['running', 'failed'].includes(run.status) || run.deliveryStatus !== 'leased') {
         throw routineError('routine_delivery_superseded', 'Routine delivery was superseded.');
+      }
+      if (input.failureClass === 'direct_thread_unavailable') {
+        const routine = this.getRoutine(run.routineId);
+        if (!routine || routine.destination.kind !== 'direct_thread') {
+          throw routineError('routine_delivery_invalid', 'Routine delivery result is invalid.');
+        }
       }
       this.db.run(
         `UPDATE routine_runs SET delivery_status = ?, delivery_lease_until = NULL,
@@ -1771,6 +1981,9 @@ export class RoutineStoreLogic {
           run.routineId,
         );
       }
+      if (run.status === 'failed' && input.failureClass === 'direct_thread_unavailable') {
+        this.pauseRoutineForDirectThreadFailure(run, input.at);
+      }
       const updated = required(this.getRun(run.id), 'Routine occurrence was not readable after delivery.');
       this.appendRunAudit(
         `routine.delivery_${input.outcome}`,
@@ -1779,6 +1992,90 @@ export class RoutineStoreLogic {
         input.at,
       );
       return updated;
+    });
+  }
+
+  getRecoveryDelivery(occurrenceId: string): RoutineRecoveryDelivery | undefined {
+    if (!isOpaqueRoutineId(occurrenceId)) {
+      throw routineError('routine_recovery_delivery_invalid', 'Routine recovery delivery is invalid.');
+    }
+    const row = this.db.get(
+      'SELECT * FROM routine_recovery_deliveries WHERE occurrence_id = ?',
+      occurrenceId,
+    );
+    return row ? rowToRecoveryDelivery(row as unknown as RecoveryDeliveryRow) : undefined;
+  }
+
+  claimRecoveryDelivery(
+    input: ClaimRoutineRecoveryDeliveryInput,
+  ): 'claimed' | 'superseded' {
+    if (!isOpaqueRoutineId(input.occurrenceId) ||
+        !Number.isSafeInteger(input.at) || input.at <= 0) {
+      throw routineError('routine_recovery_delivery_invalid', 'Routine recovery delivery is invalid.');
+    }
+    return this.db.transaction(() => {
+      const current = required(
+        this.getRecoveryDelivery(input.occurrenceId),
+        'Routine recovery delivery was not found.',
+      );
+      if (current.status !== 'pending' || current.claimedAt !== null) return 'superseded';
+      this.db.run(
+        `UPDATE routine_recovery_deliveries SET claimed_at = ?, updated_at = ?
+         WHERE occurrence_id = ? AND status = 'pending' AND claimed_at = 0`,
+        input.at,
+        input.at,
+        input.occurrenceId,
+      );
+      return this.getRecoveryDelivery(input.occurrenceId)?.claimedAt === input.at
+        ? 'claimed'
+        : 'superseded';
+    });
+  }
+
+  recordRecoveryDelivery(input: RecordRoutineRecoveryDeliveryInput): RoutineRecoveryDelivery {
+    if (
+      !isOpaqueRoutineId(input.occurrenceId) ||
+      !Number.isSafeInteger(input.at) ||
+      !['accepted', 'definitive_failure', 'unknown'].includes(input.outcome) ||
+      (input.messageTs !== undefined && !/^\d{1,20}\.\d{1,12}$/.test(input.messageTs)) ||
+      (input.outcome === 'accepted' && !input.messageTs) ||
+      (input.outcome !== 'accepted' && input.messageTs !== undefined)
+    ) {
+      throw routineError('routine_recovery_delivery_invalid', 'Routine recovery delivery is invalid.');
+    }
+    return this.db.transaction(() => {
+      const current = required(
+        this.getRecoveryDelivery(input.occurrenceId),
+        'Routine recovery delivery was not found.',
+      );
+      if (current.claimedAt === null) {
+        throw routineError(
+          'routine_recovery_delivery_superseded',
+          'Routine recovery delivery was not claimed.',
+        );
+      }
+      if (current.status !== 'pending') {
+        if (current.status === input.outcome && current.messageTs === (input.messageTs ?? null)) {
+          return current;
+        }
+        throw routineError(
+          'routine_recovery_delivery_superseded',
+          'Routine recovery delivery was superseded.',
+        );
+      }
+      this.db.run(
+        `UPDATE routine_recovery_deliveries
+         SET status = ?, message_ts = ?, updated_at = ?
+         WHERE occurrence_id = ? AND status = 'pending'`,
+        input.outcome,
+        input.outcome === 'accepted' ? input.messageTs! : null,
+        input.at,
+        input.occurrenceId,
+      );
+      return required(
+        this.getRecoveryDelivery(input.occurrenceId),
+        'Routine recovery delivery was not readable.',
+      );
     });
   }
 
@@ -1822,6 +2119,8 @@ export class RoutineStoreLogic {
         id TEXT PRIMARY KEY, work_id TEXT, binding_id TEXT,
         source_visibility TEXT NOT NULL DEFAULT 'unknown',
         workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+        destination_kind TEXT NOT NULL DEFAULT 'channel',
+        direct_thread_ts TEXT, direct_owner_membership_id TEXT,
         creator_user_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL,
         task_text TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_input TEXT NOT NULL,
         schedule_json TEXT NOT NULL, timezone TEXT NOT NULL, output_policy TEXT NOT NULL,
@@ -1842,6 +2141,10 @@ export class RoutineStoreLogic {
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS routines_scope_idx
        ON routines (workspace_id, channel_id, state, created_at)`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routines_work_idx
+       ON routines (work_id)`,
     );
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS routine_revisions (
@@ -1930,6 +2233,38 @@ export class RoutineStoreLogic {
         "ALTER TABLE routines ADD COLUMN source_visibility TEXT NOT NULL DEFAULT 'unknown'",
       );
     }
+    if (!routineColumns.some((row) => row.name === 'destination_kind')) {
+      this.db.exec(
+        "ALTER TABLE routines ADD COLUMN destination_kind TEXT NOT NULL DEFAULT 'channel'",
+      );
+    }
+    if (!routineColumns.some((row) => row.name === 'direct_thread_ts')) {
+      this.db.exec('ALTER TABLE routines ADD COLUMN direct_thread_ts TEXT');
+    }
+    if (!routineColumns.some((row) => row.name === 'direct_owner_membership_id')) {
+      this.db.exec('ALTER TABLE routines ADD COLUMN direct_owner_membership_id TEXT');
+    }
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS routine_pending_authority (
+        routine_id TEXT PRIMARY KEY,
+        routine_version INTEGER NOT NULL,
+        destination_binding_digest TEXT NOT NULL,
+        next_run_at INTEGER NOT NULL,
+        projected_daily_starts INTEGER NOT NULL,
+        reservation_windows_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS routine_recovery_deliveries (
+        occurrence_id TEXT PRIMARY KEY,
+        claimed_at INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        message_ts TEXT,
+        failure_class TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    );
     // The pointers into the Work ledger (routines.work_id/binding_id,
     // routine_runs.canonical_run_id) are installed by whichever store gets here
     // first — see installLedgerLinks. The tables above must already exist.
@@ -1988,6 +2323,7 @@ export class RoutineStoreLogic {
     id: string;
     workspaceId: string;
     channelId: string;
+    destination: RoutineDestination;
     creatorUserId: string;
     definition: RoutineDefinitionContent;
     nextRunAt: number;
@@ -1998,22 +2334,28 @@ export class RoutineStoreLogic {
     sourceVisibility: SourceVisibility;
   }): void {
     const d = input.definition;
+    const direct = input.destination.kind === 'direct_thread';
     this.db.run(
       `INSERT INTO routines (
-        id, source_visibility, workspace_id, channel_id, creator_user_id, name, description, task_text,
+        id, source_visibility, workspace_id, channel_id, destination_kind,
+        direct_thread_ts, direct_owner_membership_id,
+        creator_user_id, name, description, task_text,
         trigger_kind, schedule_input, schedule_json, timezone, output_policy,
         authority_mode, state, version, next_run_at, last_scheduled_at,
         last_finished_at, consecutive_failures, last_change_key_hash,
         projected_daily_starts, reservation_windows_json, created_at, created_by,
         updated_at, updated_by, paused_at, paused_by, paused_reason, disabled_at,
         disabled_by, disabled_reason, deleted_at, deleted_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, NULL,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL,
                 NULL, 0, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL,
                 NULL, NULL, NULL)`,
       input.id,
       input.sourceVisibility,
       input.workspaceId,
       input.channelId,
+      input.destination.kind,
+      input.destination.kind === 'direct_thread' ? input.destination.threadTs : null,
+      input.destination.kind === 'direct_thread' ? input.destination.ownerMembershipId : null,
       input.creatorUserId,
       d.name,
       d.description,
@@ -2024,13 +2366,38 @@ export class RoutineStoreLogic {
       d.timezone,
       d.outputPolicy,
       d.authorityMode,
-      input.nextRunAt,
-      input.projectedDailyStarts,
-      JSON.stringify(input.reservations),
+      direct ? 'pending_authority' : 'active',
+      direct ? null : input.nextRunAt,
+      direct ? 0 : input.projectedDailyStarts,
+      JSON.stringify(direct ? [] : input.reservations),
       input.at,
       input.actorId,
       input.at,
       input.actorId,
+    );
+  }
+
+  private insertPendingAuthority(
+    routineId: string,
+    routineVersion: number,
+    destinationBindingDigest: string,
+    nextRunAt: number,
+    projectedDailyStarts: number,
+    reservations: RoutineScheduleReservation[],
+    createdAt: number,
+  ): void {
+    this.db.run(
+      `INSERT INTO routine_pending_authority (
+        routine_id, routine_version, destination_binding_digest, next_run_at,
+        projected_daily_starts, reservation_windows_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      routineId,
+      routineVersion,
+      destinationBindingDigest,
+      nextRunAt,
+      projectedDailyStarts,
+      JSON.stringify(reservations),
+      createdAt,
     );
   }
 
@@ -2081,15 +2448,18 @@ export class RoutineStoreLogic {
     const reference = this.config.getAgentScheduleReference(routine.id);
     if (!reference || reference.workspaceId !== routine.workspaceId ||
         reference.channelId !== routine.channelId || reference.state !== 'active') return;
-    const grant = this.config.listAgentChannelGrants(routine.workspaceId, routine.channelId)
-      .find((candidate) => candidate.agentId === reference.agentId && candidate.status === 'active');
-    if (!grant) return;
     let assignment: ResolvedAssignment;
     try {
       const agent = this.config.getAgent(reference.agentId);
-      if (!agent.enabled) return;
-      const channel = this.config.getChannel(routine.workspaceId, routine.channelId);
-      if (channel?.lifecycle === 'archived') return;
+      if (!agent.enabled || (routine.destination.kind === 'direct_thread' && agent.kind !== 'user')) return;
+      const channel = routine.destination.kind === 'channel'
+        ? this.config.getChannel(routine.workspaceId, routine.channelId)
+        : undefined;
+      if (routine.destination.kind === 'channel') {
+        const grant = this.config.listAgentChannelGrants(routine.workspaceId, routine.channelId)
+          .find((candidate) => candidate.agentId === reference.agentId && candidate.status === 'active');
+        if (!grant || channel?.lifecycle === 'archived') return;
+      }
       assignment = {
         workspaceId: routine.workspaceId,
         channelId: routine.channelId,
@@ -2622,6 +2992,10 @@ export class RoutineStoreLogic {
     const routineId = run.routineId;
     const routine = this.getRoutine(routineId);
     if (!routine || routine.deletedAt !== null) return;
+    if (failureClass === 'direct_thread_unavailable') {
+      this.pauseRoutineForDirectThreadFailure(run, at);
+      return;
+    }
     if (run.triggerSource === 'once' && routine.triggerKind === 'once') {
       this.completeOneTimeRoutine(run, at, status);
       return;
@@ -2701,6 +3075,46 @@ export class RoutineStoreLogic {
       return;
     }
     this.db.run('UPDATE routines SET last_finished_at = ? WHERE id = ?', at, routineId);
+  }
+
+  private pauseRoutineForDirectThreadFailure(run: RoutineRun, at: number): void {
+    const routine = required(this.getRoutine(run.routineId), 'Routine was not found.');
+    if (routine.destination.kind !== 'direct_thread' || routine.deletedAt !== null) {
+      throw routineError('routine_run_transition_invalid', 'Routine occurrence transition is invalid.');
+    }
+    this.db.run(
+      `UPDATE routines SET state = 'paused', paused_at = ?, paused_by = NULL,
+         paused_reason = 'direct_thread_unavailable', next_run_at = NULL,
+         projected_daily_starts = 0, reservation_windows_json = '[]',
+         last_finished_at = ?, updated_at = ?
+       WHERE id = ? AND deleted_at IS NULL`,
+      at,
+      at,
+      at,
+      routine.id,
+    );
+    this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', routine.id);
+    this.db.run(
+      `INSERT INTO routine_recovery_deliveries (
+        occurrence_id, claimed_at, status, message_ts, failure_class, updated_at
+      ) VALUES (?, ?, 'pending', NULL, 'direct_thread_unavailable', ?)
+      ON CONFLICT(occurrence_id) DO NOTHING`,
+      run.id,
+      0,
+      at,
+    );
+    const paused = required(this.getRoutine(routine.id), 'Paused routine was not readable.');
+    this.appendRoutineAudit(
+      `routine:auto-pause:${run.id}:direct_thread_unavailable`,
+      'routine.auto_paused',
+      paused,
+      null,
+      'system',
+      definitionHash(routine),
+      definitionHash(paused),
+      at,
+      'direct_thread_unavailable',
+    );
   }
 
   private completeOneTimeRoutine(run: RoutineRun, at: number, outcome: RoutineRunStatus): void {
@@ -3114,12 +3528,14 @@ function validateReservationInput(
 }
 
 function rowToRoutine(row: RoutineRow): RoutineDefinition {
+  const destination = routineDestinationFromRow(row);
   return {
     id: row.id,
     ...(row.work_id ? { workId: row.work_id } : {}),
     ...(row.binding_id ? { bindingId: row.binding_id } : {}),
     workspaceId: row.workspace_id,
     channelId: row.channel_id,
+    destination,
     creatorUserId: row.creator_user_id,
     name: row.name,
     description: row.description,
@@ -3151,6 +3567,25 @@ function rowToRoutine(row: RoutineRow): RoutineDefinition {
     disabledReason: row.disabled_reason,
     deletedAt: row.deleted_at,
     deletedBy: row.deleted_by,
+  };
+}
+
+function routineDestinationFromRow(row: RoutineRow): RoutineDestination {
+  if ((row.destination_kind ?? 'channel') === 'channel') {
+    return { kind: 'channel', channelId: row.channel_id };
+  }
+  if (
+    row.destination_kind !== 'direct_thread' ||
+    !row.direct_thread_ts ||
+    !row.direct_owner_membership_id
+  ) {
+    throw routineError('routine_invalid_destination', 'Routine destination is incomplete.');
+  }
+  return {
+    kind: 'direct_thread',
+    conversationId: row.channel_id,
+    threadTs: row.direct_thread_ts,
+    ownerMembershipId: row.direct_owner_membership_id,
   };
 }
 
@@ -3284,6 +3719,17 @@ function rowToAdmission(row: AdmissionRow): RoutineAdmissionAttempt {
   };
 }
 
+function rowToRecoveryDelivery(row: RecoveryDeliveryRow): RoutineRecoveryDelivery {
+  return {
+    occurrenceId: row.occurrence_id,
+    claimedAt: row.claimed_at > 0 ? row.claimed_at : null,
+    status: row.status,
+    messageTs: row.message_ts,
+    failureClass: 'direct_thread_unavailable',
+    updatedAt: row.updated_at,
+  };
+}
+
 function definitionHash(definition: RoutineDefinitionContent): string;
 function definitionHash(definition: RoutineDefinition): string;
 function definitionHash(definition: RoutineDefinitionContent | RoutineDefinition): string {
@@ -3304,6 +3750,29 @@ function definitionContent(
     outputPolicy: definition.outputPolicy,
     authorityMode: definition.authorityMode,
   };
+}
+
+function assertDestinationAuthority(
+  destination: RoutineDestination,
+  authorityMode: RoutineDefinition['authorityMode'],
+): void {
+  const expected = destination.kind === 'direct_thread'
+    ? 'live_direct_member_v1'
+    : 'live_channel_v1';
+  if (authorityMode !== expected) {
+    throw routineError('routine_invalid_destination', 'Routine authority does not match its destination.');
+  }
+}
+
+function sameRoutineDestination(left: RoutineDestination, right: RoutineDestination): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === 'channel' && right.kind === 'channel') {
+    return left.channelId === right.channelId;
+  }
+  return left.kind === 'direct_thread' && right.kind === 'direct_thread' &&
+    left.conversationId === right.conversationId &&
+    left.threadTs === right.threadTs &&
+    left.ownerMembershipId === right.ownerMembershipId;
 }
 
 function targetState(action: ControlRoutineInput['action']): RoutineDefinition['state'] {

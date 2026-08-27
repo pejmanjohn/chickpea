@@ -12,6 +12,7 @@ import {
   type RoutineConfirmationDraft,
   type RoutineDefinition,
   type RoutineDefinitionContent,
+  type RoutineDestination,
   type RoutineScheduleReservation,
   type RoutineRequestProvenanceInput,
   type SaveRoutineInput,
@@ -26,6 +27,7 @@ interface RoutineRequestBase {
   actorClass?: 'member' | 'operator';
   workspaceId: string;
   channelId: string;
+  destination?: RoutineDestination;
   provenance?: RoutineRequestProvenanceInput | null;
   sourceVisibility?: SourceVisibility;
 }
@@ -132,6 +134,7 @@ export class RoutineService {
       actorClass: request.actorClass ?? 'member',
       workspaceId: request.workspaceId,
       channelId: request.channelId,
+      ...(request.destination ? { destination: request.destination } : {}),
       draft,
       provenance: request.provenance ?? null,
       idempotencyKey,

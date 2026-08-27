@@ -25,6 +25,9 @@ const FILTER_COLUMNS = {
 export function usageWhere(query: NormalizedUsageQuery, includeCursor = false): UsageWhereClause {
   const clauses = ['o.started_at >= ?', 'o.started_at < ?'];
   const params: SqlParam[] = [query.from, query.to];
+  if (query.excludePrivateRoutines) {
+    clauses.push("NOT (o.operation_kind = 'routine_run' AND o.conversation_kind = 'direct_message')");
+  }
   for (const [key, column] of Object.entries(FILTER_COLUMNS)) {
     const values = query.filters[key as keyof typeof FILTER_COLUMNS];
     if (!values || values.length === 0) continue;
