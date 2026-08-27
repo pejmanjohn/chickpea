@@ -1,6 +1,13 @@
 import type { SlackStatusUpdate } from './replies.ts';
 import { THREAD_TTL_MS } from './state-limits.ts';
 import type { WebClientPresenter } from './web-client-presenter.ts';
+import {
+  emitSemanticActivityTelemetry,
+  semanticTelemetryForStatus,
+  type SemanticActivityQueueDisposition,
+  type SemanticActivityTelemetrySink,
+} from '../activity/telemetry.ts';
+import { isSafeTypedActivityStatus } from '../activity/status.ts';
 
 export interface SlackStatusTurnRegistration {
   setStatus(update: SlackStatusUpdate): Promise<boolean>;
@@ -34,6 +41,8 @@ export interface SlackStatusTurnOptions {
   refreshIntervalMs?: number;
   /** Durable proof that this exact phrase is already visible from admission. */
   initialAppliedStatus?: SlackStatusUpdate;
+  /** Fixed-schema content-free observability; injectable for focused tests. */
+  telemetry?: SemanticActivityTelemetrySink;
 }
 
 interface QueuedStatusWrite {
@@ -65,6 +74,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     private readonly presenter: StatusPresenter,
     private readonly observedMinIntervalMs: number,
     private readonly refreshIntervalMs: number,
+    private readonly telemetry: SemanticActivityTelemetrySink,
     private readonly sessionGeneration?: number,
     private acceptsWrites = true,
     ownershipBarrier?: Promise<void>,
@@ -84,11 +94,11 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   }
 
   setStatus(update: SlackStatusUpdate): Promise<boolean> {
-    return this.enqueue(update, false);
+    return this.enqueue(update, false, false);
   }
 
   setObservedStatus(update: SlackStatusUpdate): Promise<boolean> {
-    return this.enqueue(update, true);
+    return this.enqueue(update, true, false);
   }
 
   belongsTo(generation: string): boolean {
@@ -102,25 +112,46 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   fenceByNewerGeneration(): Promise<void> {
     this.acceptsWrites = false;
     this.cancelRefresh();
-    this.discardPending();
+    this.discardPending('stale_dropped');
     return this.active?.result.then(() => undefined) ?? Promise.resolve();
   }
 
-  private enqueue(update: SlackStatusUpdate, observed: boolean): Promise<boolean> {
-    if (this.closed || this.terminalizing || !this.ownsVisibleWrites()) {
+  private enqueue(
+    update: SlackStatusUpdate,
+    observed: boolean,
+    refresh: boolean,
+  ): Promise<boolean> {
+    if (!refresh && isSafeTypedActivityStatus(update)) {
+      const produced = semanticTelemetryForStatus(update);
+      emitSemanticActivityTelemetry({
+        event: 'activity.produced',
+        family: produced.family,
+        phase: produced.phase,
+        observed,
+      }, this.telemetry);
+    }
+    if (this.closed || this.terminalizing) {
+      this.emitQueue('terminal_dropped', observed);
+      return Promise.resolve(false);
+    }
+    if (!this.ownsVisibleWrites()) {
+      this.emitQueue('stale_dropped', observed);
       return Promise.resolve(false);
     }
     if (!this.active && !this.pending && this.lastAppliedText === update.text) {
+      this.emitQueue('duplicate', observed);
       return Promise.resolve(true);
     }
 
     // If the newest fact matches the write already in flight, that in-flight
     // value is already the desired final state. Discard any older queued fact.
     if (this.active?.update.text === update.text) {
-      this.discardPending();
+      this.discardPending('superseded');
+      this.emitQueue('coalesced', observed);
       return this.active.result;
     }
     if (this.pending?.update.text === update.text) {
+      this.emitQueue('coalesced', observed);
       return this.pending.result;
     }
 
@@ -138,8 +169,10 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     };
     if (this.pending) {
       this.pending.resolve(false);
+      this.emitQueue('superseded', this.pending.observed);
     }
     this.pending = queued;
+    this.emitQueue('enqueued', observed);
 
     // A turn-owned lifecycle update takes precedence over a delayed observed
     // detail and should not inherit its throttle timer.
@@ -157,7 +190,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
    * then wait only for the single Slack write already in flight.
    */
   async drain(): Promise<void> {
-    this.discardPending();
+    this.discardPending('terminal_dropped');
     if (this.active) {
       await this.active.result;
     }
@@ -166,14 +199,14 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   async prepareFinal(): Promise<void> {
     this.terminalizing = true;
     this.cancelRefresh();
-    this.discardPending();
+    this.discardPending('terminal_dropped');
   }
 
   close(): void {
     if (this.closed) return;
     this.closed = true;
     this.cancelRefresh();
-    this.discardPending();
+    this.discardPending('terminal_dropped');
     // Two turns in the same Slack conversation share one registry key
     // (workspace:channel:thread — and ALL DM turns share workspace:dm-channel:dm),
     // so each key holds a SET of live turns. Closing removes only this turn;
@@ -225,6 +258,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     }
     const waitMs = this.waitBefore(this.pending);
     if (waitMs > 0) {
+      this.emitQueue('throttled', this.pending.observed, waitMs);
       this.pendingTimer = setTimeout(() => {
         this.pendingTimer = undefined;
         this.startNext();
@@ -246,7 +280,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
 
   private startNext(): void {
     if (this.closed || !this.ownsVisibleWrites() || this.active || !this.pending) {
-      if (!this.ownsVisibleWrites()) this.discardPending();
+      if (!this.ownsVisibleWrites()) this.discardPending('stale_dropped');
       return;
     }
     const queued = this.pending;
@@ -279,13 +313,14 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
       });
   }
 
-  private discardPending(): void {
+  private discardPending(disposition: SemanticActivityQueueDisposition): void {
     if (this.pendingTimer) {
       clearTimeout(this.pendingTimer);
       this.pendingTimer = undefined;
     }
     if (this.pending) {
       this.pending.resolve(false);
+      this.emitQueue(disposition, this.pending.observed);
       this.pending = undefined;
     }
   }
@@ -293,15 +328,31 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   private scheduleRefresh(update: SlackStatusUpdate): void {
     this.cancelRefresh();
     if (this.closed || this.terminalizing || !this.ownsVisibleWrites()) return;
+    emitSemanticActivityTelemetry({
+      event: 'activity.refresh',
+      outcome: 'scheduled',
+      durationMs: this.refreshIntervalMs,
+    }, this.telemetry);
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = undefined;
       if (this.closed || this.terminalizing || !this.ownsVisibleWrites() ||
-          this.lastAppliedText !== update.text) return;
+          this.lastAppliedText !== update.text) {
+        emitSemanticActivityTelemetry({
+          event: 'activity.refresh',
+          outcome: 'stale_dropped',
+        }, this.telemetry);
+        return;
+      }
       // The timer belongs to this bounded turn registration. It reuses the
       // normal one-active/one-pending queue, but intentionally bypasses the
       // same-text short circuit so Slack does not expire truthful status.
       this.lastAppliedText = undefined;
-      void this.enqueue(update, true);
+      emitSemanticActivityTelemetry({
+        event: 'activity.refresh',
+        outcome: 'attempted',
+        durationMs: this.refreshIntervalMs,
+      }, this.telemetry);
+      void this.enqueue(update, true, true);
     }, this.refreshIntervalMs);
     this.refreshTimer.unref?.();
   }
@@ -310,6 +361,24 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     if (!this.refreshTimer) return;
     clearTimeout(this.refreshTimer);
     this.refreshTimer = undefined;
+    emitSemanticActivityTelemetry({
+      event: 'activity.refresh',
+      outcome: 'canceled',
+    }, this.telemetry);
+  }
+
+  private emitQueue(
+    disposition: SemanticActivityQueueDisposition,
+    observed: boolean,
+    durationMs?: number,
+  ): void {
+    emitSemanticActivityTelemetry({
+      event: 'activity.queue',
+      layer: 'presentation',
+      disposition,
+      observed,
+      ...(durationMs === undefined ? {} : { durationMs }),
+    }, this.telemetry);
   }
 
   private async clearBestEffort(clearStatus: () => Promise<void>): Promise<void> {
@@ -417,6 +486,7 @@ export function registerSlackStatusTurn(
     presenter,
     options.observedMinIntervalMs ?? DEFAULT_OBSERVED_STATUS_MIN_INTERVAL_MS,
     Math.max(1, Math.floor(options.refreshIntervalMs ?? DEFAULT_STATUS_REFRESH_INTERVAL_MS)),
+    options.telemetry ?? console,
     options.sessionGeneration,
     acceptsWrites,
     ownershipBarrier,

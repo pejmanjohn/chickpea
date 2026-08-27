@@ -1,6 +1,11 @@
 import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import {
+  emitSemanticActivityTelemetry,
+  type SemanticActivityTelemetrySink,
+  type SemanticActivityTelemetrySurface,
+} from '../activity/telemetry.ts';
+import {
   appendSlackReplyFooter,
   canonicalSlackMarkdownText,
   renderSlackMessage,
@@ -122,6 +127,8 @@ export interface SlackPresenterOptions {
     reserve(): Promise<{ outcome: 'reserved' | 'cooldown' | 'exhausted' }>;
     applyCooldown(retryAfterMs: number): Promise<unknown>;
   };
+  /** Fixed-schema content-free observability; injectable for focused tests. */
+  activityTelemetry?: SemanticActivityTelemetrySink;
 }
 
 export interface SlackActivityWrite {
@@ -192,8 +199,10 @@ export class WebClientPresenter {
    * its exact coordinate. A failed native write never creates a message.
    */
   async setStatus(update: SlackStatusUpdate, durable?: SlackActivityWrite): Promise<boolean> {
+    const startedAt = Date.now();
     this.lastActivityReceiptCertainty = 'failed';
     if (this.statusFailed) {
+      this.emitTransport(activitySurface(this.activityMessageTs, durable), 'latched_off', startedAt);
       return false;
     }
     const chat = (this.client as unknown as {
@@ -208,6 +217,7 @@ export class WebClientPresenter {
     if (this.activityMessageTs) {
       if (typeof chat?.update !== 'function') {
         this.statusFailed = true;
+        this.emitTransport('legacy_message', 'rejected', startedAt);
         return false;
       }
       try {
@@ -217,17 +227,29 @@ export class WebClientPresenter {
           text: update.text,
         });
         this.lastActivityReceiptCertainty = 'acknowledged';
+        this.emitTransport('legacy_message', 'acknowledged', startedAt);
         return true;
       } catch (error) {
         // An existing visible activity must never gain a competing fallback.
         this.lastActivityReceiptCertainty = slackDeliveryFailureOutcome(error);
         this.statusFailed = true;
+        this.emitTransport(
+          'legacy_message',
+          transportTelemetryOutcome(this.lastActivityReceiptCertainty),
+          startedAt,
+        );
         return false;
       }
     }
-    if (durable?.surface === 'message') return false;
+    if (durable?.surface === 'message') {
+      this.emitTransport('legacy_message', 'rejected', startedAt);
+      return false;
+    }
     const reservation = await this.reserveNativeStatus();
-    if (!reservation) return false;
+    if (!reservation) {
+      this.emitTransport('assistant_status', 'rejected', startedAt);
+      return false;
+    }
     try {
       await this.client.assistant.threads.setStatus({
         channel_id: this.target.channelId,
@@ -238,13 +260,24 @@ export class WebClientPresenter {
       });
       this.statusWasSet = true;
       this.lastActivityReceiptCertainty = 'acknowledged';
+      this.emitTransport('assistant_status', 'acknowledged', startedAt);
       return true;
     } catch (error) {
       // Latch off further custom-status attempts for this turn.
       this.lastActivityReceiptCertainty = slackDeliveryFailureOutcome(error);
       this.statusFailed = true;
+      this.emitTransport(
+        'assistant_status',
+        transportTelemetryOutcome(this.lastActivityReceiptCertainty),
+        startedAt,
+      );
       const retryAfterMs = slackRateRetryAfterMs(error);
       if (retryAfterMs !== undefined) {
+        emitSemanticActivityTelemetry({
+          event: 'activity.rate',
+          outcome: 'cooldown',
+          durationMs: retryAfterMs,
+        }, this.options.activityTelemetry ?? console);
         await this.options.activityStatusCoordinator?.applyCooldown(
           retryAfterMs,
         ).catch(() => undefined);
@@ -257,10 +290,19 @@ export class WebClientPresenter {
     const coordinator = this.options.activityStatusCoordinator;
     if (!coordinator) return true;
     try {
-      return (await coordinator.reserve()).outcome === 'reserved';
+      const result = await coordinator.reserve();
+      emitSemanticActivityTelemetry({
+        event: 'activity.rate',
+        outcome: result.outcome,
+      }, this.options.activityTelemetry ?? console);
+      return result.outcome === 'reserved';
     } catch {
       // Coordination is part of the cosmetic transport. A state failure must
       // not bypass the shared budget or interfere with final delivery.
+      emitSemanticActivityTelemetry({
+        event: 'activity.rate',
+        outcome: 'unavailable',
+      }, this.options.activityTelemetry ?? console);
       return false;
     }
   }
@@ -277,8 +319,10 @@ export class WebClientPresenter {
   }
 
   /** Clear the Assistant thread status, but only if one was ever set. */
-  async clearStatus(): Promise<SlackActivityReceiptCertainty> {
+  async clearStatus(late = false): Promise<SlackActivityReceiptCertainty> {
+    const startedAt = Date.now();
     if (!this.statusWasSet) {
+      this.emitClear(activitySurface(this.activityMessageTs), 'skipped', late, startedAt);
       return 'acknowledged';
     }
     if (this.activityMessageTs) {
@@ -289,14 +333,23 @@ export class WebClientPresenter {
         });
         this.activityMessageTs = undefined;
         this.statusWasSet = false;
+        this.emitClear('legacy_message', 'acknowledged', late, startedAt);
         return 'acknowledged';
       } catch (error) {
         if (slackPlatformErrorCode(error) === 'message_not_found') {
           this.activityMessageTs = undefined;
           this.statusWasSet = false;
+          this.emitClear('legacy_message', 'acknowledged', late, startedAt);
           return 'acknowledged';
         }
-        return slackDeliveryFailureOutcome(error);
+        const certainty = slackDeliveryFailureOutcome(error);
+        this.emitClear(
+          'legacy_message',
+          clearTelemetryOutcome(certainty),
+          late,
+          startedAt,
+        );
+        return certainty;
       }
     }
     try {
@@ -306,10 +359,46 @@ export class WebClientPresenter {
         status: '',
       });
       this.statusWasSet = false;
+      this.emitClear('assistant_status', 'acknowledged', late, startedAt);
       return 'acknowledged';
     } catch (error) {
-      return slackDeliveryFailureOutcome(error);
+      const certainty = slackDeliveryFailureOutcome(error);
+      this.emitClear(
+        'assistant_status',
+        clearTelemetryOutcome(certainty),
+        late,
+        startedAt,
+      );
+      return certainty;
     }
+  }
+
+  private emitTransport(
+    surface: SemanticActivityTelemetrySurface,
+    outcome: 'acknowledged' | 'rejected' | 'ambiguous' | 'latched_off',
+    startedAt: number,
+  ): void {
+    emitSemanticActivityTelemetry({
+      event: 'activity.transport',
+      surface,
+      outcome,
+      durationMs: Date.now() - startedAt,
+    }, this.options.activityTelemetry ?? console);
+  }
+
+  private emitClear(
+    surface: SemanticActivityTelemetrySurface,
+    outcome: 'acknowledged' | 'rejected' | 'ambiguous' | 'skipped',
+    late: boolean,
+    startedAt: number,
+  ): void {
+    emitSemanticActivityTelemetry({
+      event: 'activity.clear',
+      surface,
+      outcome,
+      late,
+      durationMs: Date.now() - startedAt,
+    }, this.options.activityTelemetry ?? console);
   }
 
   /** Best-effort work acknowledgment. The receipt records whether this run
@@ -736,6 +825,26 @@ export class WebClientPresenter {
       icon_url: this.target.visibleOwner.persona.avatarUrl,
     };
   }
+}
+
+function activitySurface(
+  messageTs: string | undefined,
+  durable?: SlackActivityWrite,
+): SemanticActivityTelemetrySurface {
+  return messageTs || durable?.surface === 'message' ? 'legacy_message' : 'assistant_status';
+}
+
+function transportTelemetryOutcome(
+  certainty: SlackActivityReceiptCertainty,
+): 'acknowledged' | 'rejected' | 'ambiguous' {
+  if (certainty === 'acknowledged') return 'acknowledged';
+  return certainty === 'unknown' ? 'ambiguous' : 'rejected';
+}
+
+function clearTelemetryOutcome(
+  certainty: SlackActivityReceiptCertainty,
+): 'acknowledged' | 'rejected' | 'ambiguous' {
+  return transportTelemetryOutcome(certainty);
 }
 
 /** Replay a previously persisted adapter render without invoking the agent or

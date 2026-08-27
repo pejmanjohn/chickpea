@@ -617,17 +617,17 @@ export async function runTurn(
     await agentViewPresentation?.settleAgentSession(result);
     await statusTurn.finish(async (late) => {
       if (frozenPresentation?.schemaVersion !== 3 || !agentViewPresentation) {
-        await presenter.clearStatus();
+        await presenter.clearStatus(late);
         return;
       }
       const cleanup = await agentViewPresentation.prepareActivityCleanup();
       if (!cleanup) {
         // An in-flight native write may have landed after the acknowledged
         // durable cleanup. Re-clear the transport without rewriting receipts.
-        if (late) await presenter.clearStatus();
+        if (late) await presenter.clearStatus(true);
         return;
       }
-      const certainty = await presenter.clearStatus();
+      const certainty = await presenter.clearStatus(late);
       await agentViewPresentation.recordActivityCleanupReceipt(
         cleanup.operationId,
         certainty,

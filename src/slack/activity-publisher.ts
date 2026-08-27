@@ -3,6 +3,7 @@ import {
   type ActivityStatus,
   type TypedActivityStatus,
 } from '../activity/status.ts';
+import { emitSemanticActivityTelemetry } from '../activity/telemetry.ts';
 import { currentFlueObservationContext } from '../work/model-invocation.ts';
 import { setObservedSlackStatus } from './status-registry.ts';
 import { relayObservedStatus } from './status-relay.ts';
@@ -56,13 +57,20 @@ export function publishActivityStatus(
   instanceQueues.set(submissionId, queue);
   if (sameActivityStatus(queue.active?.status, status)) {
     // The in-flight value is already the newest requested state.
+    if (queue.pending) {
+      emitRelayQueue('superseded');
+    }
     queue.pending = undefined;
+    emitRelayQueue('coalesced');
     return;
   }
   if (sameActivityStatus(queue.pending?.status, status)) {
+    emitRelayQueue('coalesced');
     return;
   }
+  if (queue.pending) emitRelayQueue('superseded');
   queue.pending = { status, ...(env ? { env } : {}) };
+  emitRelayQueue('enqueued');
   startNextRelay(instanceId, submissionId, queue);
 }
 
@@ -71,9 +79,9 @@ function startNextRelay(instanceId: string, submissionId: string, queue: RelayQu
 
   const next = queue.pending;
   queue.pending = undefined;
-  const result = relayObservedStatus(instanceId, submissionId, next.status, next.env).catch(
-    () => undefined,
-  );
+  const result = relayObservedStatus(instanceId, submissionId, next.status, next.env).catch(() => {
+    emitRelayQueue('relay_failed');
+  });
   const active = { status: next.status };
   queue.active = active;
   void result.then(() => {
@@ -91,6 +99,17 @@ function startNextRelay(instanceId: string, submissionId: string, queue: RelayQu
         }
       }
     }
+  });
+}
+
+function emitRelayQueue(
+  disposition: 'enqueued' | 'coalesced' | 'superseded' | 'relay_failed',
+): void {
+  emitSemanticActivityTelemetry({
+    event: 'activity.queue',
+    layer: 'relay',
+    disposition,
+    observed: true,
   });
 }
 
