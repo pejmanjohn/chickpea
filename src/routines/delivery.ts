@@ -38,7 +38,12 @@ export async function deliverRoutineResult(
 ): Promise<RoutineDeliveryReceipt> {
   return deliverRoutineSlackMessage(
     { ...input, approvedOutput: input.message },
-    renderRoutineDelivery(input.routine, input.run, input.message, routineReplyFooter(input.access)),
+    renderRoutineDelivery(
+      input.routine,
+      input.run,
+      input.message,
+      routineReplyFooter(input.access, input.routine),
+    ),
     client,
   );
 }
@@ -55,15 +60,20 @@ export async function deliverRoutineFailureNotice(
   },
   client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
 ): Promise<RoutineDeliveryReceipt> {
+  const direct = input.routine.destination.kind === 'direct_thread';
   const text = [
     `⚠️ **Routine needs attention**`,
     `**${escapeSlackControlCharacters(input.routine.name)}**`,
     '',
     escapeSlackControlCharacters(input.publicError),
     ...(input.routine.state === 'paused'
-      ? ['Automatic scheduling is paused until a channel member reviews and resumes it.']
+      ? [direct
+          ? 'Automatic scheduling is paused until you review and resume it in this DM.'
+          : 'Automatic scheduling is paused until a channel member reviews and resumes it.']
       : input.routine.state === 'disabled'
-        ? ['This routine was disabled because its current channel authority is no longer eligible.']
+        ? [direct
+            ? 'This routine was disabled because its current private scheduling authority is no longer eligible.'
+            : 'This routine was disabled because its current channel authority is no longer eligible.']
         : []),
   ].join('\n');
   return deliverRoutineSlackMessage(
@@ -75,8 +85,9 @@ export async function deliverRoutineFailureNotice(
         input.run,
         input.access.publicUrl,
         input.access.config.agentId,
+        direct,
       ),
-      routineReplyFooter(input.access),
+      routineReplyFooter(input.access, input.routine),
     ),
     client,
   );
@@ -116,6 +127,9 @@ async function deliverRoutineSlackMessage(
   );
   const payload = {
     channel: input.routine.channelId,
+    ...(input.routine.destination.kind === 'direct_thread'
+      ? { thread_ts: input.routine.destination.threadTs }
+      : {}),
     ...(typeof message === 'string' ? { text: message } : message),
     username: input.access.config.agent.name,
     ...(agentAvatarUrl
@@ -191,7 +205,7 @@ async function deliverRoutineSlackMessage(
 }
 
 export function renderRoutineDelivery(
-  routine: Pick<RoutineDefinition, 'name' | 'id' | 'timezone'>,
+  routine: Pick<RoutineDefinition, 'name' | 'id' | 'timezone' | 'destination'>,
   run: Pick<RoutineRun, 'id' | 'scheduledFor'>,
   message: string,
   footer?: SlackReplyFooter,
@@ -207,6 +221,7 @@ export function renderRoutineDelivery(
     run,
     footer?.publicUrl,
     footer?.agentId,
+    routine.destination.kind === 'direct_thread',
   );
   const withFallback = { ...withRunContext, text: fallback.text };
   return footer ? appendSlackReplyFooter(withFallback, footer) : withFallback;
@@ -218,6 +233,7 @@ function appendRoutineRunContext(
   run: Pick<RoutineRun, 'scheduledFor'>,
   publicUrl: string | undefined,
   agentId: string | undefined,
+  privateDestination = false,
 ): RenderedSlackMessage {
   return {
     ...rendered,
@@ -227,7 +243,7 @@ function appendRoutineRunContext(
         type: 'context',
         elements: [{
           type: 'mrkdwn',
-          text: routineRunContext(routine, run, publicUrl, agentId),
+          text: routineRunContext(routine, run, publicUrl, agentId, privateDestination),
         }],
       },
     ],
@@ -239,8 +255,10 @@ function routineRunContext(
   run: Pick<RoutineRun, 'scheduledFor'>,
   publicUrl: string | undefined,
   agentId: string | undefined,
+  privateDestination = false,
 ): string {
   const scheduled = formatScheduledTime(run.scheduledFor, routine.timezone);
+  if (privateDestination) return `Scheduled ${scheduled}`;
   const adminBase = buildSlackAdminUrl(publicUrl);
   if (!adminBase || !agentId) return `Scheduled ${scheduled}`;
   const detail = new URL(adminBase);
@@ -264,12 +282,16 @@ function formatScheduledTime(timestamp: number, timezone: string): string {
   }
 }
 
-function routineReplyFooter(access: RoutineRuntimeAccess): SlackReplyFooter {
+function routineReplyFooter(
+  access: RoutineRuntimeAccess,
+  routine: RoutineDefinition,
+): SlackReplyFooter {
   return {
     agentName: access.config.agent.name,
     modelLabel: access.config.model,
     agentId: access.config.agentId,
     publicUrl: access.publicUrl,
+    ...(routine.destination.kind === 'direct_thread' ? { includeConfigureLink: false } : {}),
   };
 }
 

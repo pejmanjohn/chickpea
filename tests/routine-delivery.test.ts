@@ -20,6 +20,18 @@ import type { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
 
 const routine = {
   id: 'routine_test', name: '<Daily & write>', channelId: 'C_TEST', timezone: 'UTC',
+  destination: { kind: 'channel', channelId: 'C_TEST' },
+} as RoutineDefinition;
+const directRoutine = {
+  ...routine,
+  id: 'routine_direct_test',
+  channelId: 'D_TEST',
+  destination: {
+    kind: 'direct_thread',
+    conversationId: 'D_TEST',
+    threadTs: '1784000000.000100',
+    ownerMembershipId: 'membership_direct',
+  },
 } as RoutineDefinition;
 const run = { id: 'rrun_test', scheduledFor: Date.UTC(2026, 6, 27, 16) } as RoutineRun;
 const access = {
@@ -94,6 +106,43 @@ test('routine delivery claims once, posts at top level, and records the Slack re
     }],
   });
   assert.match(JSON.stringify(rendered.blocks?.at(-1)), /Default.*anthropic\/claude-sonnet-4.*Configure/);
+});
+
+test('private routine results and failure notices stay in the originating thread without Admin links', async () => {
+  const events: string[] = [];
+  const requests: Array<Record<string, string>> = [];
+  const client = new WebClient('xoxb-test', {
+    slackApiUrl: 'https://slack.invalid/api/', retryConfig: { retries: 0 },
+    fetch: async (_url, init) => {
+      requests.push(Object.fromEntries(new URLSearchParams(String(init?.body ?? ''))));
+      return new Response(
+        JSON.stringify({ ok: true, channel: 'D_TEST', ts: `1785000000.000${requests.length}` }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    },
+  });
+
+  await deliverRoutineResult({
+    store: store(events), run, routine: directRoutine, access,
+    message: 'Private result.', changeKeyHash: null, now: () => 1_000,
+  }, client);
+  await deliverRoutineFailureNotice({
+    store: store(events), run, routine: { ...directRoutine, state: 'paused' }, access,
+    publicError: 'The private run stopped safely.', now: () => 2_000,
+  }, client);
+
+  assert.equal(requests.length, 2);
+  for (const request of requests) {
+    assert.equal(request.channel, 'D_TEST');
+    assert.equal(request.thread_ts, directRoutine.destination.kind === 'direct_thread'
+      ? directRoutine.destination.threadTs
+      : undefined);
+    assert.equal(request.username, 'Default');
+    assert.doesNotMatch(request.blocks ?? '', /View schedule|Configure|\/admin\//);
+    assert.match(request.blocks ?? '', /Default.*anthropic\/claude-sonnet-4/);
+  }
+  assert.match(requests[0]?.text ?? '', /Private result/);
+  assert.match(requests[1]?.text ?? '', /review and resume it in this DM/);
 });
 
 test('delivery derives its lease from one clock read', async () => {
