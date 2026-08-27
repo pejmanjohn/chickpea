@@ -177,7 +177,9 @@ export async function prepareMemoryTurn(input: {
       memoryEpoch,
       ...(promptBlock ? { promptBlock } : {}),
       selection,
-      footerItems: promptBlock ? ['Agent memory supplied'] : [],
+      // Memory remains available to the Agent, but generic provenance is not
+      // useful enough to occupy every Slack reply footer.
+      footerItems: [],
       visibilityBarrierAt: null,
       ownerBound: true,
       confirmInjection: async () => true,
