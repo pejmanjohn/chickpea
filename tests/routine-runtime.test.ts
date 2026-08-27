@@ -28,6 +28,7 @@ const config: EffectiveSlackConfig = {
 
 const routine = {
   id: 'routine_test', workspaceId: 'T_TEST', channelId: 'C_TEST', creatorUserId: 'U_CREATOR',
+  destination: { kind: 'channel', channelId: 'C_TEST' },
   name: 'Test', description: '', taskText: 'Do the work.', triggerKind: 'schedule',
   scheduleInput: '0 * * * *', scheduleJson: '{"version":1,"kind":"cron","expression":"0 * * * *"}',
   timezone: 'UTC', outputPolicy: 'post', authorityMode: 'live_channel_v1', state: 'active',

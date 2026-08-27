@@ -518,6 +518,7 @@ async function putConnection(
 function routineDefinition(): RoutineDefinition {
   return {
     id: 'routine_support', workspaceId: WORKSPACE, channelId: CHANNEL, creatorUserId: 'U_OWNER',
+    destination: { kind: 'channel', channelId: CHANNEL },
     name: 'Support check', description: '', taskText: 'Review support.', triggerKind: 'schedule',
     scheduleInput: '0 * * * *',
     scheduleJson: '{"version":1,"kind":"cron","expression":"0 * * * *"}',

@@ -13,6 +13,7 @@ import {
 
 const routine: RoutineDefinition = {
   id: 'routine_rpc', workspaceId: 'T_TEST', channelId: 'C_TEST', creatorUserId: 'U_MEMBER',
+  destination: { kind: 'channel', channelId: 'C_TEST' },
   name: 'RPC routine', description: '', taskText: 'Do the task.', triggerKind: 'schedule',
   scheduleInput: 'hourly', scheduleJson: '{"kind":"cron","expression":"0 * * * *"}',
   timezone: 'UTC', outputPolicy: 'post', authorityMode: 'live_channel_v1', state: 'active',
@@ -25,10 +26,14 @@ const routine: RoutineDefinition = {
 
 test('Cloudflare routine proxy preserves the typed execute request and response', async () => {
   const requests: RoutineRpcRequest[] = [];
+  const { destination: _legacyOmission, ...legacyRoutine } = routine;
   const stub = {
     async routinesExecute(request: RoutineRpcRequest): Promise<StateRpcResult<RoutineRpcResponse>> {
       requests.push(request);
-      return { ok: true, value: { kind: 'routine', routine } };
+      return {
+        ok: true,
+        value: { kind: 'routine', routine: legacyRoutine as unknown as RoutineDefinition },
+      };
     },
   } as unknown as TagStateRpc;
   const store = new CfRoutineStore(stub);
@@ -88,6 +93,54 @@ test('Cloudflare routine proxy carries one-message saves across the RPC seam', a
 
   assert.deepEqual(await store.save(input), routine);
   assert.deepEqual(requests, [{ kind: 'save', input }]);
+});
+
+test('Cloudflare routine proxy carries direct activation and recovery receipts across the RPC seam', async () => {
+  const requests: RoutineRpcRequest[] = [];
+  const recovery = {
+    occurrenceId: 'rrun_rpc',
+    claimedAt: 10,
+    status: 'pending' as const,
+    messageTs: null,
+    failureClass: 'direct_thread_unavailable' as const,
+    updatedAt: 10,
+  };
+  const stub = {
+    async routinesExecute(request: RoutineRpcRequest): Promise<StateRpcResult<RoutineRpcResponse>> {
+      requests.push(request);
+      if (request.kind === 'activate_direct_routine') {
+        return { ok: true, value: { kind: 'routine', routine } };
+      }
+      if (request.kind === 'get_recovery_delivery') {
+        return { ok: true, value: { kind: 'recovery_delivery', delivery: recovery } };
+      }
+      return { ok: true, value: { kind: 'recovery_delivery', delivery: { ...recovery, status: 'unknown' } } };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfRoutineStore(stub);
+  const activation = {
+    routineId: routine.id,
+    expectedVersion: 1,
+    expectedReferenceRevision: 2,
+    destinationBindingDigest: 'a'.repeat(64),
+  };
+
+  assert.deepEqual(await store.activateDirectRoutine(activation), routine);
+  assert.deepEqual(await store.getRecoveryDelivery('rrun_rpc'), recovery);
+  assert.equal(
+    (await store.recordRecoveryDelivery({
+      occurrenceId: 'rrun_rpc', outcome: 'unknown', at: 11,
+    })).status,
+    'unknown',
+  );
+  assert.deepEqual(requests, [
+    { kind: 'activate_direct_routine', input: activation },
+    { kind: 'get_recovery_delivery', occurrenceId: 'rrun_rpc' },
+    {
+      kind: 'record_recovery_delivery',
+      input: { occurrenceId: 'rrun_rpc', outcome: 'unknown', at: 11 },
+    },
+  ]);
 });
 
 test('Cloudflare routine proxy carries bounded admin routine pages across the RPC seam', async () => {

@@ -15,6 +15,7 @@ import { CHICKPEA_RESPONSE_METADATA_KEY } from '../../src/usage/response-metadat
 
 const routine = {
   id: 'routine_usage', workspaceId: 'T_USAGE', channelId: 'C_USAGE', creatorUserId: 'U_OWNER',
+  destination: { kind: 'channel', channelId: 'C_USAGE' },
   name: 'Usage digest', description: '', taskText: 'Prepare the digest.', triggerKind: 'schedule',
   scheduleInput: '0 * * * *', scheduleJson: '{"version":1,"kind":"cron","expression":"0 * * * *"}',
   timezone: 'UTC', outputPolicy: 'post', authorityMode: 'live_channel_v1', state: 'active',

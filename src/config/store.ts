@@ -217,6 +217,8 @@ interface AgentScheduleReferenceRow {
   agent_id: string;
   workspace_id: string;
   channel_id: string;
+  destination_kind?: string;
+  destination_binding_digest?: string | null;
   created_by_membership_id: string;
   runs_as_membership_id: string;
   authority_receipt_id: string;
@@ -1423,6 +1425,7 @@ export class ConfigStoreLogic {
     input: AgentScheduleReferenceInput,
     expectedRevision?: number,
   ): AgentScheduleReference {
+    const destination = normalizeScheduleReferenceDestination(input);
     const current = this.db.get(
       'SELECT * FROM config_agent_schedule_references WHERE schedule_id = ?',
       input.scheduleId,
@@ -1443,15 +1446,18 @@ export class ConfigStoreLogic {
       }
       this.db.run(
         `INSERT INTO config_agent_schedule_references (
-          schedule_id, agent_id, workspace_id, channel_id, created_by_membership_id,
+          schedule_id, agent_id, workspace_id, channel_id, destination_kind,
+          destination_binding_digest, created_by_membership_id,
           runs_as_membership_id, authority_receipt_id,
           required_connection_account_ids_json, connection_pause_account_ids_json,
           connection_pause_preserves_state, state, revision, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         input.scheduleId,
         input.agentId,
         input.workspaceId,
         input.channelId,
+        destination.kind,
+        destination.bindingDigest,
         input.createdByMembershipId,
         input.runsAsMembershipId,
         input.authorityReceiptId,
@@ -1478,9 +1484,22 @@ export class ConfigStoreLogic {
       ) {
         throw new Error('Schedule authority reassignment requires a new receipt');
       }
+      if (
+        destination.kind !== (current.destination_kind ?? 'channel') ||
+        destination.bindingDigest !== (current.destination_binding_digest ?? null)
+      ) {
+        throw new Error('A schedule destination binding is immutable');
+      }
+      if (
+        destination.kind === 'direct_thread' &&
+        (input.workspaceId !== current.workspace_id || input.channelId !== current.channel_id)
+      ) {
+        throw new Error('A direct schedule destination is immutable');
+      }
       this.db.run(
         `UPDATE config_agent_schedule_references
-         SET agent_id = ?, workspace_id = ?, channel_id = ?, created_by_membership_id = ?,
+         SET agent_id = ?, workspace_id = ?, channel_id = ?, destination_kind = ?,
+             destination_binding_digest = ?, created_by_membership_id = ?,
              runs_as_membership_id = ?, authority_receipt_id = ?,
              required_connection_account_ids_json = ?, connection_pause_account_ids_json = ?,
              connection_pause_preserves_state = ?, state = ?,
@@ -1489,6 +1508,8 @@ export class ConfigStoreLogic {
         input.agentId,
         input.workspaceId,
         input.channelId,
+        destination.kind,
+        destination.bindingDigest,
         input.createdByMembershipId,
         input.runsAsMembershipId,
         input.authorityReceiptId,
@@ -1933,6 +1954,8 @@ export class ConfigStoreLogic {
         agent_id TEXT NOT NULL,
         workspace_id TEXT NOT NULL,
         channel_id TEXT NOT NULL,
+        destination_kind TEXT NOT NULL DEFAULT 'channel',
+        destination_binding_digest TEXT,
         created_by_membership_id TEXT NOT NULL,
         runs_as_membership_id TEXT NOT NULL,
         authority_receipt_id TEXT NOT NULL,
@@ -2344,6 +2367,16 @@ export class ConfigStoreLogic {
     if (!scheduleColumns.has('connection_pause_preserves_state')) {
       this.db.exec(
         'ALTER TABLE config_agent_schedule_references ADD COLUMN connection_pause_preserves_state INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (!scheduleColumns.has('destination_kind')) {
+      this.db.exec(
+        "ALTER TABLE config_agent_schedule_references ADD COLUMN destination_kind TEXT NOT NULL DEFAULT 'channel'",
+      );
+    }
+    if (!scheduleColumns.has('destination_binding_digest')) {
+      this.db.exec(
+        'ALTER TABLE config_agent_schedule_references ADD COLUMN destination_binding_digest TEXT',
       );
     }
   }
@@ -3019,6 +3052,8 @@ function rowToAgentScheduleReference(row: AgentScheduleReferenceRow): AgentSched
     agentId: row.agent_id,
     workspaceId: row.workspace_id,
     channelId: row.channel_id,
+    destinationKind: row.destination_kind === 'direct_thread' ? 'direct_thread' : 'channel',
+    destinationBindingDigest: row.destination_binding_digest ?? null,
     createdByMembershipId: row.created_by_membership_id,
     runsAsMembershipId: row.runs_as_membership_id,
     authorityReceiptId: row.authority_receipt_id,
@@ -3035,6 +3070,22 @@ function rowToAgentScheduleReference(row: AgentScheduleReferenceRow): AgentSched
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
+}
+
+function normalizeScheduleReferenceDestination(input: AgentScheduleReferenceInput): {
+  kind: AgentScheduleReference['destinationKind'];
+  bindingDigest: string | null;
+} {
+  const kind = input.destinationKind ?? 'channel';
+  const bindingDigest = input.destinationBindingDigest ?? null;
+  if (kind === 'channel') {
+    if (bindingDigest !== null) throw new Error('A Channel schedule cannot have a destination binding');
+    return { kind, bindingDigest };
+  }
+  if (!/^[a-f0-9]{64}$/.test(bindingDigest ?? '')) {
+    throw new Error('A direct schedule requires a valid destination binding');
+  }
+  return { kind, bindingDigest };
 }
 
 function parseApiConnections(raw: string | null | undefined): CustomAgentConfig['apiConnections'] {

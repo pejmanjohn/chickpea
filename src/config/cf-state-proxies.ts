@@ -191,6 +191,7 @@ import {
 } from '../usage/index.ts';
 import {
   RoutineStateError,
+  type ActivateDirectRoutineInput,
   type BeginRoutineOccurrenceInput,
   type CancelRoutineConfirmationInput,
   type ClaimRoutineDeliveryInput,
@@ -203,6 +204,7 @@ import {
   type RecordRoutineAgentReceiptInput,
   type RecordRoutineAgentSettlementInput,
   type RecordRoutineDeliveryInput,
+  type RecordRoutineRecoveryDeliveryInput,
   type RoutineAdmissionAttempt,
   type RoutineAdminPage,
   type RoutineAdminPageInput,
@@ -210,6 +212,7 @@ import {
   type RoutineDefinition,
   type RoutineDueClaimBatch,
   type RoutineRevision,
+  type RoutineRecoveryDelivery,
   type RoutineRpcRequest,
   type RoutineRpcResponse,
   type RoutineRun,
@@ -1366,18 +1369,22 @@ export class CfConfigStore implements ConfigStore {
   }
 
   async listAgentScheduleReferences(agentId: string): Promise<AgentScheduleReference[]> {
-    return unwrap(await this.stub.configListAgentScheduleReferences(agentId));
+    return unwrap(await this.stub.configListAgentScheduleReferences(agentId))
+      .map(withScheduleReferenceDestination);
   }
 
   async getAgentScheduleReference(scheduleId: string): Promise<AgentScheduleReference | undefined> {
-    return orUndefined(unwrap(await this.stub.configGetAgentScheduleReference(scheduleId)));
+    const reference = orUndefined(unwrap(await this.stub.configGetAgentScheduleReference(scheduleId)));
+    return reference ? withScheduleReferenceDestination(reference) : undefined;
   }
 
   async putAgentScheduleReference(
     input: AgentScheduleReferenceInput,
     expectedRevision?: number,
   ): Promise<AgentScheduleReference> {
-    return unwrap(await this.stub.configPutAgentScheduleReference(input, expectedRevision));
+    return withScheduleReferenceDestination(
+      unwrap(await this.stub.configPutAgentScheduleReference(input, expectedRevision)),
+    );
   }
 
   async retireAgentScheduleReference(scheduleId: string): Promise<boolean> {
@@ -1653,6 +1660,9 @@ export class CfRoutineStore implements RoutineStore {
   async save(input: SaveRoutineInput): Promise<RoutineDefinition> {
     return this.requiredRoutine(await this.execute({ kind: 'save', input }));
   }
+  async activateDirectRoutine(input: ActivateDirectRoutineInput): Promise<RoutineDefinition> {
+    return this.requiredRoutine(await this.execute({ kind: 'activate_direct_routine', input }));
+  }
   async purgeConfirmations(): Promise<number> {
     const response = await this.execute({ kind: 'purge_confirmations' });
     if (response.kind !== 'purged') throw unexpectedRoutineResponse();
@@ -1666,7 +1676,7 @@ export class CfRoutineStore implements RoutineStore {
   async getRoutine(routineId: string): Promise<RoutineDefinition | undefined> {
     const response = await this.execute({ kind: 'get_routine', routineId });
     if (response.kind !== 'routine') throw unexpectedRoutineResponse();
-    return orUndefined(response.routine);
+    return response.routine ? withRoutineDestination(response.routine) : undefined;
   }
   async listRoutines(workspaceId?: string, channelId?: string): Promise<RoutineDefinition[]> {
     const response = await this.execute({
@@ -1675,12 +1685,15 @@ export class CfRoutineStore implements RoutineStore {
       ...(channelId ? { channelId } : {}),
     });
     if (response.kind !== 'routines') throw unexpectedRoutineResponse();
-    return response.routines;
+    return response.routines.map(withRoutineDestination);
   }
   async listAdminRoutinePage(input: RoutineAdminPageInput): Promise<RoutineAdminPage> {
     const response = await this.execute({ kind: 'list_admin_routine_page', input });
     if (response.kind !== 'admin_routine_page') throw unexpectedRoutineResponse();
-    return response.page;
+    return {
+      ...response.page,
+      routines: response.page.routines.map(withRoutineDestination),
+    };
   }
   async listRevisions(routineId: string): Promise<RoutineRevision[]> {
     const response = await this.execute({ kind: 'list_revisions', routineId });
@@ -1766,6 +1779,22 @@ export class CfRoutineStore implements RoutineStore {
   async recordDelivery(input: RecordRoutineDeliveryInput): Promise<RoutineRun> {
     return this.requiredRun(await this.execute({ kind: 'record_delivery', input }));
   }
+  async getRecoveryDelivery(
+    occurrenceId: string,
+  ): Promise<RoutineRecoveryDelivery | undefined> {
+    const response = await this.execute({ kind: 'get_recovery_delivery', occurrenceId });
+    if (response.kind !== 'recovery_delivery') throw unexpectedRoutineResponse();
+    return orUndefined(response.delivery);
+  }
+  async recordRecoveryDelivery(
+    input: RecordRoutineRecoveryDeliveryInput,
+  ): Promise<RoutineRecoveryDelivery> {
+    const response = await this.execute({ kind: 'record_recovery_delivery', input });
+    if (response.kind !== 'recovery_delivery' || !response.delivery) {
+      throw unexpectedRoutineResponse();
+    }
+    return response.delivery;
+  }
   async listAdmissions(occurrenceId: string): Promise<RoutineAdmissionAttempt[]> {
     const response = await this.execute({ kind: 'list_admissions', occurrenceId });
     if (response.kind !== 'admissions') throw unexpectedRoutineResponse();
@@ -1782,7 +1811,7 @@ export class CfRoutineStore implements RoutineStore {
   }
   private requiredRoutine(response: RoutineRpcResponse): RoutineDefinition {
     if (response.kind !== 'routine' || !response.routine) throw unexpectedRoutineResponse();
-    return response.routine;
+    return withRoutineDestination(response.routine);
   }
   private requiredRun(response: RoutineRpcResponse): RoutineRun {
     if (response.kind !== 'run' || !response.run) throw unexpectedRoutineResponse();
@@ -2166,4 +2195,22 @@ function unexpectedUsageResponse(): Error {
 
 function unexpectedWorkResponse(): Error {
   return new Error('Unexpected Work state response');
+}
+
+function withRoutineDestination(routine: RoutineDefinition): RoutineDefinition {
+  if ((routine as Partial<RoutineDefinition>).destination) return routine;
+  return {
+    ...routine,
+    destination: { kind: 'channel', channelId: routine.channelId },
+  };
+}
+
+function withScheduleReferenceDestination(
+  reference: AgentScheduleReference,
+): AgentScheduleReference {
+  return {
+    ...reference,
+    destinationKind: reference.destinationKind ?? 'channel',
+    destinationBindingDigest: reference.destinationBindingDigest ?? null,
+  };
 }

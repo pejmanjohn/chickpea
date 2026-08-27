@@ -292,6 +292,8 @@ test('connection accounts bind once and schedule references retain creator autho
     assert.equal(binding.connectionAccountId, account.id);
     assert.equal(schedule.runsAsMembershipId, 'membership_owner');
     assert.deepEqual(schedule.requiredConnectionAccountIds, [account.id]);
+    assert.equal(schedule.destinationKind, 'channel');
+    assert.equal(schedule.destinationBindingDigest, null);
   } finally {
     store.close();
   }
@@ -358,6 +360,8 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
     runsAsMembershipId: 'membership_owner',
     authorityReceiptId: 'schedule_authority_owner',
     requiredConnectionAccountIds: [account.id],
+    destinationKind: 'channel',
+    destinationBindingDigest: null,
     state: 'active',
     revision: 1,
     createdAt: 1,

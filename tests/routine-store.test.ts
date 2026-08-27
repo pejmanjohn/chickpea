@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { openStateDb } from '../src/state/node-state-db.ts';
-import { hashRoutineValue } from '../src/routines/ids.ts';
+import { hashRoutineValue, routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import { ROUTINE_LIMITS } from '../src/routines/limits.ts';
 import { normalizeRoutineSchedule } from '../src/routines/schedule.ts';
 import { RoutineService } from '../src/routines/service.ts';
@@ -109,7 +109,311 @@ test('routine schema is additive and portable across the target-neutral StateDb 
     sqlite.all('PRAGMA table_info(routine_runs)')
       .some((column) => column.name === 'canonical_run_id'),
   );
+  assert.ok(
+    sqlite.all('PRAGMA table_info(routines)')
+      .some((column) => column.name === 'destination_kind'),
+  );
+  assert.ok(sqlite.get(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'routine_pending_authority'",
+  ));
+  assert.ok(sqlite.get(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'routine_recovery_deliveries'",
+  ));
   sqlite.close();
+});
+
+test('direct routines stay inert until their exact Agent reference is bound and activated', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-routine-direct-activation-'));
+  const path = join(dir, 'state.db');
+  const store = new SqliteRoutineStore(path, () => CREATED_AT);
+  const config = new SqliteConfigStore(path, { agents: [] });
+  const destination = {
+    kind: 'direct_thread' as const,
+    conversationId: 'D_MEMBER',
+    threadTs: '1787853827.722389',
+    ownerMembershipId: 'membership_owner',
+  };
+  try {
+    await config.createAgent({
+      id: 'agent_direct_owner',
+      name: 'Direct owner',
+      instructions: 'Own private scheduled work.',
+      enabled: true,
+      creatorMembershipId: 'membership_owner',
+      editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const pending = await store.save({
+      actorId: 'U_MEMBER',
+      actorClass: 'member',
+      workspaceId: 'T_TEST',
+      channelId: destination.conversationId,
+      destination,
+      draft: createDraft('routine_direct_pending', {
+        definition: definition({ authorityMode: 'live_direct_member_v1' }),
+      }),
+      idempotencyKey: 'routine:direct:pending',
+      sourceVisibility: 'private',
+    });
+
+    assert.equal(pending.state, 'pending_authority');
+    assert.equal(pending.nextRunAt, null);
+    assert.deepEqual(pending.reservationWindows, []);
+    assert.deepEqual(pending.destination, destination);
+    assert.deepEqual(await store.claimDueSchedules({
+      now: NEXT_RUN,
+      owner: 'heartbeat',
+      limit: 25,
+    }), { runs: [], scannedCount: 0, deferredCount: 0 });
+    await assert.rejects(
+      () => store.createOccurrence({
+        runId: 'rrun_direct_pending',
+        idempotencyKey: 'routine:direct:pending:run-now',
+        routineId: pending.id,
+        routineVersion: pending.version,
+        scheduledFor: CREATED_AT,
+        triggerSource: 'run_now',
+        requestedBy: 'U_MEMBER',
+        queuedAt: CREATED_AT,
+        deadlineAt: CREATED_AT + 15 * 60 * 1_000,
+      }),
+      (error: unknown) => (
+        error instanceof RoutineStateError && error.code === 'routine_state_ineligible'
+      ),
+    );
+    await assert.rejects(
+      () => store.control({
+        routineId: pending.id,
+        expectedVersion: pending.version,
+        action: 'resume',
+        actorId: 'U_MEMBER',
+        actorClass: 'member',
+        idempotencyKey: 'routine:direct:pending:resume',
+      }),
+      (error: unknown) => (
+        error instanceof RoutineStateError && error.code === 'routine_transition_invalid'
+      ),
+    );
+
+    const digest = routineDestinationBindingDigest(
+      pending.id,
+      pending.workspaceId,
+      destination,
+    );
+    await assert.rejects(
+      () => store.activateDirectRoutine({
+        routineId: pending.id,
+        expectedVersion: pending.version,
+        expectedReferenceRevision: 1,
+        destinationBindingDigest: digest,
+      }),
+      (error: unknown) => (
+        error instanceof RoutineStateError && error.code === 'routine_authority_binding_invalid'
+      ),
+    );
+    assert.equal((await store.getRoutine(pending.id))?.state, 'pending_authority');
+
+    const reference = await config.putAgentScheduleReference({
+      scheduleId: pending.id,
+      agentId: 'agent_direct_owner',
+      workspaceId: pending.workspaceId,
+      channelId: destination.conversationId,
+      destinationKind: 'direct_thread',
+      destinationBindingDigest: digest,
+      createdByMembershipId: destination.ownerMembershipId,
+      runsAsMembershipId: destination.ownerMembershipId,
+      authorityReceiptId: 'receipt_direct_owner',
+      requiredConnectionAccountIds: [],
+      state: 'active',
+    });
+    assert.equal(reference.destinationKind, 'direct_thread');
+    assert.equal(reference.destinationBindingDigest, digest);
+    const active = await store.activateDirectRoutine({
+      routineId: pending.id,
+      expectedVersion: pending.version,
+      expectedReferenceRevision: reference.revision,
+      destinationBindingDigest: digest,
+    });
+
+    assert.equal(active.state, 'active');
+    assert.equal(active.nextRunAt, NEXT_RUN);
+    assert.deepEqual(active.reservationWindows, [{ windowStart: NEXT_RUN, count: 1 }]);
+    assert.deepEqual(
+      await store.activateDirectRoutine({
+        routineId: pending.id,
+        expectedVersion: pending.version,
+        expectedReferenceRevision: reference.revision,
+        destinationBindingDigest: digest,
+      }),
+      active,
+    );
+
+    const oncePending = await store.save({
+      actorId: 'U_MEMBER',
+      actorClass: 'member',
+      workspaceId: 'T_TEST',
+      channelId: destination.conversationId,
+      destination,
+      draft: createDraft('routine_direct_once', {
+        definition: definition({
+          triggerKind: 'once',
+          scheduleInput: 'In one hour',
+          scheduleJson: JSON.stringify({ version: 1, kind: 'once', at: NEXT_RUN }),
+          authorityMode: 'live_direct_member_v1',
+        }),
+        projectedDailyStarts: 0,
+      }),
+      idempotencyKey: 'routine:direct:once',
+      sourceVisibility: 'private',
+    });
+    const onceDigest = routineDestinationBindingDigest(
+      oncePending.id,
+      oncePending.workspaceId,
+      destination,
+    );
+    const onceReference = await config.putAgentScheduleReference({
+      scheduleId: oncePending.id,
+      agentId: 'agent_direct_owner',
+      workspaceId: oncePending.workspaceId,
+      channelId: destination.conversationId,
+      destinationKind: 'direct_thread',
+      destinationBindingDigest: onceDigest,
+      createdByMembershipId: destination.ownerMembershipId,
+      runsAsMembershipId: destination.ownerMembershipId,
+      authorityReceiptId: 'receipt_direct_once',
+      requiredConnectionAccountIds: [],
+      state: 'active',
+    });
+    const once = await store.activateDirectRoutine({
+      routineId: oncePending.id,
+      expectedVersion: oncePending.version,
+      expectedReferenceRevision: onceReference.revision,
+      destinationBindingDigest: onceDigest,
+    });
+    const run = await store.createOccurrence({
+      runId: 'rrun_direct_once',
+      idempotencyKey: 'routine:direct:once:slot',
+      routineId: once.id,
+      routineVersion: once.version,
+      scheduledFor: NEXT_RUN,
+      triggerSource: 'once',
+      queuedAt: CREATED_AT,
+      deadlineAt: NEXT_RUN + 15 * 60 * 1_000,
+    });
+    await store.startAdmissionAttempt({
+      occurrenceId: run.id,
+      owner: 'heartbeat',
+      leaseUntil: CREATED_AT + 120_000,
+      invokeStartedAt: CREATED_AT + 1,
+    });
+    await store.beginOccurrence({
+      occurrenceId: run.id,
+      flueRunId: 'run_direct_once',
+      startedAt: CREATED_AT + 2,
+    });
+    const failed = await store.transitionRun({
+      occurrenceId: run.id,
+      from: ['running'],
+      to: 'failed',
+      at: CREATED_AT + 3,
+      failureClass: 'direct_thread_unavailable',
+      publicError: 'The private thread is unavailable.',
+    });
+
+    assert.equal((await store.getRoutine(once.id))?.state, 'paused');
+    assert.equal((await store.getRoutine(once.id))?.pausedReason, 'direct_thread_unavailable');
+    const recovery = await store.getRecoveryDelivery(run.id);
+    assert.deepEqual(recovery, {
+      occurrenceId: run.id,
+      claimedAt: CREATED_AT + 3,
+      status: 'pending',
+      messageTs: null,
+      failureClass: 'direct_thread_unavailable',
+      updatedAt: CREATED_AT + 3,
+    });
+    assert.deepEqual(await store.transitionRun({
+      occurrenceId: run.id,
+      from: ['running'],
+      to: 'failed',
+      at: CREATED_AT + 3,
+      failureClass: 'direct_thread_unavailable',
+      publicError: 'The private thread is unavailable.',
+    }), failed);
+    const accepted = await store.recordRecoveryDelivery({
+      occurrenceId: run.id,
+      outcome: 'accepted',
+      at: CREATED_AT + 4,
+      messageTs: '1787853828.000100',
+    });
+    assert.equal(accepted.status, 'accepted');
+    assert.equal(accepted.messageTs, '1787853828.000100');
+    assert.deepEqual(await store.recordRecoveryDelivery({
+      occurrenceId: run.id,
+      outcome: 'accepted',
+      at: CREATED_AT + 4,
+      messageTs: '1787853828.000100',
+    }), accepted);
+  } finally {
+    store.close();
+    config.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a direct binding mismatch stays inert and cannot fall back to Channel authority', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-routine-direct-mismatch-'));
+  const path = join(dir, 'state.db');
+  const store = new SqliteRoutineStore(path, () => CREATED_AT);
+  const config = new SqliteConfigStore(path, { agents: [] });
+  const destination = {
+    kind: 'direct_thread' as const,
+    conversationId: 'D_MEMBER',
+    threadTs: '1787853827.722389',
+    ownerMembershipId: 'membership_owner',
+  };
+  try {
+    await config.createAgent({
+      id: 'agent_direct_owner', name: 'Direct owner', instructions: 'Own private work.',
+      enabled: true, creatorMembershipId: 'membership_owner', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const pending = await store.save({
+      actorId: 'U_MEMBER', actorClass: 'member', workspaceId: 'T_TEST',
+      channelId: destination.conversationId, destination,
+      draft: createDraft('routine_direct_mismatch', {
+        definition: definition({ authorityMode: 'live_direct_member_v1' }),
+      }),
+      idempotencyKey: 'routine:direct:mismatch', sourceVisibility: 'private',
+    });
+    const expectedDigest = routineDestinationBindingDigest(pending.id, pending.workspaceId, destination);
+    const wrongDigest = hashRoutineValue('different direct destination');
+    const reference = await config.putAgentScheduleReference({
+      scheduleId: pending.id, agentId: 'agent_direct_owner', workspaceId: pending.workspaceId,
+      channelId: destination.conversationId, destinationKind: 'direct_thread',
+      destinationBindingDigest: wrongDigest,
+      createdByMembershipId: destination.ownerMembershipId,
+      runsAsMembershipId: destination.ownerMembershipId,
+      authorityReceiptId: 'receipt_wrong_destination', requiredConnectionAccountIds: [], state: 'active',
+    });
+
+    await assert.rejects(
+      () => store.activateDirectRoutine({
+        routineId: pending.id,
+        expectedVersion: pending.version,
+        expectedReferenceRevision: reference.revision,
+        destinationBindingDigest: expectedDigest,
+      }),
+      (error: unknown) => (
+        error instanceof RoutineStateError && error.code === 'routine_authority_binding_invalid'
+      ),
+    );
+    assert.equal((await store.getRoutine(pending.id))?.state, 'pending_authority');
+    assert.deepEqual((await store.getRoutine(pending.id))?.reservationWindows, []);
+  } finally {
+    store.close();
+    config.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('direct save is idempotent and keeps deletion behind confirmation', async () => {
@@ -194,6 +498,7 @@ test('confirmation atomically creates a versioned routine and body-free schedule
 
     assert.deepEqual(replay, routine);
     assert.equal(routine.state, 'active');
+    assert.deepEqual(routine.destination, { kind: 'channel', channelId: 'C_TEST' });
     assert.equal(routine.version, 1);
     assert.equal(routine.creatorUserId, 'U_MEMBER');
     assert.equal(routine.authorityMode, 'live_channel_v1');
