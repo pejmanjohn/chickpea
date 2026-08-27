@@ -234,11 +234,16 @@ export type RoutineRecoveryDeliveryStatus =
 
 export interface RoutineRecoveryDelivery {
   occurrenceId: string;
-  claimedAt: number;
+  claimedAt: number | null;
   status: RoutineRecoveryDeliveryStatus;
   messageTs: string | null;
   failureClass: 'direct_thread_unavailable';
   updatedAt: number;
+}
+
+export interface ClaimRoutineRecoveryDeliveryInput {
+  occurrenceId: string;
+  at: number;
 }
 
 export interface RecordRoutineRecoveryDeliveryInput {
@@ -506,6 +511,7 @@ export interface RecordRoutineDeliveryInput {
   occurrenceId: string;
   outcome: 'delivered' | 'unknown' | 'failed';
   at: number;
+  failureClass?: Extract<RoutineFailureClass, 'direct_thread_unavailable'>;
   channelId?: string;
   messageTs?: string;
   changeKeyHash?: string | null;
@@ -567,6 +573,9 @@ export interface RoutineStore {
   claimDelivery(input: ClaimRoutineDeliveryInput): Promise<'claimed' | 'superseded'>;
   recordDelivery(input: RecordRoutineDeliveryInput): Promise<RoutineRun>;
   getRecoveryDelivery(occurrenceId: string): Promise<RoutineRecoveryDelivery | undefined>;
+  claimRecoveryDelivery(
+    input: ClaimRoutineRecoveryDeliveryInput,
+  ): Promise<'claimed' | 'superseded'>;
   recordRecoveryDelivery(
     input: RecordRoutineRecoveryDeliveryInput,
   ): Promise<RoutineRecoveryDelivery>;
@@ -620,6 +629,7 @@ export type RoutineRpcRequest =
   | { kind: 'claim_delivery'; input: ClaimRoutineDeliveryInput }
   | { kind: 'record_delivery'; input: RecordRoutineDeliveryInput }
   | { kind: 'get_recovery_delivery'; occurrenceId: string }
+  | { kind: 'claim_recovery_delivery'; input: ClaimRoutineRecoveryDeliveryInput }
   | { kind: 'record_recovery_delivery'; input: RecordRoutineRecoveryDeliveryInput }
   | { kind: 'list_admissions'; occurrenceId: string }
   | { kind: 'count_admitting_or_running_occurrences' }
@@ -639,6 +649,7 @@ export type RoutineRpcResponse =
   | { kind: 'begin'; outcome: 'started' | 'superseded' }
   | { kind: 'delivery_claim'; outcome: 'claimed' | 'superseded' }
   | { kind: 'recovery_delivery'; delivery: RoutineRecoveryDelivery | null }
+  | { kind: 'recovery_delivery_claim'; outcome: 'claimed' | 'superseded' }
   | { kind: 'boolean'; value: boolean }
   | { kind: 'purged'; count: number }
   | { kind: 'count'; count: number }

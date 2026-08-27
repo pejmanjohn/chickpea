@@ -325,7 +325,7 @@ test('direct routines stay inert until their exact Agent reference is bound and 
     const recovery = await store.getRecoveryDelivery(run.id);
     assert.deepEqual(recovery, {
       occurrenceId: run.id,
-      claimedAt: CREATED_AT + 3,
+      claimedAt: null,
       status: 'pending',
       messageTs: null,
       failureClass: 'direct_thread_unavailable',
@@ -339,10 +339,26 @@ test('direct routines stay inert until their exact Agent reference is bound and 
       failureClass: 'direct_thread_unavailable',
       publicError: 'The private thread is unavailable.',
     }), failed);
+    await assert.rejects(
+      store.recordRecoveryDelivery({
+        occurrenceId: run.id,
+        outcome: 'unknown',
+        at: CREATED_AT + 4,
+      }),
+      /not claimed/,
+    );
+    assert.equal(await store.claimRecoveryDelivery({
+      occurrenceId: run.id,
+      at: CREATED_AT + 4,
+    }), 'claimed');
+    assert.equal(await store.claimRecoveryDelivery({
+      occurrenceId: run.id,
+      at: CREATED_AT + 4,
+    }), 'superseded');
     const accepted = await store.recordRecoveryDelivery({
       occurrenceId: run.id,
       outcome: 'accepted',
-      at: CREATED_AT + 4,
+      at: CREATED_AT + 5,
       messageTs: '1787853828.000100',
     });
     assert.equal(accepted.status, 'accepted');
@@ -350,9 +366,54 @@ test('direct routines stay inert until their exact Agent reference is bound and 
     assert.deepEqual(await store.recordRecoveryDelivery({
       occurrenceId: run.id,
       outcome: 'accepted',
-      at: CREATED_AT + 4,
+      at: CREATED_AT + 5,
       messageTs: '1787853828.000100',
     }), accepted);
+
+    const noticeRun = await store.createOccurrence({
+      runId: 'rrun_direct_failure_notice',
+      idempotencyKey: 'routine:direct:failure-notice:slot',
+      routineId: active.id,
+      routineVersion: active.version,
+      scheduledFor: NEXT_RUN,
+      triggerSource: 'schedule',
+      queuedAt: CREATED_AT,
+      deadlineAt: NEXT_RUN + 15 * 60 * 1_000,
+    });
+    await store.startAdmissionAttempt({
+      occurrenceId: noticeRun.id,
+      owner: 'heartbeat',
+      leaseUntil: CREATED_AT + 120_000,
+      invokeStartedAt: CREATED_AT + 6,
+    });
+    await store.beginOccurrence({
+      occurrenceId: noticeRun.id,
+      flueRunId: 'run_direct_failure_notice',
+      startedAt: CREATED_AT + 7,
+    });
+    await store.transitionRun({
+      occurrenceId: noticeRun.id,
+      from: ['running'],
+      to: 'failed',
+      at: CREATED_AT + 8,
+      failureClass: 'internal_error',
+      publicError: 'The run stopped safely.',
+    });
+    assert.equal((await store.getRoutine(active.id))?.state, 'active');
+    assert.equal(await store.claimDelivery({
+      occurrenceId: noticeRun.id,
+      at: CREATED_AT + 9,
+      leaseUntil: CREATED_AT + 9 + ROUTINE_LIMITS.deliveryLeaseMs,
+    }), 'claimed');
+    await store.recordDelivery({
+      occurrenceId: noticeRun.id,
+      outcome: 'failed',
+      failureClass: 'direct_thread_unavailable',
+      at: CREATED_AT + 10,
+    });
+    assert.equal((await store.getRoutine(active.id))?.state, 'paused');
+    assert.equal((await store.getRoutine(active.id))?.pausedReason, 'direct_thread_unavailable');
+    assert.equal((await store.getRecoveryDelivery(noticeRun.id))?.status, 'pending');
   } finally {
     store.close();
     config.close();

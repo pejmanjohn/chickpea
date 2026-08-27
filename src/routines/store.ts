@@ -30,6 +30,7 @@ import {
   type ActivateDirectRoutineInput,
   type BeginRoutineOccurrenceInput,
   type CancelRoutineConfirmationInput,
+  type ClaimRoutineRecoveryDeliveryInput,
   type ClaimRoutineDeliveryInput,
   type ClaimDueRoutinesInput,
   type ConfirmRoutineInput,
@@ -358,6 +359,11 @@ export class RoutineStoreLogic {
         return {
           kind: 'recovery_delivery',
           delivery: this.getRecoveryDelivery(request.occurrenceId) ?? null,
+        };
+      case 'claim_recovery_delivery':
+        return {
+          kind: 'recovery_delivery_claim',
+          outcome: this.claimRecoveryDelivery(request.input),
         };
       case 'record_recovery_delivery':
         return {
@@ -1926,6 +1932,8 @@ export class RoutineStoreLogic {
       !isOpaqueRoutineId(input.occurrenceId) ||
       !Number.isSafeInteger(input.at) ||
       !['delivered', 'unknown', 'failed'].includes(input.outcome) ||
+      (input.failureClass !== undefined &&
+        (input.failureClass !== 'direct_thread_unavailable' || input.outcome !== 'failed')) ||
       (input.channelId !== undefined && !isOpaqueRoutineId(input.channelId)) ||
       (input.messageTs !== undefined && !/^\d{1,20}\.\d{1,12}$/.test(input.messageTs)) ||
       (input.changeKeyHash !== undefined &&
@@ -1939,6 +1947,12 @@ export class RoutineStoreLogic {
       const run = required(this.getRun(input.occurrenceId), 'Routine occurrence was not found.');
       if (!['running', 'failed'].includes(run.status) || run.deliveryStatus !== 'leased') {
         throw routineError('routine_delivery_superseded', 'Routine delivery was superseded.');
+      }
+      if (input.failureClass === 'direct_thread_unavailable') {
+        const routine = this.getRoutine(run.routineId);
+        if (!routine || routine.destination.kind !== 'direct_thread') {
+          throw routineError('routine_delivery_invalid', 'Routine delivery result is invalid.');
+        }
       }
       this.db.run(
         `UPDATE routine_runs SET delivery_status = ?, delivery_lease_until = NULL,
@@ -1956,6 +1970,9 @@ export class RoutineStoreLogic {
           input.changeKeyHash,
           run.routineId,
         );
+      }
+      if (run.status === 'failed' && input.failureClass === 'direct_thread_unavailable') {
+        this.pauseRoutineForDirectThreadFailure(run, input.at);
       }
       const updated = required(this.getRun(run.id), 'Routine occurrence was not readable after delivery.');
       this.appendRunAudit(
@@ -1979,6 +1996,32 @@ export class RoutineStoreLogic {
     return row ? rowToRecoveryDelivery(row as unknown as RecoveryDeliveryRow) : undefined;
   }
 
+  claimRecoveryDelivery(
+    input: ClaimRoutineRecoveryDeliveryInput,
+  ): 'claimed' | 'superseded' {
+    if (!isOpaqueRoutineId(input.occurrenceId) ||
+        !Number.isSafeInteger(input.at) || input.at <= 0) {
+      throw routineError('routine_recovery_delivery_invalid', 'Routine recovery delivery is invalid.');
+    }
+    return this.db.transaction(() => {
+      const current = required(
+        this.getRecoveryDelivery(input.occurrenceId),
+        'Routine recovery delivery was not found.',
+      );
+      if (current.status !== 'pending' || current.claimedAt !== null) return 'superseded';
+      this.db.run(
+        `UPDATE routine_recovery_deliveries SET claimed_at = ?, updated_at = ?
+         WHERE occurrence_id = ? AND status = 'pending' AND claimed_at = 0`,
+        input.at,
+        input.at,
+        input.occurrenceId,
+      );
+      return this.getRecoveryDelivery(input.occurrenceId)?.claimedAt === input.at
+        ? 'claimed'
+        : 'superseded';
+    });
+  }
+
   recordRecoveryDelivery(input: RecordRoutineRecoveryDeliveryInput): RoutineRecoveryDelivery {
     if (
       !isOpaqueRoutineId(input.occurrenceId) ||
@@ -1995,6 +2038,12 @@ export class RoutineStoreLogic {
         this.getRecoveryDelivery(input.occurrenceId),
         'Routine recovery delivery was not found.',
       );
+      if (current.claimedAt === null) {
+        throw routineError(
+          'routine_recovery_delivery_superseded',
+          'Routine recovery delivery was not claimed.',
+        );
+      }
       if (current.status !== 'pending') {
         if (current.status === input.outcome && current.messageTs === (input.messageTs ?? null)) {
           return current;
@@ -3034,7 +3083,7 @@ export class RoutineStoreLogic {
       ) VALUES (?, ?, 'pending', NULL, 'direct_thread_unavailable', ?)
       ON CONFLICT(occurrence_id) DO NOTHING`,
       run.id,
-      at,
+      0,
       at,
     );
     const paused = required(this.getRoutine(routine.id), 'Paused routine was not readable.');
@@ -3656,7 +3705,7 @@ function rowToAdmission(row: AdmissionRow): RoutineAdmissionAttempt {
 function rowToRecoveryDelivery(row: RecoveryDeliveryRow): RoutineRecoveryDelivery {
   return {
     occurrenceId: row.occurrence_id,
-    claimedAt: row.claimed_at,
+    claimedAt: row.claimed_at > 0 ? row.claimed_at : null,
     status: row.status,
     messageTs: row.message_ts,
     failureClass: 'direct_thread_unavailable',

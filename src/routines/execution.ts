@@ -62,6 +62,7 @@ import type { RunId } from '../work/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import {
+  deliverDirectRoutineRecoveryNotice,
   deliverRoutineFailureNotice,
   deliverRoutineResult,
 } from './delivery.ts';
@@ -748,15 +749,47 @@ async function finalizeSettlement(
   if (settlement.outcome === 'completed') {
     let delivered = false;
     if (settlement.result.status === 'succeeded') {
-      await deliverRoutineResult({
-        store: prepared.store,
-        run: prepared.run,
-        routine: prepared.routine,
-        access: prepared.access,
-        message: settlement.result.message,
-        changeKeyHash: settlement.result.changeKeyHash,
-        ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
-      }, prepared.access.client);
+      try {
+        await deliverRoutineResult({
+          store: prepared.store,
+          run: prepared.run,
+          routine: prepared.routine,
+          access: prepared.access,
+          message: settlement.result.message,
+          changeKeyHash: settlement.result.changeKeyHash,
+          ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
+        }, prepared.access.client);
+      } catch (error) {
+        if (!(error instanceof RoutineRuntimeError) ||
+            error.failureClass !== 'direct_thread_unavailable') throw error;
+        const usage = settlement.result.usage;
+        prepared.run = await prepared.store.transitionRun({
+          occurrenceId: prepared.run.id,
+          from: ['running'],
+          to: 'failed',
+          at,
+          failureClass: error.failureClass,
+          publicError: error.publicError,
+          model: routineModelLabel(usage.returnedModel, usage.requestedModel),
+          ...(usage.inputTokens === null ? {} : { inputTokens: usage.inputTokens }),
+          ...(usage.outputTokens === null ? {} : { outputTokens: usage.outputTokens }),
+          ...(prepared.usageRecorder
+            ? {
+                usageLedgerOperationId: prepared.run.id,
+                usageProvenance: 'usage_ledger' as const,
+              }
+            : {}),
+          usageCompleteness: usage.completeness,
+          toolCallCount: settlement.result.toolCallCount,
+        });
+        await deliverDirectRoutineRecoveryNotice({
+          store: prepared.store,
+          run: prepared.run,
+          routine: prepared.routine,
+          access: prepared.access,
+        }, prepared.access.client).catch(() => undefined);
+        return;
+      }
       delivered = true;
     } else {
       await prepared.workLifecycle?.settleWithoutDelivery({ terminalDisposition: 'no_op' });
@@ -1118,8 +1151,21 @@ async function deliverFailureNoticeBestEffort(
       publicError,
       ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
     }, prepared.access.client);
-  } catch {
-    // The failed occurrence remains visible in Slack commands and Admin.
+  } catch (error) {
+    if (error instanceof RoutineRuntimeError &&
+        error.failureClass === 'direct_thread_unavailable') {
+      await (async () => {
+        const run = await prepared.store.getRun(prepared.run.id);
+        if (!run) return;
+        await deliverDirectRoutineRecoveryNotice({
+          store: prepared.store,
+          run,
+          routine: prepared.routine,
+          access: prepared.access,
+        }, prepared.access.client);
+      })().catch(() => undefined);
+    }
+    // The failed occurrence remains available through its authorized management surface.
   }
 }
 

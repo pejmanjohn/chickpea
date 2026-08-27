@@ -99,7 +99,7 @@ test('Cloudflare routine proxy carries direct activation and recovery receipts a
   const requests: RoutineRpcRequest[] = [];
   const recovery = {
     occurrenceId: 'rrun_rpc',
-    claimedAt: 10,
+    claimedAt: null,
     status: 'pending' as const,
     messageTs: null,
     failureClass: 'direct_thread_unavailable' as const,
@@ -114,6 +114,9 @@ test('Cloudflare routine proxy carries direct activation and recovery receipts a
       if (request.kind === 'get_recovery_delivery') {
         return { ok: true, value: { kind: 'recovery_delivery', delivery: recovery } };
       }
+      if (request.kind === 'claim_recovery_delivery') {
+        return { ok: true, value: { kind: 'recovery_delivery_claim', outcome: 'claimed' } };
+      }
       return { ok: true, value: { kind: 'recovery_delivery', delivery: { ...recovery, status: 'unknown' } } };
     },
   } as unknown as TagStateRpc;
@@ -127,6 +130,7 @@ test('Cloudflare routine proxy carries direct activation and recovery receipts a
 
   assert.deepEqual(await store.activateDirectRoutine(activation), routine);
   assert.deepEqual(await store.getRecoveryDelivery('rrun_rpc'), recovery);
+  assert.equal(await store.claimRecoveryDelivery({ occurrenceId: 'rrun_rpc', at: 10 }), 'claimed');
   assert.equal(
     (await store.recordRecoveryDelivery({
       occurrenceId: 'rrun_rpc', outcome: 'unknown', at: 11,
@@ -136,6 +140,7 @@ test('Cloudflare routine proxy carries direct activation and recovery receipts a
   assert.deepEqual(requests, [
     { kind: 'activate_direct_routine', input: activation },
     { kind: 'get_recovery_delivery', occurrenceId: 'rrun_rpc' },
+    { kind: 'claim_recovery_delivery', input: { occurrenceId: 'rrun_rpc', at: 10 } },
     {
       kind: 'record_recovery_delivery',
       input: { occurrenceId: 'rrun_rpc', outcome: 'unknown', at: 11 },

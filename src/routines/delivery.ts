@@ -16,11 +16,25 @@ import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 
 const ROUTINE_SLACK_TIMEOUT_MS = 10_000;
+const DEFINITIVE_DIRECT_THREAD_ERRORS = new Set([
+  'cannot_reply_to_message',
+  'restricted_action_non_threadable_channel',
+  'restricted_action_thread_locked',
+]);
+
+export const DIRECT_ROUTINE_RECOVERY_NOTICE =
+  'Chickpea paused private scheduled work because its original thread could not receive a reply. Ask Chickpea here to list private schedules.';
 
 export interface RoutineDeliveryReceipt {
   channelId: string;
   messageTs: string;
 }
+
+export type RoutineRecoveryDeliveryOutcome =
+  | 'accepted'
+  | 'definitive_failure'
+  | 'unknown'
+  | 'superseded';
 
 /** One at-most-once top-level Slack delivery. Ambiguous transport failures are never retried. */
 export async function deliverRoutineResult(
@@ -148,13 +162,30 @@ async function deliverRoutineSlackMessage(
   try {
     response = await client.chat.postMessage(payload);
   } catch (error) {
+    const directThreadUnavailable = input.routine.destination.kind === 'direct_thread' &&
+      isDefinitiveDirectThreadError(error);
     const rateLimited = slackErrorCode(error) === ErrorCode.RateLimitedError;
     await input.workLifecycle?.afterDelivery({
       attemptId: workAttemptId,
-      outcome: rateLimited ? 'failed' : 'unknown',
-      safeFailureCode: rateLimited ? 'slack_rate_limited' : 'delivery_unknown',
+      outcome: directThreadUnavailable || rateLimited ? 'failed' : 'unknown',
+      ...(directThreadUnavailable ? { terminalDisposition: 'failed' as const } : {}),
+      safeFailureCode: directThreadUnavailable
+        ? 'direct_thread_unavailable'
+        : rateLimited ? 'slack_rate_limited' : 'delivery_unknown',
     });
-    await recordFailedDelivery(input.store, input.run.id, rateLimited ? 'failed' : 'unknown', now());
+    await recordFailedDelivery(
+      input.store,
+      input.run.id,
+      directThreadUnavailable || rateLimited ? 'failed' : 'unknown',
+      now(),
+      directThreadUnavailable ? 'direct_thread_unavailable' : undefined,
+    );
+    if (directThreadUnavailable) {
+      throw new RoutineRuntimeError(
+        'direct_thread_unavailable',
+        'The private routine thread could not receive a reply.',
+      );
+    }
     throw new RoutineRuntimeError(
       rateLimited ? 'slack_rate_limited' : 'delivery_unknown',
       rateLimited
@@ -164,6 +195,26 @@ async function deliverRoutineSlackMessage(
   }
   const channelId = typeof response.channel === 'string' ? response.channel : undefined;
   const messageTs = typeof response.ts === 'string' ? response.ts : undefined;
+  if (input.routine.destination.kind === 'direct_thread' &&
+      isDefinitiveDirectThreadError(response)) {
+    await input.workLifecycle?.afterDelivery({
+      attemptId: workAttemptId,
+      outcome: 'failed',
+      terminalDisposition: 'failed',
+      safeFailureCode: 'direct_thread_unavailable',
+    });
+    await recordFailedDelivery(
+      input.store,
+      input.run.id,
+      'failed',
+      now(),
+      'direct_thread_unavailable',
+    );
+    throw new RoutineRuntimeError(
+      'direct_thread_unavailable',
+      'The private routine thread could not receive a reply.',
+    );
+  }
   if (!response.ok || channelId !== input.routine.channelId || !messageTs) {
     await input.workLifecycle?.afterDelivery({
       attemptId: workAttemptId,
@@ -202,6 +253,68 @@ async function deliverRoutineSlackMessage(
     );
   }
   return { channelId, messageTs };
+}
+
+export async function deliverDirectRoutineRecoveryNotice(
+  input: {
+    store: RoutineStore;
+    run: RoutineRun;
+    routine: RoutineDefinition;
+    access: RoutineRuntimeAccess;
+    now?: () => number;
+  },
+  client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
+): Promise<RoutineRecoveryDeliveryOutcome> {
+  if (input.routine.destination.kind !== 'direct_thread' || !input.access.actorSlackUserId) {
+    return 'superseded';
+  }
+  const now = input.now ?? Date.now;
+  const claimed = await input.store.claimRecoveryDelivery({
+    occurrenceId: input.run.id,
+    at: now(),
+  });
+  if (claimed !== 'claimed') return 'superseded';
+
+  let openResponse: Awaited<ReturnType<WebClient['conversations']['open']>>;
+  try {
+    openResponse = await client.conversations.open({ users: input.access.actorSlackUserId });
+  } catch (error) {
+    const outcome = slackPlatformErrorCode(error) ? 'definitive_failure' : 'unknown';
+    await recordRecoveryOutcome(input.store, input.run.id, outcome, now());
+    return outcome;
+  }
+  const opened = openResponse.channel && typeof openResponse.channel === 'object'
+    ? openResponse.channel as Record<string, unknown>
+    : undefined;
+  if (!openResponse.ok || !opened || opened.id !== input.routine.destination.conversationId ||
+      opened.is_mpim === true || (opened.is_im !== undefined && opened.is_im !== true)) {
+    await recordRecoveryOutcome(input.store, input.run.id, 'definitive_failure', now());
+    return 'definitive_failure';
+  }
+
+  let response: ChatPostMessageResponse;
+  try {
+    response = await client.chat.postMessage({
+      channel: input.routine.destination.conversationId,
+      text: DIRECT_ROUTINE_RECOVERY_NOTICE,
+      username: 'Chickpea',
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+  } catch (error) {
+    const outcome = slackPlatformErrorCode(error) ? 'definitive_failure' : 'unknown';
+    await recordRecoveryOutcome(input.store, input.run.id, outcome, now());
+    return outcome;
+  }
+  const channelId = typeof response.channel === 'string' ? response.channel : undefined;
+  const messageTs = typeof response.ts === 'string' ? response.ts : undefined;
+  if (response.ok && channelId === input.routine.destination.conversationId && messageTs) {
+    await recordRecoveryOutcome(input.store, input.run.id, 'accepted', now(), messageTs);
+    return 'accepted';
+  }
+  const outcome = slackPlatformErrorCode(response) ? 'definitive_failure' : 'unknown';
+  await recordRecoveryOutcome(input.store, input.run.id, outcome, now());
+  return outcome;
 }
 
 export function renderRoutineDelivery(
@@ -324,15 +437,57 @@ async function recordFailedDelivery(
   occurrenceId: string,
   outcome: 'unknown' | 'failed',
   at: number,
+  failureClass?: 'direct_thread_unavailable',
 ): Promise<void> {
   try {
-    await store.recordDelivery({ occurrenceId, outcome, at });
+    await store.recordDelivery({
+      occurrenceId,
+      outcome,
+      at,
+      ...(failureClass ? { failureClass } : {}),
+    });
   } catch {
     // The outward attempt is already terminal. Never turn state-write failure
     // into a blind second Slack post.
   }
 }
 
+async function recordRecoveryOutcome(
+  store: RoutineStore,
+  occurrenceId: string,
+  outcome: Exclude<RoutineRecoveryDeliveryOutcome, 'superseded'>,
+  at: number,
+  messageTs?: string,
+): Promise<void> {
+  try {
+    await store.recordRecoveryDelivery({
+      occurrenceId,
+      outcome,
+      at,
+      ...(messageTs ? { messageTs } : {}),
+    });
+  } catch {
+    // The durable claim prevents a second outward attempt even if its receipt
+    // cannot be finalized.
+  }
+}
+
 function slackErrorCode(error: unknown): unknown {
   return error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
+}
+
+function isDefinitiveDirectThreadError(error: unknown): boolean {
+  const code = slackPlatformErrorCode(error);
+  return code !== undefined && DEFINITIVE_DIRECT_THREAD_ERRORS.has(code);
+}
+
+function slackPlatformErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const record = error as Record<string, unknown>;
+  if (typeof record.error === 'string') return record.error;
+  const data = record.data;
+  if (data && typeof data === 'object' && typeof (data as { error?: unknown }).error === 'string') {
+    return (data as { error: string }).error;
+  }
+  return undefined;
 }

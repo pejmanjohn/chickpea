@@ -403,6 +403,118 @@ test('a direct schedule with permanently missing Agent authority fails and auto-
   }
 });
 
+test('a definitive private-thread rejection pauses recurring work and posts one root notice', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-direct-thread-recovery-'));
+  const path = join(dir, 'state.db');
+  const store = new SqliteRoutineStore(path, () => NOW);
+  const configStore = new SqliteConfigStore(path, { agents: [] });
+  const destination = {
+    kind: 'direct_thread' as const,
+    conversationId: 'D_DIRECT',
+    threadTs: '1787853827.722389',
+    ownerMembershipId: 'membership_direct',
+  };
+  const slackRequests: Array<Record<string, unknown>> = [];
+  try {
+    await configStore.createAgent({
+      id: 'agent_direct', name: 'Direct Agent', instructions: 'Run private work.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: destination.ownerMembershipId,
+      editPolicy: 'creator_and_admins', model: config.model,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const pending = await store.save({
+      actorId: 'U_DIRECT', actorClass: 'member', workspaceId: 'T_TEST',
+      channelId: destination.conversationId, destination,
+      draft: {
+        action: 'create', routineId: 'routine_direct_thread_recovery',
+        definition: {
+          name: 'Direct recurring fixture', description: '', taskText: 'Inspect current state.',
+          triggerKind: 'schedule', scheduleInput: '0 * * * *',
+          scheduleJson: JSON.stringify({ version: 1, kind: 'cron', expression: '0 * * * *' }),
+          timezone: 'UTC', outputPolicy: 'post', authorityMode: 'live_direct_member_v1',
+        },
+        nextRunAt: NOW, projectedDailyStarts: 1,
+        reservations: [{ windowStart: NOW, count: 1 }],
+      },
+      idempotencyKey: 'create:direct-thread-recovery', sourceVisibility: 'private',
+    });
+    const digest = routineDestinationBindingDigest(pending.id, pending.workspaceId, destination);
+    const reference = await configStore.putAgentScheduleReference({
+      scheduleId: pending.id, agentId: 'agent_direct', workspaceId: pending.workspaceId,
+      channelId: destination.conversationId, destinationKind: 'direct_thread',
+      destinationBindingDigest: digest, createdByMembershipId: destination.ownerMembershipId,
+      runsAsMembershipId: destination.ownerMembershipId,
+      authorityReceiptId: 'receipt_direct', requiredConnectionAccountIds: [], state: 'active',
+    });
+    const routine = await store.activateDirectRoutine({
+      routineId: pending.id, expectedVersion: pending.version,
+      expectedReferenceRevision: reference.revision, destinationBindingDigest: digest,
+    });
+    const run = await store.createOccurrence({
+      runId: 'rrun_direct_thread_recovery', idempotencyKey: 'run:direct-thread-recovery',
+      routineId: routine.id, routineVersion: routine.version, scheduledFor: NOW,
+      triggerSource: 'schedule', queuedAt: NOW, deadlineAt: NOW + 60_000,
+    });
+    const attempt = await store.startAdmissionAttempt({
+      occurrenceId: run.id, owner: 'heartbeat', invokeStartedAt: NOW, leaseUntil: NOW + 30_000,
+    });
+    const client = {
+      conversations: {
+        open: async (input: Record<string, unknown>) => {
+          slackRequests.push({ method: 'open', ...input });
+          return { ok: true, channel: { id: destination.conversationId, is_im: true } };
+        },
+      },
+      chat: {
+        postMessage: async (input: Record<string, unknown>) => {
+          slackRequests.push({ method: 'post', ...input });
+          if ('thread_ts' in input) throw { data: { error: 'cannot_reply_to_message' } };
+          return { ok: true, channel: destination.conversationId, ts: '1787853828.000100' };
+        },
+      },
+    };
+
+    const outcome = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: run.id, attempt: attempt.attempt,
+    }, {
+      ...dependencies(),
+      resolveAccess: async () => ({
+        config: {
+          ...config,
+          channelId: destination.conversationId,
+          agentId: 'agent_direct',
+          agent: { ...config.agent, id: 'agent_direct', name: 'Direct Agent' },
+        },
+        accessHash: 'a'.repeat(64),
+        botToken: 'xoxb-test',
+        botUserId: 'UBOT',
+        actorSlackUserId: 'U_DIRECT',
+        actorMembershipId: destination.ownerMembershipId,
+        authorityReceiptId: 'receipt_direct',
+        client: client as never,
+      }),
+      handle: fakeHandle({ reply: successfulReply() }),
+    });
+
+    assert.equal(outcome, 'completed');
+    const failed = await store.getRun(run.id);
+    assert.equal(failed?.status, 'failed');
+    assert.equal(failed?.failureClass, 'direct_thread_unavailable');
+    assert.equal((await store.getRoutine(routine.id))?.state, 'paused');
+    assert.equal((await store.getRoutine(routine.id))?.pausedReason, 'direct_thread_unavailable');
+    assert.equal((await store.getRecoveryDelivery(run.id))?.status, 'accepted');
+    assert.equal(slackRequests.length, 3);
+    assert.equal(slackRequests[0]?.thread_ts, destination.threadTs);
+    assert.deepEqual(slackRequests[1], { method: 'open', users: 'U_DIRECT' });
+    assert.equal(slackRequests[2]?.thread_ts, undefined);
+    assert.equal(slackRequests[2]?.username, 'Chickpea');
+  } finally {
+    configStore.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('reattachment never combines a frozen Agent A envelope with current Agent B access', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   try {

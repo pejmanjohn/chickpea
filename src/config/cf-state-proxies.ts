@@ -194,6 +194,7 @@ import {
   type ActivateDirectRoutineInput,
   type BeginRoutineOccurrenceInput,
   type CancelRoutineConfirmationInput,
+  type ClaimRoutineRecoveryDeliveryInput,
   type ClaimRoutineDeliveryInput,
   type ClaimDueRoutinesInput,
   type ConfirmRoutineInput,
@@ -1785,6 +1786,13 @@ export class CfRoutineStore implements RoutineStore {
     const response = await this.execute({ kind: 'get_recovery_delivery', occurrenceId });
     if (response.kind !== 'recovery_delivery') throw unexpectedRoutineResponse();
     return orUndefined(response.delivery);
+  }
+  async claimRecoveryDelivery(
+    input: ClaimRoutineRecoveryDeliveryInput,
+  ): Promise<'claimed' | 'superseded'> {
+    const response = await this.execute({ kind: 'claim_recovery_delivery', input });
+    if (response.kind !== 'recovery_delivery_claim') throw unexpectedRoutineResponse();
+    return response.outcome;
   }
   async recordRecoveryDelivery(
     input: RecordRoutineRecoveryDeliveryInput,
