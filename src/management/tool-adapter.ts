@@ -65,7 +65,7 @@ export function workspaceManagementSemanticDescriptor(
 }
 
 /**
- * KTD10 owner seam: the already-normalized tool name selects a closed fact.
+ * The already-normalized tool name selects a closed activity fact.
  * Operation arguments and bodies never enter the emitted value.
  */
 export function workspaceManagementSemanticInvocation(

@@ -4,7 +4,6 @@ import {
   unknownSemanticDescriptor,
   type SemanticActivityDescriptor,
   type SemanticInvocationFact,
-  type SemanticLifecycleRole,
   type TypedActivityStatus,
 } from './semantic.ts';
 
@@ -25,13 +24,11 @@ interface ActiveWorkCall {
 
 interface SubmissionLifecycleState {
   readonly instanceId: string;
-  readonly submissionId: string;
   attemptCount?: number;
   nextSequence: number;
   activeWork: Map<string, ActiveWorkCall>;
-  nonWorkRoles: Map<string, SemanticLifecycleRole>;
+  nonWorkCallIds: Set<string>;
   seenCallIds: Set<string>;
-  settledCallIds: Set<string>;
   invocationFacts: Map<string, SemanticActivityDescriptor>;
   completedDescriptors: SemanticActivityDescriptor[];
   batchUnsuccessful: boolean;
@@ -88,7 +85,10 @@ export class ActivityLifecycleReducer {
     const key = submissionKey(instanceId, submissionId);
     if (this.settledSubmissions.has(key)) return undefined;
     const state = this.state(instanceId, submissionId);
-    if (state.suppressed || state.settledCallIds.has(fact.toolCallId)) return undefined;
+    if (state.suppressed ||
+        state.seenCallIds.has(fact.toolCallId) && !state.activeWork.has(fact.toolCallId)) {
+      return undefined;
+    }
 
     setBounded(
       state.invocationFacts,
@@ -138,19 +138,13 @@ export class ActivityLifecycleReducer {
     toolCallId: string,
     baseline: SemanticActivityDescriptor,
   ): TypedActivityStatus | undefined {
-    if (state.settledCallIds.has(toolCallId) || state.activeWork.has(toolCallId) ||
-        state.nonWorkRoles.has(toolCallId)) return undefined;
+    if (state.activeWork.has(toolCallId) || state.nonWorkCallIds.has(toolCallId)) return undefined;
     if (!recordNewCall(state, toolCallId)) return undefined;
     const descriptor = state.invocationFacts.get(toolCallId) ?? baseline;
     state.invocationFacts.delete(toolCallId);
 
     if (descriptor.role !== 'work') {
-      setBounded(
-        state.nonWorkRoles,
-        toolCallId,
-        descriptor.role,
-        MAX_CALLS_PER_SUBMISSION,
-      );
+      addBounded(state.nonWorkCallIds, toolCallId, MAX_CALLS_PER_SUBMISSION);
       if (descriptor.role !== 'answer_generation' || state.activeWork.size > 0) {
         return undefined;
       }
@@ -169,21 +163,17 @@ export class ActivityLifecycleReducer {
     toolCallId: string,
     isError: boolean | undefined,
   ): TypedActivityStatus | undefined {
-    const nonWorkRole = state.nonWorkRoles.get(toolCallId);
-    if (nonWorkRole) {
-      state.nonWorkRoles.delete(toolCallId);
-      addBounded(state.settledCallIds, toolCallId, MAX_CALLS_PER_SUBMISSION);
+    if (state.nonWorkCallIds.has(toolCallId)) {
+      state.nonWorkCallIds.delete(toolCallId);
       return undefined;
     }
 
     const completed = state.activeWork.get(toolCallId);
     if (!completed) {
       if (!recordNewCall(state, toolCallId)) return undefined;
-      addBounded(state.settledCallIds, toolCallId, MAX_CALLS_PER_SUBMISSION);
       return undefined;
     }
     state.activeWork.delete(toolCallId);
-    addBounded(state.settledCallIds, toolCallId, MAX_CALLS_PER_SUBMISSION);
     state.completedDescriptors.push(completed.descriptor);
     if (isError !== false) state.batchUnsuccessful = true;
 
@@ -225,12 +215,10 @@ export class ActivityLifecycleReducer {
     }
     const created: SubmissionLifecycleState = {
       instanceId,
-      submissionId,
       nextSequence: 0,
       activeWork: new Map(),
-      nonWorkRoles: new Map(),
+      nonWorkCallIds: new Set(),
       seenCallIds: new Set(),
-      settledCallIds: new Set(),
       invocationFacts: new Map(),
       completedDescriptors: [],
       batchUnsuccessful: false,
@@ -281,9 +269,8 @@ function latestActiveCall(
 function resetAttempt(state: SubmissionLifecycleState): void {
   state.nextSequence = 0;
   state.activeWork.clear();
-  state.nonWorkRoles.clear();
+  state.nonWorkCallIds.clear();
   state.seenCallIds.clear();
-  state.settledCallIds.clear();
   state.invocationFacts.clear();
   state.completedDescriptors = [];
   state.batchUnsuccessful = false;
@@ -293,7 +280,7 @@ function resetAttempt(state: SubmissionLifecycleState): void {
 
 function suppressSubmission(state: SubmissionLifecycleState): void {
   state.activeWork.clear();
-  state.nonWorkRoles.clear();
+  state.nonWorkCallIds.clear();
   state.invocationFacts.clear();
   state.completedDescriptors = [];
   state.batchUnsuccessful = true;
