@@ -78,6 +78,10 @@ test('the semantic copy matrix covers core roles and hides internal helpers', ()
     text: 'Thinking…',
   });
   assert.equal(isSafeTypedActivityStatus(thinkingSemanticActivity()), true);
+  assert.deepEqual(
+    activityStatus('preparing', 'Thinking', 'the request', 'unknown', 'thinking'),
+    thinkingSemanticActivity(),
+  );
 
   const answer = semanticDescriptorForCoreTool('stream_answer');
   assert.equal(answer.role, 'answer_generation');

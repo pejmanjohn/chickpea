@@ -512,6 +512,15 @@ export function activityStatus(
   const safeObject = hasCredentialLikeContent(candidateObject)
     ? 'the current item'
     : candidateObject || 'the request';
+  if (
+    kind === 'preparing' &&
+    safeAction === 'Thinking' &&
+    safeObject === 'the request' &&
+    family === 'unknown' &&
+    phase === 'thinking'
+  ) {
+    return thinkingSemanticActivity();
+  }
   const maxObjectLength = Math.max(1, ACTIVITY_STATUS_TEXT_LIMIT - safeAction.length - 2);
   const boundedObject = truncate(safeObject, maxObjectLength);
   return canonicalActivityStatus(
