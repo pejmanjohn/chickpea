@@ -27,6 +27,7 @@ import {
   sanitizeError,
 } from './run-turn.ts';
 import { AgentPromptFailure } from './flue-dispatch.ts';
+import { DURABLE_RECOVERY_FAILURE_TEXT } from './web-client-presenter.ts';
 import { slackAgentThreadKey } from './thread-key.ts';
 import {
   cacheSlackInstallationExecutionContexts,
@@ -42,6 +43,7 @@ import { recordSlackInstallationUnavailable } from './installation-observability
 import { MAX_POST_DISPATCH_ATTEMPTS } from './turn-jobs.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 import { recordDeliveredSlackAgentMessage } from './public-context.ts';
+import { drainSlackPresentationRepairs } from './presentation-repair.ts';
 
 const NODE_RECONCILE_INTERVAL_MS = 30_000;
 const NODE_RETRY_BACKOFF_MS = 2_000;
@@ -172,6 +174,7 @@ export async function drainNodeTurnRelayOnce(
     const recordInteractionIntent = state.recordInteractionIntent.bind(state);
     const recordSlackInteractionProgress = state.recordSlackInteractionProgress.bind(state);
     const markTurnDelivered = state.markTurnDelivered.bind(state);
+    const markTurnError = state.markTurnError?.bind(state);
     const discardTurn = state.discardTurn.bind(state);
     const presentationState = slackPresentationStatePort(state);
     const pending = await listPendingTurns();
@@ -226,6 +229,34 @@ export async function drainNodeTurnRelayOnce(
         markRecoveryRequired: (reason: string) =>
           markTurnRecoveryRequired(job.id, reason),
       };
+      const deliverRecoveryFailure = async (reasonCode: string): Promise<boolean> => {
+        try {
+          await executeTurn(job.turn, job.assignment, env, {
+            ...(installationContext
+              ? { client: installationContext.client, installationContext }
+              : options.client
+                ? { client: options.client }
+                : {}),
+            turnId: job.id,
+            ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
+            ...(presentationState ? { presentationState } : {}),
+            replayText: DURABLE_RECOVERY_FAILURE_TEXT,
+            replayTerminalResult: 'failure',
+            onPublicMessageDelivered: (delivery) =>
+              recordDeliveredSlackAgentMessage(config, job.turn, job.assignment, delivery),
+            onDelivered: async () => {
+              if (markTurnError) await markTurnError(job.id);
+              else await markTurnDelivered(job.id);
+              if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
+            },
+          });
+          return true;
+        } catch {
+          await markTurnRecoveryRequired(job.id, reasonCode);
+          if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
+          return false;
+        }
+      };
       try {
         const runtimePlanDecision = job.runtimePlan && job.agentInstanceId
           ? {
@@ -272,9 +303,10 @@ export async function drainNodeTurnRelayOnce(
           if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
           if (error instanceof AgentPromptFailure && error.recoveryRequired) {
             console.error('[chickpea] node Flue turn requires operator reconciliation');
+            return deliverRecoveryFailure('flue_dispatch_reconciliation_required');
           } else if (attempt >= MAX_POST_DISPATCH_ATTEMPTS) {
-            await markTurnRecoveryRequired(job.id, 'post_dispatch_attempts_exhausted');
             console.error('[chickpea] node Flue turn exhausted durable reattachment attempts');
+            return deliverRecoveryFailure('post_dispatch_attempts_exhausted');
           } else {
             // Production drains receive an automatic, bounded retry like the
             // Cloudflare alarm. Injected test/store drains stay caller-owned.
@@ -324,6 +356,12 @@ export async function drainNodeTurnRelayOnce(
     shouldResolveIdentity ? installationFor : undefined,
     verifyInstallationAccess,
   );
+  await drainPresentationRepairs(
+    state,
+    options.client,
+    env,
+    shouldResolveIdentity ? installationFor : undefined,
+  );
   await state.maintainRunPresentations?.(100);
   if (!options.state) {
     const identity = getIdentityStore(env);
@@ -332,6 +370,30 @@ export async function drainNodeTurnRelayOnce(
       deliver: (record) => deliverManagementReceiptToSlack(record, { identity, ...(env ? { env } : {}) }),
     }).catch(() => undefined);
   }
+}
+
+async function drainPresentationRepairs(
+  state: SlackStateStore,
+  client: WebClient | undefined,
+  env: PlatformEnv | undefined,
+  resolveInstallation?: SlackInstallationExecutionResolver,
+): Promise<void> {
+  const presentationState = slackPresentationStatePort(state);
+  if (!state.listRunPresentationsForRepair || !presentationState) return;
+  const presentations = (await state.listRunPresentationsForRepair())
+    .filter((presentation) => presentation.schemaVersion === 3);
+  await drainSlackPresentationRepairs({
+    presentations,
+    state: presentationState,
+    resolveClient: async (workspaceId) => {
+      if (client) return client;
+      if (resolveInstallation) return (await resolveInstallation(workspaceId)).client;
+      return getClient(env);
+    },
+    onFailure: (_presentation, error) => {
+      console.warn('[chickpea] Slack presentation repair failed:', sanitizeError(error));
+    },
+  });
 }
 
 async function drainSlackInteractionCleanups(
@@ -439,11 +501,12 @@ async function drainLedgerRuns(input: {
   await driver.drain();
 }
 
-function slackPresentationStatePort(
+export function slackPresentationStatePort(
   state: SlackStateStore,
 ): SlackPresentationStatePort | undefined {
   if (
     !state.getRunPresentation ||
+    !state.getLatestThreadSessionGeneration ||
     !state.transitionRunPresentation ||
     !state.reserveSlackAppend ||
     !state.applySlackAppendCooldown ||
@@ -451,6 +514,7 @@ function slackPresentationStatePort(
   ) return undefined;
   return {
     getRunPresentation: state.getRunPresentation.bind(state),
+    getLatestThreadSessionGeneration: state.getLatestThreadSessionGeneration.bind(state),
     transitionRunPresentation: state.transitionRunPresentation.bind(state),
     reserveSlackAppend: state.reserveSlackAppend.bind(state),
     applySlackAppendCooldown: state.applySlackAppendCooldown.bind(state),

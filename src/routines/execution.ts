@@ -20,8 +20,10 @@ import {
 } from '../agents/runtime-plan.ts';
 import {
   canonicalRuntimeModel,
+  freezeRuntimeModelRoute,
   resolveRuntimeModel,
   safeRuntimeModelRouteEvidence,
+  type FrozenRuntimeModelRoute,
   type ProviderAuthRoute,
 } from '../config/runtime-model.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
@@ -392,7 +394,7 @@ async function prepareExecution(
     : undefined;
   const runtimeModel = frozenInitialData
     ? {
-        model: frozenInitialData.runtimePlan.model,
+        model: frozenInitialData.runtimePlan.runtimeModel ?? frozenInitialData.runtimePlan.model,
         ...(input.run.providerAuthRoute
           ? { providerAuthRoute: input.run.providerAuthRoute }
           : {}),
@@ -401,6 +403,9 @@ async function prepareExecution(
         settings: settingsStore,
         env: input.env,
       });
+  const runtimeModelRoute = frozenInitialData
+    ? frozenInitialData.runtimePlan.runtimeModelRoute
+    : freezeRuntimeModelRoute(access.config.model, runtimeModel.providerAuthRoute);
   const modelCredential = access.config.modelCredential ?? await (
     dependencies.resolveCredential ?? resolveModelCredentialAttribution
   )(
@@ -444,7 +449,9 @@ async function prepareExecution(
       access,
       prompt,
       attemptId,
+      canonicalModel: access.config.model,
       runtimeModel: runtimeModel.model,
+      ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
       modelCredential,
       sandboxMode: sandboxDecision.selection,
     });
@@ -572,7 +579,9 @@ function createEnvelope(input: {
   access: RoutineRuntimeAccess;
   prompt: PreparedRoutinePrompt;
   attemptId: string;
+  canonicalModel: string;
   runtimeModel: string;
+  runtimeModelRoute?: FrozenRuntimeModelRoute;
   modelCredential: EffectiveSlackConfig['modelCredential'] | null;
   sandboxMode: 'bash' | 'cloudflare';
 }): RoutineAgentDispatchEnvelopeV1 {
@@ -583,13 +592,15 @@ function createEnvelope(input: {
       channelId: input.routine.channelId,
       agentId: input.access.config.agentId,
       agent: input.access.config.agent,
-      model: input.runtimeModel,
+      model: input.canonicalModel,
       modelAttribution: input.access.config.modelAttribution,
       ...(input.access.config.ownerIncarnation
         ? { ownerIncarnation: input.access.config.ownerIncarnation }
         : {}),
       ...(input.modelCredential ? { modelCredential: input.modelCredential } : {}),
     },
+    runtimeModel: input.runtimeModel,
+    ...(input.runtimeModelRoute ? { runtimeModelRoute: input.runtimeModelRoute } : {}),
     instructions: [
       input.access.config.instructions,
       externalActionAuthorityInstructions(input.access.config.agent.instructions),

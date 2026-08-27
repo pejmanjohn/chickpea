@@ -136,6 +136,125 @@ test('a suggested prompt click remains an ordinary user-rooted DM turn', () => {
   assert.equal(normalized.turn.sessionThreadTs, 'dm');
 });
 
+test('a human Slack file share remains runnable and retains bounded attachment references', () => {
+  const payload = channelThreadMessage({
+    event_id: 'Ev_MSG_IMAGE_SHARE',
+    event: {
+      subtype: 'file_share',
+      text: 'What is in this image?',
+    },
+  });
+  Object.assign(payload.event, {
+    files: [
+      {
+        id: 'F_IMAGE_1',
+        name: 'screenshot.png',
+        mimetype: 'image/png',
+        size: 125_000,
+      },
+    ],
+  });
+
+  const normalized = normalizeSlackTurn(payload, { botUserId: 'UBOT' });
+
+  assert.equal(normalized.status, 'runnable');
+  if (normalized.status !== 'runnable') return;
+  assert.equal(normalized.turn.source, 'implicit_thread_reply');
+  assert.deepEqual(normalized.turn.attachments, [
+    {
+      fileId: 'F_IMAGE_1',
+    },
+  ]);
+  assert.deepEqual(normalized.turn.attachmentIntake, { status: 'ok', count: 1 });
+});
+
+test('attachment intake rejects a fifth file instead of silently dropping it', () => {
+  const payload = channelThreadMessage({
+    event_id: 'Ev_MSG_TOO_MANY_FILES',
+    event: { text: 'Compare every attachment.' },
+  });
+  Object.assign(payload.event, {
+    files: Array.from({ length: 5 }, (_, index) => ({ id: `F_FILE_${index + 1}` })),
+  });
+
+  const normalized = normalizeSlackTurn(payload, { botUserId: 'UBOT' });
+
+  assert.equal(normalized.status, 'runnable');
+  if (normalized.status !== 'runnable') return;
+  assert.equal(normalized.turn.attachments, undefined);
+  assert.deepEqual(normalized.turn.attachmentIntake, { status: 'too_many', count: 5 });
+});
+
+test('attachment intake rejects malformed metadata without persisting adjacent filenames', () => {
+  const payload = channelThreadMessage({
+    event_id: 'Ev_MSG_INVALID_FILE',
+    event: { text: 'Read both attachments.' },
+  });
+  Object.assign(payload.event, {
+    files: [
+      { id: 'F_VALID', name: 'private-name.pdf', mimetype: 'application/pdf', size: 10 },
+      { name: 'missing-id.pdf', mimetype: 'application/pdf', size: 10 },
+    ],
+  });
+
+  const normalized = normalizeSlackTurn(payload, { botUserId: 'UBOT' });
+
+  assert.equal(normalized.status, 'runnable');
+  if (normalized.status !== 'runnable') return;
+  assert.equal(normalized.turn.attachments, undefined);
+  assert.deepEqual(normalized.turn.attachmentIntake, { status: 'invalid_metadata', count: 2 });
+  assert.doesNotMatch(JSON.stringify(normalized.turn), /private-name|missing-id|application\/pdf/);
+});
+
+test('native app mentions preserve the same attachment intake contract', () => {
+  const payload = fixture();
+  payload.event = {
+    type: 'app_mention',
+    user: 'U_HUMAN',
+    text: '<@UBOT> inspect this',
+    ts: '1782770400.000100',
+    channel: 'C_EXEC',
+    event_ts: '1782770400.000100',
+    files: [{ id: 'F_MENTION_PDF', name: 'mention.pdf', mimetype: 'application/pdf', size: 20 }],
+  };
+
+  const normalized = normalizeSlackTurn(payload, { botUserId: 'UBOT' });
+
+  assert.equal(normalized.status, 'runnable');
+  if (normalized.status !== 'runnable') return;
+  assert.deepEqual(normalized.turn.attachments, [{ fileId: 'F_MENTION_PDF' }]);
+  assert.deepEqual(normalized.turn.attachmentIntake, { status: 'ok', count: 1 });
+});
+
+test('DM and selected-Agent mentions preserve the same ordered attachment contract', () => {
+  const dm = dmMessage({ event: { text: 'Compare these files.' } });
+  Object.assign(dm.event, {
+    subtype: 'file_share',
+    files: [{ id: 'F_DM_ONE' }, { id: 'F_DM_TWO' }],
+  });
+  const selectedAgent = topLevelChannelMessage({
+    event_id: 'Ev_AGENT_FILES',
+    event: { text: '<!subteam^SSPROUT|@sprout> compare these files' },
+  });
+  Object.assign(selectedAgent.event, {
+    subtype: 'file_share',
+    files: [{ id: 'F_AGENT_ONE' }, { id: 'F_AGENT_TWO' }],
+  });
+
+  for (const [payload, source, expectedIds] of [
+    [dm, 'dm_message', ['F_DM_ONE', 'F_DM_TWO']],
+    [selectedAgent, 'agent_mention', ['F_AGENT_ONE', 'F_AGENT_TWO']],
+  ] as const) {
+    const normalized = normalizeSlackTurn(payload, { botUserId: 'UBOT' });
+    assert.equal(normalized.status, 'runnable');
+    if (normalized.status !== 'runnable') continue;
+    assert.equal(normalized.turn.source, source);
+    assert.deepEqual(normalized.turn.attachments, expectedIds.map((fileId) => ({ fileId })));
+    assert.deepEqual(normalized.turn.attachmentIntake, { status: 'ok', count: 2 });
+    assert.doesNotMatch(JSON.stringify(normalized.turn), /filename|mimetype|size/);
+  }
+});
+
 test('artifact routing derives the Slack thread timestamp from the durable agent id', () => {
   const id = 'TDEMO:C_EXEC:1782770400.000100';
   assert.equal(parseSlackThreadKey(id).threadTs, '1782770400.000100');

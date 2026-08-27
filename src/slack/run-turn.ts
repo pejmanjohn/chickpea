@@ -6,6 +6,7 @@ import {
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
 import { effectiveSlackInstructions } from '../config/effective-config.ts';
+import { CHICKPEA_AGENT_NAME } from '../config/agent-id.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
 import { getGithubConnection } from '../config/github-app.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
@@ -25,7 +26,9 @@ import type {
 } from '../config/state-rpc.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import {
+  freezeRuntimeModelRoute,
   resolveProviderAuthRoute,
+  resolveRuntimeModel,
   safeRuntimeModelRouteEvidence,
 } from '../config/runtime-model.ts';
 import { parseMemoryCommand } from '../memory/commands.ts';
@@ -48,6 +51,7 @@ import {
 import { resolveSlackCredentials, resolveSlackPublicUrl } from './credentials.ts';
 import { agentAvatarUrlForPresentation } from './agent-presence/avatar-assets.ts';
 import type { SlackStatusUpdate } from './replies.ts';
+import { activityStatus, initialActivityStatus } from '../activity/status.ts';
 import { registerSlackStatusTurn } from './status-registry.ts';
 import { currentMessageOnlyContext, type SlackTurnContext } from './thread-context.ts';
 import { slackAgentThreadKey } from './thread-key.ts';
@@ -66,6 +70,7 @@ import {
   decideProgressiveEligibility,
   type ProgressiveEligibilityDecision,
 } from './progressive-eligibility.ts';
+import type { SlackPresentationOwner } from './run-presentations.ts';
 import { slackProgressiveStreamingEnabled } from './progressive-ops-flag.ts';
 import {
   resolveSandboxSelection,
@@ -98,10 +103,6 @@ import {
   classifySlackInteraction,
   type SlackInteractionIntent,
 } from './interaction-intent.ts';
-import {
-  startWorkChecklistHeartbeat,
-  type WorkChecklistHeartbeat,
-} from './work-checklist-heartbeat.ts';
 import {
   SlackAgentViewPresentation,
   type SlackPresentationStatePort,
@@ -162,6 +163,8 @@ export interface RunTurnOptions {
   turnId?: string;
   /** Recorded result from an earlier attempt; skips the agent entirely. */
   replayText?: string;
+  /** Recovery replays can be a durable failure rather than a successful answer. */
+  replayTerminalResult?: 'answer' | 'failure';
   /** Persist sandbox side effects before the final Slack delivery can fail. */
   beforeDelivery?: () => Promise<string | undefined>;
   /** Persist terminal delivery before post-delivery workspace teardown begins. */
@@ -210,7 +213,7 @@ export interface RunTurnOptions {
   onInteractionProgress?: (
     patch: SlackInteractionProgressPatch,
   ) => void | Promise<void>;
-  /** U4/U5 adapter seam; absent means terminal-only delivery. */
+  /** Adapter seam; absent means terminal-only delivery. */
   prepareProgressiveRelay?: (input: {
     runId: string;
     runFencingToken: number;
@@ -222,13 +225,7 @@ export interface RunTurnOptions {
   progressiveAttributionProven?: boolean;
   /** Canonical presentation writer; absent keeps the legacy terminal path. */
   presentationState?: SlackPresentationStatePort;
-  /** Focused-test override for the otherwise one-minute checklist heartbeat. */
-  progressHeartbeatMs?: number;
-  /** Focused-test override for the bounded in-flight heartbeat drain. */
-  progressHeartbeatDrainMs?: number;
 }
-
-const DEFAULT_PROGRESS_HEARTBEAT_MS = 60_000;
 
 export const WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT =
   'The Workspace default model needs attention. An owner or admin can repair it in Settings → Model providers.';
@@ -278,6 +275,22 @@ export async function runTurn(
   // fallback the footer's "Configure" link would be dead.
   const publicUrl = await resolveSlackPublicUrl(platformEnv, settingsStore);
   const agentAvatarUrl = agentAvatarUrlForPresentation(assignment.agent, publicUrl);
+  const frozenPresentation = options.presentationState && options.runId
+    ? await options.presentationState.getRunPresentation(options.runId)
+    : undefined;
+  const visibleOwner: SlackPresentationOwner | undefined =
+    frozenPresentation?.schemaVersion === 3 ? frozenPresentation.owner : undefined;
+  const footerModelLabel = resolvedModel;
+  const visibleAgentName = visibleOwner?.kind === 'selected_agent'
+    ? visibleOwner.persona.name
+    : visibleOwner?.kind === 'chickpea'
+      ? CHICKPEA_AGENT_NAME
+      : assignment.agent.name;
+  const visibleAgentAvatarUrl = visibleOwner?.kind === 'selected_agent'
+    ? visibleOwner.persona.avatarUrl
+    : visibleOwner?.kind === 'chickpea'
+      ? undefined
+      : agentAvatarUrl;
   // Once the Chickpea contract is active, the frozen Workspace default is the
   // only fallback for an unpinned Agent. Never reintroduce SLACK_TAG_MODEL (or
   // another implicit provider default) after admission failed to freeze one.
@@ -285,8 +298,9 @@ export async function runTurn(
     const repairPresenter = new WebClientPresenter(client, {
       channelId: turn.channelId,
       threadTs: turn.threadTs,
-      agentName: assignment.agent.name,
-      ...(agentAvatarUrl ? { agentAvatarUrl } : {}),
+      agentName: visibleAgentName,
+      ...(visibleAgentAvatarUrl ? { agentAvatarUrl: visibleAgentAvatarUrl } : {}),
+      ...(visibleOwner ? { visibleOwner } : {}),
       agentId: assignment.agent.id,
       publicUrl,
       userId: turn.userId,
@@ -321,12 +335,13 @@ export async function runTurn(
       const routinePresenter = new WebClientPresenter(client, {
         channelId: turn.channelId,
         threadTs: turn.threadTs,
-        agentName: assignment.agent.name,
-        ...(agentAvatarUrl
-          ? { agentAvatarUrl }
+        agentName: visibleAgentName,
+        ...(visibleAgentAvatarUrl
+          ? { agentAvatarUrl: visibleAgentAvatarUrl }
           : {}),
+        ...(visibleOwner ? { visibleOwner } : {}),
         agentId: assignment.agent.id,
-        modelLabel: resolvedModel,
+        ...(footerModelLabel === undefined ? {} : { modelLabel: footerModelLabel }),
         publicUrl,
         userId: turn.userId,
         workspaceId: turn.workspaceId,
@@ -457,8 +472,8 @@ export async function runTurn(
         runId: options.runId,
         runFencingToken: options.runFencingToken ?? 0,
         footer: {
-          agentName: assignment.agent.name,
-          modelLabel: resolvedModel,
+          agentName: visibleAgentName,
+          ...(footerModelLabel === undefined ? {} : { modelLabel: footerModelLabel }),
           agentId: assignment.agent.id,
           publicUrl,
           memoryItems: preparedMemory?.footerItems,
@@ -469,12 +484,13 @@ export async function runTurn(
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,
-    agentName: assignment.agent.name,
-    ...(agentAvatarUrl
-      ? { agentAvatarUrl }
+    agentName: visibleAgentName,
+    ...(visibleAgentAvatarUrl
+      ? { agentAvatarUrl: visibleAgentAvatarUrl }
       : {}),
+    ...(visibleOwner ? { visibleOwner } : {}),
     agentId: assignment.agent.id,
-    modelLabel: resolvedModel,
+    ...(footerModelLabel === undefined ? {} : { modelLabel: footerModelLabel }),
     publicUrl,
     userId: turn.userId,
     workspaceId: turn.workspaceId,
@@ -482,16 +498,60 @@ export async function runTurn(
   }, workLifecycle, {
     deliverySafety: ledgerAuthority ? 'ledger' : 'legacy',
     ...(agentViewPresentation ? { agentViewPresentation } : {}),
+    ...(frozenPresentation?.schemaVersion === 3
+      ? { activityProjection: frozenPresentation.activityProjection }
+      : {}),
     ...(options.onPublicMessageDelivered
       ? { onPublicDelivery: options.onPublicMessageDelivered }
       : {}),
   });
+  await agentViewPresentation?.beginAgentSessionProcessing();
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
   const statusInstanceId = runtimePlanDecision?.instanceId ?? agentConversationKey;
-  const statusTurn = registerSlackStatusTurn(statusInstanceId, presenter, {
+  const activityPresenter = {
+    async setStatus(update: SlackStatusUpdate): Promise<boolean> {
+      let activityWrite: Awaited<ReturnType<SlackAgentViewPresentation['beginActivity']>>;
+      try {
+        activityWrite = await agentViewPresentation?.beginActivity(
+          update,
+          presenter.preferredActivitySurface(),
+        );
+      } catch {
+        // No Slack effect may precede its durable intent.
+        return false;
+      }
+      if (frozenPresentation?.schemaVersion === 3 && !activityWrite) return false;
+      const succeeded = await presenter.setStatus(update, activityWrite);
+      try {
+        const receipt = presenter.activityReceipt();
+        await agentViewPresentation?.recordActivityReceipt(
+          activityWrite?.operationId,
+          receipt.certainty,
+          receipt.messageTs,
+        );
+      } catch {
+        // Slack may already have accepted the activity. Keep the presenter's
+        // one-message coordinate and let durable repair reconcile the receipt.
+        return false;
+      }
+      return succeeded;
+    },
+  };
+  const statusTurn = registerSlackStatusTurn(statusInstanceId, activityPresenter, {
     generation: statusGeneration,
+    ...(frozenPresentation?.schemaVersion === 3
+      ? {
+          sessionGeneration: frozenPresentation.sessionGeneration,
+          ownershipKey: [
+            frozenPresentation.root.workspaceId,
+            frozenPresentation.root.channelId,
+            frozenPresentation.root.threadTs,
+          ].join(':'),
+        }
+      : {}),
   });
-  const finishStatus = async (): Promise<void> => {
+  let terminalStatusFinished = false;
+  const finishStatus = async (result: 'answer' | 'failure'): Promise<void> => {
     // Close the sink first. Agent observations are relayed best-effort from a
     // different Cloudflare isolate and may still arrive after settlement
     // resolves; removing this generation makes its late relays no-ops even if
@@ -499,7 +559,23 @@ export async function runTurn(
     // The normal clear is awaited so it reaches Slack before the Worker turn
     // settles. If an active status write lands after it, the registry issues a
     // second best-effort clear without blocking the final response.
-    await statusTurn.finish(() => presenter.clearStatus());
+    await agentViewPresentation?.settleAgentSession(result);
+    await presenter.clearNativeThreadStatus();
+    await statusTurn.finish(async () => {
+      if (frozenPresentation?.schemaVersion !== 3 || !agentViewPresentation) {
+        await presenter.clearStatus();
+        return;
+      }
+      const cleanup = await agentViewPresentation.prepareActivityCleanup();
+      if (!cleanup) return;
+      const certainty = await presenter.clearStatus();
+      await agentViewPresentation.recordActivityCleanupReceipt(
+        cleanup.operationId,
+        certainty,
+      );
+    });
+    await agentViewPresentation?.settleLifecycle();
+    terminalStatusFinished = true;
   };
   let usedCloudflareSandbox = false;
   let usageRecorder: InteractiveUsageRecorder | undefined;
@@ -514,7 +590,6 @@ export async function runTurn(
         }
       : undefined;
   let workChecklistTs = interactionProgress.checklist?.messageTs;
-  let workChecklistHeartbeat: WorkChecklistHeartbeat | undefined;
   const workChecklist = interactionIntent?.disposition === 'work'
     ? interactionIntent.checklist
     : undefined;
@@ -575,15 +650,6 @@ export async function runTurn(
     await options.onDelivered?.();
     await presenter.markCanonicalPresentationFinalized();
     await usageRecorder?.repairAfterDelivery();
-    if (workChecklistHeartbeat) {
-      const drained = await workChecklistHeartbeat.stop();
-      workChecklistHeartbeat = undefined;
-      if (!drained) {
-        // The delivered tombstone is already durable. Leave adapter cleanup
-        // pending so the repair lane can finalize without racing a late write.
-        return;
-      }
-    }
     if (workChecklistTs && workChecklist &&
         !interactionProgress.checklist?.supersededByNative) {
       try {
@@ -603,10 +669,6 @@ export async function runTurn(
   onNativeStarted = async (): Promise<void> => {
     if (!workChecklistTs || !interactionProgress.checklist ||
         interactionProgress.checklist.cleanup === 'done') return;
-    if (workChecklistHeartbeat) {
-      await workChecklistHeartbeat.stop();
-      workChecklistHeartbeat = undefined;
-    }
     const checklist = {
       ...interactionProgress.checklist,
       supersededByNative: true,
@@ -711,66 +773,40 @@ export async function runTurn(
         console.warn('[chickpea] Slack late native plan attachment failed');
       });
     }
-    if (workChecklist) {
-      if (!interactionProgress.acknowledgment) {
-        try {
-          workAcknowledgment = await presenter.addSemanticReaction('work_ack', triggerCoordinate);
-        } catch {
-          console.warn('[chickpea] Slack work acknowledgment failed');
-        }
-        if (workAcknowledgment) {
-          await recordInteractionProgress({
-            acknowledgment: {
-              channelId: triggerCoordinate.channelId,
-              messageTs: triggerCoordinate.messageTs,
-              name: workAcknowledgment.name,
-              created: workAcknowledgment.created,
-              cleanup: workAcknowledgment.created ? 'pending' : 'done',
-            },
-          });
-        }
-      }
-      if (!workChecklistTs) {
-        try {
-          workChecklistTs = await presenter.postWorkChecklist(workChecklist);
-        } catch {
-          console.warn('[chickpea] Slack work checklist post failed');
-        }
-        if (workChecklistTs) {
-          await recordInteractionProgress({
-            checklist: {
-              channelId: turn.channelId,
-              threadTs: turn.threadTs,
-              messageTs: workChecklistTs,
-              cleanup: 'pending',
-            },
-          });
-        }
-      }
-      if (workChecklistTs && interactionProgress.checklist?.cleanup !== 'done') {
-        const heartbeatMs = Math.max(
-          1_000,
-          Math.floor(options.progressHeartbeatMs ?? DEFAULT_PROGRESS_HEARTBEAT_MS),
+    // The eyes reaction is a lightweight receipt on the user's root message,
+    // distinct from the native activity status. Persist whether this run
+    // created it so terminal cleanup never removes a pre-existing reaction.
+    if (workChecklist && !interactionProgress.acknowledgment) {
+      try {
+        workAcknowledgment = await presenter.addSemanticReaction(
+          'work_ack',
+          triggerCoordinate,
         );
-        workChecklistHeartbeat = startWorkChecklistHeartbeat({
-          intervalMs: heartbeatMs,
-          ...(options.progressHeartbeatDrainMs === undefined
-            ? {}
-            : { drainTimeoutMs: options.progressHeartbeatDrainMs }),
-          update: () => presenter.updateWorkChecklist(workChecklistTs!, workChecklist, false),
-          onError: () => {
-            console.warn('[chickpea] Slack work checklist heartbeat failed');
-          },
-          onDrainTimeout: () => {
-            console.warn('[chickpea] Slack work checklist heartbeat drain timed out');
+      } catch {
+        console.warn('[chickpea] Slack work acknowledgment failed');
+      }
+      if (workAcknowledgment) {
+        await recordInteractionProgress({
+          acknowledgment: {
+            channelId: triggerCoordinate.channelId,
+            messageTs: triggerCoordinate.messageTs,
+            name: workAcknowledgment.name,
+            created: workAcknowledgment.created,
+            cleanup: workAcknowledgment.created ? 'pending' : 'done',
           },
         });
       }
     }
-    const statusSet = await statusTurn.setStatus(thinkingStatus());
-    if (!statusSet && !workChecklistTs) {
-      await presenter.postProgress(`${assignment.agent.name} is reading the thread.`);
-    }
+    const initialStatus = frozenPresentation?.schemaVersion === 3 &&
+        frozenPresentation.currentActivity
+      ? activityStatus(
+          frozenPresentation.currentActivity.kind,
+          frozenPresentation.currentActivity.action,
+          frozenPresentation.currentActivity.object,
+        )
+      : initialActivityStatus(workChecklist, turn.text);
+    await statusTurn.setStatus(initialStatus);
+    await presenter.setNativeThreadStatus(initialStatus);
 
     // 2. Hydrate bounded context (degrades to current-message-only on failure).
     const frozenHandoff = runtimePlanDecision?.runtimePlan.handoffContext ??
@@ -782,7 +818,6 @@ export async function runTurn(
       hydratedContext,
       preparedMemory?.visibilityBarrierAt ?? null,
     );
-    void statusTurn.setStatus(hydratedContextStatus(context));
     const handoffBlock = formatSlackPublicHandoff(frozenHandoff);
     const progressiveRelayFactory = options.prepareProgressiveRelay ??
       (agentViewPresentation
@@ -812,7 +847,7 @@ export async function runTurn(
           allowed: frozen.allowed,
           reason: frozen.reason,
         };
-        currentRequestPolicyVersion = frozen.presentationSchemaVersion;
+        currentRequestPolicyVersion = frozen.presentationSchemaVersion === 1 ? 1 : 2;
       } else {
         frozenProgressiveEligibility = candidate;
       }
@@ -857,12 +892,10 @@ export async function runTurn(
     if (options.replayText !== undefined) {
       text = options.replayText;
     } else {
-      if (resolvedModel) {
-        void statusTurn.setStatus(modelStatus(resolvedModel));
-      }
       try {
         usedCloudflareSandbox = runtimePlanDecision
           ? runtimePlanDecision.runtimePlan.sandbox.mode === 'cloudflare' &&
+            !turn.attachmentIntake && !turn.attachments?.length &&
             !sandboxUnavailableFallback
           : await shouldUseCloudflareSandbox(assignment, platformEnv);
         if (!options.agentPrompt && !options.flueDispatch) {
@@ -925,6 +958,9 @@ export async function runTurn(
         if (err instanceof AgentPromptFailure && (err.recoveryRequired || err.retryable)) {
           throw err;
         }
+        await agentViewPresentation?.recordExecutionFailure(
+          'agent execution stopped before the active milestone finished.',
+        );
         console.error('[chickpea] agent run failed:', sanitizeError(err));
         const modelNotInvoked = agentFailureBeforeModelInvocation(err);
         await workLifecycle?.settleExecution({
@@ -942,12 +978,12 @@ export async function runTurn(
               : recoveredText,
             'markdown',
           );
-          await finishStatus();
+          await finishStatus('answer');
           await finishDelivery();
           return;
         }
         await presenter.deliverFinal(agentFailureText(err), 'plain_text', 'error');
-        await finishStatus();
+        await finishStatus('failure');
         await finishDelivery();
         return;
       }
@@ -959,7 +995,12 @@ export async function runTurn(
     // lease-valid answer.
     await preparedMemory?.confirmInjection();
     const leaseValid = await preparedMemory?.validateLease() ?? true;
-    if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) return;
+    if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) {
+      await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
+      await finishStatus('failure');
+      await finishDelivery();
+      return;
+    }
     text = resolveMemoryDeliveryText(
       text,
       recoveredText,
@@ -968,11 +1009,16 @@ export async function runTurn(
     if (installationContext) {
       text = renderSlackSelfMention(text, installationContext.botUserId);
     }
-    await presenter.deliverFinal(text, 'markdown');
+    const terminalResult = options.replayTerminalResult ?? 'answer';
+    await presenter.deliverFinal(
+      text,
+      'markdown',
+      terminalResult === 'failure' ? 'error' : 'complete',
+    );
     // Clear after the final reaches Slack. A custom Agent persona does not
     // reliably trigger Slack's automatic app-status cleanup, and clearing
     // before delivery can leave the custom status visible after the reply.
-    await finishStatus();
+    await finishStatus(terminalResult);
     await finishDelivery();
   } catch (err) {
     if (!(err instanceof AgentPromptFailure && err.retryable)) {
@@ -980,14 +1026,17 @@ export async function runTurn(
     }
     throw err;
   } finally {
-    // Also covers failures before the ordinary delivery boundary (hydration,
-    // provider setup, or persistence). Idempotent after the success path.
+    // A V3 retry/recovery attempt keeps its acknowledged activity visible.
+    // Legacy presentations retain their prior best-effort finally cleanup.
     try {
-      if (workChecklistHeartbeat) {
-        workChecklistHeartbeat.cancel();
-        workChecklistHeartbeat = undefined;
+      if (!terminalStatusFinished) {
+        if (frozenPresentation?.schemaVersion === 3) {
+          statusTurn.close();
+          await presenter.clearNativeThreadStatus();
+        } else {
+          await statusTurn.finish(async () => { await presenter.clearStatus(); });
+        }
       }
-      await finishStatus();
       await removeWorkAcknowledgment();
     } finally {
       // The Sandbox DO lives in a different isolate from the agent factory;
@@ -1289,9 +1338,27 @@ async function freezeRuntimePlanForTurn(input: {
     connections: allEffectiveConnections,
     requestText: input.turn.text,
   });
+  const canonicalModel = resolvedAssignmentModel(input.assignment);
+  if (!canonicalModel) {
+    throw new Error('Runtime plan compilation requires a frozen model.');
+  }
+  const runtimeModel = await resolveRuntimeModel(
+    input.assignment.agentId,
+    canonicalModel,
+    {
+      settings: input.settingsStore ?? getSettingsStore(input.platformEnv),
+      ...(input.platformEnv ? { env: input.platformEnv } : {}),
+    },
+  );
+  const runtimeModelRoute = freezeRuntimeModelRoute(
+    canonicalModel,
+    runtimeModel.providerAuthRoute,
+  );
   const candidate = compileRuntimePlanV2({
     turn: input.turn,
     assignment: input.assignment,
+    runtimeModel: runtimeModel.model,
+    ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
     instructions,
     memoryEpoch: input.memoryEpoch,
     sandboxMode: sandboxDecision.selection,
@@ -1386,24 +1453,6 @@ function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): s
   } catch {
     return undefined;
   }
-}
-
-function thinkingStatus(): SlackStatusUpdate {
-  return { text: 'is thinking...' };
-}
-
-function hydratedContextStatus(context: SlackTurnContext): SlackStatusUpdate {
-  const count = context.messages.length;
-  const noun = count === 1 ? 'message' : 'messages';
-  return {
-    text: `is using ${count} ${noun} of ${context.mode} context`,
-  };
-}
-
-function modelStatus(modelId: string): SlackStatusUpdate {
-  return {
-    text: `is using ${modelId}`,
-  };
 }
 
 export function applyVisibilityBarrier(

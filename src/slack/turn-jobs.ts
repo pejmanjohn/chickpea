@@ -395,6 +395,15 @@ export class TurnJobStoreLogic {
             eventId: turn.eventId,
             messageTs: turn.messageTs,
             turnJobId: id,
+            ...(turn.attachments?.length
+              ? { attachmentFileIds: turn.attachments.map(({ fileId }) => fileId).join(',') }
+              : {}),
+            ...((turn.attachmentIntake || turn.attachments?.length)
+              ? {
+                  attachmentIntakeStatus: turn.attachmentIntake?.status ?? 'ok',
+                  attachmentCount: String(turn.attachmentIntake?.count ?? turn.attachments?.length ?? 0),
+                }
+              : {}),
           },
         },
         ...(continuing ? {} : { initialData: decision.runtimePlan }),
@@ -1118,6 +1127,8 @@ function parseSlackSignalMessage(
   }
   const attributes = exactObject(message.attributes, 'Flue Slack signal attributes', [
     'workspaceId', 'channelId', 'threadTs', 'slackUserId', 'eventId', 'messageTs', 'turnJobId',
+    'attachmentFileIds',
+    'attachmentIntakeStatus', 'attachmentCount',
   ]);
   const parsed = {
     workspaceId: validateBoundedString(attributes.workspaceId, 'Slack workspace id', 128),
@@ -1127,7 +1138,29 @@ function parseSlackSignalMessage(
     eventId: validateBoundedString(attributes.eventId, 'Slack event id', 256),
     messageTs: validateBoundedString(attributes.messageTs, 'Slack message timestamp', 80),
     turnJobId: validateBoundedString(attributes.turnJobId, 'TurnJob id', 256),
+    ...(attributes.attachmentFileIds === undefined
+      ? {}
+      : {
+          attachmentFileIds: validateAttachmentFileIds(attributes.attachmentFileIds),
+        }),
+    ...(attributes.attachmentIntakeStatus === undefined
+      ? {}
+      : { attachmentIntakeStatus: validateAttachmentIntakeStatus(attributes.attachmentIntakeStatus) }),
+    ...(attributes.attachmentCount === undefined
+      ? {}
+      : { attachmentCount: validateAttachmentCount(attributes.attachmentCount) }),
   };
+  if ((parsed.attachmentIntakeStatus === undefined) !== (parsed.attachmentCount === undefined)) {
+    throw new Error('Flue Slack attachment intake metadata is incomplete.');
+  }
+  if (parsed.attachmentIntakeStatus === 'ok') {
+    const ids = parsed.attachmentFileIds?.split(',') ?? [];
+    if (ids.length === 0 || parsed.attachmentCount !== String(ids.length)) {
+      throw new Error('Flue Slack attachment intake metadata does not match its files.');
+    }
+  } else if (parsed.attachmentIntakeStatus !== undefined && parsed.attachmentFileIds !== undefined) {
+    throw new Error('Rejected Slack attachments cannot enter the Flue signal.');
+  }
   if (parsed.turnJobId !== idempotencyKey) {
     throw new Error('Flue Slack signal does not match its TurnJob.');
   }
@@ -1145,6 +1178,33 @@ function parseSlackSignalMessage(
     tagName: 'slack_message',
     attributes: parsed,
   };
+}
+
+function validateAttachmentFileIds(value: unknown): string {
+  const encoded = validateBoundedString(value, 'Slack attachment file ids', 1_027);
+  const ids = encoded.split(',');
+  if (ids.length < 1 || ids.length > 4 ||
+      ids.some((id) => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(id))) {
+    throw new Error('Slack attachment file ids are invalid.');
+  }
+  return ids.join(',');
+}
+
+function validateAttachmentIntakeStatus(
+  value: unknown,
+): 'ok' | 'too_many' | 'invalid_metadata' {
+  if (value !== 'ok' && value !== 'too_many' && value !== 'invalid_metadata') {
+    throw new Error('Slack attachment intake status is invalid.');
+  }
+  return value;
+}
+
+function validateAttachmentCount(value: unknown): string {
+  const encoded = validateBoundedString(value, 'Slack attachment count', 8);
+  if (!/^[1-9][0-9]{0,6}$/.test(encoded)) {
+    throw new Error('Slack attachment count is invalid.');
+  }
+  return encoded;
 }
 
 function parseFlueDispatchReceipt(value: unknown): FlueDispatchReceiptV1 {

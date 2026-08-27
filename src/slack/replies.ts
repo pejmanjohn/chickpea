@@ -9,25 +9,14 @@ export function toolStatus(toolName: string, args?: unknown): SlackStatusUpdate 
   return toolActivityStatus(toolName, args);
 }
 
-const FALLBACK_STATUS_TEXT = 'is working on the request';
-const SLACK_LIVENESS_STATUS_TEXT = 'is thinking...';
+const FALLBACK_STATUS_TEXT = 'Preparing your request…';
 
-export function slackStatusText(_stage: SlackStatusUpdate, agentName?: string): string {
-  return namedStatus(agentName, SLACK_LIVENESS_STATUS_TEXT);
+export function slackStatusText(stage: SlackStatusUpdate, _agentName?: string): string {
+  return activityStatusText(stage);
 }
 
-export function slackLoadingMessages(stage: SlackStatusUpdate, agentName?: string): string[] {
-  const activity = statusToLoadingMessage(activityStatusText(stage));
-  const liveness = boundedLoadingMessage(slackStatusText(stage, agentName));
-  if (isThinkingActivity(activity)) {
-    return [liveness];
-  }
-  return [
-    liveness,
-    boundedLoadingMessage(
-      agentName?.trim() ? namedStatus(agentName, activityStatusText(stage)) : activity,
-    ),
-  ];
+export function slackLoadingMessages(stage: SlackStatusUpdate, _agentName?: string): string[] {
+  return [boundedLoadingMessage(activityStatusText(stage))];
 }
 
 function activityStatusText(stage: SlackStatusUpdate): string {
@@ -40,25 +29,7 @@ function activityStatusText(stage: SlackStatusUpdate): string {
 // within the limit so a longer fact never silently kills the status line.
 const SLACK_LOADING_MESSAGE_MAX = 50;
 
-function statusToLoadingMessage(status: string): string {
-  const withoutSlackPrefix = status.replace(/^is\s+/i, '');
-  const message = withoutSlackPrefix.charAt(0).toUpperCase() + withoutSlackPrefix.slice(1);
-  if (message.length <= SLACK_LOADING_MESSAGE_MAX) {
-    return message;
-  }
-  return `${message.slice(0, SLACK_LOADING_MESSAGE_MAX - 1)}…`;
-}
-
-function namedStatus(agentName: string | undefined, status: string): string {
-  const name = agentName?.trim();
-  return name ? `${name} ${status}` : status;
-}
-
 function boundedLoadingMessage(message: string): string {
   if (message.length <= SLACK_LOADING_MESSAGE_MAX) return message;
   return `${message.slice(0, SLACK_LOADING_MESSAGE_MAX - 1)}…`;
-}
-
-function isThinkingActivity(message: string): boolean {
-  return message.replace(/\.+$/, '').trim().toLowerCase() === 'thinking';
 }

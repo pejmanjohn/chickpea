@@ -10,7 +10,7 @@ export const SLACK_REFERENCE_ORIGIN = 'https://chickpea.example';
 
 export const SLACK_BOT_SCOPES = Object.freeze([
   'app_mentions:read', 'assistant:write', 'channels:history', 'channels:join',
-  'channels:read', 'chat:write', 'chat:write.customize', 'files:write',
+  'channels:read', 'chat:write', 'chat:write.customize', 'files:read', 'files:write',
   'groups:history', 'groups:read',
   'im:history', 'im:write', 'mpim:read', 'reactions:read', 'reactions:write', 'users:read',
   'usergroups:read', 'usergroups:write', 'users:read.email',

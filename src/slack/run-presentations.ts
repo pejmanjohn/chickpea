@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 
 import type { StateDb } from '../state/state-db.ts';
+import type { ActivityKind } from '../activity/status.ts';
+import { hasCredentialLikeContent } from '../security/content-validation.ts';
 
 export const SLACK_PRESENTATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 export const SLACK_PRESENTATION_FINALIZED_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -90,6 +92,95 @@ export interface SlackPresentationPersona {
   avatarRevision: number;
 }
 
+export type SlackPresentationOwner =
+  | { kind: 'selected_agent'; persona: SlackPresentationPersona }
+  | { kind: 'chickpea' };
+
+export type SlackPresentationReceiptCertainty =
+  | 'pending'
+  | 'acknowledged'
+  | 'failed'
+  | 'unknown';
+
+export interface SlackPresentationOperationReceipt {
+  operationId: string;
+  certainty: SlackPresentationReceiptCertainty;
+}
+
+export type SlackPresentationActivityKind = ActivityKind;
+
+export interface SlackPresentationActivity {
+  kind: SlackPresentationActivityKind;
+  action: string;
+  object: string;
+  generation: number;
+  sequence: number;
+  operation: SlackPresentationOperationReceipt;
+}
+
+/** Durable coordinate for the one visible activity artifact owned by this Run. */
+export type SlackPresentationActivityProjection =
+  | { surface: 'unselected'; state: 'absent' }
+  | {
+      surface: 'message';
+      state: 'selected' | 'visible' | 'cleared';
+      messageTs?: string;
+    }
+  | {
+      surface: 'assistant_status';
+      state: 'selected' | 'visible' | 'cleared';
+    };
+
+export type SlackPresentationTaskOutcome =
+  | 'completed'
+  | 'changed'
+  | 'skipped'
+  | 'failed'
+  | 'not_run';
+
+export type SlackPresentationLifecyclePhase =
+  | 'admitted'
+  | 'active'
+  | 'terminal_intended'
+  | 'settled'
+  | 'recovery_required';
+
+/** Slack Agent Session state vocabulary; delivery outcome is intentionally separate. */
+export type SlackPresentationAgentSessionState =
+  | 'processing'
+  | 'active'
+  | 'suspended'
+  | 'closed';
+
+export interface SlackPresentationAgentSession {
+  desired: SlackPresentationAgentSessionState;
+  acknowledged: SlackPresentationAgentSessionState | 'none';
+  operation?: SlackPresentationOperationReceipt;
+  /** Terminal reason this shared effect no longer requires repair. */
+  disposition?: 'superseded' | 'unavailable';
+}
+
+export type SlackPresentationTerminalDelivery =
+  | { state: 'none' }
+  | {
+      state: 'intended';
+      result: 'answer' | 'failure' | 'legacy';
+      operation: SlackPresentationOperationReceipt;
+    };
+
+export type SlackPresentationCleanup =
+  | { state: 'not_required'; disposition?: 'superseded' }
+  | {
+      state: 'required';
+      target: 'activity' | 'agent_session';
+      operation: SlackPresentationOperationReceipt;
+    };
+
+export interface SlackPresentationRepairSchedule {
+  attempts: number;
+  nextRetryAt: number;
+}
+
 export interface SlackPresentationRoot {
   workspaceId: string;
   channelId: string;
@@ -128,6 +219,20 @@ export interface SlackPresentationPlan {
   }>;
 }
 
+export interface SlackPresentationTaskV3 {
+  id: string;
+  title: string;
+  /** Slack-compatible projection status; semantic outcome remains authoritative. */
+  status: 'pending' | 'in_progress' | 'complete' | 'error';
+  outcome?: SlackPresentationTaskOutcome;
+  detail?: string;
+}
+
+export interface SlackPresentationPlanV3 {
+  displayMode: 'timeline' | 'plan';
+  tasks: SlackPresentationTaskV3[];
+}
+
 export interface SlackPresentationTelemetry {
   eligibilityDecidedAt?: number;
   firstProgressiveEffectAt?: number;
@@ -141,11 +246,8 @@ interface SlackRunPresentationBase {
   runFencingToken: number;
   projectionVersion: number;
   progressiveEligibility: SlackProgressiveEligibility;
-  /** Immutable Agent authorship captured before any Slack effect. */
-  persona?: SlackPresentationPersona;
   root: SlackPresentationRoot;
   stream: SlackPresentationStream;
-  plan?: SlackPresentationPlan;
   title?: { valueHash: string; outcome: 'pending' | 'set' | 'failed' };
   /** Content-free event times used only for aggregate delivery evidence. */
   telemetry?: SlackPresentationTelemetry;
@@ -156,6 +258,9 @@ interface SlackRunPresentationBase {
 
 export interface SlackRunPresentationV1 extends SlackRunPresentationBase {
   schemaVersion: 1;
+  /** Immutable legacy Agent authorship captured before any Slack effect. */
+  persona?: SlackPresentationPersona;
+  plan?: SlackPresentationPlan;
   features: {
     progressiveStreaming: boolean;
     nativeTasks: boolean;
@@ -164,38 +269,138 @@ export interface SlackRunPresentationV1 extends SlackRunPresentationBase {
 
 export interface SlackRunPresentationV2 extends SlackRunPresentationBase {
   schemaVersion: 2;
+  /** Immutable legacy Agent authorship captured before any Slack effect. */
+  persona?: SlackPresentationPersona;
+  plan?: SlackPresentationPlan;
   progressiveIntent: SlackProgressiveIntent;
 }
 
-export type SlackRunPresentation = SlackRunPresentationV1 | SlackRunPresentationV2;
+export interface SlackRunPresentationV3 extends SlackRunPresentationBase {
+  schemaVersion: 3;
+  /** Preserves the established progressive-intent state machine across the V3 boundary. */
+  progressiveIntent: SlackProgressiveIntent;
+  /** Frozen before the first visible effect. Chickpea intentionally has no synthetic persona. */
+  owner: SlackPresentationOwner;
+  /** V3 callers use owner; this property remains absent on durable V3 state. */
+  persona?: never;
+  sessionGeneration: number;
+  currentActivity?: SlackPresentationActivity;
+  activityProjection: SlackPresentationActivityProjection;
+  lifecyclePhase: SlackPresentationLifecyclePhase;
+  agentSession: SlackPresentationAgentSession;
+  terminalDelivery: SlackPresentationTerminalDelivery;
+  cleanup: SlackPresentationCleanup;
+  /** Durable pacing for background repair, absent until the first drain attempt. */
+  repair?: SlackPresentationRepairSchedule;
+  plan?: SlackPresentationPlanV3;
+  compatibility: {
+    sourceSchemaVersion: 1 | 2 | 3;
+    legacyPersona?: SlackPresentationPersona;
+    legacyFeatures?: SlackRunPresentationV1['features'];
+    legacyProgressiveIntent?: SlackProgressiveIntent;
+  };
+}
+
+export type SlackRunPresentation =
+  | SlackRunPresentationV1
+  | SlackRunPresentationV2
+  | SlackRunPresentationV3;
+
+/**
+ * Upgrade legacy product truth in memory without claiming that a legacy persona
+ * was a reliable selected-Agent capability. Coordinates remain byte-for-byte
+ * identical; callers may persist the result with `upgrade_to_v3` later.
+ */
+export function upgradeSlackRunPresentation(
+  presentation: SlackRunPresentation,
+): SlackRunPresentationV3 {
+  if (presentation.schemaVersion === 3) return structuredClone(presentation);
+  const lifecyclePhase = legacyLifecyclePhase(presentation.stream.state);
+  const terminalDelivery = legacyTerminalDelivery(presentation);
+  return {
+    schemaVersion: 3,
+    runId: presentation.runId,
+    turnJobId: presentation.turnJobId,
+    bindingId: presentation.bindingId,
+    workBindingGeneration: presentation.workBindingGeneration,
+    runFencingToken: presentation.runFencingToken,
+    projectionVersion: presentation.projectionVersion,
+    progressiveEligibility: structuredClone(presentation.progressiveEligibility),
+    progressiveIntent: presentation.schemaVersion === 2
+      ? structuredClone(presentation.progressiveIntent)
+      : { status: 'not_requested', decidedAt: presentation.createdAt },
+    owner: { kind: 'chickpea' },
+    sessionGeneration: presentation.workBindingGeneration,
+    activityProjection: { surface: 'unselected', state: 'absent' },
+    root: structuredClone(presentation.root),
+    stream: structuredClone(presentation.stream),
+    ...(presentation.plan ? { plan: upgradeLegacyPlan(presentation.plan) } : {}),
+    ...(presentation.title ? { title: structuredClone(presentation.title) } : {}),
+    ...(presentation.telemetry
+      ? { telemetry: structuredClone(presentation.telemetry) }
+      : {}),
+    lifecyclePhase,
+    agentSession: {
+      desired: lifecyclePhase === 'settled' ? 'active' : 'processing',
+      acknowledged: 'none',
+    },
+    terminalDelivery,
+    cleanup: { state: 'not_required' },
+    compatibility: {
+      sourceSchemaVersion: presentation.schemaVersion,
+      ...(presentation.persona
+        ? { legacyPersona: structuredClone(presentation.persona) }
+        : {}),
+      ...(presentation.schemaVersion === 1
+        ? { legacyFeatures: structuredClone(presentation.features) }
+        : { legacyProgressiveIntent: structuredClone(presentation.progressiveIntent) }),
+    },
+    repairRequired: presentation.repairRequired,
+    createdAt: presentation.createdAt,
+    updatedAt: presentation.updatedAt,
+  };
+}
 
 export function presentationAllowsProgressive(
   presentation: SlackRunPresentation,
 ): boolean {
-  return presentation.schemaVersion === 2 || presentation.features.progressiveStreaming;
+  return presentation.schemaVersion !== 1 || presentation.features.progressiveStreaming;
 }
 
 export function presentationUsesNativeTasks(
   presentation: SlackRunPresentation,
 ): boolean {
-  return presentation.schemaVersion === 2 || presentation.features.nativeTasks;
+  return presentation.schemaVersion !== 1 || presentation.features.nativeTasks;
 }
 
-export interface SlackRunPresentationCreateInput {
+interface SlackRunPresentationCreateInputBase {
   runId: string;
   turnJobId: string;
   bindingId: string;
   workBindingGeneration: number;
   runFencingToken: number;
-  /** Test and migration seam only. New admissions default to V2. */
-  schemaVersion?: 1 | 2;
-  features?: Partial<SlackRunPresentationV1['features']>;
-  persona?: SlackPresentationPersona;
   root: SlackPresentationRoot;
   taskLabels?: readonly string[];
 }
 
+export type SlackRunPresentationCreateInput =
+  | (SlackRunPresentationCreateInputBase & {
+      /** Test and migration seam only. New admissions continue to default to V2. */
+      schemaVersion?: 1 | 2;
+      features?: Partial<SlackRunPresentationV1['features']>;
+      persona?: SlackPresentationPersona;
+    })
+  | (SlackRunPresentationCreateInputBase & {
+      schemaVersion: 3;
+      owner: SlackPresentationOwner;
+      sessionGeneration: number;
+      currentActivity: SlackPresentationActivity;
+      features?: never;
+      persona?: never;
+    });
+
 export type SlackPresentationMutation =
+  | { kind: 'upgrade_to_v3' }
   | {
       kind: 'freeze_progressive_eligibility';
       eligibility: {
@@ -250,6 +455,63 @@ export type SlackPresentationMutation =
   | { kind: 'mark_unknown'; degradationReason: SlackPresentationDegradationReason }
   | { kind: 'adopt_plan'; taskLabels: readonly string[] }
   | { kind: 'set_task_status'; status: 'in_progress' | 'complete' | 'error' }
+  | {
+      kind: 'transition_task';
+      taskId: string;
+      to: 'in_progress' | SlackPresentationTaskOutcome;
+      detail?: string;
+    }
+  | { kind: 'set_lifecycle_phase'; phase: SlackPresentationLifecyclePhase }
+  | { kind: 'record_repair_attempt'; nextRetryAt: number }
+  | { kind: 'set_current_activity'; activity: SlackPresentationActivity }
+  | { kind: 'retry_activity'; operationId: string }
+  | {
+      kind: 'select_activity_projection';
+      surface: Exclude<SlackPresentationActivityProjection['surface'], 'unselected'>;
+    }
+  | {
+      kind: 'record_activity_receipt';
+      operationId: string;
+      certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>;
+      messageTs?: string;
+    }
+  | {
+      kind: 'set_agent_session_desired';
+      desired: SlackPresentationAgentSessionState;
+      operationId: string;
+    }
+  | {
+      kind: 'record_agent_session_receipt';
+      operationId: string;
+      certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>;
+      acknowledged?: SlackPresentationAgentSessionState;
+    }
+  | { kind: 'retry_agent_session'; operationId: string }
+  | { kind: 'mark_agent_session_unavailable' }
+  | { kind: 'supersede_shared_repair_effects' }
+  | {
+      kind: 'record_terminal_delivery_intent';
+      operationId: string;
+      result: 'answer' | 'failure';
+    }
+  | {
+      kind: 'record_terminal_delivery_receipt';
+      operationId: string;
+      certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>;
+    }
+  | { kind: 'supersede_failed_answer_delivery'; operationId: string }
+  | { kind: 'retry_terminal_delivery'; operationId: string }
+  | {
+      kind: 'record_cleanup_intent';
+      operationId: string;
+      target: 'activity' | 'agent_session';
+    }
+  | {
+      kind: 'record_cleanup_receipt';
+      operationId: string;
+      certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>;
+    }
+  | { kind: 'retry_cleanup'; operationId: string }
   | { kind: 'record_title_intent'; valueHash: string }
   | { kind: 'record_title_outcome'; outcome: 'set' | 'failed' };
 
@@ -313,7 +575,7 @@ export interface SlackPresentationLatencySummary {
 export interface SlackPresentationFinalizationRecord {
   schemaVersion: 1;
   runRef: string;
-  presentationSchemaVersion: 1 | 2;
+  presentationSchemaVersion: 1 | 2 | 3;
   offer: string;
   intent: string;
   policyOutcome: string;
@@ -457,40 +719,65 @@ export class SlackRunPresentationStoreLogic {
         runFencingToken: input.runFencingToken,
         projectionVersion: 1,
         progressiveEligibility: { status: 'pending' },
-        ...(input.persona ? { persona: { ...input.persona } } : {}),
         root: { ...input.root },
         stream: {
           state: 'absent',
           acknowledgedByteLength: 0,
           slackAppendCursor: 0,
         },
-        ...(input.taskLabels && input.taskLabels.length > 0
-          ? { plan: buildPlan(input.runId, input.taskLabels) }
-          : {}),
         repairRequired: false,
         createdAt: at,
         updatedAt: at,
     };
-    const presentation: SlackRunPresentation = input.schemaVersion === 1
-      ? {
-          ...shared,
-          schemaVersion: 1,
-          features: {
-            progressiveStreaming: input.features?.progressiveStreaming ?? false,
-            nativeTasks: input.features?.nativeTasks ?? false,
-          },
-        }
-      : {
-          ...shared,
-          schemaVersion: 2,
-          progressiveIntent: { status: 'unresolved' },
-        };
+    let presentation: SlackRunPresentation;
+    if (input.schemaVersion === 3) {
+      presentation = {
+        ...shared,
+        schemaVersion: 3,
+        progressiveIntent: { status: 'unresolved' },
+        owner: structuredClone(input.owner),
+        sessionGeneration: input.sessionGeneration,
+        currentActivity: structuredClone(input.currentActivity),
+        activityProjection: { surface: 'unselected', state: 'absent' },
+        lifecyclePhase: 'admitted',
+        agentSession: { desired: 'processing', acknowledged: 'none' },
+        terminalDelivery: { state: 'none' },
+        cleanup: { state: 'not_required' },
+        ...(input.taskLabels && input.taskLabels.length > 1
+          ? { plan: buildPlanV3(input.runId, input.taskLabels) }
+          : {}),
+        compatibility: { sourceSchemaVersion: 3 },
+        repairRequired: true,
+      };
+    } else {
+      const legacyShared = {
+        ...shared,
+        ...(input.persona ? { persona: { ...input.persona } } : {}),
+        ...(input.taskLabels && input.taskLabels.length > 0
+          ? { plan: buildPlan(input.runId, input.taskLabels) }
+          : {}),
+      };
+      presentation = input.schemaVersion === 1
+        ? {
+            ...legacyShared,
+            schemaVersion: 1,
+            features: {
+              progressiveStreaming: input.features?.progressiveStreaming ?? false,
+              nativeTasks: input.features?.nativeTasks ?? false,
+            },
+          }
+        : {
+            ...legacyShared,
+            schemaVersion: 2,
+            progressiveIntent: { status: 'unresolved' },
+          };
+    }
     this.db.run(
         `INSERT INTO slack_run_presentations (
           run_id, binding_generation, run_fencing_token, projection_version,
           stream_state, workspace_id, channel_id, message_ts, repair_required,
           presentation_json, created_at, updated_at, finalized_at, hard_expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, NULL, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)`,
         presentation.runId,
         presentation.workBindingGeneration,
         presentation.runFencingToken,
@@ -498,6 +785,7 @@ export class SlackRunPresentationStoreLogic {
         presentation.stream.state,
         presentation.root.workspaceId,
         presentation.root.channelId,
+        presentation.repairRequired ? 1 : 0,
         JSON.stringify(presentation),
         at,
         at,
@@ -510,6 +798,38 @@ export class SlackRunPresentationStoreLogic {
     validateId(runId, 'Run id');
     const row = this.getRow(runId);
     return row ? decodePresentation(row) : undefined;
+  }
+
+  /** Deterministic compatibility read. It never rewrites the stored row. */
+  getV3(runId: string): SlackRunPresentationV3 | undefined {
+    const presentation = this.get(runId);
+    return presentation ? upgradeSlackRunPresentation(presentation) : undefined;
+  }
+
+  /** Exact durable generation fence for shared lifecycle effects in one Slack thread. */
+  getLatestThreadSessionGeneration(
+    root: Pick<SlackPresentationRoot, 'workspaceId' | 'channelId' | 'threadTs'>,
+  ): number | undefined {
+    validateId(root.workspaceId, 'Workspace id');
+    validateId(root.channelId, 'Channel id');
+    validateSlackTimestamp(root.threadTs, 'Slack root timestamp');
+    const row = this.db.get(
+      `SELECT MAX(CAST(json_extract(presentation_json, '$.sessionGeneration') AS INTEGER))
+         AS session_generation
+       FROM slack_run_presentations
+       WHERE workspace_id = ? AND channel_id = ?
+         AND json_extract(presentation_json, '$.schemaVersion') = 3
+         AND json_extract(presentation_json, '$.root.threadTs') = ?`,
+      root.workspaceId,
+      root.channelId,
+      root.threadTs,
+    );
+    if (row?.session_generation === null || row?.session_generation === undefined) {
+      return undefined;
+    }
+    const generation = Number(row.session_generation);
+    validatePositiveInteger(generation, 'Session generation');
+    return generation;
   }
 
   transition(input: SlackPresentationTransitionInput): SlackPresentationTransitionResult {
@@ -528,6 +848,7 @@ export class SlackRunPresentationStoreLogic {
       const current = decodePresentation(row);
       const at = this.now();
       const next = applyMutation(current, input.mutation, at);
+      if (next.schemaVersion === 3) next.repairRequired = v3RepairRequired(next);
       next.projectionVersion = current.projectionVersion + 1;
       next.updatedAt = at;
 
@@ -581,6 +902,41 @@ export class SlackRunPresentationStoreLogic {
        WHERE repair_required = 1 ORDER BY updated_at ASC, run_id ASC LIMIT ?`,
       boundedLimit,
     ) as PresentationRow[]).map(decodePresentation);
+  }
+
+  /** Rows whose acknowledged V3 terminal can be repaired without replaying it. */
+  listAutoRepairableV3(limit = 50): SlackRunPresentationV3[] {
+    const boundedLimit = boundedLimitValue(limit);
+    return (this.db.all(
+      `SELECT ${PRESENTATION_COLUMNS} FROM slack_run_presentations
+       WHERE repair_required = 1
+         AND json_extract(presentation_json, '$.schemaVersion') = 3
+         AND json_extract(presentation_json, '$.terminalDelivery.state') = 'intended'
+         AND json_extract(presentation_json, '$.terminalDelivery.operation.certainty') = 'acknowledged'
+         AND (
+           json_extract(presentation_json, '$.lifecyclePhase') <> 'settled'
+           OR
+           (
+             json_type(presentation_json, '$.agentSession.disposition') IS NULL
+             AND (
+               json_type(presentation_json, '$.agentSession.operation') IS NULL
+               OR json_extract(presentation_json, '$.agentSession.operation.certainty') = 'failed'
+             )
+           )
+           OR (
+             json_extract(presentation_json, '$.activityProjection.state') = 'visible'
+             AND json_type(presentation_json, '$.cleanup.disposition') IS NULL
+             AND (
+               json_extract(presentation_json, '$.cleanup.state') = 'not_required'
+               OR json_extract(presentation_json, '$.cleanup.operation.certainty') = 'failed'
+             )
+           )
+         )
+       ORDER BY updated_at ASC, run_id ASC LIMIT ?`,
+      boundedLimit,
+    ) as PresentationRow[]).map(decodePresentation).filter(
+      (presentation): presentation is SlackRunPresentationV3 => presentation.schemaVersion === 3,
+    );
   }
 
   reserveAppend(
@@ -840,6 +1196,11 @@ function applyMutation(
 ): SlackRunPresentation {
   const next = structuredClone(current);
   switch (mutation.kind) {
+    case 'upgrade_to_v3':
+      if (current.schemaVersion === 3) {
+        throw stateError('terminal_rewrite', 'Presentation is already V3.');
+      }
+      return upgradeSlackRunPresentation(current);
     case 'freeze_progressive_eligibility':
       if (current.progressiveEligibility.status !== 'pending') {
         throw stateError('eligibility_frozen', 'Progressive eligibility is already frozen.');
@@ -867,37 +1228,37 @@ function applyMutation(
       next.runFencingToken = mutation.runFencingToken;
       return next;
     case 'progressive_intent_candidate':
-      requireV2ProgressiveIntent(current);
+      requireProgressiveIntent(current);
       requireProgressiveIntentState(current, 'unresolved');
       validateId(mutation.toolCallId, 'Progressive intent tool call id');
-      (next as SlackRunPresentationV2).progressiveIntent = {
+      (next as SlackRunPresentationV2 | SlackRunPresentationV3).progressiveIntent = {
         status: 'pending',
         toolCallId: mutation.toolCallId,
       };
       return next;
     case 'progressive_intent_requested':
-      requireV2ProgressiveIntent(current);
+      requireProgressiveIntent(current);
       requireProgressiveIntentState(current, 'pending');
       validateId(mutation.toolCallId, 'Progressive intent tool call id');
       if (current.progressiveIntent.toolCallId !== mutation.toolCallId) {
         throw stateError('identity_conflict', 'Progressive intent result does not match its call.');
       }
-      (next as SlackRunPresentationV2).progressiveIntent = {
+      (next as SlackRunPresentationV2 | SlackRunPresentationV3).progressiveIntent = {
         status: 'requested',
         toolCallId: mutation.toolCallId,
         requestedAt: at,
       };
       return next;
     case 'progressive_intent_not_requested':
-      requireV2ProgressiveIntent(current);
+      requireProgressiveIntent(current);
       requireProgressiveIntentState(current, 'unresolved');
-      (next as SlackRunPresentationV2).progressiveIntent = {
+      (next as SlackRunPresentationV2 | SlackRunPresentationV3).progressiveIntent = {
         status: 'not_requested',
         decidedAt: at,
       };
       return next;
     case 'progressive_intent_denied':
-      requireV2ProgressiveIntent(current);
+      requireProgressiveIntent(current);
       if (current.progressiveIntent.status === 'not_requested' ||
           current.progressiveIntent.status === 'denied') {
         throw stateError('terminal_rewrite', 'Progressive intent is already terminal.');
@@ -905,7 +1266,7 @@ function applyMutation(
       if (!isProgressiveIntentDenialReason(mutation.reason)) {
         throw stateError('invalid_input', 'Progressive intent denial reason is invalid.');
       }
-      (next as SlackRunPresentationV2).progressiveIntent = {
+      (next as SlackRunPresentationV2 | SlackRunPresentationV3).progressiveIntent = {
         status: 'denied',
         reason: mutation.reason,
         decidedAt: at,
@@ -977,7 +1338,7 @@ function applyMutation(
       // This transition happens only after Slack accepted the answer bytes, so
       // it is visibility evidence rather than merely a stream-start attempt.
       // It also covers prose appended to an already-open native task stream.
-      if (current.schemaVersion === 2 && current.progressiveIntent.status === 'requested' &&
+      if (current.schemaVersion !== 1 && current.progressiveIntent.status === 'requested' &&
           current.telemetry?.firstProgressiveEffectAt === undefined) {
         next.telemetry = { ...current.telemetry, firstProgressiveEffectAt: at };
       }
@@ -1063,11 +1424,22 @@ function applyMutation(
       if (!presentationUsesNativeTasks(current)) {
         throw stateError('invalid_transition', 'Native tasks are disabled for this presentation.');
       }
+      if (current.schemaVersion === 3 && mutation.taskLabels.length < 2) {
+        throw stateError('invalid_input', 'V3 task plans require multiple committed milestones.');
+      }
       requireState(current, 'absent');
-      next.plan = buildPlan(current.runId, mutation.taskLabels);
+      next.plan = current.schemaVersion === 3
+        ? buildPlanV3(current.runId, mutation.taskLabels)
+        : buildPlan(current.runId, mutation.taskLabels);
       return next;
     }
     case 'set_task_status': {
+      if (current.schemaVersion === 3) {
+        throw stateError(
+          'invalid_transition',
+          'V3 tasks must transition independently by stable task id.',
+        );
+      }
       if (!current.plan) {
         throw stateError('invalid_transition', 'Ordinary replies have no native tasks.');
       }
@@ -1086,6 +1458,434 @@ function applyMutation(
         ...task,
         status: mutation.status,
       }));
+      return next;
+    }
+    case 'transition_task': {
+      requireV3(current);
+      requireV3(next);
+      if (!current.plan || !next.plan) {
+        throw stateError('invalid_transition', 'Ordinary replies have no committed tasks.');
+      }
+      validateId(mutation.taskId, 'Task id');
+      const index = current.plan.tasks.findIndex((task) => task.id === mutation.taskId);
+      if (index < 0) throw stateError('invalid_input', 'Task id is not part of this Run.');
+      const existing = current.plan.tasks[index]!;
+      if (existing.status === 'complete' || existing.status === 'error') {
+        throw stateError('terminal_rewrite', 'Terminal task outcomes are immutable.');
+      }
+      if (mutation.to === 'in_progress') {
+        if (existing.status !== 'pending') {
+          throw stateError('invalid_transition', 'A task can begin only once.');
+        }
+        if (mutation.detail !== undefined) {
+          throw stateError('invalid_input', 'Only terminal task outcomes carry details.');
+        }
+        if (current.plan.tasks.some((task) => task.status === 'in_progress')) {
+          throw stateError('invalid_transition', 'Only one milestone can be active at a time.');
+        }
+        if (current.plan.tasks.slice(0, index).some((task) =>
+          task.status !== 'complete' && task.status !== 'error'
+        )) {
+          throw stateError('invalid_transition', 'Earlier milestones must settle first.');
+        }
+        next.plan.tasks[index] = { ...existing, status: 'in_progress' };
+        return next;
+      }
+      if (!isTaskOutcome(mutation.to)) {
+        throw stateError('invalid_input', 'Task outcome is invalid.');
+      }
+      if (mutation.detail === undefined) {
+        throw stateError('invalid_input', 'Terminal task outcomes require a readable detail.');
+      }
+      validateDetail(mutation.detail);
+      if (!mutation.detail.startsWith(taskOutcomePrefix(mutation.to))) {
+        throw stateError('invalid_input', 'Task detail must name its semantic outcome.');
+      }
+      const mayFinishWithoutStarting = mutation.to === 'skipped' || mutation.to === 'not_run';
+      if (existing.status === 'pending' && !mayFinishWithoutStarting) {
+        throw stateError(
+          'invalid_transition',
+          'Only skipped or not-run tasks may finish before starting.',
+        );
+      }
+      if (existing.status === 'in_progress' && mutation.to === 'not_run') {
+        throw stateError('invalid_transition', 'A started task cannot become not run.');
+      }
+      next.plan.tasks[index] = {
+        id: existing.id,
+        title: existing.title,
+        status: taskProjectionStatus(mutation.to),
+        outcome: mutation.to,
+        detail: mutation.detail,
+      };
+      return next;
+    }
+    case 'set_lifecycle_phase': {
+      requireV3(current);
+      requireV3(next);
+      if (!isLifecyclePhase(mutation.phase)) {
+        throw stateError('invalid_input', 'Lifecycle phase is invalid.');
+      }
+      assertLifecycleTransition(current.lifecyclePhase, mutation.phase);
+      next.lifecyclePhase = mutation.phase;
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'record_repair_attempt': {
+      requireV3(current);
+      requireV3(next);
+      if (!current.repairRequired || current.terminalDelivery.state !== 'intended' ||
+          current.terminalDelivery.operation.certainty !== 'acknowledged') {
+        throw stateError('invalid_transition', 'Only an acknowledged terminal repair may be paced.');
+      }
+      validatePositiveInteger(mutation.nextRetryAt, 'Presentation repair retry time');
+      next.repair = {
+        attempts: (current.repair?.attempts ?? 0) + 1,
+        nextRetryAt: mutation.nextRetryAt,
+      };
+      return next;
+    }
+    case 'set_current_activity': {
+      requireV3(current);
+      requireV3(next);
+      validateActivity(mutation.activity, current.sessionGeneration);
+      if (mutation.activity.operation.certainty !== 'pending') {
+        throw stateError('invalid_input', 'A new activity operation must begin pending.');
+      }
+      if (current.currentActivity &&
+          mutation.activity.sequence <= current.currentActivity.sequence) {
+        throw stateError('invalid_transition', 'Activity sequence must advance monotonically.');
+      }
+      if (current.currentActivity &&
+          (current.currentActivity.operation.certainty === 'pending' ||
+            current.currentActivity.operation.certainty === 'unknown')) {
+        throw stateError('invalid_transition', 'Current activity effect requires reconciliation.');
+      }
+      if (current.currentActivity &&
+          mutation.activity.operation.operationId ===
+            current.currentActivity.operation.operationId) {
+        throw stateError('identity_conflict', 'A new activity requires a new operation id.');
+      }
+      next.currentActivity = structuredClone(mutation.activity);
+      if (next.lifecyclePhase === 'admitted') next.lifecyclePhase = 'active';
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'select_activity_projection': {
+      requireV3(current);
+      requireV3(next);
+      if (!current.currentActivity || current.currentActivity.operation.certainty !== 'pending') {
+        throw stateError('invalid_transition', 'Activity projection requires a pending activity.');
+      }
+      if (current.activityProjection.surface !== 'unselected') {
+        throw stateError('terminal_rewrite', 'Activity projection surface is already frozen.');
+      }
+      if (mutation.surface !== 'message' && mutation.surface !== 'assistant_status') {
+        throw stateError('invalid_input', 'Activity projection surface is invalid.');
+      }
+      next.activityProjection = { surface: mutation.surface, state: 'selected' };
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'retry_activity': {
+      requireV3(current);
+      requireV3(next);
+      if (!current.currentActivity ||
+          current.currentActivity.operation.certainty !== 'failed') {
+        throw stateError('invalid_transition', 'Only a confirmed failed activity may retry.');
+      }
+      validateId(mutation.operationId, 'Activity operation id');
+      if (mutation.operationId === current.currentActivity.operation.operationId) {
+        throw stateError('identity_conflict', 'Activity retry requires a new operation id.');
+      }
+      next.currentActivity!.operation = {
+        operationId: mutation.operationId,
+        certainty: 'pending',
+      };
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'record_activity_receipt': {
+      requireV3(current);
+      requireV3(next);
+      if (!current.currentActivity || !next.currentActivity) {
+        throw stateError('invalid_transition', 'There is no current activity operation.');
+      }
+      if (current.activityProjection.surface === 'unselected') {
+        throw stateError('invalid_transition', 'Activity projection surface is missing.');
+      }
+      if (mutation.certainty === 'acknowledged') {
+        if (current.activityProjection.surface === 'message') {
+          if (mutation.messageTs === undefined) {
+            throw stateError('invalid_input', 'Message activity acknowledgement requires a coordinate.');
+          }
+          validateSlackTimestamp(mutation.messageTs, 'Activity message timestamp');
+          if (current.activityProjection.messageTs &&
+              current.activityProjection.messageTs !== mutation.messageTs) {
+            throw stateError('coordinate_conflict', 'Activity coordinate is immutable.');
+          }
+          next.activityProjection = {
+            surface: 'message',
+            state: 'visible',
+            messageTs: mutation.messageTs,
+          };
+        } else {
+          if (mutation.messageTs !== undefined) {
+            throw stateError('invalid_input', 'Assistant status has no message coordinate.');
+          }
+          next.activityProjection = { surface: 'assistant_status', state: 'visible' };
+        }
+      } else if (mutation.messageTs !== undefined) {
+        throw stateError('invalid_input', 'Only acknowledged activity carries a coordinate.');
+      }
+      next.currentActivity.operation = transitionReceipt(
+        current.currentActivity.operation,
+        mutation.operationId,
+        mutation.certainty,
+      );
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'set_agent_session_desired': {
+      requireV3(current);
+      requireV3(next);
+      if (current.agentSession.disposition) {
+        throw stateError('terminal_rewrite', 'Agent Session repair is already terminal.');
+      }
+      if (!isAgentSessionState(mutation.desired)) {
+        throw stateError('invalid_input', 'Agent Session state is invalid.');
+      }
+      validateId(mutation.operationId, 'Agent Session operation id');
+      if (current.agentSession.operation &&
+          current.agentSession.operation.certainty !== 'acknowledged' &&
+          current.agentSession.operation.certainty !== 'failed') {
+        throw stateError('invalid_transition', 'Agent Session operation is unresolved.');
+      }
+      if (current.agentSession.desired !== 'processing') {
+        throw stateError('terminal_rewrite', 'Agent Session desired state is terminal.');
+      }
+      next.agentSession = {
+        ...current.agentSession,
+        desired: mutation.desired,
+        operation: { operationId: mutation.operationId, certainty: 'pending' },
+      };
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'record_agent_session_receipt': {
+      requireV3(current);
+      requireV3(next);
+      if (!current.agentSession.operation) {
+        throw stateError('invalid_transition', 'There is no Agent Session operation.');
+      }
+      if (mutation.certainty === 'acknowledged') {
+        if (mutation.acknowledged !== current.agentSession.desired) {
+          throw stateError('identity_conflict', 'Acknowledged Agent Session state is mismatched.');
+        }
+        next.agentSession.acknowledged = mutation.acknowledged;
+      } else if (mutation.acknowledged !== undefined) {
+        throw stateError('invalid_input', 'Only acknowledged receipts carry session state.');
+      }
+      next.agentSession.operation = transitionReceipt(
+        current.agentSession.operation,
+        mutation.operationId,
+        mutation.certainty,
+      );
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'retry_agent_session': {
+      requireV3(current);
+      requireV3(next);
+      if (current.agentSession.disposition || !current.agentSession.operation ||
+          current.agentSession.operation.certainty !== 'failed') {
+        throw stateError('invalid_transition', 'Only a confirmed failed Agent Session effect may retry.');
+      }
+      validateId(mutation.operationId, 'Agent Session operation id');
+      if (mutation.operationId === current.agentSession.operation.operationId) {
+        throw stateError('identity_conflict', 'Agent Session retry requires a new operation id.');
+      }
+      next.agentSession.operation = { operationId: mutation.operationId, certainty: 'pending' };
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'mark_agent_session_unavailable': {
+      requireV3(current);
+      requireV3(next);
+      if (current.agentSession.disposition || !current.agentSession.operation ||
+          current.agentSession.operation.certainty !== 'failed') {
+        throw stateError(
+          'invalid_transition',
+          'Only a confirmed failed Agent Session effect may become unavailable.',
+        );
+      }
+      next.agentSession.disposition = 'unavailable';
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'supersede_shared_repair_effects': {
+      requireV3(current);
+      requireV3(next);
+      let superseded = false;
+      if (!current.agentSession.disposition &&
+          (!current.agentSession.operation ||
+            current.agentSession.operation.certainty === 'failed')) {
+        next.agentSession.disposition = 'superseded';
+        superseded = true;
+      }
+      if (current.activityProjection.surface === 'assistant_status' &&
+          current.activityProjection.state === 'visible' &&
+          (current.cleanup.state === 'not_required' ||
+            current.cleanup.operation.certainty === 'failed')) {
+        next.cleanup = { state: 'not_required', disposition: 'superseded' };
+        superseded = true;
+      }
+      if (!superseded) {
+        throw stateError(
+          'invalid_transition',
+          'No absent or confirmed failed shared repair effect may be superseded.',
+        );
+      }
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'record_terminal_delivery_intent': {
+      requireV3(current);
+      requireV3(next);
+      if (current.terminalDelivery.state !== 'none') {
+        throw stateError('terminal_rewrite', 'Terminal delivery intent is already frozen.');
+      }
+      validateId(mutation.operationId, 'Terminal delivery operation id');
+      next.terminalDelivery = {
+        state: 'intended',
+        result: mutation.result,
+        operation: { operationId: mutation.operationId, certainty: 'pending' },
+      };
+      next.lifecyclePhase = 'terminal_intended';
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'record_terminal_delivery_receipt': {
+      requireV3(current);
+      requireV3(next);
+      if (current.terminalDelivery.state !== 'intended' ||
+          next.terminalDelivery.state !== 'intended') {
+        throw stateError('invalid_transition', 'Terminal delivery intent is missing.');
+      }
+      next.terminalDelivery.operation = transitionReceipt(
+        current.terminalDelivery.operation,
+        mutation.operationId,
+        mutation.certainty,
+      );
+      if (mutation.certainty === 'unknown') next.lifecyclePhase = 'recovery_required';
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'supersede_failed_answer_delivery': {
+      requireV3(current);
+      requireV3(next);
+      if (current.terminalDelivery.state !== 'intended' ||
+          current.terminalDelivery.result !== 'answer' ||
+          current.terminalDelivery.operation.certainty !== 'failed') {
+        throw stateError(
+          'invalid_transition',
+          'Only a confirmed failed answer delivery may be superseded by failure.',
+        );
+      }
+      validateId(mutation.operationId, 'Terminal delivery operation id');
+      if (mutation.operationId === current.terminalDelivery.operation.operationId) {
+        throw stateError('identity_conflict', 'Terminal delivery supersession requires a new operation id.');
+      }
+      next.terminalDelivery = {
+        state: 'intended',
+        result: 'failure',
+        operation: { operationId: mutation.operationId, certainty: 'pending' },
+      };
+      next.lifecyclePhase = 'terminal_intended';
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'retry_terminal_delivery': {
+      requireV3(current);
+      requireV3(next);
+      if (current.terminalDelivery.state !== 'intended' ||
+          next.terminalDelivery.state !== 'intended' ||
+          current.terminalDelivery.operation.certainty !== 'failed') {
+        throw stateError('invalid_transition', 'Only a confirmed failed terminal effect may retry.');
+      }
+      validateId(mutation.operationId, 'Terminal delivery operation id');
+      if (mutation.operationId === current.terminalDelivery.operation.operationId) {
+        throw stateError('identity_conflict', 'Terminal delivery retry requires a new operation id.');
+      }
+      next.terminalDelivery.operation = {
+        operationId: mutation.operationId,
+        certainty: 'pending',
+      };
+      next.lifecyclePhase = 'terminal_intended';
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'record_cleanup_intent': {
+      requireV3(current);
+      requireV3(next);
+      if (current.cleanup.state !== 'not_required') {
+        throw stateError('terminal_rewrite', 'Cleanup intent is already frozen.');
+      }
+      if (current.cleanup.disposition) {
+        throw stateError('terminal_rewrite', 'Shared cleanup repair is already terminal.');
+      }
+      if (current.terminalDelivery.state !== 'intended' ||
+          current.terminalDelivery.operation.certainty !== 'acknowledged') {
+        throw stateError('invalid_transition', 'Terminal delivery must be acknowledged before cleanup.');
+      }
+      validateId(mutation.operationId, 'Cleanup operation id');
+      if (mutation.target === 'activity' &&
+          (current.activityProjection.surface === 'unselected' ||
+            current.activityProjection.state !== 'visible')) {
+        throw stateError('invalid_transition', 'There is no visible activity to clean up.');
+      }
+      next.cleanup = {
+        state: 'required',
+        target: mutation.target,
+        operation: { operationId: mutation.operationId, certainty: 'pending' },
+      };
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'record_cleanup_receipt': {
+      requireV3(current);
+      requireV3(next);
+      if (current.cleanup.state !== 'required' || next.cleanup.state !== 'required') {
+        throw stateError('invalid_transition', 'Cleanup intent is missing.');
+      }
+      next.cleanup.operation = transitionReceipt(
+        current.cleanup.operation,
+        mutation.operationId,
+        mutation.certainty,
+      );
+      if (mutation.certainty === 'acknowledged' && current.cleanup.target === 'activity') {
+        if (current.activityProjection.surface === 'message') {
+          next.activityProjection = { ...current.activityProjection, state: 'cleared' };
+        } else if (current.activityProjection.surface === 'assistant_status') {
+          next.activityProjection = { surface: 'assistant_status', state: 'cleared' };
+        }
+      }
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'retry_cleanup': {
+      requireV3(current);
+      requireV3(next);
+      if (current.cleanup.state !== 'required' || next.cleanup.state !== 'required' ||
+          current.cleanup.operation.certainty !== 'failed') {
+        throw stateError('invalid_transition', 'Only a confirmed failed cleanup may retry.');
+      }
+      validateId(mutation.operationId, 'Cleanup operation id');
+      if (mutation.operationId === current.cleanup.operation.operationId) {
+        throw stateError('identity_conflict', 'Cleanup retry requires a new operation id.');
+      }
+      next.cleanup.operation = { operationId: mutation.operationId, certainty: 'pending' };
+      next.repairRequired = v3RepairRequired(next);
       return next;
     }
     case 'record_title_intent':
@@ -1170,7 +1970,7 @@ function presentationTiming(presentation: SlackRunPresentation): {
   offerToRequest?: number;
   requestToFirstEffect?: number;
 } {
-  if (presentation.schemaVersion !== 2 ||
+  if (presentation.schemaVersion === 1 ||
       presentation.progressiveIntent.status !== 'requested') return {};
   const offeredAt = presentation.telemetry?.eligibilityDecidedAt;
   const requestedAt = presentation.progressiveIntent.requestedAt;
@@ -1250,10 +2050,10 @@ function isProgressiveIntent(value: unknown): value is SlackProgressiveIntent {
   return false;
 }
 
-function requireV2ProgressiveIntent(
+function requireProgressiveIntent(
   presentation: SlackRunPresentation,
-): asserts presentation is SlackRunPresentationV2 {
-  if (presentation.schemaVersion !== 2) {
+): asserts presentation is SlackRunPresentationV2 | SlackRunPresentationV3 {
+  if (presentation.schemaVersion === 1) {
     throw stateError('invalid_transition', 'Legacy presentations do not store model intent.');
   }
   if (presentation.progressiveEligibility.status !== 'frozen' ||
@@ -1268,9 +2068,9 @@ function requireV2ProgressiveIntent(
 }
 
 function requireProgressiveIntentState<S extends SlackProgressiveIntent['status']>(
-  presentation: SlackRunPresentationV2,
+  presentation: SlackRunPresentationV2 | SlackRunPresentationV3,
   expected: S,
-): asserts presentation is SlackRunPresentationV2 & {
+): asserts presentation is (SlackRunPresentationV2 | SlackRunPresentationV3) & {
   progressiveIntent: Extract<SlackProgressiveIntent, { status: S }>;
 } {
   if (presentation.progressiveIntent.status !== expected) {
@@ -1289,6 +2089,70 @@ function isProgressiveIntentDenialReason(
     value === 'non_presentation_tool' || value === 'structured_output' ||
     value === 'reset' || value === 'identity_conflict' ||
     value === 'persistence_failure' || value === 'runtime_denied';
+}
+
+function legacyLifecyclePhase(
+  streamState: SlackPresentationStreamState,
+): SlackPresentationLifecyclePhase {
+  if (streamState === 'finalized') return 'settled';
+  if (streamState === 'unknown') return 'recovery_required';
+  if (streamState === 'absent') return 'admitted';
+  if (streamState === 'finalizing' || streamState === 'fallback' ||
+      streamState === 'artifact_delivered') return 'terminal_intended';
+  return 'active';
+}
+
+function legacyTerminalDelivery(
+  presentation: SlackRunPresentationV1 | SlackRunPresentationV2,
+): SlackPresentationTerminalDelivery {
+  if (presentation.stream.state !== 'finalizing' &&
+      presentation.stream.state !== 'fallback' &&
+      presentation.stream.state !== 'artifact_delivered' &&
+      presentation.stream.state !== 'finalized') {
+    return { state: 'none' };
+  }
+  const certainty = presentation.stream.state === 'artifact_delivered' ||
+      presentation.stream.state === 'finalized'
+    ? 'acknowledged'
+    : 'pending';
+  return {
+    state: 'intended',
+    result: 'legacy',
+    operation: {
+      operationId: `legacy_terminal_${createHash('sha256')
+        .update(`${presentation.runId}\0terminal`)
+        .digest('hex')
+        .slice(0, 24)}`,
+      certainty,
+    },
+  };
+}
+
+function upgradeLegacyPlan(plan: SlackPresentationPlan): SlackPresentationPlanV3 {
+  return {
+    displayMode: plan.displayMode,
+    tasks: plan.tasks.map((task) => {
+      if (task.status === 'complete') {
+        return {
+          id: task.id,
+          title: task.title,
+          status: 'complete',
+          outcome: 'completed',
+          detail: 'Completed: legacy task completed.',
+        };
+      }
+      if (task.status === 'error') {
+        return {
+          id: task.id,
+          title: task.title,
+          status: 'error',
+          outcome: 'failed',
+          detail: 'Failed: legacy task failed.',
+        };
+      }
+      return { id: task.id, title: task.title, status: task.status };
+    }),
+  };
 }
 
 function buildPlan(runId: string, labels: readonly string[]): SlackPresentationPlan {
@@ -1310,6 +2174,17 @@ function buildPlan(runId: string, labels: readonly string[]): SlackPresentationP
   return { displayMode: tasks.length === 1 ? 'timeline' : 'plan', tasks };
 }
 
+function buildPlanV3(runId: string, labels: readonly string[]): SlackPresentationPlanV3 {
+  if (labels.length < 2) {
+    throw stateError('invalid_input', 'V3 task plans require multiple committed milestones.');
+  }
+  const legacy = buildPlan(runId, labels);
+  return {
+    displayMode: legacy.displayMode,
+    tasks: legacy.tasks.map(({ id, title }) => ({ id, title, status: 'pending' })),
+  };
+}
+
 function validateCreateInput(input: SlackRunPresentationCreateInput): void {
   validateId(input.runId, 'Run id');
   validateId(input.turnJobId, 'TurnJob id');
@@ -1320,14 +2195,26 @@ function validateCreateInput(input: SlackRunPresentationCreateInput): void {
   validateId(input.root.channelId, 'Channel id');
   validateSlackTimestamp(input.root.threadTs, 'Slack root timestamp');
   validateId(input.root.requesterUserId, 'Requester user id');
-  if (input.persona) {
-    validateLabel(input.persona.name);
-    validatePositiveInteger(input.persona.avatarRevision, 'Avatar revision');
-    if (!/^https:\/\//.test(input.persona.avatarUrl) || input.persona.avatarUrl.length > 2_048) {
-      throw stateError('invalid_input', 'Avatar URL must be a bounded HTTPS URL.');
+  if (input.schemaVersion === 3) {
+    validateOwner(input.owner);
+    validatePositiveInteger(input.sessionGeneration, 'Session generation');
+    validateActivity(input.currentActivity, input.sessionGeneration);
+    if (input.currentActivity.operation.certainty !== 'pending') {
+      throw stateError('invalid_input', 'Initial activity receipt must be pending.');
     }
+    if ('persona' in input && input.persona !== undefined) {
+      throw stateError('invalid_input', 'V3 identity must be stored only in the frozen owner.');
+    }
+  } else if (input.persona) {
+    validatePersona(input.persona);
   }
-  if (input.taskLabels !== undefined) buildPlan(input.runId, input.taskLabels);
+  if (input.taskLabels !== undefined) {
+    if (input.schemaVersion === 3) {
+      if (input.taskLabels.length > 1) buildPlanV3(input.runId, input.taskLabels);
+      else buildPlan(input.runId, input.taskLabels);
+    }
+    else buildPlan(input.runId, input.taskLabels);
+  }
 }
 
 function validateTransitionInput(input: SlackPresentationTransitionInput): void {
@@ -1342,16 +2229,27 @@ function sameCreateIdentity(
   presentation: SlackRunPresentation,
   input: SlackRunPresentationCreateInput,
 ): boolean {
-  const expectedPlan = input.taskLabels && input.taskLabels.length > 0
-    ? buildPlan(input.runId, input.taskLabels)
-    : undefined;
-  return presentation.runId === input.runId &&
+  const sharedIdentityMatches = presentation.runId === input.runId &&
     presentation.turnJobId === input.turnJobId &&
     presentation.bindingId === input.bindingId &&
     presentation.workBindingGeneration === input.workBindingGeneration &&
     presentation.runFencingToken === input.runFencingToken &&
-    JSON.stringify(presentation.root) === JSON.stringify(input.root) &&
-    JSON.stringify(presentation.persona) === JSON.stringify(input.persona) &&
+    JSON.stringify(presentation.root) === JSON.stringify(input.root);
+  if (!sharedIdentityMatches) return false;
+  if (input.schemaVersion === 3 || presentation.schemaVersion === 3) {
+    if (input.schemaVersion !== 3 || presentation.schemaVersion !== 3) return false;
+    const expectedPlan = input.taskLabels && input.taskLabels.length > 1
+      ? buildPlanV3(input.runId, input.taskLabels)
+      : undefined;
+    return presentation.sessionGeneration === input.sessionGeneration &&
+      JSON.stringify(presentation.owner) === JSON.stringify(input.owner) &&
+      JSON.stringify(presentation.currentActivity) === JSON.stringify(input.currentActivity) &&
+      JSON.stringify(presentation.plan) === JSON.stringify(expectedPlan);
+  }
+  const expectedPlan = input.taskLabels && input.taskLabels.length > 0
+    ? buildPlan(input.runId, input.taskLabels)
+    : undefined;
+  return JSON.stringify(presentation.persona) === JSON.stringify(input.persona) &&
     JSON.stringify(presentation.plan) === JSON.stringify(expectedPlan);
 }
 
@@ -1367,7 +2265,8 @@ function decodePresentation(row: PresentationRow): SlackRunPresentation {
   }
   const presentation = value as SlackRunPresentation;
   if (
-    (presentation.schemaVersion !== 1 && presentation.schemaVersion !== 2) ||
+    (presentation.schemaVersion !== 1 && presentation.schemaVersion !== 2 &&
+      presentation.schemaVersion !== 3) ||
     presentation.runId !== row.run_id ||
     presentation.workBindingGeneration !== row.binding_generation ||
     presentation.runFencingToken !== row.run_fencing_token ||
@@ -1385,7 +2284,8 @@ function decodePresentation(row: PresentationRow): SlackRunPresentation {
     (presentation.schemaVersion === 1 &&
       (typeof presentation.features?.progressiveStreaming !== 'boolean' ||
         typeof presentation.features?.nativeTasks !== 'boolean')) ||
-    (presentation.schemaVersion === 2 && !isProgressiveIntent(presentation.progressiveIntent))
+    (presentation.schemaVersion === 2 && !isProgressiveIntent(presentation.progressiveIntent)) ||
+    (presentation.schemaVersion === 3 && !isStoredV3Presentation(presentation))
   ) {
     throw stateError('invalid_input', 'Stored presentation version payload is invalid.');
   }
@@ -1401,6 +2301,281 @@ function isPresentationTelemetry(value: unknown): value is SlackPresentationTele
   ) && [telemetry.eligibilityDecidedAt, telemetry.firstProgressiveEffectAt].every((entry) =>
     entry === undefined ||
     (typeof entry === 'number' && Number.isSafeInteger(entry) && entry >= 0)
+  );
+}
+
+function isStoredV3Presentation(
+  presentation: SlackRunPresentationV3,
+): boolean {
+  try {
+    validateOwner(presentation.owner);
+    validatePositiveInteger(presentation.sessionGeneration, 'Session generation');
+    if (!isProgressiveIntent(presentation.progressiveIntent)) return false;
+    if (presentation.currentActivity) {
+      validateActivity(presentation.currentActivity, presentation.sessionGeneration);
+    }
+    if (!isActivityProjection(presentation.activityProjection)) return false;
+    if (!isLifecyclePhase(presentation.lifecyclePhase) ||
+        !isAgentSessionState(presentation.agentSession?.desired) ||
+        (presentation.agentSession?.acknowledged !== 'none' &&
+          !isAgentSessionState(presentation.agentSession?.acknowledged)) ||
+        (presentation.agentSession.disposition !== undefined &&
+          presentation.agentSession.disposition !== 'superseded' &&
+          presentation.agentSession.disposition !== 'unavailable') ||
+        (presentation.agentSession.operation !== undefined &&
+          !isOperationReceipt(presentation.agentSession.operation))) return false;
+    if (presentation.terminalDelivery?.state === 'intended') {
+      if ((presentation.terminalDelivery.result !== 'answer' &&
+          presentation.terminalDelivery.result !== 'failure' &&
+          presentation.terminalDelivery.result !== 'legacy') ||
+          !isOperationReceipt(presentation.terminalDelivery.operation)) return false;
+    } else if (presentation.terminalDelivery?.state !== 'none') return false;
+    if (presentation.cleanup?.state === 'required') {
+      if ((presentation.cleanup.target !== 'activity' &&
+          presentation.cleanup.target !== 'agent_session') ||
+          !isOperationReceipt(presentation.cleanup.operation)) return false;
+    } else if (presentation.cleanup?.state === 'not_required') {
+      if (presentation.cleanup.disposition !== undefined &&
+          presentation.cleanup.disposition !== 'superseded') return false;
+    } else return false;
+    if (presentation.repair !== undefined && (
+      !Number.isSafeInteger(presentation.repair.attempts) ||
+      presentation.repair.attempts < 1 ||
+      !Number.isSafeInteger(presentation.repair.nextRetryAt) ||
+      presentation.repair.nextRetryAt < 1
+    )) return false;
+    if (!presentation.compatibility ||
+        ![1, 2, 3].includes(presentation.compatibility.sourceSchemaVersion)) return false;
+    if (presentation.plan) {
+      if (presentation.plan.displayMode !== 'timeline' &&
+          presentation.plan.displayMode !== 'plan') return false;
+      if (presentation.plan.tasks.length < 1 || presentation.plan.tasks.length > 4) return false;
+      if (presentation.compatibility.sourceSchemaVersion === 3 &&
+          presentation.plan.tasks.length < 2) return false;
+      for (const task of presentation.plan.tasks) {
+        validateId(task.id, 'Task id');
+        validateLabel(task.title);
+        if (task.status !== 'pending' && task.status !== 'in_progress' &&
+            task.status !== 'complete' && task.status !== 'error') return false;
+        if (task.status === 'complete' || task.status === 'error') {
+          if (!isTaskOutcome(task.outcome) || task.detail === undefined) return false;
+          if (task.status !== taskProjectionStatus(task.outcome)) return false;
+          validateDetail(task.detail);
+        } else if (task.outcome !== undefined || task.detail !== undefined) return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function requireV3(
+  presentation: SlackRunPresentation,
+): asserts presentation is SlackRunPresentationV3 {
+  if (presentation.schemaVersion !== 3) {
+    throw stateError('invalid_transition', 'This mutation requires presentation V3.');
+  }
+}
+
+function validatePersona(persona: SlackPresentationPersona): void {
+  validateLabel(persona.name);
+  validatePositiveInteger(persona.avatarRevision, 'Avatar revision');
+  if (!/^https:\/\//.test(persona.avatarUrl) || persona.avatarUrl.length > 2_048) {
+    throw stateError('invalid_input', 'Avatar URL must be a bounded HTTPS URL.');
+  }
+}
+
+function validateOwner(owner: SlackPresentationOwner): void {
+  if (!owner || (owner.kind !== 'selected_agent' && owner.kind !== 'chickpea')) {
+    throw stateError('invalid_input', 'Visible owner is invalid.');
+  }
+  if (owner.kind === 'selected_agent') {
+    if (!owner.persona) {
+      throw stateError('invalid_input', 'Selected-Agent owner requires a complete persona.');
+    }
+    validatePersona(owner.persona);
+  } else if ('persona' in owner && owner.persona !== undefined) {
+    throw stateError('invalid_input', 'Chickpea owner must use the base-app identity.');
+  }
+}
+
+function validateActivity(
+  activity: SlackPresentationActivity,
+  sessionGeneration: number,
+): void {
+  if (!isActivityKind(activity?.kind)) {
+    throw stateError('invalid_input', 'Activity kind is invalid.');
+  }
+  validateUserFacingFact(activity.action, 'Activity action', 80);
+  validateUserFacingFact(activity.object, 'Activity object', 160);
+  if (activity.generation !== sessionGeneration) {
+    throw stateError('identity_conflict', 'Activity generation does not match its session.');
+  }
+  validatePositiveInteger(activity.sequence, 'Activity sequence');
+  if (!isOperationReceipt(activity.operation)) {
+    throw stateError('invalid_input', 'Activity operation receipt is invalid.');
+  }
+}
+
+function validateDetail(value: string): void {
+  validateUserFacingFact(value, 'Task detail', 480);
+  if (hasCredentialLikeContent(value)) {
+    throw stateError('invalid_input', 'Task detail cannot contain credential-like content.');
+  }
+}
+
+function validateUserFacingFact(value: string, label: string, maxBytes: number): void {
+  if (typeof value !== 'string' || value.trim() !== value || value.length < 1 ||
+      new TextEncoder().encode(value).byteLength > maxBytes ||
+      /[\u0000-\u001f\u007f]/.test(value)) {
+    throw stateError('invalid_input', `${label} is not bounded user-readable text.`);
+  }
+}
+
+function isActivityKind(value: unknown): value is SlackPresentationActivityKind {
+  return value === 'preparing' || value === 'checking' || value === 'reading' ||
+    value === 'writing' || value === 'updating' || value === 'running' ||
+    value === 'waiting' || value === 'finishing';
+}
+
+function isReceiptCertainty(value: unknown): value is SlackPresentationReceiptCertainty {
+  return value === 'pending' || value === 'acknowledged' || value === 'failed' ||
+    value === 'unknown';
+}
+
+function isOperationReceipt(value: unknown): value is SlackPresentationOperationReceipt {
+  if (!value || typeof value !== 'object') return false;
+  const receipt = value as Record<string, unknown>;
+  try {
+    validateId(String(receipt.operationId ?? ''), 'Operation id');
+  } catch {
+    return false;
+  }
+  return isReceiptCertainty(receipt.certainty);
+}
+
+function transitionReceipt(
+  current: SlackPresentationOperationReceipt,
+  operationId: string,
+  certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>,
+): SlackPresentationOperationReceipt {
+  validateId(operationId, 'Operation id');
+  if (!isReceiptCertainty(certainty)) {
+    throw stateError('invalid_input', 'Receipt certainty is invalid.');
+  }
+  if (current.operationId !== operationId) {
+    throw stateError('identity_conflict', 'Receipt operation identity is mismatched.');
+  }
+  if (current.certainty === 'acknowledged' || current.certainty === 'failed') {
+    throw stateError('terminal_rewrite', 'Known operation receipt is immutable.');
+  }
+  if (current.certainty === 'unknown' && certainty === 'unknown') {
+    throw stateError('invalid_transition', 'Unknown receipt still requires reconciliation.');
+  }
+  return { operationId, certainty };
+}
+
+function isTaskOutcome(value: unknown): value is SlackPresentationTaskOutcome {
+  return value === 'completed' || value === 'changed' || value === 'skipped' ||
+    value === 'failed' || value === 'not_run';
+}
+
+function taskProjectionStatus(
+  outcome: SlackPresentationTaskOutcome,
+): 'complete' | 'error' {
+  return outcome === 'failed' || outcome === 'not_run' ? 'error' : 'complete';
+}
+
+function taskOutcomePrefix(outcome: SlackPresentationTaskOutcome): string {
+  switch (outcome) {
+    case 'completed': return 'Completed:';
+    case 'changed': return 'Changed:';
+    case 'skipped': return 'Skipped:';
+    case 'failed': return 'Failed:';
+    case 'not_run': return 'Not run:';
+  }
+}
+
+function isLifecyclePhase(value: unknown): value is SlackPresentationLifecyclePhase {
+  return value === 'admitted' || value === 'active' || value === 'terminal_intended' ||
+    value === 'settled' || value === 'recovery_required';
+}
+
+function isAgentSessionState(value: unknown): value is SlackPresentationAgentSessionState {
+  return value === 'processing' || value === 'active' || value === 'suspended' ||
+    value === 'closed';
+}
+
+function isActivityProjection(value: unknown): value is SlackPresentationActivityProjection {
+  if (!value || typeof value !== 'object') return false;
+  const projection = value as Record<string, unknown>;
+  if (projection.surface === 'unselected') {
+    return projection.state === 'absent' && projection.messageTs === undefined;
+  }
+  if (projection.surface === 'assistant_status') {
+    return (projection.state === 'selected' || projection.state === 'visible' ||
+      projection.state === 'cleared') && projection.messageTs === undefined;
+  }
+  if (projection.surface !== 'message' ||
+      (projection.state !== 'selected' && projection.state !== 'visible' &&
+        projection.state !== 'cleared')) return false;
+  if (projection.state === 'selected') return projection.messageTs === undefined;
+  if (typeof projection.messageTs !== 'string') return false;
+  try {
+    validateSlackTimestamp(projection.messageTs, 'Activity message timestamp');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function assertLifecycleTransition(
+  from: SlackPresentationLifecyclePhase,
+  to: SlackPresentationLifecyclePhase,
+): void {
+  const allowed: Record<SlackPresentationLifecyclePhase, readonly SlackPresentationLifecyclePhase[]> = {
+    admitted: ['active', 'terminal_intended', 'recovery_required'],
+    active: ['terminal_intended', 'recovery_required'],
+    terminal_intended: ['settled', 'recovery_required'],
+    recovery_required: ['active', 'terminal_intended', 'settled'],
+    settled: [],
+  };
+  if (!allowed[from].includes(to)) {
+    const code = from === 'settled' ? 'terminal_rewrite' : 'invalid_transition';
+    throw stateError(code, `Lifecycle cannot move from ${from} to ${to}.`);
+  }
+}
+
+function v3RepairRequired(presentation: SlackRunPresentationV3): boolean {
+  if (presentation.lifecyclePhase === 'recovery_required' ||
+      presentation.stream.pendingAppend ||
+      presentation.stream.state === 'starting' ||
+      presentation.stream.state === 'finalizing' ||
+      presentation.stream.state === 'fallback' ||
+      presentation.stream.state === 'unknown') return true;
+  const activityReceipt = presentation.currentActivity?.operation;
+  const terminalAcknowledged = presentation.terminalDelivery.state === 'intended' &&
+    presentation.terminalDelivery.operation.certainty === 'acknowledged';
+  const sharedCleanupSuperseded = presentation.activityProjection.surface ===
+      'assistant_status' && presentation.cleanup.state === 'not_required' &&
+    presentation.cleanup.disposition === 'superseded';
+  if (terminalAcknowledged && (
+    presentation.lifecyclePhase !== 'settled' ||
+    (presentation.activityProjection.state === 'visible' && !sharedCleanupSuperseded)
+  )) return true;
+  const receipts = [
+    activityReceipt?.certainty === 'failed' && terminalAcknowledged
+      ? undefined
+      : activityReceipt,
+    presentation.agentSession.disposition ? undefined : presentation.agentSession.operation,
+    presentation.terminalDelivery.state === 'intended'
+      ? presentation.terminalDelivery.operation
+      : undefined,
+    presentation.cleanup.state === 'required' ? presentation.cleanup.operation : undefined,
+  ];
+  return receipts.some((receipt) =>
+    receipt !== undefined && receipt.certainty !== 'acknowledged'
   );
 }
 

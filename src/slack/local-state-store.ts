@@ -65,12 +65,14 @@ export function localSlackStateStore(input: {
       turnJobs.retrySlackInstallationRecovery(workspaceId),
     resolveTurnRecoveryRequired: async (id) => turnJobs.resolveRecoveryRequired(id),
     getRunPresentation: async (runId) => presentations.get(runId),
+    getLatestThreadSessionGeneration: async (root) =>
+      presentations.getLatestThreadSessionGeneration(root),
     transitionRunPresentation: async (transition) => presentations.transition(transition),
     reserveSlackAppend: async (workspaceId) => presentations.reserveAppend(workspaceId),
     applySlackAppendCooldown: async (workspaceId, retryAfterMs) =>
       presentations.applyAppendCooldown(workspaceId, retryAfterMs),
     listRunPresentationsForRepair: async (limit = 50) =>
-      presentations.listRepairRequired(limit),
+      presentations.listAutoRepairableV3(limit),
     maintainRunPresentations: async (limit = 100) => presentations.maintain(limit),
     summarizeRunPresentations: async (workspaceId) => presentations.summarize(workspaceId),
     discardTurn: async (id) => turnJobs.discard(id),

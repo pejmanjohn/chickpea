@@ -24,6 +24,11 @@ import {
 } from '../connections/runtime.ts';
 import type { EffectiveConnectionAccount } from '../connections/types.ts';
 import type { PersonalConnectionAuthorizationOption } from '../connections/types.ts';
+import {
+  validateFrozenRuntimeModelRoute,
+  type FrozenRuntimeModelRoute,
+} from '../config/runtime-model.ts';
+import { isCompiledModelProfileId } from '../model-catalog/profiles.ts';
 
 export const RUNTIME_PLAN_SCHEMA_VERSION = 3 as const;
 export const DEFAULT_CONTINUITY_POLICY = 'slack-runtime-v3' as const;
@@ -129,6 +134,10 @@ export interface RuntimePlanV2 {
   /** Slack-visible history only, frozen when a new owner begins. */
   handoffContext?: SlackPublicHandoffMessage[];
   conversation: RuntimePlanConversationV2;
+  /** Internal, secret-free Flue model route frozen for this admitted turn. */
+  runtimeModel?: string;
+  /** Safe hosted-catalog inputs needed to register that route in a cold isolate. */
+  runtimeModelRoute?: FrozenRuntimeModelRoute;
   model: string;
   /** Non-secret model policy facts frozen with the admitted turn. Required on V3. */
   modelAttribution?: AgentModelAttribution;
@@ -157,6 +166,9 @@ export interface CompileRuntimePlanV2Input {
   instructions: string;
   memoryEpoch: number;
   sandboxMode: RuntimePlanSandboxMode;
+  /** Resolved internal Flue route; defaults to the canonical model for compatibility. */
+  runtimeModel?: string;
+  runtimeModelRoute?: FrozenRuntimeModelRoute;
   continuityPolicy?: string;
   effectiveConnections?: readonly EffectiveConnectionAccount[];
   connectionAuthorizations?: readonly PersonalConnectionAuthorizationOption[];
@@ -210,6 +222,8 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
       surface: surfaceForTurn(input.turn),
       continuityKey,
     },
+    runtimeModel: input.runtimeModel ?? requireFrozenModel(input.assignment),
+    ...(input.runtimeModelRoute ? { runtimeModelRoute: input.runtimeModelRoute } : {}),
     model: requireFrozenModel(input.assignment),
     modelAttribution: frozenModelAttribution(input.assignment),
     ...(input.assignment.modelCredential
@@ -296,6 +310,8 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'ownerIncarnation',
     'handoffContext',
     'conversation',
+    'runtimeModel',
+    'runtimeModelRoute',
     'model',
     'modelAttribution',
     'modelCredential',
@@ -318,6 +334,8 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'managedConnections',
     'ownerIncarnation',
     'handoffContext',
+    'runtimeModel',
+    'runtimeModelRoute',
     'modelAttribution',
     'modelCredential',
   ]);
@@ -393,6 +411,13 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     continuityKey: opaqueAgentId(conversationRecord.continuityKey, 'conversation.continuityKey'),
   };
   const model = boundedString(record.model, 'model', 3, 240);
+  const runtimeModel = record.runtimeModel === undefined
+    ? undefined
+    : boundedString(record.runtimeModel, 'runtimeModel', 3, 240);
+  const runtimeModelRoute = record.runtimeModelRoute === undefined
+    ? undefined
+    : parseFrozenRuntimeModelRoute(record.runtimeModelRoute);
+  validateFrozenRuntimeModelRoute(model, runtimeModel ?? model, runtimeModelRoute);
   const instructions = boundedString(record.instructions, 'instructions', 1, 200_000);
   const memoryEpoch = positiveInteger(record.memoryEpoch, 'memoryEpoch');
   const skills = arrayOf(record.skills, 'skills', parseSkill, 128);
@@ -448,6 +473,8 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     ...(ownerIncarnation ? { ownerIncarnation } : {}),
     ...(handoffContext?.length ? { handoffContext } : {}),
     conversation,
+    ...(runtimeModel ? { runtimeModel } : {}),
+    ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
     model,
     ...(modelAttribution ? { modelAttribution } : {}),
     ...(modelCredential ? { modelCredential } : {}),
@@ -622,6 +649,8 @@ function computeHarnessRevision(
         : {}),
       ...(plan.ownerIncarnation ? { ownerIncarnation: plan.ownerIncarnation } : {}),
       ...(plan.handoffContext?.length ? { handoffContext: plan.handoffContext } : {}),
+      ...(plan.runtimeModel ? { runtimeModel: plan.runtimeModel } : {}),
+      ...(plan.runtimeModelRoute ? { runtimeModelRoute: plan.runtimeModelRoute } : {}),
       model: plan.model,
       ...(plan.modelAttribution ? { modelAttribution: plan.modelAttribution } : {}),
       ...(plan.modelCredential ? { modelCredential: plan.modelCredential } : {}),
@@ -780,6 +809,51 @@ function parseModelCredential(value: unknown): RuntimePlanModelCredentialV3 {
     credentialRefId: boundedString(record.credentialRefId, 'modelCredential.credentialRefId', 1, 256),
     version: positiveInteger(record.version, 'modelCredential.version'),
     providerId: boundedString(record.providerId, 'modelCredential.providerId', 1, 128),
+  };
+}
+
+function parseFrozenRuntimeModelRoute(value: unknown): FrozenRuntimeModelRoute {
+  const record = exactRecord(value, 'runtimeModelRoute', [
+    'source',
+    'revision',
+    'sha256',
+    'lane',
+    'profile',
+    'displayName',
+    'contextWindow',
+    'maxTokens',
+  ], ['displayName', 'contextWindow', 'maxTokens']);
+  if (record.source !== 'hosted_catalog') {
+    throw new Error('runtimeModelRoute.source is invalid.');
+  }
+  const sha256 = boundedString(record.sha256, 'runtimeModelRoute.sha256', 64, 64);
+  if (!/^[a-f0-9]{64}$/.test(sha256)) {
+    throw new Error('runtimeModelRoute.sha256 is invalid.');
+  }
+  const lane = oneOf(record.lane, 'runtimeModelRoute.lane', [
+    'anthropic_api_key',
+    'openai_api_key',
+    'openai_subscription',
+  ] as const);
+  const profile = boundedString(record.profile, 'runtimeModelRoute.profile', 1, 96);
+  if (!isCompiledModelProfileId(profile)) {
+    throw new Error('runtimeModelRoute.profile is invalid.');
+  }
+  return {
+    source: 'hosted_catalog',
+    revision: positiveInteger(record.revision, 'runtimeModelRoute.revision'),
+    sha256,
+    lane,
+    profile,
+    ...(record.displayName === undefined
+      ? {}
+      : { displayName: boundedString(record.displayName, 'runtimeModelRoute.displayName', 1, 160) }),
+    ...(record.contextWindow === undefined
+      ? {}
+      : { contextWindow: positiveInteger(record.contextWindow, 'runtimeModelRoute.contextWindow') }),
+    ...(record.maxTokens === undefined
+      ? {}
+      : { maxTokens: positiveInteger(record.maxTokens, 'runtimeModelRoute.maxTokens') }),
   };
 }
 

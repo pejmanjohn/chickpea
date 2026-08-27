@@ -1540,6 +1540,12 @@ export class CfSlackStateStore implements SlackStateStore {
     return orUndefined(unwrap(await this.stub.slackPresentationGet(runId)));
   }
 
+  async getLatestThreadSessionGeneration(
+    root: Parameters<TagStateRpc['slackPresentationLatestThreadGeneration']>[0],
+  ) {
+    return orUndefined(unwrap(await this.stub.slackPresentationLatestThreadGeneration(root)));
+  }
+
   async transitionRunPresentation(input: SlackPresentationTransitionInput) {
     return unwrap(await this.stub.slackPresentationTransition(input));
   }

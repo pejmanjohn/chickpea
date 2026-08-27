@@ -65,6 +65,7 @@ import {
 import { resolveMcpOAuthAccessToken } from '../config/mcp-oauth.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
 import {
+  registerFrozenRuntimeModelRoute,
   resolveRuntimeModel,
   type ResolvedRuntimeModel,
 } from '../config/runtime-model.ts';
@@ -141,6 +142,11 @@ import { createWorkspaceArtifactTool } from '../sandbox/artifact-tool.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import { parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
+import {
+  parseSlackAttachmentIntake,
+  slackAttachmentTurnIsReadOnly,
+  useSlackAttachmentContext,
+} from '../slack/attachment-context.ts';
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { slackPresentationIntentCapability } from '../slack/presentation-intent.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
@@ -1060,17 +1066,43 @@ export function ChickpeaSlack({ id }: AgentProps) {
   const delivery = useDelivery();
   const currentRequest = parseCurrentRequestEnvelope(delivery.body);
   const presentationIntent = slackPresentationIntentCapability(currentRequest);
+  const attachmentReadOnly = slackAttachmentTurnIsReadOnly(
+    parseSlackAttachmentIntake(delivery, plan),
+  );
+  useChickpeaSlackRuntimeCapabilities(
+    plan,
+    id,
+    attachmentReadOnly,
+    presentationIntent,
+  );
+  useSlackAttachmentContext(
+    plan,
+    resolveAgentPlatformEnv,
+    async (env) => plan.runtimeModel ?? (await prepareRuntimePlanModel(plan, env)).model,
+  );
+  return plan.instructions;
+}
+
+/** Register the exact main-turn capability set after trusted attachment intake is known. */
+export function useChickpeaSlackRuntimeCapabilities(
+  plan: RuntimePlanV2,
+  id: string,
+  attachmentReadOnly: boolean,
+  presentationIntent: ReturnType<typeof slackPresentationIntentCapability>,
+): void {
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
+    toolsDisabled: attachmentReadOnly,
   });
-  useAgentAuthoring();
-  useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv);
-  usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
-  if (presentationIntent) {
-    useInstruction(presentationIntent.instruction);
-    useTool(presentationIntent.tool);
+  if (!attachmentReadOnly) {
+    useAgentAuthoring();
+    useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv);
+    usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
+    if (presentationIntent) {
+      useInstruction(presentationIntent.instruction);
+      useTool(presentationIntent.tool);
+    }
   }
-  return plan.instructions;
 }
 
 /** Compose the declarations shared by Slack and fresh routine agents. */
@@ -1081,27 +1113,41 @@ export function useRuntimePlanAgent(
     responseMetadataModel?: string;
     sandboxConversationKey?: string;
     connectorUsageCorrelation?: import('../connections/managed-tools.ts').ManagedToolUsageCorrelation;
+    toolsDisabled?: boolean;
   } = {},
 ): void {
+  registerFrozenRuntimeModelRoute(
+    plan.model,
+    plan.runtimeModel ?? plan.model,
+    plan.runtimeModelRoute,
+  );
   const thinkingLevel = thinkingLevelForModel(plan.model);
-  useModel(plan.model, thinkingLevel ? { thinkingLevel } : {});
+  useModel(plan.runtimeModel ?? plan.model, thinkingLevel ? { thinkingLevel } : {});
   if (options.responseMetadataModel) {
     useChickpeaResponseMetadata(options.responseMetadataModel);
   }
   useInstruction('Never invent facts or claim access to context and tools you do not have.');
-  useManagedConnectionTools(
-    plan,
-    resolveAgentPlatformEnv,
-    options.connectorUsageCorrelation,
-    [AGENT_AUTHORING_SKILL_NAME],
-  );
-  for (const skill of resolveProfileSkills(
-    plan.skills.map((entry) => ({ ...entry, enabled: true })),
-    { reservedNames: [AGENT_AUTHORING_SKILL_NAME] },
-  )) {
-    useSkill(skill);
+  if (options.toolsDisabled) {
+    useInstruction(
+      'This attachment-bearing Slack turn is read-only. No tools, connectors, sandboxes, or workspace-management actions are available. Answer only from the authoritative Slack request and the attachment evidence signal. If the request also asks for an external action, analyze the attachments, state the exact proposed action inputs separately, and ask the user to restate those exact inputs in a new text-only message. A vague follow-up such as "go ahead" is not authorization.',
+    );
+  } else {
+    useManagedConnectionTools(
+      plan,
+      resolveAgentPlatformEnv,
+      options.connectorUsageCorrelation,
+      [AGENT_AUTHORING_SKILL_NAME],
+    );
   }
-  if (!plan.actorMembershipId) {
+  if (!options.toolsDisabled) {
+    for (const skill of resolveProfileSkills(
+      plan.skills.map((entry) => ({ ...entry, enabled: true })),
+      { reservedNames: [AGENT_AUTHORING_SKILL_NAME] },
+    )) {
+      useSkill(skill);
+    }
+  }
+  if (!options.toolsDisabled && !plan.actorMembershipId) {
     for (const connection of resolveRuntimePlanMcpConnections(
       plan.agentId,
       plan.mcpConnections,
@@ -1112,9 +1158,16 @@ export function useRuntimePlanAgent(
       useMcpConnection(connection);
     }
   }
-  useSandbox(createRuntimePlanSandbox(plan, options.sandboxConversationKey));
-  if (plan.sandbox.mode === 'cloudflare') {
-    useTool(createRuntimePlanArtifactTool(plan));
+  if (options.toolsDisabled) {
+    // Attachment turns expose no sandbox tools, but still initialize a tiny
+    // environment so provider authority is rebound on every Flue recovery
+    // attempt, including one whose durable start hook already committed.
+    useSandbox(createRuntimePlanPreparationSandbox(plan));
+  } else {
+    useSandbox(createRuntimePlanSandbox(plan, options.sandboxConversationKey));
+    if (plan.sandbox.mode === 'cloudflare') {
+      useTool(createRuntimePlanArtifactTool(plan));
+    }
   }
 }
 
@@ -1145,25 +1198,7 @@ function createRuntimePlanSandbox(
     return {
       async createSessionEnv(options) {
         const env = await resolveAgentPlatformEnv();
-        // Runtime plans freeze behavior, but they do not preserve execution
-        // authority after an Agent is disabled or archived.
-        await requireLiveFrozenAgent(getConfigStore(env), plan.agentId);
-        const settings = getSettingsStore(env);
-        if (plan.modelCredential) {
-          await revalidateModelCredentialAttribution(
-            plan.model,
-            plan.modelCredential,
-            env,
-            settings,
-            getUsageStore(env),
-          );
-        }
-        // useModel owns the frozen public model id; resolving here binds only
-        // its current credential lane/provider in this Flue Agent isolate.
-        await resolveRuntimeModel(plan.agentId, plan.model, {
-          settings,
-          ...(env ? { env } : {}),
-        });
+        await prepareRuntimePlanModel(plan, env);
         return localSandbox.createSessionEnv(options);
       },
     };
@@ -1205,6 +1240,49 @@ function createRuntimePlanSandbox(
       return runtime.sandbox.createSessionEnv({ id });
     },
   };
+}
+
+function createRuntimePlanPreparationSandbox(plan: RuntimePlanV2): SandboxFactory {
+  const localSandbox = bash(() => new Bash({ fs: new InMemoryFs() }));
+  return {
+    async createSessionEnv(options) {
+      const env = await resolveAgentPlatformEnv();
+      await prepareRuntimePlanModel(plan, env);
+      return localSandbox.createSessionEnv(options);
+    },
+    tools: () => [],
+  };
+}
+
+/** Bind the frozen model lane before any model call, including tool-free attachment turns. */
+async function prepareRuntimePlanModel(
+  plan: RuntimePlanV2,
+  env: PlatformEnv | undefined,
+) {
+  // Runtime plans freeze behavior, but they do not preserve execution
+  // authority after an Agent is disabled or archived.
+  await requireLiveFrozenAgent(getConfigStore(env), plan.agentId);
+  const settings = getSettingsStore(env);
+  if (plan.modelCredential) {
+    await revalidateModelCredentialAttribution(
+      plan.model,
+      plan.modelCredential,
+      env,
+      settings,
+      getUsageStore(env),
+    );
+  }
+  // Keep the canonical model as the public/audit identity. Resolve and bind its
+  // live billing lane immediately before the call, then verify that it still
+  // matches the secret-free internal route frozen when the turn was admitted.
+  const resolved = await resolveRuntimeModel(plan.agentId, plan.model, {
+    settings,
+    ...(env ? { env } : {}),
+  });
+  if (plan.runtimeModel && resolved.model !== plan.runtimeModel) {
+    throw new Error('Runtime model route changed after this Slack turn was admitted.');
+  }
+  return resolved;
 }
 
 function projectRuntimePlanAgent(

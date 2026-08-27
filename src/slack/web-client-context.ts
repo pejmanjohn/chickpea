@@ -85,7 +85,8 @@ export async function hydrateSlackPublicHandoffFallback(
     });
     const entries = ((response.messages ?? []) as unknown as SlackWebApiMessage[])
       .flatMap((message) => {
-        if (!message.text?.trim() || !message.ts || message.subtype) return [];
+        if (!message.text?.trim() || !message.ts ||
+            (message.subtype && message.subtype !== 'file_share')) return [];
         if (!atOrBeforeSlackWatermark(message.ts, turn.messageTs) || message.ts === turn.messageTs) {
           return [];
         }

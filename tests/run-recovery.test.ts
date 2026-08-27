@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { WebClient } from '@slack/web-api';
+import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
@@ -73,6 +73,88 @@ test('activated direct-message dispatch uses the frozen Slack root coordinate', 
     if (envelope.schemaVersion !== 2) throw new Error('expected a signal dispatch');
     assert.equal(envelope.message.attributes.threadTs, '100.009');
     assert.equal(envelope.initialData?.conversation.threadTs, '100.009');
+  } finally {
+    db.close();
+  }
+});
+
+test('Flue Slack signals retain trusted attachment file ids without durable bytes or URLs', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const imageTurn: NormalizedSlackTurn = {
+      ...turn(),
+      attachments: [{ fileId: 'F_IMAGE_1' }],
+      attachmentIntake: { status: 'ok', count: 1 },
+    };
+    const imageAssignment = assignment();
+    turns.enqueue({
+      id: 'turn_image-signal',
+      evtKey: 'evt_image-signal',
+      msgKey: 'msg_image-signal',
+      turn: imageTurn,
+      assignment: imageAssignment,
+    });
+    turns.freezeRuntimePlan('turn_image-signal', compileRuntimePlanV2({
+      turn: imageTurn,
+      assignment: imageAssignment,
+      instructions: 'Frozen image instructions.',
+      memoryEpoch: 1,
+      sandboxMode: 'bash',
+    }));
+
+    const envelope = turns.prepareFlueDispatch(
+      'turn_image-signal',
+      'Inspect the image.',
+      { generation: 'image-generation' },
+    );
+
+    assert.equal(envelope.schemaVersion, 2);
+    if (envelope.schemaVersion !== 2) throw new Error('expected a signal dispatch');
+    assert.equal(envelope.message.attributes.attachmentFileIds, 'F_IMAGE_1');
+    assert.equal(envelope.message.attributes.attachmentIntakeStatus, 'ok');
+    assert.equal(envelope.message.attributes.attachmentCount, '1');
+    assert.doesNotMatch(JSON.stringify(envelope), /private-image|image\/png|url_private/i);
+  } finally {
+    db.close();
+  }
+});
+
+test('Flue Slack signals retain explicit attachment intake failures without file metadata', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const failedTurn: NormalizedSlackTurn = {
+      ...turn(),
+      attachmentIntake: { status: 'too_many', count: 5 },
+    };
+    const failedAssignment = assignment();
+    turns.enqueue({
+      id: 'turn_attachment-limit',
+      evtKey: 'evt_attachment-limit',
+      msgKey: 'msg_attachment-limit',
+      turn: failedTurn,
+      assignment: failedAssignment,
+    });
+    turns.freezeRuntimePlan('turn_attachment-limit', compileRuntimePlanV2({
+      turn: failedTurn,
+      assignment: failedAssignment,
+      instructions: 'Frozen attachment instructions.',
+      memoryEpoch: 1,
+      sandboxMode: 'bash',
+    }));
+
+    const envelope = turns.prepareFlueDispatch(
+      'turn_attachment-limit',
+      'Inspect every attachment.',
+      { generation: 'attachment-limit-generation' },
+    );
+
+    assert.equal(envelope.schemaVersion, 2);
+    if (envelope.schemaVersion !== 2) throw new Error('expected a signal dispatch');
+    assert.equal(envelope.message.attributes.attachmentFileIds, undefined);
+    assert.equal(envelope.message.attributes.attachmentIntakeStatus, 'too_many');
+    assert.equal(envelope.message.attributes.attachmentCount, '5');
   } finally {
     db.close();
   }
@@ -353,6 +435,140 @@ test('delivery recovery finalizes one exact known stream and its presentation', 
   }
 });
 
+test('delivery recovery settles an acknowledged V3 terminal before completing its Work run', async () => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const presentations = new SlackRunPresentationStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('v3-delivery-recovery')));
+    const first = work.claimNextInteractiveRun({
+      ownerId: 'first_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    const lifecycle = lifecycleFor(work, admission.run.id, first.fencingToken, () => ++clock);
+    await lifecycle.prepareExecution('Prepared input');
+    await lifecycle.markInvoked();
+    await lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+    const attemptId = await lifecycle.beforeDelivery({
+      method: 'slack_chat_stream_resume',
+      approvedOutput: 'Persisted answer',
+      renderedPayload: JSON.stringify({
+        method: 'slack_chat_stream_resume',
+        channel: 'C_canary', ts: '100.002', stop: { chunks: [] },
+      }),
+    });
+    await lifecycle.afterDelivery({
+      attemptId,
+      outcome: 'failed',
+      safeFailureCode: 'slack_stream_finalize_failed',
+    });
+    let presentation = presentations.create({
+      schemaVersion: 3,
+      runId: admission.run.id,
+      turnJobId: 'turn_v3-delivery-recovery',
+      bindingId: admission.binding.id,
+      workBindingGeneration: admission.binding.generation,
+      runFencingToken: first.fencingToken,
+      owner: { kind: 'chickpea' },
+      sessionGeneration: 1,
+      currentActivity: {
+        kind: 'preparing', action: 'Preparing', object: 'your request', generation: 1, sequence: 1,
+        operation: { operationId: 'activity_v3_delivery_recovery_1', certainty: 'pending' },
+      },
+      root: {
+        workspaceId: 'T_canary', channelId: 'C_canary', threadTs: '100.001',
+        requesterUserId: 'U_member',
+      },
+    });
+    for (const mutation of [
+      { kind: 'select_activity_projection', surface: 'message' as const } as const,
+      {
+        kind: 'record_activity_receipt', operationId: 'activity_v3_delivery_recovery_1',
+        certainty: 'acknowledged' as const, messageTs: '100.003',
+      } as const,
+      { kind: 'freeze_progressive_eligibility', eligibility: {
+        allowed: false, reason: 'other' as const,
+      } } as const,
+      { kind: 'stream_start_intent' } as const,
+      { kind: 'stream_started', messageTs: '100.002', flue: {
+        instanceId: 'instance_v3_recovery', submissionId: 'submission_v3_recovery',
+      } } as const,
+      { kind: 'close_stream', outcome: 'terminal_only' as const } as const,
+      { kind: 'mark_finalizing' } as const,
+      {
+        kind: 'record_terminal_delivery_intent', operationId: 'terminal_v3_delivery_recovery_1',
+        result: 'answer' as const,
+      } as const,
+      {
+        kind: 'record_terminal_delivery_receipt', operationId: 'terminal_v3_delivery_recovery_1',
+        certainty: 'acknowledged' as const,
+      } as const,
+    ]) {
+      presentation = transitionPresentation(presentations, presentation, mutation);
+    }
+    work.releaseRunLease({
+      runId: admission.run.id, ownerId: first.leaseOwner, fencingToken: first.fencingToken,
+      outcome: 'requeue', reasonCode: 'confirmed_delivery_failure', releasedAt: ++clock,
+    });
+    turns.enqueue(turnJob(admission.run.id, 'v3-delivery-recovery'));
+    const second = work.claimNextInteractiveRun({
+      ownerId: 'second_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
+    })!;
+    const calls: string[] = [];
+    let cleanupAttempts = 0;
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client: {
+        apiCall: async () => { calls.push('session'); return { ok: true }; },
+        chat: {
+          stopStream: async () => { calls.push('stream'); return { ok: true }; },
+          delete: async () => {
+            calls.push('activity');
+            cleanupAttempts += 1;
+            if (cleanupAttempts === 1) {
+              throw Object.assign(new Error('cleanup rejected'), { code: ErrorCode.PlatformError });
+            }
+            return { ok: true };
+          },
+        },
+      } as unknown as WebClient,
+      presentationState: presentationPort(presentations, turns),
+      now: () => ++clock,
+    });
+
+    assert.deepEqual(await handler(second), {
+      kind: 'requeue', reasonCode: 'slack_presentation_terminal_repair_pending',
+    });
+    assert.equal(work.getRun(admission.run.id)?.status, 'response_ready');
+    const pending = presentations.get(admission.run.id);
+    assert.equal(pending?.schemaVersion, 3);
+    if (pending?.schemaVersion === 3) {
+      assert.equal(pending.activityProjection.state, 'visible');
+      assert.equal(pending.repairRequired, true);
+    }
+    work.releaseRunLease({
+      runId: admission.run.id, ownerId: second.leaseOwner, fencingToken: second.fencingToken,
+      outcome: 'requeue', reasonCode: 'slack_presentation_terminal_repair_pending', releasedAt: ++clock,
+    });
+    const third = work.claimNextInteractiveRun({
+      ownerId: 'third_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
+    })!;
+    assert.deepEqual(await handler(third), { kind: 'completed' });
+    assert.deepEqual(calls, ['stream', 'session', 'activity', 'activity']);
+    const settled = presentations.get(admission.run.id);
+    assert.equal(settled?.schemaVersion, 3);
+    if (settled?.schemaVersion !== 3) return;
+    assert.equal(settled.lifecyclePhase, 'settled');
+    assert.equal(settled.activityProjection.state, 'cleared');
+    assert.equal(settled.repairRequired, false);
+    assert.equal(work.getRun(admission.run.id)?.status, 'settled');
+  } finally {
+    db.close();
+  }
+});
+
 test('a pre-submit executor failure is safely requeued instead of quarantined', async () => {
   let clock = NOW;
   const db = openStateDb(':memory:');
@@ -452,6 +668,55 @@ test('a Flue reconciliation conflict quarantines the ledger Run and retains its 
       reasonCode: 'flue_dispatch_reconciliation_required',
     });
     assert.equal(turns.runtimeDrainCounts().pendingLedgerTurnJobs, 1);
+    assert.equal(turns.getPendingByRunId(admission.run.id), undefined);
+  } finally {
+    db.close();
+  }
+});
+
+test('a delivered recovery notice still quarantines the ambiguous canonical Run', async () => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('recovery-notice')));
+    turns.enqueue(turnJob(admission.run.id, 'recovery-notice'));
+    const claim = work.claimNextInteractiveRun({
+      ownerId: 'worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    const replayed: Array<{ text: string | undefined; result: string | undefined }> = [];
+    let executions = 0;
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client: {} as WebClient,
+      executeTurn: (async (_turn, _assignment, _env, options) => {
+        executions += 1;
+        if (executions === 1) {
+          turns.markRecoveryRequired(
+            'turn_recovery-notice',
+            'flue_dispatch_payload_conflict',
+          );
+          throw new AgentPromptFailure('agent', 409, true);
+        }
+        replayed.push({
+          text: options?.replayText,
+          result: options?.replayTerminalResult,
+        });
+        await options?.onDelivered?.();
+      }) as LedgerSlackTurnExecutor,
+      now: () => ++clock,
+    });
+
+    assert.deepEqual(await handler(claim), {
+      kind: 'recovery_required',
+      reasonCode: 'flue_dispatch_reconciliation_required',
+    });
+    assert.equal(executions, 2);
+    assert.equal(replayed.length, 1);
+    assert.match(replayed[0]?.text ?? '', /couldn't finish this request after retrying/i);
+    assert.equal(replayed[0]?.result, 'failure');
     assert.equal(turns.getPendingByRunId(admission.run.id), undefined);
   } finally {
     db.close();
@@ -624,6 +889,8 @@ function presentationPort(
 ): SlackPresentationStatePort {
   return {
     getRunPresentation: (runId) => store.get(runId),
+    getLatestThreadSessionGeneration: (root) =>
+      store.getLatestThreadSessionGeneration(root),
     transitionRunPresentation: (input) => store.transition(input),
     reserveSlackAppend: (workspaceId) => store.reserveAppend(workspaceId),
     applySlackAppendCooldown: (workspaceId, retryAfterMs) =>

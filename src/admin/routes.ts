@@ -8244,7 +8244,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!installation?.botUserId) {
         return c.json({ error: 'slack_not_configured' }, 409);
       }
-      const inboundStatus = await readGatewaySessionStatus(c.env);
+      let inboundStatus = await readGatewaySessionStatus(c.env);
+      if (!inboundStatus.healthy) {
+        // An explicit Admin retry is also the recovery action. A stale or
+        // needs-attention runner can otherwise remain observable-but-idle
+        // after the gateway Worker is redeployed even though the binding and
+        // outbound Slack credential are still healthy.
+        await restartCloudflareGatewaySession(c.env);
+        inboundStatus = await readGatewaySessionStatus(c.env);
+      }
       try {
         const bot = await (await agentSlackTransport(c, installation.workspaceId))
           .lookupMember(installation.botUserId);

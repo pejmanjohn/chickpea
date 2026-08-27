@@ -15,6 +15,7 @@ export interface SlackAppMentionEvent {
   bot_id?: string;
   app_id?: string;
   bot_profile?: { app_id?: string };
+  files?: SlackFileEvent[];
 }
 
 export interface SlackMessageEvent {
@@ -36,8 +37,25 @@ export interface SlackMessageEvent {
     app_id?: string;
     id?: string;
   };
+  files?: SlackFileEvent[];
   /** Agent View context is deliberately discarded before turn normalization. */
   app_context?: unknown;
+}
+
+export interface SlackFileEvent {
+  id?: string;
+  name?: string;
+  mimetype?: string;
+  size?: number;
+}
+
+export interface SlackAttachmentReference {
+  fileId: string;
+}
+
+export interface SlackAttachmentIntake {
+  status: 'ok' | 'too_many' | 'invalid_metadata';
+  count: number;
 }
 
 export interface SlackAppHomeOpenedEvent {
@@ -166,6 +184,10 @@ export interface NormalizedSlackTurn {
   reactionTargetTs?: string;
   /** Slack-verified text of the message that received an inbound reaction. */
   reactionTargetText?: string;
+  /** Slack-authenticated file handles. File bytes and private URLs never enter durable state. */
+  attachments?: SlackAttachmentReference[];
+  /** Content-free intake result retained so rejected files never disappear silently. */
+  attachmentIntake?: SlackAttachmentIntake;
   /** Content-free state snapshot used by the durable explicit-turn classifier. */
   activeWorkAtAdmission?: boolean;
   /** Host-validated preflight result carried into the durable TurnJob. */

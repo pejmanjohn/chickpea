@@ -8,6 +8,21 @@ import {
 
 type ApiMethod = (input?: Record<string, unknown>) => Promise<WebAPICallResult>;
 
+export type AgentSessionStatus = 'active' | 'processing' | 'suspended' | 'closed';
+
+export interface AgentSessionSetStatusArguments {
+  channel_id?: string;
+  thread_ts?: string;
+  status: AgentSessionStatus;
+  title?: string;
+  initiator_user_id?: string;
+  icon_emoji?: string | null;
+  icon_url?: string | null;
+  username?: string | null;
+}
+
+const AGENT_SESSION_SET_STATUS_OPERATION = 'agents.sessions.setStatus' as const;
+
 const NAMESPACED_OPERATIONS = new Set<GatewaySlackOperation>([
   'auth.test',
   'users.info',
@@ -45,6 +60,18 @@ const ASSISTANT_THREAD_OPERATIONS = new Set<GatewaySlackOperation>([
   'assistant.threads.setTitle',
 ]);
 
+const AGENT_SESSION_OPERATIONS = new Set<GatewaySlackOperation>([
+  AGENT_SESSION_SET_STATUS_OPERATION,
+]);
+
+/** Narrow SDK-version bridge for the untyped Agent Sessions method. */
+export function setAgentSessionStatus(
+  client: Pick<WebClient, 'apiCall'>,
+  input: AgentSessionSetStatusArguments,
+): Promise<WebAPICallResult> {
+  return client.apiCall(AGENT_SESSION_SET_STATUS_OPERATION, { ...input });
+}
+
 /**
  * WebClient-shaped facade over the private Chickpea gateway. It intentionally
  * has no fallback client or token: an unlisted-app deployment can invoke only
@@ -78,6 +105,14 @@ export function createGatewaySlackWebClient(client: GatewayOperationClient): Web
   return new Proxy({}, {
     get(_target, property): unknown {
       if (property === 'assistant') return assistant;
+      if (property === 'apiCall') {
+        return (operation: string, input: Record<string, unknown> = {}) => {
+          if (!AGENT_SESSION_OPERATIONS.has(operation as GatewaySlackOperation)) {
+            return Promise.reject(unsupported(operation));
+          }
+          return apiMethod(client, operation)(input);
+        };
+      }
       if (typeof property !== 'string') throw unsupported(String(property));
       if (['auth', 'users', 'conversations', 'usergroups', 'views', 'chat', 'files', 'reactions']
         .includes(property)) {
@@ -91,7 +126,9 @@ export function createGatewaySlackWebClient(client: GatewayOperationClient): Web
 function apiMethod(client: GatewayOperationClient, operationName: string): ApiMethod {
   if (!gatewayOperationAllowed(operationName)) throw unsupported(operationName);
   const operation = operationName as GatewaySlackOperation;
-  if (!NAMESPACED_OPERATIONS.has(operation) && !ASSISTANT_THREAD_OPERATIONS.has(operation)) {
+  if (!NAMESPACED_OPERATIONS.has(operation) &&
+      !ASSISTANT_THREAD_OPERATIONS.has(operation) &&
+      !AGENT_SESSION_OPERATIONS.has(operation)) {
     throw unsupported(operationName);
   }
   return async (input = {}) => {

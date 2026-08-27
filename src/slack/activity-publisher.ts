@@ -1,15 +1,19 @@
-import type { ActivityStatus } from '../activity/status.ts';
+import {
+  isSafeTypedActivityStatus,
+  type ActivityStatus,
+  type TypedActivityStatus,
+} from '../activity/status.ts';
 import { currentFlueObservationContext } from '../work/model-invocation.ts';
 import { setObservedSlackStatus } from './status-registry.ts';
 import { relayObservedStatus } from './status-relay.ts';
 
 interface PendingRelay {
-  text: string;
+  status: TypedActivityStatus;
   env?: Record<string, unknown>;
 }
 
 interface RelayQueue {
-  active: { text: string } | undefined;
+  active: { status: TypedActivityStatus } | undefined;
   pending: PendingRelay | undefined;
 }
 
@@ -28,6 +32,10 @@ export function publishActivityStatus(
   env?: Record<string, unknown>,
   observedSubmissionId?: string,
 ): void {
+  // Production activity is canonicalized by activityStatus(). Preserve its
+  // structured fact over the Cloudflare RPC, and reject legacy/raw text before
+  // it can cross an isolate boundary.
+  if (!isSafeTypedActivityStatus(status)) return;
   const context = currentFlueObservationContext();
   const matchingContext = context?.instanceId === instanceId ? context : undefined;
   const submissionId = observedSubmissionId ?? matchingContext?.submissionId;
@@ -46,15 +54,15 @@ export function publishActivityStatus(
     pending: undefined,
   };
   instanceQueues.set(submissionId, queue);
-  if (queue.active?.text === status.text) {
+  if (sameActivityStatus(queue.active?.status, status)) {
     // The in-flight value is already the newest requested state.
     queue.pending = undefined;
     return;
   }
-  if (queue.pending?.text === status.text) {
+  if (sameActivityStatus(queue.pending?.status, status)) {
     return;
   }
-  queue.pending = { text: status.text, ...(env ? { env } : {}) };
+  queue.pending = { status, ...(env ? { env } : {}) };
   startNextRelay(instanceId, submissionId, queue);
 }
 
@@ -63,10 +71,10 @@ function startNextRelay(instanceId: string, submissionId: string, queue: RelayQu
 
   const next = queue.pending;
   queue.pending = undefined;
-  const result = relayObservedStatus(instanceId, submissionId, next.text, next.env).catch(
+  const result = relayObservedStatus(instanceId, submissionId, next.status, next.env).catch(
     () => undefined,
   );
-  const active = { text: next.text };
+  const active = { status: next.status };
   queue.active = active;
   void result.then(() => {
     if (queue.active === active) {
@@ -84,4 +92,12 @@ function startNextRelay(instanceId: string, submissionId: string, queue: RelayQu
       }
     }
   });
+}
+
+function sameActivityStatus(
+  left: TypedActivityStatus | undefined,
+  right: TypedActivityStatus,
+): boolean {
+  return left?.kind === right.kind && left.action === right.action &&
+    left.object === right.object && left.text === right.text;
 }

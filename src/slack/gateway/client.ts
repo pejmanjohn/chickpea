@@ -13,6 +13,7 @@ import {
 } from './identity.ts';
 import {
   CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+  GATEWAY_ATTACHMENT_REPRESENTATIONS,
   MAX_GATEWAY_FRAME_BYTES,
   gatewayOperationAllowed,
   parseGatewayClaimCreateResponse,
@@ -24,6 +25,8 @@ import {
   type GatewayClaimCreateResponse,
   type GatewayClaimStatusResponse,
   type GatewayClientFrame,
+  type GatewayAttachmentReadRequest,
+  type GatewayAttachmentRepresentation,
   type GatewayEventAck,
   type GatewayInboundDelivery,
   type GatewayOperationRequest,
@@ -44,6 +47,11 @@ export const GATEWAY_BINDING_SETTING = 'slack.gateway.binding.v1';
 export const GATEWAY_SESSION_SETTING = 'slack.gateway.session.v1';
 const GATEWAY_REQUEST_TIMEOUT_MS = 15_000;
 const GATEWAY_IDENTITY_RECOVERY_CONTENTION_LIMIT = 3;
+const MAX_GATEWAY_ATTACHMENT_BYTES = 8 * 1_024 * 1_024;
+const GATEWAY_ATTACHMENT_OPERATION = 'slack.attachment.read';
+const GATEWAY_ATTACHMENT_REPRESENTATION_SET = new Set<string>(
+  GATEWAY_ATTACHMENT_REPRESENTATIONS,
+);
 
 export interface GatewayClaimState {
   claimId: string;
@@ -69,6 +77,22 @@ export interface GatewayOperationClient {
     operation: GatewaySlackOperation,
     input: Record<string, unknown>,
   ): Promise<Record<string, unknown>>;
+}
+
+export interface GatewayAttachmentRead {
+  fileId: string;
+  filename: string;
+  representation: GatewayAttachmentRepresentation;
+  contentType: string;
+  bytes: Uint8Array;
+}
+
+export interface GatewayAttachmentClient {
+  readAttachment(
+    fileId: string,
+    maxBytes: number,
+    signal?: AbortSignal,
+  ): Promise<GatewayAttachmentRead>;
 }
 
 /** HTTPS control plane plus credential-free Slack operation proxy. */
@@ -259,6 +283,53 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       );
     }
     return response.result ?? {};
+  }
+
+  /** Read one bounded attachment representation without exposing Slack credentials or URLs. */
+  async readAttachment(
+    fileId: string,
+    maxBytes: number,
+    signal?: AbortSignal,
+  ): Promise<GatewayAttachmentRead> {
+    if (!isGatewayId(fileId)) {
+      throw new SlackTransportError(GATEWAY_ATTACHMENT_OPERATION, 'invalid_file_id');
+    }
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 ||
+        maxBytes > MAX_GATEWAY_ATTACHMENT_BYTES) {
+      throw new SlackTransportError(GATEWAY_ATTACHMENT_OPERATION, 'invalid_max_bytes');
+    }
+    const binding = await this.loadBinding();
+    if (!binding) {
+      throw new SlackTransportError(
+        GATEWAY_ATTACHMENT_OPERATION,
+        'gateway_not_connected',
+        { retryable: true },
+      );
+    }
+    const identity = await this.identity();
+    const unsigned = {
+      protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+      kind: GATEWAY_ATTACHMENT_OPERATION,
+      deploymentId: identity.deploymentId,
+      requestId: requestId(),
+      issuedAt: this.now(),
+      nonce: requestId('nonce'),
+      bindingId: binding.bindingId,
+      workspaceId: binding.workspaceId,
+      fileId,
+      maxBytes,
+    } satisfies Omit<GatewayAttachmentReadRequest, 'signature'>;
+    const request = await signGatewayRequest(identity, unsigned);
+    const response = await this.requestAttachment(
+      `/v1/workspaces/${encodeURIComponent(binding.workspaceId)}/attachments/read`,
+      request,
+      signal,
+    );
+    return parseGatewayAttachmentResponse(response, {
+      requestId: request.requestId,
+      fileId,
+      maxBytes,
+    });
   }
 
   /** Publish one immutable Agent avatar through gateway-owned public storage. */
@@ -518,10 +589,91 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       throw new SlackTransportError(
         operation,
         typeof record.error === 'string' ? record.error : 'gateway_rejected',
-        { retryable: response.status >= 500 || response.status === 429 },
+        {
+          retryable: response.status >= 500 || response.status === 429,
+          effectOutcome: response.status < 500 ? 'failed' : 'unknown',
+        },
       );
     }
     return payload;
+  }
+
+  private async requestAttachment(
+    path: string,
+    request: GatewayAttachmentReadRequest,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    let response: Response;
+    try {
+      response = await this.fetch(new URL(path, this.requireBaseUrl()), {
+        method: 'POST',
+        body: JSON.stringify(request),
+        redirect: 'manual',
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(GATEWAY_REQUEST_TIMEOUT_MS)])
+          : AbortSignal.timeout(GATEWAY_REQUEST_TIMEOUT_MS),
+        headers: { 'content-type': 'application/json' },
+      });
+    } catch {
+      console.warn('[chickpea] shared Slack gateway attachment request failed before response');
+      throw new SlackTransportError(
+        GATEWAY_ATTACHMENT_OPERATION,
+        'gateway_unreachable',
+        { retryable: true },
+      );
+    }
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
+      throw new SlackTransportError(
+        GATEWAY_ATTACHMENT_OPERATION,
+        'gateway_redirect_rejected',
+      );
+    }
+    if (response.ok) return response;
+
+    const text = await boundedResponseText(
+      response,
+      MAX_GATEWAY_FRAME_BYTES,
+      GATEWAY_ATTACHMENT_OPERATION,
+    );
+    let payload: unknown;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      throw new SlackTransportError(
+        GATEWAY_ATTACHMENT_OPERATION,
+        'invalid_gateway_response',
+      );
+    }
+    let envelope;
+    try {
+      envelope = parseGatewayOperationResponse(payload);
+    } catch {
+      throw new SlackTransportError(
+        GATEWAY_ATTACHMENT_OPERATION,
+        'invalid_gateway_response',
+      );
+    }
+    if (envelope.requestId !== request.requestId) {
+      throw new SlackTransportError(
+        GATEWAY_ATTACHMENT_OPERATION,
+        'attachment_request_mismatch',
+      );
+    }
+    if (envelope.ok || !envelope.error) {
+      throw new SlackTransportError(
+        GATEWAY_ATTACHMENT_OPERATION,
+        'invalid_gateway_response',
+      );
+    }
+    throw new SlackTransportError(
+      GATEWAY_ATTACHMENT_OPERATION,
+      envelope.error.code,
+      {
+        retryable: envelope.error.retryable,
+        effectOutcome: response.status < 500 ? 'failed' : 'unknown',
+      },
+    );
   }
 
   private async identity(): Promise<GatewayDeploymentIdentity> {
@@ -792,9 +944,124 @@ function encodeValue(value: unknown): unknown {
   return value;
 }
 
-async function boundedResponseText(response: Response, maximumBytes: number): Promise<string> {
+async function parseGatewayAttachmentResponse(
+  response: Response,
+  expected: { requestId: string; fileId: string; maxBytes: number },
+): Promise<GatewayAttachmentRead> {
+  const invalid = (code: string): never => {
+    void response.body?.cancel();
+    throw new SlackTransportError(GATEWAY_ATTACHMENT_OPERATION, code);
+  };
+  if (response.headers.get('x-chickpea-protocol-version') !==
+      String(CHICKPEA_GATEWAY_PROTOCOL_VERSION)) {
+    return invalid('attachment_protocol_mismatch');
+  }
+  if (response.headers.get('x-chickpea-request-id') !== expected.requestId) {
+    return invalid('attachment_request_mismatch');
+  }
+  if (response.headers.get('x-chickpea-file-id') !== expected.fileId) {
+    return invalid('attachment_file_mismatch');
+  }
+  if (response.headers.get('x-chickpea-complete') !== 'true') {
+    return invalid('attachment_incomplete');
+  }
+
+  const encodedFilename = response.headers.get('x-chickpea-filename');
+  let filename: string;
+  try {
+    filename = decodeGatewayFilename(encodedFilename);
+  } catch {
+    return invalid('invalid_attachment_filename');
+  }
+  const representation = response.headers.get('x-chickpea-representation');
+  if (!representation || !GATEWAY_ATTACHMENT_REPRESENTATION_SET.has(representation)) {
+    return invalid('invalid_attachment_representation');
+  }
+  const contentType = response.headers.get('content-type');
+  if (!contentType || contentType.length > 128 ||
+      !/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(contentType)) {
+    return invalid('invalid_attachment_content_type');
+  }
+  // content-length is hop-sensitive: workerd can transparently decompress a
+  // Worker-to-Worker response and remove it. The gateway-owned header remains
+  // stable across that hop and is still checked against the bounded body.
+  const rawContentLength = response.headers.get('x-chickpea-content-length');
+  if (!rawContentLength || !/^(0|[1-9][0-9]*)$/.test(rawContentLength)) {
+    return invalid('invalid_attachment_content_length');
+  }
+  const contentLength = Number(rawContentLength);
+  if (!Number.isSafeInteger(contentLength) || contentLength > expected.maxBytes) {
+    return invalid('attachment_byte_limit_exceeded');
+  }
+  const bytes = await boundedResponseBytes(
+    response,
+    expected.maxBytes,
+    GATEWAY_ATTACHMENT_OPERATION,
+    contentLength,
+  );
+  if (bytes.byteLength !== contentLength) {
+    throw new SlackTransportError(
+      GATEWAY_ATTACHMENT_OPERATION,
+      'attachment_content_length_mismatch',
+    );
+  }
+  return {
+    fileId: expected.fileId,
+    filename,
+    representation: representation as GatewayAttachmentRepresentation,
+    contentType,
+    bytes,
+  };
+}
+
+function decodeGatewayFilename(value: string | null): string {
+  if (!value || value.length > 1_024 || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error('invalid filename');
+  }
+  const base64 = value.replaceAll('-', '+').replaceAll('_', '/');
+  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  if (bytesToBase64Url(bytes) !== value) throw new Error('non-canonical filename');
+  const filename = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  if (!filename || Array.from(filename).length > 256 || /[\p{Cc}\p{Cf}]/u.test(filename)) {
+    throw new Error('unsafe filename');
+  }
+  return filename;
+}
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+  return bytesToBase64(bytes)
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replace(/=+$/, '');
+}
+
+function isGatewayId(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value);
+}
+
+async function boundedResponseText(
+  response: Response,
+  maximumBytes: number,
+  operation = 'gateway.request',
+): Promise<string> {
+  return new TextDecoder('utf-8', { fatal: true }).decode(
+    await boundedResponseBytes(response, maximumBytes, operation),
+  );
+}
+
+async function boundedResponseBytes(
+  response: Response,
+  maximumBytes: number,
+  operation: string,
+  expectedBytes?: number,
+): Promise<Uint8Array> {
   const reader = response.body?.getReader();
-  if (!reader) return '';
+  if (!reader) return new Uint8Array();
+  const preallocated = expectedBytes === undefined
+    ? undefined
+    : new Uint8Array(expectedBytes);
   const chunks: Uint8Array[] = [];
   let total = 0;
   while (true) {
@@ -803,17 +1070,26 @@ async function boundedResponseText(response: Response, maximumBytes: number): Pr
     total += value.byteLength;
     if (total > maximumBytes) {
       await reader.cancel();
-      throw new SlackTransportError('gateway.request', 'gateway_response_too_large');
+      throw new SlackTransportError(operation, 'gateway_response_too_large');
     }
-    chunks.push(value);
+    if (preallocated) {
+      if (total > preallocated.byteLength) {
+        await reader.cancel();
+        throw new SlackTransportError(operation, 'attachment_content_length_mismatch');
+      }
+      preallocated.set(value, total - value.byteLength);
+    } else {
+      chunks.push(value);
+    }
   }
+  if (preallocated) return preallocated.subarray(0, total);
   const joined = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
     joined.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return new TextDecoder('utf-8', { fatal: true }).decode(joined);
+  return joined;
 }
 
 function requestId(prefix = 'request'): string {

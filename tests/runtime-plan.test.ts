@@ -13,6 +13,7 @@ import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.
 import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
 import { sandboxThreadKey } from '../src/sandbox/thread-key.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { revisionedAlias } from '../src/model-catalog/provider-alias.ts';
 
 const AGENT: CustomAgentConfig = {
   id: 'agent_runtime',
@@ -274,6 +275,7 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
   assert.equal(plan.conversation.surface, 'channel_thread');
   assert.match(plan.conversation.continuityKey, /^agent_[a-f0-9]{40}$/);
   assert.equal(plan.model, 'openai/gpt-5.4-mini');
+  assert.equal(plan.runtimeModel, 'openai/gpt-5.4-mini');
   assert.deepEqual(plan.modelAttribution, {
     source: 'workspace_default',
     providerId: 'openai',
@@ -314,6 +316,49 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
   assert.equal(JSON.stringify(plan).includes('installationId'), false);
   assert.match(plan.instructions, /sk-live-looking-but-not-secret/);
   assert.equal(parseRuntimePlanV2(structuredClone(plan)).harnessRevision, plan.harnessRevision);
+});
+
+test('a runtime plan freezes an internal execution route without changing its canonical model', () => {
+  const plan = compile({ runtimeModel: 'openai-subscription/gpt-5.4-mini' });
+  const apiKeyPlan = compile({ runtimeModel: 'openai/gpt-5.4-mini' });
+
+  assert.equal(plan.model, 'openai/gpt-5.4-mini');
+  assert.equal(plan.runtimeModel, 'openai-subscription/gpt-5.4-mini');
+  assert.notEqual(plan.harnessRevision, apiKeyPlan.harnessRevision);
+  assert.equal(
+    parseRuntimePlanV2(structuredClone(plan)).runtimeModel,
+    'openai-subscription/gpt-5.4-mini',
+  );
+});
+
+test('a hosted route carries only compiled profile facts and binds its revisioned alias', () => {
+  const sha256 = 'ab'.repeat(32);
+  const providerId = revisionedAlias('openaiSubscription', 9, sha256).providerId;
+  const runtimeModelRoute = {
+    source: 'hosted_catalog' as const,
+    revision: 9,
+    sha256,
+    lane: 'openai_subscription' as const,
+    profile: 'openai-codex-responses-standard@1' as const,
+    displayName: 'Hosted GPT',
+    contextWindow: 200_000,
+    maxTokens: 100_000,
+  };
+  const plan = compile({
+    runtimeModel: `${providerId}/gpt-5.4-mini`,
+    runtimeModelRoute,
+  });
+
+  assert.deepEqual(plan.runtimeModelRoute, runtimeModelRoute);
+  assert.equal(parseRuntimePlanV2(structuredClone(plan)).runtimeModelRoute?.profile,
+    'openai-codex-responses-standard@1');
+  assert.throws(
+    () => parseRuntimePlanV2({
+      ...plan,
+      runtimeModelRoute: { ...runtimeModelRoute, baseUrl: 'https://attacker.example' },
+    }),
+    /runtimeModelRoute.*unknown field/i,
+  );
 });
 
 test('managed providers freeze Chickpea capabilities without remote account identifiers', () => {
@@ -437,6 +482,7 @@ test('persisted RuntimePlan V2 jobs remain readable without new attribution fiel
   const {
     ownerIncarnation: _ownerIncarnation,
     modelAttribution: _modelAttribution,
+    runtimeModel: _runtimeModel,
     ...legacy
   } = compile();
   const v2 = { ...legacy, schemaVersion: 2 as const };

@@ -15,6 +15,8 @@ import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 import { setProvider } from '@flue/runtime';
 
+import { decorateAttachmentProviderStreams } from '../slack/attachment-model-context.ts';
+
 export type PiBuiltinProviderId = 'anthropic' | 'openai' | 'openrouter';
 
 interface PiProviderCredential {
@@ -51,7 +53,7 @@ export function setBuiltinPiProvider(
       name: catalog.name,
       auth: selectedApiKeyAuth(catalog.name, credential),
       models,
-      api: parts.api(),
+      api: decorateAttachmentProviderStreams(parts.api()),
     }),
   );
 }
@@ -92,7 +94,7 @@ export function setWorkersAiRestPiProvider(options: {
         },
       },
       models,
-      api: cloudflareStreams(openAICompletionsApi()),
+      api: decorateAttachmentProviderStreams(cloudflareStreams(openAICompletionsApi())),
     }),
   );
 }
@@ -125,7 +127,7 @@ export function setLocalStubPiProvider(options: {
         baseUrl: options.baseUrl,
       }),
       models,
-      api: openAICompletionsApi(),
+      api: decorateAttachmentProviderStreams(openAICompletionsApi()),
     }),
   );
 }
@@ -147,8 +149,22 @@ export function createChickpeaPiProvider<TApi extends Api>(options: {
       ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
     }),
     models: withProviderBaseUrl(options.models, options.baseUrl),
-    api: options.api,
+    api: decorateAttachmentProviderApi(options.api),
   });
+}
+
+function decorateAttachmentProviderApi<TApi extends Api>(
+  api: ProviderStreams | Partial<Record<TApi, ProviderStreams>>,
+): ProviderStreams | Partial<Record<TApi, ProviderStreams>> {
+  if ('stream' in api && typeof api.stream === 'function') {
+    return decorateAttachmentProviderStreams(api as ProviderStreams);
+  }
+  return Object.fromEntries(
+    Object.entries(api).map(([id, streams]) => [
+      id,
+      streams ? decorateAttachmentProviderStreams(streams as ProviderStreams) : streams,
+    ]),
+  ) as Partial<Record<TApi, ProviderStreams>>;
 }
 
 function selectedApiKeyAuth(name: string, credential: PiProviderCredential) {

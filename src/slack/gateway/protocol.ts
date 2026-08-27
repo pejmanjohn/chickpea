@@ -31,9 +31,11 @@ export const GATEWAY_SLACK_OPERATIONS = [
   'chat.startStream',
   'chat.appendStream',
   'chat.stopStream',
+  'agents.sessions.setStatus',
   'assistant.threads.setStatus',
   'assistant.threads.setSuggestedPrompts',
   'assistant.threads.setTitle',
+  'chickpea.files.getImage',
   'files.uploadV2',
   'reactions.get',
   'reactions.add',
@@ -148,6 +150,24 @@ export interface GatewayOperationRequest extends GatewaySignedRequest {
   workspaceId: string;
   operation: GatewaySlackOperation;
   input: Record<string, unknown>;
+}
+
+export const GATEWAY_ATTACHMENT_REPRESENTATIONS = [
+  'image_original',
+  'text_original',
+  'pdf_original',
+  'slack_pdf_conversion',
+] as const;
+
+export type GatewayAttachmentRepresentation =
+  (typeof GATEWAY_ATTACHMENT_REPRESENTATIONS)[number];
+
+export interface GatewayAttachmentReadRequest extends GatewaySignedRequest {
+  kind: 'slack.attachment.read';
+  bindingId: string;
+  workspaceId: string;
+  fileId: string;
+  maxBytes: number;
 }
 
 export interface GatewayOperationResponse {

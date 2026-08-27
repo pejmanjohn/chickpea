@@ -134,6 +134,7 @@ import {
 import { createLedgerSlackRunHandler } from './slack/ledger-turn-driver.ts';
 import type { SlackPresentationStatePort } from './slack/agent-view-presentation.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
+import { isSafeTypedActivityStatus, type TypedActivityStatus } from './activity/status.ts';
 import {
   deliverAgentFailureFinal,
   repairSlackInteractionProgress,
@@ -141,6 +142,11 @@ import {
   sanitizeError,
 } from './slack/run-turn.ts';
 import { AgentPromptFailure } from './slack/flue-dispatch.ts';
+import { DURABLE_RECOVERY_FAILURE_TEXT } from './slack/web-client-presenter.ts';
+import {
+  drainSlackPresentationRepairs,
+  type SlackPresentationRepairDrainResult,
+} from './slack/presentation-repair.ts';
 import type {
   FlueDispatchReceiptV1,
   FlueSettlementCheckpointV1,
@@ -1178,6 +1184,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.presentations.get(runId) ?? null);
   }
 
+  async slackPresentationLatestThreadGeneration(
+    root: Parameters<TagStateRpc['slackPresentationLatestThreadGeneration']>[0],
+  ) {
+    return this.call((stores) =>
+      stores.presentations.getLatestThreadSessionGeneration(root) ?? null,
+    );
+  }
+
   async slackPresentationTransition(
     input: Parameters<TagStateRpc['slackPresentationTransition']>[0],
   ) {
@@ -1195,7 +1209,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   }
 
   async slackPresentationRepairList(limit: number) {
-    return this.call((stores) => stores.presentations.listRepairRequired(limit));
+    return this.call((stores) => stores.presentations.listAutoRepairableV3(limit));
   }
 
   async slackPresentationMaintain(limit: number) {
@@ -1367,12 +1381,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   async observedStatus(
     instanceId: string,
     submissionId: string,
-    statusText: string,
+    status: TypedActivityStatus,
   ): Promise<StateRpcResult<null>> {
     return this.call((stores) => {
+      if (!isSafeTypedActivityStatus(status)) return null;
       const target = stores.turnJobs.matchFlueObservation(instanceId, submissionId);
       if (target) {
-        setObservedSlackStatus(instanceId, target.generation, { text: statusText });
+        setObservedSlackStatus(instanceId, target.generation, status);
       }
       return null;
     });
@@ -1414,13 +1429,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (cleanupPending) {
         await drainSlackInteractionCleanups(stores, resolveInstallation);
       }
+      const presentationRepairs = await drainTerminalPresentationRepairs(
+        stores,
+        resolveInstallation,
+      );
       await drainCloudflareManagementReceipts(stores, resolveInstallation);
       const turnRetry = gatewayNeedsRetry || stores.gatewayInbox.hasPending() ||
         stores.turnJobs.hasPending('ledger') || stores.turnJobs.hasPendingSlackInteractionCleanup()
         ? Date.now() + runDriverRetryDelayMs(ledgerDrain, RELAY_RETRY_BACKOFF_MS)
         : undefined;
       const outboxRetry = stores.management.nextOutboxDueAt();
-      const nextWake = earliestDefined(turnRetry, outboxRetry);
+      const nextWake = earliestDefined(turnRetry, presentationRepairs.nextRetryAt, outboxRetry);
       if (nextWake !== undefined) await this.ctx.storage.setAlarm(nextWake);
       return;
     }
@@ -1490,6 +1509,35 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         markRecoveryRequired: (reason: string) =>
           stores.turnJobs.markRecoveryRequired(job.id, reason),
       };
+      const presentationState = localSlackPresentationState(stores);
+      const deliverRecoveryFailure = async (reasonCode: string): Promise<boolean> => {
+        try {
+          await runTurn(job.turn, job.assignment, this.env as PlatformEnv, {
+            client,
+            installationContext,
+            turnId: job.id,
+            ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
+            settingsStore: localSettingsStore(stores),
+            presentationState,
+            replayText: DURABLE_RECOVERY_FAILURE_TEXT,
+            replayTerminalResult: 'failure',
+            onPublicMessageDelivered: (delivery) =>
+              recordDeliveredSlackAgentMessage(
+                stores.config, job.turn, job.assignment, delivery,
+              ),
+            onDelivered: () => {
+              stores.turnJobs.markError(job.id);
+              if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
+              delivered = true;
+            },
+          });
+          return true;
+        } catch {
+          stores.turnJobs.markRecoveryRequired(job.id, reasonCode);
+          if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
+          return false;
+        }
+      };
       try {
         const persistSandboxProgress = async (): Promise<string | undefined> => {
           const binding =
@@ -1522,7 +1570,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           // identity retains its marker, so a later alarm can try again.
           return undefined;
         };
-      const replayText =
+        const replayText =
           replayTextForTurnProgress(job.progress) ?? (await persistSandboxProgress());
         const runtimePlanDecision = job.runtimePlan && job.agentInstanceId
           ? {
@@ -1543,7 +1591,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
           onRuntimePlan: (candidate) => stores.turnJobs.freezeRuntimePlan(job.id, candidate),
           flueDispatch,
-          presentationState: localSlackPresentationState(stores),
+          presentationState,
           progressiveAttributionProven: true,
           onUsagePersistence: (event) => {
             stores.turnJobs.recordUsagePersistence(job.id, event);
@@ -1578,9 +1626,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         return true;
       } catch (err) {
         if (err instanceof AgentPromptFailure && err.recoveryRequired) {
-          if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
           console.error('[chickpea] Flue turn requires operator reconciliation');
-          return false;
+          return deliverRecoveryFailure('flue_dispatch_reconciliation_required');
         }
         // Any failure after the terminal presentation boundary is cleanup,
         // not a failed turn. The durable tombstone prevents a duplicate final;
@@ -1593,8 +1640,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           // A dispatched turn is never discarded or replaced. A later alarm
           // replays its admission key, receipt read, or terminal settlement.
           if (attempt >= MAX_POST_DISPATCH_ATTEMPTS) {
-            stores.turnJobs.markRecoveryRequired(job.id, 'post_dispatch_attempts_exhausted');
             console.error('[chickpea] Flue turn exhausted durable reattachment attempts');
+            return deliverRecoveryFailure('post_dispatch_attempts_exhausted');
           } else {
             needsRetry = true;
           }
@@ -1677,6 +1724,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     );
     identityRetryDelayMs = runDriverRetryDelayMs(ledgerDrain, identityRetryDelayMs);
     await drainSlackInteractionCleanups(stores, resolveInstallation);
+    const presentationRepairs = await drainTerminalPresentationRepairs(
+      stores,
+      resolveInstallation,
+    );
     await drainCloudflareManagementReceipts(stores, resolveInstallation);
     needsRetry ||= stores.turnJobs.hasPending('legacy') ||
       stores.turnJobs.hasPending('ledger') ||
@@ -1684,7 +1735,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       stores.gatewayInbox.hasPending();
     const turnRetry = needsRetry ? Date.now() + identityRetryDelayMs : undefined;
     const outboxRetry = stores.management.nextOutboxDueAt();
-    const nextWake = earliestDefined(turnRetry, outboxRetry);
+    const nextWake = earliestDefined(turnRetry, presentationRepairs.nextRetryAt, outboxRetry);
     if (nextWake !== undefined) {
       // Re-arm (do NOT throw) so this invocation returns normally and its
       // attempt-count writes commit; the next firing re-drives the leftover
@@ -1872,6 +1923,21 @@ async function drainSlackInteractionCleanups(
       console.warn('[chickpea] Slack interaction cleanup retry failed:', sanitizeError(error));
     }
   }
+}
+
+async function drainTerminalPresentationRepairs(
+  stores: TagStateStores,
+  resolveInstallation: SlackInstallationExecutionResolver,
+): Promise<SlackPresentationRepairDrainResult> {
+  const presentations = stores.presentations.listAutoRepairableV3(MAX_TURN_DRAIN_BATCH);
+  return drainSlackPresentationRepairs({
+    presentations,
+    state: localSlackPresentationState(stores),
+    resolveClient: async (workspaceId) => (await resolveInstallation(workspaceId)).client,
+    onFailure: (_presentation, error) => {
+      console.warn('[chickpea] Slack presentation repair failed:', sanitizeError(error));
+    },
+  });
 }
 
 async function drainCloudflareManagementReceipts(
@@ -2062,6 +2128,8 @@ function localSettingsStore(stores: TagStateStores): SettingsStore {
 function localSlackPresentationState(stores: TagStateStores): SlackPresentationStatePort {
   return {
     getRunPresentation: (runId) => stores.presentations.get(runId),
+    getLatestThreadSessionGeneration: (root) =>
+      stores.presentations.getLatestThreadSessionGeneration(root),
     transitionRunPresentation: (input) => stores.presentations.transition(input),
     reserveSlackAppend: (workspaceId) => stores.presentations.reserveAppend(workspaceId),
     applySlackAppendCooldown: (workspaceId, retryAfterMs) =>

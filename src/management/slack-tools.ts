@@ -57,6 +57,15 @@ const SIGNAL_ATTRIBUTE_KEYS = [
   'messageTs',
   'turnJobId',
 ] as const;
+const SIGNAL_OPTIONAL_ATTRIBUTE_KEYS = [
+  'attachmentFileIds',
+  'attachmentIntakeStatus',
+  'attachmentCount',
+] as const;
+const SIGNAL_ALLOWED_ATTRIBUTE_KEYS = new Set<string>([
+  ...SIGNAL_ATTRIBUTE_KEYS,
+  ...SIGNAL_OPTIONAL_ATTRIBUTE_KEYS,
+]);
 
 export interface SlackManagementSignal {
   /** Trusted Agent selected by Slack routing, never by model text. */
@@ -332,7 +341,7 @@ export function parseSlackManagementSignal(
   if (delivery.kind !== 'signal' || delivery.type !== 'slack.message' ||
       delivery.tagName !== 'slack_message' || !delivery.attributes) return undefined;
   if (Object.keys(delivery.attributes).some((key) =>
-    !SIGNAL_ATTRIBUTE_KEYS.includes(key as typeof SIGNAL_ATTRIBUTE_KEYS[number]))) return undefined;
+    !SIGNAL_ALLOWED_ATTRIBUTE_KEYS.has(key))) return undefined;
   const values = Object.fromEntries(SIGNAL_ATTRIBUTE_KEYS.map((key) => [
     key,
     boundedAttribute(delivery.attributes?.[key], key, key.endsWith('Ts') ? 80 : 256),

@@ -5,6 +5,7 @@ import {
 } from '@flue/runtime/cloudflare/workers-ai';
 
 import { SEED_CLOUDFLARE_MODEL_ID } from './config/seed.ts';
+import { decorateAttachmentProvider } from './slack/attachment-model-context.ts';
 
 const SEED_CLOUDFLARE_MAX_COMPLETION_TOKENS = 2_048;
 const SEED_CLOUDFLARE_RESPONSE_TIMEOUT_MS = 90_000;
@@ -17,7 +18,14 @@ const SEED_CLOUDFLARE_RESPONSE_TIMEOUT_MS = 90_000;
  * imports it or registers a keyless `cloudflare/*` provider.
  */
 export function registerCloudflareBindingProvider(binding: CloudflareAIBinding): void {
-  setProvider(cloudflareBindingProvider(cloudflareBindingProviderOptions(binding)));
+  setProvider(createCloudflareBindingProvider(binding));
+}
+
+/** Pure provider seam used to apply the same attachment policy as Pi APIs. */
+export function createCloudflareBindingProvider(binding: CloudflareAIBinding) {
+  return decorateAttachmentProvider(
+    cloudflareBindingProvider(cloudflareBindingProviderOptions(binding)),
+  );
 }
 
 /** Pure construction seam: keeps gateway privacy and payload policy testable. */
