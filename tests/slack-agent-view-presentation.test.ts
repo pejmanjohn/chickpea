@@ -662,6 +662,49 @@ test('V3 reconciles unknown activity posts and cleanup receipts without replayin
   }
 });
 
+test('a newer durable thread generation fences stale native activity across isolates', async () => {
+  const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
+  try {
+    h.store.create({
+      schemaVersion: 3,
+      runId: 'run_newer_thread_generation',
+      turnJobId: 'turn_newer_thread_generation',
+      bindingId: 'binding_newer_thread_generation',
+      workBindingGeneration: 1,
+      runFencingToken: 0,
+      root: ROOT,
+      owner: { kind: 'chickpea' },
+      sessionGeneration: 1785700100000200,
+      currentActivity: {
+        kind: 'preparing',
+        action: 'Preparing',
+        object: 'your request',
+        generation: 1785700100000200,
+        sequence: 1,
+        operation: {
+          operationId: 'activity_run_newer_thread_generation_1',
+          certainty: 'pending',
+        },
+      },
+    });
+
+    assert.equal(await h.presentation.beginActivity({
+      kind: 'checking',
+      action: 'Checking',
+      object: 'Gmail',
+      text: 'Checking Gmail…',
+    }, 'assistant_status'), undefined);
+    const old = h.store.get(h.runId);
+    assert.equal(old?.schemaVersion, 3);
+    if (old?.schemaVersion === 3) {
+      assert.deepEqual(old.activityProjection, { surface: 'unselected', state: 'absent' });
+      assert.equal(old.currentActivity?.operation.certainty, 'pending');
+    }
+  } finally {
+    h.db.close();
+  }
+});
+
 test('V3 keeps one native processing status active until an acknowledged terminal reply', async () => {
   const persona = {
     name: 'Sprout',

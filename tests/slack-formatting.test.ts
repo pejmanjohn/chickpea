@@ -320,4 +320,5 @@ test('derived loading message is capped to Slack’s 50-character limit', () => 
   const loading = slackLoadingMessages({ text: long }).at(-1);
   assert.ok(loading);
   assert.ok(loading.length <= 50, `expected <= 50 chars, got ${loading.length}`);
+  assert.equal(slackStatusText({ text: long }), loading);
 });

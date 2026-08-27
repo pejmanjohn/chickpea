@@ -1558,6 +1558,17 @@ export class CfSlackStateStore implements SlackStateStore {
     return unwrap(await this.stub.slackPresentationApplyCooldown(workspaceId, retryAfterMs));
   }
 
+  async reserveSlackActivityStatus(workspaceId: string) {
+    return unwrap(await this.stub.slackPresentationReserveActivityStatus(workspaceId));
+  }
+
+  async applySlackActivityStatusCooldown(workspaceId: string, retryAfterMs: number) {
+    return unwrap(await this.stub.slackPresentationApplyActivityStatusCooldown(
+      workspaceId,
+      retryAfterMs,
+    ));
+  }
+
   async listRunPresentationsForRepair(limit = 50) {
     return unwrap(await this.stub.slackPresentationRepairList(limit));
   }

@@ -59,6 +59,11 @@ export interface SlackPresentationStatePort {
     workspaceId: string,
     retryAfterMs: number,
   ): MaybePromise<{ cooldownUntil: number; budgetVersion: number }>;
+  reserveSlackActivityStatus?(workspaceId: string): MaybePromise<SlackAppendReservation>;
+  applySlackActivityStatusCooldown?(
+    workspaceId: string,
+    retryAfterMs: number,
+  ): MaybePromise<{ cooldownUntil: number; budgetVersion: number }>;
   matchFlueObservation(
     instanceId: string,
     submissionId?: string,
@@ -152,6 +157,11 @@ export class SlackAgentViewPresentation {
   ): Promise<PreparedSlackActivityWrite | undefined> {
     let presentation = await this.requirePresentation();
     if (presentation.schemaVersion !== 3) return undefined;
+    if (!(await this.ownsLatestThreadGeneration(presentation))) return undefined;
+    // A V3 presentation admitted without an initial activity has the custom
+    // semantic-status capability frozen off. It remains lifecycle-only.
+    if (!presentation.currentActivity &&
+        presentation.activityProjection.surface === 'unselected') return undefined;
     let current = presentation.currentActivity;
     let created = false;
     if (current?.operation.certainty === 'pending') {
@@ -414,6 +424,9 @@ export class SlackAgentViewPresentation {
     projection: Exclude<SlackPresentationActivityProjection, { surface: 'unselected' }>;
   } | undefined> {
     let presentation = await this.requirePresentation();
+    if (presentation.schemaVersion === 3 &&
+        presentation.activityProjection.surface === 'assistant_status' &&
+        !(await this.ownsLatestThreadGeneration(presentation))) return undefined;
     if (presentation.schemaVersion === 3 && presentation.cleanup.state === 'required' &&
         presentation.cleanup.operation.certainty === 'unknown') {
       await this.reconcileActivityReceipts();
@@ -1004,6 +1017,15 @@ export class SlackAgentViewPresentation {
       cursor: pending.cursor,
       acknowledgedPrefixHash: pending.hash,
     });
+  }
+
+  private async ownsLatestThreadGeneration(
+    presentation: Extract<SlackRunPresentation, { schemaVersion: 3 }>,
+  ): Promise<boolean> {
+    const latest = await this.options.state.getLatestThreadSessionGeneration(
+      presentation.root,
+    );
+    return latest === undefined || latest <= presentation.sessionGeneration;
   }
 
   private async startNativePlan(

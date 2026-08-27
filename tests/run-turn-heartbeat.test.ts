@@ -359,9 +359,15 @@ test('runTurn keeps the persisted V3 owner from first status through final deliv
 });
 
 test('admission activity is fixed thinking copy without checklist or UTC narration', async () => {
+  const statuses: Array<Record<string, unknown>> = [];
   const posts: Array<Record<string, unknown>> = [];
   const updates: Array<Record<string, unknown>> = [];
+  let deletes = 0;
   const client = {
+    assistant: { threads: { setStatus: async (input: Record<string, unknown>) => {
+      statuses.push(input);
+      return { ok: true };
+    } } },
     conversations: { history: async () => ({ ok: true, messages: [] }) },
     chat: {
       postMessage: async (input: Record<string, unknown>) => {
@@ -372,7 +378,10 @@ test('admission activity is fixed thinking copy without checklist or UTC narrati
         updates.push(input);
         return { ok: true };
       },
-      delete: async () => ({ ok: true }),
+      delete: async () => {
+        deletes += 1;
+        return { ok: true };
+      },
       startStream: async () => ({ ok: true, ts: 'final-ts' }),
       stopStream: async () => ({ ok: true }),
     },
@@ -384,10 +393,11 @@ test('admission activity is fixed thinking copy without checklist or UTC narrati
     usageRecordingEnabled: false,
   });
 
-  assert.equal(posts.length, 1);
-  assert.equal(posts[0]?.text, 'Thinking…');
+  assert.deepEqual(statuses.map((status) => status.status), ['Thinking…', '']);
+  assert.equal(posts.length, 0);
   assert.deepEqual(updates, []);
-  assert.doesNotMatch(JSON.stringify(posts), /UTC|chickpea_work_checklist|is thinking|local-stub/);
+  assert.equal(deletes, 0);
+  assert.doesNotMatch(JSON.stringify(statuses), /UTC|chickpea_work_checklist|is thinking|local-stub/);
 });
 
 test('replay delivery skips model activity and never invokes the agent provider', async () => {
@@ -567,7 +577,7 @@ test('a recovery-required Flue conflict emits no Slack final', async () => {
     (error: unknown) => error instanceof AgentPromptFailure && error.recoveryRequired,
   );
   assert.equal(finalAttempts, 0);
-  assert.deepEqual(posts.map((post) => post.text), ['Thinking…']);
+  assert.deepEqual(posts, []);
 });
 
 test('a retryable Flue interruption emits no Slack final', async () => {
@@ -604,7 +614,7 @@ test('a retryable Flue interruption emits no Slack final', async () => {
     (error: unknown) => error instanceof AgentPromptFailure && error.retryable,
   );
   assert.equal(finalAttempts, 0);
-  assert.deepEqual(posts.map((post) => post.text), ['Thinking…']);
+  assert.deepEqual(posts, []);
 });
 
 test('activity remains visible until final delivery and omits model or context narration', async () => {
@@ -612,12 +622,13 @@ test('activity remains visible until final delivery and omits model or context n
   const finalAttempted = deferred<void>();
   const lifecycle: string[] = [];
   const activity: Array<Record<string, unknown>> = [];
-  let compatibilityStatusCalls = 0;
+  const nativeStatuses: Array<Record<string, unknown>> = [];
   const client = {
     assistant: {
       threads: {
-        async setStatus() {
-          compatibilityStatusCalls += 1;
+        async setStatus(input: Record<string, unknown>) {
+          nativeStatuses.push(input);
+          if (input.status === '') lifecycle.push('clear');
           return { ok: true };
         },
       },
@@ -665,9 +676,13 @@ test('activity remains visible until final delivery and omits model or context n
   await agentStarted.promise;
   await finalAttempted.promise;
   assert.equal(await Promise.race([outcome, delay(100, 'timeout' as const)]), 'resolved');
-  assert.equal(compatibilityStatusCalls, 2, 'native status is set once and cleared once');
-  assert.deepEqual(activity.map((item) => item.text), ['Thinking…']);
-  assert.doesNotMatch(JSON.stringify(activity), /local-stub|message(?:s)? of|is thinking/i);
+  assert.deepEqual(
+    nativeStatuses.map((item) => item.status),
+    ['Thinking…', ''],
+    'native status is set once and cleared once',
+  );
+  assert.deepEqual(activity, []);
+  assert.doesNotMatch(JSON.stringify(nativeStatuses), /local-stub|message(?:s)? of|is thinking/i);
   assert.deepEqual(
     lifecycle.slice(0, 2),
     ['final', 'clear'],

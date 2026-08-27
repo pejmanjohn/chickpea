@@ -52,7 +52,7 @@ export interface SlackCanonicalAdmissionInput {
     root: SlackPresentationRoot;
     owner: SlackPresentationOwner;
     sessionGeneration: number;
-    currentActivity: SlackPresentationActivity;
+    currentActivity?: SlackPresentationActivity;
     taskLabels?: readonly string[];
   };
 }
@@ -204,6 +204,11 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
     workspaceId: string,
     retryAfterMs: number,
   ): Promise<{ cooldownUntil: number; budgetVersion: number }>;
+  reserveSlackActivityStatus?(workspaceId: string): Promise<SlackAppendReservation>;
+  applySlackActivityStatusCooldown?(
+    workspaceId: string,
+    retryAfterMs: number,
+  ): Promise<{ cooldownUntil: number; budgetVersion: number }>;
   listRunPresentationsForRepair?(limit?: number): Promise<SlackRunPresentation[]>;
   maintainRunPresentations?(
     limit?: number,
@@ -340,7 +345,9 @@ export class SlackStateLogic {
           root: input.presentation.root,
           owner: input.presentation.owner,
           sessionGeneration: input.presentation.sessionGeneration,
-          currentActivity: input.presentation.currentActivity,
+          ...(input.presentation.currentActivity
+            ? { currentActivity: input.presentation.currentActivity }
+            : {}),
           ...(input.presentation.taskLabels
             ? { taskLabels: input.presentation.taskLabels }
             : {}),
@@ -561,6 +568,14 @@ export class SqliteSlackStateStore implements SlackStateStore {
 
   async applySlackAppendCooldown(workspaceId: string, retryAfterMs: number) {
     return this.presentations.applyAppendCooldown(workspaceId, retryAfterMs);
+  }
+
+  async reserveSlackActivityStatus(workspaceId: string) {
+    return this.presentations.reserveActivityStatus(workspaceId);
+  }
+
+  async applySlackActivityStatusCooldown(workspaceId: string, retryAfterMs: number) {
+    return this.presentations.applyActivityStatusCooldown(workspaceId, retryAfterMs);
   }
 
   async listRunPresentationsForRepair(limit = 50) {

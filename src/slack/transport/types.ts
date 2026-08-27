@@ -136,16 +136,25 @@ const RETRYABLE_SLACK_ERRORS = new Set([
 export class SlackTransportError extends Error {
   readonly retryable: boolean;
   readonly effectOutcome: 'failed' | 'unknown';
+  readonly retryAfterMs: number | undefined;
 
   constructor(
     readonly operation: string,
     readonly code: string,
-    options: { retryable?: boolean; effectOutcome?: 'failed' | 'unknown' } = {},
+    options: {
+      retryable?: boolean;
+      effectOutcome?: 'failed' | 'unknown';
+      retryAfterMs?: number;
+    } = {},
   ) {
     super(`Slack ${operation} failed (${code})`);
     this.name = 'SlackTransportError';
     this.retryable = options.retryable ?? RETRYABLE_SLACK_ERRORS.has(code);
     this.effectOutcome = options.effectOutcome ?? 'unknown';
+    this.retryAfterMs = Number.isSafeInteger(options.retryAfterMs) &&
+        options.retryAfterMs! >= 1 && options.retryAfterMs! <= 3_600_000
+      ? options.retryAfterMs
+      : undefined;
   }
 }
 

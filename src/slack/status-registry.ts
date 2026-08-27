@@ -5,9 +5,11 @@ import type { WebClientPresenter } from './web-client-presenter.ts';
 export interface SlackStatusTurnRegistration {
   setStatus(update: SlackStatusUpdate): Promise<boolean>;
   drain(): Promise<void>;
+  /** Fence narration and drop queued work before final delivery. */
+  prepareFinal(): Promise<void>;
   close(): void;
   /** Fence new writes, clear now, and clear once more if an in-flight write lands late. */
-  finish(clearStatus: () => Promise<void>): Promise<void>;
+  finish(clearStatus: (late: boolean) => Promise<void>): Promise<void>;
 }
 
 type StatusPresenter = Pick<WebClientPresenter, 'setStatus'>;
@@ -28,6 +30,10 @@ export interface SlackStatusTurnOptions {
    * The override exists for deterministic focused tests.
    */
   observedMinIntervalMs?: number;
+  /** Refresh a still-current native phrase before Slack's two-minute expiry. */
+  refreshIntervalMs?: number;
+  /** Durable proof that this exact phrase is already visible from admission. */
+  initialAppliedStatus?: SlackStatusUpdate;
 }
 
 interface QueuedStatusWrite {
@@ -38,15 +44,18 @@ interface QueuedStatusWrite {
 }
 
 const DEFAULT_OBSERVED_STATUS_MIN_INTERVAL_MS = 1_000;
+const DEFAULT_STATUS_REFRESH_INTERVAL_MS = 90_000;
 
 class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   private active: QueuedStatusWrite | undefined;
   private pending: QueuedStatusWrite | undefined;
   private pendingTimer: ReturnType<typeof setTimeout> | undefined;
+  private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private lastObservedWriteStartedAt: number | undefined;
   private lastAppliedText: string | undefined;
   private closed = false;
   private finished = false;
+  private terminalizing = false;
   private ownershipReady: boolean;
 
   constructor(
@@ -55,9 +64,11 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     private readonly generation: string,
     private readonly presenter: StatusPresenter,
     private readonly observedMinIntervalMs: number,
+    private readonly refreshIntervalMs: number,
     private readonly sessionGeneration?: number,
     private acceptsWrites = true,
     ownershipBarrier?: Promise<void>,
+    initialAppliedStatus?: SlackStatusUpdate,
   ) {
     this.ownershipReady = ownershipBarrier === undefined;
     if (ownershipBarrier) {
@@ -65,6 +76,10 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
         this.ownershipReady = true;
         this.scheduleNext();
       });
+    }
+    if (initialAppliedStatus) {
+      this.lastAppliedText = initialAppliedStatus.text;
+      this.scheduleRefresh(initialAppliedStatus);
     }
   }
 
@@ -86,12 +101,13 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
 
   fenceByNewerGeneration(): Promise<void> {
     this.acceptsWrites = false;
+    this.cancelRefresh();
     this.discardPending();
     return this.active?.result.then(() => undefined) ?? Promise.resolve();
   }
 
   private enqueue(update: SlackStatusUpdate, observed: boolean): Promise<boolean> {
-    if (this.closed || !this.ownsVisibleWrites()) {
+    if (this.closed || this.terminalizing || !this.ownsVisibleWrites()) {
       return Promise.resolve(false);
     }
     if (!this.active && !this.pending && this.lastAppliedText === update.text) {
@@ -107,6 +123,8 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     if (this.pending?.update.text === update.text) {
       return this.pending.result;
     }
+
+    this.cancelRefresh();
 
     // One in-flight write plus one replaceable pending value is the complete
     // queue. Rapid distinct events resolve their superseded promises false and
@@ -145,9 +163,16 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     }
   }
 
+  async prepareFinal(): Promise<void> {
+    this.terminalizing = true;
+    this.cancelRefresh();
+    this.discardPending();
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.cancelRefresh();
     this.discardPending();
     // Two turns in the same Slack conversation share one registry key
     // (workspace:channel:thread — and ALL DM turns share workspace:dm-channel:dm),
@@ -167,16 +192,18 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     }
   }
 
-  async finish(clearStatus: () => Promise<void>): Promise<void> {
+  async finish(clearStatus: (late: boolean) => Promise<void>): Promise<void> {
     if (this.finished) return;
     this.finished = true;
+    this.terminalizing = true;
+    this.cancelRefresh();
     const clearAuthority = this.ownsVisibleWrites();
     const activeResult = this.active?.result;
     this.close();
-    const firstClear = this.clearIfUnowned(clearStatus, clearAuthority);
+    const firstClear = this.clearIfUnowned(() => clearStatus(false), clearAuthority);
     if (activeResult) {
       void activeResult.finally(() => {
-        return this.clearIfUnowned(clearStatus, clearAuthority);
+        return this.clearIfUnowned(() => clearStatus(true), clearAuthority);
       });
     }
     // The ordinary no-write-in-flight path must reach Slack before the Worker
@@ -240,6 +267,9 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
       .then((succeeded) => {
         if (succeeded) {
           this.lastAppliedText = queued.update.text;
+          if (!this.pending || this.pending.update.text === queued.update.text) {
+            this.scheduleRefresh(queued.update);
+          }
         }
         if (this.active === queued) {
           this.active = undefined;
@@ -258,6 +288,28 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
       this.pending.resolve(false);
       this.pending = undefined;
     }
+  }
+
+  private scheduleRefresh(update: SlackStatusUpdate): void {
+    this.cancelRefresh();
+    if (this.closed || this.terminalizing || !this.ownsVisibleWrites()) return;
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = undefined;
+      if (this.closed || this.terminalizing || !this.ownsVisibleWrites() ||
+          this.lastAppliedText !== update.text) return;
+      // The timer belongs to this bounded turn registration. It reuses the
+      // normal one-active/one-pending queue, but intentionally bypasses the
+      // same-text short circuit so Slack does not expire truthful status.
+      this.lastAppliedText = undefined;
+      void this.enqueue(update, true);
+    }, this.refreshIntervalMs);
+    this.refreshTimer.unref?.();
+  }
+
+  private cancelRefresh(): void {
+    if (!this.refreshTimer) return;
+    clearTimeout(this.refreshTimer);
+    this.refreshTimer = undefined;
   }
 
   private async clearBestEffort(clearStatus: () => Promise<void>): Promise<void> {
@@ -364,9 +416,11 @@ export function registerSlackStatusTurn(
     options.generation,
     presenter,
     options.observedMinIntervalMs ?? DEFAULT_OBSERVED_STATUS_MIN_INTERVAL_MS,
+    Math.max(1, Math.floor(options.refreshIntervalMs ?? DEFAULT_STATUS_REFRESH_INTERVAL_MS)),
     options.sessionGeneration,
     acceptsWrites,
     ownershipBarrier,
+    options.initialAppliedStatus,
   );
   turns.add(turn);
   activeSlackStatusTurns.set(instanceId, turns);

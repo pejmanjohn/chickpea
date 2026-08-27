@@ -1027,6 +1027,29 @@ test('V3 activity sequence and operation receipt identity are durable and guarde
   }
 });
 
+test('native activity status budget is shared per installation and honors retry cooldown', () => {
+  const db = openStateDb(':memory:');
+  let now = 1_800_000_000_000;
+  try {
+    const firstIsolate = new SlackRunPresentationStoreLogic(db, () => now);
+    const secondIsolate = new SlackRunPresentationStoreLogic(db, () => now);
+
+    assert.equal(firstIsolate.reserveActivityStatus('T_SHARED').outcome, 'reserved');
+    assert.equal(secondIsolate.reserveActivityStatus('T_SHARED').outcome, 'reserved');
+    assert.equal(firstIsolate.reserveActivityStatus('T_SHARED').outcome, 'exhausted');
+    now += 1_000;
+    assert.equal(secondIsolate.reserveActivityStatus('T_SHARED').outcome, 'reserved');
+
+    secondIsolate.applyActivityStatusCooldown('T_SHARED', 5_000);
+    now += 1_000;
+    assert.equal(firstIsolate.reserveActivityStatus('T_SHARED').outcome, 'cooldown');
+    now += 4_000;
+    assert.equal(firstIsolate.reserveActivityStatus('T_SHARED').outcome, 'reserved');
+  } finally {
+    db.close();
+  }
+});
+
 test('V3 activity coordinate, terminal delivery, and cleanup retries remain separate', () => {
   const db = openStateDb(':memory:');
   try {

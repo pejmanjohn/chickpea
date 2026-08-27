@@ -95,6 +95,42 @@ test('observed status after close is a no-op (no status lands after the turn end
   assert.deepEqual(presenter.statuses, [], 'a closed turn must not accept further statuses');
 });
 
+test('a still-current phase refreshes and final preparation cancels the refresh', async () => {
+  const presenter = recordingPresenter();
+  const turn = registerSlackStatusTurn('refresh-thread', presenter, {
+    generation: 'refresh-generation',
+    observedMinIntervalMs: 1,
+    refreshIntervalMs: 20,
+  });
+
+  assert.equal(await turn.setStatus({ text: 'Checking Gmail…' }), true);
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  assert.ok(presenter.statuses.length >= 2);
+  assert.ok(presenter.statuses.every((status) => status === 'Checking Gmail…'));
+
+  await turn.prepareFinal();
+  const settledCount = presenter.statuses.length;
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(presenter.statuses.length, settledCount);
+  await turn.finish(async () => {});
+});
+
+test('a superseded phase never refreshes after the newer fact is applied', async () => {
+  const presenter = recordingPresenter();
+  const turn = registerSlackStatusTurn('refresh-superseded-thread', presenter, {
+    generation: 'refresh-superseded-generation',
+    observedMinIntervalMs: 1,
+    refreshIntervalMs: 30,
+  });
+
+  await turn.setStatus({ text: 'Thinking…' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await turn.setStatus({ text: 'Checking Gmail…' });
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.deepEqual(presenter.statuses, ['Thinking…', 'Checking Gmail…']);
+  turn.close();
+});
+
 test('a delayed observation from turn A cannot land after turn B registers', async () => {
   const first = recordingPresenter();
   const second = recordingPresenter();
@@ -400,6 +436,7 @@ test('finish does not trap final delivery and clears again after a late status s
   }, { generation: GENERATION_A });
 
   const active = turn.setStatus({ text: 'is using Cloudflare Docs' });
+  await turn.prepareFinal();
   turn.finish(async () => {
     clearCount += 1;
     calls.push(`clear:${clearCount}`);

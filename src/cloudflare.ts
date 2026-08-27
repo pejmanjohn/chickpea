@@ -1208,6 +1208,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     );
   }
 
+  async slackPresentationReserveActivityStatus(workspaceId: string) {
+    return this.call((stores) => stores.presentations.reserveActivityStatus(workspaceId));
+  }
+
+  async slackPresentationApplyActivityStatusCooldown(
+    workspaceId: string,
+    retryAfterMs: number,
+  ) {
+    return this.call((stores) =>
+      stores.presentations.applyActivityStatusCooldown(workspaceId, retryAfterMs),
+    );
+  }
+
   async slackPresentationRepairList(limit: number) {
     return this.call((stores) => stores.presentations.listAutoRepairableV3(limit));
   }
@@ -2134,6 +2147,10 @@ function localSlackPresentationState(stores: TagStateStores): SlackPresentationS
     reserveSlackAppend: (workspaceId) => stores.presentations.reserveAppend(workspaceId),
     applySlackAppendCooldown: (workspaceId, retryAfterMs) =>
       stores.presentations.applyAppendCooldown(workspaceId, retryAfterMs),
+    reserveSlackActivityStatus: (workspaceId) =>
+      stores.presentations.reserveActivityStatus(workspaceId),
+    applySlackActivityStatusCooldown: (workspaceId, retryAfterMs) =>
+      stores.presentations.applyActivityStatusCooldown(workspaceId, retryAfterMs),
     matchFlueObservation: (instanceId, submissionId) =>
       stores.turnJobs.matchFlueObservation(instanceId, submissionId),
   };

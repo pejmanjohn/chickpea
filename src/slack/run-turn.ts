@@ -72,6 +72,7 @@ import {
 } from './progressive-eligibility.ts';
 import type { SlackPresentationOwner } from './run-presentations.ts';
 import { slackProgressiveStreamingEnabled } from './progressive-ops-flag.ts';
+import { slackSemanticActivityStatusEnabled } from './semantic-status-flag.ts';
 import {
   resolveSandboxSelection,
   sandboxBindingInstalled,
@@ -107,6 +108,7 @@ import {
   SlackAgentViewPresentation,
   type SlackPresentationStatePort,
 } from './agent-view-presentation.ts';
+import { presentAdmittedSlackActivity } from './admission-activity.ts';
 import { createSlackWebClient } from './web-client.ts';
 import {
   externalActionAuthorityInstructions,
@@ -232,7 +234,7 @@ export const WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT =
 
 /**
  * Full Slack turn lifecycle:
- *   1. set Assistant status (or post a durable progress placeholder on reject),
+ *   1. set best-effort native Assistant status when the capability is enabled,
  *   2. hydrate the bounded Slack context per contextMode,
  *   3. prompt the durable agent through Flue 2 dispatch/read with the
  *      trigger text + hydrated (bot-filtered) context rows,
@@ -275,7 +277,7 @@ export async function runTurn(
   // fallback the footer's "Configure" link would be dead.
   const publicUrl = await resolveSlackPublicUrl(platformEnv, settingsStore);
   const agentAvatarUrl = agentAvatarUrlForPresentation(assignment.agent, publicUrl);
-  const frozenPresentation = options.presentationState && options.runId
+  let frozenPresentation = options.presentationState && options.runId
     ? await options.presentationState.getRunPresentation(options.runId)
     : undefined;
   const visibleOwner: SlackPresentationOwner | undefined =
@@ -464,6 +466,28 @@ export async function runTurn(
         mode: ledgerAuthority ? 'enforce' : 'observe',
       })
     : undefined;
+  if (frozenPresentation?.schemaVersion === 3 &&
+      frozenPresentation.currentActivity?.operation.certainty === 'pending' &&
+      options.presentationState && options.runId) {
+    const admitted = frozenPresentation.currentActivity;
+    await presentAdmittedSlackActivity({
+      client,
+      state: options.presentationState,
+      runId: options.runId,
+      runFencingToken: options.runFencingToken ?? 0,
+      workspaceId: frozenPresentation.root.workspaceId,
+      channelId: frozenPresentation.root.channelId,
+      threadTs: frozenPresentation.root.threadTs,
+      requesterUserId: frozenPresentation.root.requesterUserId,
+      owner: frozenPresentation.owner,
+      agentId: assignment.agent.id,
+      activity: activityStatus(admitted.kind, admitted.action, admitted.object),
+    }).catch(() => {
+      // The durable pending receipt remains repairable; status is cosmetic.
+      console.warn('[chickpea] admitted Slack activity projection failed');
+    });
+    frozenPresentation = await options.presentationState.getRunPresentation(options.runId);
+  }
   let onNativeStarted = async (): Promise<void> => {};
   const agentViewPresentation = options.presentationState && options.runId
     ? new SlackAgentViewPresentation({
@@ -501,6 +525,22 @@ export async function runTurn(
     ...(frozenPresentation?.schemaVersion === 3
       ? { activityProjection: frozenPresentation.activityProjection }
       : {}),
+    ...(frozenPresentation?.schemaVersion === 3 &&
+        options.presentationState?.reserveSlackActivityStatus &&
+        options.presentationState.applySlackActivityStatusCooldown
+      ? {
+          activityStatusCoordinator: {
+            reserve: async () => options.presentationState!.reserveSlackActivityStatus!(
+              frozenPresentation.root.workspaceId,
+            ),
+            applyCooldown: async (retryAfterMs: number) =>
+              options.presentationState!.applySlackActivityStatusCooldown!(
+                frozenPresentation.root.workspaceId,
+                retryAfterMs,
+              ),
+          },
+        }
+      : {}),
     ...(options.onPublicMessageDelivered
       ? { onPublicDelivery: options.onPublicMessageDelivered }
       : {}),
@@ -508,8 +548,22 @@ export async function runTurn(
   await agentViewPresentation?.beginAgentSessionProcessing();
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
   const statusInstanceId = runtimePlanDecision?.instanceId ?? agentConversationKey;
+  const semanticActivityEnabled = frozenPresentation?.schemaVersion === 3
+    ? frozenPresentation.currentActivity !== undefined
+    : slackSemanticActivityStatusEnabled(platformEnv);
+  const admittedVisibleStatus = frozenPresentation?.schemaVersion === 3 &&
+      frozenPresentation.activityProjection.surface === 'assistant_status' &&
+      frozenPresentation.activityProjection.state === 'visible' &&
+      frozenPresentation.currentActivity?.operation.certainty === 'acknowledged'
+    ? activityStatus(
+        frozenPresentation.currentActivity.kind,
+        frozenPresentation.currentActivity.action,
+        frozenPresentation.currentActivity.object,
+      )
+    : undefined;
   const activityPresenter = {
     async setStatus(update: SlackStatusUpdate): Promise<boolean> {
+      if (!semanticActivityEnabled) return false;
       let activityWrite: Awaited<ReturnType<SlackAgentViewPresentation['beginActivity']>>;
       try {
         activityWrite = await agentViewPresentation?.beginActivity(
@@ -547,6 +601,7 @@ export async function runTurn(
             frozenPresentation.root.channelId,
             frozenPresentation.root.threadTs,
           ].join(':'),
+          ...(admittedVisibleStatus ? { initialAppliedStatus: admittedVisibleStatus } : {}),
         }
       : {}),
   });
@@ -560,14 +615,18 @@ export async function runTurn(
     // settles. If an active status write lands after it, the registry issues a
     // second best-effort clear without blocking the final response.
     await agentViewPresentation?.settleAgentSession(result);
-    await presenter.clearNativeThreadStatus();
-    await statusTurn.finish(async () => {
+    await statusTurn.finish(async (late) => {
       if (frozenPresentation?.schemaVersion !== 3 || !agentViewPresentation) {
         await presenter.clearStatus();
         return;
       }
       const cleanup = await agentViewPresentation.prepareActivityCleanup();
-      if (!cleanup) return;
+      if (!cleanup) {
+        // An in-flight native write may have landed after the acknowledged
+        // durable cleanup. Re-clear the transport without rewriting receipts.
+        if (late) await presenter.clearStatus();
+        return;
+      }
       const certainty = await presenter.clearStatus();
       await agentViewPresentation.recordActivityCleanupReceipt(
         cleanup.operationId,
@@ -683,8 +742,8 @@ export async function runTurn(
     }
   };
 
-  // 1. Visible work: set status; if it is rejected, post a durable progress
-  //    placeholder so the user still sees work in-flight before the final.
+  // 1. Visible work: set best-effort native status. A rejection degrades to
+  //    Agent Session lifecycle only and never creates a progress message.
   try {
     // Owner-native memory is authorized live, independently of the frozen
     // config snapshot. Fence every visible Slack effect as well as model/tool
@@ -805,8 +864,9 @@ export async function runTurn(
           frozenPresentation.currentActivity.object,
         )
       : initialActivityStatus(workChecklist, turn.text);
-    await statusTurn.setStatus(initialStatus);
-    await presenter.setNativeThreadStatus(initialStatus);
+    if (semanticActivityEnabled && !admittedVisibleStatus) {
+      await statusTurn.setStatus(initialStatus);
+    }
 
     // 2. Hydrate bounded context (degrades to current-message-only on failure).
     const frozenHandoff = runtimePlanDecision?.runtimePlan.handoffContext ??
@@ -972,6 +1032,7 @@ export async function runTurn(
         const recoveredText = await options.beforeDelivery?.();
         if (recoveredText) {
           await preparedMemory?.confirmInjection();
+          await statusTurn.prepareFinal();
           await presenter.deliverFinal(
             installationContext
               ? renderSlackSelfMention(recoveredText, installationContext.botUserId)
@@ -982,6 +1043,7 @@ export async function runTurn(
           await finishDelivery();
           return;
         }
+        await statusTurn.prepareFinal();
         await presenter.deliverFinal(agentFailureText(err), 'plain_text', 'error');
         await finishStatus('failure');
         await finishDelivery();
@@ -996,6 +1058,7 @@ export async function runTurn(
     await preparedMemory?.confirmInjection();
     const leaseValid = await preparedMemory?.validateLease() ?? true;
     if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) {
+      await statusTurn.prepareFinal();
       await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
       await finishStatus('failure');
       await finishDelivery();
@@ -1010,6 +1073,7 @@ export async function runTurn(
       text = renderSlackSelfMention(text, installationContext.botUserId);
     }
     const terminalResult = options.replayTerminalResult ?? 'answer';
+    await statusTurn.prepareFinal();
     await presenter.deliverFinal(
       text,
       'markdown',
@@ -1032,7 +1096,6 @@ export async function runTurn(
       if (!terminalStatusFinished) {
         if (frozenPresentation?.schemaVersion === 3) {
           statusTurn.close();
-          await presenter.clearNativeThreadStatus();
         } else {
           await statusTurn.finish(async () => { await presenter.clearStatus(); });
         }

@@ -12,24 +12,23 @@ export function toolStatus(toolName: string, args?: unknown): SlackStatusUpdate 
 const FALLBACK_STATUS_TEXT = 'Preparing your request…';
 
 export function slackStatusText(stage: SlackStatusUpdate, _agentName?: string): string {
-  return activityStatusText(stage);
+  return boundedNativeStatusText(stage);
 }
 
 export function slackLoadingMessages(stage: SlackStatusUpdate, _agentName?: string): string[] {
-  return [boundedLoadingMessage(activityStatusText(stage))];
+  return [boundedNativeStatusText(stage)];
 }
 
 function activityStatusText(stage: SlackStatusUpdate): string {
   return stage.text.trim() || FALLBACK_STATUS_TEXT;
 }
 
-// Slack's assistant.threads.setStatus rejects a loading_messages entry of 51+
-// characters; a rejected call trips the presenter's statusFailed latch and
-// suppresses every later status for the turn. Keep derived loading messages
-// within the limit so a longer fact never silently kills the status line.
+// Slack rejects a loading_messages entry of 51+ characters. Bound the one
+// canonical phrase once so `status` and its one loading entry remain identical.
 const SLACK_LOADING_MESSAGE_MAX = 50;
 
-function boundedLoadingMessage(message: string): string {
+function boundedNativeStatusText(stage: SlackStatusUpdate): string {
+  const message = activityStatusText(stage);
   if (message.length <= SLACK_LOADING_MESSAGE_MAX) return message;
   return `${message.slice(0, SLACK_LOADING_MESSAGE_MAX - 1)}…`;
 }
