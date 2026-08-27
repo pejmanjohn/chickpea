@@ -172,6 +172,7 @@ function harness(input: {
     calls,
     finalizationRecords,
     presentation,
+    presentationState: state,
     setThreadReplies(messages: Array<Record<string, unknown>>, complete = true) {
       threadReplies = structuredClone(messages);
       threadRepliesComplete = complete;
@@ -580,7 +581,8 @@ test('V3 reconciles unknown activity posts and cleanup receipts without replayin
       operationId: 'terminal_activity_cleanup', certainty: 'acknowledged',
     });
     const cleanup = await h.presentation.prepareActivityCleanup();
-    assert.ok(cleanup);
+    assert.equal(cleanup.kind, 'prepared');
+    if (cleanup.kind !== 'prepared') return;
     await h.presentation.recordActivityCleanupReceipt(cleanup.operationId, 'unknown');
     h.setThreadReplies([{ ts: ROOT.threadTs }]);
     await h.presentation.reconcileActivityReceipts();
@@ -644,7 +646,8 @@ test('V3 reconciles unknown activity posts and cleanup receipts without replayin
         operationId: 'terminal_cleanup_visible', certainty: 'acknowledged',
       });
       const cleanup = await stillVisible.presentation.prepareActivityCleanup();
-      assert.ok(cleanup);
+      assert.equal(cleanup.kind, 'prepared');
+      if (cleanup.kind !== 'prepared') return;
       await stillVisible.presentation.recordActivityCleanupReceipt(cleanup.operationId, 'unknown');
       stillVisible.setThreadReplies([{ ts: '1785700100.000356' }]);
       await stillVisible.presentation.reconcileActivityReceipts();
@@ -657,6 +660,197 @@ test('V3 reconciles unknown activity posts and cleanup receipts without replayin
     } finally {
       stillVisible.db.close();
     }
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a newer durable thread generation fences stale native activity across isolates', async () => {
+  const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
+  try {
+    h.store.create({
+      schemaVersion: 3,
+      runId: 'run_newer_thread_generation',
+      turnJobId: 'turn_newer_thread_generation',
+      bindingId: 'binding_newer_thread_generation',
+      workBindingGeneration: 1,
+      runFencingToken: 0,
+      root: ROOT,
+      owner: { kind: 'chickpea' },
+      sessionGeneration: 1785700100000200,
+      currentActivity: {
+        kind: 'preparing',
+        action: 'Preparing',
+        object: 'your request',
+        generation: 1785700100000200,
+        sequence: 1,
+        operation: {
+          operationId: 'activity_run_newer_thread_generation_1',
+          certainty: 'pending',
+        },
+      },
+    });
+
+    assert.equal(await h.presentation.beginActivity({
+      kind: 'checking',
+      action: 'Checking',
+      object: 'Gmail',
+      text: 'Checking Gmail…',
+    }, 'assistant_status'), undefined);
+    const old = h.store.get(h.runId);
+    assert.equal(old?.schemaVersion, 3);
+    if (old?.schemaVersion === 3) {
+      assert.deepEqual(old.activityProjection, { surface: 'unselected', state: 'absent' });
+      assert.equal(old.currentActivity?.operation.certainty, 'pending');
+    }
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a native rejection latches the durable projection unavailable across presenters', async () => {
+  const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
+  try {
+    const prepared = await h.presentation.beginActivity({
+      kind: 'preparing',
+      action: 'Preparing',
+      object: 'your request',
+      family: 'unknown',
+      phase: 'thinking',
+      text: 'Preparing your request…',
+    }, 'assistant_status');
+    assert.ok(prepared);
+    await h.presentation.recordActivityReceipt(
+      prepared.operationId,
+      'failed',
+      undefined,
+      true,
+    );
+
+    const replacement = new SlackAgentViewPresentation({
+      client: {} as WebClient,
+      state: h.presentationState,
+      runId: h.runId,
+      runFencingToken: 0,
+      footer: { agentName: 'Chickpea', agentId: 'agent_chickpea' },
+    });
+    assert.equal(await replacement.beginActivity({
+      kind: 'checking',
+      action: 'Checking',
+      object: 'Gmail',
+      family: 'managed_connector',
+      phase: 'working',
+      text: 'Checking Gmail…',
+    }, 'assistant_status'), undefined);
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.schemaVersion, 3);
+    if (stored?.schemaVersion === 3) {
+      assert.deepEqual(stored.activityProjection, {
+        surface: 'assistant_status', state: 'unavailable',
+      });
+    }
+  } finally {
+    h.db.close();
+  }
+});
+
+test('an ambiguous native write remains eligible for terminal clear', async () => {
+  const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
+  try {
+    const prepared = await h.presentation.beginActivity({
+      kind: 'preparing', action: 'Preparing', object: 'your request',
+      text: 'Preparing your request…',
+    }, 'assistant_status');
+    assert.ok(prepared);
+    await h.presentation.recordActivityReceipt(
+      prepared.operationId,
+      'unknown',
+      undefined,
+      true,
+    );
+    applyPresentationMutation(h, {
+      kind: 'record_terminal_delivery_intent',
+      operationId: 'terminal_ambiguous_native',
+      result: 'answer',
+    });
+    applyPresentationMutation(h, {
+      kind: 'record_terminal_delivery_receipt',
+      operationId: 'terminal_ambiguous_native',
+      certainty: 'acknowledged',
+    });
+
+    const cleanup = await h.presentation.prepareActivityCleanup();
+    assert.equal(cleanup.kind, 'prepared');
+    if (cleanup.kind === 'prepared') {
+      assert.deepEqual(cleanup.projection, {
+        surface: 'assistant_status', state: 'unavailable',
+      });
+    }
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a rehydrated refresh must match the acknowledged current native fact', async () => {
+  const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
+  try {
+    const initial = {
+      kind: 'preparing' as const,
+      action: 'Preparing',
+      object: 'your request',
+      family: 'unknown' as const,
+      phase: 'working' as const,
+      text: 'Preparing your request…',
+    };
+    const prepared = await h.presentation.beginActivity(initial, 'assistant_status');
+    assert.ok(prepared);
+    await h.presentation.recordActivityReceipt(prepared.operationId, 'acknowledged');
+
+    assert.deepEqual(await h.presentation.prepareActivityRefresh(initial), {
+      operationId: prepared.operationId,
+      surface: 'assistant_status',
+    });
+    assert.equal(await h.presentation.prepareActivityRefresh({
+      ...initial,
+      text: 'Checking Gmail…',
+    }), undefined);
+  } finally {
+    h.db.close();
+  }
+});
+
+test('terminal cleanup is fenced when a newer durable generation owns the thread', async () => {
+  const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
+  try {
+    const prepared = await h.presentation.beginActivity({
+      kind: 'preparing', action: 'Preparing', object: 'your request',
+      text: 'Preparing your request…',
+    }, 'assistant_status');
+    assert.ok(prepared);
+    await h.presentation.recordActivityReceipt(prepared.operationId, 'acknowledged');
+    applyPresentationMutation(h, {
+      kind: 'record_terminal_delivery_intent',
+      operationId: 'terminal_old_generation',
+      result: 'answer',
+    });
+    applyPresentationMutation(h, {
+      kind: 'record_terminal_delivery_receipt',
+      operationId: 'terminal_old_generation',
+      certainty: 'acknowledged',
+    });
+    h.store.create({
+      schemaVersion: 3,
+      runId: 'run_cleanup_newer_generation',
+      turnJobId: 'turn_cleanup_newer_generation',
+      bindingId: 'binding_cleanup_newer_generation',
+      workBindingGeneration: 1,
+      runFencingToken: 0,
+      root: ROOT,
+      owner: { kind: 'chickpea' },
+      sessionGeneration: 1785700100000200,
+    });
+
+    assert.deepEqual(await h.presentation.prepareActivityCleanup(), { kind: 'fenced' });
   } finally {
     h.db.close();
   }

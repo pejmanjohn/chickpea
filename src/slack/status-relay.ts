@@ -1,6 +1,6 @@
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { tagStateStub } from '../config/state-rpc.ts';
-import type { TypedActivityStatus } from '../activity/status.ts';
+import { activityStatus, type TypedActivityStatus } from '../activity/status.ts';
 
 /**
  * Cloudflare only: the durable agent runs in its own DO isolate, while the
@@ -31,7 +31,17 @@ export async function relayObservedStatus(
       const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
       env = getCloudflareContext().env as Record<string, unknown> | undefined;
     }
-    await tagStateStub(env).observedStatus(instanceId, submissionId, status);
+    await tagStateStub(env).observedStatus(
+      instanceId,
+      submissionId,
+      activityStatus(
+        status.kind,
+        status.action,
+        status.object,
+        status.family,
+        status.phase,
+      ),
+    );
   } catch {
     // Outside a DO handler (no ALS context) or a transient RPC failure —
     // the status line simply skips this stage.

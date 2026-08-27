@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 
 import type { StateDb } from '../state/state-db.ts';
-import type { ActivityKind } from '../activity/status.ts';
+import type {
+  ActivityKind,
+  SemanticActivityPhase,
+  SemanticTargetFamily,
+} from '../activity/status.ts';
 import { hasCredentialLikeContent } from '../security/content-validation.ts';
 
 export const SLACK_PRESENTATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -10,6 +14,13 @@ export const MAX_SLACK_PENDING_APPEND_BYTES = 128 * 1_024;
 
 export const DEFAULT_SLACK_APPEND_BUDGET = {
   capacity: 1,
+  refillWindowMs: 1_000,
+} as const;
+
+export const DEFAULT_SLACK_ACTIVITY_STATUS_BUDGET = {
+  // Admission and the first observed phase may occur in the same second.
+  // Later observed phases are already serialized by the one-second turn queue.
+  capacity: 2,
   refillWindowMs: 1_000,
 } as const;
 
@@ -113,6 +124,10 @@ export interface SlackPresentationActivity {
   kind: SlackPresentationActivityKind;
   action: string;
   object: string;
+  /** Added by semantic status V1; absent only on compatible older rows. */
+  family?: SemanticTargetFamily;
+  /** Added by semantic status V1; absent only on compatible older rows. */
+  phase?: SemanticActivityPhase;
   generation: number;
   sequence: number;
   operation: SlackPresentationOperationReceipt;
@@ -128,7 +143,7 @@ export type SlackPresentationActivityProjection =
     }
   | {
       surface: 'assistant_status';
-      state: 'selected' | 'visible' | 'cleared';
+      state: 'selected' | 'visible' | 'unavailable' | 'cleared';
     };
 
 export type SlackPresentationTaskOutcome =
@@ -394,7 +409,8 @@ export type SlackRunPresentationCreateInput =
       schemaVersion: 3;
       owner: SlackPresentationOwner;
       sessionGeneration: number;
-      currentActivity: SlackPresentationActivity;
+      /** Absent freezes this run to native Agent Session lifecycle only. */
+      currentActivity?: SlackPresentationActivity;
       features?: never;
       persona?: never;
     });
@@ -475,6 +491,7 @@ export type SlackPresentationMutation =
       certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>;
       messageTs?: string;
     }
+  | { kind: 'mark_activity_unavailable' }
   | {
       kind: 'set_agent_session_desired';
       desired: SlackPresentationAgentSessionState;
@@ -684,6 +701,18 @@ export class SlackRunPresentationStoreLogic {
       )`,
     );
     db.exec(
+      `CREATE TABLE IF NOT EXISTS slack_workspace_activity_status_budgets (
+        workspace_id TEXT PRIMARY KEY,
+        capacity INTEGER NOT NULL,
+        refill_window_ms INTEGER NOT NULL,
+        available INTEGER NOT NULL,
+        last_refill_at INTEGER NOT NULL,
+        cooldown_until INTEGER,
+        version INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    );
+    db.exec(
       `CREATE TABLE IF NOT EXISTS slack_presentation_retention_tombstones (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         stream_state TEXT NOT NULL,
@@ -737,7 +766,9 @@ export class SlackRunPresentationStoreLogic {
         progressiveIntent: { status: 'unresolved' },
         owner: structuredClone(input.owner),
         sessionGeneration: input.sessionGeneration,
-        currentActivity: structuredClone(input.currentActivity),
+        ...(input.currentActivity
+          ? { currentActivity: structuredClone(input.currentActivity) }
+          : {}),
         activityProjection: { surface: 'unselected', state: 'absent' },
         lifecyclePhase: 'admitted',
         agentSession: { desired: 'processing', acknowledged: 'none' },
@@ -1002,6 +1033,17 @@ export class SlackRunPresentationStoreLogic {
     });
   }
 
+  reserveActivityStatus(
+    workspaceId: string,
+    policy: SlackAppendBudgetPolicy = DEFAULT_SLACK_ACTIVITY_STATUS_BUDGET,
+  ): SlackAppendReservation {
+    return this.reserveBudget(
+      'slack_workspace_activity_status_budgets',
+      workspaceId,
+      policy,
+    );
+  }
+
   applyAppendCooldown(
     workspaceId: string,
     retryAfterMs: number,
@@ -1045,6 +1087,19 @@ export class SlackRunPresentationStoreLogic {
       );
       return { cooldownUntil, budgetVersion };
     });
+  }
+
+  applyActivityStatusCooldown(
+    workspaceId: string,
+    retryAfterMs: number,
+    policy: SlackAppendBudgetPolicy = DEFAULT_SLACK_ACTIVITY_STATUS_BUDGET,
+  ): { cooldownUntil: number; budgetVersion: number } {
+    return this.applyBudgetCooldown(
+      'slack_workspace_activity_status_budgets',
+      workspaceId,
+      retryAfterMs,
+      policy,
+    );
   }
 
   maintain(limit = 100): { finalizedPurged: number; expiredTombstoned: number } {
@@ -1184,6 +1239,128 @@ export class SlackRunPresentationStoreLogic {
       `SELECT workspace_id, capacity, refill_window_ms, available,
               last_refill_at, cooldown_until, version, updated_at
        FROM slack_workspace_append_budgets WHERE workspace_id = ?`,
+      workspaceId,
+    ) as BudgetRow | undefined;
+  }
+
+  private reserveBudget(
+    table: 'slack_workspace_activity_status_budgets',
+    workspaceId: string,
+    policy: SlackAppendBudgetPolicy,
+  ): SlackAppendReservation {
+    validateId(workspaceId, 'Workspace id');
+    validateBudgetPolicy(policy);
+    return this.db.transaction(() => {
+      const at = this.now();
+      let row = this.getNamedBudget(table, workspaceId);
+      if (!row) {
+        this.db.run(
+          `INSERT INTO ${table} (
+            workspace_id, capacity, refill_window_ms, available, last_refill_at,
+            cooldown_until, version, updated_at
+          ) VALUES (?, ?, ?, ?, ?, NULL, 0, ?)`,
+          workspaceId,
+          policy.capacity,
+          policy.refillWindowMs,
+          policy.capacity,
+          at,
+          at,
+        );
+        row = this.getNamedBudget(table, workspaceId)!;
+      }
+      assertBudgetPolicy(row, policy);
+      if (row.cooldown_until !== null && row.cooldown_until > at) {
+        return {
+          outcome: 'cooldown',
+          retryAt: row.cooldown_until,
+          budgetVersion: row.version,
+        };
+      }
+      const elapsedWindows = Math.floor((at - row.last_refill_at) / row.refill_window_ms);
+      const available = elapsedWindows > 0
+        ? Math.min(row.capacity, row.available + elapsedWindows)
+        : row.available;
+      const refillAt = elapsedWindows > 0
+        ? row.last_refill_at + elapsedWindows * row.refill_window_ms
+        : row.last_refill_at;
+      if (available <= 0) {
+        return {
+          outcome: 'exhausted',
+          retryAt: refillAt + row.refill_window_ms,
+          budgetVersion: row.version,
+        };
+      }
+      const nextVersion = row.version + 1;
+      this.db.run(
+        `UPDATE ${table}
+         SET available = ?, last_refill_at = ?, cooldown_until = NULL,
+             version = ?, updated_at = ?
+         WHERE workspace_id = ? AND version = ?`,
+        available - 1,
+        refillAt,
+        nextVersion,
+        at,
+        workspaceId,
+        row.version,
+      );
+      return { outcome: 'reserved', budgetVersion: nextVersion };
+    });
+  }
+
+  private applyBudgetCooldown(
+    table: 'slack_workspace_activity_status_budgets',
+    workspaceId: string,
+    retryAfterMs: number,
+    policy: SlackAppendBudgetPolicy,
+  ): { cooldownUntil: number; budgetVersion: number } {
+    validateId(workspaceId, 'Workspace id');
+    validateBudgetPolicy(policy);
+    if (!Number.isSafeInteger(retryAfterMs) || retryAfterMs < 1 || retryAfterMs > 15 * 60_000) {
+      throw stateError('invalid_input', 'Slack retry delay is invalid.');
+    }
+    return this.db.transaction(() => {
+      const at = this.now();
+      let row = this.getNamedBudget(table, workspaceId);
+      if (!row) {
+        this.db.run(
+          `INSERT INTO ${table} (
+            workspace_id, capacity, refill_window_ms, available, last_refill_at,
+            cooldown_until, version, updated_at
+          ) VALUES (?, ?, ?, ?, ?, NULL, 0, ?)`,
+          workspaceId,
+          policy.capacity,
+          policy.refillWindowMs,
+          policy.capacity,
+          at,
+          at,
+        );
+        row = this.getNamedBudget(table, workspaceId)!;
+      }
+      assertBudgetPolicy(row, policy);
+      const cooldownUntil = Math.max(row.cooldown_until ?? 0, at + retryAfterMs);
+      const budgetVersion = row.version + 1;
+      this.db.run(
+        `UPDATE ${table}
+         SET cooldown_until = ?, version = ?, updated_at = ?
+         WHERE workspace_id = ? AND version = ?`,
+        cooldownUntil,
+        budgetVersion,
+        at,
+        workspaceId,
+        row.version,
+      );
+      return { cooldownUntil, budgetVersion };
+    });
+  }
+
+  private getNamedBudget(
+    table: 'slack_workspace_activity_status_budgets',
+    workspaceId: string,
+  ): BudgetRow | undefined {
+    return this.db.get(
+      `SELECT workspace_id, capacity, refill_window_ms, available,
+              last_refill_at, cooldown_until, version, updated_at
+       FROM ${table} WHERE workspace_id = ?`,
       workspaceId,
     ) as BudgetRow | undefined;
   }
@@ -1633,7 +1810,11 @@ function applyMutation(
           if (mutation.messageTs !== undefined) {
             throw stateError('invalid_input', 'Assistant status has no message coordinate.');
           }
-          next.activityProjection = { surface: 'assistant_status', state: 'visible' };
+          const cleanupAlreadyAcknowledged = current.cleanup.state === 'required' &&
+            current.cleanup.operation.certainty === 'acknowledged';
+          if (!cleanupAlreadyAcknowledged) {
+            next.activityProjection = { surface: 'assistant_status', state: 'visible' };
+          }
         }
       } else if (mutation.messageTs !== undefined) {
         throw stateError('invalid_input', 'Only acknowledged activity carries a coordinate.');
@@ -1643,6 +1824,23 @@ function applyMutation(
         mutation.operationId,
         mutation.certainty,
       );
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
+    case 'mark_activity_unavailable': {
+      requireV3(current);
+      requireV3(next);
+      if (current.activityProjection.surface !== 'assistant_status' ||
+          current.activityProjection.state === 'cleared' ||
+          !current.currentActivity ||
+          (current.currentActivity.operation.certainty !== 'failed' &&
+            current.currentActivity.operation.certainty !== 'unknown')) {
+        throw stateError(
+          'invalid_transition',
+          'Only a rejected or ambiguous native activity may become unavailable.',
+        );
+      }
+      next.activityProjection = { surface: 'assistant_status', state: 'unavailable' };
       next.repairRequired = v3RepairRequired(next);
       return next;
     }
@@ -1734,7 +1932,9 @@ function applyMutation(
         superseded = true;
       }
       if (current.activityProjection.surface === 'assistant_status' &&
-          current.activityProjection.state === 'visible' &&
+          (current.activityProjection.state === 'visible' ||
+            current.activityProjection.state === 'unavailable' &&
+            current.currentActivity?.operation.certainty === 'unknown') &&
           (current.cleanup.state === 'not_required' ||
             current.cleanup.operation.certainty === 'failed')) {
         next.cleanup = { state: 'not_required', disposition: 'superseded' };
@@ -1839,9 +2039,12 @@ function applyMutation(
         throw stateError('invalid_transition', 'Terminal delivery must be acknowledged before cleanup.');
       }
       validateId(mutation.operationId, 'Cleanup operation id');
+      const ambiguousNativeActivity = current.activityProjection.surface ===
+          'assistant_status' && current.activityProjection.state === 'unavailable' &&
+        current.currentActivity?.operation.certainty === 'unknown';
       if (mutation.target === 'activity' &&
           (current.activityProjection.surface === 'unselected' ||
-            current.activityProjection.state !== 'visible')) {
+            current.activityProjection.state !== 'visible' && !ambiguousNativeActivity)) {
         throw stateError('invalid_transition', 'There is no visible activity to clean up.');
       }
       next.cleanup = {
@@ -2198,9 +2401,11 @@ function validateCreateInput(input: SlackRunPresentationCreateInput): void {
   if (input.schemaVersion === 3) {
     validateOwner(input.owner);
     validatePositiveInteger(input.sessionGeneration, 'Session generation');
-    validateActivity(input.currentActivity, input.sessionGeneration);
-    if (input.currentActivity.operation.certainty !== 'pending') {
-      throw stateError('invalid_input', 'Initial activity receipt must be pending.');
+    if (input.currentActivity) {
+      validateActivity(input.currentActivity, input.sessionGeneration);
+      if (input.currentActivity.operation.certainty !== 'pending') {
+        throw stateError('invalid_input', 'Initial activity receipt must be pending.');
+      }
     }
     if ('persona' in input && input.persona !== undefined) {
       throw stateError('invalid_input', 'V3 identity must be stored only in the frozen owner.');
@@ -2409,6 +2614,11 @@ function validateActivity(
   }
   validateUserFacingFact(activity.action, 'Activity action', 80);
   validateUserFacingFact(activity.object, 'Activity object', 160);
+  if ((activity.family === undefined) !== (activity.phase === undefined) ||
+      activity.family !== undefined && !isActivityFamily(activity.family) ||
+      activity.phase !== undefined && !isActivityPhase(activity.phase)) {
+    throw stateError('invalid_input', 'Activity semantic telemetry is invalid.');
+  }
   if (activity.generation !== sessionGeneration) {
     throw stateError('identity_conflict', 'Activity generation does not match its session.');
   }
@@ -2437,6 +2647,18 @@ function isActivityKind(value: unknown): value is SlackPresentationActivityKind 
   return value === 'preparing' || value === 'checking' || value === 'reading' ||
     value === 'writing' || value === 'updating' || value === 'running' ||
     value === 'waiting' || value === 'finishing';
+}
+
+function isActivityFamily(value: unknown): value is SemanticTargetFamily {
+  return value === 'managed_connector' || value === 'custom_connection' || value === 'skill' ||
+    value === 'repository' || value === 'memory' || value === 'scheduled_work' ||
+    value === 'workspace' || value === 'connection_setup' || value === 'agent_authoring' ||
+    value === 'artifact' || value === 'response' || value === 'unknown' || value === 'internal';
+}
+
+function isActivityPhase(value: unknown): value is SemanticActivityPhase {
+  return value === 'thinking' || value === 'working' || value === 'reviewing' ||
+    value === 'drafting' || value === 'reassessing';
 }
 
 function isReceiptCertainty(value: unknown): value is SlackPresentationReceiptCertainty {
@@ -2515,7 +2737,8 @@ function isActivityProjection(value: unknown): value is SlackPresentationActivit
   }
   if (projection.surface === 'assistant_status') {
     return (projection.state === 'selected' || projection.state === 'visible' ||
-      projection.state === 'cleared') && projection.messageTs === undefined;
+      projection.state === 'unavailable' || projection.state === 'cleared') &&
+      projection.messageTs === undefined;
   }
   if (projection.surface !== 'message' ||
       (projection.state !== 'selected' && projection.state !== 'visible' &&

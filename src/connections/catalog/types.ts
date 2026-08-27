@@ -1,4 +1,5 @@
 import type { ToolInputSchema } from '@flue/runtime';
+import type { ManagedCapabilitySemanticOverride } from '../../activity/semantic.ts';
 export type ManagedAccessLane = 'read' | 'write';
 
 export type ManagedEffectClass =
@@ -20,6 +21,8 @@ export interface ManagedCapabilityDefinition {
   description: string;
   input: ToolInputSchema;
   maxResultBytes: number;
+  /** Optional closed grammar correction; never rendered copy. */
+  semantic?: ManagedCapabilitySemanticOverride;
   /** Human-readable action checked by Chickpea's side-effect gate. */
   sideEffectLabel?: string;
   /** Conservative provider quota reservation made before remote dispatch. */

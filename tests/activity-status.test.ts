@@ -4,11 +4,220 @@ import { test } from 'node:test';
 import {
   activityStatus,
   activityStatusForObservation,
+  buildSemanticActivityContext,
   connectingActivityStatus,
   initialActivityStatus,
+  isSafeTypedActivityStatus,
   registerActivityContext,
   toolActivityStatus,
 } from '../src/activity/status.ts';
+import {
+  genericSemanticDescriptor,
+  managedConnectorSemanticDescriptor,
+  narrateSemanticActivity,
+  semanticDescriptorForCoreTool,
+  semanticInvocationFact,
+  thinkingSemanticActivity,
+} from '../src/activity/semantic.ts';
+import {
+  MANAGED_CONNECTOR_CATALOG,
+  semanticDescriptorForManagedCapability,
+  semanticDescriptorForManagedTool,
+} from '../src/connections/catalog/index.ts';
+
+test('semantic activity narrates Gmail from catalog facts without reading invocation input', () => {
+  const descriptor = semanticDescriptorForManagedCapability('gmail.messages.search');
+  assert.ok(descriptor);
+  assert.deepEqual(semanticDescriptorForManagedTool('gmail_search_messages'), descriptor);
+  assert.deepEqual(narrateSemanticActivity(descriptor, { phase: 'started' }), {
+    kind: 'checking',
+    action: 'Checking',
+    object: 'Gmail',
+    family: 'managed_connector',
+    phase: 'working',
+    text: 'Checking Gmail…',
+  });
+  assert.deepEqual(narrateSemanticActivity(descriptor, {
+    phase: 'settled',
+    outcome: 'succeeded',
+  }), {
+    kind: 'reading',
+    action: 'Reviewing',
+    object: 'Gmail messages',
+    family: 'managed_connector',
+    phase: 'reviewing',
+    text: 'Reviewing Gmail messages…',
+  });
+});
+
+test('every managed capability produces bounded deterministic start and review copy', () => {
+  for (const connector of MANAGED_CONNECTOR_CATALOG.list()) {
+    for (const capability of connector.capabilities) {
+      const descriptor = semanticDescriptorForManagedCapability(capability.id);
+      assert.ok(descriptor, capability.id);
+      for (const event of [
+        { phase: 'started' as const },
+        { phase: 'settled' as const, outcome: 'succeeded' as const },
+      ]) {
+        const activity = narrateSemanticActivity(descriptor, event);
+        assert.ok(activity, `${capability.id}:${event.phase}`);
+        assert.ok(activity.text.length <= 50, `${capability.id}:${activity.text}`);
+        assert.doesNotMatch(activity.text, /[<>&*_~`\r\n]/);
+      }
+    }
+  }
+});
+
+test('the semantic copy matrix covers core roles and hides internal helpers', () => {
+  assert.deepEqual(thinkingSemanticActivity(), {
+    kind: 'preparing',
+    action: 'Thinking',
+    object: 'the request',
+    family: 'unknown',
+    phase: 'thinking',
+    text: 'Thinking…',
+  });
+  assert.equal(isSafeTypedActivityStatus(thinkingSemanticActivity()), true);
+  assert.deepEqual(
+    activityStatus('preparing', 'Thinking', 'the request', 'unknown', 'thinking'),
+    thinkingSemanticActivity(),
+  );
+
+  const answer = semanticDescriptorForCoreTool('stream_answer');
+  assert.equal(answer.role, 'answer_generation');
+  assert.deepEqual(narrateSemanticActivity(answer, { phase: 'started' }), {
+    kind: 'writing',
+    action: 'Drafting',
+    object: 'the response',
+    family: 'response',
+    phase: 'drafting',
+    text: 'Drafting the response…',
+  });
+  assert.equal(narrateSemanticActivity(answer, {
+    phase: 'settled', outcome: 'failed',
+  }), undefined);
+
+  const hidden = semanticDescriptorForCoreTool('request_chickpea_handoff');
+  assert.equal(hidden.role, 'internal_hidden');
+  assert.equal(narrateSemanticActivity(hidden, { phase: 'started' }), undefined);
+
+  const secret = 'sk-proj-credential-do-not-leak';
+  const unknown = semanticDescriptorForCoreTool(secret);
+  assert.deepEqual(narrateSemanticActivity(unknown, { phase: 'started' }), {
+    kind: 'running',
+    action: 'Working on',
+    object: 'the request',
+    family: 'unknown',
+    phase: 'working',
+    text: 'Working on the request…',
+  });
+  assert.doesNotMatch(
+    narrateSemanticActivity(unknown, { phase: 'started' })?.text ?? '',
+    new RegExp(secret),
+  );
+});
+
+test('semantic descriptors never accept customer-authored names as copy inputs', () => {
+  const secret = 'xoxb-customer-authored-name-do-not-leak';
+  for (const family of [
+    'custom_connection', 'skill', 'repository', 'agent_authoring',
+  ] as const) {
+    const descriptor = genericSemanticDescriptor(family);
+    const serialized = JSON.stringify(descriptor);
+    assert.doesNotMatch(serialized, new RegExp(secret));
+    const activity = narrateSemanticActivity(descriptor, { phase: 'started' });
+    assert.ok(activity);
+    assert.doesNotMatch(activity.text, new RegExp(secret));
+  }
+  const forged = {
+    ...genericSemanticDescriptor('skill'),
+    label: { kind: 'managed_connector', id: 'customer', label: secret },
+  };
+  assert.doesNotMatch(
+    narrateSemanticActivity(forged, { phase: 'started' })?.text ?? '',
+    new RegExp(secret),
+  );
+});
+
+test('semantic invocation facts reject extra or unsafe fields at the owner boundary', () => {
+  const secret = 'xoxb-owner-payload-do-not-cross';
+  const descriptor = {
+    ...genericSemanticDescriptor('workspace'),
+    operationBody: secret,
+  };
+  assert.throws(
+    () => semanticInvocationFact('call_workspace_unsafe', descriptor as never),
+    /descriptor is invalid/,
+  );
+
+  const gmail = MANAGED_CONNECTOR_CATALOG.connector('gmail');
+  const search = MANAGED_CONNECTOR_CATALOG.capability('gmail.messages.search');
+  assert.ok(gmail && search);
+  const unsafeManaged = managedConnectorSemanticDescriptor({ ...gmail, label: secret }, search);
+  assert.throws(
+    () => semanticInvocationFact('call_gmail_unsafe', unsafeManaged),
+    /descriptor is invalid/,
+  );
+});
+
+test('unsafe managed labels and invalid descriptors degrade to fixed copy', () => {
+  const gmail = MANAGED_CONNECTOR_CATALOG.connector('gmail');
+  const search = MANAGED_CONNECTOR_CATALOG.capability('gmail.messages.search');
+  assert.ok(gmail && search);
+  for (const label of [
+    'xoxb-12345678901234567890',
+    'Gmail <@U123> *private*',
+    `Gmail ${'x'.repeat(80)}`,
+  ]) {
+    const descriptor = managedConnectorSemanticDescriptor({ ...gmail, label }, search);
+    assert.deepEqual(narrateSemanticActivity(descriptor, { phase: 'started' }), {
+      kind: 'running',
+      action: 'Working on',
+      object: 'the request',
+      family: 'unknown',
+      phase: 'working',
+      text: 'Working on the request…',
+    });
+  }
+  assert.deepEqual(
+    narrateSemanticActivity({ operation: 'prompt_injected' }, { phase: 'started' }),
+    {
+      kind: 'running',
+      action: 'Working on',
+      object: 'the request',
+      family: 'unknown',
+      phase: 'working',
+      text: 'Working on the request…',
+    },
+  );
+});
+
+test('side-effecting semantic activity stays in-progress or neutral until final prose', () => {
+  for (const capabilityId of ['gmail.drafts.create', 'gmail.messages.send']) {
+    const descriptor = semanticDescriptorForManagedCapability(capabilityId);
+    assert.ok(descriptor);
+    const start = narrateSemanticActivity(descriptor, { phase: 'started' });
+    const review = narrateSemanticActivity(descriptor, {
+      phase: 'settled', outcome: 'succeeded',
+    });
+    assert.ok(start && review);
+    assert.doesNotMatch(start.text, /created|sent|completed|succeeded/i);
+    assert.match(review.text, /^Reviewing /);
+    assert.doesNotMatch(review.text, /created|sent|completed|succeeded/i);
+  }
+  const descriptor = semanticDescriptorForManagedCapability('gmail.messages.send');
+  assert.ok(descriptor);
+  assert.deepEqual(narrateSemanticActivity(descriptor, {
+    phase: 'settled', outcome: 'failed',
+  }), {
+    kind: 'preparing',
+    action: 'Reassessing',
+    object: 'the request',
+    family: 'unknown',
+    phase: 'reassessing',
+    text: 'Reassessing the request…',
+  });
+});
 
 test('activity facts carry safe action-and-object copy without exposing raw input', () => {
   const secret = 'xoxb-12345678901234567890';
@@ -18,6 +227,8 @@ test('activity facts carry safe action-and-object copy without exposing raw inpu
     kind: 'writing',
     action: 'Drafting',
     object: 'the current item',
+    family: 'unknown',
+    phase: 'drafting',
     text: 'Drafting the current item…',
   });
   assert.equal(activity.text.startsWith('Agent '), false);
@@ -49,21 +260,21 @@ test('thinking observations do not replace the admitted user-facing activity', (
   );
 });
 
-test('admission activity uses allowlisted request objects without echoing user text', () => {
+test('admission activity is fixed thinking copy and ignores request content', () => {
   assert.deepEqual(
     initialActivityStatus(
       undefined,
       'Briefly explain how you would draft an initial skill for monitoring xoxb-secret.',
     ),
-    activityStatus('writing', 'Drafting', 'the initial skill'),
+    thinkingSemanticActivity(),
   );
   assert.deepEqual(
     initialActivityStatus(undefined, 'Reply with exactly received.'),
-    activityStatus('writing', 'Drafting', 'the response'),
+    thinkingSemanticActivity(),
   );
   assert.deepEqual(
     initialActivityStatus(['Google Ads access requirements'], 'xoxb-secret'),
-    activityStatus('writing', 'Drafting', 'Google Ads access requirements'),
+    thinkingSemanticActivity(),
   );
 });
 
@@ -140,6 +351,26 @@ test('unknown tool names are never copied into status text', () => {
 
   assert.deepEqual(status, activityStatus('running', 'Working with', 'a tool'));
   assert.doesNotMatch(status.text, new RegExp(secret));
+});
+
+test('semantic MCP activity uses a family grant without caching customer-authored names', () => {
+  const secretName = 'mcp__xoxb-customer-secret__prompt_injected_tool';
+  const context = buildSemanticActivityContext([], ['custom_connection']);
+  assert.doesNotMatch(JSON.stringify(context), /xoxb-customer-secret/);
+  registerActivityContext('semantic-mcp-thread', context);
+
+  assert.deepEqual(activityStatusForObservation({
+    type: 'tool_start',
+    instanceId: 'semantic-mcp-thread',
+    toolName: secretName,
+  }), {
+    kind: 'checking',
+    action: 'Checking',
+    object: 'a connected service',
+    family: 'custom_connection',
+    phase: 'working',
+    text: 'Checking a connected service…',
+  });
 });
 
 test('the presentation declaration uses user-facing activity copy', () => {

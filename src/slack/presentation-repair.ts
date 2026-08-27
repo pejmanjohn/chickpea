@@ -108,6 +108,9 @@ export async function repairTerminalSlackPresentation(
   }, undefined, {
     agentViewPresentation: agentView,
     activityProjection: presentation.activityProjection,
+    ...(presentation.currentActivity?.operation.certainty === 'unknown'
+      ? { activityMayBeVisible: true }
+      : {}),
   });
 
   const latestGeneration = await state.getLatestThreadSessionGeneration(presentation.root);
@@ -121,7 +124,8 @@ export async function repairTerminalSlackPresentation(
     await agentView.supersedeSharedRepairEffects();
   }
   const cleanup = await agentView.prepareActivityCleanup();
-  if (cleanup && (ownsSharedEffects || cleanup.projection.surface === 'message')) {
+  if (cleanup.kind === 'prepared' &&
+      (ownsSharedEffects || cleanup.projection.surface === 'message')) {
     const certainty = await presenter.clearStatus();
     await agentView.recordActivityCleanupReceipt(cleanup.operationId, certainty);
   }
@@ -144,7 +148,11 @@ export function hasRetryableTerminalRepair(
   const lifecycleRepairable = presentation.lifecyclePhase !== 'settled';
   const sessionRepairable = !presentation.agentSession.disposition &&
     (!session || session.certainty === 'failed');
-  const cleanupRepairable = presentation.activityProjection.state === 'visible' &&
+  const ambiguousNativeActivity = presentation.activityProjection.surface ===
+      'assistant_status' && presentation.activityProjection.state === 'unavailable' &&
+    presentation.currentActivity?.operation.certainty === 'unknown';
+  const cleanupRepairable = (presentation.activityProjection.state === 'visible' ||
+      ambiguousNativeActivity) &&
     (presentation.cleanup.state === 'not_required'
       ? presentation.cleanup.disposition === undefined
       : presentation.cleanup.operation.certainty === 'failed');

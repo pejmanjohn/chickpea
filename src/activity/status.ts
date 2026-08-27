@@ -6,44 +6,31 @@ import {
   type ParsedShellCommand,
 } from './curl-request-urls.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../slack/presentation-intent.ts';
-import { hasCredentialLikeContent } from '../security/content-validation.ts';
+import { ActivityLifecycleReducer } from './lifecycle.ts';
+import {
+  activityStatus,
+  genericSemanticDescriptor,
+  isSemanticActivityDescriptor,
+  narrateSemanticActivity,
+  safeActivityLabel,
+  thinkingSemanticActivity,
+  unknownSemanticDescriptor,
+  type ActivityStatus,
+  type SemanticActivityDescriptor,
+  type SemanticInvocationFact,
+  type SemanticTargetFamily,
+  type TypedActivityStatus,
+} from './semantic.ts';
 
-export type ActivityKind =
-  | 'preparing'
-  | 'checking'
-  | 'reading'
-  | 'writing'
-  | 'updating'
-  | 'running'
-  | 'waiting'
-  | 'finishing';
-
-export interface ActivityStatus {
-  /** Present on all production-derived activity; optional only for legacy relays/tests. */
-  kind?: ActivityKind;
-  action?: string;
-  object?: string;
-  text: string;
-}
-
-export interface TypedActivityStatus extends ActivityStatus {
-  kind: ActivityKind;
-  action: string;
-  object: string;
-}
-
-/**
- * Activity crosses an isolate boundary on Cloudflare. Accept only the canonical
- * typed form there so an RPC cannot turn an internal label into user-visible
- * copy or discard the structured action/object needed by durable presentation.
- */
-export function isSafeTypedActivityStatus(value: unknown): value is TypedActivityStatus {
-  if (!value || typeof value !== 'object') return false;
-  const status = value as Record<string, unknown>;
-  if (!isActivityKind(status.kind) || typeof status.action !== 'string' ||
-      typeof status.object !== 'string' || typeof status.text !== 'string') return false;
-  return activityStatus(status.kind, status.action, status.object).text === status.text;
-}
+export {
+  activityStatus,
+  isSafeTypedActivityStatus,
+  type ActivityKind,
+  type ActivityStatus,
+  type SemanticActivityPhase,
+  type SemanticTargetFamily,
+  type TypedActivityStatus,
+} from './semantic.ts';
 
 export interface ActivitySkill {
   name: string;
@@ -63,10 +50,40 @@ export interface ApiConnectionActivity {
   matchesRequest?: (url: string) => boolean;
 }
 
+export interface ActivityToolDescriptor {
+  toolName: string;
+  descriptor: SemanticActivityDescriptor;
+}
+
 export interface ActivityContext {
   skills: readonly ActivitySkill[];
   mcpConnections: readonly ActivityConnection[];
   apiConnections: readonly ApiConnectionActivity[];
+  /**
+   * Exact product-trusted descriptors for tools mounted on this render.
+   * Presence selects the closed semantic contract, even when the list is
+   * empty; unregistered observations then degrade to fixed generic copy.
+   */
+  toolDescriptors?: readonly ActivityToolDescriptor[];
+  /** Generic grants are policy evidence for invocation-owner facts, not copy. */
+  enabledFamilies?: readonly SemanticTargetFamily[];
+}
+
+/** Build the content-free context shape shared by RuntimePlan and legacy assembly. */
+export function buildSemanticActivityContext(
+  toolDescriptors: readonly ActivityToolDescriptor[],
+  enabledFamilies: readonly SemanticTargetFamily[] = [],
+): ActivityContext {
+  return {
+    skills: [],
+    mcpConnections: [],
+    apiConnections: [],
+    toolDescriptors: toolDescriptors.map(({ toolName, descriptor }) => ({
+      toolName,
+      descriptor: cloneSemanticDescriptor(descriptor),
+    })),
+    enabledFamilies: [...new Set(enabledFamilies)],
+  };
 }
 
 interface RegisteredActivityContext {
@@ -79,16 +96,21 @@ interface RegisteredActivityContext {
     allowedMethods: Set<string>;
     matchesRequest?: (url: string) => boolean;
   }>;
+  semanticDescriptors?: Map<string, SemanticActivityDescriptor>;
+  enabledFamilies: Set<SemanticTargetFamily>;
 }
 
 interface ActivityObservation {
   type: string;
   instanceId?: string | undefined;
+  submissionId?: string | undefined;
   toolName?: string | undefined;
   args?: unknown;
   contentIndex?: number | undefined;
   delta?: string | undefined;
   toolCallId?: string | undefined;
+  isError?: boolean | undefined;
+  attemptCount?: number | undefined;
 }
 
 // Durable agent instances can outlive individual turns, and Flue observation
@@ -97,8 +119,15 @@ interface ActivityObservation {
 // credentials or persisting profile data indefinitely.
 const MAX_ACTIVITY_CONTEXTS = 256;
 const activityContexts = new Map<string, RegisteredActivityContext>();
+const activityLifecycle = new ActivityLifecycleReducer();
 
 export function registerActivityContext(instanceId: string, context: ActivityContext): void {
+  const semanticDescriptors = context.toolDescriptors === undefined
+    ? undefined
+    : new Map(context.toolDescriptors.flatMap(({ toolName, descriptor }) => {
+        if (!toolName || !isSemanticActivityDescriptor(descriptor)) return [];
+        return [[toolName, cloneSemanticDescriptor(descriptor)] as const];
+      }));
   const registered: RegisteredActivityContext = {
     skills: new Map(
       context.skills.map((skill) => [
@@ -121,6 +150,8 @@ export function registerActivityContext(instanceId: string, context: ActivityCon
       ),
       ...(connection.matchesRequest ? { matchesRequest: connection.matchesRequest } : {}),
     })),
+    ...(semanticDescriptors ? { semanticDescriptors } : {}),
+    enabledFamilies: new Set(context.enabledFamilies ?? []),
   };
 
   // Refresh insertion order so safe degradation evicts the oldest registered
@@ -131,6 +162,7 @@ export function registerActivityContext(instanceId: string, context: ActivityCon
     const oldest = activityContexts.keys().next().value;
     if (oldest === undefined) break;
     activityContexts.delete(oldest);
+    activityLifecycle.clearInstance(oldest);
   }
 }
 
@@ -148,6 +180,20 @@ export function activityStatusForObservation(
   if (!context) {
     return undefined;
   }
+  if (typeof event.submissionId === 'string') {
+    const descriptor = event.type === 'tool_start' || event.type === 'tool'
+      ? descriptorForObservation(context, event.toolName)
+      : undefined;
+    return activityLifecycle.observe({
+      type: event.type,
+      instanceId: event.instanceId,
+      submissionId: event.submissionId,
+      ...(event.toolCallId ? { toolCallId: event.toolCallId } : {}),
+      ...(descriptor ? { descriptor } : {}),
+      ...(event.isError === undefined ? {} : { isError: event.isError }),
+      ...(event.attemptCount === undefined ? {} : { attemptCount: event.attemptCount }),
+    });
+  }
   if (event.type === 'thinking_start') {
     // The turn already publishes an admission activity before model work
     // starts. A thinking event contains no new user-facing fact and must not
@@ -161,7 +207,82 @@ export function activityStatusForObservation(
   ) {
     return undefined;
   }
+  if (context.semanticDescriptors) {
+    const descriptor = descriptorForObservation(context, event.toolName);
+    return narrateSemanticActivity(
+      descriptor ?? unknownSemanticDescriptor(),
+      { phase: 'started' },
+    );
+  }
   return toolActivityStatus(event.toolName, event.args, context);
+}
+
+/** Register an invocation-owner fact only when the exact plan grants its family. */
+export function registerActivityInvocationFact(
+  instanceId: string,
+  submissionId: string,
+  fact: SemanticInvocationFact,
+): ActivityStatus | undefined {
+  const context = activityContexts.get(instanceId);
+  if (!context || !descriptorIsGranted(context, fact.descriptor)) return undefined;
+  return activityLifecycle.registerInvocationFact(instanceId, submissionId, fact);
+}
+
+function descriptorIsGranted(
+  context: RegisteredActivityContext,
+  descriptor: SemanticActivityDescriptor,
+): boolean {
+  if (descriptor.target !== 'managed_connector') {
+    return context.enabledFamilies.has(descriptor.target);
+  }
+  for (const granted of context.semanticDescriptors?.values() ?? []) {
+    if (sameSemanticDescriptor(granted, descriptor)) return true;
+  }
+  return false;
+}
+
+function sameSemanticDescriptor(
+  left: SemanticActivityDescriptor,
+  right: SemanticActivityDescriptor,
+): boolean {
+  return left.operation === right.operation && left.target === right.target &&
+    left.object === right.object && left.effect === right.effect &&
+    left.role === right.role && left.trust === right.trust &&
+    left.label?.kind === right.label?.kind && left.label?.id === right.label?.id &&
+    left.label?.label === right.label?.label;
+}
+
+function descriptorForObservation(
+  context: RegisteredActivityContext,
+  toolName: string | undefined,
+): SemanticActivityDescriptor | undefined {
+  if (!toolName || !context.semanticDescriptors) return undefined;
+  return context.semanticDescriptors.get(toolName) ??
+    (toolName.startsWith('mcp__') && context.enabledFamilies.has('custom_connection')
+      ? genericSemanticDescriptor('custom_connection')
+      : unknownSemanticDescriptor());
+}
+
+function cloneSemanticDescriptor(
+  descriptor: SemanticActivityDescriptor,
+): SemanticActivityDescriptor {
+  return {
+    operation: descriptor.operation,
+    target: descriptor.target,
+    ...(descriptor.label
+      ? {
+          label: {
+            kind: descriptor.label.kind,
+            id: descriptor.label.id,
+            label: descriptor.label.label,
+          },
+        }
+      : {}),
+    object: descriptor.object,
+    effect: descriptor.effect,
+    role: descriptor.role,
+    trust: descriptor.trust,
+  };
 }
 
 export function toolActivityStatus(
@@ -220,34 +341,12 @@ export function connectingActivityStatus(displayName: string): ActivityStatus {
   return activityStatus('checking', 'Connecting to', displayName);
 }
 
-/** Calm admission activity, upgraded to a safe request object when known. */
+/** Fixed truthful admission activity; request content never selects its copy. */
 export function initialActivityStatus(
-  taskLabels?: readonly string[],
-  requestText?: string,
+  _taskLabels?: readonly string[],
+  _requestText?: string,
 ): TypedActivityStatus {
-  const firstTask = taskLabels?.find((label) => label.trim())?.trim();
-  if (firstTask) return activityStatus('writing', 'Drafting', firstTask);
-  return activityStatus('writing', 'Drafting', requestedDraftObject(requestText));
-}
-
-/**
- * Infer only from an allowlist of common product artifacts. User wording is
- * never copied into Slack, so credentials, mentions, and prompt injection
- * cannot become presentation text.
- */
-function requestedDraftObject(requestText: string | undefined): string {
-  const text = requestText?.toLowerCase() ?? '';
-  const drafting = /\b(?:author|build|create|design|draft|edit|outline|revise|write)\b/.test(text);
-  if (!drafting) return 'the response';
-  if (/\binitial\s+skill\b/.test(text)) return 'the initial skill';
-  if (/\bskills?\b/.test(text)) return 'the skill';
-  if (/\bagents?\b/.test(text)) return 'the Agent';
-  if (/\bplans?\b/.test(text)) return 'the plan';
-  if (/\breports?\b/.test(text)) return 'the report';
-  if (/\bproposals?\b/.test(text)) return 'the proposal';
-  if (/\bdocuments?\b/.test(text)) return 'the document';
-  if (/\b(?:emails?|messages?)\b/.test(text)) return 'the message';
-  return 'the response';
+  return thinkingSemanticActivity();
 }
 
 function bashActivityStatus(
@@ -505,46 +604,6 @@ function objectString(value: unknown, key: string): string | undefined {
   if (typeof value !== 'object' || value === null || !(key in value)) return undefined;
   const candidate = (value as Record<string, unknown>)[key];
   return typeof candidate === 'string' ? candidate : undefined;
-}
-
-export function activityStatus(
-  kind: ActivityKind,
-  action: string,
-  object: string,
-): TypedActivityStatus {
-  const safeAction = safeActivityLabel(action) || 'Working on';
-  const candidateObject = safeActivityLabel(object);
-  const safeObject = hasCredentialLikeContent(candidateObject)
-    ? 'the current item'
-    : candidateObject || 'the request';
-  const maxObjectLength = Math.max(1, 50 - safeAction.length - 2);
-  const boundedObject = truncate(safeObject, maxObjectLength);
-  return {
-    kind,
-    action: safeAction,
-    object: boundedObject,
-    text: `${safeAction} ${boundedObject}…`,
-  };
-}
-
-function isActivityKind(value: unknown): value is ActivityKind {
-  return value === 'preparing' || value === 'checking' || value === 'reading' ||
-    value === 'writing' || value === 'updating' || value === 'running' ||
-    value === 'waiting' || value === 'finishing';
-}
-
-function safeActivityLabel(value: string): string {
-  const normalized = value
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/[<>&*_~`]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return normalized || 'connection';
-}
-
-function truncate(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value;
-  return `${value.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
 }
 
 function humanizeIdentifier(value: string): string {

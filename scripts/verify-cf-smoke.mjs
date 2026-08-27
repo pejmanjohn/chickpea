@@ -238,6 +238,10 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
   );
   check(config.ai?.binding === 'AI', 'built wrangler.json carries the production AI binding');
   check(
+    config.version_metadata?.binding === 'CF_VERSION_METADATA',
+    'built wrangler.json carries the Worker version metadata binding',
+  );
+  check(
     sameArray(config.triggers?.crons ?? [], ['* * * * *']),
     'built wrangler.json carries exactly one heartbeat Cron Trigger',
   );

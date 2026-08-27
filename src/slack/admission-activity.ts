@@ -20,12 +20,14 @@ export interface AdmittedSlackActivityInput {
   owner: SlackPresentationOwner;
   agentId: string;
   activity: TypedActivityStatus;
+  semanticActivityEnabled?: boolean;
 }
 
 /**
- * Project the activity intent persisted by canonical admission before the
- * durable turn driver begins model or sandbox work. Replays are safe: the
- * presentation state either returns the same pending operation for receipt
+ * Project the intent persisted by canonical admission at the head of the
+ * durable turn driver, before model or sandbox work. Keeping the write in the
+ * state owner lets one generation fence every native status writer. Replays
+ * are safe: presentation state either returns the same pending operation for receipt
  * reconciliation or proves that the activity is already visible.
  */
 export async function presentAdmittedSlackActivity(
@@ -49,8 +51,21 @@ export async function presentAdmittedSlackActivity(
     agentId: input.agentId,
     userId: input.requesterUserId,
     workspaceId: input.workspaceId,
-  }, undefined, { agentViewPresentation: agentView });
+  }, undefined, {
+    agentViewPresentation: agentView,
+    ...(input.state.reserveSlackActivityStatus &&
+        input.state.applySlackActivityStatusCooldown
+      ? {
+          activityStatusCoordinator: {
+            reserve: async () => input.state.reserveSlackActivityStatus!(input.workspaceId),
+            applyCooldown: async (retryAfterMs: number) =>
+              input.state.applySlackActivityStatusCooldown!(input.workspaceId, retryAfterMs),
+          },
+        }
+      : {}),
+  });
   await agentView.beginAgentSessionProcessing();
+  if (input.semanticActivityEnabled === false) return true;
   const write = await agentView.beginActivity(
     input.activity,
     presenter.preferredActivitySurface(),
@@ -62,7 +77,7 @@ export async function presentAdmittedSlackActivity(
     write.operationId,
     receipt.certainty,
     receipt.messageTs,
+    receipt.unavailable,
   );
-  await presenter.setNativeThreadStatus(input.activity);
   return receipt.certainty === 'acknowledged';
 }

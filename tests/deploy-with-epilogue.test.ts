@@ -22,6 +22,7 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const DEPLOY_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'deploy-with-epilogue.mjs');
 const PROFILE_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'cloudflare-deployment-profile.mjs');
 const CAPABILITY_SCRIPT = path.join(PROJECT_ROOT, 'src', 'auth', 'setup-capability.mjs');
+const ACTIVATION_SCRIPT = path.join(PROJECT_ROOT, 'src', 'auth', 'deployment-activation.mjs');
 const AUTH_MIGRATIONS = [
   '0001_better_auth.sql',
   '0002_mcp_oauth.sql',
@@ -45,6 +46,7 @@ function createHarness() {
   copyFileSync(DEPLOY_SCRIPT, path.join(scriptsDir, 'deploy-with-epilogue.mjs'));
   copyFileSync(PROFILE_SCRIPT, path.join(scriptsDir, 'cloudflare-deployment-profile.mjs'));
   copyFileSync(CAPABILITY_SCRIPT, path.join(authDir, 'setup-capability.mjs'));
+  copyFileSync(ACTIVATION_SCRIPT, path.join(authDir, 'deployment-activation.mjs'));
   for (const migrationPath of AUTH_MIGRATIONS) {
     copyFileSync(migrationPath, path.join(authMigrationsDir, path.basename(migrationPath)));
   }
@@ -166,6 +168,7 @@ function createHarness() {
         }));
       }
       if (process.env.DEPLOY_TEST_URL) process.stdout.write(process.env.DEPLOY_TEST_URL + '\\n');
+      if (args[0] === 'deploy') process.stdout.write('Current Version ID: deployed-version\\n');
       if (args[0] === 'deploy' && process.env.DEPLOY_TEST_DEPLOY_STATUS) {
         process.exit(Number(process.env.DEPLOY_TEST_DEPLOY_STATUS));
       }
@@ -203,12 +206,15 @@ function runHarness(
       ...env,
       DEPLOY_TEST_LOG: harness.logPath,
       DEPLOY_TEST_SECRET_CAPTURE: harness.secretCapturePath,
+      DEPLOY_TEST_READINESS_BASE_URL:
+        env.DEPLOY_TEST_READINESS_BASE_URL ?? 'https://chickpea.test',
+      DEPLOY_TEST_READINESS_STATUSES: env.DEPLOY_TEST_READINESS_STATUSES ?? '204',
       npm_execpath: harness.npmStub,
     },
   });
 }
 
-test('successful deploy generates stable auth and prints the setup link immediately', async (context) => {
+test('successful deploy generates stable auth and prints the setup link after readiness', async (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
 
@@ -229,6 +235,8 @@ test('successful deploy generates stable auth and prints the setup link immediat
   assert.match(config.vars.CHICKPEA_SETUP_CAPABILITY_DIGEST, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(config.vars.CHICKPEA_SETUP_CAPABILITY_DIGEST, await digestSetupCapability(link[1]!));
   assert.match(config.vars.CHICKPEA_SETUP_CAPABILITY_ISSUED_AT, /^\d{13}$/);
+  assert.match(config.vars.CHICKPEA_DEPLOYMENT_ACTIVATION_DIGEST, /^[A-Za-z0-9_-]{43}$/);
+  assert.match(config.vars.CHICKPEA_DEPLOYMENT_ACTIVATION_ISSUED_AT, /^\d{13}$/);
   assert.equal(JSON.stringify(config).includes(link[1]!), false);
   const capture = JSON.parse(readFileSync(harness.secretCapturePath, 'utf8'));
   assert.equal(capture.mode, 0o600);
@@ -242,9 +250,10 @@ test('successful deploy generates stable auth and prints the setup link immediat
   assert.equal(existsSync(capture.path), false);
   assert.doesNotMatch(result.stdout, /Checking the public setup URL|setup is responding/);
   assert.match(result.stdout, /✔ Worker deployed/);
-  assert.match(result.stdout, /may take 1–2 minutes/);
+  assert.match(result.stdout, /Verified current-version deployment readiness/);
   assert.match(result.stdout, /🔐 PRIVATE SETUP LINK/);
   assert.match(result.stdout, /👉 https:\/\/chickpea\.example\.workers\.dev\/admin\/setup#setup=/);
+  assert.equal(result.stdout.match(/[A-Za-z0-9_-]{43}/g)?.length, 1);
   const invoked = commands(harness.logPath);
   assert.match(invoked[0] ?? '', /^wrangler:\["secret","list","--format","json","--config",/);
   assert.match(
@@ -253,6 +262,35 @@ test('successful deploy generates stable auth and prints the setup link immediat
   );
   assert.match(invoked[2] ?? '', /^wrangler:\["d1","execute","AUTH_DB","--remote","--json","--command",/);
   assert.match(invoked[3] ?? '', /^wrangler:\["deploy","--secrets-file",".*"\]$/);
+});
+
+test('deploy waits through stale Worker and gateway versions before announcing success', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+    DEPLOY_TEST_READINESS_STATUSES: '404,409,503,204',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Waiting for the current Worker and Slack gateway version/);
+  assert.match(result.stdout, /Verified current-version deployment readiness/);
+  assert.match(result.stdout, /✔ Worker deployed/);
+});
+
+test('deploy does not announce readiness when the Slack gateway stays on older code', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_URL: 'https://chickpea.example.workers.dev',
+    DEPLOY_TEST_READINESS_STATUSES: '503',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /current-version readiness was not confirmed/);
+  assert.doesNotMatch(result.stdout, /✔ Worker deployed/);
 });
 
 test('successful custom-route deploy preserves the private setup path when Wrangler reports no origin', (context) => {
@@ -788,6 +826,7 @@ function writeCutoverArtifact(
     cloudflareTracer?: boolean;
     sandboxCommandRedaction?: boolean;
     agentViewArtifact?: boolean;
+    versionMetadata?: boolean;
     databaseId?: string;
     profile?: 'core' | 'sandbox';
     workerName?: string;
@@ -823,6 +862,9 @@ function writeCutoverArtifact(
       ? ['nodejs_compat']
       : ['nodejs_compat', 'global_fetch_strictly_public'],
     observability: { enabled: true, traces: { enabled: options.tracing ?? true } },
+    ...(options.versionMetadata === false
+      ? {}
+      : { version_metadata: { binding: 'CF_VERSION_METADATA' } }),
     vars: {
       SLACK_TAG_LEDGER_CANARY_CHANNELS: options.selector ?? '',
     },
@@ -1209,6 +1251,7 @@ test('preflight rejects unexpected or protected destructive class operations', (
 
 test('preflight rejects missing bindings, missing content-free tracing, and stale dates', (context) => {
   const missingState = createHarness();
+  const missingVersionMetadata = createHarness();
   const tracingDisabled = createHarness();
   const missingTracer = createHarness();
   const missingSandboxRedaction = createHarness();
@@ -1216,6 +1259,7 @@ test('preflight rejects missing bindings, missing content-free tracing, and stal
   const privateGlobalFetch = createHarness();
   context.after(() => {
     rmSync(missingState.root, { recursive: true, force: true });
+    rmSync(missingVersionMetadata.root, { recursive: true, force: true });
     rmSync(tracingDisabled.root, { recursive: true, force: true });
     rmSync(missingTracer.root, { recursive: true, force: true });
     rmSync(missingSandboxRedaction.root, { recursive: true, force: true });
@@ -1223,6 +1267,7 @@ test('preflight rejects missing bindings, missing content-free tracing, and stal
     rmSync(privateGlobalFetch.root, { recursive: true, force: true });
   });
   writeCutoverArtifact(missingState, { missingBinding: 'TAG_STATE' });
+  writeCutoverArtifact(missingVersionMetadata, { versionMetadata: false });
   writeCutoverArtifact(tracingDisabled, { tracing: false });
   writeCutoverArtifact(missingTracer, { cloudflareTracer: false });
   writeCutoverArtifact(missingSandboxRedaction, { sandboxCommandRedaction: false });
@@ -1230,6 +1275,10 @@ test('preflight rejects missing bindings, missing content-free tracing, and stal
   writeCutoverArtifact(privateGlobalFetch, { publicGlobalFetch: false });
 
   const stateResult = runHarness(missingState, ['--skip-build', '--preflight-only']);
+  const versionMetadataResult = runHarness(
+    missingVersionMetadata,
+    ['--skip-build', '--preflight-only'],
+  );
   const tracingDisabledResult = runHarness(
     tracingDisabled,
     ['--skip-build', '--preflight-only'],
@@ -1247,6 +1296,8 @@ test('preflight rejects missing bindings, missing content-free tracing, and stal
 
   assert.equal(stateResult.status, 1);
   assert.match(stateResult.stderr, /TAG_STATE\/TagStateStore binding/);
+  assert.equal(versionMetadataResult.status, 1);
+  assert.match(versionMetadataResult.stderr, /CF_VERSION_METADATA Worker version binding/);
   assert.equal(tracingDisabledResult.status, 1);
   assert.match(tracingDisabledResult.stderr, /enabled Workers Traces/);
   assert.equal(missingTracerResult.status, 1);

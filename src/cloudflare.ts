@@ -134,7 +134,11 @@ import {
 import { createLedgerSlackRunHandler } from './slack/ledger-turn-driver.ts';
 import type { SlackPresentationStatePort } from './slack/agent-view-presentation.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
-import { isSafeTypedActivityStatus, type TypedActivityStatus } from './activity/status.ts';
+import {
+  activityStatus,
+  isSafeTypedActivityStatus,
+  type TypedActivityStatus,
+} from './activity/status.ts';
 import {
   deliverAgentFailureFinal,
   repairSlackInteractionProgress,
@@ -1208,6 +1212,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     );
   }
 
+  async slackPresentationReserveActivityStatus(workspaceId: string) {
+    return this.call((stores) => stores.presentations.reserveActivityStatus(workspaceId));
+  }
+
+  async slackPresentationApplyActivityStatusCooldown(
+    workspaceId: string,
+    retryAfterMs: number,
+  ) {
+    return this.call((stores) =>
+      stores.presentations.applyActivityStatusCooldown(workspaceId, retryAfterMs),
+    );
+  }
+
   async slackPresentationRepairList(limit: number) {
     return this.call((stores) => stores.presentations.listAutoRepairableV3(limit));
   }
@@ -1387,7 +1404,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (!isSafeTypedActivityStatus(status)) return null;
       const target = stores.turnJobs.matchFlueObservation(instanceId, submissionId);
       if (target) {
-        setObservedSlackStatus(instanceId, target.generation, status);
+        setObservedSlackStatus(
+          instanceId,
+          target.generation,
+          activityStatus(
+            status.kind,
+            status.action,
+            status.object,
+            status.family,
+            status.phase,
+          ),
+        );
       }
       return null;
     });
@@ -2134,6 +2161,10 @@ function localSlackPresentationState(stores: TagStateStores): SlackPresentationS
     reserveSlackAppend: (workspaceId) => stores.presentations.reserveAppend(workspaceId),
     applySlackAppendCooldown: (workspaceId, retryAfterMs) =>
       stores.presentations.applyAppendCooldown(workspaceId, retryAfterMs),
+    reserveSlackActivityStatus: (workspaceId) =>
+      stores.presentations.reserveActivityStatus(workspaceId),
+    applySlackActivityStatusCooldown: (workspaceId, retryAfterMs) =>
+      stores.presentations.applyActivityStatusCooldown(workspaceId, retryAfterMs),
     matchFlueObservation: (instanceId, submissionId) =>
       stores.turnJobs.matchFlueObservation(instanceId, submissionId),
   };

@@ -2,6 +2,7 @@ import { DurableObject, type DurableObjectState } from 'cloudflare:workers';
 
 import { getSettingsStore, type PlatformEnv } from '../../config/state-backend.ts';
 import { tagStateStub } from '../../config/state-rpc.ts';
+import { cloudflareWorkerVersionId } from '../../config/cloudflare-version.ts';
 import { GATEWAY_BINDING_SETTING } from './client.ts';
 import { GATEWAY_DURABLE_ADMISSION_CAPABILITY } from './protocol.ts';
 import { createGatewayDeploymentClient } from './runtime.ts';
@@ -66,10 +67,18 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
   async status(): Promise<GatewaySessionStatusSnapshot> {
     await this.wake();
     const live = this.supervisor?.snapshot();
-    if (live) return reconcileGatewaySessionStatus(live, undefined);
+    if (live) {
+      return {
+        ...reconcileGatewaySessionStatus(live, undefined),
+        versionId: cloudflareWorkerVersionId(this.env) ?? null,
+      };
+    }
     const persisted = await createGatewayDeploymentClient(this.env as PlatformEnv)
       .loadSessionCheckpoint();
-    return reconcileGatewaySessionStatus(undefined, persisted);
+    return {
+      ...reconcileGatewaySessionStatus(undefined, persisted),
+      versionId: cloudflareWorkerVersionId(this.env) ?? null,
+    };
   }
 }
 

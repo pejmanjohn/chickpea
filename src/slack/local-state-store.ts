@@ -71,6 +71,10 @@ export function localSlackStateStore(input: {
     reserveSlackAppend: async (workspaceId) => presentations.reserveAppend(workspaceId),
     applySlackAppendCooldown: async (workspaceId, retryAfterMs) =>
       presentations.applyAppendCooldown(workspaceId, retryAfterMs),
+    reserveSlackActivityStatus: async (workspaceId) =>
+      presentations.reserveActivityStatus(workspaceId),
+    applySlackActivityStatusCooldown: async (workspaceId, retryAfterMs) =>
+      presentations.applyActivityStatusCooldown(workspaceId, retryAfterMs),
     listRunPresentationsForRepair: async (limit = 50) =>
       presentations.listAutoRepairableV3(limit),
     maintainRunPresentations: async (limit = 100) => presentations.maintain(limit),

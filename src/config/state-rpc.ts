@@ -460,6 +460,13 @@ export interface TagStateRpc {
     workspaceId: string,
     retryAfterMs: number,
   ): Promise<StateRpcResult<{ cooldownUntil: number; budgetVersion: number }>>;
+  slackPresentationReserveActivityStatus(
+    workspaceId: string,
+  ): Promise<StateRpcResult<SlackAppendReservation>>;
+  slackPresentationApplyActivityStatusCooldown(
+    workspaceId: string,
+    retryAfterMs: number,
+  ): Promise<StateRpcResult<{ cooldownUntil: number; budgetVersion: number }>>;
   slackPresentationRepairList(
     limit: number,
   ): Promise<StateRpcResult<SlackRunPresentation[]>>;

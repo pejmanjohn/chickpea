@@ -1,6 +1,13 @@
 import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import {
+  emitSemanticActivityTelemetry,
+  semanticTelemetryForStatus,
+  type SemanticActivityTelemetrySink,
+  type SemanticActivityTelemetrySurface,
+} from '../activity/telemetry.ts';
+import { isSafeTypedActivityStatus } from '../activity/status.ts';
+import {
   appendSlackReplyFooter,
   canonicalSlackMarkdownText,
   renderSlackMessage,
@@ -117,6 +124,15 @@ export interface SlackPresenterOptions {
   onPublicDelivery?: (input: { messageTs: string; text: string }) => void | Promise<void>;
   /** Rehydrates the one V3 activity artifact after an isolate restart. */
   activityProjection?: SlackPresentationActivityProjection;
+  /** A native write had an ambiguous receipt and therefore still needs clear. */
+  activityMayBeVisible?: boolean;
+  /** Installation-scoped durable budget shared by native semantic status writers. */
+  activityStatusCoordinator?: {
+    reserve(): Promise<{ outcome: 'reserved' | 'cooldown' | 'exhausted' }>;
+    applyCooldown(retryAfterMs: number): Promise<unknown>;
+  };
+  /** Fixed-schema content-free observability; injectable for focused tests. */
+  activityTelemetry?: SemanticActivityTelemetrySink;
 }
 
 export interface SlackActivityWrite {
@@ -144,9 +160,8 @@ export class PersistedSlackDeliveryError extends Error {
  * Slack presentation over a `@slack/web-api` WebClient. This is the sole Slack
  * presentation path and owns the complete fallback ordering.
  *
- * Status policy: attempted per stage but latched off after the first rejection
- * for the turn (no retry storm — scenario S16); a clear is only issued when a
- * status was actually set.
+ * Status policy: attempted per truthful stage but latched off after the first
+ * rejection for the turn; a clear is only issued when a status was set.
  *
  * Final delivery: chat.startStream(markdown_text) -> chat.stopStream; on a
  * startStream rejection or missing recipient fields, fall back to a single
@@ -156,7 +171,6 @@ export class PersistedSlackDeliveryError extends Error {
 export class WebClientPresenter {
   private statusFailed = false;
   private statusWasSet = false;
-  private nativeThreadStatusWasSet = false;
   private activityMessageTs: string | undefined;
   private lastActivityReceiptCertainty: SlackActivityReceiptCertainty = 'failed';
 
@@ -172,35 +186,43 @@ export class WebClientPresenter {
       this.statusWasSet = true;
     } else if (projection?.surface === 'assistant_status' && projection.state === 'visible') {
       this.statusWasSet = true;
-      this.nativeThreadStatusWasSet = true;
+    } else if (projection?.surface === 'assistant_status' &&
+        projection.state === 'unavailable') {
+      this.statusFailed = true;
+      this.statusWasSet = options.activityMayBeVisible === true;
+    } else if (projection?.surface === 'assistant_status' &&
+        options.activityMayBeVisible === true) {
+      this.statusWasSet = true;
     }
   }
 
   preferredActivitySurface(): 'message' | 'assistant_status' {
     const projection = this.options.activityProjection;
     if (projection && projection.surface !== 'unselected') return projection.surface;
-    // V3 owners use Slack's native under-composer status. Slack supports
-    // custom username/icon authorship on this surface, so selected Agents keep
-    // their frozen identity without creating a transient chat message.
-    if (this.target.visibleOwner) return 'assistant_status';
-    const chat = (this.client as unknown as { chat?: { postMessage?: unknown } }).chat;
-    return typeof chat?.postMessage === 'function' ? 'message' : 'assistant_status';
+    // Every new semantic projection is native. `message` can only be returned
+    // above when durable state proves an existing legacy coordinate.
+    return 'assistant_status';
   }
 
   /**
-   * Present one owner-authored activity artifact. Direct message activity is
-   * preferred because Slack's Assistant/Agent status surfaces cannot carry the
-   * safe action-and-object fact. Once created, every update targets the same
-   * coordinate. The legacy thread-status bridge is used only when a message
-   * post is locally unavailable or Slack confirms that no post occurred.
+   * Present one owner-authored activity artifact. New activity is native-only;
+   * a legacy message may only be updated when durable state already supplies
+   * its exact coordinate. A failed native write never creates a message.
    */
   async setStatus(update: SlackStatusUpdate, durable?: SlackActivityWrite): Promise<boolean> {
+    const startedAt = Date.now();
+    this.lastActivityReceiptCertainty = 'failed';
     if (this.statusFailed) {
+      this.emitTransport(
+        activitySurface(this.activityMessageTs, durable),
+        'latched_off',
+        startedAt,
+        update,
+      );
       return false;
     }
     const chat = (this.client as unknown as {
       chat?: {
-        postMessage?: (input: Record<string, unknown>) => Promise<{ ts?: string }>;
         update?: (input: Record<string, unknown>) => Promise<unknown>;
       };
     }).chat;
@@ -211,6 +233,7 @@ export class WebClientPresenter {
     if (this.activityMessageTs) {
       if (typeof chat?.update !== 'function') {
         this.statusFailed = true;
+        this.emitTransport('legacy_message', 'rejected', startedAt, update);
         return false;
       }
       try {
@@ -220,49 +243,30 @@ export class WebClientPresenter {
           text: update.text,
         });
         this.lastActivityReceiptCertainty = 'acknowledged';
+        this.emitTransport('legacy_message', 'acknowledged', startedAt, update);
         return true;
       } catch (error) {
         // An existing visible activity must never gain a competing fallback.
         this.lastActivityReceiptCertainty = slackDeliveryFailureOutcome(error);
         this.statusFailed = true;
+        this.emitTransport(
+          'legacy_message',
+          transportTelemetryOutcome(this.lastActivityReceiptCertainty),
+          startedAt,
+          update,
+        );
         return false;
       }
     }
-    if (durable?.surface !== 'assistant_status' && typeof chat?.postMessage === 'function') {
-      try {
-        const posted = await chat.postMessage({
-          channel: this.target.channelId,
-          thread_ts: this.target.threadTs,
-          text: update.text,
-          ...(durable ? { client_msg_id: slackClientMessageId(durable.operationId) } : {}),
-          ...this.persona(),
-        });
-        if (typeof posted.ts !== 'string' || !posted.ts) {
-          // Slack may have accepted the write without returning its coordinate.
-          // Do not create a second artifact when the effect is ambiguous.
-          this.lastActivityReceiptCertainty = 'unknown';
-          this.statusFailed = true;
-          return false;
-        }
-        this.activityMessageTs = posted.ts;
-        this.statusWasSet = true;
-        this.lastActivityReceiptCertainty = 'acknowledged';
-        return true;
-      } catch (error) {
-        const outcome = slackDeliveryFailureOutcome(error);
-        if (outcome !== 'failed') {
-          this.lastActivityReceiptCertainty = outcome;
-          this.statusFailed = true;
-          return false;
-        }
-        // V3 freezes its projection surface. A confirmed message rejection is
-        // repairable, but may not switch authorship/surface mid-lifecycle.
-        if (durable) return false;
-        // Legacy presentation may use the compatibility status after a proven
-        // message rejection because it has no durable activity projection.
-      }
+    if (durable?.surface === 'message') {
+      this.emitTransport('legacy_message', 'rejected', startedAt, update);
+      return false;
     }
-    if (durable?.surface === 'message') return false;
+    const reservation = await this.reserveNativeStatus();
+    if (!reservation) {
+      this.emitTransport('assistant_status', 'rejected', startedAt, update);
+      return false;
+    }
     try {
       await this.client.assistant.threads.setStatus({
         channel_id: this.target.channelId,
@@ -272,13 +276,52 @@ export class WebClientPresenter {
         ...this.nativeStatusPersona(),
       });
       this.statusWasSet = true;
-      this.nativeThreadStatusWasSet = true;
       this.lastActivityReceiptCertainty = 'acknowledged';
+      this.emitTransport('assistant_status', 'acknowledged', startedAt, update);
       return true;
     } catch (error) {
-      // Latch off further status attempts for this turn (S16: <=2 non-empty).
+      // Latch off further custom-status attempts for this turn.
       this.lastActivityReceiptCertainty = slackDeliveryFailureOutcome(error);
       this.statusFailed = true;
+      if (this.lastActivityReceiptCertainty === 'unknown') this.statusWasSet = true;
+      this.emitTransport(
+        'assistant_status',
+        transportTelemetryOutcome(this.lastActivityReceiptCertainty),
+        startedAt,
+        update,
+      );
+      const retryAfterMs = slackRateRetryAfterMs(error);
+      if (retryAfterMs !== undefined) {
+        emitSemanticActivityTelemetry({
+          event: 'activity.rate',
+          outcome: 'cooldown',
+          durationMs: retryAfterMs,
+        }, this.options.activityTelemetry ?? console);
+        await this.options.activityStatusCoordinator?.applyCooldown(
+          retryAfterMs,
+        ).catch(() => undefined);
+      }
+      return false;
+    }
+  }
+
+  private async reserveNativeStatus(): Promise<boolean> {
+    const coordinator = this.options.activityStatusCoordinator;
+    if (!coordinator) return true;
+    try {
+      const result = await coordinator.reserve();
+      emitSemanticActivityTelemetry({
+        event: 'activity.rate',
+        outcome: result.outcome,
+      }, this.options.activityTelemetry ?? console);
+      return result.outcome === 'reserved';
+    } catch {
+      // Coordination is part of the cosmetic transport. A state failure must
+      // not bypass the shared budget or interfere with final delivery.
+      emitSemanticActivityTelemetry({
+        event: 'activity.rate',
+        outcome: 'unavailable',
+      }, this.options.activityTelemetry ?? console);
       return false;
     }
   }
@@ -287,52 +330,23 @@ export class WebClientPresenter {
     return this.lastActivityReceiptCertainty;
   }
 
-  activityReceipt(): { certainty: SlackActivityReceiptCertainty; messageTs?: string } {
+  activityReceipt(): {
+    certainty: SlackActivityReceiptCertainty;
+    messageTs?: string;
+    unavailable?: boolean;
+  } {
     return {
       certainty: this.lastActivityReceiptCertainty,
       ...(this.activityMessageTs ? { messageTs: this.activityMessageTs } : {}),
+      ...(this.statusFailed && !this.activityMessageTs ? { unavailable: true } : {}),
     };
   }
 
-  /** Keep Slack's native under-composer loading indicator visible for the run. */
-  async setNativeThreadStatus(update: SlackStatusUpdate): Promise<boolean> {
-    if (this.nativeThreadStatusWasSet) return true;
-    try {
-      await this.client.assistant.threads.setStatus({
-        channel_id: this.target.channelId,
-        thread_ts: this.target.threadTs,
-        status: slackStatusText(update),
-        loading_messages: slackLoadingMessages(update),
-        ...this.nativeStatusPersona(),
-      });
-      this.nativeThreadStatusWasSet = true;
-      return true;
-    } catch {
-      // Agent Sessions and the durable activity message remain authoritative.
-      return false;
-    }
-  }
-
-  /** Clear only the native under-composer indicator, never the activity message. */
-  async clearNativeThreadStatus(): Promise<boolean> {
-    if (!this.nativeThreadStatusWasSet) return true;
-    try {
-      await this.client.assistant.threads.setStatus({
-        channel_id: this.target.channelId,
-        thread_ts: this.target.threadTs,
-        status: '',
-      });
-      this.nativeThreadStatusWasSet = false;
-      if (!this.activityMessageTs) this.statusWasSet = false;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   /** Clear the Assistant thread status, but only if one was ever set. */
-  async clearStatus(): Promise<SlackActivityReceiptCertainty> {
+  async clearStatus(late = false): Promise<SlackActivityReceiptCertainty> {
+    const startedAt = Date.now();
     if (!this.statusWasSet) {
+      this.emitClear(activitySurface(this.activityMessageTs), 'skipped', late, startedAt);
       return 'acknowledged';
     }
     if (this.activityMessageTs) {
@@ -343,14 +357,23 @@ export class WebClientPresenter {
         });
         this.activityMessageTs = undefined;
         this.statusWasSet = false;
+        this.emitClear('legacy_message', 'acknowledged', late, startedAt);
         return 'acknowledged';
       } catch (error) {
         if (slackPlatformErrorCode(error) === 'message_not_found') {
           this.activityMessageTs = undefined;
           this.statusWasSet = false;
+          this.emitClear('legacy_message', 'acknowledged', late, startedAt);
           return 'acknowledged';
         }
-        return slackDeliveryFailureOutcome(error);
+        const certainty = slackDeliveryFailureOutcome(error);
+        this.emitClear(
+          'legacy_message',
+          clearTelemetryOutcome(certainty),
+          late,
+          startedAt,
+        );
+        return certainty;
       }
     }
     try {
@@ -360,24 +383,51 @@ export class WebClientPresenter {
         status: '',
       });
       this.statusWasSet = false;
-      this.nativeThreadStatusWasSet = false;
+      this.emitClear('assistant_status', 'acknowledged', late, startedAt);
       return 'acknowledged';
     } catch (error) {
-      return slackDeliveryFailureOutcome(error);
+      const certainty = slackDeliveryFailureOutcome(error);
+      this.emitClear(
+        'assistant_status',
+        clearTelemetryOutcome(certainty),
+        late,
+        startedAt,
+      );
+      return certainty;
     }
   }
 
-  /**
-   * Durable progress placeholder used when status could not be set: a plain
-   * chat.postMessage with NO blocks, posted before the final (scenario S16).
-   */
-  async postProgress(text: string): Promise<void> {
-    await this.client.chat.postMessage({
-      channel: this.target.channelId,
-      thread_ts: this.target.threadTs,
-      text,
-      ...this.persona(),
-    });
+  private emitTransport(
+    surface: SemanticActivityTelemetrySurface,
+    outcome: 'acknowledged' | 'rejected' | 'ambiguous' | 'latched_off',
+    startedAt: number,
+    update: SlackStatusUpdate,
+  ): void {
+    const semantic = isSafeTypedActivityStatus(update)
+      ? semanticTelemetryForStatus(update)
+      : { family: 'unknown' as const, phase: 'working' as const };
+    emitSemanticActivityTelemetry({
+      event: 'activity.transport',
+      surface,
+      outcome,
+      ...semantic,
+      durationMs: Date.now() - startedAt,
+    }, this.options.activityTelemetry ?? console);
+  }
+
+  private emitClear(
+    surface: SemanticActivityTelemetrySurface,
+    outcome: 'acknowledged' | 'rejected' | 'ambiguous' | 'skipped',
+    late: boolean,
+    startedAt: number,
+  ): void {
+    emitSemanticActivityTelemetry({
+      event: 'activity.clear',
+      surface,
+      outcome,
+      late,
+      durationMs: Date.now() - startedAt,
+    }, this.options.activityTelemetry ?? console);
   }
 
   /** Best-effort work acknowledgment. The receipt records whether this run
@@ -806,6 +856,26 @@ export class WebClientPresenter {
   }
 }
 
+function activitySurface(
+  messageTs: string | undefined,
+  durable?: SlackActivityWrite,
+): SemanticActivityTelemetrySurface {
+  return messageTs || durable?.surface === 'message' ? 'legacy_message' : 'assistant_status';
+}
+
+function transportTelemetryOutcome(
+  certainty: SlackActivityReceiptCertainty,
+): 'acknowledged' | 'rejected' | 'ambiguous' {
+  if (certainty === 'acknowledged') return 'acknowledged';
+  return certainty === 'unknown' ? 'ambiguous' : 'rejected';
+}
+
+function clearTelemetryOutcome(
+  certainty: SlackActivityReceiptCertainty,
+): 'acknowledged' | 'rejected' | 'ambiguous' {
+  return transportTelemetryOutcome(certainty);
+}
+
 /** Replay a previously persisted adapter render without invoking the agent or
  * re-rendering from mutable Agent/config state. */
 export interface PersistedSlackDeliveryReceipt {
@@ -1151,6 +1221,23 @@ function slackPlatformErrorCode(error: unknown): string | undefined {
   if (!data || typeof data !== 'object') return undefined;
   const code = (data as { error?: unknown }).error;
   return typeof code === 'string' ? code : undefined;
+}
+
+function slackRateRetryAfterMs(error: unknown): number | undefined {
+  if (error instanceof SlackTransportError) {
+    if (error.retryAfterMs !== undefined) return Math.min(15 * 60_000, error.retryAfterMs);
+    if (error.code.includes('429') || error.code.includes('ratelimit')) return 1_000;
+    return undefined;
+  }
+  if (!error || typeof error !== 'object' ||
+      (error as { code?: unknown }).code !== ErrorCode.RateLimitedError) return undefined;
+  const seconds = (error as { retryAfter?: unknown }).retryAfter;
+  return Math.min(
+    15 * 60_000,
+    Math.max(1_000, Math.floor((typeof seconds === 'number' && Number.isFinite(seconds)
+      ? seconds
+      : 1) * 1_000)),
+  );
 }
 
 function renderWorkChecklist(checklist: readonly string[], complete: boolean | 'failed'): {

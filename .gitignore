@@ -28,5 +28,6 @@ docs/runbooks/*
 !docs/runbooks/coding-sandbox-deployment.md
 !docs/runbooks/agent-first-acceptance-2026-08-21.md
 !docs/runbooks/composio-managed-connectors.md
+!docs/runbooks/semantic-activity-status.md
 design-qa.md
 !docs/design/agent-first-admin-prototype/design-qa.md

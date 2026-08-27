@@ -101,10 +101,9 @@ import {
 import { slackAgentThreadKey, slackThreadKey } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import {
-  slackPresentationStatePort,
   wakeNodeTurnRelay,
 } from '../slack/node-turn-relay.ts';
-import { presentAdmittedSlackActivity } from '../slack/admission-activity.ts';
+import { slackSemanticActivityStatusEnabled } from '../slack/semantic-status-flag.ts';
 import {
   hydrateSlackContextViaWebClient,
   hydrateSlackPublicHandoffFallback,
@@ -1350,6 +1349,7 @@ async function processSlackEvent(
         : undefined,
       turn.text,
     );
+    const semanticActivityEnabled = slackSemanticActivityStatusEnabled(platformEnv);
     try {
       const result = await state.admitCanonical({
         evtKey,
@@ -1367,20 +1367,26 @@ async function processSlackEvent(
           },
           owner,
           sessionGeneration,
-          currentActivity: {
-            kind: admittedActivity.kind,
-            action: admittedActivity.action,
-            object: admittedActivity.object,
-            generation: sessionGeneration,
-            sequence: 1,
-            operation: {
-              operationId: opaqueId(
-                'activity',
-                `${admission.run.id}:${canonicalTurnJob.id}:1`,
-              ),
-              certainty: 'pending',
-            },
-          },
+          ...(semanticActivityEnabled
+            ? {
+                currentActivity: {
+                  kind: admittedActivity.kind,
+                  action: admittedActivity.action,
+                  object: admittedActivity.object,
+                  family: admittedActivity.family,
+                  phase: admittedActivity.phase,
+                  generation: sessionGeneration,
+                  sequence: 1,
+                  operation: {
+                    operationId: opaqueId(
+                      'activity',
+                      `${admission.run.id}:${canonicalTurnJob.id}:1`,
+                    ),
+                    certainty: 'pending' as const,
+                  },
+                },
+              }
+            : {}),
           ...(turn.interactionIntent?.disposition === 'work'
             ? { taskLabels: turn.interactionIntent.checklist }
             : {}),
@@ -1389,26 +1395,6 @@ async function processSlackEvent(
       if (!result.claimed) return;
       claimsHeldByCanonicalAdmission = true;
       canonicalRunId = result.admission.run.id;
-      const presentationState = slackPresentationStatePort(state);
-      if (slackClient && presentationState) {
-        await presentAdmittedSlackActivity({
-          client: slackClient,
-          state: presentationState,
-          runId: result.admission.run.id,
-          runFencingToken: result.admission.run.fencingToken,
-          workspaceId: turn.workspaceId,
-          channelId: turn.channelId,
-          threadTs: turn.threadTs,
-          requesterUserId: turn.userId,
-          owner,
-          agentId: assignment.agent.id,
-          activity: admittedActivity,
-        }).catch(() => {
-          // The durable activity intent remains recoverable by the turn
-          // driver. Admission must not fail because the first projection did.
-          console.warn('[chickpea] admitted Slack activity projection failed');
-        });
-      }
     } catch (err) {
       if (admission.run.executionAuthority === 'ledger') {
         // A selected canary must never fall back across authority lanes. The

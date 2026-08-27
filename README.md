@@ -210,11 +210,15 @@ The repository includes parity fixtures for direct Slack transport and the share
 
 New Slack runs freeze one visible owner before the first effect. A healthy selected Agent keeps its name and avatar through activity, task updates, the final response, and Agent Session settlement. If that identity is incomplete or unhealthy, Chickpea owns the full run. The UI never switches to a generic "Agent" identity.
 
-Activity is one mutable thread reply with safe action-and-object copy such as "Drafting the initial skill…" or "Checking Google Ads…". Model names, provider names, private reasoning, raw tool arguments, and context-loading narration are not activity. Updates reuse the same Slack message and it remains visible until Slack acknowledges the final response.
+Semantic activity uses Slack's native under-composer `assistant_status` only. It begins generically, then changes only when a real runtime event proves a safe phase such as `Checking Gmail…`, `Reviewing Gmail messages…`, or `Drafting the response…`. Fast phases may coalesce, and presentation never delays the final answer. If custom semantic status is disabled or Slack rejects it, Chickpea keeps the generic native Agent Session lifecycle when available and creates no progress message. Message-based activity remains readable only to clean up an exact legacy coordinate.
+
+Activity copy is deterministic. Product-owned managed connector labels may be specific; customer-authored Agent, skill, repository, connection, MCP, API, and resource names remain generic. Model names, provider names, prompts, private reasoning, tool descriptions, arguments, results, raw errors, identifiers, paths, credentials, and user/provider content are never activity or activity telemetry.
+
+First-party tool contributors must add or reuse a closed semantic descriptor next to the capability definition, derive managed defaults from the immutable connector catalog, and use a closed invocation-owner override only when tool identity cannot express the operation. Add start, review/failure, and unknown-fallback tests with the descriptor. Never add a Slack-side tool-name mapping or arbitrary status string. See the [semantic activity status runbook](docs/runbooks/semantic-activity-status.md).
 
 Task rows appear only after the runtime emits an authoritative milestone transition for a plan with at least two committed steps. A single action stays activity-only. Task details record completed, changed, skipped, failed, or not-run outcomes and do not include UTC timestamps.
 
-Terminal delivery, Agent Session settlement, and activity cleanup have separate durable receipts. Confirmed failures retry against the stored coordinate in both Node and Cloudflare drains. An unknown Slack effect is never replayed automatically because the original write may already be visible; it stays marked for operator reconciliation instead of risking a duplicate response.
+Terminal delivery, Agent Session settlement, and activity cleanup have separate durable receipts. Confirmed failures retry against the stored coordinate in both Node and Cloudflare drains. An unknown Slack effect is never replayed automatically because the original write may already be visible; it stays marked for operator reconciliation instead of risking a duplicate response. The fixed-schema `[chickpea:activity]` records contain only closed enums, booleans, and bounded timing; they contain no rendered status copy or Slack/account/run coordinates.
 
 ## Good to know
 

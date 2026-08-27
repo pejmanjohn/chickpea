@@ -65,8 +65,10 @@ export interface GatewaySessionRunnerHealthInput {
 export interface GatewaySessionStatusSnapshot {
   healthy: boolean;
   phase: GatewaySessionRunnerPhase | 'offline';
-  detail: 'gateway_session_offline' | null;
+  detail: 'gateway_session_offline' | 'gateway_session_stale_version' | null;
   generation: number | null;
+  /** Absent only while interoperating with a pre-version-metadata deployment. */
+  versionId?: string | null;
 }
 
 export interface GatewaySessionRunnerControl {

@@ -5,6 +5,11 @@ import { MANAGED_HUBSPOT_CONNECTORS } from './hubspot.ts';
 import { MANAGED_GONG_CONNECTORS } from './gong.ts';
 import { MANAGED_GOOGLE_ADS_CONNECTORS } from './google-ads.ts';
 import { MANAGED_YOUTUBE_CONNECTORS } from './youtube.ts';
+import {
+  isManagedCapabilitySemanticOverride,
+  managedConnectorSemanticDescriptor,
+  type SemanticActivityDescriptor,
+} from '../../activity/semantic.ts';
 import { MANAGED_NOTION_CONNECTORS } from './notion.ts';
 import type {
   ManagedAccessLane,
@@ -23,6 +28,7 @@ const RESOURCE_HANDLE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 export class ManagedConnectorCatalog {
   private readonly connectorsByToolkit = new Map<string, ManagedConnectorDefinition>();
   private readonly capabilitiesById = new Map<string, ManagedCapabilityDefinition>();
+  private readonly capabilitiesByToolName = new Map<string, ManagedCapabilityDefinition>();
   private readonly connectors: ManagedConnectorDefinition[];
 
   constructor(definitions: readonly ManagedConnectorDefinition[]) {
@@ -46,6 +52,7 @@ export class ManagedConnectorCatalog {
           throw new Error(`Duplicate managed tool name ${capability.toolName}`);
         }
         this.capabilitiesById.set(capability.id, capability);
+        this.capabilitiesByToolName.set(capability.toolName, capability);
         toolNames.add(capability.toolName);
       }
     }
@@ -61,6 +68,10 @@ export class ManagedConnectorCatalog {
 
   capability(id: string): ManagedCapabilityDefinition | undefined {
     return this.capabilitiesById.get(id.trim());
+  }
+
+  capabilityForToolName(toolName: string): ManagedCapabilityDefinition | undefined {
+    return this.capabilitiesByToolName.get(toolName.trim());
   }
 
   capabilities(toolkit: string, accessLane: ManagedAccessLane): ManagedCapabilityDefinition[] {
@@ -90,6 +101,22 @@ export const MANAGED_CONNECTOR_CATALOG = createManagedConnectorCatalog(
     ...MANAGED_YOUTUBE_CONNECTORS,
   ],
 );
+
+export function semanticDescriptorForManagedCapability(
+  capabilityId: string,
+): SemanticActivityDescriptor | undefined {
+  const capability = MANAGED_CONNECTOR_CATALOG.capability(capabilityId);
+  if (!capability) return undefined;
+  const connector = MANAGED_CONNECTOR_CATALOG.connector(capability.connectorToolkit);
+  return connector ? managedConnectorSemanticDescriptor(connector, capability) : undefined;
+}
+
+export function semanticDescriptorForManagedTool(
+  toolName: string,
+): SemanticActivityDescriptor | undefined {
+  const capability = MANAGED_CONNECTOR_CATALOG.capabilityForToolName(toolName);
+  return capability ? semanticDescriptorForManagedCapability(capability.id) : undefined;
+}
 
 export function intersectManagedResourceConstraints(
   connector: ManagedConnectorDefinition,
@@ -156,6 +183,10 @@ function validateConnector(definition: ManagedConnectorDefinition): ManagedConne
         !Number.isInteger(capability.maxResultBytes) || capability.maxResultBytes < 1 ||
         capability.maxResultBytes > 256 * 1024) {
       throw new Error(`Managed connector ${toolkit} has an invalid capability`);
+    }
+    if (capability.semantic !== undefined &&
+        !isManagedCapabilitySemanticOverride(capability.semantic)) {
+      throw new Error(`Managed connector ${toolkit} has an invalid semantic override`);
     }
     if (capability.quota && (
       capability.quota.length === 0 || capability.quota.length > 8 ||

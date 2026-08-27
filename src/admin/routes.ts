@@ -120,6 +120,11 @@ import {
   SETUP_CAPABILITY_DIGEST_BINDING,
   SETUP_CAPABILITY_ISSUED_AT_BINDING,
 } from '../auth/setup-capability.mjs';
+import {
+  DEPLOYMENT_ACTIVATION_DIGEST_BINDING,
+  DEPLOYMENT_ACTIVATION_ISSUED_AT_BINDING,
+  verifyDeploymentActivation,
+} from '../auth/deployment-activation.mjs';
 // Build-time JSON import: the committed manifest is the single source of the
 // Slack app identity; the wizard deep-link below substitutes the request host
 // so users never hand-edit a request_url.
@@ -434,6 +439,7 @@ import { discoverableAgents } from '../slack/agent-routing.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
+import { cloudflareWorkerVersionId } from '../config/cloudflare-version.ts';
 import {
   GATEWAY_BINDING_SETTING,
   GATEWAY_CLAIM_SETTING,
@@ -496,6 +502,8 @@ const GATEWAY_RECONNECT_REQUIRED_DETAILS = new Set([
   'gateway_binding_mismatch',
   'gateway_not_connected',
 ]);
+const WORKER_VERSION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface BetterAuthContext {
   environment: BetterAuthEnvironment;
@@ -1425,6 +1433,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const slackState = (c: Context) =>
     options.slackState ?? getSlackStateStore(c.env as PlatformEnv | undefined);
   app.use('*', async (c, next) => {
+    // Deployment activation has its own short-lived bearer capability and
+    // must remain callable while an older release left Admin in recovery.
+    if (c.req.path === '/internal/deployment/ready') return next();
     const control = await identity(c).getAuthControl();
     if (control?.healthGate === 'recovery_only' &&
         c.req.path !== '/admin/recovery' &&
@@ -1455,6 +1466,61 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       : Number.NaN;
     return digest && Number.isSafeInteger(issuedAt) ? { digest, issuedAt } : undefined;
   };
+  const deploymentActivation = (
+    c: Context,
+  ): { digest: string; issuedAt: number } | undefined => {
+    const env = c.env as PlatformEnv | undefined;
+    const digestValue = env?.[DEPLOYMENT_ACTIVATION_DIGEST_BINDING] ??
+      process.env[DEPLOYMENT_ACTIVATION_DIGEST_BINDING];
+    const issuedValue = env?.[DEPLOYMENT_ACTIVATION_ISSUED_AT_BINDING] ??
+      process.env[DEPLOYMENT_ACTIVATION_ISSUED_AT_BINDING];
+    const digest = typeof digestValue === 'string' ? digestValue : undefined;
+    const issuedAt = typeof issuedValue === 'string' || typeof issuedValue === 'number'
+      ? Number(issuedValue)
+      : Number.NaN;
+    return digest && Number.isSafeInteger(issuedAt) ? { digest, issuedAt } : undefined;
+  };
+
+  // A deploy is not ready merely because one edge serves the new module. For
+  // an installed shared Slack gateway, its long-lived Durable Object must also
+  // report the same Worker version before the deploy wrapper announces success.
+  app.post('/internal/deployment/ready', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const authority = deploymentActivation(c);
+    const authorization = c.req.header('authorization') ?? '';
+    const match = authorization.match(/^Bearer ([A-Za-z0-9_-]{43})$/);
+    if (!authority || !match || !await verifyDeploymentActivation({
+      capability: match[1]!,
+      digest: authority.digest,
+      issuedAt: authority.issuedAt,
+    })) return c.notFound();
+
+    const targetVersion = c.req.header('x-chickpea-target-version')?.trim();
+    const currentVersion = cloudflareWorkerVersionId(c.env);
+    if (!targetVersion || !WORKER_VERSION_ID_PATTERN.test(targetVersion)) {
+      return c.json({ error: 'invalid_target_version' }, 400);
+    }
+    if (!currentVersion || currentVersion !== targetVersion) {
+      c.header('Retry-After', '1');
+      return c.json({ error: 'worker_version_pending' }, 409);
+    }
+
+    try {
+      const gatewayConfigured = Boolean(
+        await settings(c).getSetting(GATEWAY_BINDING_SETTING),
+      );
+      if (!gatewayConfigured) return c.body(null, 204);
+      const gateway = await readGatewaySessionStatus(c.env);
+      if (!gateway.healthy || gateway.versionId !== targetVersion) {
+        c.header('Retry-After', '1');
+        return c.json({ error: gateway.detail ?? 'gateway_session_offline' }, 503);
+      }
+      return c.body(null, 204);
+    } catch {
+      c.header('Retry-After', '1');
+      return c.json({ error: 'deployment_readiness_unavailable' }, 503);
+    }
+  });
   const slackApiBaseUrl = (c: Context): string | undefined => {
     const bound = (c.env as PlatformEnv | undefined)?.SLACK_API_URL;
     const value = typeof bound === 'string' ? bound : process.env.SLACK_API_URL;
@@ -8289,16 +8355,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           }, 422);
         }
         if (!inboundStatus.healthy) {
+          const healthDetail = inboundStatus.detail ?? 'gateway_session_offline';
           try {
             const current = await store(c).getWorkspaceInstallation(installation.workspaceId);
             if (
               current &&
               (current.health !== 'needs_attention' ||
-                current.healthDetail !== 'gateway_session_offline')
+                current.healthDetail !== healthDetail)
             ) {
               await store(c).updateWorkspaceInstallation(installation.workspaceId, {
                 health: 'needs_attention',
-                healthDetail: 'gateway_session_offline',
+                healthDetail,
               }, current.revision);
             }
           } catch {
@@ -8307,7 +8374,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           }
           return c.json({
             error: 'slack_gateway_unreachable',
-            detail: 'gateway_session_offline',
+            detail: healthDetail,
           }, 502);
         }
         if (installation.health !== 'healthy' || installation.healthDetail) {
@@ -9091,7 +9158,19 @@ async function readGatewaySessionStatus(rawEnv: unknown): Promise<GatewaySession
   if (namespace) {
     try {
       const status = await namespace.get(namespace.idFromName('deployment')).status();
-      if (typeof status?.healthy === 'boolean') return status;
+      if (typeof status?.healthy === 'boolean') {
+        const currentVersion = cloudflareWorkerVersionId(rawEnv);
+        if (currentVersion && status.versionId !== currentVersion) {
+          return {
+            healthy: false,
+            phase: 'stale',
+            detail: 'gateway_session_stale_version',
+            generation: status.generation,
+            versionId: status.versionId ?? null,
+          };
+        }
+        return status;
+      }
     } catch {
       // A missing or unreachable live-health RPC is itself an offline inbound
       // path. The outbound Slack diagnostic still runs and may provide a

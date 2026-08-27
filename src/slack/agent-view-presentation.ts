@@ -5,7 +5,7 @@ import type { AnyChunk, KnownBlock } from '@slack/types';
 
 import { hasCredentialLikeContent, hasDisallowedControlCharacter } from '../security/content-validation.ts';
 import type { FlueDispatchReceiptV1, FlueObservationTarget } from './turn-job-types.ts';
-import type { ActivityStatus } from '../activity/status.ts';
+import { activityStatus, type ActivityStatus } from '../activity/status.ts';
 import {
   appendSlackReplyFooter,
   canonicalSlackMarkdownText,
@@ -59,11 +59,26 @@ export interface SlackPresentationStatePort {
     workspaceId: string,
     retryAfterMs: number,
   ): MaybePromise<{ cooldownUntil: number; budgetVersion: number }>;
+  reserveSlackActivityStatus?(workspaceId: string): MaybePromise<SlackAppendReservation>;
+  applySlackActivityStatusCooldown?(
+    workspaceId: string,
+    retryAfterMs: number,
+  ): MaybePromise<{ cooldownUntil: number; budgetVersion: number }>;
   matchFlueObservation(
     instanceId: string,
     submissionId?: string,
   ): MaybePromise<FlueObservationTarget | undefined>;
 }
+
+export type SlackActivityCleanupPreparation =
+  | {
+      kind: 'prepared';
+      operationId: string;
+      projection: Exclude<SlackPresentationActivityProjection, { surface: 'unselected' }>;
+    }
+  | { kind: 'already_cleared'; surface: 'message' | 'assistant_status' }
+  | { kind: 'fenced' }
+  | { kind: 'not_required' };
 
 export interface SlackPresentationDeliveryObserver {
   before(input: {
@@ -152,6 +167,13 @@ export class SlackAgentViewPresentation {
   ): Promise<PreparedSlackActivityWrite | undefined> {
     let presentation = await this.requirePresentation();
     if (presentation.schemaVersion !== 3) return undefined;
+    if (!(await this.ownsLatestThreadGeneration(presentation))) return undefined;
+    if (presentation.activityProjection.surface === 'assistant_status' &&
+        presentation.activityProjection.state === 'unavailable') return undefined;
+    // A V3 presentation admitted without an initial activity has the custom
+    // semantic-status capability frozen off. It remains lifecycle-only.
+    if (!presentation.currentActivity &&
+        presentation.activityProjection.surface === 'unselected') return undefined;
     let current = presentation.currentActivity;
     let created = false;
     if (current?.operation.certainty === 'pending') {
@@ -185,6 +207,8 @@ export class SlackAgentViewPresentation {
           kind,
           action,
           object,
+          ...(update.family ? { family: update.family } : {}),
+          ...(update.phase ? { phase: update.phase } : {}),
           generation: presentation.sessionGeneration,
           sequence,
           operation: {
@@ -211,7 +235,8 @@ export class SlackAgentViewPresentation {
       projection = presentation.activityProjection;
       selectedNow = true;
     }
-    if (projection.surface === 'unselected' || projection.state === 'cleared') return undefined;
+    if (projection.surface === 'unselected' || projection.state === 'cleared' ||
+        projection.state === 'unavailable') return undefined;
     const messageTs = projection.surface === 'message' ? projection.messageTs : undefined;
     if (!selectedNow && !created && projection.state !== 'visible') return undefined;
     const activity = presentation.currentActivity;
@@ -223,23 +248,59 @@ export class SlackAgentViewPresentation {
     };
   }
 
+  /**
+   * Reassert one still-current native phrase without inventing a new durable
+   * activity operation. Native status expires after two minutes; legacy
+   * message coordinates deliberately fail this check and are never refreshed.
+   */
+  async prepareActivityRefresh(
+    update: ActivityStatus,
+  ): Promise<PreparedSlackActivityWrite | undefined> {
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 ||
+        presentation.activityProjection.surface !== 'assistant_status' ||
+        presentation.activityProjection.state !== 'visible' ||
+        presentation.currentActivity?.operation.certainty !== 'acknowledged' ||
+        !(await this.ownsLatestThreadGeneration(presentation))) return undefined;
+    const current = activityStatus(
+      presentation.currentActivity.kind,
+      presentation.currentActivity.action,
+      presentation.currentActivity.object,
+      presentation.currentActivity.family,
+      presentation.currentActivity.phase,
+    );
+    if (current.kind !== update.kind || current.action !== update.action ||
+        current.object !== update.object || current.family !== update.family ||
+        current.phase !== update.phase || current.text !== update.text) return undefined;
+    return {
+      operationId: presentation.currentActivity.operation.operationId,
+      surface: 'assistant_status',
+    };
+  }
+
   async recordActivityReceipt(
     operationId: string | undefined,
     certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>,
     messageTs?: string,
+    unavailable = false,
   ): Promise<void> {
     if (!operationId) return;
-    const presentation = await this.requirePresentation();
+    let presentation = await this.requirePresentation();
     if (presentation.schemaVersion !== 3 ||
         presentation.currentActivity?.operation.operationId !== operationId ||
         (presentation.currentActivity.operation.certainty !== 'pending' &&
           presentation.currentActivity.operation.certainty !== 'unknown')) return;
-    await this.transition(presentation, {
+    presentation = await this.transition(presentation, {
       kind: 'record_activity_receipt',
       operationId,
       certainty,
       ...(messageTs ? { messageTs } : {}),
     });
+    if (unavailable && presentation.schemaVersion === 3 &&
+        presentation.activityProjection.surface === 'assistant_status' &&
+        presentation.activityProjection.state !== 'cleared') {
+      await this.transition(presentation, { kind: 'mark_activity_unavailable' });
+    }
   }
 
   async transitionMilestone(input: SlackMilestoneTransition): Promise<void> {
@@ -402,29 +463,45 @@ export class SlackAgentViewPresentation {
       (!presentation.agentSession.operation ||
         presentation.agentSession.operation.certainty === 'failed');
     const cleanupSupersedable = presentation.activityProjection.surface ===
-        'assistant_status' && presentation.activityProjection.state === 'visible' &&
+        'assistant_status' &&
+      (presentation.activityProjection.state === 'visible' ||
+        presentation.activityProjection.state === 'unavailable' &&
+        presentation.currentActivity?.operation.certainty === 'unknown') &&
       (presentation.cleanup.state === 'not_required' ||
         presentation.cleanup.operation.certainty === 'failed');
     if (!sessionSupersedable && !cleanupSupersedable) return;
     await this.transition(presentation, { kind: 'supersede_shared_repair_effects' });
   }
 
-  async prepareActivityCleanup(): Promise<{
-    operationId: string;
-    projection: Exclude<SlackPresentationActivityProjection, { surface: 'unselected' }>;
-  } | undefined> {
+  async prepareActivityCleanup(): Promise<SlackActivityCleanupPreparation> {
     let presentation = await this.requirePresentation();
+    if (presentation.schemaVersion === 3 &&
+        presentation.activityProjection.surface === 'assistant_status' &&
+        !(await this.ownsLatestThreadGeneration(presentation))) return { kind: 'fenced' };
     if (presentation.schemaVersion === 3 && presentation.cleanup.state === 'required' &&
         presentation.cleanup.operation.certainty === 'unknown') {
       await this.reconcileActivityReceipts();
       presentation = await this.requirePresentation();
     }
-    if (presentation.schemaVersion !== 3 || presentation.terminalDelivery.state !== 'intended' ||
+    if (presentation.schemaVersion !== 3) return { kind: 'not_required' };
+    if (presentation.cleanup.state === 'required' &&
+        presentation.cleanup.operation.certainty === 'acknowledged' &&
+        presentation.activityProjection.surface !== 'unselected' &&
+        presentation.activityProjection.state === 'cleared') {
+      return {
+        kind: 'already_cleared',
+        surface: presentation.activityProjection.surface,
+      };
+    }
+    const ambiguousNativeActivity = presentation.activityProjection.surface ===
+        'assistant_status' && presentation.activityProjection.state === 'unavailable' &&
+      presentation.currentActivity?.operation.certainty === 'unknown';
+    if (presentation.terminalDelivery.state !== 'intended' ||
         presentation.terminalDelivery.operation.certainty !== 'acknowledged' ||
         presentation.activityProjection.surface === 'unselected' ||
-        presentation.activityProjection.state !== 'visible' ||
+        presentation.activityProjection.state !== 'visible' && !ambiguousNativeActivity ||
         (presentation.cleanup.state === 'not_required' &&
-          presentation.cleanup.disposition !== undefined)) return undefined;
+          presentation.cleanup.disposition !== undefined)) return { kind: 'not_required' };
     let operationId: string;
     if (presentation.cleanup.state === 'not_required') {
       operationId = `cleanup_${hash(`${presentation.runId}:activity:1`).slice(0, 24)}`;
@@ -437,11 +514,15 @@ export class SlackAgentViewPresentation {
         kind: 'retry_cleanup', operationId,
       });
     } else {
-      return undefined;
+      return { kind: 'not_required' };
     }
     if (presentation.schemaVersion !== 3 ||
-        presentation.activityProjection.surface === 'unselected') return undefined;
-    return { operationId, projection: presentation.activityProjection };
+        presentation.activityProjection.surface === 'unselected') return { kind: 'not_required' };
+    return {
+      kind: 'prepared',
+      operationId,
+      projection: presentation.activityProjection,
+    };
   }
 
   async recordActivityCleanupReceipt(
@@ -1004,6 +1085,15 @@ export class SlackAgentViewPresentation {
       cursor: pending.cursor,
       acknowledgedPrefixHash: pending.hash,
     });
+  }
+
+  private async ownsLatestThreadGeneration(
+    presentation: Extract<SlackRunPresentation, { schemaVersion: 3 }>,
+  ): Promise<boolean> {
+    const latest = await this.options.state.getLatestThreadSessionGeneration(
+      presentation.root,
+    );
+    return latest === undefined || latest <= presentation.sessionGeneration;
   }
 
   private async startNativePlan(

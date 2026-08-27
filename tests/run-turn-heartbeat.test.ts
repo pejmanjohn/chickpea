@@ -114,7 +114,11 @@ function workTurn(eventId: string): NormalizedSlackTurn {
   };
 }
 
-function v3PresentationHarness(turn: NormalizedSlackTurn, runId: string) {
+function v3PresentationHarness(
+  turn: NormalizedSlackTurn,
+  runId: string,
+  semanticActivityEnabled = true,
+) {
   const db = openStateDb(':memory:');
   const store = new SlackRunPresentationStoreLogic(db);
   const sessionGeneration = Number(turn.messageTs.replace('.', ''));
@@ -131,14 +135,20 @@ function v3PresentationHarness(turn: NormalizedSlackTurn, runId: string) {
       avatarRevision: 7,
     } },
     sessionGeneration,
-    currentActivity: {
-      kind: 'preparing',
-      action: 'Preparing',
-      object: 'your request',
-      generation: sessionGeneration,
-      sequence: 1,
-      operation: { operationId: `activity_${runId}_1`, certainty: 'pending' },
-    },
+    ...(semanticActivityEnabled
+      ? {
+          currentActivity: {
+            kind: 'preparing' as const,
+            action: 'Preparing',
+            object: 'your request',
+            generation: sessionGeneration,
+            sequence: 1,
+            operation: {
+              operationId: `activity_${runId}_1`, certainty: 'pending' as const,
+            },
+          },
+        }
+      : {}),
     root: {
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
@@ -358,10 +368,16 @@ test('runTurn keeps the persisted V3 owner from first status through final deliv
   }
 });
 
-test('work activity replaces the legacy checklist heartbeat and UTC timestamp', async () => {
+test('admission activity is fixed thinking copy without checklist or UTC narration', async () => {
+  const statuses: Array<Record<string, unknown>> = [];
   const posts: Array<Record<string, unknown>> = [];
   const updates: Array<Record<string, unknown>> = [];
+  let deletes = 0;
   const client = {
+    assistant: { threads: { setStatus: async (input: Record<string, unknown>) => {
+      statuses.push(input);
+      return { ok: true };
+    } } },
     conversations: { history: async () => ({ ok: true, messages: [] }) },
     chat: {
       postMessage: async (input: Record<string, unknown>) => {
@@ -372,7 +388,10 @@ test('work activity replaces the legacy checklist heartbeat and UTC timestamp', 
         updates.push(input);
         return { ok: true };
       },
-      delete: async () => ({ ok: true }),
+      delete: async () => {
+        deletes += 1;
+        return { ok: true };
+      },
       startStream: async () => ({ ok: true, ts: 'final-ts' }),
       stopStream: async () => ({ ok: true }),
     },
@@ -384,10 +403,56 @@ test('work activity replaces the legacy checklist heartbeat and UTC timestamp', 
     usageRecordingEnabled: false,
   });
 
-  assert.equal(posts.length, 1);
-  assert.equal(posts[0]?.text, 'Drafting Verification result…');
+  assert.deepEqual(statuses.map((status) => status.status), ['Thinking…', '']);
+  assert.equal(posts.length, 0);
   assert.deepEqual(updates, []);
-  assert.doesNotMatch(JSON.stringify(posts), /UTC|chickpea_work_checklist|is thinking|local-stub/);
+  assert.equal(deletes, 0);
+  assert.doesNotMatch(JSON.stringify(statuses), /UTC|chickpea_work_checklist|is thinking|local-stub/);
+});
+
+test('a capability-disabled V3 turn keeps Agent Session lifecycle without semantic status', async () => {
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_V3_SEMANTIC_ACTIVITY_OFF'),
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+  const runId = 'run_v3_semantic_activity_off';
+  const h = v3PresentationHarness(turn, runId, false);
+  const sessionStatuses: string[] = [];
+  const semanticStatuses: string[] = [];
+  const client = {
+    apiCall: async (_method: string, input: Record<string, unknown>) => {
+      sessionStatuses.push(String(input.status));
+      return { ok: true };
+    },
+    assistant: { threads: { setStatus: async (input: Record<string, unknown>) => {
+      semanticStatuses.push(String(input.status));
+      return { ok: true };
+    } } },
+    chat: {
+      startStream: async () => ({ ok: true, ts: '1787776100.000300' }),
+      stopStream: async () => ({ ok: true }),
+    },
+  } as unknown as WebClient;
+
+  try {
+    await runTurn(turn, assignment, undefined, {
+      client,
+      runId,
+      replayText: 'Lifecycle-only answer.',
+      presentationState: h.state,
+      usageRecordingEnabled: false,
+    });
+    assert.deepEqual(sessionStatuses, ['processing', 'active']);
+    assert.deepEqual(semanticStatuses, []);
+    const stored = h.store.get(runId);
+    assert.equal(stored?.schemaVersion, 3);
+    if (stored?.schemaVersion === 3) {
+      assert.equal(stored.currentActivity, undefined);
+      assert.deepEqual(stored.activityProjection, { surface: 'unselected', state: 'absent' });
+    }
+  } finally {
+    h.db.close();
+  }
 });
 
 test('replay delivery skips model activity and never invokes the agent provider', async () => {
@@ -567,7 +632,7 @@ test('a recovery-required Flue conflict emits no Slack final', async () => {
     (error: unknown) => error instanceof AgentPromptFailure && error.recoveryRequired,
   );
   assert.equal(finalAttempts, 0);
-  assert.deepEqual(posts.map((post) => post.text), ['Drafting the response…']);
+  assert.deepEqual(posts, []);
 });
 
 test('a retryable Flue interruption emits no Slack final', async () => {
@@ -604,7 +669,7 @@ test('a retryable Flue interruption emits no Slack final', async () => {
     (error: unknown) => error instanceof AgentPromptFailure && error.retryable,
   );
   assert.equal(finalAttempts, 0);
-  assert.deepEqual(posts.map((post) => post.text), ['Drafting the response…']);
+  assert.deepEqual(posts, []);
 });
 
 test('activity remains visible until final delivery and omits model or context narration', async () => {
@@ -612,12 +677,13 @@ test('activity remains visible until final delivery and omits model or context n
   const finalAttempted = deferred<void>();
   const lifecycle: string[] = [];
   const activity: Array<Record<string, unknown>> = [];
-  let compatibilityStatusCalls = 0;
+  const nativeStatuses: Array<Record<string, unknown>> = [];
   const client = {
     assistant: {
       threads: {
-        async setStatus() {
-          compatibilityStatusCalls += 1;
+        async setStatus(input: Record<string, unknown>) {
+          nativeStatuses.push(input);
+          if (input.status === '') lifecycle.push('clear');
           return { ok: true };
         },
       },
@@ -665,9 +731,13 @@ test('activity remains visible until final delivery and omits model or context n
   await agentStarted.promise;
   await finalAttempted.promise;
   assert.equal(await Promise.race([outcome, delay(100, 'timeout' as const)]), 'resolved');
-  assert.equal(compatibilityStatusCalls, 2, 'native status is set once and cleared once');
-  assert.deepEqual(activity.map((item) => item.text), ['Drafting the response…']);
-  assert.doesNotMatch(JSON.stringify(activity), /local-stub|message(?:s)? of|is thinking/i);
+  assert.deepEqual(
+    nativeStatuses.map((item) => item.status),
+    ['Thinking…', ''],
+    'native status is set once and cleared once',
+  );
+  assert.deepEqual(activity, []);
+  assert.doesNotMatch(JSON.stringify(nativeStatuses), /local-stub|message(?:s)? of|is thinking/i);
   assert.deepEqual(
     lifecycle.slice(0, 2),
     ['final', 'clear'],

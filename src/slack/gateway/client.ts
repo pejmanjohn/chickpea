@@ -279,7 +279,14 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       throw new SlackTransportError(
         operation,
         response.error?.code ?? 'gateway_error',
-        response.error ? { retryable: response.error.retryable } : {},
+        response.error
+          ? {
+              retryable: response.error.retryable,
+              ...(response.error.retryAfterMs === undefined
+                ? {}
+                : { retryAfterMs: response.error.retryAfterMs }),
+            }
+          : {},
       );
     }
     return response.result ?? {};
@@ -672,6 +679,9 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       {
         retryable: envelope.error.retryable,
         effectOutcome: response.status < 500 ? 'failed' : 'unknown',
+        ...(envelope.error.retryAfterMs === undefined
+          ? {}
+          : { retryAfterMs: envelope.error.retryAfterMs }),
       },
     );
   }
