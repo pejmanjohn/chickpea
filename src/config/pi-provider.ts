@@ -16,6 +16,10 @@ import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 import { setProvider } from '@flue/runtime';
 
 import { decorateAttachmentProviderStreams } from '../slack/attachment-model-context.ts';
+import {
+  CURRENT_WORKERS_AI_MODEL_ID,
+  withCurrentWorkersAiModels,
+} from './workers-ai-models.ts';
 
 export type PiBuiltinProviderId = 'anthropic' | 'openai' | 'openrouter';
 
@@ -43,10 +47,14 @@ const BUILTIN_PROVIDER_PARTS: Record<
 export function setBuiltinPiProvider(
   id: PiBuiltinProviderId,
   credential: PiProviderCredential,
+  modelOverlays: readonly Model<Api>[] = [],
 ): void {
   const parts = BUILTIN_PROVIDER_PARTS[id];
   const catalog = parts.provider();
-  const models = withProviderBaseUrl(catalog.getModels(), credential.baseUrl);
+  const models = withProviderBaseUrl(
+    mergeProviderModels(catalog.getModels(), modelOverlays),
+    credential.baseUrl,
+  );
   setProvider(
     createProvider({
       id,
@@ -58,6 +66,15 @@ export function setBuiltinPiProvider(
   );
 }
 
+function mergeProviderModels(
+  baseline: readonly Model<Api>[],
+  overlays: readonly Model<Api>[],
+): Model<Api>[] {
+  const models = new Map(baseline.map((model) => [model.id, model]));
+  for (const model of overlays) models.set(model.id, model);
+  return [...models.values()];
+}
+
 export function setWorkersAiRestPiProvider(options: {
   apiKey?: string;
   accountId?: string;
@@ -66,10 +83,11 @@ export function setWorkersAiRestPiProvider(options: {
   maxTokens: number;
 }): void {
   const catalog = cloudflareWorkersAIProvider();
-  const models = catalog.getModels().map((model) => ({
+  const models = withCurrentWorkersAiModels(catalog.getModels()).map((model) => ({
     ...model,
     baseUrl: options.baseUrl,
-    ...(model.id === '@cf/zai-org/glm-5.2'
+    ...(
+      model.id === '@cf/zai-org/glm-5.2' || model.id === CURRENT_WORKERS_AI_MODEL_ID
       ? {
           contextWindow: Math.min(model.contextWindow, options.contextWindowFloor),
           maxTokens: Math.min(model.maxTokens, options.maxTokens),

@@ -5,6 +5,10 @@ import {
 } from '@flue/runtime/cloudflare/workers-ai';
 
 import { SEED_CLOUDFLARE_MODEL_ID } from './config/seed.ts';
+import {
+  CURRENT_WORKERS_AI_MODEL_ID,
+  withCurrentWorkersAiModels,
+} from './config/workers-ai-models.ts';
 import { decorateAttachmentProvider } from './slack/attachment-model-context.ts';
 
 const SEED_CLOUDFLARE_MAX_COMPLETION_TOKENS = 2_048;
@@ -23,9 +27,9 @@ export function registerCloudflareBindingProvider(binding: CloudflareAIBinding):
 
 /** Pure provider seam used to apply the same attachment policy as Pi APIs. */
 export function createCloudflareBindingProvider(binding: CloudflareAIBinding) {
-  return decorateAttachmentProvider(
-    cloudflareBindingProvider(cloudflareBindingProviderOptions(binding)),
-  );
+  const provider = cloudflareBindingProvider(cloudflareBindingProviderOptions(binding));
+  const models = withCurrentWorkersAiModels(provider.getModels());
+  return decorateAttachmentProvider({ ...provider, getModels: () => models });
 }
 
 /** Pure construction seam: keeps gateway privacy and payload policy testable. */
@@ -43,7 +47,10 @@ export function cloudflareBindingProviderOptions(
 function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAIBinding {
   return {
     run(modelId, inputs, options) {
-      if (modelId !== SEED_CLOUDFLARE_MODEL_ID) {
+      if (
+        modelId !== SEED_CLOUDFLARE_MODEL_ID &&
+        modelId !== CURRENT_WORKERS_AI_MODEL_ID
+      ) {
         return binding.run(modelId, inputs, options);
       }
 
@@ -54,8 +61,8 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
       // effort value, cap each generation to the same 2,048-token ceiling as
       // the app's REST Workers AI path, and abort a provider stream that still
       // fails to settle. This policy is deliberately limited to the seeded
-      // keyless model whose generations have otherwise held the shared Slack
-      // relay alarm until its 15-minute platform deadline.
+      // GLM model and its reviewed successor. The former has otherwise held
+      // the shared Slack relay alarm until its 15-minute platform deadline.
       const {
         reasoning_effort: _reasoningEffort,
         chat_template_kwargs,

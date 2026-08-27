@@ -9,6 +9,8 @@ const CLOUDFLARE_BINDING_STALE_AFTER =
   CLOUDFLARE_BINDING_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 const CACHE_PRICING_REVIEWED_AT = Date.UTC(2026, 7, 17);
 const CACHE_PRICING_STALE_AFTER = CACHE_PRICING_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const GLM_5_3_REVIEWED_AT = Date.UTC(2026, 7, 27);
+const GLM_5_3_STALE_AFTER = GLM_5_3_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 
 function version(
   input: Omit<UsagePriceVersion, 'contentHash' | 'rates'> & {
@@ -161,6 +163,46 @@ export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
       outputMicrosPerUnit: 4_400_000,
       cacheReadMicrosPerUnit: 260_000,
       cacheWriteMicrosPerUnit: 1_400_000,
+      basis: 'standard_input_output',
+    }],
+  }),
+  version({
+    id: 'cloudflare-binding-glm-5.3_2026-08-27',
+    providerId: 'cloudflare',
+    sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-5.3-flash/',
+    effectiveFrom: GLM_5_3_REVIEWED_AT,
+    reviewedAt: GLM_5_3_REVIEWED_AT,
+    staleAfter: GLM_5_3_STALE_AFTER,
+    currency: 'USD',
+    rates: [{
+      providerId: 'cloudflare',
+      modelId: '@cf/zai-org/glm-5.3-flash',
+      modelAliases: ['@cf/zai-org/glm-5.3-flash'],
+      currency: 'USD',
+      unitScale: 1_000_000,
+      inputMicrosPerUnit: 150_000,
+      outputMicrosPerUnit: 500_000,
+      cacheReadMicrosPerUnit: 30_000,
+      basis: 'standard_input_output',
+    }],
+  }),
+  version({
+    id: 'cloudflare-workers-ai-glm-5.3_2026-08-27',
+    providerId: 'cloudflare-workers-ai',
+    sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-5.3-flash/',
+    effectiveFrom: GLM_5_3_REVIEWED_AT,
+    reviewedAt: GLM_5_3_REVIEWED_AT,
+    staleAfter: GLM_5_3_STALE_AFTER,
+    currency: 'USD',
+    rates: [{
+      providerId: 'cloudflare-workers-ai',
+      modelId: '@cf/zai-org/glm-5.3-flash',
+      modelAliases: ['@cf/zai-org/glm-5.3-flash'],
+      currency: 'USD',
+      unitScale: 1_000_000,
+      inputMicrosPerUnit: 150_000,
+      outputMicrosPerUnit: 500_000,
+      cacheReadMicrosPerUnit: 30_000,
       basis: 'standard_input_output',
     }],
   }),

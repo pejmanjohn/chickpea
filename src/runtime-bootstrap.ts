@@ -6,8 +6,9 @@ import {
   setWorkersAiRestPiProvider,
 } from './config/pi-provider.ts';
 import { recordRegisteredProvider } from './config/providers.ts';
+import { WORKERS_AI_CONTEXT_WINDOW_FLOOR } from './config/workers-ai-models.ts';
 
-export const WORKERS_AI_CONTEXT_WINDOW_FLOOR = 32_768;
+export { WORKERS_AI_CONTEXT_WINDOW_FLOOR };
 
 let bootstrapped = false;
 
