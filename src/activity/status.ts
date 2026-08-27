@@ -6,15 +6,18 @@ import {
   type ParsedShellCommand,
 } from './curl-request-urls.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../slack/presentation-intent.ts';
+import { ActivityLifecycleReducer } from './lifecycle.ts';
 import {
   activityStatus,
   genericSemanticDescriptor,
   isSemanticActivityDescriptor,
   narrateSemanticActivity,
   safeActivityLabel,
+  thinkingSemanticActivity,
   unknownSemanticDescriptor,
   type ActivityStatus,
   type SemanticActivityDescriptor,
+  type SemanticInvocationFact,
   type SemanticTargetFamily,
   type TypedActivityStatus,
 } from './semantic.ts';
@@ -98,11 +101,14 @@ interface RegisteredActivityContext {
 interface ActivityObservation {
   type: string;
   instanceId?: string | undefined;
+  submissionId?: string | undefined;
   toolName?: string | undefined;
   args?: unknown;
   contentIndex?: number | undefined;
   delta?: string | undefined;
   toolCallId?: string | undefined;
+  isError?: boolean | undefined;
+  attemptCount?: number | undefined;
 }
 
 // Durable agent instances can outlive individual turns, and Flue observation
@@ -111,6 +117,7 @@ interface ActivityObservation {
 // credentials or persisting profile data indefinitely.
 const MAX_ACTIVITY_CONTEXTS = 256;
 const activityContexts = new Map<string, RegisteredActivityContext>();
+const activityLifecycle = new ActivityLifecycleReducer();
 
 export function registerActivityContext(instanceId: string, context: ActivityContext): void {
   const semanticDescriptors = context.toolDescriptors === undefined
@@ -153,6 +160,7 @@ export function registerActivityContext(instanceId: string, context: ActivityCon
     const oldest = activityContexts.keys().next().value;
     if (oldest === undefined) break;
     activityContexts.delete(oldest);
+    activityLifecycle.clearInstance(oldest);
   }
 }
 
@@ -170,6 +178,20 @@ export function activityStatusForObservation(
   if (!context) {
     return undefined;
   }
+  if (typeof event.submissionId === 'string') {
+    const descriptor = event.type === 'tool_start' || event.type === 'tool'
+      ? descriptorForObservation(context, event.toolName)
+      : undefined;
+    return activityLifecycle.observe({
+      type: event.type,
+      instanceId: event.instanceId,
+      submissionId: event.submissionId,
+      ...(event.toolCallId ? { toolCallId: event.toolCallId } : {}),
+      ...(descriptor ? { descriptor } : {}),
+      ...(event.isError === undefined ? {} : { isError: event.isError }),
+      ...(event.attemptCount === undefined ? {} : { attemptCount: event.attemptCount }),
+    });
+  }
   if (event.type === 'thinking_start') {
     // The turn already publishes an admission activity before model work
     // starts. A thinking event contains no new user-facing fact and must not
@@ -184,16 +206,59 @@ export function activityStatusForObservation(
     return undefined;
   }
   if (context.semanticDescriptors) {
-    const descriptor = context.semanticDescriptors.get(event.toolName) ??
-      (event.toolName.startsWith('mcp__') && context.enabledFamilies.has('custom_connection')
-        ? genericSemanticDescriptor('custom_connection')
-        : unknownSemanticDescriptor());
+    const descriptor = descriptorForObservation(context, event.toolName);
     return narrateSemanticActivity(
-      descriptor,
+      descriptor ?? unknownSemanticDescriptor(),
       { phase: 'started' },
     );
   }
   return toolActivityStatus(event.toolName, event.args, context);
+}
+
+/** Register an invocation-owner fact only when the exact plan grants its family. */
+export function registerActivityInvocationFact(
+  instanceId: string,
+  submissionId: string,
+  fact: SemanticInvocationFact,
+): ActivityStatus | undefined {
+  const context = activityContexts.get(instanceId);
+  if (!context || !descriptorIsGranted(context, fact.descriptor)) return undefined;
+  return activityLifecycle.registerInvocationFact(instanceId, submissionId, fact);
+}
+
+function descriptorIsGranted(
+  context: RegisteredActivityContext,
+  descriptor: SemanticActivityDescriptor,
+): boolean {
+  if (descriptor.target !== 'managed_connector') {
+    return context.enabledFamilies.has(descriptor.target);
+  }
+  for (const granted of context.semanticDescriptors?.values() ?? []) {
+    if (sameSemanticDescriptor(granted, descriptor)) return true;
+  }
+  return false;
+}
+
+function sameSemanticDescriptor(
+  left: SemanticActivityDescriptor,
+  right: SemanticActivityDescriptor,
+): boolean {
+  return left.operation === right.operation && left.target === right.target &&
+    left.object === right.object && left.effect === right.effect &&
+    left.role === right.role && left.trust === right.trust &&
+    left.label?.kind === right.label?.kind && left.label?.id === right.label?.id &&
+    left.label?.label === right.label?.label;
+}
+
+function descriptorForObservation(
+  context: RegisteredActivityContext,
+  toolName: string | undefined,
+): SemanticActivityDescriptor | undefined {
+  if (!toolName || !context.semanticDescriptors) return undefined;
+  return context.semanticDescriptors.get(toolName) ??
+    (toolName.startsWith('mcp__') && context.enabledFamilies.has('custom_connection')
+      ? genericSemanticDescriptor('custom_connection')
+      : unknownSemanticDescriptor());
 }
 
 function cloneSemanticDescriptor(
@@ -274,34 +339,12 @@ export function connectingActivityStatus(displayName: string): ActivityStatus {
   return activityStatus('checking', 'Connecting to', displayName);
 }
 
-/** Calm admission activity, upgraded to a safe request object when known. */
+/** Fixed truthful admission activity; request content never selects its copy. */
 export function initialActivityStatus(
-  taskLabels?: readonly string[],
-  requestText?: string,
+  _taskLabels?: readonly string[],
+  _requestText?: string,
 ): TypedActivityStatus {
-  const firstTask = taskLabels?.find((label) => label.trim())?.trim();
-  if (firstTask) return activityStatus('writing', 'Drafting', firstTask);
-  return activityStatus('writing', 'Drafting', requestedDraftObject(requestText));
-}
-
-/**
- * Infer only from an allowlist of common product artifacts. User wording is
- * never copied into Slack, so credentials, mentions, and prompt injection
- * cannot become presentation text.
- */
-function requestedDraftObject(requestText: string | undefined): string {
-  const text = requestText?.toLowerCase() ?? '';
-  const drafting = /\b(?:author|build|create|design|draft|edit|outline|revise|write)\b/.test(text);
-  if (!drafting) return 'the response';
-  if (/\binitial\s+skill\b/.test(text)) return 'the initial skill';
-  if (/\bskills?\b/.test(text)) return 'the skill';
-  if (/\bagents?\b/.test(text)) return 'the Agent';
-  if (/\bplans?\b/.test(text)) return 'the plan';
-  if (/\breports?\b/.test(text)) return 'the report';
-  if (/\bproposals?\b/.test(text)) return 'the proposal';
-  if (/\bdocuments?\b/.test(text)) return 'the document';
-  if (/\b(?:emails?|messages?)\b/.test(text)) return 'the message';
-  return 'the response';
+  return thinkingSemanticActivity();
 }
 
 function bashActivityStatus(

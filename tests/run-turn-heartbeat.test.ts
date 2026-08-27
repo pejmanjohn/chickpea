@@ -358,7 +358,7 @@ test('runTurn keeps the persisted V3 owner from first status through final deliv
   }
 });
 
-test('work activity replaces the legacy checklist heartbeat and UTC timestamp', async () => {
+test('admission activity is fixed thinking copy without checklist or UTC narration', async () => {
   const posts: Array<Record<string, unknown>> = [];
   const updates: Array<Record<string, unknown>> = [];
   const client = {
@@ -385,7 +385,7 @@ test('work activity replaces the legacy checklist heartbeat and UTC timestamp', 
   });
 
   assert.equal(posts.length, 1);
-  assert.equal(posts[0]?.text, 'Drafting Verification result…');
+  assert.equal(posts[0]?.text, 'Thinking…');
   assert.deepEqual(updates, []);
   assert.doesNotMatch(JSON.stringify(posts), /UTC|chickpea_work_checklist|is thinking|local-stub/);
 });
@@ -567,7 +567,7 @@ test('a recovery-required Flue conflict emits no Slack final', async () => {
     (error: unknown) => error instanceof AgentPromptFailure && error.recoveryRequired,
   );
   assert.equal(finalAttempts, 0);
-  assert.deepEqual(posts.map((post) => post.text), ['Drafting the response…']);
+  assert.deepEqual(posts.map((post) => post.text), ['Thinking…']);
 });
 
 test('a retryable Flue interruption emits no Slack final', async () => {
@@ -604,7 +604,7 @@ test('a retryable Flue interruption emits no Slack final', async () => {
     (error: unknown) => error instanceof AgentPromptFailure && error.retryable,
   );
   assert.equal(finalAttempts, 0);
-  assert.deepEqual(posts.map((post) => post.text), ['Drafting the response…']);
+  assert.deepEqual(posts.map((post) => post.text), ['Thinking…']);
 });
 
 test('activity remains visible until final delivery and omits model or context narration', async () => {
@@ -666,7 +666,7 @@ test('activity remains visible until final delivery and omits model or context n
   await finalAttempted.promise;
   assert.equal(await Promise.race([outcome, delay(100, 'timeout' as const)]), 'resolved');
   assert.equal(compatibilityStatusCalls, 2, 'native status is set once and cleared once');
-  assert.deepEqual(activity.map((item) => item.text), ['Drafting the response…']);
+  assert.deepEqual(activity.map((item) => item.text), ['Thinking…']);
   assert.doesNotMatch(JSON.stringify(activity), /local-stub|message(?:s)? of|is thinking/i);
   assert.deepEqual(
     lifecycle.slice(0, 2),

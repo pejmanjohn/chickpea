@@ -238,21 +238,21 @@ test('thinking observations do not replace the admitted user-facing activity', (
   );
 });
 
-test('admission activity uses allowlisted request objects without echoing user text', () => {
+test('admission activity is fixed thinking copy and ignores request content', () => {
   assert.deepEqual(
     initialActivityStatus(
       undefined,
       'Briefly explain how you would draft an initial skill for monitoring xoxb-secret.',
     ),
-    activityStatus('writing', 'Drafting', 'the initial skill'),
+    thinkingSemanticActivity(),
   );
   assert.deepEqual(
     initialActivityStatus(undefined, 'Reply with exactly received.'),
-    activityStatus('writing', 'Drafting', 'the response'),
+    thinkingSemanticActivity(),
   );
   assert.deepEqual(
     initialActivityStatus(['Google Ads access requirements'], 'xoxb-secret'),
-    activityStatus('writing', 'Drafting', 'Google Ads access requirements'),
+    thinkingSemanticActivity(),
   );
 });
 
