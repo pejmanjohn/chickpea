@@ -353,34 +353,34 @@ test('private recovery posts one sanitized Chickpea notice at the verified DM ro
   );
 });
 
-test('private recovery rejects a mismatched DM without posting', async () => {
-  const events: string[] = [];
-  let posts = 0;
-  const recoveryStore = {
-    claimRecoveryDelivery: async () => 'claimed' as const,
-    recordRecoveryDelivery: async (input: RecordRoutineRecoveryDeliveryInput) => {
-      events.push(input.outcome);
-      return {};
-    },
-  } as unknown as RoutineStore;
-  const client = {
-    conversations: {
-      open: async () => ({ ok: true, channel: { id: 'D_OTHER', is_im: true } }),
-    },
-    chat: {
-      postMessage: async () => { posts += 1; return { ok: true }; },
-    },
-  } as unknown as WebClient;
+test('private recovery rejects a mismatched or unproven DM without posting', async () => {
+  for (const channel of [{ id: 'D_OTHER', is_im: true }, { id: 'D_TEST' }]) {
+    const events: string[] = [];
+    let posts = 0;
+    const recoveryStore = {
+      claimRecoveryDelivery: async () => 'claimed' as const,
+      recordRecoveryDelivery: async (input: RecordRoutineRecoveryDeliveryInput) => {
+        events.push(input.outcome);
+        return {};
+      },
+    } as unknown as RoutineStore;
+    const client = {
+      conversations: { open: async () => ({ ok: true, channel }) },
+      chat: {
+        postMessage: async () => { posts += 1; return { ok: true }; },
+      },
+    } as unknown as WebClient;
 
-  assert.equal(await deliverDirectRoutineRecoveryNotice({
-    store: recoveryStore,
-    run,
-    routine: directRoutine,
-    access: { ...access, actorSlackUserId: 'U_ACTOR' },
-    now: () => 2_000,
-  }, client), 'definitive_failure');
-  assert.equal(posts, 0);
-  assert.deepEqual(events, ['definitive_failure']);
+    assert.equal(await deliverDirectRoutineRecoveryNotice({
+      store: recoveryStore,
+      run,
+      routine: directRoutine,
+      access: { ...access, actorSlackUserId: 'U_ACTOR' },
+      now: () => 2_000,
+    }, client), 'definitive_failure');
+    assert.equal(posts, 0);
+    assert.deepEqual(events, ['definitive_failure']);
+  }
 });
 
 test('an ambiguous private recovery attempt is recorded unknown and never retried', async () => {

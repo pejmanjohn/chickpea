@@ -231,32 +231,38 @@ test('direct runtime rejects ineligible Slack identities and a mismatched DM', a
     );
   }
 
-  const mismatchClient = {
-    users: { info: async () => ({
-      ok: true,
-      user: {
-        id: 'U_DIRECT', team_id: 'T_TEST', deleted: false, is_bot: false,
-        is_app_user: false, is_restricted: false, is_ultra_restricted: false,
-        is_stranger: false,
-      },
-    }) },
-    conversations: { open: async () => ({ ok: true, channel: { id: 'D_OTHER', is_im: true } }) },
-  } as unknown as WebClient;
-  await assert.rejects(
-    resolveRoutineRuntimeAccess(
-      { ...run, routineId: directRoutine.id, revision: { ...run.revision!, authorityMode: 'live_direct_member_v1' } },
-      directRoutine,
-      undefined,
-      dependencies({
-        authority: async () => directAuthority,
-        installationExecution: async () => ({
-          workspaceId: 'T_TEST', transportMode: 'gateway', botUserId: 'UBOT', client: mismatchClient,
+  for (const channel of [
+    { id: 'D_OTHER', is_im: true },
+    { id: 'D_TEST' },
+    { id: 'D_TEST', is_im: false, is_mpim: true },
+  ]) {
+    const mismatchClient = {
+      users: { info: async () => ({
+        ok: true,
+        user: {
+          id: 'U_DIRECT', team_id: 'T_TEST', deleted: false, is_bot: false,
+          is_app_user: false, is_restricted: false, is_ultra_restricted: false,
+          is_stranger: false,
+        },
+      }) },
+      conversations: { open: async () => ({ ok: true, channel }) },
+    } as unknown as WebClient;
+    await assert.rejects(
+      resolveRoutineRuntimeAccess(
+        { ...run, routineId: directRoutine.id, revision: { ...run.revision!, authorityMode: 'live_direct_member_v1' } },
+        directRoutine,
+        undefined,
+        dependencies({
+          authority: async () => directAuthority,
+          installationExecution: async () => ({
+            workspaceId: 'T_TEST', transportMode: 'gateway', botUserId: 'UBOT', client: mismatchClient,
+          }),
         }),
-      }),
-    ),
-    (error: unknown) => error instanceof RoutineRuntimeError &&
-      error.failureClass === 'channel_ineligible',
-  );
+      ),
+      (error: unknown) => error instanceof RoutineRuntimeError &&
+        error.failureClass === 'channel_ineligible',
+    );
+  }
 });
 
 test('runtime access resolves the one workspace Slack installation', async () => {

@@ -190,7 +190,7 @@ export async function resolveRoutineRuntimeAccess(
       !directConversation ||
       directConversation.id !== routine.destination.conversationId ||
       directConversation.is_mpim === true ||
-      (directConversation.is_im !== undefined && directConversation.is_im !== true)
+      directConversation.is_im !== true
     ) {
       throw new RoutineRuntimeError(
         'channel_ineligible',

@@ -448,8 +448,10 @@ async function bindSavedRoutineAuthority(
   store: RoutineStore,
   bindAuthority: typeof bindRoutineAgentAuthority,
 ): Promise<RoutineDefinition> {
+  const pendingDirect = routine.destination.kind === 'direct_thread' &&
+    routine.state === 'pending_authority';
   if (!assignment || !turn.actorMembershipId) {
-    if (routine.destination.kind === 'channel') {
+    if (!pendingDirect) {
       await service.control({
         routineId: routine.id,
         expectedVersion: routine.version,
@@ -462,7 +464,9 @@ async function bindSavedRoutineAuthority(
     }
     throw new RoutineStateError(
       'routine_access_denied',
-      'The schedule was saved paused because its Agent or Runs as member was unavailable.',
+      pendingDirect
+        ? 'The private schedule was saved inactive because its Agent or requesting member was unavailable.'
+        : 'The schedule was saved paused because its Agent or Runs as member was unavailable.',
     );
   }
   try {
@@ -486,7 +490,7 @@ async function bindSavedRoutineAuthority(
     }
     return routine;
   } catch (error) {
-    if (routine.destination.kind === 'channel') {
+    if (!pendingDirect) {
       await service.control({
         routineId: routine.id,
         expectedVersion: routine.version,

@@ -2439,7 +2439,9 @@ export class WorkspaceManagementService {
           return routineMutation(activated);
         }
       } catch {
-        if (routine.destination.kind === 'channel') {
+        const pendingDirect = routine.destination.kind === 'direct_thread' &&
+          routine.state === 'pending_authority';
+        if (!pendingDirect) {
           await service.control({
             routineId: routine.id,
             expectedVersion: routine.version,
@@ -2452,7 +2454,9 @@ export class WorkspaceManagementService {
         }
         throw new ManagementError(
           'invalid_request',
-          'The schedule was saved paused because its Agent authority could not be bound.',
+          pendingDirect
+            ? 'The private schedule was saved inactive because its Agent authority could not be bound.'
+            : 'The schedule was saved paused because its Agent authority could not be bound.',
         );
       }
       return routineMutation(routine);

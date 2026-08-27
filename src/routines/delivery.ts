@@ -287,7 +287,7 @@ export async function deliverDirectRoutineRecoveryNotice(
     ? openResponse.channel as Record<string, unknown>
     : undefined;
   if (!openResponse.ok || !opened || opened.id !== input.routine.destination.conversationId ||
-      opened.is_mpim === true || (opened.is_im !== undefined && opened.is_im !== true)) {
+      opened.is_mpim === true || opened.is_im !== true) {
     await recordRecoveryOutcome(input.store, input.run.id, 'definitive_failure', now());
     return 'definitive_failure';
   }

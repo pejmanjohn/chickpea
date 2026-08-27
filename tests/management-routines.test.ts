@@ -8,6 +8,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
+import { RoutineService } from '../src/routines/service.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
@@ -488,6 +489,56 @@ test('private DM routines use trusted thread creation and DM-wide Agent-scoped m
     assert.equal((groupAttempt as { ok: true; result: {
       outcomes: Array<{ disposition: string }>;
     } }).result.outcomes[0]?.disposition, 'failed');
+
+    const pausedRoutine = (await routines.getRoutine(routine.id))!;
+    const activeRoutine = await new RoutineService(routines).control({
+      routineId: pausedRoutine.id,
+      expectedVersion: pausedRoutine.version,
+      action: 'resume',
+      actorId: owner.user.id,
+      actorClass: 'operator',
+      reasonCode: 'test_reactivate',
+      idempotencyKey: 'test:reactivate-before-authority-failure',
+    });
+    const originalPutReference = config.putAgentScheduleReference.bind(config);
+    config.putAgentScheduleReference = (() => {
+      throw new Error('simulated authority write failure');
+    }) as typeof config.putAgentScheduleReference;
+    try {
+      const editSignal = signal('agent_chickpea', '500.1');
+      const editProposal = await invokeSlackWorkspaceManagementTool({
+        signal: editSignal, identity, service,
+        name: 'propose_workspace_changes',
+        args: {
+          ...authoringProposalMetadata('private-schedule-authority-failure', 'agent_edit'),
+          operations: [{
+            ...createOperation,
+            itemId: 'edit-after-authority-failure',
+            agentId: sales.id,
+            routineId: routine.id,
+            expectedVersion: activeRoutine.version,
+            name: 'Edited private support pulse',
+          }],
+        },
+      });
+      assert.equal(editProposal.ok, true);
+      const editProposalId = (editProposal as {
+        ok: true; result: { proposalId: string };
+      }).result.proposalId;
+      const failedEdit = await invokeSlackWorkspaceManagementTool({
+        signal: { ...editSignal, eventId: `Ev_DIRECT_${++sequence}` },
+        identity, service, name: 'confirm_workspace_change',
+        args: { proposalId: editProposalId },
+      });
+      assert.equal((failedEdit as { ok: true; result: {
+        outcomes: Array<{ disposition: string }>;
+      } }).result.outcomes[0]?.disposition, 'failed');
+    } finally {
+      config.putAgentScheduleReference = originalPutReference;
+    }
+    const authorityFailedRoutine = await routines.getRoutine(routine.id);
+    assert.equal(authorityFailedRoutine?.state, 'paused');
+    assert.equal(authorityFailedRoutine?.pausedReason, 'schedule_authority_missing');
   } finally {
     identity.close();
     config.close();
